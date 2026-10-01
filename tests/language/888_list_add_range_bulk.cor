@@ -1,0 +1,42 @@
+// test: list_add_range_bulk
+// expect-exit: 0
+// expect-output:
+// 1,2,3,4,5,7,8,9,1,2,3,4,5,7,8,9,10,11 18
+// 7,8,7,8,1,2,3,4,5,9,1,2,3,4,5,9 16
+// range
+// 5
+// 4 p 7 4
+// 1000
+// modified
+//
+// List.AddRange and InsertRange make room once and copy the range in, as
+// .NET's do: a collection by its own CopyTo, an array or a list by copy, a
+// span by index, the list itself by a copy first; a list filled from an
+// empty one by a range is the range's size. An array or a string cast to
+// a span is made one, as its implicit conversion makes one. Output checked
+// against .NET.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+static class Program
+{
+    static IEnumerable<int> Gen() { yield return 7; yield return 8; }
+    static void Main()
+    {
+        var a = new List<int> { 1, 2 };
+        a.AddRange(new[] { 3, 4 }); a.AddRange(new List<int> { 5 }); a.AddRange(Gen()); a.AddRange(new HashSet<int> { 9 });
+        a.AddRange(a); a.AddRange(new int[0]); a.AddRange(((ReadOnlySpan<int>)new[] { 10, 11 }));
+        Console.WriteLine(string.Join(",", a) + " " + a.Count);
+        var b = new List<int> { 1, 5 };
+        b.InsertRange(1, new[] { 2, 3, 4 }); b.InsertRange(0, Gen()); b.InsertRange(b.Count, new List<int> { 9 }); b.InsertRange(2, b);
+        Console.WriteLine(string.Join(",", b) + " " + b.Count);
+        try { b.InsertRange(100, new[] { 1 }); } catch (ArgumentOutOfRangeException) { Console.WriteLine("range"); }
+        var c = new List<string>(); c.AddRange(Enumerable.Repeat("x", 5)); Console.WriteLine(c.Count);
+        ReadOnlySpan<char> word = (ReadOnlySpan<char>)"span"; Span<int> some = (Span<int>)new[] { 6, 7 };
+        Console.WriteLine(word.Length + " " + word[1] + " " + some[1] + " " + ((ReadOnlySpan<int>)new[] { 4, 5 })[0]);
+        var d = new List<byte>(); d.AddRange(new byte[1000]); Console.WriteLine(d.Capacity);
+        var e = new List<int> { 1 }; var en = e.GetEnumerator(); e.AddRange(new[] { 2 });
+        try { en.MoveNext(); Console.WriteLine("no throw"); } catch (InvalidOperationException) { Console.WriteLine("modified"); }
+    }
+}

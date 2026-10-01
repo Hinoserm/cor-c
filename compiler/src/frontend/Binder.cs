@@ -11766,6 +11766,17 @@ public sealed partial class Binder
                 Type operand = CheckExpr(cast.Operand);
                 Type wanted = Resolve(cast.Type, _thisType);
 
+                // AN ARRAY OR A STRING CAST TO A SPAN IS MADE ONE, as its
+                // implicit conversion makes one where it is assigned: the cast
+                // only says which. Left alone, `(ReadOnlySpan<int>)array` was
+                // the array's reference read as a span -- its descriptor and
+                // its length as the span's first two elements.
+                if ((operand.IsArray || operand.Prim == Prim.String && !operand.IsArray) && SpanHolds(wanted) is not null
+                    && !operand.IsError && !_r.Rewrites.ContainsKey(cast.Operand))
+                {
+                    CheckAssignable(operand, wanted, cast.Operand, "cast");
+                }
+
                 // A CONSTANT THAT DOES NOT FIT IS REFUSED (C# 12.23, CS0221):
                 // a constant expression is checked at compile time unless it is
                 // written unchecked. `(short)100000` is an error in .NET, and a

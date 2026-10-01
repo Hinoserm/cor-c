@@ -6812,10 +6812,24 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
     }
 
     public void InsertRange(int index, IEnumerable<T> more) {
-        foreach (T one in more) {
-            Insert(index, one);
-            index = index + 1;
+        if (more == null) { throw new ArgumentNullException("collection"); }
+        if ((uint)index > (uint)count) { throw new ArgumentOutOfRangeException("index", "Index must be within the bounds of the List."); }
+        // A COLLECTION GOES IN AT ONCE, as .NET's does: the tail moved once
+        // and the elements copied in, not each inserted with the tail moved
+        // for every one.
+        T[] adding = (object)more == (object)this ? ToArray() : (more is ICollection<T> ? null! : new List<T>(more).ToArray());
+        if (adding == null) {
+            ICollection<T> collection = (ICollection<T>)more;
+            adding = new T[collection.Count];
+            collection.CopyTo(adding, 0);
         }
+        int n = adding.Length;
+        if (n == 0) { return; }
+        version = version + 1;
+        EnsureCapacity(count + n);
+        if (index < count) { Array.Copy(items, index, items, index + n, count - index); }
+        Array.Copy(adding, 0, items, index, n);
+        count = count + n;
     }
 
     public int IndexOf(T value) {
@@ -6919,40 +6933,79 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
         return items;
     }
 
+    // ROOM ONCE, THEN THE ELEMENTS, as .NET's AddRange does: the list grows
+    // to what it needs (or double, if that is more) and the range is copied
+    // in. Added one at a time, a list filled from a span -- every section a
+    // link reads -- grew by doubling and ended with up to twice its bytes.
     public void AddRange(IEnumerable<T> more) {
         if (more == null) { throw new ArgumentNullException("collection"); }
         // ITSELF IS COPIED FIRST, as .NET copies a collection: walking the
         // list while adding to it is a change under the walk.
         if ((object)more == (object)this) { AddRange(ToArray()); return; }
+        if (more is ICollection<T> collection) {
+            int n = collection.Count;
+            if (n == 0) { return; }
+            version = version + 1;
+            EnsureCapacity(count + n);
+            collection.CopyTo(items, count);
+            count = count + n;
+            return;
+        }
         foreach (T one in more) { Add(one); }
     }
 
     public void AddRange(IReadOnlyList<T> more) {
-        for (int i = 0; i < more.Count; i++) { Add(more[i]); }
+        int n = more.Count;
+        if (n == 0) { return; }
+        version = version + 1;
+        EnsureCapacity(count + n);
+        for (int i = 0; i < n; i++) { items[count + i] = more[i]; }
+        count = count + n;
     }
 
     public void AddRange(List<T> more) {
-        int howMany = more.Count;
-        for (int i = 0; i < howMany; i++) { Add(more[i]); }
+        int n = more.Count;
+        if (n == 0) { return; }
+        version = version + 1;
+        EnsureCapacity(count + n);
+        // Read after the room is made: `list.AddRange(list)` reads the array
+        // the elements were just moved to.
+        Array.Copy(more.items, 0, items, count, n);
+        count = count + n;
     }
 
     public void AddRange(T[] more) {
-        for (int i = 0; i < more.Length; i++) { Add(more[i]); }
+        int n = more.Length;
+        if (n == 0) { return; }
+        version = version + 1;
+        EnsureCapacity(count + n);
+        Array.Copy(more, 0, items, count, n);
+        count = count + n;
     }
 
     /// .NET 8's span overloads. Span<T> is written out beside ReadOnlySpan<T>
     /// because the implicit conversion between them that .NET relies on is a
     /// user-defined conversion operator, which this compiler does not have.
     public void AddRange(ReadOnlySpan<T> more) {
-        for (int i = 0; i < more.Length; i++) { Add(more[i]); }
+        int n = more.Length;
+        if (n == 0) { return; }
+        version = version + 1;
+        EnsureCapacity(count + n);
+        for (int i = 0; i < n; i++) { items[count + i] = more[i]; }
+        count = count + n;
     }
 
     public void AddRange(Span<T> more) {
-        for (int i = 0; i < more.Length; i++) { Add(more[i]); }
+        int n = more.Length;
+        if (n == 0) { return; }
+        version = version + 1;
+        EnsureCapacity(count + n);
+        for (int i = 0; i < n; i++) { items[count + i] = more[i]; }
+        count = count + n;
     }
 
     public void InsertRange(int index, List<T> more) {
-        for (int i = 0; i < more.Count; i++) { Insert(index + i, more[i]); }
+        InsertRange(index, (IEnumerable<T>)more);
     }
 
     // True when it was there, which is .NET's contract for Remove.
