@@ -7941,6 +7941,24 @@ static class Enumerable {
     }
 
     private static IEnumerable<T> WhereIterator<T>(IEnumerable<T> source, Func<T, bool> predicate) {
+        // AN ARRAY OR A LIST IS WALKED AS ITSELF, as .NET's ArrayWhereIterator
+        // and ListWhereIterator do: by index, or with the list's own struct
+        // enumerator, not with an enumerator boxed for the interface. Asked
+        // with `is`, as .NET asks, so a List's subclass is walked as a List.
+        if (source is T[] array) { return WhereArray(array, predicate); }
+        if (source is List<T> list) { return WhereList(list, predicate); }
+        return WhereAny(source, predicate);
+    }
+
+    private static IEnumerable<T> WhereAny<T>(IEnumerable<T> source, Func<T, bool> predicate) {
+        foreach (T item in source) { if (predicate(item)) { yield return item; } }
+    }
+
+    private static IEnumerable<T> WhereArray<T>(T[] source, Func<T, bool> predicate) {
+        for (int i = 0; i < source.Length; i++) { T item = source[i]; if (predicate(item)) { yield return item; } }
+    }
+
+    private static IEnumerable<T> WhereList<T>(List<T> source, Func<T, bool> predicate) {
         foreach (T item in source) { if (predicate(item)) { yield return item; } }
     }
 
@@ -7963,6 +7981,21 @@ static class Enumerable {
     }
 
     private static IEnumerable<R> SelectIterator<T, R>(IEnumerable<T> source, Func<T, R> selector) {
+        // As Where's: .NET's ArraySelectIterator and ListSelectIterator.
+        if (source is T[] array) { return SelectArray(array, selector); }
+        if (source is List<T> list) { return SelectList(list, selector); }
+        return SelectAny(source, selector);
+    }
+
+    private static IEnumerable<R> SelectAny<T, R>(IEnumerable<T> source, Func<T, R> selector) {
+        foreach (T item in source) { yield return selector(item); }
+    }
+
+    private static IEnumerable<R> SelectArray<T, R>(T[] source, Func<T, R> selector) {
+        for (int i = 0; i < source.Length; i++) { yield return selector(source[i]); }
+    }
+
+    private static IEnumerable<R> SelectList<T, R>(List<T> source, Func<T, R> selector) {
         foreach (T item in source) { yield return selector(item); }
     }
 
@@ -8468,14 +8501,31 @@ static class Enumerable {
 
     // ---- elements (immediate) -----------------------------------------------
 
+    /// .NET's TryGetSpan: the elements of an array or of a List -- exactly
+    /// one, not a subclass, which may enumerate itself otherwise -- as an
+    /// array and how many of it count, or null. What the questions below ask
+    /// is then asked by index, with no enumerator made to ask it.
+    private static T[]? Items<T>(IEnumerable<T> source, out int count) {
+        if (source.GetType() == typeof(T[])) { T[] array = (T[])source; count = array.Length; return array; }
+        if (source.GetType() == typeof(List<T>)) { List<T> list = (List<T>)source; count = list.Count; return list.Backing(); }
+        count = 0;
+        return null;
+    }
+
     public static T First<T>(this IEnumerable<T> source) {
         NotNull(source, "source");
+        // A list is asked for its first, as .NET asks any IList.
+        if (source is IList<T> list) { if (list.Count > 0) { return list[0]; } throw NoElements(); }
         foreach (T item in source) { return item; }
         throw NoElements();
     }
 
     public static T First<T>(this IEnumerable<T> source, Func<T, bool> predicate) {
         NotNull(source, "source"); NotNull(predicate, "predicate");
+        if (Items(source, out int count) is T[] items) {
+            for (int i = 0; i < count; i++) { if (predicate(items[i])) { return items[i]; } }
+            throw NoMatch();
+        }
         foreach (T item in source) { if (predicate(item)) { return item; } }
         throw NoMatch();
     }
@@ -8484,6 +8534,7 @@ static class Enumerable {
 
     public static T FirstOrDefault<T>(this IEnumerable<T> source, T defaultValue) {
         NotNull(source, "source");
+        if (source is IList<T> list) { return list.Count > 0 ? list[0] : defaultValue; }
         foreach (T item in source) { return item; }
         return defaultValue;
     }
@@ -8492,6 +8543,10 @@ static class Enumerable {
 
     public static T FirstOrDefault<T>(this IEnumerable<T> source, Func<T, bool> predicate, T defaultValue) {
         NotNull(source, "source"); NotNull(predicate, "predicate");
+        if (Items(source, out int count) is T[] items) {
+            for (int i = 0; i < count; i++) { if (predicate(items[i])) { return items[i]; } }
+            return defaultValue;
+        }
         foreach (T item in source) { if (predicate(item)) { return item; } }
         return defaultValue;
     }
@@ -8619,17 +8674,31 @@ static class Enumerable {
 
     public static bool Any<T>(this IEnumerable<T> source, Func<T, bool> predicate) {
         NotNull(source, "source"); NotNull(predicate, "predicate");
+        if (Items(source, out int count) is T[] items) {
+            for (int i = 0; i < count; i++) { if (predicate(items[i])) { return true; } }
+            return false;
+        }
         foreach (T item in source) { if (predicate(item)) { return true; } }
         return false;
     }
 
     public static bool All<T>(this IEnumerable<T> source, Func<T, bool> predicate) {
         NotNull(source, "source"); NotNull(predicate, "predicate");
+        if (Items(source, out int count) is T[] items) {
+            for (int i = 0; i < count; i++) { if (!predicate(items[i])) { return false; } }
+            return true;
+        }
         foreach (T item in source) { if (!predicate(item)) { return false; } }
         return true;
     }
 
-    public static bool Contains<T>(this IEnumerable<T> source, T value) { return Contains(source, value, null); }
+    /// A collection is asked itself, as .NET asks it: its own Contains, with
+    /// its own comparer -- a set's, a list's search.
+    public static bool Contains<T>(this IEnumerable<T> source, T value) {
+        NotNull(source, "source");
+        if (source is ICollection<T> collection) { return collection.Contains(value); }
+        return Contains(source, value, null);
+    }
 
     public static bool Contains<T>(this IEnumerable<T> source, T value, IEqualityComparer<T>? comparer) {
         NotNull(source, "source");
@@ -8663,6 +8732,10 @@ static class Enumerable {
     public static int Count<T>(this IEnumerable<T> source, Func<T, bool> predicate) {
         NotNull(source, "source"); NotNull(predicate, "predicate");
         int count = 0;
+        if (Items(source, out int length) is T[] items) {
+            for (int i = 0; i < length; i++) { if (predicate(items[i])) { count = count + 1; } }
+            return count;
+        }
         foreach (T item in source) { if (predicate(item)) { count = checked(count + 1); } }
         return count;
     }

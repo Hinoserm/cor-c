@@ -1,0 +1,80 @@
+// test: linq_array_list_paths
+// expect-exit: 0
+// expect-output:
+// list where 1,3,5 select 10,20,30,40,50 any True all True first 1 2 fod 0 1 count 4 contains True False
+// array where 1,3,5 select 10,20,30,40,50 any True all True first 1 2 fod 0 1 count 4 contains True False
+// backwards where 1,3,5 select 10,20,30,40,50 any True all True first 1 5 fod 0 1 count 4 contains True False
+// set where 1,3,5 select 10,20,30,40,50 any True all True first 1 2 fod 0 1 count 4 contains True False
+// range where 1,3,5 select 10,20,30,40,50 any True all True first 1 2 fod 0 1 count 4 contains True False
+// list any False all True fod null count 0 where [] first: Sequence contains no elements match: Sequence contains no matching element
+// array any False all True fod null count 0 where [] first: Sequence contains no elements match: Sequence contains no matching element
+// set comparer True True
+// deferred 1,2,3,4
+// changed InvalidOperationException
+// covariant 2 p
+//
+// LINQ's questions and its Where and Select walk an array or a List as
+// itself, as .NET's do: Where and Select ask `is` (a List's subclass is
+// walked as a List), First and FirstOrDefault without a predicate ask any
+// IList for its first, and the predicate forms take the elements of exactly
+// an array or a List (TryGetSpan) and enumerate anything else. Contains asks
+// a collection itself, with its own comparer. Output checked against .NET.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+class Backwards : List<int>, IEnumerable<int>
+{
+    IEnumerator<int> IEnumerable<int>.GetEnumerator()
+    {
+        for (int i = Count - 1; i >= 0; i--) yield return this[i];
+    }
+}
+
+static class Program
+{
+    static void Show(string name, IEnumerable<int> s)
+    {
+        string where = string.Join(",", s.Where(x => x % 2 == 1));
+        string select = string.Join(",", s.Select(x => x * 10));
+        Console.WriteLine(name + " where " + where + " select " + select
+            + " any " + s.Any(x => x > 3) + " all " + s.All(x => x > 0)
+            + " first " + s.First() + " " + s.First(x => x > 1)
+            + " fod " + s.FirstOrDefault(x => x > 100) + " " + s.FirstOrDefault()
+            + " count " + s.Count(x => x != 2) + " contains " + s.Contains(4) + " " + s.Contains(9));
+    }
+
+    static void Empty(string name, IEnumerable<string> s)
+    {
+        string text = name + " any " + s.Any(x => true) + " all " + s.All(x => false) + " fod " + (s.FirstOrDefault() ?? "null")
+            + " count " + s.Count(x => true) + " where [" + string.Join(",", s.Where(x => true)) + "]";
+        try { s.First(); } catch (InvalidOperationException e) { text += " first: " + e.Message; }
+        try { s.First(x => true); } catch (InvalidOperationException e) { text += " match: " + e.Message; }
+        Console.WriteLine(text);
+    }
+
+    static void Main()
+    {
+        Show("list", new List<int> { 1, 2, 3, 4, 5 });
+        Show("array", new[] { 1, 2, 3, 4, 5 });
+        Show("backwards", new Backwards { 1, 2, 3, 4, 5 });
+        Show("set", new HashSet<int> { 1, 2, 3, 4, 5 });
+        Show("range", Enumerable.Range(1, 5));
+        Empty("list", new List<string>());
+        Empty("array", new string[0]);
+        HashSet<string> folded = new(StringComparer.OrdinalIgnoreCase) { "Alpha" };
+        Console.WriteLine("set comparer " + folded.Contains("ALPHA") + " " + ((IEnumerable<string>)folded).Contains("ALPHA"));
+        List<string> words = new() { "a", "bb", "ccc" };
+        var lengths = words.Select(w => w.Length);
+        words.Add("dddd");
+        Console.WriteLine("deferred " + string.Join(",", lengths));
+        try
+        {
+            foreach (string w in words.Where(w => w.Length > 1)) words.Add("x");
+        }
+        catch (InvalidOperationException e) { Console.WriteLine("changed " + e.GetType().Name); }
+        IEnumerable<object> covariant = new[] { "p", "q" };
+        Console.WriteLine("covariant " + covariant.Count(o => o is string) + " " + covariant.First());
+    }
+}
