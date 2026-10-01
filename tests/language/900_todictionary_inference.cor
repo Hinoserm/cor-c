@@ -1,0 +1,21 @@
+// test: todictionary_inference
+// expect-exit: 0
+// expect-output:
+// 4=4
+// 8=9
+using System;
+using System.Collections.Generic;
+using System.Linq;
+class Reg { public int N; }
+class Field { public int Size; }
+static class P {
+    static int next;
+    static Reg NewReg(Field t, string? name = null) { return new Reg { N = t.Size + next++ }; }
+    static void Main() {
+        Dictionary<long, (int Size, Field Type)> fields = new();
+        fields[4] = (4, new Field { Size = 4 });
+        fields[8] = (8, new Field { Size = 8 });
+        Dictionary<long, Reg> locals = fields.ToDictionary(p => p.Key, p => NewReg(p.Value.Type, "scalarfield"));
+        foreach (var kv in locals) Console.WriteLine(kv.Key + "=" + kv.Value.N);
+    }
+}
