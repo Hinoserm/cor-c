@@ -3077,6 +3077,20 @@ static class Gc
         {
             return;
         }
+        // SWEPT ALREADY by the workers beside the collector (SweepPagesTogether):
+        // what is left is this page's place on its class's lists, which only
+        // one thread may change, and its counts.
+        if (HeapChunks.IsSwept(page))
+        {
+            HeapChunks.SetSwept(page, false);
+            _sweepLive = _sweepLive + HeapChunks.LiveBlocks(page);
+            _sweepLiveBytes = _sweepLiveBytes + HeapChunks.LiveBytes(page);
+            CollectedBytes = CollectedBytes + HeapChunks.Owner(page);
+            HeapChunks.SetOwner(page, 0);
+            PlacePage(page, HeapChunks.LiveBlocks(page), HeapChunks.PageFree(page), HeapChunks.LargestHole(page),
+                HeapChunks.End(page) - HeapChunks.First(page));
+            return;
+        }
         long first = HeapChunks.First(page);
         long end = HeapChunks.End(page);
         long step = GcThreads.BufferAtOrAbove(first);
@@ -3159,6 +3173,142 @@ static class Gc
         HeapChunks.SetYoung(page, stillYoung);
         _sweepLive = _sweepLive + live;
         _sweepLiveBytes = _sweepLiveBytes + liveBytes;
+        PlacePage(page, live, head, freeBytes, end - first);
+    }
+
+    /// THE PAGE'S OWN PART OF ITS SWEEP, which any thread may do: each block
+    /// stamped live or freed and zeroed, the free ones threaded into the
+    /// page's own list, and the page's record written. Nothing shared is
+    /// touched: the bytes the collector freed wait in the owner word, which
+    /// is 0 on every page swept here, for the collector to count (SweepPage).
+    /// Only with no checking, census or verifying asked for, which the
+    /// collector's own sweep does.
+    static void SweepPageAlone(long page)
+    {
+        long first = HeapChunks.First(page);
+        long end = HeapChunks.End(page);
+        long size = ClassSize(HeapChunks.PageClass(page) - 1);
+        long head = 0;
+        long tail = 0;
+        long live = 0;
+        long liveBytes = 0;
+        long freeBytes = 0;
+        long collected = 0;
+        bool stillYoung = false;
+        long block = first;
+        while (block + size <= end)
+        {
+            long word = Sys.Peek(block);
+            if ((word & SizeMask) != size)
+            {
+                break;
+            }
+            if ((word & FlagFree) == 0 && ((word & FlagMark) != 0 || Newcomer(page, block, word)))
+            {
+                if (_generational && (word & FlagMark) != 0)
+                {
+                    Stamp(block, size, FlagMark | FlagScan);
+                }
+                else
+                {
+                    Stamp(block, size, Zero);
+                    stillYoung = stillYoung || (word & FlagMark) == 0;
+                }
+                live = live + 1;
+                liveBytes = liveBytes + size;
+            }
+            else
+            {
+                if ((word & FlagFree) == 0)
+                {
+                    collected = collected + size;
+                    ZeroWords(block + HeaderBytes, block + size - FooterBytes);
+                    Stamp(block, size, FlagFree);
+                }
+                Sys.Poke(block + KindAt, Zero);
+                if (tail == 0) head = block;
+                else Sys.Poke(tail + KindAt, block);
+                tail = block;
+                freeBytes = freeBytes + size;
+            }
+            block = block + size;
+        }
+        HeapChunks.SetPageFree(page, head);
+        HeapChunks.SetLive(page, live, liveBytes);
+        HeapChunks.SetLargestHole(page, freeBytes);
+        HeapChunks.SetYoung(page, stillYoung);
+        HeapChunks.SetOwner(page, collected);
+        HeapChunks.SetSwept(page, true);
+    }
+
+    // THE PAGES SWEPT TOGETHER. A collection with the world stopped sweeps
+    // its pages on the workers too, before its own walk of the chunks: a
+    // queue of the pages to sweep, taken from by every thread, then the
+    // walk, which finds them swept and only lists them (SweepPage). The
+    // mixed chunks, whose free runs go on the shared lists, stay its own.
+    static long _pageQueue;
+    static long _pageQueueBytes;
+    static long _pageCount;
+    static long _pageNext;
+    static long _pagesDone;
+    static long _job;           // what the workers do while the word is odd: 0 mark, 1 sweep pages
+    const long PagesTogether = 512;
+
+    static void SweepPagesTogether()
+    {
+        if (Workers == 0 || _census || _heapCheck || _verify || _deadCensus || _concurrent || HeapChunks.HeapBytes < WorkersWorthBytes) return;
+        long w = WordSize.Bytes;
+        long chunks = 0;
+        for (long each = HeapChunks.Newest(); each != 0; each = HeapChunks.Next(each)) chunks = chunks + 1;
+        long wanted = chunks * w;
+        if (wanted > _pageQueueBytes)
+        {
+            // The smaller queue is left mapped: kernels have no unmap, and a
+            // queue grows only as the heap does.
+            _pageQueueBytes = wanted * 2;
+            _pageQueue = Platform.Map(_pageQueueBytes);
+            if (_pageQueue == 0) { _pageQueueBytes = 0; return; }
+        }
+        long n = 0;
+        long cap = _pageQueueBytes / w;
+        for (long chunk = HeapChunks.Newest(); chunk != 0 && n < cap; chunk = HeapChunks.Next(chunk))
+        {
+            if (HeapChunks.PageClass(chunk) == 0 || HeapChunks.IsPooled(chunk) || HeapChunks.Owner(chunk) != 0) continue;
+            if (_minor && !HeapChunks.IsYoung(chunk)) continue;
+            long step = GcThreads.BufferAtOrAbove(HeapChunks.First(chunk));
+            if (step < GcThreads.BufferCount() && GcThreads.BufferBase(step) == HeapChunks.First(chunk)) continue;
+            Sys.Poke(_pageQueue + n * w, chunk);
+            n = n + 1;
+        }
+        if (n < PagesTogether) return;
+        _pageCount = n;
+        Sys.AtomicSwap(Sys.AddressOf(ref _pageNext), 0);
+        Sys.AtomicSwap(Sys.AddressOf(ref _pagesDone), 0);
+        Sys.AtomicSwap(Sys.AddressOf(ref _job), 1);
+        WorkersMark(true);
+        SweepPagesSome();
+        while (Sys.Peek(Sys.AddressOf(ref _pagesDone)) < n) Sys.Pause();
+        WorkersMark(false);
+        Sys.AtomicSwap(Sys.AddressOf(ref _job), 0);
+    }
+
+    /// Pages taken off the queue and swept until it is empty.
+    static void SweepPagesSome()
+    {
+        long w = WordSize.Bytes;
+        while (true)
+        {
+            long i = Sys.AtomicAdd(Sys.AddressOf(ref _pageNext), 1);
+            if (i >= _pageCount) return;
+            SweepPageAlone(Sys.Peek(_pageQueue + i * w));
+            Sys.AtomicAdd(Sys.AddressOf(ref _pagesDone), 1);
+        }
+    }
+
+    /// A swept page put where it belongs: retired when nothing in it lives,
+    /// listed for reuse when half free, off the list otherwise.
+    static void PlacePage(long page, long live, long head, long freeBytes, long span)
+    {
         if (live == 0)
         {
             RetirePage(page);
@@ -3177,7 +3327,7 @@ static class Gc
         // EXCEPT NEAR A LIMIT (_reuseEveryPage): past half a cap or of the
         // 32-bit ceiling, or with the machine short, the slots of a fuller
         // page are what is left.
-        else if (head != 0 && (_reuseEveryPage || freeBytes >= ((end - first) >> 1)))
+        else if (head != 0 && (_reuseEveryPage || freeBytes >= (span >> 1)))
         {
             if (!HeapChunks.IsListed(page)) ListPage(page);
         }
@@ -6782,7 +6932,10 @@ static class Gc
     {
         // The workers mark what the roots queue as they queue it.
         // Not for a census, whose sums are plain additions.
-        bool helped = !_concurrent && !_rootsOnly && !_census;
+        // Not for a small heap, whose marking is over before the workers
+        // are awake: waking them and stopping them again cost more than the
+        // whole of such a collection.
+        bool helped = !_concurrent && !_rootsOnly && !_census && HeapChunks.HeapBytes >= WorkersWorthBytes;
         if (helped) WorkersMark(true);
         long clock = PauseClock;
         long t0 = clock != 0 ? Sys.Call(clock, 0, 0, 0) : 0;
@@ -6814,6 +6967,7 @@ static class Gc
         HeapChunks.SetBlockAnchorsActive(false);
         if (_verify) CheckQuarantine();
         BeginSweep();
+        SweepPagesTogether();
         while (SweepNext()) { }
         if (clock != 0)
         {
@@ -7043,6 +7197,14 @@ static class Gc
                 Platform.Wait(at, word);
                 continue;
             }
+            // Sweeping pages: take them until there are none, then sleep
+            // until the word changes.
+            if (Sys.Peek(Sys.AddressOf(ref _job)) == 1)
+            {
+                SweepPagesSome();
+                Platform.Wait(at, word);
+                continue;
+            }
             // AN IDLE WORKER LOOKS AND DOES NOT TOUCH. Its check of the queue
             // is two plain reads; a take that found nothing was two locked
             // additions on the line every push and take of the marking thread
@@ -7072,6 +7234,9 @@ static class Gc
             idle = 0;
         }
     }
+
+    /// The heap below which a collection runs on its own thread alone.
+    const long WorkersWorthBytes = 32 * 1048576;
 
     /// Looks at an empty queue before a worker parks.
     const long WorkerSpins = 256;
@@ -8028,6 +8193,14 @@ static class Gc
             long after = HeapChunks.Next(chunk);
             _sweepAt = after;
 
+            // A PAGE THE WORKERS SWEPT is listed whatever its age now: their
+            // sweep may have found it old.
+            if (HeapChunks.PageClass(chunk) != 0 && HeapChunks.IsSwept(chunk))
+            {
+                SweepPage(chunk);
+                return _sweepAt != 0;
+            }
+
             // AN OLD CHUNK IS LEFT ALONE by a minor sweep: nothing in it was
             // made since the last cycle, nothing in it can have died that a
             // minor cycle would know of, and what its last sweep found live
@@ -8242,6 +8415,7 @@ static class HeapChunks
     const long ChunkYoung = 1;
     const long ChunkListed = 2;     // a page on its class's list
     const long ChunkPooled = 4;     // an empty page kept for any class
+    const long ChunkSwept = 8;      // a page the workers swept, for the collector to list (Gc.SweepPage)
 
     /// A size-class page: small enough that a thread owning one of every
     /// class holds little, large enough that the start table inside it is
@@ -8848,6 +9022,17 @@ static class HeapChunks
     {
         long flags = Sys.Peek(chunk + ChunkFlags);
         Sys.Poke(chunk + ChunkFlags, listed ? flags | ChunkListed : flags & ~ChunkListed);
+    }
+
+    public static bool IsSwept(long chunk)
+    {
+        return (Sys.Peek(chunk + ChunkFlags) & ChunkSwept) != 0;
+    }
+
+    public static void SetSwept(long chunk, bool swept)
+    {
+        long flags = Sys.Peek(chunk + ChunkFlags);
+        Sys.Poke(chunk + ChunkFlags, swept ? flags | ChunkSwept : flags & ~ChunkSwept);
     }
 
     public static bool IsPooled(long chunk)
