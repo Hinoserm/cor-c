@@ -604,18 +604,19 @@ public sealed partial class Escape
     /// site. The function's name is unique in the unit and gives the same
     /// symbol however the batches fall.
     /// </summary>
+    ///
+    /// A SERIAL FOR EACH FUNCTION, kept while the unit is: one that restarted
+    /// whenever the function changed named a function's sites from 0 again
+    /// when its frees were placed in two turns with another function's
+    /// between, and the object defined one site twice.
     private string FieldSiteSymbol(Function f)
     {
-        if (!ReferenceEquals(_siteFunction, f))
-        {
-            _siteFunction = f;
-            _siteSerial = 0;
-        }
+        _siteSerials.TryGetValue(f.Name, out int serial);
+        _siteSerials[f.Name] = serial + 1;
         string function = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(f.Name)))[..12];
-        return FieldSitePrefix + _unitKey + "$" + function + "$" + (_siteSerial++).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return FieldSitePrefix + _unitKey + "$" + function + "$" + serial.ToString(System.Globalization.CultureInfo.InvariantCulture);
     }
-    private Function? _siteFunction;
-    private int _siteSerial;
+    private readonly Dictionary<string, int> _siteSerials = new(StringComparer.Ordinal);
 
     /// <summary>The prefix of the symbols field sites call (LifetimeHints.FieldSites).</summary>
     public const string FieldSitePrefix = "__corsac_field$";
