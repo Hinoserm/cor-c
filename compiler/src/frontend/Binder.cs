@@ -287,7 +287,7 @@ public sealed partial class Binder
         if (written is { FromLibrary: true, Specialised: false } && within.Length == 0
             && _r.Types.TryGetValue(LibraryHome + "." + name, out TypeSymbol? moved) && moved.Decl is { MovedToSystem: true })
         {
-            if (!BindingElsewhere) moved.Used = true;
+            if (!BindingElsewhere && !_namingOnly) moved.Used = true;
             sym = moved;
             return true;
         }
@@ -488,7 +488,7 @@ public sealed partial class Binder
         bool plain = name.IndexOf('.') < 0;
         if (plain && _r.Types.TryGetWithin(within, name, out symbol))
         {
-            if (!BindingElsewhere) symbol!.Used = true;
+            if (!BindingElsewhere && !_namingOnly) symbol!.Used = true;
             return true;
         }
         if (plain && _requireDeclaration is null)
@@ -509,7 +509,7 @@ public sealed partial class Binder
             // source given only for them (--ref, TypeDecl.Elsewhere) asks
             // about the types they mention, and a program then described
             // every library type the library's own signatures name.
-            if (!BindingElsewhere) symbol.Used = true;
+            if (!BindingElsewhere && !_namingOnly) symbol.Used = true;
             return true;
         }
         // A MISSING DECLARATION IS RECORDED, NOT RAISED. Unwinding here threw
@@ -518,6 +518,7 @@ public sealed partial class Binder
         // on with the name unresolved instead, which reports nonsense for the
         // rest of this pass -- and that is fine, because the pass is discarded
         // the moment anything was recorded. See DeclarationBatch.
+        if (_namingOnly) return false;
         try { _requireDeclaration?.Invoke(key); }
         catch (Metadata.DeclarationDemand demand) { _declarationBatch.Add(demand); }
         return false;
@@ -2024,15 +2025,19 @@ public sealed partial class Binder
 
         // A SPECIALISATION'S ARGUMENTS, resolved once in its own scope, for
         // the name .NET gives it: List`1[[System.Int32, ...]].
+        // Named only: a type looked up here is not one this unit uses, and
+        // one not loaded is not asked for -- described but never laid out,
+        // it made a second, empty layout of a type another unit had.
         _quiet++;
+        _namingOnly = true;
         try
         {
-            foreach (TypeSymbol made in _r.Types.Values.Where(t => t.Decl is { Specialised: true, TemplateArgs.Count: > 0 } && t.TemplateArgTypes.Count == 0))
+            foreach (TypeSymbol made in _r.Types.Values.Where(t => t.Decl is { Specialised: true, TemplateArgs.Count: > 0 } && t.TemplateArgTypes.Count == 0).ToList())
             {
                 foreach (TypeRef arg in made.Decl!.TemplateArgs) made.TemplateArgTypes.Add(Resolve(arg, made));
             }
         }
-        finally { _quiet--; }
+        finally { _quiet--; _namingOnly = false; }
 
         // The tuple shapes met so far take ValueTuple's interfaces now that
         // those have slots; any made from here on take them as they are made.
@@ -7793,6 +7798,9 @@ public sealed partial class Binder
         Remember(tuple, names);
         return tuple;
     }
+
+    /// <summary>Types are being looked up for their names alone: none is marked used, none is asked for.</summary>
+    private bool _namingOnly;
 
     /// <summary>Whether the library's interfaces have their slots, so a tuple shape can be given them.</summary>
     private bool _tupleFacesReady;
