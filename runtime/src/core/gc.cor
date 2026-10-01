@@ -268,6 +268,9 @@ static class Gc
 
     // Work counters, for finding out where a collection's time goes.
     public static long MarkCalls;
+    /// Frees the program asked for and the collector was left with: while a
+    /// mark or a sweep was under way, and on top of the allocator or the lock.
+    public static long FreesDroppedMarking, FreesDropped;
     /// Whether MarkCalls and the new-mark count are kept: CORSAC_GC_STATS, or a
     /// program that reads them (the compiler's benchmark build) setting it.
     /// Every marking thread bumping the two shared words for every word it
@@ -4275,6 +4278,8 @@ static class Gc
         // escape analysis kept in frames never reaches the heap at all.)
         SayNumber("gc: frees ", Frees);
         SayNumber("gc: freed by the program MB ", FreedBytes / 1048576);
+        SayNumber("gc: frees dropped while marking ", FreesDroppedMarking);
+        SayNumber("gc: frees dropped otherwise ", FreesDropped);
         SayNumber("gc: freed by the collector MB ", CollectedBytes / 1048576);
         // WHO GAVE BACK WHAT WAS GIVEN BACK: the program's frees against the
         // collector's sweeps -- by the bytes each actually reclaimed.
@@ -4721,6 +4726,7 @@ static class Gc
         long self = Sys.ThreadBlock();
         if (self != 0 && Sys.Peek(self + Tls.InAlloc) != 0 || GcLock.HeldByMe())
         {
+            FreesDropped = FreesDropped + 1;
             return;
         }
         if (_heapCheck && (at & 3) == 0)
@@ -4756,6 +4762,7 @@ static class Gc
         // it unreferenced and frees it then.
         if (Runtime.Marking != 0 || _sweeping)
         {
+            FreesDroppedMarking = FreesDroppedMarking + 1;
             return;
         }
 
