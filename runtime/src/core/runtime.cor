@@ -100,8 +100,9 @@ static class WordSize
     public const int Shift = 2;
 
     /// What an address is, as a number: the low 32 bits, unsigned. Sys.Peek
-    /// sign-extends a 32-bit word, and an address above 2 GiB must not
-    /// compare below one under it.
+    /// zero-extends a 32-bit word already; a long sum or difference of two
+    /// addresses can still leave the 32 bits, and an address above 2 GiB
+    /// must not compare below one under it.
     public const long AddressMask = 0xFFFFFFFF;
 #endif
 }
@@ -592,7 +593,7 @@ static class Runtime
     public static long Alloc(nint bytes)
     {
         if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes, 1);
-        return Gc.AllocWord(bytes, 0);
+        return (long)(nuint)Gc.AllocWord(bytes, 0);
     }
 
     /// The same for memory that will hold no references -- a string, an
@@ -602,7 +603,7 @@ static class Runtime
     public static long AllocLeaf(nint bytes)
     {
         if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes, 2);
-        return Gc.AllocWord(bytes, (nint)Gc.LeafKind);
+        return (long)(nuint)Gc.AllocWord(bytes, (nint)Gc.LeafKind);
     }
 
     /// The same for an object whose vtable the compiler stores next -- a class
@@ -611,7 +612,7 @@ static class Runtime
     public static long AllocObject(nint bytes)
     {
         if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes, 3);
-        return Gc.AllocWord(bytes, (nint)Gc.ObjectKind);
+        return (long)(nuint)Gc.AllocWord(bytes, (nint)Gc.ObjectKind);
     }
 
     /// THE SAME TAKING LONGS, for a program that holds sizes and addresses in

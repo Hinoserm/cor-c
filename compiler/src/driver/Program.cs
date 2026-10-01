@@ -25,6 +25,7 @@ public static partial class Program
     public static int Main(string[] args)
     {
 #if COR_SELFHOST_BENCHMARK
+        Gc.CountMarks = true;
         long started = Stopwatch.GetTimestamp();
         long collections = Gc.Collections, marked = Gc.MarkCalls, walked = Gc.WalkSteps;
         try { return Driver.Run(args); }
