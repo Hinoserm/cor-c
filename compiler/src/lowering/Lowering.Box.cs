@@ -241,6 +241,14 @@ public sealed partial class Lowering
 
     private string BoxDescriptor(Type of)
     {
+        // AN ENUM BY ITS UNDERLYING TYPE, however the Type in hand was made:
+        // one without the Prim -- typeof's -- read the box as signed where
+        // a byte enum is not, and two units made two different helpers of
+        // one name.
+        if (of.Symbol is { Kind: TypeKind.Enum } named && !of.IsArray && !of.IsPointer && !of.IsNullableValue)
+        {
+            of = new Type { Prim = named.EnumUnderlying, Symbol = named };
+        }
         string name = BoxName(of);
         string key = BoxKey(of);
 
