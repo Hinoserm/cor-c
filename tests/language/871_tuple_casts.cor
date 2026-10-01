@@ -1,0 +1,29 @@
+// test: a cast to a tuple type parses -- ((long, string))x -- unwraps a nullable tuple (InvalidOperationException when empty), unboxes an object (InvalidCastException for anything else) and converts another shape item by item; ((x)) + 1 and ((F))(x) stay expressions; output identical to .NET
+// expect-exit: 0
+// expect-output:
+// (4, m) (5, o) (1, 2) 7 18
+// bad cast
+// Nullable object must have a value.
+using System;
+static class Program
+{
+    static Func<int, int> F = n => n * 3;
+    static int Main()
+    {
+        (long, string)? maybe = (4L, "m");
+        var a = ((long, string))maybe;
+        object boxed = (5, "o");
+        var b = ((int, string))boxed;
+        var c = ((long, double))(1, 2);
+        int x = 6;
+        int d = ((x)) + 1;
+        int e = ((F))(x);
+        Console.WriteLine(a + " " + b + " " + c + " " + d + " " + e);
+        try { var none = ((long, string))(object)"text"; Console.WriteLine(none); }
+        catch (InvalidCastException) { Console.WriteLine("bad cast"); }
+        (long, string)? empty = null;
+        try { var f = ((long, string))empty; Console.WriteLine(f); }
+        catch (InvalidOperationException ex) { Console.WriteLine(ex.Message); }
+        return 0;
+    }
+}

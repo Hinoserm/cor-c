@@ -11465,6 +11465,30 @@ public sealed partial class Binder
                     return wanted.Nullable && !produced.Nullable ? wanted : produced;
                 }
 
+                // A TUPLE CAST TO ANOTHER SHAPE IS ITEM BY ITEM (C# 10.3.6):
+                // `((long, double))(1, 2)` is a new tuple, each item cast
+                // explicitly -- not the same bytes read as another layout.
+                if (!_r.Rewrites.ContainsKey(cast) && TupleArity(operand) is int items && TupleArity(wanted) == items
+                    && !ReferenceEquals(operand.Symbol, wanted.Symbol))
+                {
+                    List<FieldSymbol> into = wanted.Symbol!.Fields.Where(f => !f.Static).ToList();
+                    TupleExpr rebuilt = new() { Line = cast.Line, Col = cast.Col, File = cast.File };
+                    for (int i = 0; i < items; i++)
+                    {
+                        Expr item = new MemberExpr { Target = new SubjectExpr { Line = cast.Line, Col = cast.Col }, Name = "Item" + (i + 1), Line = cast.Line, Col = cast.Col, File = cast.File };
+                        rebuilt.Items.Add(RefOf(into[i].Type) is TypeRef element
+                            ? new CastExpr { Type = element, Operand = item, Line = cast.Line, Col = cast.Col, File = cast.File }
+                            : item);
+                    }
+                    PatternExpr each = new() { Subject = cast.Operand, Test = rebuilt, Line = cast.Line, Col = cast.Col, File = cast.File };
+                    _r.Rewrites[cast] = each;
+                    Type? outside = _wanted;
+                    _wanted = wanted;
+                    CheckExpr(each);
+                    _wanted = outside;
+                    return wanted;
+                }
+
                 // `(int?)5` PUTS THE NUMBER IN A CELL, which is a conversion
                 // and not merely a name for the same bits. Marked on the
                 // operand, because that is the value the cell is made from.

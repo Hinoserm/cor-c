@@ -5009,15 +5009,16 @@ public sealed class Parser
         {
             _i++;
 
-            if (!At(Tok.Ident) && !At(Tok.KwVoid) && !(At(Tok.KwDelegate) && Ahead().Kind == Tok.Star))
+            bool tuple = At(Tok.LParen);
+            if (!tuple && !At(Tok.Ident) && !At(Tok.KwVoid) && !(At(Tok.KwDelegate) && Ahead().Kind == Tok.Star))
             {
                 return false;
             }
 
             TypeRef type = ParseTypeRef();
 
-            return At(Tok.RParen)
-                && (CastCanFollow(Ahead().Kind) || CannotBeExpression(type));
+            return At(Tok.RParen) && (!tuple || type.Args.Count >= 2)
+                && (CastCanFollow(Ahead().Kind) || !tuple && CannotBeExpression(type));
         }
         catch (CompileError)
         {
@@ -7034,14 +7035,17 @@ public sealed class Parser
                 int save = _i;
                 _i++;
 
-                if (At(Tok.Ident) || At(Tok.KwVoid) || (At(Tok.KwDelegate) && Ahead().Kind == Tok.Star))
+                // A CAST TO A TUPLE TYPE, `((long, string))x`, begins with a
+                // second bracket: the type written as one, then the operand.
+                bool tuple = At(Tok.LParen);
+                if (tuple || At(Tok.Ident) || At(Tok.KwVoid) || (At(Tok.KwDelegate) && Ahead().Kind == Tok.Star))
                 {
                     try
                     {
                         TypeRef type = ParseTypeRef();
 
-                        if (At(Tok.RParen)
-                            && (CastCanFollow(Ahead().Kind) || CannotBeExpression(type)))
+                        if (At(Tok.RParen) && (!tuple || type.Args.Count >= 2)
+                            && (CastCanFollow(Ahead().Kind) || !tuple && CannotBeExpression(type)))
                         {
                             _i++;
                             return new CastExpr { Type = type, Operand = ParseUnary(), Line = at.Line, Col = at.Col };
