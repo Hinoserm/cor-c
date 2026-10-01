@@ -99,6 +99,7 @@ public sealed partial class Escape : IModulePass
         Dictionary<string, bool[]> summaries = new(StringComparer.Ordinal);
         _summaries = summaries;
         SeedKnown(summaries);
+        foreach (string made in AlwaysFresh) if (!byName.ContainsKey(made)) _fresh.Add(made);
         foreach (List<Function> cycle in CallCycles(m, byName))
         {
             SummariseCycle(cycle, summaries);
@@ -1512,6 +1513,62 @@ continue;
         ("m_Runtime_ArrayStoreCheck_2_V$I64_V$I64", 2),
         // A failed cast's exception names the object's type; it keeps no reference.
         ("m_Runtime_InvalidCastTo_2_V$Any_V$String", 2),
+        // The string routines that read their strings and keep none of them:
+        // comparing, searching, hashing, and copying into a new one.
+        ("m_String_Compare_2_V$String_V$String", 2),
+        ("m_String_Compare_3_V$String_V$String_T$StringComparison", 3),
+        ("m_String_Compare_3_V$String_V$String_V$Bool", 3),
+        ("m_String_CompareOrdinal_2_V$String_V$String", 2),
+        ("m_String_CompareOrdinal_5_V$String_V$I32_V$String_V$I32_V$I32", 5),
+        ("m_String_Contains_2_V$String_V$Char", 2),
+        ("m_String_Contains_2_V$String_V$String", 2),
+        ("m_String_Contains_3_V$String_V$String_T$StringComparison", 3),
+        ("m_String_EndsWith_2_V$String_V$Char", 2),
+        ("m_String_EndsWith_2_V$String_V$String", 2),
+        ("m_String_EndsWith_3_V$String_V$String_T$StringComparison", 3),
+        ("m_String_Equals_2_V$String_V$String", 2),
+        ("m_String_Equals_3_V$String_V$String_T$StringComparison", 3),
+        ("m_String_GetHashCode_1_V$String", 1),
+        ("m_String_IndexOf_2_V$String_V$I32", 2),
+        ("m_String_IndexOf_2_V$String_V$String", 2),
+        ("m_String_IndexOf_3_V$String_V$Char_V$I32", 3),
+        ("m_String_IndexOf_3_V$String_V$String_T$StringComparison", 3),
+        ("m_String_IndexOf_3_V$String_V$String_V$I32", 3),
+        ("m_String_IndexOf_4_V$String_V$Char_V$I32_V$I32", 4),
+        ("m_String_IndexOf_4_V$String_V$String_V$I32_T$StringComparison", 4),
+        ("m_String_IsNullOrEmpty_1_V$String", 1),
+        ("m_String_IsNullOrWhiteSpace_1_V$String", 1),
+        ("m_String_KeyHash_1_V$String", 1),
+        ("m_String_LastIndexOf_2_V$String_V$I32", 2),
+        ("m_String_LastIndexOf_2_V$String_V$String", 2),
+        ("m_String_LastIndexOf_3_V$String_V$Char_V$I32", 3),
+        ("m_String_LastIndexOf_3_V$String_V$String_T$StringComparison", 3),
+        ("m_String_StartsWith_2_V$String_V$Char", 2),
+        ("m_String_StartsWith_2_V$String_V$String", 2),
+        ("m_String_StartsWith_3_V$String_V$String_T$StringComparison", 3),
+        ("m_Runtime_StringHashCode_1_V$String", 1),
+        ("m_String_Concat_2_V$String_V$String", 2),
+        ("m_String_Concat_3_V$String_V$String_V$String", 3),
+        ("m_String_Concat_4_V$String_V$String_V$String_V$String", 4),
+        ("m_String_Substring_2_V$String_V$I32", 2),
+        ("m_String_Substring_3_V$String_V$I32_V$I32", 3),
+    };
+
+    /// <summary>
+    /// LIBRARY ROUTINES THAT ALWAYS HAND BACK A STRING MADE FOR THE CALL --
+    /// Sys.NewChars and the parts copied in, never an argument returned as it
+    /// is -- known fresh in a unit that does not hold their bodies. A name
+    /// built with `a + "." + b` to look something up, then dropped, was the
+    /// collector's: the unit could not see that Concat made it.
+    /// </summary>
+    private static readonly string[] AlwaysFresh =
+    {
+        "m_String_Concat_2_V$String_V$String",
+        "m_String_Concat_3_V$String_V$String_V$String",
+        "m_String_Concat_4_V$String_V$String_V$String_V$String",
+        "m_String_Substring_2_V$String_V$I32",
+        "m_String_Substring_3_V$String_V$I32_V$I32",
+        "m_String_FromInt_1_V$I64",
     };
 
     internal static void SeedKnown(Dictionary<string, bool[]> summaries)
@@ -2367,7 +2424,11 @@ continue;
     {
         // Not the whole program: each virtual call stands for its overrides
         // under one name, for the link to answer (VirtualCallees).
-        if (m.PreserveExports || m.Entry is null) return m.PreserveExports ? VirtualCallees(m.Functions) : null;
+        // A unit of a program the link will finish (LeavesLinkHints) names its
+        // virtual calls too: an argument handed through an interface -- a key
+        // to a dictionary's comparer -- is then a condition on every override,
+        // which the link answers, not an escape no unit can take back.
+        if (m.PreserveExports || m.Entry is null) return m.PreserveExports || m.LeavesLinkHints ? VirtualCallees(m.Functions) : null;
 
         // Where in a descriptor its methods begin: the offsets objects are
         // stamped with (`store @t_Type+48` into the new object's first word).

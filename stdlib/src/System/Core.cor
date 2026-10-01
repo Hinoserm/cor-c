@@ -6754,6 +6754,14 @@ static class CollectionExpressionBuilder {
 // GENERIC so that each collection's copy is made in the unit that uses it,
 // as the collection's own code is: a call into the library's unit was an
 // unknown call there, the freed array an escape, and the field dirty.
+// THE ELEMENTS OF A COLLECTION THE COMPILER PROVED OWNS THEM: freed one by
+// one when it dies (Opt.OwnedElements). A value type has nothing to free.
+static class OwnedElements {
+    internal static void Release<E>(E element) {
+        if (Sys.IsObject(element) && Sys.Word(element) != 0) { Runtime.Free((nint)Sys.Word(element)); }
+    }
+}
+
 static class OutgrownStorage {
     internal static void Release<E>(E[]? old) {
         if (old != null) { Runtime.Free((nint)Sys.Word(old)); }
@@ -7350,6 +7358,18 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
     private void Outgrown(T[]? old) {
         if (!lent) { OutgrownStorage.Release(old); }
         lent = false;
+    }
+
+    // THE ELEMENTS GIVEN BACK, by the compiler's call alone (OwnedElements):
+    // it proved every element this list holds was made for it, is held by
+    // nothing else, and is dead. Each is freed and its place cleared.
+    internal void FreeOwnedElements() {
+        if (items == null) { return; }
+        for (int i = 0; i < count; i++) {
+            OwnedElements.Release(items[i]);
+            items[i] = default(T)!;
+        }
+        count = 0;
     }
     // ---- the rest of .NET's List<T> ---------------------------------------
 
@@ -10643,6 +10663,19 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         filled = 0;
         ordered = 0;
         vacancies = 0;
+    }
+
+    // THE VALUES GIVEN BACK, by the compiler's call alone (OwnedElements):
+    // every value this table holds was proved made for it, held by nothing
+    // else, and dead. Each is freed and its place cleared.
+    internal void FreeOwnedValues() {
+        if (state == null) { return; }
+        for (int i = 0; i < state.Length; i++) {
+            if (state[i] == 1) {
+                OwnedElements.Release(values[i]);
+                values[i] = default(V)!;
+            }
+        }
     }
 
     private void Grow() {

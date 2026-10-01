@@ -1,0 +1,28 @@
+// test: built_names_freed
+// expect-exit: 0
+// expect-output:
+// 3442730
+//
+// Names built with + and FromInt to look something up, then dropped. The
+// library's string routines that always make their result, and those that
+// only read their strings, are known as such in a unit that does not hold
+// their bodies, so the strings handed to Find are freed after it.
+
+using System;
+using System.Collections.Generic;
+static class P
+{
+    static Dictionary<string, int> table = new();
+    static int Find(string ns, string name)
+    {
+        string full = ns + "." + name;
+        return table.TryGetValue(full, out int v) ? v : -1;
+    }
+    static void Main()
+    {
+        for (int i = 0; i < 50; i++) table["sys.n" + i] = i;
+        long sum = 0;
+        for (int r = 0; r < 200000; r++) sum += Find("sys", "n" + (r % 70));
+        Console.WriteLine(sum);
+    }
+}
