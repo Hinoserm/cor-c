@@ -2032,9 +2032,15 @@ continue;
                 bool resolved = false;
                 foreach (VReg d in pending.ToList())
                 {
+                    // Or the address of the frame's own memory: a struct
+                    // local is a block the lowering makes, and one a struct
+                    // is assigned into is pointed at the frame slot the value
+                    // was built in -- the List walk of a foreach. A register
+                    // that holds the object or the frame holds nothing else.
                     bool mine = f.Params.Contains(d) is false && writes.TryGetValue(d, out List<Instr>? all) && all.All(w =>
                         w.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 && w.Operands.Count == 1
                         && (w.Operands[0] is ImmOperand { Value: 0 } || Literal(w.Operands[0], writes)
+                            || FrameAddress(w.Operands[0], writes)
                             || w.Operands[0] is RegOperand { Reg: var from } && flow.Derived.Contains(from)));
                     if (!mine) continue;
                     pending.Remove(d);
@@ -2059,6 +2065,14 @@ continue;
         }
 
         return flow;
+
+        // A frame slot's address, or a register only ever given one.
+        static bool FrameAddress(Operand o, Dictionary<VReg, List<Instr>> writes)
+        {
+            if (o is SlotOperand) return true;
+            return o is RegOperand { Reg: var r } && writes.TryGetValue(r, out List<Instr>? ws) && ws.Count == 1
+                && ws[0] is { Op: Opcode.Copy, Operands: [SlotOperand] };
+        }
 
         // Whether every use of `r` makes a number of it or compares it, through
         // copies: shifts right, multiplies, mixes, divisions, comparisons.

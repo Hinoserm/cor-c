@@ -7344,8 +7344,13 @@ public sealed partial class Binder
                 {
                     outer.Statements.Add(new LocalDecl
                     {
+                        // NO INITIALISER: read only where the List was taken,
+                        // after the one assignment there. A default made a
+                        // block of its own, the assignment a second, and a
+                        // register given both was one the lifetime rules
+                        // could not follow: every List walk left its
+                        // enumerator to the collector.
                         Type = RefOf(listWalking)!, Name = listWalker,
-                        Init = new DefaultExpr { Type = RefOf(listWalking)!, Line = fe.Line, Col = fe.Col },
                         Line = fe.Line, Col = fe.Col,
                     });
                 }
@@ -7711,8 +7716,12 @@ public sealed partial class Binder
         // has a List of the element is this unit's accident, and an array's
         // descriptor is anybody's to lay down. LINQ's own fast paths
         // (Enumerable) name List<T> in the template, so every copy has it.
+        // (Not TemplateIndex: that is every member's place in its type, set
+        // for all of them, and asking for -1 turned the List walk off nearly
+        // everywhere -- a foreach over a List behind an interface boxed an
+        // enumerator in every pass of the compiler.)
         bool once = _thisType?.Decl is null or { Template: null, TypeParams.Count: 0 }
-                 && _member is null or { TemplateIndex: -1, LocalCopy: false }
+                 && _member is null or { LocalCopy: false }
                  && _member is not MethodDecl { TypeParams.Count: > 0 }
                  && _member?.Name.Contains('$') != true;
         if (!once

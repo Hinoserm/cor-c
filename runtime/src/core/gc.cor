@@ -4278,7 +4278,6 @@ static class Gc
         // escape analysis kept in frames never reaches the heap at all.)
         SayNumber("gc: frees ", Frees);
         SayNumber("gc: freed by the program MB ", FreedBytes / 1048576);
-        SayNumber("gc: frees deferred past a collection ", FreesDeferred);
         SayNumber("gc: frees dropped while marking ", FreesDroppedMarking);
         SayNumber("gc: frees dropped otherwise ", FreesDropped);
         SayNumber("gc: freed by the collector MB ", CollectedBytes / 1048576);
@@ -4756,7 +4755,11 @@ static class Gc
             return;
         }
 
-        // NOTHING IS FREED WHILE A MARK IS UNDER WAY. The marker reads and
+        // NOTHING IS FREED WHILE A MARK IS UNDER WAY. (Deferring such frees
+        // past the collection was tried, 10-01: a block marked to keep it
+        // through the sweep was still taken by the size-class page logic --
+        // a page a thread gives up mid-cycle -- and freed again later. The
+        // compiler, which collects stop-the-world, drops none here.) The marker reads and
         // flags the objects of its snapshot with nothing held; an object
         // that went back to the free list under it, was merged with its
         // neighbour and handed out again, would have its flags written into
@@ -4764,75 +4767,10 @@ static class Gc
         // it unreferenced and frees it then.
         if (Runtime.Marking != 0 || _sweeping)
         {
-            Defer(at);
-            return;
-        }
-
-        // What was asked for while the last collection ran, given back now
-        // that it is over (Defer).
-        if (Sys.Peek(Sys.AddressOf(ref _deferredHead)) != 0 && !_collecting)
-        {
-            DrainDeferred();
-        }
-
-        FreeNow(at);
-    }
-
-    // ---- frees asked for while a collection runs -------------------------------
-    //
-    // NOT DROPPED, DEFERRED. A free that came while a mark or a sweep was
-    // under way used to be left to the collector, and a program that
-    // collects often -- a compiler, beside its marking threads -- lost most
-    // of its frees that way. The block is marked first, so this cycle's
-    // sweep keeps it whatever the marker found, and pushed on a list linked
-    // through its first payload word (it is dead: nothing of the program
-    // reads it again; a marker that scans it reads the link as a reference,
-    // to a block that is marked already). The first free after the
-    // collection is over takes the whole list and frees each block as it
-    // would have been freed. One the next collection meets still marked
-    // stays alive through it, and is freed after.
-    static long _deferredHead;
-    public static long FreesDeferred;
-
-    static void Defer(long at)
-    {
-        long block = at - HeaderBytes;
-        long word = Sys.Peek(block);
-        long size = word & SizeMask;
-        // Not a block a free could have been asked for: left to the collector.
-        if ((at & 7) != 0 || (word & FlagFree) != 0 || size < Smallest || Sys.Peek(block + size - FooterBytes) != word)
-        {
             FreesDroppedMarking = FreesDroppedMarking + 1;
             return;
         }
-        SetFlag(block, FlagMark);
-        long head = Sys.AddressOf(ref _deferredHead);
-        while (true)
-        {
-            long was = Sys.Peek(head);
-            Sys.Poke(at, was);
-            if (Sys.Cas(head, was, at) == was) break;
-        }
-        FreesDeferred = FreesDeferred + 1;
-    }
 
-    static void DrainDeferred()
-    {
-        long at = Sys.AtomicSwap(Sys.AddressOf(ref _deferredHead), 0);
-        while (at != 0)
-        {
-            long next = Sys.Peek(at);
-            Sys.Poke(at, 0);
-            // A collection begun meanwhile defers it again.
-            if (Runtime.Marking != 0 || _sweeping) Defer(at);
-            else FreeNow(at);
-            at = next;
-        }
-    }
-
-    /// Gc.Free's own work, with no collection under way.
-    static void FreeNow(long at)
-    {
         long tb = Sys.ThreadBlock();
 
         // THE TOP BLOCK OF THIS THREAD'S OWN BUFFER goes straight back to it:

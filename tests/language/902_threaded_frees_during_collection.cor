@@ -1,15 +1,14 @@
-// test: threaded_frees_defer_past_collection
+// test: threaded_frees_during_collection
 // expect-exit: 0
 // expect-output:
 // 2292000 60 t0r0 t3r900
 //
 // Four threads each run a pass that builds and drops a HashSet, a Dictionary
-// of Lists and a work List, while the collector marks beside them. A free the
-// compiler asks for during a mark or a sweep is deferred, not dropped: the
-// block is marked so the sweep keeps it, and it is freed once the collection
-// is over. Every result must be what .NET prints, and new
-// Thread(ParameterizedThreadStart) with Start(object) must hand each thread
-// its argument.
+// of Lists and a work List, while the collector marks beside them: the frees
+// the compiler inserted run on every thread, some while a collection is under
+// way (and are left to it then). Every result must be what .NET prints, and
+// new Thread(ParameterizedThreadStart) with Start(object) must hand each
+// thread its argument.
 
 using System;
 using System.Collections.Generic;
