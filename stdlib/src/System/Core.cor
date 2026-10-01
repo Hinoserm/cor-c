@@ -2051,6 +2051,42 @@ static class Convert {
     // OverflowException here and silent nonsense there.
 
     public static int ToInt32(string value) { return Int32.Parse(value); }
+    /// Any object, as .NET's IConvertible path takes it: null is 0, a number
+    /// is converted with its range checked, a bool is 1 or 0, a char its code,
+    /// a string parsed; anything else is no number at all.
+    public static int ToInt32(object? value) {
+        if (value == null) { return 0; }
+        if (value is int i) { return i; }
+        if (value is string s) { return Int32.Parse(s); }
+        if (value is bool b) { return b ? 1 : 0; }
+        if (value is char c) { return c; }
+        if (value is double d) { return ToInt32(d); }
+        if (value is float f) { return ToInt32((double)f); }
+        return checked((int)ObjectInteger(value));
+    }
+    public static long ToInt64(object? value) {
+        if (value == null) { return 0; }
+        if (value is long l) { return l; }
+        if (value is string s) { return Int64.Parse(s); }
+        if (value is bool b) { return b ? 1 : 0; }
+        if (value is char c) { return c; }
+        if (value is double d) { return ToInt64(d); }
+        if (value is float f) { return ToInt64((double)f); }
+        return ObjectInteger(value);
+    }
+    /// A boxed integer of any width as a long; ulong past long's range and
+    /// anything not an integer are refused as .NET refuses them.
+    static long ObjectInteger(object value) {
+        if (value is int i) { return i; }
+        if (value is long l) { return l; }
+        if (value is short sh) { return sh; }
+        if (value is sbyte sb) { return sb; }
+        if (value is byte by) { return by; }
+        if (value is ushort us) { return us; }
+        if (value is uint ui) { return ui; }
+        if (value is ulong ul) { if (ul > (ulong)long.MaxValue) { throw new OverflowException("Value was either too large or too small for an Int64."); } return (long)ul; }
+        throw new InvalidCastException("Unable to cast object of type '" + String.TypeText(value.GetType().FullName) + "' to type 'System.IConvertible'.");
+    }
     public static long ToInt64(string value) { return Int64.Parse(value); }
     public static long ToInt64(string value, int fromBase) { return (long)ToUInt64(value, fromBase); }
 

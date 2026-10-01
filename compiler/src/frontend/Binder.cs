@@ -14375,6 +14375,27 @@ public sealed partial class Binder
 
         List<MethodSymbol> group = MethodsOn(owner, m.Name);
 
+        // OBJECT'S OWN STAY IN THE GROUP beside a type's overloads of the
+        // name, as C#'s member lookup has them (12.5): a record that writes
+        // Equals(LocalSym) still answers Equals(object), and with only its
+        // own in the group `a.Equals((object)f)` had nowhere to go but the
+        // typed one. Not where the type has one of the same parameters -- its
+        // override, which is the one called.
+        if (group.Count > 0 && owner.Kind is TypeKind.Class or TypeKind.Interface or TypeKind.Struct
+            && m.Name is "Equals" or "GetHashCode" or "ToString" or "GetType"
+            && Rooted().FindMethods(m.Name) is { Count: > 0 } rootMethods)
+        {
+            List<MethodSymbol>? widened = null;
+            foreach (MethodSymbol root in rootMethods)
+            {
+                if (root.Static) continue;
+                bool overridden = group.Any(had => !had.Static && had.Params.Count == root.Params.Count
+                    && had.Params.Zip(root.Params).All(pair => MethodSignatures.SameType(pair.First.Type, pair.Second.Type)));
+                if (!overridden) (widened ??= new List<MethodSymbol>(group)).Add(root);
+            }
+            if (widened is not null) group = widened;
+        }
+
         if (group.Count > 0)
         {
             _r.Resolved[m] = new MethodGroupSym(group);
@@ -15407,6 +15428,27 @@ public sealed partial class Binder
                 && ConstantValue(written, _thisType) is long value && Binder.ConstantConverts(had, value, want);
         }
 
+        // An argument typed object against a parameter of another type -- a
+        // class, an interface, an array, a value -- which C# reaches only by
+        // a cast. Not against a parameter still open (a T), nor dynamic.
+        // An argument whose type comes from what it is converted to -- a
+        // tuple literal, a `new()`, a null, a default, a conditional or a
+        // switch expression -- reads as object until then; it is no object.
+        static bool TargetTyped(Expr e) => e switch
+        {
+            SuppressExpr sure => TargetTyped(sure.Operand),
+            TupleExpr or ConditionalExpr or SwitchExpr => true,
+            NewExpr { Type.Name.Length: 0 } => true,
+            LiteralExpr { Kind: Lit.Null } => true,
+            DefaultExpr { Type.Name.Length: 0 } => true,
+            _ => false,
+        };
+
+        static bool ObjectNarrowed(Type had, Type want)
+            => had.Prim == Prim.Any && had.Symbol is null && !had.IsError
+            && !(want.Prim == Prim.Any && want.Symbol is null) && !want.IsError
+            && want.ParamName is null && !want.IsPointer;
+
         bool OrdinaryFits(MethodSymbol m) => m.Params.Count == args.Count
             && Enumerable.Range(0, args.Count)
                          .All(i => WordFits(m, i) && WrittenFits(args[i], Wants(m, i), c.Args[i]))
@@ -15849,6 +15891,12 @@ public sealed partial class Binder
                 }
 
                 if (NullableIntoValue(args[i], want)) return false;
+                // AN OBJECT IS NO NARROWER TYPE without a cast (C# 10.2): the
+                // machine word goes anywhere here, but an overload that wants
+                // a LocalSym is not applicable to an object, and choosing it
+                // read a FieldSym as one -- `a.Equals((object)f)` beside a
+                // record's own Equals(LocalSym) and the inherited Equals(object).
+                if (ObjectNarrowed(args[i], want) && !(i < c.Args.Count && (IsFunctionSource(c.Args[i]) || TargetTyped(c.Args[i])))) return false;
                 if (Convertible(args[i], want) || args[i].IsError || Unmade(want)
                     || (variant && Variant(args[i], want))
                     || (i < c.Args.Count && LocalFunctionConverts(c.Args[i], want)))

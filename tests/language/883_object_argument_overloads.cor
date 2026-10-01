@@ -1,0 +1,51 @@
+// test: object_argument_overloads
+// expect-exit: 0
+// expect-output:
+// True False True False
+// object hi | string hi | object | shape
+// 7,7 7,7 -3,-3 200,200 1,1 65,65 42,42 2,2 4,4 9,9 0,0
+// cast Unable to cast object of type 'System.Collections.Generic.List`1[System.Int32]' to type 'System.IConvertible'.
+// overflow
+//
+// An argument typed object is not one of a narrower type, as C# 10.2 has
+// it: an overload that wants a LocalSym or a string is not applicable to
+// it, and object's own Equals stays in the group beside a record's typed
+// one, so a.Equals((object)f) is the guarded Equals(object) and says
+// false for a FieldSym. Convert.ToInt32 and ToInt64 take any object as
+// .NET's do. Output checked against .NET.
+
+using System;
+using System.Collections.Generic;
+
+abstract record Sym;
+sealed record LocalSym(int Slot, string Name) : Sym
+{
+    public bool Equals(LocalSym? other) => other is not null && Slot == other.Slot && Name == other.Name;
+    public override int GetHashCode() => HashCode.Combine(Slot, Name);
+}
+sealed record FieldSym(string Field) : Sym;
+
+class Shape
+{
+    public static string Take(string s) => "string " + s;
+    public static string Take(object o) => "object " + o;
+    public static string Pick(Shape s) => "shape";
+    public static string Pick(object o) => "object";
+}
+
+static class Program
+{
+    static void Main()
+    {
+        LocalSym a = new LocalSym(3, "x");
+        Console.WriteLine(a.Equals(new LocalSym(3, "x")) + " " + a.Equals((object)new FieldSym("q")) + " " + a.Equals((object)new LocalSym(3, "x")) + " " + a.Equals((object?)null));
+        object text = "hi";
+        Console.WriteLine(Shape.Take(text) + " | " + Shape.Take("hi") + " | " + Shape.Pick(text) + " | " + Shape.Pick(new Shape()));
+        object[] values = { 7, 7L, (short)-3, (byte)200, true, 'A', "42", 2.5, 3.5, 9u, null! };
+        string all = "";
+        foreach (object v in values) all += Convert.ToInt32(v) + "," + Convert.ToInt64(v) + " ";
+        Console.WriteLine(all.TrimEnd());
+        try { Convert.ToInt32((object)new List<int>()); } catch (InvalidCastException e) { Console.WriteLine("cast " + e.Message); }
+        try { Convert.ToInt32((object)3000000000L); } catch (OverflowException) { Console.WriteLine("overflow"); }
+    }
+}

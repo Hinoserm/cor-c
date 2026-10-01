@@ -40,8 +40,58 @@ public sealed class CardMarks : IModulePass
     {
         foreach (Function f in m.Functions)
         {
+            DropFrameNotes(f);
             Expand(f);
         }
+    }
+
+    /// <summary>
+    /// A STORE INTO THIS FRAME TELLS THE COLLECTOR NOTHING. The snapshot
+    /// barrier and the card mark are for references held in the heap; a frame
+    /// is a root the collector reads whole at each stop. Lowering cannot tell
+    /// a struct's `this` in the frame from one in an object and marks both,
+    /// and a struct method inlined where its value is a local -- List's
+    /// enumerator in every foreach -- kept a barrier test and a card mark
+    /// call per element. Dropped where the address is a frame slot plus a
+    /// constant, by its only definition. Not in an iterator's or async body,
+    /// whose frame may be a block of the heap.
+    /// </summary>
+    public static void DropFrameNotes(Function f)
+    {
+        if (f.Async is not null) return;
+        bool any = false;
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Op == Opcode.Call && i.Callee is CardMark or Barrier) { any = true; break; }
+        if (!any) return;
+
+        Dictionary<VReg, Instr?> defs = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Dest is { } d) defs[d] = defs.ContainsKey(d) ? null : i;
+        foreach (VReg p in f.Params) defs[p] = null;
+
+        bool InFrame(Operand o)
+        {
+            for (int hops = 0; hops < 8; hops++)
+            {
+                if (o is SlotOperand) return true;
+                if (o is not RegOperand { Reg: var r } || !defs.TryGetValue(r, out Instr? def) || def is null) return false;
+                if (def.Op is Opcode.Copy or Opcode.ZExt32 or Opcode.SExt32 or Opcode.Trunc64 && def.Operands.Count == 1) { o = def.Operands[0]; continue; }
+                if (def.Op is Opcode.Add && def.Operands.Count == 2 && def.Operands[1] is ImmOperand) { o = def.Operands[0]; continue; }
+                if (def.Op is Opcode.Add && def.Operands.Count == 2 && def.Operands[0] is ImmOperand) { o = def.Operands[1]; continue; }
+                return false;
+            }
+            return false;
+        }
+
+        foreach (Block b in f.Blocks)
+            for (int k = b.Instrs.Count - 1; k >= 0; k--)
+            {
+                Instr i = b.Instrs[k];
+                if (i.Op == Opcode.Call && i.Dest is null && i.Callee is CardMark or Barrier && i.Operands.Count >= 1 && InFrame(i.Operands[0]))
+                    b.Instrs.RemoveAt(k);
+            }
     }
 
     /// <summary>Runtime.WriteBarrier: the snapshot barrier's slow path, which lowering calls.</summary>

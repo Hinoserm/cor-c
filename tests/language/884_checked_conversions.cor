@@ -1,0 +1,104 @@
+// test: checked_conversions
+// expect-exit: 0
+// expect-output:
+// -9223372036854775808: ovf ovf ovf ovf ovf ovf ovf ovf 0 0
+// -2147483649: ovf ovf ovf ovf ovf ovf ovf ovf -1 2147483647
+// -2147483648: ovf ovf ovf ovf ovf -2147483648 ovf ovf 0 2147483648
+// -129: ovf ovf -129 ovf ovf -129 ovf ovf 127 4294967167
+// -128: -128 ovf -128 ovf ovf -128 ovf ovf -128 4294967168
+// -1: -1 ovf -1 ovf ovf -1 ovf ovf -1 4294967295
+// 0: 0 0 0 0 0 0 0 0 0 0
+// 127: 127 127 127 127 127 127 127 127 127 127
+// 128: ovf 128 128 128 128 128 128 128 -128 128
+// 255: ovf 255 255 255 255 255 255 255 -1 255
+// 256: ovf ovf 256 256 256 256 256 256 0 256
+// 65535: ovf ovf ovf 65535 65535 65535 65535 65535 -1 65535
+// 65536: ovf ovf ovf ovf ovf 65536 65536 65536 0 65536
+// 2147483647: ovf ovf ovf ovf ovf 2147483647 2147483647 2147483647 -1 2147483647
+// 2147483648: ovf ovf ovf ovf ovf ovf 2147483648 2147483648 0 2147483648
+// 4294967295: ovf ovf ovf ovf ovf ovf 4294967295 4294967295 -1 4294967295
+// 4294967296: ovf ovf ovf ovf ovf ovf ovf 4294967296 0 0
+// 9223372036854775807: ovf ovf ovf ovf ovf ovf ovf 9223372036854775807 -1 4294967295
+// 0: 0 0 0
+// 127: 127 127 127
+// 2147483647: 2147483647 2147483647 2147483647
+// 2147483648: ovf 2147483648 2147483648
+// 9223372036854775807: ovf 9223372036854775807 ovf
+// 9223372036854775808: ovf ovf ovf
+// 18446744073709551615: ovf ovf ovf
+// -2147483648: ovf ovf ovf ovf
+// -1: ovf ovf ovf ovf
+// 0: 0 0 0 c
+// 255: 255 255 255 c
+// 256: ovf 256 256 c
+// 2147483647: ovf 2147483647 2147483647 ovf
+// uint ovf 3000000000
+// nan: ovf ovf ovf ovf ovf ovf
+// -inf: ovf ovf ovf ovf ovf ovf
+// -2147483649: ovf ovf ovf ovf -2147483649 ovf
+// -2147483648.9: ovf ovf -2147483648 ovf -2147483648 ovf
+// -128.9: -128 ovf -128 ovf -128 ovf
+// -129: ovf ovf -129 ovf -129 ovf
+// -0.9: 0 0 0 0 0 0
+// 0: 0 0 0 0 0 0
+// 127.9: 127 127 127 127 127 127
+// 128: ovf 128 128 128 128 128
+// 255.9: ovf 255 255 255 255 255
+// 256: ovf ovf 256 256 256 256
+// 2147483647.9: ovf ovf 2147483647 2147483647 2147483647 2147483647
+// 2147483648: ovf ovf ovf 2147483648 2147483648 2147483648
+// 9.223372036854776E+18: ovf ovf ovf ovf ovf 9223372036854775808
+// -9.223372036854776E+18: ovf ovf ovf ovf -9223372036854775808 ovf
+// +inf: ovf ovf ovf ovf ovf ovf
+// float ovf 3000000000
+//
+// An explicit numeric conversion in a checked context throws
+// OverflowException when the value does not fit, as C# 12.8.20 has it:
+// every integer width from every other, unsigned 64-bit sources, floating
+// values truncated toward zero, NaN and the infinities; unchecked ones
+// wrap. Output checked against .NET.
+
+using System;
+using System.Text;
+
+static class Program
+{
+    static string Try(Func<string> f)
+    {
+        try { return f(); } catch (OverflowException) { return "ovf"; }
+    }
+
+    static void Main()
+    {
+        long[] longs = { long.MinValue, int.MinValue - 1L, int.MinValue, -129, -128, -1, 0, 127, 128, 255, 256, 65535, 65536, int.MaxValue, int.MaxValue + 1L, uint.MaxValue, uint.MaxValue + 1L, long.MaxValue };
+        StringBuilder sb = new();
+        foreach (long v in longs)
+        {
+            sb.Append(v).Append(": ");
+            sb.Append(Try(() => checked((sbyte)v).ToString())).Append(' ');
+            sb.Append(Try(() => checked((byte)v).ToString())).Append(' ');
+            sb.Append(Try(() => checked((short)v).ToString())).Append(' ');
+            sb.Append(Try(() => checked((ushort)v).ToString())).Append(' ');
+            sb.Append(Try(() => ((int)checked((char)v)).ToString())).Append(' ');
+            sb.Append(Try(() => checked((int)v).ToString())).Append(' ');
+            sb.Append(Try(() => checked((uint)v).ToString())).Append(' ');
+            sb.Append(Try(() => checked((ulong)v).ToString())).Append(' ');
+            sb.Append(unchecked((sbyte)v)).Append(' ').Append(unchecked((uint)v));
+            Console.WriteLine(sb.ToString());
+            sb.Clear();
+        }
+        ulong[] ulongs = { 0, 127, 2147483647, 2147483648, 9223372036854775807, 9223372036854775808, ulong.MaxValue };
+        foreach (ulong u in ulongs)
+            Console.WriteLine(u + ": " + Try(() => checked((int)u).ToString()) + " " + Try(() => checked((long)u).ToString()) + " " + Try(() => checked((uint)u).ToString()));
+        int[] ints = { int.MinValue, -1, 0, 255, 256, int.MaxValue };
+        foreach (int i in ints)
+            Console.WriteLine(i + ": " + Try(() => checked((byte)i).ToString()) + " " + Try(() => checked((uint)i).ToString()) + " " + Try(() => checked((ulong)i).ToString()) + " " + Try(() => checked((char)i) == 'a' ? "a" : "c"));
+        uint big = 3000000000;
+        Console.WriteLine("uint " + Try(() => checked((int)big).ToString()) + " " + Try(() => checked((long)big).ToString()));
+        double[] doubles = { double.NaN, double.NegativeInfinity, -2147483649.0, -2147483648.9, -128.9, -129.0, -0.9, 0.0, 127.9, 128.0, 255.9, 256.0, 2147483647.9, 2147483648.0, 9.2233720368547758E18, -9.2233720368547758E18, double.PositiveInfinity };
+        foreach (double d in doubles)
+            Console.WriteLine((double.IsNaN(d) ? "nan" : double.IsInfinity(d) ? (d > 0 ? "+inf" : "-inf") : d.ToString("R")) + ": " + Try(() => checked((sbyte)d).ToString()) + " " + Try(() => checked((byte)d).ToString()) + " " + Try(() => checked((int)d).ToString()) + " " + Try(() => checked((uint)d).ToString()) + " " + Try(() => checked((long)d).ToString()) + " " + Try(() => checked((ulong)d).ToString()));
+        float f = 3e9f;
+        Console.WriteLine("float " + Try(() => checked((int)f).ToString()) + " " + Try(() => checked((uint)f).ToString()));
+    }
+}

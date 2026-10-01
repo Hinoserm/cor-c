@@ -273,7 +273,7 @@ public sealed class Inline : IParallelModulePass
                     int argumentWords = ArgumentWordCredit == 0 ? 0
                         : callee.Params.Sum(p => (p.Type.Bytes() + IrTypes.Word.Bytes() - 1) / IrTypes.Word.Bytes());
                     int smallBody = SmallBody + Math.Min(24, argumentWords * ArgumentWordCredit);
-                    int ordinaryCost = calleeSize;
+                    int ordinaryCost = HotSize(callee);
                     if (ConditionalBranchCost != 0)
                         ordinaryCost += ConditionalBranchCost * callee.Blocks.Sum(block =>
                             block.Instrs.Count(instruction => instruction.Op is Opcode.Branch or Opcode.Switch));
@@ -420,6 +420,44 @@ public sealed class Inline : IParallelModulePass
             index = site.Index;
         }
         return false;
+    }
+
+    /// <summary>
+    /// What a body costs where it runs, for the small-body test: its size
+    /// without the collector's bookkeeping -- a store's barrier, which is a
+    /// test of the marking flag and a call under it, and its card mark --
+    /// and without a block that only throws or dies. Inlined where the
+    /// object is the caller's frame's, the bookkeeping goes; a cold path
+    /// runs once if ever. List's enumerator's MoveNext was 57 by count and
+    /// 37 by this, and every foreach over a list called it.
+    /// </summary>
+    private static int HotSize(Function f)
+    {
+        int n = 0;
+        foreach (Block b in f.Blocks)
+        {
+            if (b.Terminator is { Op: Opcode.Unreachable } || b.Instrs.Any(i => i.Op == Opcode.Call && i.Callee is { } c
+                    && (c.StartsWith("m_ThrowHelper_", StringComparison.Ordinal) || c == "m_Runtime_IndexOutOfRange_0")))
+            {
+                continue;
+            }
+            for (int k = 0; k < b.Instrs.Count; k++)
+            {
+                Instr i = b.Instrs[k];
+                if (i.Op == Opcode.Call && i.Callee is Corsac.Lang.Lto.RuntimeAbi.WriteBarrier or Corsac.Lang.Lto.RuntimeAbi.WriteBarrierValues
+                        or Corsac.Lang.Lto.RuntimeAbi.CardMark or Corsac.Lang.Lto.RuntimeAbi.CardMarkObject)
+                {
+                    continue;
+                }
+                // The flag's read and the branch on it, and the field address
+                // that only the bookkeeping takes.
+                if (i.Op == Opcode.Load && i.Operands.Count > 0 && i.Operands[0] is SymOperand { Name: "s_Runtime_Marking" }) continue;
+                if (k + 1 < b.Instrs.Count && i.Op == Opcode.Add && b.Instrs[k + 1] is { Op: Opcode.Call, Callee: Corsac.Lang.Lto.RuntimeAbi.WriteBarrier or Corsac.Lang.Lto.RuntimeAbi.CardMark }) continue;
+                if (i.Op == Opcode.Jump && b.Instrs.Count <= 3 && b.Instrs.Any(x => x.Op == Opcode.Call && x.Callee == Corsac.Lang.Lto.RuntimeAbi.WriteBarrier)) continue;
+                n++;
+            }
+        }
+        return n;
     }
 
     private static int Size(Function f)
