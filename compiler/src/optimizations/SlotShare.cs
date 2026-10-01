@@ -23,7 +23,8 @@ using Block = Corsac.Lang.Ir.Block;
 /// returned, thrown, handed to the kernel or used in a way this does not
 /// know, or used in a landing pad or the code after one, which the graph does
 /// not connect to the calls that unwind to it. A call may be handed the
-/// address: nothing a callee is given by reference outlives the call.
+/// address: nothing a callee is given by reference outlives the call, save
+/// the address it answers with, which a struct's result buffer is.
 ///
 /// Nothing depends on a slot starting out as zero: the lowering writes every
 /// slot before reading it, so a slot that held another's bytes first is
@@ -49,7 +50,12 @@ public static class SlotShare
             foreach (Block b in f.Blocks)
                 foreach (Instr i in b.Instrs)
                 {
-                    if (i.Dest is null || !Carries(i.Op)) continue;
+                    // A CALL HANDED AN ADDRESS MAY HAND IT BACK: a struct's
+                    // result is written to the caller's buffer and its address
+                    // returned, and the result is that slot for as long as it
+                    // is used -- shared at the call, the next call's result
+                    // was written over it.
+                    if (i.Dest is null || !Carries(i.Op) && i.Op is not (Opcode.Call or Opcode.CallIndirect)) continue;
                     ulong[]? into = null;
                     foreach (Operand o in i.Operands)
                     {
