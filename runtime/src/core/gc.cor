@@ -4718,35 +4718,45 @@ static class Gc
         // took the heap lock, and the lock was most of what freeing cost.
         if ((SkippedFreePaths & 128) == 0 && Runtime.Marking == 0 && !_sweeping && !_collecting && !_heapCheck && (at & 7) == 0)
         {
+            // Its page found among the thread's own first: nothing is read at
+            // an address a wrong proof handed over until it is known to lie in
+            // one of them -- a free of an address in no chunk at all must
+            // cost nothing.
             long cache = Sys.Peek(tb + Tls.Classes);
-            long head = Sys.Peek(block);
-            long bytes = head & SizeMask;
-            if (cache != 0 && _classSize != 0 && (head & FlagFree) == 0 && bytes >= Smallest && bytes <= ClassMax
-                && Sys.Peek(tb + Tls.ClassBytes) >= bytes)
+            long c = 0;
+            long page = 0;
+            while (cache != 0 && c < Classes)
             {
-                long c = Sys.Peek(_classOf + (bytes >> 3) * WordSize.Bytes);
-                long slot = cache + c * (2 * WordSize.Bytes);
-                long page = Sys.Peek(slot);
-                if (page != 0 && Sys.Peek(_classSize + c * WordSize.Bytes) == bytes && HeapChunks.Owner(page) == tb)
+                long mine = Sys.Peek(cache + c * (2 * WordSize.Bytes));
+                if (mine != 0 && block >= HeapChunks.First(mine) && block < HeapChunks.End(mine))
                 {
-                    long first = HeapChunks.First(page);
-                    if (block >= first && block + bytes <= HeapChunks.End(page) && (block - first) % bytes == 0
-                        && Sys.Peek(block + bytes - FooterBytes) == head)
+                    page = mine;
+                    break;
+                }
+                c = c + 1;
+            }
+            if (page != 0 && HeapChunks.Owner(page) == tb && _classSize != 0)
+            {
+                long bytes = Sys.Peek(_classSize + c * WordSize.Bytes);
+                long head = Sys.Peek(block);
+                long slot = cache + c * (2 * WordSize.Bytes);
+                if ((head & SizeMask) == bytes && (head & FlagFree) == 0 && block + bytes <= HeapChunks.End(page)
+                    && (int)(block - HeapChunks.First(page)) % (int)bytes == 0
+                    && Sys.Peek(block + bytes - FooterBytes) == head && Sys.Peek(tb + Tls.ClassBytes) >= bytes)
+                {
+                    if (VerifyingFieldFrees)
                     {
-                        if (VerifyingFieldFrees)
-                        {
-                            ReportFreedAgain(block, at);
-                        }
-                        ZeroWords(block + HeaderBytes, block + bytes - FooterBytes);
-                        Stamp(block, bytes, FlagFree);
-                        Sys.Poke(tb + Tls.ClassBytes, Sys.Peek(tb + Tls.ClassBytes) - bytes);
-                        Sys.Poke(block + KindAt, Sys.Peek(slot + WordSize.Bytes));
-                        Sys.Poke(slot + WordSize.Bytes, block);
-                        Frees = Frees + 1;
-                        FreedBytes = FreedBytes + bytes;
-                        Sys.Poke(tb + Tls.InAlloc, inside);
-                        return;
+                        ReportFreedAgain(block, at);
                     }
+                    ZeroWords(block + HeaderBytes, block + bytes - FooterBytes);
+                    Stamp(block, bytes, FlagFree);
+                    Sys.Poke(tb + Tls.ClassBytes, Sys.Peek(tb + Tls.ClassBytes) - bytes);
+                    Sys.Poke(block + KindAt, Sys.Peek(slot + WordSize.Bytes));
+                    Sys.Poke(slot + WordSize.Bytes, block);
+                    Frees = Frees + 1;
+                    FreedBytes = FreedBytes + bytes;
+                    Sys.Poke(tb + Tls.InAlloc, inside);
+                    return;
                 }
             }
         }
