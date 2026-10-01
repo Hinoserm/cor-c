@@ -258,7 +258,9 @@ static class AllocSamples
         if (kind == 1) _blockBytes = _blockBytes + bytes;
         else if (kind == 2) _leafBytes = _leafBytes + bytes;
         else _objectBytes = _objectBytes + bytes;
-        long site = Sys.Peek(fp + WordSize.Bytes);
+        // The allocator in the site's top bits (code sits far below them):
+        // 1 a struct's block or a cell, 2 a leaf, 3 an object.
+        long site = Sys.Peek(fp + WordSize.Bytes) | (kind << 30);
         long up = Sys.Peek(fp) & WordSize.AddressMask;
         long caller = up != 0 ? Sys.Peek(up + WordSize.Bytes) : 0;
         long h = ((site >> 2) ^ (caller << 3)) * 40503 & (Slots - 1);
