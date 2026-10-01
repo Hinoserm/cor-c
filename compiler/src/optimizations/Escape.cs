@@ -261,6 +261,13 @@ public sealed partial class Escape : IModulePass
     /// <summary>The runtime asking whether the program has a collector (answered here, per program).</summary>
     public const string CollectorQuery = "m_Runtime_CollectorLinked_0";
 
+    /// <summary>
+    /// Where the fault handler sends a thread that dereferenced null, to throw
+    /// NullReferenceException: named by the handler's address, run only by a
+    /// program that has already faulted.
+    /// </summary>
+    public const string NullFault = "m_Runtime_NullFault_2_V$I64_V$I64";
+
     /// <summary>A thread made known to the collector as it starts.</summary>
     public const string ThreadRegister = "m_GcThreads_Register_1_V$I64";
 
@@ -3287,6 +3294,11 @@ continue;
         {
             (string name, bool unowned) = work.Pop();
             if (reached[name] != unowned) continue;     // superseded by a stronger visit
+            // A NULL DEREFERENCE'S EXCEPTION decides nothing either, as a
+            // trapping block's allocations do not: it is made only once the
+            // program has faulted, and without a collector it is made on the
+            // manual heap, where the catch that owns it gives it back.
+            if (name == NullFault) continue;
             if (data.TryGetValue(name, out DataItem? item))
             {
                 bool descriptor = IsDescriptor(name);

@@ -96,15 +96,21 @@ abstract class Stream : IDisposable, IAsyncDisposable
         throw new NotSupportedException("this stream cannot be resized");
     }
 
+    // ONE BYTE AT A TIME THROUGH THE ARRAY METHODS, with an array the
+    // stream keeps for it rather than one made each time -- .NET's default
+    // rents one from the shared pool. A stream that writes a byte at a time
+    // (a BinaryWriter's bool, a hash being fed) made one per byte.
+    byte[]? _one;
+
     public virtual int ReadByte()
     {
-        byte[] one = new byte[1];
+        byte[] one = _one ??= new byte[1];
         return Read(one, 0, 1) == 1 ? one[0] & 255 : -1;
     }
 
     public virtual void WriteByte(byte value)
     {
-        byte[] one = new byte[1];
+        byte[] one = _one ??= new byte[1];
         one[0] = value;
         Write(one, 0, 1);
     }

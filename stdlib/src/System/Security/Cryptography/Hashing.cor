@@ -1124,6 +1124,10 @@ class CryptoStream : Stream
     int _inputFilled;
     byte[] _output = new byte[0];
     int _outputAt;
+    // What a write's whole blocks are transformed into on their way to the
+    // stream under this one, kept from write to write as .NET keeps its
+    // rented buffer.
+    byte[]? _scratch;
     bool _finalDone;
     bool _ended;
 
@@ -1187,9 +1191,24 @@ class CryptoStream : Stream
         while (at < end) { _input[_inputFilled] = buffer[at]; _inputFilled = _inputFilled + 1; at = at + 1; }
     }
 
+    /// A byte into the block being filled, and the block on when it is full:
+    /// no array for the byte, as the base Stream's WriteByte would make.
+    public override void WriteByte(byte value)
+    {
+        if (_mode != CryptoStreamMode.Write) throw new NotSupportedException("Stream does not support writing.");
+        _input[_inputFilled] = value;
+        _inputFilled = _inputFilled + 1;
+        if (_inputFilled == _input.Length)
+        {
+            WriteTransformed(_input, 0, _input.Length);
+            _inputFilled = 0;
+        }
+    }
+
     void WriteTransformed(byte[] buffer, int offset, int count)
     {
-        byte[] output = new byte[count / _input.Length * _transform.OutputBlockSize];
+        int need = count / _input.Length * _transform.OutputBlockSize;
+        byte[] output = _scratch is { } kept && kept.Length >= need ? kept : (_scratch = new byte[need]);
         int made = _transform.TransformBlock(buffer, offset, count, output, 0);
         if (made > 0) _stream.Write(output, 0, made);
     }

@@ -326,6 +326,10 @@ class BinaryWriter : IDisposable
     Stream _stream;
     bool _leaveOpen;
     Encoding _encoding;
+    // A NUMBER GOES OUT IN ONE WRITE, laid out here first, as .NET's
+    // BinaryWriter lays it out in its own _buffer: a byte at a time was a
+    // call on the stream for each.
+    readonly byte[] _buffer = new byte[16];
 
     public BinaryWriter(Stream output) : this(output, new UTF8Encoding(), false) { }
 
@@ -450,12 +454,15 @@ class BinaryWriter : IDisposable
     public void Write7BitEncodedInt(int value)
     {
         uint left = (uint)value;
+        int n = 0;
         while (left >= 128)
         {
-            _stream.WriteByte((byte)(left | 128));
+            _buffer[n] = (byte)(left | 128);
+            n = n + 1;
             left = left >> 7;
         }
-        _stream.WriteByte((byte)left);
+        _buffer[n] = (byte)left;
+        _stream.Write(_buffer, 0, n + 1);
     }
 
     public void Flush()
@@ -478,8 +485,9 @@ class BinaryWriter : IDisposable
     {
         for (int i = 0; i < width; i++)
         {
-            _stream.WriteByte((byte)((value >> (i * 8)) & 255));
+            _buffer[i] = (byte)((value >> (i * 8)) & 255);
         }
+        _stream.Write(_buffer, 0, width);
     }
 
     // One character as UTF-8. A char is sixteen bits, so three bytes is the
