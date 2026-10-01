@@ -38,22 +38,23 @@ public sealed class IntegerValueReuse : IPass
             Dictionary<Key, Value>? values = null;
             aliases.Clear();
             var predecessors = cfg.Preds(block);
-            if (!cfg.IsRoot(block) && predecessors.Count == 1 && cfg.Dominates(predecessors[0], block)
+            // One predecessor, and not a root, dominates: every way in is
+            // through it (LocalCopies); the dominator tree is not asked.
+            if (!cfg.IsRoot(block) && predecessors.Count == 1
                 && atEnd.TryGetValue(predecessors[0], out var inherited))
                 // The only successor takes the table itself: nobody else reads it.
                 values = cfg.Succs(predecessors[0]).Count == 1 ? inherited : new(inherited);
-            values ??= new();
             for (int k = 0; k < block.Instrs.Count; k++)
             {
                 Instr i = block.Instrs[k];
-                if (i.Op == Opcode.Phi) { values.Clear(); aliases.Clear(); continue; }
+                if (i.Op == Opcode.Phi) { values?.Clear(); aliases.Clear(); continue; }
                 // A CSE result is available to later expressions immediately,
                 // not only after another whole pipeline round. Aliases are
                 // canonical snapshots and are invalidated on either write.
                 if (aliases.Count != 0) IrInfo.ReplaceUses(i, alias);
                 Key? key = KeyOf(i);
                 RegOperand? reused = null;
-                if (key is { } found && values.TryGetValue(found, out Value existing))
+                if (key is { } found && values is not null && values.TryGetValue(found, out Value existing))
                 {
                     reused = aliases.GetValueOrDefault(existing.Result) ?? new RegOperand(existing.Result);
                     block.Instrs[k] = IrInfo.CopyOf(i, reused);
@@ -72,7 +73,7 @@ public sealed class IntegerValueReuse : IPass
                     if (aliases.Count >= 256) aliases.Clear();
                     aliases[dest] = reused;
                 }
-                if (values.Count != 0)
+                if (values is { Count: > 0 })
                 {
                     foreach (var pair in values)
                         if (pair.Value.Result == dest || pair.Value.Reads(dest)) staleValues.Add(pair.Key);
@@ -85,11 +86,21 @@ public sealed class IntegerValueReuse : IPass
                     // The key describes values before this instruction. If
                     // it overwrites an input, that key is no longer current.
                     if (first == dest || second == dest) continue;
+                    // A TABLE ONLY ONCE THERE IS A VALUE FOR IT: most blocks
+                    // have nothing to reuse, and one each was made regardless.
+                    values ??= new();
                     if (values.Count >= 128) values.Clear();
                     values[made] = new(dest, first, second);
                 }
             }
-            if (cfg.Succs(block).Any(next => cfg.Preds(next).Count == 1)) atEnd[block] = values;
+            if (values is { Count: > 0 })
+            {
+                IReadOnlyList<Corsac.Lang.Ir.Block> next = cfg.Succs(block);
+                for (int n = 0; n < next.Count; n++)
+                {
+                    if (cfg.Preds(next[n]).Count == 1) { atEnd[block] = values; break; }
+                }
+            }
         }
     }
 
