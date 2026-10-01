@@ -273,7 +273,14 @@ public sealed class Inline : IParallelModulePass
                     int argumentWords = ArgumentWordCredit == 0 ? 0
                         : callee.Params.Sum(p => (p.Type.Bytes() + IrTypes.Word.Bytes() - 1) / IrTypes.Word.Bytes());
                     int smallBody = SmallBody + Math.Min(24, argumentWords * ArgumentWordCredit);
-                    int ordinaryCost = HotSize(callee);
+                    // THE HOT PATH'S COST ONLY IN A LOOP, where the call is paid
+                    // every time round; anywhere else the body's whole size, or
+                    // the image grew a tenth for nothing measurable.
+                    int ordinaryCost = calleeSize;
+                    if (calleeSize > SmallBody && InLoop(caller, b))
+                    {
+                        ordinaryCost = HotSize(callee);
+                    }
                     if (ConditionalBranchCost != 0)
                         ordinaryCost += ConditionalBranchCost * callee.Blocks.Sum(block =>
                             block.Instrs.Count(instruction => instruction.Op is Opcode.Branch or Opcode.Switch));
@@ -431,6 +438,22 @@ public sealed class Inline : IParallelModulePass
     /// runs once if ever. List's enumerator's MoveNext was 57 by count and
     /// 37 by this, and every foreach over a list called it.
     /// </summary>
+    /// <summary>Whether a block can reach itself: it is inside a loop.</summary>
+    private static bool InLoop(Function f, Block from)
+    {
+        HashSet<Block> seen = new(ReferenceEqualityComparer.Instance);
+        Stack<Block> work = new();
+        foreach (Block s in from.Successors) work.Push(s);
+        while (work.Count > 0)
+        {
+            Block b = work.Pop();
+            if (ReferenceEquals(b, from)) return true;
+            if (!seen.Add(b)) continue;
+            foreach (Block s in b.Successors) work.Push(s);
+        }
+        return false;
+    }
+
     private static int HotSize(Function f)
     {
         int n = 0;
