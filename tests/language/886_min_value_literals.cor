@@ -1,0 +1,33 @@
+// test: min_value_literals
+// expect-exit: 0
+// expect-output:
+// Int64 -9223372036854775808 True
+// Int32 -2147483648 True
+// long -9223372036854775808 | ulong 9223372036854775808 | int -2147483648 | long 2147483648
+// -9223372036854775808,9223372036854775807,-2147483648,2147483647
+//
+// `-9223372036854775808` is long.MinValue and `-2147483648` int.MinValue,
+// as C# 6.4.5.3 has them: the literal right after a unary minus. On its own
+// 9223372036854775808 is a ulong, and negated it had been that ulong with
+// the sign lost. Output checked against .NET.
+
+using System;
+
+static class Program
+{
+    static string W(long v) => "long " + v;
+    static string W(ulong v) => "ulong " + v;
+    static string I(int v) => "int " + v;
+    static string I(long v) => "long " + v;
+
+    static void Main()
+    {
+        var x = -9223372036854775808;
+        var y = -2147483648;
+        Console.WriteLine(x.GetType().Name + " " + x + " " + (x == long.MinValue));
+        Console.WriteLine(y.GetType().Name + " " + y + " " + (y == int.MinValue));
+        Console.WriteLine(W(-9223372036854775808) + " | " + W(9223372036854775808) + " | " + I(-2147483648) + " | " + I(2147483648));
+        long[] edges = { -9223372036854775808, 9223372036854775807, -2147483648, 2147483647 };
+        Console.WriteLine(string.Join(",", edges));
+    }
+}

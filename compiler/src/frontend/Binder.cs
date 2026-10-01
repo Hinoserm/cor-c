@@ -11112,6 +11112,16 @@ public sealed partial class Binder
                     _r.Rewrites[u] = least;
                     return CheckExpr(least);
                 }
+                // AND `-9223372036854775808` IS A LONG, long.MinValue, by the
+                // same rule: the literal on its own is a ulong, and negated it
+                // was that ulong, 9223372036854775808, with the sign lost.
+                if (u.Op == UnOp.Neg && u.Operand is LiteralExpr { Kind: Lit.Int } widest
+                    && widest.Text == "9223372036854775808" && !_r.Rewrites.ContainsKey(u))
+                {
+                    LiteralExpr least = new() { Kind = Lit.Int, Text = "-9223372036854775808L", IntValue = long.MinValue, Line = u.Line, Col = u.Col };
+                    _r.Rewrites[u] = least;
+                    return CheckExpr(least);
+                }
 
                 // `&Method`: a static method's address, as a function pointer.
                 if (u.Op == UnOp.AddressOf && AddressedMethod(u.Operand) is MethodSymbol addressed)
