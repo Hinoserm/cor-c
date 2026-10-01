@@ -98,6 +98,7 @@ public sealed partial class Escape : IModulePass
         // pessimistic answer.
         Dictionary<string, bool[]> summaries = new(StringComparer.Ordinal);
         _summaries = summaries;
+        SeedKnown(summaries);
         foreach (List<Function> cycle in CallCycles(m, byName))
         {
             SummariseCycle(cycle, summaries);
@@ -1489,6 +1490,24 @@ continue;
     /// throws, they made every field read live across an allocation unowned:
     /// Dictionary's order, read across the `new int[]` of its own Tidy.
     /// </summary>
+    /// <summary>
+    /// RUNTIME ROUTINES THAT READ WHAT THEY ARE HANDED AND KEEP NONE OF IT,
+    /// known whether or not this unit holds their bodies. A unit compiled on
+    /// its own has no summary for another unit's function and takes every
+    /// argument to escape: the store check every reference written into an
+    /// array of a shared generic makes -- List's Grow copying into its new
+    /// array -- let the array go, and no List's array was ever its own.
+    /// </summary>
+    private static readonly (string Name, int Params)[] KeepsNothing =
+    {
+        ("m_Runtime_ArrayStoreCheck_2_V$I64_V$I64", 2),
+    };
+
+    internal static void SeedKnown(Dictionary<string, bool[]> summaries)
+    {
+        foreach ((string name, int count) in KeepsNothing) summaries.TryAdd(name, new bool[count]);
+    }
+
     internal static bool NeverWritesFields(string callee) =>
         IsAllocator(callee) || callee == "m_Runtime_ArrayStoreCheck_2_V$I64_V$I64";
 

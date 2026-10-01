@@ -571,6 +571,7 @@ public sealed partial class Escape
     /// before the slot is zeroed for the next one and on every return (with
     /// the fields cleared on entry, since a frame starts as garbage).
     /// </summary>
+    internal static readonly bool FieldTraceAll = Environment.GetEnvironmentVariable("CORSAC_FIELD_TRACE_ALL") is { Length: > 0 };
     internal static readonly string? FieldTrace = Environment.GetEnvironmentVariable("CORSAC_FIELD_TRACE") is { Length: > 0 } t ? t : null;
 
     private void OwnFields(Function f, Dictionary<string, bool[]> summaries)
@@ -606,7 +607,7 @@ public sealed partial class Escape
             List<long> clean = fs.Clean().Where(Fits).OrderBy(o => o).ToList();
             if (FieldTrace is { } traced && f.Name.Contains(traced, StringComparison.Ordinal))
                 Console.Error.WriteLine($"field trace: {f.Name} {r.Origin} slot={r.Slot?.Name} opaque={fs.Opaque} fresh=[{string.Join(",", fs.FreshStored.Order())}] dirty=[{string.Join(",", fs.Dirty.Order())}] clean=[{string.Join(",", clean)}] why={fs.Why}"
-                    + string.Concat((fs.DirtyWhy ?? new()).Where(kv => fs.FreshStored.Contains(kv.Key)).OrderBy(kv => kv.Key).Select(kv => $"\n    +{kv.Key}: {kv.Value}")));
+                    + string.Concat((fs.DirtyWhy ?? new()).Where(kv => fs.FreshStored.Contains(kv.Key) || FieldTraceAll).OrderBy(kv => kv.Key).Select(kv => $"\n    +{kv.Key}: {kv.Value}")));
             // The fields only the link can call clean: those some code filled
             // with fresh objects -- or will have, if another unit's function
             // is what the link finds it to be -- and none made dirty here.
