@@ -1931,15 +1931,16 @@ continue;
                             // is already owned, and owning it again would free
                             // it twice (the link reruns this pass over frees
                             // the unit compile put in).
+                            // A call that takes the object over (a sink
+                            // parameter, OwnedFields, a field's replaced value
+                            // given back): handed on, not lost.
+                            if (consumers is not null && consumers.Contains(i)) break;
                             if (IsFreeCall(i.Callee) && _inserted?.Contains(i) != true)
                             {
                                 foreach (Operand o in i.Operands)
                                     if (o is RegOperand r && flow.Derived.Contains(r.Reg)) { flow.Escapes = true; flow.Why ??= i; }
                                 break;
                             }
-                            // A call that takes the object over (a sink
-                            // parameter, OwnedFields): handed on, not lost.
-                            if (consumers is not null && consumers.Contains(i)) break;
                             summaries.TryGetValue(i.Callee, out bool[]? summary);
                             for (int a = 0; a < i.Operands.Count; a++)
                             {

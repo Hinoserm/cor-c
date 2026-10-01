@@ -94,6 +94,16 @@ public sealed partial class Escape
     {
         /// <summary>Used some way the field rules cannot follow: no field is freed.</summary>
         public bool Opaque;
+        /// <summary>The first use that made it opaque or a field dirty (CORSAC_FIELD_TRACE).</summary>
+        public string? Why;
+        /// <summary>The first reason each offset went dirty (CORSAC_FIELD_TRACE).</summary>
+        public Dictionary<long, string>? DirtyWhy;
+        public void Note(long at, string why)
+        {
+            if (FieldTrace is null) return;
+            DirtyWhy ??= new();
+            DirtyWhy.TryAdd(at, why);
+        }
         /// <summary>Word offsets something other than a fresh object was stored at, or whose loaded object escaped.</summary>
         public readonly HashSet<long> Dirty = new();
         /// <summary>Word offsets a fresh object was stored at.</summary>
@@ -110,7 +120,9 @@ public sealed partial class Escape
 
         public void Merge(FieldSummary? other)
         {
-            if (other is null) { Opaque = true; return; }
+            if (other is null) { Opaque = true; Why ??= "a callee with no field summary"; return; }
+            if (other.Opaque || other.Dirty.Count > 0) Why ??= other.Why;
+            if (other.DirtyWhy is not null) foreach (var kv in other.DirtyWhy) Note(kv.Key, kv.Value);
             Opaque |= other.Opaque;
             Dirty.UnionWith(other.Dirty);
             FreshStored.UnionWith(other.FreshStored);
@@ -260,13 +272,17 @@ public sealed partial class Escape
         List<(long At, VReg Value, Instr Load)> loads = new();
         List<(long At, Instr Store)> stores = new();
 
+        Instr? current = null;
         void Opaque()
         {
             fs.Opaque = true;
+            fs.Why ??= $"opaque: {current} in {f.Name}";
             if (hint is not null) hint.Opaque = true;
         }
         void DirtyRange(long at, long bytes)
         {
+            fs.Why ??= $"dirty +{at}: {current} in {f.Name}";
+            for (long o = at - ((at % word) + word) % word; o < at + bytes; o += word) fs.Note(o, $"{current} in {f.Name}");
             long first = at - ((at % word) + word) % word;
             for (long o = first; o < at + bytes; o += word)
             {
@@ -283,6 +299,7 @@ public sealed partial class Escape
             foreach (Instr i in b.Instrs)
             {
                 if (ReferenceEquals(i, source) || _bookkeeping.Contains(i)) continue;
+                current = i;
                 bool uses = false;
                 foreach (Operand uOperand in (i).Operands) if (uOperand is RegOperand { Reg: var u }) if (addresses.ContainsKey(u)) { uses = true; break; }
                 if (!uses) continue;
@@ -339,8 +356,12 @@ public sealed partial class Escape
                         {
                             if (i.Operands[a] is not RegOperand arg || !addresses.TryGetValue(arg.Reg, out long off)) continue;
                             if (off != 0 || i.Callee is null) { Opaque(); break; }
-                            if (_paramFields.TryGetValue(i.Callee, out FieldSummary?[]? callee) && a < callee.Length) fs.Merge(callee[a]);
-                            else fs.Opaque = true;
+                            if (_paramFields.TryGetValue(i.Callee, out FieldSummary?[]? callee) && a < callee.Length)
+                            {
+                                fs.Merge(callee[a]);
+                                if (callee[a] is null) fs.Why = fs.Why == "a callee with no field summary" ? $"{i.Callee} param {a} has no field summary (it escapes)" : fs.Why;
+                            }
+                            else { fs.Opaque = true; fs.Why ??= $"{i.Callee} unknown here (param {a})"; }
                             if (hint is null) continue;
                             // For the link: another unit's function is merged in
                             // there; one of this unit's brings its own hint.
@@ -396,6 +417,8 @@ public sealed partial class Escape
                 }
             }
             fs.Dirty.Add(at);
+            fs.Why ??= $"dirty +{at}: stored {vr.Reg} is not a fresh object only this field keeps ({st}) in {f.Name}";
+            fs.Note(at, $"stored {vr.Reg} not fresh-and-only-here: {st} in {f.Name}");
             if (hint is null) continue;
             // For the link: a child made by another unit's function, or let go
             // only through calls to one, is fresh if the condition holds.
@@ -415,13 +438,47 @@ public sealed partial class Escape
             // One object in two fields would be freed twice.
             if (condition is null)
             {
-                if (storedOrigins[origin] > 1) fs.Dirty.Add(at);
+                if (storedOrigins[origin] > 1) { fs.Dirty.Add(at); fs.Note(at, $"one object stored twice: {origin} in {f.Name}"); }
                 else fs.FreshStored.Add(at);
             }
             if (hint is null) continue;
             if (hintOrigins[origin] > 1) hint.Dirty.Add(at);
             else if (condition is null || condition.IsTrue) hint.Fresh.Add(at);
             else hint.Conditional.Add((at, condition, true));
+        }
+
+        // WHAT A FIELD HELD, GIVEN BACK ONCE THE FIELD HOLDS SOMETHING ELSE: a
+        // free in the block of a store to the same field, after it. That is
+        // the owned field's own discipline -- the collections free the array
+        // their Grow replaced (OutgrownStorage) -- and not an escape: counted
+        // as one, it made every growing table's fields dirty, and the arrays
+        // of a table that died were never freed with it.
+        // The store comes first: before the free in its block, or in a block
+        // that dominates the free's (the free is behind a null test).
+        Dictionary<long, HashSet<Instr>>? replacedFrees = null;
+        if (stores.Count > 0)
+        {
+            Dictionary<Instr, Block> storeBlock = new(ReferenceEqualityComparer.Instance);
+            Dictionary<Instr, int> storeIndex = new(ReferenceEqualityComparer.Instance);
+            foreach (Block b in f.Blocks)
+                for (int k = 0; k < b.Instrs.Count; k++)
+                    if (b.Instrs[k].Op == Opcode.Store) { storeBlock[b.Instrs[k]] = b; storeIndex[b.Instrs[k]] = k; }
+            Cfg? cfg = null;
+            foreach (Block b in f.Blocks)
+                for (int k = 0; k < b.Instrs.Count; k++)
+                {
+                    Instr i = b.Instrs[k];
+                    if (i.Op != Opcode.Call || !IsFreeCall(i.Callee) || _bookkeeping.Contains(i)) continue;
+                    foreach ((long sat, Instr st) in stores)
+                    {
+                        if (!storeBlock.TryGetValue(st, out Block? sb)) continue;
+                        bool first = ReferenceEquals(sb, b) ? storeIndex[st] < k : (cfg ??= new Cfg(f)).Dominates(sb, b);
+                        if (!first) continue;
+                        replacedFrees ??= new();
+                        if (!replacedFrees.TryGetValue(sat, out HashSet<Instr>? set)) replacedFrees[sat] = set = new(ReferenceEqualityComparer.Instance);
+                        set.Add(i);
+                    }
+                }
         }
 
         // What came out of each field (rule 2).
@@ -433,10 +490,12 @@ public sealed partial class Escape
             HashSetOfStores putBack = new();
             foreach ((long sat, Instr st) in stores)
                 if (sat == at && st.Operands[1] is RegOperand sv && ReferenceEquals(sv.Reg, v)) putBack.Set.Add(st);
+            // Only where the store before the free put something else there.
+            HashSet<Instr>? released = replacedFrees?.GetValueOrDefault(at) is { } frees && putBack.Set.Count == 0 ? frees : null;
             Needs? needs = hintDirty ? null : new(this);
-            Flow flow = Analyse(f, new[] { v }, summaries, load, putBack.Set, needs: needs);
+            Flow flow = Analyse(f, new[] { v }, summaries, load, putBack.Set, needs: needs, consumers: released);
             bool escapes = flow.Escapes || needs is { Condition.IsTrue: false };
-            if (escapes) fs.Dirty.Add(at);
+            if (escapes) { fs.Dirty.Add(at); fs.Note(at, $"loaded {v} escapes via {flow.Why} ({load}) in {f.Name}"); }
             if (needs is null) continue;
             if (flow.Escapes) hint!.Dirty.Add(at);
             else if (!needs.Condition.IsTrue) hint!.Conditional.Add((at, needs.Condition, false));
@@ -512,6 +571,8 @@ public sealed partial class Escape
     /// before the slot is zeroed for the next one and on every return (with
     /// the fields cleared on entry, since a frame starts as garbage).
     /// </summary>
+    internal static readonly string? FieldTrace = Environment.GetEnvironmentVariable("CORSAC_FIELD_TRACE") is { Length: > 0 } t ? t : null;
+
     private void OwnFields(Function f, Dictionary<string, bool[]> summaries)
     {
         if (!_records.TryGetValue(f, out List<OwnedRecord>? records)) return;
@@ -543,6 +604,9 @@ public sealed partial class Escape
             }
             bool Fits(long o) => o >= 0 && (r.Bytes < 0 || o + word <= r.Bytes);
             List<long> clean = fs.Clean().Where(Fits).OrderBy(o => o).ToList();
+            if (FieldTrace is { } traced && f.Name.Contains(traced, StringComparison.Ordinal))
+                Console.Error.WriteLine($"field trace: {f.Name} {r.Origin} slot={r.Slot?.Name} opaque={fs.Opaque} fresh=[{string.Join(",", fs.FreshStored.Order())}] dirty=[{string.Join(",", fs.Dirty.Order())}] clean=[{string.Join(",", clean)}] why={fs.Why}"
+                    + string.Concat((fs.DirtyWhy ?? new()).Where(kv => fs.FreshStored.Contains(kv.Key)).OrderBy(kv => kv.Key).Select(kv => $"\n    +{kv.Key}: {kv.Value}")));
             // The fields only the link can call clean: those some code filled
             // with fresh objects -- or will have, if another unit's function
             // is what the link finds it to be -- and none made dirty here.
