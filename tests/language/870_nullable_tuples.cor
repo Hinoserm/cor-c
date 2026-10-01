@@ -1,0 +1,29 @@
+// test: a nullable tuple is a Nullable<ValueTuple>: ?. reads an item of the value inside (an item named Length or Value too), a positional pattern over it tests for a value and takes the value apart, Value of an empty one throws as .NET's does; output identical to .NET
+// expect-exit: 0
+// expect-output:
+// 7 8 []
+// 30 4 [t] 1
+// 30k3
+// none
+// 20k2
+// True 50 k5 (50, k5)
+using System;
+struct S { public int N; public string T; }
+static class Program
+{
+    static (string Path, long Offset, int Length)? Backed;
+    static S? Plain;
+    static (long Value, string Type)? Find(int n) => n > 0 ? (n * 10L, "k" + n) : null;
+    static int Main()
+    {
+        Console.WriteLine((Backed?.Length ?? 7) + " " + (Plain?.N ?? 8) + " [" + Plain?.T + "]");
+        Backed = ("p", 2, 30); Plain = new S { N = 4, T = "t" };
+        Console.WriteLine((Backed?.Length ?? 7) + " " + (Plain?.N ?? 8) + " [" + Plain?.T + "] " + Backed?.Path.Length);
+        if (Find(3) is (long v, string s)) Console.WriteLine(v + s);
+        if (Find(0) is (long w, string z)) Console.WriteLine("no"); else Console.WriteLine("none");
+        if (Find(2) is var (a, b)) Console.WriteLine(a + b);
+        var found = Find(5);
+        Console.WriteLine(found.HasValue + " " + found.Value.Value + " " + found.Value.Type + " " + found);
+        return 0;
+    }
+}

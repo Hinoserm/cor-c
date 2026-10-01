@@ -2577,6 +2577,12 @@ static class Runtime
         throw new IndexOutOfRangeException("Index was outside the bounds of the array.");
     }
 
+    /// A Nullable's Value read when it has none.
+    public static void NoValue()
+    {
+        throw new InvalidOperationException("Nullable object must have a value.");
+    }
+
     /// A boxed tuple compared with a box of another type: ValueTuple's
     /// CompareTo(object) refuses it so.
     public static void ArgumentFailure()

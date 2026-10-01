@@ -4369,9 +4369,22 @@ public sealed partial class Binder
                 string held = $"$taken${_iterations++}";
                 Block block = new() { Line = taken.Line, Col = taken.Col };
 
+                // A POSITIONAL PATTERN OVER A NULLABLE VALUE takes apart what
+                // is in it (C# 11.2.5): `x is (long v, Type t)` over a `(long,
+                // Type)?` has tested x for a value already, and the tuple taken
+                // apart is the value, unwrapped by the conversion to it -- not
+                // by `.Value`, which a tuple with an item named Value answers
+                // with that item.
+                Expr whole = taken.Value;
+                if (had.IsNullableValue && RefOf(had.Underlying) is TypeRef inner)
+                {
+                    whole = new CastExpr { Type = inner, Operand = taken.Value, Line = taken.Line, Col = taken.Col, File = taken.File };
+                    had = had.Underlying;
+                }
+
                 block.Statements.Add(new LocalDecl
                 {
-                    Name = held, Init = taken.Value, Line = taken.Line, Col = taken.Col,
+                    Name = held, Init = whole, Line = taken.Line, Col = taken.Col,
                 });
                 block.Statements.AddRange(Deconstruct(
                     taken,
@@ -7761,7 +7774,10 @@ public sealed partial class Binder
     /// </summary>
     private void TupleFaces(TypeSymbol tuple)
     {
-        if (tuple.TupleFacesGiven || tuple.Fields.Any(f => !f.Static && f.Type.Size <= 0)) return;
+        // A SHAPE NO VALUE IS EVER MADE OF -- an item unresolved where it was
+        // met, a template's own parameter, a pointer -- implements nothing.
+        if (tuple.TupleFacesGiven || tuple.Fields.Any(f => !f.Static && (f.Type.Size <= 0 || f.Type.IsError || f.Type.ParamName is not null
+                || f.Type.IsPointer || f.Type.Function is not null || f.Type.Prim == Prim.Void && f.Type.Symbol is null && !f.Type.IsArray))) return;
         tuple.TupleFacesGiven = true;
         List<TypeSymbol> faces = new();
         foreach (string plain in new[] { "IComparable", "System.Runtime.CompilerServices.ITuple" })
@@ -13705,7 +13721,10 @@ public sealed partial class Binder
         // `(int At, string Label)` is the first field, and the name is carried
         // by the TYPE rather than by the class -- two tuples of the same shape
         // are one class and may name their elements differently.
-        if (target.Symbol is TypeSymbol shaped && shaped.TupleNamings.Count > 0)
+        // Not of a NULLABLE tuple, which is a Nullable<ValueTuple>: its
+        // members are HasValue and Value, and `x?.Length` reads the item of
+        // the value inside, below.
+        if (!target.IsNullableValue && target.Symbol is TypeSymbol shaped && shaped.TupleNamings.Count > 0)
         {
             IReadOnlyList<string>? named = target.Names ?? target.Symbol?.TupleNames;
             int which = -1;

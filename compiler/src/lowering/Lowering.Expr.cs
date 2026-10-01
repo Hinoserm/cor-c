@@ -453,6 +453,14 @@ public sealed partial class Lowering
         // where a word is 32 bits, and in long mode a null arm of `x?.M() ==
         // true` copied as an I32 into the cell register, which the verifier
         // refused at every link.
+        // A NULLABLE VALUE TO WHAT IT HOLDS is its Value (C# 10.3.4): what is
+        // in the cell, and InvalidOperationException when there is none. Taken
+        // as a word it handed over the cell's address as the value.
+        if (from.IsNullableValue && !to.IsNullableValue && to.Prim != Prim.Any && to.Symbol is not { Kind: TypeKind.Interface })
+        {
+            return Convert(at, NullableValue(v, from.Underlying), from.Underlying, to);
+        }
+
         if (from.IsNullableValue || to.IsNullableValue)
         {
             return v;
@@ -907,8 +915,7 @@ public sealed partial class Lowering
             {
                 return _e.Binary(Opcode.Ne, R(cell), Imm(0, cell.Type), IrType.I32);
             }
-            Type inner = target.Underlying;
-            return LoadPlace(new MemPlace(R(cell), 0, inner));
+            return NullableValue(cell, target.Underlying);
         }
 
         if (_b.Resolved.TryGetValue(m, out Sym? sym))
@@ -1070,6 +1077,26 @@ public sealed partial class Lowering
         VReg arg = Convert(at, bytes, IrTypes.Word == IrType.I64 ? Type.I64 : Type.I32, alloc.Params[0].Type);
         VReg r = _e.Call(CallLabel(alloc), IrTypes.Of(alloc.Returns), R(arg))!;
         return r.Type == IrTypes.Word ? r : _e.Unary(Opcode.Trunc64, r);
+    }
+
+    /// <summary>
+    /// What a Nullable&lt;T&gt; holds: the value in its cell, or, when it has
+    /// none, InvalidOperationException as .NET's Value throws it.
+    /// </summary>
+    private VReg NullableValue(VReg cell, Type inner)
+    {
+        Block some = _f.NewBlock("nvsome"), none = _f.NewBlock("nvnone");
+        _e.Branch(cell, some, none);
+        _e.SetBlock(none);
+        if (RuntimeMethod("NoValue", 0) is MethodSymbol fail)
+        {
+            Require(fail);
+            _e.Call(CallLabel(fail), IrType.Void);
+        }
+        _e.Emit(Opcode.Trap, null);
+        _e.Unreachable();
+        _e.SetBlock(some);
+        return LoadPlace(new MemPlace(R(cell), 0, inner));
     }
 
     /// <summary>A value into a Nullable<T> cell: one allocation holding it; the cell's address is the result.</summary>
@@ -3582,7 +3609,7 @@ public sealed partial class Lowering
                 return _e.Address(InternString(spelt));
             }
 
-            return Fail(at, $"'{type}' cannot be joined to a string");
+            return Fail(at, $"'{type}' cannot be joined to a string" + (Environment.GetEnvironmentVariable("CORC_TRACE_JOIN") is null ? "" : " in " + _f.Name + " prim=" + type.Prim + " sym=" + type.Symbol?.Name + " param=" + type.ParamName + " nullable=" + type.Nullable));
         }
 
         // AN ENUM IS ITS MEMBER'S NAME, which .NET reads out of the type's
