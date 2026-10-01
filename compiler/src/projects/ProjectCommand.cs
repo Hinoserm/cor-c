@@ -220,7 +220,7 @@ public static class ProjectCommand
             link.AddRange(linkArguments);
             try
             {
-                if (Driver.Run(link.ToArray()) != 0) return 1;
+                if (LinkApart(link) != 0) return 1;
                 File.Move(temporary, output, overwrite: true);
                 ProjectState.Record(linkState, linkSignature, output);
             }
@@ -228,6 +228,25 @@ public static class ProjectCommand
         }
         Console.Error.WriteLine("project: " + changed + "/" + owners.Count + " source units rebuilt; output " + output);
         return 0;
+    }
+
+    /// <summary>
+    /// THE LINK IN A PROCESS OF ITS OWN, for a native compiler: it starts with
+    /// the whole address space, not what the compile left of it. A 32-bit
+    /// build of the compiler itself linked in the process that had run its
+    /// project had no room left for the image, where the same link alone had.
+    /// Under dotnet, in this process, whose heap is no 32-bit one.
+    /// </summary>
+    private static int LinkApart(List<string> link)
+    {
+        bool hosted = Environment.ProcessPath is string path
+            && Path.GetFileNameWithoutExtension(path).Equals("dotnet", StringComparison.OrdinalIgnoreCase);
+        if (hosted || Environment.ProcessPath is null) return Driver.Run(link.ToArray());
+        System.Diagnostics.ProcessStartInfo start = new() { FileName = Environment.ProcessPath, UseShellExecute = false };
+        foreach (string argument in link) start.ArgumentList.Add(argument);
+        using System.Diagnostics.Process child = System.Diagnostics.Process.Start(start)!;
+        child.WaitForExit();
+        return child.ExitCode;
     }
 
     /// <summary>
