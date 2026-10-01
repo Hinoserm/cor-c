@@ -2251,6 +2251,13 @@ public sealed partial class Lowering
         {
             f.Params.Add(f.NewReg(IrTypes.Of(p.Type), p.Name));
         }
+        // A struct element is written to its caller's buffer (Buffered).
+        VReg? buffer = null;
+        if (Buffered(m))
+        {
+            buffer = f.NewReg(IrTypes.Word, "retbuf");
+            f.Params.Add(buffer);
+        }
         Builder e = new(f, f.NewBlock("entry"));
         VReg items = e.Load(IrTypes.Word, self, view.Fields[0].Offset);
 
@@ -2299,8 +2306,9 @@ public sealed partial class Lowering
             {
                 VReg value = LoadElement(items, e.Load(IrType.I32, self, cursor.Offset), of,
                                          At(m));
-                // A struct element is a copy, as any method's struct result is.
-                if (IsStructValue(of)) value = CopyStruct(At(m), value, StructOf(of));
+                // A struct element into the caller's buffer, or a copy.
+                if (buffer is not null) { e.Emit(Opcode.MemCopy, null, R(buffer), R(value), Imm(Math.Max(1, StructOf(of).InstanceSize), IrTypes.Word)); value = buffer; }
+                else if (IsStructValue(of)) value = CopyStruct(At(m), value, StructOf(of));
 
                 e.Ret(new RegOperand(value));
             }
@@ -2345,7 +2353,8 @@ public sealed partial class Lowering
             Function saved = _f; Builder savedE = _e;
             _f = f; _e = e; _boundsFail = null;
             VReg value = LoadElement(items, index, of, At(m));
-            if (IsStructValue(of)) value = CopyStruct(At(m), value, StructOf(of));
+            if (buffer is not null) { e.Emit(Opcode.MemCopy, null, R(buffer), R(value), Imm(Math.Max(1, StructOf(of).InstanceSize), IrTypes.Word)); value = buffer; }
+            else if (IsStructValue(of)) value = CopyStruct(At(m), value, StructOf(of));
             _f = saved; _e = savedE;
             e.Ret(new RegOperand(value));
         }

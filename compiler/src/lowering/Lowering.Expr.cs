@@ -253,13 +253,25 @@ public sealed partial class Lowering
     {
         if (HasStructFields(sym))
         {
-            return _e.Call(StructCopier(at, sym), IrTypes.Word, R(src))!;
+            VReg deep = _e.Call(StructCopier(at, sym), IrTypes.Word, R(src))!;
+            _heapStructs.Add(deep);
+            return deep;
         }
         int size = Math.Max(1, sym.InstanceSize);
         VReg made = Allocate(at, size);
         _e.Emit(Opcode.MemCopy, null, R(made), R(src), Imm(size, IrTypes.Word));
+        _heapStructs.Add(made);
         return made;
     }
+
+    /// <summary>
+    /// A struct value about to be kept as a pointer in the heap -- a closure's
+    /// cell, a struct not held in line -- as a block of the heap: one that may
+    /// be its caller's frame (a call's result buffer) is copied first.
+    /// </summary>
+    private VReg HeapStruct(Node at, VReg value, Type type)
+        => IsStructValue(type) && !_heapStructs.Contains(value) && value.Type == IrTypes.Word
+            ? CopyStruct(at, value, StructOf(type)) : value;
 
     /// <summary>
     /// A struct's zero value, made: a zeroed block, and in each of its
@@ -271,11 +283,9 @@ public sealed partial class Lowering
     /// </summary>
     private VReg NewStruct(Node at, TypeSymbol sym)
     {
-        if (HasStructFields(sym))
-        {
-            return _e.Call(StructMaker(at, sym), IrTypes.Word)!;
-        }
-        return Allocate(at, Math.Max(1, sym.InstanceSize));
+        VReg made = HasStructFields(sym) ? _e.Call(StructMaker(at, sym), IrTypes.Word)! : Allocate(at, Math.Max(1, sym.InstanceSize));
+        _heapStructs.Add(made);
+        return made;
     }
 
     /// <summary>

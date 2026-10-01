@@ -376,6 +376,13 @@ public sealed partial class Lowering
             f.Params.Add(a);
             args.Add(a);
         }
+        // The result buffer passes straight through (Buffered).
+        if (Buffered(m))
+        {
+            VReg buffer = f.NewReg(IrTypes.Word, "retbuf");
+            f.Params.Add(buffer);
+            args.Add(buffer);
+        }
         Builder e = new(f, f.NewBlock("entry"));
         args.Insert(0, e.Binary(Opcode.Add, self, _t.ObjectHeaderBytes));
         VReg? result = e.Call(target, returns, args);

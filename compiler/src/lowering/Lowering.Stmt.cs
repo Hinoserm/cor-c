@@ -268,7 +268,12 @@ public sealed partial class Lowering
             {
                 if (r.Value is not null && _method is not null && _returnValue is not null)
                 {
-                    VReg v = EvalAs(r.Value, _returnType ?? _method.Returns);
+                    // Through a buffer the value is copied in at the end, so
+                    // it is not copied here as well.
+                    Type wanted = _returnType ?? _method.Returns;
+                    VReg v = _resultBuffer is not null && _openHandlers.Count == 0
+                        ? InlineValue(new MemPlace(R(_resultBuffer), 0, wanted, Inline: true), r.Value, wanted)
+                        : EvalAs(r.Value, wanted);
                     _e.CopyTo(_returnValue, new RegOperand(v));
                 }
                 // `return Os.Syscall(..., Sys.ArrayData(path))`: the value is

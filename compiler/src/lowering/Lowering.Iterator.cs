@@ -41,6 +41,14 @@ public sealed partial class Lowering
 
     /// <summary>The iterator whose MoveNext is being lowered; null elsewhere.</summary>
     private IteratorMethod? _iterating;
+
+    /// <summary>
+    /// Where an iterator object holds its Current in line, by the object's
+    /// type: a struct element held in line has an area of its own at the
+    /// object's end, and a yield copies its bytes there -- a word pointing at
+    /// a block made for every element kept each of them for the collector.
+    /// </summary>
+    private readonly Dictionary<TypeSymbol, int> _inlineCurrent = new(ReferenceEqualityComparer.Instance);
     private int _yieldPoints;
 
     // The fixed part of every iterator object, after the object header.
@@ -108,6 +116,12 @@ public sealed partial class Lowering
             }
             offsets[i] = at;
             at += 8;
+        }
+        if (IsStructValue(element) && StructOf(element).HeldInline)
+        {
+            at = (at + 7) / 8 * 8;
+            _inlineCurrent[machine] = at;
+            at += (Math.Max(1, StructOf(element).InstanceSize) + 7) / 8 * 8;
         }
         machine.InstanceSize = at;
         machine.InlineDecided = true;                  // laid out here, nothing in line
@@ -205,6 +219,13 @@ public sealed partial class Lowering
             };
             VReg self = f.NewReg(IrTypes.Word, "this");
             f.Params.Add(self);
+            // A struct Current is written to its caller's buffer (Buffered).
+            VReg? buffer = null;
+            if (Buffered(member))
+            {
+                buffer = f.NewReg(IrTypes.Word, "retbuf");
+                f.Params.Add(buffer);
+            }
             Builder e = new(f, f.NewBlock("entry"));
             _f = f; _e = e;
 
@@ -235,21 +256,24 @@ public sealed partial class Lowering
 
                 case "get_Current":
                 {
-                    VReg current = e.Load(IrTypes.Of(it.Element), self, IterCurrentField, LoadSize(it.Element),
-                                          !it.Element.IsUnsigned && it.Element.Prim != Prim.Bool);
+                    VReg current = _inlineCurrent.TryGetValue(it.Machine, out int inlineAt)
+                        ? e.Binary(Opcode.Add, self, inlineAt)
+                        : e.Load(IrTypes.Of(it.Element), self, IterCurrentField, LoadSize(it.Element),
+                                 !it.Element.IsUnsigned && it.Element.Prim != Prim.Bool);
                     // IEnumerator's Current is an object: the element boxed.
                     if (member.ExplicitMember is not null && Boxable(it.Element))
                     {
                         current = BoxValue(it.Decl, current, it.Element);
                     }
-                    // A struct element is a copy, as every struct a method
-                    // returns is: the caller may give it back.
+                    // A struct element goes into the caller's buffer.
+                    else if (buffer is not null)
+                    {
+                        e.Emit(Opcode.MemCopy, null, R(buffer), R(current), Imm(Math.Max(1, StructOf(it.Element).InstanceSize), IrTypes.Word));
+                        current = buffer;
+                    }
                     else if (IsStructValue(it.Element))
                     {
-                        Function savedIt = _f; Builder savedItE = _e;
-                        _f = f; _e = e;
                         current = CopyStruct(it.Decl, current, StructOf(it.Element));
-                        _f = savedIt; _e = savedItE;
                     }
                     e.Ret(R(current));
                     break;
@@ -433,8 +457,17 @@ public sealed partial class Lowering
             return;
         }
 
-        VReg value = EvalAs(y.Value, it.Element);
-        _e.Store(R(machine), R(value), IterCurrentField, LoadSize(it.Element));
+        if (_inlineCurrent.TryGetValue(it.Machine, out int inlineAt))
+        {
+            // Its bytes into the object's own area: nothing kept by pointer.
+            MemPlace place = new(R(machine), inlineAt, it.Element, Inline: true);
+            StorePlace(place, InlineValue(place, y.Value, it.Element));
+        }
+        else
+        {
+            VReg value = EvalAs(y.Value, it.Element);
+            _e.Store(R(machine), R(value), IterCurrentField, LoadSize(it.Element));
+        }
 
         int w = _t.WordSize;
         if (_openHandlers.Count > 0)

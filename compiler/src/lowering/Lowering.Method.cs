@@ -85,6 +85,12 @@ public sealed partial class Lowering
     private Block? _returnBlock;
     private VReg? _returnValue;
 
+    /// <summary>The caller's buffer this method writes its struct result to (Buffered), or null.</summary>
+    private VReg? _resultBuffer;
+
+    /// <summary>Struct values known to be blocks of the heap, which a store into the heap may keep as they are.</summary>
+    private readonly HashSet<VReg> _heapStructs = new();
+
     /// <summary>What a `return` converts its value to: the method's return type, or an async method's task result.</summary>
     private Type? _returnType;
     private int _checkedDepth;
@@ -110,6 +116,8 @@ public sealed partial class Lowering
         _this = null;
         _returnBlock = null;
         _returnValue = null;
+        _resultBuffer = null;
+        _heapStructs.Clear();
         _returnType = null;
         _boundsFail = null;
         _checkedDepth = 0;
@@ -179,6 +187,12 @@ public sealed partial class Lowering
             ParamSymbol p = m.Params[i];
             _params[i] = _f.NewReg(p.ByRef ? IrTypes.Word : IrTypes.Of(p.Type), p.Name);
             _f.Params.Add(_params[i]);
+        }
+
+        if (Buffered(m))
+        {
+            _resultBuffer = _f.NewReg(IrTypes.Word, "retbuf");
+            _f.Params.Add(_resultBuffer);
         }
 
         ScanAddressTaken(decl.Body!);
@@ -267,7 +281,18 @@ public sealed partial class Lowering
         {
             LeaveToC(decl, fromC);
         }
-        _e.Ret(_returnValue is null ? null : new RegOperand(_returnValue));
+        if (_resultBuffer is not null && _returnValue is not null)
+        {
+            // THE RESULT INTO THE CALLER'S BUFFER, and its address answered:
+            // bytes only. A buffer is the caller's frame, or a block the caller
+            // made for it and marks the cards of itself (ResultBuffer).
+            _e.Emit(Opcode.MemCopy, null, R(_resultBuffer), R(_returnValue), Imm(Math.Max(1, StructOf(m.Returns).InstanceSize), IrTypes.Word));
+            _e.Ret(new RegOperand(_resultBuffer));
+        }
+        else
+        {
+            _e.Ret(_returnValue is null ? null : new RegOperand(_returnValue));
+        }
 
         _m.Functions.Add(_f);
         _method = null;
@@ -740,6 +765,9 @@ public sealed partial class Lowering
                 {
                     StoreCheck(array, value, m.Type);
                 }
+                // A struct kept as a pointer in memory is a block of the heap,
+                // not a caller's result buffer (HeapStruct).
+                if (IsStructValue(m.Type)) value = HeapStruct(_decl ?? (Node)new MethodDecl { Name = "", Line = 0, Col = 0 }, value, m.Type);
                 ReferenceBarrier(m, value);
                 _e.Store(m.Address, new RegOperand(value), m.Offset, LoadSize(m.Type));
                 if (m.Field is FieldSymbol written && TagsField(written)) _e.Block.Instrs[^1].Field = FieldKey(written);
@@ -908,6 +936,7 @@ public sealed partial class Lowering
     /// </summary>
     private void StoreNew(VReg block, VReg value, long offset, Type type, FieldSymbol? field = null)
     {
+        if (IsStructValue(type)) value = HeapStruct(_decl ?? (Node)new MethodDecl { Name = "", Line = 0, Col = 0 }, value, type);
         _e.Store(R(block), R(value), offset, LoadSize(type));
         if (field is not null && TagsField(field)) _e.Block.Instrs[^1].Field = FieldKey(field);
         CardMark(new MemPlace(R(block), offset, type), value);

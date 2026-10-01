@@ -11,10 +11,57 @@ public sealed partial class Lowering
     private static bool UsesVirtualDispatch(MethodSymbol m)
         => m.VtableSlot >= 0 && !m.Static && m.Owner.Kind != TypeKind.Struct;
 
+    /// <summary>
+    /// A STRUCT RETURNED THROUGH ITS CALLER'S STORAGE, as .NET's return buffer:
+    /// a method returning a struct held in line takes, after its own
+    /// parameters, the address it writes its result to, and answers that
+    /// address. The caller hands it a slot of its own frame (ResultBuffer), so
+    /// a struct a call makes is no allocation at all. Not a method C calls or
+    /// that calls C, nor an async one, whose result goes into a Task.
+    /// </summary>
+    private bool Buffered(MethodSymbol m)
+        => IsStructValue(m.Returns) && StructOf(m.Returns).HeldInline && !m.Async && !m.IsCtor
+        && NativeImportOf(m) is null && !CalledByC(m) && m.Decl is not { File: "<prelude>" };
+
+    /// <summary>
+    /// Where a call's struct result is written: a slot of this frame, one per
+    /// call site -- or, in an iterator's or an async method's body, whose frame
+    /// does not outlast a suspension, a block of the heap.
+    /// </summary>
+    private VReg ResultBuffer(Node at, Type type)
+    {
+        TypeSymbol shape = StructOf(type);
+        int size = Math.Max(4, shape.InstanceSize);
+        if (_stateMachine is not null)
+        {
+            VReg made = Allocate(at, size);
+            _heapStructs.Add(made);
+            return made;
+        }
+        FrameSlot slot = _f.NewSlot(size, Math.Min(_t.Align64, Math.Max(4, shape.InlineAlign)), "result");
+        return RegOf(new SlotOperand(slot));
+    }
+
+    /// <summary>
+    /// A result buffer of the heap, written by its callee with no card marks:
+    /// its references' cards marked after the call, for a collection that
+    /// may have made the block old under the call.
+    /// </summary>
+    private void MarkBuffer(VReg buffer, Type type)
+    {
+        if (!_heapStructs.Contains(buffer)) return;
+        foreach ((int at, Type field) in TracedFields(StructOf(type), 0))
+        {
+            if (MayHoldReference(field)) CardMarkAt(R(buffer), at);
+        }
+    }
+
     /// <summary>A direct call by label; the callee is marked reachable.</summary>
     private VReg? CallDirect(MethodSymbol m, IrType returns, List<Operand> args)
     {
         Require(m);
+        VReg? buffer = Buffered(m) ? ResultBuffer(_decl ?? (Node)new MethodDecl { Name = m.Name, Line = 0, Col = 0 }, m.Returns) : null;
+        if (buffer is not null) args = new List<Operand>(args) { R(buffer) };
         // THE PROGRAM'S OWN SOURCE CALLING INTO THE COLLECTOR -- asking its
         // heap where a block is, collecting -- means it has one, whatever its
         // allocations need (Escape). Reading a counter (a getter) does not.
@@ -22,8 +69,10 @@ public sealed partial class Lowering
             && !m.Name.StartsWith("get_", StringComparison.Ordinal))
             _m.CallsCollector = true;
         VReg? made = _e.Call(CallLabel(m), returns, args.ToArray());
-        // A struct a method of source returns is made for this caller.
-        if (IsStructValue(m.Returns) && m.Decl is { File: not "<prelude>" }) _e.Block.Instrs[^1].Field = Instr.FreshStruct;
+        if (buffer is not null) MarkBuffer(buffer, m.Returns);
+        // A struct a method of source returns other than through a buffer is
+        // made for this caller.
+        if (!Buffered(m) && IsStructValue(m.Returns) && m.Decl is { File: not "<prelude>" }) _e.Block.Instrs[^1].Field = Instr.FreshStruct;
         return made;
     }
 
@@ -60,12 +109,14 @@ public sealed partial class Lowering
             }
             VReg vt = _e.Load(IrTypes.Word, receiver, 0);
             VReg fn = _e.Load(IrTypes.Word, vt, (long)m.VtableSlot * _t.WordSize);
+            VReg? buffer = Buffered(m) ? ResultBuffer(_decl ?? (Node)new MethodDecl { Name = m.Name, Line = 0, Col = 0 }, m.Returns) : null;
+            if (buffer is not null) args = new List<Operand>(args) { R(buffer) };
             VReg? called = _e.CallIndirect(R(fn), returns, args);
             _e.Block.Instrs[^1].DispatchType = DescriptorOf(m.Owner);
-            // Whatever implementation answers, a struct it returns is a copy
-            // made for this caller (the compiler's own Currents and indexers
-            // copy too).
-            if (IsStructValue(m.Returns)) _e.Block.Instrs[^1].Field = Instr.FreshStruct;
+            if (buffer is not null) MarkBuffer(buffer, m.Returns);
+            // Whatever implementation answers, a struct it returns other than
+            // through a buffer is a copy made for this caller.
+            if (!Buffered(m) && IsStructValue(m.Returns)) _e.Block.Instrs[^1].Field = Instr.FreshStruct;
             return called;
         }
 

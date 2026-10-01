@@ -4708,6 +4708,49 @@ static class Gc
             return;
         }
 
+        // A BLOCK OF ONE OF THIS THREAD'S OWN PAGES goes onto the thread's own
+        // list for its class with no lock, as the allocator's fast path takes
+        // one off it: the page, its record, the list and the thread's pending
+        // count are all this thread's while it owns the page, and the block's
+        // header -- a live object's, mapped -- says its class. Only while its
+        // count still holds the block (no pressure to give back), and never
+        // with a collection anywhere under way. Every free the compiler writes
+        // took the heap lock, and the lock was most of what freeing cost.
+        if ((SkippedFreePaths & 128) == 0 && Runtime.Marking == 0 && !_sweeping && !_collecting && !_heapCheck && (at & 7) == 0)
+        {
+            long cache = Sys.Peek(tb + Tls.Classes);
+            long head = Sys.Peek(block);
+            long bytes = head & SizeMask;
+            if (cache != 0 && _classSize != 0 && (head & FlagFree) == 0 && bytes >= Smallest && bytes <= ClassMax
+                && Sys.Peek(tb + Tls.ClassBytes) >= bytes)
+            {
+                long c = Sys.Peek(_classOf + (bytes >> 3) * WordSize.Bytes);
+                long slot = cache + c * (2 * WordSize.Bytes);
+                long page = Sys.Peek(slot);
+                if (page != 0 && Sys.Peek(_classSize + c * WordSize.Bytes) == bytes && HeapChunks.Owner(page) == tb)
+                {
+                    long first = HeapChunks.First(page);
+                    if (block >= first && block + bytes <= HeapChunks.End(page) && (block - first) % bytes == 0
+                        && Sys.Peek(block + bytes - FooterBytes) == head)
+                    {
+                        if (VerifyingFieldFrees)
+                        {
+                            ReportFreedAgain(block, at);
+                        }
+                        ZeroWords(block + HeaderBytes, block + bytes - FooterBytes);
+                        Stamp(block, bytes, FlagFree);
+                        Sys.Poke(tb + Tls.ClassBytes, Sys.Peek(tb + Tls.ClassBytes) - bytes);
+                        Sys.Poke(block + KindAt, Sys.Peek(slot + WordSize.Bytes));
+                        Sys.Poke(slot + WordSize.Bytes, block);
+                        Frees = Frees + 1;
+                        FreedBytes = FreedBytes + bytes;
+                        Sys.Poke(tb + Tls.InAlloc, inside);
+                        return;
+                    }
+                }
+            }
+        }
+
         Sys.Poke(tb + Tls.InAlloc, inside);
         GcLock.Enter();
 
