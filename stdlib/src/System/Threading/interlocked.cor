@@ -122,3 +122,20 @@ public static class Interlocked
     /// Every load and store before this is done before any after it.
     public static void MemoryBarrier() { Sys.Fence(); }
 }
+
+/// System.Threading.Volatile: a read no later read is moved before, a write no
+/// earlier write is moved after, as .NET has them. Made of Interlocked's
+/// operations, each a full barrier -- stronger than asked, and never a read
+/// the optimiser keeps from the last time round a loop.
+public static class Volatile
+{
+    public static int Read(ref int location) { return Interlocked.CompareExchange(ref location, 0, 0); }
+    public static long Read(ref long location) { return Interlocked.Read(ref location); }
+    public static bool Read(ref bool location) { Sys.Fence(); bool seen = location; Sys.Fence(); return seen; }
+    public static T Read<T>(ref T location) where T : class? { return Interlocked.CompareExchange<T>(ref location, null!, null!); }
+
+    public static void Write(ref int location, int value) { Interlocked.Exchange(ref location, value); }
+    public static void Write(ref long location, long value) { Interlocked.Exchange(ref location, value); }
+    public static void Write(ref bool location, bool value) { Sys.Fence(); location = value; Sys.Fence(); }
+    public static void Write<T>(ref T location, T value) where T : class? { Interlocked.Exchange<T>(ref location, value); }
+}

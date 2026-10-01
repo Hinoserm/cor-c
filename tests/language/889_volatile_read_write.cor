@@ -1,0 +1,27 @@
+// test: volatile_read_write
+// expect-exit: 0
+// expect-output:
+// hi 1007 1099511627776 False
+//
+// System.Threading.Volatile reads and writes a reference, an int, a long
+// and a bool, as .NET's does: a loop on Volatile.Read sees another thread's
+// Volatile.Write. Output checked against .NET.
+
+using System;
+using System.Threading;
+static class Program
+{
+    static string? _note;
+    static int _count;
+    static long _wide;
+    static bool _done;
+    static void Main()
+    {
+        Volatile.Write(ref _note, "hi"); Volatile.Write(ref _count, 7); Volatile.Write(ref _wide, 1L << 40); Volatile.Write(ref _done, true);
+        Thread t = new Thread(() => { for (int i = 0; i < 1000; i++) Interlocked.Increment(ref _count); Volatile.Write(ref _done, false); });
+        t.Start();
+        while (Volatile.Read(ref _done)) { }
+        t.Join();
+        Console.WriteLine(Volatile.Read(ref _note) + " " + Volatile.Read(ref _count) + " " + Volatile.Read(ref _wide) + " " + Volatile.Read(ref _done));
+    }
+}
