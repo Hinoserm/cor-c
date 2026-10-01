@@ -1,0 +1,12 @@
+// test: long_to_int_needs_cast
+// expect-compile-error: cannot convert 'long' to 'int'
+// A narrowing is always a cast. As C# 10.2.3 has it.
+
+using System;
+static class Program
+{
+    static void Main()
+    {
+        long l = Environment.TickCount; int i = l; Console.WriteLine(i);
+    }
+}

@@ -57,8 +57,6 @@ public sealed partial class Binder
     /// <summary>Inside unchecked(...) or an unchecked block: a constant cast may wrap (CS0221).</summary>
     private int _uncheckedDepth;
 
-    /// <summary>While overloads are weighed: integers convert as C#'s do (IntegerWidens).</summary>
-    private bool _exactIntegers;
     private MethodSymbol? _method;
     private readonly List<LocalScope> _scopes = new();
 
@@ -1516,13 +1514,34 @@ public sealed partial class Binder
     /// The same rule at an assignment as at a call: `int n = WordSize.Bytes`
     /// with Bytes a const long is an error, as it is in C#; say (int).
     /// </summary>
-    private static bool ConstantConverts(Type from, long value, Type to) => from.Prim switch
+    // C# 10.2.11: an int constant into sbyte, byte, short, ushort, uint or
+    // ulong when it fits -- never char, which no number becomes implicitly --
+    // and a long constant into ulong when it is not negative.
+    private static bool ConstantConverts(Type from, long value, Type to) => to.Prim != Prim.Char && from.Prim switch
     {
         Prim.I32 => to.Prim == Prim.U64 ? value >= 0 : Fits(value, to),
-        Prim.I64 => (to.Prim == Prim.U64 && value >= 0)
-                    || (to.Prim == Prim.U32 && value > int.MaxValue && value <= uint.MaxValue),
+        Prim.I64 => to.Prim == Prim.U64 && value >= 0,
         _ => false,
     };
+
+    /// <summary>
+    /// Whether an integer constant expression reaches `want` implicitly: by
+    /// the constant conversion (ConstantConverts), into a nullable of what it
+    /// reaches (C# 10.6.1, wrapping after), or into the operand of a user-
+    /// defined implicit conversion -- `x - 1` over a UInt128 takes the 1 as
+    /// a uint first, as .NET's operators do.
+    /// </summary>
+    private bool IntegerConstantFits(Expr? written, Type had, Type want)
+    {
+        if (written is null || !had.IsInteger || had.Nullable || had.Symbol is not null
+            || ConstantValue(written, _thisType) is not long value)
+        {
+            return false;
+        }
+        Type target = want.IsNullableValue ? want.Underlying : want;
+        if (target.IsInteger && target.Symbol is null && !target.Nullable && ConstantConverts(had, value, target)) return true;
+        return target.Symbol is not null && UserConversion(had, target, false, value) is not null;
+    }
 
     /// <summary>Looks a TEXT const up on a type or any of its bases.</summary>
     private string? FindText(TypeSymbol? owner, string name)
@@ -5144,10 +5163,23 @@ public sealed partial class Binder
 
         // A USER-DEFINED IMPLICIT CONVERSION, where no standard one applies.
         if (at is Expr converted && !StandardConvertible(from, to) && !Variant(from, to)
-            && !_r.Rewrites.ContainsKey(converted)
+            && (!_r.Rewrites.TryGetValue(converted, out Expr? priorRewrite) || priorRewrite is CallExpr { Target: MemberExpr { Name: "op_Implicit" } })
             && UserConversion(from, to, explicitToo: false, IntegerConstant(converted, from)) is { } implicitOp)
         {
-            ConvertByOperator(converted, implicitOp);
+            // CHECKED AGAIN, it is the operator's call already: the operands
+            // of `t - 1 - x` are checked once to choose the operator and again
+            // as its arguments.
+            if (priorRewrite is null) ConvertByOperator(converted, implicitOp);
+            return;
+        }
+
+        // AN INTEGER CONSTANT INTO A NULLABLE OF A TYPE IT FITS: converted,
+        // then put in a cell, as `ulong? x = 6;` is in C#.
+        if (to.IsNullableValue && !from.IsNullableValue && at is Expr fitted && IntegerConstantFits(fitted, from, to)
+            && !Convertible(from, to))
+        {
+            _r.Boxes.Add(fitted);
+            _r.BoxedAs[fitted] = to;
             return;
         }
 
@@ -5225,8 +5257,7 @@ public sealed partial class Binder
     private bool Fits(Type had, Type want, Expr? written)
         => had.IsError || (!NullableIntoValue(had, want) && (Convertible(had, want) || Variant(had, want)))
         || (written is not null && MethodGroupFits(written, want))
-        || (written is not null && had.IsInteger && want.IsInteger && !want.Nullable
-            && ConstantValue(written, _thisType) is long value && ConstantConverts(had, value, want));
+        || IntegerConstantFits(written, had, want);
 
     /// <summary>
     /// A Nullable&lt;T&gt; where a plain value type is wanted: no implicit
@@ -5572,11 +5603,11 @@ public sealed partial class Binder
         // written as a cast so it is visible at the point it happens.
         if (from.IsInteger && to.IsInteger)
         {
-            // C#'S OWN WHILE OVERLOADS ARE WEIGHED (_exactIntegers); this
-            // language's wider rule -- any integer into one at least as wide --
-            // everywhere else.
-            if (_exactIntegers) return IntegerWidens(from.Prim, to.Prim);
-            return to.Size >= from.Size;
+            // C#'S OWN (10.2.3): only where every value is kept. Into char
+            // never, from signed into unsigned never; anything else is a
+            // cast. A constant that fits is the constant conversion's
+            // (ConstantConverts), not this.
+            return IntegerWidens(from.Prim, to.Prim);
         }
 
         if (from.IsInteger && to.IsFloat)
@@ -9657,7 +9688,7 @@ public sealed partial class Binder
 
     /// <summary>
     /// The type of an integer literal: what its suffix declares, or else the
-    /// first of int, long and ulong that its value fits.
+    /// first of int, uint, long and ulong that its value fits.
     ///
     /// `10U` is a uint, `10L` a long and `10UL` a ulong, in either letter
     /// order and either case; a `U` whose value is past uint is a ulong, and
@@ -9683,39 +9714,40 @@ public sealed partial class Binder
             }
         }
 
+        // A NEGATIVE VALUE IS A WRAPPED ULONG unless the text says minus:
+        // the parser keeps 64 bits, so `0xFFFFFFFFFFFFFFFF` arrives as -1, and
+        // only the int.MinValue and long.MinValue literals a unary minus was
+        // folded into are written with their sign.
+        bool negative = l.Text.StartsWith('-');
+        bool wrapped = l.IntValue < 0 && !negative;
+
         if (unsigned)
         {
-            return !wide && l.IntValue is >= 0 and <= uint.MaxValue ? Type.U32 : Type.U64;
+            return !wide && !wrapped && l.IntValue <= uint.MaxValue ? Type.U32 : Type.U64;
         }
 
         if (wide)
         {
-            return Type.I64;
+            return wrapped ? Type.U64 : Type.I64;
         }
 
+        // THE FIRST TYPE THAT CAN HOLD IT, which is C#'s rule (6.4.5.3) for
+        // every unsuffixed literal, decimal or hex: int, uint, long, ulong.
+        // `2147483648` is a uint, as `0x80000000` is.
+        if (wrapped)
+        {
+            return Type.U64;
+        }
         if (l.IntValue is >= int.MinValue and <= int.MaxValue)
         {
             return Type.I32;
         }
-
-        // THE FIRST TYPE THAT CAN HOLD IT, which is C#'s rule: int, then long,
-        // then ulong for a decimal literal, and int, uint, long, ulong for one
-        // written in hex or binary. A negative IntValue here is a literal past
-        // long.MaxValue that wrapped, and that is a ulong either way --
-        // `0x8000000000000000` is one bit, not a negative number, and `v &
-        // 0x8000000000000000` on a ulong was refused for mixing the two.
-        if (l.IntValue < 0)
+        if (!negative && l.IntValue <= uint.MaxValue)
         {
-            return Type.U64;
+            return Type.U32;
         }
-
-        return IsHexOrBinary(l.Text) && l.IntValue <= uint.MaxValue ? Type.U32 : Type.I64;
+        return Type.I64;
     }
-
-    /// <summary>Whether a literal was written in hex or binary.</summary>
-    private static bool IsHexOrBinary(string text)
-        => text.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
-        || text.StartsWith("0b", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// The type of an argument once what it fills in is known.
@@ -11105,6 +11137,13 @@ public sealed partial class Binder
                 // `-2147483648` IS AN INT (C# 6.4.5.3): the literal 2147483648
                 // right after a unary minus is int.MinValue, where on its own
                 // it would be a uint and its negation a long.
+                // CHECKED AGAIN -- overloads are chosen by checking arguments
+                // more than once -- it is the literal it was rewritten to,
+                // not a negated uint (a long) or a negated ulong (an error).
+                if (u.Op == UnOp.Neg && _r.Rewrites.TryGetValue(u, out Expr? folded) && folded is LiteralExpr)
+                {
+                    return CheckExpr(folded);
+                }
                 if (u.Op == UnOp.Neg && u.Operand is LiteralExpr { Kind: Lit.Int, IntValue: 2147483648 } minimal
                     && minimal.Text.All(char.IsDigit) && !_r.Rewrites.ContainsKey(u))
                 {
@@ -11200,7 +11239,19 @@ public sealed partial class Binder
                             Error(u, $"'-' needs a number, not '{t}'");
                             return Type.Error;
                         }
-                        return t.IsNullableValue ? Promote(t.Underlying).AsNullable() : Promote(t);
+                        {
+                            // A UINT NEGATED IS A LONG, and a ulong cannot be
+                            // negated at all (C# 12.9.3): the value is widened
+                            // to a type that holds its negation first.
+                            Type negated = Promote(t.IsNullableValue ? t.Underlying : t);
+                            if (negated.Prim == Prim.U64 && negated.Symbol is null)
+                            {
+                                Error(u, "CS0023: operator '-' cannot be applied to an operand of type 'ulong'");
+                                return Type.Error;
+                            }
+                            if (negated.Prim == Prim.U32 && negated.Symbol is null) negated = Type.I64;
+                            return t.IsNullableValue ? negated.AsNullable() : negated;
+                        }
 
                     case UnOp.BitNot:
                         if (!t.IsInteger)
@@ -15510,8 +15561,7 @@ public sealed partial class Binder
             // about constant EXPRESSIONS, and `const int V5HeaderBytes = 64;`
             // passed to a ushort parameter is the case that found this: the
             // literal 64 was accepted where the name for it was not.
-            return had.IsInteger && want.IsInteger && !want.Nullable
-                && ConstantValue(written, _thisType) is long value && Binder.ConstantConverts(had, value, want);
+            return IntegerConstantFits(written, had, want);
         }
 
         // An argument typed object against a parameter of another type -- a
@@ -16011,10 +16061,8 @@ public sealed partial class Binder
                 // conversion on purpose: a number is not a character. With it
                 // in, `Write(7)` against Write(char)/Write(string)/Write(long)
                 // took the char and printed a control code.
-                if (args[i].IsInteger && want.IsInteger && !want.Nullable
-                    && want.Prim != Prim.Char && args[i].Prim != Prim.Char
-                    && i < c.Args.Count && ConstantValue(c.Args[i], _thisType) is long value
-                    && Binder.ConstantConverts(args[i], value, want))
+                // And into a nullable of what it fits (IntegerConstantFits).
+                if (args[i].Prim != Prim.Char && i < c.Args.Count && IntegerConstantFits(c.Args[i], args[i], want))
                 {
                     continue;
                 }
@@ -16073,26 +16121,7 @@ public sealed partial class Binder
                           // `Concat(object?)` takes a sequence of strings, and
                           // leaving the variant one out until nothing else fit
                           // handed the sequence to the object overload.
-                          ?? ExactlyBetterMember();
-
-        // THE OVERLOADS C# WOULD CALL APPLICABLE, weighed by C#'s own integer
-        // conversions, before this language's wider ones: `WriteLine((short)
-        // 100)` is WriteLine(int), a short reaching char by no implicit
-        // conversion -- weighed the wide way, char was applicable and the
-        // narrower, and printed 'd'. Only when none is applicable C#'s way
-        // are the others weighed, so what compiled before still does.
-        MethodSymbol? ExactlyBetterMember()
-        {
-            bool outer = _exactIntegers;
-            _exactIntegers = true;
-            try
-            {
-                List<MethodSymbol> exact = byArity.Where(m => m.TypeParams.Count == 0 && Accepts(m, variant: true)).ToList();
-                if (exact.Count > 0) return BetterMember(exact);
-            }
-            finally { _exactIntegers = outer; }
-            return BetterMember(byArity.Where(m => m.TypeParams.Count == 0 && Accepts(m, variant: true)).ToList());
-        }
+                          ?? BetterMember(byArity.Where(m => m.TypeParams.Count == 0 && Accepts(m, variant: true)).ToList());
 
         // A GENERIC METHOD COMPETES ON THE SAME TERMS (C# 12.6.4.3), and loses
         // only a tie: `One(5)` beside One(object) and One<T>(T) is One<int>,

@@ -2534,6 +2534,8 @@ public sealed partial class Lowering
             {
                 Type operand = _b.TypeOf(u.Operand);
                 Type promoted = NumericRules.Unary(operand);
+                // A uint is negated as the long it widens to (C# 12.9.3).
+                if (promoted.Prim == Prim.U32 && promoted.Symbol is null) promoted = Type.I64;
                 VReg v = EvalAs(u.Operand, promoted);
                 if (promoted.IsFloat)
                 {

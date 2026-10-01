@@ -1,0 +1,12 @@
+// test: ulong_cannot_be_negated
+// expect-compile-error: CS0023
+// A ulong has no negation: no type holds the negation of all its values. As C# 10.2.3 has it.
+
+using System;
+static class Program
+{
+    static void Main()
+    {
+        ulong v = (ulong)Environment.TickCount; Console.WriteLine(-v);
+    }
+}

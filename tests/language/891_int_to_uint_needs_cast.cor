@@ -1,0 +1,12 @@
+// test: int_to_uint_needs_cast
+// expect-compile-error: cannot convert 'int' to 'uint'
+// An int is no uint without a cast: its negative values have no place there. As C# 10.2.3 has it.
+
+using System;
+static class Program
+{
+    static void Main()
+    {
+        int i = Environment.TickCount; uint u = i; Console.WriteLine(u);
+    }
+}

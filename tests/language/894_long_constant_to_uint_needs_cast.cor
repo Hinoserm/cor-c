@@ -1,0 +1,12 @@
+// test: long_constant_to_uint_needs_cast
+// expect-compile-error: cannot convert 'long' to 'uint'
+// A long constant converts implicitly only to ulong, and only when it is not negative. As C# 10.2.3 has it.
+
+using System;
+static class Program
+{
+    static void Main()
+    {
+        uint u = 3000000000L; Console.WriteLine(u);
+    }
+}

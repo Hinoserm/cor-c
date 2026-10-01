@@ -1,0 +1,12 @@
+// test: int_constant_to_char_needs_cast
+// expect-compile-error: cannot convert 'int' to 'char'
+// Not even a constant that fits: C#'s constant conversion leaves char out. As C# 10.2.3 has it.
+
+using System;
+static class Program
+{
+    static void Main()
+    {
+        char c = 65; Console.WriteLine(c);
+    }
+}

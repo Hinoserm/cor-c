@@ -93,8 +93,9 @@ static class Program
         q = b;
         L("sbyte", (long)q);
 
+        // A cast, as C# wants one from a signed int: sign-extended all the same.
         ulong ul = 0;
-        ul = n;
+        ul = (ulong)n;
         L("ulong", (long)ul);
 
         return 0;

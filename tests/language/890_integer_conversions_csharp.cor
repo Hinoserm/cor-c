@@ -1,0 +1,45 @@
+// test: integer_conversions_csharp
+// expect-exit: 0
+// expect-output:
+// -5,-5,-5,200,200,200,200,200,200,-300,-300,60000,60000,60000,60000,65,65,65,65,65,-7,4000000000,4000000000,-9,1.8E+19
+// 255 -128 32767 65535 5 6 7 100
+// Int32 Int32 Int32 Int32 Int64 UInt32 Int64 UInt64 UInt64 Int32 Int32 UInt32 Int64 Int32 Int32 UInt32 Int64 Int32 Int32
+// Int32 UInt32 UInt32 Int64 UInt32 UInt64 Int32 Int64 UInt32 Int64
+// 44 -56 B -294967296 4294967289 65 -5536 18446744073709551607
+// 44 B 464 126
+//
+// Integers convert as C# converts them (10.2.3, 10.2.11): implicitly only
+// where every value is kept -- never into char, never from signed into
+// unsigned -- and an int constant into any integer type but char that holds
+// it, a long constant into ulong when not negative. Unsuffixed literals are
+// the first of int, uint, long and ulong that holds them, a negated uint is
+// a long, and mixed arithmetic has C#'s result types. Output checked
+// against .NET.
+
+using System;
+using System.Linq;
+
+static class Program
+{
+    static string T(object o) => o.GetType().Name;
+
+    static void Main()
+    {
+        sbyte sb = -5; byte b = 200; short s = -300; ushort us = 60000; char c = 'A'; int i = -7; uint u = 4000000000; long l = -9; ulong ul = 18000000000000000000;
+        short s1 = sb; int i1 = sb; long l1 = sb;
+        short s2 = b; ushort us2 = b; int i2 = b; uint u2 = b; long l2 = b; ulong ul2 = b;
+        int i3 = s; long l3 = s;
+        int i4 = us; uint u4 = us; long l4 = us; ulong ul4 = us;
+        ushort us5 = c; int i5 = c; uint u5 = c; long l5 = c; ulong ul5 = c;
+        long l6 = i; long l7 = u; ulong ul7 = u;
+        double d1 = l; float f1 = ul;
+        Console.WriteLine(string.Join(",", new object[] { s1, i1, l1, s2, us2, i2, u2, l2, ul2, i3, l3, i4, u4, l4, ul4, us5, i5, u5, l5, ul5, l6, l7, ul7, d1, f1 }));
+        byte cb = 255; sbyte csb = -128; short cs = 32767; ushort cus = 65535; uint cu = 5; ulong cul = 6; ulong cul2 = 7L; const int k = 100; byte kb = k;
+        Console.WriteLine(cb + " " + csb + " " + cs + " " + cus + " " + cu + " " + cul + " " + cul2 + " " + kb);
+        Console.WriteLine(string.Join(" ", new object[] { b + b, sb + sb, s + us, c + c, u + i, u + u, u + l, ul + ul, ul + u, us * c, b - 1, u - 1, -u, ~b, i << 3, u >> 1, l * u, b / 2, c % 7 }.Select(T)));
+        Console.WriteLine(string.Join(" ", new object[] { 2147483647, 2147483648, 4294967295, 4294967296, 0x80000000, 0xFFFFFFFFFFFFFFFF, -2147483648, -9223372036854775808, 3000000000u, 5L }.Select(T)));
+        Console.WriteLine(unchecked((byte)300) + " " + unchecked((sbyte)200) + " " + (char)66 + " " + (int)u + " " + (uint)i + " " + (ushort)c + " " + (short)us + " " + (ulong)l);
+        b += 100; c++; us += 6000; sb -= 125;
+        Console.WriteLine(b + " " + c + " " + us + " " + sb);
+    }
+}

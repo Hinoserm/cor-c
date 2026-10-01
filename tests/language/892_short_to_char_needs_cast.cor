@@ -1,0 +1,12 @@
+// test: short_to_char_needs_cast
+// expect-compile-error: cannot convert 'short' to 'char'
+// No integer becomes a char without a cast: a number is not a character. As C# 10.2.3 has it.
+
+using System;
+static class Program
+{
+    static void Main()
+    {
+        short s = (short)Environment.TickCount; char c = s; Console.WriteLine(c);
+    }
+}

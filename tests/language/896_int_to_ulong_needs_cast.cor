@@ -1,0 +1,12 @@
+// test: int_to_ulong_needs_cast
+// expect-compile-error: cannot convert 'int' to 'ulong'
+// A signed value is no unsigned one without a cast, however wide the unsigned type. As C# 10.2.3 has it.
+
+using System;
+static class Program
+{
+    static void Main()
+    {
+        int i = Environment.TickCount; ulong v = i; Console.WriteLine(v);
+    }
+}
