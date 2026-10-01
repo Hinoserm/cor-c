@@ -6751,9 +6751,12 @@ static class CollectionExpressionBuilder {
 // replaces is garbage the moment the new one is in place. Left to the
 // collector, every growing table's old arrays were a quarter of everything
 // the compiler allocated.
+// GENERIC so that each collection's copy is made in the unit that uses it,
+// as the collection's own code is: a call into the library's unit was an
+// unknown call there, the freed array an escape, and the field dirty.
 static class OutgrownStorage {
-    internal static void Release(object? old) {
-        if (old != null) { Runtime.Free(Sys.Word(old)); }
+    internal static void Release<E>(E[]? old) {
+        if (old != null) { Runtime.Free((nint)Sys.Word(old)); }
     }
 }
 
