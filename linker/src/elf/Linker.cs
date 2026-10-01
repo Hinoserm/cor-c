@@ -83,6 +83,13 @@ public static partial class Linker
         image.WriteTo(file);
     }
 
+    /// <summary>
+    /// Whether a link may take its input sections' bytes rather than copy
+    /// them (Section.HandOver), leaving the objects unfit to link again: set
+    /// by the one command that links a program once and writes it out.
+    /// </summary>
+    public static bool ReleaseSections { get; set; }
+
     private static ElfBuffer LinkImage(IEnumerable<(string Name, ObjectFile Object)> objects, string entrySymbol, ulong loadAddress, ulong? physicalAddress, ProgramInfo? program, bool? longMode)
     {
         ArgumentNullException.ThrowIfNull(objects);
@@ -354,7 +361,7 @@ public static partial class Linker
             Section = section;
             Output = output;
             Offset = offset;
-            Bytes = section.Bytes.ToArray();
+            Bytes = ReleaseSections ? section.HandOver() : section.Bytes.ToArray();
         }
     }
 

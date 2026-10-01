@@ -141,7 +141,9 @@ public static class ObjectLinkCommand
         }
         else
         {
-            // Straight to the file, a chunk at a time (Linker.LinkTo).
+            // Straight to the file, a chunk at a time (Linker.LinkTo), the
+            // inputs' sections taken rather than copied: nothing links them again.
+            Linker.ReleaseSections = true;
             Linker.LinkTo(output, inputs, entry, baseAddress ?? Linker.DefaultLoadAddress, physicalAddress, longMode: longMode);
             image = Array.Empty<byte>();
             streamed = true;

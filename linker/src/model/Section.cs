@@ -25,11 +25,32 @@ public sealed class Section
     /// </summary>
     public (string Path, long Offset, int Length)? FileBacked { get; set; }
 
-    public int Size => Kind == SectionKind.Uninitialised ? ZeroBytes : FileBacked?.Length ?? Bytes.Count;
+    public int Size => Kind == SectionKind.Uninitialised ? ZeroBytes : FileBacked?.Length ?? HandedOver ?? Bytes.Count;
+
+    /// <summary>
+    /// How many bytes this section had when a link took them (HandOver): the
+    /// list is let go and its size remembered. Null while the bytes are here.
+    /// </summary>
+    public int? HandedOver { get; private set; }
+
+    /// <summary>
+    /// The bytes, as an array the caller owns, and the list let go: a link
+    /// that places every section of a large program held each one twice,
+    /// in its list and in the placed copy it relocates.
+    /// </summary>
+    public byte[] HandOver()
+    {
+        byte[] made = Bytes.ToArray();
+        HandedOver = made.Length;
+        Bytes.Clear();
+        Bytes.TrimExcess();
+        return made;
+    }
 
     /// <summary>The section's content, read from its file if it was left there.</summary>
     public byte[] Content()
     {
+        if (HandedOver is not null) throw new InvalidOperationException("section '" + Name + "' was handed to a link");
         if (FileBacked is not (string path, long offset, int length)) return Bytes.ToArray();
         byte[] content = new byte[length];
         using FileStream file = new(path, FileMode.Open, FileAccess.Read, FileShare.Read);
