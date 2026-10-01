@@ -4730,6 +4730,7 @@ static class Gc
             FreesDropped = FreesDropped + 1;
             return;
         }
+        if (AllocSamples.Tracking) AllocSamples.Freed(at);
         if (_heapCheck && (at & 3) == 0)
         {
             long guarded = at - HeaderBytes;

@@ -236,15 +236,28 @@ static class Tls
 /// process ends, for tools/sym to name. Nothing here allocates.
 static class AllocSamples
 {
-    const long Slots = 65536;           // entries of four words: site, caller, bytes, count
+    const long Slots = 65536;           // entries of five words: site, caller, bytes, count, freed
+    const long Words = 5;
     static long _table;
     static long _lost;
+
+    // WHICH SAMPLED BLOCKS THE PROGRAM FREED: each sampled block's address
+    // and its entry, so a free (Gc.Free) can charge its bytes to the entry
+    // it was made at. What an entry made and was not freed this way, the
+    // collector took. Open addressing, two words a place; a block the
+    // collector took leaves its place behind, written over when another
+    // sampled block lands at the same address.
+    const long Places = 1048576;
+    static long _places;
+    public static bool Tracking;
 
     public static void Start()
     {
         if (!Platform.AllocSample()) return;
-        _table = Platform.Map(Slots * 4 * WordSize.Bytes);
+        _table = Platform.Map(Slots * Words * WordSize.Bytes);
         if (_table == 0) return;
+        _places = Platform.Map(Places * 3 * WordSize.Bytes);
+        Tracking = _places != 0;
         Runtime.AllocHook = Sys.AddressOf(AllocSamples.Record);
     }
 
@@ -254,8 +267,10 @@ static class AllocSamples
     static long _leafBytes;
     static long _objectBytes;
 
-    static void Record(long fp, long bytes, long kind)
+    static void Record(long fp, long bytesKind, long block)
     {
+        long bytes = bytesKind & 0xFFFFFFFFFF;
+        long kind = bytesKind >> 40;
         if (kind == 1) _blockBytes = _blockBytes + bytes;
         else if (kind == 2) _leafBytes = _leafBytes + bytes;
         else _objectBytes = _objectBytes + bytes;
@@ -267,7 +282,7 @@ static class AllocSamples
         long h = ((site >> 2) ^ (caller << 3)) * 40503 & (Slots - 1);
         for (long probe = 0; probe < 64; probe++)
         {
-            long e = _table + ((h + probe) & (Slots - 1)) * 4 * WordSize.Bytes;
+            long e = _table + ((h + probe) & (Slots - 1)) * Words * WordSize.Bytes;
             long at = Sys.Peek(e);
             if (at == 0)
             {
@@ -279,10 +294,52 @@ static class AllocSamples
             {
                 Sys.Poke(e + 2 * WordSize.Bytes, Sys.Peek(e + 2 * WordSize.Bytes) + bytes);
                 Sys.Poke(e + 3 * WordSize.Bytes, Sys.Peek(e + 3 * WordSize.Bytes) + 1);
+                if (Tracking && block != 0) Place(block, e, bytes);
                 return;
             }
         }
         _lost = _lost + 1;
+    }
+
+    static long PlaceOf(long block)
+    {
+        return ((block >> 3) * 2654435761L) & (Places - 1);
+    }
+
+    static void Place(long block, long entry, long bytes)
+    {
+        long h = PlaceOf(block);
+        for (long probe = 0; probe < 32; probe++)
+        {
+            long p = _places + ((h + probe) & (Places - 1)) * 3 * WordSize.Bytes;
+            long at = Sys.Peek(p);
+            if (at == 0 || at == block || at == -1)
+            {
+                Sys.Poke(p, block);
+                Sys.Poke(p + WordSize.Bytes, entry);
+                Sys.Poke(p + 2 * WordSize.Bytes, bytes);
+                return;
+            }
+        }
+    }
+
+    /// A block the program frees: charged to the entry that made it, if sampled.
+    public static void Freed(long block)
+    {
+        long h = PlaceOf(block);
+        for (long probe = 0; probe < 32; probe++)
+        {
+            long p = _places + ((h + probe) & (Places - 1)) * 3 * WordSize.Bytes;
+            long at = Sys.Peek(p);
+            if (at == 0) return;
+            if (at == block)
+            {
+                long e = Sys.Peek(p + WordSize.Bytes);
+                Sys.Poke(e + 4 * WordSize.Bytes, Sys.Peek(e + 4 * WordSize.Bytes) + Sys.Peek(p + 2 * WordSize.Bytes));
+                Sys.Poke(p, -1);
+                return;
+            }
+        }
     }
 
     public static void Dump()
@@ -290,10 +347,11 @@ static class AllocSamples
         long table = _table;
         if (table == 0) return;
         _table = 0;
+        Tracking = false;
         Runtime.AllocHook = 0;
         for (long i = 0; i < Slots; i++)
         {
-            long e = table + i * 4 * WordSize.Bytes;
+            long e = table + i * Words * WordSize.Bytes;
             if (Sys.Peek(e) == 0) continue;
             Gc.SayNumber("alloc sample site ", Sys.Peek(e));
             Gc.SayNumber("alloc sample caller ", Sys.Peek(e + WordSize.Bytes));
@@ -304,6 +362,7 @@ static class AllocSamples
             // allocate, or every program would need a collector for the end
             // it reaches this way.
             Runtime.SayWhere("alloc sample where ", (Sys.Peek(e) & ((1L << 30) - 1)) - 1);
+            Gc.SayNumber("alloc sample freed ", Sys.Peek(e + 4 * WordSize.Bytes));
             Gc.SayNumber("alloc sample count ", Sys.Peek(e + 3 * WordSize.Bytes));
         }
         Gc.SayNumber("alloc sample lost ", _lost);
@@ -592,8 +651,11 @@ static class Runtime
 
     public static long Alloc(nint bytes)
     {
-        if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes, 1);
-        return (long)(nuint)Gc.AllocWord(bytes, 0);
+        long at = (long)(nuint)Gc.AllocWord(bytes, 0);
+        // After the allocation, so the sampler knows the block (and whether
+        // the program frees it or leaves it to the collector).
+        if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes | (1L << 40), at);
+        return at;
     }
 
     /// The same for memory that will hold no references -- a string, an
@@ -602,8 +664,11 @@ static class Runtime
     /// compiler calls this for those, and Alloc for everything else.
     public static long AllocLeaf(nint bytes)
     {
-        if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes, 2);
-        return (long)(nuint)Gc.AllocWord(bytes, (nint)Gc.LeafKind);
+        long at = (long)(nuint)Gc.AllocWord(bytes, (nint)Gc.LeafKind);
+        // After the allocation, so the sampler knows the block (and whether
+        // the program frees it or leaves it to the collector).
+        if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes | (2L << 40), at);
+        return at;
     }
 
     /// The same for an object whose vtable the compiler stores next -- a class
@@ -611,8 +676,11 @@ static class Runtime
     /// references from its descriptor instead of guessing them from every word.
     public static long AllocObject(nint bytes)
     {
-        if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes, 3);
-        return (long)(nuint)Gc.AllocWord(bytes, (nint)Gc.ObjectKind);
+        long at = (long)(nuint)Gc.AllocWord(bytes, (nint)Gc.ObjectKind);
+        // After the allocation, so the sampler knows the block (and whether
+        // the program frees it or leaves it to the collector).
+        if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes | (3L << 40), at);
+        return at;
     }
 
     /// THE SAME TAKING LONGS, for a program that holds sizes and addresses in
