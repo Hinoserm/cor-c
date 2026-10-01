@@ -1,0 +1,51 @@
+// test: integer_overload_ranking
+// expect-exit: 0
+// expect-output:
+// 100
+// 100
+// 65
+// -5
+// 66
+// C
+// int int char int int
+// long uint uint long uint
+// ushort ushort int int ushort
+// byte short
+// 100 5 7
+//
+// Overloads are weighed by C#'s own integer conversions (10.2.3): a short
+// reaches int and not char, a signed value no unsigned type, so
+// Console.WriteLine((short)100) is WriteLine(int) and prints 100, and every
+// narrow type finds the overload .NET finds. This language's wider integer
+// conversion is tried only when no overload is applicable C#'s way.
+// Output checked against .NET.
+
+using System;
+
+static class Program
+{
+    static string F(char c) => "char";
+    static string F(int i) => "int";
+    static string G(uint u) => "uint";
+    static string G(long l) => "long";
+    static string H(ushort u) => "ushort";
+    static string H(int i) => "int";
+    static string K(byte b) => "byte";
+    static string K(short s) => "short";
+
+    static void Main()
+    {
+        short s = 100; byte b = 65; sbyte sb = -5; ushort us = 66; char c = 'C'; int i = -1; uint u = 7;
+        Console.WriteLine((short)100);
+        Console.WriteLine(s);
+        Console.WriteLine(b);
+        Console.WriteLine(sb);
+        Console.WriteLine(us);
+        Console.WriteLine(c);
+        Console.WriteLine(F(s) + " " + F(b) + " " + F(c) + " " + F(us) + " " + F(sb));
+        Console.WriteLine(G(i) + " " + G(u) + " " + G(us) + " " + G(sb) + " " + G(b));
+        Console.WriteLine(H(b) + " " + H(c) + " " + H(sb) + " " + H(s) + " " + H(us));
+        Console.WriteLine(K(b) + " " + K(sb));
+        Console.WriteLine(Math.Max(s, b) + " " + Math.Abs(sb) + " " + Math.Max(u, 3u));
+    }
+}

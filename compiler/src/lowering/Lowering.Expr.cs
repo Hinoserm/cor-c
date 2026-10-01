@@ -2660,32 +2660,34 @@ public sealed partial class Lowering
     {
         if (from.Symbol is not null || to.Symbol is not null || from.Nullable || to.Nullable) return;
         if (!(to.IsInteger || to.Prim == Prim.Char)) return;
-        static (decimal Min, decimal Max)? Range(Prim p, int word) => p switch
+        // A range as its least value, signed, and its greatest, unsigned:
+        // between them every integer type's bounds are exact.
+        static (long Min, ulong Max)? Range(Prim p, int word) => p switch
         {
-            Prim.I8 => (sbyte.MinValue, sbyte.MaxValue),
-            Prim.U8 => (byte.MinValue, byte.MaxValue),
-            Prim.I16 => (short.MinValue, short.MaxValue),
-            Prim.U16 or Prim.Char => (ushort.MinValue, ushort.MaxValue),
-            Prim.I32 => (int.MinValue, int.MaxValue),
-            Prim.U32 => (uint.MinValue, uint.MaxValue),
-            Prim.I64 => (long.MinValue, long.MaxValue),
-            Prim.U64 => (ulong.MinValue, ulong.MaxValue),
-            Prim.NInt => word == 8 ? (long.MinValue, long.MaxValue) : (int.MinValue, int.MaxValue),
-            Prim.NUInt => word == 8 ? (ulong.MinValue, ulong.MaxValue) : (uint.MinValue, uint.MaxValue),
+            Prim.I8 => (sbyte.MinValue, (ulong)sbyte.MaxValue),
+            Prim.U8 => (0L, byte.MaxValue),
+            Prim.I16 => (short.MinValue, (ulong)short.MaxValue),
+            Prim.U16 or Prim.Char => (0L, ushort.MaxValue),
+            Prim.I32 => (int.MinValue, (ulong)int.MaxValue),
+            Prim.U32 => (0L, uint.MaxValue),
+            Prim.I64 => (long.MinValue, (ulong)long.MaxValue),
+            Prim.U64 => (0L, ulong.MaxValue),
+            Prim.NInt => word == 8 ? (long.MinValue, (ulong)long.MaxValue) : (int.MinValue, (ulong)int.MaxValue),
+            Prim.NUInt => word == 8 ? (0L, ulong.MaxValue) : (0L, uint.MaxValue),
             _ => null,
         };
-        if (Range(to.Prim, _t.WordSize) is not (decimal min, decimal max)) return;
+        if (Range(to.Prim, _t.WordSize) is not (long min, ulong max)) return;
         VReg bad;
         if (from.Prim is Prim.F32 or Prim.F64)
         {
             Type dbl = Type.F64;
             VReg d = from.Prim == Prim.F32 ? _e.Unary(Opcode.FConv, R(v), IrType.F64) : v;
             // Truncation keeps anything above min - 1 and below max + 1; at 64
-            // bits min - 1 is no double, and min itself is the bound.
-            // An unsigned target's bound is -1, exclusive, at any width.
+            // bits min - 1 is no double, and min itself is the bound. An
+            // unsigned target's bound is -1, exclusive, at any width.
             bool wide = max > uint.MaxValue && min < 0;
-            VReg low = FloatConst(wide ? (double)min : (double)(min - 1), dbl);
-            VReg high = FloatConst((double)(max + 1), dbl);
+            VReg low = FloatConst(wide ? (double)min : (double)min - 1.0, dbl);
+            VReg high = FloatConst((double)max + 1.0, dbl);
             VReg aboveLow = _e.Binary(wide ? Opcode.FGe : Opcode.FGt, R(d), R(low), IrType.I32);
             VReg belowHigh = _e.Binary(Opcode.FLt, R(d), R(high), IrType.I32);
             VReg fits = _e.Binary(Opcode.And, aboveLow, belowHigh);
@@ -2693,20 +2695,19 @@ public sealed partial class Lowering
         }
         else if (from.IsInteger || from.Prim == Prim.Char)
         {
-            if (Range(from.Prim, _t.WordSize) is not (decimal fromMin, decimal fromMax)) return;
+            if (Range(from.Prim, _t.WordSize) is not (long fromMin, ulong fromMax)) return;
             if (fromMin >= min && fromMax <= max) return;
             if (from.Prim == Prim.U64 || from.Prim == Prim.NUInt && _t.WordSize == 8)
             {
                 // Above long's range a ulong has no signed reading: compared unsigned.
                 VReg u = v.Type == IrType.I64 ? v : _e.Unary(Opcode.ZExt32, R(v), IrType.I64);
-                bad = _e.Binary(Opcode.GtU, R(u), Imm((long)(ulong)max, IrType.I64), IrType.I32);
+                bad = _e.Binary(Opcode.GtU, R(u), Imm((long)max, IrType.I64), IrType.I32);
             }
             else
             {
                 VReg w = v.Type == IrType.I64 ? v : _e.Unary(from.IsUnsigned ? Opcode.ZExt32 : Opcode.SExt32, R(v), IrType.I64);
-                long lo = min < long.MinValue ? long.MinValue : (long)min;
-                long hi = max > long.MaxValue ? long.MaxValue : (long)max;
-                VReg under = _e.Binary(Opcode.LtS, R(w), Imm(lo, IrType.I64), IrType.I32);
+                long hi = max > (ulong)long.MaxValue ? long.MaxValue : (long)max;
+                VReg under = _e.Binary(Opcode.LtS, R(w), Imm(min, IrType.I64), IrType.I32);
                 VReg over = _e.Binary(Opcode.GtS, R(w), Imm(hi, IrType.I64), IrType.I32);
                 bad = _e.Binary(Opcode.Or, under, over);
             }

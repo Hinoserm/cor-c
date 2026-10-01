@@ -53,6 +53,12 @@ public sealed partial class Binder
     private const int ProjectClassReserve = 128;
 
     private TypeSymbol? _thisType;
+
+    /// <summary>Inside unchecked(...) or an unchecked block: a constant cast may wrap (CS0221).</summary>
+    private int _uncheckedDepth;
+
+    /// <summary>While overloads are weighed: integers convert as C#'s do (IntegerWidens).</summary>
+    private bool _exactIntegers;
     private MethodSymbol? _method;
     private readonly List<LocalScope> _scopes = new();
 
@@ -1470,6 +1476,15 @@ public sealed partial class Binder
     }
 
     /// <summary>Whether a whole number is inside what a type can hold.</summary>
+    /// <summary>Whether a floating constant, truncated, is a value of the integer type.</summary>
+    private static bool RealFits(double real, Type to)
+    {
+        if (double.IsNaN(real) || double.IsInfinity(real)) return false;
+        double t = Math.Truncate(real);
+        if (to.Prim == Prim.U64) return t >= 0 && t < 18446744073709551616.0;
+        return t >= -9223372036854775808.0 && t < 9223372036854775808.0 && Fits((long)t, to);
+    }
+
     private static bool Fits(long value, Type to) => to.Prim switch
     {
         Prim.I8  => value is >= sbyte.MinValue and <= sbyte.MaxValue,
@@ -4110,8 +4125,15 @@ public sealed partial class Binder
         switch (s)
         {
             case Block b:
-                CheckBlock(b);
+            {
+                // `checked { }` and `unchecked { }`: what a constant cast may
+                // do inside (CastExpr, CS0221).
+                int outer = _uncheckedDepth;
+                if (b.ArithmeticContext != 0) _uncheckedDepth = b.ArithmeticContext == 1 ? 0 : 1;
+                try { CheckBlock(b); }
+                finally { _uncheckedDepth = outer; }
                 break;
+            }
 
             case LocalDecl d:
             {
@@ -5550,6 +5572,10 @@ public sealed partial class Binder
         // written as a cast so it is visible at the point it happens.
         if (from.IsInteger && to.IsInteger)
         {
+            // C#'S OWN WHILE OVERLOADS ARE WEIGHED (_exactIntegers); this
+            // language's wider rule -- any integer into one at least as wide --
+            // everywhere else.
+            if (_exactIntegers) return IntegerWidens(from.Prim, to.Prim);
             return to.Size >= from.Size;
         }
 
@@ -5611,6 +5637,21 @@ public sealed partial class Binder
     /// floats. Everything else -- long to nint, uint to nint, nuint to long,
     /// int to nuint, one of them to the other -- is a cast.
     /// </summary>
+    /// <summary>C#'s implicit numeric conversions between integers (10.2.3): the value always kept.</summary>
+    private static bool IntegerWidens(Prim from, Prim to) => from == to || from switch
+    {
+        Prim.I8 => to is Prim.I16 or Prim.I32 or Prim.I64 or Prim.NInt,
+        Prim.U8 => to is Prim.I16 or Prim.U16 or Prim.I32 or Prim.U32 or Prim.I64 or Prim.U64 or Prim.NInt or Prim.NUInt,
+        Prim.I16 => to is Prim.I32 or Prim.I64 or Prim.NInt,
+        Prim.U16 => to is Prim.I32 or Prim.U32 or Prim.I64 or Prim.U64 or Prim.NInt or Prim.NUInt,
+        Prim.Char => to is Prim.U16 or Prim.I32 or Prim.U32 or Prim.I64 or Prim.U64 or Prim.NInt or Prim.NUInt,
+        Prim.I32 => to is Prim.I64 or Prim.NInt,
+        Prim.U32 => to is Prim.I64 or Prim.U64 or Prim.NUInt,
+        Prim.NInt => to is Prim.I64,
+        Prim.NUInt => to is Prim.U64,
+        _ => false,
+    };
+
     private static bool NativeConvertible(Prim from, Prim to)
     {
         if (from == to)
@@ -11084,7 +11125,12 @@ public sealed partial class Binder
                     };
                 }
 
-                Type t = CheckExpr(u.Operand);
+                int outerContext = _uncheckedDepth;
+                if (u.Op == UnOp.Unchecked) _uncheckedDepth = 1;
+                else if (u.Op == UnOp.Checked) _uncheckedDepth = 0;
+                Type t;
+                try { t = CheckExpr(u.Operand); }
+                finally { _uncheckedDepth = outerContext; }
 
                 if (t.IsError)
                 {
@@ -11709,6 +11755,25 @@ public sealed partial class Binder
             {
                 Type operand = CheckExpr(cast.Operand);
                 Type wanted = Resolve(cast.Type, _thisType);
+
+                // A CONSTANT THAT DOES NOT FIT IS REFUSED (C# 12.23, CS0221):
+                // a constant expression is checked at compile time unless it is
+                // written unchecked. `(short)100000` is an error in .NET, and a
+                // compiler that took it compiled what .NET's would not.
+                if (_uncheckedDepth == 0 && !operand.IsError && !wanted.IsError && wanted.Symbol is null && !wanted.Nullable
+                    && (wanted.IsInteger || wanted.Prim == Prim.Char) && operand.Symbol is null)
+                {
+                    if (operand.IsInteger && ConstantValue(cast.Operand, _thisType) is long whole && !Binder.Fits(whole, wanted)
+                        && !(operand.Prim == Prim.U64 && wanted.Prim == Prim.U64))
+                    {
+                        Error(cast, $"CS0221: constant value '{(operand.IsUnsigned ? ((ulong)whole).ToString() : whole.ToString())}' cannot be converted to a '{wanted}' (use 'unchecked' syntax to override)");
+                    }
+                    else if (operand.Prim is Prim.F32 or Prim.F64 && RealConstant(cast.Operand, _thisType) is double real
+                        && !RealFits(real, wanted))
+                    {
+                        Error(cast, $"CS0221: constant value '{real.ToString(System.Globalization.CultureInfo.InvariantCulture)}' cannot be converted to a '{wanted}' (use 'unchecked' syntax to override)");
+                    }
+                }
 
                 // `(string?)attribute` CALLS THE OPERATOR the type declares,
                 // implicit or explicit, where no standard conversion either
@@ -15987,7 +16052,26 @@ public sealed partial class Binder
                           // `Concat(object?)` takes a sequence of strings, and
                           // leaving the variant one out until nothing else fit
                           // handed the sequence to the object overload.
-                          ?? BetterMember(byArity.Where(m => m.TypeParams.Count == 0 && Accepts(m, variant: true)).ToList());
+                          ?? ExactlyBetterMember();
+
+        // THE OVERLOADS C# WOULD CALL APPLICABLE, weighed by C#'s own integer
+        // conversions, before this language's wider ones: `WriteLine((short)
+        // 100)` is WriteLine(int), a short reaching char by no implicit
+        // conversion -- weighed the wide way, char was applicable and the
+        // narrower, and printed 'd'. Only when none is applicable C#'s way
+        // are the others weighed, so what compiled before still does.
+        MethodSymbol? ExactlyBetterMember()
+        {
+            bool outer = _exactIntegers;
+            _exactIntegers = true;
+            try
+            {
+                List<MethodSymbol> exact = byArity.Where(m => m.TypeParams.Count == 0 && Accepts(m, variant: true)).ToList();
+                if (exact.Count > 0) return BetterMember(exact);
+            }
+            finally { _exactIntegers = outer; }
+            return BetterMember(byArity.Where(m => m.TypeParams.Count == 0 && Accepts(m, variant: true)).ToList());
+        }
 
         // A GENERIC METHOD COMPETES ON THE SAME TERMS (C# 12.6.4.3), and loses
         // only a tie: `One(5)` beside One(object) and One<T>(T) is One<int>,

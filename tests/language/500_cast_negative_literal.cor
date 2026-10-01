@@ -12,7 +12,8 @@
 // only took a parenthesised type as a cast when an operand token followed, and
 // '-' is not one. C# settles this by asking whether the parenthesised sequence
 // could have been an expression at all: `short` could not, so it is a cast.
-// An ordinary name still subtracts, which the last line checks.
+// An ordinary name still subtracts, which the line before last checks. The
+// last is unchecked, as C# needs it: a constant that does not fit is CS0221.
 static class Program
 {
     static void Line(string text)
@@ -31,6 +32,6 @@ static class Program
         Line("" + (int)-300);
         int b = 5;
         Line("" + ((b)-2));
-        Line("" + (int)(ushort)-2);
+        Line("" + (int)unchecked((ushort)-2));
     }
 }
