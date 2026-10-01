@@ -1,0 +1,39 @@
+// test: frame_object_fields_freed
+// expect-exit: 0
+// expect-output:
+// 1146000
+//
+// A pass's HashSet and work List are promoted to the frame; their arrays,
+// made in Grow and freed there when outgrown, are owned fields freed when the
+// frame object dies. The Dictionary of Lists stays on the heap.
+
+using System;
+using System.Collections.Generic;
+class Instr { public int Op; public int A; public int B; }
+class Function { public List<Instr> Instrs = new(); }
+static class P
+{
+    static int Pass(Function f)
+    {
+        var seen = new HashSet<int>();
+        var map = new Dictionary<int, List<Instr>>();
+        var work = new List<Instr>();
+        foreach (Instr i in f.Instrs)
+        {
+            if (seen.Add(i.A)) work.Add(i);
+            if (!map.TryGetValue(i.B, out List<Instr>? l)) { l = new List<Instr>(); map[i.B] = l; }
+            l.Add(i);
+        }
+        int n = 0;
+        foreach (KeyValuePair<int, List<Instr>> kv in map) n += kv.Value.Count;
+        return n + work.Count + seen.Count;
+    }
+    static void Main()
+    {
+        Function f = new();
+        for (int k = 0; k < 300; k++) f.Instrs.Add(new Instr { Op = k % 5, A = k % 41, B = k % 17 });
+        long total = 0;
+        for (int r = 0; r < 3000; r++) total += Pass(f);
+        Console.WriteLine(total);
+    }
+}

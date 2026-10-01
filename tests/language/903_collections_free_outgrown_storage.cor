@@ -1,0 +1,44 @@
+// test: collections_free_outgrown_storage
+// expect-exit: 0
+// expect-output:
+// 12268400
+//
+// List, Dictionary, HashSet and Queue give back the arrays a growth replaces.
+// A span taken from a List before it grows (CollectionsMarshal.AsSpan) must
+// still read the old contents afterwards, so a List whose array was handed
+// out leaves that array to the collector.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+static class P
+{
+    static void Main()
+    {
+        long total = 0;
+        for (int round = 0; round < 200; round++)
+        {
+            var list = new List<string>();
+            var map = new Dictionary<string, int>();
+            var set = new HashSet<int>();
+            var queue = new Queue<int>();
+            for (int i = 0; i < 300; i++)
+            {
+                string k = "k" + (i % 97);
+                list.Add(k);
+                map[k] = map.TryGetValue(k, out int c) ? c + 1 : 1;
+                set.Add(i * 7 % 211);
+                queue.Enqueue(i);
+                if (i % 3 == 0) queue.Dequeue();
+                if (i % 5 == 0) set.Remove(i % 211);
+                if (i % 7 == 0) map.Remove("k" + (i % 13));
+            }
+            list.Capacity = list.Count + 10;
+            var span = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(list);
+            string first = span[0];
+            for (int i = 0; i < 100; i++) list.Add("x");
+            total += list.Count + map.Values.Sum() + set.Sum() + queue.Sum() + first.Length + span.Length;
+        }
+        Console.WriteLine(total);
+    }
+}

@@ -443,6 +443,9 @@ static class Native
 /// lib/rt/gc.cor for why, and for what fixes it.
 public delegate void ThreadStart();
 
+/// A thread body handed one argument, Start(object) passing it, as .NET's.
+public delegate void ParameterizedThreadStart(object? obj);
+
 class ThreadStateException : SystemException
 {
     public ThreadStateException() : base("Thread was in an invalid state for the operation being executed.") { }
@@ -460,6 +463,8 @@ class Thread
 
     Action _body;
     ThreadStart? _start;
+    ParameterizedThreadStart? _withArgument;
+    object? _argument;
     long _id;
     long _stack;
     long _stackBytes;
@@ -500,6 +505,22 @@ class Thread
     {
         if (start == null) throw new ArgumentNullException("start");
         _start = start;
+    }
+
+    public Thread(ParameterizedThreadStart start)
+    {
+        if (start == null) throw new ArgumentNullException("start");
+        _withArgument = start;
+    }
+
+    /// Starts a thread made with a ParameterizedThreadStart, handing it
+    /// `parameter`; one made with a ThreadStart refuses, as in .NET.
+    public void Start(object? parameter)
+    {
+        if (_withArgument == null)
+            throw new InvalidOperationException("The thread was created with a ThreadStart delegate that does not accept a parameter.");
+        _argument = parameter;
+        Start();
     }
 
     /// The thread id the kernel gave it, or 0 before it has been started.
@@ -838,7 +859,9 @@ class Thread
         try
         {
             ThreadStart? start = _start;
+            ParameterizedThreadStart? withArgument = _withArgument;
             if (start != null) start.Invoke();
+            else if (withArgument != null) withArgument.Invoke(_argument);
             else _body.Invoke();
         }
         catch (Exception e)

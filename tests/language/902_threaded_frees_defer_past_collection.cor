@@ -1,0 +1,61 @@
+// test: threaded_frees_defer_past_collection
+// expect-exit: 0
+// expect-output:
+// 2292000 60 t0r0 t3r900
+//
+// Four threads each run a pass that builds and drops a HashSet, a Dictionary
+// of Lists and a work List, while the collector marks beside them. A free the
+// compiler asks for during a mark or a sweep is deferred, not dropped: the
+// block is marked so the sweep keeps it, and it is freed once the collection
+// is over. Every result must be what .NET prints, and new
+// Thread(ParameterizedThreadStart) with Start(object) must hand each thread
+// its argument.
+
+using System;
+using System.Collections.Generic;
+using System.Threading;
+class Instr { public int Op; public int A; public int B; }
+class Function { public List<Instr> Instrs = new(); }
+static class P
+{
+    static int Pass(Function f)
+    {
+        var seen = new HashSet<int>();
+        var map = new Dictionary<int, List<Instr>>();
+        var work = new List<Instr>();
+        foreach (Instr i in f.Instrs)
+        {
+            if (seen.Add(i.A)) work.Add(i);
+            if (!map.TryGetValue(i.B, out List<Instr>? l)) { l = new List<Instr>(); map[i.B] = l; }
+            l.Add(i);
+        }
+        int n = 0;
+        foreach (KeyValuePair<int, List<Instr>> kv in map) n += kv.Value.Count;
+        return n + work.Count + seen.Count;
+    }
+    static long[] totals = new long[4];
+    static List<string> kept = new();
+    static void Run(object? o)
+    {
+        int me = (int)o!;
+        Function f = new();
+        for (int k = 0; k < 300; k++) f.Instrs.Add(new Instr { Op = k % 5, A = (k + me) % 41, B = k % 17 });
+        long total = 0;
+        for (int r = 0; r < 1500; r++)
+        {
+            total += Pass(f);
+            if (r % 100 == 0) lock (kept) kept.Add("t" + me + "r" + r);
+        }
+        totals[me] = total;
+    }
+    static void Main()
+    {
+        Thread[] threads = new Thread[4];
+        for (int t = 0; t < 4; t++) { threads[t] = new Thread(Run); threads[t].Start(t); }
+        foreach (Thread t in threads) t.Join();
+        long sum = 0;
+        foreach (long x in totals) sum += x;
+        kept.Sort(StringComparer.Ordinal);
+        Console.WriteLine(sum + " " + kept.Count + " " + kept[0] + " " + kept[kept.Count - 1]);
+    }
+}
