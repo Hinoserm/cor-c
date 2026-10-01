@@ -121,6 +121,10 @@ public sealed class Pipeline
         // the routine reading it has been folded into the caller that
         // named the literal.
         p.ModulePasses.Add(new ReadOnlyFold());
+        // After the read-only fold has made what it can of the descriptors,
+        // and before the late inliner, so a call it makes direct can be
+        // inlined and the lifetime rules see into it.
+        p.ModulePasses.Add(new Devirtualize());
         if (experimentalBatch)
         {
             p.ModulePasses.Add(new ConstantReturns());

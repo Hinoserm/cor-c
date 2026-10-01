@@ -1501,6 +1501,8 @@ continue;
     private static readonly (string Name, int Params)[] KeepsNothing =
     {
         ("m_Runtime_ArrayStoreCheck_2_V$I64_V$I64", 2),
+        // A failed cast's exception names the object's type; it keeps no reference.
+        ("m_Runtime_InvalidCastTo_2_V$Any_V$String", 2),
     };
 
     internal static void SeedKnown(Dictionary<string, bool[]> summaries)
