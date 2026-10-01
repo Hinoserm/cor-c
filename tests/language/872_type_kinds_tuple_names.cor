@@ -1,0 +1,30 @@
+// test: Type answers IsValueType, IsClass, IsEnum, IsInterface, IsPrimitive and IsArray as .NET's does, from its descriptor's flags; a tuple's Name is ValueTuple`2 and its FullName .NET's assembly-qualified generic name, ValueTuple`8 nesting the rest; output identical to .NET
+// expect-exit: 0
+// expect-output:
+// Int32:V---P- Double:V---P- Char:V---P- Boolean:V---P- String:-C---- Hue:V-E--- Pt:V----- ValueTuple`2:V----- Circle:-C---- Int32[]:-C---A Object:-C---- Int64:V---P- Byte:V---P- 
+// IShape:---I-- Int32:V---P- String:-C---- Pt:V----- Hue:V-E---
+// System.ValueTuple`2[[System.Int32, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e],[System.String, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]]
+// ValueTuple`8 System.ValueTuple`8[[System.Int32, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e],[System.Int32, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e],[System.Int32, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e],[System.Int32, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e],[System.Int32, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e],[System.Int32, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e],[System.Int32, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e],[System.ValueTuple`2[[System.Int32, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e],[System.Int32, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]], System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]]
+// ValueTuple`2[] ValueTuple`2
+using System;
+using System.Collections.Generic;
+enum Hue { Red }
+struct Pt { public int X; }
+interface IShape { }
+sealed class Circle : IShape { }
+static class Program
+{
+    static string Kind(Type t) => t.Name + ":" + (t.IsValueType ? "V" : "-") + (t.IsClass ? "C" : "-") + (t.IsEnum ? "E" : "-")
+        + (t.IsInterface ? "I" : "-") + (t.IsPrimitive ? "P" : "-") + (t.IsArray ? "A" : "-");
+    static int Main()
+    {
+        object[] values = { 1, 2.5, 'c', true, "s", Hue.Red, new Pt(), (1, "a"), new Circle(), new int[2], new object(), 3L, (byte)4 };
+        foreach (object v in values) Console.Write(Kind(v.GetType()) + " ");
+        Console.WriteLine();
+        Console.WriteLine(Kind(typeof(IShape)) + " " + Kind(typeof(int)) + " " + Kind(typeof(string)) + " " + Kind(typeof(Pt)) + " " + Kind(typeof(Hue)));
+        Console.WriteLine(((object)(1, "a")).GetType().FullName);
+        Console.WriteLine(((object)(1, 2, 3, 4, 5, 6, 7, 8, 9)).GetType().Name + " " + ((object)(1, 2, 3, 4, 5, 6, 7, 8, 9)).GetType().FullName);
+        Console.WriteLine(typeof((int, string)[]).Name + " " + typeof((int, string)).Name);
+        return 0;
+    }
+}

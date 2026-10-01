@@ -188,6 +188,21 @@ static class String {
     /// `Object` of `System.Object`, `Int32` of `System.Int32`, `State` of a
     /// nested `Parser+State`.
     public static string TypeName(string full) {
+        // A GENERIC TYPE'S ARGUMENTS ARE NOT ITS NAME: System.ValueTuple`2[[
+        // System.Int32, ...]] is ValueTuple`2, as .NET's Type.Name, and an
+        // array of one keeps its brackets after.
+        int generic = full.IndexOf("[[");
+        if (generic >= 0) {
+            int depth = 0;
+            int end = generic;
+            while (end < full.Length) {
+                char c = full[end];
+                if (c == '[') { depth++; }
+                else if (c == ']') { depth--; if (depth == 0) { end++; break; } }
+                end++;
+            }
+            return TypeName(full.Substring(0, generic)) + full.Substring(end);
+        }
         int dot = full.LastIndexOf('.');
         int plus = full.LastIndexOf('+');
         int cut = dot > plus ? dot : plus;

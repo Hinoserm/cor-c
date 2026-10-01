@@ -68,8 +68,9 @@ public sealed partial class Lowering
     /// it, `System.Byte` rather than the `byte` C# spells it, so a boxed
     /// value's GetType().Name is "Byte" and its FullName "System.Byte".
     /// </summary>
-    private static string BoxName(Type t)
-        => t.Symbol is { Kind: TypeKind.Enum or TypeKind.Struct } named ? named.Name : RuntimeName(t);
+    private string BoxName(Type t)
+        => t.Symbol is { Kind: TypeKind.Struct } tuple && IsTupleShape(tuple) ? FullTypeName(tuple)
+         : t.Symbol is { Kind: TypeKind.Enum or TypeKind.Struct } named ? named.Name : RuntimeName(t);
 
     /// <summary>The register width a boxed value is kept and compared in.</summary>
     private static IrType BoxSlot(Type t)
@@ -228,7 +229,7 @@ public sealed partial class Lowering
     /// two meanings. The name it SAYS it is stays BoxName's.
     /// </summary>
     private static string BoxKey(Type t)
-        => t.Symbol is { Kind: TypeKind.Enum or TypeKind.Struct } named ? TypeKey(named) : BoxName(t);
+        => t.Symbol is { Kind: TypeKind.Enum or TypeKind.Struct } named ? TypeKey(named) : RuntimeName(t);
 
     private string BoxDescriptor(Type of)
     {
@@ -258,6 +259,12 @@ public sealed partial class Lowering
         WriteWord(block, DescSize * w, _t.ObjectHeaderBytes + Math.Max(w, BoxPayload(of)));
         WriteWord(block, DescDepth * w, 0);
         WriteWord(block, DescPayload * w, _t.ObjectHeaderBytes);
+        // What Type asks of it (IsValueType, IsEnum, IsPrimitive): a box is
+        // always of a value type.
+        WriteWord(block, DescFlags * w, TypeFlagValue
+            | (of.Symbol is { Kind: TypeKind.Enum } ? TypeFlagEnum : 0)
+            | (of.Symbol is null && of.Prim is Prim.Bool or Prim.Char or Prim.I8 or Prim.U8 or Prim.I16 or Prim.U16 or Prim.I32 or Prim.U32
+                   or Prim.I64 or Prim.U64 or Prim.F32 or Prim.F64 or Prim.NInt or Prim.NUInt ? TypeFlagPrimitive : 0));
 
         // Structural, like a sequence descriptor: a boxed int is one type
         // across the whole process, so the library's copy is used where

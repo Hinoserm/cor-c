@@ -1297,6 +1297,9 @@ public sealed partial class Lowering
                       DescInterfaces = 4, DescSelf = 5, DescFlags = 6, DescPayload = 7,
                       DescRefMap = 8, DescGcFlags = 9, DescElement = 10;
 
+    // DescFlags beyond a sequence's 1 and a string's 2: what Type answers.
+    private const int TypeFlagValue = 4, TypeFlagEnum = 8, TypeFlagInterface = 16, TypeFlagPrimitive = 32;
+
     /// <summary>
     /// The descriptor an array of these names as its element's (DescElement):
     /// a class's, an interface's, a string's, an inner array's; null for
@@ -1480,8 +1483,12 @@ public sealed partial class Lowering
     /// specialisation, a tuple or a closure keeps the name it was made with.
     /// Type.Name is the part after the last `.` or `+` (String.TypeName).
     /// </summary>
-    private static string FullTypeName(TypeSymbol t)
+    private string FullTypeName(TypeSymbol t)
     {
+        if (t.Kind == TypeKind.Struct && t.Structural && IsTupleShape(t))
+        {
+            return TupleFullName(t.Fields.Where(f => !f.Static).Select(f => f.Type).ToList());
+        }
         if (t.Decl is not TypeDecl d || d.Specialised || t.Structural)
         {
             return t.Name;
@@ -1499,6 +1506,47 @@ public sealed partial class Lowering
         }
         string nested = outer.Length > 0 ? outer.Replace('.', '+') + "+" + t.Name : t.Name;
         return space.Length > 0 ? space + "." + nested : nested;
+    }
+
+    /// <summary>
+    /// A tuple's name as .NET spells it: System.ValueTuple`2[[System.Int32,
+    /// System.Private.CoreLib, ...],[...]], each item assembly-qualified, and
+    /// past seven items ValueTuple`8 whose last is the rest, nested.
+    /// </summary>
+    private string TupleFullName(List<Type> items)
+    {
+        List<string> args = items.Take(7).Select(QualifiedName).ToList();
+        if (items.Count > 7)
+        {
+            args.Add(TupleFullName(items.Skip(7).ToList()) + ", " + CoreLibrary);
+        }
+        return "System.ValueTuple`" + args.Count + "[" + string.Join(",", args.Select(a => "[" + a + "]")) + "]";
+    }
+
+    /// <summary>The identity .NET's own types are qualified with.</summary>
+    private const string CoreLibrary = "System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e";
+
+    /// <summary>A type as a generic argument names it: its full name and its assembly's.</summary>
+    private string QualifiedName(Type t)
+    {
+        bool own = t.Symbol is TypeSymbol named && !IsTupleShape(named) && named.Decl is { FromLibrary: false } && !t.IsNullableValue;
+        for (Type e = t; e.IsArray && e.Element is Type inner; e = inner)
+        {
+            own = inner.Symbol is TypeSymbol held && !IsTupleShape(held) && held.Decl is { FromLibrary: false };
+        }
+        // The program's own types are in the one assembly the program is
+        // (System.Reflection.Assembly): its image's name, version 0.0.0.0.
+        string assembly = own ? System.IO.Path.GetFileNameWithoutExtension(_m.Name) + ", Version=0.0.0.0, Culture=neutral, PublicKeyToken=null" : CoreLibrary;
+        return DotNetTypeName(t) + ", " + assembly;
+    }
+
+    /// <summary>A type's full name as .NET's Type.FullName spells it.</summary>
+    private string DotNetTypeName(Type t)
+    {
+        if (t.IsArray && t.Element is Type element) return DotNetTypeName(element) + "[" + new string(',', Math.Max(0, t.ArrayRank - 1)) + "]";
+        if (t.IsNullableValue) return "System.Nullable`1[[" + QualifiedName(t.Underlying) + "]]";
+        if (t.Symbol is TypeSymbol named) return FullTypeName(named);
+        return RuntimeName(t);
     }
 
     private static string DotNetName(string key)
@@ -1568,7 +1616,9 @@ public sealed partial class Lowering
         DataItem item = new(sym, d) { ReadOnly = true, Align = _t.Align64, FromLibrary = true, Coalescible = true };
         _sequenceDescriptors[key] = sym;
         _m.Data.Add(item);
-        item.Relocs.Add(new DataReloc(DescName * w, InternString(isString ? "System.String" : DotNetName(element) + "[]"), 0));
+        item.Relocs.Add(new DataReloc(DescName * w, InternString(isString ? "System.String"
+            : elementType?.AsNonNullable().Symbol is { Kind: TypeKind.Struct } tuple && IsTupleShape(tuple) ? DotNetTypeName(elementType.AsNonNullable()) + "[]"
+            : DotNetName(element) + "[]"), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
         // ITS ELEMENT'S DESCRIPTOR, for covariance at run time: whether a
         // value may be stored in it (Runtime.ArrayStoreCheck) and whether it
@@ -1765,6 +1815,7 @@ public sealed partial class Lowering
         byte[] d = new byte[_t.DescriptorBytes];
         int w = _t.WordSize;
         WriteWord(d, DescDepth * w, -1);
+        WriteWord(d, DescFlags * w, TypeFlagInterface);
 
         DataItem item = new(sym, d) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), Coalescible = t.Decl?.Specialised == true };
         _m.Data.Add(item);

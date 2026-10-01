@@ -13952,6 +13952,13 @@ public sealed partial class Binder
                 return Type.String;
             }
 
+            // WHAT KIND OF TYPE IT IS, read from the flags of the same
+            // descriptor (Lowering.IntrinsicMember).
+            if (m.Name is "IsValueType" or "IsEnum" or "IsInterface" or "IsPrimitive" or "IsArray" or "IsClass" && target.Prim == Prim.Type)
+            {
+                return Type.Bool;
+            }
+
             // ITS ASSEMBLY, which is the program's: one image holds every
             // type (System.Reflection.Assembly). The Type is still evaluated,
             // as reading a member of it would be.

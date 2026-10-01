@@ -942,7 +942,7 @@ public sealed partial class Lowering
     private static bool IsIntrinsicMember(MemberExpr m, Type target)
         => (m.Name == "Length" && (target.IsArray || target.Prim == Prim.String))
         || (m.Name == "LongLength" && target.IsArray)
-        || (m.Name is "Name" or "FullName" && target.Prim == Prim.Type);
+        || (m.Name is "Name" or "FullName" or "IsValueType" or "IsEnum" or "IsInterface" or "IsPrimitive" or "IsArray" or "IsClass" && target.Prim == Prim.Type);
 
     /// <summary>
     /// Such a member of the value `obj` holds.
@@ -953,6 +953,22 @@ public sealed partial class Lowering
     /// </summary>
     private VReg IntrinsicMember(MemberExpr m, Type target, VReg obj)
     {
+        // WHAT KIND OF TYPE, as System.Type answers it, from the flags its
+        // descriptor carries: a sequence is an array (and a string, a class),
+        // a box's descriptor a value type's, an interface's its own.
+        if (target.Prim == Prim.Type && m.Name is "IsValueType" or "IsEnum" or "IsInterface" or "IsPrimitive" or "IsArray" or "IsClass")
+        {
+            VReg flags = _e.Load(IrType.I32, obj, DescFlags * _t.WordSize, 4, false);
+            int bits = m.Name switch
+            {
+                "IsValueType" => TypeFlagValue, "IsEnum" => TypeFlagEnum, "IsInterface" => TypeFlagInterface,
+                "IsPrimitive" => TypeFlagPrimitive, "IsArray" => 1, _ => TypeFlagValue | TypeFlagInterface,
+            };
+            VReg masked = m.Name == "IsArray"
+                ? _e.Binary(Opcode.Eq, R(_e.Binary(Opcode.And, flags, 3)), Imm(1, IrType.I32), IrType.I32)
+                : _e.Binary(Opcode.Ne, R(_e.Binary(Opcode.And, flags, bits)), Imm(0, IrType.I32), IrType.I32);
+            return m.Name == "IsClass" ? _e.Binary(Opcode.Eq, R(masked), Imm(0, IrType.I32), IrType.I32) : masked;
+        }
         if (m.Name == "Length")
             return target.IsArray ? _e.Unary(Opcode.ArrayLength, R(obj), IrType.I32) : _e.Load(IrType.I32, obj, _t.ArrayCountOffset);
         if (m.Name == "LongLength")
