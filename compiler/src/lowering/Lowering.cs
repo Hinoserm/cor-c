@@ -2299,6 +2299,8 @@ public sealed partial class Lowering
             {
                 VReg value = LoadElement(items, e.Load(IrType.I32, self, cursor.Offset), of,
                                          At(m));
+                // A struct element is a copy, as any method's struct result is.
+                if (IsStructValue(of)) value = CopyStruct(At(m), value, StructOf(of));
 
                 e.Ret(new RegOperand(value));
             }
@@ -2343,6 +2345,7 @@ public sealed partial class Lowering
             Function saved = _f; Builder savedE = _e;
             _f = f; _e = e; _boundsFail = null;
             VReg value = LoadElement(items, index, of, At(m));
+            if (IsStructValue(of)) value = CopyStruct(At(m), value, StructOf(of));
             _f = saved; _e = savedE;
             e.Ret(new RegOperand(value));
         }

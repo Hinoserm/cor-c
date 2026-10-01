@@ -864,7 +864,7 @@ public sealed partial class Escape : IModulePass
             foreach (Block b in f.Blocks)
                 foreach (Instr i in b.Instrs)
                 {
-                    if (i.Field is null || i.Operands.Count < 1 || i.Operands[0] is SymOperand) continue;
+                    if (i.Field is null || i.Operands.Count < 1 || i.Operands[0] is SymOperand || i.ReturnsFreshStruct) continue;
                     if (i.Op == Opcode.Store) stores.Add((f, b, i));
                     else if (i.Op == Opcode.Load) loads.Add((f, b, i));
                     // A field's address taken (ref, out, Interlocked on it):
@@ -1579,7 +1579,16 @@ continue;
     public int FreshFunctions => _fresh.Count;
 
     /// <summary>Whether a call's result is an object its callee hands over.</summary>
-    public bool IsFreshCall(Instr i) => i.Op == Opcode.Call && i.Callee is not null && _fresh.Contains(i.Callee);
+    public bool IsFreshCall(Instr i) => i.Op == Opcode.Call && i.Callee is not null && _fresh.Contains(i.Callee) || i.ReturnsFreshStruct;
+
+    /// <summary>
+    /// What a fresh struct result's record names as the callee that filled it
+    /// (OwnedRecord.FreshCallee): the callee when it is a fresh function of
+    /// its own, and otherwise OpaqueCallee -- its fields were filled by code
+    /// this analysis did not see, and none of them is the caller's to free.
+    /// </summary>
+    private string FreshCalleeOf(Instr call) => call.Callee is not null && _fresh.Contains(call.Callee) ? call.Callee : OpaqueCallee;
+    internal const string OpaqueCallee = "\u0001opaque";
 
     /// <summary>
     /// Whether every return of `f` hands over a fresh object. The returned
@@ -2799,7 +2808,7 @@ continue;
             // Dead within its own block: one free at its last use.
             if (FreeAtLastUse(f, b, call, derived, liveness!, pads!, uses!, -1))
             {
-                _records[f][^1].FreshCallee = call.Callee;
+                _records[f][^1].FreshCallee = FreshCalleeOf(call);
                 _ownedCalls.Add(call);
                 Owned++;
                 OwnedReturns++;
@@ -2864,7 +2873,7 @@ continue;
         // object -- x = Grow(x) -- gives it back after instead.
         if (readsPrevious ? !OwnAfter(f, b, call, repeats) : !Own(f, b, call, -1, repeats)) return false;
         // Own/OwnAfter recorded the object's frees; the callee is what filled its fields.
-        _records[f][^1].FreshCallee = call.Callee;
+        _records[f][^1].FreshCallee = FreshCalleeOf(call);
         _ownedCalls.Add(call);
         Owned++;
         OwnedReturns++;

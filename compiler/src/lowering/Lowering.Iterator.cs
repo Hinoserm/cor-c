@@ -242,6 +242,15 @@ public sealed partial class Lowering
                     {
                         current = BoxValue(it.Decl, current, it.Element);
                     }
+                    // A struct element is a copy, as every struct a method
+                    // returns is: the caller may give it back.
+                    else if (IsStructValue(it.Element))
+                    {
+                        Function savedIt = _f; Builder savedItE = _e;
+                        _f = f; _e = e;
+                        current = CopyStruct(it.Decl, current, StructOf(it.Element));
+                        _f = savedIt; _e = savedItE;
+                    }
                     e.Ret(R(current));
                     break;
                 }

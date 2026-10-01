@@ -326,7 +326,7 @@ public sealed partial class Escape
                 {
                     if (i.Op == Opcode.Call && i.Callee is not null) record.Calls.Add(i.Callee);
                     else if (i.Op == Opcode.CallIndirect && _indirect is not null && _indirect.TryGetValue(i, out string[]? targets)) record.Calls.UnionWith(targets);
-                    if (i.Field is null || i.Operands.Count < 1 || i.Operands[0] is SymOperand) continue;
+                    if (i.Field is null || i.Operands.Count < 1 || i.Operands[0] is SymOperand || i.ReturnsFreshStruct) continue;
                     if (i.Op == Opcode.Store)
                     {
                         stores.Add((f, b, i));

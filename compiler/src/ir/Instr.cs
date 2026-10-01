@@ -34,6 +34,17 @@ public sealed class Instr
     /// </summary>
     public string? Field { get; set; }
 
+    /// <summary>
+    /// What a call's Field says when its result is a struct its callee made
+    /// for it: a struct value is returned as a block nobody else holds (every
+    /// `return` copies what it did not just make), whoever the callee is, so
+    /// the caller may give it back when the value is dead (Escape).
+    /// </summary>
+    public const string FreshStruct = "\u0001fresh-struct";
+
+    /// <summary>Whether this call hands back a struct made for it (FreshStruct).</summary>
+    public bool ReturnsFreshStruct => Op is Opcode.Call or Opcode.CallIndirect && Field == FreshStruct;
+
     /// <summary>Jump, Branch, Switch, LabelAddr: where. Phi: the predecessor each operand comes from.</summary>
     public List<Block> Targets { get; } = new();
 

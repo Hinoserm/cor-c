@@ -526,7 +526,12 @@ public sealed partial class Escape
             // For the link as well, when the unit can leave it field sites.
             LifetimeFields? hint = _hinting && _fieldSites ? new() : null;
             FieldSummary fs = FieldUses(f, roots, summaries, r.Origin, null, hint);
-            if (r.FreshCallee is not null)
+            if (r.FreshCallee == OpaqueCallee)
+            {
+                fs.Opaque = true;
+                if (hint is not null) hint.Opaque = true;
+            }
+            else if (r.FreshCallee is not null)
             {
                 fs.Merge(_freshFields.GetValueOrDefault(r.FreshCallee));
                 if (hint is not null)

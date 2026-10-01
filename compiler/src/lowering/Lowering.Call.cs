@@ -21,7 +21,10 @@ public sealed partial class Lowering
         if (_f is { FromLibrary: false } && m.Owner.Name is "Gc" or "HeapChunks" or "GcLock" or "GcRoots" or "GcThreads"
             && !m.Name.StartsWith("get_", StringComparison.Ordinal))
             _m.CallsCollector = true;
-        return _e.Call(CallLabel(m), returns, args.ToArray());
+        VReg? made = _e.Call(CallLabel(m), returns, args.ToArray());
+        // A struct a method of source returns is made for this caller.
+        if (IsStructValue(m.Returns) && m.Decl is { File: not "<prelude>" }) _e.Block.Instrs[^1].Field = Instr.FreshStruct;
+        return made;
     }
 
     /// <summary>
@@ -59,6 +62,10 @@ public sealed partial class Lowering
             VReg fn = _e.Load(IrTypes.Word, vt, (long)m.VtableSlot * _t.WordSize);
             VReg? called = _e.CallIndirect(R(fn), returns, args);
             _e.Block.Instrs[^1].DispatchType = DescriptorOf(m.Owner);
+            // Whatever implementation answers, a struct it returns is a copy
+            // made for this caller (the compiler's own Currents and indexers
+            // copy too).
+            if (IsStructValue(m.Returns)) _e.Block.Instrs[^1].Field = Instr.FreshStruct;
             return called;
         }
 
