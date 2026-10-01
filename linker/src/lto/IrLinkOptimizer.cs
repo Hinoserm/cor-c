@@ -213,7 +213,14 @@ public static class IrLinkOptimizer
         var freer = Find(LifetimeHints.FieldFreer);
         var keeper = Find(LifetimeHints.FieldKeeper)
             ?? throw new ElfFormatException("Field sites need Runtime.KeepField, which no object defines");
-        int sites = 0, freed = 0;
+        // ONE DEFINITION A SITE, however many units list it. A generic copy
+        // -- an iterator of a generic method, say -- is compiled by every unit
+        // that uses it, the link keeps one, and each unit names its sites
+        // alike; defined once for each, the routine's object held the name
+        // twice. Freed only when every unit that lists the site finds the
+        // field clean: the one copy kept must be right for all of them.
+        Dictionary<string, bool> verdicts = new(StringComparer.Ordinal);
+        List<string> order = new();
         foreach (LifetimeHints unit in hints)
             foreach ((LifetimeFields fields, List<(string Symbol, long Offset)> list) in unit.FieldSites)
             {
@@ -227,13 +234,20 @@ public static class IrLinkOptimizer
                             + " solved fresh=[" + string.Join(",", solved?.Fresh ?? Array.Empty<long>()) + "] dirty=["
                             + string.Join(",", solved?.Dirty ?? Array.Empty<long>()) + "] opaque=" + (solved?.Opaque ?? true)
                             + " merges=" + string.Join(" ", fields.Merges.Take(8).Select(m => m.Callee + ":" + m.Argument)));
-                    (ObjectFile owner, Symbol target) = clean ? freer!.Value : keeper;
-                    owner.Symbols.Add(new Symbol { Name = name, Section = target.Section, Offset = target.Offset,
-                        Size = target.Size, IsFunction = true, Global = true });
-                    sites++;
-                    if (clean) freed++;
+                    if (verdicts.TryGetValue(name, out bool was)) verdicts[name] = was && clean;
+                    else { verdicts[name] = clean; order.Add(name); }
                 }
             }
+        int sites = 0, freed = 0;
+        foreach (string name in order)
+        {
+            bool clean = verdicts[name];
+            (ObjectFile owner, Symbol target) = clean ? freer!.Value : keeper;
+            owner.Symbols.Add(new Symbol { Name = name, Section = target.Section, Offset = target.Offset,
+                Size = target.Size, IsFunction = true, Global = true });
+            sites++;
+            if (clean) freed++;
+        }
         return (sites, freed);
     }
 }
