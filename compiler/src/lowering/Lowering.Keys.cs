@@ -295,7 +295,7 @@ public sealed partial class Lowering
         if (IsStructValue(field.Type))
         {
             VReg x = FieldStruct(a, field), y = FieldStruct(b, field);
-            return _e.Call(StructEquals(field.Type.Symbol!), IrType.I32, R(x), R(y))!;
+            return _e.Call(StructEquals(StructOf(field.Type)), IrType.I32, R(x), R(y))!;
         }
         if (CouldBeObject(field.Type) || field.Type.IsNullableValue)
         {
@@ -355,7 +355,7 @@ public sealed partial class Lowering
                 VReg v;
                 if (IsStructValue(field.Type))
                 {
-                    v = _e.Call(StructHash(field.Type.Symbol!), IrType.I32, R(FieldStruct(a, field)))!;
+                    v = _e.Call(StructHash(StructOf(field.Type)), IrType.I32, R(FieldStruct(a, field)))!;
                 }
                 else if (CouldBeObject(field.Type) || field.Type.IsNullableValue)
                 {
@@ -732,10 +732,8 @@ public sealed partial class Lowering
 
     /// <summary>
     /// `__tuple_compare_T(a, b)`: ValueTuple's CompareTo over two tuples'
-    /// bytes -- each item in turn by Comparer&lt;T&gt;.Default, the first that
-    /// differs deciding: an object by its CompareTo, a number by its value, a
-    /// float with NaN before everything and equal to itself, a struct by its
-    /// own CompareTo.
+    /// bytes -- each item in turn by Comparer&lt;T&gt;.Default (ItemOrder), the
+    /// first that differs deciding.
     /// </summary>
     private string TupleCompare(TypeSymbol shape)
     {
@@ -752,81 +750,84 @@ public sealed partial class Lowering
         f.Params.Add(other);
         Function savedFn = _f; Builder savedB = _e; Block? savedFail = _boundsFail;
         _f = f; _e = new Builder(f, f.NewBlock("entry")); _boundsFail = null;
-        Builder e = _e;
         Node at = new MethodDecl { Name = label, Line = 0, Col = 0 };
-        Block less = f.NewBlock("tcless");
-        Block more = f.NewBlock("tcmore");
 
         foreach (FieldSymbol field in shape.Fields.Where(fd => !fd.Static))
         {
-            Type of = field.Type;
-            Block next = f.NewBlock("tcnext");
-            VReg? order = null;
-
-            if (CouldBeObject(of) || of.IsNullableValue)
-            {
-                order = e.Call(KeyCompareStub(), IrType.I32, R(e.Load(IrTypes.Word, self, field.Offset)), R(e.Load(IrTypes.Word, other, field.Offset)))!;
-            }
-            else if (IsStructValue(of))
-            {
-                VReg x = FieldStruct(self, field), y = FieldStruct(other, field);
-                if (StructCompareTo(of.Symbol!, out bool boxed) is MethodSymbol own)
-                {
-                    Require(own);
-                    VReg them = boxed ? BoxValue(at, y, of) : y;
-                    VReg said = CallDirect(own, IrType.I32, new List<Operand> { R(x), R(them) })!;
-                    order = said.Type == IrType.I32 ? said : e.Unary(Opcode.Trunc64, R(said), IrType.I32);
-                }
-            }
-            else if (of.Prim is Prim.F32 or Prim.F64)
-            {
-                VReg x = LoadPlace(new MemPlace(R(self), field.Offset, of)), y = LoadPlace(new MemPlace(R(other), field.Offset, of));
-                Block notLess = f.NewBlock("tcfnl"), notMore = f.NewBlock("tcfnm"), unordered = f.NewBlock("tcfnan"), xNan = f.NewBlock("tcfxnan");
-                e.Branch(e.Binary(Opcode.FLt, R(x), R(y), IrType.I32), less, notLess);
-                e.SetBlock(notLess);
-                e.Branch(e.Binary(Opcode.FGt, R(x), R(y), IrType.I32), more, notMore);
-                e.SetBlock(notMore);
-                e.Branch(e.Binary(Opcode.FEq, R(x), R(y), IrType.I32), next, unordered);
-                // One or both NaN: NaN sorts first, and equals NaN.
-                e.SetBlock(unordered);
-                e.Branch(e.Binary(Opcode.FNe, R(x), R(x), IrType.I32), xNan, more);
-                e.SetBlock(xNan);
-                e.Branch(e.Binary(Opcode.FNe, R(y), R(y), IrType.I32), next, less);
-            }
-            else
-            {
-                int size = Math.Max(1, of.Size);
-                bool unsigned = of.IsUnsigned || of.Prim is Prim.Bool or Prim.Char;
-                VReg x = e.Load(BoxSlot(of), self, field.Offset, size, !unsigned);
-                VReg y = e.Load(BoxSlot(of), other, field.Offset, size, !unsigned);
-                Block rest = f.NewBlock("tcrest");
-                e.Branch(e.Binary(unsigned ? Opcode.LtU : Opcode.LtS, R(x), R(y), IrType.I32), less, rest);
-                e.SetBlock(rest);
-                e.Branch(e.Binary(Opcode.Eq, R(x), R(y), IrType.I32), next, more);
-            }
-
-            if (order is VReg decided)
-            {
-                Block answer = f.NewBlock("tcanswer");
-                e.Branch(decided, answer, next);
-                e.SetBlock(answer);
-                e.Ret(R(decided));
-            }
-            else if (!e.Closed)
-            {
-                e.Jump(next);
-            }
-            e.SetBlock(next);
+            VReg order = ItemOrder(at, LoadPlace(PlaceOfField(field, self, at)), LoadPlace(PlaceOfField(field, other, at)), field.Type);
+            Block answer = f.NewBlock("tcanswer"), next = f.NewBlock("tcnext");
+            _e.Branch(order, answer, next);
+            _e.SetBlock(answer);
+            _e.Ret(R(order));
+            _e.SetBlock(next);
         }
-
-        e.Ret(new ImmOperand(0, IrType.I32));
-        e.SetBlock(less);
-        e.Ret(new ImmOperand(-1, IrType.I32));
-        e.SetBlock(more);
-        e.Ret(new ImmOperand(1, IrType.I32));
+        _e.Ret(new ImmOperand(0, IrType.I32));
         _m.Functions.Add(f);
         _f = savedFn; _e = savedB; _boundsFail = savedFail;
         return label;
+    }
+
+    /// <summary>
+    /// Two values in Comparer&lt;T&gt;.Default's order, as -1, 0 or 1: an object
+    /// by its CompareTo (null first), a nullable value with no value first
+    /// and then by its value, a struct by its own CompareTo (none: equal), a
+    /// float with NaN before everything and equal to itself, an integer by
+    /// its value, signed or not.
+    /// </summary>
+    private VReg ItemOrder(Node at, VReg x, VReg y, Type of)
+    {
+        VReg order = _f.NewReg(IrType.I32, "order");
+        Block done = _f.NewBlock("orddone");
+        if (CouldBeObject(of))
+        {
+            _e.CopyTo(order, R(_e.Call(KeyCompareStub(), IrType.I32, R(x), R(y))!));
+        }
+        else if (of.IsNullableValue)
+        {
+            VReg hasX = HasValue(x), hasY = HasValue(y);
+            Block both = _f.NewBlock("ordboth");
+            _e.CopyTo(order, R(_e.Binary(Opcode.Sub, R(hasX), R(hasY), IrType.I32)));
+            _e.Branch(_e.Binary(Opcode.And, R(hasX), R(hasY), IrType.I32), both, done);
+            _e.SetBlock(both);
+            _e.CopyTo(order, R(ItemOrder(at, NullableRead(x, of), NullableRead(y, of), of.Underlying)));
+        }
+        else if (IsStructValue(of))
+        {
+            _e.CopyTo(order, Imm(0, IrType.I32));
+            if (StructCompareTo(StructOf(of), out bool boxed) is MethodSymbol own)
+            {
+                Require(own);
+                VReg them = boxed ? BoxValue(at, y, of) : y;
+                VReg said = CallDirect(own, IrType.I32, new List<Operand> { R(x), R(them) })!;
+                _e.CopyTo(order, R(said.Type == IrType.I32 ? said : _e.Unary(Opcode.Trunc64, R(said), IrType.I32)));
+            }
+        }
+        else if (of.Prim is Prim.F32 or Prim.F64)
+        {
+            Block notLess = _f.NewBlock("ordfnl"), notMore = _f.NewBlock("ordfnm"), unordered = _f.NewBlock("ordfnan");
+            _e.CopyTo(order, Imm(-1, IrType.I32));
+            _e.Branch(_e.Binary(Opcode.FLt, R(x), R(y), IrType.I32), done, notLess);
+            _e.SetBlock(notLess);
+            _e.CopyTo(order, Imm(1, IrType.I32));
+            _e.Branch(_e.Binary(Opcode.FGt, R(x), R(y), IrType.I32), done, notMore);
+            _e.SetBlock(notMore);
+            _e.CopyTo(order, Imm(0, IrType.I32));
+            _e.Branch(_e.Binary(Opcode.FEq, R(x), R(y), IrType.I32), done, unordered);
+            // One or both NaN: NaN first, and equal to NaN.
+            _e.SetBlock(unordered);
+            VReg nanX = _e.Binary(Opcode.FNe, R(x), R(x), IrType.I32), nanY = _e.Binary(Opcode.FNe, R(y), R(y), IrType.I32);
+            _e.CopyTo(order, R(_e.Binary(Opcode.Sub, R(nanY), R(nanX), IrType.I32)));
+        }
+        else
+        {
+            bool unsigned = of.IsUnsigned || of.Prim is Prim.Bool or Prim.Char;
+            VReg less = _e.Binary(unsigned ? Opcode.LtU : Opcode.LtS, R(x), R(y), IrType.I32);
+            VReg more = _e.Binary(unsigned ? Opcode.GtU : Opcode.GtS, R(x), R(y), IrType.I32);
+            _e.CopyTo(order, R(_e.Binary(Opcode.Sub, R(more), R(less), IrType.I32)));
+        }
+        _e.Jump(done);
+        _e.SetBlock(done);
+        return order;
     }
 
     /// <summary>A boxed value's hash: the value, so that equal boxes hash alike.</summary>

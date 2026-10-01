@@ -409,6 +409,8 @@ public static class Prelude
     public const string FromDoubleMethod = "FromDouble";
     public const string FromSingleMethod = "FromSingle";
     public const string TypeNameMethod = "TypeName";
+    /// <summary>A type's full name as Type.ToString writes it: a generic's arguments without their assemblies.</summary>
+    public const string TypeTextMethod = "TypeText";
 
     public const string Source = """
         static class Sys {

@@ -187,6 +187,37 @@ static class String {
     /// Type.Name: the last part of the name a type's descriptor holds --
     /// `Object` of `System.Object`, `Int32` of `System.Int32`, `State` of a
     /// nested `Parser+State`.
+    /// A type's full name as Type.ToString writes it, which is what
+    /// object.ToString answers: a generic's arguments by their own names
+    /// alone -- List`1[System.Int32] -- where FullName qualifies each with
+    /// its assembly. Anything without arguments is its full name.
+    public static string TypeText(string full) {
+        int open = full.IndexOf("[[");
+        if (open < 0) { return full; }
+        string text = full.Substring(0, open) + "[";
+        int at = open + 1;
+        bool first = true;
+        while (at < full.Length && full[at] == '[') {
+            int depth = 0;
+            int end = at;
+            int comma = -1;
+            while (end < full.Length) {
+                char c = full[end];
+                if (c == '[') { depth++; }
+                else if (c == ']') { depth--; if (depth == 0) { break; } }
+                else if (c == ',' && depth == 1 && comma < 0) { comma = end; }
+                end++;
+            }
+            string inner = full.Substring(at + 1, (comma >= 0 ? comma : end) - at - 1);
+            text = text + (first ? "" : ",") + TypeText(inner);
+            first = false;
+            at = end + 1;
+            if (at < full.Length && full[at] == ',') { at++; }
+        }
+        // The list's own close, then whatever follows it: an array's [].
+        return text + "]" + (at + 1 <= full.Length ? full.Substring(at + 1) : "");
+    }
+
     public static string TypeName(string full) {
         // A GENERIC TYPE'S ARGUMENTS ARE NOT ITS NAME: System.ValueTuple`2[[
         // System.Int32, ...]] is ValueTuple`2, as .NET's Type.Name, and an
@@ -8737,6 +8768,166 @@ static class Enumerable {
         double total = 0;
         foreach (T item in source) { total = total + selector(item); }
         return total;
+    }
+
+    /// The values there are, added: nulls are skipped, and none at all is 0 -- never null, as .NET's.
+    public static int? Sum(this IEnumerable<int?> source) {
+        NotNull(source, "source");
+        int total = 0;
+        foreach (int? item in source) { if (item.HasValue) { total = checked(total + item.Value); } }
+        return total;
+    }
+
+    public static int? Sum<T>(this IEnumerable<T> source, Func<T, int?> selector) {
+        NotNull(source, "source"); NotNull(selector, "selector");
+        int total = 0;
+        foreach (T item in source) { int? value = selector(item); if (value.HasValue) { total = checked(total + value.Value); } }
+        return total;
+    }
+
+    /// The mean of the values there are, nulls skipped; null when there are none.
+    public static double? Average(this IEnumerable<int?> source) {
+        NotNull(source, "source");
+        long total = 0;
+        long count = 0;
+        foreach (int? item in source) { if (item.HasValue) { total = checked(total + item.Value); count = count + 1; } }
+        if (count == 0) { return null; }
+        return (double)((double)total / count);
+    }
+
+    /// The least and greatest of the values there are, nulls skipped; null when there are none.
+    public static int? Min(this IEnumerable<int?> source) {
+        NotNull(source, "source");
+        int? best = null;
+        foreach (int? item in source) { if (item.HasValue && (!best.HasValue || item.Value < best.Value)) { best = item; } }
+        return best;
+    }
+
+    public static int? Max(this IEnumerable<int?> source) {
+        NotNull(source, "source");
+        int? best = null;
+        foreach (int? item in source) { if (item.HasValue && (!best.HasValue || item.Value > best.Value)) { best = item; } }
+        return best;
+    }
+
+    /// The values there are, added: nulls are skipped, and none at all is 0 -- never null, as .NET's.
+    public static long? Sum(this IEnumerable<long?> source) {
+        NotNull(source, "source");
+        long total = 0;
+        foreach (long? item in source) { if (item.HasValue) { total = checked(total + item.Value); } }
+        return total;
+    }
+
+    public static long? Sum<T>(this IEnumerable<T> source, Func<T, long?> selector) {
+        NotNull(source, "source"); NotNull(selector, "selector");
+        long total = 0;
+        foreach (T item in source) { long? value = selector(item); if (value.HasValue) { total = checked(total + value.Value); } }
+        return total;
+    }
+
+    /// The mean of the values there are, nulls skipped; null when there are none.
+    public static double? Average(this IEnumerable<long?> source) {
+        NotNull(source, "source");
+        long total = 0;
+        long count = 0;
+        foreach (long? item in source) { if (item.HasValue) { total = checked(total + item.Value); count = count + 1; } }
+        if (count == 0) { return null; }
+        return (double)((double)total / count);
+    }
+
+    /// The least and greatest of the values there are, nulls skipped; null when there are none.
+    public static long? Min(this IEnumerable<long?> source) {
+        NotNull(source, "source");
+        long? best = null;
+        foreach (long? item in source) { if (item.HasValue && (!best.HasValue || item.Value < best.Value)) { best = item; } }
+        return best;
+    }
+
+    public static long? Max(this IEnumerable<long?> source) {
+        NotNull(source, "source");
+        long? best = null;
+        foreach (long? item in source) { if (item.HasValue && (!best.HasValue || item.Value > best.Value)) { best = item; } }
+        return best;
+    }
+
+    /// The values there are, added: nulls are skipped, and none at all is 0 -- never null, as .NET's.
+    public static float? Sum(this IEnumerable<float?> source) {
+        NotNull(source, "source");
+        double total = 0;
+        foreach (float? item in source) { if (item.HasValue) { total = total + item.Value; } }
+        return (float)total;
+    }
+
+    public static float? Sum<T>(this IEnumerable<T> source, Func<T, float?> selector) {
+        NotNull(source, "source"); NotNull(selector, "selector");
+        double total = 0;
+        foreach (T item in source) { float? value = selector(item); if (value.HasValue) { total = total + value.Value; } }
+        return (float)total;
+    }
+
+    /// The mean of the values there are, nulls skipped; null when there are none.
+    public static float? Average(this IEnumerable<float?> source) {
+        NotNull(source, "source");
+        double total = 0;
+        long count = 0;
+        foreach (float? item in source) { if (item.HasValue) { total = total + item.Value; count = count + 1; } }
+        if (count == 0) { return null; }
+        return (float)((double)total / count);
+    }
+
+    /// The least and greatest of the values there are, nulls skipped; null when there are none.
+    public static float? Min(this IEnumerable<float?> source) {
+        NotNull(source, "source");
+        float? best = null;
+        foreach (float? item in source) { if (item.HasValue && (!best.HasValue || item.Value < best.Value || float.IsNaN(item.Value))) { best = item; } }
+        return best;
+    }
+
+    public static float? Max(this IEnumerable<float?> source) {
+        NotNull(source, "source");
+        float? best = null;
+        foreach (float? item in source) { if (item.HasValue && (!best.HasValue || item.Value > best.Value || float.IsNaN(best.Value))) { best = item; } }
+        return best;
+    }
+
+    /// The values there are, added: nulls are skipped, and none at all is 0 -- never null, as .NET's.
+    public static double? Sum(this IEnumerable<double?> source) {
+        NotNull(source, "source");
+        double total = 0;
+        foreach (double? item in source) { if (item.HasValue) { total = total + item.Value; } }
+        return total;
+    }
+
+    public static double? Sum<T>(this IEnumerable<T> source, Func<T, double?> selector) {
+        NotNull(source, "source"); NotNull(selector, "selector");
+        double total = 0;
+        foreach (T item in source) { double? value = selector(item); if (value.HasValue) { total = total + value.Value; } }
+        return total;
+    }
+
+    /// The mean of the values there are, nulls skipped; null when there are none.
+    public static double? Average(this IEnumerable<double?> source) {
+        NotNull(source, "source");
+        double total = 0;
+        long count = 0;
+        foreach (double? item in source) { if (item.HasValue) { total = total + item.Value; count = count + 1; } }
+        if (count == 0) { return null; }
+        return (double)((double)total / count);
+    }
+
+    /// The least and greatest of the values there are, nulls skipped; null when there are none.
+    public static double? Min(this IEnumerable<double?> source) {
+        NotNull(source, "source");
+        double? best = null;
+        foreach (double? item in source) { if (item.HasValue && (!best.HasValue || item.Value < best.Value || double.IsNaN(item.Value))) { best = item; } }
+        return best;
+    }
+
+    public static double? Max(this IEnumerable<double?> source) {
+        NotNull(source, "source");
+        double? best = null;
+        foreach (double? item in source) { if (item.HasValue && (!best.HasValue || item.Value > best.Value || double.IsNaN(best.Value))) { best = item; } }
+        return best;
     }
 
     public static double Average(this IEnumerable<int> source) {

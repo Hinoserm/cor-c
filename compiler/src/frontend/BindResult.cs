@@ -441,6 +441,51 @@ public sealed partial class BindResult
     public List<CompileError> Errors { get; } = new();
     public List<CompileError> Warnings { get; } = new();
     public TypeTable Types { get; } = new();
+
+    /// <summary>
+    /// NULLABLE&lt;T&gt; AS .NET LAYS IT OUT, one shape per T: hasValue, a bool
+    /// at 0, then the value at T's alignment -- a struct like any other,
+    /// held in line wherever it is held, and empty when it is all zero. Made
+    /// on first asking, by the binder laying out a field or by the code
+    /// generator making a value, and the same shape for both.
+    /// </summary>
+    public Dictionary<string, TypeSymbol> NullableShapes { get; private set; } = new(StringComparer.Ordinal);
+
+    /// <summary>The struct a value of this type is: a nullable value's shape, or the struct itself.</summary>
+    public TypeSymbol StructOf(Type t) => t.IsNullableValue ? NullableShape(t.Underlying) : t.Symbol!;
+
+    /// <summary>The Nullable&lt;T&gt; shape for T, which must already be laid out if it is a struct.</summary>
+    public TypeSymbol NullableShape(Type underlying)
+    {
+        string key = underlying.Symbol?.Key ?? underlying.Prim.ToString();
+        lock (NullableShapes)
+        {
+            if (NullableShapes.TryGetValue(key, out TypeSymbol? made)) return made;
+            TypeSymbol shape = new() { Name = "Nullable$" + key, Kind = TypeKind.Struct, Structural = true };
+            int size, align;
+            bool inline = false;
+            if (underlying.Symbol is { Kind: TypeKind.Struct } held)
+            {
+                inline = held.HeldInline;
+                size = inline ? Math.Max(1, held.InstanceSize) : Target.Current.WordSize;
+                align = inline ? Math.Max(1, held.InlineAlign) : Target.Current.WordSize;
+            }
+            else
+            {
+                size = Math.Max(1, underlying.Size);
+                align = Math.Min(8, size);
+            }
+            shape.Fields.Add(new FieldSymbol { Name = "hasValue", Type = Type.Bool, Owner = shape, Offset = 0 });
+            shape.Fields.Add(new FieldSymbol { Name = "value", Type = underlying.AsNonNullable(), Owner = shape, Offset = align, Inline = inline });
+            shape.InstanceSize = (align + size + align - 1) / align * align;
+            shape.InlineAlign = Math.Max(1, align);
+            shape.HeldInline = underlying.Symbol is not { Kind: TypeKind.Struct } || inline;
+            shape.InlineDecided = true;
+            shape.SlotsAssigned = true;
+            NullableShapes[key] = shape;
+            return shape;
+        }
+    }
     /// <summary>Bytes of static storage, including the reserved low words.</summary>
     public int StaticBytes { get; set; } = 16;
 
@@ -538,6 +583,7 @@ public sealed partial class BindResult
             CompareSlot = CompareSlot, StaticBytes = StaticBytes,
         };
         copy.StaticInits.AddRange(StaticInits);
+        copy.NullableShapes = NullableShapes;
         copy.Wanted.AddRange(Wanted);
         copy.Wanting.AddRange(Wanting);
         CopyEntries(Views, copy.Views);

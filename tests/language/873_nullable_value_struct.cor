@@ -1,0 +1,74 @@
+// test: a nullable value is Nullable<T>, a struct of hasValue and the value, held in line in fields and arrays: null is the empty one, ==/!= null ask hasValue, ?? ?. and the lifted operators, ++ keeping the old value apart, boxing (null or a box of T) and unboxing, is int v and is {} v, int?[] and List<int?> with LINQ's nullable Sum, a Dictionary keyed and valued by them (ContainsValue(null)), Equals/GetHashCode/ToString/GetValueOrDefault, Sort with nulls first, bool? three-valued logic, a nullable struct, Value of an empty one throwing; output identical to .NET
+// expect-exit: 0
+// expect-output:
+// 5 [] FalseTrueTrue TrueFalse 5 0 9
+// 6 [] TrueFalseFalse 5 7 8 []
+// [][][][] False
+// 3 4/p [] 2.5 (1, t) t p
+// 5 6 7 -5 []
+// 5 True Int32 5 []
+// is 5
+// not
+// got 5
+// 1,,3 2 4
+// 0,,1,,2,,3 6
+// oneFalseTrue
+// [] 4 TrueTrue
+// True False True 5 0 []
+// null,null,1,2,3
+//  False True  False
+// 9 9 has
+// Nullable object must have a value.
+// (, n) (1, a) (2, b)
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+struct Pt { public int X; public string? Name; public override string ToString() => X + "/" + Name; }
+sealed class Holder { public int? N; public Pt? P; public double? D; public (int, string)? T; }
+
+static class Program
+{
+    static int? Half(int v) => v % 2 == 0 ? v / 2 : null;
+    static long? Sum(int? a, long? b) => a + b;
+    static int Main()
+    {
+        int? a = 5, b = null;
+        Console.WriteLine(a + " [" + b + "] " + (a == null) + (b == null) + (a != null) + " " + a.HasValue + b.HasValue + " " + a.Value + " " + b.GetValueOrDefault() + " " + b.GetValueOrDefault(9));
+        Console.WriteLine((a + 1) + " [" + (b + 1) + "] " + (a * 2 > 9) + (b > 0) + (b < 0) + " " + (a ?? 7) + " " + (b ?? 7) + " " + Sum(a, 3L) + " [" + Sum(b, 3) + "]");
+        var h = new Holder();
+        Console.WriteLine("[" + h.N + "][" + h.P + "][" + h.D + "][" + h.T + "] " + h.N.HasValue);
+        h.N = 3; h.P = new Pt { X = 4, Name = "p" }; h.D = 2.5; h.T = (1, "t");
+        var copy = h.P; h.P = null;
+        Console.WriteLine(h.N + " " + copy + " [" + h.P + "] " + h.D + " " + h.T + " " + h.T?.Item2 + " " + copy?.Name);
+        int? c = a; c++; ++c;
+        int? d = c--;
+        Console.WriteLine(a + " " + c + " " + d + " " + (-a) + " [" + (-b) + "]");
+        object boxed = a; object nothing = b;
+        Console.WriteLine(boxed + " " + (nothing == null) + " " + boxed.GetType().Name + " " + (int?)boxed + " [" + (int?)nothing + "]");
+        if (a is int v) Console.WriteLine("is " + v);
+        if (b is int w) Console.WriteLine("no"); else Console.WriteLine("not");
+        if (a is { } got) Console.WriteLine("got " + got);
+        var arr = new int?[] { 1, null, 3 };
+        Console.WriteLine(string.Join(",", arr) + " " + arr.Count(x => x.HasValue) + " " + arr.Sum());
+        var list = Enumerable.Range(0, 7).Select(Half).ToList();
+        Console.WriteLine(string.Join(",", list) + " " + list.Where(x => x != null).Sum());
+        var dict = new Dictionary<int?, string> { [1] = "one", [2] = "two" };
+        Console.WriteLine(dict[1] + dict.ContainsKey(3) + dict.ContainsKey(2));
+        var keyed = new Dictionary<string, int?> { ["x"] = null, ["y"] = 4 };
+        Console.WriteLine("[" + keyed["x"] + "] " + keyed["y"] + " " + keyed.ContainsValue(null) + keyed.ContainsValue(4));
+        Console.WriteLine(a.Equals(5) + " " + a.Equals(b) + " " + b.Equals(null) + " " + a.GetHashCode() + " " + b.GetHashCode() + " [" + b.ToString() + "]");
+        int?[] sorted = { 3, null, 1, null, 2 };
+        Array.Sort(sorted);
+        Console.WriteLine(string.Join(",", sorted.Select(x => x?.ToString() ?? "null")));
+        bool? t = true, f = false, n = null;
+        Console.WriteLine((t & n) + " " + (f & n) + " " + (t | n) + " " + (f | n) + " " + (n ?? false));
+        Pt? q = new Pt { X = 9 };
+        Console.WriteLine(q.Value.X + " " + q?.X + " " + (q.HasValue ? "has" : "none"));
+        try { Console.WriteLine(b.Value); } catch (InvalidOperationException e) { Console.WriteLine(e.Message); }
+        var tuples = new List<(int?, string)> { (null, "n"), (2, "b"), (1, "a") };
+        tuples.Sort();
+        Console.WriteLine(string.Join(" ", tuples));
+        return 0;
+    }
+}

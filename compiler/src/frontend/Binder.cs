@@ -2022,6 +2022,18 @@ public sealed partial class Binder
             LayOut(sym);
         }
 
+        // A SPECIALISATION'S ARGUMENTS, resolved once in its own scope, for
+        // the name .NET gives it: List`1[[System.Int32, ...]].
+        _quiet++;
+        try
+        {
+            foreach (TypeSymbol made in _r.Types.Values.Where(t => t.Decl is { Specialised: true, TemplateArgs.Count: > 0 } && t.TemplateArgTypes.Count == 0))
+            {
+                foreach (TypeRef arg in made.Decl!.TemplateArgs) made.TemplateArgTypes.Add(Resolve(arg, made));
+            }
+        }
+        finally { _quiet--; }
+
         // The tuple shapes met so far take ValueTuple's interfaces now that
         // those have slots; any made from here on take them as they are made.
         // Asked for by name, so that every unit has them -- a unit's library
@@ -3040,6 +3052,20 @@ public sealed partial class Binder
     /// </summary>
     private bool InlineStruct(Type t)
     {
+        // A NULLABLE VALUE IS Nullable<T>, a struct of its own (BindResult.
+        // NullableShape), held in line where T can be: a number, an enum, or
+        // a struct held in line itself.
+        if (t.IsNullableValue && !t.IsPointer && !t.IsArray)
+        {
+            Type under = t.Underlying;
+            if (under.ParamName != null || under.IsError || under.IsReference || under.Prim == Prim.Any) return false;
+            if (under.Symbol is { Kind: TypeKind.Struct } held)
+            {
+                LayOut(held);
+                return held.HeldInline;
+            }
+            return under.Size > 0;
+        }
         if (t.IsPointer || t.IsArray || t.Nullable || t.IsNullableValue) return false;
         if (t.Symbol is not { Kind: TypeKind.Struct } sym) return false;
         if (t.ParamName != null) return false;
@@ -3096,11 +3122,11 @@ public sealed partial class Binder
     /// sizeof and every copy of it say -- and each one held in line is put
     /// at this alignment.
     /// </summary>
-    private static int InlineAlignOf(TypeSymbol sym)
+    private int InlineAlignOf(TypeSymbol sym)
     {
         int widest = 1;
         foreach (FieldSymbol f in sym.Fields.Where(f => !f.Static))
-            widest = Math.Max(widest, f.Inline ? Math.Max(1, f.Type.Symbol!.InlineAlign) : Math.Min(8, Math.Max(1, f.Type.Size)));
+            widest = Math.Max(widest, f.Inline ? Math.Max(1, _r.StructOf(f.Type).InlineAlign) : Math.Min(8, Math.Max(1, f.Type.Size)));
         return Math.Min(8, widest);
     }
 
@@ -3199,7 +3225,7 @@ public sealed partial class Binder
             int align = size;
             if (f.Inline)
             {
-                TypeSymbol held = f.Type.Symbol!;
+                TypeSymbol held = _r.StructOf(f.Type);
                 size = Math.Max(1, held.InstanceSize);
                 align = Math.Max(1, held.InlineAlign);
             }
@@ -7780,7 +7806,17 @@ public sealed partial class Binder
     {
         // A SHAPE NO VALUE IS EVER MADE OF -- an item unresolved where it was
         // met, a template's own parameter, a pointer -- implements nothing.
-        if (tuple.TupleFacesGiven || tuple.Fields.Any(f => !f.Static && (f.Type.Size <= 0 || f.Type.IsError || f.Type.ParamName is not null
+        if (tuple.TupleFacesGiven) return;
+        // object's three, in the slots every type has them in -- numbered
+        // only now: a shape laid out before the numbering had all three in
+        // slot zero in one unit and in their own in another.
+        foreach (MethodSymbol m in tuple.Methods.Where(m => m.ExplicitInterface is null && !m.Static))
+        {
+            if (m.Name == "ToString" && m.Params.Count == 0) m.VtableSlot = _r.ToStringSlot;
+            else if (m.Name == "GetHashCode" && m.Params.Count == 0) m.VtableSlot = _r.HashSlot;
+            else if (m.Name == "Equals" && m.Params.Count == 1 && m.Params[0].Type.Prim == Prim.Any) m.VtableSlot = _r.EqualsSlot;
+        }
+        if (tuple.Fields.Any(f => !f.Static && (f.Type.Size <= 0 || f.Type.IsError || f.Type.ParamName is not null
                 || f.Type.IsPointer || f.Type.Function is not null || f.Type.Prim == Prim.Void && f.Type.Symbol is null && !f.Type.IsArray))) return;
         tuple.TupleFacesGiven = true;
         List<TypeSymbol> faces = new();
@@ -11493,7 +11529,8 @@ public sealed partial class Binder
                 // and not merely a name for the same bits. Marked on the
                 // operand, because that is the value the cell is made from.
                 if (wanted.IsNullableValue && !operand.IsNullableValue
-                    && operand.Prim != Prim.NullLiteral && !operand.IsError)
+                    && operand.Prim is not (Prim.NullLiteral or Prim.Any) && !operand.IsError
+                    && !operand.IsReference && operand.Symbol is not { Kind: TypeKind.Interface })
                 {
                     _r.Boxes.Add(cast.Operand);
                 }

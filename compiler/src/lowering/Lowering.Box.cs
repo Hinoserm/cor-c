@@ -103,7 +103,7 @@ public sealed partial class Lowering
                 {
                     continue;
                 }
-                VReg own = CopyStruct(at, _e.Load(IrTypes.Word, into, f.Offset), f.Type.Symbol!);
+                VReg own = CopyStruct(at, _e.Load(IrTypes.Word, into, f.Offset), StructOf(f.Type));
                 StoreNewReference(into, own, f.Offset);
             }
             return obj;
@@ -149,7 +149,7 @@ public sealed partial class Lowering
         if (BoxedBlock(want))
         {
             VReg inside = _e.Binary(Opcode.Add, obj, _t.ObjectHeaderBytes);
-            return CopyStruct(at, inside, want.Symbol!);
+            return CopyStruct(at, inside, StructOf(want));
         }
 
         return _e.Load(BoxSlot(want), obj, _t.ObjectHeaderBytes, Math.Max(1, want.Size),

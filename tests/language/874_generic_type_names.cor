@@ -1,0 +1,25 @@
+// test: a generic type's Name is .NET's (List`1, Dictionary`2, List`1[]) and its FullName and ToString name its namespace (System.Collections.Generic) and its arguments, FullName assembly-qualifying them; output identical to .NET
+// expect-exit: 0
+// expect-output:
+// List`1 | System.Collections.Generic.List`1[System.Int32]
+// Dictionary`2 | System.Collections.Generic.Dictionary`2[System.String,System.Collections.Generic.List`1[System.Int32]]
+// List`1 | System.Collections.Generic.List`1[Node]
+// List`1[] | System.Collections.Generic.List`1[System.Int32][]
+// ValueTuple`2 | (1, a)
+// HashSet`1 | System.Collections.Generic.HashSet`1[System.ValueTuple`2[System.Int32,System.String]]
+// System.Collections.Generic.List`1[[System.Int32, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]]
+// Dictionary`2
+using System;
+using System.Collections.Generic;
+sealed class Node { }
+static class Program
+{
+    static int Main()
+    {
+        object[] values = { new List<int>(), new Dictionary<string, List<int>>(), new List<Node>(), new List<int>[2], (object)(1, "a"), new HashSet<(int, string)>() };
+        foreach (object v in values) Console.WriteLine(v.GetType().Name + " | " + v.ToString());
+        Console.WriteLine(new List<int>().GetType().FullName);
+        Console.WriteLine(typeof(Dictionary<int, string>).Name);
+        return 0;
+    }
+}

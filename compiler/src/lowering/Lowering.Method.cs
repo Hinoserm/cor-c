@@ -715,9 +715,9 @@ public sealed partial class Lowering
                 }
                 VReg basis = RegOf(held.Address);
                 VReg into = held.Offset == 0 ? basis : _e.Binary(Opcode.Add, basis, held.Offset);
-                int bytes = Math.Max(1, held.Type.Symbol!.InstanceSize);
+                int bytes = Math.Max(1, StructOf(held.Type).InstanceSize);
                 List<(int Offset, VReg Value)> references = new();
-                foreach ((int offset, Type type) in TracedFields(held.Type.Symbol!, 0))
+                foreach ((int offset, Type type) in TracedFields(StructOf(held.Type), 0))
                 {
                     if (!MayHoldReference(type)) continue;
                     VReg word = _e.Load(IrTypes.Word, value, offset);
@@ -1102,7 +1102,7 @@ public sealed partial class Lowering
                 Block made = _f.NewBlock("szdone");
                 _e.Branch(held, made, make);
                 _e.SetBlock(make);
-                VReg zero = NewStruct(at, f.Type.Symbol!);
+                VReg zero = NewStruct(at, StructOf(f.Type));
                 VReg old = _e.Reg(IrTypes.Word);
                 _e.Emit(Opcode.AtomicCas, old, R(at2), R(_e.Const(0, IrTypes.Word)), R(zero));
                 _e.Jump(made);

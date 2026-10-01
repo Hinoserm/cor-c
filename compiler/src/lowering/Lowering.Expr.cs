@@ -134,9 +134,12 @@ public sealed partial class Lowering
         // a copy, as C# promises. The representation is still a pointer to a
         // block, so a copy is a fresh block with the bytes moved over -- unless
         // the expression already produced a block nobody else holds.
-        if (IsStructValue(target) && !IsFreshStruct(e))
+        // Only a struct already: anything else is made one by the conversion
+        // below -- a number or a null into a Nullable<T> -- and is new.
+        if (IsStructValue(target) && IsStructValue(_b.TypeOf(e)) && !IsFreshStruct(e)
+            && ReferenceEquals(StructOf(_b.TypeOf(e)), StructOf(target)))
         {
-            v = CopyStruct(e, v, target.Symbol!);
+            v = CopyStruct(e, v, StructOf(target));
         }
 
         // A USER-DEFINED CONVERSION already produced the operator's result;
@@ -166,9 +169,13 @@ public sealed partial class Lowering
             _ => false,
         };
 
-    /// <summary>A struct held by value: copied at every boundary. Not a pointer to one, not a nullable cell.</summary>
+    /// <summary>
+    /// A struct held by value: copied at every boundary. Not a pointer to one.
+    /// A nullable value is one too -- Nullable&lt;T&gt;, whose struct is its
+    /// shape (StructOf).
+    /// </summary>
     private static bool IsStructValue(Type t)
-        => t.Symbol is { Kind: TypeKind.Struct } && !t.IsPointer && !t.Nullable && !t.IsArray;
+        => !t.IsPointer && !t.IsArray && (t.IsNullableValue || t.Symbol is { Kind: TypeKind.Struct } && !t.Nullable);
 
     /// <summary>
     /// AN ARRAY'S STRUCT ELEMENTS HELD IN LINE (TypeSymbol.HeldInline): each
@@ -176,13 +183,13 @@ public sealed partial class Lowering
     /// struct array out -- not a word pointing at a block of its own, which
     /// cost an allocation for every element made, stored or copied.
     /// </summary>
-    private static bool InlineElement(Type element) => IsStructValue(element) && element.Symbol!.HeldInline;
+    private bool InlineElement(Type element) => IsStructValue(element) && StructOf(element).HeldInline;
 
     /// <summary>The bytes from one element of an array to the next.</summary>
-    private static int ElementStride(Type element)
+    private int ElementStride(Type element)
     {
         if (!InlineElement(element)) return Math.Max(1, element.Size);
-        TypeSymbol held = element.Symbol!;
+        TypeSymbol held = StructOf(element);
         int align = Math.Max(1, held.InlineAlign);
         return (Math.Max(1, held.InstanceSize) + align - 1) / align * align;
     }
@@ -201,7 +208,7 @@ public sealed partial class Lowering
             StoreNew(array, value, offset, element);
             return;
         }
-        TypeSymbol held = element.Symbol!;
+        TypeSymbol held = StructOf(element);
         VReg into = _e.Binary(Opcode.Add, array, offset);
         _e.Emit(Opcode.MemCopy, null, R(into), R(value), Imm(Math.Max(1, held.InstanceSize), IrTypes.Word));
         foreach ((int at, Type type) in TracedFields(held, 0))
@@ -278,7 +285,7 @@ public sealed partial class Lowering
                 {
                     continue;
                 }
-                VReg inner = NewStruct(at, f.Type.Symbol!);
+                VReg inner = NewStruct(at, StructOf(f.Type));
                 StoreNewReference(obj, inner, f.Offset);
             }
         }
@@ -342,7 +349,7 @@ public sealed partial class Lowering
                 continue;
             }
             VReg shared = _e.Load(IrTypes.Word, made, field.Offset);
-            VReg own = CopyStruct(at, shared, field.Type.Symbol!);
+            VReg own = CopyStruct(at, shared, StructOf(field.Type));
             StoreNewReference(made, own, field.Offset);
         }
         _e.Ret(R(made));
@@ -382,11 +389,11 @@ public sealed partial class Lowering
             Block liftSome = _f.NewBlock("liftsome");
             Block liftEnd = _f.NewBlock("liftend");
 
-            _e.CopyTo(lifted, Imm(0, lifted.Type));
-            _e.Branch(v, liftSome, liftEnd);
+            _e.CopyTo(lifted, R(NullableEmpty(at, to)));
+            _e.Branch(HasValue(v), liftSome, liftEnd);
             _e.SetBlock(liftSome);
 
-            VReg inside = LoadPlace(new MemPlace(R(v), 0, inner));
+            VReg inside = NullableRead(v, from);
 
             _e.CopyTo(lifted, R(Box(at, Convert(at, inside, inner, wanted), wanted)));
             _e.Jump(liftEnd);
@@ -424,9 +431,9 @@ public sealed partial class Lowering
             Block some = _f.NewBlock("nbsome");
             Block end = _f.NewBlock("nbend");
             _e.CopyTo(boxed, Imm(0, IrTypes.Word));
-            _e.Branch(v, some, end);
+            _e.Branch(HasValue(v), some, end);
             _e.SetBlock(some);
-            VReg inside = LoadPlace(new MemPlace(R(v), 0, from.Underlying));
+            VReg inside = NullableRead(v, from);
             _e.CopyTo(boxed, R(BoxValue(at, inside, from.Underlying)));
             _e.Jump(end);
             _e.SetBlock(end);
@@ -453,6 +460,29 @@ public sealed partial class Lowering
         // where a word is 32 bits, and in long mode a null arm of `x?.M() ==
         // true` copied as an I32 into the cell register, which the verifier
         // refused at every link.
+        // AN OBJECT INTO A NULLABLE VALUE (C# 10.3.7): null is one with no
+        // value, anything else unboxed as T -- a box of another type refused
+        // as any unboxing is -- and the value wrapped.
+        if ((from.Prim == Prim.Any || from.Symbol is { Kind: TypeKind.Interface }) && to.IsNullableValue && Boxable(to.Underlying))
+        {
+            VReg made = _f.NewReg(IrTypes.Word, "unbn");
+            Block some = _f.NewBlock("unbnsome"), end = _f.NewBlock("unbnend");
+            _e.CopyTo(made, R(NullableEmpty(at, to)));
+            _e.Branch(v, some, end);
+            _e.SetBlock(some);
+            _e.CopyTo(made, R(Box(at, Unbox(at, v, to.Underlying), to)));
+            _e.Jump(end);
+            _e.SetBlock(end);
+            return made;
+        }
+
+        // NULL AS A NULLABLE VALUE is one with no value: all zero, as
+        // default(T?) is, and not a null pointer.
+        if (from.Prim == Prim.NullLiteral && to.IsNullableValue)
+        {
+            return NullableEmpty(at, to);
+        }
+
         // A NULLABLE VALUE TO WHAT IT HOLDS is its Value (C# 10.3.4): what is
         // in the cell, and InvalidOperationException when there is none. Taken
         // as a word it handed over the cell's address as the value.
@@ -768,7 +798,7 @@ public sealed partial class Lowering
                 return _e.Const(0, IrTypes.Word);
 
             case DefaultExpr df when IsStructValue(_b.TypeOf(df)):
-                return NewStruct(df, _b.TypeOf(df).Symbol!);
+                return NewStruct(df, StructOf(_b.TypeOf(df)));
 
             case DefaultExpr df:
             {
@@ -913,7 +943,7 @@ public sealed partial class Lowering
             VReg cell = Eval(m.Target);
             if (m.Name == "HasValue")
             {
-                return _e.Binary(Opcode.Ne, R(cell), Imm(0, cell.Type), IrType.I32);
+                return HasValue(cell);
             }
             return NullableValue(cell, target.Underlying);
         }
@@ -1018,7 +1048,8 @@ public sealed partial class Lowering
         Block some = _f.NewBlock("qmsome");
         Block end = _f.NewBlock("qmend");
 
-        _e.CopyTo(dest, Imm(0, dest.Type));
+        // An empty Nullable when the answer is one: what `?.` gives for null.
+        _e.CopyTo(dest, result.IsNullableValue ? R(NullableEmpty(m, result)) : Imm(0, dest.Type));
         _e.Branch(obj, some, end);
         _e.SetBlock(some);
 
@@ -1096,13 +1127,13 @@ public sealed partial class Lowering
     }
 
     /// <summary>
-    /// What a Nullable&lt;T&gt; holds: the value in its cell, or, when it has
-    /// none, InvalidOperationException as .NET's Value throws it.
+    /// What a Nullable&lt;T&gt; holds: its value, or, when it has none,
+    /// InvalidOperationException as .NET's Value throws it.
     /// </summary>
     private VReg NullableValue(VReg cell, Type inner)
     {
         Block some = _f.NewBlock("nvsome"), none = _f.NewBlock("nvnone");
-        _e.Branch(cell, some, none);
+        _e.Branch(HasValue(cell), some, none);
         _e.SetBlock(none);
         if (RuntimeMethod("NoValue", 0) is MethodSymbol fail)
         {
@@ -1112,20 +1143,56 @@ public sealed partial class Lowering
         _e.Emit(Opcode.Trap, null);
         _e.Unreachable();
         _e.SetBlock(some);
-        return LoadPlace(new MemPlace(R(cell), 0, inner));
+        return NullableRead(cell, inner.AsNullable());
     }
 
-    /// <summary>A value into a Nullable<T> cell: one allocation holding it; the cell's address is the result.</summary>
+    /// <summary>The struct a value of this type is (BindResult.StructOf): a nullable value's Nullable&lt;T&gt; shape too.</summary>
+    private TypeSymbol StructOf(Type t) => _b.StructOf(t);
+
+    /// <summary>Whether a Nullable&lt;T&gt; has a value: its first byte, hasValue.</summary>
+    private VReg HasValue(VReg nullable) => _e.Load(IrType.I32, nullable, 0, 1, false);
+
+    /// <summary>Where a Nullable&lt;T&gt;'s value is, after hasValue at T's alignment.</summary>
+    private MemPlace NullableValuePlace(VReg nullable, Type type)
+    {
+        FieldSymbol value = StructOf(type.IsNullableValue ? type : type.AsNullable()).Fields[1];
+        return new MemPlace(R(nullable), value.Offset, value.Type, Inline: value.Inline);
+    }
+
+    /// <summary>A Nullable&lt;T&gt;'s value, read without asking whether it has one.</summary>
+    private VReg NullableRead(VReg nullable, Type type) => LoadPlace(NullableValuePlace(nullable, type));
+
+    /// <summary>A Nullable&lt;T&gt; with no value: all of it zero, as default(T?) is.</summary>
+    private VReg NullableEmpty(Node at, Type type) => NewStruct(at, StructOf(type.IsNullableValue ? type : type.AsNullable()));
+
+    /// <summary>
+    /// A value made a Nullable&lt;T&gt; holding it (C# 10.2.6): hasValue set and
+    /// the value after it, a struct like any other -- held in line where it
+    /// is held, and on the stack where it goes no further.
+    /// </summary>
     private VReg Box(Node at, VReg value, Type held)
     {
-        Type inner = held.Underlying;
-        if (IsStructValue(inner))
+        Type nullable = held.IsNullableValue ? held : held.AsNullable();
+        // A reference's `?` is an annotation: the reference is the value.
+        if (!nullable.IsNullableValue)
         {
-            value = CopyStruct(at, value, inner.Symbol!);
+            return value;
         }
-        VReg cell = Allocate(at, Math.Max(_t.WordSize, inner.Size));
-        StoreNew(cell, value, 0, inner);
-        return cell;
+        TypeSymbol shape = StructOf(nullable);
+        VReg made = NewStruct(at, shape);
+        _e.Store(R(made), Imm(1, IrType.I32), 0, 1);
+        FieldSymbol slot = shape.Fields[1];
+        Type inner = nullable.Underlying;
+        if (slot.Inline)
+        {
+            StoreNewElement(made, slot.Offset, inner, value);
+        }
+        else
+        {
+            if (IsStructValue(inner)) value = CopyStruct(at, value, StructOf(inner));
+            StoreNew(made, value, slot.Offset, inner);
+        }
+        return made;
     }
 
     private VReg EmitNew(NewExpr nw)
@@ -1146,7 +1213,7 @@ public sealed partial class Lowering
             int stride = ElementStride(element);
             for (int i = 0; i < written.Count; i++)
             {
-                VReg value = InlineElement(element) ? Convert(written[i], Eval(written[i]), _b.TypeOf(written[i]), element) : EvalAs(written[i], element);
+                VReg value = InlineElement(element) ? InlineValue(new MemPlace(R(array), 0, element, Inline: true), written[i], element) : EvalAs(written[i], element);
                 StoreNewElement(array, _t.ArrayHeaderBytes + (long)i * stride, element, value);
             }
             return array;
@@ -1251,7 +1318,7 @@ public sealed partial class Lowering
         VReg bytes = stride == 1 ? count : _e.Binary(Opcode.Mul, count, stride);
         VReg total = _e.Binary(Opcode.Add, WordOf(bytes), _t.ArrayHeaderBytes);
         bool inline = InlineElement(element);
-        bool references = inline && InlineHasReferences(element.Symbol!);
+        bool references = inline && InlineHasReferences(StructOf(element));
         VReg array = AllocateDynamic(at, total, inline ? !references : LeafElement(element), described: true);
         string desc = SequenceDescriptor(ElementKey(element), stride, isString: false, inline ? references : null, elementType: element);
         _e.Store(R(array), new SymOperand(desc, _t.DescriptorBytes), 0, _t.WordSize);
@@ -1270,7 +1337,7 @@ public sealed partial class Lowering
         // keeps the semantics right until then.
         if (IsStructValue(element))
         {
-            int size = Math.Max(1, element.Symbol!.InstanceSize);
+            int size = Math.Max(1, StructOf(element).InstanceSize);
             VReg index = _f.NewReg(IrType.I32, "ei");
             _e.CopyTo(index, Imm(0, IrType.I32));
             Block top = _f.NewBlock("eloop");
@@ -1280,7 +1347,7 @@ public sealed partial class Lowering
             _e.SetBlock(top);
             _e.Branch(_e.Binary(Opcode.LtS, index, count), body, done);
             _e.SetBlock(body);
-            VReg block = NewStruct(at, element.Symbol!);
+            VReg block = NewStruct(at, StructOf(element));
             VReg slot = _e.Binary(Opcode.Add, array, WordOf(_e.Binary(Opcode.Mul, index, stride)));
             StoreNewReference(slot, block, _t.ArrayHeaderBytes);
             _e.CopyTo(index, R(_e.Binary(Opcode.Add, index, 1)));
@@ -1492,14 +1559,14 @@ public sealed partial class Lowering
                 {
                     VReg from = f.Offset == 0 ? src : _e.Binary(Opcode.Add, src, f.Offset);
                     VReg to = f.Offset == 0 ? obj : _e.Binary(Opcode.Add, obj, f.Offset);
-                    _e.Emit(Opcode.MemCopy, null, R(to), R(from), Imm(Math.Max(1, f.Type.Symbol!.InstanceSize), IrTypes.Word));
+                    _e.Emit(Opcode.MemCopy, null, R(to), R(from), Imm(Math.Max(1, StructOf(f.Type).InstanceSize), IrTypes.Word));
                     continue;
                 }
                 VReg v = LoadPlace(new MemPlace(R(src), f.Offset, f.Type));
                 // A struct field is copied, not shared with the source.
                 if (!f.Boxed && IsStructValue(f.Type))
                 {
-                    v = CopyStruct(copy, v, f.Type.Symbol!);
+                    v = CopyStruct(copy, v, StructOf(f.Type));
                 }
                 StoreNew(obj, v, f.Offset, f.Type, f);
             }
@@ -1791,17 +1858,18 @@ public sealed partial class Lowering
         if (_b.NullablePatterns.Contains(isx))
         {
             // `nullable is T value`: null is false; a present cell is opened.
-            Type held = _b.TypeOf(isx.Operand).Underlying;
+            Type whole = _b.TypeOf(isx.Operand);
+            Type held = whole.Underlying;
             VReg cell = Eval(isx.Operand);
             VReg result = _f.NewReg(IrType.I32, "isn");
             Block some = _f.NewBlock("isnsome");
             Block end = _f.NewBlock("isnend");
             _e.CopyTo(result, Imm(0, IrType.I32));
-            _e.Branch(cell, some, end);
+            _e.Branch(HasValue(cell), some, end);
             _e.SetBlock(some);
             if (_b.PatternSlot.TryGetValue(isx, out int slot))
             {
-                VReg v = LoadPlace(new MemPlace(R(cell), 0, held));
+                VReg v = NullableRead(cell, whole);
                 BindPattern(isx, slot, held, v);
             }
             _e.CopyTo(result, Imm(1, IrType.I32));
@@ -1838,6 +1906,16 @@ public sealed partial class Lowering
         VReg obj = Eval(isx.Operand);
 
         // `is { } y` asks only that the subject is there.
+        if (isx.Type.Name == TypeRef.Same && _b.TypeOf(isx.Operand).IsNullableValue)
+        {
+            // Over a nullable value: whether it has one, and the value named.
+            Type whole = _b.TypeOf(isx.Operand);
+            if (_b.PatternSlot.TryGetValue(isx, out int present))
+            {
+                BindPattern(isx, present, whole.Underlying, NullableRead(obj, whole));
+            }
+            return HasValue(obj);
+        }
         if (isx.Type.Name == TypeRef.Same)
         {
             if (_b.PatternSlot.TryGetValue(isx, out int same))
@@ -2448,7 +2526,9 @@ public sealed partial class Lowering
                 // the old one keeps it).
                 if (operand.IsNullableValue)
                 {
-                    VReg had = _e.Copy(LoadPlace(p));
+                    // The value before, kept apart from the place the
+                    // stepped one is copied into.
+                    VReg had = CopyStruct(u, LoadPlace(p), StructOf(operand));
                     VReg stepped = NullableArith(u, inc ? BinOp.Add : BinOp.Sub, had, operand, _e.Const(1, IrType.I32), Type.I32, operand);
                     StorePlace(p, stepped);
                     return post ? had : stepped;
@@ -2565,7 +2645,10 @@ public sealed partial class Lowering
     {
         if (place is MemPlace { Inline: true } && IsStructValue(storedAs))
         {
-            return Convert(value, Eval(value), _b.TypeOf(value), storedAs);
+            // Already made what it is stored as -- a number the checker marked
+            // to go into a Nullable -- it is not converted a second time.
+            VReg made = Eval(value);
+            return _b.Boxes.Contains(value) || _b.Views.ContainsKey(value) ? made : Convert(value, made, _b.TypeOf(value), storedAs);
         }
         return EvalAs(value, storedAs);
     }
@@ -2594,7 +2677,7 @@ public sealed partial class Lowering
         }
         if (fresh)
         {
-            VReg made = NewStruct(target, type.Symbol!);
+            VReg made = NewStruct(target, StructOf(type));
             StorePlace(place, made);
             return made;
         }
@@ -2607,7 +2690,7 @@ public sealed partial class Lowering
         _e.SetBlock(make);
         // The parameter's struct type, not the argument's: an argument may
         // name the variable through a type that carries no symbol of its own.
-        VReg zero = NewStruct(target, type.Symbol!);
+        VReg zero = NewStruct(target, StructOf(type));
         StorePlace(place, zero);
         _e.CopyTo(result, R(zero));
         _e.Jump(done);
@@ -2682,6 +2765,16 @@ public sealed partial class Lowering
             && left.Prim != Prim.NullLiteral && right.Prim != Prim.NullLiteral)
         {
             return NullableEquality(b, left, right);
+        }
+
+        // A NULLABLE VALUE AGAINST NULL asks whether it has a value: it is a
+        // struct, and never a null pointer.
+        if (b.Op is BinOp.Eq or BinOp.Ne
+            && (left.IsNullableValue && right.Prim == Prim.NullLiteral || right.IsNullableValue && left.Prim == Prim.NullLiteral))
+        {
+            VReg some = HasValue(left.IsNullableValue ? Eval(b.Left) : Eval(b.Right));
+            if (left.IsNullableValue) Eval(b.Right); else Eval(b.Left);
+            return b.Op == BinOp.Ne ? some : _e.Binary(Opcode.Eq, R(some), Imm(0, IrType.I32), IrType.I32);
         }
 
         // AND THE ORDERED ONES ARE LIFTED TOO: `n > 3` for an `int? n` is false
@@ -2796,12 +2889,12 @@ public sealed partial class Lowering
         Block end = _f.NewBlock("ncend");
 
         VReg l = Eval(b.Left);
-        _e.Branch(l, got, miss);
+        _e.Branch(left.IsNullableValue ? HasValue(l) : l, got, miss);
 
         _e.SetBlock(got);
         if (left.IsNullableValue && !result.IsNullableValue)
         {
-            _e.CopyTo(dest, R(Convert(b, LoadPlace(new MemPlace(R(l), 0, left.Underlying)), left.Underlying, result)));
+            _e.CopyTo(dest, R(Convert(b, NullableRead(l, left), left.Underlying, result)));
         }
         else
         {
@@ -2843,28 +2936,28 @@ public sealed partial class Lowering
         {
             Block lSome = _f.NewBlock("nqls");
             Block lNone = _f.NewBlock("nqln");
-            _e.Branch(l, lSome, lNone);
+            _e.Branch(HasValue(l), lSome, lNone);
             _e.SetBlock(lNone);
-            _e.Branch(r, differ, same);
+            _e.Branch(HasValue(r), differ, same);
             _e.SetBlock(lSome);
-            _e.Branch(r, compare, differ);
+            _e.Branch(HasValue(r), compare, differ);
             _e.SetBlock(compare);
-            lv = LoadPlace(new MemPlace(R(l), 0, inner));
-            rv = LoadPlace(new MemPlace(R(r), 0, inner));
+            lv = NullableRead(l, left);
+            rv = NullableRead(r, right);
         }
         else if (left.IsNullableValue)
         {
-            _e.Branch(l, compare, differ);
+            _e.Branch(HasValue(l), compare, differ);
             _e.SetBlock(compare);
-            lv = LoadPlace(new MemPlace(R(l), 0, inner));
+            lv = NullableRead(l, left);
             rv = Convert(b, r, right, inner);
         }
         else
         {
-            _e.Branch(r, compare, differ);
+            _e.Branch(HasValue(r), compare, differ);
             _e.SetBlock(compare);
             lv = Convert(b, l, left, inner);
-            rv = LoadPlace(new MemPlace(R(r), 0, inner));
+            rv = NullableRead(r, right);
         }
 
         VReg eq = inner.IsFloat ? _e.Binary(Opcode.FEq, lv, rv) : _e.Binary(Opcode.Eq, lv, rv);
@@ -2902,7 +2995,7 @@ public sealed partial class Lowering
 
         if (left.IsNullableValue)
         {
-            _e.Branch(l, leftHas, end);
+            _e.Branch(HasValue(l), leftHas, end);
         }
         else
         {
@@ -2913,7 +3006,7 @@ public sealed partial class Lowering
 
         if (right.IsNullableValue)
         {
-            _e.Branch(r, compare, end);
+            _e.Branch(HasValue(r), compare, end);
         }
         else
         {
@@ -2922,8 +3015,8 @@ public sealed partial class Lowering
 
         _e.SetBlock(compare);
 
-        VReg lv = left.IsNullableValue ? LoadPlace(new MemPlace(R(l), 0, leftInner)) : l;
-        VReg rv = right.IsNullableValue ? LoadPlace(new MemPlace(R(r), 0, rightInner)) : r;
+        VReg lv = left.IsNullableValue ? NullableRead(l, left) : l;
+        VReg rv = right.IsNullableValue ? NullableRead(r, right) : r;
 
         lv = Convert(b.Left, lv, leftInner, promoted);
         rv = Convert(b.Right, rv, rightInner, promoted);
@@ -2956,15 +3049,15 @@ public sealed partial class Lowering
         Block both = _f.NewBlock("naboth");
         Block end = _f.NewBlock("naend");
 
-        _e.CopyTo(result, Imm(0, IrTypes.Word));
+        _e.CopyTo(result, R(NullableEmpty(b, whole)));
 
-        if (left.IsNullableValue) _e.Branch(l, leftHas, end); else _e.Jump(leftHas);
+        if (left.IsNullableValue) _e.Branch(HasValue(l), leftHas, end); else _e.Jump(leftHas);
         _e.SetBlock(leftHas);
-        if (right.IsNullableValue) _e.Branch(r, both, end); else _e.Jump(both);
+        if (right.IsNullableValue) _e.Branch(HasValue(r), both, end); else _e.Jump(both);
         _e.SetBlock(both);
 
-        VReg lv = left.IsNullableValue ? LoadPlace(new MemPlace(R(l), 0, leftInner)) : l;
-        VReg rv = right.IsNullableValue ? LoadPlace(new MemPlace(R(r), 0, rightInner)) : r;
+        VReg lv = left.IsNullableValue ? NullableRead(l, left) : l;
+        VReg rv = right.IsNullableValue ? NullableRead(r, right) : r;
         lv = Convert(b, lv, leftInner, promoted);
         rv = Convert(b, rv, rightInner, rightPromoted);
         VReg value = Convert(b, Arith(b, op, lv, rv, promoted), ResultTypeOf(op, promoted), whole.Underlying);
@@ -2986,10 +3079,10 @@ public sealed partial class Lowering
         VReg result = _f.NewReg(IrTypes.Word, "nu");
         Block has = _f.NewBlock("nuhas");
         Block end = _f.NewBlock("nuend");
-        _e.CopyTo(result, Imm(0, IrTypes.Word));
-        _e.Branch(cell, has, end);
+        _e.CopyTo(result, R(NullableEmpty(u, whole.IsNullableValue ? whole : promoted.AsNullable())));
+        _e.Branch(HasValue(cell), has, end);
         _e.SetBlock(has);
-        VReg v = Convert(u, LoadPlace(new MemPlace(R(cell), 0, inner)), inner, promoted);
+        VReg v = Convert(u, NullableRead(cell, operand), inner, promoted);
         VReg made = u.Op == UnOp.Neg
             ? (promoted.IsFloat ? _e.Unary(Opcode.FNeg, v) : _e.Unary(Opcode.Neg, v))
             : Canonical(_e.Unary(Opcode.Not, v), promoted);
@@ -3040,7 +3133,7 @@ public sealed partial class Lowering
         _e.Branch(anyNull, nulled, decided);
 
         _e.SetBlock(nulled);
-        _e.CopyTo(result, Imm(0, IrTypes.Word));
+        _e.CopyTo(result, R(NullableEmpty(b, Type.Bool.AsNullable())));
         _e.Jump(end);
 
         _e.SetBlock(decided);
@@ -3058,9 +3151,9 @@ public sealed partial class Lowering
         Block some = _f.NewBlock("trisome");
         Block end = _f.NewBlock("triend");
         _e.CopyTo(tri, Imm(2, IrType.I32));
-        _e.Branch(v, some, end);
+        _e.Branch(HasValue(v), some, end);
         _e.SetBlock(some);
-        _e.CopyTo(tri, R(LoadPlace(new MemPlace(R(v), 0, Type.Bool))));
+        _e.CopyTo(tri, R(NullableRead(v, t)));
         _e.Jump(end);
         _e.SetBlock(end);
         return tri;
@@ -3571,9 +3664,9 @@ public sealed partial class Lowering
             Block none = _f.NewBlock("ntsnone");
             Block end = _f.NewBlock("ntsend");
 
-            _e.Branch(v, some, none);
+            _e.Branch(HasValue(v), some, none);
             _e.SetBlock(some);
-            _e.CopyTo(result, R(Stringify(at, LoadPlace(new MemPlace(R(v), 0, inner)), inner)));
+            _e.CopyTo(result, R(Stringify(at, NullableRead(v, type), inner)));
             _e.Jump(end);
             _e.SetBlock(none);
             _e.CopyTo(result, R(_e.Address(InternString(""))));

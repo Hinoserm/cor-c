@@ -418,7 +418,7 @@ public sealed partial class Lowering
             // A STRUCT LOCAL WITH NO INITIALISER IS A VALUE ALREADY, zero until
             // written, and C# lets it be written a field at a time (`Pair p;
             // p.A = 1;`): the block its fields live in is made here.
-            VReg zero = NewStruct(d, type.Symbol!);
+            VReg zero = NewStruct(d, StructOf(type));
             if (boxed)
             {
                 _e.Store(new RegOperand(LocalReg(d)), new RegOperand(zero), 0, LoadSize(type));
@@ -503,7 +503,7 @@ public sealed partial class Lowering
         {
             _e.CopyTo(cell, new RegOperand(Allocate(fe, Math.Max(_t.WordSize, Math.Max(1, element.Size)))));
             // A lambda keeps a copy of the element, not where it is in the array.
-            StoreNew(cell, inline ? CopyStruct(fe, value, stored.Symbol!) : value, 0, element);
+            StoreNew(cell, inline ? CopyStruct(fe, value, StructOf(stored)) : value, 0, element);
         }
         else
         {

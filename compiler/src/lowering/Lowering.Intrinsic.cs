@@ -301,13 +301,14 @@ public sealed partial class Lowering
             }
             case "IsObject":
             {
-                // A T? IS AN OBJECT WHEN IT HAS A VALUE (NullableKey): the
-                // comparers then ask the key questions below, which look at
-                // the value inside.
+                // A T? IS ALWAYS ASKED THE KEY QUESTIONS (NullableKey), which
+                // answer as EqualityComparer<T?> does -- two without a value
+                // equal, one without a value hashing as 0. Asked only when it
+                // had one, two empty values were compared by their addresses.
                 if (_b.TypeOf(call.Args[0]).IsNullableValue)
                 {
-                    VReg cell = ToWord(Eval(call.Args[0]));
-                    return _e.Binary(Opcode.Ne, R(cell), Imm(0, cell.Type), IrType.I32);
+                    Eval(call.Args[0]);
+                    return _e.Const(1, IrType.I32);
                 }
                 // A STRUCT IS ASKED as an object is -- KeyEquals, KeyHash and
                 // KeyCompare below compare its value -- so the collections'
@@ -333,7 +334,7 @@ public sealed partial class Lowering
                 if (IsStructValue(_b.TypeOf(call.Args[0])) && IsStructValue(_b.TypeOf(call.Args[1])))
                 {
                     VReg x = ToWord(Arg(call, target, 0)), y = ToWord(Arg(call, target, 1));
-                    return _e.Call(StructEquals(_b.TypeOf(call.Args[0]).Symbol!), IrType.I32, R(x), R(y))!;
+                    return _e.Call(StructEquals(StructOf(_b.TypeOf(call.Args[0]))), IrType.I32, R(x), R(y))!;
                 }
                 if (!CouldBeObject(_b.TypeOf(call.Args[0])) || !CouldBeObject(_b.TypeOf(call.Args[1])))
                 {
@@ -350,7 +351,7 @@ public sealed partial class Lowering
                 if (NullableKey(call, "KeyCompare") is VReg nullableKey) return nullableKey;
                 if (IsStructValue(_b.TypeOf(call.Args[0])) && IsStructValue(_b.TypeOf(call.Args[1])))
                 {
-                    TypeSymbol shape = _b.TypeOf(call.Args[0]).Symbol!;
+                    TypeSymbol shape = StructOf(_b.TypeOf(call.Args[0]));
                     VReg x = ToWord(Arg(call, target, 0)), y = ToWord(Arg(call, target, 1));
                     bool boxed;
                     MethodSymbol? order = StructCompareTo(shape, out boxed);
@@ -374,7 +375,7 @@ public sealed partial class Lowering
             {
                 if (NullableKey(call, "KeyHash") is VReg nullableKey) return nullableKey;
                 if (IsStructValue(_b.TypeOf(call.Args[0])))
-                    return _e.Call(StructHash(_b.TypeOf(call.Args[0]).Symbol!), IrType.I32, R(ToWord(Arg(call, target, 0))))!;
+                    return _e.Call(StructHash(StructOf(_b.TypeOf(call.Args[0]))), IrType.I32, R(ToWord(Arg(call, target, 0))))!;
                 if (!CouldBeObject(_b.TypeOf(call.Args[0])))
                 {
                     Eval(call.Args[0]);
@@ -707,9 +708,9 @@ public sealed partial class Lowering
         if (!pair)
         {
             _e.CopyTo(result, Imm(0, IrType.I32));
-            _e.Branch(a, both, end);
+            _e.Branch(HasValue(a), both, end);
             _e.SetBlock(both);
-            VReg one = LoadPlace(new MemPlace(R(a), 0, value));
+            VReg one = NullableRead(a, held);
             _e.CopyTo(result, R(KeyOfValue("KeyHash", one, null, value)));
             _e.Jump(end);
             _e.SetBlock(end);
@@ -718,8 +719,8 @@ public sealed partial class Lowering
 
         // Which of the two have a value: 0 for neither, and the answer when
         // only one has is decided without looking any further.
-        VReg hasA = _e.Binary(Opcode.Ne, R(a), Imm(0, a.Type), IrType.I32);
-        VReg hasB = _e.Binary(Opcode.Ne, R(b!), Imm(0, b!.Type), IrType.I32);
+        VReg hasA = HasValue(a);
+        VReg hasB = HasValue(b!);
         Block oneSide = _f.NewBlock("nkone");
         _e.CopyTo(result, Imm(question == "KeyEquals" ? 1 : 0, IrType.I32));
         VReg eitherHas = _e.Binary(Opcode.Or, R(hasA), R(hasB), IrType.I32);
@@ -734,8 +735,8 @@ public sealed partial class Lowering
         else _e.CopyTo(result, R(_e.Binary(Opcode.Sub, R(hasA), R(hasB), IrType.I32)));
         _e.Jump(end);
         _e.SetBlock(both);
-        VReg x = LoadPlace(new MemPlace(R(a), 0, value));
-        VReg y = LoadPlace(new MemPlace(R(b), 0, value));
+        VReg x = NullableRead(a, held);
+        VReg y = NullableRead(b, held);
         _e.CopyTo(result, R(KeyOfValue(question, x, y, value)));
         _e.Jump(end);
         _e.SetBlock(end);
@@ -747,7 +748,7 @@ public sealed partial class Lowering
     {
         if (IsStructValue(value))
         {
-            TypeSymbol shape = value.Symbol!;
+            TypeSymbol shape = StructOf(value);
             switch (question)
             {
                 case "KeyEquals":

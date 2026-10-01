@@ -1356,14 +1356,14 @@ public sealed partial class Lowering
     /// heap pointer whatever the captured type is; String stands in for "one
     /// traced word".
     /// </summary>
-    private static IEnumerable<(int Offset, Corsac.Lang.Type Type)> TracedFields(TypeSymbol sym, int at)
+    private IEnumerable<(int Offset, Corsac.Lang.Type Type)> TracedFields(TypeSymbol sym, int at)
     {
         foreach (FieldSymbol f in sym.Fields)
         {
             if (f.Static) continue;
             if (f.Inline)
             {
-                foreach (var inner in TracedFields(f.Type.Symbol!, at + f.Offset)) yield return inner;
+                foreach (var inner in TracedFields(StructOf(f.Type), at + f.Offset)) yield return inner;
                 continue;
             }
             yield return (at + f.Offset, f.Boxed ? Corsac.Lang.Type.String : f.Type);
@@ -1489,11 +1489,27 @@ public sealed partial class Lowering
         {
             return TupleFullName(t.Fields.Where(f => !f.Static).Select(f => f.Type).ToList());
         }
+        // A SPECIALISATION AS .NET NAMES ONE: its template's full name, the
+        // arity after a backtick, and each argument assembly-qualified --
+        // System.Collections.Generic.List`1[[System.Int32, System.Private.
+        // CoreLib, ...]] -- and so Name is List`1, as GetType().Name says.
+        if (t.Decl is { Specialised: true, Template: string template } made && t.TemplateArgTypes.Count == made.TemplateArgs.Count
+            && t.TemplateArgTypes.Count > 0 && t.TemplateArgTypes.All(a => !a.IsError && a.ParamName is null))
+        {
+            string bare = template.Contains('.') ? template[(template.LastIndexOf('.') + 1)..] : template;
+            string home = made.Namespace.Length > 0 ? made.Namespace : made.FromLibrary ? LibraryHome(bare) : "";
+            string within = made.Outer is { Length: > 0 } o && !(home.Length > 0 && (o == home || o.StartsWith(home + ".", StringComparison.Ordinal)))
+                ? o.Replace('.', '+') + "+" : "";
+            if (home.Length > 0 && made.Outer is { Length: > 0 } inside && inside.StartsWith(home + ".", StringComparison.Ordinal))
+                within = inside[(home.Length + 1)..].Replace('.', '+') + "+";
+            string head = (home.Length > 0 ? home + "." : "") + within + bare + "`" + t.TemplateArgTypes.Count;
+            return head + "[" + string.Join(",", t.TemplateArgTypes.Select(a => "[" + QualifiedName(a) + "]")) + "]";
+        }
         if (t.Decl is not TypeDecl d || d.Specialised || t.Structural)
         {
             return t.Name;
         }
-        string space = d.Namespace.Length > 0 ? d.Namespace : d.FromLibrary ? "System" : "";
+        string space = d.Namespace.Length > 0 ? d.Namespace : d.FromLibrary ? LibraryHome(t.Name) : "";
         // The outer types: the declaration's path less its namespace.
         string outer = d.Outer ?? "";
         if (space.Length > 0 && (outer == space || outer.StartsWith(space + ".", StringComparison.Ordinal)))
@@ -1522,6 +1538,22 @@ public sealed partial class Lowering
         }
         return "System.ValueTuple`" + args.Count + "[" + string.Join(",", args.Select(a => "[" + a + "]")) + "]";
     }
+
+    /// <summary>
+    /// The namespace .NET has a type of the class library's in, where the
+    /// library declares it without one: the collections and their interfaces
+    /// in System.Collections.Generic, LINQ's own in System.Linq, the rest in
+    /// System -- what FullName and object.ToString say of them.
+    /// </summary>
+    private static string LibraryHome(string name) => name switch
+    {
+        "Comparer" or "Dictionary" or "EqualityComparer" or "HashSet" or "ICollection" or "IComparer" or "IDictionary"
+            or "IEnumerable" or "IEnumerator" or "IEqualityComparer" or "IList" or "IReadOnlyCollection" or "IReadOnlyDictionary"
+            or "IReadOnlyList" or "IReadOnlySet" or "ISet" or "KeyValuePair" or "List" or "Queue" or "SortedSet" or "Stack"
+            or "LinkedList" or "LinkedListNode" or "SortedDictionary" or "SortedList" or "PriorityQueue" => "System.Collections.Generic",
+        "IGrouping" or "ILookup" or "IOrderedEnumerable" or "Lookup" or "Grouping" or "OrderedSequence" or "Enumerable" => "System.Linq",
+        _ => "System",
+    };
 
     /// <summary>The identity .NET's own types are qualified with.</summary>
     private const string CoreLibrary = "System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e";
@@ -1617,7 +1649,8 @@ public sealed partial class Lowering
         _sequenceDescriptors[key] = sym;
         _m.Data.Add(item);
         item.Relocs.Add(new DataReloc(DescName * w, InternString(isString ? "System.String"
-            : elementType?.AsNonNullable().Symbol is { Kind: TypeKind.Struct } tuple && IsTupleShape(tuple) ? DotNetTypeName(elementType.AsNonNullable()) + "[]"
+            : elementType?.AsNonNullable().Symbol is TypeSymbol shaped && (shaped.Kind == TypeKind.Struct && IsTupleShape(shaped) || shaped.Decl is { Specialised: true })
+                ? DotNetTypeName(elementType.AsNonNullable()) + "[]"
             : DotNetName(element) + "[]"), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
         // ITS ELEMENT'S DESCRIPTOR, for covariance at run time: whether a
@@ -2036,6 +2069,14 @@ public sealed partial class Lowering
             Builder e = new(f, f.NewBlock("entry"));
             VReg vt = e.Load(IrTypes.Word, self, 0);
             VReg nm = e.Load(IrTypes.Word, vt, -_t.DescriptorBytes + DescName * _t.WordSize);
+            // AS Type.ToString WRITES IT, which is what object.ToString is in
+            // .NET: List`1[System.Int32], a generic's arguments named without
+            // the assemblies its FullName qualifies them with.
+            if (HasStringMethod(Prelude.TypeTextMethod)
+                && StringMethod(new MethodDecl { Name = name, Line = 0, Col = 0 }, Prelude.TypeTextMethod, 1, "an object's text") is MethodSymbol text)
+            {
+                nm = e.Call(CallLabel(text), IrTypes.Word, R(nm))!;
+            }
             e.Ret(new RegOperand(nm));
             _m.Functions.Add(f);
         }
