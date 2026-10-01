@@ -496,8 +496,27 @@ public sealed partial class Binder
             symbol = null;
             return false;
         }
-        return TypeCandidate(within + "." + name, out symbol);
+        // A NAME ASKED IN A SCOPE THAT HAS NO SUCH TYPE, NOR AN INDEX ONE TO
+        // DEMAND, is asked again from every expression that mentions it, and
+        // each time spelt `within.name` to be told no -- the binder's largest
+        // run of string building. Remembered by its two parts, scope first,
+        // the second asking costs two lookups and no string.
+        if (plain && _absentWithin.TryGetValue(within, out HashSet<string>? absent) && absent.Contains(name))
+        {
+            symbol = null;
+            return false;
+        }
+        bool demandedBefore = _declarationBatch.Any;
+        bool found = TypeCandidate(within + "." + name, out symbol);
+        if (!found && plain && !_namingOnly && (demandedBefore || !_declarationBatch.Any))
+        {
+            if (!_absentWithin.TryGetValue(within, out absent)) _absentWithin[within] = absent = new HashSet<string>(StringComparer.Ordinal);
+            absent.Add(name);
+        }
+        return found;
     }
+
+    private readonly Dictionary<string, HashSet<string>> _absentWithin = new(StringComparer.Ordinal);
 
     private bool TypeCandidate(string key, out TypeSymbol? symbol)
     {
