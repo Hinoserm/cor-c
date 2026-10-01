@@ -316,6 +316,11 @@ class FileStream : Stream
     int _readPos;
     int _readLen;
     int _writePos;
+    // WHERE THE DESCRIPTOR IS, kept here as .NET keeps _filePosition, so
+    // that asking the position is not a system call and a seek that lands
+    // in the bytes already read ahead keeps them. -1 while unknown: before
+    // the first ask and after the descriptor is handed out (Handle).
+    long _at = -1;
 
     public FileStream(string path, FileMode mode) : this(path, mode, mode == FileMode.Open ? FileAccess.Read : FileAccess.ReadWrite)
     {
@@ -355,6 +360,9 @@ class FileStream : Stream
         _canRead = access != FileAccess.Write;
         _canWrite = access != FileAccess.Read;
         _owns = true;
+        // AN APPEND STREAM STARTS AT THE END, as .NET's does: its Position
+        // is the file's length from the first moment, not 0.
+        _at = mode == FileMode.Append ? Os.Lseek(_fd, 0, (int)SeekOrigin.End) : 0;
     }
 
     /// The same with what others may do meanwhile (FileShare). .NET on Unix
@@ -404,6 +412,7 @@ class FileStream : Stream
         {
             FlushWrite();
             FlushRead();
+            _at = -1;
             return _fd;
         }
     }
@@ -435,6 +444,7 @@ class FileStream : Stream
             {
                 throw Interop.GetExceptionForIoErrno(n, _name);
             }
+            if (_at >= 0) _at = _at + n;
             return n;
         }
     }
@@ -455,6 +465,7 @@ class FileStream : Stream
             }
             done = done + n;
         }
+        if (_at >= 0) _at = _at + count;
     }
 
     /// What was written into the buffer, out to the file.
@@ -474,7 +485,11 @@ class FileStream : Stream
         int ahead = _readLen - _readPos;
         _readPos = 0;
         _readLen = 0;
-        if (ahead != 0 && _fd >= 0) Os.Lseek(_fd, -ahead, (int)SeekOrigin.Current);
+        if (ahead != 0 && _fd >= 0)
+        {
+            long at = Os.Lseek(_fd, -ahead, (int)SeekOrigin.Current);
+            _at = at >= 0 ? at : -1;
+        }
     }
 
     public override int Read(byte[] buffer, int offset, int count)
@@ -545,6 +560,7 @@ class FileStream : Stream
         if (result < 0) throw Interop.GetExceptionForIoErrno(result, "");
         // Cut short beneath the position, the position moves to the new end.
         if (Os.Lseek(_fd, 0, (int)SeekOrigin.Current) > value) Os.Lseek(_fd, value, (int)SeekOrigin.Begin);
+        _at = -1;
     }
 
     public override void Write(byte[] buffer, int offset, int count)
@@ -600,13 +616,35 @@ class FileStream : Stream
     /// while bytes are read ahead or held back.
     public override long Position
     {
-        get { return Os.Lseek(_fd, 0, (int)SeekOrigin.Current) - (_readLen - _readPos) + _writePos; }
+        get { return Where() - (_readLen - _readPos) + _writePos; }
         set { Seek(value, SeekOrigin.Begin); }
+    }
+
+    /// The descriptor's offset, from _at when it is known.
+    long Where()
+    {
+        if (_at >= 0 && _bufferSize != 0) return _at;
+        long at = Os.Lseek(_fd, 0, (int)SeekOrigin.Current);
+        if (_bufferSize != 0 && at >= 0) _at = at;
+        return at;
     }
 
     public override long Seek(long offset, SeekOrigin origin)
     {
         FlushWrite();
+        // INSIDE WHAT WAS READ AHEAD, the buffer is kept and only the reader
+        // moves, as .NET's BufferedFileStreamStrategy does: a reader that
+        // hops about a small region costs no system call per hop.
+        if (_readLen != 0 && _at >= 0 && origin != SeekOrigin.End)
+        {
+            long target = origin == SeekOrigin.Begin ? offset : _at - (_readLen - _readPos) + offset;
+            long low = _at - _readLen;
+            if (target >= low && target <= _at)
+            {
+                _readPos = (int)(target - low);
+                return target;
+            }
+        }
         // Relative to the reader, not to the descriptor, which is ahead.
         if (origin == SeekOrigin.Current) offset = offset - (_readLen - _readPos);
         _readPos = 0;
@@ -616,6 +654,7 @@ class FileStream : Stream
         {
             throw Interop.GetExceptionForIoErrno((int)at, _name);
         }
+        _at = at;
         return at;
     }
 

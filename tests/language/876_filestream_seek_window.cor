@@ -1,0 +1,81 @@
+// test: filestream_seek_window
+// expect-exit: 0
+// expect-output:
+// hops 0 94 31 0 0 249 105 -1 212 pos 9101
+// binary 42120864682
+// write after read pos 2
+// reread 0 200 14
+// append starts 10000
+// append now 10004 len 10004
+// final 10004
+//
+// FileStream keeps the descriptor's offset itself, as .NET keeps
+// _filePosition: Position is no system call, and a seek that lands inside
+// the bytes already read ahead moves only the reader. Seeks outside the
+// window, from the end, a write after a read, and an append stream (whose
+// offset is wherever the end is) all answer as .NET does. Output checked
+// against .NET.
+
+using System;
+using System.IO;
+using System.Text;
+
+static class Program
+{
+    static void Main()
+    {
+        string path = Path.Combine(Path.GetTempPath(), "corc_fsw_" + Environment.ProcessId + ".bin");
+        byte[] data = new byte[10000];
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)(i * 7);
+        File.WriteAllBytes(path, data);
+        using (FileStream f = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            int a = f.ReadByte();
+            f.Position = 50;
+            int b = f.ReadByte();
+            f.Seek(-10, SeekOrigin.Current);
+            int c = f.ReadByte();
+            f.Position = 0;
+            int d = f.ReadByte();
+            f.Position = 4096;
+            int e = f.ReadByte();
+            f.Position = 4095;
+            int g = f.ReadByte();
+            f.Seek(-1, SeekOrigin.End);
+            int h = f.ReadByte();
+            int end = f.ReadByte();
+            f.Position = 9000;
+            f.Seek(100, SeekOrigin.Current);
+            int k = f.ReadByte();
+            Console.WriteLine("hops " + a + " " + b + " " + c + " " + d + " " + e + " " + g + " " + h + " " + end + " " + k + " pos " + f.Position);
+            BinaryReader r = new BinaryReader(f);
+            long sum = 0;
+            for (int i = 0; i < 300; i++)
+            {
+                f.Position = (i * 37) % 9990;
+                sum += r.ReadInt32();
+                if (f.Position != (i * 37) % 9990 + 4) Console.WriteLine("bad position " + i);
+            }
+            Console.WriteLine("binary " + sum);
+        }
+        using (FileStream f = new FileStream(path, FileMode.Open, FileAccess.ReadWrite))
+        {
+            f.ReadByte();
+            f.ReadByte();
+            f.Position = 1;
+            f.WriteByte(200);
+            Console.WriteLine("write after read pos " + f.Position);
+            f.Position = 0;
+            Console.WriteLine("reread " + f.ReadByte() + " " + f.ReadByte() + " " + f.ReadByte());
+        }
+        using (FileStream f = new FileStream(path, FileMode.Append, FileAccess.Write))
+        {
+            Console.WriteLine("append starts " + f.Position);
+            f.WriteByte(1);
+            f.Write(new byte[] { 2, 3, 4 }, 0, 3);
+            Console.WriteLine("append now " + f.Position + " len " + f.Length);
+        }
+        Console.WriteLine("final " + new FileInfo(path).Length);
+        File.Delete(path);
+    }
+}
