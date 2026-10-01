@@ -297,6 +297,11 @@ static class AllocSamples
             Gc.SayNumber("alloc sample site ", Sys.Peek(e));
             Gc.SayNumber("alloc sample caller ", Sys.Peek(e + WordSize.Bytes));
             Gc.SayNumber("alloc sample bytes ", Sys.Peek(e + 2 * WordSize.Bytes));
+            // AND THE LINE THE CALL IS ON, for a tool to read without
+            // decoding the image's line program itself: the hook is off, so
+            // what naming it allocates is not sampled.
+            string? where = Runtime.Frame((Sys.Peek(e) & ((1L << 30) - 1)) - 1);
+            if (where != null) Runtime.WriteText(2, String.Concat("alloc sample where ", String.Concat(where.Trim(), "\n")));
             Gc.SayNumber("alloc sample count ", Sys.Peek(e + 3 * WordSize.Bytes));
         }
         Gc.SayNumber("alloc sample lost ", _lost);
