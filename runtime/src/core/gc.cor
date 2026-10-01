@@ -2169,6 +2169,69 @@ static class Gc
         if (magicGood && bytes >= 0 && at + bytes <= words) for (long p = at + bytes; p < words; p++) Sys.PokeByte(p, 0xCD);
     }
 
+    public const long ObjectKind = KindObject;
+    public const long LeafKind = KindLeaf;
+
+    /// THE WAY IN FOR COMPILED CODE, IN WORDS: AllocKindUnguarded's two fast
+    /// paths again, in nint. On i386 the long forms did every address sum as
+    /// an add and an adc, every compare as a cmp and an sbb, and kept the
+    /// high halves in the frame -- for each of the billions of objects a
+    /// compiler makes -- behind three calls of two-word arguments. Addresses
+    /// compare as nuint: an address above 2 GiB is not below one under it.
+    /// Anything unusual (the guard check, a bad size, an empty list, a full
+    /// buffer) is the long path's, unchanged.
+    public static nint AllocWord(nint bytes, nint kind)
+    {
+        if (_heapCheck || bytes < 0 || bytes > (nint)MaxRequest)
+        {
+            return (nint)AllocKind(bytes, kind);
+        }
+        nint w = (nint)WordSize.Bytes;
+        nint tb = (nint)Sys.ThreadBlock();
+        nint need = (bytes + (nint)(Overhead + 7)) & (nint)SizeMask;
+        if (need <= (nint)ClassMax)
+        {
+            nint cache = (nint)Sys.Peek(tb + (nint)Tls.Classes);
+            if (cache == 0)
+            {
+                return (nint)AllocSlow(bytes, kind);
+            }
+            nint c = (nint)Sys.Peek((nint)_classOf + (need >> 3) * w);
+            nint slot = cache + c * (2 * w);
+            Sys.Poke(tb + (nint)Tls.InAlloc, 1);
+            nint free = (nint)Sys.Peek(slot + w);
+            if (free == 0)
+            {
+                Sys.Poke(tb + (nint)Tls.InAlloc, 0);
+                return (nint)AllocSlow(bytes, kind);
+            }
+            nint size = (nint)Sys.Peek((nint)_classSize + c * w);
+            Sys.Poke(slot + w, Sys.Peek(free + (nint)KindAt));
+            Sys.Poke(free, size);
+            Sys.Poke(free + (nint)KindAt, kind);
+            Sys.Poke(free + size - (nint)FooterBytes, size);
+            nint counted = tb + (nint)Tls.ClassBytes;
+            Sys.Poke(counted, (nint)Sys.Peek(counted) + size);
+            Sys.Poke(tb + (nint)Tls.InAlloc, 0);
+            return free + (nint)HeaderBytes;
+        }
+        // Not to be stopped from outside between here and the bump: see AllocKindUnguarded.
+        Sys.Poke(tb + (nint)Tls.InAlloc, 1);
+        nuint block = (nuint)Sys.Peek(tb + (nint)Tls.AllocPtr);
+        nuint next = block + (nuint)need;
+        if (next + (nuint)Smallest > (nuint)Sys.Peek(tb + (nint)Tls.AllocLimit))
+        {
+            Sys.Poke(tb + (nint)Tls.InAlloc, 0);
+            return (nint)AllocSlow(bytes, kind);
+        }
+        Sys.Poke(tb + (nint)Tls.AllocPtr, (nint)next);
+        Sys.Poke((nint)block, need);
+        Sys.Poke((nint)block + (nint)KindAt, kind);
+        Sys.Poke((nint)next - (nint)FooterBytes, need);
+        Sys.Poke(tb + (nint)Tls.InAlloc, 0);
+        return (nint)block + (nint)HeaderBytes;
+    }
+
     static long AllocKindUnguarded(long bytes, long kind)
     {
         long tb = Sys.ThreadBlock();

@@ -105,9 +105,12 @@ public sealed class Pipeline
             p.Passes.Add(new BitFactSimplify());
             p.Passes.Add(new EdgePredicateSimplify());
             p.Passes.Add(new StoreBackElimination());
-            p.Passes.Add(new LoadReuse());
-            p.Passes.Add(new DeadCodeElimination());
         }
+        // A field read again with no write, call or lock between: `while
+        // (!Done) { char c = Cur; ...` read pos, the source and its length
+        // twice over in every lap of every lexer loop.
+        p.Passes.Add(new LoadReuse());
+        p.Passes.Add(new DeadCodeElimination());
         p.Passes.Add(new LoopInvariant());
         p.Passes.Add(new BranchSimplify());
         if (experimentalBatch) p.Passes.Add(new CommonTailMerge());

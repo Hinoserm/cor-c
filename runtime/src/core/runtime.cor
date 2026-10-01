@@ -592,7 +592,7 @@ static class Runtime
     public static long Alloc(nint bytes)
     {
         if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes, 1);
-        return Gc.Alloc(bytes);
+        return Gc.AllocWord(bytes, 0);
     }
 
     /// The same for memory that will hold no references -- a string, an
@@ -602,7 +602,7 @@ static class Runtime
     public static long AllocLeaf(nint bytes)
     {
         if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes, 2);
-        return Gc.AllocLeaf(bytes);
+        return Gc.AllocWord(bytes, (nint)Gc.LeafKind);
     }
 
     /// The same for an object whose vtable the compiler stores next -- a class
@@ -611,7 +611,7 @@ static class Runtime
     public static long AllocObject(nint bytes)
     {
         if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes, 3);
-        return Gc.AllocObject(bytes);
+        return Gc.AllocWord(bytes, (nint)Gc.ObjectKind);
     }
 
     /// THE SAME TAKING LONGS, for a program that holds sizes and addresses in

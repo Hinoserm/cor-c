@@ -38,6 +38,10 @@ public sealed class BranchSimplify : IPass
             {
                 changed = true;
             }
+            if (ThreadConstantConditions(f))
+            {
+                changed = true;
+            }
             if (Cfg.RemoveUnreachable(f))
             {
                 changed = true;
@@ -69,6 +73,67 @@ public sealed class BranchSimplify : IPass
         }
         b.Instrs[^1] = new Instr { Op = Opcode.Jump, Targets = { only }, Line = t.Line };
         return true;
+    }
+
+    /// <summary>
+    /// A block that sets a register to a constant and jumps to a block that
+    /// does nothing but branch on that register goes straight to the side
+    /// the constant picks. `a &amp;&amp; b`, `a || b` and every inlined method
+    /// returning bool come out of lowering as a 0 or 1 written on each arm
+    /// and tested again where the arms meet; this takes the test away from
+    /// every arm that knows the answer. The copy stays for any later reader.
+    /// </summary>
+    private static bool ThreadConstantConditions(Function f)
+    {
+        Cfg cfg = new(f);
+        bool changed = false;
+        foreach (Block p in f.Blocks)
+        {
+            Instr? jump = p.Terminator;
+            if (jump is null || jump.Op != Opcode.Jump)
+            {
+                continue;
+            }
+            Block b = jump.Targets[0];
+            if (ReferenceEquals(b, p) || cfg.IsRoot(b) || b.Instrs.Count != 1)
+            {
+                continue;
+            }
+            Instr branch = b.Instrs[0];
+            if (branch.Op != Opcode.Branch || branch.Operands[0] is not RegOperand tested)
+            {
+                continue;
+            }
+            // The value the register holds as this block leaves: its last write here.
+            long? known = null;
+            for (int k = p.Instrs.Count - 2; k >= 0; k--)
+            {
+                Instr i = p.Instrs[k];
+                if (i.Dest != tested.Reg)
+                {
+                    continue;
+                }
+                if (i.Op == Opcode.Copy && i.Operands[0] is ImmOperand imm)
+                {
+                    known = imm.Value;
+                }
+                break;
+            }
+            if (known is null)
+            {
+                continue;
+            }
+            Block to = known.Value != 0 ? branch.Targets[0] : branch.Targets[1];
+            if (ReferenceEquals(to, b) || !Phi.CanAddIncoming(to, b, p))
+            {
+                continue;
+            }
+            Phi.AddIncoming(to, b, p);
+            jump.Targets[0] = to;
+            Phi.DropEdgeIfGone(p, b);
+            changed = true;
+        }
+        return changed;
     }
 
     /// <summary>
