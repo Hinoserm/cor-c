@@ -1,0 +1,42 @@
+// test: iterator_foreach_freed
+// expect-exit: 0
+// expect-output:
+// 3280000
+//
+// A foreach over an iterator method's result, in a loop: the iterator is
+// made, asked for its enumerator (itself), walked and disposed. Its calls
+// are devirtualised (its type is in sight), its inlined GetEnumerator's
+// state test forwarded from the store its making did, the branch that
+// would make a second iterator folded away, and the finally that disposes
+// it keeps it alive only where the finally can run -- so it is freed.
+
+using System;
+using System.Collections.Generic;
+class MInstr { public int[] Regs = Array.Empty<int>(); public bool Mov; }
+static class P
+{
+    static IEnumerable<(int Reg, bool IsDef)> AllRegs(MInstr i)
+    {
+        foreach (int r in i.Regs) yield return (r, false);
+        yield return (99, true);
+    }
+    static int FindCopy(List<MInstr> instrs, int k)
+    {
+        HashSet<int> touched = new();
+        for (int j = k - 1; j >= 0 && j >= k - 6; j--)
+        {
+            MInstr c = instrs[j];
+            if (c.Mov && !touched.Contains(c.Regs[0])) return j;
+            foreach ((int r, _) in AllRegs(c)) touched.Add(r);
+        }
+        return -1 - touched.Count;
+    }
+    static void Main()
+    {
+        List<MInstr> instrs = new();
+        for (int n = 0; n < 50; n++) instrs.Add(new MInstr { Regs = new[] { n % 7, n % 5, n % 3 }, Mov = n % 11 == 0 });
+        long sum = 0;
+        for (int r = 0; r < 20000; r++) for (int k = 1; k < instrs.Count; k++) sum += FindCopy(instrs, k);
+        Console.WriteLine(sum);
+    }
+}

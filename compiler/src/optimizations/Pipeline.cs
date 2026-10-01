@@ -139,6 +139,7 @@ public sealed class Pipeline
         // inlining. Do it before lifetime analysis, not only afterwards,
         // otherwise newly visible owned children miss their promotion chance.
         p.LatePasses.Add(Inliner(keepFree: true));
+        p.LatePasses.Add(new LateCleanup());
         p.LatePasses.Add(new ScalarObjects());
         p.LatePasses.Add(new Escape());
         p.LatePasses.Add(Inliner());

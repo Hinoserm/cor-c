@@ -3187,6 +3187,82 @@ continue;
         => LiveAtSelf(liveness, PadLive(liveness), b, alloc, derived);
 
     /// <summary>
+    /// WHERE EACH LANDING PAD CAN BE ENTERED FROM: the blocks between the
+    /// store of its label into a handler record (PushHandler) and the load
+    /// of that record's link that takes it off again (PopHandler), as an
+    /// over-approximation -- a pop's block is counted in, and a pad whose push
+    /// is not found protects everything. What a pad reads is live where the
+    /// pad can be entered, not everywhere: a foreach's finally reads its
+    /// enumerator, and that made every iterator a loop walks look alive at
+    /// the next one's making, so none was ever freed.
+    /// </summary>
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Liveness, Dictionary<Block, HashSet<VReg>>> _padsAt = new();
+
+    internal static HashSet<VReg> PadLiveAt(Liveness liveness, Block at)
+    {
+        Dictionary<Block, HashSet<VReg>> table = _padsAt.GetValue(liveness, _ => new(ReferenceEqualityComparer.Instance));
+        lock (table)
+        {
+            if (table.Count == 0) BuildPadRegions(liveness, table);
+            return table.TryGetValue(at, out HashSet<VReg>? live) ? live : Empty;
+        }
+    }
+    private static readonly HashSet<VReg> Empty = new();
+
+    private static void BuildPadRegions(Liveness liveness, Dictionary<Block, HashSet<VReg>> table)
+    {
+        Function f = liveness.Cfg.Function;
+        Cfg cfg = liveness.Cfg;
+        table[f.Entry] = table.GetValueOrDefault(f.Entry) ?? new HashSet<VReg>();
+        foreach (Block pad in f.Blocks)
+        {
+            if (!pad.IsLandingPad) continue;
+            HashSet<VReg> reads = liveness.LiveIn(pad).ToHashSet();
+            if (reads.Count == 0) continue;
+            // The push: a labeladdr of this pad stored into a frame slot.
+            (Block B, int I, FrameSlot Record)? push = null;
+            foreach (Block b in f.Blocks)
+                for (int k = 0; k < b.Instrs.Count && push is null; k++)
+                {
+                    Instr i = b.Instrs[k];
+                    if (i.Op != Opcode.LabelAddr || i.Dest is null || i.Targets.Count != 1 || !ReferenceEquals(i.Targets[0], pad)) continue;
+                    for (int j = k + 1; j < b.Instrs.Count; j++)
+                        if (b.Instrs[j] is { Op: Opcode.Store } st && st.Operands.Count >= 2 && st.Operands[1] is RegOperand v && v.Reg == i.Dest
+                            && st.Operands[0] is SlotOperand slot)
+                        { push = (b, j, slot.Slot); break; }
+                }
+            List<Block> region;
+            if (push is not { } p)
+            {
+                region = f.Blocks.ToList();
+            }
+            else
+            {
+                bool Pops(Block b) => b.Instrs.Any(i => i.Op == Opcode.Load && i.Offset == 0 && i.Operands[0] is SlotOperand s && s.Slot == p.Record);
+                region = new() { p.B };
+                HashSet<Block> seen = new(ReferenceEqualityComparer.Instance) { p.B };
+                Stack<Block> work = new();
+                // A pop later in the push's own block ends it there.
+                bool closedHere = p.B.Instrs.Skip(p.I + 1).Any(i => i.Op == Opcode.Load && i.Offset == 0 && i.Operands[0] is SlotOperand s && s.Slot == p.Record);
+                if (!closedHere) foreach (Block n in cfg.Succs(p.B)) work.Push(n);
+                while (work.Count > 0)
+                {
+                    Block b = work.Pop();
+                    if (!seen.Add(b)) continue;
+                    region.Add(b);
+                    if (Pops(b)) continue;
+                    foreach (Block n in cfg.Succs(b)) work.Push(n);
+                }
+            }
+            foreach (Block b in region)
+            {
+                if (!table.TryGetValue(b, out HashSet<VReg>? live)) table[b] = live = new();
+                live.UnionWith(reads);
+            }
+        }
+    }
+
+    /// <summary>
     /// The same, with the pads' live registers given: a caller asking about
     /// many allocations works them out once. The analysis may be older than
     /// the function (see <see cref="Liveness.WalkBackwards"/>); a derived
@@ -3194,9 +3270,11 @@ continue;
     /// </summary>
     internal static bool LiveAtSelf(Liveness liveness, HashSet<VReg> pads, Block b, Instr alloc, HashSet<VReg> derived)
     {
+        // Only the pads that can be entered here keep what they read alive here.
+        HashSet<VReg> padsHere = pads.Count == 0 ? pads : PadLiveAt(liveness, b);
         foreach (VReg r in derived)
         {
-            if (pads.Contains(r) || !liveness.Tracks(r)) return true;
+            if (padsHere.Contains(r) || !liveness.Tracks(r)) return true;
         }
         foreach ((Instr i, ulong[] liveAfter) in liveness.WalkBackwards(b, skipNewer: true))
         {
