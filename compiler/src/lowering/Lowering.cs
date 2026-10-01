@@ -460,6 +460,12 @@ public sealed partial class Lowering
                 continue;
             }
 
+            if (m.Decl is null && m.Owner.Kind == TypeKind.Struct && IsTupleShape(m.Owner))
+            {
+                EmitTupleMethod(m);
+                continue;
+            }
+
             if (m.Decl?.Body is null)
             {
                 continue;       // abstract, external, or an intrinsic
@@ -686,7 +692,8 @@ public sealed partial class Lowering
         // pointing at it is a symbol something has to define.
         => m.Decl is null
         && (m.Owner.Name.StartsWith("ArrayView$", StringComparison.Ordinal)
-            || m.Owner.Name.StartsWith("ArrayEnumerator$", StringComparison.Ordinal))
+            || m.Owner.Name.StartsWith("ArrayEnumerator$", StringComparison.Ordinal)
+            || m.Owner.Kind == TypeKind.Struct && IsTupleShape(m.Owner))
         || m.Decl?.Body != null && m.Decl.File != "<prelude>"
         && !IsExternal(m) && (m.Decl?.LocalCopy == true || (m.Decl?.OwnedImplementation ?? m.Owner.Decl?.Elsewhere != true)) && m.Owner.Decl?.Canon is null
         && m.Owner.Decl?.TypeParams.Count is null or 0
@@ -1903,19 +1910,19 @@ public sealed partial class Lowering
             }
             else if (i == _b.EqualsSlot && t.Kind == TypeKind.Class)
             {
-                target = IsTupleShape(t) ? TupleEquals(t) : EqualsGuard(t) ?? ObjectEqualsStub();
+                target = EqualsGuard(t) ?? ObjectEqualsStub();
             }
             else if (i == _b.HashSlot && t.Kind == TypeKind.Class)
             {
-                target = IsTupleShape(t) ? TupleHash(t) : ObjectHashStub();
+                target = ObjectHashStub();
             }
             else if (i == _b.CompareSlot && t.Kind == TypeKind.Class)
             {
-                target = IsTupleShape(t) ? TupleCompare(t) : OwnCompare(t) ?? ObjectCompareStub();
+                target = OwnCompare(t) ?? ObjectCompareStub();
             }
             else if (i == _b.ToStringSlot && t.Kind == TypeKind.Class)
             {
-                target = IsTupleShape(t) ? TupleToString(t) : ObjectToStringStub();
+                target = ObjectToStringStub();
             }
             else
             {
@@ -1991,6 +1998,119 @@ public sealed partial class Lowering
     /// <summary>A node to hang a diagnostic on, for code nobody wrote.</summary>
     private static MethodDecl At(MethodSymbol m)
         => m.Decl ?? new MethodDecl { Name = m.Name, Line = 0, Col = 0 };
+
+    /// <summary>
+    /// A member of ValueTuple, written from the shape's items: `this` is the
+    /// tuple's bytes, a tuple argument is too, an object argument is a box.
+    /// </summary>
+    private void EmitTupleMethod(MethodSymbol m)
+    {
+        TypeSymbol shape = m.Owner;
+        Function f = new(Label(m), IrTypes.Of(m.Returns)) { Coalescible = true };
+        VReg self = f.NewReg(IrTypes.Word, "this");
+        f.Params.Add(self);
+        foreach (ParamSymbol p in m.Params) f.Params.Add(f.NewReg(IrTypes.Of(p.Type), p.Name));
+        Function savedFn = _f; Builder savedB = _e; Block? savedFail = _boundsFail;
+        _f = f; _e = new Builder(f, f.NewBlock("entry")); _boundsFail = null;
+        Builder e = _e;
+        Node at = new MethodDecl { Name = f.Name, Line = 0, Col = 0 };
+        Type shapeType = new() { Prim = Prim.Void, Symbol = shape };
+        string member = m.ExplicitMember ?? m.Name;
+        bool typed = m.Params.Count == 1 && m.Params[0].Type.Symbol == shape;
+        int n = shape.Fields.Count(fd => !fd.Static);
+
+        // The other side as a tuple's bytes, when it is a box of this shape;
+        // `otherwise` taken for null and anything else.
+        VReg Unboxed(VReg obj, Block otherwise)
+        {
+            Block some = f.NewBlock("tmsome"), same = f.NewBlock("tmsame");
+            e.Branch(obj, some, otherwise);
+            e.SetBlock(some);
+            VReg want = e.Address(BoxDescriptor(shapeType), _t.DescriptorBytes);
+            e.Branch(e.Binary(Opcode.Eq, R(e.Load(IrTypes.Word, obj, 0)), R(want), IrType.I32), same, otherwise);
+            e.SetBlock(same);
+            return e.Binary(Opcode.Add, obj, _t.ObjectHeaderBytes);
+        }
+
+        switch (member)
+        {
+            case "ToString":
+                e.Ret(R(e.Call(TupleToString(shape), IrTypes.Word, R(self))!));
+                break;
+            case "GetHashCode":
+                e.Ret(R(e.Call(StructHash(shape), IrType.I32, R(self))!));
+                break;
+            case "Equals" when typed:
+                e.Ret(R(e.Call(StructEquals(shape), IrType.I32, R(self), R(f.Params[1]))!));
+                break;
+            case "Equals":
+            {
+                Block no = f.NewBlock("teno");
+                VReg other = Unboxed(f.Params[1], no);
+                e.Ret(R(e.Call(StructEquals(shape), IrType.I32, R(self), R(other))!));
+                e.SetBlock(no);
+                e.Ret(Imm(0, IrType.I32));
+                break;
+            }
+            case "CompareTo" when typed:
+                e.Ret(R(e.Call(TupleCompare(shape), IrType.I32, R(self), R(f.Params[1]))!));
+                break;
+            case "CompareTo":
+            {
+                // ValueTuple's IComparable: null comes first, a box of any
+                // other type is refused.
+                Block none = f.NewBlock("tcnull"), wrong = f.NewBlock("tcwrong"), some = f.NewBlock("tcsome");
+                e.Branch(f.Params[1], some, none);
+                e.SetBlock(none);
+                e.Ret(Imm(1, IrType.I32));
+                e.SetBlock(some);
+                VReg other = Unboxed(f.Params[1], wrong);
+                e.Ret(R(e.Call(TupleCompare(shape), IrType.I32, R(self), R(other))!));
+                e.SetBlock(wrong);
+                if (RuntimeMethod("ArgumentFailure", 0) is MethodSymbol fail)
+                {
+                    Require(fail);
+                    e.Call(CallLabel(fail), IrType.Void);
+                }
+                e.Emit(Opcode.Trap, null);
+                e.Unreachable();
+                break;
+            }
+            case var length when length.EndsWith("get_Length", StringComparison.Ordinal):
+                e.Ret(Imm(n, IrType.I32));
+                break;
+            case var item when item.EndsWith("get_Item", StringComparison.Ordinal):
+            {
+                // ITuple's indexer: each item as an object, and outside them
+                // IndexOutOfRangeException, as .NET's.
+                VReg index = f.Params[1];
+                int i = 0;
+                foreach (FieldSymbol field in shape.Fields.Where(fd => !fd.Static))
+                {
+                    Block here = f.NewBlock("tihere"), next = f.NewBlock("tinext");
+                    e.Branch(e.Binary(Opcode.Eq, R(index), Imm(i, IrType.I32), IrType.I32), here, next);
+                    e.SetBlock(here);
+                    VReg value = LoadPlace(PlaceOfField(field, self, at));
+                    e.Ret(R(CouldBeObject(field.Type) ? value : BoxValue(at, value, field.Type)));
+                    e.SetBlock(next);
+                    i++;
+                }
+                if (RuntimeMethod("IndexOutOfRange", 0) is MethodSymbol outside)
+                {
+                    Require(outside);
+                    e.Call(CallLabel(outside), IrType.Void);
+                }
+                e.Emit(Opcode.Trap, null);
+                e.Unreachable();
+                break;
+            }
+            default:
+                throw new InvalidOperationException("no ValueTuple member " + member + " to write for " + shape.Name);
+        }
+
+        _m.Functions.Add(f);
+        _f = savedFn; _e = savedB; _boundsFail = savedFail;
+    }
 
     private void EmitArrayViewMethod(MethodSymbol m)
     {

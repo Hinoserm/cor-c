@@ -320,7 +320,8 @@ public sealed partial class Lowering
         item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.ToStringSlot * w, BoxToString(of, name, key), 0));
         item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.EqualsSlot * w, BoxEquals(of, key), 0));
         item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.HashSlot * w, BoxHash(of, key), 0));
-        item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.CompareSlot * w, ObjectCompareStub(), 0));
+        item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.CompareSlot * w,
+            BoxedBlock(of) && IsTupleShape(of.Symbol!) ? BoxTupleCompare(of.Symbol!, key) : ObjectCompareStub(), 0));
         return sym;
     }
 
@@ -357,6 +358,42 @@ public sealed partial class Lowering
 
     private readonly HashSet<string> _boxStubs = new(StringComparer.Ordinal);
 
+    /// <summary>
+    /// A boxed tuple's CompareTo(object): null after it, a box of another
+    /// type refused as ValueTuple refuses it (ArgumentException), else the
+    /// two tuples' items in order (TupleCompare).
+    /// </summary>
+    private string BoxTupleCompare(TypeSymbol shape, string key)
+    {
+        string label = "__box_compare_" + Safe(key);
+        if (!_structHelpers.Add(label)) return label;
+        Function f = new(label, IrType.I32) { Coalescible = true };
+        VReg self = f.NewReg(IrTypes.Word, "this");
+        VReg other = f.NewReg(IrTypes.Word, "other");
+        f.Params.Add(self);
+        f.Params.Add(other);
+        Builder e = new(f, f.NewBlock("entry"));
+        Block some = f.NewBlock("bcsome"), none = f.NewBlock("bcnone"), same = f.NewBlock("bcsame"), wrong = f.NewBlock("bcwrong");
+        e.Branch(other, some, none);
+        e.SetBlock(none);
+        e.Ret(new ImmOperand(1, IrType.I32));
+        e.SetBlock(some);
+        e.Branch(e.Binary(Opcode.Eq, e.Load(IrTypes.Word, self, 0), e.Load(IrTypes.Word, other, 0)), same, wrong);
+        e.SetBlock(wrong);
+        if (RuntimeMethod("ArgumentFailure", 0) is MethodSymbol fail)
+        {
+            Require(fail);
+            e.Call(CallLabel(fail), IrType.Void);
+        }
+        e.Emit(Opcode.Trap, null);
+        e.Unreachable();
+        e.SetBlock(same);
+        e.Ret(new RegOperand(e.Call(TupleCompare(shape), IrType.I32,
+            R(e.Binary(Opcode.Add, self, _t.ObjectHeaderBytes)), R(e.Binary(Opcode.Add, other, _t.ObjectHeaderBytes)))!));
+        _m.Functions.Add(f);
+        return label;
+    }
+
     /// <summary>A boxed value rendered the way the library renders its type.</summary>
     private string BoxToString(Type of, string name, string key)
     {
@@ -384,6 +421,11 @@ public sealed partial class Lowering
             {
                 Require(own);
                 e.Ret(new RegOperand(e.Call(CallLabel(own), IrTypes.Word, R(inside))!));
+            }
+            else if (IsTupleShape(of.Symbol!))
+            {
+                // A TUPLE SAYS ITS ITEMS, as ValueTuple's ToString: "(1, a)".
+                e.Ret(new RegOperand(e.Call(TupleToString(of.Symbol!), IrTypes.Word, R(inside))!));
             }
             else
             {
@@ -450,26 +492,10 @@ public sealed partial class Lowering
                 return label;
             }
 
-            int bytes = BoxPayload(of);
-            VReg at = f.NewReg(IrType.I32, "bxat");
-            e.CopyTo(at, new ImmOperand(0, IrType.I32));
-            Block step = f.NewBlock("bxstep");
-            Block more = f.NewBlock("bxmore");
-            Block same2 = f.NewBlock("bxeq");
-            e.Jump(step);
-            e.SetBlock(step);
-            e.Branch(e.Binary(Opcode.LtS, at, bytes), more, same2);
-            e.SetBlock(more);
-            VReg off = IrTypes.Word == IrType.I32 ? at : e.Unary(Opcode.SExt32, at);
-            VReg x = e.Load(IrType.I32, e.Binary(Opcode.Add, R(mine2), R(off), IrTypes.Word), 0, 1, false);
-            VReg y = e.Load(IrType.I32, e.Binary(Opcode.Add, R(theirs2), R(off), IrTypes.Word), 0, 1, false);
-            Block next = f.NewBlock("bxnext");
-            e.Branch(e.Binary(Opcode.Eq, x, y), next, no);
-            e.SetBlock(next);
-            e.CopyTo(at, new RegOperand(e.Binary(Opcode.Add, at, 1)));
-            e.Jump(step);
-            e.SetBlock(same2);
-            e.Ret(new ImmOperand(1, IrType.I32));
+            // OTHERWISE FIELD BY FIELD, as ValueType.Equals: each one by its
+            // own Equals (StructEquals). By bytes, two copies of a struct
+            // holding equal strings were unequal.
+            e.Ret(new RegOperand(e.Call(StructEquals(of.Symbol!), IrType.I32, R(mine2), R(theirs2))!));
             e.SetBlock(no);
             e.Ret(new ImmOperand(0, IrType.I32));
             _m.Functions.Add(f);

@@ -2022,6 +2022,14 @@ public sealed partial class Binder
             LayOut(sym);
         }
 
+        // The tuple shapes met so far take ValueTuple's interfaces now that
+        // those have slots; any made from here on take them as they are made.
+        _tupleFacesReady = true;
+        foreach (TypeSymbol shape in _r.Types.Values.Where(t => t.Structural && t.Kind == TypeKind.Struct).ToList())
+        {
+            TupleFaces(shape);
+        }
+
         foreach (TypeDecl d in unit.Types)
         {
             // A TEMPLATE'S BODIES ARE NOT CHECKED, for the same reason a generic
@@ -3035,9 +3043,26 @@ public sealed partial class Binder
     }
 
     /// <summary>Whether a laid-out struct can be held in line (InlineStruct), from its fields.</summary>
+    /// <summary>
+    /// An expression moved one pattern deeper: each subject it reads named
+    /// one further out. The right side of a tuple `==` is evaluated inside
+    /// the left side's pattern, and when it is itself an item of an outer
+    /// comparison's subject -- `((1, 2), 3) == ((1, 2), 3)` -- it read the
+    /// left item where it meant the right.
+    /// </summary>
+    private static Expr Deeper(Expr e) => e switch
+    {
+        SubjectExpr s => new SubjectExpr { Outer = s.Outer + 1, Line = s.Line, Col = s.Col, File = s.File },
+        MemberExpr { Target: var inner } m when Reads(inner) => new MemberExpr { Target = Deeper(inner), Name = m.Name, Guarded = m.Guarded, Line = m.Line, Col = m.Col, File = m.File },
+        _ => e,
+    };
+
+    /// <summary>Whether a chain of member reads begins at a pattern's subject.</summary>
+    private static bool Reads(Expr e) => e is SubjectExpr || e is MemberExpr { Target: var inner } && Reads(inner);
+
     /// <summary>How many items a tuple type has; null for anything else, a nullable tuple too.</summary>
     private static int? TupleArity(Type t)
-        => !t.Nullable && t.Symbol is { Kind: TypeKind.Class } shape && shape.Name.StartsWith(TypeRef.Tuple + "$", StringComparison.Ordinal)
+        => !t.Nullable && !t.IsPointer && !t.IsArray && t.Symbol is { Kind: TypeKind.Struct } shape && shape.Name.StartsWith(TypeRef.Tuple + "$", StringComparison.Ordinal)
             ? shape.Fields.Count(f => !f.Static) : null;
 
     private static bool HoldsInline(TypeSymbol sym)
@@ -7665,27 +7690,114 @@ public sealed partial class Binder
             return already;
         }
 
-        TypeDecl decl = new() { Name = name, Kind = TypeKind.Class, File = _in };
-        TypeSymbol tuple = new() { Name = name, Kind = TypeKind.Class, Decl = decl, Structural = true };
-        int at = Target.Current.ObjectHeaderBytes;  // past the vtable and sync word
+        // A STRUCT, as ValueTuple is: a copy of one is a copy, `u = t; u.Item1
+        // = 5` leaves t alone, and a tuple held by another struct, an object
+        // or an array is held in line. It was a class, and assigning one
+        // shared it.
+        TypeDecl decl = new() { Name = name, Kind = TypeKind.Struct, File = _in };
+        TypeSymbol tuple = new() { Name = name, Kind = TypeKind.Struct, Decl = decl, Structural = true };
 
         for (int i = 0; i < elements.Count; i++)
         {
-            int size = Math.Max(1, elements[i].Size);
-
-            at = (at + size - 1) / size * size; // natural alignment, as LayOut does
-            tuple.Fields.Add(new FieldSymbol
-            {
-                Name = "Item" + (i + 1), Type = elements[i], Owner = tuple, Offset = at,
-            });
-            at += size;
+            tuple.Fields.Add(new FieldSymbol { Name = "Item" + (i + 1), Type = elements[i], Owner = tuple });
         }
 
-        tuple.InstanceSize = (at + 7) & ~7;
-        tuple.InlineDecided = true;                    // laid out here, nothing in line
+        // VALUETUPLE'S OWN MEMBERS, written by the code generator from the
+        // items (Lowering.EmitTupleMethod): Equals of a tuple and of an object,
+        // GetHashCode and ToString, CompareTo of a tuple -- and IComparable's
+        // and ITuple's members, which .NET implements explicitly. The
+        // interfaces are added when the library's have their slots
+        // (TupleFaces).
+        Type self = new() { Prim = Prim.Void, Symbol = tuple };
+        MethodSymbol Member(string name, Type returns, params (string Name, Type Type)[] parameters)
+        {
+            MethodSymbol m = new() { Name = name, Returns = returns, Owner = tuple };
+            foreach ((string n, Type t) in parameters) m.Params.Add(new ParamSymbol { Name = n, Type = t });
+            tuple.Methods.Add(m);
+            return m;
+        }
+        Member("Equals", Type.Bool, ("other", self));
+        Member("Equals", Type.Bool, ("obj", Type.Any.AsNullable()));
+        Member("GetHashCode", Type.I32);
+        Member("ToString", Type.String);
+        Member("CompareTo", Type.I32, ("other", self));
+
         RegisterType(name, tuple);
+        if (elements.All(e => e.Size > 0))
+        {
+            LayOut(tuple);
+        }
+        else
+        {
+            // A SHAPE OVER A TEMPLATE'S OWN PARAMETERS -- `(T, U)` inside a
+            // generic before it is copied -- holds no value ever made: a word
+            // an item, so that it has offsets to name.
+            int at = 0;
+            foreach (FieldSymbol item in tuple.Fields)
+            {
+                int size = Math.Max(1, item.Type.Size);
+                at = (at + size - 1) / size * size;
+                item.Offset = at;
+                at += size;
+            }
+            tuple.InstanceSize = Math.Max(1, at);
+            tuple.InlineDecided = true;
+            tuple.SlotsAssigned = true;
+        }
+        if (_tupleFacesReady) TupleFaces(tuple);
         Remember(tuple, names);
         return tuple;
+    }
+
+    /// <summary>Whether the library's interfaces have their slots, so a tuple shape can be given them.</summary>
+    private bool _tupleFacesReady;
+
+    /// <summary>
+    /// The interfaces a ValueTuple implements, given to a shape and mapped to
+    /// its members: IComparable and ITuple, which it implements explicitly,
+    /// and IEquatable and IComparable of itself where the library has them.
+    /// What `(IComparable)(1, "a")`, a sort over boxed tuples and `t is
+    /// ITuple` reach.
+    /// </summary>
+    private void TupleFaces(TypeSymbol tuple)
+    {
+        if (tuple.TupleFacesGiven || tuple.Fields.Any(f => !f.Static && f.Type.Size <= 0)) return;
+        tuple.TupleFacesGiven = true;
+        List<TypeSymbol> faces = new();
+        foreach (string plain in new[] { "IComparable", "System.Runtime.CompilerServices.ITuple" })
+        {
+            if (_r.Types.TryGetValue(plain, out TypeSymbol? face) && face.Kind == TypeKind.Interface) faces.Add(face);
+        }
+        if (RefOf(new Type { Prim = Prim.Void, Symbol = tuple }) is TypeRef written)
+        {
+            foreach (string generic in new[] { "IEquatable", "IComparable" })
+            {
+                if (_r.Types.TryGetValue(Monomorphiser.MangledName(generic, new List<TypeRef> { written }), out TypeSymbol? face)
+                    && face.Kind == TypeKind.Interface) faces.Add(face);
+            }
+        }
+        foreach (TypeSymbol face in faces)
+        {
+            if (tuple.Interfaces.Contains(face)) continue;
+            tuple.Interfaces.Add(face);
+            bool explicitly = face.Name is "IComparable" || face.Name.EndsWith("ITuple", StringComparison.Ordinal);
+            foreach (MethodSymbol want in face.Methods.Where(m => !m.Static && m.TypeParams.Count == 0))
+            {
+                MethodSymbol? impl = explicitly ? null
+                    : tuple.Methods.FirstOrDefault(m => m.ExplicitInterface is null && m.Name == want.Name && MethodSignatures.Implements(m, want));
+                if (impl is null)
+                {
+                    impl = new MethodSymbol
+                    {
+                        Name = ExplicitName(face) + "." + want.Name, ExplicitInterface = ExplicitName(face), ExplicitMember = want.Name,
+                        Returns = want.Returns, Owner = tuple,
+                    };
+                    foreach (ParamSymbol p in want.Params) impl.Params.Add(new ParamSymbol { Name = p.Name, Type = p.Type });
+                    tuple.Methods.Add(impl);
+                }
+                if (want.VtableSlot >= 0) tuple.InterfaceImplementations[want.VtableSlot] = impl;
+            }
+        }
     }
 
     /// <summary>
@@ -9948,6 +10060,53 @@ public sealed partial class Binder
 
             // The statement's names belong to the scope the expression is in,
             // as a pattern's own bindings do.
+            // A POSITIONAL PATTERN OVER AN OBJECT IS ASKED OF ITuple (C#
+            // 11.2.5): with no Deconstruct to call, `o is (int, string)`
+            // matches what is an ITuple of that Length whose items match, as
+            // every boxed ValueTuple is.
+            case SequenceExpr { Effect: DeconstructStmt { Names.Count: > 0 } apart, Value: LiteralExpr { Kind: Lit.Bool, IntValue: 1 } } seq
+                when Peek(apart.Value) is { } over && (over.Prim == Prim.Any || over.Symbol?.Name.EndsWith("ITuple", StringComparison.Ordinal) == true)
+                     && !over.IsError && _r.Types.ContainsKey("System.Runtime.CompilerServices.ITuple"):
+            {
+                Node at = seq;
+                NameExpr Named(string name) => new() { Name = name, Line = at.Line, Col = at.Col };
+                string tuple = $"$tuple${_iterations++}";
+                Expr matched = new IsExpr
+                {
+                    Operand = apart.Value,
+                    Type = new TypeRef { Name = "System.Runtime.CompilerServices.ITuple", Line = at.Line, Col = at.Col },
+                    Binding = tuple, Line = at.Line, Col = at.Col,
+                };
+                Expr parts = new LiteralExpr { Kind = Lit.Bool, Text = "true", IntValue = 1, Line = at.Line, Col = at.Col };
+                for (int i = apart.Names.Count - 1; i >= 0; i--)
+                {
+                    IndexExpr item = new() { Target = Named(tuple), Line = at.Line, Col = at.Col };
+                    item.Args.Add(new LiteralExpr { Kind = Lit.Int, Text = i.ToString(), IntValue = i, Line = at.Line, Col = at.Col });
+                    parts = new SequenceExpr
+                    {
+                        Effect = new LocalDecl { Name = apart.Names[i].Name, Init = item, Line = at.Line, Col = at.Col },
+                        Value = parts, Line = at.Line, Col = at.Col,
+                    };
+                }
+                Expr whole = new BinaryExpr
+                {
+                    Op = BinOp.AndAlso, Line = at.Line, Col = at.Col,
+                    Left = new BinaryExpr
+                    {
+                        Op = BinOp.AndAlso, Left = matched, Line = at.Line, Col = at.Col,
+                        Right = new BinaryExpr
+                        {
+                            Op = BinOp.Eq, Line = at.Line, Col = at.Col,
+                            Left = new MemberExpr { Target = Named(tuple), Name = "Length", Line = at.Line, Col = at.Col },
+                            Right = new LiteralExpr { Kind = Lit.Int, Text = apart.Names.Count.ToString(), IntValue = apart.Names.Count, Line = at.Line, Col = at.Col },
+                        },
+                    },
+                    Right = parts,
+                };
+                _r.Rewrites[seq] = whole;
+                return CheckExpr(whole);
+            }
+
             case SequenceExpr seq:
                 CheckStmt(seq.Effect);
                 return CheckExpr(seq.Value);
@@ -13685,41 +13844,19 @@ public sealed partial class Binder
             return Type.Error;
         }
 
-        // A NULLABLE TUPLE ANSWERS .Value AND .HasValue.
-        //
-        // C#'s tuple is a struct, so `(Block, int)?` is a Nullable<ValueTuple<…>>
-        // and those two members are how it is opened. A tuple is a class here
-        // and the question mark is an annotation on a reference, so the two
-        // members become what they mean: whether the thing is there, and the
-        // thing.
-        // Asked of the tuple whether or not the '?' is still on it: proving a
-        // nullable reference is not null takes the annotation off here, and
-        // C#'s Nullable<T> keeps its two members whatever the flow has proved.
-        if (target.Symbol?.Name.StartsWith(TypeRef.Tuple + "$", StringComparison.Ordinal) == true
-            && m.Name is "Value" or "HasValue")
+        // A TUPLE OF EIGHT OR MORE HAS Rest, as ValueTuple`8 does: the items
+        // from the eighth on, a tuple of their own -- whose own Rest goes on
+        // from the fifteenth. Held flat here; read as .NET's nesting reads it.
+        if (m.Name == "Rest" && !m.NullConditional && TupleArity(target) is int count && count >= 8)
         {
-            if (m.Name == "HasValue")
+            TupleExpr rest = new() { Line = m.Line, Col = m.Col, File = m.File };
+            for (int i = 8; i <= count; i++)
             {
-                _r.Rewrites[m] = new BinaryExpr
-                {
-                    Op = BinOp.Ne, Left = m.Target,
-                    Right = new LiteralExpr
-                    {
-                        Kind = Lit.Null, Text = "null", Line = m.Line, Col = m.Col,
-                    },
-                    Line = m.Line, Col = m.Col,
-                };
-                return Type.Bool;
+                rest.Items.Add(new MemberExpr { Target = new SubjectExpr { Line = m.Line, Col = m.Col }, Name = "Item" + i, Line = m.Line, Col = m.Col, File = m.File });
             }
-
-            if (m.Name == "Value")
-            {
-                _r.Rewrites[m] = new SuppressExpr
-                {
-                    Operand = m.Target, Line = m.Line, Col = m.Col,
-                };
-                return target.AsNonNullable();
-            }
+            PatternExpr taken = new() { Subject = m.Target, Test = rest, Line = m.Line, Col = m.Col, File = m.File };
+            _r.Rewrites[m] = taken;
+            return CheckExpr(taken);
         }
 
         bool conditional = m.NullConditional || ConditionalChain(m.Target);
@@ -16445,7 +16582,7 @@ public sealed partial class Binder
                     PatternExpr items = new()
                     {
                         Subject = b.Left,
-                        Test = new PatternExpr { Subject = b.Right, Test = chain!, Line = b.Line, Col = b.Col, File = b.File },
+                        Test = new PatternExpr { Subject = Deeper(b.Right), Test = chain!, Line = b.Line, Col = b.Col, File = b.File },
                         Line = b.Line, Col = b.Col, File = b.File,
                     };
                     _r.Rewrites[b] = items;

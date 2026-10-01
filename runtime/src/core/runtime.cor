@@ -2577,6 +2577,13 @@ static class Runtime
         throw new IndexOutOfRangeException("Index was outside the bounds of the array.");
     }
 
+    /// A boxed tuple compared with a box of another type: ValueTuple's
+    /// CompareTo(object) refuses it so.
+    public static void ArgumentFailure()
+    {
+        throw new ArgumentException("Argument must be of type ValueTuple.", "other");
+    }
+
     // ---- array covariance ------------------------------------------------
     //
     // A Dog[] may be held as an Animal[] -- C# allows it -- and then a Cat

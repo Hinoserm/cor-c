@@ -242,9 +242,12 @@ public sealed partial class Lowering
         _f = f; _e = new Builder(f, f.NewBlock("entry")); _boundsFail = null;
         Node at = new MethodDecl { Name = name, Line = 0, Col = 0 };
 
-        MethodSymbol? typed = sym.Methods.FirstOrDefault(m => m.Name == "Equals" && !m.Static && m.Params.Count == 1
+        // A tuple's own Equals is written from this (EmitTupleMethod): its
+        // items are compared here, never by asking it.
+        bool tuple = IsTupleShape(sym);
+        MethodSymbol? typed = tuple ? null : sym.Methods.FirstOrDefault(m => m.Name == "Equals" && !m.Static && m.Params.Count == 1
                                                             && !m.Params[0].ByRef && m.Params[0].Type.Symbol == sym);
-        MethodSymbol? untyped = sym.Methods.FirstOrDefault(m => m.Name == "Equals" && !m.Static && m.Params.Count == 1
+        MethodSymbol? untyped = tuple ? null : sym.Methods.FirstOrDefault(m => m.Name == "Equals" && !m.Static && m.Params.Count == 1
                                                               && m.Params[0].Type.Prim == Prim.Any);
         if (typed is not null || untyped is not null)
         {
@@ -299,10 +302,18 @@ public sealed partial class Lowering
             VReg x = _e.Load(IrTypes.Word, a, field.Offset), y = _e.Load(IrTypes.Word, b, field.Offset);
             return _e.Call(KeyEqualsStub(), IrType.I32, R(x), R(y))!;
         }
-        // A number by its bits (a float's too, as ValueType.Equals compares
-        // a struct with no references), read at its own width.
-        Type raw = field.Type.Prim == Prim.F32 ? Type.I32 : field.Type.Prim == Prim.F64 ? Type.I64 : field.Type;
-        VReg p = LoadPlace(new MemPlace(R(a), field.Offset, raw)), q = LoadPlace(new MemPlace(R(b), field.Offset, raw));
+        // A FLOAT AS ITS OWN Equals: every NaN equal to every other, and
+        // each zero to the other -- what EqualityComparer<double>.Default,
+        // which ValueTuple and ValueType.Equals ask, answers.
+        if (field.Type.Prim is Prim.F32 or Prim.F64)
+        {
+            VReg x = LoadPlace(new MemPlace(R(a), field.Offset, field.Type)), y = LoadPlace(new MemPlace(R(b), field.Offset, field.Type));
+            VReg equal = _e.Binary(Opcode.FEq, R(x), R(y), IrType.I32);
+            VReg bothNan = _e.Binary(Opcode.And, _e.Binary(Opcode.FNe, R(x), R(x), IrType.I32), _e.Binary(Opcode.FNe, R(y), R(y), IrType.I32));
+            return _e.Binary(Opcode.Or, equal, bothNan);
+        }
+        // Any other number by its bits, read at its own width.
+        VReg p = LoadPlace(new MemPlace(R(a), field.Offset, field.Type)), q = LoadPlace(new MemPlace(R(b), field.Offset, field.Type));
         return _e.Binary(Opcode.Eq, R(p), R(q), IrType.I32);
     }
 
@@ -324,7 +335,7 @@ public sealed partial class Lowering
         Function savedFn = _f; Builder savedB = _e; Block? savedFail = _boundsFail;
         _f = f; _e = new Builder(f, f.NewBlock("entry")); _boundsFail = null;
 
-        MethodSymbol? own = sym.Methods.FirstOrDefault(m => m.Name == "GetHashCode" && !m.Static && m.Params.Count == 0);
+        MethodSymbol? own = IsTupleShape(sym) ? null : sym.Methods.FirstOrDefault(m => m.Name == "GetHashCode" && !m.Static && m.Params.Count == 0);
         if (own is not null)
         {
             Require(own);
@@ -350,9 +361,14 @@ public sealed partial class Lowering
                 {
                     v = _e.Call(KeyHashStub(), IrType.I32, R(_e.Load(IrTypes.Word, a, field.Offset)))!;
                 }
+                else if (field.Type.Prim is Prim.F32 or Prim.F64)
+                {
+                    bool wide = field.Type.Prim == Prim.F64;
+                    v = FloatHash(_f, _e, _e.Load(wide ? IrType.I64 : IrType.I32, a, field.Offset, wide ? 8 : 4, false), wide);
+                }
                 else
                 {
-                    Type raw = field.Type.Prim == Prim.F32 ? Type.I32 : field.Type.Prim == Prim.F64 ? Type.I64 : field.Type;
+                    Type raw = field.Type;
                     VReg w = LoadPlace(new MemPlace(R(a), field.Offset, raw));
                     if (w.Type == IrType.I64)
                     {
@@ -372,6 +388,34 @@ public sealed partial class Lowering
         _m.Functions.Add(f);
         _f = savedFn; _e = savedB; _boundsFail = savedFail;
         return name;
+    }
+
+    /// <summary>
+    /// A float's hash from its bits, as its Equals sees it: both zeros hash
+    /// as one, and every NaN as one, so that equal values hash alike.
+    /// </summary>
+    private static VReg FloatHash(Function f, Builder e, VReg bits, bool wide)
+    {
+        IrType bitsType = wide ? IrType.I64 : IrType.I32;
+        VReg result = f.NewReg(IrType.I32, "fhash");
+        VReg magnitude = e.Binary(Opcode.And, R(bits), new ImmOperand(wide ? long.MaxValue : int.MaxValue, bitsType), bitsType);
+        Block zero = f.NewBlock("fhzero"), nonzero = f.NewBlock("fhnonzero"), nan = f.NewBlock("fhnan"), finite = f.NewBlock("fhbits"), done = f.NewBlock("fhdone");
+        e.Branch(e.Binary(Opcode.Eq, R(magnitude), new ImmOperand(0, bitsType), IrType.I32), zero, nonzero);
+        e.SetBlock(zero);
+        e.CopyTo(result, new ImmOperand(0, IrType.I32));
+        e.Jump(done);
+        e.SetBlock(nonzero);
+        e.Branch(e.Binary(Opcode.GtU, R(magnitude), new ImmOperand(wide ? 0x7ff0000000000000L : 0x7f800000L, bitsType), IrType.I32), nan, finite);
+        e.SetBlock(nan);
+        e.CopyTo(result, new ImmOperand(wide ? 0x7ff00000 : 0x7f800000, IrType.I32));
+        e.Jump(done);
+        e.SetBlock(finite);
+        e.CopyTo(result, R(wide
+            ? e.Unary(Opcode.Trunc64, e.Binary(Opcode.Xor, bits, e.Binary(Opcode.ShrU, R(bits), new ImmOperand(32, IrType.I32), IrType.I64)))
+            : bits));
+        e.Jump(done);
+        e.SetBlock(done);
+        return result;
     }
 
     /// <summary>
@@ -465,93 +509,6 @@ public sealed partial class Lowering
     private static bool IsTupleShape(TypeSymbol t)
         => t.Name.StartsWith(TypeRef.Tuple + "$", StringComparison.Ordinal);
 
-    private string TupleEquals(TypeSymbol shape)
-    {
-        string label = "__tuple_equals_" + Safe(shape.Name);
-
-        if (_m.Functions.Any(had => had.Name == label))
-        {
-            return label;
-        }
-
-        Function f = new(label, IrType.I32) { Coalescible = true };
-        VReg self = f.NewReg(IrTypes.Word, "this");
-        VReg other = f.NewReg(IrTypes.Word, "other");
-
-        f.Params.Add(self);
-        f.Params.Add(other);
-        Builder e = new(f, f.NewBlock("entry"));
-        Block no = f.NewBlock("tqno");
-        Block some = f.NewBlock("tqsome");
-        Block shaped = f.NewBlock("tqshaped");
-
-        e.Branch(other, some, no);
-        e.SetBlock(some);
-        e.Branch(e.Binary(Opcode.Eq, e.Load(IrTypes.Word, self, 0), e.Load(IrTypes.Word, other, 0)), shaped, no);
-        e.SetBlock(shaped);
-
-        foreach (FieldSymbol field in shape.Fields.Where(fd => !fd.Static))
-        {
-            Block next = f.NewBlock("tqnext");
-            Type of = field.Type;
-
-            if (CouldBeObject(of))
-            {
-                VReg x = e.Load(IrTypes.Word, self, field.Offset);
-                VReg y = e.Load(IrTypes.Word, other, field.Offset);
-
-                e.Branch(e.Call(KeyEqualsStub(), IrType.I32, R(x), R(y))!, next, no);
-            }
-            else if (BoxedBlock(of) && !of.IsNullableValue)
-            {
-                // A STRUCT BY ITS FIELDS, as ValueType.Equals: one held in
-                // line is where it is, any other is the block its word points
-                // at. Compared as bytes, a struct holding a string compared
-                // two strings' addresses, and one held as a block compared
-                // two blocks' -- unequal for every pair of copies.
-                VReg x = field.Inline ? e.Binary(Opcode.Add, self, field.Offset) : e.Load(IrTypes.Word, self, field.Offset);
-                VReg y = field.Inline ? e.Binary(Opcode.Add, other, field.Offset) : e.Load(IrTypes.Word, other, field.Offset);
-                e.Branch(e.Call(StructEquals(of.Symbol!), IrType.I32, R(x), R(y))!, next, no);
-            }
-            else if (of.IsNullableValue)
-            {
-                // A nullable value is a cell and is compared as the cell it
-                // is, which says equal for two empty ones and for the same
-                // one; two cells holding the same number are not yet the
-                // same key.
-                int bytes = _t.WordSize;
-
-                for (int at = 0; at < bytes; at++)
-                {
-                    Block more = f.NewBlock("tqbyte");
-                    VReg x = e.Load(IrType.I32, self, field.Offset + at, 1, false);
-                    VReg y = e.Load(IrType.I32, other, field.Offset + at, 1, false);
-
-                    e.Branch(e.Binary(Opcode.Eq, x, y), more, no);
-                    e.SetBlock(more);
-                }
-                e.Jump(next);
-            }
-            else
-            {
-                int size = Math.Max(1, of.Size);
-                bool signed = !of.IsUnsigned && of.Prim != Prim.Bool;
-                VReg x = e.Load(BoxSlot(of), self, field.Offset, size, signed);
-                VReg y = e.Load(BoxSlot(of), other, field.Offset, size, signed);
-
-                e.Branch(e.Binary(Opcode.Eq, R(x), R(y), IrType.I32), next, no);
-            }
-
-            e.SetBlock(next);
-        }
-
-        e.Ret(new ImmOperand(1, IrType.I32));
-        e.SetBlock(no);
-        e.Ret(new ImmOperand(0, IrType.I32));
-        _m.Functions.Add(f);
-        return label;
-    }
-
     /// <summary>
     /// A tuple's text, as ValueTuple writes it: `(1, two, 3.5)`, each item as
     /// `"" + item` would show it -- a null one as nothing at all.
@@ -585,6 +542,7 @@ public sealed partial class Lowering
         _f = f;
         _e = e;
 
+        // `this` is the tuple's bytes: a ValueTuple is a struct.
         LiteralExpr at = new() { Kind = Lit.Int, Text = "0", Line = 0, Col = 0 };
         VReg text = e.Address(InternString("("));
         List<FieldSymbol> items = shape.Fields.Where(fd => !fd.Static).ToList();
@@ -595,6 +553,22 @@ public sealed partial class Lowering
                 text = StringBinary(at, BinOp.Add, text, e.Address(InternString(", ")));
             }
             VReg item = LoadPlace(PlaceOfField(items[i], self, at));
+            if (CouldBeObject(items[i].Type))
+            {
+                // A null item is no text, as ValueTuple's `Item?.ToString()`.
+                VReg said = f.NewReg(IrTypes.Word, "titem");
+                Block some = f.NewBlock("tisome"), none = f.NewBlock("tinone"), joined = f.NewBlock("tijoin");
+                e.Branch(item, some, none);
+                e.SetBlock(some);
+                e.CopyTo(said, R(Stringify(at, item, items[i].Type)));
+                e.Jump(joined);
+                e.SetBlock(none);
+                e.CopyTo(said, R(e.Address(InternString(""))));
+                e.Jump(joined);
+                e.SetBlock(joined);
+                text = StringBinary(at, BinOp.Add, text, said);
+                continue;
+            }
             text = StringBinary(at, BinOp.Add, text, Stringify(at, item, items[i].Type));
         }
         text = StringBinary(at, BinOp.Add, text, e.Address(InternString(")")));
@@ -602,59 +576,6 @@ public sealed partial class Lowering
 
         _f = savedF;
         _e = savedE;
-        _m.Functions.Add(f);
-        return label;
-    }
-
-    private string TupleHash(TypeSymbol shape)
-    {
-        string label = "__tuple_hash_" + Safe(shape.Name);
-
-        if (_m.Functions.Any(had => had.Name == label))
-        {
-            return label;
-        }
-
-        Function f = new(label, IrType.I32) { Coalescible = true };
-        VReg self = f.NewReg(IrTypes.Word, "this");
-
-        f.Params.Add(self);
-        Builder e = new(f, f.NewBlock("entry"));
-        VReg hash = f.NewReg(IrType.I32, "hash");
-
-        e.CopyTo(hash, new ImmOperand(17, IrType.I32));
-
-        foreach (FieldSymbol field in shape.Fields.Where(fd => !fd.Static))
-        {
-            Type of = field.Type;
-            VReg part;
-
-            if (CouldBeObject(of))
-            {
-                part = e.Call(KeyHashStub(), IrType.I32, R(e.Load(IrTypes.Word, self, field.Offset)))!;
-            }
-            else if (BoxedBlock(of) && !of.IsNullableValue)
-            {
-                // A struct by its fields, as TupleEquals compares it: equal
-                // ones hash alike. Its first byte was its block's address's,
-                // or a string's, for one that held one.
-                VReg at = field.Inline ? e.Binary(Opcode.Add, self, field.Offset) : e.Load(IrTypes.Word, self, field.Offset);
-                part = e.Call(StructHash(of.Symbol!), IrType.I32, R(at))!;
-            }
-            else if (of.IsNullableValue)
-            {
-                // A cell, compared as the cell it is (TupleEquals).
-                part = e.Load(IrType.I32, self, field.Offset, 1, false);
-            }
-            else
-            {
-                part = e.Load(IrType.I32, self, field.Offset, Math.Min(4, Math.Max(1, of.Size)), false);
-            }
-
-            e.CopyTo(hash, new RegOperand(e.Binary(Opcode.Add, e.Binary(Opcode.Mul, hash, 31), part)));
-        }
-
-        e.Ret(new RegOperand(hash));
         _m.Functions.Add(f);
         return label;
     }
@@ -809,12 +730,17 @@ public sealed partial class Lowering
         return name;
     }
 
-    /// <summary>A tuple before another when its first differing element is.</summary>
+    /// <summary>
+    /// `__tuple_compare_T(a, b)`: ValueTuple's CompareTo over two tuples'
+    /// bytes -- each item in turn by Comparer&lt;T&gt;.Default, the first that
+    /// differs deciding: an object by its CompareTo, a number by its value, a
+    /// float with NaN before everything and equal to itself, a struct by its
+    /// own CompareTo.
+    /// </summary>
     private string TupleCompare(TypeSymbol shape)
     {
         string label = "__tuple_compare_" + Safe(shape.Name);
-
-        if (_m.Functions.Any(had => had.Name == label))
+        if (!_structHelpers.Add(label))
         {
             return label;
         }
@@ -822,62 +748,84 @@ public sealed partial class Lowering
         Function f = new(label, IrType.I32) { Coalescible = true };
         VReg self = f.NewReg(IrTypes.Word, "this");
         VReg other = f.NewReg(IrTypes.Word, "other");
-
         f.Params.Add(self);
         f.Params.Add(other);
-        Builder e = new(f, f.NewBlock("entry"));
-        Block some = f.NewBlock("tcsome");
-        Block none = f.NewBlock("tcnone");
-
-        e.Branch(other, some, none);
-        e.SetBlock(none);
-        e.Ret(new ImmOperand(1, IrType.I32));
-        e.SetBlock(some);
+        Function savedFn = _f; Builder savedB = _e; Block? savedFail = _boundsFail;
+        _f = f; _e = new Builder(f, f.NewBlock("entry")); _boundsFail = null;
+        Builder e = _e;
+        Node at = new MethodDecl { Name = label, Line = 0, Col = 0 };
+        Block less = f.NewBlock("tcless");
+        Block more = f.NewBlock("tcmore");
 
         foreach (FieldSymbol field in shape.Fields.Where(fd => !fd.Static))
         {
             Type of = field.Type;
             Block next = f.NewBlock("tcnext");
-            Block less = f.NewBlock("tcless");
-            Block more = f.NewBlock("tcmore");
+            VReg? order = null;
 
-            if (CouldBeObject(of))
+            if (CouldBeObject(of) || of.IsNullableValue)
             {
-                VReg x = e.Load(IrTypes.Word, self, field.Offset);
-                VReg y = e.Load(IrTypes.Word, other, field.Offset);
-                VReg order = e.Call(KeyCompareStub(), IrType.I32, R(x), R(y))!;
-                Block decided = f.NewBlock("tcdecided");
-
-                e.Branch(order, decided, next);
-                e.SetBlock(decided);
-                e.Ret(new RegOperand(order));
+                order = e.Call(KeyCompareStub(), IrType.I32, R(e.Load(IrTypes.Word, self, field.Offset)), R(e.Load(IrTypes.Word, other, field.Offset)))!;
             }
-            else if (!BoxedBlock(of) && !of.IsNullableValue && !of.IsFloat)
+            else if (IsStructValue(of))
+            {
+                VReg x = FieldStruct(self, field), y = FieldStruct(other, field);
+                if (StructCompareTo(of.Symbol!, out bool boxed) is MethodSymbol own)
+                {
+                    Require(own);
+                    VReg them = boxed ? BoxValue(at, y, of) : y;
+                    VReg said = CallDirect(own, IrType.I32, new List<Operand> { R(x), R(them) })!;
+                    order = said.Type == IrType.I32 ? said : e.Unary(Opcode.Trunc64, R(said), IrType.I32);
+                }
+            }
+            else if (of.Prim is Prim.F32 or Prim.F64)
+            {
+                VReg x = LoadPlace(new MemPlace(R(self), field.Offset, of)), y = LoadPlace(new MemPlace(R(other), field.Offset, of));
+                Block notLess = f.NewBlock("tcfnl"), notMore = f.NewBlock("tcfnm"), unordered = f.NewBlock("tcfnan"), xNan = f.NewBlock("tcfxnan");
+                e.Branch(e.Binary(Opcode.FLt, R(x), R(y), IrType.I32), less, notLess);
+                e.SetBlock(notLess);
+                e.Branch(e.Binary(Opcode.FGt, R(x), R(y), IrType.I32), more, notMore);
+                e.SetBlock(notMore);
+                e.Branch(e.Binary(Opcode.FEq, R(x), R(y), IrType.I32), next, unordered);
+                // One or both NaN: NaN sorts first, and equals NaN.
+                e.SetBlock(unordered);
+                e.Branch(e.Binary(Opcode.FNe, R(x), R(x), IrType.I32), xNan, more);
+                e.SetBlock(xNan);
+                e.Branch(e.Binary(Opcode.FNe, R(y), R(y), IrType.I32), next, less);
+            }
+            else
             {
                 int size = Math.Max(1, of.Size);
-                bool unsigned = of.IsUnsigned || of.Prim == Prim.Bool;
+                bool unsigned = of.IsUnsigned || of.Prim is Prim.Bool or Prim.Char;
                 VReg x = e.Load(BoxSlot(of), self, field.Offset, size, !unsigned);
                 VReg y = e.Load(BoxSlot(of), other, field.Offset, size, !unsigned);
                 Block rest = f.NewBlock("tcrest");
-
                 e.Branch(e.Binary(unsigned ? Opcode.LtU : Opcode.LtS, R(x), R(y), IrType.I32), less, rest);
                 e.SetBlock(rest);
                 e.Branch(e.Binary(Opcode.Eq, R(x), R(y), IrType.I32), next, more);
             }
-            else
+
+            if (order is VReg decided)
+            {
+                Block answer = f.NewBlock("tcanswer");
+                e.Branch(decided, answer, next);
+                e.SetBlock(answer);
+                e.Ret(R(decided));
+            }
+            else if (!e.Closed)
             {
                 e.Jump(next);
             }
-
-            e.SetBlock(less);
-            e.Ret(new ImmOperand(-1, IrType.I32));
-            e.SetBlock(more);
-            e.Ret(new ImmOperand(1, IrType.I32));
             e.SetBlock(next);
         }
 
         e.Ret(new ImmOperand(0, IrType.I32));
+        e.SetBlock(less);
+        e.Ret(new ImmOperand(-1, IrType.I32));
+        e.SetBlock(more);
+        e.Ret(new ImmOperand(1, IrType.I32));
         _m.Functions.Add(f);
+        _f = savedFn; _e = savedB; _boundsFail = savedFail;
         return label;
     }
 
@@ -922,8 +870,14 @@ public sealed partial class Lowering
             return label;
         }
 
-        e.Ret(new RegOperand(e.Load(IrType.I32, self, _t.ObjectHeaderBytes,
-                                    BoxedBlock(of) ? 1 : Math.Min(4, Math.Max(1, of.Size)), false)));
+        if (BoxedBlock(of))
+        {
+            // A struct by its fields, as its Equals is (StructHash).
+            e.Ret(new RegOperand(e.Call(StructHash(of.Symbol!), IrType.I32, R(e.Binary(Opcode.Add, self, _t.ObjectHeaderBytes)))!));
+            _m.Functions.Add(f);
+            return label;
+        }
+        e.Ret(new RegOperand(e.Load(IrType.I32, self, _t.ObjectHeaderBytes, Math.Min(4, Math.Max(1, of.Size)), false)));
         _m.Functions.Add(f);
         return label;
     }

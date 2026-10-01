@@ -48,6 +48,8 @@ public sealed class TypeSymbol
     /// numbers, references, or structs held in line themselves.
     /// </summary>
     public bool HeldInline { get; set; }
+    /// <summary>A tuple shape's: whether it has been given ValueTuple's interfaces (Binder.TupleFaces).</summary>
+    public bool TupleFacesGiven { get; set; }
     /// <summary>Compiler-created closed tuple/array adapter shape, shared only after semantic certification.</summary>
     public bool Structural { get; init; }
 

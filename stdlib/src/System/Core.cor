@@ -12113,6 +12113,14 @@ interface IComparable<T> {
     int CompareTo(T other);
 }
 
+/// The same asked of anything: .NET's non-generic IComparable, which a sort
+/// over objects and every boxed number and tuple answers. Less than zero
+/// when this comes first, zero when neither does, more when `obj` does; a
+/// null `obj` comes first.
+interface IComparable {
+    int CompareTo(object? obj);
+}
+
 /// An order imposed from outside, for a type that has none or has the wrong
 /// one. This is what List.Sort and Array.Sort are given.
 /// `in T`, for the reason IEqualityComparer's is.
@@ -14416,5 +14424,16 @@ namespace System.Text.Unicode
             charsWritten = o;
             return status;
         }
+    }
+}
+
+namespace System.Runtime.CompilerServices
+{
+    /// What every ValueTuple answers, boxed or not: how many items it has,
+    /// and each one as an object, from 0.
+    public interface ITuple
+    {
+        int Length { get; }
+        object? this[int index] { get; }
     }
 }

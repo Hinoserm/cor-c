@@ -1,0 +1,72 @@
+// test: tuples are ValueTuple, a struct: a copy is a copy (u = t; u.Item1 = 5 leaves t), held in line by fields and arrays, ref to an element writes it, (A, B)? is a nullable value; boxed they are IComparable and ITuple (o is (int, string) asks ITuple), Equals, GetHashCode, CompareTo (NaN first) and ToString (a null item prints empty) as .NET's, == item by item (nested too), Rest past the seventh item; output identical to .NET
+// expect-exit: 0
+// expect-output:
+// 1 5 (1, a) (5, a)
+// 2 9 (100, 0);(4, 5);(0, 7)
+// False True
+// True c (3, c)
+// (7, x) True False True
+// ((1, 2), (3.5, q), P { X = 4, S = p }) True True True
+// True False True
+// (1, a),(1, z),(2, b),(3, c)
+// (NaN, 2),(-1, 3),(2, 1)
+// 1 -1
+// 30 False
+// 42v211two3
+// (1, 2, 3, 4, 5, 6, 7, 8, 9, 10) 90 9 (8, 9, 10) True
+// (1, 2) (2, 1) (3, 1)
+// (1, 2) (0, ) True
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+record struct P(int X, string S);
+sealed class Holder { public (int A, string B) Pair; public (int, int)[] Many = new (int, int)[3]; }
+
+static class Program
+{
+    static (int Sum, string Text) Make(int n) => (n * 2, "v" + n);
+    static void Bump(ref (int, int) t) { t.Item1 += 100; }
+    static int Main()
+    {
+        var t = (1, "a");
+        var u = t;
+        u.Item1 = 5;
+        Console.WriteLine(t.Item1 + " " + u.Item1 + " " + t + " " + u);
+        var h = new Holder { Pair = (2, "b") };
+        var copy = h.Pair; copy.A = 9;
+        h.Many[1] = (4, 5); h.Many[2].Item2 = 7; Bump(ref h.Many[0]);
+        Console.WriteLine(h.Pair.A + " " + copy.A + " " + string.Join(";", h.Many));
+        (int, string)? maybe = null;
+        Console.WriteLine(maybe.HasValue + " " + (maybe is null));
+        maybe = (3, "c");
+        Console.WriteLine(maybe.HasValue + " " + maybe.Value.Item2 + " " + maybe);
+        object boxed = (7, "x");
+        Console.WriteLine(boxed + " " + boxed.Equals((7, "x")) + " " + boxed.Equals((7, "y")) + " " + (boxed is (int, string)));
+        var nested = ((1, 2), (3.5, "q"), new P(4, "p"));
+        var nested2 = ((1, 2), (3.5, "q"), new P(4, "p"));
+        Console.WriteLine(nested + " " + (nested == nested2) + " " + nested.Equals(nested2) + " " + (nested.GetHashCode() == nested2.GetHashCode()));
+        var nans = (double.NaN, 0.0); var nans2 = (double.NaN, -0.0);
+        Console.WriteLine(nans.Equals(nans2) + " " + (nans == nans2) + " " + (nans.GetHashCode() == nans2.GetHashCode()));
+        var list = new List<(int Key, string Name)> { (3, "c"), (1, "a"), (2, "b"), (1, "z") };
+        list.Sort();
+        Console.WriteLine(string.Join(",", list));
+        var floats = new List<(double, int)> { (2.0, 1), (double.NaN, 2), (-1.0, 3) };
+        floats.Sort();
+        Console.WriteLine(string.Join(",", floats));
+        Console.WriteLine(((IComparable)(1, "b")).CompareTo((1, "a")) + " " + (1, 2).CompareTo((1, 3)));
+        var d = new Dictionary<(int, string), int> { [(1, "a")] = 10, [(2, "b")] = 20 };
+        Console.WriteLine(d[(1, "a")] + d[(2, "b")] + " " + d.ContainsKey((3, "c")));
+        var (sum, text) = Make(21);
+        (int x, (string y, double z)) = (1, ("two", 3.0));
+        Console.WriteLine(sum + text + x + y + z);
+        var big = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
+        var big2 = big; big2.Item9 = 90;
+        Console.WriteLine(big + " " + big2.Item9 + " " + big.Item9 + " " + big.Rest + " " + (big == (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)));
+        var grouped = list.GroupBy(p => p.Key).Select(g => (g.Key, Count: g.Count())).OrderBy(p => p.Key);
+        Console.WriteLine(string.Join(" ", grouped));
+        (long, int) widened = (1, 2);
+        Console.WriteLine(widened + " " + default((int, string)) + " " + ((1, "a") != (1, "b")));
+        return 0;
+    }
+}
