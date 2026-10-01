@@ -70,6 +70,20 @@ public static partial class Linker
     /// can say which one it means.
     /// </summary>
     public static byte[] Link(IEnumerable<(string Name, ObjectFile Object)> objects, string entrySymbol, ulong loadAddress = DefaultLoadAddress, ulong? physicalAddress = null, ProgramInfo? program = null, bool? longMode = null)
+        => LinkImage(objects, entrySymbol, loadAddress, physicalAddress, program, longMode).ToArray();
+
+    /// <summary>
+    /// The same link, written straight to a file a chunk at a time: the image
+    /// is never one array, which a 32-bit link of a large program cannot have.
+    /// </summary>
+    public static void LinkTo(string path, IEnumerable<(string Name, ObjectFile Object)> objects, string entrySymbol, ulong loadAddress = DefaultLoadAddress, ulong? physicalAddress = null, ProgramInfo? program = null, bool? longMode = null)
+    {
+        ElfBuffer image = LinkImage(objects, entrySymbol, loadAddress, physicalAddress, program, longMode);
+        using FileStream file = new(path, FileMode.Create, FileAccess.Write);
+        image.WriteTo(file);
+    }
+
+    private static ElfBuffer LinkImage(IEnumerable<(string Name, ObjectFile Object)> objects, string entrySymbol, ulong loadAddress, ulong? physicalAddress, ProgramInfo? program, bool? longMode)
     {
         ArgumentNullException.ThrowIfNull(objects);
         ArgumentNullException.ThrowIfNull(entrySymbol);
@@ -113,7 +127,9 @@ public static partial class Linker
             {
                 throw new LinkException(new[] { "a program that calls into C is loaded by ld-linux; it has no physical address" });
             }
-            return Link(inputs.Select(i => (i.Name, i.Object)).ToList(), entrySymbol, Array.Empty<string>(), program: program, longMode: longMode);
+            ElfBuffer dynamic = new();
+            dynamic.Bytes(Link(inputs.Select(i => (i.Name, i.Object)).ToList(), entrySymbol, Array.Empty<string>(), program: program, longMode: longMode));
+            return dynamic;
         }
 
         TargetContract.Validate(inputs.Select(i => (i.Name, i.Object)));
@@ -1049,7 +1065,7 @@ public static partial class Linker
 
     // ---- Phase 5: emit ---------------------------------------------------
 
-    private static byte[] Emit(List<Input> inputs, Layout layout, uint entry, ushort fileType)
+    private static ElfBuffer Emit(List<Input> inputs, Layout layout, uint entry, ushort fileType)
     {
         List<OutputSection> present = Present(layout);
 
@@ -1139,11 +1155,14 @@ public static partial class Linker
             h.WriteTo(b);
         }
 
-        byte[] file = b.ToArray();
-        BinaryPrimitives.WriteUInt32LittleEndian(file.AsSpan(32), shoff);
-        BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(48), (ushort)headers.Count);
-        BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(50), (ushort)(headers.Count - 1));
-        return file;
+        // THE HEADER'S LAST FIELDS PATCHED INTO THE CHUNKS, and the image
+        // handed back as them: flattened into one array it was a request for
+        // the whole image's size in one run of a 32-bit address space, which
+        // the native link of the compiler itself could not get.
+        b.PatchU32(32, shoff);
+        b.PatchU16(48, (ushort)headers.Count);
+        b.PatchU16(50, (ushort)(headers.Count - 1));
+        return b;
     }
 
     /// <summary>
@@ -1151,7 +1170,7 @@ public static partial class Linker
     /// section headers and symbols at their 64-bit sizes, everything else --
     /// the layout, the section contents, the tables' order -- as Emit writes it.
     /// </summary>
-    private static byte[] Emit64(List<Input> inputs, Layout layout, ulong entry, ushort fileType = Elf.TypeExec)
+    private static ElfBuffer Emit64(List<Input> inputs, Layout layout, ulong entry, ushort fileType = Elf.TypeExec)
     {
         List<OutputSection> present = Present(layout);
 
@@ -1282,11 +1301,10 @@ public static partial class Linker
             b.U64(h.EntSize);
         }
 
-        byte[] file = b.ToArray();
-        BinaryPrimitives.WriteUInt64LittleEndian(file.AsSpan(40), shoff);
-        BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(60), (ushort)headers.Count);
-        BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(62), (ushort)(headers.Count - 1));
-        return file;
+        b.PatchU64(40, shoff);
+        b.PatchU16(60, (ushort)headers.Count);
+        b.PatchU16(62, (ushort)(headers.Count - 1));
+        return b;
     }
 
     /// <summary>

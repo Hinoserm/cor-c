@@ -116,6 +116,12 @@ internal sealed class ElfBuffer
         return made;
     }
 
+    public void PatchU64(int offset, ulong v)
+    {
+        PatchU32(offset, (uint)v);
+        PatchU32(offset + 4, (uint)(v >> 32));
+    }
+
     public void PatchU16(int offset, ushort v)
     {
         if (offset < 0 || offset + 2 > _length) throw new ArgumentOutOfRangeException(nameof(offset));

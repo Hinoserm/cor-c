@@ -124,6 +124,7 @@ public static class ObjectLinkCommand
         // Every unit's frame table names from one pool (FramePool).
         if (lto) FramePool.Run(inputs);
         byte[] image;
+        bool streamed = false;
         if (flat)
         {
             Linker.FlatImage linked = Linker.LinkFlat(inputs, entry, checked((uint)(baseAddress ?? 0x10000)), longMode, map);
@@ -138,18 +139,24 @@ public static class ObjectLinkCommand
             image = shared ? Linker.LinkShared(inputs, Path.GetFileName(output), needed, runpath, checked((uint)(baseAddress ?? 0)), sharedLibraries, longMode: longMode)
                 : Linker.Link(inputs, entry, needed, runpath, libraries: sharedLibraries, longMode: longMode);
         }
-        else image = Linker.Link(inputs, entry, baseAddress ?? Linker.DefaultLoadAddress, physicalAddress, longMode: longMode);
+        else
+        {
+            // Straight to the file, a chunk at a time (Linker.LinkTo).
+            Linker.LinkTo(output, inputs, entry, baseAddress ?? Linker.DefaultLoadAddress, physicalAddress, longMode: longMode);
+            image = Array.Empty<byte>();
+            streamed = true;
+        }
         if (noUndefined && (shared || sharedLibraries.Count > 0))
         {
             HashSet<string> provided = new(sharedLibraries.SelectMany(path => ElfReader.ExportsOf(File.ReadAllBytes(path))), StringComparer.Ordinal);
             string[] missing = ElfReader.ImportsOf(image).Where(name => !provided.Contains(name)).Order(StringComparer.Ordinal).ToArray();
             if (missing.Length != 0) return Fail("unresolved shared-library imports: " + string.Join(", ", missing));
         }
-        File.WriteAllBytes(output, image);
+        if (!streamed) File.WriteAllBytes(output, image);
         if (!OperatingSystem.IsWindows())
             File.SetUnixFileMode(output, File.GetUnixFileMode(output)
                 | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
-        Console.Error.WriteLine($"{output}: {inputs.Count} objects, {image.Length} bytes; LTO calls folded={folded}; IR units regenerated={regenerated}");
+        Console.Error.WriteLine($"{output}: {inputs.Count} objects, {(streamed ? new FileInfo(output).Length : image.Length)} bytes; LTO calls folded={folded}; IR units regenerated={regenerated}");
         return 0;
     }
 

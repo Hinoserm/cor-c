@@ -220,9 +220,9 @@ public static partial class Linker
         {
             throw new LinkException(errors);
         }
-        return layout.LongMode
+        return (layout.LongMode
             ? Emit64(inputs, layout, entry, dyn.Shared ? Elf.TypeDyn : Elf.TypeExec)
-            : Emit(inputs, layout, checked((uint)entry), dyn.Shared ? Elf.TypeDyn : Elf.TypeExec);
+            : Emit(inputs, layout, checked((uint)entry), dyn.Shared ? Elf.TypeDyn : Elf.TypeExec)).ToArray();
     }
 
     // ---- the state a dynamic link carries -------------------------------
