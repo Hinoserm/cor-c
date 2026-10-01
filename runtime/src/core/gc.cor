@@ -4001,6 +4001,9 @@ static class Gc
         SayNumber("gc: majors costly ", MajorsCostly);
         SayNumber("gc: pause ms ", PauseMicros / 1000);
         SayNumber("gc: minor pause ms ", _minorPauseMicros / 1000);
+        SayNumber("gc: roots ms ", RootMicros / 1000);
+        SayNumber("gc: mark ms ", MarkMicros / 1000);
+        SayNumber("gc: sweep ms ", SweepMicros / 1000);
         SayNumber("gc: marks ", MarkCalls);
         SayNumber("gc: marks new ", _marksNew);
         SayNumber("gc: cards taken ", TakenCards);
@@ -6035,6 +6038,7 @@ static class Gc
 
             long depth = (tail + 1 - head) & WordSize.AddressMask;
             if (depth > _markPeak) _markPeak = depth;
+            if (Workers != 0) WakeWorkers(depth);
             return;
         }
     }
@@ -6780,6 +6784,8 @@ static class Gc
         // Not for a census, whose sums are plain additions.
         bool helped = !_concurrent && !_rootsOnly && !_census;
         if (helped) WorkersMark(true);
+        long clock = PauseClock;
+        long t0 = clock != 0 ? Sys.Call(clock, 0, 0, 0) : 0;
         GcRoots.ScanAll();
 
         // A MINOR CYCLE'S OTHER ROOTS, read with the ordinary ones: what old
@@ -6796,7 +6802,9 @@ static class Gc
             return;
         }
 
+        long t1 = clock != 0 ? Sys.Call(clock, 0, 0, 0) : 0;
         MarkToEmpty();
+        long t2 = clock != 0 ? Sys.Call(clock, 0, 0, 0) : 0;
         // Idle, as MarkToEmpty found them: none holds a block, and the queue
         // is empty. A worker between its check of the word and its next take
         // finds nothing to take.
@@ -6807,8 +6815,21 @@ static class Gc
         if (_verify) CheckQuarantine();
         BeginSweep();
         while (SweepNext()) { }
+        if (clock != 0)
+        {
+            long t3 = Sys.Call(clock, 0, 0, 0);
+            RootMicros = RootMicros + ((t1 - t0) & 0xFFFFFFFF);
+            MarkMicros = MarkMicros + ((t2 - t1) & 0xFFFFFFFF);
+            SweepMicros = SweepMicros + ((t3 - t2) & 0xFFFFFFFF);
+        }
         FinishCycle();
     }
+
+    // WHERE A COLLECTION ALONE SPENDS ITS PAUSE: roots and cards, marking,
+    // and sweeping (CORSAC_GC_STATS).
+    public static long RootMicros;
+    public static long MarkMicros;
+    public static long SweepMicros;
 
     /// Several threads: the collection runs beside them. Entered and left
     /// with the heap lock held.
@@ -7011,15 +7032,60 @@ static class Gc
     {
         if (WorkerQuietHook != 0) Sys.Call(WorkerQuietHook, 0, 0, 0);
         long at = Sys.AddressOf(ref _workWord);
+        long ctl = GcLock.Words();
+        long idle = 0;
         while (true)
         {
             long word = Sys.Peek(at);
             if ((word & 1) == 0)
             {
+                idle = 0;
                 Platform.Wait(at, word);
                 continue;
             }
-            if (DrainSome(-1) == 0) Sys.Pause();
+            // AN IDLE WORKER LOOKS AND DOES NOT TOUCH. Its check of the queue
+            // is two plain reads; a take that found nothing was two locked
+            // additions on the line every push and take of the marking thread
+            // goes through, and that slowed the marking it was there to help.
+            long tail = Sys.Peek(ctl + GcLock.GreyTail);
+            if ((Sys.Peek(ctl + GcLock.GreyHead) & WordSize.AddressMask) != (tail & WordSize.AddressMask))
+            {
+                if (DrainSome(-1) != 0)
+                {
+                    idle = 0;
+                    continue;
+                }
+            }
+            idle = idle + 1;
+            if (idle < WorkerSpins)
+            {
+                Sys.Pause();
+                continue;
+            }
+            // PARKED until a push leaves work enough to share (PushGrey), or
+            // the marking ends (WorkersMark). The tail is the word slept on:
+            // a push between the look above and the sleep has moved it, and
+            // the sleep does not begin.
+            Sys.AtomicAdd(Sys.AddressOf(ref _sleepers), 1);
+            if ((Sys.Peek(at) & 1) != 0) Platform.Wait(ctl + GcLock.GreyTail, tail);
+            Sys.AtomicAdd(Sys.AddressOf(ref _sleepers), -1);
+            idle = 0;
+        }
+    }
+
+    /// Looks at an empty queue before a worker parks.
+    const long WorkerSpins = 256;
+    /// Workers parked on the queue's tail.
+    static long _sleepers;
+    /// The depth at which a push wakes them: less is the pusher's own to scan.
+    const long WorkerWakeDepth = 64;
+
+    /// Wakes the parked workers when the queue holds work to share.
+    static void WakeWorkers(long depth)
+    {
+        if (depth >= WorkerWakeDepth && Sys.Peek(Sys.AddressOf(ref _sleepers)) != 0)
+        {
+            Platform.Wake(GcLock.Words() + GcLock.GreyTail, 0x7FFFFFFF);
         }
     }
 
@@ -7047,6 +7113,8 @@ static class Gc
         if (((word & 1) != 0) == on) return;
         Sys.AtomicAdd(at, 1);
         if (on) Platform.Wake(at, 0x7FFFFFFF);
+        // Parked on the tail, they go back to sleeping on the word.
+        else if (Sys.Peek(Sys.AddressOf(ref _sleepers)) != 0) Platform.Wake(GcLock.Words() + GcLock.GreyTail, 0x7FFFFFFF);
     }
 
     /// A concurrent collection that cannot finish soundly -- a barrier
