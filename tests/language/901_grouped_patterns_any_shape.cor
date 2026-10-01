@@ -1,0 +1,29 @@
+// test: grouped_patterns_any_shape
+// expect-exit: 0
+// expect-output:
+// other big plain plain big other
+// True
+// True
+using System;
+abstract class Op { }
+sealed class Reg : Op { public int Id; public bool Phys => Id < 8; }
+sealed class Imm : Op { public long Value; }
+sealed class Mem : Op { }
+static class P
+{
+    static string Kind(Op o)
+    {
+        if (o is not (Reg { Phys: false } or Imm)) return "other";
+        return o is (Imm { Value: > 10 } or Reg { Id: 9 }) ? "big" : "plain";
+    }
+    static void Main()
+    {
+        Op[] ops = { new Reg { Id = 3 }, new Reg { Id = 9 }, new Reg { Id = 12 }, new Imm { Value = 5 }, new Imm { Value = 50 }, new Mem() };
+        string line = "";
+        foreach (Op o in ops) line += Kind(o) + " ";
+        Console.WriteLine(line.TrimEnd());
+        object x = 7;
+        Console.WriteLine(x is (int and > 5) or (string { Length: 0 }));
+        Console.WriteLine(x is not (string or long));
+    }
+}

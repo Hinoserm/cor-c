@@ -5984,12 +5984,14 @@ public sealed class Parser
     {
         // A PARENTHESISED PATTERN, which is how alternatives are grouped:
         // `c is not ('r' or 'R')`. The brackets are the grouping and nothing
-        // else, so what is inside them is a whole pattern again.
+        // else, so what is inside them is a whole pattern again -- of any
+        // shape, not only constants: `y is not (MReg { IsPhys: false } or
+        // MImm)` was a syntax error at the brace.
         if (At(Tok.LParen) && !LooksLikeCast())
         {
             _i++;
 
-            Expr grouped = ParseValuePattern(subject, at);
+            Expr grouped = ParseIsPattern(subject, at);
 
             Expect(Tok.RParen, "')' to close the pattern");
             return grouped;
