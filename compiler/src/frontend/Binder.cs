@@ -2018,7 +2018,8 @@ public sealed partial class Binder
         // no code. It is here to be NAMED -- a generic method declared over
         // `List<T>` needs `List` to be a type the checker knows -- and nothing
         // else about it is real until it is specialised.
-        foreach (TypeSymbol sym in _r.Types.Values.Where(t => !IsTemplate(t)))
+        _layingOut = true;
+        foreach (TypeSymbol sym in _r.Types.Values.Where(t => !IsTemplate(t)).ToList())
         {
             LayOut(sym);
         }
@@ -7775,7 +7776,11 @@ public sealed partial class Binder
         RegisterType(name, tuple);
         if (elements.All(e => e.Size > 0))
         {
-            LayOut(tuple);
+            // NOT BEFORE THE TYPES HAVE THEIR MEMBERS: a shape is first met
+            // reading tuple namings, and laying it out then laid its items'
+            // structs out with no fields -- size one, every offset zero, kept
+            // for good. The pass that lays out every type (Run) takes it then.
+            if (_layingOut) LayOut(tuple);
         }
         else
         {
@@ -7798,6 +7803,9 @@ public sealed partial class Binder
         Remember(tuple, names);
         return tuple;
     }
+
+    /// <summary>Whether every type has its members, so a type made now can be laid out at once.</summary>
+    private bool _layingOut;
 
     /// <summary>Types are being looked up for their names alone: none is marked used, none is asked for.</summary>
     private bool _namingOnly;
