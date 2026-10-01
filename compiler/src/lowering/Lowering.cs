@@ -1850,7 +1850,6 @@ public sealed partial class Lowering
          // A STRUCT'S OR AN ENUM'S TYPE IS ITS BOX'S, which is what an object
          // holding one has: a class's descriptor made for one named members
          // only a class has.
-         : t.Kind is TypeKind.Struct or TypeKind.Enum ? BoxDescriptor(new Type { Prim = t.Kind == TypeKind.Enum ? t.EnumUnderlying : Prim.Void, Symbol = t })
          : ClassDescriptor(t);
 
     /// <summary>The address an object's first word holds: the vtable, just past the descriptor.</summary>
@@ -1897,6 +1896,13 @@ public sealed partial class Lowering
     /// </summary>
     private string ClassDescriptor(TypeSymbol t)
     {
+        // A STRUCT'S OR AN ENUM'S TYPE IS ITS BOX'S, which is what an object
+        // holding one has: a class's descriptor made for one named members
+        // only a class has, and a tuple shape's none ever written.
+        if (t.Kind is TypeKind.Struct or TypeKind.Enum)
+        {
+            return BoxDescriptor(new Type { Prim = t.Kind == TypeKind.Enum ? t.EnumUnderlying : Prim.Void, Symbol = t });
+        }
         if (_descriptors.TryGetValue(t, out string? sym))
         {
             return sym;
