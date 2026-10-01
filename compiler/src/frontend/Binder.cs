@@ -7747,7 +7747,10 @@ public sealed partial class Binder
         // LOOKED UP FOR A NAME ONLY (_namingOnly): a shape no source made is
         // made for the name and kept nowhere -- registered, one whose items
         // did not resolve in the scope asked was emitted as a type.
-        if (_namingOnly)
+        // And the tuple namings read before anything is declared: a shape
+        // whose items did not resolve there -- `(Block Block, ...)` read in no
+        // scope -- names nothing, and registered it was emitted as a type.
+        if (_namingOnly || _namingTuples && elements.Any(e => Unresolved(e)))
         {
             TypeSymbol transient = new() { Name = name, Kind = TypeKind.Struct, Structural = true };
             for (int i = 0; i < elements.Count; i++)
