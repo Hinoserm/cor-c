@@ -5699,7 +5699,7 @@ struct ReadOnlySpan<T> {
     /// THE ORDER OF TWO SEQUENCES, element by element and then by length:
     /// .NET's MemoryExtensions.SequenceCompareTo.
     public int SequenceCompareTo(ReadOnlySpan<T> other) {
-        IComparer<T> by = new DefaultComparer<T>();
+        IComparer<T> by = Comparer<T>.Default;
         int common = count < other.Length ? count : other.Length;
         for (int i = 0; i < common; i++) {
             int order = by.Compare(items[from + i], other[i]);
@@ -5877,7 +5877,7 @@ struct Span<T> {
     /// THE ORDER OF TWO SEQUENCES, element by element and then by length:
     /// .NET's MemoryExtensions.SequenceCompareTo.
     public int SequenceCompareTo(ReadOnlySpan<T> other) {
-        IComparer<T> by = new DefaultComparer<T>();
+        IComparer<T> by = Comparer<T>.Default;
         int common = count < other.Length ? count : other.Length;
         for (int i = 0; i < common; i++) {
             int order = by.Compare(items[from + i], other[i]);
@@ -7112,7 +7112,7 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
     /// THE ELEMENTS IN ORDER. With no argument the order is Comparer<T>'s --
     /// text by its characters, numbers by their value, and anything else by
     /// its address, which is the limitation described there.
-    public void Sort() { SortRange(0, count, new DefaultComparer<T>()); }
+    public void Sort() { SortRange(0, count, Comparer<T>.Default); }
 
     public void Sort(IComparer<T> by) { SortRange(0, count, by); }
 
@@ -7261,7 +7261,7 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
         return ~low;
     }
 
-    public int BinarySearch(T value) { return BinarySearch(value, new DefaultComparer<T>()); }
+    public int BinarySearch(T value) { return BinarySearch(value, Comparer<T>.Default); }
 
     private void Grow() {
         int size = items == null || items.Length == 0 ? 4 : items.Length * 2;
@@ -7386,7 +7386,7 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
 
     public int BinarySearch(int index, int howMany, T item, IComparer<T>? comparer) {
         CheckRange(index, howMany);
-        IComparer<T> by = comparer ?? new DefaultComparer<T>();
+        IComparer<T> by = comparer ?? Comparer<T>.Default;
         int lo = index;
         int hi = index + howMany - 1;
         while (lo <= hi) {
@@ -9692,7 +9692,7 @@ static class Array {
     }
 
     public static void Sort<T>(T[] items) {
-        Sorting.Introspective<T>(items, 0, items.Length, new DefaultComparer<T>());
+        Sorting.Introspective<T>(items, 0, items.Length, Comparer<T>.Default);
     }
 
     public static void Sort<T>(T[] items, IComparer<T> by) {
@@ -9876,7 +9876,7 @@ static class Array {
     }
 
     public static int BinarySearch<T>(T[] items, T value) {
-        return BinarySearch(items, value, new DefaultComparer<T>());
+        return BinarySearch(items, value, Comparer<T>.Default);
     }
 }
 
@@ -10089,7 +10089,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     private int mask;
 
     // The comparer this table was given, or null for the machine word. .NET
-    // spells the default Equalitynew DefaultComparer<T>() and picks it per element
+    // spells the default EqualityComparer<T>.Default and picks it per element
     // type; a word-shaped instantiation here shares one compiled copy and
     // cannot, so a table of strings is given one -- see the task list.
     private IEqualityComparer<K>? by;
@@ -12278,13 +12278,17 @@ class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
     private List<T> items;
+    // AN EMPTY SET HOLDS NO LIST OF ITS OWN: every one shares this until its
+    // first Add. A link's lifetime hints made sets by the million, most of
+    // them never added to, and each was a list too.
+    static readonly List<T> NoItems = new List<T>();
     private IComparer<T> by;
 
-    public SortedSet() { items = new List<T>(); by = new DefaultComparer<T>(); }
+    public SortedSet() { items = NoItems; by = Comparer<T>.Default; }
 
     public SortedSet(IComparer<T>? comparer) {
-        items = new List<T>();
-        by = comparer ?? new DefaultComparer<T>();
+        items = NoItems;
+        by = comparer ?? Comparer<T>.Default;
     }
 
     public SortedSet(IEnumerable<T> collection) : this(collection, null) { }
@@ -12321,6 +12325,7 @@ class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
     public bool Add(T value) {
         int at = Find(value);
         if (at >= 0) { return false; }
+        if (ReferenceEquals(items, NoItems)) { items = new List<T>(); }
         items.Insert(~at, value);
         return true;
     }
@@ -12334,7 +12339,7 @@ class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
 
     public bool Contains(T value) { return Find(value) >= 0; }
 
-    public void Clear() { items.Clear(); }
+    public void Clear() { if (!ReferenceEquals(items, NoItems)) { items.Clear(); } }
 
     public void UnionWith(IEnumerable<T> other) {
         foreach (T item in other) { Add(item); }
@@ -12433,6 +12438,7 @@ class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
     }
 
     public int RemoveWhere(Predicate<T> match) {
+        if (ReferenceEquals(items, NoItems)) { return 0; }
         return items.RemoveAll(item => match(item));
     }
 
@@ -12516,13 +12522,28 @@ class DefaultComparer<T> : IComparer<T> {
     }
 }
 
-/// .NET's Equalitynew DefaultComparer<T>() and new DefaultComparer<T>(), which are how
+/// .NET's EqualityComparer<T>.Default and Comparer<T>.Default, which are how
 /// generic code asks for "the usual" without knowing what T is.
-class Comparer<T> {
+abstract class Comparer<T> : IComparer<T> {
     // ONE, as .NET has one: made at every use, a record's CompareTo and every
     // sort paid an allocation for each comparison.
     static readonly IComparer<T> _default = new DefaultComparer<T>();
     public static IComparer<T> Default => _default;
+
+    public abstract int Compare(T x, T y);
+
+    /// .NET's Comparer<T>.Create: a comparer that asks the function given.
+    public static Comparer<T> Create(Comparison<T> comparison) {
+        if (comparison == null) { throw new ArgumentNullException(nameof(comparison)); }
+        return new CreatedComparer<T>(comparison);
+    }
+}
+
+/// What Comparer<T>.Create makes: a Comparer, as .NET's is, asking the function.
+sealed class CreatedComparer<T> : Comparer<T> {
+    private readonly Comparison<T> comparison;
+    public CreatedComparer(Comparison<T> comparison) { this.comparison = comparison; }
+    public override int Compare(T x, T y) { return comparison.Invoke(x, y); }
 }
 
 class DefaultEqualityComparer<T> : IEqualityComparer<T> {
