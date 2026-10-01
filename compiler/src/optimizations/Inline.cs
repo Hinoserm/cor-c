@@ -72,6 +72,15 @@ public sealed class Inline : IParallelModulePass
     public int GrowthLimit { get; init; } = 4000;
 
     /// <summary>
+    /// Bodies up to this many instructions are inlined however large the
+    /// caller has grown: no bigger than the call they replace -- arguments
+    /// pushed, the call, the frame, the result moved -- they cannot grow it.
+    /// Past the growth limit every getter, Math.Min and List indexer in the
+    /// compiler's own large methods stayed a call.
+    /// </summary>
+    public int TinyBody { get; init; } = 12;
+
+    /// <summary>
     /// Keep the free helper alive even though nothing calls it yet. Escape
     /// analysis has not run when the first inlining round strips dead code,
     /// and it is escape analysis that inserts the calls; without this the
@@ -302,7 +311,7 @@ public sealed class Inline : IParallelModulePass
                         TraceDecision?.Invoke(caller, callee, $"keep: body={calleeSize} cost={ordinaryCost} small-limit={smallBody} caller={size} sites={callers.GetValueOrDefault(callee.Name)}");
                         continue;
                     }
-                    if (size + calleeSize > GrowthLimit && !single && !exposesChildren)
+                    if (size + calleeSize > GrowthLimit && !single && !exposesChildren && calleeSize > TinyBody)
                     {
                         TraceDecision?.Invoke(caller, callee, $"keep: growth caller={size} body={calleeSize} limit={GrowthLimit}");
                         continue;

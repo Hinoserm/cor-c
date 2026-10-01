@@ -6745,6 +6745,18 @@ static class CollectionExpressionBuilder {
     }
 }
 
+// STORAGE A COLLECTION HAS OUTGROWN, given back by the collection itself.
+// Its arrays are its own: nothing outside it holds one (List's Backing,
+// which hands one out, is the exception and says so), so the array a Grow
+// replaces is garbage the moment the new one is in place. Left to the
+// collector, every growing table's old arrays were a quarter of everything
+// the compiler allocated.
+static class OutgrownStorage {
+    internal static void Release(object? old) {
+        if (old != null) { Runtime.Free(Sys.Word(old)); }
+    }
+}
+
 class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
@@ -6755,6 +6767,10 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
     // only growth and an explicit request for Backing materialize storage.
     private T[] items = null!;
     private int count;
+    // WHETHER THE ARRAY HAS BEEN HANDED OUT (Backing, for CollectionsMarshal
+    // and LINQ's span paths): one that has may be read after the list grows,
+    // as .NET promises, so it is left to the collector rather than freed.
+    private bool lent;
     // WHAT CHANGED IT LAST, counted: every change moves it on, and an
     // enumerator that finds it moved throws, as .NET's does.
     internal int version;
@@ -6930,6 +6946,7 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
     /// that grows afterwards leaves the old array behind.
     internal T[] Backing() {
         if (items == null) { items = new T[0]; }
+        lent = true;
         return items;
     }
 
@@ -7084,11 +7101,13 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
         set {
             if (value < count) { throw new ArgumentOutOfRangeException("value"); }
             if (value == Capacity) { return; }
-            if (value == 0) { items = null!; return; }
+            T[] old = items;
+            if (value == 0) { items = null!; Outgrown(old); return; }
 
             T[] bigger = new T[value];
-            for (int i = 0; i < count; i++) { bigger[i] = items[i]; }
+            for (int i = 0; i < count; i++) { bigger[i] = old[i]; }
             items = bigger;
+            Outgrown(old);
         }
     }
 
@@ -7319,8 +7338,15 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
     private void Grow() {
         int size = items == null || items.Length == 0 ? 4 : items.Length * 2;
         T[] bigger = new T[size];
-        for (int i = 0; i < count; i++) { bigger[i] = items[i]; }
+        T[] old = items;
+        for (int i = 0; i < count; i++) { bigger[i] = old[i]; }
         items = bigger;
+        Outgrown(old);
+    }
+
+    private void Outgrown(T[]? old) {
+        if (!lent) { OutgrownStorage.Release(old); }
+        lent = false;
     }
     // ---- the rest of .NET's List<T> ---------------------------------------
 
@@ -7610,8 +7636,10 @@ class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T> {
             bigger[i] = items[at];
         }
 
+        T[] old = items;
         items = bigger;
         head = 0;
+        OutgrownStorage.Release(old);
     }
 }
 
@@ -10199,9 +10227,11 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
             int place = places[slot];
             list[place] = -1;
             if (vacant == null || vacancies == vacant.Length) {
+                int[]? was = vacant;
                 int[] more = new int[vacant == null ? 8 : vacant.Length * 2];
-                for (int n = 0; n < vacancies; n++) { more[n] = vacant![n]; }
+                for (int n = 0; n < vacancies; n++) { more[n] = was![n]; }
                 vacant = more;
+                OutgrownStorage.Release(was);
             }
             vacant[vacancies] = place;
             vacancies = vacancies + 1;
@@ -10212,6 +10242,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     // can hold.
     private void Tidy() {
         int[]? old = order;
+        int[]? oldPlaces = placeOf;
         int[] list = new int[(mask + 1) * 2];
         int[] places = new int[mask + 1];
         int kept = 0;
@@ -10230,6 +10261,8 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         order = list;
         placeOf = places;
         ordered = kept;
+        OutgrownStorage.Release(old);
+        OutgrownStorage.Release(oldPlaces);
     }
 
     internal int SlotAt(int n) {
@@ -10611,6 +10644,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         int[] oldState = state;
         int[] oldHashes = hashes;
         int[]? oldOrder = order;
+        int[]? oldPlaces = placeOf;
         int oldOrdered = ordered;
         int oldSize = mask + 1;
 
@@ -10656,6 +10690,12 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         order = list;
         placeOf = places;
         ordered = oldOrdered;
+        OutgrownStorage.Release(oldKeys);
+        OutgrownStorage.Release(oldValues);
+        OutgrownStorage.Release(oldState);
+        OutgrownStorage.Release(oldHashes);
+        OutgrownStorage.Release(oldOrder);
+        OutgrownStorage.Release(oldPlaces);
     }
 }
 
@@ -11991,9 +12031,11 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
             int place = places[slot];
             list[place] = -1;
             if (vacant == null || vacancies == vacant.Length) {
+                int[]? was = vacant;
                 int[] more = new int[vacant == null ? 8 : vacant.Length * 2];
-                for (int n = 0; n < vacancies; n++) { more[n] = vacant![n]; }
+                for (int n = 0; n < vacancies; n++) { more[n] = was![n]; }
                 vacant = more;
+                OutgrownStorage.Release(was);
             }
             vacant[vacancies] = place;
             vacancies = vacancies + 1;
@@ -12004,6 +12046,7 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
     // can hold.
     private void Tidy() {
         int[]? old = order;
+        int[]? oldPlaces = placeOf;
         int[] list = new int[(mask + 1) * 2];
         int[] places = new int[mask + 1];
         int kept = 0;
@@ -12022,6 +12065,8 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
         order = list;
         placeOf = places;
         ordered = kept;
+        OutgrownStorage.Release(old);
+        OutgrownStorage.Release(oldPlaces);
     }
 
     internal int SlotAt(int n) {
@@ -12281,6 +12326,7 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
         int[] oldState = state;
         int[] oldHashes = hashes;
         int[]? oldOrder = order;
+        int[]? oldPlaces = placeOf;
         int oldOrdered = ordered;
         int oldSize = mask + 1;
 
@@ -12321,6 +12367,11 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
         order = list;
         placeOf = places;
         ordered = oldOrdered;
+        OutgrownStorage.Release(old);
+        OutgrownStorage.Release(oldState);
+        OutgrownStorage.Release(oldHashes);
+        OutgrownStorage.Release(oldOrder);
+        OutgrownStorage.Release(oldPlaces);
     }
 }
 
