@@ -433,6 +433,9 @@ public static class ElfReader
             }
             ReadOnlySpan<byte> table = Content(f, h, $"'{names[i]}'");
             int count = (int)(h.Size / Elf.RelSize);
+            // Sized once from the table: a link reads every object's relocations
+            // and keeps them, and grown by doubling they kept up to twice their size.
+            target.Relocs.EnsureCapacity(target.Relocs.Count + count);
             for (int j = 0; j < count; j++)
             {
                 uint offset = BinaryPrimitives.ReadUInt32LittleEndian(table[(j * Elf.RelSize)..]);

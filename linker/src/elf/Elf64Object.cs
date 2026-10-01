@@ -440,6 +440,8 @@ internal static class Elf64Object
             }
             ReadOnlySpan<byte> table = Content(f, h, $"'{names[i]}'");
             int count = (int)(h.Size / RelaSize);
+            // Sized once from the table, as the 32-bit reader sizes it.
+            target.Relocs.EnsureCapacity(target.Relocs.Count + count);
             for (int j = 0; j < count; j++)
             {
                 ReadOnlySpan<byte> e = table[(j * RelaSize)..];
