@@ -655,7 +655,7 @@ public static class Driver
                 !args.Contains("--no-stackmaps"),
                 new(true, m.NoCollector, m.CallsCollector, m.LeavesLinkHints, args.Contains("--opt-size"), args.Contains("--experimental-batch"),
                     m.RuntimeHelpers.ToArray()));
-            Optimise(module, Value(args, "--trace-opt"), args.Contains("--experimental-ssa"), args.Contains("--opt-size"), args.Contains("--experimental-batch"), Value(args, "--batch-without"), workers, beforeLate, Value(args, "--region-report"));
+            Optimise(module, Value(args, "--trace-opt"), args.Contains("--experimental-ssa"), args.Contains("--opt-size"), args.Contains("--experimental-batch"), Value(args, "--batch-without"), workers, beforeLate, Value(args, "--region-report"), regions: !freestanding);
             Phase("optimise");
             if (args.Contains("--dump-opt"))
             {
@@ -1170,9 +1170,9 @@ public static class Driver
     /// backend. Heavier passes slot in here as they arrive.
     /// </summary>
     private static void Optimise(Module module, string? traced = null, bool experimentalSsa = false, bool optimizeSize = false, bool experimentalBatch = false, string? batchWithout = null, int workers = 1,
-        Action<Module>? beforeLate = null, string? regionReport = null)
+        Action<Module>? beforeLate = null, string? regionReport = null, bool regions = true)
     {
-        Corsac.Lang.Opt.Pipeline pipeline = Corsac.Lang.Opt.Pipeline.Default(optimizeSize: optimizeSize, experimentalBatch: experimentalBatch, regionReport: regionReport);
+        Corsac.Lang.Opt.Pipeline pipeline = Corsac.Lang.Opt.Pipeline.Default(optimizeSize: optimizeSize, experimentalBatch: experimentalBatch, regionReport: regionReport, regions: regions);
         pipeline.Workers = workers;
         pipeline.BeforeLate = beforeLate;
         if (batchWithout is not null)

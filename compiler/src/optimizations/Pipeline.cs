@@ -60,7 +60,7 @@ public sealed class Pipeline
     /// The standard optimiser: cheap, safe, and enough to clean up what
     /// lowering leaves behind. Ordered so each pass feeds the next.
     /// </summary>
-    public static Pipeline Default(int rounds = 3, bool optimizeSize = false, bool experimentalBatch = false, string? regionReport = null)
+    public static Pipeline Default(int rounds = 3, bool optimizeSize = false, bool experimentalBatch = false, string? regionReport = null, bool regions = true)
     {
         Inline Inliner(bool keepFree = false) => new()
         {
@@ -148,7 +148,9 @@ public sealed class Pipeline
         p.LatePasses.Add(new Escape());
         // What the lifetime passes left to the collector, given to regions
         // where a boundary's return is proved to leave it dead.
-        p.LatePasses.Add(new RegionPointsTo { Report = regionReport });
+        // Not without an operating system: there a thread block is a
+        // processor's, and the runtime keeps no arena (baremetal.cor).
+        if (regions) p.LatePasses.Add(new RegionPointsTo { Report = regionReport });
         p.LatePasses.Add(Inliner());
         // The card marks written out, last: to every pass above they are a
         // call that lets nothing go (CardMarks).
