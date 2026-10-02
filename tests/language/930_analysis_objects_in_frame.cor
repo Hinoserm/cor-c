@@ -1,0 +1,54 @@
+// test: analysis_objects_in_frame
+// expect-exit: 0
+// expect-output:
+// 13590660000
+//
+// Two objects of one pass, each with arrays its constructor fills: a Graph,
+// and Facts made over it, which keeps it in a field. Both live in the frame;
+// the Graph's address stored into the Facts (another object of the frame)
+// does not make its fields unknown, so its arrays are given back with it.
+// Output from .NET.
+
+using System;
+sealed class Graph
+{
+    public readonly int[] Succ;
+    public readonly int[] Pred;
+    public Graph(int n)
+    {
+        Succ = new int[n];
+        Pred = new int[n];
+        for (int i = 0; i < n; i++) { Succ[i] = (i + 1) % n; Pred[i] = (i + n - 1) % n; }
+    }
+    public int Next(int i) => Succ[i];
+}
+sealed class Facts
+{
+    readonly Graph _g;
+    readonly int[] _depth;
+    public Facts(Graph g)
+    {
+        _g = g;
+        _depth = new int[g.Succ.Length];
+        for (int i = 0; i < _depth.Length; i++) _depth[i] = g.Pred[i] + 1;
+    }
+    public int Depth(int i) => _depth[_g.Next(i)];
+}
+public static class Program
+{
+    static long Pass(int n, int salt)
+    {
+        Graph g = new(n);
+        Facts f = new(g);
+        long t = 0;
+        for (int i = 0; i < n; i++) t += f.Depth(i) + g.Next(i) + salt;
+        return t;
+    }
+    public static int Main()
+    {
+        long t = 0;
+        for (int i = 0; i < 20000; i++) t += Pass(64 + (i & 7), i);
+        Console.WriteLine(t);
+        return 0;
+    }
+}

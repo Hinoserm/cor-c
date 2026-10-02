@@ -267,7 +267,7 @@ public sealed partial class Escape
     /// answer either way.
     /// </summary>
     internal FieldSummary FieldUses(Function f, IEnumerable<VReg> roots, Dictionary<string, bool[]> summaries,
-        Instr? source, HashSet<VReg>? returnable, LifetimeFields? hint = null)
+        Instr? source, HashSet<VReg>? returnable, LifetimeFields? hint = null, bool framed = false)
     {
         FieldSummary fs = new();
         int word = IrTypes.Word.Bytes();
@@ -331,7 +331,18 @@ public sealed partial class Escape
                     {
                         if (i.Operands.Count < 2) { Opaque(); break; }
                         // The object's own address stored anywhere -- in itself included.
-                        if (i.Operands[1] is RegOperand v0 && addresses.ContainsKey(v0.Reg)) { Opaque(); break; }
+                        // EXCEPT, for an object the frame holds, into another
+                        // object of the frame: a Defs kept in the frame holding
+                        // the Cfg it was made over. Neither outlives the frame
+                        // (they were put there for that), and what this one's
+                        // fields hold stays its own: the whole program's rules
+                        // own those fields, every store into one a fresh object
+                        // and what it replaces given back, whoever stores it.
+                        if (i.Operands[1] is RegOperand v0 && addresses.ContainsKey(v0.Reg))
+                        {
+                            if (framed && !(i.Operands[0] is RegOperand into && addresses.ContainsKey(into.Reg)) && FrameMemory(i.Operands[0], defs)) break;
+                            Opaque(); break;
+                        }
                         if (i.Operands[0] is not RegOperand baseReg || !addresses.TryGetValue(baseReg.Reg, out long off))
                         { Opaque(); break; }
                         long at = off + i.Offset;
@@ -575,6 +586,24 @@ public sealed partial class Escape
     /// before the slot is zeroed for the next one and on every return (with
     /// the fields cleared on entry, since a frame starts as garbage).
     /// </summary>
+    /// <summary>
+    /// Memory of the frame: a slot, or a register made once from one's address
+    /// through copies and width changes (an object put in the frame keeps its
+    /// own register, a copy of the slot's address, and its truncation).
+    /// </summary>
+    private static bool FrameMemory(Operand o, Defs defs)
+    {
+        for (int depth = 0; depth < 8; depth++)
+        {
+            if (o is SlotOperand) return true;
+            if (o is not RegOperand { Reg: var r } || !defs.IsSingle(r) || defs.Site(r) is not { } site) return false;
+            Instr made = site.Block.Instrs[site.Index];
+            if (made.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || made.Operands.Count != 1) return false;
+            o = made.Operands[0];
+        }
+        return false;
+    }
+
     internal static readonly bool FieldTraceAll = Environment.GetEnvironmentVariable("CORSAC_FIELD_TRACE_ALL") is { Length: > 0 };
     internal static readonly string? FieldTrace = Environment.GetEnvironmentVariable("CORSAC_FIELD_TRACE") is { Length: > 0 } t ? t : null;
 
@@ -591,7 +620,7 @@ public sealed partial class Escape
             VReg[] roots = r.SlotAddress is null ? new[] { r.Root } : new[] { r.Root, r.SlotAddress };
             // For the link as well, when the unit can leave it field sites.
             LifetimeFields? hint = _hinting && _fieldSites ? new() : null;
-            FieldSummary fs = FieldUses(f, roots, summaries, r.Origin, null, hint);
+            FieldSummary fs = FieldUses(f, roots, summaries, r.Origin, null, hint, framed: r.SlotAddress is not null);
             if (r.FreshCallee == OpaqueCallee)
             {
                 fs.Opaque = true;
