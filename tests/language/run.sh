@@ -21,7 +21,8 @@
 
 #            (default: the runtime and standard-library sources in this repository)
 #   TIMEOUT  seconds a compiled test may run (default: 10)
-#   KEEP     set to 1 to keep the build directory for inspection
+#   KEEP     set to 1 to keep the build directory (and the copy of the
+#            sources the run compiled) for inspection
 #   JOBS     tests run at once (default 30, or the processors less two)
 
 set -u
@@ -89,6 +90,46 @@ libs="${CORC_LIBS:-$($CORC library-sources | tr '\n' ' ')}"
 
 # The compiler answers absolute paths; CORC_LIBS may be relative to the root.
 lib_path() { case "$1" in /*) printf '%s' "$1" ;; *) printf '%s' "$root/$1" ;; esac; }
+
+# ONE COPY OF THE SOURCES FOR THE WHOLE RUN. A "// units:" test reads the
+# library twice, a minute or more apart under load: once compiling its other
+# unit with --lib, once compiling itself against --ref of the same files. A
+# library file saved between the two -- the tree being worked on while its
+# suite runs -- gave the halves two versions of it, and six tests in flight
+# at that moment stopped with "managed layout of 'type:ArgumentException'
+# conflicts", every one passing alone. So the run copies the library tree the
+# compiler names and these tests, once, and runs that copy of this script
+# against them: every test sees the sources as they were when the run began,
+# whatever is saved meanwhile. The copy carries a mark, which is how the run
+# inside it knows not to copy again.
+if [ ! -e "$root/.run-snapshot" ]; then
+    lib_root="$($CORC library-sources | sed -n 's|/stdlib/src/System/Core\.cor$||p' | head -1)"
+    if [ -n "$lib_root" ] && [ -d "$lib_root/stdlib" ] && [ -d "$lib_root/runtime" ]; then
+        tree="$(mktemp -d "${TMPDIR:-/tmp}/corc-lang-sources.XXXXXX")" || exit 2
+        if [ "${KEEP:-0}" != "1" ]; then
+            trap 'rm -rf "$tree"' EXIT
+        fi
+        mkdir -p "$tree/tests" \
+            && cp -R "$lib_root/stdlib" "$lib_root/runtime" "$tree/" \
+            && cp -R "$here" "$tree/tests/language" \
+            && : > "$tree/.run-snapshot" \
+            || { echo "cannot copy the sources to $tree" >&2; exit 2; }
+        # Library sources named by CORC_LIBS are read from the copy too.
+        if [ -n "${CORC_LIBS:-}" ]; then
+            copied=""
+            for lib in $CORC_LIBS; do
+                full="$(lib_path "$lib")"
+                case "$full" in
+                    "$lib_root"/stdlib/*|"$lib_root"/runtime/*) full="$tree${full#"$lib_root"}" ;;
+                esac
+                copied="$copied $full"
+            done
+            export CORC_LIBS="${copied# }"
+        fi
+        CORC="$CORC" CORC_LIB="$tree" bash "$tree/tests/language/run.sh" "$@"
+        exit $?
+    fi
+fi
 
 for lib in $libs; do
     if [ ! -f "$(lib_path "$lib")" ]; then
