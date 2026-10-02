@@ -25,11 +25,14 @@ static class Host
         Platform.SetHeap(memory, memory + bytes);
     }
 
+    /// A line of the test's output. Strings are UTF-16; the tests print
+    /// ASCII, written out a byte a character.
     public static void Line(string text)
     {
-        Sys.Syscall(Write, 1, Sys.ArrayData(text), text.Length);
-        string newline = "\n";
-        Sys.Syscall(Write, 1, Sys.ArrayData(newline), 1);
+        byte[] bytes = new byte[text.Length + 1];
+        for (int i = 0; i < text.Length; i++) bytes[i] = (byte)text[i];
+        bytes[text.Length] = (byte)'\n';
+        Sys.Syscall(Write, 1, Sys.ArrayData(bytes), bytes.Length);
     }
 
     public static void Done(int code)
