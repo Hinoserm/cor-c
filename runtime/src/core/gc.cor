@@ -2992,6 +2992,10 @@ static class Gc
     /// A thread that is going: its pages given up and its cache unmapped.
     public static void ForgetClasses(long tb)
     {
+        // ITS PAGES STAMPED FIRST while it still owes STAMP, as its buffer is
+        // (Retire): the snapshot stepped over them as this thread's, and
+        // once given up nobody's answer looks in them.
+        if (_stamping && !StampedAlready(tb)) StampPages(tb);
         RetireClasses(tb);
         long cache = Sys.Peek(tb + Tls.Classes);
         if (cache == 0) cache = Sys.Peek(tb + Tls.ClassesSaved);
@@ -4181,6 +4185,25 @@ static class Gc
         }
 
         GcLock.Enter();
+
+        // NOTHING NEW BEFORE THIS THREAD'S STAMP ANSWER. A page or a buffer
+        // taken between the snapshot and that answer may be one the snapshot
+        // does not cover -- a pooled page laid out afresh, a chunk mapped
+        // since, a hole in an old chunk a minor cycle skipped -- and its
+        // objects are newcomers, never traced. Made before the answer, they
+        // could hold what was then only on this thread's stack: a string put
+        // into a new array, with no barrier, and dropped before the answer
+        // copied the stack. So the answer comes first, waiting out the few
+        // instructions between the snapshot and the round being asked. Not
+        // on top of the allocator (an interrupt's allocation, on a kernel):
+        // that cannot answer, and goes on as it always has.
+        while (tb != 0 && Sys.Peek(tb + Tls.InAlloc) == 0 && _stamping && !StampedAlready(tb))
+        {
+            GcLock.Exit();
+            GcThreads.Park();
+            Sys.Pause();
+            GcLock.Enter();
+        }
 
         // A buffer limit taken away to ask for that answer (GcThreads.Round)
         // is given back: the buffer was this thread's all along.

@@ -1,0 +1,163 @@
+// test: what a thread makes after answering STAMP is not stamped by it later
+// expect-exit: 0
+// expect-output:
+// rounds 6
+// stamping True
+// strings 7200
+// bad 0
+//
+// A concurrent collection writes down where every object starts (the
+// snapshot), each thread its own buffer's and pages' objects as it answers
+// STAMP, and copies its stack then. An object made after that answer is a
+// newcomer: kept by the sweep, never traced. While other threads had still
+// to answer, a thread that had answered and then gave up a used-up page --
+// or retired its buffer -- wrote that page's objects into the snapshot
+// again, the ones made since its answer among them. Such an object is then
+// swept unless something marks it, and nothing does when it is held only by
+// another newcomer: a string put into an array made after the answer, stored
+// with no barrier because the array is new. The rs repro's chains read back
+// a live string as somebody else's text, or as nothing (2026-10-02).
+//
+// Here one thread spins without allocating, so it never answers and stamping
+// stays open; another answers, then makes strings of six sizes -- enough to
+// use up the page each size class had -- each held only by an array made
+// after its answer, and lets the spinner go once they are made. Every string
+// is read back after the collection has swept.
+
+class Spinner : Action
+{
+    public volatile int Hold;
+    public volatile bool Stop;
+    public volatile bool Spinning;
+
+    public void Invoke()
+    {
+        while (!Stop)
+        {
+            // Waiting as a blocked thread: the collector answers for it.
+            GcThreads.BeginBlocking();
+            while (Hold == 0 && !Stop) { }
+            GcThreads.EndBlocking();
+            // Held as a running thread that neither allocates nor calls:
+            // nothing answers its STAMP, so stamping stays open.
+            Spinning = true;
+            while (Hold != 0 && !Stop) { }
+            Spinning = false;
+        }
+    }
+}
+
+class Maker : Action
+{
+    public const int Rounds = 6;
+    public const int Lengths = 6;
+    public const int PerLength = 200;
+    public volatile int Started;
+    public volatile int Done;
+    public Spinner? Other;
+    public long Bad;
+    public long Checked;
+    public int Open;
+    public static byte[]? Junk;
+    // Where the arrays are kept: a static, so that they and the strings
+    // are on the heap and not in a region of this call.
+    public static string[][]? Keep;
+    static readonly int[] Sizes = new int[] { 3, 9, 17, 29, 45, 70 };
+
+    static string Text(int length, int value)
+    {
+        char[] chars = new char[length];
+        int v = value;
+        for (int i = length - 1; i >= 0; i--)
+        {
+            chars[i] = (char)('a' + v % 26);
+            v = v / 26 + i;
+        }
+        return new string(chars);
+    }
+
+    public void Invoke()
+    {
+        Spinner other = Other!;
+        for (int round = 0; round < Rounds; round++)
+        {
+            // Out of any collection under way, with a page of every size
+            // this round uses owned before the next one's snapshot.
+            while (Runtime.Marking != 0 || GcLock.IsCollecting()) Junk = new byte[8];
+            for (int k = 0; k < Lengths; k++)
+            {
+                for (int j = 0; j < 8; j++) Junk = new byte[1 + j];
+                Text(Sizes[k], k);
+            }
+            other.Hold = 1;
+            while (!other.Spinning) { }
+            Started = round + 1;
+            // The collection Main starts: STAMP is asked of this thread.
+            while (Runtime.Marking == 0) { }
+
+            // STAMP answered: an allocation is a safepoint, and the round
+            // took the buffer's limit away so the next one is slow.
+            long before = GcThreads.Answered;
+            while (GcThreads.Answered == before && Runtime.Marking == 1) Junk = new byte[16];
+
+            string[][] held = new string[Lengths * PerLength][];
+            Keep = held;
+            for (int k = 0; k < Lengths; k++)
+            {
+                for (int i = 0; i < PerLength; i++)
+                {
+                    // An initializer: the new array's element is written
+                    // with no barrier.
+                    string[] one = new string[] { Text(Sizes[k], round * 100000 + k * 1000 + i) };
+                    held[k * PerLength + i] = one;
+                }
+            }
+            // Made while the spinner still owed STAMP: stamping was open.
+            if (Runtime.Marking == 1 && other.Spinning) Open = Open + 1;
+            other.Hold = 0;
+
+            // The collection finished, its sweep with it.
+            while (Done <= round) Junk = new byte[24];
+
+            for (int k = 0; k < Lengths; k++)
+            {
+                for (int i = 0; i < PerLength; i++)
+                {
+                    string s = held[k * PerLength + i][0];
+                    if (s != Text(Sizes[k], round * 100000 + k * 1000 + i)) Bad = Bad + 1;
+                    Checked = Checked + 1;
+                }
+            }
+        }
+    }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Spinner spinner = new Spinner();
+        Maker maker = new Maker();
+        maker.Other = spinner;
+        Thread s = Thread.Start(spinner);
+        Thread m = Thread.Start(maker);
+
+        for (int round = 0; round < Maker.Rounds; round++)
+        {
+            GcThreads.BeginBlocking();
+            while (maker.Started <= round) { }
+            GcThreads.EndBlocking();
+            GC.Collect();
+            maker.Done = round + 1;
+        }
+        m.Join();
+        spinner.Stop = true;
+        s.Join();
+
+        System.Console.WriteLine("rounds " + Maker.Rounds);
+        System.Console.WriteLine("stamping " + (maker.Open >= Maker.Rounds / 2));
+        System.Console.WriteLine("strings " + maker.Checked);
+        System.Console.WriteLine("bad " + maker.Bad);
+        return 0;
+    }
+}
