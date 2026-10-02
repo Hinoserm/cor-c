@@ -32,6 +32,7 @@ public static class IrLinkOptimizer
             foreach (Symbol symbol in input.Object.Symbols.Where(symbol => symbol.Global && symbol.IsDefined))
                 owners.TryAdd(symbol.Name, input.Object);
         }
+        LinkTimings.Phase("archives and hints");
         // Every unit's lifetime summaries, solved together (LifetimeSolver).
         // Virtual calls, each by the overrides the whole image holds for it
         // (VirtualTargets), from the descriptors in the objects themselves.
@@ -42,6 +43,7 @@ public static class IrLinkOptimizer
             : new(StringComparer.Ordinal);
         LifetimeSolver? lifetimes = enabled && hints.Count > 0 ? new LifetimeSolver(hintOrder, virtuals) : null;
         if (virtuals.Count > 0) Console.Error.WriteLine("LTO virtual calls resolved: " + virtuals.Count);
+        LinkTimings.Phase("virtual targets and lifetime solve");
         // THE WHOLE PROGRAM'S ANSWERS, for a closed image only -- a library's
         // consumers could throw anything -- and only where every unit with
         // IR said what it throws.
@@ -70,6 +72,7 @@ public static class IrLinkOptimizer
             Console.Error.WriteLine("LTO owned fields: " + ownedFields.Fields.Count + " of "
                 + hintOrder.SelectMany(unit => unit.Owned!.Fields.Keys).Distinct(StringComparer.Ordinal).Count()
                 + (Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 0 } ? ": " + string.Join(" ", ownedFields.Fields.Keys.Order(StringComparer.Ordinal)) : ""));
+        LinkTimings.Phase("catches and owned fields");
         bool regionsPossible = lifetimes is not null && closedImageEntry is not null && archives.Keys.All(hints.ContainsKey)
             && archives.Keys.All(regionHints.Contains)
             && new[] { RuntimeAbi.RegionEnter, RuntimeAbi.RegionLeave, RuntimeAbi.AllocRegion, RuntimeAbi.RegionCatch }.All(owners.ContainsKey);
@@ -99,6 +102,7 @@ public static class IrLinkOptimizer
         linkRoots.Add(RuntimeAbi.WriteBarrierValues);
         Dictionary<ObjectFile, HashSet<string>>? reachability = enabled && closedImageEntry is not null
             ? IrReachability.Find(inputs, archives, owners, closedImageEntry, linkRoots) : null;
+        LinkTimings.Phase("reachability");
         // REGIONS OVER EVERY UNIT (RegionSolver): the boundaries to open and
         // the allocation sites to make in the innermost open region, for a
         // closed image whose every unit with IR said what its functions do
@@ -131,6 +135,7 @@ public static class IrLinkOptimizer
             }
         }
 
+        LinkTimings.Phase("regions");
         int lifetimeUnits = 0;
         List<(int Index, List<(string Symbol, IrArchive Archive, IrArchiveEntry Body)> Imports, HashSet<string>? Retained)> plans = new();
         if (enabled)
@@ -184,6 +189,7 @@ public static class IrLinkOptimizer
             }
             planFacts[k] = facts;
         }
+        LinkTimings.Phase("plans and facts");
         // A BODY BROUGHT IN CARRIES WHAT ITS OWN UNIT WAS TOLD OF IT: the
         // sites chosen of it, which ride on every copy the inliner makes, so
         // a constructor's buffer inlined into a caller in another unit is
@@ -218,6 +224,7 @@ public static class IrLinkOptimizer
                     int k = Interlocked.Increment(ref next);
                     if (k >= plans.Count) break;
                     var plan = plans[k];
+                    long began = LinkTimings.Enabled ? Environment.TickCount64 : 0;
                     service ??= backend();
                     ObjectFile original = inputs[plan.Index].Object;
                     IrImport[] imports = plan.Imports.Select(import => Imported(import.Symbol, import.Archive, import.Body)).ToArray();
@@ -233,7 +240,8 @@ public static class IrLinkOptimizer
                     if (!before.SequenceEqual(after)) throw new ElfFormatException("IR backend changed the unit's exported definitions");
                     regenerated[k] = replacement;
                     reports[k] = "LTO IR: " + inputs[plan.Index].Name + ": imported " + imports.Length + " bodies, "
-                        + imports.Sum(import => import.Body.Length) + " bytes; retained records=" + (plan.Retained?.Count.ToString() ?? "all");
+                        + imports.Sum(import => import.Body.Length) + " bytes; retained records=" + (plan.Retained?.Count.ToString() ?? "all")
+                        + (LinkTimings.Enabled ? "; " + (Environment.TickCount64 - began) + "ms" : "");
                 }
             }
             catch (Exception error) { Interlocked.CompareExchange(ref failure, error, null); }
@@ -261,6 +269,7 @@ public static class IrLinkOptimizer
             replacements.Add((plans[k].Index, regenerated[k]!));
             Console.Error.WriteLine(reports[k]);
         }
+        LinkTimings.Phase("units regenerated (" + plans.Count + ", " + workerCount + " backends)");
         foreach (var replacement in replacements)
             inputs[replacement.Index] = (inputs[replacement.Index].Name, replacement.Object);
         // Final images do not carry compiler IR or stale native integrity hashes.
@@ -273,6 +282,7 @@ public static class IrLinkOptimizer
         foreach (var input in inputs)
             input.Object.Sections.RemoveAll(section => section.Name == IrArchive.SectionName || section.Name == LifetimeHints.SectionName
                 || section.Name == RegionHints.SectionName);
+        LinkTimings.Phase("field sites");
         if (lifetimes is not null || sites > 0)
             Console.Error.WriteLine("LTO lifetimes: units with hints=" + hints.Count + ", units gaining=" + lifetimeUnits
                 + ", field sites=" + sites + " freed=" + sitesFreed);

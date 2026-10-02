@@ -24,7 +24,7 @@ public static class ProjectCommand
         string? path = null, output = null, framework = null, targetName = null, regionReport = null;
         string configuration = "Release";
         int workers = Environment.ProcessorCount;
-        bool linkOnly = false, runtimeOnly = false;
+        bool linkOnly = false, runtimeOnly = false, timings = false;
         List<string> profileArguments = new();
         for (int i = 0; i < arguments.Length; i++)
         {
@@ -51,6 +51,8 @@ public static class ProjectCommand
                 case "--target": targetName = Value(); break;
                 // The link's region report (corc link --region-report NAMES).
                 case "--region-report": regionReport = Value(); break;
+                // The link's phases timed (corc link --timings).
+                case "--timings": timings = true; break;
                 case "--cpu": case "--tune": case "--fpu":
                     profileArguments.Add(arguments[i]); profileArguments.Add(Value()); break;
                 case "--enable-mmx": case "--disable-mmx": case "--enable-3dnow": case "--disable-3dnow":
@@ -93,6 +95,7 @@ public static class ProjectCommand
         // compiler's own build made no region at all.
         linkArguments.Add("--closed");
         if (regionReport is not null) { linkArguments.Add("--region-report"); linkArguments.Add(regionReport); }
+        if (timings) linkArguments.Add("--timings");
         string directory = Path.GetDirectoryName(project.Path)!;
         string work = Path.Combine(directory, "obj", "cor-c", configuration, project.Framework);
         Directory.CreateDirectory(work);

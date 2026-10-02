@@ -80,6 +80,8 @@ public static class ObjectLinkCommand
             }
             else if (arg == "--flat") flat = true;
             else if (arg == "--closed") closed = true;
+            // A line at the end of each phase: its time and the memory it took (LinkTimings).
+            else if (arg == "--timings") LinkTimings.Enabled = true;
             else if (arg == "--map" && i + 1 < args.Length) map = args[++i];
             else if (arg == "--shared") shared = true;
             else if (arg == "--no-undefined") noUndefined = true;
@@ -90,7 +92,7 @@ public static class ObjectLinkCommand
             else paths.Add(arg);
         }
         if (output is null || paths.Count == 0)
-            return Fail("usage: corlink <file.o> ... -o <output> [--entry symbol] [--flat] [--closed] [--base address] [--paddr address] [--no-lto]");
+            return Fail("usage: corlink <file.o> ... -o <output> [--entry symbol] [--flat] [--closed] [--base address] [--paddr address] [--no-lto] [--timings]");
         if (flat && physicalAddress is not null) return Fail("--paddr is for ELF output; use --base for flat images");
         if (closed && (shared || sharedLibraries.Count > 0)) return Fail("--closed is for an image linked against no shared library");
         if ((shared || sharedLibraries.Count > 0) && (flat || physicalAddress is not null))
@@ -98,6 +100,7 @@ public static class ObjectLinkCommand
         if (!shared && sharedLibraries.Count > 0 && baseAddress is not null)
             return Fail("a dynamically linked executable is laid out at the default address");
         string destination = Path.GetFullPath(output);
+        LinkTimings.Start();
         List<(string, ObjectFile)> inputs = new();
         HashSet<string> seen = new(StringComparer.Ordinal);
         foreach (string path in paths)
@@ -113,6 +116,7 @@ public static class ObjectLinkCommand
         }
         // Resolve every input and relocation before writing the destination.
         // LinkException is rendered by Driver, just as for compile-and-link.
+        LinkTimings.Phase("read objects");
         TargetContract.Validate(inputs);
         X86CodeGenerationContract? selected = cpuArguments.Count == 0 ? null : Lang.X86.X86Cpu.Parse(cpuArguments).Contract;
         if (selected is not null) X86CodeGenerationContract.ValidateTarget(inputs, selected);
@@ -120,6 +124,7 @@ public static class ObjectLinkCommand
         int regenerated = IrLinkOptimizer.Run(inputs, () => backend ?? new ProcessUnitBackend(backendPath), lto, importBytes,
             closedImageEntry: flat || closed || physicalAddress is not null ? entry : null, parallelBackends: backend is null, regionReport: regionReport);
         int folded = LinkTimeOptimizer.Run(inputs, lto);
+        LinkTimings.Phase("constant returns and coalescing");
         if (selected is not null) X86CodeGenerationContract.ValidateTarget(inputs, selected);
         // Long mode is read before the notes that say so go.
         bool longMode = inputs.Any(input => TargetContract.IsLongMode(input.Item2));
@@ -133,6 +138,7 @@ public static class ObjectLinkCommand
                 || section.Name == ManagedLayoutContract.SectionName);
         // Every unit's frame table names from one pool (FramePool).
         if (lto) FramePool.Run(inputs);
+        LinkTimings.Phase("frame names");
         byte[] image;
         bool streamed = false;
         if (flat)
@@ -165,6 +171,7 @@ public static class ObjectLinkCommand
             if (missing.Length != 0) return Fail("unresolved shared-library imports: " + string.Join(", ", missing));
         }
         if (!streamed) File.WriteAllBytes(output, image);
+        LinkTimings.Phase("layout and write");
         if (!OperatingSystem.IsWindows())
             File.SetUnixFileMode(output, File.GetUnixFileMode(output)
                 | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
