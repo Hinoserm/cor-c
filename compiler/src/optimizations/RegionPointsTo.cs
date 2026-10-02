@@ -17,9 +17,12 @@ using Block = Corsac.Lang.Ir.Block;
 /// index) -- with one object of context: an instance method is analysed once
 /// per object it is called on, and what it makes is made once per such
 /// object, so a List's array and the elements in it are that List's and not
-/// every List's. Contexts nest two deep; deeper ones are merged into the
-/// method's context-free copy. A virtual call runs, for each object it is
-/// made on, the method that object's own descriptor names.
+/// every List's -- an object kept in a frame as much as one on the heap.
+/// Contexts nest two deep; deeper ones are merged into the method's
+/// context-free copy. A static function that hands back what it makes is
+/// analysed once per call that reaches it, and what it makes is made once
+/// per call (CallContext). A virtual call runs, for each object it is made
+/// on, the method that object's own descriptor names.
 ///
 /// Boundaries are the compiler's choice (Nearest): for each object the
 /// lifetime passes left to the collector, the nearest call whose return it is
@@ -259,6 +262,11 @@ public sealed class RegionPointsTo : IModulePass
     /// on (AllocNear): what it makes for an object in a region must be dead
     /// by that region's end. Any other site is made in the innermost region
     /// open (AllocRegion): dead by the end of every boundary it runs beneath.
+    ///
+    /// A FUNCTION SOME CALLS NEED MADE DIFFERENTLY is made once more for them:
+    /// where the copies a call reaches -- its own contexts, not every
+    /// caller's -- prove more of its sites than the function's every copy
+    /// does, that call runs a version of it making those in the region.
     /// </summary>
     private void Apply()
     {
@@ -272,57 +280,276 @@ public sealed class RegionPointsTo : IModulePass
         List<(HashSet<int> Outlives, HashSet<int> Beneath)> judged = new();
         foreach (int c in boundaries) judged.Add((OutlivingOf(c), Beneath(c)));
 
-        // Each site's objects, and the boundaries each is made beneath.
-        Dictionary<Instr, List<int>> bySite = new(ReferenceEqualityComparer.Instance);
-        for (int o = 1; o < _objects.Count; o++)
-            if (_objects[o].Site is { } site) (bySite.TryGetValue(site, out List<int>? l) ? l : bySite[site] = new()).Add(o);
+        // Each site's objects, and the copy each is made in.
+        Dictionary<Instr, List<(int, int)>> bySite = new(ReferenceEqualityComparer.Instance);
+        foreach (var ((copy, site), o) in _madeIn)
+            (bySite.TryGetValue(site, out List<(int, int)>? l) ? l : bySite[site] = new()).Add((o, copy));
 
-        int near = 0, inRegion = 0;
-        Dictionary<Instr, string> chosen = new(ReferenceEqualityComparer.Instance);
-        foreach ((Instr site, List<int> objects) in bySite)
+        // How a site's objects -- all of them, or those of the copies one
+        // version runs -- are made: null for on the heap, as they were.
+        string? Decide(Function f, List<(int Object, int Copy)> objects)
         {
-            if (site.Callee is not (Opt.Escape.Allocator or Opt.Escape.LeafAllocator or Opt.Escape.ObjectAllocator)) continue;
-            Function f = _objects[objects[0]].F!;
-            bool beside = IsInstance(f) && objects.Any(o => _objects[o].Context >= 0);
-            bool anywhere = false, ok = true;
-            foreach (int o in objects)
+            // Beside the object called on when that may be in a region; when
+            // every one is in a frame or unknown, in the innermost region.
+            bool beside = IsInstance(f) && objects.Any(m => _objects[m.Object].Context >= 0 && _objects[_objects[m.Object].Context].Site is not null);
+            bool anywhere = false;
+            foreach ((int o, int copy) in objects)
             {
-                int copy = CopyIdOfObject(o);
                 int context = _objects[o].Context;
-                for (int k = 0; k < boundaries.Count && ok; k++)
+                for (int k = 0; k < boundaries.Count; k++)
                 {
                     if (!judged[k].Beneath.Contains(copy)) continue;
                     anywhere = true;
                     // Beside an object that is never in this boundary's
-                    // region: never in it either, so nothing to prove.
-                    if (beside && context >= 0 && judged[k].Outlives.Contains(context)) continue;
-                    if (judged[k].Outlives.Contains(o)) ok = false;
+                    // region -- one that outlives it, or one in a frame --
+                    // never in it either, so nothing to prove.
+                    if (beside && context >= 0 && (judged[k].Outlives.Contains(context) || _objects[context].Site is null)) continue;
+                    if (judged[k].Outlives.Contains(o)) return null;
                 }
-                if (!ok) break;
             }
-            if (!ok || !anywhere) continue;
-            chosen[site] = beside ? Near : InRegion;
-            if (Report is not null) Console.Error.WriteLine($"regions: {(beside ? "beside" : "region")} {f.Name} line {site.Line} {TypeOf(objects[0])}");
-            if (beside) near++; else inRegion++;
+            return anywhere ? beside ? Near : InRegion : null;
         }
 
-        foreach (Function f in _m.Functions)
-            foreach (Block b in f.Blocks)
-                for (int k = 0; k < b.Instrs.Count; k++)
-                    if (chosen.TryGetValue(b.Instrs[k], out string? helper))
-                    {
-                        // The allocating function's own frame: a region a throw
-                        // left below it is closed before this one is used.
-                        VReg frame = f.NewReg(IrTypes.Word, "allocframe");
-                        b.Instrs.Insert(k, new Instr { Op = Opcode.FramePointer, Dest = frame, Line = b.Instrs[k].Line });
-                        k++;
-                        b.Instrs[k] = Retarget(f, b.Instrs[k], helper, frame);
-                    }
+        int near = 0, inRegion = 0;
+        Dictionary<Instr, string> chosen = new(ReferenceEqualityComparer.Instance);
+        foreach ((Instr site, List<(int Object, int Copy)> objects) in bySite)
+        {
+            if (site.Callee is not (Opt.Escape.Allocator or Opt.Escape.LeafAllocator or Opt.Escape.ObjectAllocator)) continue;
+            Function f = _objects[objects[0].Object].F!;
+            if (Decide(f, objects) is not { } helper) continue;
+            chosen[site] = helper;
+            if (Report is not null) Console.Error.WriteLine($"regions: {(helper == Near ? "beside" : "region")} {f.Name} line {site.Line} {TypeOf(objects[0].Object)}");
+            if (helper == Near) near++; else inRegion++;
+        }
 
+        List<Version> versions = Versions(chosen, Decide);
+
+        // The versions' bodies, from the functions as they are before any
+        // is rewritten.
+        Dictionary<Version, (Function Body, Dictionary<Instr, Instr> From)> made = new();
+        List<Function> originals = _m.Functions.ToList();
+        foreach (Version v in versions)
+        {
+            var body = CloneBody(v.F, v.F.Name + "$region$" + made.Count);
+            made[v] = body;
+            _m.Functions.Add(body.Body);
+        }
+
+        foreach (Function f in originals)
+            Rewrite(f, chosen.GetValueOrDefault, i => _roots.TryGetValue(i, out Version? to) && to.Same is { } same && made.TryGetValue(same, out var b) ? b.Body.Name : null);
         HashSet<Function> opened = new();
         foreach (int c in boundaries)
             if (opened.Add(_copies[c].F)) Open(_copies[c].F);
-        Console.Error.WriteLine($"regions: {opened.Count} boundaries, {inRegion} sites in the innermost region, {near} beside their object");
+
+        int versionSites = 0;
+        foreach (Version v in versions)
+        {
+            (Function body, Dictionary<Instr, Instr> from) = made[v];
+            Dictionary<Instr, string> helpers = new(ReferenceEqualityComparer.Instance);
+            Dictionary<Instr, string> calls = new(ReferenceEqualityComparer.Instance);
+            foreach (var (site, helper) in v.Sites)
+                if (helper is not null)
+                {
+                    helpers[from[site]] = helper;
+                    if (chosen.GetValueOrDefault(site) != helper) versionSites++;
+                }
+            foreach (var (call, to) in v.Calls) if (to.Same is { } same && made.TryGetValue(same, out var b)) calls[from[call]] = b.Body.Name;
+            Rewrite(body, helpers.GetValueOrDefault, calls.GetValueOrDefault);
+            if (opened.Contains(v.F)) Open(body);
+            if (Report is not null) Console.Error.WriteLine($"regions: version {body.Name} for {v.Copies.Length} of its copies");
+        }
+        Console.Error.WriteLine($"regions: {opened.Count} boundaries, {inRegion} sites in the innermost region, {near} beside their object, {versions.Count} versions making {versionSites} more");
+    }
+
+    // ---- versions -------------------------------------------------------------
+
+    // A function as some calls reach it: the copies those calls reach, how
+    // each of its sites makes its objects there, and which version each of
+    // its own calls reaches.
+    private sealed class Version
+    {
+        public required Function F;
+        public required int[] Copies;
+        public readonly Dictionary<Instr, string?> Sites = new(ReferenceEqualityComparer.Instance);
+        public readonly Dictionary<Instr, Version> Calls = new(ReferenceEqualityComparer.Instance);
+        public bool Wanted;
+        // The version whose body this one runs: itself, or one alike.
+        public Version? Same;
+    }
+
+    // Which version each call in the functions themselves reaches.
+    private readonly Dictionary<Instr, Version> _roots = new(ReferenceEqualityComparer.Instance);
+
+    // So many versions in all, and of any one function: past either, a call
+    // runs the function itself, whose every site is proved for every copy.
+    private const int MaxVersions = 512;
+    private const int VersionsPerFunction = 16;
+
+    /// <summary>
+    /// The versions worth making: each a function reached, by the calls that
+    /// reach it, in fewer copies than all of its own, where those copies
+    /// make some site differently or call a version that does.
+    /// </summary>
+    private List<Version> Versions(Dictionary<Instr, string> chosen, Func<Function, List<(int Object, int Copy)>, string?> decide)
+    {
+        Dictionary<Function, List<int>> copiesOf = new();
+        for (int c = 0; c < _copies.Count; c++)
+            (copiesOf.TryGetValue(_copies[c].F, out List<int>? l) ? l : copiesOf[_copies[c].F] = new()).Add(c);
+        Dictionary<string, Version> known = new(StringComparer.Ordinal);
+        Dictionary<Function, int> count = new();
+        Queue<Version> next = new();
+
+        Version? VersionOf(Function f, HashSet<int> reached)
+        {
+            if (f.Async is not null || reached.Count >= copiesOf[f].Count) return null;
+            int[] copies = reached.Order().ToArray();
+            string key = f.Name + ":" + string.Join(",", copies);
+            if (known.TryGetValue(key, out Version? v)) return v;
+            if (known.Count >= MaxVersions || count.GetValueOrDefault(f) >= VersionsPerFunction) return null;
+            count[f] = count.GetValueOrDefault(f) + 1;
+            known[key] = v = new Version { F = f, Copies = copies };
+            next.Enqueue(v);
+            return v;
+        }
+
+        // The version each direct call in `f`, run as `copies`, reaches.
+        void CallsOf(Function f, IEnumerable<int> copies, Action<Instr, Version> found)
+        {
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Op != Opcode.Call || i.Callee is null || !_byName.TryGetValue(i.Callee, out Function? g)) continue;
+                    HashSet<int> reached = new();
+                    foreach (int c in copies)
+                        if (_bindings.TryGetValue((c, i), out HashSet<int>? to)) reached.UnionWith(to);
+                    if (reached.Count > 0 && VersionOf(g, reached) is { } v) found(i, v);
+                }
+        }
+
+        // The program's own functions first: the budget is theirs before
+        // the class library's.
+        foreach (Function f in _m.Functions.Where(f => !f.FromLibrary).Concat(_m.Functions.Where(f => f.FromLibrary)))
+            if (copiesOf.TryGetValue(f, out List<int>? all)) CallsOf(f, all, (i, v) => _roots[i] = v);
+
+        while (next.TryDequeue(out Version? v))
+        {
+            foreach (Block b in v.F.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Callee is not (Opt.Escape.Allocator or Opt.Escape.LeafAllocator or Opt.Escape.ObjectAllocator)) continue;
+                    List<(int, int)> objects = new();
+                    foreach (int c in v.Copies) if (_madeIn.TryGetValue((c, i), out int o)) objects.Add((o, c));
+                    string? was = chosen.GetValueOrDefault(i);
+                    v.Sites[i] = objects.Count == 0 ? was : decide(v.F, objects) ?? was;
+                    if (v.Sites[i] != was) v.Wanted = true;
+                }
+            CallsOf(v.F, v.Copies, (i, to) => v.Calls[i] = to);
+        }
+
+        // Wanted too: a version that calls one that is.
+        for (bool grew = true; grew;)
+        {
+            grew = false;
+            foreach (Version v in known.Values)
+                if (!v.Wanted && v.Calls.Values.Any(to => to.Wanted)) { v.Wanted = true; grew = true; }
+        }
+        // ONE BODY FOR VERSIONS ALIKE: the same function making the same sites
+        // the same way and calling versions alike -- found as a machine's
+        // states are merged, by splitting until no class splits further.
+        List<Version> wanted = known.Values.Where(v => v.Wanted).ToList();
+        Dictionary<Version, int> kind = new();
+        for (int classes = -1; ;)
+        {
+            Dictionary<string, int> named = new(StringComparer.Ordinal);
+            Dictionary<Version, int> next2 = new();
+            foreach (Version v in wanted)
+            {
+                System.Text.StringBuilder key = new(v.F.Name);
+                key.Append('|').Append(kind.GetValueOrDefault(v));
+                foreach (Block b in v.F.Blocks)
+                    foreach (Instr i in b.Instrs)
+                    {
+                        if (v.Sites.TryGetValue(i, out string? h)) key.Append(h == Near ? 'n' : h == InRegion ? 'r' : '-');
+                        else if (i.Op == Opcode.Call) key.Append(v.Calls.TryGetValue(i, out Version? to) && to.Wanted ? kind.GetValueOrDefault(to) : -1).Append(',');
+                    }
+                string k = key.ToString();
+                next2[v] = named.TryGetValue(k, out int id) ? id : named[k] = named.Count;
+            }
+            kind = next2;
+            if (named.Count == classes) break;
+            classes = named.Count;
+        }
+        Dictionary<int, Version> first = new();
+        foreach (Version v in wanted)
+            v.Same = first.TryGetValue(kind[v], out Version? one) ? one : first[kind[v]] = v;
+        return first.Values.ToList();
+    }
+
+    /// <summary>A function's body copied whole under another name, and which copied instruction each of its own became.</summary>
+    private (Function Body, Dictionary<Instr, Instr> From) CloneBody(Function f, string name)
+    {
+        Function made = new(name, f.Returns)
+        {
+            Exported = false, SourceFile = f.SourceFile, Line = f.Line, Display = f.Display, FromLibrary = f.FromLibrary,
+            NoInlining = f.NoInlining,
+        };
+        Dictionary<VReg, VReg> regs = new();
+        Dictionary<FrameSlot, FrameSlot> slots = new();
+        Dictionary<Block, Block> blocks = new();
+        Dictionary<Instr, Instr> from = new(ReferenceEqualityComparer.Instance);
+        VReg Reg(VReg r) => regs.TryGetValue(r, out VReg? m) ? m : regs[r] = made.NewReg(r.Type, r.Name);
+        foreach (VReg p in f.Params) made.Params.Add(Reg(p));
+        foreach (FrameSlot s in f.Slots) slots[s] = made.NewSlot(s.Bytes, s.Align, s.Name);
+        foreach (Block b in f.Blocks)
+        {
+            Block copy = made.NewBlock(b.Label + "$");
+            copy.IsLandingPad = b.IsLandingPad;
+            blocks[b] = copy;
+        }
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+            {
+                Instr c = new()
+                {
+                    Op = i.Op, Dest = i.Dest is null ? null : Reg(i.Dest), Size = i.Size, Signed = i.Signed, Offset = i.Offset,
+                    Callee = i.Callee, DispatchType = i.DispatchType, Field = i.Field, Line = i.Line,
+                    Default = i.Default is null ? null : blocks[i.Default],
+                };
+                foreach (Operand o in i.Operands)
+                    c.Operands.Add(o switch { RegOperand r => new RegOperand(Reg(r.Reg)), SlotOperand s => new SlotOperand(slots[s.Slot]), _ => o });
+                foreach (Block t in i.Targets) c.Targets.Add(blocks[t]);
+                if (_m.KeepCalls.Contains(i)) _m.KeepCalls.Add(c);
+                blocks[b].Instrs.Add(c);
+                from[i] = c;
+            }
+        return (made, from);
+    }
+
+    // Each allocation `helper` names made by it, and each call `callee`
+    // names sent there.
+    private void Rewrite(Function f, Func<Instr, string?> helper, Func<Instr, string?> callee)
+    {
+        foreach (Block b in f.Blocks)
+            for (int k = 0; k < b.Instrs.Count; k++)
+            {
+                Instr i = b.Instrs[k];
+                if (helper(i) is { } h)
+                {
+                    // The allocating function's own frame: a region a throw
+                    // left below it is closed before this one is used.
+                    VReg frame = f.NewReg(IrTypes.Word, "allocframe");
+                    b.Instrs.Insert(k, new Instr { Op = Opcode.FramePointer, Dest = frame, Line = i.Line });
+                    k++;
+                    b.Instrs[k] = Retarget(f, i, h, frame);
+                }
+                else if (callee(i) is { } to)
+                {
+                    Instr call = new() { Op = Opcode.Call, Dest = i.Dest, Callee = to, DispatchType = i.DispatchType, Field = i.Field, Line = i.Line };
+                    call.Operands.AddRange(i.Operands);
+                    if (_m.KeepCalls.Contains(i)) _m.KeepCalls.Add(call);
+                    b.Instrs[k] = call;
+                }
+            }
     }
 
     // Whether a function may be a boundary at all: not the entry, not a
@@ -489,7 +716,7 @@ public sealed class RegionPointsTo : IModulePass
 
     private int SiteObject(Instr site, Function f, int context)
     {
-        int depth = context < 0 ? 0 : _objects[context].Depth + 1;
+        int depth = Level(context);
         if (depth > MaxDepth) { context = -1; depth = 0; }
         if (_siteObjects.TryGetValue((site, context), out int known)) return known;
         int made = NewObject(f, site, context, null, depth);
@@ -512,8 +739,8 @@ public sealed class RegionPointsTo : IModulePass
 
     private int CopyOf(Function f, int context)
     {
-        if (!IsInstance(f)) context = -1;
-        else if (context >= 0 && (_objects[context].Site is null || _objects[context].Depth >= MaxDepth)) context = -1;
+        if (!IsInstance(f)) { if (context >= 0) context = -1; }
+        else if (context < -1 || context >= 0 && (_objects[context].Site is null && _objects[context].Slot is null || _objects[context].Depth >= MaxDepth)) context = -1;
         if (_copyIds.TryGetValue((f, context), out int known)) return known;
         int copy = _copies.Count;
         _copies.Add((f, context));
@@ -841,7 +1068,9 @@ public sealed class RegionPointsTo : IModulePass
         if (callee is null) { Unknown(copy, i, 0); return; }
         if (Opt.Escape.IsAllocator(callee) || callee == Opt.Escape.ManualAllocator || callee == Opt.Escape.ManualObjectAllocator)
         {
-            if (i.Dest is not null) Add(Reg(copy, i.Dest), Loc(SiteObject(i, f, context), 0));
+            int made = SiteObject(i, f, context);
+            _madeIn[(copy, i)] = made;
+            if (i.Dest is not null) Add(Reg(copy, i.Dest), Loc(made, 0));
             return;
         }
         if (Harmless(callee)) return;
@@ -878,9 +1107,23 @@ public sealed class RegionPointsTo : IModulePass
         {
             _callers[callee].Add(copy);
             _callees[copy].Add(callee);
+            if (i.Op == Opcode.Call)
+                (_bindings.TryGetValue((copy, i), out HashSet<int>? reached) ? reached : _bindings[(copy, i)] = new()).Add(callee);
             Function g = _copies[callee].F;
+            int self = _copies[callee].Context;
             for (int k = 0; k < args.Count && k < g.Params.Count; k++)
-                if (args[k] >= 0) Edge(args[k], Reg(callee, g.Params[k]), 0);
+            {
+                if (args[k] < 0) continue;
+                // THE OBJECT A COPY IS FOR is the only `this` it is handed: the
+                // call's other receivers run their own copies, and handed in
+                // here they read this one's fields from every other type.
+                if (k == 0 && self >= 0)
+                {
+                    int to = Reg(callee, g.Params[0]);
+                    Watch(args[0], l => { if (ObjectOf(l) == self) Add(to, l); });
+                }
+                else Edge(args[k], Reg(callee, g.Params[k]), 0);
+            }
             if (dest >= 0) Edge(ReturnNode(callee), dest, 0);
         }
         if (receiver != -2) To(CopyOf(target, receiver));
@@ -894,7 +1137,109 @@ public sealed class RegionPointsTo : IModulePass
             });
             _unbound.Add((seen, () => To(CopyOf(target, -1))));
         }
+        else if (receiver == -2 && !IsInstance(target))
+        {
+            To(CopyOf(target, CallContext(i, copy, target)));
+        }
         else To(CopyOf(target, -1));
+    }
+
+    // ---- call contexts --------------------------------------------------------
+
+    // A STATIC FUNCTION THAT HANDS BACK WHAT IT MAKES -- a concatenation, a
+    // substring, a list built from a sequence -- is analysed once per call
+    // that reaches it, from each copy that makes the call, and what it makes
+    // is made once per such call: the string one caller keeps is not the
+    // string every caller makes. Calls nest three deep; past that, or past
+    // so many in all, a call runs the function's context-free copy, as does
+    // a call the class library makes itself from no object's copy, or past
+    // so many such contexts of one function: where a boundary's own work
+    // calls, it has one.
+    private const int MaxHops = 3;
+    private const int ContextsPerFunction = 24;
+    private const int ContextBudget = 4096;
+    private readonly List<(Instr Site, int Caller, int Level, int Hops)> _callContexts = new();
+    private readonly Dictionary<(Instr, int), int> _callContextOf = new();
+    private readonly Dictionary<Function, int> _contextCount = new();
+    private HashSet<string>? _fresh;
+    // The copies each direct call reaches, from each copy that makes it; and
+    // the object each allocation makes in each copy.
+    private readonly Dictionary<(int Copy, Instr Call), HashSet<int>> _bindings = new();
+    private readonly Dictionary<(int Copy, Instr Site), int> _madeIn = new();
+
+    // A call context is numbered below -1: -2 the first.
+    private static bool IsCallContext(int context) => context < -1;
+    private (Instr Site, int Caller, int Level, int Hops) CallContextAt(int context) => _callContexts[-2 - context];
+
+    // How deep an object made in a context is: one below the object an
+    // instance method was called on; in a call's, as deep as its caller's.
+    private int Level(int context) =>
+        context == -1 ? 0 : context >= 0 ? _objects[context].Depth + 1 : CallContextAt(context).Level;
+
+    private int CallContext(Instr call, int caller, Function target)
+    {
+        if (_callContextOf.TryGetValue((call, caller), out int known)) return known;
+        _fresh ??= FreshReturning();
+        int from = _copies[caller].Context;
+        int hops = IsCallContext(from) ? CallContextAt(from).Hops + 1 : 1;
+        // The program's own calls, and the calls beneath them, each have one;
+        // the class library's own, only from an object's copy and only so
+        // many per function: they are not what a boundary is chosen around.
+        bool program = !_copies[caller].F.FromLibrary || IsCallContext(from);
+        int made = -1;
+        if (_fresh.Contains(target.Name) && hops <= MaxHops && _callContexts.Count < ContextBudget
+            && (program || from >= 0 && _contextCount.GetValueOrDefault(target) < ContextsPerFunction))
+        {
+            if (!program) _contextCount[target] = _contextCount.GetValueOrDefault(target) + 1;
+            _callContexts.Add((call, caller, Level(from), hops));
+            made = -1 - _callContexts.Count;
+        }
+        return _callContextOf[(call, caller)] = made;
+    }
+
+    /// <summary>
+    /// The functions whose return can be an object they made, or one a
+    /// function they call made and handed back: what a call context is for.
+    /// </summary>
+    private HashSet<string> FreshReturning()
+    {
+        HashSet<string> fresh = new(StringComparer.Ordinal);
+        bool grew = true;
+        while (grew)
+        {
+            grew = false;
+            foreach (Function f in _m.Functions)
+                if (!fresh.Contains(f.Name) && ReturnsMade(f, fresh)) { fresh.Add(f.Name); grew = true; }
+        }
+        return fresh;
+    }
+
+    private static bool ReturnsMade(Function f, HashSet<string> fresh)
+    {
+        HashSet<VReg> made = new();
+        bool grew = true;
+        while (grew)
+        {
+            grew = false;
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Dest is not { } d || made.Contains(d)) continue;
+                    bool from = i.Op switch
+                    {
+                        Opcode.Call => i.Callee is { } c && (Opt.Escape.IsAllocator(c) || fresh.Contains(c)),
+                        Opcode.Copy or Opcode.Phi or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32
+                            or Opcode.And or Opcode.Or or Opcode.Add or Opcode.Sub =>
+                            i.Operands.Any(o => o is RegOperand { Reg: var r } && made.Contains(r)),
+                        _ => false,
+                    };
+                    if (from) { made.Add(d); grew = true; }
+                }
+        }
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Op == Opcode.Ret && i.Operands.Count > 0 && i.Operands[0] is RegOperand { Reg: var r } && made.Contains(r)) return true;
+        return false;
     }
 
     private void Unknown(int copy, Instr i, int first)
@@ -1009,6 +1354,7 @@ public sealed class RegionPointsTo : IModulePass
         long locations = 0;
         foreach (HashSet<long> p in _pts) locations += p.Count;
         Console.Error.WriteLine($"regions: {_copies.Count} function copies, {_objects.Count} objects, {_pts.Count} nodes, {locations} locations held, {_steps} steps");
+        Console.Error.WriteLine($"regions: {_callContexts.Count} call contexts");
         for (int c = 0; c < _copies.Count; c++)
         {
             (Function f, int context) = _copies[c];
@@ -1025,7 +1371,7 @@ public sealed class RegionPointsTo : IModulePass
                 if (obj.Site is null || !beneath.Contains(CopyIdOfObject(o))) continue;
                 bool outlives = reached.Contains(o);
                 if (outlives) kept++; else local++;
-                lines.Add($"  {(outlives ? "outlives" : "local   ")} {obj.F!.Name} line {obj.Site.Line} {TypeOf(o)}");
+                lines.Add($"  {(outlives ? "outlives" : "local   ")} {obj.F!.Name} line {obj.Site.Line} {TypeOf(o)}{(IsCallContext(obj.Context) ? " called from line " + CallContextAt(obj.Context).Site.Line : "")}");
             }
             Console.Error.WriteLine($"regions: boundary {f.Name} ctx {context}: {local} local, {kept} outlive it");
             foreach (string line in lines) Console.Error.WriteLine(line);
@@ -1036,7 +1382,7 @@ public sealed class RegionPointsTo : IModulePass
     private int CopyIdOfObject(int o)
     {
         var obj = _objects[o];
-        return _copyIds.TryGetValue((obj.F!, IsInstance(obj.F!) ? obj.Context : -1), out int c) ? c
+        return _copyIds.TryGetValue((obj.F!, IsInstance(obj.F!) || IsCallContext(obj.Context) ? obj.Context : -1), out int c) ? c
             : _copyIds.TryGetValue((obj.F!, -1), out int d) ? d : -1;
     }
 
