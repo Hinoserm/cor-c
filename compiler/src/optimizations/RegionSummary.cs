@@ -186,7 +186,12 @@ public static class RegionSummary
                     long by = constant ? ((ImmOperand)i.Operands[1]).Value * (i.Op == Opcode.Sub ? -1 : 1) : RegionConstraint.Any;
                     // An index scaled into an address never brings the
                     // unknown object (RegionPointsTo.IndexShift).
-                    foreach (Operand o in i.Operands) Copy(dest, Value(o), ScaledIndex(i, o) ? RegionConstraint.Index : by);
+                    // The address it is added to moves to a residue of the
+                    // index's scale (RegionPointsTo.Strided).
+                    int scale = i.Op == Opcode.Add ? i.Operands.Max(o => IndexScale(i, o)) : 0;
+                    foreach (Operand o in i.Operands)
+                        Copy(dest, Value(o), IndexScale(i, o) is int k and > 0 ? RegionConstraint.IndexScaled(k)
+                            : scale > 0 ? RegionConstraint.MovedByScaled(scale) : by);
                     return;
                 }
 
@@ -348,9 +353,14 @@ public static class RegionSummary
 
         // Whether operand `o` of addition `i` is an index scaled into an
         // address (RegionPointsTo.ScaledIndex).
-        private bool ScaledIndex(Instr i, Operand o) =>
+        private bool ScaledIndex(Instr i, Operand o) => IndexScale(i, o) > 0;
+
+        // The k of an index scaled by 2^k, or 0 (past MostScale, one more: no
+        // element's word told).
+        private int IndexScale(Instr i, Operand o) =>
             i.Operands.Count == 2 && i.Operands.All(x => x is RegOperand) && o is RegOperand { Reg: var r }
-            && Defs().TryGetValue(r, out Instr? w) && w is { Op: Opcode.Shl, Operands: [RegOperand, ImmOperand { Value: > 0 }] };
+            && Defs().TryGetValue(r, out Instr? w) && w is { Op: Opcode.Shl, Operands: [RegOperand, ImmOperand { Value: > 0 and var k }] }
+                ? (int)Math.Min(k, RegionConstraint.MostScale + 1) : 0;
 
         // Whether an address computation's source is a join its own result
         // flows back into: `p = phi(start, next); next = p + 4`.

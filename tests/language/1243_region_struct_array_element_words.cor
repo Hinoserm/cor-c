@@ -1,0 +1,36 @@
+// test: region_struct_array_element_words
+// expect-exit: 0
+// expect-output:
+// 1560000 given back True
+//
+// An array of structs read at an index scaled into an address reads the
+// element's word at that residue, not every word of the array: an
+// `(int At, Tok Was)` read back gave a number that held every Tok, and the
+// sum made of it, returned, kept them all past the boundary
+// (RegionPointsTo.Strided).
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+public sealed class Tok { public int A; public Tok(int a) { A = a; } }
+public static class W
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long Work(int n)
+    {
+        List<(int At, Tok Was)> marks = new();
+        for (int i = 0; i < n; i++) marks.Add((i, new Tok(i)));
+        long s = 0;
+        for (int k = 0; k < marks.Count; k++) { (int at, Tok was) = marks[k]; s += at + was.A; }
+        return s;
+    }
+}
+static class P
+{
+    static void Main()
+    {
+        long s = 0, before = Gc.RegionFreedBytes;
+        for (int k = 0; k < 1000; k++) s += W.Work(40);
+        Console.WriteLine(s + " given back " + (Gc.RegionFreedBytes - before >= 2800000L));
+    }
+}

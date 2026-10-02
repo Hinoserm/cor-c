@@ -1,0 +1,22 @@
+// test: region_struct_array_element_words_across_units
+// units: tests/language/support/1244_struct_array_units.cor
+// expect-exit: 0
+// expect-output:
+// 1560000 given back True
+//
+// The same as 1243 with the work in a unit of its own, so the link decides
+// the regions: an index scaled by 2^k is told to it with k
+// (RegionConstraint.IndexScaled, MovedByScaled), and RegionSolver reads an
+// element's word at its residue. Before, nothing was taken.
+
+using System;
+using TupUnits;
+static class P
+{
+    static void Main()
+    {
+        long s = 0, before = Gc.RegionFreedBytes;
+        for (int k = 0; k < 1000; k++) s += W.Work(40);
+        Console.WriteLine(s + " given back " + (Gc.RegionFreedBytes - before >= 500000L));
+    }
+}

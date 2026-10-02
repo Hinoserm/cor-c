@@ -343,6 +343,19 @@ public readonly record struct RegionConstraint(RegionConstraintKind Kind, int A,
     /// never the unknown object.
     /// </summary>
     public const long Index = long.MinValue + 1;
+    /// <summary>The largest k an index scaled by 2^k is told by (Strided element words, k at most 6).</summary>
+    public const int MostScale = 6;
+    /// <summary>An index scaled by 2^k: Index + k (k of 0, a scale not known).</summary>
+    public static long IndexScaled(int k) => Index + k;
+    public static bool IsIndex(long c) => c >= Index && c <= Index + MostScale;
+    /// <summary>
+    /// The address such an index is added to: moved by a multiple of 2^k, to
+    /// a word at a residue of 2^k in its object -- an element's word in an
+    /// array of structs -- the unknown object kept.
+    /// </summary>
+    public const long MovedBy = Index + 64;
+    public static long MovedByScaled(int k) => MovedBy + k;
+    public static bool IsMovedBy(long c) => c > MovedBy && c <= MovedBy + MostScale;
 }
 
 /// <summary>

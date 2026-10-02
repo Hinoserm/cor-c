@@ -217,6 +217,42 @@ public static class RegionSolver
         private const int Global = 0;
         private const int FarthestField = 4096;
         private const int Any = FarthestField + 1;
+
+        // AN ELEMENT'S WORD IN AN ARRAY OF STRUCTS (RegionPointsTo.Strided):
+        // an offset with this bit is the word at a residue of 2^k, k in bits
+        // 8-10. Words that may be the same one are read and written as one.
+        private const int StrideBit = 0x4000;
+        private static bool IsStrided(int offset) => offset != Any && (offset & StrideBit) != 0;
+        // A plain offset worked out: past the farthest field, any offset --
+        // never a value that happens to carry StrideBit.
+        private static long Plain(long offset) => offset < 0 || offset > FarthestField ? Any : offset;
+        private static int Strided(int k, long residue) => StrideBit | (k << 8) | (int)(residue & ((1L << k) - 1));
+        private static int StrideShiftOf(int offset) => (offset >> 8) & 0x7;
+        private static int ResidueOf(int offset) => offset & 0xFF;
+        private static int StridedPlus(int offset, long by)
+        {
+            int k = StrideShiftOf(offset);
+            long m = 1L << k;
+            return Strided(k, ((ResidueOf(offset) + by) % m + m) % m);
+        }
+        private static bool MayOverlap(int a, int b, int firstData)
+        {
+            if (a == b || a == Any || b == Any) return a == b;
+            bool sa = IsStrided(a), sb = IsStrided(b);
+            if (!sa && !sb) return false;
+            if (sa && sb)
+            {
+                long m = 1L << Math.Min(StrideShiftOf(a), StrideShiftOf(b));
+                return ((ResidueOf(a) - ResidueOf(b)) % m + m) % m == 0;
+            }
+            int strided = sa ? a : b, plain = sa ? b : a;
+            return plain >= firstData && (plain & ((1 << StrideShiftOf(strided)) - 1)) == ResidueOf(strided);
+        }
+        // An array's elements are never its stamp (offset 0): the one word an
+        // element's word cannot be, told without the target's header size.
+        private int FirstData(int o) =>
+            o != Global && _objectSite[o] >= 0 && _functions[_objectFunction[o]].Sites[_objectSite[o]] is { Table: { } table }
+            && table.StartsWith("q_array", StringComparison.Ordinal) ? 1 : 0;
         private const int NearestReach = 8;
         // Past this many cells an object is one cell: an object read or
         // written at that many offsets is an array, or a pointer walked
@@ -587,7 +623,8 @@ public static class RegionSolver
 
         private int Location(int o, long offset)
         {
-            int at = o == Global || _collapsed[o] || offset < 0 || offset > FarthestField ? Any : (int)offset;
+            // Plain offsets arrive clamped (Plain); one with StrideBit is an element's word.
+            int at = o == Global || _collapsed[o] || offset < 0 || offset > FarthestField && (offset > 0x7FFF || !IsStrided((int)offset)) ? Any : (int)offset;
             long key = ((long)o << 16) | (uint)at;
             if (_locations.TryGetValue(key, out int known)) return known;
             int made = _locationObject.Count;
@@ -611,7 +648,16 @@ public static class RegionSolver
             if (shift == 0) return loc;
             int o = _locationObject[loc], offset = _locationOffset[loc];
             if (o == Global) return loc;
-            if (shift is RegionConstraint.Any or RegionConstraint.Index || offset != 0 || shift > FarthestField || shift < -FarthestField) return Location(o, Any);
+            if (shift == RegionConstraint.Any || offset == Any) return Location(o, Any);
+            if (RegionConstraint.IsIndex(shift) || RegionConstraint.IsMovedBy(shift))
+            {
+                int k = (int)(shift - (RegionConstraint.IsMovedBy(shift) ? RegionConstraint.MovedBy : RegionConstraint.Index));
+                if (k < 1) return Location(o, Any);
+                return Location(o, IsStrided(offset) ? Strided(Math.Min(k, StrideShiftOf(offset)), ResidueOf(offset)) : Strided(k, offset));
+            }
+            if (shift > FarthestField || shift < -FarthestField) return Location(o, Any);
+            if (IsStrided(offset)) return Location(o, StridedPlus(offset, shift));
+            if (offset != 0) return Location(o, Any);
             return Location(o, shift);
         }
 
@@ -620,7 +666,7 @@ public static class RegionSolver
         // RegionPointsTo.IndexShift) -- dropped.
         private void AddShifted(int to, int loc, long shift)
         {
-            if (shift == RegionConstraint.Index && _locationObject[loc] == Global) return;
+            if (RegionConstraint.IsIndex(shift) && _locationObject[loc] == Global) return;
             Add(to, Shifted(loc, shift));
         }
 
@@ -646,6 +692,13 @@ public static class RegionSolver
             {
                 // A cell written at any offset is read wherever this one is.
                 Edge(Cell(Location(o, Any)), node, 0);
+                // Words that may be this one are this one, both ways (MayOverlap).
+                if (_objectCells[o] is { } others)
+                {
+                    int firstData = FirstData(o), mine = _locationOffset[loc];
+                    foreach (int other in others.ToArray())
+                        if (MayOverlap(mine, _locationOffset[other], firstData)) { int at = Cell(other); Edge(node, at, 0); Edge(at, node, 0); }
+                }
                 (_objectCells[o] ??= new()).Add(loc);
                 if (_objectWatchers[o] is { } watchers)
                     for (int w = 0; w < watchers.Count; w++) Watch(watchers[w], loc, node);
@@ -728,9 +781,11 @@ public static class RegionSolver
 
         private void Watch(Watcher w, int loc, int cell)
         {
-            long offset = _locationOffset[loc];
-            if (offset >= w.From && (w.Count == RegionConstraint.Any || offset - w.From < w.Count))
-                Edge(cell, Cell(Location(w.To, w.At + offset - w.From)), 0);
+            int offset = _locationOffset[loc];
+            // An element's word copied as a block: to the word at the same residue, moved as the block is.
+            if (IsStrided(offset)) Edge(cell, Cell(Location(w.To, StridedPlus(offset, w.At - w.From))), 0);
+            else if (offset >= w.From && (w.Count == RegionConstraint.Any || offset - w.From < w.Count))
+                Edge(cell, Cell(Location(w.To, Plain(w.At + offset - w.From))), 0);
         }
 
         /// <summary>Run a watcher over every cell of an object at a fixed offset, now and later.</summary>
@@ -859,7 +914,7 @@ public static class RegionSolver
             // Out of the unknown object comes the unknown object.
             if (o == Global) { Add(dest, GlobalLocation); return; }
             int from = _locationOffset[loc];
-            long at = from == Any ? Any : from + offset;
+            long at = from == Any ? Any : IsStrided(from) ? StridedPlus(from, offset) : Plain(from + offset);
             int cell = Location(o, at);
             // A read at any offset reads one node per object, not an edge
             // from every cell to every such read.
@@ -876,7 +931,7 @@ public static class RegionSolver
         private void Stored(int loc, int value, long offset)
         {
             int o = _locationObject[loc], from = _locationOffset[loc];
-            long at = o == Global || from == Any ? Any : from + offset;
+            long at = o == Global || from == Any ? Any : IsStrided(from) ? StridedPlus(from, offset) : Plain(from + offset);
             Edge(value, Cell(Location(o, at)), 0);
         }
 
@@ -936,6 +991,20 @@ public static class RegionSolver
                 Add(Cell(Location(od, Any)), GlobalLocation);
                 return;
             }
+            // An element of an array of structs copied in or out, word by word
+            // at its residues (RegionPointsTo's Pair).
+            if ((IsStrided(ds) || IsStrided(dd)) && ds != Any && dd != Any && od != Global && r.Count != RegionConstraint.Any && r.Count is > 0 and <= FarthestField)
+            {
+                for (long k = 0; k < r.Count; k += 4)
+                {
+                    long from = IsStrided(ds) ? StridedPlus(ds, k) : Plain(ds + k), into = IsStrided(dd) ? StridedPlus(dd, k) : Plain(dd + k);
+                    Edge(Cell(Location(os, from)), Cell(Location(od, into)), 0);
+                }
+                Edge(Cell(Location(os, Any)), Cell(Location(od, Any)), 0);
+                return;
+            }
+            if (IsStrided(ds)) ds = Any;
+            if (IsStrided(dd)) dd = Any;
             // A copy at any offset depends only on the two objects.
             if (ds == Any || dd == Any || od == Global)
             {

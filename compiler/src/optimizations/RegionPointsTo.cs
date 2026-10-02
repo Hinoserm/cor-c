@@ -125,15 +125,81 @@ public sealed class RegionPointsTo : IModulePass
     // object, and a pointer walked further is walking an array.
     private const long FarthestField = 4096;
 
-    private static long Loc(int o, long offset) => ((long)o << 24) | (offset is < 0 or > FarthestField ? Any : offset);
+    private static long Loc(int o, long offset) => ((long)o << 24) | (offset is < 0 || offset > FarthestField && !IsStrided(offset) ? Any : offset);
+
+    /// <summary>
+    /// AN ELEMENT'S WORD IN AN ARRAY OF STRUCTS: an address made by adding an
+    /// index scaled by 2^k (`shl i k`) to an array's is the array's word at
+    /// some offset congruent to a residue mod 2^k -- not anywhere in it. An
+    /// array of `(int At, Tok Was)` read at any offset mixed the number with
+    /// the reference: the number read back held every Tok, and a sum made of
+    /// it kept them all; a Tok written back through one the unknown object.
+    /// Offsets past FarthestField with this bit name such a word: the stride's
+    /// shift and the residue. A plain offset into the array's data, and
+    /// another such word, that may be the same word are read and written as
+    /// one (Cell).
+    /// </summary>
+    private const long StrideBit = 0x100000;
+    private const int MostStrideShift = Corsac.Lang.Lto.RegionConstraint.MostScale;
+    private static bool IsStrided(long offset) => offset != Any && (offset & StrideBit) != 0;
+    // A plain offset worked out: past the farthest field, any offset -- never
+    // a value that happens to carry StrideBit.
+    private static long Plain(long offset) => offset < 0 || offset > FarthestField ? Any : offset;
+    private static long Strided(int shift, long residue) => StrideBit | ((long)shift << 12) | (residue & ((1L << shift) - 1));
+    private static int StrideShiftOf(long offset) => (int)((offset >> 12) & 0xFF);
+    private static long ResidueOf(long offset) => offset & 0xFFF;
+    // A strided word moved by a constant: the same stride, the residue moved.
+    private static long StridedPlus(long offset, long by)
+    {
+        int k = StrideShiftOf(offset);
+        long s = 1L << k;
+        return Strided(k, ((ResidueOf(offset) + by) % s + s) % s);
+    }
+    // Whether two offsets of one object may name the same word.
+    private static bool MayOverlap(long a, long b, long firstData)
+    {
+        if (a == b || a == Any || b == Any) return a == b;
+        bool sa = IsStrided(a), sb = IsStrided(b);
+        if (!sa && !sb) return false;
+        if (sa && sb)
+        {
+            long m = 1L << Math.Min(StrideShiftOf(a), StrideShiftOf(b));
+            return ((ResidueOf(a) - ResidueOf(b)) % m + m) % m == 0;
+        }
+        long strided = sa ? a : b, plain = sa ? b : a;
+        // In an array, only a word of its data: an element is never the
+        // stamp or the length. Anywhere in anything else.
+        return plain >= firstData && (plain & ((1L << StrideShiftOf(strided)) - 1)) == ResidueOf(strided);
+    }
     private static int ObjectOf(long loc) => (int)(loc >> 24);
     private static long OffsetOf(long loc) => loc & Any;
     // A pointer already inside an object moved again is anywhere in it: a
     // field's address is the object's moved once, and a count that once held
     // a pointer, stepped through memory where Walked cannot see the loop,
     // made every object a location per step.
-    private static long Shifted(long loc, long shift) =>
-        shift is long.MinValue or IndexShift || OffsetOf(loc) is not 0 ? Loc(ObjectOf(loc), Any) : Loc(ObjectOf(loc), shift);
+    private static long Shifted(long loc, long shift)
+    {
+        int o = ObjectOf(loc);
+        long off = OffsetOf(loc);
+        if (shift == long.MinValue || off == Any) return Loc(o, Any);
+        if (IsIndexShift(shift) || IsMovedBy(shift))
+        {
+            int k = (int)(shift - (IsMovedBy(shift) ? MovedBy : IndexShift));
+            if (k < 1 || k > MostStrideShift) return Loc(o, Any);
+            if (!IsStrided(off)) return Loc(o, Strided(k, off));
+            int kk = Math.Min(k, StrideShiftOf(off));
+            return Loc(o, Strided(kk, ResidueOf(off)));
+        }
+        if (IsStrided(off)) return Loc(o, StridedPlus(off, shift));
+        return off is not 0 ? Loc(o, Any) : Loc(o, Plain(shift));
+    }
+
+    // An index scaled by 2^k is IndexShift + k on an edge; IndexShift alone
+    // an index of no known scale. What it is added to moves by MovedBy + k:
+    // to a residue of 2^k, the unknown object kept (an index is never one).
+    private static bool IsIndexShift(long shift) => shift >= IndexShift && shift <= IndexShift + MostStrideShift;
+    private const long MovedBy = Corsac.Lang.Lto.RegionConstraint.MovedBy;
+    private static bool IsMovedBy(long shift) => shift > MovedBy && shift <= MovedBy + MostStrideShift;
 
     /// <summary>
     /// AN INDEX ADDED TO AN ADDRESS: an operand of an addition of two
@@ -152,14 +218,17 @@ public sealed class RegionPointsTo : IModulePass
     // A location carried along an edge: moved, or dropped (IndexShift).
     private void AddShifted(int to, long loc, long shift)
     {
-        if (shift == IndexShift && ObjectOf(loc) == Global) return;
+        if (IsIndexShift(shift) && ObjectOf(loc) == Global) return;
         Add(to, Shifted(loc, shift));
     }
 
     /// <summary>Whether operand `o` of addition `i` is an index scaled into an address (IndexShift).</summary>
-    private bool ScaledIndex(Function f, Instr i, Operand o) =>
+    private bool ScaledIndex(Function f, Instr i, Operand o) => IndexScale(f, i, o) > 0;
+
+    // The k of an index scaled by 2^k, or 0.
+    private int IndexScale(Function f, Instr i, Operand o) =>
         i.Operands.Count == 2 && i.Operands.All(x => x is RegOperand) && o is RegOperand { Reg: var r }
-        && Single(f, r) is { Op: Opcode.Shl, Operands: [RegOperand, ImmOperand { Value: > 0 }] };
+        && Single(f, r) is { Op: Opcode.Shl, Operands: [RegOperand, ImmOperand { Value: > 0 and var k }] } ? (int)Math.Min(k, MostStrideShift + 1) : 0;
 
     public void Run(Module m)
     {
@@ -1608,12 +1677,16 @@ public sealed class RegionPointsTo : IModulePass
     /// <summary>The node of one of an object's cells, made on first use.</summary>
     private int Cell(int o, long offset)
     {
-        if (offset is < 0 or > FarthestField || _collapsed[o]) offset = Any;
+        if (offset is < 0 || offset > FarthestField && !IsStrided(offset) || _collapsed[o]) offset = Any;
         Dictionary<long, int> cells = _cells[o];
         if (cells.TryGetValue(offset, out int node)) return node;
         if (offset != Any && cells.Count >= MostCells) return Collapse(o);
         node = NewNode();
         cells[offset] = node;
+        // Words that may be this one are this one, both ways (MayOverlap).
+        long firstData = IsArrayObject(o) ? Target.Current.ArrayHeaderBytes : 0;
+        foreach (var (other, at) in cells.ToArray())
+            if (other != offset && MayOverlap(offset, other, firstData)) { Edge(node, at, 0); Edge(at, node, 0); }
         if (HoldsNoReference(o, offset)) _noReference[node] = true;
         if (_allCells[o] >= 0) Edge(node, _allCells[o], 0);
         if (_readCells[o] >= 0 && offset != 0) Edge(node, _readCells[o], 0);
@@ -1637,6 +1710,17 @@ public sealed class RegionPointsTo : IModulePass
     /// collector's own rules (Gc.ScanBlockWithin), and its own checks first:
     /// the stamp names a descriptor that names itself.
     /// </summary>
+    // Whether the object is an array: stamped with a descriptor that says so.
+    private bool IsArrayObject(int o)
+    {
+        if (Stamp(o) is not var (table, at)) return false;
+        int w = Target.Current.WordSize;
+        if (at != Target.Current.DescriptorBytes || !_data.TryGetValue(table, out DataItem? d) || d.Bytes.Length < at
+            || !d.Relocs.Any(r => r.Offset == DescSelf * w && r.Symbol == table && r.Addend == 0))
+            return false;
+        return (Word(d, DescFlags * w) & 1) != 0;
+    }
+
     private bool HoldsNoReference(int o, long offset)
     {
         Instr? site = _objects[o].Site;
@@ -1987,8 +2071,7 @@ public sealed class RegionPointsTo : IModulePass
             // that ever escaped -- those are already judged, and flowing on
             // they would reach every load from a static and every call on one.
             if (o == Global) { Add(dest, Loc(Global, Any)); return; }
-            long at = OffsetOf(l) == Any ? Any : OffsetOf(l) + offset;
-            if (at is < 0 or > FarthestField) at = Any;
+            long at = OffsetOf(l) == Any ? Any : IsStrided(OffsetOf(l)) ? StridedPlus(OffsetOf(l), offset) : Plain(OffsetOf(l) + offset);
             Edge(at == Any ? ReadAnywhere(o) : Cell(o, at), dest, 0);
         });
     }
@@ -1999,8 +2082,7 @@ public sealed class RegionPointsTo : IModulePass
         Watch(baseNode, l =>
         {
             int o = ObjectOf(l);
-            long at = o == Global || OffsetOf(l) == Any ? Any : OffsetOf(l) + offset;
-            if (at is < 0 or > FarthestField) at = Any;
+            long at = o == Global || OffsetOf(l) == Any ? Any : IsStrided(OffsetOf(l)) ? StridedPlus(OffsetOf(l), offset) : Plain(OffsetOf(l) + offset);
             Edge(value, Cell(o, at), 0);
         });
     }
@@ -2042,8 +2124,12 @@ public sealed class RegionPointsTo : IModulePass
                 // location, and the analysis ran out of memory counting them.
                 bool constant = i.Operands.Count == 2 && i.Operands[1] is ImmOperand && !Walked(f, i);
                 long by = constant ? ((ImmOperand)i.Operands[1]).Value * (i.Op == Opcode.Sub ? -1 : 1) : long.MinValue;
+                // The address an index scaled by 2^k is added to moves by a
+                // multiple of 2^k: a word at a residue (Strided), not anywhere.
+                int scale = i.Op == Opcode.Add ? i.Operands.Max(o => IndexScale(f, i, o)) : 0;
                 foreach (Operand o in i.Operands)
-                    if (Value(copy, o) is int v and >= 0) Edge(v, dest, ScaledIndex(f, i, o) ? IndexShift : by);
+                    if (Value(copy, o) is int v and >= 0)
+                        Edge(v, dest, IndexScale(f, i, o) is int k and > 0 ? IndexShift + k : scale > 0 ? MovedBy + scale : by);
                 return;
             }
 
@@ -2195,6 +2281,22 @@ public sealed class RegionPointsTo : IModulePass
                 Add(Cell(od, Any), Loc(Global, Any));
                 return;
             }
+            // AN ELEMENT OF AN ARRAY OF STRUCTS copied in or out, word by word
+            // at its residues (IsStrided): the struct a list's indexer hands
+            // back, the one its Add stores.
+            if ((IsStrided(ds) || IsStrided(dd)) && ds != Any && dd != Any && od != Global && count != Any && count <= FarthestField)
+            {
+                int w = Target.Current.WordSize;
+                for (long k = 0; k < count; k += w)
+                {
+                    long from = IsStrided(ds) ? StridedPlus(ds, k) : Plain(ds + k), into = IsStrided(dd) ? StridedPlus(dd, k) : Plain(dd + k);
+                    Edge(Cell(os, from), Cell(od, into), 0);
+                }
+                Edge(Cell(os, Any), Cell(od, Any), 0);
+                return;
+            }
+            if (IsStrided(ds)) ds = Any;
+            if (IsStrided(dd)) dd = Any;
             if (ds == Any || dd == Any || od == Global)
             {
                 // From any offset, what a read there reads (ReadAnywhere): a
@@ -2204,7 +2306,10 @@ public sealed class RegionPointsTo : IModulePass
             }
             EachCell(os, (offset, cell) =>
             {
-                if (offset >= ds && (count == Any || offset - ds < count)) Edge(cell, Cell(od, dd + offset - ds), 0);
+                // An element's word (IsStrided) copied as a block: to the
+                // destination's word at the same residue, moved as the block is.
+                if (IsStrided(offset)) Edge(cell, Cell(od, StridedPlus(offset, dd - ds)), 0);
+                else if (offset >= ds && (count == Any || offset - ds < count)) Edge(cell, Cell(od, Plain(dd + offset - ds)), 0);
             });
             Edge(Cell(os, Any), Cell(od, Any), 0);
         }
