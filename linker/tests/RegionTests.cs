@@ -13,17 +13,21 @@ public static class RegionTests
         RegionFunction Function(string name, int parameters, int nodes, bool global = true, bool boundary = true, params RegionSite[] sites)
             => new(name, global, boundary, false, parameters, nodes, 0, sites);
 
-        // Unit A: the entry calls Work, Keep and Pass. Work keeps what B's
+        // Unit A: the entry calls Main, which calls Work, Keep and Pass (what
+        // the entry calls itself is never a boundary). Work keeps what B's
         // Make makes to itself; Keep stores what B's MakeKept makes where
         // nobody follows; Pass hands what B's MakeHanded makes to a call
         // nobody can name. Hook, whose address A takes, stores what it makes
         // into what it is handed.
         RegionHints a = new();
         RegionFunction start = Function("_start", 0, 1, boundary: false);
-        start.Calls.Add(new("Work", -1, Array.Empty<int>()));
-        start.Calls.Add(new("Keep", -1, Array.Empty<int>()));
-        start.Calls.Add(new("Pass", -1, Array.Empty<int>()));
+        start.Calls.Add(new("Main", -1, Array.Empty<int>()));
         a.Functions.Add(start);
+        RegionFunction main = Function("Main", 0, 1);
+        main.Calls.Add(new("Work", -1, Array.Empty<int>()));
+        main.Calls.Add(new("Keep", -1, Array.Empty<int>()));
+        main.Calls.Add(new("Pass", -1, Array.Empty<int>()));
+        a.Functions.Add(main);
         RegionFunction work = Function("Work", 0, 2);
         work.Calls.Add(new("Make", 1, Array.Empty<int>()));
         a.Functions.Add(work);
@@ -41,12 +45,34 @@ public static class RegionTests
         hook.Constraints.Add(new(RegionConstraintKind.Store, 0, 2, 4));
         a.Functions.Add(hook);
         a.AddressTaken.Add("Hook");
+        // Stash stores what MakeHeld makes into a leaf, and what MakeHeld2
+        // makes at a word its descriptor's map says no reference is kept in,
+        // and leaves both where nobody follows: the collector never reads
+        // either word, so neither object is reached by it.
+        RegionFunction stash = Function("Stash", 0, 7);
+        stash.Calls.Add(new("MakeLeaf", 1, Array.Empty<int>()));
+        stash.Calls.Add(new("MakeHeld", 2, Array.Empty<int>()));
+        stash.Calls.Add(new("MakeDescribed", 4, Array.Empty<int>()));
+        stash.Calls.Add(new("MakeHeld2", 5, Array.Empty<int>()));
+        stash.Constraints.Add(new(RegionConstraintKind.Store, 1, 2, 8));
+        stash.Constraints.Add(new(RegionConstraintKind.Store, 4, 5, 8));
+        stash.Constraints.Add(new(RegionConstraintKind.Unknown, 3, 0, 0));
+        stash.Constraints.Add(new(RegionConstraintKind.Store, 3, 1, 0));
+        stash.Constraints.Add(new(RegionConstraintKind.Store, 3, 4, 0));
+        a.Functions.Add(stash);
+        main.Calls.Add(new("Stash", -1, Array.Empty<int>()));
 
-        // Unit B: three makers, each handing back what it makes.
+        // Unit B: the makers, each handing back what it makes.
         RegionHints b = new();
-        foreach (string name in new[] { "Make", "MakeKept", "MakeHanded" })
+        foreach (string name in new[] { "Make", "MakeKept", "MakeHanded", "MakeLeaf", "MakeHeld", "MakeDescribed", "MakeHeld2" })
         {
-            RegionFunction maker = Function(name, 0, 2, sites: Made());
+            RegionSite site = name switch
+            {
+                "MakeLeaf" => new(true, 1, null, 0, RegionWords.Leaf),
+                "MakeDescribed" => new(true, 1, "t_T", 48, RegionWords.Described),
+                _ => Made(),
+            };
+            RegionFunction maker = Function(name, 0, 2, sites: site);
             maker.Constraints.Add(new(RegionConstraintKind.Site, 1, 0, 0));
             maker.Constraints.Add(new(RegionConstraintKind.Copy, 0, 1, 0));
             b.Functions.Add(maker);
@@ -62,13 +88,17 @@ public static class RegionTests
         try { RegionHints.Read(bytes[..^3]); } catch (ElfFormatException) { refused = true; }
         Check(refused, "truncated region hints accepted");
 
-        RegionFacts?[]? facts = RegionSolver.Solve(new[] { again, RegionHints.Read(b.Write()) }, new(StringComparer.Ordinal),
-            (_, _) => null, "_start", new HashSet<string>(StringComparer.Ordinal), null);
+        RegionHints unitB = RegionHints.Read(b.Write());
+        Check(unitB.Functions.Single(f => f.Name == "MakeDescribed").Sites[0] == new RegionSite(true, 1, "t_T", 48, RegionWords.Described),
+            "a site's words do not read back alike");
+        RegionFacts?[]? facts = RegionSolver.Solve(new[] { again, unitB }, new(StringComparer.Ordinal),
+            (_, _) => null, "_start", new HashSet<string>(StringComparer.Ordinal), null,
+            noReference: (table, at, offset) => table == "t_T" && at == 48 && offset == 8);
         Check(facts is not null, "the region solve gave up");
-        Check(facts![0] is { } inA && inA.Boundaries.SetEquals(new[] { "Work" }) && inA.Sites.Count == 0,
-            "unit A: Work alone is a boundary, and Hook's object -- stored into what anything may hand it -- is never in a region");
-        Check(facts[1] is { } inB && inB.Boundaries.Count == 0 && inB.Sites.SetEquals(new[] { ("Make", 0) }),
-            "unit B: only Make's object is in a region; what is stored where nobody follows, or handed to a call nobody can name, is not");
+        Check(facts![0] is { } inA && inA.Boundaries.SetEquals(new[] { "Work", "Stash" }) && inA.Sites.Count == 0,
+            "unit A: Work and Stash alone are boundaries, and Hook's object -- stored into what anything may hand it -- is never in a region");
+        Check(facts[1] is { } inB && inB.Boundaries.Count == 0 && inB.Sites.SetEquals(new[] { ("Make", 0), ("MakeHeld", 0), ("MakeHeld2", 0) }),
+            "unit B: Make's object and those kept only in words no reference is kept in are in a region; what is stored where nobody follows, or handed to a call nobody can name, is not");
 
         // The facts on the backend's wire.
         LifetimeFacts lifetime = new() { Regions = facts[1] };

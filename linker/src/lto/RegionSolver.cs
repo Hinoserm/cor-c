@@ -17,14 +17,25 @@ namespace Corsac.Lang.Lto;
 /// override the image holds for the slot (VirtualTargets). Only what is
 /// called from the entry, or from code outside the IR, is ever copied. Sets
 /// are sparse bitmaps, and copy cycles are collapsed as they are found.
+/// RegionPointsTo's costs and approximations, each sound: past 16 objects'
+/// copies of one method the rest share its context-free copy; an object
+/// with more than 64 cells is one any-offset cell; a pointer already inside
+/// an object moved again is anywhere in it; a read at any offset reads one
+/// node per object; a block copy meets each source with each destination
+/// once, and past 1024 pairs goes through one node; a word the collector
+/// never reads as a reference holds the unknown at most. And two of its own,
+/// for a program the size of the compiler: each location a receiver may be
+/// is handed to the copies that run on it alone, never by an edge to every
+/// copy the call reaches; and a node that holds more than 256 locations holds
+/// the unknown object instead, and what it held escapes.
 ///
 /// Then the boundaries, chosen as RegionPointsTo.Nearest chooses them: for
 /// each allocation, the nearest caller -- not the entry, not recursive, not
 /// a type's initialiser or an async body -- whose return it is proved not to
 /// outlive. A site is made in a region only if, in every copy that makes it,
-/// every boundary that can be open above it, however far up, is proved to
-/// outlive none of its objects (Runtime.AllocRegion takes whichever is open
-/// innermost).
+/// every boundary that can be the innermost open above it -- the first on
+/// each way up, however far up -- is proved to outlive none of its objects
+/// (Runtime.AllocRegion takes whichever is open innermost).
 ///
 /// SOUND WHERE IT CANNOT SEE: a call nobody can name, or of a function no
 /// unit summarised, hands its arguments to the unknown object and gets it
@@ -36,7 +47,13 @@ namespace Corsac.Lang.Lto;
 public static class RegionSolver
 {
     /// <summary>The most nodes, locations held, and locations made, before giving up.</summary>
-    public const int NodeBudget = 3_000_000, HeldBudget = 10_000_000, LocationBudget = 1_500_000;
+    public const int NodeBudget = 6_000_000, HeldBudget = 40_000_000, LocationBudget = 4_000_000;
+    /// <summary>
+    /// And the most heap the solve may grow by, whatever holds it: edges,
+    /// watchers, pairs of copies. A reading over it is believed only after a
+    /// collection (RegionPointsTo.OverHeap).
+    /// </summary>
+    public const long HeapBudget = 1L << 30;
     /// <summary>The most objects and calls walked judging the boundaries, before giving up.</summary>
     public const long JudgeBudget = 200_000_000;
 
@@ -44,16 +61,20 @@ public static class RegionSolver
     /// Each unit's answer, by its place in <paramref name="units"/>; null when
     /// it gave up. <paramref name="methodAt"/> names the function a descriptor
     /// holds at a byte offset (null: none, or not one descriptor);
-    /// <paramref name="live"/> says which of a unit's functions the image keeps.
+    /// <paramref name="live"/> says which of a unit's functions the image keeps;
+    /// <paramref name="noReference"/> whether the collector never reads a word
+    /// of an object stamped with a descriptor, at a byte offset (null: any
+    /// word), as a reference (VirtualTargets.HoldsNoReference).
     /// </summary>
     public static RegionFacts?[]? Solve(IReadOnlyList<RegionHints> units, Dictionary<string, string[]> virtuals,
-        Func<string, long, string?> methodAt, string entry, IReadOnlySet<string> foreign, string? report, Func<int, string, bool>? live = null)
+        Func<string, long, string?> methodAt, string entry, IReadOnlySet<string> foreign, string? report, Func<int, string, bool>? live = null,
+        Func<string, long, long?, bool>? noReference = null)
     {
         // CONTEXTS AS FAR AS THE BUDGET GOES: two objects deep, then one, then none
         // at all -- every function one copy, coarser but far smaller.
         foreach (int depth in new[] { 2, 1, 0 })
         {
-            Solver solver = new(units, virtuals, methodAt, entry, foreign, report, live, depth);
+            Solver solver = new(units, virtuals, methodAt, entry, foreign, report, live, depth, noReference);
             if (solver.Run() is { } facts) return facts;
             if (!solver.TooBig) break;
         }
@@ -124,6 +145,11 @@ public static class RegionSolver
             return true;
         }
 
+        // Walked in place, block by block, while nothing is added to it.
+        public int Blocks => _blocks;
+        public int KeyAt(int block) => _keys[block];
+        public ulong BitsAt(int block) => _bits[block];
+
         public int[] ToArray()
         {
             int[] result = new int[Count];
@@ -138,14 +164,12 @@ public static class RegionSolver
         }
     }
 
-    // What watches an object's cells, now and later: a load at any offset
-    // reading every cell, or a block copy taking each cell to its place.
+    // What watches an object's cells, now and later: a block copy taking each
+    // cell at a fixed offset to its place.
     private sealed class Watcher
     {
-        public int Reader = -1;
         public int To;
         public long From, At, Count;
-        public bool Exact;
     }
 
     // A node's uses beyond the copies out of it: the loads and stores it is
@@ -160,11 +184,18 @@ public static class RegionSolver
         public HashSet<(int, long)>? EdgeSet;
     }
 
+    // A block copy: each location at either end met with each at the other
+    // once, from the two lists seen so far; one at any offset decided by its
+    // two objects; past MostPairs, every source to every destination through
+    // one node.
     private sealed class MemCopyRecord
     {
         public int To, From;
         public long Count;
-        public readonly HashSet<long> Pairs = new();
+        public readonly HashSet<int> SourcesSeen = new(), DestinationsSeen = new();
+        public readonly List<int> Sources = new(), Destinations = new();
+        public readonly HashSet<long> AnyPairs = new();
+        public int Through = -1;
     }
 
     // A call whose callee depends on what its receiver is: an instance
@@ -185,6 +216,18 @@ public static class RegionSolver
         private const int FarthestField = 4096;
         private const int Any = FarthestField + 1;
         private const int NearestReach = 8;
+        // Past this many cells an object is one cell: an object read or
+        // written at that many offsets is an array, or a pointer walked
+        // through memory.
+        private const int MostCells = 64;
+        // Past this many pairs of source and destination a block copy is one
+        // node, everything from every source to anywhere in every destination.
+        private const int MostPairs = 1024;
+        // Past this many objects' copies of one method, the rest share its
+        // copy in no object's context.
+        private const int MostContexts = 16;
+        // Past this many locations a node holds the unknown object, and they escape.
+        private const int MostHeld = 256;
         private readonly int _maxDepth;
         /// <summary>It gave up for its budget: fewer contexts might fit.</summary>
         public bool TooBig { get; private set; }
@@ -196,6 +239,7 @@ public static class RegionSolver
         private readonly IReadOnlySet<string> _foreign;
         private readonly string[]? _report;
         private readonly Func<int, string, bool>? _live;
+        private readonly Func<string, long, long?, bool>? _noReferenceAt;
 
         // Functions: one per function each unit summarised that the image keeps.
         private readonly List<RegionFunction> _functions = new();
@@ -211,6 +255,8 @@ public static class RegionSolver
         private readonly List<int> _copyBase = new();
         private readonly Dictionary<long, int> _copyIds = new();
         private readonly List<int>?[] _copiesOf;
+        // Per function: the copies made for an object (MostContexts).
+        private readonly int[] _contexts;
         private readonly List<HashSet<int>> _callees = new();
         private readonly List<HashSet<int>> _callers = new();
         // Only the calls named, between functions, for finding recursion:
@@ -229,6 +275,10 @@ public static class RegionSolver
         private readonly Dictionary<long, int> _slotObjects = new();
         private readonly List<List<int>?> _objectCells = new(); // locations of its cells at fixed offsets
         private readonly List<List<Watcher>?> _objectWatchers = new();
+        // Per object: a node holding what every cell of it holds (-1 until
+        // asked for), and whether its cells were folded into the any-offset one.
+        private readonly List<int> _allCells = new();
+        private readonly List<bool> _collapsed = new();
 
         // Locations: an object and an offset (Any: anywhere in it).
         private readonly Dictionary<long, int> _locations = new();
@@ -244,18 +294,26 @@ public static class RegionSolver
         // What else a node is used for, made only for the nodes that are:
         // most are copied from and into, and nothing more.
         private readonly List<Uses?> _uses = new();
+        // Per node: a cell no reference is ever kept in (HoldsNoReference),
+        // which holds the unknown at most.
+        private readonly List<bool> _noReference = new();
+        // Per node: it held more than MostHeld, and holds the unknown object instead (Saturate).
+        private readonly List<bool> _saturated = new();
         private readonly List<MemCopyRecord> _memcopyRecords = new();
         private readonly List<Binding> _bindings = new();
-        private readonly HashSet<long> _readers = new();
         private readonly Queue<int> _work = new();
         private long _held, _steps, _edgesSinceCollapse;
         private bool _over;
+        private readonly long _heapAtStart = GC.GetTotalMemory(false);
+        private long _heapLimit = HeapBudget;
 
         public Solver(IReadOnlyList<RegionHints> units, Dictionary<string, string[]> virtuals, Func<string, long, string?> methodAt,
-            string entry, IReadOnlySet<string> foreign, string? report, Func<int, string, bool>? live, int depth)
+            string entry, IReadOnlySet<string> foreign, string? report, Func<int, string, bool>? live, int depth,
+            Func<string, long, long?, bool>? noReference)
         {
             _maxDepth = depth;
             _units = units; _virtuals = virtuals; _methodAt = methodAt; _entry = entry; _foreign = foreign; _live = live;
+            _noReferenceAt = noReference;
             _report = report?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
             for (int u = 0; u < _units.Count; u++)
             {
@@ -276,13 +334,30 @@ public static class RegionSolver
                 }
             }
             _copiesOf = new List<int>?[_functions.Count];
+            _contexts = new int[_functions.Count];
         }
 
         private void Log(string text) => Console.Error.WriteLine("regions: " + text);
 
         private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
 
+        /// <summary>The solve has outgrown its budget, inside a step: it stops, and nothing is made in a region.</summary>
+        private sealed class OverBudget : Exception { }
+
         public RegionFacts?[]? Run()
+        {
+            // Met anywhere -- a step's watchers adding without end, a copy made
+            // while binding or rooting -- the budget is giving up, never an
+            // unhandled exception.
+            try { return Steps(); }
+            catch (OverBudget)
+            {
+                _over = true;
+                return GiveUp("too much to hold");
+            }
+        }
+
+        private RegionFacts?[]? Steps()
         {
             NewObject(-1, -1, -1, 0);                               // Global
             // WHERE THE PROGRAM STARTS, each called with anything: the entry
@@ -311,7 +386,10 @@ public static class RegionSolver
                         Binding binding = _bindings[b];
                         binding.Unbound = false;
                         foreach (int g in binding.Direct!)
-                            if (binding.Seen.Add(Key(g, -1))) To(binding.Copy, binding.Call, CopyOf(g, -1));
+                        {
+                            int copy = CopyOf(g, -1);
+                            if (binding.Seen.Add(copy)) To(binding.Copy, binding.Call, copy, receiver: false);
+                        }
                         more = true;
                     }
                 if (!more) break;
@@ -355,6 +433,8 @@ public static class RegionSolver
             _delta.Add(null);
             _edges.Add(null);
             _uses.Add(null);
+            _noReference.Add(false);
+            _saturated.Add(false);
             return _parent.Count - 1;
         }
 
@@ -367,7 +447,21 @@ public static class RegionSolver
             _objectMakers.Add(new List<int>());
             _objectCells.Add(null);
             _objectWatchers.Add(null);
+            _allCells.Add(-1);
+            _collapsed.Add(false);
             return _objectFunction.Count - 1;
+        }
+
+        // Past the heap budget. Counted without a collection, the heap is
+        // garbage too: what is still held after one decides, and the next
+        // look waits for garbage to pile up again.
+        private bool OverHeap()
+        {
+            if (GC.GetTotalMemory(false) - _heapAtStart <= _heapLimit) return false;
+            long live = GC.GetTotalMemory(true) - _heapAtStart;
+            if (live > HeapBudget) return true;
+            _heapLimit = Math.Max(HeapBudget, live + HeapBudget / 4);
+            return false;
         }
 
         private static long Key(int function, int context) => ((long)function << 32) | (uint)(context + 1);
@@ -381,6 +475,14 @@ public static class RegionSolver
             if (!function.Instance) context = -1;
             else if (context >= 0 && (_objectSite[context] < 0 || _objectDepth[context] >= _maxDepth)) context = -1;
             if (_copyIds.TryGetValue(Key(f, context), out int known)) return known;
+            // A METHOD CALLED ON MANY OBJECTS is called on the rest without a
+            // context: each object its own copy multiplied the objects made
+            // in them, and those the copies (RegionPointsTo.MostContexts).
+            if (context >= 0)
+            {
+                if (_contexts[f] >= MostContexts) return CopyOf(f, -1);
+                _contexts[f]++;
+            }
             int copy = _copyFunction.Count;
             _copyIds[Key(f, context)] = copy;
             _copyFunction.Add(f);
@@ -440,7 +542,7 @@ public static class RegionSolver
 
         private int Location(int o, long offset)
         {
-            int at = o == Global || offset < 0 || offset > FarthestField ? Any : (int)offset;
+            int at = o == Global || _collapsed[o] || offset < 0 || offset > FarthestField ? Any : (int)offset;
             long key = ((long)o << 16) | (uint)at;
             if (_locations.TryGetValue(key, out int known)) return known;
             int made = _locationObject.Count;
@@ -454,23 +556,38 @@ public static class RegionSolver
 
         private int GlobalLocation => Location(Global, Any);
 
+        // A pointer already inside an object moved again is anywhere in it
+        // (RegionPointsTo.Shifted): a field's address is the object's moved
+        // once, and a count that once held a pointer, stepped through memory
+        // where Walked cannot see the loop, made every object a location per
+        // step.
         private int Shifted(int loc, long shift)
         {
             if (shift == 0) return loc;
             int o = _locationObject[loc], offset = _locationOffset[loc];
             if (o == Global) return loc;
-            if (shift == RegionConstraint.Any || offset == Any || shift > FarthestField || shift < -FarthestField) return Location(o, Any);
-            return Location(o, offset + shift);
+            if (shift == RegionConstraint.Any || offset != 0 || shift > FarthestField || shift < -FarthestField) return Location(o, Any);
+            return Location(o, shift);
         }
 
         /// <summary>The node of one of an object's cells, made on first use.</summary>
         private int Cell(int loc)
         {
             if (_cellNode[loc] >= 0) return Rep(_cellNode[loc]);
+            int o = _locationObject[loc];
+            bool fixedOffset = _locationOffset[loc] != Any;
+            // TOO MANY OFFSETS: the object becomes its any-offset cell.
+            if (fixedOffset && (_collapsed[o] || _objectCells[o] is { Count: >= MostCells }))
+            {
+                int any = Collapse(o);
+                _cellNode[loc] = any;
+                return any;
+            }
             int node = NewNode();
             _cellNode[loc] = node;
-            int o = _locationObject[loc];
-            if (_locationOffset[loc] != Any)
+            if (HoldsNoReference(o, _locationOffset[loc])) _noReference[node] = true;
+            if (_allCells[o] >= 0) Edge(node, _allCells[o], 0);
+            if (fixedOffset)
             {
                 // A cell written at any offset is read wherever this one is.
                 Edge(Cell(Location(o, Any)), node, 0);
@@ -481,10 +598,60 @@ public static class RegionSolver
             return node;
         }
 
+        /// <summary>
+        /// TOO MANY OFFSETS: the object becomes one any-offset cell
+        /// (RegionPointsTo.Collapse). Each cell it had flows into that one,
+        /// which already flows into each, so whatever is read from it anywhere
+        /// is everything ever written to it; a location in it is any offset
+        /// from here on.
+        /// </summary>
+        private int Collapse(int o)
+        {
+            int any = Cell(Location(o, Any));
+            if (_collapsed[o]) return any;
+            _collapsed[o] = true;
+            if (_objectCells[o] is { } cells)
+                foreach (int loc in cells.ToArray()) Edge(Cell(loc), any, 0);
+            return Rep(any);
+        }
+
+        /// <summary>The node holding what every cell of an object holds: what a read at any offset reads.</summary>
+        private int AllCells(int o)
+        {
+            if (_collapsed[o]) return Cell(Location(o, Any));
+            if (_allCells[o] >= 0) return Rep(_allCells[o]);
+            int any = Cell(Location(o, Any));
+            int all = NewNode();
+            _allCells[o] = all;
+            if (HoldsNoReference(o, Any)) _noReference[all] = true;
+            Edge(any, all, 0);
+            if (_objectCells[o] is { } cells)
+                foreach (int loc in cells.ToArray()) Edge(Cell(loc), all, 0);
+            return all;
+        }
+
+        /// <summary>
+        /// A WORD THE COLLECTOR NEVER READS AS A REFERENCE holds none
+        /// (RegionPointsTo.HoldsNoReference): nothing kept there is an object
+        /// anyone reaches by it, and what is read from it is a number, or the
+        /// unknown at most. A leaf is never scanned; an object made with a
+        /// descriptor is scanned by it, which the link reads from the image.
+        /// </summary>
+        private bool HoldsNoReference(int o, int offset)
+        {
+            if (o == Global || _objectSite[o] < 0) return false;
+            RegionSite site = _functions[_objectFunction[o]].Sites[_objectSite[o]];
+            if (site.Words == RegionWords.Leaf) return true;
+            if (site.Words != RegionWords.Described || site.Table is not { } table || _noReferenceAt is null) return false;
+            long? at = offset == Any ? null : offset;
+            if (_noReferenceWords.TryGetValue((table, site.At, at), out bool known)) return known;
+            return _noReferenceWords[(table, site.At, at)] = _noReferenceAt(table, site.At, at);
+        }
+
+        private readonly Dictionary<(string, long, long?), bool> _noReferenceWords = new();
+
         private void Watch(Watcher w, int loc, int cell)
         {
-            if (w.Reader >= 0) { Edge(cell, w.Reader, 0); return; }
-            if (!w.Exact) { Edge(cell, Cell(Location(w.To, Any)), 0); return; }
             long offset = _locationOffset[loc];
             if (offset >= w.From && (w.Count == RegionConstraint.Any || offset - w.From < w.Count))
                 Edge(cell, Cell(Location(w.To, w.At + offset - w.From)), 0);
@@ -501,24 +668,69 @@ public static class RegionSolver
         private void Add(int node, int loc)
         {
             node = Rep(node);
+            // A node that holds no reference holds the unknown at most.
+            if (_noReference[node]) loc = GlobalLocation;
+            else if (_saturated[node] && _locationObject[loc] != Global) { Escape(loc); loc = GlobalLocation; }
             SparseSet set = _pts[node] ??= new();
             if (!set.Add(loc)) return;
-            if (++_held > HeldBudget) _over = true;
+            // Checked here, not only between steps: one step's watchers can
+            // add without end, and the link died inside it before the loop
+            // looked again.
+            if ((++_held & 4095) == 0 && (_held > HeldBudget || OverHeap())) throw new OverBudget();
             List<int>? delta = _delta[node];
             if (delta is null) { _delta[node] = delta = new(); _work.Enqueue(node); }
             delta.Add(loc);
+            if (set.Count > MostHeld && node != Rep(Cell(GlobalLocation))) Saturate(node);
         }
+
+        /// <summary>
+        /// A NODE THAT HOLDS TOO MUCH holds the unknown object instead, and
+        /// what it held, and is handed from here on, escapes: each location
+        /// is put where nobody follows (the unknown object's cell), so what
+        /// reaches it is reached from there, and the unknown object stands
+        /// for it wherever the node is read, stored through or called on --
+        /// everything those could reach is already reached from the unknown
+        /// object. A context-free copy of a shared generic method (a List's,
+        /// a Dictionary's) holds every object any list holds; past this, one
+        /// set of thousands carried to every node it feeds was the compiler's
+        /// own build holding a hundred million.
+        /// </summary>
+        private void Saturate(int node)
+        {
+            _saturated[node] = true;
+            int[] held = _pts[node]!.ToArray();
+            _pts[node] = new SparseSet();
+            _held -= held.Length;
+            List<int> delta = _delta[node] ??= new();
+            if (delta.Count == 0) _work.Enqueue(node);
+            delta.Clear();
+            foreach (int loc in held) if (_locationObject[loc] != Global) Escape(loc);
+            _pts[node]!.Add(GlobalLocation);
+            _held++;
+            delta.Add(GlobalLocation);
+        }
+
+        private void Escape(int loc) => Add(Cell(GlobalLocation), loc);
 
         private void Edge(int from, int to, long shift)
         {
             from = Rep(from); to = Rep(to);
             if (from == to && shift == 0) return;
+            // A node that holds no reference holds the unknown at most (Add),
+            // and gives no more -- and only once something is put in it: a
+            // word only ever written numbers holds nothing anyone follows.
+            // RegionPointsTo gives the unknown along every such edge at once,
+            // and an instance read at any offset, through the numbers beside
+            // its references, was the unknown, and a store through it kept
+            // everything stored (973's terms, in its Main).
             List<(int To, long Shift)> edges = _edges[from] ??= new();
             if (_uses[from]?.EdgeSet is { } set) { if (!set.Add((to, shift))) return; }
             else
             {
+                // A short list searched while short, a set beside it past
+                // that: most nodes have one or two edges.
                 for (int e = 0; e < edges.Count; e++) if (edges[e].To == to && edges[e].Shift == shift) return;
-                if (edges.Count >= 8)
+                if (edges.Count >= 16)
                 {
                     HashSet<(int, long)> made = new();
                     foreach (var e in edges) made.Add((e.To, e.Shift));
@@ -528,8 +740,19 @@ public static class RegionSolver
             }
             edges.Add((to, shift));
             if (shift == 0) _edgesSinceCollapse++;
-            if (_pts[from] is { } pts)
-                foreach (int loc in pts.ToArray()) Add(to, Shifted(loc, shift));
+            if (_pts[from] is not { } pts) return;
+            // The unknown object's cell takes what escapes while this walks (Saturate).
+            if (from == to || from == Rep(Cell(GlobalLocation))) { foreach (int loc in pts.ToArray()) Add(to, Shifted(loc, shift)); return; }
+            // Walked in place: what is added goes to another node.
+            for (int b = 0; b < pts.Blocks; b++)
+            {
+                int key = pts.KeyAt(b) << 6;
+                for (ulong bits = pts.BitsAt(b); bits != 0; bits &= bits - 1)
+                {
+                    int loc = key + System.Numerics.BitOperations.TrailingZeroCount(bits);
+                    Add(to, shift == 0 ? loc : Shifted(loc, shift));
+                }
+            }
         }
 
         private void Leak(int node) => Edge(node, Cell(GlobalLocation), 0);
@@ -551,8 +774,9 @@ public static class RegionSolver
             int from = _locationOffset[loc];
             long at = from == Any ? Any : from + offset;
             int cell = Location(o, at);
-            Edge(Cell(cell), dest, 0);
-            if (_locationOffset[cell] == Any && _readers.Add(((long)o << 32) | (uint)Rep(dest))) EachCell(o, new Watcher { Reader = Rep(dest) });
+            // A read at any offset reads one node per object, not an edge
+            // from every cell to every such read.
+            Edge(_locationOffset[cell] == Any ? AllCells(o) : Cell(cell), dest, 0);
         }
 
         private void Store(int baseNode, long offset, int value)
@@ -576,34 +800,62 @@ public static class RegionSolver
             to = Rep(to); from = Rep(from);
             (Use(to).MemCopies ??= new()).Add(id);
             if (from != to) (Use(from).MemCopies ??= new()).Add(id);
-            if (_pts[from] is { } pts) foreach (int loc in pts.ToArray()) Copied(id, loc, true);
+            if (_pts[from] is { } sources) foreach (int loc in sources.ToArray()) Copied(id, loc, true);
+            if (_pts[to] is { } destinations) foreach (int loc in destinations.ToArray()) Copied(id, loc, false);
         }
 
-        // A new location at one end of a block copy: paired with every one at the other.
+        // A new location at one end of a block copy: met with each one seen
+        // at the other end once, or, past MostPairs, through one node.
         private void Copied(int id, int loc, bool atSource)
         {
             MemCopyRecord r = _memcopyRecords[id];
-            int other = Rep(atSource ? r.To : r.From);
-            if (_pts[other] is not { } pts) return;
-            foreach (int with in pts.ToArray())
+            if (!(atSource ? r.SourcesSeen : r.DestinationsSeen).Add(loc)) return;
+            (atSource ? r.Sources : r.Destinations).Add(loc);
+            if (r.Through < 0 && (long)r.Sources.Count * r.Destinations.Count > MostPairs)
             {
-                int src = atSource ? loc : with, dst = atSource ? with : loc;
-                if (!r.Pairs.Add(((long)src << 32) | (uint)dst)) continue;
-                Pair(src, dst, r.Count);
+                // TOO MANY PAIRS -- a copy through pointers that may each be
+                // any of hundreds of objects -- and every source is copied to
+                // every destination through one node, at any offset.
+                r.Through = NewNode();
+                foreach (int src in r.Sources) Into(r, src);
+                foreach (int dst in r.Destinations) OutOf(r, dst);
+                return;
             }
+            if (r.Through >= 0)
+            {
+                if (atSource) Into(r, loc); else OutOf(r, loc);
+                return;
+            }
+            List<int> others = atSource ? r.Destinations : r.Sources;
+            for (int k = 0; k < others.Count; k++)
+                if (atSource) Pair(r, loc, others[k]); else Pair(r, others[k], loc);
         }
 
-        private void Pair(int src, int dst, long count)
+        private void Into(MemCopyRecord r, int src)
+        {
+            int o = _locationObject[src];
+            if (o == Global) Add(r.Through, GlobalLocation);
+            else Edge(AllCells(o), r.Through, 0);
+        }
+
+        private void OutOf(MemCopyRecord r, int dst) => Edge(r.Through, Cell(Location(_locationObject[dst], Any)), 0);
+
+        private void Pair(MemCopyRecord r, int src, int dst)
         {
             int os = _locationObject[src], od = _locationObject[dst];
-            int ds = _locationOffset[src], dd = _locationOffset[dst];
+            int ds = _collapsed[os] ? Any : _locationOffset[src], dd = _collapsed[od] ? Any : _locationOffset[dst];
             if (os == Global)
             {
                 Add(Cell(Location(od, Any)), GlobalLocation);
                 return;
             }
-            bool exact = ds != Any && dd != Any && od != Global;
-            EachCell(os, new Watcher { To = od, From = ds, At = dd, Count = count, Exact = exact });
+            // A copy at any offset depends only on the two objects.
+            if (ds == Any || dd == Any || od == Global)
+            {
+                if (r.AnyPairs.Add(((long)os << 32) | (uint)od)) Edge(AllCells(os), Cell(Location(od, Any)), 0);
+                return;
+            }
+            EachCell(os, new Watcher { To = od, From = ds, At = dd, Count = r.Count });
             Edge(Cell(Location(os, Any)), Cell(Location(od, Any)), 0);
         }
 
@@ -657,17 +909,27 @@ public static class RegionSolver
             if (_pts[receiver] is { } pts) foreach (int loc in pts.ToArray()) Received(id, loc);
         }
 
-        // An object a receiver may be: the callee's copy for it.
+        /// <summary>
+        /// A LOCATION A RECEIVER MAY BE goes to the copies that run on it, and
+        /// to no other: the callee's copy for its object, the method its
+        /// descriptor holds -- or, on an object of no known type, every
+        /// override -- each handed this location as `this` and nothing else
+        /// the receiver holds (RegionPointsTo.Bind's rule for the object a
+        /// copy is for). A copy shared past the contexts, or one in no
+        /// object's context, was handed every receiver of the call by an
+        /// edge: every ToString in the compiler's own build was handed the
+        /// six thousand objects anything was printed from.
+        /// </summary>
         private void Received(int id, int loc)
         {
             Binding binding = _bindings[id];
             int o = _locationObject[loc];
+            int caller = _copyFunction[binding.Copy];
             if (binding.Direct is not null)
             {
                 binding.Unbound = false;
                 int context = _locationOffset[loc] == 0 && o != Global ? o : -1;
-                foreach (int g in binding.Direct)
-                    if (binding.Seen.Add(Key(g, context))) To(binding.Copy, binding.Call, CopyOf(g, context));
+                foreach (int g in binding.Direct) Handed(binding, CopyOf(g, context), loc);
                 return;
             }
             // A virtual call runs, on an object whose stamp is known, the
@@ -676,20 +938,31 @@ public static class RegionSolver
                 && SlotOf(binding.Call.Callee!) is long slot && _methodAt(table, site.At + slot) is { } method
                 && binding.Overrides!.Contains(method, StringComparer.Ordinal))
             {
-                if (!binding.Seen.Add(((long)o << 1) | 1)) return;
-                foreach (int g in Resolve(_unitOf[_copyFunction[binding.Copy]], method)!)
+                foreach (int g in Resolve(_unitOf[caller], method)!)
                 {
-                    _named[_copyFunction[binding.Copy]].Add(g);
-                    To(binding.Copy, binding.Call, CopyOf(g, o));
+                    _named[caller].Add(g);
+                    Handed(binding, CopyOf(g, o), loc);
                 }
                 return;
             }
-            AllOverrides(binding);
+            foreach (string target in binding.Overrides!)
+                foreach (int g in Resolve(_unitOf[caller], target)!)
+                {
+                    _named[caller].Add(g);
+                    Handed(binding, CopyOf(g, -1), loc);
+                }
         }
 
+        // The call made to a copy once, its receiver aside; and this location its `this`.
+        private void Handed(Binding binding, int callee, int loc)
+        {
+            if (binding.Seen.Add(callee)) To(binding.Copy, binding.Call, callee, receiver: false);
+            if (_functions[_copyFunction[callee]].Parameters > 0) Add(Node(callee, 0), loc);
+        }
+
+        // A virtual call made on nothing that can hold an address: every override, as it is.
         private void AllOverrides(Binding binding)
         {
-            if (!binding.Seen.Add(-2)) return;
             int u = _unitOf[_copyFunction[binding.Copy]];
             foreach (string target in binding.Overrides!)
                 foreach (int g in Resolve(u, target)!)
@@ -711,12 +984,14 @@ public static class RegionSolver
             _callers[callee].Add(caller);
         }
 
-        // The call made: its arguments the callee copy's parameters, its return the call's result.
-        private void To(int caller, RegionCall call, int callee)
+        // The call made: its arguments the callee copy's parameters -- its
+        // receiver too, unless each location of it is handed over alone
+        // (Received) -- and its return the call's result.
+        private void To(int caller, RegionCall call, int callee, bool receiver = true)
         {
             Beneath(caller, callee);
             RegionFunction g = _functions[_copyFunction[callee]];
-            for (int k = 0; k < call.Arguments.Length && k < g.Parameters; k++)
+            for (int k = receiver ? 0 : 1; k < call.Arguments.Length && k < g.Parameters; k++)
                 if (call.Arguments[k] >= 0) Edge(Node(caller, call.Arguments[k]), Node(callee, k), 0);
             if (call.Dest >= 0) Edge(Node(callee, g.Parameters), Node(caller, call.Dest), 0);
         }
@@ -748,7 +1023,7 @@ public static class RegionSolver
                     foreach (int loc in delta) Add(node, loc);
                     continue;
                 }
-                _steps++;
+                if ((++_steps & 63) == 0 && OverHeap()) { _over = true; return false; }
                 foreach (int loc in delta) Propagate(node, loc);
                 if (_edgesSinceCollapse > 50_000 + _parent.Count / 4) Collapse();
             }
@@ -808,7 +1083,9 @@ public static class RegionSolver
                         (int to, long shift) = edges[e++];
                         if (shift != 0) continue;
                         int w = Rep(to);
-                        if (w == v) continue;
+                        // A cell that holds no reference is never merged: it
+                        // holds less than what feeds it.
+                        if (w == v || _noReference[w]) continue;
                         if (index[w] < 0)
                         {
                             calls.Push((v, e));
@@ -887,23 +1164,34 @@ public static class RegionSolver
             foreach (int loc in pts.ToArray()) yield return _locationObject[loc];
         }
 
+        // Which objects each object's cells point into, found once.
+        private int[][]? _pointsInto;
+
         // Objects reached from `start` through their cells, past those in `stop`.
         private void Reach(IEnumerable<int> start, HashSet<int> reached, HashSet<int>? stop)
         {
-            Queue<int> next = new();
+            if (_pointsInto is null)
+            {
+                _pointsInto = new int[_objectFunction.Count][];
+                HashSet<int> into = new();
+                for (int o = 0; o < _objectFunction.Count; o++)
+                {
+                    into.Clear();
+                    List<int> cells = new(_objectCells[o] ?? new List<int>());
+                    if (_locations.TryGetValue(((long)o << 16) | (uint)Any, out int any)) cells.Add(any);
+                    foreach (int loc in cells)
+                        if (_cellNode[loc] >= 0) into.UnionWith(ObjectsHeld(_cellNode[loc]));
+                    _pointsInto[o] = into.ToArray();
+                }
+            }
+            Stack<int> next = new();
             foreach (int o in start)
-                if ((stop is null || !stop.Contains(o)) && reached.Add(o)) next.Enqueue(o);
-            while (next.TryDequeue(out int o))
+                if ((stop is null || !stop.Contains(o)) && reached.Add(o)) next.Push(o);
+            while (next.TryPop(out int o))
             {
                 _walked++;
-                List<int> cells = new(_objectCells[o] ?? new List<int>());
-                if (_locations.TryGetValue(((long)o << 16) | (uint)Any, out int any)) cells.Add(any);
-                foreach (int loc in cells)
-                {
-                    if (_cellNode[loc] < 0) continue;
-                    foreach (int held in ObjectsHeld(_cellNode[loc]))
-                        if ((stop is null || !stop.Contains(held)) && reached.Add(held)) next.Enqueue(held);
-                }
+                foreach (int held in _pointsInto[o])
+                    if ((stop is null || !stop.Contains(held)) && reached.Add(held)) next.Push(held);
             }
         }
 
@@ -937,8 +1225,13 @@ public static class RegionSolver
         {
             _globalReach = new();
             Reach(new[] { Global }, _globalReach, null);
-            bool[] recursive = Recursive();
-            bool MayBeBoundary(int f) => _functions[f].MayBeBoundary && !recursive[f] && _functions[f].Name != _entry;
+            bool[] recursive = Recursive(), beforeBlock = BeforeThreadBlock();
+            // Nor what the entry calls itself -- Main, the runtime's start --
+            // as RegionPointsTo does not make one either.
+            HashSet<int> started = new();
+            for (int f = 0; f < _functions.Count; f++)
+                if (_functions[f].Name == _entry) started.UnionWith(_named[f]);
+            bool MayBeBoundary(int f) => _functions[f].MayBeBoundary && !recursive[f] && !beforeBlock[f] && !started.Contains(f) && _functions[f].Name != _entry;
 
             // Each site's objects, by function and ordinal.
             Dictionary<(int, int), List<int>> bySite = new();
@@ -1005,19 +1298,13 @@ public static class RegionSolver
                 }
             }
 
-            // A boundary with nothing taken beneath it opens nothing worth opening.
-            List<int> opened = new();
-            foreach (int f in chosen)
-            {
-                bool any = false;
-                foreach (int b in _copiesOf[f]!)
-                {
-                    foreach (int c in Beneath(b))
-                        if (madeBy.TryGetValue(c, out List<int>? made) && made.Any(o => taken.Contains((_objectFunction[o], _objectSite[o])))) { any = true; break; }
-                    if (any) break;
-                }
-                if (any) opened.Add(f);
-            }
+            // A boundary with nothing taken innermost beneath it opens nothing
+            // worth opening: what is taken beneath it is made in another's.
+            HashSet<int> opening = new();
+            foreach ((int c, List<int> made) in madeBy)
+                if (made.Any(o => taken.Contains((_objectFunction[o], _objectSite[o]))))
+                    foreach (int b in Above(c)) opening.Add(_copyFunction[b]);
+            List<int> opened = chosen.Where(opening.Contains).ToList();
 
             RegionFacts?[] facts = new RegionFacts?[_units.Count];
             RegionFacts For(int f) => facts[_unitOf[f]] ??= new RegionFacts();
@@ -1038,12 +1325,19 @@ public static class RegionSolver
         }
 
         /// <summary>
-        /// EVERY BOUNDARY THAT CAN BE OPEN ABOVE A SITE, however far up, in any
-        /// copy that makes it, must outlive none of its objects: the sites
-        /// taken, and what each boundary costs and gives. Null past the budget.
+        /// EVERY BOUNDARY THAT CAN BE INNERMOST ABOVE A SITE, in any copy that
+        /// makes it, must outlive none of its objects: the sites taken, and
+        /// what each boundary costs and gives. Runtime.AllocRegion takes the
+        /// region opened innermost, so a boundary farther up than another on
+        /// every way to the site is never the one it is made in: the walk up
+        /// from each making copy stops at the first boundary on each way
+        /// (NearestAbove), however far up that is. Walking down from every
+        /// boundary, every boundary above every object was judged: the
+        /// compiler's own build judged for seven minutes. Null past the budget.
         /// </summary>
         private Verdict? Evaluate(SortedSet<int> chosen, Dictionary<(int, int), List<int>> bySite, Dictionary<int, List<int>> madeBy)
         {
+            NearestAbove(chosen);
             // Per object: the boundary above it and the one refusing it, -1
             // for none and -2 for more than one.
             Dictionary<int, int> above = new(), refuser = new();
@@ -1053,22 +1347,29 @@ public static class RegionSolver
                 else if (was != f) into[o] = -2;
             }
             _refusedBy.Clear();
-            foreach (int f in chosen)
-                foreach (int b in _copiesOf[f]!)
+            HashSet<int> outer = new();
+            foreach ((int c, List<int> made) in madeBy)
+            {
+                foreach (int b in Above(c))
                 {
-                    foreach (int c in Beneath(b))
-                        if (madeBy.TryGetValue(c, out List<int>? made))
-                            foreach (int o in made)
-                            {
-                                Note(above, o, f);
-                                if (Outlives(o, b))
-                                {
-                                    Note(refuser, o, f);
-                                    _refusedBy.TryAdd(o, b);
-                                }
-                            }
-                    if (_walked > JudgeBudget) return null;
+                    int f = _copyFunction[b];
+                    foreach (int o in made)
+                    {
+                        _walked++;
+                        Note(above, o, f);
+                        // Another boundary above this one: open around it
+                        // too, for what it leaves -- as every boundary above
+                        // an object was noted when every one was judged.
+                        if (Above(b, beyond: true).Length > 0) outer.Add(o);
+                        if (Outlives(o, b))
+                        {
+                            Note(refuser, o, f);
+                            _refusedBy.TryAdd(o, b);
+                        }
+                    }
                 }
+                if (_walked > JudgeBudget) return null;
+            }
             // A site is taken when none of its objects is refused and one is
             // beneath some boundary.
             Verdict verdict = new();
@@ -1082,7 +1383,7 @@ public static class RegionSolver
                     // Taken only for the one boundary above all of it.
                     int only = -1;
                     foreach (int o in objects)
-                        if (above.TryGetValue(o, out int f)) only = only == -1 || only == f ? f : -2;
+                        if (above.TryGetValue(o, out int f)) only = (only == -1 || only == f) && !outer.Contains(o) ? f : -2;
                     if (only >= 0) verdict.Gain[only] = verdict.Gain.GetValueOrDefault(only) + 1;
                     continue;
                 }
@@ -1092,11 +1393,100 @@ public static class RegionSolver
                 foreach (int o in objects)
                 {
                     if (refuser.TryGetValue(o, out int r)) sole = sole == -1 || sole == r ? r : -2;
-                    if (above.TryGetValue(o, out int a) && (a == -2 || refuser.GetValueOrDefault(o, -1) != a)) other = true;
+                    if (outer.Contains(o) || above.TryGetValue(o, out int a) && (a == -2 || refuser.GetValueOrDefault(o, -1) != a)) other = true;
                 }
                 if (sole >= 0 && other) verdict.Loss[sole] = verdict.Loss.GetValueOrDefault(sole) + 1;
             }
             return verdict;
+        }
+
+        // Per copy: whether it is a chosen boundary's; per component of the
+        // calls between copies, the boundary copies innermost above it.
+        private bool[] _isBoundary = Array.Empty<bool>();
+        private int[] _component = Array.Empty<int>();
+        private int[][] _nearest = Array.Empty<int[]>();
+
+        /// <summary>The boundary copies a region can be opened in innermost when copy `c` runs: itself, if it is one (unless `beyond`), else the first on each way up.</summary>
+        private int[] Above(int c, bool beyond = false) => _isBoundary[c] && !beyond ? new[] { c } : _nearest[_component[c]];
+
+        /// <summary>
+        /// THE FIRST BOUNDARY ON EACH WAY UP, for every copy at once: over the
+        /// components of the calls between copies (Tarjan's, which finds a
+        /// component after every one it calls), callers first, each holding
+        /// what its callers outside it hold -- a caller that is a boundary
+        /// copy itself, else that caller's own. A boundary is never on a
+        /// cycle: no recursive function is one.
+        /// </summary>
+        private void NearestAbove(SortedSet<int> chosen)
+        {
+            int count = _copyFunction.Count;
+            _isBoundary = new bool[count];
+            for (int c = 0; c < count; c++) _isBoundary[c] = chosen.Contains(_copyFunction[c]);
+            _component = new int[count];
+            List<List<int>> components = new();
+            int[] index = new int[count], low = new int[count];
+            bool[] onStack = new bool[count];
+            for (int n = 0; n < count; n++) index[n] = -1;
+            int next = 0;
+            Stack<int> stack = new();
+            Stack<(int Node, int[] Callees, int At)> calls = new();
+            for (int start = 0; start < count; start++)
+            {
+                if (index[start] >= 0) continue;
+                index[start] = low[start] = next++;
+                stack.Push(start); onStack[start] = true;
+                calls.Push((start, _callees[start].ToArray(), 0));
+                while (calls.Count > 0)
+                {
+                    (int v, int[] callees, int at) = calls.Pop();
+                    bool descended = false;
+                    while (at < callees.Length)
+                    {
+                        int w = callees[at++];
+                        if (index[w] < 0)
+                        {
+                            calls.Push((v, callees, at));
+                            index[w] = low[w] = next++;
+                            stack.Push(w); onStack[w] = true;
+                            calls.Push((w, _callees[w].ToArray(), 0));
+                            descended = true;
+                            break;
+                        }
+                        if (onStack[w]) low[v] = Math.Min(low[v], index[w]);
+                    }
+                    if (descended) continue;
+                    if (low[v] == index[v])
+                    {
+                        List<int> component = new();
+                        int w;
+                        do { w = stack.Pop(); onStack[w] = false; component.Add(w); _component[w] = components.Count; } while (w != v);
+                        components.Add(component);
+                    }
+                    if (calls.Count > 0) { int parent = calls.Peek().Node; low[parent] = Math.Min(low[parent], low[v]); }
+                }
+            }
+            // Found callees first: the last found is called by none found before it.
+            _nearest = new int[components.Count][];
+            HashSet<int> union = new();
+            for (int k = components.Count - 1; k >= 0; k--)
+            {
+                union.Clear();
+                int[]? only = null;
+                bool many = false;
+                foreach (int m in components[k])
+                    foreach (int p in _callers[m])
+                    {
+                        if (_component[p] == k) continue;
+                        _walked++;
+                        int[] from = _isBoundary[p] ? new[] { p } : _nearest[_component[p]];
+                        if (from.Length == 0) continue;
+                        if (only is null && !many) { only = from; continue; }
+                        if (ReferenceEquals(only, from)) continue;
+                        if (!many) { union.UnionWith(only!); many = true; }
+                        union.UnionWith(from);
+                    }
+                _nearest[k] = many ? union.Order().ToArray() : only ?? Array.Empty<int>();
+            }
         }
 
         // The copies a call of `start` can reach, itself among them.
@@ -1112,6 +1502,30 @@ public static class RegionSolver
                     if (seen.Add(callee)) next.Enqueue(callee);
             }
             return seen;
+        }
+
+        /// <summary>
+        /// WHAT RUNS BEFORE A THREAD'S BLOCK IS ITS OWN: the function that
+        /// makes it so (RuntimeAbi.SetThreadBlock) and every function that
+        /// calls it, however far up -- the entry stub's first call, a new
+        /// thread's first method, which run with no block or the parent's.
+        /// A region is opened in the block, so none of these is a boundary:
+        /// 214_linq's link opened one in SetThreadBlock and died there.
+        /// </summary>
+        private bool[] BeforeThreadBlock()
+        {
+            bool[] before = new bool[_functions.Count];
+            List<int>[] callers = new List<int>[_functions.Count];
+            for (int f = 0; f < _functions.Count; f++)
+                foreach (int g in _named[f]) (callers[g] ??= new()).Add(f);
+            Stack<int> next = new();
+            for (int f = 0; f < _functions.Count; f++)
+                if (_functions[f].Name == RuntimeAbi.SetThreadBlock) { before[f] = true; next.Push(f); }
+            while (next.TryPop(out int g))
+                if (callers[g] is { } list)
+                    foreach (int f in list)
+                        if (!before[f]) { before[f] = true; next.Push(f); }
+            return before;
         }
 
         // Each function on a cycle of named calls, itself included (Tarjan, iterative).
@@ -1211,6 +1625,20 @@ public static class RegionSolver
             for (int loc = 0; loc < _cellNode.Count; loc++) if (_cellNode[loc] >= 0) cellOf[_cellNode[loc]] = loc;
             foreach ((int count, int node) in sizes.Take(25))
                 Log($"  {count} held by {DescribeNode(node, cellOf)}");
+            // And where it is held in all: by the function whose copies' nodes
+            // hold it, or the site whose objects' cells do.
+            Dictionary<string, long> by = new(StringComparer.Ordinal);
+            int copy = 0;
+            for (int n = 0; n < _pts.Count; n++)
+            {
+                if (_pts[n] is not { } set) continue;
+                while (copy + 1 < _copyBase.Count && _copyBase[copy + 1] <= n) copy++;
+                string where = cellOf.TryGetValue(n, out int loc) ? "cells of " + DescribeObject(_locationObject[loc])
+                    : copy < _copyBase.Count && n - _copyBase[copy] < _functions[_copyFunction[copy]].Nodes ? _functions[_copyFunction[copy]].Name : "other nodes";
+                by[where] = by.GetValueOrDefault(where) + set.Count;
+            }
+            foreach (var (where, count) in by.OrderByDescending(pair => pair.Value).Take(25))
+                Log($"  {count} held in all by {where}");
         }
 
         private string DescribeNode(int node, Dictionary<int, int> cellOf)

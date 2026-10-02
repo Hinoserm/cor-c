@@ -118,7 +118,8 @@ public static class IrLinkOptimizer
                     foreach (Section section in input.Object.Sections) foreach (Relocation reloc in section.Relocs) foreign.Add(reloc.Symbol);
             RegionFacts?[]? solved = RegionSolver.Solve(regionUnits, regionVirtuals, (table, offset) => VirtualTargets.MethodAt(inputs, table, offset),
                 closedImageEntry!, foreign, regionReport,
-                (u, name) => reachability?.GetValueOrDefault(regionOrder[u]) is not { } kept || kept.Contains("F:" + name));
+                (u, name) => reachability?.GetValueOrDefault(regionOrder[u]) is not { } kept || kept.Contains("F:" + name),
+                (table, at, offset) => VirtualTargets.HoldsNoReference(inputs, table, at, offset));
             if (solved is not null)
             {
                 regionFacts = new();
