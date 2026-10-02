@@ -232,7 +232,8 @@ static class Platform
     /// kind of free: 1 (or anything else) all of them; p the plain frees at
     /// a last use (Runtime.Free); f the fields freed with their owner
     /// (Runtime.FreeField); r what an owned variable held before it was
-    /// assigned (Runtime.FreeReplaced). 0, or unset, none.
+    /// assigned (Runtime.FreeReplaced); s the storage a collection made in a
+    /// frame gives back (Runtime.FreeStorageInFrame). 0, or unset, none.
     public static long IgnoreFrees()
     {
         long first = EnvironmentByte("CORSAC_IGNORE_FREES=");

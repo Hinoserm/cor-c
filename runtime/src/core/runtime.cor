@@ -445,6 +445,8 @@ static class Runtime
     /// word, as the slot starts) is nothing to do.
     public static void FreeStorageInFrame(object? collection)
     {
+        long ignored = Gc.IgnoredFrees;
+        if (ignored == 's' || ignored != 0 && ignored != 'p' && ignored != 'f' && ignored != 'r') return;
         if (collection == null || (Sys.Peek(Sys.Word(collection)) & WordSize.AddressMask) == 0) return;
         if (collection is IOwnsStorage owner) owner.FreeStorage();
     }
