@@ -1,0 +1,39 @@
+// The other unit of 1020_interface_across_units: an interface, and the
+// classes that implement it.
+namespace ShapeUnits;
+
+public interface IShape
+{
+    int Area();
+    string Name { get; }
+}
+
+public sealed class Square : IShape
+{
+    readonly int side;
+    public Square(int side) { this.side = side; }
+    public int Area() { return side * side; }
+    public string Name { get { return "square"; } }
+}
+
+public sealed class Rect : IShape
+{
+    readonly int w, h;
+    public Rect(int w, int h) { this.w = w; this.h = h; }
+    public int Area() { return w * h; }
+    public string Name { get { return "rect"; } }
+}
+
+public static class Shapes
+{
+    public static List<IShape> Make(int n)
+    {
+        List<IShape> all = new List<IShape>();
+        for (int i = 1; i <= n; i++)
+        {
+            if (i % 2 == 0) all.Add(new Square(i));
+            else all.Add(new Rect(i, i + 1));
+        }
+        return all;
+    }
+}

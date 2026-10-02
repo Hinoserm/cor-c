@@ -1,0 +1,35 @@
+// The other unit of 1021_interfaces_both_sides_across_units: interfaces on
+// this side, one of them on an exception that derives from the library's.
+namespace CodeUnits;
+
+public interface ICoded
+{
+    int Code { get; }
+    string Describe();
+}
+
+public interface IWeighted
+{
+    int Weight();
+}
+
+public sealed class CodedError : ArgumentException, ICoded, IWeighted
+{
+    readonly int code;
+    public CodedError(string message, int code) : base(message) { this.code = code; }
+    public int Code { get { return code; } }
+    public string Describe() { return Message + "#" + code; }
+    public int Weight() { return code * 10; }
+}
+
+public static class Coded
+{
+    public static int Sum(List<ICoded> items)
+    {
+        int s = 0;
+        foreach (ICoded c in items) s += c.Code;
+        return s;
+    }
+
+    public static void Fail(int code) { throw new CodedError("fail", code); }
+}

@@ -1946,6 +1946,17 @@ public sealed partial class Binder
         // every class of the project numbered its own virtuals 129 higher in
         // the units that had one than in the units that did not. They are
         // numbered last, above the project's classes, where nothing shared is.
+        // WHERE IT WAS DECLARED DECIDES THE TIER, index or no index -- the
+        // same question AssignSlots asks of a class. Without an index every
+        // interface used to count as library, so a unit compiled from its
+        // sources alongside the library (--lib) numbered its own IShape among
+        // the library's families, while the unit that read IShape from the
+        // index put it in the project's tier: every library slot sorted after
+        // it moved by two on one side of the link and not the other, and the
+        // link stopped on ArgumentException's layout. The index only adds
+        // what the sources cannot say, a family listed as the library's.
+        bool IsLibraryInterface(TypeSymbol t, (string, int) family)
+            => IsLibraryType(t) || (_libraryInterfaces?.Contains(family) ?? false);
         SortedDictionary<(string, int), int> families = new(), local = new(), unitLocal = new();
         bool IsLibraryFamily((string, int) family, bool declaredHere)
             => _libraryInterfaces is null ? true : _libraryInterfaces.Contains(family) && !declaredHere;
@@ -1960,7 +1971,7 @@ public sealed partial class Binder
                 unitLocal[family] = Math.Max(unitLocal.GetValueOrDefault(family), t.Methods.Count(m => m.Decl?.LocalCopy != true));
                 continue;
             }
-            bool library = IsLibraryType(t) || (_libraryInterfaces?.Contains(family) ?? true);
+            bool library = IsLibraryInterface(t, family);
             SortedDictionary<(string, int), int> into = library ? families : local;
             if (library) local.Remove(family);
             // THE DECLARED MEMBERS, not the copies this unit made beside them:
@@ -1990,7 +2001,7 @@ public sealed partial class Binder
             {
                 (string template, int arity) = Family(t);
                 if ((t.Decl?.LocalOnly == true) != unitOnly) continue;
-                if (!unitOnly && (IsLibraryType(t) || (_libraryInterfaces?.Contains((template, arity)) ?? true)) != library) continue;
+                if (!unitOnly && IsLibraryInterface(t, (template, arity)) != library) continue;
 
                 for (int i = 0; i < t.Methods.Count; i++)
                 {

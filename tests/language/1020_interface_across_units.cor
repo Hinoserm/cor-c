@@ -1,0 +1,56 @@
+// test: interface_across_units
+// units: tests/language/support/1020_interface_units.cor
+// expect-exit: 0
+// expect-output:
+// 4 square
+// 6 rect
+// 4 24 rect
+// 3 8 square
+// bad side
+//
+// An interface declared in a unit that does not hold the library, used
+// here: called through, kept in a List, implemented again on this side,
+// and a library exception thrown and caught beside it.
+
+using System;
+using System.Collections.Generic;
+using ShapeUnits;
+
+sealed class Tri : IShape
+{
+    readonly int b, h;
+    public Tri(int b, int h) { this.b = b; this.h = h; }
+    public int Area() { return b * h / 2; }
+    public string Name { get { return "tri"; } }
+}
+
+static class P
+{
+    static int Total(List<IShape> all)
+    {
+        int s = 0;
+        foreach (IShape x in all) s += x.Area();
+        return s;
+    }
+
+    static void Main()
+    {
+        IShape a = new Square(2);
+        IShape b = new Rect(2, 3);
+        Console.WriteLine(a.Area() + " " + a.Name);
+        Console.WriteLine(b.Area() + " " + b.Name);
+        List<IShape> all = Shapes.Make(3);
+        all.Add(new Tri(3, 4));
+        Console.WriteLine(all.Count + " " + Total(all) + " " + all[0].Name);
+        List<IShape> mine = new List<IShape> { new Tri(2, 3), new Square(1), new Square(2) };
+        Console.WriteLine(mine.Count + " " + Total(mine) + " " + mine[2].Name);
+        try
+        {
+            throw new ArgumentException("bad side");
+        }
+        catch (ArgumentException e)
+        {
+            Console.WriteLine(e.Message);
+        }
+    }
+}

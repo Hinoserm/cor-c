@@ -1,0 +1,58 @@
+// test: interfaces_both_sides_across_units
+// units: tests/language/support/1021_interface_units.cor
+// expect-exit: 0
+// expect-output:
+// fail#7 70 7
+// 12 fail#5
+// a:3 z:4
+// 3
+//
+// Interfaces declared on both sides of a link: the other unit's on an
+// exception derived from the library's, thrown there and caught here as
+// the library type and as the interface, and this unit's own, one sorting
+// before the other unit's and one after, implemented by a class of each.
+
+using System;
+using System.Collections.Generic;
+using CodeUnits;
+
+interface IAlpha { string Tag(); }
+interface IZulu { int Size(); }
+
+sealed class Local : ICoded, IAlpha, IZulu
+{
+    public int Code { get { return 5; } }
+    public string Describe() { return "fail#5"; }
+    public string Tag() { return "a:3"; }
+    public int Size() { return 4; }
+}
+
+static class P
+{
+    static void Main()
+    {
+        try
+        {
+            Coded.Fail(7);
+        }
+        catch (ArgumentException e)
+        {
+            ICoded c = (ICoded)e;
+            IWeighted w = (IWeighted)e;
+            Console.WriteLine(c.Describe() + " " + w.Weight() + " " + c.Code);
+        }
+        List<ICoded> all = new List<ICoded> { new Local(), new CodedError("x", 7) };
+        Console.WriteLine(Coded.Sum(all) + " " + all[0].Describe());
+        Local l = new Local();
+        IAlpha a = l;
+        IZulu z = l;
+        Console.WriteLine(a.Tag() + " z:" + z.Size());
+        int caught = 0;
+        for (int i = 0; i < 3; i++)
+        {
+            try { Coded.Fail(i); }
+            catch (Exception e) when (e is ICoded) { caught++; }
+        }
+        Console.WriteLine(caught);
+    }
+}
