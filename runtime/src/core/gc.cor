@@ -2221,6 +2221,60 @@ static class Gc
         }
     }
 
+    /// The words the arena's live part takes: at most what a copy of it
+    /// (CopyRegion) writes.
+    public static long RegionWords(long tb)
+    {
+        long p = Sys.Peek(tb + Tls.RegionBase);
+        if (p == 0) return 0;
+        long end = Sys.Peek(tb + Tls.RegionAt);
+        return end > p ? (end - p) / WordSize.Bytes : 0;
+    }
+
+    /// THE ARENA AS IT IS, written to `copy` for STAMP's snapshot
+    /// (GcThreads.CopyStack): a stack's copy keeps what the stack held at
+    /// the snapshot, and the arena is the stack's as far as the heap is
+    /// concerned. Without it a reference held only in a region's object
+    /// could be moved into an object made since -- new, so stored with no
+    /// barrier -- and the region's end zeroes where it was before SCAN reads
+    /// the arena: the newcomer is kept, never traced, and what it holds is
+    /// swept. The payloads of every block but a leaf, read as a stack's
+    /// words are; past a header that does not read as a block (never, while
+    /// the thread is stopped or is the one copying) the rest whole, which is
+    /// never wrong. Answers how many words it wrote.
+    public static long CopyRegion(long tb, long copy)
+    {
+        long w = WordSize.Bytes;
+        long p = Sys.Peek(tb + Tls.RegionBase);
+        if (p == 0) return 0;
+        long end = Sys.Peek(tb + Tls.RegionAt);
+        long n = 0;
+        while (p < end)
+        {
+            long size = Sys.Peek(p) & SizeMask;
+            long from = p + HeaderBytes;
+            long to = p + size - FooterBytes;
+            if (size < Smallest || p + size > end)
+            {
+                from = p;
+                to = end;
+                size = end - p;
+            }
+            else if (Sys.Peek(p + KindAt) == KindLeaf)
+            {
+                from = to;
+            }
+            while (from < to)
+            {
+                Sys.Poke(copy + n * w, Sys.Peek(from));
+                n = n + 1;
+                from = from + w;
+            }
+            p = p + size;
+        }
+        return n;
+    }
+
     /// The heap. Zeroed memory for `bytes`, 8-aligned.
     ///
     /// THE FAST PATH, kept to a few instructions so the inliner can put it at
@@ -7701,6 +7755,11 @@ static class Gc
             return;
         }
 
+        // THE COLLECTOR'S OWN STACK AND ARENA ARE NOT COPIED: no code of the
+        // program runs on this thread from here until GcRoots reads both
+        // (ScanAll, step 3) -- only the rounds, the barrier and the marking --
+        // so no region of it ends and nothing moves off its stack in between,
+        // and what they hold then is what they held at the snapshot.
         StampBuffer(self);
 
         _concurrent = true;
@@ -11049,7 +11108,11 @@ static class GcThreads
             spilled = NoCopy;
         }
         long words = stackWords + spilled;
-        if (words == 0)
+        // And its region arena, live as it is now (Gc.CopyRegion): what an
+        // object there holds was the thread's at the snapshot as surely as
+        // its stack's words were.
+        long regionWords = Gc.RegionWords(block);
+        if (words == 0 && regionWords == 0)
         {
             return;
         }
@@ -11061,8 +11124,9 @@ static class GcThreads
         long slot = Sys.AtomicAdd(_stackCopies, 1);
         // Room for a live register's value in every frame beside the stack's
         // own words (Gc.ScanOwnStack): twice them, mapped, and touched only
-        // as far as written.
-        long copy = slot < Max ? Platform.Map((2 * words + 16) * w) : NoCopy;
+        // as far as written; the arena's words after them.
+        long mapped = (2 * words + 16 + regionWords) * w;
+        long copy = slot < Max ? Platform.Map(mapped) : NoCopy;
         if (copy == 0)
         {
             Sys.AtomicSwap(ctl + GcLock.BarrierLost, 1);
@@ -11092,8 +11156,9 @@ static class GcThreads
             }
             kept = words;
         }
+        kept = kept + Gc.CopyRegion(block, copy + kept * w);
         Sys.Poke(CopyAt(slot) + w, kept * w);
-        Sys.Poke(CopyAt(slot) + 2 * w, (2 * words + 16) * w);
+        Sys.Poke(CopyAt(slot) + 2 * w, mapped);
         Sys.AtomicSwap(CopyAt(slot), copy);
     }
 
