@@ -723,7 +723,10 @@ public sealed class RegionPointsTo : IModulePass
 
     // WHAT THE ENTRY CALLS IS THE PROGRAM -- Main, and the stub's own setup:
     // a region opened there lasts the whole run, so what it holds is never
-    // given back before the end, and only fills the arena.
+    // given back before the end, and only fills the arena. Main always
+    // (Module.Main); the stub's other calls only while it calls Main: a stub
+    // that took Main into itself calls what Main calls, and 1110's Checksum,
+    // called twenty thousand times from Main, was never a boundary.
     private HashSet<string> EntryCalls()
     {
         if (_entryCalls is not null) return _entryCalls;
@@ -732,6 +735,8 @@ public sealed class RegionPointsTo : IModulePass
             foreach (Block b in start.Blocks)
                 foreach (Instr i in b.Instrs)
                     if (i.Op == Opcode.Call && i.Callee is string callee) _entryCalls.Add(callee);
+        if (_m.Main is string main && !_entryCalls.Contains(main)) _entryCalls.Clear();
+        if (_m.Main is string program) _entryCalls.Add(program);
         return _entryCalls;
     }
 

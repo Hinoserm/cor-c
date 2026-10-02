@@ -37,7 +37,7 @@ public static class RegionSummary
                 foreach (Instr i in b.Instrs)
                     foreach (Operand o in i.Operands)
                         if (o is SymOperand { Name: var n }) hints.AddressTaken.Add(n);
-            hints.Functions.Add(new Builder(f).Build());
+            hints.Functions.Add(new Builder(f, f.Name == m.Main).Build());
         }
         // A data item's name is never a function's.
         hints.AddressTaken.RemoveWhere(data.Contains);
@@ -59,9 +59,12 @@ public static class RegionSummary
         private Dictionary<Instr, string[]>? _virtuals;
         private Dictionary<VReg, Instr?>? _defs;
 
-        public Builder(Function f)
+        private readonly bool _main;
+
+        public Builder(Function f, bool main)
         {
             _f = f;
+            _main = main;
             _params = f.Params.Count;
             for (int k = 0; k < _params; k++) _regs.TryAdd(f.Params[k], k);
             _next = _params + 1;
@@ -425,8 +428,8 @@ public static class RegionSummary
                 for (int k = 0; k < arguments.Length; k++) arguments[k] = Node(call.Arguments[k]);
                 calls.Add(new(call.Callee, Node(call.Dest), arguments));
             }
-            RegionFunction result = new(_f.Name, _f.Exported, _f.Async is null && !_f.Name.Contains("StaticInit", StringComparison.Ordinal),
-                _params > 0 && _f.Params[0].Name == "this", _params, next, _slots.Count, _sites.ToArray());
+            RegionFunction result = new(_f.Name, _f.Exported, _f.Async is null && !_f.Name.Contains("StaticInit", StringComparison.Ordinal) && !_main,
+                _params > 0 && _f.Params[0].Name == "this", _params, next, _slots.Count, _sites.ToArray()) { Main = _main };
             result.Constraints.AddRange(kept);
             result.Calls.AddRange(calls);
             return result;

@@ -23,7 +23,7 @@ public sealed class RegionHints
     public const string SectionName = ".corsac.regions";
     public const int MaximumBytes = 64 * 1024 * 1024;
     private const uint Magic = 0x47455243; // "CREG"
-    private const int Version = 2;
+    private const int Version = 3;
     private static readonly UTF8Encoding Utf8 = new(false, true);
 
     public List<RegionFunction> Functions { get; } = new();
@@ -82,7 +82,7 @@ public sealed class RegionHints
         foreach (RegionFunction function in Functions)
         {
             Var(index[function.Name]);
-            writer.Write((byte)((function.Global ? 1 : 0) | (function.MayBeBoundary ? 2 : 0) | (function.Instance ? 4 : 0)));
+            writer.Write((byte)((function.Global ? 1 : 0) | (function.MayBeBoundary ? 2 : 0) | (function.Instance ? 4 : 0) | (function.Main ? 8 : 0)));
             Var(function.Parameters); Var(function.Nodes); Var(function.Slots);
             Var(function.Sites.Length);
             foreach (RegionSite site in function.Sites)
@@ -175,7 +175,7 @@ public sealed class RegionHints
                     if (bits > 5 || table < -1 || table >= names.Length) throw new ElfFormatException("Invalid region hint stamp");
                     sites[s] = new RegionSite((bits & 1) != 0, line, table < 0 ? null : names[table], at, (RegionWords)(bits >> 1));
                 }
-                RegionFunction function = new(name, (flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0, parameters, nodes, slots, sites);
+                RegionFunction function = new(name, (flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0, parameters, nodes, slots, sites) { Main = (flags & 8) != 0 };
                 bool Node(int n) => n >= 0 && n < nodes;
                 for (int k = Count(); k > 0; k--)
                 {
@@ -229,10 +229,12 @@ public sealed class RegionFunction
     public string Name { get; }
     /// <summary>Exported: other units name it. Otherwise its name is its unit's own.</summary>
     public bool Global { get; }
-    /// <summary>Not an async or iterator body (its frame outlives a return) nor a type's initialiser (run wherever first asked).</summary>
+    /// <summary>Not an async or iterator body (its frame outlives a return), a type's initialiser (run wherever first asked) or Main (run for the whole run).</summary>
     public bool MayBeBoundary { get; }
     /// <summary>An instance method: its first parameter the object it is called on, by which the link tells its calls apart.</summary>
     public bool Instance { get; }
+    /// <summary>The program's Main (Module.Main): never a boundary, and what the entry calls besides it is the entry's setup.</summary>
+    public bool Main { get; init; }
     public int Parameters { get; }
     public int Nodes { get; }
     public int Slots { get; }

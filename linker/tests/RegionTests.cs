@@ -23,7 +23,7 @@ public static class RegionTests
         RegionFunction start = Function("_start", 0, 1, boundary: false);
         start.Calls.Add(new("Main", -1, Array.Empty<int>()));
         a.Functions.Add(start);
-        RegionFunction main = Function("Main", 0, 1);
+        RegionFunction main = new("Main", true, false, false, 0, 1, 0, Array.Empty<RegionSite>()) { Main = true };
         main.Calls.Add(new("Work", -1, Array.Empty<int>()));
         main.Calls.Add(new("Keep", -1, Array.Empty<int>()));
         main.Calls.Add(new("Pass", -1, Array.Empty<int>()));
@@ -83,6 +83,7 @@ public static class RegionTests
         byte[] bytes = a.Write();
         Check(bytes.AsSpan().SequenceEqual(a.Write()), "region hints are not deterministic");
         RegionHints again = RegionHints.Read(bytes);
+        Check(again.Functions.Single(f => f.Name == "Main").Main, "Main does not read back as Main");
         Check(again.Write().AsSpan().SequenceEqual(bytes), "region hints do not read back alike");
         bool refused = false;
         try { RegionHints.Read(bytes[..^3]); } catch (ElfFormatException) { refused = true; }

@@ -20,6 +20,12 @@ public sealed class Module
 
     /// <summary>The function the program starts in, or null for a library.</summary>
     public string? Entry { get; set; }
+    /// <summary>
+    /// The program's Main, which the entry stub calls, or took into itself.
+    /// A region opened there would last the whole run, so it is never a
+    /// boundary (RegionPointsTo, RegionSummary).
+    /// </summary>
+    public string? Main { get; set; }
     /// <summary>Other compilation units may call exported definitions, even when this unit owns Main.</summary>
     public bool PreserveExports { get; set; }
 

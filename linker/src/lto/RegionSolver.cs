@@ -1227,10 +1227,12 @@ public static class RegionSolver
             Reach(new[] { Global }, _globalReach, null);
             bool[] recursive = Recursive(), beforeBlock = BeforeThreadBlock();
             // Nor what the entry calls itself -- Main, the runtime's start --
-            // as RegionPointsTo does not make one either.
+            // as RegionPointsTo.EntryCalls: Main never (its summary says it
+            // may not be one), the rest only while the entry calls Main, not
+            // when it took Main into itself and calls what Main calls.
             HashSet<int> started = new();
             for (int f = 0; f < _functions.Count; f++)
-                if (_functions[f].Name == _entry) started.UnionWith(_named[f]);
+                if (_functions[f].Name == _entry && _named[f].Any(g => _functions[g].Main)) started.UnionWith(_named[f]);
             bool MayBeBoundary(int f) => _functions[f].MayBeBoundary && !recursive[f] && !beforeBlock[f] && !started.Contains(f) && _functions[f].Name != _entry;
 
             // Each site's objects, by function and ordinal.
