@@ -1,0 +1,113 @@
+// test: iterator_holds_source_units
+// units: tests/language/support/1211_iterator_units.cor
+// expect-exit: 0
+// expect-output:
+// count 100000 True
+// any 20000 True
+// first -180000 True
+// join 380000 True
+// foreach-where 300000 True
+// foreach-select 360000 True
+// odd 100000
+// kept walk 30 rest 30
+// copies 15 15
+//
+// 1210 across units: the runtime and the libraries one unit, the walks
+// below another, linked as the whole program. LINQ's operators are generic,
+// so each copy -- the iterator classes Where and Select make among them --
+// is compiled in the unit that calls it, and a list fed to them, the
+// iterator holding it, and the closure, die with the walk here as they do in
+// one compile (Escape.SummariseHeld, TypedTargets, Copies, TypedFields; and
+// Devirtualize.FoldTypeTests). Before, each call left 160 bytes to the
+// collector, 280 for a foreach. A list walked by the other unit's LINQ still
+// sums right, and an iterator the other unit hands back keeps its list.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    static List<int> Make(int n) { List<int> l = new(); for (int i = 0; i < n; i++) l.Add(i - 3); return l; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int WhereCount(int n) { List<int> l = Make(n); return l.Where(x => x > 0).Count(); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int WhereAny(int n) { List<int> l = Make(n); return l.Where(x => x > 2).Any() ? 1 : 0; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int SelectFirst(int n) { List<int> l = Make(n); return l.Select(x => x * 3).First(); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int JoinSelect(int n) { List<int> l = Make(n); return string.Join(",", l.Select(x => x + 1)).Length; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int ForeachWhere(int n) { List<int> l = Make(n); int t = 0; foreach (int x in l.Where(x => x > 0)) t += x; return t; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int ForeachSelect(int n) { List<int> l = Make(n); int t = 0; foreach (int x in l.Select(x => x * 2)) t += x; return t; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Twice(int n)
+    {
+        List<int> l = Make(n);
+        IEnumerable<int> w = l.Where(x => x > 0);
+        int a = 0, b = 0;
+        foreach (int x in w) a += x;
+        foreach (int x in w) b += x;
+        return a == b ? a : -1;
+    }
+
+    // What each call left to the collector, and whether the program gave
+    // back memory itself meanwhile: frees, or a region's end.
+    static string Measure(Func<int, int> f, out long total)
+    {
+        const int N = 20000;
+        total = 0;
+        Gc.Collect();
+        long taken = Gc.CollectedBytes, frees = Gc.Frees, region = Gc.RegionFreedBytes;
+        for (int k = 0; k < N; k++) total += f(9);
+        bool given = Gc.Frees - frees >= N || Gc.RegionFreedBytes - region >= N * 16;
+        Gc.Collect();
+        long left = (Gc.CollectedBytes - taken) / N;
+        return given && left <= 32 ? "True" : "False " + left;
+    }
+
+    static void Main()
+    {
+        string freed = Measure(WhereCount, out long total);
+        Console.WriteLine("count " + total + " " + freed);
+        freed = Measure(WhereAny, out total);
+        Console.WriteLine("any " + total + " " + freed);
+        freed = Measure(SelectFirst, out total);
+        Console.WriteLine("first " + total + " " + freed);
+        freed = Measure(JoinSelect, out total);
+        Console.WriteLine("join " + total + " " + freed);
+        freed = Measure(ForeachWhere, out total);
+        Console.WriteLine("foreach-where " + total + " " + freed);
+        freed = Measure(ForeachSelect, out total);
+        Console.WriteLine("foreach-select " + total + " " + freed);
+
+        long odd = 0;
+        for (int k = 0; k < 20000; k++) odd += Chains.Odd(Make(9));
+        Console.WriteLine("odd " + odd);
+
+        // Kept past the call, in the other unit's iterator: the list lives
+        // as long as it does.
+        IEnumerable<int> later = Chains.Later(Make(6));
+        long churn = 0;
+        for (int k = 0; k < 20000; k++) churn += ForeachWhere(9) + WhereCount(9);
+        Gc.Collect();
+        int walk = 0;
+        foreach (int x in later) walk += x;
+        int rest = 0;
+        foreach (int x in later) rest += x;
+        Console.WriteLine("kept walk " + walk + " rest " + rest);
+
+        int twice = 0;
+        for (int k = 0; k < 3; k++) twice = Twice(9);
+        Console.WriteLine("copies " + twice + " " + Twice(9));
+    }
+}

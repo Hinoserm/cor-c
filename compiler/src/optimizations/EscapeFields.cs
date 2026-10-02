@@ -194,12 +194,22 @@ public sealed partial class Escape
         FieldSummary?[] result = new FieldSummary?[f.Params.Count];
         LifetimeFields?[] hints = new LifetimeFields?[f.Params.Count];
         bool[] escapes = summaries[f.Name];
-        if (f.Async is not null) return result;
+        // AN ITERATOR'S BODY IS SUMMARISED: its one parameter is the machine,
+        // which owns no field (StampedBox), and what it keeps across a yield
+        // goes into that machine and no further -- the iterator a LINQ
+        // operator hands back holds its source, read here and walked, and a
+        // caller holding the source in the machine asks what the body does to
+        // that word. An async method's body still is not.
+        if (f.Async is not null && !IteratorBody(f)) return result;
         _paramHints.TryGetValue(f.Name, out LifetimeCondition?[]? stays);
         for (int p = 0; p < f.Params.Count; p++)
         {
             VReg param = f.Params[p];
             if (param.Type is not (IrType.I32 or IrType.I64)) continue;
+            // Handed back, or copied word for word (Copies): what it does to
+            // the argument's fields was found then; its callers follow what
+            // comes back as the argument's own words.
+            if (p == 0 && _copyFields.TryGetValue(f.Name, out FieldSummary? copied)) { result[p] = copied; continue; }
             // The unit's own summary where the parameter stays here; the
             // link's wherever it may stay once other units are known.
             bool here = !(p < escapes.Length && escapes[p]);
@@ -290,7 +300,7 @@ public sealed partial class Escape
     /// answer either way.
     /// </summary>
     internal FieldSummary FieldUses(Function f, IEnumerable<VReg> roots, Dictionary<string, bool[]> summaries,
-        Instr? source, HashSet<VReg>? returnable, LifetimeFields? hint = null, bool framed = false)
+        Instr? source, HashSet<VReg>? returnable, LifetimeFields? hint = null, bool framed = false, Stamp[]? kinds = null)
     {
         FieldSummary fs = new();
         int word = IrTypes.Word.Bytes();
@@ -302,6 +312,8 @@ public sealed partial class Escape
         Instr? current = null;
         void Opaque()
         {
+            if (!fs.Opaque && FieldTrace is { } opaqueTraced && f.Name.Contains(opaqueTraced, StringComparison.Ordinal))
+                Console.Error.WriteLine($"field trace: {f.Name} opaque at {current}{(kinds is null ? "" : " as " + string.Join(",", kinds.Select(k => k.Descriptor)))}");
             fs.Opaque = true;
             fs.Why ??= $"opaque: {current} in {f.Name}";
             if (hint is not null) hint.Opaque = true;
@@ -331,8 +343,69 @@ public sealed partial class Escape
             addresses = aliases;
         }
 
+        // WHAT A CALL HANDS BACK AS THE OBJECT OR A COPY OF ITS WORDS (Copies):
+        // an iterator's GetEnumerator. Its words are the object's, and what
+        // is read out of it is read as the object's own is; what is stored
+        // into it may not be stored into the object, and is taken as dirty.
+        // With the object's types known (kinds), a copy's types join them.
+        HashSet<VReg>? throughCopies = null;
+        if (!framed)
+        {
+            List<VReg>? copies = null;
+            for (int round = 0; round < 4; round++)
+            {
+                List<VReg>? more = null;
+                foreach (Block b in f.Blocks)
+                    foreach (Instr i in b.Instrs)
+                    {
+                        if (i.Dest is not { } d || addresses.ContainsKey(d) || i.Op is not (Opcode.Call or Opcode.CallIndirect)) continue;
+                        int receiver = i.Op == Opcode.Call ? 0 : 1;
+                        if (i.Operands.Count <= receiver || i.Operands[receiver] is not RegOperand { Reg: var r }
+                            || !addresses.TryGetValue(r, out long at) || at != 0) continue;
+                        if (CallTargets(defs, i, addresses, kinds) is not { } targets || !targets.Any(t => Copies(t) is not null)) continue;
+                        (more ??= new()).Add(d);
+                        if (kinds is not null)
+                            kinds = kinds.Concat(targets.SelectMany(t => Copies(t) ?? Array.Empty<Stamp>())).Distinct().ToArray();
+                    }
+                if (more is null) break;
+                (copies ??= new()).AddRange(more);
+                addresses = OwnedFieldEscape.Addresses(f, roots.Concat(copies));
+            }
+            if (copies is not null) throughCopies = OwnedFieldEscape.Addresses(f, copies).Keys.ToHashSet();
+        }
+        // Of the object's types known: what none of them reaches.
+        HashSet<Block>? dead = kinds is not null ? DeadUnder(f, defs, addresses, kinds) : null;
+
+        // What `callee` does to the fields of its parameter `p`: its summary,
+        // or, with the object's types known, its summary for those types
+        // (TypedFields) -- the virtual calls on it each type's own method.
+        void MergeCallee(string callee, int p, Stamp[]? typed)
+        {
+            FieldSummary? known = null;
+            bool found = false;
+            if (typed is not null && Copies(callee) is null && TypedFields(callee, p, typed) is { } specific) { known = specific; found = true; }
+            else if (_paramFields.TryGetValue(callee, out FieldSummary?[]? all) && p < all.Length) { known = all[p]; found = true; }
+            if (found)
+            {
+                if (!fs.Opaque && known is not { Opaque: false } && FieldTrace is { } mergeTraced && f.Name.Contains(mergeTraced, StringComparison.Ordinal))
+                    Console.Error.WriteLine($"field trace: {f.Name} opaque from {callee}:{p} at {current}{(typed is null ? "" : " typed")}: {known?.Why ?? "no summary"}");
+                fs.Merge(known);
+                if (known is null) fs.Why = fs.Why == "a callee with no field summary" ? $"{callee} param {p} has no field summary (it escapes)" : fs.Why;
+            }
+            else { fs.Opaque = true; fs.Why ??= $"{callee} unknown here (param {p})"; }
+            if (hint is null) return;
+            // For the link: another unit's function is merged in
+            // there; one of this unit's brings its own hint.
+            if (!_defined.Contains(callee)) hint.Merges.Add((callee, p));
+            else if (_fieldHints.TryGetValue(callee, out LifetimeFields?[]? calleeHints) && p < calleeHints.Length
+                     && calleeHints[p] is LifetimeFields hinted)
+                hint.Absorb(hinted);
+            else hint.Opaque = true;
+        }
+
         foreach (Block b in f.Blocks)
         {
+            if (dead is not null && dead.Contains(b)) continue;
             foreach (Instr i in b.Instrs)
             {
                 if (ReferenceEquals(i, source) || _bookkeeping.Contains(i)) continue;
@@ -379,7 +452,8 @@ public sealed partial class Escape
                         if (i.Operands[0] is not RegOperand baseReg || !addresses.TryGetValue(baseReg.Reg, out long off))
                         { Opaque(); break; }
                         long at = off + i.Offset;
-                        if (i.Size == word && ((at % word) + word) % word == 0) stores.Add((at, i));
+                        if (throughCopies is not null && throughCopies.Contains(baseReg.Reg)) DirtyRange(at, i.Size);
+                        else if (i.Size == word && ((at % word) + word) % word == 0) stores.Add((at, i));
                         else DirtyRange(at, i.Size);
                         break;
                     }
@@ -404,20 +478,29 @@ public sealed partial class Escape
                         {
                             if (i.Operands[a] is not RegOperand arg || !addresses.TryGetValue(arg.Reg, out long off)) continue;
                             if (off != 0 || i.Callee is null) { Opaque(); break; }
-                            if (_paramFields.TryGetValue(i.Callee, out FieldSummary?[]? callee) && a < callee.Length)
-                            {
-                                fs.Merge(callee[a]);
-                                if (callee[a] is null) fs.Why = fs.Why == "a callee with no field summary" ? $"{i.Callee} param {a} has no field summary (it escapes)" : fs.Why;
-                            }
-                            else { fs.Opaque = true; fs.Why ??= $"{i.Callee} unknown here (param {a})"; }
-                            if (hint is null) continue;
-                            // For the link: another unit's function is merged in
-                            // there; one of this unit's brings its own hint.
-                            if (!_defined.Contains(i.Callee)) hint.Merges.Add((i.Callee, a));
-                            else if (_fieldHints.TryGetValue(i.Callee, out LifetimeFields?[]? calleeHints) && a < calleeHints.Length
-                                     && calleeHints[a] is LifetimeFields known)
-                                hint.Absorb(known);
-                            else hint.Opaque = true;
+                            // A copy of its words handed back and not followed
+                            // (a frame-held object's): read where nothing sees.
+                            if (a == 0 && Copies(i.Callee) is not null && i.Dest is { } handedBack && !addresses.ContainsKey(handedBack)) { Opaque(); break; }
+                            MergeCallee(i.Callee, a, kinds);
+                        }
+                        break;
+                    }
+                    case Opcode.CallIndirect when i.DispatchType == Devirtualize.NoTarget:
+                        // No object made here has the method: never runs.
+                        break;
+                    case Opcode.CallIndirect:
+                    {
+                        // A VIRTUAL CALL is every override it reaches, each
+                        // summary merged -- or, on the object itself as the
+                        // receiver with its types known, each type's method.
+                        if (i.Operands.Count == 0 || i.Operands[0] is RegOperand { Reg: var through } && addresses.ContainsKey(through)
+                            || CallTargets(defs, i, addresses, kinds) is not { } targets) { Opaque(); break; }
+                        for (int a = 1; a < i.Operands.Count && !Done(); a++)
+                        {
+                            if (i.Operands[a] is not RegOperand arg || !addresses.TryGetValue(arg.Reg, out long off)) continue;
+                            if (off != 0) { Opaque(); break; }
+                            if (a == 1 && targets.Any(t => Copies(t) is not null) && i.Dest is { } handedBack && !addresses.ContainsKey(handedBack)) { Opaque(); break; }
+                            foreach (string t in targets) MergeCallee(t, a - 1, a == 1 ? kinds : null);
                         }
                         break;
                     }
@@ -428,6 +511,8 @@ public sealed partial class Escape
                         break;
                     case Opcode.Branch:
                     case Opcode.Switch:
+                    // An array's count read: a number, no field.
+                    case Opcode.ArrayLength:
                         break;
                     default:
                         if (!IrInfo.IsIntCompare(i.Op)) Opaque();
@@ -925,4 +1010,157 @@ public sealed partial class Escape
         }
         return true;
     }
+
+
+    /// <summary>
+    /// THE BLOCKS NO OBJECT OF THESE TYPES REACHES, when the object at
+    /// `addresses` is known to be one of `kinds`: a test of its type the
+    /// descriptors answer -- `source is T[]`, `source is List&lt;T&gt;` -- is
+    /// folded for each type, and a block reached only past tests every type
+    /// fails is dead for it. List's constructor from IEnumerable, handed an
+    /// iterator's machine, walks it as an enumerator and never as the array
+    /// or the collection it tests for. Constants are propagated over the
+    /// blocks that run (a register written in several places is what every
+    /// write that runs gives it), the values read as Devirtualize reads them:
+    /// symbols, read-only words and their relocations; the object itself is
+    /// a place, never null.
+    /// </summary>
+    private static HashSet<Block>? DeadUnder(Function f, Defs defs, Dictionary<VReg, long> addresses, Stamp[] kinds)
+    {
+        if (_typeItems is null || kinds.Length == 0) return null;
+        HashSet<Block>? dead = null;
+        foreach (Stamp k in kinds)
+        {
+            HashSet<Block> live = LiveFor(k);
+            HashSet<Block> notLive = new(f.Blocks.Where(b => !live.Contains(b)));
+            if (dead is null) dead = notLive;
+            else dead.IntersectWith(notLive);
+            if (dead.Count == 0) return null;
+        }
+        return dead;
+
+        HashSet<Block> LiveFor(Stamp k)
+        {
+            int word = IrTypes.Word.Bytes();
+            // Absent: nothing known yet. Bottom: anything.
+            Dictionary<VReg, Known> values = new();
+            HashSet<VReg> bottom = new();
+            // Every landing pad, whatever installs it: entered by an unwind.
+            HashSet<Block> live = new(f.Blocks.Where(b => b.IsLandingPad)) { f.Entry };
+            bool grew = true;
+            for (int round = 0; grew && round < 64; round++)
+            {
+                grew = false;
+                foreach (Block b in f.Blocks)
+                {
+                    if (!live.Contains(b)) continue;
+                    foreach (Instr i in b.Instrs)
+                    {
+                        if (i.Op == Opcode.LabelAddr) foreach (Block pad in i.Targets) grew |= live.Add(pad);
+                        if (i.Dest is { } d && !bottom.Contains(d))
+                        {
+                            Known? v = Evaluate(i);
+                            if (v is null) { if (Settled(i)) { bottom.Add(d); values.Remove(d); grew = true; } }
+                            else if (!values.TryGetValue(d, out Known was)) { values[d] = v.Value; grew = true; }
+                            else if (was != v.Value) { bottom.Add(d); values.Remove(d); grew = true; }
+                        }
+                    }
+                    Instr? t = b.Terminator;
+                    if (t is null) continue;
+                    if (t.Op == Opcode.Branch && t.Targets.Count == 2 && t.Operands.Count == 1)
+                    {
+                        Known? c = Of(t.Operands[0]);
+                        if (c is { Sym: null } n) { grew |= live.Add(t.Targets[n.Value != 0 ? 0 : 1]); continue; }
+                        if (c is not null) { grew |= live.Add(t.Targets[0]); continue; }      // a place: never zero
+                        if (!IsBottom(t.Operands[0])) continue;                            // not known yet
+                    }
+                    foreach (Block next in t.Targets) grew |= live.Add(next);
+                }
+            }
+            if (grew) return new HashSet<Block>(f.Blocks);      // did not settle: all of it
+            return live;
+
+            bool IsBottom(Operand o) => o is RegOperand { Reg: var r } && (bottom.Contains(r) || f.Params.Contains(r) && !addresses.ContainsKey(r));
+
+            Known? Of(Operand o)
+            {
+                if (o is ImmOperand imm) return new Known(null, imm.Value);
+                if (o is SymOperand sym) return new Known(sym.Name, sym.Offset);
+                if (o is not RegOperand { Reg: var r }) return null;
+                // Written once from the object: the object, never null. A
+                // register also written null is followed through its writes.
+                if (addresses.TryGetValue(r, out long at) && defs.IsSingle(r)) return new Known(Object, at);
+                return values.TryGetValue(r, out Known v) ? v : null;
+            }
+
+            // Whether an instruction that gave no value never will: it is not
+            // one this follows, one of its inputs is anything, or every input
+            // is known already (and so its answer is not).
+            bool Settled(Instr i)
+            {
+                if (i.Op is not (Opcode.Copy or Opcode.ZExt32 or Opcode.Trunc64 or Opcode.Add or Opcode.Sub or Opcode.Load)
+                    && !IrInfo.IsIntCompare(i.Op)) return true;
+                bool allKnown = true;
+                foreach (Operand o in i.Operands)
+                {
+                    if (IsBottom(o) || o is not (RegOperand or ImmOperand or SymOperand)) return true;
+                    if (Of(o) is null) allKnown = false;
+                }
+                return allKnown;
+            }
+
+            Known? Evaluate(Instr i)
+            {
+                switch (i.Op)
+                {
+                    case Opcode.Copy or Opcode.ZExt32 or Opcode.Trunc64 when i.Operands.Count == 1:
+                        return Of(i.Operands[0]);
+                    case Opcode.Add or Opcode.Sub when i.Operands.Count == 2 && Of(i.Operands[0]) is { } a && Of(i.Operands[1]) is { Sym: null } n:
+                        return a with { Value = i.Op == Opcode.Add ? a.Value + n.Value : a.Value - n.Value };
+                    case Opcode.Load when i.Operands.Count == 1 && Of(i.Operands[0]) is { Sym: { } table } at:
+                    {
+                        // The object's first word: its type's descriptor.
+                        if (table == Object) return at.Value == 0 && i.Offset == 0 && i.Size == word ? new Known(k.Descriptor, k.Base) : null;
+                        if (!_typeItems!.TryGetValue(table, out DataItem? item) || !item.ReadOnly || item.Zero) return null;
+                        long w = at.Value + i.Offset;
+                        foreach (DataReloc rel in item.Relocs)
+                            if (rel.Offset == w) return i.Size == word ? new Known(rel.Symbol, rel.Addend) : null;
+                        if (item.Relocs.Any(rel => rel.Offset < w + i.Size && rel.Offset + word > w)) return null;
+                        if (w < 0 || w + i.Size > item.Bytes.Length || i.Size is not (4 or 8)) return null;
+                        return new Known(null, i.Size == 8 ? BitConverter.ToInt64(item.Bytes, (int)w) : (i.Signed ? BitConverter.ToInt32(item.Bytes, (int)w) : BitConverter.ToUInt32(item.Bytes, (int)w)));
+                    }
+                    case var _ when IrInfo.IsIntCompare(i.Op) && i.Operands.Count == 2 && Of(i.Operands[0]) is { } x && Of(i.Operands[1]) is { } y:
+                    {
+                        if (x.Sym is not null || y.Sym is not null)
+                        {
+                            // Two places, or a place and a number: equal only
+                            // as the same symbol at the same offset; a place
+                            // is never a number.
+                            if (i.Op is not (Opcode.Eq or Opcode.Ne)) return null;
+                            bool same = x.Sym is not null && x == y;
+                            return new Known(null, (i.Op == Opcode.Eq) == same ? 1 : 0);
+                        }
+                        bool? r = i.Op switch
+                        {
+                            Opcode.Eq => x.Value == y.Value, Opcode.Ne => x.Value != y.Value,
+                            Opcode.LtS => x.Value < y.Value, Opcode.LeS => x.Value <= y.Value,
+                            Opcode.GtS => x.Value > y.Value, Opcode.GeS => x.Value >= y.Value,
+                            Opcode.LtU => (ulong)x.Value < (ulong)y.Value, Opcode.LeU => (ulong)x.Value <= (ulong)y.Value,
+                            Opcode.GtU => (ulong)x.Value > (ulong)y.Value, Opcode.GeU => (ulong)x.Value >= (ulong)y.Value,
+                            _ => null,
+                        };
+                        return r is bool known ? new Known(null, known ? 1 : 0) : null;
+                    }
+                    default:
+                        return null;
+                }
+            }
+        }
+    }
+
+    /// <summary>A value DeadUnder knows: a number (no symbol), or a place -- a symbol and an offset into it.</summary>
+    private readonly record struct Known(string? Sym, long Value);
+
+    /// <summary>DeadUnder's name for the object itself, which no symbol is.</summary>
+    private const string Object = "\u0001object";
 }

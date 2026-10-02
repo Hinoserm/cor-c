@@ -1,0 +1,124 @@
+// test: iterator_holds_source
+// expect-exit: 0
+// expect-output:
+// where-tolist 100000 True
+// select-sum 360000 True
+// join-select 380000 True
+// foreach-where 300000 True
+// strings kept 60000 a0a0a0a0
+// kept walk 30 rest 30
+// copies 15 15
+//
+// A list fed to LINQ is kept in no box but in the iterator Where or Select
+// hands back: a compiler-made class holding the source in a field, which no
+// owned-field rule ever takes (Escape.StampedBox). A function storing its
+// argument only there is summarised as holding it there (SummariseHeld);
+// the caller takes the iterator for a holder, a virtual call on it reaching
+// its own type's method (TypedTargets), GetEnumerator handing back the
+// iterator or a copy of its words (Copies), and a consumer it is handed to
+// asked what it does to those words for the iterator's type alone
+// (TypedFields), the tests of the type it does not pass (`is T[]`, `is
+// List<T>`) answered (Devirtualize.FoldTypeTests). The list, its array, the
+// closure and the iterator then die with the walk. Each line: what the calls
+// computed, and whether each left at most a few bytes to the collector while
+// the program gave memory back itself, one free at a time or a region at
+// once. Strings walked out of a freed list and kept stay intact; an iterator
+// kept past its call keeps its list; and one walked twice, the second time
+// through a copy GetEnumerator made, sees the same list.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    static List<int> Make(int n) { List<int> l = new(); for (int i = 0; i < n; i++) l.Add(i - 3); return l; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int WhereToList(int n) { List<int> l = Make(n); List<int> r = l.Where(x => x > 0).ToList(); return r.Count; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int SelectSum(int n) { List<int> l = Make(n); return l.Select(x => x * 2).Sum(); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int JoinSelect(int n) { List<int> l = Make(n); return string.Join(",", l.Select(x => x + 1)).Length; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int ForeachWhere(int n) { List<int> l = Make(n); int t = 0; foreach (int x in l.Where(x => x > 0)) t += x; return t; }
+
+    static readonly List<string> Kept = new();
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Strings(int n)
+    {
+        List<string> names = new();
+        for (int i = 0; i < n; i++) names.Add(i % 2 == 0 ? "a" + i : "b" + i);
+        List<string> picked = names.Where(s => s[0] == 'a').ToList();
+        if (Kept.Count < 4) Kept.Add(picked[0]);
+        return picked.Count;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static IEnumerable<int> Later(int n) { List<int> l = Make(n); return l.Where(x => x > 0).Select(x => x * 10); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Twice(int n)
+    {
+        List<int> l = Make(n);
+        IEnumerable<int> w = l.Where(x => x > 0);
+        int a = 0, b = 0;
+        foreach (int x in w) a += x;
+        foreach (int x in w) b += x;
+        return a == b ? a : -1;
+    }
+
+    // What each call left to the collector, and whether the program gave
+    // back memory itself meanwhile: frees, or a region's end.
+    static string Measure(Func<int, int> f, out long total)
+    {
+        const int N = 20000;
+        total = 0;
+        Gc.Collect();
+        long taken = Gc.CollectedBytes, frees = Gc.Frees, region = Gc.RegionFreedBytes;
+        for (int k = 0; k < N; k++) total += f(9);
+        bool given = Gc.Frees - frees >= N || Gc.RegionFreedBytes - region >= N * 16;
+        Gc.Collect();
+        long left = (Gc.CollectedBytes - taken) / N;
+        // Before: 280 bytes a call for Where and ToList, 160 for the others.
+        return given && left <= 32 ? "True" : "False " + left;
+    }
+
+    static void Main()
+    {
+        string freed = Measure(WhereToList, out long total);
+        Console.WriteLine("where-tolist " + total + " " + freed);
+        freed = Measure(SelectSum, out total);
+        Console.WriteLine("select-sum " + total + " " + freed);
+        freed = Measure(JoinSelect, out total);
+        Console.WriteLine("join-select " + total + " " + freed);
+        freed = Measure(ForeachWhere, out total);
+        Console.WriteLine("foreach-where " + total + " " + freed);
+
+        long count = 0;
+        for (int k = 0; k < 20000; k++) count += Strings(6);
+        // What was freed made again: the kept strings must be untouched.
+        long churn = 0;
+        for (int k = 0; k < 20000; k++) churn += WhereToList(9) + SelectSum(9);
+        Console.WriteLine("strings kept " + count + " " + (churn == 20000L * 23 ? string.Join("", Kept) : "churn " + churn));
+
+        // Kept past the call: the list lives as long as the iterator.
+        IEnumerable<int> later = Later(6);
+        for (int k = 0; k < 20000; k++) churn += SelectSum(9);
+        Gc.Collect();
+        int walk = 0;
+        foreach (int x in later) walk += x;
+        int rest = 0;
+        foreach (int x in later) rest += x;
+        Console.WriteLine("kept walk " + walk + " rest " + rest);
+
+        int twice = 0;
+        for (int k = 0; k < 3; k++) twice = Twice(9);
+        Console.WriteLine("copies " + twice + " " + Twice(9));
+    }
+}

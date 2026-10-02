@@ -92,10 +92,16 @@ public sealed class Devirtualize : IModulePass
         //    and no store of it into memory comes between -- on any path,
         //    round a loop included.
         ForwardFreshFields(f, defs, Made);
+        // 1b. A TEST OF THE TYPE OF ONE OF A FEW OBJECTS MADE HERE -- Where's
+        //     iterator over a List or over anything else, joined, then asked
+        //     by an inlined Sum whether it is a List or an array -- answered
+        //     where every object it can be answers alike.
+        if (FoldTypeTests(f, items)) defs = new(f, buildCfg: false);
         if (!any) return;
         defs = new(f, buildCfg: false);
 
         // 2. A slot read from read-only data at a relocation.
+        HashSet<VReg>? emptySlots = null;
         foreach (Block b in f.Blocks)
             for (int k = 0; k < b.Instrs.Count; k++)
             {
@@ -105,6 +111,14 @@ public sealed class Devirtualize : IModulePass
                 long at = table.Offset + i.Offset;
                 if (item.Relocs.FirstOrDefault(rel => rel.Offset == at) is not { Symbol: { } named } exact)
                 {
+                    // A SLOT A TYPE DOES NOT FILL, in its whole descriptor (one
+                    // this unit wrote, naming itself): a method its objects do
+                    // not have -- an interface's, asked of an iterator that
+                    // is no collection, on the path a failed `is` guards. A
+                    // call through it is never made.
+                    if (table.Name.StartsWith("t_", StringComparison.Ordinal) && at >= Target.Current.DescriptorBytes
+                        && item.Relocs.Any(rel => rel.Offset == 5 * word && rel.Symbol == table.Name))
+                        (emptySlots ??= new()).Add(i.Dest);
                     // A type's flags word (Lowering's DescFlags): what a
                     // string's ToString, a sequence's walk, tests the
                     // descriptor for. Written by lowering and nothing after
@@ -125,6 +139,11 @@ public sealed class Devirtualize : IModulePass
             {
                 Instr i = b.Instrs[k];
                 if (i.Op != Opcode.CallIndirect || i.Operands.Count < 1) continue;
+                if (emptySlots is not null && i.Operands[0] is RegOperand { Reg: var empty } && emptySlots.Contains(empty) && defs.IsSingle(empty))
+                {
+                    i.DispatchType = NoTarget;
+                    continue;
+                }
                 if (Symbol(i.Operands[0]) is not { Offset: 0 } target || !target.Name.StartsWith("m_", StringComparison.Ordinal)) continue;
                 Instr call = new() { Op = Opcode.Call, Dest = i.Dest, Line = i.Line, Callee = target.Name };
                 for (int a = 1; a < i.Operands.Count; a++) call.Operands.Add(i.Operands[a]);
@@ -275,6 +294,169 @@ public sealed class Devirtualize : IModulePass
                 break;   // the block was split; the rest of it is `after`, met later
             }
         }
+    }
+
+    /// <summary>
+    /// A comparison whose every possible answer is the same, where one side
+    /// is read from the descriptor of an object made here: the register
+    /// read holds one of a few objects, all made in this function with their
+    /// vtables stored as they are made (or null, through which nothing is
+    /// read), so its first word is one of those vtables -- the word lowering
+    /// writes once and nothing writes again. Words read on from a vtable at
+    /// constant offsets are read-only data: a relocation's symbol, or the
+    /// number lowering wrote (a type's depth). `x is T[]`, `x is List&lt;T&gt;`
+    /// and their like, asked of Where's iterator, become constants, and the
+    /// paths they guard go with BranchSimplify and dead-code elimination.
+    /// </summary>
+    private static bool FoldTypeTests(Function f, Dictionary<string, DataItem> items)
+    {
+        int word = IrTypes.Word.Bytes();
+        Dictionary<VReg, List<Instr>> writes = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Dest is { } d)
+                {
+                    if (!writes.TryGetValue(d, out List<Instr>? list)) writes[d] = list = new();
+                    list.Add(i);
+                }
+        foreach (VReg p in f.Params) writes.Remove(p);
+        bool anyAlloc = false;
+        foreach (List<Instr> ws in writes.Values) if (ws.Count == 1 && ws[0] is { Op: Opcode.Call } c && Escape.IsAllocator(c.Callee)) { anyAlloc = true; break; }
+        if (!anyAlloc) return false;
+        // The vtable stored into each object as it is made: its one store of
+        // word 0, a symbol, through the allocation's own register chain.
+        Dictionary<Instr, SymOperand?> stamped = new(ReferenceEqualityComparer.Instance);
+        Instr? MadeBy(VReg r)
+        {
+            for (int depth = 0; depth < 8 && writes.TryGetValue(r, out List<Instr>? list) && list.Count == 1; depth++)
+            {
+                Instr d = list[0];
+                if (d.Op == Opcode.Call && Escape.IsAllocator(d.Callee)) return d;
+                if (d.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || d.Operands[0] is not RegOperand next) return null;
+                r = next.Reg;
+            }
+            return null;
+        }
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Op == Opcode.Store && i.Offset == 0 && i.Operands.Count >= 2 && i.Operands[0] is RegOperand at && MadeBy(at.Reg) is { } alloc)
+                {
+                    // More than one store of word 0, or one not of a vtable:
+                    // the word is not known.
+                    // A vtable is a descriptor at its methods (DescriptorBytes on), never a
+                    // type's identity (typeof, the descriptor itself) kept as data.
+                    SymOperand? vt = i.Operands[1] is SymOperand { Name: var t, Offset: var o } s && o == Target.Current.DescriptorBytes
+                        && t.Length > 2 && t[1] == '_' && t[0] is 't' or 'q' or 'b' or 'v' ? s : null;
+                    stamped[alloc] = stamped.ContainsKey(alloc) ? null : vt;
+                }
+        if (stamped.Count == 0) return false;
+        bool Origins(VReg r, List<Instr> into, HashSet<VReg> seen, int depth)
+        {
+            if (depth > 8 || !seen.Add(r)) return depth <= 8;
+            if (MadeBy(r) is { } one) { into.Add(one); return true; }
+            if (!writes.TryGetValue(r, out List<Instr>? list)) return false;
+            foreach (Instr d in list)
+            {
+                if (d.Op == Opcode.Copy && d.Operands[0] is ImmOperand { Value: 0 }) continue;
+                if (d.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || d.Operands[0] is not RegOperand next
+                    || !Origins(next.Reg, into, seen, depth + 1)) return false;
+            }
+            return true;
+        }
+        // Every value an operand can have, as symbols with offsets or
+        // numbers; null if not known.
+        List<(string? Sym, long Value)>? Values(Operand o, int depth)
+        {
+            if (depth > 10) return null;
+            if (o is ImmOperand imm) return new() { (null, imm.Value) };
+            if (o is SymOperand sym) return new() { (sym.Name, sym.Offset) };
+            if (o is not RegOperand { Reg: var r } || !writes.TryGetValue(r, out List<Instr>? ws) || ws.Count != 1) return null;
+            Instr d = ws[0];
+            switch (d.Op)
+            {
+                case Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 when d.Operands.Count == 1:
+                    return Values(d.Operands[0], depth + 1);
+                case Opcode.Add or Opcode.Sub when d.Operands.Count == 2 && d.Operands[1] is ImmOperand plus:
+                    return Values(d.Operands[0], depth + 1)?.Select(v => (v.Sym, d.Op == Opcode.Add ? v.Value + plus.Value : v.Value - plus.Value)).ToList();
+                case Opcode.Load when d.Operands.Count == 1 && d.Operands[0] is RegOperand { Reg: var from }:
+                {
+                    if (d.Offset == 0 && d.Size == word)
+                    {
+                        List<Instr> origins = new();
+                        if (Origins(from, origins, new HashSet<VReg>(), 0) && origins.Count is > 0 and <= 8)
+                        {
+                            List<(string?, long)> tables = new();
+                            foreach (Instr origin in origins)
+                            {
+                                if (!stamped.TryGetValue(origin, out SymOperand? vt) || vt is null) return null;
+                                if (!tables.Contains((vt.Name, vt.Offset))) tables.Add((vt.Name, vt.Offset));
+                            }
+                            return tables;
+                        }
+                    }
+                    if (Values(d.Operands[0], depth + 1) is not { } bases) return null;
+                    List<(string?, long)> read = new();
+                    foreach ((string? table, long into) in bases)
+                    {
+                        if (table is null || !items.TryGetValue(table, out DataItem? item)) return null;
+                        long w = into + d.Offset;
+                        int found = item.Relocs.FindIndex(rel => rel.Offset == w);
+                        if (found >= 0)
+                        {
+                            if (d.Size != word) return null;
+                            read.Add((item.Relocs[found].Symbol, item.Relocs[found].Addend));
+                            continue;
+                        }
+                        // A number lowering wrote -- not in another unit's class
+                        // as this one shadows it, which leaves its relocations
+                        // out: a word there may be one.
+                        if (Shadow(table, item) || item.Relocs.Any(rel => rel.Offset < w + d.Size && rel.Offset + word > w)) return null;
+                        if (w < 0 || w + d.Size > item.Bytes.Length || d.Size is not (4 or 8)) return null;
+                        read.Add((null, d.Size == 8 ? BitConverter.ToInt64(item.Bytes, (int)w) : (d.Signed ? BitConverter.ToInt32(item.Bytes, (int)w) : BitConverter.ToUInt32(item.Bytes, (int)w))));
+                    }
+                    return read;
+                }
+                default:
+                    return null;
+            }
+        }
+        bool folded = false;
+        foreach (Block b in f.Blocks)
+            for (int k = 0; k < b.Instrs.Count; k++)
+            {
+                Instr i = b.Instrs[k];
+                if (!IrInfo.IsIntCompare(i.Op) || i.Dest is null || i.Operands.Count != 2) continue;
+                // Only where one side is read from an object made here.
+                if (Values(i.Operands[0], 0) is not { } xs || Values(i.Operands[1], 0) is not { } ys) continue;
+                bool? answer = null;
+                foreach (var x in xs)
+                    foreach (var y in ys)
+                    {
+                        bool? one;
+                        if (x.Sym is not null || y.Sym is not null)
+                            one = i.Op is Opcode.Eq or Opcode.Ne && x.Sym is not null && y.Sym is not null
+                                ? (i.Op == Opcode.Eq) == (x.Sym == y.Sym && x.Value == y.Value) : null;
+                        else one = i.Op switch
+                        {
+                            Opcode.Eq => x.Value == y.Value, Opcode.Ne => x.Value != y.Value,
+                            Opcode.LtS => x.Value < y.Value, Opcode.LeS => x.Value <= y.Value,
+                            Opcode.GtS => x.Value > y.Value, Opcode.GeS => x.Value >= y.Value,
+                            _ => null,
+                        };
+                        if (one is null || answer is not null && answer != one) { answer = null; goto next; }
+                        answer = one;
+                    }
+                next:
+                if (answer is not bool known) continue;
+                b.Instrs[k] = new Instr { Op = Opcode.Copy, Dest = i.Dest, Line = i.Line, Operands = { new ImmOperand(known ? 1 : 0, i.Dest.Type) } };
+                folded = true;
+            }
+        return folded;
+
+        // A class of another unit as this one knows it (Lowering.ShadowDescriptor):
+        // no name, no self, only some of its methods.
+        bool Shadow(string name, DataItem item)
+            => name.StartsWith("t_", StringComparison.Ordinal) && !item.Relocs.Any(rel => rel.Offset == 5 * word && rel.Symbol == name);
     }
 
     private static bool KeepsFields(string? callee) =>

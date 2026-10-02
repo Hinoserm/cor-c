@@ -73,7 +73,7 @@ public sealed partial class Escape : IModulePass
         // thread's static (_inserted); left set, it kept the last unit's IR
         // alive for as long as the thread lived.
         try { RunCore(m); }
-        finally { _inserted = null; _indirect = null; _held = null; _fieldsOf = null; }
+        finally { _inserted = null; _indirect = null; _held = null; _fieldsOf = null; _heldStamps = null; _copies = null; _typeItems = null; _typedFieldsOf = null; }
     }
 
     private void RunCore(Module m)
@@ -84,8 +84,16 @@ public sealed partial class Escape : IModulePass
             byName[f.Name] = f;
         }
         _defined.UnionWith(byName.Keys);
+        _byName = byName;
         _returnsFirst = new(StringComparer.Ordinal);
         _held = new(StringComparer.Ordinal);
+        _heldStamps = new(StringComparer.Ordinal);
+        _copies = new(StringComparer.Ordinal);
+        // This unit's own descriptors, whole: a shadow of another unit's
+        // class lists only some of its methods.
+        _typeItems = new(StringComparer.Ordinal);
+        foreach (DataItem d in m.Data) if (d.ReadOnly && !d.Zero) _typeItems[d.Name] = d;
+        _typedFieldsOf = TypedFields;
         _fieldsOf = _paramFields;
         _bodies = _defined;
         _hinting = m.LeavesLinkHints;
@@ -111,6 +119,7 @@ public sealed partial class Escape : IModulePass
         {
             SummariseCycle(cycle, summaries);
             foreach (Function f in cycle) SummariseReturnsFirst(f, summaries);
+            foreach (Function f in cycle) SummariseCopies(f);
             foreach (Function f in cycle) SummariseHeld(f, summaries);
             foreach (Function f in cycle) InvokeOnly(f, summaries);
             // ROUND AGAIN INSIDE A CYCLE while it finds more: a member may
@@ -154,6 +163,13 @@ public sealed partial class Escape : IModulePass
             if (cycle.Count == 1 || _fresh.Count == freshBefore) break;
             todo = todo.Where(f => !_fresh.Contains(f.Name)).ToList();
             }
+            // THE FIELD SUMMARIES ONCE MORE INSIDE A CYCLE: a member asked
+            // before another it calls found none for it and was opaque -- an
+            // iterator's Dispose, which resumes its MoveNext, is in a cycle
+            // with every MoveNext that disposes what it walked. Each answer
+            // of the first round is a cautious one, so one taken from it is.
+            if (cycle.Count > 1)
+                foreach (Function f in cycle) _paramFields[f.Name] = ParameterFields(f, summaries);
         }
 
         // What is thrown that was not just made, now that the functions
@@ -1875,6 +1891,7 @@ continue;
     {
         if (f.Async is not null || !summaries.TryGetValue(f.Name, out bool[]? escapes)) return;
         long[]?[]? held = null;
+        Stamp[]?[]? stamps = null;
         LifetimeHeld?[]? hints = null;
         for (int p = 0; p < f.Params.Count && p < escapes.Length; p++)
         {
@@ -1883,25 +1900,299 @@ continue;
             Flow flow = Analyse(f, new[] { f.Params[p] }, summaries, null, needs: needs, returnsHolder: true);
             if (PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal))
                 Console.Error.WriteLine($"held {f.Name}:{p} escapes={flow.Escapes} via {flow.Why} at [{string.Join(",", flow.HeldReturned?.Order() ?? Enumerable.Empty<long>())}]");
-            if (flow.Escapes || flow.HeldReturned is not { Count: > 0 } offsets || flow.HeldRoots is null
-                || !flow.HeldRoots.All(root => StampedBox(f, root))) continue;
+            if (flow.Escapes || flow.HeldReturned is not { Count: > 0 } offsets || flow.HeldRoots is null || !flow.HeldOwnsNothing) continue;
             long[] at = offsets.Order().ToArray();
-            if (needs is null || needs.Condition.IsTrue) (held ??= new long[]?[f.Params.Count])[p] = at;
+            if (needs is null || needs.Condition.IsTrue)
+            {
+                (held ??= new long[]?[f.Params.Count])[p] = at;
+                (stamps ??= new Stamp[]?[f.Params.Count])[p] = flow.HeldStamps;
+            }
             if (needs is not null) (hints ??= new LifetimeHeld?[f.Params.Count])[p] = new LifetimeHeld(needs.Condition, at);
         }
         if (held is not null) (_held ??= new(StringComparer.Ordinal))[f.Name] = held;
+        if (stamps is not null) (_heldStamps ??= new(StringComparer.Ordinal))[f.Name] = stamps;
         if (hints is not null) _heldHints[f.Name] = hints;
     }
 
-    /// <summary>Whether the block `made` makes is stamped a box (`b_...`) where it is made: a struct's copy, which has no owned fields.</summary>
-    private static bool StampedBox(Function f, VReg made)
+    /// <summary>
+    /// What the block a Held function hands back is, per parameter, where
+    /// every way it is made says: the descriptors stamped into it. A virtual
+    /// call on that block reaches only those types' methods (Analyse's
+    /// TypedTargets); null where one way is not known.
+    /// </summary>
+    [ThreadStatic] private static Dictionary<string, Stamp[]?[]>? _heldStamps;
+
+    private static Stamp[]? HeldStamps(string callee, int argument)
+        => _heldStamps is not null && _heldStamps.TryGetValue(callee, out Stamp[]?[]? all) && argument >= 0 && argument < all.Length ? all[argument] : null;
+
+    /// <summary>A descriptor stamped into a block's first word, and where in it the methods begin (the stamp's offset).</summary>
+    internal readonly record struct Stamp(string Descriptor, long Base);
+
+    /// <summary>
+    /// Every read-only item of this unit, its descriptors whole (a shadow of
+    /// another unit's class lists only some of its methods, and is not
+    /// here): where a call on an object of a known type finds its method,
+    /// and what the tests of its type read (DeadUnder).
+    /// </summary>
+    [ThreadStatic] private static Dictionary<string, DataItem>? _typeItems;
+
+    /// <summary>
+    /// FUNCTIONS THAT HAND BACK THEIR FIRST ARGUMENT OR A COPY OF ITS WORDS:
+    /// an iterator's GetEnumerator, the machine itself the first time and a
+    /// new machine with the same arguments after. Whatever the argument holds
+    /// at an offset, what comes back holds there too, and the argument goes
+    /// nowhere else; the copy is stamped a type that owns no field. A caller
+    /// holding an object in the argument holds it in the result (Analyse's
+    /// HolderCall).
+    /// </summary>
+    [ThreadStatic] private static Dictionary<string, Stamp[]>? _copies;
+
+    /// <summary>
+    /// What a copying function does to its first argument's fields, as
+    /// SummariseCopies found it: its words read into the copy, at the same
+    /// places, or compared; nothing but numbers and null stored into it.
+    /// Read where the callers follow what comes back as the argument's own
+    /// words (FieldUses' throughCopies, Analyse's HolderCall).
+    /// </summary>
+    private readonly Dictionary<string, FieldSummary> _copyFields = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The functions a call reaches: a direct call's callee; a virtual call
+    /// on the object itself (one of `addresses`, at its base) whose types are
+    /// known, each type's method at the slot it reads -- none for a type
+    /// that has none there, which the call never reaches with that object;
+    /// otherwise every override (IndirectTargets), or null where not known.
+    /// </summary>
+    private static string[]? CallTargets(Defs defs, Instr call, Dictionary<VReg, long> addresses, Stamp[]? kinds)
+    {
+        if (call.Op == Opcode.Call) return call.Callee is null ? null : new[] { call.Callee };
+        if (call.Op != Opcode.CallIndirect) return null;
+        if (kinds is { Length: > 0 } && _typeItems is not null && call.Operands.Count >= 2
+            && call.Operands[1] is RegOperand { Reg: var self } && addresses.TryGetValue(self, out long at) && at == 0
+            && call.Operands[0] is RegOperand { Reg: var method } && defs.IsSingle(method)
+            && defs.Definition(method) is { Op: Opcode.Load, Operands: [RegOperand { Reg: var table }] } slot && defs.IsSingle(table)
+            && defs.Definition(table) is { Op: Opcode.Load, Offset: 0, Operands: [RegOperand { Reg: var from }] }
+            && addresses.TryGetValue(from, out long fromAt) && fromAt == 0
+            && TypedSlot(kinds, slot.Offset) is { } typed)
+            return typed;
+        return _indirect is not null && _indirect.TryGetValue(call, out string[]? targets) ? targets : null;
+    }
+
+    /// <summary>
+    /// The methods objects of these types have at a slot: each descriptor's
+    /// relocation there. A descriptor with none there is a type whose objects
+    /// never take the call. Null when a descriptor is not this run's to read.
+    /// </summary>
+    private static string[]? TypedSlot(Stamp[] kinds, long slot)
+    {
+        if (_typeItems is null) return null;
+        List<string> found = new();
+        foreach (Stamp t in kinds)
+        {
+            if (!_typeItems.TryGetValue(t.Descriptor, out DataItem? item)) return null;
+            long at = t.Base + slot;
+            foreach (DataReloc r in item.Relocs)
+                if (r.Offset == at && r.Addend == 0) { if (!found.Contains(r.Symbol)) found.Add(r.Symbol); break; }
+        }
+        return found.ToArray();
+    }
+
+    /// <summary>
+    /// What a function does to the fields of its parameter `p` when that is an
+    /// object of these types (FieldUses with kinds): the virtual calls on it
+    /// each type's own method. Asked by a caller that knows what it hands
+    /// over -- an iterator's machine to List's constructor, which walks it
+    /// through IEnumerable. Null where the body is not here, the parameter
+    /// escapes, or the question is already being asked further up.
+    /// </summary>
+    private FieldSummary? TypedFields(string callee, int p, Stamp[] kinds)
+    {
+        if (_summaries is null || _byName is null || !_byName.TryGetValue(callee, out Function? g) || p >= g.Params.Count
+            || g.Async is not null && !IteratorBody(g)) return null;
+        if (!_summaries.TryGetValue(callee, out bool[]? escapes) || p >= escapes.Length || escapes[p]) return null;
+        string key = callee + "#" + p + "#" + string.Join(",", kinds.Select(k => k.Descriptor + "+" + k.Base).Order(StringComparer.Ordinal));
+        if (_typedFields.TryGetValue(key, out FieldSummary? known)) return known;
+        if (_typedDepth >= 4) return null;
+        _typedFields[key] = null;           // in progress: a cautious answer
+        _typedDepth++;
+        try { return _typedFields[key] = FieldUses(g, new[] { g.Params[p] }, _summaries, null, null, kinds: kinds); }
+        finally { _typedDepth--; }
+    }
+
+    private readonly Dictionary<string, FieldSummary?> _typedFields = new(StringComparer.Ordinal);
+    private int _typedDepth;
+    private Dictionary<string, Function>? _byName;
+
+    /// <summary>The run's TypedFields, for Analyse, which is static.</summary>
+    [ThreadStatic] private static Func<string, int, Stamp[], FieldSummary?>? _typedFieldsOf;
+
+    /// <summary>What a copying function's copies are stamped (Copies), or null where it is not one.</summary>
+    private static Stamp[]? Copies(string callee) => _copies is not null && _copies.TryGetValue(callee, out Stamp[]? stamps) ? stamps : null;
+
+    private void SummariseCopies(Function f)
+    {
+        if (f.Async is not null || f.Params.Count == 0 || !ReturnsFirst(f.Name)) return;
+        RegisterWrites writes = new(f);
+        // The argument and its copies; the blocks made here and theirs.
+        HashSet<VReg> self = new() { f.Params[0] };
+        HashSet<VReg> made = new();
+        HashSet<VReg> addresses = new();
+        List<Stamp> stamps = new();
+        bool grew = true;
+        while (grew)
+        {
+            grew = false;
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Dest is null || !writes.TryGetValue(i.Dest, out WriteList ws) || ws.Count != 1) continue;
+                    if (i.Op == Opcode.Call && i.Callee is Allocator or ObjectAllocator)
+                    {
+                        if (StampOf(f, i.Dest) is Stamp stamp && stamp.Base == Target.Current.DescriptorBytes && OwnsNoField(stamp.Descriptor) && made.Add(i.Dest))
+                        {
+                            grew = true;
+                            if (!stamps.Contains(stamp)) stamps.Add(stamp);
+                        }
+                        continue;
+                    }
+                    if (i.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || i.Operands is not [RegOperand { Reg: var from }]) continue;
+                    if (self.Contains(from) && self.Add(i.Dest)) grew = true;
+                    if (made.Contains(from) && made.Add(i.Dest)) grew = true;
+                }
+        }
+        // A word of the argument, by the register it is loaded into.
+        Dictionary<VReg, Instr> loaded = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Op == Opcode.Load && i.Dest is not null && i.Operands is [RegOperand { Reg: var from }] && self.Contains(from)
+                    && writes.TryGetValue(i.Dest, out WriteList ws) && ws.Count == 1)
+                    loaded[i.Dest] = i;
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+            {
+                if (i.Op == Opcode.Ret)
+                {
+                    if (i.Operands is not [RegOperand { Reg: var back }] || !self.Contains(back) && !made.Contains(back)) return;
+                    continue;
+                }
+                bool touchesMade = false, touchesLoaded = false;
+                foreach (Operand o in i.Operands)
+                    if (o is RegOperand { Reg: var r })
+                    {
+                        touchesMade |= made.Contains(r) || addresses.Contains(r);
+                        touchesLoaded |= loaded.ContainsKey(r);
+                    }
+                if (!touchesMade && !touchesLoaded) continue;
+                if (i.Dest is not null && made.Contains(i.Dest)) continue;
+                switch (i.Op)
+                {
+                    // A word stored into the copy: the descriptor, a number, or
+                    // the argument's own word at the same place and width.
+                    case Opcode.Store when i.Operands.Count == 2 && i.Operands[0] is RegOperand { Reg: var into } && made.Contains(into):
+                        if (i.Operands[1] is SymOperand or ImmOperand) continue;
+                        if (i.Operands[1] is RegOperand { Reg: var v } && loaded.TryGetValue(v, out Instr? load)
+                            && load.Offset == i.Offset && load.Size == i.Size) continue;
+                        return;
+                    // The copy's field address, for its card mark only.
+                    case Opcode.Add when i.Dest is not null && i.Operands is [RegOperand { Reg: var from }, ImmOperand] && made.Contains(from):
+                        addresses.Add(i.Dest);
+                        continue;
+                    case Opcode.Call when IsCollectorNote(i.Callee) && !touchesLoaded:
+                        continue;
+                    // A number of the argument compared, the state tested.
+                    case var _ when IrInfo.IsIntCompare(i.Op) && !touchesMade:
+                        continue;
+                    default:
+                        return;
+                }
+            }
+        // Each field address made only for a card mark.
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Op != Opcode.Call || !IsCollectorNote(i.Callee))
+                    foreach (Operand o in i.Operands)
+                        if (o is RegOperand { Reg: var r } && addresses.Contains(r)) return;
+        // THE ARGUMENT ITSELF: read at its words, compared, written with
+        // numbers and null (the state), handed back -- nothing else. What
+        // it does to the argument's fields, then: the words a number is
+        // written over are dirty, and none is let go.
+        FieldSummary fields = new();
+        int word = IrTypes.Word.Bytes();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+            {
+                bool usesSelf = false;
+                foreach (Operand o in i.Operands) if (o is RegOperand { Reg: var r } && self.Contains(r)) { usesSelf = true; break; }
+                if (!usesSelf || i.Dest is not null && self.Contains(i.Dest)) continue;
+                switch (i.Op)
+                {
+                    case Opcode.Load when i.Operands is [RegOperand] && i.Dest is not null && loaded.ContainsKey(i.Dest):
+                    case Opcode.Ret:
+                        continue;
+                    case Opcode.Store when i.Operands.Count == 2 && i.Operands[0] is RegOperand { Reg: var into } && self.Contains(into)
+                        && i.Operands[1] is ImmOperand or SymOperand:
+                        if (i.Operands[1] is ImmOperand { Value: 0 }) continue;
+                        for (long o = i.Offset - ((i.Offset % word) + word) % word; o < i.Offset + i.Size; o += word) fields.Dirty.Add(o);
+                        continue;
+                    case var _ when IrInfo.IsIntCompare(i.Op) || i.Op == Opcode.Branch:
+                        continue;
+                    default:
+                        return;
+                }
+            }
+        if (PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal)) Console.Error.WriteLine($"copies {f.Name} dirty [{string.Join(",", fields.Dirty.Order())}]");
+        (_copies ??= new(StringComparer.Ordinal))[f.Name] = stamps.ToArray();
+        _copyFields[f.Name] = fields;
+    }
+
+    /// <summary>
+    /// Whether the block `made` makes is stamped, where it is made, with a
+    /// type that owns none of its fields: a box (`b_...`), a struct's copy;
+    /// or an iterator's machine (`t_Iter$...`), whose every word lowering
+    /// writes untagged -- the receiver, the arguments, the state -- so no
+    /// owned-field rule ever takes one (OwnedFields reads tagged fields
+    /// only), and nothing derives from the class. Freeing either gives back
+    /// the block alone, never what it holds.
+    /// </summary>
+    private static bool StampedBox(Function f, VReg made) => OwnsNoField(StampOf(f, made)?.Descriptor);
+
+    /// <summary>The descriptor stored into the first word of the block `made` makes, where it is made; or null.</summary>
+    private static Stamp? StampOf(Function f, VReg made)
     {
         foreach (Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
-                if (i.Op == Opcode.Store && i.Offset == 0 && i.Operands.Count >= 2 && i.Operands[1] is SymOperand { Name: var t }
+                if (i.Op == Opcode.Store && i.Offset == 0 && i.Operands.Count >= 2 && i.Operands[1] is SymOperand { Name: var t, Offset: var at }
                     && i.Operands[0] is RegOperand { Reg: var into } && (into == made || Stamped(f, into, made)))
-                    return t.StartsWith("b_", StringComparison.Ordinal);
-        return false;
+                    return new Stamp(t, at);
+        return null;
+    }
+
+    /// <summary>An iterator's MoveNext: a body run a step at a time in its machine (Lowering.Iterator), not an async method's.</summary>
+    internal static bool IteratorBody(Function f)
+        => f.Async is { SizeSymbol: var size } && size.StartsWith("itsize_", StringComparison.Ordinal) && f.Params.Count == 1;
+
+    /// <summary>A descriptor whose objects own no field: a box's, or a compiler-made iterator's (StampedBox).</summary>
+    private static bool OwnsNoField(string? descriptor)
+        => descriptor is not null && (descriptor.StartsWith("b_", StringComparison.Ordinal) || IteratorMachine(descriptor)
+            // AN ARRAY'S VIEW AND ITS WALKER (Binder.ArrayView), the classes
+            // an array is wrapped in where it becomes a sequence: the
+            // compiler's own, their words written untagged as an iterator's.
+            || descriptor.StartsWith("t_ArrayView$0024", StringComparison.Ordinal)
+            || descriptor.StartsWith("t_ArrayEnumerator$0024", StringComparison.Ordinal));
+
+    /// <summary>
+    /// An iterator machine's descriptor: `Iter$` and the method's identity
+    /// (ClosureIdentity, 64 hex digits), escaped as type keys are. Not a
+    /// class of the program's own called Iter&lt;T&gt;, whose key has the
+    /// type arguments there.
+    /// </summary>
+    private static bool IteratorMachine(string descriptor)
+    {
+        const string prefix = "t_Iter$0024";
+        if (descriptor.Length != prefix.Length + 64 || !descriptor.StartsWith(prefix, StringComparison.Ordinal)) return false;
+        for (int k = prefix.Length; k < descriptor.Length; k++)
+            if (!char.IsAsciiHexDigitUpper(descriptor[k]) && !char.IsAsciiDigit(descriptor[k])) return false;
+        return true;
     }
 
     internal static void SeedKnown(Dictionary<string, bool[]> summaries)
@@ -2232,6 +2523,9 @@ continue;
         /// <summary>The blocks made here and returned holding the object (returnsHolder), and where in them it is.</summary>
         public List<VReg>? HeldRoots { get; set; }
         public HashSet<long>? HeldReturned { get; set; }
+        /// <summary>Whether every block returned holding it owns no field (a box, an iterator's machine), and what each is, where all are known.</summary>
+        public bool HeldOwnsNothing { get; set; }
+        public Stamp[]? HeldStamps { get; set; }
     }
 
     internal static Flow Analyse(Function f, IEnumerable<VReg> roots, Dictionary<string, bool[]> summaries, Instr? source,
@@ -2287,6 +2581,15 @@ continue;
         // calls, which the object must outlive.
         HashSet<VReg>? boxes = null;
         HashSet<VReg>? handed = null;
+        // WHAT EACH HOLDER IS, where that is known: the descriptor stamped
+        // into a block made here, or what a Held callee's block is. A virtual
+        // call on one reaches its own type's method only (TypedTargets), not
+        // every override of the slot -- an iterator's MoveNext is not asked
+        // what it does to the word a List's enumerator holds the list in.
+        // Roots taken as one that were not all known are absent; so are those
+        // that cannot be handed to a call as a box (`refusedRoots`).
+        Dictionary<object, Stamp[]?>? kinds = null;
+        HashSet<object>? refusedRoots = null;
         bool changed = true;
         while (changed && !flow.Escapes)
         {
@@ -2570,7 +2873,7 @@ continue;
                                 // KEPT ONLY IN THE BOX IT HANDS BACK (Held):
                                 // the result holds the object, as frame memory
                                 // does, at the offsets the callee put it.
-                                if (!borrowing && Held(i.Callee, a) is long[] boxed && HoldsResult(i, boxed)) continue;
+                                if (!borrowing && Held(i.Callee, a) is long[] boxed && HoldsResult(i, boxed, HeldStamps(i.Callee, a))) continue;
                                 if (needs is not null && needs.Allow(i.Callee, a)) continue;
                                 flow.Escapes = true;
                             }
@@ -2603,18 +2906,31 @@ continue;
                             {
                                 if (i.Operands[a] is not RegOperand arg || !flow.Derived.Contains(arg.Reg)) continue;
                                 List<long>? boxedAt = null;
+                                List<Stamp>? boxedAs = null;
+                                bool untyped = false, handedBack = false;
                                 foreach (string o in overrides)
                                 {
                                     if (summaries.TryGetValue(o, out bool[]? summary) && a - 1 < summary.Length && !summary[a - 1]) continue;
+                                    // HANDED BACK BY THIS OVERRIDE (ReturnsFirst):
+                                    // an iterator's GetEnumerator, among a List's
+                                    // and an array's -- the result may be it.
+                                    if (a == 1 && ReturnsFirst(o)) { handedBack = true; continue; }
                                     // Kept by this override only in the box it
                                     // returns (Held): the result holds it.
-                                    if (!borrowing && Held(o, a - 1) is long[] boxed) { (boxedAt ??= new()).AddRange(boxed); continue; }
+                                    if (!borrowing && Held(o, a - 1) is long[] boxed)
+                                    {
+                                        (boxedAt ??= new()).AddRange(boxed);
+                                        if (HeldStamps(o, a - 1) is Stamp[] stamped) (boxedAs ??= new()).AddRange(stamped);
+                                        else untyped = true;
+                                        continue;
+                                    }
                                     if (needs is not null && needs.Allow(o, a - 1)) continue;
                                     flow.Escapes = true;
                                     break;
                                 }
                                 if (flow.Escapes) break;
-                                if (boxedAt is not null && !HoldsResult(i, boxedAt)) { flow.Escapes = true; break; }
+                                if (handedBack) Derive(i.Dest, borrowing);
+                                if (boxedAt is not null && !HoldsResult(i, boxedAt, untyped ? null : boxedAs?.ToArray())) { flow.Escapes = true; break; }
                             }
                             break;
                         }
@@ -2747,7 +3063,15 @@ continue;
         {
             flow.HeldReturned = new();
             foreach (VReg root in flow.HeldRoots)
-                if (held is not null && held.TryGetValue(root, out HashSet<long>? at)) flow.HeldReturned.UnionWith(at);
+                if (held is not null && held.TryGetValue(Canon(root), out HashSet<long>? at)) flow.HeldReturned.UnionWith(at);
+            flow.HeldOwnsNothing = flow.HeldRoots.All(root => Acceptable(root));
+            List<Stamp>? stamps = new();
+            foreach (VReg root in flow.HeldRoots)
+            {
+                if (KindsOf(root) is not { } those) { stamps = null; break; }
+                foreach (Stamp s in those) if (!stamps.Contains(s)) stamps.Add(s);
+            }
+            flow.HeldStamps = stamps?.ToArray();
         }
         return flow;
 
@@ -2822,6 +3146,12 @@ continue;
                 if (w is not { Op: Opcode.Copy, Operands: [var from] }) return false;
                 if (FrameSlotOf(from, 0) is object slot) slots.Add(slot);
                 else if (from is RegOperand { Reg: var source } && source != d && HolderAt(from, 1) is (object block, 0)) slots.Add(block);
+                // A HOLDER A CALL HANDED BACK (Held), or null: Where's iterator
+                // made over an array, over a List, over anything else, the
+                // three joined in the one it returns.
+                else if (from is RegOperand { Reg: var result } && result != d && holderRegs!.TryGetValue(result, out var handedBack) && handedBack.Delta == 0)
+                    slots.Add(handedBack.Root);
+                else if (from is ImmOperand { Value: 0 }) continue;
                 else return false;
             }
             object one = Canon(root);
@@ -2829,6 +3159,12 @@ continue;
             {
                 object was = Canon(slot);
                 if (was == one) continue;
+                // What they are together: each's types, or not known; handed
+                // to a call as a box only where each could be.
+                Stamp[]? those = KindsOf(was), these = KindsOf(one);
+                bool boxed = Acceptable(was) && Acceptable(one);
+                (kinds ??= new())[one] = those is null || these is null ? null : those.Concat(these).Distinct().ToArray();
+                if (!boxed) (refusedRoots ??= new()).Add(one);
                 sameSlot ??= new();
                 foreach (object k in sameSlot.Keys.ToList()) if (sameSlot[k] == was) sameSlot[k] = one;
                 sameSlot[was] = one;
@@ -2901,6 +3237,12 @@ continue;
                     return;
                 case Opcode.Call when IsCollectorNote(i.Callee) || i.Callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive:
                     return;
+                // A call no object here has the method for (Devirtualize): never made.
+                case Opcode.CallIndirect when i.DispatchType == Devirtualize.NoTarget:
+                    return;
+                // An array's count, read where it might be one: a number.
+                case Opcode.ArrayLength:
+                    return;
                 case Opcode.Ret when returnsHolder && i.Operands is [RegOperand] && Holding(i.Operands[0]) is (VReg returned, 0):
                     // A BLOCK MADE HERE, handed back whole (SummariseHeld):
                     // what it holds goes with it to the caller and nowhere
@@ -2943,14 +3285,62 @@ continue;
         }
 
         // A CALL'S RESULT THAT HOLDS THE OBJECT (Held): a block made for the
-        // call, holding it at `offsets`, which becomes a holder here.
-        bool HoldsResult(Instr call, IEnumerable<long> offsets)
+        // call, holding it at `offsets`, which becomes a holder here -- of the
+        // types the callee stamps it with, where those are known.
+        bool HoldsResult(Instr call, IEnumerable<long> offsets, Stamp[]? stamps)
         {
             if (call.Dest is not { } result || result.Id < defs.Length && defs[result.Id] > 1) return false;
             foreach (long o in offsets) Hold(result, o);
             HolderAlias(result, result, 0);
             (boxes ??= new()).Add(result);
+            (kinds ??= new())[Canon(result)] = stamps;
             return !flow.Escapes;
+        }
+
+        // What a root is: the types it was given (HoldsResult, a merge), or
+        // the descriptor stamped into a block made here; null if not known.
+        Stamp[]? KindsOf(object root)
+        {
+            root = Canon(root);
+            if (kinds is not null && kinds.TryGetValue(root, out Stamp[]? known)) return known;
+            writes ??= new(f);
+            return root is VReg made && writes.TryGetValue(made, out WriteList ws) && ws.Count == 1 && ws[0] is { Op: Opcode.Call, Callee: Allocator or ObjectAllocator }
+                && StampOf(f, made) is Stamp stamp && stamp.Base == Target.Current.DescriptorBytes ? new[] { stamp } : null;
+        }
+
+        // Whether a root may be handed to a call as a box: a block that owns
+        // none of its fields, made here (StampedBox) or handed back by a call
+        // that holds the object in it (boxes), and every root taken with it.
+        bool Acceptable(object root)
+        {
+            root = Canon(root);
+            if (refusedRoots is not null && refusedRoots.Contains(root)) return false;
+            return root is VReg box && (boxes?.Contains(box) == true || StampedBox(f, box));
+        }
+
+        // The methods a virtual call on a holder of known types reaches: each
+        // type's own, at the slot the call reads -- when the holder is the
+        // receiver, the table its first word, and every type's descriptor here
+        // to read. Otherwise null, and the call is every override of the slot.
+        string[]? TypedTargets(Instr call, object root)
+        {
+            if (call.Op != Opcode.CallIndirect || call.Operands.Count < 2 || KindsOf(root) is not { Length: > 0 } types || _typeItems is null
+                || call.Operands[0] is not RegOperand { Reg: var method }) return null;
+            writes ??= new(f);
+            if (!writes.TryGetValue(method, out WriteList ws) || ws.Count != 1 || ws[0] is not { Op: Opcode.Load, Operands: [RegOperand { Reg: var table }] } slot
+                || !writes.TryGetValue(table, out WriteList ts) || ts.Count != 1 || ts[0] is not { Op: Opcode.Load, Offset: 0, Operands: [RegOperand { Reg: var self }] }
+                || Holding(new RegOperand(self)) is not (var selfRoot, 0) || !Equals(Canon(selfRoot), Canon(root))) return null;
+            List<string> found = new();
+            foreach (Stamp t in types)
+            {
+                if (!_typeItems.TryGetValue(t.Descriptor, out DataItem? item)) return null;
+                long at = t.Base + slot.Offset;
+                string? target = null;
+                foreach (DataReloc r in item.Relocs) if (r.Offset == at && r.Addend == 0) { target = r.Symbol; break; }
+                if (target is null) return null;
+                if (!found.Contains(target)) found.Add(target);
+            }
+            return found.ToArray();
         }
 
         // A HOLDER HANDED TO A CALL: a box -- a block made here and stamped
@@ -2958,7 +3348,9 @@ continue;
         // functions that each keep nothing of that argument and whose field
         // summary of it leaves every offset holding the object clean (not
         // let go, not overwritten with anything else). A runtime free of a
-        // box gives back the box alone: a box has no owned fields.
+        // box gives back the box alone: a box has no owned fields. Or to one
+        // that hands it back or a copy of its words (Copies): the result
+        // holds the object where the box did.
         bool HolderCall(Instr i)
         {
             int first = i.Op == Opcode.CallIndirect ? 1 : 0;
@@ -2967,35 +3359,62 @@ continue;
                 if (Holding(i.Operands[o]) is not var (root, delta)) continue;
                 // Memory that holds nothing of the object: nothing of it goes.
                 if (!held!.TryGetValue(root, out HashSet<long>? holding) || holding.Count == 0) continue;
-                if (o < first || delta != 0 || root is not VReg box || !(boxes?.Contains(box) == true || StampedBox(f, box)))
+                if (o < first || delta != 0 || root is not VReg box || !Acceptable(box))
                 {
                     if (PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal)) Console.Error.WriteLine($"holder {f.Name}: {i} operand {o} not a box's base ({root} +{delta})");
                     return false;
                 }
                 if (i.Op == Opcode.Call && i.Callee == Freer && i.Operands.Count == 1) continue;
                 string[]? targets = i.Op == Opcode.Call ? (i.Callee is null ? null : new[] { i.Callee })
+                    // On the receiver of a type known here: that type's method.
+                    : o == first && TypedTargets(i, box) is { } typed ? typed
                     : _indirect is not null && _indirect.TryGetValue(i, out string[]? found) ? found
                     // Through the one function's address (Devirtualize's
                     // answer for a box it saw made): that function.
                     : i.Operands[0] is RegOperand { Reg: var method } && (writes ??= new(f)).TryGetValue(method, out WriteList known) && known.Count == 1
                       && known[0] is { Op: Opcode.Copy, Operands: [SymOperand { Name: var named, Offset: 0 }] } ? new[] { named } : null;
+                // No method there in any type it is: never called with it.
+                if (targets is { Length: 0 } && i.Op == Opcode.CallIndirect && o == first && KindsOf(box) is { Length: > 0 }) continue;
                 if (targets is not { Length: > 0 })
                 {
                     if (PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal)) Console.Error.WriteLine($"holder {f.Name}: {i} reaches nothing known");
                     return false;
                 }
                 HashSet<long> holds = held!.TryGetValue(box, out HashSet<long>? at) ? at : new();
+                Stamp[]? boxKinds = KindsOf(box);
+                List<Stamp>? copiedAs = null;
                 foreach (string t in targets)
                 {
                     int p = o - first;
+                    // HANDED BACK, OR A COPY OF ITS WORDS (Copies): an
+                    // iterator's GetEnumerator. The result holds the object.
+                    if (p == 0 && Copies(t) is Stamp[] copies) { (copiedAs ??= new()).AddRange(copies); continue; }
                     bool keeps = !summaries.TryGetValue(t, out bool[]? summary) || p >= summary.Length || summary[p];
-                    FieldSummary? uses = !keeps && _fieldsOf is not null && _fieldsOf.TryGetValue(t, out FieldSummary?[]? fields) && p < fields.Length ? fields[p] : null;
+                    // What it does to the box's words: for the box's own
+                    // types where those are known (TypedFields), so a call
+                    // on it inside reaches its type's method alone.
+                    FieldSummary? uses = keeps ? null
+                        : boxKinds is { Length: > 0 } && _typedFieldsOf?.Invoke(t, p, boxKinds) is { } typedUses ? typedUses
+                        : _fieldsOf is not null && _fieldsOf.TryGetValue(t, out FieldSummary?[]? fields) && p < fields.Length ? fields[p] : null;
                     if (keeps || uses is not { Opaque: false } || holds.Any(uses.Dirty.Contains))
                     {
                         if (PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal))
-                            Console.Error.WriteLine($"holder {f.Name}: {i} to {t}:{p} keeps={keeps} fields={(uses is null ? "none" : uses.Opaque ? "opaque " + uses.Why : "dirty " + string.Join(",", uses.Dirty.Order()))} at {string.Join(",", holds.Order())}");
+                            Console.Error.WriteLine($"holder {f.Name}: {i} to {t}:{p} keeps={keeps} fields={(uses is null ? "none" : uses.Opaque ? "opaque " + uses.Why : "dirty " + string.Join(",", uses.Dirty.Order()))} at {string.Join(",", holds.Order())}"
+                                + string.Concat((uses?.DirtyWhy ?? new()).Where(kv => holds.Contains(kv.Key)).Select(kv => $"\n    +{kv.Key}: {kv.Value}")));
                         return false;
                     }
+                }
+                if (copiedAs is not null && i.Dest is { } result)
+                {
+                    // The box again, or a box the callee stamped with the
+                    // same words: a holder of its own, at the same offsets.
+                    if (result.Id < defs.Length && defs[result.Id] > 1) return false;
+                    Stamp[]? same = KindsOf(box) is { } was ? was.Concat(copiedAs).Distinct().ToArray() : null;
+                    foreach (long h in holds.ToList()) Hold(result, h);
+                    HolderAlias(result, result, 0);
+                    (boxes ??= new()).Add(result);
+                    (kinds ??= new())[Canon(result)] = same;
+                    if (flow.Escapes) return false;
                 }
                 // Its uses are the object's: it lives as long as they last.
                 (handed ??= new()).Add(((RegOperand)i.Operands[o]).Reg);
