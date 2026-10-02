@@ -1,0 +1,17 @@
+// The other unit of 1211_iterator_holds_source_units: a LINQ walk over a
+// list another unit made, and an iterator handed back to the unit that
+// made the list, which walks it there after the call has returned.
+using System.Collections.Generic;
+using System.Linq;
+
+static class Chains
+{
+    public static int Odd(List<int> l)
+    {
+        int total = 0;
+        foreach (int x in l.Where(x => x % 2 != 0)) total += x;
+        return total;
+    }
+
+    public static IEnumerable<int> Later(List<int> l) => l.Where(x => x > 0).Select(x => x * 10);
+}

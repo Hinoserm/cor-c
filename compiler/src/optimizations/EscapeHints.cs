@@ -312,7 +312,7 @@ public sealed partial class Escape
             if (canFree && facts.Helpers.Contains(ReplacedFreer)) pass.OwnVariables(f, summaries);
             if (canFree && facts.Helpers.Contains(FieldFreer)) pass.OwnFields(f, summaries);
         }
-        finally { _inserted = null; _indirect = null; _held = null; _fieldsOf = null; }
+        finally { _inserted = null; _indirect = null; _held = null; _fieldsOf = null; _heldStamps = null; _copies = null; _typeItems = null; }
         // A READ OF AN OWNED FIELD was judged, by the unit and then the link,
         // among the frees the function had then: a free placed now, while
         // what was read is live, could free the field's owner under it. The
