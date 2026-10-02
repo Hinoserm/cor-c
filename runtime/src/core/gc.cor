@@ -480,6 +480,66 @@ static class Gc
         }
     }
 
+    /// CORSAC_GC_VERIFY (or VerifyMarks), after a concurrent cycle has
+    /// marked: every NEWCOMER -- kept by the sweep because it is not in the
+    /// snapshot, and never traced -- read word by word, and a word the marker
+    /// would read that is the start of a block of the snapshot left unmarked
+    /// is reported: the sweep is about to free what a kept object holds.
+    /// VerifyMajor reads only marked blocks, and a newcomer holding such a
+    /// block is the shape every hole in stamping has had: a names array made
+    /// in a page the snapshot never saw, before its thread answered STAMP,
+    /// filled with a string only that thread's stack held (test 1011).
+    static void VerifyNewcomers()
+    {
+        long chunk = HeapChunks.Newest();
+        while (chunk != 0 && _verifyReports < 40)
+        {
+            long block = HeapChunks.First(chunk);
+            long end = HeapChunks.End(chunk);
+            while (block < end && _verifyReports < 40)
+            {
+                long word = Sys.Peek(block);
+                long size = word & SizeMask;
+                if (size < Smallest || block + size > end || Sys.Peek(block + size - FooterBytes) != word)
+                {
+                    break;
+                }
+                if ((word & (FlagFree | FlagMark)) == 0 && Sys.Peek(block + KindAt) != KindLeaf && Newcomer(chunk, block, word))
+                {
+                    long p = block + HeaderBytes;
+                    while (p < block + size - FooterBytes)
+                    {
+                        long target = MarkerReads(block, size, p) ? BlockForPointer(Sys.Peek(p)) : 0;
+                        if (target != 0 && target != block)
+                        {
+                            long seen = Sys.Peek(target);
+                            long home = HeapChunks.OfSnapshot(target + HeaderBytes);
+                            if ((seen & (FlagMark | FlagFree)) == 0 && home != 0 && !Newcomer(home, target, seen))
+                            {
+                                SayNumber("gc verify newcomer: block ", block);
+                                SayNumber("gc verify newcomer:   its vtable ", Sys.Peek(block + HeaderBytes));
+                                SayNumber("gc verify newcomer:   its chunk starts this cycle ", HeapChunks.StartsCycle(chunk) == _cycle ? 1 : 0);
+                                SayNumber("gc verify newcomer:   its chunk is a page ", HeapChunks.PageClass(chunk));
+                                SayNumber("gc verify newcomer:   its chunk owner ", HeapChunks.Owner(chunk));
+                                SayNumber("gc verify newcomer:   offset ", p - block - HeaderBytes);
+                                SayNumber("gc verify newcomer:   points at unmarked ", target);
+                                SayNumber("gc verify newcomer:   whose vtable ", Sys.Peek(target + HeaderBytes));
+                                SayNumber("gc verify newcomer:   whose kind ", Sys.Peek(target + KindAt));
+                                SayNumber("gc verify newcomer:   whose chunk is a page ", HeapChunks.PageClass(home));
+                                SayNumber("gc verify newcomer:   whose chunk owner ", HeapChunks.Owner(home));
+                                SayNumber("gc verify newcomer:   minor ", _minor ? 1 : 0);
+                                _verifyReports = _verifyReports + 1;
+                            }
+                        }
+                        p = p + WordSize.Bytes;
+                    }
+                }
+                block = block + size;
+            }
+            chunk = HeapChunks.Next(chunk);
+        }
+    }
+
     /// Whether the record RescanHeld read this cycle names a block (the verifier).
     static bool WasHeld(long block)
     {
@@ -8115,6 +8175,7 @@ static class Gc
         MarkToEmpty();
         if (_minor && _verifyGenerations) VerifyMinor();
         if (!_minor && (_verifyGenerations || VerifyMarks)) VerifyMajor();
+        if (_verifyGenerations || VerifyMarks) VerifyNewcomers();
 
         GcLock.Enter();
         HeapChunks.SetBlockAnchorsActive(false);

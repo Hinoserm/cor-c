@@ -1,0 +1,142 @@
+// test: a string held only by an array made while a collection marks is kept, with cycles asked for back to back under a cap
+// timeout: 60
+// expect-exit: 0
+// expect-output:
+// checked 870000
+// bad 0
+//
+// The rs repro (2026-10-02): worker threads build chains of holders, read
+// the last holder's name into an array made after it, and drop the chain.
+// Under a cap a small allocation finds no page and waits the collection
+// under way out (Gc.WaitOutCycle). Before Gc.AnswerBeforeTaking was asked
+// again there, a thread could come back inside the NEXT collection's
+// stamping still owing its STAMP answer, take a page laid out afresh, and
+// make the names array in it: a newcomer, kept and never traced. The
+// string only that array held was in the snapshot, unmarked, and swept --
+// read back as somebody else's text or as nothing. Two to three runs in a
+// hundred of the rs repro; 1011 is the same program and catches it about
+// one run in fifty.
+//
+// This one makes the race less rare: a thread asking for whole
+// collections without a pause, so that one begins as soon as the last
+// ends, and the workers' rings keep the heap near its cap. Every array is
+// read back: before its slot is reused, and the ring's last laps at the
+// end. Against the collector before the fix it failed a run in four with
+// the machine busy, and seldom with it idle: the thread has to lose the
+// heap lock to the next cycle's snapshot as it wakes. CORSAC_GC_VERIFY=1
+// says each such hole the cycle it happens (Gc.VerifyNewcomers).
+//
+// The cap leaves room: at 16 MB, or with eight workers, some runs end
+// out of memory with the fix as without it (a few in forty), a different
+// matter from the hole this is for.
+
+using System.Runtime.CompilerServices;
+
+class Holder
+{
+    public string? S;
+    public Holder? Next;
+}
+
+class Node
+{
+    public string[]? Names;
+    public int Value;
+}
+
+class Collector : Action
+{
+    public static volatile bool Stop;
+
+    public void Invoke()
+    {
+        while (!Stop)
+        {
+            GC.Collect();
+        }
+    }
+}
+
+class Worker : Action
+{
+    public static long Bad;
+    public int Seed;
+    public long Checked;
+    Node?[] _ring = new Node?[Program.Ring];
+
+    public Worker(int seed) { Seed = seed; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Holder? Chain(int v, int len)
+    {
+        Holder? head = null;
+        for (int k = 0; k < len; k++)
+        {
+            Holder h = new Holder();
+            h.S = "n" + v;
+            h.Next = head;
+            head = h;
+        }
+        return head;
+    }
+
+    // The name is made first; the array that alone holds it once this
+    // returns is made after, with no barrier on its elements.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Node Make(int v)
+    {
+        Holder? c = Chain(v, 4);
+        Node n = new Node();
+        n.Value = v;
+        Holder p = c!;
+        while (p.Next != null) p = p.Next;
+        n.Names = new string[] { p.S!, p.S! };
+        return n;
+    }
+
+    public void Invoke()
+    {
+        int at = 0;
+        for (int i = 0; i < Program.Steps; i++)
+        {
+            Node? old = _ring[at];
+            if (old != null)
+            {
+                if (old.Names![1] != "n" + old.Value) Bad++;
+                Checked++;
+            }
+            _ring[at] = Make(Seed * 1000000 + i);
+            at = at + 1;
+            if (at == _ring.Length) at = 0;
+        }
+        foreach (Node? last in _ring)
+        {
+            if (last != null && last.Names![1] != "n" + last.Value) Bad++;
+        }
+    }
+}
+
+static class Program
+{
+    public static int Steps = 150000;
+    public static int Ring = 5000;
+
+    static int Main()
+    {
+        Gc.SetLimit(20971520);
+        Collector collector = new Collector();
+        Thread ct = Thread.Start(collector);
+        int workers = 6;
+        Worker[] w = new Worker[workers];
+        Thread[] t = new Thread[workers];
+        for (int i = 0; i < workers; i++) { w[i] = new Worker(i + 1); t[i] = Thread.Start(w[i]); }
+        for (int i = 0; i < workers; i++) t[i].Join();
+        Collector.Stop = true;
+        ct.Join();
+        long checkedAll = 0;
+        for (int i = 0; i < workers; i++) checkedAll += w[i].Checked;
+        System.Console.WriteLine("checked " + checkedAll);
+        System.Console.WriteLine("bad " + Worker.Bad);
+        return 0;
+    }
+}
