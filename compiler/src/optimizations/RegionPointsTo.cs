@@ -176,8 +176,18 @@ public sealed class RegionPointsTo : IModulePass
             // AN INSTANCE CALL NOTHING WAS SEEN TO BE MADE ON still runs: its
             // callee's context-free copy, so its stores and calls are counted.
             bool more = false;
-            foreach (var (seen, bind) in _unbound)
-                if (seen.Count == 0) { seen.Add(-3); bind(); more = true; }
+            // By index: a bind makes copies, and their instance calls are
+            // unbound too.
+            try
+            {
+                for (int k = 0; k < _unbound.Count; k++)
+                    if (_unbound[k].Seen.Count == 0) { _unbound[k].Seen.Add(-3); _unbound[k].Bind(); more = true; }
+            }
+            catch (OverBudget)
+            {
+                if (Report is not null) Console.Error.WriteLine("regions: gave up while building the constraints");
+                return;
+            }
             // CODE THIS NEVER SAW CALL may call anything whose address it was
             // given, with anything: once any call goes where this cannot
             // follow, every function whose address is taken is called from
@@ -185,11 +195,19 @@ public sealed class RegionPointsTo : IModulePass
             if (_unknownCalls && !rooted)
             {
                 rooted = true;
-                foreach (Function f in AddressTaken(m))
+                try
                 {
-                    int copy = CopyOf(f, -1);
-                    for (int k = 0; k < f.Params.Count; k++) Add(Reg(copy, f.Params[k]), Loc(Global, Any));
-                    Edge(ReturnNode(copy), Cell(Global, Any), 0);
+                    foreach (Function f in AddressTaken(m))
+                    {
+                        int copy = CopyOf(f, -1);
+                        for (int k = 0; k < f.Params.Count; k++) Add(Reg(copy, f.Params[k]), Loc(Global, Any));
+                        Edge(ReturnNode(copy), Cell(Global, Any), 0);
+                    }
+                }
+                catch (OverBudget)
+                {
+                    if (Report is not null) Console.Error.WriteLine("regions: gave up while building the constraints");
+                    return;
                 }
                 more = true;
             }
