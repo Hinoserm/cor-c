@@ -712,10 +712,12 @@ public sealed class RegionPointsTo : IModulePass
 
     // Whether a function may be a boundary at all: not the entry, not a
     // type's initialiser (run once, wherever first asked), not an async or
-    // iterator body (its frame outlives a return).
+    // iterator body (its frame outlives a return), not what runs before its
+    // thread's block is its own (BeforeThreadBlock).
     private bool MayBeBoundary(Function f) =>
         f.Async is null && f.Name != _m.Entry && !EntryCalls().Contains(f.Name)
-        && !f.Name.Contains("StaticInit", StringComparison.Ordinal);
+        && !f.Name.Contains("StaticInit", StringComparison.Ordinal)
+        && !(_beforeBlock ??= BeforeThreadBlock()).Contains(f.Name);
 
     private HashSet<string>? _entryCalls;
 
@@ -731,6 +733,33 @@ public sealed class RegionPointsTo : IModulePass
                 foreach (Instr i in b.Instrs)
                     if (i.Op == Opcode.Call && i.Callee is string callee) _entryCalls.Add(callee);
         return _entryCalls;
+    }
+
+    private HashSet<string>? _beforeBlock;
+
+    /// <summary>
+    /// WHAT RUNS BEFORE A THREAD'S BLOCK IS ITS OWN: the function that makes
+    /// it so (RuntimeAbi.SetThreadBlock) and every function that calls it,
+    /// however far up -- the entry stub's first call, a new thread's first
+    /// method, which run with no block or the parent's. A region is opened
+    /// in the block, so none of these is a boundary.
+    /// </summary>
+    private HashSet<string> BeforeThreadBlock()
+    {
+        Dictionary<string, List<string>> callers = new(StringComparer.Ordinal);
+        foreach (Function f in _m.Functions)
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.Call && i.Callee is { } callee)
+                        (callers.TryGetValue(callee, out List<string>? l) ? l : callers[callee] = new()).Add(f.Name);
+        HashSet<string> before = new(StringComparer.Ordinal) { Corsac.Lang.Lto.RuntimeAbi.SetThreadBlock };
+        Stack<string> next = new();
+        next.Push(Corsac.Lang.Lto.RuntimeAbi.SetThreadBlock);
+        while (next.TryPop(out string? g))
+            if (callers.TryGetValue(g, out List<string>? list))
+                foreach (string f in list)
+                    if (before.Add(f)) next.Push(f);
+        return before;
     }
 
     /// <summary>

@@ -35,4 +35,10 @@ public static class RuntimeAbi
     /// <summary>A catch closes the regions it caught out of (every landing pad of a program with regions).</summary>
     public const string RegionCatch = "m_Runtime_RegionCatch_1_" + Word;
     public const string AllocRegion = "m_Runtime_AllocRegion_3_" + Word + "_" + Word + "_" + Word;
+    /// <summary>
+    /// What makes a thread's block its own (Platform.SetThreadBlock): a
+    /// region is opened in the block, so nothing that runs before this does
+    /// -- it, and every function that calls it -- may open one.
+    /// </summary>
+    public const string SetThreadBlock = "m_Platform_SetThreadBlock_1_V$I64";
 }

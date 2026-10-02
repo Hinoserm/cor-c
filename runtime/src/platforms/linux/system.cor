@@ -474,6 +474,11 @@ static class Platform
     /// Nothing here allocates: the structure the call reads is sixteen bytes
     /// of the block itself, because a thread sets its block up before it is
     /// allowed to touch the heap.
+    ///
+    /// Never inlined: a call of it by name is how region inference tells
+    /// what runs before a thread's block is its own (RuntimeAbi.SetThreadBlock),
+    /// where no region may be opened.
+    [MethodImpl(MethodImplOptions.NoInlining)]
     public static void SetThreadBlock(long block)
     {
         // The collector times its pauses by this system's clock.
