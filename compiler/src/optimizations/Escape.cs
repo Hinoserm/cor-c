@@ -439,7 +439,7 @@ public sealed partial class Escape : IModulePass
         HashSet<string> reached = Reached(m);
         foreach (Function f in m.Functions.Where(g => reached.Contains(g.Name)))
         {
-            Dictionary<VReg, List<Instr>> writes = Writes(f);
+            RegisterWrites writes = new(f);
             // Registers holding what a landing pad received: `throw;` hands it on.
             HashSet<FrameSlot> caughtSlots = new();
             // What a landing pad received, through the copies that may carry
@@ -448,7 +448,7 @@ public sealed partial class Escape : IModulePass
             {
                 for (int hop = 0; hop < 8; hop++)
                 {
-                    if (!writes.TryGetValue(v, out List<Instr>? vw) || vw.Count != 1) return false;
+                    if (!writes.TryGetValue(v, out WriteList vw) || vw.Count != 1) return false;
                     if (vw[0] is { Op: Opcode.Call, Callee: "__exception" }) return true;
                     if (vw[0] is not { Op: Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32, Operands: [RegOperand from] }) return false;
                     v = from.Reg;
@@ -507,7 +507,7 @@ public sealed partial class Escape : IModulePass
                 fromStatic = null;
                 for (int hop = 0; hop < 8 && o is RegOperand { Reg: var r }; hop++)
                 {
-                    if (!writes.TryGetValue(r, out List<Instr>? ws) || ws.Count != 1) return false;
+                    if (!writes.TryGetValue(r, out WriteList ws) || ws.Count != 1) return false;
                     Instr d = ws[0];
                     if (d.Op == Opcode.Call && (IsAllocator(d.Callee) || d.Callee is not null && _fresh.Contains(d.Callee)))
                     {
@@ -574,13 +574,13 @@ public sealed partial class Escape : IModulePass
         foreach (Function f in m.Functions)
         {
             bool initialiser = f.Name.Contains("_StaticInit$", StringComparison.Ordinal);
-            Dictionary<VReg, List<Instr>> writes = Writes(f);
+            RegisterWrites writes = new(f);
             HashSet<FrameSlot> caughtSlots = new();
             foreach (Block b in f.Blocks)
                 foreach (Instr i in b.Instrs)
                 {
                     if (i.Op == Opcode.Store && i.Operands.Count == 2 && i.Operands[0] is SlotOperand { Slot: var slot }
-                        && i.Operands[1] is RegOperand { Reg: var v } && writes.TryGetValue(v, out List<Instr>? vw)
+                        && i.Operands[1] is RegOperand { Reg: var v } && writes.TryGetValue(v, out WriteList vw)
                         && vw.Count == 1 && vw[0] is { Op: Opcode.Call, Callee: "__exception" })
                         caughtSlots.Add(slot);
                     if (i.Op == Opcode.Store && i.Operands.Count == 2 && i.Operands[0] is SymOperand { Name: var into })
@@ -596,7 +596,7 @@ public sealed partial class Escape : IModulePass
             {
                 for (int hop = 0; hop < 8 && o is RegOperand { Reg: var r }; hop++)
                 {
-                    if (!writes.TryGetValue(r, out List<Instr>? ws) || ws.Count != 1) return "*";
+                    if (!writes.TryGetValue(r, out WriteList ws) || ws.Count != 1) return "*";
                     Instr d = ws[0];
                     if (d.Op == Opcode.Call && (IsAllocator(d.Callee) || d.Callee is not null && _fresh.Contains(d.Callee))) return null;
                     if (d.Op == Opcode.Call && d.Callee == "__exception") return null;
@@ -660,12 +660,12 @@ public sealed partial class Escape : IModulePass
     /// <summary>The descriptor stamped into the object an allocation made and `r` holds, or null.</summary>
     private static string? StampedType(Function f, VReg r)
     {
-        Dictionary<VReg, List<Instr>> writes = Writes(f);
+        RegisterWrites writes = new(f);
         VReg? made = null;
         VReg at = r;
         for (int hop = 0; hop < 8; hop++)
         {
-            if (!writes.TryGetValue(at, out List<Instr>? ws) || ws.Count != 1) return null;
+            if (!writes.TryGetValue(at, out WriteList ws) || ws.Count != 1) return null;
             Instr d = ws[0];
             if (d.Op == Opcode.Call && IsAllocator(d.Callee)) { made = d.Dest; break; }
             if (d.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || d.Operands is not [RegOperand next]) return null;
@@ -976,7 +976,7 @@ public sealed partial class Escape : IModulePass
                         if (!sites.TryGetValue(callee, out var list)) sites[callee] = list = new();
                         list.Add((g, b, k));
                     }
-        Dictionary<Function, Dictionary<VReg, List<Instr>>> writesOf = new();
+        Dictionary<Function, RegisterWrites> writesOf = new();
         Dictionary<(Function, int), List<Instr>?> sinks = new();
         Dictionary<Function, Liveness> sinkLiveness = new();
         // WHAT EVERY CALLER HANDS OVER FOR PARAMETER `index`: the fresh objects
@@ -1049,14 +1049,14 @@ public sealed partial class Escape : IModulePass
             HashSet<VReg> seen = new();
             Stack<VReg> work = new();
             work.Push(r);
-            if (!writesOf.TryGetValue(f, out Dictionary<VReg, List<Instr>>? writes)) writesOf[f] = writes = Writes(f);
+            if (!writesOf.TryGetValue(f, out RegisterWrites? writes)) writesOf[f] = writes = new(f);
             while (work.Count > 0 && found.Count < 16)
             {
                 VReg at = work.Pop();
                 if (!seen.Add(at)) continue;
                 int param = f.Params.IndexOf(at);
                 if (param >= 0) { found.Add(new Source(SourceKind.Parameter, param, null)); continue; }
-                if (!writes.TryGetValue(at, out List<Instr>? ws)) { found.Add(new Source(SourceKind.Unknown, 0, null)); continue; }
+                if (!writes.TryGetValue(at, out WriteList ws)) { found.Add(new Source(SourceKind.Unknown, 0, null)); continue; }
                 foreach (Instr w in ws)
                 {
                     if (w.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.Phi)
@@ -1274,13 +1274,13 @@ continue;
         {
             if (returnedOf.TryGetValue(f, out HashSet<VReg>? known)) return known;
             HashSet<VReg> chain = new();
-            Dictionary<VReg, List<Instr>> writes = Writes(f);
+            RegisterWrites writes = new(f);
             Stack<VReg> work = new();
             foreach (Block rb in f.Blocks)
                 if (rb.Terminator is { Op: Opcode.Ret, Operands: [RegOperand back] }) work.Push(back.Reg);
             while (work.TryPop(out VReg? r))
             {
-                if (!chain.Add(r) || !writes.TryGetValue(r, out List<Instr>? ws)) continue;
+                if (!chain.Add(r) || !writes.TryGetValue(r, out WriteList ws)) continue;
                 foreach (Instr w in ws)
                     if (w.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.Phi)
                         foreach (Operand o in w.Operands) if (o is RegOperand from) work.Push(from.Reg);
@@ -1942,7 +1942,7 @@ continue;
         }
 
         HashSet<VReg>? pending = null;
-        Dictionary<VReg, List<Instr>>? writes = null;
+        RegisterWrites? writes = null;
         bool changed = true;
         while (changed && !flow.Escapes)
         {
@@ -2216,7 +2216,7 @@ continue;
             // grows as the analysis goes.
             if (!changed && !flow.Escapes && pending is { Count: > 0 })
             {
-                writes ??= Writes(f);
+                writes ??= new(f);
                 bool resolved = false;
                 foreach (VReg d in pending.ToList())
                 {
@@ -2225,7 +2225,7 @@ continue;
                     // is assigned into is pointed at the frame slot the value
                     // was built in -- the List walk of a foreach. A register
                     // that holds the object or the frame holds nothing else.
-                    bool mine = f.Params.Contains(d) is false && writes.TryGetValue(d, out List<Instr>? all) && all.All(w =>
+                    bool mine = f.Params.Contains(d) is false && writes.TryGetValue(d, out WriteList all) && all.All(w =>
                         w.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 && w.Operands.Count == 1
                         && (w.Operands[0] is ImmOperand { Value: 0 } || Literal(w.Operands[0], writes)
                             || FrameAddress(w.Operands[0], writes)
@@ -2247,7 +2247,7 @@ continue;
                 if (!resolved && pending.Count > 0)
                 {
                     flow.Escapes = true;    // shared with another value; unknowable
-                    flow.Why ??= writes.TryGetValue(pending.First(), out List<Instr>? w0) ? w0[0] : null;
+                    flow.Why ??= writes.TryGetValue(pending.First(), out WriteList w0) ? w0[0] : null;
                 }
             }
         }
@@ -2255,10 +2255,10 @@ continue;
         return flow;
 
         // A frame slot's address, or a register only ever given one.
-        static bool FrameAddress(Operand o, Dictionary<VReg, List<Instr>> writes)
+        static bool FrameAddress(Operand o, RegisterWrites writes)
         {
             if (o is SlotOperand) return true;
-            return o is RegOperand { Reg: var r } && writes.TryGetValue(r, out List<Instr>? ws) && ws.Count == 1
+            return o is RegOperand { Reg: var r } && writes.TryGetValue(r, out WriteList ws) && ws.Count == 1
                 && ws[0] is { Op: Opcode.Copy, Operands: [SlotOperand] };
         }
 
@@ -2316,9 +2316,9 @@ continue;
     /// register that holds either the object or a literal is as much the
     /// object's as one that holds either the object or null.
     /// </summary>
-    private static bool Literal(Operand o, Dictionary<VReg, List<Instr>> writes)
+    private static bool Literal(Operand o, RegisterWrites writes)
     {
-        if (o is RegOperand { Reg: var r } && writes.TryGetValue(r, out List<Instr>? ws) && ws.Count == 1
+        if (o is RegOperand { Reg: var r } && writes.TryGetValue(r, out WriteList ws) && ws.Count == 1
             && ws[0] is { Op: Opcode.Copy, Operands.Count: 1 } load)
             o = load.Operands[0];
         return o is SymOperand { Name: var name } && name.StartsWith("str_", StringComparison.Ordinal);
@@ -2331,8 +2331,8 @@ continue;
     /// </summary>
     private List<Instr>? JoinedAllocations(Function f, VReg joined, long budget, List<VReg>? promoted = null)
     {
-        Dictionary<VReg, List<Instr>> writes = Writes(f);
-        if (!writes.TryGetValue(joined, out List<Instr>? into) || into.Count < 2 || f.Params.Contains(joined)) return null;
+        RegisterWrites writes = new(f);
+        if (!writes.TryGetValue(joined, out WriteList into) || into.Count < 2 || f.Params.Contains(joined)) return null;
         List<Instr> group = new();
         foreach (Instr w in into)
         {
@@ -2342,7 +2342,7 @@ continue;
             Instr? made = null;
             for (int hop = 0; hop < 8; hop++)
             {
-                if (!writes.TryGetValue(from, out List<Instr>? ws) || ws.Count != 1 || f.Params.Contains(from)) return null;
+                if (!writes.TryGetValue(from, out WriteList ws) || ws.Count != 1 || f.Params.Contains(from)) return null;
                 Instr d = ws[0];
                 if (d.Op == Opcode.Call && IsAllocator(d.Callee)) { made = d; break; }
                 // A member already given a frame slot (an earlier turn of
@@ -2364,20 +2364,6 @@ continue;
             if (!group.Contains(made)) group.Add(made);
         }
         return group.Count + (promoted?.Count ?? 0) >= 2 && group.Count >= 1 ? group : null;
-    }
-
-    /// <summary>Every instruction that writes each register.</summary>
-    private static Dictionary<VReg, List<Instr>> Writes(Function f)
-    {
-        Dictionary<VReg, List<Instr>> writes = new();
-        foreach (Block b in f.Blocks)
-            foreach (Instr i in b.Instrs)
-                if (i.Dest is not null)
-                {
-                    if (!writes.TryGetValue(i.Dest, out List<Instr>? list)) writes[i.Dest] = list = new();
-                    list.Add(i);
-                }
-        return writes;
     }
 
     // ---- recursion ---------------------------------------------------------------------
@@ -2716,20 +2702,13 @@ continue;
     /// </summary>
     private static List<VReg>? FreshWrites(Function f, VReg joined)
     {
-        Dictionary<VReg, List<Instr>> writes = new();
-        foreach (Block b in f.Blocks)
-            foreach (Instr i in b.Instrs)
-                if (i.Dest is { } d)
-                {
-                    if (!writes.TryGetValue(d, out List<Instr>? list)) writes[d] = list = new();
-                    list.Add(i);
-                }
-        if (!writes.TryGetValue(joined, out List<Instr>? top) || top.Count < 2) return null;
+        RegisterWrites writes = new(f);
+        if (!writes.TryGetValue(joined, out WriteList top) || top.Count < 2) return null;
         List<VReg> made = new();
         HashSet<VReg> seen = new();
         void Walk(VReg r, int depth)
         {
-            if (depth > 8 || !seen.Add(r) || !writes.TryGetValue(r, out List<Instr>? list)) return;
+            if (depth > 8 || !seen.Add(r) || !writes.TryGetValue(r, out WriteList list)) return;
             foreach (Instr d in list)
             {
                 if (d.Op == Opcode.Call && IsAllocator(d.Callee)) { if (!made.Contains(d.Dest!)) made.Add(d.Dest!); continue; }

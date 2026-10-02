@@ -14,47 +14,63 @@ public sealed class LoopInvariant : IPass
         Cfg cfg = new(function);
         if (cfg.Roots.Count != 1) return; // EH/indirect entry needs separate reasoning.
         Defs defs = new(cfg);
-        Dictionary<VReg, Block> sites = new();
+        // Where each register is written, by its number. Loops and arrays
+        // throughout: the lambdas here were closures and boxed edge walks
+        // for every block of every function.
+        Block?[] sites = new Block?[function.RegCount];
         foreach (Block block in function.Blocks)
             foreach (Instr instruction in block.Instrs)
-                if (instruction.Dest is { } dest) sites[dest] = block;
+                if (instruction.Dest is { } dest && dest.Id < sites.Length) sites[dest.Id] = block;
 
         foreach (Block header in function.Blocks)
         {
-            Block[] latches = cfg.Preds(header).Where(p => cfg.Dominates(header, p)).ToArray();
-            if (latches.Length == 0) continue;
+            Stack<Block>? todo = null;
+            foreach (Block p in cfg.Preds(header))
+                if (cfg.Dominates(header, p)) (todo ??= new()).Push(p);
+            if (todo is null) continue;
             HashSet<Block> loop = new() { header };
-            Stack<Block> todo = new(latches);
             while (todo.TryPop(out Block? block))
                 if (loop.Add(block)) foreach (Block pred in cfg.Preds(block)) todo.Push(pred);
-            if (loop.Any(b => !cfg.Dominates(header, b))) continue;
-            Block[] outside = cfg.Preds(header).Where(p => !loop.Contains(p)).ToArray();
-            if (outside.Length != 1) continue;
-            Block preheader = outside[0];
-            if (preheader.Terminator?.Op != Opcode.Jump || cfg.Succs(preheader).Count != 1) continue;
+            bool dominated = true;
+            foreach (Block b in loop) if (!cfg.Dominates(header, b)) { dominated = false; break; }
+            if (!dominated) continue;
+            Block? preheader = null;
+            int outside = 0;
+            foreach (Block p in cfg.Preds(header))
+                if (!loop.Contains(p) && outside++ == 0) preheader = p;
+            if (outside != 1) continue;
+            if (preheader!.Terminator?.Op != Opcode.Jump || cfg.Succs(preheader).Count != 1) continue;
             int budget = 16;
             bool changed;
             do
             {
                 changed = false;
-                foreach (Block block in function.Blocks.Where(loop.Contains))
+                foreach (Block block in function.Blocks)
+                {
+                if (!loop.Contains(block)) continue;
                 foreach (Instr instruction in block.Instrs.ToArray())
                 {
                     if (budget == 0 || instruction.Dest is not { } dest || !dest.Type.IsInt()
                         || !defs.IsSingle(dest) || !Safe(instruction.Op)) continue;
-                    bool invariant = instruction.Operands.All(operand => operand switch
+                    bool invariant = true;
+                    foreach (Operand operand in instruction.Operands)
                     {
-                        ImmOperand or SymOperand or SlotOperand => true,
-                        RegOperand reg => defs.IsSingle(reg.Reg)
-                            && (!sites.TryGetValue(reg.Reg, out Block? site)
-                                || (!loop.Contains(site) && cfg.Dominates(site, preheader))),
-                        _ => false,
-                    });
+                        invariant = operand switch
+                        {
+                            ImmOperand or SymOperand or SlotOperand => true,
+                            RegOperand reg => defs.IsSingle(reg.Reg)
+                                && ((uint)reg.Reg.Id >= (uint)sites.Length || sites[reg.Reg.Id] is not { } site
+                                    || (!loop.Contains(site) && cfg.Dominates(site, preheader!))),
+                            _ => false,
+                        };
+                        if (!invariant) break;
+                    }
                     if (!invariant) continue;
                     block.Instrs.Remove(instruction);
-                    preheader.Instrs.Insert(preheader.Instrs.Count - 1, instruction);
-                    sites[dest] = preheader;
+                    preheader!.Instrs.Insert(preheader.Instrs.Count - 1, instruction);
+                    if (dest.Id < sites.Length) sites[dest.Id] = preheader;
                     budget--; changed = true;
+                }
                 }
             } while (changed && budget > 0);
         }

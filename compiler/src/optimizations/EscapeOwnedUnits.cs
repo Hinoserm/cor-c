@@ -305,7 +305,7 @@ public sealed partial class Escape
 
         Dictionary<Function, Dictionary<VReg, Instr>> defsOf = new();
         Dictionary<VReg, Instr> Defs(Function f) => defsOf.TryGetValue(f, out var d) ? d : defsOf[f] = SingleDefs(f);
-        Dictionary<Function, Dictionary<VReg, List<Instr>>> writesOf = new();
+        Dictionary<Function, RegisterWrites> writesOf = new();
 
         // A call's result made for its caller: an allocation, a fresh function
         // of this unit, or -- if the link finds it fresh -- another unit's.
@@ -393,14 +393,14 @@ public sealed partial class Escape
             HashSet<VReg> seen = new();
             Stack<VReg> work = new();
             work.Push(r);
-            if (!writesOf.TryGetValue(f, out Dictionary<VReg, List<Instr>>? writes)) writesOf[f] = writes = Writes(f);
+            if (!writesOf.TryGetValue(f, out RegisterWrites? writes)) writesOf[f] = writes = new(f);
             while (work.Count > 0 && found.Count < 16)
             {
                 VReg at = work.Pop();
                 if (!seen.Add(at)) continue;
                 int param = f.Params.IndexOf(at);
                 if (param >= 0) { found.Add(new Source(SourceKind.Parameter, param, null)); continue; }
-                if (!writes.TryGetValue(at, out List<Instr>? ws)) { found.Add(new Source(SourceKind.Unknown, 0, null)); continue; }
+                if (!writes.TryGetValue(at, out WriteList ws)) { found.Add(new Source(SourceKind.Unknown, 0, null)); continue; }
                 foreach (Instr w in ws)
                 {
                     if (w.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.Phi)
@@ -552,13 +552,13 @@ public sealed partial class Escape
         {
             if (returnedOf.TryGetValue(f, out HashSet<VReg>? known)) return known;
             HashSet<VReg> chain = new();
-            Dictionary<VReg, List<Instr>> writes = writesOf.TryGetValue(f, out var w) ? w : writesOf[f] = Writes(f);
+            RegisterWrites writes = writesOf.TryGetValue(f, out var w) ? w : writesOf[f] = new(f);
             Stack<VReg> work = new();
             foreach (Block rb in f.Blocks)
                 if (rb.Terminator is { Op: Opcode.Ret, Operands: [RegOperand back] }) work.Push(back.Reg);
             while (work.TryPop(out VReg? r))
             {
-                if (!chain.Add(r) || !writes.TryGetValue(r, out List<Instr>? ws)) continue;
+                if (!chain.Add(r) || !writes.TryGetValue(r, out WriteList ws)) continue;
                 foreach (Instr i in ws)
                     if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.Phi)
                         foreach (Operand o in i.Operands) if (o is RegOperand from) work.Push(from.Reg);

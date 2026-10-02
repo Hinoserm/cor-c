@@ -534,31 +534,28 @@ public sealed class Inline : IParallelModulePass
     /// </summary>
     private sealed class FreshValues
     {
-        private readonly Dictionary<VReg, List<Instr>> _writes = new();
-        private readonly Dictionary<VReg, bool> _known = new();
+        private readonly RegisterWrites _writes;
+        // By register number: 0 not asked, 1 no, 2 yes. A register made since
+        // has no writes in the index, and is no allocation's, as before.
+        private readonly byte[] _known;
         public FreshValues(Function f)
         {
-            foreach (Block b in f.Blocks)
-                foreach (Instr i in b.Instrs)
-                    if (i.Dest is { } d)
-                    {
-                        if (!_writes.TryGetValue(d, out List<Instr>? list)) _writes[d] = list = new();
-                        list.Add(i);
-                    }
+            _writes = new RegisterWrites(f);
+            _known = new byte[f.RegCount];
         }
         public bool Made(VReg r) => Made(r, 0);
         private bool Made(VReg r, int depth)
         {
-            if (_known.TryGetValue(r, out bool answer)) return answer;
-            if (depth > 8 || !_writes.TryGetValue(r, out List<Instr>? defs)) return false;
-            _known[r] = false;   // a cycle of copies is no allocation
+            if ((uint)r.Id < (uint)_known.Length && _known[r.Id] != 0) return _known[r.Id] == 2;
+            if (depth > 8 || !_writes.TryGetValue(r, out WriteList defs)) return false;
+            _known[r.Id] = 1;   // a cycle of copies is no allocation
             foreach (Instr d in defs)
             {
                 bool ok = d.Op == Opcode.Call && Escape.IsAllocator(d.Callee)
                     || d.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && d.Operands[0] is RegOperand next && Made(next.Reg, depth + 1);
                 if (!ok) return false;
             }
-            _known[r] = true;
+            _known[r.Id] = 2;
             return true;
         }
     }
