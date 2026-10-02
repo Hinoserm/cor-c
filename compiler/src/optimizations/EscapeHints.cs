@@ -194,8 +194,14 @@ public sealed partial class Escape
         Needs needs = new(this);
         if (freshCallee is not null && !needs.AllowFresh(freshCallee)) return;
         Flow flow = Analyse(f, new[] { made.Dest }, summaries, made, needs: needs);
+        bool tracing = PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal);
+        if (tracing) Console.Error.WriteLine($"pending {f.Name}: {made} escapes={flow.Escapes} via {flow.Why} needs={needs.Condition}");
         if (flow.Escapes || needs.Condition.IsTrue) return;
-        if (!liveness.Tracks(made.Dest) || LiveAtSelf(liveness, pads, b, made, flow.Derived)) return;
+        if (!liveness.Tracks(made.Dest) || LiveAtSelf(liveness, pads, b, made, flow.Derived))
+        {
+            if (tracing) Console.Error.WriteLine($"pending {f.Name}: {made} live at its own making");
+            return;
+        }
         AddPending(needs.Condition);
         // An allocation stays a call to the allocator, not to what the
         // allocator calls: the link recognises allocations by that name.

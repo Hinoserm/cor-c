@@ -1923,6 +1923,7 @@ public sealed partial class Lowering
 
         if (t.Decl?.Elsewhere == true)
         {
+            ShadowDescriptor(t, sym);
             return sym;
         }
 
@@ -2065,6 +2066,47 @@ public sealed partial class Lowering
         }
 
         return sym;
+    }
+
+    /// <summary>
+    /// Another unit's class, as its descriptor will be: the words lowering
+    /// writes for any class, and the virtual slots its own and its ancestors'
+    /// overrides fill (Module.ShadowData). Only a class no generic copy is
+    /// made of, whose every method its own unit emits; a slot object's shared
+    /// stubs would fill is left empty, so nothing names a stub this unit has
+    /// not made.
+    /// </summary>
+    private void ShadowDescriptor(TypeSymbol t, string sym)
+    {
+        if (t.Kind != TypeKind.Class || _m.ShadowData.ContainsKey(sym)) return;
+        for (TypeSymbol? s = t; s is not null; s = s.Base)
+            if (s.Decl is null || s.Decl.Template is not null || s.Decl.Specialised || s.Decl.TypeParams.Count > 0) return;
+        int slots = Math.Max(Math.Max(_b.ToStringSlot, _b.CompareSlot), Math.Max(_b.EqualsSlot, _b.HashSlot)) + 1;
+        List<TypeSymbol> chain = new();
+        for (TypeSymbol? s = t; s is not null; s = s.Base) chain.Insert(0, s);
+        foreach (TypeSymbol s in chain)
+        {
+            foreach (int interfaceSlot in s.InterfaceImplementations.Keys) slots = Math.Max(slots, interfaceSlot + 1);
+            foreach (MethodSymbol m in s.Methods.Where(m => m.VtableSlot >= 0)) slots = Math.Max(slots, m.VtableSlot + 1);
+        }
+        MethodSymbol?[] table = new MethodSymbol?[slots];
+        foreach (TypeSymbol s in chain)
+        {
+            foreach (var implementation in s.InterfaceImplementations)
+                table[implementation.Key] = implementation.Value.Abstract ? null : implementation.Value;
+            foreach (MethodSymbol m in s.Methods.Where(m => m.VtableSlot >= 0))
+                table[m.VtableSlot] = m.Abstract ? null : m;
+        }
+        int w = _t.WordSize;
+        byte[] block = new byte[_t.DescriptorBytes + Math.Max(1, slots) * w];
+        WriteWord(block, DescSize * w, Math.Max(t.InstanceSize, _t.ObjectHeaderBytes));
+        WriteWord(block, DescDepth * w, t.Depth);
+        WriteWord(block, DescPayload * w, _t.ObjectHeaderBytes);
+        DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, Exported = false };
+        for (int i = 0; i < slots; i++)
+            if (table[i] is { } m && m.Decl is not null && m.Owner?.Decl?.Elsewhere == true && m.Owner.Decl.Template is null)
+                item.Relocs.Add(new DataReloc(_t.DescriptorBytes + i * w, CallLabel(m), 0));
+        _m.ShadowData[sym] = item;
     }
 
     private static void AddInterfaceClosure(TypeSymbol face, List<TypeSymbol> into)

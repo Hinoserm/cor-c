@@ -147,6 +147,25 @@ public sealed class UnitBackend : IUnitBackend
                 Interlocked.Add(ref _lifetimes, taken);
                 new Inline { SmallBody = 40, GrowthLimit = 1024, ConstantBranchBody = 160, FreshOwnerBody = 0 }.Run(local);
                 cleanup.Run(local);
+                // AND AGAIN OVER WHAT THAT INLINED: an imported body is the IR
+                // its unit archived before its own lifetime pass, so a block
+                // it makes and drops -- FromInt's scratch digits -- came in
+                // with no free. The objects owned above are frees already,
+                // which this run takes for escapes and leaves alone.
+                byte[]? again = Escape.ReadsOwnedField(function, link!) ? IrFunctionCodec.Write(function) : null;
+                int more = Escape.RunAtLink(function, link!);
+                if (more < 0)
+                {
+                    function = IrFunctionCodec.Read(again!, new IrReadBudget(64L * 1024 * 1024));
+                    local.Functions[0] = function;
+                    more = 0;
+                }
+                if (more > 0)
+                {
+                    Interlocked.Add(ref _lifetimes, more);
+                    new Inline { SmallBody = 40, GrowthLimit = 1024, ConstantBranchBody = 160, FreshOwnerBody = 0 }.Run(local);
+                    cleanup.Run(local);
+                }
             }
             // Written out last here too: the link's lifetime pass saw them as
             // notes to the collector (CardMarks).

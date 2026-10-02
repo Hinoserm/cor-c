@@ -10,6 +10,14 @@ public sealed class Module
     public List<Function> Functions { get; } = new();
     public List<DataItem> Data { get; } = new();
 
+    /// <summary>
+    /// What another unit's descriptors hold, as far as this one can know it
+    /// from their declarations: a non-generic class's virtual slots. Never
+    /// emitted; read by Devirtualize, so a call on an object made in sight
+    /// whose class another unit defines (a StringBuilder's ToString) is direct.
+    /// </summary>
+    public Dictionary<string, DataItem> ShadowData { get; } = new(StringComparer.Ordinal);
+
     /// <summary>The function the program starts in, or null for a library.</summary>
     public string? Entry { get; set; }
     /// <summary>Other compilation units may call exported definitions, even when this unit owns Main.</summary>

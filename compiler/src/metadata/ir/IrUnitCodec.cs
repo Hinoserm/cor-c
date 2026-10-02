@@ -66,6 +66,14 @@ public static class IrUnitCodec
         foreach (DataItem item in module.Data)
             records.Add(new("D:" + item.Name, false, 0, Array.Empty<string>(), IrDataCodec.Write(item),
                 item.Relocs.Select(relocation => relocation.Symbol).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray()));
+        // Other units' descriptors as this one knew them (Module.ShadowData):
+        // the late passes the link runs again devirtualize as the compile did.
+        foreach (DataItem item in module.ShadowData.Values.OrderBy(item => item.Name, StringComparer.Ordinal))
+            // Its slots are calls the unit may come to make: the link gives
+            // the unit their answers (LifetimeSolver.For).
+            records.Add(new("S:" + item.Name, false, 0,
+                item.Relocs.Select(relocation => relocation.Symbol).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray(),
+                IrDataCodec.Write(item)));
         return records;
     }
 
@@ -134,6 +142,13 @@ public static class IrUnitCodec
             foreach (IrArchiveEntry entry in archive.Entries.Values)
             {
                 if (entry.Key == "M:unit") continue;
+                if (entry.Key.StartsWith("S:", StringComparison.Ordinal))
+                {
+                    DataItem shadow = IrDataCodec.Read(archive.ReadBody(entry.Key), memoryBudget, budget);
+                    if (entry.Key != "S:" + shadow.Name) throw new InvalidDataException("IR shadow key mismatch");
+                    module.ShadowData[shadow.Name] = shadow;
+                    continue;
+                }
                 if (retained is not null && !retained.Contains(entry.Key)) continue;
                 if (entry.Key.StartsWith("F:", StringComparison.Ordinal))
                 {

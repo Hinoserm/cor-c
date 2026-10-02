@@ -97,7 +97,18 @@ public sealed class Devirtualize : IModulePass
                 if (i.Op != Opcode.Load || i.Size != word || i.Dest is null || i.Dest.Type != IrTypes.Word) continue;
                 if (Symbol(i.Operands[0]) is not { } table || !items.TryGetValue(table.Name, out DataItem? item)) continue;
                 long at = table.Offset + i.Offset;
-                if (item.Relocs.FirstOrDefault(rel => rel.Offset == at) is not { Symbol: { } named } exact) continue;
+                if (item.Relocs.FirstOrDefault(rel => rel.Offset == at) is not { Symbol: { } named } exact)
+                {
+                    // A type's flags word (Lowering's DescFlags): what a
+                    // string's ToString, a sequence's walk, tests the
+                    // descriptor for. Written by lowering and nothing after
+                    // it, unlike words the link fills in.
+                    if (table.Name.StartsWith("t_", StringComparison.Ordinal) && at == DescFlagsWord * word && at + word <= item.Bytes.Length
+                        && !item.Relocs.Any(rel => rel.Offset == at))
+                        b.Instrs[k] = new Instr { Op = Opcode.Copy, Dest = i.Dest, Line = i.Line,
+                            Operands = { new ImmOperand(word == 8 ? BitConverter.ToInt64(item.Bytes, (int)at) : BitConverter.ToInt32(item.Bytes, (int)at), i.Dest.Type) } };
+                    continue;
+                }
                 b.Instrs[k] = new Instr { Op = Opcode.Copy, Dest = i.Dest, Line = i.Line, Operands = { new SymOperand(named, exact.Addend) } };
             }
         defs = new(f, buildCfg: false);
@@ -339,11 +350,15 @@ public sealed class Devirtualize : IModulePass
         }
     }
 
+    /// <summary>Lowering's DescFlags: the descriptor word a type's kind is in.</summary>
+    private const int DescFlagsWord = 6;
+
     internal static Dictionary<string, DataItem> ReadOnlyItems(Module m)
     {
         Dictionary<string, DataItem> items = new(StringComparer.Ordinal);
         foreach (DataItem d in m.Data)
             if (d.ReadOnly && !d.Zero) items[d.Name] = d;
+        foreach ((string name, DataItem shadow) in m.ShadowData) items.TryAdd(name, shadow);
         return items;
     }
 }
@@ -367,7 +382,6 @@ public sealed class LateCleanup : IModulePass
         IPass[] after = { new ConstantAndCopyPropagation(), new ConstantFold(), new BranchSimplify(), new DeadCodeElimination() };
         foreach (Function f in m.Functions)
         {
-            if (f.Async is not null) continue;
             // Twice round: a test folded to a constant is a register until it
             // is propagated into the branch that reads it, and the branch gone,
             // the enumerator is the one object, whose vtable can then be read.

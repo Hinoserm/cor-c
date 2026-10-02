@@ -84,6 +84,8 @@ public sealed partial class Escape : IModulePass
             byName[f.Name] = f;
         }
         _defined.UnionWith(byName.Keys);
+        _returnsFirst = new(StringComparer.Ordinal);
+        _bodies = _defined;
         _hinting = m.LeavesLinkHints;
         _inserted = _bookkeeping;
         _unresolvedWhy = Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 0 } ? new() : null;
@@ -103,8 +105,18 @@ public sealed partial class Escape : IModulePass
         foreach (List<Function> cycle in CallCycles(m, byName))
         {
             SummariseCycle(cycle, summaries);
+            foreach (Function f in cycle) SummariseReturnsFirst(f, summaries);
             foreach (Function f in cycle) InvokeOnly(f, summaries);
-            foreach (Function f in cycle)
+            // ROUND AGAIN INSIDE A CYCLE while it finds more: a member may
+            // return what another makes, and be asked first -- Substring can
+            // throw, its message is built, and StringBuilder.ToString, which
+            // hands back Substring's string, was never fresh. Found fresh
+            // only grows, so this settles.
+            List<Function> todo = cycle;
+            for (int round = 0; round < 4 && todo.Count > 0; round++)
+            {
+            int freshBefore = _fresh.Count;
+            foreach (Function f in todo)
             {
             // Whether what it returns is a fresh object it hands over: made
             // here (or by a callee that hands it over in turn), never stored
@@ -114,6 +126,8 @@ public sealed partial class Escape : IModulePass
             // now when the condition is already true.
             LifetimeCondition? freshHint = FreshHint(f, summaries, out List<Instr>? origins, out HashSet<VReg>? chain);
             _freshHints[f.Name] = freshHint;
+            if (PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal))
+                Console.Error.WriteLine($"freshhint {f.Name}: {(freshHint is null ? "not fresh" : freshHint.IsTrue ? "fresh" : "fresh if " + string.Join(",", freshHint.Stays.Select(s => s.Callee + ":" + s.Argument).Concat(freshHint.Fresh)))}");
             if (freshHint is not null && (freshHint.IsTrue || _hinting))
             {
                 LifetimeFields? returned = _hinting ? new() : null;
@@ -130,6 +144,9 @@ public sealed partial class Escape : IModulePass
             // (EscapeFields): the reference fields that hold only objects
             // made for them may be freed with an owner that dies.
             _paramFields[f.Name] = ParameterFields(f, summaries);
+            }
+            if (cycle.Count == 1 || _fresh.Count == freshBefore) break;
+            todo = todo.Where(f => !_fresh.Contains(f.Name)).ToList();
             }
         }
 
@@ -1573,6 +1590,39 @@ continue;
         "m_String_FromInt_1_V$I64",
     };
 
+    /// <summary>
+    /// FUNCTIONS WHOSE FIRST ARGUMENT LEAVES ONLY BY BEING HANDED BACK: a
+    /// builder's Append returns the builder, an iterator's GetEnumerator
+    /// returns itself. Summarised as escaping it, every StringBuilder the
+    /// compiler builds a name in was the collector's. A caller takes the
+    /// result for the argument again (Analyse).
+    /// </summary>
+    [ThreadStatic] private static HashSet<string>? _returnsFirst;
+    /// <summary>The functions this run holds bodies for: their own answers stand (ReturnsFirst).</summary>
+    [ThreadStatic] private static HashSet<string>? _bodies;
+
+    private static readonly string[] ReturnsFirstKnown =
+    {
+        "m_StringBuilder_Append_", "m_StringBuilder_AppendLine_", "m_StringBuilder_AppendFormat_", "m_StringBuilder_AppendJoin_",
+        "m_StringBuilder_Insert_", "m_StringBuilder_Remove_", "m_StringBuilder_Replace_", "m_StringBuilder_Clear_0",
+    };
+
+    private static bool ReturnsFirst(string callee)
+    {
+        if (_returnsFirst?.Contains(callee) == true) return true;
+        // In a unit that does not hold the library's bodies.
+        if (_bodies?.Contains(callee) == true) return false;
+        foreach (string known in ReturnsFirstKnown) if (callee.StartsWith(known, StringComparison.Ordinal)) return true;
+        return false;
+    }
+
+    private void SummariseReturnsFirst(Function f, Dictionary<string, bool[]> summaries)
+    {
+        if (f.Params.Count == 0 || f.Params[0].Type is not (IrType.I32 or IrType.I64)) return;
+        if (!summaries.TryGetValue(f.Name, out bool[]? escapes) || escapes.Length == 0 || !escapes[0]) return;
+        if (!Analyse(f, new[] { f.Params[0] }, summaries, null, returnsAny: true).Escapes) (_returnsFirst ??= new(StringComparer.Ordinal)).Add(f.Name);
+    }
+
     internal static void SeedKnown(Dictionary<string, bool[]> summaries)
     {
         foreach ((string name, int count) in KeepsNothing) summaries.TryAdd(name, new bool[count]);
@@ -1855,7 +1905,7 @@ continue;
     internal static Flow Analyse(Function f, IEnumerable<VReg> roots, Dictionary<string, bool[]> summaries, Instr? source,
         HashSet<Instr>? ownedStores = null, HashSet<VReg>? returnable = null, HashSet<VReg>? joinable = null,
         Needs? needs = null, bool handOff = false, HashSet<Instr>? consumers = null,
-        bool invokeReceiverStays = false, bool closure = false)
+        bool invokeReceiverStays = false, bool closure = false, bool returnsAny = false)
     {
         Flow flow = new() { Source = source };
         foreach (VReg r in roots)
@@ -1999,6 +2049,11 @@ continue;
                             // pointer: the runtime's contract with this pass.
                             break;
 
+                        case Opcode.Ret when returnsAny:
+                            // Handed back to the caller, who is told so
+                            // (ReturnsFirst): its result is the argument.
+                            break;
+
                         case Opcode.Ret when returnable is not null:
                             // Handing the object back: not an escape when it
                             // is the object's base, by a register of the
@@ -2072,13 +2127,18 @@ continue;
                                 // unit's function, or one of this unit's whose
                                 // own answer waits on another unit, is a
                                 // condition rather than an escape.
+                                // HANDED BACK AND KEPT NOWHERE ELSE: the call's
+                                // result is the object again (a builder's
+                                // Append, an iterator's GetEnumerator) -- known
+                                // here, not a condition on the link.
+                                if (a == 0 && ReturnsFirst(i.Callee)) { Derive(i.Dest); continue; }
                                 if (needs is not null && needs.Allow(i.Callee, a)) continue;
                                 flow.Escapes = true;
                             }
                             // The result of a call that took the pointer is
-                            // not assumed to be the pointer: a callee that
-                            // returns its argument is summarised as escaping
-                            // that argument.
+                            // otherwise not assumed to be the pointer: a callee
+                            // that returns its argument some other way is
+                            // summarised as escaping it.
                             break;
                         }
 
@@ -2617,6 +2677,9 @@ continue;
         return f.Blocks.OrderByDescending(b => depth.GetValueOrDefault(b)).ToList();
     }
 
+    /// <summary>CORSAC_PROMOTE_TRACE=&lt;function&gt;: each allocation PromoteIn looks at there, and what it decided.</summary>
+    private static readonly string? PromoteTrace = Environment.GetEnvironmentVariable("CORSAC_PROMOTE_TRACE") is { Length: > 0 } t ? t : null;
+
     private void PromoteIn(Function f, Dictionary<string, bool[]> summaries, bool canFree, OwnedFieldEscape fields)
     {
         // AN ASYNC BODY'S OR AN ITERATOR'S FRAME does not outlive a
@@ -2660,6 +2723,8 @@ continue;
 
                 bool sized = ConstantSize(f, i.Operands[0], out long size)
                              && size > 0 && size <= ObjectLimit && size <= budget;
+                bool tracing = PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal);
+                if (tracing) Console.Error.WriteLine($"promote {f.Name}: {i} sized={sized} canFree={canFree}");
                 if (!sized && !canFree)
                 {
                     continue;
@@ -2726,6 +2791,7 @@ continue;
                     Flow together = Analyse(f, group.Select(g => g.Dest!).Concat(promotedMembers).ToList(), summaries, i);
                     if (!together.Escapes) flow = together;
                 }
+                if (tracing) Console.Error.WriteLine($"promote {f.Name}: {i} escapes={flow.Escapes} via {flow.Why}");
                 if (flow.Escapes)
                 {
                     // Left to the collector: say why, for the link (EscapeHints).
@@ -2751,11 +2817,20 @@ continue;
                     : flow.Derived.Where(r => liveness.Tracks(r)).ToHashSet();
                 if (LiveAtSelf(liveness, pads, b, i, selfDerived))
                 {
+                    if (tracing) Console.Error.WriteLine($"promote {f.Name}: {i} live at its own making");
                     continue;
                 }
-                if (coroutine && SuspendsWhileLive(f, liveness, pads, flow.Derived))
+                // Held across a suspension, an object can only stay on the heap:
+                // AsyncTransform makes every frame slot a field of the state
+                // machine and saves every live register there, so the pointer
+                // an owned allocation keeps (Own's slot) survives, but an
+                // object's own bytes in a frame slot would be a block inside
+                // the machine.
+                bool heldAcross = coroutine && SuspendsWhileLive(f, liveness, pads, flow.Derived);
+                if (heldAcross && sized)
                 {
-                    continue;
+                    sized = false;
+                    if (!canFree) continue;
                 }
 
                 if (!sized)
@@ -2985,6 +3060,9 @@ continue;
                          && !IsAllocator(i.Callee) && !IsCollectorNote(i.Callee) && !_bookkeeping.Contains(i))
                     waiting.Add((b, i));
             }
+        if (PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal))
+            foreach (Instr i in f.Blocks.SelectMany(b => b.Instrs).Where(i => i.Op == Opcode.Call && i.Callee is not null && i.Dest is not null && !IsAllocator(i.Callee)))
+                Console.Error.WriteLine($"fresh {f.Name}: {i} fresh={IsFreshCall(i)} hinting={_hinting}");
         if (calls.Count == 0 && waiting.Count == 0) return;
         Defs defs = new(f, buildCfg: false);
         HashSet<VReg>? addresses = waiting.Count == 0 ? null : AddressRegisters(f);
@@ -3381,6 +3459,28 @@ continue;
         Function f = liveness.Cfg.Function;
         Cfg cfg = liveness.Cfg;
         table[f.Entry] = table.GetValueOrDefault(f.Entry) ?? new HashSet<VReg>();
+        // A handler record reached through a register written once with its
+        // address (`%r = copy &slot`), as a coroutine's body keeps it.
+        Dictionary<VReg, FrameSlot>? slotOf = null;
+        FrameSlot? SlotAt(Operand o)
+        {
+            if (o is SlotOperand direct) return direct.Slot;
+            if (o is not RegOperand r) return null;
+            if (slotOf is null)
+            {
+                slotOf = new();
+                Dictionary<VReg, int> writes = new();
+                foreach (Block b in f.Blocks)
+                    foreach (Instr i in b.Instrs)
+                        if (i.Dest is { } d)
+                        {
+                            writes[d] = writes.GetValueOrDefault(d) + 1;
+                            if (i.Op == Opcode.Copy && i.Operands[0] is SlotOperand { } s0) slotOf[d] = s0.Slot;
+                        }
+                foreach ((VReg d, int n) in writes) if (n > 1) slotOf.Remove(d);
+            }
+            return slotOf.TryGetValue(r.Reg, out FrameSlot? slot) ? slot : null;
+        }
         foreach (Block pad in f.Blocks)
         {
             if (!pad.IsLandingPad) continue;
@@ -3395,8 +3495,8 @@ continue;
                     if (i.Op != Opcode.LabelAddr || i.Dest is null || i.Targets.Count != 1 || !ReferenceEquals(i.Targets[0], pad)) continue;
                     for (int j = k + 1; j < b.Instrs.Count; j++)
                         if (b.Instrs[j] is { Op: Opcode.Store } st && st.Operands.Count >= 2 && st.Operands[1] is RegOperand v && v.Reg == i.Dest
-                            && st.Operands[0] is SlotOperand slot)
-                        { push = (b, j, slot.Slot); break; }
+                            && SlotAt(st.Operands[0]) is { } slot)
+                        { push = (b, j, slot); break; }
                 }
             List<Block> region;
             if (push is not { } p)
@@ -3405,12 +3505,12 @@ continue;
             }
             else
             {
-                bool Pops(Block b) => b.Instrs.Any(i => i.Op == Opcode.Load && i.Offset == 0 && i.Operands[0] is SlotOperand s && s.Slot == p.Record);
+                bool Pops(Block b) => b.Instrs.Any(i => i.Op == Opcode.Load && i.Offset == 0 && SlotAt(i.Operands[0]) == p.Record);
                 region = new();
                 HashSet<Block> seen = new(ReferenceEqualityComparer.Instance);
                 Stack<Block> work = new();
                 // A pop later in the push's own block ends it there.
-                bool closedHere = p.B.Instrs.Skip(p.I + 1).Any(i => i.Op == Opcode.Load && i.Offset == 0 && i.Operands[0] is SlotOperand s && s.Slot == p.Record);
+                bool closedHere = p.B.Instrs.Skip(p.I + 1).Any(i => i.Op == Opcode.Load && i.Offset == 0 && SlotAt(i.Operands[0]) == p.Record);
                 if (!closedHere) foreach (Block n in cfg.Succs(p.B)) work.Push(n);
                 while (work.Count > 0)
                 {
