@@ -9,22 +9,24 @@
 // `where T : struct` travels with a generic declared in a unit compiled
 // apart (the template format and the header carry TypeParam.Struct), so the
 // consumer's own copies keep `T?` as Nullable<T>: dropped on the way through,
-// the copy of Equal<Path> here took plain Paths and refused a Path?.
+// the copy of Equal<Spot> here took plain Spots and refused a Spot?. (Not
+// `Path`: the standard library's Path is in the global namespace, and a
+// second global Path in another unit is a second type of the one name.)
 
 using System;
 using LiftUnits;
 
-readonly record struct Path(int P, string C);
+readonly record struct Spot(int P, string C);
 
 static class Program
 {
     static int Main()
     {
-        Path? a = new Path(1, "x");
-        Path? n = null;
-        Path plain = new Path(1, "x");
-        Console.WriteLine(Lift.Equal<Path>(a, a) + " " + Lift.Equal(a, n) + " " + Lift.Equal(plain, a));
-        Console.WriteLine(Lift.Or(a, new Path(0, "f")).C + " " + Lift.Or(n, new Path(0, "f")).C + " " + Lift.Seven());
+        Spot? a = new Spot(1, "x");
+        Spot? n = null;
+        Spot plain = new Spot(1, "x");
+        Console.WriteLine(Lift.Equal<Spot>(a, a) + " " + Lift.Equal(a, n) + " " + Lift.Equal(plain, a));
+        Console.WriteLine(Lift.Or(a, new Spot(0, "f")).C + " " + Lift.Or(n, new Spot(0, "f")).C + " " + Lift.Seven());
 
         Box<int> b = new Box<int>();
         bool before = b.Has;

@@ -52,8 +52,10 @@ static class P
         for (int k = 0; k < 2000; k++) total += Run(Front.CompileUnit(source));
         long freed = Gc.RegionFreedBytes - freedBefore, perCall = (Gc.RegionBlocks - blocksBefore) / 2000;
         Console.WriteLine(total);
-        // 31 nodes a call; the rest of a call's region holds 44 blocks.
-        Console.WriteLine("tree given back " + (perCall >= 70));
+        // 31 nodes a call, and some 38 blocks more of the call's region
+        // (what owned elements do not free one at a time first); without
+        // the tree, nothing is taken here at all.
+        Console.WriteLine("tree given back " + (perCall >= 60));
         Console.WriteLine("freed by regions " + (freed >= 2000L * 2400));
     }
 }

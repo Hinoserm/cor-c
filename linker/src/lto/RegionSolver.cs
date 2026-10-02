@@ -257,6 +257,13 @@ public static class RegionSolver
         private readonly List<int> _copyFunction = new();
         private readonly List<int> _copyContext = new();
         private readonly List<int> _copyBase = new();
+        // A COPY RUN FOR WHAT NOBODY FOLLOWS (Unseen) IS ONE NODE: everything
+        // it is handed is the unknown object, so every register in it holds
+        // what the unknown object reaches and what it makes -- as one node
+        // they hold the same, and the copies cost one node each rather than
+        // a second body of every function a root reaches, which ran the
+        // compiler's own link out of memory.
+        private readonly List<bool> _copyCollapsed = new();
         private readonly Dictionary<long, int> _copyIds = new();
         private readonly List<int>?[] _copiesOf;
         // Per function: the copies made for an object (MostContexts).
@@ -377,14 +384,20 @@ public static class RegionSolver
             // a call nobody can name may reach it, and so may the kernel,
             // handed it by a system call (a signal's handler), whether or not
             // the IR makes any such call.
-            SortedSet<int> started = new();
+            SortedSet<int> started = new(), addressed = new();
             for (int f = 0; f < _functions.Count; f++)
                 if (_functions[f].Name == _entry || _foreign.Contains(_functions[f].Name)) started.Add(f);
             if (started.Count == 0) return GiveUp("no entry " + _entry);
             for (int u = 0; u < _units.Count; u++)
                 foreach (string name in _units[u].AddressTaken)
-                    if (Resolve(u, name) is { } targets) started.UnionWith(targets);
-            foreach (int f in started) Root(f);
+                    if (Resolve(u, name) is { } targets) addressed.UnionWith(targets);
+            // The entry and what code outside the IR names run as they are
+            // written, in the copy every followed call runs: the program
+            // itself, Main and all it calls, is beneath them. What only an
+            // address reaches runs a copy of its own (Unseen), whose callees
+            // run in theirs.
+            foreach (int f in started) Root(f, unseen: false);
+            foreach (int f in addressed) Root(f, unseen: true);
             while (true)
             {
                 if (!Solve()) return GiveUp("too much to hold");
@@ -398,7 +411,7 @@ public static class RegionSolver
                         binding.Unbound = false;
                         foreach (int g in binding.Direct!)
                         {
-                            int copy = CopyOf(g, -1);
+                            int copy = CopyOf(g, -1, binding.Copy);
                             if (binding.Seen.Add(copy)) To(binding.Copy, binding.Call, copy, receiver: false);
                         }
                         more = true;
@@ -437,9 +450,9 @@ public static class RegionSolver
         private const int Unseen = -2;
 
         // A function called from where nobody can say, with anything, its return going anywhere.
-        private void Root(int f)
+        private void Root(int f, bool unseen)
         {
-            int copy = CopyOf(f, Unseen);
+            int copy = CopyOf(f, unseen ? Unseen : -1);
             if (!_roots.Add(copy)) return;
             RegionFunction function = _functions[f];
             for (int k = 0; k < function.Parameters; k++) Add(Node(copy, k), GlobalLocation);
@@ -490,12 +503,16 @@ public static class RegionSolver
 
         private static long Key(int function, int context) => ((long)function << 32) | (uint)(context + 1);
 
-        private int Node(int copy, int local) => _copyBase[copy] + local;
+        private int Node(int copy, int local) => _copyCollapsed[copy] ? _copyBase[copy] : _copyBase[copy] + local;
 
         /// <summary>A function's copy for an object it is called on (-1: none; Unseen: code nobody follows calls it), made on first use with its constraints.</summary>
-        private int CopyOf(int f, int context)
+        private int CopyOf(int f, int context, int from = -1)
         {
             RegionFunction function = _functions[f];
+            // WHAT AN UNSEEN COPY CALLS IS UNSEEN TOO: its one node holds the
+            // unknown object, and handed to a function's shared copy it would
+            // be every caller's argument there.
+            if (from >= 0 && _copyCollapsed[from]) context = Unseen;
             if (context == Unseen) { }
             else if (!function.Instance) context = -1;
             else if (context >= 0 && (_objectSite[context] < 0 || _objectDepth[context] >= _maxDepth)) context = -1;
@@ -513,12 +530,15 @@ public static class RegionSolver
             _copyFunction.Add(f);
             _copyContext.Add(context);
             _copyBase.Add(_parent.Count);
+            _copyCollapsed.Add(context == Unseen);
             (_copiesOf[f] ??= new()).Add(copy);
             _callees.Add(new());
             _callers.Add(new());
-            for (int n = 0; n < function.Nodes; n++) NewNode();
+            if (context == Unseen) NewNode();
+            else for (int n = 0; n < function.Nodes; n++) NewNode();
             if (_over) return copy;
             if (context >= 0) Add(Node(copy, 0), Location(context, 0));
+            if (context == Unseen) Add(Node(copy, 0), GlobalLocation);
             foreach (RegionConstraint c in function.Constraints)
             {
                 int a = Node(copy, c.A);
@@ -964,7 +984,7 @@ public static class RegionSolver
             {
                 _named[_copyFunction[copy]].Add(g);
                 if (_functions[g].Instance && call.Arguments.Length > 0 && call.Arguments[0] >= 0) instance.Add(g);
-                else To(copy, call, CopyOf(g, -1));
+                else To(copy, call, CopyOf(g, -1, copy));
             }
             if (instance.Count > 0) Watch(new Binding { Copy = copy, Call = call, Direct = instance }, Node(copy, call.Arguments[0]));
         }
@@ -999,7 +1019,7 @@ public static class RegionSolver
                 binding.Unbound = false;
                 // On the unknown object, the copy code nobody follows runs (Unseen).
                 int context = o == Global ? Unseen : _locationOffset[loc] == 0 ? o : -1;
-                foreach (int g in binding.Direct) Handed(binding, CopyOf(g, context), loc);
+                foreach (int g in binding.Direct) Handed(binding, CopyOf(g, context, binding.Copy), loc);
                 return;
             }
             // A virtual call runs, on an object whose stamp is known, the
@@ -1011,7 +1031,7 @@ public static class RegionSolver
                 foreach (int g in Resolve(_unitOf[caller], method)!)
                 {
                     _named[caller].Add(g);
-                    Handed(binding, CopyOf(g, o), loc);
+                    Handed(binding, CopyOf(g, o, binding.Copy), loc);
                 }
                 return;
             }
@@ -1019,7 +1039,7 @@ public static class RegionSolver
                 foreach (int g in Resolve(_unitOf[caller], target)!)
                 {
                     _named[caller].Add(g);
-                    Handed(binding, CopyOf(g, o == Global ? Unseen : -1), loc);
+                    Handed(binding, CopyOf(g, o == Global ? Unseen : -1, binding.Copy), loc);
                 }
         }
 
@@ -1038,7 +1058,7 @@ public static class RegionSolver
                 foreach (int g in Resolve(u, target)!)
                 {
                     _named[_copyFunction[binding.Copy]].Add(g);
-                    To(binding.Copy, binding.Call, CopyOf(g, -1));
+                    To(binding.Copy, binding.Call, CopyOf(g, -1, binding.Copy));
                 }
         }
 

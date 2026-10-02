@@ -364,6 +364,67 @@ public static class Driver
     /// <summary>The project session in force, when sources are compiled together.</summary>
     internal static Corsac.Lang.Metadata.DeclarationSession? Session { get; set; }
 
+    /// <summary>What a unit's front end leaves for the rest of its compile: the module and what is taken from the syntax and bindings before they go.</summary>
+    private sealed record UnitFront(Module Module, Dictionary<string, string> Entries, Dictionary<string, byte[]> DefinitionSemantics,
+        List<ManagedTypeLayout> Layouts, List<RegistrySchema> Schemas);
+
+    /// <summary>
+    /// Parses, binds and lowers a unit, and takes from its syntax and
+    /// bindings what is written into the object after code generation: the
+    /// definitions' semantics, the managed layouts and the registry schemas.
+    /// Null on an error, which is reported here. Never inlined, so that
+    /// everything the front end makes is dead when it returns.
+    /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static UnitFront? FrontToModule(List<string> files, string name, bool library, List<string> libraryMark, List<string> symbols,
+        List<string> references, int workers, IndexedDeclarations? declarations, Action<string> phase)
+    {
+        (CompilationUnit unit, BindResult bound)? front =
+            Frontend.Compile(files, name, library, libraryMark, symbols, references, workers, declarations);
+        if (declarations is not null) Console.Error.WriteLine("indexed declaration payloads loaded=" + declarations.PayloadLoads
+            + " passes=" + declarations.Passes + " token-cache hits=" + declarations.Tokens.Hits
+            + " misses=" + declarations.Tokens.Misses + " bytes=" + declarations.Tokens.ResidentBytes
+            // ALLOCATED BYTES ARE THE STOPWATCH HERE. A machine with other
+            // builds on it cannot be timed: wall clock moves with whatever
+            // else is running. What the compiler allocates does not, so a
+            // change that removes repeated work shows up as a smaller number
+            // whoever else is using the processors.
+            + " allocated=" + GC.GetTotalAllocatedBytes()
+            + " specialisations=" + Lang.Monomorphiser.Specialisations + " members=" + Lang.Monomorphiser.SpecialisedMembers);
+        if (front is null)
+        {
+            return null;
+        }
+
+        List<CompileError> errors = new();
+        Dictionary<string, string> entries = new(StringComparer.Ordinal);
+#if COR_SELFHOST_BENCHMARK
+        Program.BenchmarkStage("lower");
+#endif
+        Module module = Lowering.Lower(front.Value.bound, front.Value.unit, name, library, errors, entries);
+        module.LibraryCodeIsShared = Corsac.Lang.Lower.Lowering.Dynamic;
+        phase("lower");
+
+        if (errors.Count > 0)
+        {
+            foreach (CompileError e in errors)
+            {
+                Console.Error.WriteLine(e.ToString());
+            }
+            return null;
+        }
+
+        Dictionary<string, byte[]> definitionSemantics = DefinitionSemantics.Capture(module);
+
+        // THE FRONT END IS LET GO HERE. Its syntax, symbols and bindings were
+        // held to the end of the unit for two things written into the object
+        // after code generation, and they were a unit's largest structure
+        // alive through its largest phase. What those two need is taken now.
+        List<ManagedTypeLayout> layouts = ManagedLayouts.Capture(front.Value.bound, library);
+        List<RegistrySchema> schemas = new(front.Value.unit.RegistrySchemas);
+        return new UnitFront(module, entries, definitionSemantics, layouts, schemas);
+    }
+
     internal static int Compile(string[] argv)
     {
         string[] args = Response(argv);
@@ -574,23 +635,6 @@ public static class Driver
         using IndexedDeclarations? declarations = declarationIndex is null ? null
             : Session is not null ? new IndexedDeclarations(Session, files)
             : new IndexedDeclarations(declarationIndex, Value(args, "--assembly")!, files);
-        (CompilationUnit unit, BindResult bound)? front =
-            Frontend.Compile(files, name, library, libraryMark, symbols, references, workers, declarations);
-        if (declarations is not null) Console.Error.WriteLine("indexed declaration payloads loaded=" + declarations.PayloadLoads
-            + " passes=" + declarations.Passes + " token-cache hits=" + declarations.Tokens.Hits
-            + " misses=" + declarations.Tokens.Misses + " bytes=" + declarations.Tokens.ResidentBytes
-            // ALLOCATED BYTES ARE THE STOPWATCH HERE. A machine with other
-            // builds on it cannot be timed: wall clock moves with whatever
-            // else is running. What the compiler allocates does not, so a
-            // change that removes repeated work shows up as a smaller number
-            // whoever else is using the processors.
-            + " allocated=" + GC.GetTotalAllocatedBytes()
-            + " specialisations=" + Lang.Monomorphiser.Specialisations + " members=" + Lang.Monomorphiser.SpecialisedMembers);
-        if (front is null)
-        {
-            return 1;
-        }
-
         // WHERE A UNIT'S TIME AND ALLOCATION GO, by phase, when asked. The
         // frontend's own line covers what happened before this point.
         bool phases = Environment.GetEnvironmentVariable("CORC_REPORT_PHASES") is not null;
@@ -603,33 +647,22 @@ public static class Driver
             Console.Error.WriteLine("phase " + what + " " + phaseClock.ElapsedMilliseconds + "ms " + ((now - phaseBytes) >> 20) + "MiB");
             phaseClock.Restart(); phaseBytes = now;
         }
-        List<CompileError> errors = new();
-        Dictionary<string, string> entries = new(StringComparer.Ordinal);
-#if COR_SELFHOST_BENCHMARK
-        Program.BenchmarkStage("lower");
-#endif
-        Module module = Lowering.Lower(front.Value.bound, front.Value.unit, name, library, errors, entries);
-        module.LibraryCodeIsShared = Corsac.Lang.Lower.Lowering.Dynamic;
-        Phase("lower");
-
-        if (errors.Count > 0)
+        // THE FRONT END IN A CALL OF ITS OWN (FrontToModule): parsing,
+        // binding and lowering make the unit's largest structure -- syntax,
+        // symbols, bindings -- and all of it is dead once the module and the
+        // few things captured from it come back. Done inline, no function
+        // returned where it died, and nothing could give it back as one
+        // (regions open and close at calls).
+        UnitFront? made = FrontToModule(files, name, library, libraryMark, symbols, references, workers, declarations, Phase);
+        if (made is null)
         {
-            foreach (CompileError e in errors)
-            {
-                Console.Error.WriteLine(e.ToString());
-            }
             return 1;
         }
-
-        Dictionary<string, byte[]> definitionSemantics = DefinitionSemantics.Capture(module);
-
-        // THE FRONT END IS LET GO HERE. Its syntax, symbols and bindings were
-        // held to the end of the unit for two things written into the object
-        // after code generation, and they were a unit's largest structure
-        // alive through its largest phase. What those two need is taken now.
-        List<ManagedTypeLayout> layouts = ManagedLayouts.Capture(front.Value.bound, library);
-        List<RegistrySchema> schemas = new(front.Value.unit.RegistrySchemas);
-        front = null;
+        Module module = made.Module;
+        Dictionary<string, string> entries = made.Entries;
+        Dictionary<string, byte[]> definitionSemantics = made.DefinitionSemantics;
+        List<ManagedTypeLayout> layouts = made.Layouts;
+        List<RegistrySchema> schemas = made.Schemas;
         if (args.Contains("--dump-ir"))
         {
             Console.Write(module.Dump());
