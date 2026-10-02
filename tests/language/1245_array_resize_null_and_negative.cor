@@ -1,0 +1,26 @@
+// test: array_resize_null_and_negative
+// expect-exit: 0
+// expect-output:
+// 8 7 2 2 out
+//
+// Array.Resize of a null array makes one of the size asked, as .NET does,
+// and a negative size throws: the region pass grows a set that starts with
+// no array (RegionPointsTo.LocSet), and the native compiler faulted reading
+// the length of the array that was not there.
+
+using System;
+static class P
+{
+    static int[]? few;
+    static void Main()
+    {
+        Array.Resize(ref few, 4);
+        few![0] = 7;
+        Array.Resize(ref few, 8);
+        int[] kept = { 1, 2, 3 };
+        Array.Resize(ref kept, 2);
+        string thrown = "";
+        try { Array.Resize(ref kept, -1); } catch (ArgumentOutOfRangeException) { thrown = "out"; }
+        Console.WriteLine(few.Length + " " + few[0] + " " + kept.Length + " " + kept[1] + " " + thrown);
+    }
+}

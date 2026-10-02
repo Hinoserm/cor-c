@@ -10040,7 +10040,10 @@ static class Array {
     /// parameter is `ref`: an array cannot change its own length, so what
     /// really happens is a new one and an assignment over the caller's
     /// variable. .NET's signature says so and this one says the same.
-    public static void Resize<T>(ref T[] items, int size) {
+    public static void Resize<T>(ref T[]? items, int size) {
+        if (size < 0) { throw new ArgumentOutOfRangeException("newSize"); }
+        // NO ARRAY YET is an empty one, as .NET has it: one of the size asked.
+        if (items is null) { items = new T[size]; return; }
         T[] made = new T[size];
         int count = items.Length < size ? items.Length : size;
 
