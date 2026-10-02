@@ -157,7 +157,10 @@ public sealed partial class Escape : IModulePass
         bool canFree = Provided(Freer);
         bool canFreeFields = canFree && Provided(FieldFreer);
         _fieldSites = canFreeFields && Provided(FieldKeeper);
-        _unitKey = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(m.Name)))[..16];
+        // At the link's own run of a unit's late passes (Module.AtLink), a key
+        // of its own: its field sites are defined from its records (attached
+        // to the regenerated object), never from the compile's alike-named.
+        _unitKey = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(m.Name + (m.AtLink ? "@link" : ""))))[..16];
         OwnedFieldEscape fields = new(byName, summaries);
         // ONLY A CATCH THE PROGRAM CAN REACH KEEPS ANYTHING: one in code nothing
         // calls -- a Forms dispatcher storing what posted work threw, in a

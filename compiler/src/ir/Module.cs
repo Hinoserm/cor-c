@@ -59,6 +59,13 @@ public sealed class Module
     public bool LeavesLinkHints { get; set; }
 
     /// <summary>
+    /// The link running a unit's late passes again (UnitBackend): its field
+    /// sites are named apart from the compile's, and their records go with
+    /// the regenerated object for the link to define.
+    /// </summary>
+    public bool AtLink { get; set; }
+
+    /// <summary>
     /// The program declares it runs without a collector (--no-collector): a
     /// loader that hands over to a kernel and is overwritten. What the
     /// lifetime passes cannot prove is taken from the manual heap and never

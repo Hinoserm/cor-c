@@ -58,14 +58,14 @@ public sealed class UnitBackend : IUnitBackend
         module.PreserveExports = true;
         if (preLate)
         {
-            // NO HINTS FROM THE LINK'S OWN RUN OF THE LATE PASSES: nothing after
-            // the link reads them, and the field sites they named were new
-            // symbols nobody defined -- or, named alike by serial, the unit's
-            // compile-time sites with another field's verdict. That they once
-            // matched rested on the run here repeating the compile's exactly,
-            // which nothing promises (the calls a unit keeps, m.KeepCalls, are
-            // not archived). What the link knows it frees directly (RunAtLink).
-            module.LeavesLinkHints = false;
+            // THE LINK'S OWN RUN OF THE LATE PASSES names field sites apart
+            // from the compile's (Module.AtLink) and hands their records on
+            // with the regenerated object. Named alike, they were symbols
+            // nobody defined -- or the compile's sites of another field, with
+            // that field's verdict: they matched only while the run here
+            // repeated the compile's exactly, which nothing promises (the
+            // calls a unit keeps, m.KeepCalls, are not archived).
+            module.AtLink = true;
             // The whole program's answers the late passes read, for a closed image.
             if (facts?.ForeignCatchable is string[] catchable) module.ForeignCatchable = new(catchable, StringComparer.Ordinal);
             module.OwnedFields = facts?.OwnedFields;
@@ -216,6 +216,12 @@ public sealed class UnitBackend : IUnitBackend
             copy.Bytes.AddRange(section.Bytes); copy.Relocs.AddRange(section.Relocs); result.Sections.Add(copy);
         }
         DefinitionSemantics.Attach(result, semantics);
+        if (preLate && module.LifetimeHints is { FieldSites.Count: > 0 } named)
+        {
+            LifetimeHints sites = new();
+            sites.FieldSites.AddRange(named.FieldSites);
+            sites.Attach(result);
+        }
         return result;
     }
 }

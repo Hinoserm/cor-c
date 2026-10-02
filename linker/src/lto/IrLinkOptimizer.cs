@@ -192,7 +192,12 @@ public static class IrLinkOptimizer
         foreach (var replacement in replacements)
             inputs[replacement.Index] = (inputs[replacement.Index].Name, replacement.Object);
         // Final images do not carry compiler IR or stale native integrity hashes.
-        (int sites, int sitesFreed) = DefineFieldSites(inputs, hintOrder, lifetimes);
+        // The sites a regenerated unit's own late passes named, with the
+        // compile's: each object's records define its symbols.
+        List<LifetimeHints> siteOrder = new(hintOrder);
+        foreach (var replacement in replacements)
+            if (LifetimeHints.Read(replacement.Object) is LifetimeHints regeneratedSites) siteOrder.Add(regeneratedSites);
+        (int sites, int sitesFreed) = DefineFieldSites(inputs, siteOrder, lifetimes);
         foreach (var input in inputs)
             input.Object.Sections.RemoveAll(section => section.Name == IrArchive.SectionName || section.Name == LifetimeHints.SectionName);
         if (lifetimes is not null || sites > 0)

@@ -1,0 +1,30 @@
+// test: builder_strings_across_units
+// units: tests/language/support/915_builder_units.cor
+// expect-exit: 0
+// expect-output:
+// 8711260
+//
+// A StringBuilder made, appended to and read in a unit that does not hold
+// its class: ToString is direct (the class's slots from its declarations,
+// Module.ShadowData), Append hands the builder back (ReturnsFirst), the
+// string ToString makes is fresh (asked again inside its call cycle), and
+// FromInt's scratch digits, inlined at the link, are freed by the link's
+// second lifetime pass.
+
+using System;
+using System.Text;
+static class P
+{
+    static int Work(int k)
+    {
+        StringBuilder made = new StringBuilder();
+        for (int i = 0; i < 8; i++) made.Append("" + (k + i));
+        return made.ToString().Length;
+    }
+    static void Main()
+    {
+        long t = 0;
+        for (int k = 0; k < 200000; k++) t += Work(k);
+        Console.WriteLine(t);
+    }
+}

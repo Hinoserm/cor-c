@@ -1,0 +1,31 @@
+// test: linq_across_units
+// units: tests/language/support/915_builder_units.cor
+// expect-exit: 0
+// expect-output:
+// 7211300
+//
+// Select, Where and string.Join over a List in a unit that does not hold
+// the library: the iterators handed to ToList and Join, and the strings
+// Join builds, as the library's own unit would see them.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+static class P
+{
+    static int Work(List<int> xs, int k)
+    {
+        List<int> doubled = xs.Select(x => x * k).ToList();
+        string joined = string.Join(",", xs.Select(x => x + k));
+        int s = 0;
+        foreach (int v in xs.Where(x => x % 2 == k % 2)) s += v;
+        return doubled.Count + joined.Length + s;
+    }
+    static void Main()
+    {
+        List<int> xs = new() { 1, 2, 3, 4, 5, 6, 7, 8 };
+        long t = 0;
+        for (int k = 0; k < 100000; k++) t += Work(xs, k);
+        Console.WriteLine(t);
+    }
+}
