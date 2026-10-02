@@ -317,6 +317,10 @@ public sealed class RegionPointsTo : IModulePass
                 b.Instrs[k] = Retarget(f, i, InRegion, frame);
                 sites++;
             }
+        // And the pads of what the link brought in and inlined since the
+        // unit's own catch-up: a catch from another unit's body closes the
+        // regions it caught out of too.
+        CatchUp(f);
         return sites;
     }
 
@@ -442,12 +446,19 @@ public sealed class RegionPointsTo : IModulePass
     /// </summary>
     private static void CatchUp(Module m)
     {
-        foreach (Function f in m.Functions)
+        foreach (Function f in m.Functions) CatchUp(f);
+    }
+
+    // Once a pad: a function caught up already (the unit's, then again after
+    // the link brought in and inlined other units' bodies) keeps one call.
+    private static void CatchUp(Function f)
+    {
             foreach (Block b in f.Blocks)
             {
                 if (!b.IsLandingPad) continue;
                 // After the pad's fetch of what was thrown, which must come first.
                 int at = b.Instrs.Count > 0 && b.Instrs[0] is { Op: Opcode.Call, Callee: "__exception" } ? 1 : 0;
+                if (b.Instrs.Skip(at).Take(2).Any(i => i is { Op: Opcode.Call, Callee: Catch })) continue;
                 VReg frame = f.NewReg(IrTypes.Word, "catchframe");
                 b.Instrs.InsertRange(at, new[]
                 {
