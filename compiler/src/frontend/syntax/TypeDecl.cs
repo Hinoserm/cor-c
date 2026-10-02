@@ -19,7 +19,13 @@ public sealed class TypeDecl : Node
     /// a class with four properties made its one list four times.
     /// </summary>
     public bool InitialisersPlaced { get; set; }
-    public List<TypeParam> TypeParams { get; } = new();
+    // Made only when written: most have none, and a list each was the collector's.
+    private static readonly List<TypeParam> NoTypeParams = new();
+    private List<TypeParam>? _typeParams;
+    /// <summary>To read: one shared empty list when there are none, never written through.</summary>
+    public List<TypeParam> TypeParams => _typeParams ?? NoTypeParams;
+    /// <summary>To write: made on first use.</summary>
+    public List<TypeParam> WritableTypeParams => _typeParams ??= new();
     /// <summary>The attributes written on it, by name: `[Flags]` is "Flags".</summary>
     public List<string> Attributes { get; } = new();
 

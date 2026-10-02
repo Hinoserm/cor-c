@@ -1231,7 +1231,7 @@ public static class Gir
                 {
                     p.Constraints.Add(Type());
                 }
-                d.TypeParams.Add(p);
+                d.WritableTypeParams.Add(p);
             }
 
             int bases = Count();

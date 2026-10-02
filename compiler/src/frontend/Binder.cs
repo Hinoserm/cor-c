@@ -155,7 +155,7 @@ public sealed partial class Binder
             _r.Types.Remove(before);
         }
         TypeSymbol moved = new() { Name = library.Name, Key = after, Kind = library.Kind, Decl = library };
-        AddNames(moved.TypeParams, library.TypeParams);
+        if (library.TypeParams.Count > 0) AddNames(moved.WritableTypeParamNames, library.TypeParams);
         _r.Types[after] = moved;
 
         // Its nested types declared already go with it; the rest are moved as
@@ -171,7 +171,7 @@ public sealed partial class Binder
             innerDecl.Outer = MovedPath(innerDecl.Outer) ?? innerDecl.Outer;
             if (innerDecl.Namespace.Length == 0) innerDecl.Namespace = LibraryHome;
             TypeSymbol movedInner = new() { Name = innerDecl.Name, Key = TypeKey(innerDecl), Kind = innerDecl.Kind, Decl = innerDecl };
-            AddNames(movedInner.TypeParams, innerDecl.TypeParams);
+            if (innerDecl.TypeParams.Count > 0) AddNames(movedInner.WritableTypeParamNames, innerDecl.TypeParams);
             _r.Types[movedInner.Key] = movedInner;
         }
     }
@@ -1741,7 +1741,7 @@ public sealed partial class Binder
                 {
                     MoveToSystem(library);
                     TypeSymbol mine = new() { Name = d.Name, Key = key, Kind = d.Kind, Decl = d };
-                    AddNames(mine.TypeParams, d.TypeParams);
+                    if (d.TypeParams.Count > 0) AddNames(mine.WritableTypeParamNames, d.TypeParams);
                     RegisterType(key, mine);
                     continue;
                 }
@@ -1762,7 +1762,7 @@ public sealed partial class Binder
             }
 
             TypeSymbol sym = new() { Name = d.Name, Key = key, Kind = d.Kind, Decl = d };
-            AddNames(sym.TypeParams, d.TypeParams);
+            if (d.TypeParams.Count > 0) AddNames(sym.WritableTypeParamNames, d.TypeParams);
             RegisterType(key, sym);
         }
 

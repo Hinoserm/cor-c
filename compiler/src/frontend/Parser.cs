@@ -1391,14 +1391,14 @@ public sealed class Parser
         decl.Outer = outer.Length == 0 ? null : outer;
         _typePath = outer.Length == 0 ? name : outer + "." + name;
 
-        ParseTypeParams(decl.TypeParams);
+        if (At(Tok.Lt)) ParseTypeParams(decl.WritableTypeParams);
         // A TYPE INSIDE A GENERIC ONE TAKES THE OUTER'S PARAMETERS FIRST:
         // `class Outer<T> { class Inner { T Value; } }` makes Outer.Inner<T>,
         // whose every use is given Outer's argument (FinishFamily).
         List<string> enclosing = _enclosingParams;
         if (enclosing.Count > 0)
         {
-            for (int k = enclosing.Count - 1; k >= 0; k--) decl.TypeParams.Insert(0, new TypeParam { Name = enclosing[k], Line = start.Line, Col = start.Col });
+            for (int k = enclosing.Count - 1; k >= 0; k--) decl.WritableTypeParams.Insert(0, new TypeParam { Name = enclosing[k], Line = start.Line, Col = start.Col });
             decl.OuterParams = enclosing.Count;
         }
         _enclosingParams = decl.TypeParams.Select(p => p.Name).ToList();
@@ -1601,10 +1601,10 @@ public sealed class Parser
         };
         declaration.Attributes.AddRange(_attributes);
         declaration.AttributeParts.AddRange(CapturedAttributes());
-        ParseTypeParams(declaration.TypeParams);
+        if (At(Tok.Lt)) ParseTypeParams(declaration.WritableTypeParams);
         if (_enclosingParams.Count > 0)
         {
-            for (int k = _enclosingParams.Count - 1; k >= 0; k--) declaration.TypeParams.Insert(0, new TypeParam { Name = _enclosingParams[k], Line = start.Line, Col = start.Col });
+            for (int k = _enclosingParams.Count - 1; k >= 0; k--) declaration.WritableTypeParams.Insert(0, new TypeParam { Name = _enclosingParams[k], Line = start.Line, Col = start.Col });
             declaration.OuterParams = _enclosingParams.Count;
         }
         MethodDecl invoke = new()
@@ -5225,7 +5225,7 @@ public sealed class Parser
         };
         for (int k = _enclosingParams.Count - 1; k >= 0; k--)
         {
-            declaration.TypeParams.Insert(0, new TypeParam { Name = _enclosingParams[k], Line = at.Line, Col = at.Col });
+            declaration.WritableTypeParams.Insert(0, new TypeParam { Name = _enclosingParams[k], Line = at.Line, Col = at.Col });
         }
         declaration.OuterParams = _enclosingParams.Count;
         MethodDecl invoke = new()

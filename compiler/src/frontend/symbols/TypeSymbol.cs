@@ -69,7 +69,13 @@ public sealed class TypeSymbol
     public List<MethodSymbol> Methods { get; } = new();
     /// <summary>One implementation can occupy several distinct interface slots.</summary>
     public Dictionary<int, MethodSymbol> InterfaceImplementations { get; } = new();
-    public List<string> TypeParams { get; } = new();
+    // Made only when written: most have none, and a list each was the collector's.
+    private static readonly List<string> NoTypeParams = new();
+    private List<string>? _typeParams;
+    /// <summary>To read: one shared empty list when there are none, never written through.</summary>
+    public List<string> TypeParams => _typeParams ?? NoTypeParams;
+    /// <summary>To write: made on first use.</summary>
+    public List<string> WritableTypeParamNames => _typeParams ??= new();
     /// <summary>Enum member values, when this is an enum.</summary>
     public Dictionary<string, long> EnumValues { get; } = new();
 
