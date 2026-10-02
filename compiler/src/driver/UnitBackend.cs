@@ -118,7 +118,7 @@ public sealed class UnitBackend : IUnitBackend
                 local.Functions.Add(body);
             }
             Pipeline cleanup = new() { Rounds = 3, Workers = 1 };
-            cleanup.Passes.Add(new ConstantFold()); cleanup.Passes.Add(new ConstantAndCopyPropagation());
+            cleanup.Passes.Add(new ConstantFold { AcrossFunction = true }); cleanup.Passes.Add(new ConstantAndCopyPropagation());
             cleanup.Passes.Add(new DeadCodeElimination()); cleanup.Passes.Add(new BranchSimplify());
             // With the link's lifetime answers the allocator calls stay calls
             // through the first round, so the lifetime rules can tell them

@@ -379,7 +379,7 @@ public sealed class LateCleanup : IModulePass
     {
         Dictionary<string, DataItem> items = Devirtualize.ReadOnlyItems(m);
         Devirtualize devirtualize = new();
-        IPass[] after = { new ConstantAndCopyPropagation(), new ConstantFold(), new BranchSimplify(), new DeadCodeElimination() };
+        IPass[] after = { new ConstantAndCopyPropagation(), new ConstantFold { AcrossFunction = true }, new BranchSimplify(), new DeadCodeElimination() };
         foreach (Function f in m.Functions)
         {
             // Twice round: a test folded to a constant is a register until it

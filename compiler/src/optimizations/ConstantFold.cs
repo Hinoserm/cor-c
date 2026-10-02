@@ -23,9 +23,17 @@ public sealed class ConstantFold : IPass
 {
     public string Name => "fold";
 
+    /// <summary>
+    /// The folds that look across the function as well (EdgeConstants,
+    /// Known): where devirtualization has just left their tests, and once a
+    /// round -- not at every one of the pipeline's folds, each of which paid
+    /// for the tables again.
+    /// </summary>
+    public bool AcrossFunction { get; init; }
+
     public void Run(Function f)
     {
-        EdgeConstants(f);
+        if (AcrossFunction) EdgeConstants(f);
         Known? known = null;
         foreach (Block b in f.Blocks)
         {
@@ -33,7 +41,7 @@ public sealed class ConstantFold : IPass
             {
                 Instr i = b.Instrs[k];
                 Instr? folded = Fold(i);
-                if (folded is null && i.Op is Opcode.Eq or Opcode.Ne or Opcode.Branch)
+                if (folded is null && AcrossFunction && i.Op is Opcode.Eq or Opcode.Ne or Opcode.Branch)
                 {
                     known ??= new Known(f);
                     folded = known.Fold(i);
@@ -125,38 +133,46 @@ public sealed class ConstantFold : IPass
 
         public Known(Function f)
         {
-            Dictionary<VReg, int> writes = new();
-            Dictionary<VReg, Instr> only = new();
-            Dictionary<VReg, long?> value = new();
+            // By register number: a table per function, not a hash of every
+            // register (the pass runs once a round on every function).
+            int count = f.RegCount;
+            int[] writes = new int[count];
+            Instr?[] only = new Instr?[count];
+            long[] value = new long[count];
+            bool[] same = new bool[count];
+            List<VReg> written = new();
             foreach (Block b in f.Blocks)
                 foreach (Instr i in b.Instrs)
                 {
-                    if (i.Dest is not { } d) continue;
-                    int n = writes.GetValueOrDefault(d) + 1;
-                    writes[d] = n;
-                    only[d] = i;
-                    long? v = i.Op == Opcode.Copy && i.Operands[0] is ImmOperand imm ? imm.Value : null;
-                    value[d] = n == 1 ? v : value[d] == v ? v : null;
+                    if (i.Dest is not { } d || d.Id >= count) continue;
+                    int n = ++writes[d.Id];
+                    if (n == 1) written.Add(d);
+                    only[d.Id] = i;
+                    bool constant = i.Op == Opcode.Copy && i.Operands[0] is ImmOperand;
+                    long v = constant ? ((ImmOperand)i.Operands[0]).Value : 0;
+                    if (n == 1) { same[d.Id] = constant; value[d.Id] = v; }
+                    else same[d.Id] &= constant && value[d.Id] == v;
                 }
-            foreach (VReg p in f.Params) writes[p] = 2;
-            foreach ((VReg d, int n) in writes)
+            foreach (VReg p in f.Params) if (p.Id < count) { writes[p.Id] = 2; same[p.Id] = false; }
+            foreach (VReg d in written)
             {
-                if (n > 1)
+                if (writes[d.Id] > 1)
                 {
-                    if (!f.Params.Contains(d) && value.GetValueOrDefault(d) is long same && d.Type.IsInt()) _constant[d] = same;
+                    if (same[d.Id] && d.Type.IsInt()) _constant[d] = value[d.Id];
                     continue;
                 }
-                Instr i = only[d];
+                Instr i = only[d.Id]!;
                 if (i.Op == Opcode.Copy && i.Operands[0] is SymOperand s && IsDescriptor(s.Name)) _descriptors[d] = (s.Name, s.Offset);
                 else if (i.Op == Opcode.Call && Escape.IsAllocator(i.Callee)) _fresh.Add(d);
             }
+            if (_fresh.Count == 0) return;
             // Through the copies and width changes of a fresh object.
             bool grew = true;
             while (grew)
             {
                 grew = false;
-                foreach ((VReg d, Instr i) in only)
-                    if (writes[d] == 1 && !_fresh.Contains(d) && i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32
+                foreach (VReg d in written)
+                    if (writes[d.Id] == 1 && !_fresh.Contains(d) && only[d.Id] is { Op: Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 } i
                         && i.Operands[0] is RegOperand r && _fresh.Contains(r.Reg))
                     { _fresh.Add(d); grew = true; }
             }

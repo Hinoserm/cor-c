@@ -97,7 +97,7 @@ public sealed class Pipeline
         p.Passes.Add(new SignedPowerOfTwo());
         p.Passes.Add(new ByteSwapCalls());
         p.Passes.Add(new Peephole());
-        p.Passes.Add(new ConstantFold());
+        p.Passes.Add(new ConstantFold { AcrossFunction = true });
         p.Passes.Add(new DeadCodeElimination());
         p.Passes.Add(new BooleanMaskDiamonds());
         if (experimentalBatch)
