@@ -81,6 +81,8 @@ public sealed partial class Escape
     private readonly HashSet<string> _defined = new(StringComparer.Ordinal);
     private readonly Dictionary<string, LifetimeCondition?[]> _paramHints = new(StringComparer.Ordinal);
     private readonly Dictionary<string, LifetimeCondition?> _freshHints = new(StringComparer.Ordinal);
+    /// <summary>Each parameter kept only in the box its function returns, as a condition on other units (SummariseHeld).</summary>
+    private readonly Dictionary<string, LifetimeHeld?[]> _heldHints = new(StringComparer.Ordinal);
     private readonly Dictionary<string, LifetimeFields?[]> _fieldHints = new(StringComparer.Ordinal);
     /// <summary>Field frees the link decides (OwnFields): each owned object's field summary and its sites.</summary>
     private readonly List<(LifetimeFields Fields, List<(string Symbol, long Offset)> Sites)> _fieldSiteRecords = new();
@@ -227,7 +229,7 @@ public sealed partial class Escape
             LifetimeCondition?[] parameters = _paramHints.TryGetValue(f.Name, out LifetimeCondition?[]? known)
                 ? known : new LifetimeCondition?[f.Params.Count];
             hints.Functions.Add(new(f.Name, f.Exported, parameters, _freshHints.GetValueOrDefault(f.Name),
-                _fieldHints.GetValueOrDefault(f.Name), _freshFieldHints.GetValueOrDefault(f.Name)));
+                _fieldHints.GetValueOrDefault(f.Name), _freshFieldHints.GetValueOrDefault(f.Name), _heldHints.GetValueOrDefault(f.Name)));
         }
         hints.Pending.AddRange(_pending);
         hints.FieldSites.AddRange(_fieldSiteRecords);
@@ -255,6 +257,8 @@ public sealed partial class Escape
     {
         internal HashSet<string> Fresh { get; }
         internal Dictionary<string, bool[]> Escapes { get; }
+        /// <summary>Per function, per parameter: the offsets of the box it returns that alone keep it (Held); null where not so.</summary>
+        internal Dictionary<string, long[]?[]> Held { get; }
         internal HashSet<string> Helpers { get; }
         internal Dictionary<string, FieldSummary?[]> ParameterFields { get; } = new(StringComparer.Ordinal);
         internal Dictionary<string, FieldSummary> FreshFields { get; } = new(StringComparer.Ordinal);
@@ -266,6 +270,7 @@ public sealed partial class Escape
             OwnedFields = facts.OwnedFields;
             Fresh = facts.Fresh;
             Escapes = facts.Escapes;
+            Held = facts.Held;
             Helpers = facts.Helpers;
             foreach ((string name, SolvedFields?[] fields) in facts.Fields) ParameterFields[name] = fields.Select(Summary).ToArray();
             foreach ((string name, SolvedFields fields) in facts.FreshFields) FreshFields[name] = Summary(fields)!;
@@ -296,6 +301,8 @@ public sealed partial class Escape
         pass._descriptors = descriptors;
         Dictionary<string, Function> byName = new(StringComparer.Ordinal) { [f.Name] = f };
         _inserted = pass._bookkeeping;
+        _held = facts.Held;
+        _fieldsOf = facts.ParameterFields;
         // Its virtual calls, each as every override the image has for it,
         // wherever the link could say (VirtualCallees; Lto.VirtualTargets).
         _indirect = VirtualCallees(new[] { f }, summaries.ContainsKey);
@@ -305,7 +312,7 @@ public sealed partial class Escape
             if (canFree && facts.Helpers.Contains(ReplacedFreer)) pass.OwnVariables(f, summaries);
             if (canFree && facts.Helpers.Contains(FieldFreer)) pass.OwnFields(f, summaries);
         }
-        finally { _inserted = null; _indirect = null; }
+        finally { _inserted = null; _indirect = null; _held = null; _fieldsOf = null; }
         // A READ OF AN OWNED FIELD was judged, by the unit and then the link,
         // among the frees the function had then: a free placed now, while
         // what was read is live, could free the field's owner under it. The

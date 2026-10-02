@@ -110,10 +110,20 @@ public sealed class LifetimeFields
 /// return's, when what it returns is a fresh object its caller then owns.
 /// Null is "never"; an empty condition is "always". The field summaries say
 /// what it does to the fields of each parameter's object and of the object
-/// it returns (null: none can be stated -- the object escapes).
+/// it returns (null: none can be stated -- the object escapes). Held: for a
+/// parameter that escapes, when it escapes only into what the function
+/// returns, a box made for it (Escape.SummariseHeld); null where that can
+/// never be said.
 /// </summary>
 public sealed record LifetimeFunction(string Name, bool Global, LifetimeCondition?[] Parameters, LifetimeCondition? Fresh,
-    LifetimeFields?[]? ParameterFields = null, LifetimeFields? FreshFields = null);
+    LifetimeFields?[]? ParameterFields = null, LifetimeFields? FreshFields = null, LifetimeHeld?[]? Held = null);
+
+/// <summary>
+/// A parameter that escapes only into the box its function returns: when
+/// (other units keeping nothing of what the condition names), and the box's
+/// word offsets that hold it.
+/// </summary>
+public sealed record LifetimeHeld(LifetimeCondition Condition, long[] Offsets);
 
 /// <summary>
 /// LINK-TIME HINTS FOR THE LIFETIME RULES. A unit compiled on its own knows
@@ -140,7 +150,7 @@ public sealed class LifetimeHints
     /// <summary>At most this many pending conditions per unit; a fixed bound, so the same everywhere.</summary>
     public const int PendingLimit = 4096;
     private const uint Magic = 0x46494c43; // "CLIF"
-    private const int Version = 4;
+    private const int Version = 5;
     private static readonly UTF8Encoding Utf8 = new(false, true);
 
     public List<LifetimeFunction> Functions { get; } = new();
@@ -198,6 +208,7 @@ public sealed class LifetimeHints
             foreach (var named in Of(function.Fresh)) yield return named;
             foreach (LifetimeFields? fields in function.ParameterFields ?? Array.Empty<LifetimeFields?>()) foreach (var named in OfFields(fields)) yield return named;
             foreach (var named in OfFields(function.FreshFields)) yield return named;
+            foreach (LifetimeHeld? held in function.Held ?? Array.Empty<LifetimeHeld?>()) foreach (var named in Of(held?.Condition)) yield return named;
         }
         foreach (LifetimeCondition condition in Pending) foreach (var named in Of(condition)) yield return named;
         foreach (var site in FieldSites) foreach (var named in OfFields(site.Fields)) yield return named;
@@ -223,6 +234,7 @@ public sealed class LifetimeHints
             Names(function.Fresh);
             foreach (LifetimeFields? fields in function.ParameterFields ?? Array.Empty<LifetimeFields?>()) FieldNames(fields);
             FieldNames(function.FreshFields);
+            foreach (LifetimeHeld? held in function.Held ?? Array.Empty<LifetimeHeld?>()) Names(held?.Condition);
         }
         foreach (LifetimeCondition condition in Pending) Names(condition);
         foreach ((LifetimeFields fields, List<(string Symbol, long Offset)> sites) in FieldSites)
@@ -269,6 +281,15 @@ public sealed class LifetimeHints
             writer.Write(parameterFields?.Length ?? -1);
             foreach (LifetimeFields? fields in parameterFields ?? Array.Empty<LifetimeFields?>()) Fields(fields);
             Fields(function.FreshFields);
+            writer.Write(function.Held?.Length ?? -1);
+            foreach (LifetimeHeld? held in function.Held ?? Array.Empty<LifetimeHeld?>())
+            {
+                Condition(held?.Condition);
+                if (held is null) continue;
+                if (held.Offsets.Length == 0 || held.Offsets.Length > LifetimeFields.Limit) throw new ElfFormatException("Lifetime held offsets exceed their bound");
+                writer.Write(held.Offsets.Length);
+                foreach (long offset in held.Offsets) writer.Write(offset);
+            }
         }
         List<LifetimeCondition> pending = Pending.Distinct().ToList();
         writer.Write(pending.Count);
@@ -420,7 +441,20 @@ public sealed class LifetimeHints
                 if (fieldCount < -1 || fieldCount > parameters.Length) throw new ElfFormatException("Invalid lifetime field count");
                 LifetimeFields?[]? parameterFields = fieldCount < 0 ? null : new LifetimeFields?[fieldCount];
                 for (int p = 0; p < fieldCount; p++) parameterFields![p] = Fields();
-                hints.Functions.Add(new(name, global, parameters, freshCondition, parameterFields, Fields()));
+                LifetimeFields? freshFields = Fields();
+                int heldCount = reader.ReadInt32();
+                if (heldCount < -1 || heldCount > parameters.Length) throw new ElfFormatException("Invalid lifetime held count");
+                LifetimeHeld?[]? held = heldCount < 0 ? null : new LifetimeHeld?[heldCount];
+                for (int p = 0; p < heldCount; p++)
+                {
+                    if (Condition() is not LifetimeCondition when) continue;
+                    int offsets = reader.ReadInt32();
+                    if (offsets < 1 || offsets > LifetimeFields.Limit) throw new ElfFormatException("Invalid lifetime held offsets");
+                    long[] at = new long[offsets];
+                    for (int k = 0; k < offsets; k++) at[k] = reader.ReadInt64();
+                    held![p] = new LifetimeHeld(when, at);
+                }
+                hints.Functions.Add(new(name, global, parameters, freshCondition, parameterFields, freshFields, held));
             }
             int pending = Count(8);
             if (pending > PendingLimit) throw new ElfFormatException("Too many pending lifetime conditions");

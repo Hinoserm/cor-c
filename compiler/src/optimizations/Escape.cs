@@ -73,7 +73,7 @@ public sealed partial class Escape : IModulePass
         // thread's static (_inserted); left set, it kept the last unit's IR
         // alive for as long as the thread lived.
         try { RunCore(m); }
-        finally { _inserted = null; _indirect = null; }
+        finally { _inserted = null; _indirect = null; _held = null; _fieldsOf = null; }
     }
 
     private void RunCore(Module m)
@@ -85,6 +85,8 @@ public sealed partial class Escape : IModulePass
         }
         _defined.UnionWith(byName.Keys);
         _returnsFirst = new(StringComparer.Ordinal);
+        _held = new(StringComparer.Ordinal);
+        _fieldsOf = _paramFields;
         _bodies = _defined;
         _hinting = m.LeavesLinkHints;
         _inserted = _bookkeeping;
@@ -108,6 +110,7 @@ public sealed partial class Escape : IModulePass
         {
             SummariseCycle(cycle, summaries);
             foreach (Function f in cycle) SummariseReturnsFirst(f, summaries);
+            foreach (Function f in cycle) SummariseHeld(f, summaries);
             foreach (Function f in cycle) InvokeOnly(f, summaries);
             // ROUND AGAIN INSIDE A CYCLE while it finds more: a member may
             // return what another makes, and be asked first -- Substring can
@@ -1630,6 +1633,75 @@ continue;
         if (!returned.Escapes) (_returnsFirst ??= new(StringComparer.Ordinal)).Add(f.Name);
     }
 
+    /// <summary>
+    /// FUNCTIONS THAT KEEP AN ARGUMENT ONLY IN THE BOX THEY HAND BACK: a
+    /// List's enumerator through IEnumerable -- the struct that walks the
+    /// list, boxed in a block made for it and returned -- and every other
+    /// collection's the same way. Summarised as escaping it, every list a
+    /// LINQ call or a `foreach` over an interface was handed was the
+    /// collector's, and so was every list a worker object held in a field and
+    /// walked so. The argument goes nowhere but into the box, at known
+    /// offsets; a caller takes the result as frame memory is taken that holds
+    /// the object (Analyse's holders): read back out, it is the object, and
+    /// the box may go only to calls that keep nothing of it and leave those
+    /// offsets clean (their field summaries). Only a box: a struct's copy has
+    /// no owned fields, so freeing the box never frees what it holds.
+    /// Per function, per parameter, the offsets (null: not so); at the link,
+    /// the whole program's answer (LifetimeFacts.Held), a virtual call's
+    /// symbol's included.
+    /// </summary>
+    [ThreadStatic] private static Dictionary<string, long[]?[]>? _held;
+
+    /// <summary>
+    /// What a function does to each parameter's fields, as Analyse reads it
+    /// when a box holding an object is handed to a call: this run's own
+    /// summaries (ParameterFields), or at the link the whole program's.
+    /// </summary>
+    [ThreadStatic] private static Dictionary<string, FieldSummary?[]>? _fieldsOf;
+
+    private static long[]? Held(string callee, int argument)
+        => _held is not null && _held.TryGetValue(callee, out long[]?[]? held) && argument >= 0 && argument < held.Length ? held[argument] : null;
+
+    /// <summary>
+    /// Which parameters `f` keeps only in the box it returns: escaping by its
+    /// summary, and kept by nothing once returning a block made here, stamped
+    /// a box, that holds it -- with the offsets it is held at. As a condition
+    /// on other units, the same with what they must keep nothing of
+    /// (_heldHints).
+    /// </summary>
+    private void SummariseHeld(Function f, Dictionary<string, bool[]> summaries)
+    {
+        if (f.Async is not null || !summaries.TryGetValue(f.Name, out bool[]? escapes)) return;
+        long[]?[]? held = null;
+        LifetimeHeld?[]? hints = null;
+        for (int p = 0; p < f.Params.Count && p < escapes.Length; p++)
+        {
+            if (!escapes[p] || f.Params[p].Type is not (IrType.I32 or IrType.I64)) continue;
+            Needs? needs = _hinting ? new(this) : null;
+            Flow flow = Analyse(f, new[] { f.Params[p] }, summaries, null, needs: needs, returnsHolder: true);
+            if (PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal))
+                Console.Error.WriteLine($"held {f.Name}:{p} escapes={flow.Escapes} via {flow.Why} at [{string.Join(",", flow.HeldReturned?.Order() ?? Enumerable.Empty<long>())}]");
+            if (flow.Escapes || flow.HeldReturned is not { Count: > 0 } offsets || flow.HeldRoots is null
+                || !flow.HeldRoots.All(root => StampedBox(f, root))) continue;
+            long[] at = offsets.Order().ToArray();
+            if (needs is null || needs.Condition.IsTrue) (held ??= new long[]?[f.Params.Count])[p] = at;
+            if (needs is not null) (hints ??= new LifetimeHeld?[f.Params.Count])[p] = new LifetimeHeld(needs.Condition, at);
+        }
+        if (held is not null) (_held ??= new(StringComparer.Ordinal))[f.Name] = held;
+        if (hints is not null) _heldHints[f.Name] = hints;
+    }
+
+    /// <summary>Whether the block `made` makes is stamped a box (`b_...`) where it is made: a struct's copy, which has no owned fields.</summary>
+    private static bool StampedBox(Function f, VReg made)
+    {
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Op == Opcode.Store && i.Offset == 0 && i.Operands.Count >= 2 && i.Operands[1] is SymOperand { Name: var t }
+                    && i.Operands[0] is RegOperand { Reg: var into } && (into == made || Stamped(f, into, made)))
+                    return t.StartsWith("b_", StringComparison.Ordinal);
+        return false;
+    }
+
     internal static void SeedKnown(Dictionary<string, bool[]> summaries)
     {
         foreach ((string name, int count) in KeepsNothing) summaries.TryAdd(name, new bool[count]);
@@ -1955,12 +2027,15 @@ continue;
         public Instr? Source { get; init; }
         /// <summary>The instruction the object escaped through, for a diagnostic.</summary>
         public Instr? Why { get; set; }
+        /// <summary>The blocks made here and returned holding the object (returnsHolder), and where in them it is.</summary>
+        public List<VReg>? HeldRoots { get; set; }
+        public HashSet<long>? HeldReturned { get; set; }
     }
 
     internal static Flow Analyse(Function f, IEnumerable<VReg> roots, Dictionary<string, bool[]> summaries, Instr? source,
         HashSet<Instr>? ownedStores = null, HashSet<VReg>? returnable = null, HashSet<VReg>? joinable = null,
         Needs? needs = null, bool handOff = false, HashSet<Instr>? consumers = null,
-        bool invokeReceiverStays = false, bool closure = false, bool returnsAny = false)
+        bool invokeReceiverStays = false, bool closure = false, bool returnsAny = false, bool returnsHolder = false)
     {
         Flow flow = new() { Source = source };
         foreach (VReg r in roots)
@@ -2003,6 +2078,10 @@ continue;
         // and how far into it; each root: the offsets that hold the object.
         Dictionary<VReg, (object Root, long Delta)>? holderRegs = null;
         Dictionary<object, HashSet<long>>? held = null;
+        // Call results that hold the object (Held), and the holders handed to
+        // calls, which the object must outlive.
+        HashSet<VReg>? boxes = null;
+        HashSet<VReg>? handed = null;
         bool changed = true;
         while (changed && !flow.Escapes)
         {
@@ -2283,6 +2362,10 @@ continue;
                                 // Append, an iterator's GetEnumerator) -- known
                                 // here, not a condition on the link.
                                 if (a == 0 && ReturnsFirst(i.Callee)) { Derive(i.Dest, borrowing); continue; }
+                                // KEPT ONLY IN THE BOX IT HANDS BACK (Held):
+                                // the result holds the object, as frame memory
+                                // does, at the offsets the callee put it.
+                                if (!borrowing && Held(i.Callee, a) is long[] boxed && HoldsResult(i, boxed)) continue;
                                 if (needs is not null && needs.Allow(i.Callee, a)) continue;
                                 flow.Escapes = true;
                             }
@@ -2314,14 +2397,19 @@ continue;
                             for (int a = 1; a < i.Operands.Count; a++)
                             {
                                 if (i.Operands[a] is not RegOperand arg || !flow.Derived.Contains(arg.Reg)) continue;
+                                List<long>? boxedAt = null;
                                 foreach (string o in overrides)
                                 {
                                     if (summaries.TryGetValue(o, out bool[]? summary) && a - 1 < summary.Length && !summary[a - 1]) continue;
+                                    // Kept by this override only in the box it
+                                    // returns (Held): the result holds it.
+                                    if (!borrowing && Held(o, a - 1) is long[] boxed) { (boxedAt ??= new()).AddRange(boxed); continue; }
                                     if (needs is not null && needs.Allow(o, a - 1)) continue;
                                     flow.Escapes = true;
                                     break;
                                 }
                                 if (flow.Escapes) break;
+                                if (boxedAt is not null && !HoldsResult(i, boxedAt)) { flow.Escapes = true; break; }
                             }
                             break;
                         }
@@ -2444,6 +2532,18 @@ continue;
             }
         }
 
+        // What holds the object and was handed to a call is used as long as
+        // the object is: its registers join the derived ones (as borrows, for
+        // what they are: other objects), for where the object is last used.
+        if (!flow.Escapes && handed is not null)
+            foreach (VReg r in handed)
+                if (flow.Derived.Add(r)) flow.Borrowed.Add(r);
+        if (!flow.Escapes && flow.HeldRoots is not null)
+        {
+            flow.HeldReturned = new();
+            foreach (VReg root in flow.HeldRoots)
+                if (held is not null && held.TryGetValue(root, out HashSet<long>? at)) flow.HeldReturned.UnionWith(at);
+        }
         return flow;
 
         bool TouchesHolder(Instr i)
@@ -2548,6 +2648,15 @@ continue;
                     return;
                 case Opcode.Call when IsCollectorNote(i.Callee) || i.Callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive:
                     return;
+                case Opcode.Ret when returnsHolder && i.Operands is [RegOperand] && Holding(i.Operands[0]) is (VReg returned, 0):
+                    // A BLOCK MADE HERE, handed back whole (SummariseHeld):
+                    // what it holds goes with it to the caller and nowhere
+                    // else, and the caller takes the result for a holder.
+                    if (!(flow.HeldRoots ??= new()).Contains(returned)) flow.HeldRoots.Add(returned);
+                    return;
+                case Opcode.Call or Opcode.CallIndirect when !IsCollectorNote(i.Callee) && i.Callee != Corsac.Lang.X86.MachineIntrinsics.KeepAlive:
+                    if (!HolderCall(i)) flow.Escapes = true;
+                    return;
                 default:
                     flow.Escapes = true;
                     return;
@@ -2556,8 +2665,81 @@ continue;
 
         void HolderAlias(VReg d, object root, long delta)
         {
-            if (d.Id < defs.Length && defs[d.Id] > 1) { flow.Escapes = true; return; }
+            if (d.Id < defs.Length && defs[d.Id] > 1)
+            {
+                // A VARIABLE THAT HOLDS THE HOLDER OR NULL -- an enumerator
+                // set to null before the `try` that disposes it -- is the
+                // holder wherever it is not null: every write is null or a
+                // copy of a register already known to address the same place.
+                writes ??= new(f);
+                if (!writes.TryGetValue(d, out WriteList all) || !all.All(w =>
+                        w.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 && w.Operands.Count == 1
+                        && (w.Operands[0] is ImmOperand { Value: 0 }
+                            || w.Operands[0] is RegOperand { Reg: var from } && holderRegs!.TryGetValue(from, out var at) && Equals(at.Root, root) && at.Delta == delta)))
+                { flow.Escapes = true; return; }
+            }
             if (holderRegs!.TryAdd(d, (root, delta))) changed = true;
+        }
+
+        // A CALL'S RESULT THAT HOLDS THE OBJECT (Held): a block made for the
+        // call, holding it at `offsets`, which becomes a holder here.
+        bool HoldsResult(Instr call, IEnumerable<long> offsets)
+        {
+            if (call.Dest is not { } result || result.Id < defs.Length && defs[result.Id] > 1) return false;
+            foreach (long o in offsets) Hold(result, o);
+            HolderAlias(result, result, 0);
+            (boxes ??= new()).Add(result);
+            return !flow.Escapes;
+        }
+
+        // A HOLDER HANDED TO A CALL: a box -- a block made here and stamped
+        // one, or a call's result that holds the object -- at its base, to
+        // functions that each keep nothing of that argument and whose field
+        // summary of it leaves every offset holding the object clean (not
+        // let go, not overwritten with anything else). A runtime free of a
+        // box gives back the box alone: a box has no owned fields.
+        bool HolderCall(Instr i)
+        {
+            int first = i.Op == Opcode.CallIndirect ? 1 : 0;
+            for (int o = 0; o < i.Operands.Count; o++)
+            {
+                if (Holding(i.Operands[o]) is not var (root, delta)) continue;
+                // Memory that holds nothing of the object: nothing of it goes.
+                if (!held!.TryGetValue(root, out HashSet<long>? holding) || holding.Count == 0) continue;
+                if (o < first || delta != 0 || root is not VReg box || !(boxes?.Contains(box) == true || StampedBox(f, box)))
+                {
+                    if (PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal)) Console.Error.WriteLine($"holder {f.Name}: {i} operand {o} not a box's base ({root} +{delta})");
+                    return false;
+                }
+                if (i.Op == Opcode.Call && i.Callee == Freer && i.Operands.Count == 1) continue;
+                string[]? targets = i.Op == Opcode.Call ? (i.Callee is null ? null : new[] { i.Callee })
+                    : _indirect is not null && _indirect.TryGetValue(i, out string[]? found) ? found
+                    // Through the one function's address (Devirtualize's
+                    // answer for a box it saw made): that function.
+                    : i.Operands[0] is RegOperand { Reg: var method } && (writes ??= new(f)).TryGetValue(method, out WriteList known) && known.Count == 1
+                      && known[0] is { Op: Opcode.Copy, Operands: [SymOperand { Name: var named, Offset: 0 }] } ? new[] { named } : null;
+                if (targets is not { Length: > 0 })
+                {
+                    if (PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal)) Console.Error.WriteLine($"holder {f.Name}: {i} reaches nothing known");
+                    return false;
+                }
+                HashSet<long> holds = held!.TryGetValue(box, out HashSet<long>? at) ? at : new();
+                foreach (string t in targets)
+                {
+                    int p = o - first;
+                    bool keeps = !summaries.TryGetValue(t, out bool[]? summary) || p >= summary.Length || summary[p];
+                    FieldSummary? uses = !keeps && _fieldsOf is not null && _fieldsOf.TryGetValue(t, out FieldSummary?[]? fields) && p < fields.Length ? fields[p] : null;
+                    if (keeps || uses is not { Opaque: false } || holds.Any(uses.Dirty.Contains))
+                    {
+                        if (PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal))
+                            Console.Error.WriteLine($"holder {f.Name}: {i} to {t}:{p} keeps={keeps} fields={(uses is null ? "none" : uses.Opaque ? "opaque " + uses.Why : "dirty " + string.Join(",", uses.Dirty.Order()))} at {string.Join(",", holds.Order())}");
+                        return false;
+                    }
+                }
+                // Its uses are the object's: it lives as long as they last.
+                (handed ??= new()).Add(((RegOperand)i.Operands[o]).Reg);
+            }
+            return true;
         }
 
         // A frame slot's address, or a register only ever given one.

@@ -1,0 +1,85 @@
+// test: kept_only_in_box
+// units: tests/language/support/1130_kept_in_box_units.cor
+// expect-exit: 0
+// expect-output:
+// any freed True
+// set freed True
+// walked 720000
+// rest 140
+//
+// A list handed to what walks it through IEnumerable -- LINQ's Any, a
+// HashSet built from it -- is kept by nothing but the enumerator List's
+// GetEnumerator boxes for it, and the box by nothing once the walk is done.
+// Summarised as escaping into the box, every such list was the collector's;
+// now the box is followed as what holds the list (Escape.SummariseHeld), and
+// the list dies with the walk. A list walked by another unit through the
+// interface still sums right, and an enumerator kept past the call still
+// holds its list, which must live.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int AnyOf(int n)
+    {
+        List<string> names = new();
+        for (int i = 0; i < n; i++) names.Add(i < 3 ? "a" : "bb");
+        return names.Any(s => s.Length == 2) ? 1 : 0;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Distinct(int n)
+    {
+        List<int> xs = new();
+        for (int i = 0; i < n; i++) xs.Add(i % 5);
+        HashSet<int> set = new(xs);
+        return set.Count;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Walked(int n)
+    {
+        List<int> xs = new();
+        for (int i = 0; i < n; i++) xs.Add(i);
+        return Walks.Sum(xs);
+    }
+
+    static void Main()
+    {
+        const int N = 20000;
+        long total = 0;
+        // What each call left to the collector: what it takes, all of it
+        // garbage by the collection after the loop.
+        Gc.Collect();
+        long taken = Gc.CollectedBytes;
+        for (int k = 0; k < N; k++) total += AnyOf(9);
+        Gc.Collect();
+        long anyLeft = (Gc.CollectedBytes - taken) / N;
+        taken = Gc.CollectedBytes;
+        for (int k = 0; k < N; k++) total += Distinct(9);
+        Gc.Collect();
+        long setLeft = (Gc.CollectedBytes - taken) / N;
+        taken = Gc.CollectedBytes;
+        long walked = 0;
+        for (int k = 0; k < N; k++) walked += Walked(9);
+        // Left before: 136 bytes a call for Any, 176 for the set.
+        Console.WriteLine("any freed " + (anyLeft <= 100));
+        Console.WriteLine("set freed " + (setLeft <= 64));
+        Console.WriteLine("walked " + walked);
+
+        // Kept past the call: the list lives as long as its enumerator.
+        List<int> kept = new();
+        for (int i = 0; i < 6; i++) kept.Add(i * 10);
+        IEnumerator<int> e = Walks.Keep(kept);
+        kept = null!;
+        for (int k = 0; k < 20000; k++) { int[] junk = new int[16]; junk[0] = k; total += junk[0] & 1; }
+        Gc.Collect();
+        int rest = 0;
+        while (e.MoveNext()) rest += e.Current;
+        Console.WriteLine("rest " + rest);
+    }
+}

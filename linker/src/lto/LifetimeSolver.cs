@@ -10,6 +10,8 @@ namespace Corsac.Lang.Lto;
 public sealed class LifetimeFacts
 {
     public Dictionary<string, bool[]> Escapes { get; } = new(StringComparer.Ordinal);
+    /// <summary>Per function, per parameter that escapes only into the box it returns: the box's offsets that hold it (Escape.SummariseHeld); null where not so.</summary>
+    public Dictionary<string, long[]?[]> Held { get; } = new(StringComparer.Ordinal);
     public HashSet<string> Fresh { get; } = new(StringComparer.Ordinal);
     /// <summary>Per function, per parameter: what it does to that object's fields; null where the parameter escapes.</summary>
     public Dictionary<string, SolvedFields?[]> Fields { get; } = new(StringComparer.Ordinal);
@@ -53,6 +55,7 @@ public sealed class LifetimeSolver
 {
     private readonly Dictionary<string, LifetimeFunction> _globals = new(StringComparer.Ordinal);
     private readonly Dictionary<string, bool[]> _escapes = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long[]?[]> _held = new(StringComparer.Ordinal);
     private readonly HashSet<string> _fresh = new(StringComparer.Ordinal);
     private readonly Dictionary<(string, int), Accumulated> _fields = new();
 
@@ -99,8 +102,14 @@ public sealed class LifetimeSolver
             foreach ((string name, int top) in widest.OrderBy(pair => pair.Key, StringComparer.Ordinal))
             {
                 LifetimeCondition?[] parameters = new LifetimeCondition?[top + 1];
+                // And what it does to each argument's fields: every
+                // override's together (a box handed to a virtual MoveNext
+                // must leave the offsets holding a collection clean in each).
+                LifetimeFields?[] parameterFields = new LifetimeFields?[top + 1];
                 for (int a = 0; a <= top; a++)
                 {
+                    parameterFields[a] = new LifetimeFields();
+                    foreach (string target in virtuals[name]) parameterFields[a]!.Merges.Add((target, a));
                     LifetimeCondition each = new();
                     foreach (string target in virtuals[name]) each.Stays.Add((target, a));
                     // However many: the condition is the solver's own, never
@@ -122,13 +131,54 @@ public sealed class LifetimeSolver
                     returned = new LifetimeFields();
                     foreach (string target in virtuals[name]) { fresh.Fresh.Add(target); returned.Merges.Add((target, Returned)); }
                 }
-                _globals.TryAdd(name, new LifetimeFunction(name, true, parameters, fresh, FreshFields: returned));
+                _globals.TryAdd(name, new LifetimeFunction(name, true, parameters, fresh, parameterFields, returned));
             }
         }
         SolveEscapes();
+        SolveHeld(virtuals);
         SolveFresh();
         SolveFields();
     }
+
+    /// <summary>
+    /// WHICH ESCAPING PARAMETERS ESCAPE ONLY INTO THE BOX THEIR FUNCTION
+    /// RETURNS, and where in it: a function's own, by its unit's condition,
+    /// once the escapes are known; then a virtual call's symbol's, where every
+    /// override it reaches keeps the argument nowhere or only so, and one at
+    /// least only so -- at every offset any of them keeps it.
+    /// </summary>
+    private void SolveHeld(IReadOnlyDictionary<string, string[]>? virtuals)
+    {
+        foreach (string name in _globals.Keys.Order(StringComparer.Ordinal))
+        {
+            if (virtuals is not null && virtuals.ContainsKey(name) || _globals[name].Held is not LifetimeHeld?[] hints) continue;
+            bool[] escapes = _escapes[name];
+            long[]?[] held = new long[]?[escapes.Length];
+            bool any = false;
+            for (int p = 0; p < escapes.Length && p < hints.Length; p++)
+                if (escapes[p] && hints[p] is LifetimeHeld hint && Holds(hint.Condition)) { held[p] = hint.Offsets; any = true; }
+            if (any) _held[name] = held;
+        }
+        if (virtuals is null) return;
+        foreach (string name in _globals.Keys.Order(StringComparer.Ordinal))
+        {
+            if (!virtuals.TryGetValue(name, out string[]? targets) || targets.Length == 0) continue;
+            bool[] escapes = _escapes[name];
+            long[]?[] held = new long[]?[escapes.Length];
+            bool any = false;
+            for (int p = 0; p < escapes.Length; p++)
+            {
+                if (!escapes[p] || !targets.All(t => !Escapes(t, p) || HeldAt(t, p) is not null)) continue;
+                long[] at = targets.SelectMany(t => HeldAt(t, p) ?? Array.Empty<long>()).Distinct().Order().ToArray();
+                if (at.Length > 0) { held[p] = at; any = true; }
+            }
+            if (any) _held[name] = held;
+        }
+    }
+
+    /// <summary>Where the named global keeps its argument in the box it returns, when only there; null otherwise.</summary>
+    public long[]? HeldAt(string callee, int argument)
+        => _held.TryGetValue(callee, out long[]?[]? held) && argument >= 0 && argument < held.Length ? held[argument] : null;
 
     /// <summary>Whether the named global's argument escapes; a function with no summary keeps everything.</summary>
     public bool Escapes(string callee, int argument)
@@ -328,6 +378,7 @@ public sealed class LifetimeSolver
             if (_escapes.TryGetValue(call, out bool[]? escapes))
             {
                 facts.Escapes[call] = (bool[])escapes.Clone();
+                if (_held.TryGetValue(call, out long[]?[]? held)) facts.Held[call] = (long[]?[])held.Clone();
                 facts.Fields[call] = Enumerable.Range(0, escapes.Length).Select(p => FieldsOf(call, p)).ToArray();
             }
             if (_fresh.Contains(call))
@@ -340,6 +391,11 @@ public sealed class LifetimeSolver
         {
             bool[] escapes = function.Parameters.Select(condition => !Holds(condition)).ToArray();
             facts.Escapes[function.Name] = escapes;
+            LifetimeHeld?[] heldHints = function.Held ?? Array.Empty<LifetimeHeld?>();
+            long[]?[] held = Enumerable.Range(0, escapes.Length)
+                .Select(p => escapes[p] && p < heldHints.Length && heldHints[p] is LifetimeHeld hint && Holds(hint.Condition) ? hint.Offsets : null).ToArray();
+            if (held.Any(h => h is not null)) facts.Held[function.Name] = held;
+            else facts.Held.Remove(function.Name);
             LifetimeFields?[] fields = function.ParameterFields ?? Array.Empty<LifetimeFields?>();
             facts.Fields[function.Name] = Enumerable.Range(0, escapes.Length)
                 .Select(p => escapes[p] || p >= fields.Length ? null : Answer(fields[p])).ToArray();

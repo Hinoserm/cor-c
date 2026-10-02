@@ -31,6 +31,16 @@ public static class BackendProtocol
                 WriteText(writer, name); writer.Write(escapes.Length);
                 foreach (bool escape in escapes) writer.Write(escape);
             }
+            writer.Write(facts.Held.Count);
+            foreach ((string name, long[]?[] held) in facts.Held.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+            {
+                WriteText(writer, name); writer.Write(held.Length);
+                foreach (long[]? at in held)
+                {
+                    writer.Write(at?.Length ?? -1);
+                    foreach (long offset in at ?? Array.Empty<long>()) writer.Write(offset);
+                }
+            }
             writer.Write(facts.Fresh.Count);
             foreach (string name in facts.Fresh.Order(StringComparer.Ordinal)) WriteText(writer, name);
             writer.Write(facts.Helpers.Count);
@@ -114,6 +124,23 @@ public static class BackendProtocol
                 bool[] escapes = new bool[parameters];
                 for (int p = 0; p < parameters; p++) escapes[p] = reader.ReadBoolean();
                 if (!facts.Escapes.TryAdd(name, escapes)) throw new InvalidDataException("Duplicate backend lifetime fact");
+            }
+            int heldFunctions = reader.ReadInt32();
+            if (heldFunctions < 0 || heldFunctions > 1000000) throw new InvalidDataException("Invalid backend lifetime facts");
+            for (int i = 0; i < heldFunctions; i++)
+            {
+                string name = ReadText(reader); int parameters = reader.ReadInt32();
+                if (parameters < 0 || parameters > 65536) throw new InvalidDataException("Invalid backend lifetime facts");
+                long[]?[] held = new long[]?[parameters];
+                for (int p = 0; p < parameters; p++)
+                {
+                    int offsets = reader.ReadInt32();
+                    if (offsets < -1 || offsets > 4096) throw new InvalidDataException("Invalid backend lifetime facts");
+                    if (offsets < 0) continue;
+                    held[p] = new long[offsets];
+                    for (int k = 0; k < offsets; k++) held[p]![k] = reader.ReadInt64();
+                }
+                if (!facts.Held.TryAdd(name, held)) throw new InvalidDataException("Duplicate backend lifetime fact");
             }
             int fresh = reader.ReadInt32();
             if (fresh < 0 || fresh > 1000000) throw new InvalidDataException("Invalid backend lifetime facts");

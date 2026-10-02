@@ -1,0 +1,21 @@
+// The other unit of 1130_kept_only_in_box: a walk over any sequence, through
+// the interface, and one that keeps the enumerator it was handed. Each loops,
+// so the link does not take its body into the caller.
+using System.Collections.Generic;
+
+static class Walks
+{
+    public static int Sum(IEnumerable<int> items)
+    {
+        int total = 0;
+        foreach (int x in items) total += x;
+        return total;
+    }
+
+    public static IEnumerator<int> Keep(IEnumerable<int> items)
+    {
+        IEnumerator<int> e = items.GetEnumerator();
+        for (int k = 0; k < 2; k++) e.MoveNext();
+        return e;
+    }
+}

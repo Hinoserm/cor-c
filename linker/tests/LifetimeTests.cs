@@ -134,6 +134,39 @@ public static class LifetimeTests
         LifetimeCondition needsLost = new(); needsLost.Fields.Add(("Lost", 0));
         Check(fields.Holds(needsFields) && !fields.Holds(needsLost), "field requirements");
 
+        // Kept only in the box returned: Box(p) escapes p into the box it
+        // returns at offset 8, if Read keeps nothing; BoxLost(p) does, if
+        // Store does (it does not); Plain(p) keeps nothing at all. A virtual
+        // call reaching Box and Plain holds its argument at 8; one reaching
+        // BoxLost as well does not. The answers survive the format, the
+        // solve, the facts and the backend wire.
+        LifetimeHints d = new();
+        d.Functions.Add(new("Box", true, new LifetimeCondition?[] { null }, null, null, null,
+            new LifetimeHeld?[] { new(Stays(("Read", 0)), new long[] { 8 }) }));
+        d.Functions.Add(new("BoxLost", true, new LifetimeCondition?[] { null }, null, null, null,
+            new LifetimeHeld?[] { new(Stays(("Store", 0)), new long[] { 8 }) }));
+        d.Functions.Add(new("Plain", true, new LifetimeCondition?[] { new() }, null));
+        LifetimeHints dBack = LifetimeHints.Read(d.Write());
+        Check(dBack.Functions.Single(f => f.Name == "Box").Held is [LifetimeHeld { Offsets: [8] } heldHint] && heldHint.Condition.Stays.Single() == ("Read", 0),
+            "held hints round trip");
+        Check(dBack.Functions.Single(f => f.Name == "Plain").Held is null, "no held hints round trip");
+        Dictionary<string, string[]> heldVirtuals = new() { ["v$walk"] = new[] { "Box", "Plain" }, ["v$lost"] = new[] { "Box", "BoxLost" } };
+        LifetimeHints asks = new();
+        asks.Pending.Add(Stays(("v$walk", 0), ("v$lost", 0)));
+        LifetimeSolver held = new(new[] { a, b, dBack, asks }, heldVirtuals);
+        Check(held.Escapes("Box", 0) && held.HeldAt("Box", 0) is [8], "escaping only into its box: held at 8");
+        Check(held.HeldAt("BoxLost", 0) is null && held.HeldAt("Plain", 0) is null, "held only where it holds and escapes");
+        Check(held.HeldAt("v$walk", 0) is [8] && held.HeldAt("v$lost", 0) is null, "a virtual call holds only if every override does or keeps nothing");
+        LifetimeFacts heldFacts = held.For(dBack, new[] { "v$walk", "Read" });
+        Check(heldFacts.Held["Box"] is [[8]] && heldFacts.Held["v$walk"] is [[8]] && !heldFacts.Held.ContainsKey("BoxLost"), "held facts for the unit");
+        using MemoryStream heldWire = new();
+        using (BinaryWriter writer = new(heldWire, BackendProtocol.Utf8, leaveOpen: true))
+            BackendProtocol.WriteRequest(writer, new("in.o", "out.o", Array.Empty<IrImport>(), null, heldFacts));
+        heldWire.Position = 0;
+        using (BinaryReader heldReader = new(heldWire, BackendProtocol.Utf8, leaveOpen: true))
+            Check(BackendProtocol.ReadRequest(heldReader)!.Facts is LifetimeFacts f3 && f3.Held["v$walk"] is [[8]] && f3.Held.Count == heldFacts.Held.Count,
+                "held facts round trip on the backend wire");
+
         // Hints ride in an object and are consumed by the link.
         ObjectFile obj = new(); Section text = new(".text", SectionKind.Code); text.Bytes.Add(0xc3); obj.Sections.Add(text);
         a.Attach(obj);
@@ -159,7 +192,7 @@ public static class LifetimeTests
         Check(pruning.Retained.Any(kept => kept is not null && kept.Contains("F:helper") && !kept.Contains("F:other")),
             "a closed image keeps the free a regenerated unit will call, and drops what nothing calls");
 
-        Console.WriteLine("  lifetime hint format, whole-program solve, cycles, unknown callees, fields, field sites, closed-image roots and backend facts passed");
+        Console.WriteLine("  lifetime hint format, whole-program solve, cycles, unknown callees, fields, field sites, held boxes, closed-image roots and backend facts passed");
     }
 }
 
