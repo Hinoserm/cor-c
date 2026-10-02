@@ -1,0 +1,27 @@
+// test: base_statics_through_derived
+// expect-exit: 0
+// expect-output:
+// items 1 7
+//
+// A base class's static initialiser runs before one of its own instance
+// members reads its static, when only derived objects were ever made:
+// making one touches every type it derives from, not only its own.
+
+using System;
+using System.Collections.Generic;
+abstract class Base
+{
+    static readonly List<int> None = new() { 7 };
+    List<int>? _items;
+    public List<int> Items => _items ?? None;
+}
+sealed class Derived : Base { public int X; }
+public static class Program
+{
+    public static int Main()
+    {
+        Derived d = new() { X = 1 };
+        Console.WriteLine(d.Items is null ? "null" : "items " + d.Items.Count + " " + d.Items[0]);
+        return 0;
+    }
+}

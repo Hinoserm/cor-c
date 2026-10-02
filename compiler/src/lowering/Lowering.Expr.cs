@@ -1284,7 +1284,11 @@ public sealed partial class Lowering
 
         // MAKING ONE TOUCHES THE TYPE. Before the allocation, because the
         // initialiser may be what fills in whatever the constructor reads.
-        TouchType(sym);
+        // AND EVERY TYPE IT DERIVES FROM: their own methods read their
+        // statics untested (TouchType, from inside the type), on the ground
+        // that making one touched the type -- and a MethodDecl made is a
+        // MemberDecl nobody made, whose shared empty list read null.
+        for (TypeSymbol? made = sym; made is not null; made = made.Base) TouchType(made);
 
         int size = Math.Max(sym.Kind == TypeKind.Class ? _t.ObjectHeaderBytes : 1, sym.InstanceSize);
         VReg obj = Allocate(nw, size, described: sym.Kind == TypeKind.Class);
