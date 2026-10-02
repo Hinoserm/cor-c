@@ -2604,6 +2604,8 @@ static class Gc
     public static long PagesTaken, PagesPooled, PagesReleased, PagesRefilled;
     /// Small requests that found no page and collected for one.
     public static long ClassStarved;
+    /// Small requests answered with a free slot of a bigger class (TakeLarger).
+    public static long ClassBorrowed;
 
     /// The class tables, mapped once as the heap starts.
     static bool StartClasses()
@@ -3381,6 +3383,31 @@ static class Gc
         long ctl = GcLock.Words();
         return Sys.Peek(ctl + GcLock.Request) == GcThreads.Stamp
             && Sys.Peek(tb + Tls.Epoch) == Sys.Peek(ctl + GcLock.Epoch);
+    }
+
+    /// WHETHER THREAD `tb` STILL OWES THIS CYCLE'S STAMP: stamping is open
+    /// and it has not answered. The heap lock is held.
+    static bool OwesStamp(long tb)
+    {
+        return _stamping && !StampedAlready(tb);
+    }
+
+    /// A block thread `tb` was just handed from memory nobody owns -- a
+    /// bigger class's slot, the mixed heap's free blocks or bump space --
+    /// written into the snapshot when the thread still owes STAMP, as its
+    /// own buffer's and pages' objects are by its answer (StampBuffer). Made
+    /// before the answer and left out, it was a newcomer: kept and never
+    /// traced, while what it held came from a stack not yet scanned -- a
+    /// string stored into an array just made, with no barrier, and then
+    /// dropped from the stack, was swept from under the array. Not in a
+    /// chunk the snapshot did not walk: that holds only newcomers. The heap
+    /// lock is held.
+    static void StampHandedOut(long tb, long block, long chunk)
+    {
+        if (!OwesStamp(tb)) return;
+        if (chunk == 0) chunk = HeapChunks.OfSnapshot(block);
+        if (chunk == 0 || HeapChunks.StartsCycle(chunk) != _cycle) return;
+        HeapChunks.SetStartShared(chunk, block);
     }
 
     /// One owned page's objects written into the snapshot (StampPages).
@@ -4409,6 +4436,7 @@ static class Gc
         _since = _since + SizeOfBlock(block);
         Count(Sys.ThreadBlock(), SizeOfBlock(block));
         Sys.Poke(block + KindAt, kind);
+        StampHandedOut(tb, block, Zero);
         GcLock.Exit();
         return block + HeaderBytes;
     }
@@ -4439,8 +4467,29 @@ static class Gc
                 }
             }
             // NO PAGE TO BE HAD -- the cap, the ceiling: a free block of the
-            // mixed heap serves as well, at the class's size.
+            // mixed heap serves as well, at the class's size; then a free
+            // slot of a bigger class's page (TakeLarger); then the current
+            // chunk's bump space, and another chunk's tail.
             long block = TakeFree(ClassSize(c));
+            if (block == 0)
+            {
+                block = TakeLarger(tb, c, attempt == 3);
+                if (block != 0)
+                {
+                    _since = _since + SizeOfBlock(block);
+                    Count(tb, SizeOfBlock(block));
+                    Sys.Poke(block + KindAt, kind);
+                    if (_heapCheck) CheckMade(block, "a bigger class's slot");
+                    GcLock.Exit();
+                    return block + HeaderBytes;
+                }
+            }
+            // THE CURRENT CHUNK'S BUMP SPACE, which AdoptTail passes by as
+            // the chunk it would move from: under an 8 MB cap the first
+            // chunk, a megabyte, had 983 KB above its bump pointer when a
+            // 32-byte request ran out of memory, every small object having
+            // gone to the pages.
+            if (block == 0) block = TakeBump(ClassSize(c));
             if (block == 0 && AdoptTail(ClassSize(c)))
             {
                 block = TakeBump(ClassSize(c));
@@ -4452,6 +4501,7 @@ static class Gc
                 Count(tb, SizeOfBlock(block));
                 Sys.Poke(block + KindAt, kind);
                 if (_heapCheck) CheckMade(block, "class fallback");
+                StampHandedOut(tb, block, Zero);
                 GcLock.Exit();
                 return block + HeaderBytes;
             }
@@ -4485,6 +4535,58 @@ static class Gc
         SayNumber("out of memory: live bytes at last collection ", _liveBytes);
         SayFreeShape();
         OutOfMemory();
+        return 0;
+    }
+
+    /// A FREE SLOT OF A BIGGER CLASS, for a request of class `c` that found
+    /// no page: the head of the nearest bigger class's listed page, handed
+    /// out whole, at that class's size -- the page is walked at its own size
+    /// (SweepPage), so the slack is the object's. Within twice the request,
+    /// or any size when `any`. Zero when no listed page has one. The page
+    /// is not taken: it stays listed while its list lasts, then is laid out
+    /// further, then is nobody's until a sweep finds room in it, as a used-up
+    /// page is (ClassRefill). Written into the snapshot when thread `tb`
+    /// owes STAMP (StampHandedOut), and so not from a page the snapshot did
+    /// not walk meanwhile. The heap lock is held.
+    ///
+    /// UNDER A CAP THE CLASSES DO NOT SHARE: a page keeps its class until
+    /// nothing in it lives, and an 8 MB heap ran out of memory for a 32-byte
+    /// request with 3 MB free in 66,000 slots of 48 bytes.
+    static long TakeLarger(long tb, long c, bool any)
+    {
+        long want = ClassSize(c);
+        bool owes = OwesStamp(tb);
+        for (long k = c + 1; k < Classes; k++)
+        {
+            long size = ClassSize(k);
+            if (!any && size > 2 * want) break;
+            long page = Sys.Peek(_classPages + k * WordSize.Bytes);
+            if (page == 0 || owes && HeapChunks.StartsCycle(page) != _cycle) continue;
+            long block = HeapChunks.PageFree(page);
+            if (block == 0)
+            {
+                block = FormatMore(page, k);
+                if (block == 0)
+                {
+                    UnlistPage(page);
+                    continue;
+                }
+            }
+            if (_heapCheck) CheckOutsideBuffer(block, block + size, "gc owner check: a bigger class's slot inside the live buffer");
+            long next = Sys.Peek(block + KindAt);
+            if (next == 0) next = FormatMore(page, k);
+            HeapChunks.SetPageFree(page, next);
+            long hole = HeapChunks.LargestHole(page) - size;
+            HeapChunks.SetLargestHole(page, hole > 0 ? hole : Zero);
+            if (next == 0) UnlistPage(page);
+            Sys.Poke(block, size);
+            Sys.Poke(block + KindAt, Zero);
+            Sys.Poke(block + size - FooterBytes, size);
+            HeapChunks.SetYoung(page, true);
+            StampHandedOut(tb, block, page);
+            ClassBorrowed = ClassBorrowed + 1;
+            return block;
+        }
         return 0;
     }
 
@@ -5725,7 +5827,7 @@ static class Gc
         long freeBytes = 0;
         long chunks = 0;
         long tails = 0;
-        long classTails = 0, classChunks = 0, pooledTails = 0, ownedTails = 0, plainTails = 0;
+        long classTails = 0, classChunks = 0, pooledTails = 0, ownedTails = 0, plainTails = 0, currentTail = 0;
         long ownedPageTails = 0, listedPageTails = 0, unlistedPageTails = 0, unlistedPages = 0, pooledPages = 0;
         long inPlaceBytes = 0;
         long inPlaceBig = 0;
@@ -5759,7 +5861,11 @@ static class Gc
             }
             else if (HeapChunks.IsPooled(chunk)) pooledTails = pooledTails + tail;
             else if (HeapChunks.Owner(chunk) != 0) ownedTails = ownedTails + tail;
-            else plainTails = plainTails + tail;
+            else
+            {
+                plainTails = plainTails + tail;
+                if (chunk == _current) currentTail = tail;
+            }
             long step = 0;
             while (block < end)
             {
@@ -5818,6 +5924,7 @@ static class Gc
         SayNumber("heap shape:   of pooled chunks ", pooledTails);
         SayNumber("heap shape:   of threads' chunks ", ownedTails);
         SayNumber("heap shape:   of the mixed heap ", plainTails);
+        SayNumber("heap shape:     of its current chunk ", currentTail);
         for (long b = 0; b < 32; b++)
         {
             long n = Sys.Peek(counts + b * WordSize.Bytes);
