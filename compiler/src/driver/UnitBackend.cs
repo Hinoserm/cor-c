@@ -22,6 +22,8 @@ public sealed class UnitBackend : IUnitBackend
         LifetimeFacts? facts = null)
     {
         _lifetimes = 0;
+        // Where the unit's time went, for corc link --timings (LinkTimings).
+        long started = Environment.TickCount64, decoded = started, lateDone = started;
         Escape.LinkFacts? link = facts is null ? null : new(facts);
         // The unit says which machine it was compiled for (its ABI note):
         // every pass below reads the word size from Target.Current.
@@ -64,6 +66,7 @@ public sealed class UnitBackend : IUnitBackend
             + ", accounted decode bytes=" + unit.AccountedBytes + (preLate ? ", late passes at link" : ""));
         Module module = unit.Module;
         module.PreserveExports = true;
+        decoded = lateDone = Environment.TickCount64;
         if (preLate)
         {
             // THE LINK'S OWN RUN OF THE LATE PASSES names field sites apart
@@ -102,6 +105,7 @@ public sealed class UnitBackend : IUnitBackend
             // found needs no heap carries none, as its compile would have.
             unit.StackMaps = unit.StackMaps && module.NeedsHeap;
             if (retained is not null) PruneAfterLate(module, archive, retained);
+            lateDone = Environment.TickCount64;
         }
         HashSet<string> originalNames = module.Functions.Select(function => function.Name).ToHashSet(StringComparer.Ordinal);
         Dictionary<string, byte[]> semantics = CoalescingContract.Read(original);
@@ -255,13 +259,19 @@ public sealed class UnitBackend : IUnitBackend
         }
         Console.Error.WriteLine("IR backend: peak batch functions=" + peakFunctions
             + ", accounted working allowance=" + peakBytes
-            + (facts is null ? "" : ", lifetimes placed or freed=" + _lifetimes));
+            + (facts is null ? "" : ", lifetimes placed or freed=" + _lifetimes)
+            + (LinkTimings.Enabled ? "; decode " + (decoded - started) + "ms, late passes " + (lateDone - decoded)
+                + "ms, functions and code " + (Environment.TickCount64 - lateDone) + "ms" : ""));
         if (errors.Count > 0) throw new InvalidDataException("IR backend: " + string.Join("; ", errors));
         foreach (Section section in original.Sections.Where(section => section.Name is TargetContract.SectionName or ManagedLayoutContract.SectionName
                        or ".corsac.tag" or RegistrySchema.SectionName or NativeLibraries.SectionName))
         {
             Section copy = new(section.Name, section.Kind) { Align = section.Align };
-            copy.Bytes.AddRange(section.Bytes); copy.Relocs.AddRange(section.Relocs); result.Sections.Add(copy);
+            // A layout a link left in its file (ElfReader.LeftInFile) stays
+            // there: the same bytes, read when they are asked for.
+            if (section.FileBacked is { } backed) copy.FileBacked = backed;
+            else copy.Bytes.AddRange(section.Bytes);
+            copy.Relocs.AddRange(section.Relocs); result.Sections.Add(copy);
         }
         DefinitionSemantics.Attach(result, semantics);
         if (preLate && module.LifetimeHints is { FieldSites.Count: > 0 } named)

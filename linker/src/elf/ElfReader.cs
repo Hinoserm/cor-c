@@ -182,6 +182,18 @@ public static class ElfReader
     [ThreadStatic] internal static string? BackingPath;
 
     /// <summary>
+    /// WHAT A LINK LEAVES IN THE FILE: a unit's IR, and the notes the link
+    /// reads once or twice and takes out before the image is laid out -- the
+    /// lifetime and region hints, the managed layouts, the coalescing
+    /// contract. Held in memory, the compiler's own link kept 170 MB of
+    /// notes, half of what its objects took, from the first phase to the last.
+    /// </summary>
+    internal static bool LeftInFile(string name)
+        => name is Corsac.Lang.Lto.IrArchive.SectionName or Corsac.Lang.Lto.LifetimeHints.SectionName
+            or Corsac.Lang.Lto.RegionHints.SectionName or ManagedLayoutContract.SectionName
+            or Corsac.Lang.Lto.CoalescingContract.SectionName;
+
+    /// <summary>
     /// An object read from a file that stays where it is while the object is
     /// used: its IR archive is not copied into memory but read from the file
     /// a record at a time, and the object knows its file (SourcePath), so a
@@ -287,8 +299,9 @@ public static class ElfReader
             else
             {
                 // A unit's IR stays in its file when the file is known: a link
-                // reads it a record at a time (IrArchive).
-                if (ElfReader.BackingPath is string backing && names[i] == Corsac.Lang.Lto.IrArchive.SectionName)
+                // reads it a record at a time (IrArchive). So do the notes a
+                // link reads and drops (LeftInFile).
+                if (ElfReader.BackingPath is string backing && LeftInFile(names[i]))
                 {
                     Content(f, h, $"section '{names[i]}'");
                     s.FileBacked = (backing, (long)h.Offset, checked((int)h.Size));
@@ -477,7 +490,9 @@ public static class ElfReader
                         throw new ElfFormatException($"relocation in '{target.Name}' at 0x{offset:x} is against an unnamed symbol");
                     }
                 }
-                // REL: the addend is whatever sits in the word.
+                // REL: the addend is whatever sits in the word -- of a section
+                // left in its file too, which then comes into memory.
+                if (target.FileBacked is not null) { target.Bytes.AddRange(target.Content()); target.FileBacked = null; }
                 int addend = BinaryPrimitives.ReadInt32LittleEndian(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(target.Bytes)[(int)offset..]);
                 target.Relocs.Add(new Relocation((int)offset, symbol, addend, kind.Value));
             }

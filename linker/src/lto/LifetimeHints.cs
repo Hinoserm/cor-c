@@ -352,8 +352,8 @@ public sealed class LifetimeHints
     {
         Section[] sections = obj.Sections.Where(section => section.Name == SectionName).ToArray();
         if (sections.Length == 0) return null;
-        if (sections.Length != 1 || sections[0].Bytes.Count > MaximumBytes) throw new ElfFormatException("Invalid lifetime hint section");
-        return Read(sections[0].Bytes.ToArray());
+        if (sections.Length != 1 || sections[0].Size > MaximumBytes) throw new ElfFormatException("Invalid lifetime hint section");
+        return Read(sections[0].Content());
     }
 
     public static LifetimeHints Read(byte[] bytes)

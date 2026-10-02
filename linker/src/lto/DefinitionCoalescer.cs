@@ -42,9 +42,17 @@ public static class DefinitionCoalescer
         }
         if (errors.Count > 0) throw new LinkException(errors);
         // Complete every check before changing any input.
+        // EACH OBJECT'S NAMES GATHERED ONCE: asked of its symbol list for
+        // every copy it loses, with the alias made afresh at each symbol, the
+        // compiler's own link compared strings for minutes, three times over.
+        Dictionary<ObjectFile, HashSet<string>> names = new();
         foreach (var item in remove)
-            if (item.Object.Symbols.Any(other => other.Name == "__corsac_retained_" + item.Symbol.Name))
+        {
+            if (!names.TryGetValue(item.Object, out HashSet<string>? known))
+                names.Add(item.Object, known = item.Object.Symbols.Select(symbol => symbol.Name).ToHashSet(StringComparer.Ordinal));
+            if (known.Contains("__corsac_retained_" + item.Symbol.Name))
                 throw new ElfFormatException("Reserved coalescing alias collision: " + item.Symbol.Name);
+        }
         if (validateOnly) return remove.Count;
         // The copies are cut out of their objects where that is plainly safe
         // (DuplicateCutter); only what it leaves stays, as dead bytes under a

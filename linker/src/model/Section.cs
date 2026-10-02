@@ -20,8 +20,9 @@ public sealed class Section
 
     /// <summary>
     /// CONTENT LEFT IN THE FILE IT WAS READ FROM: a unit's IR archive, which
-    /// a link reads a record at a time and never holds whole (ElfReader.
-    /// ReadObjectFile). Bytes is empty while this is set.
+    /// a link reads a record at a time and never holds whole, and the notes
+    /// it reads and drops (ElfReader.ReadObjectFile, LeftInFile). Bytes is
+    /// empty while this is set; Content reads it.
     /// </summary>
     public (string Path, long Offset, int Length)? FileBacked { get; set; }
 

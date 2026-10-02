@@ -352,8 +352,9 @@ internal static class Elf64Object
             else
             {
                 // A unit's IR stays in its file when the file is known: a link
-                // reads it a record at a time (IrArchive).
-                if (ElfReader.BackingPath is string backing && names[i] == Corsac.Lang.Lto.IrArchive.SectionName)
+                // reads it a record at a time (IrArchive). So do the notes a
+                // link reads and drops (ElfReader.LeftInFile).
+                if (ElfReader.BackingPath is string backing && ElfReader.LeftInFile(names[i]))
                 {
                     Content(f, h, $"section '{names[i]}'");
                     s.FileBacked = (backing, (long)h.Offset, checked((int)h.Size));

@@ -37,7 +37,7 @@ public static class CoalescingContract
         Section[] sections = obj.Sections.Where(section => section.Name == SectionName).ToArray();
         if (sections.Length == 0) return result;
         if (sections.Length != 1) throw new ElfFormatException("Duplicate coalescing contract");
-        using MemoryStream stream = new(sections[0].Bytes.ToArray(), writable: false);
+        using MemoryStream stream = new(sections[0].Content(), writable: false);
         using BinaryReader reader = new(stream, Utf8);
         try
         {
