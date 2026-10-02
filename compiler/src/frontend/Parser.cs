@@ -3664,9 +3664,12 @@ public sealed class Parser
         Block cleanup = new() { Line = marker.Line, Col = marker.Col };
         cleanup.Statements.Add(new IfStmt
         {
+            // A struct resource is disposed without a test, as C# does: the
+            // binder answers this one true over a value type (PatternNullTest).
             Cond = new BinaryExpr
             {
                 Op = BinOp.Ne,
+                PatternNullTest = true,
                 Left = new NameExpr
                 {
                     Name = marker.Declaration.Name, Line = marker.Line, Col = marker.Col,

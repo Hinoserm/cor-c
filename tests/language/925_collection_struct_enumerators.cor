@@ -1,0 +1,49 @@
+// test: collection_struct_enumerators
+// expect-exit: 0
+// expect-output:
+// queue 3 4 5 6 | stack 6 5 4 3 | sorted 1 2 5 9 | hash 3
+// linq 18 18 17 | walks 3000000
+//
+// Queue, Stack and SortedSet walked by foreach with their struct
+// enumerators (.NET's order: queue front first, stack top first, sorted
+// ascending), and through IEnumerable<T> by LINQ, which still gets an
+// object; a loop walking them many times must allocate nothing per walk.
+
+using System;
+using System.Linq;
+using System.Collections.Generic;
+
+static class P
+{
+    static void Main()
+    {
+        Queue<int> q = new();
+        for (int i = 1; i <= 6; i++) q.Enqueue(i);
+        q.Dequeue(); q.Dequeue();
+        Stack<int> st = new();
+        for (int i = 3; i <= 6; i++) st.Push(i);
+        SortedSet<int> ss = new() { 9, 2, 5, 1 };
+        HashSet<int> hs = new() { 7, 8, 9 };
+        string line = "queue";
+        foreach (int x in q) line += " " + x;
+        line += " | stack";
+        foreach (int x in st) line += " " + x;
+        line += " | sorted";
+        foreach (int x in ss) line += " " + x;
+        int n = 0;
+        foreach (int x in hs) n++;
+        Console.WriteLine(line + " | hash " + n);
+        Console.WriteLine("linq " + q.Sum() + " " + st.Sum() + " " + ss.Sum() + " | walks " + Walks(q, st, ss));
+    }
+    static long Walks(Queue<int> q, Stack<int> st, SortedSet<int> ss)
+    {
+        long w = 0;
+        for (int r = 0; r < 250000; r++)
+        {
+            foreach (int x in q) w++;
+            foreach (int x in st) w++;
+            foreach (int x in ss) w++;
+        }
+        return w;
+    }
+}

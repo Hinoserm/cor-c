@@ -7639,7 +7639,22 @@ class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T> {
         for (int i = 0; i < count; i++) { target[at + i] = this[i]; }
     }
 
-    public IEnumerator<T> GetEnumerator() { return new QueueEnumerator<T>(this); }
+    /// .NET's own: a struct, so a foreach over one allocates nothing and does
+    /// not hand the collection to an object on the heap (which the lifetime
+    /// rules take for its escape).
+    public struct Enumerator : IEnumerator<T>, IDisposable {
+        private readonly Queue<T> over;
+        private int at;
+        internal Enumerator(Queue<T> walked) { over = walked; at = -1; }
+        public T Current => over[at];
+        object? IEnumerator.Current => Current;
+        public bool MoveNext() { at = at + 1; return at < over.Count; }
+        public void Reset() { at = -1; }
+        public void Dispose() { }
+    }
+
+    public Enumerator GetEnumerator() { return new Enumerator(this); }
+    IEnumerator<T> IEnumerable<T>.GetEnumerator() { return new QueueEnumerator<T>(this); }
 
     /// Not a .NET member: the i-th element in queue order, which the
     /// enumerator and the copies above need and the ring makes non-obvious.
@@ -12734,7 +12749,22 @@ class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
         return backwards;
     }
 
-    public IEnumerator<T> GetEnumerator() { return new ListEnumerator<T>(items); }
+    /// .NET's own: a struct, so a foreach over one allocates nothing and does
+    /// not hand the collection to an object on the heap (which the lifetime
+    /// rules take for its escape).
+    public struct Enumerator : IEnumerator<T>, IDisposable {
+        private readonly List<T> over;
+        private int at;
+        internal Enumerator(List<T> walked) { over = walked; at = -1; }
+        public T Current => over[at];
+        object? IEnumerator.Current => Current;
+        public bool MoveNext() { at = at + 1; return at < over.Count; }
+        public void Reset() { at = -1; }
+        public void Dispose() { }
+    }
+
+    public Enumerator GetEnumerator() { return new Enumerator(items); }
+    IEnumerator<T> IEnumerable<T>.GetEnumerator() { return new ListEnumerator<T>(items); }
 }
 
 // ---- ordering -------------------------------------------------------------

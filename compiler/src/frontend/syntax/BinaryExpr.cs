@@ -15,7 +15,8 @@ public sealed class BinaryExpr : Expr
     /// a value type there is nothing to ask. C# does not write the test at all
     /// there, and `def is { Role: Role.Def }` over a struct was refused with
     /// "a value type can never be null", which is true of the comparison and
-    /// not of the pattern.
+    /// not of the pattern. The test `using` writes before disposing is the
+    /// same: `using (var e = set.GetEnumerator())` over a struct enumerator.
     /// </summary>
     public bool PatternNullTest { get; init; }
 
