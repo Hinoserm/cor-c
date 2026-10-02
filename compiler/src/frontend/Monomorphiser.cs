@@ -1111,8 +1111,14 @@ public sealed class Monomorphiser
             // Source>` arrives as the copy `KeyValuePair$string$Source` or as
             // the template's name with its arguments, and MinBy's `T?` over it
             // is still the pair, not a cell holding one.
+            // AND A TUPLE: `(string Callee, int Argument)` arrives as
+            // ValueTuple with its element types, a struct no unit declares,
+            // and FirstOrDefault's `T?` over it made the copy hand back a
+            // Nullable cell where every caller read the tuple -- the
+            // has-value flag read as Callee.
             bool valueBound = bound.ArrayRank == 0 && bound.PointerDepth == 0
                 && (Narrow.Contains(bound.Name) || _byValue.Contains(bound.Name)
+                    || bound.Name == TypeRef.Tuple && bound.Args.Count > 0
                     || bound.Name is "long" or "ulong" or "nint" or "nuint" or "decimal"
                     || _made.TryGetValue(bound.Name, out TypeDecl? madeDecl) && madeDecl.Kind is TypeKind.Struct or TypeKind.Enum
                     || bound.Args.Count > 0 && _generic.TryGetValue(Arity(bound.Name, bound.Args.Count), out TypeDecl? template)
