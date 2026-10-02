@@ -89,6 +89,11 @@ public static class IrLinkOptimizer
         // closed image without lifetime hints dropped the helper and failed
         // to link ("undefined symbol m_Runtime_CardMarkObject").
         linkRoots.Add(RuntimeAbi.CardMarkObject);
+        // And the barrier on a replaced object's value, which ScalarObjects
+        // writes where the unit defines it: a regenerated unit's late passes
+        // see the whole unit, what the image keeps of it or not (UnitBackend),
+        // and the one holding the runtime called it unkept.
+        linkRoots.Add(RuntimeAbi.WriteBarrierValues);
         Dictionary<ObjectFile, HashSet<string>>? reachability = enabled && closedImageEntry is not null
             ? IrReachability.Find(inputs, archives, owners, closedImageEntry, linkRoots) : null;
         // REGIONS OVER EVERY UNIT (RegionSolver): the boundaries to open and

@@ -49,8 +49,16 @@ public sealed class UnitBackend : IUnitBackend
         // has free (a quarter of what the process's 768 MB heap leaves), a
         // unit holding the runtime and the standard library, 220 MB decoded,
         // could not be linked anywhere.
+        // THE LATE PASSES SEE THE UNIT WHOLE, what a closed image's link does
+        // not keep of it too: a generic copy every unit compiles (HashSet's
+        // Add, Stack's Push) is kept only in the unit that defines it first,
+        // and pruned before them here it was a call to nothing the unit knew
+        // -- not inlined, and every parameter escaping. An iterator's set
+        // handed to Add was the collector's in the compiler's own build,
+        // freed when it was linked open (1080). What the image does not keep
+        // goes after them (PruneAfterLate).
         var read = IrUnitCodec.ReadWithSettings(archive, memoryBudget: preLate ? PreLateDecodeLimit : 64L * 1024 * 1024,
-            retained: retained, functionHeaders: preLate ? null : visibility);
+            retained: preLate ? null : retained, functionHeaders: preLate ? null : visibility);
         var unit = (read.Module, StackMaps: read.StackMaps, read.AccountedBytes);
         Console.Error.WriteLine("IR backend: retained functions=" + unit.Module.Functions.Count + ", data=" + unit.Module.Data.Count
             + ", accounted decode bytes=" + unit.AccountedBytes + (preLate ? ", late passes at link" : ""));
@@ -91,6 +99,7 @@ public sealed class UnitBackend : IUnitBackend
             // Only a collector reads stack maps, and a unit the late passes
             // found needs no heap carries none, as its compile would have.
             unit.StackMaps = unit.StackMaps && module.NeedsHeap;
+            if (retained is not null) PruneAfterLate(module, archive, retained);
         }
         HashSet<string> originalNames = module.Functions.Select(function => function.Name).ToHashSet(StringComparer.Ordinal);
         Dictionary<string, byte[]> semantics = CoalescingContract.Read(original);
@@ -260,5 +269,50 @@ public sealed class UnitBackend : IUnitBackend
             sites.Attach(result);
         }
         return result;
+    }
+
+    /// <summary>
+    /// WHAT A CLOSED IMAGE DOES NOT KEEP, taken out once the late passes have
+    /// read it: every record the link's reachability left out, as the decode
+    /// left it out before. What the passes made has no record and stays; so
+    /// does a definition of the unit's own that what stays now names -- a
+    /// body inlined from a copy the image keeps elsewhere names the unit's
+    /// locals, which nothing reached in the IR the link judged. An exported
+    /// one is the copy another unit keeps.
+    /// </summary>
+    private static void PruneAfterLate(Module module, IrArchive archive, IReadOnlySet<string> retained)
+    {
+        bool Kept(string key) => !archive.Entries.ContainsKey(key) || retained.Contains(key);
+        Dictionary<string, Function> functions = new(StringComparer.Ordinal);
+        foreach (Function function in module.Functions) functions[function.Name] = function;
+        Dictionary<string, DataItem> data = new(StringComparer.Ordinal);
+        foreach (DataItem item in module.Data) data[item.Name] = item;
+        HashSet<string> keep = new(StringComparer.Ordinal);
+        Stack<string> pending = new();
+        foreach (Function function in module.Functions) if (Kept("F:" + function.Name)) { keep.Add("F:" + function.Name); pending.Push("F:" + function.Name); }
+        foreach (DataItem item in module.Data) if (Kept("D:" + item.Name)) { keep.Add("D:" + item.Name); pending.Push("D:" + item.Name); }
+        void Name(string name)
+        {
+            if (functions.TryGetValue(name, out Function? function) && !function.Exported && keep.Add("F:" + name)) pending.Push("F:" + name);
+            else if (data.TryGetValue(name, out DataItem? item) && !item.Exported && keep.Add("D:" + name)) pending.Push("D:" + name);
+        }
+        while (pending.Count > 0)
+        {
+            string key = pending.Pop();
+            // What the archive counts as a reference (IrUnitCodec.Snapshot):
+            // calls, and every symbol an operand names; a datum's relocations.
+            if (key.StartsWith("F:", StringComparison.Ordinal))
+            {
+                foreach (Corsac.Lang.Ir.Block block in functions[key[2..]].Blocks)
+                    foreach (Instr instruction in block.Instrs)
+                    {
+                        if (instruction.Op == Opcode.Call && instruction.Callee is not null) Name(instruction.Callee);
+                        foreach (Operand operand in instruction.Operands) if (operand is SymOperand address) Name(address.Name);
+                    }
+            }
+            else foreach (DataReloc relocation in data[key[2..]].Relocs) Name(relocation.Symbol);
+        }
+        module.Functions.RemoveAll(function => !keep.Contains("F:" + function.Name));
+        module.Data.RemoveAll(item => !keep.Contains("D:" + item.Name));
     }
 }

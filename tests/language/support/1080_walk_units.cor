@@ -1,0 +1,37 @@
+// The other unit of 1080_iterator_set_freed_with_shared_copy_across_units:
+// an iterator walking a graph with a set of what it has seen and a stack of
+// what it has still to see, both its own, the way the compiler's binder
+// walks an interface's bases.
+using System.Collections.Generic;
+
+namespace WalkUnits;
+
+public sealed class Node
+{
+    public readonly List<Node> Ups = new();
+    public int Id;
+}
+
+public static class Walks
+{
+    static IEnumerable<Node> Extended(Node face)
+    {
+        HashSet<Node> seen = new();
+        Stack<Node> todo = new();
+        todo.Push(face);
+        while (todo.Count > 0)
+        {
+            Node one = todo.Pop();
+            if (!seen.Add(one)) continue;
+            yield return one;
+            foreach (Node up in one.Ups) todo.Push(up);
+        }
+    }
+
+    public static int Walk(Node n)
+    {
+        int sum = 0;
+        foreach (Node x in Extended(n)) sum += x.Id;
+        return sum;
+    }
+}

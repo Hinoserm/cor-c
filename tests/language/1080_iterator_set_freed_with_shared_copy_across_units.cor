@@ -1,0 +1,53 @@
+// test: an iterator's own set freed, its Add a copy another unit keeps
+// units: tests/language/support/1080_walk_units.cor
+// expect-exit: 0
+// expect-output:
+// 1149965 0 True
+//
+// The other unit's iterator makes a set and a stack and frees both when it
+// ends. Both are handed only to their own methods, which say so -- but this
+// unit uses a set and a stack of its own type too, so it compiles the same
+// shared copies of their methods, and being linked first, it is the one
+// whose copies the whole program keeps. The other unit's late passes run at
+// the link over its whole IR all the same: pruned to what the image keeps,
+// the set's Add was a call to nothing the unit knew, every argument
+// escaping, and a hundred thousand walks left every set to the collector.
+
+using System;
+using System.Collections.Generic;
+using WalkUnits;
+
+sealed class Tag { public int N; }
+
+static class Program
+{
+    static int Distinct(Tag[] tags)
+    {
+        HashSet<Tag> seen = new();
+        Stack<Tag> todo = new();
+        foreach (Tag t in tags) todo.Push(t);
+        int n = 0;
+        while (todo.Count > 0) if (seen.Add(todo.Pop())) n++;
+        return n;
+    }
+
+    static int Main()
+    {
+        List<Node> all = new();
+        for (int i = 0; i < 12; i++)
+        {
+            Node f = new() { Id = i };
+            for (int j = 0; j < i; j += 3) f.Ups.Add(all[j]);
+            all.Add(f);
+        }
+        Tag[] tags = new Tag[5];
+        for (int i = 0; i < tags.Length; i++) tags[i] = new Tag { N = i };
+        int collections = GC.CollectionCount(0);
+        long before = GC.GetTotalMemory(false);
+        long total = Distinct(tags);
+        for (int round = 0; round < 100000; round++) total += Walks.Walk(all[round % 12]);
+        long grown = GC.GetTotalMemory(false) - before;
+        Console.WriteLine(total + " " + (GC.CollectionCount(0) - collections) + " " + (grown < 65536));
+        return 0;
+    }
+}
