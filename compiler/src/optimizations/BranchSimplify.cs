@@ -232,19 +232,25 @@ public sealed class BranchSimplify : IPass
     /// </summary>
     private static bool MergeBlocks(Function f)
     {
+        // BY POSITION: how many blocks come into each, and which one when
+        // it is one -- all a merge asks. A set of predecessors a block was
+        // the pass's own largest allocation, a fifth of it ever given back.
         Cfg cfg = new(f);
-        Dictionary<Block, HashSet<Block>> preds = new(ReferenceEqualityComparer.Instance);
+        int n = f.Blocks.Count;
+        int[] into = new int[n];
+        Block?[] only = new Block?[n];
         foreach (Block b in f.Blocks)
         {
-            HashSet<Block> into = new(ReferenceEqualityComparer.Instance);
-            foreach (Block p in cfg.Preds(b)) into.Add(p);
-            preds[b] = into;
+            Edges preds = cfg.Preds(b);
+            into[b.Order] = preds.Count;
+            if (preds.Count == 1) only[b.Order] = preds[0];
         }
 
-        HashSet<Block> gone = new(ReferenceEqualityComparer.Instance);
+        bool[] gone = new bool[n];
+        bool any = false;
         foreach (Block a in f.Blocks)
         {
-            if (gone.Contains(a))
+            if (gone[a.Order])
             {
                 continue;
             }
@@ -256,7 +262,7 @@ public sealed class BranchSimplify : IPass
                     break;
                 }
                 Block b = t.Targets[0];
-                if (ReferenceEquals(a, b) || cfg.IsRoot(b) || preds[b].Count != 1 || !preds[b].Contains(a))
+                if (ReferenceEquals(a, b) || cfg.IsRoot(b) || into[b.Order] != 1 || !ReferenceEquals(only[b.Order], a))
                 {
                     break;
                 }
@@ -264,20 +270,31 @@ public sealed class BranchSimplify : IPass
                 Phi.LowerSingleEntry(b);
                 a.Instrs.RemoveAt(a.Instrs.Count - 1);
                 a.Instrs.AddRange(b.Instrs);
-                gone.Add(b);
-                foreach (Block s in b.Successors)
+                gone[b.Order] = true;
+                any = true;
+                // b's successors are a's now: one that had b alone has a
+                // alone; one that had others as well has at least as many
+                // (a may have been one of them -- then a later round sees it).
+                if (a.Terminator is { } end)
                 {
-                    preds[s].Remove(b);
-                    preds[s].Add(a);
-                    Phi.Rename(s, b, a);
+                    for (int k = 0; k <= end.Targets.Count; k++)
+                    {
+                        Block? s = k < end.Targets.Count ? end.Targets[k] : end.Default;
+                        if (s is null || s.Order >= n) continue;
+                        if (into[s.Order] == 1 && ReferenceEquals(only[s.Order], b)) only[s.Order] = a;
+                        Phi.Rename(s, b, a);
+                    }
                 }
             }
         }
-        if (gone.Count == 0)
+        if (!any)
         {
             return false;
         }
-        f.Blocks.RemoveAll(gone.Contains);
+        int kept = 0;
+        for (int k = 0; k < f.Blocks.Count; k++)
+            if (!gone[f.Blocks[k].Order]) f.Blocks[kept++] = f.Blocks[k];
+        f.Blocks.RemoveRange(kept, f.Blocks.Count - kept);
         return true;
     }
 }
