@@ -1758,7 +1758,28 @@ continue;
     public int FreshFunctions => _fresh.Count;
 
     /// <summary>Whether a call's result is an object its callee hands over.</summary>
-    public bool IsFreshCall(Instr i) => i.Op == Opcode.Call && i.Callee is not null && _fresh.Contains(i.Callee) || i.ReturnsFreshStruct;
+    public bool IsFreshCall(Instr i) => i.Op == Opcode.Call && i.Callee is not null && _fresh.Contains(i.Callee) || i.ReturnsFreshStruct || FreshOverrides(i);
+
+    /// <summary>
+    /// A VIRTUAL CALL HANDS OVER WHAT EVERY OVERRIDE IT REACHES HANDS OVER.
+    /// Whichever runs, the object it returns is one it made and kept nowhere,
+    /// so the caller owns it as it owns a direct call's. The overrides are
+    /// the call's resolved targets (IndirectTargets): the functions every
+    /// descriptor holds at its slot over a whole program, or, in a unit and
+    /// at the link, the one symbol standing for all of them, which the link
+    /// finds fresh only when each override is (Lto.LifetimeSolver). A call
+    /// nothing resolved, or one that reaches nothing, is never fresh.
+    /// </summary>
+    private static bool FreshOverrides(Instr i, HashSet<string> fresh)
+        => i.Op == Opcode.CallIndirect && i.Dest is not null && _indirect is not null && _indirect.TryGetValue(i, out string[]? targets)
+           && targets.Length > 0 && targets.All(fresh.Contains);
+
+    private bool FreshOverrides(Instr i) => FreshOverrides(i, _fresh);
+
+    /// <summary>The one symbol a unit's virtual call stands for (VirtualCallee), when it has one.</summary>
+    private static string? VirtualSymbol(Instr i)
+        => i.Op == Opcode.CallIndirect && _indirect is not null && _indirect.TryGetValue(i, out string[]? targets)
+           && targets is [string one] && one.StartsWith(VirtualPrefix, StringComparison.Ordinal) ? one : null;
 
     /// <summary>
     /// What a fresh struct result's record names as the callee that filled it
@@ -1766,7 +1787,15 @@ continue;
     /// its own, and otherwise OpaqueCallee -- its fields were filled by code
     /// this analysis did not see, and none of them is the caller's to free.
     /// </summary>
-    private string FreshCalleeOf(Instr call) => call.Callee is not null && _fresh.Contains(call.Callee) ? call.Callee : OpaqueCallee;
+    private string FreshCalleeOf(Instr call)
+    {
+        if (call.Callee is not null && _fresh.Contains(call.Callee)) return call.Callee;
+        // A virtual call with one fresh target -- a unit's symbol for all its
+        // overrides, whose returned fields the link merged from each -- is
+        // read as that target; with several, nothing says which ran.
+        if (FreshOverrides(call) && _indirect!.TryGetValue(call, out string[]? targets) && targets is [string one]) return one;
+        return OpaqueCallee;
+    }
     internal const string OpaqueCallee = "\u0001opaque";
 
     /// <summary>
@@ -3576,6 +3605,10 @@ continue;
                 else if (_hinting && i.Op == Opcode.Call && i.Callee is not null && i.Dest is { Type: IrType.I32 or IrType.I64 }
                          && !IsAllocator(i.Callee) && !IsCollectorNote(i.Callee) && !_bookkeeping.Contains(i))
                     waiting.Add((b, i));
+                // A virtual call's, on every override it can reach: the
+                // link knows them all, and whether each hands over.
+                else if (_hinting && i.Dest is { Type: IrType.I32 or IrType.I64 } && VirtualSymbol(i) is not null && !_bookkeeping.Contains(i))
+                    waiting.Add((b, i));
             }
         if (PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal))
             foreach (Instr i in f.Blocks.SelectMany(b => b.Instrs).Where(i => i.Op == Opcode.Call && i.Callee is not null && i.Dest is not null && !IsAllocator(i.Callee)))
@@ -3644,7 +3677,7 @@ continue;
         {
             liveness ??= new Liveness(f);
             pads ??= PadLive(liveness);
-            Pending(f, b, call, summaries, liveness, pads, call.Callee);
+            Pending(f, b, call, summaries, liveness, pads, call.Callee ?? VirtualSymbol(call));
         }
     }
 

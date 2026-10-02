@@ -1,0 +1,30 @@
+// The other unit of 1090_virtual_fresh_results_across_units: a hierarchy
+// whose every override of Make hands over an array it made, called from the
+// test only through the base. Each fills its array in a loop, so the link
+// does not take its body into the caller and the call stays virtual.
+abstract class Shape
+{
+    public abstract int[] Make(int n);
+}
+sealed class Square : Shape
+{
+    public override int[] Make(int n)
+    {
+        int[] made = new int[n];
+        for (int i = 0; i < n; i++) made[i] = i * i;
+        return made;
+    }
+}
+sealed class Line : Shape
+{
+    public override int[] Make(int n)
+    {
+        int[] made = new int[n + 1];
+        for (int i = 0; i <= n; i++) made[i] = n - i;
+        return made;
+    }
+}
+static class Shapes
+{
+    public static Shape Pick(int k) { if (k % 2 == 0) return new Square(); return new Line(); }
+}

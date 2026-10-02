@@ -1,0 +1,44 @@
+// test: virtual_fresh_results_across_units
+// units: tests/language/support/1090_virtual_fresh_units.cor
+// expect-exit: 0
+// expect-output:
+// 10000000
+// encoded freed True
+// decoded freed True
+// shape freed True
+//
+// What a virtual call hands back, when every override it can reach hands
+// over a fresh object: the caller owns it as it owns a direct call's. In a
+// unit compiled apart the call stays virtual -- Encoding.UTF8's GetBytes and
+// GetString, and Make on the other unit's abstract Shape -- and only the
+// link knows every override (Lto.VirtualTargets), so the unit leaves the
+// result as a condition on the call's one symbol, which the link answers by
+// whether each override is fresh. Flat, the calls are devirtualised and
+// always were.
+
+using System;
+using System.Text;
+static class P
+{
+    static void Main()
+    {
+        string text = "lifetimes across units, " + 12345;
+        Encoding utf8 = Encoding.UTF8;
+        long total = 0;
+        long before = Gc.Frees;
+        for (int k = 0; k < 200000; k++) total += utf8.GetBytes(text).Length;
+        long encoded = Gc.Frees - before;
+        byte[] bytes = utf8.GetBytes(text);
+        before = Gc.Frees;
+        for (int k = 0; k < 200000; k++) total += utf8.GetString(bytes, 0, bytes.Length).Length - 10;
+        long decoded = Gc.Frees - before;
+        Shape square = Shapes.Pick(0), line = Shapes.Pick(1);
+        before = Gc.Frees;
+        for (int k = 0; k < 200000; k++) total += square.Make(8).Length + line.Make(8).Length - 15;
+        long shaped = Gc.Frees - before;
+        Console.WriteLine(total);
+        Console.WriteLine("encoded freed " + (encoded >= 190000));
+        Console.WriteLine("decoded freed " + (decoded >= 190000));
+        Console.WriteLine("shape freed " + (shaped >= 380000));
+    }
+}

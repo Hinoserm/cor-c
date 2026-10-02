@@ -110,7 +110,19 @@ public sealed class LifetimeSolver
                     // an escape, and so was every key a table was asked about.
                     parameters[a] = each;
                 }
-                _globals.TryAdd(name, new LifetimeFunction(name, true, parameters, null));
+                // WHAT IT RETURNS IS FRESH if every override hands over what
+                // it returns, the same way: a condition on each, and the
+                // fields of the object handed back are every override's
+                // together. A call that reaches nothing is never fresh.
+                LifetimeCondition? fresh = null;
+                LifetimeFields? returned = null;
+                if (virtuals[name].Length > 0)
+                {
+                    fresh = new LifetimeCondition();
+                    returned = new LifetimeFields();
+                    foreach (string target in virtuals[name]) { fresh.Fresh.Add(target); returned.Merges.Add((target, Returned)); }
+                }
+                _globals.TryAdd(name, new LifetimeFunction(name, true, parameters, fresh, FreshFields: returned));
             }
         }
         SolveEscapes();
