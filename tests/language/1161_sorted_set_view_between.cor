@@ -1,0 +1,33 @@
+// test: sorted_set_view_between
+// expect-exit: 0
+// expect-output:
+// 8 4 3,4,6,7 1,3,4,6,7,9,10 3 7 out bad 2 1,9,10
+//
+// SortedSet.GetViewBetween is a live view, as in .NET: it reads the
+// parent's members in its range as they are now, an add or remove through
+// it reaches the parent, an add outside its range throws, a lower bound
+// above the upper throws, and clearing it clears that range of the parent.
+
+using System;
+using System.Collections.Generic;
+public static class Program
+{
+    public static int Main()
+    {
+        SortedSet<(string, int)> set = new() { ("a", 3), ("b", 1), ("b", 7), ("c", 2) };
+        int n = 0;
+        foreach (var (s, k) in set.GetViewBetween(("b", int.MinValue), ("b", int.MaxValue))) n += k;
+        SortedSet<int> nums = new() { 1, 3, 5, 7, 9 };
+        SortedSet<int> mid = nums.GetViewBetween(3, 7);
+        mid.Add(4); nums.Add(6); nums.Add(10); mid.Remove(5);
+        string caught = "", order = "";
+        try { mid.Add(8); } catch (ArgumentOutOfRangeException) { caught = "out"; }
+        try { nums.GetViewBetween(5, 2); } catch (ArgumentException) { order = "bad"; }
+        string before = n + " " + mid.Count + " " + string.Join(",", mid) + " " + string.Join(",", nums) + " " + mid.Min + " " + mid.Max + " " + caught + " " + order;
+        SortedSet<int> inner = mid.GetViewBetween(4, 6);
+        int innerCount = inner.Count;
+        mid.Clear();
+        Console.WriteLine(before + " " + innerCount + " " + string.Join(",", nums));
+        return 0;
+    }
+}

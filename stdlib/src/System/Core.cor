@@ -12594,6 +12594,37 @@ class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
     static readonly List<T> NoItems = new List<T>();
     private IComparer<T> by;
 
+    // A VIEW (GetViewBetween) is a set over a range of another: it holds no
+    // members of its own, reads the parent's that fall between its bounds as
+    // they are now, and writes go to the parent -- .NET's live view.
+    private SortedSet<T>? parent;
+    private T lowerBound;
+    private T upperBound;
+
+    private bool InRange(T value) => by.Compare(value, lowerBound) >= 0 && by.Compare(value, upperBound) <= 0;
+
+    /// A view's members, read again from its parent; a set's own, as they are.
+    private void Sync() {
+        if (parent == null) { return; }
+        parent.Sync();
+        List<T> now = new List<T>();
+        foreach (T value in parent.items) { if (InRange(value)) { now.Add(value); } }
+        items = now;
+    }
+
+    /// The members between two values, both included, as a set that stays
+    /// this one's: what is added to it or removed from it is added to or
+    /// removed from this, and what this gains or loses in the range it sees.
+    public SortedSet<T> GetViewBetween(T lowerValue, T upperValue) {
+        if (by.Compare(lowerValue, upperValue) > 0) { throw new ArgumentException("lowerBound is greater than upperBound"); }
+        if (parent != null && (!InRange(lowerValue) || !InRange(upperValue))) { throw new ArgumentOutOfRangeException("lowerValue"); }
+        SortedSet<T> view = new SortedSet<T>(by);
+        view.parent = this;
+        view.lowerBound = lowerValue;
+        view.upperBound = upperValue;
+        return view;
+    }
+
     public SortedSet() { items = NoItems; by = Comparer<T>.Default; }
 
     public SortedSet(IComparer<T>? comparer) {
@@ -12609,18 +12640,19 @@ class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
 
     public IComparer<T> Comparer => by;
 
-    public int Count => items.Count;
+    public int Count { get { Sync(); return items.Count; } }
 
     public T Min {
-        get { return items.Count == 0 ? default(T)! : items[0]; }
+        get { Sync(); return items.Count == 0 ? default(T)! : items[0]; }
     }
 
     public T Max {
-        get { return items.Count == 0 ? default(T)! : items[items.Count - 1]; }
+        get { Sync(); return items.Count == 0 ? default(T)! : items[items.Count - 1]; }
     }
 
     /// Where value is, or the complement of where it would go.
     private int Find(T value) {
+        Sync();
         int low = 0;
         int high = items.Count - 1;
         while (low <= high) {
@@ -12633,6 +12665,10 @@ class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
     }
 
     public bool Add(T value) {
+        if (parent != null) {
+            if (!InRange(value)) { throw new ArgumentOutOfRangeException("item"); }
+            return parent.Add(value);
+        }
         int at = Find(value);
         if (at >= 0) { return false; }
         if (ReferenceEquals(items, NoItems)) { items = new List<T>(); }
@@ -12641,6 +12677,7 @@ class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
     }
 
     public bool Remove(T value) {
+        if (parent != null) { return InRange(value) && parent.Remove(value); }
         int at = Find(value);
         if (at < 0) { return false; }
         items.RemoveAt(at);
@@ -12649,7 +12686,14 @@ class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
 
     public bool Contains(T value) { return Find(value) >= 0; }
 
-    public void Clear() { if (!ReferenceEquals(items, NoItems)) { items.Clear(); } }
+    public void Clear() {
+        if (parent != null) {
+            Sync();
+            foreach (T value in items) { parent.Remove(value); }
+            return;
+        }
+        if (!ReferenceEquals(items, NoItems)) { items.Clear(); }
+    }
 
     public void UnionWith(IEnumerable<T> other) {
         foreach (T item in other) { Add(item); }
@@ -12664,12 +12708,18 @@ class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
         foreach (T item in other) {
             if (Contains(item)) { keep.Add(item); }
         }
+        if (parent != null) {
+            Sync();
+            foreach (T value in items) { if (!keep.Contains(value)) { parent.Remove(value); } }
+            return;
+        }
         items = keep.items;
     }
 
     public bool SetEquals(IEnumerable<T> other) {
         SortedSet<T> them = new SortedSet<T>(other, by);
         if (them.Count != Count) { return false; }
+        Sync();
         for (int i = 0; i < items.Count; i++) {
             if (by.Compare(items[i], them.items[i]) != 0) { return false; }
         }
@@ -12678,6 +12728,7 @@ class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
 
     public bool IsSubsetOf(IEnumerable<T> other) {
         SortedSet<T> them = new SortedSet<T>(other, by);
+        Sync();
         for (int i = 0; i < items.Count; i++) {
             if (!them.Contains(items[i])) { return false; }
         }
@@ -12748,6 +12799,12 @@ class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
     }
 
     public int RemoveWhere(Predicate<T> match) {
+        if (parent != null) {
+            Sync();
+            int removed = 0;
+            foreach (T value in items) { if (match(value) && parent.Remove(value)) { removed = removed + 1; } }
+            return removed;
+        }
         if (ReferenceEquals(items, NoItems)) { return 0; }
         return items.RemoveAll(item => match(item));
     }
@@ -12755,11 +12812,13 @@ class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
     public void CopyTo(T[] array) { CopyTo(array, 0); }
 
     public void CopyTo(T[] array, int index) {
+        Sync();
         for (int i = 0; i < items.Count; i++) { array[index + i] = items[i]; }
     }
 
     public IEnumerable<T> Reverse() {
         List<T> backwards = new List<T>();
+        Sync();
         for (int i = items.Count - 1; i >= 0; i--) { backwards.Add(items[i]); }
         return backwards;
     }
@@ -12778,8 +12837,8 @@ class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
         public void Dispose() { }
     }
 
-    public Enumerator GetEnumerator() { return new Enumerator(items); }
-    IEnumerator<T> IEnumerable<T>.GetEnumerator() { return new ListEnumerator<T>(items); }
+    public Enumerator GetEnumerator() { Sync(); return new Enumerator(items); }
+    IEnumerator<T> IEnumerable<T>.GetEnumerator() { Sync(); return new ListEnumerator<T>(items); }
 }
 
 // ---- ordering -------------------------------------------------------------

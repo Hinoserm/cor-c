@@ -1,0 +1,24 @@
+// test: record_nullable_array_parameter
+// expect-exit: 0
+// expect-output:
+// False True True  2 3
+//
+// A positional record's `int[]?` parameter is an array that may be null,
+// not an array of nullable ints: the members the record writes for itself
+// (equality, hash, the property) spell it the way it was declared, and an
+// `int?[]` parameter beside it stays a distinct type.
+
+using System;
+public sealed record Import(string Symbol, int[]? Sites = null, bool Boundary = false);
+public sealed record Holes(int?[] Values);
+public static class Program
+{
+    public static int Main()
+    {
+        Import a = new("x", new[] { 1, 2 });
+        Import b = new("x", null);
+        Holes h = new(new int?[] { 1, null, 3 });
+        Console.WriteLine((a == b) + " " + (a.GetHashCode() == a.GetHashCode()) + " " + (b == new Import("x")) + " " + b.Sites?.Length + " " + a.Sites!.Length + " " + h.Values.Length);
+        return 0;
+    }
+}

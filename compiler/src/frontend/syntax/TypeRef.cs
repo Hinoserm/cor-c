@@ -123,14 +123,22 @@ public sealed class TypeRef : Node
         {
             s += "<" + string.Join(", ", Args) + ">";
         }
-        if (Nullable)
+        // AN ARRAY'S `?` IS WHERE C# WRITES IT: `int?[]` holds nullable ints
+        // (ElementNullable), `int[]?` may itself be null (Nullable). Written
+        // before the brackets either way, a record's synthesised equality --
+        // source text built from its parameters' types -- asked for an
+        // EqualityComparer of the wrong one, and refused its own argument.
+        if (ArrayRank == 0)
         {
-            s += "?";
+            if (Nullable) s += "?";
+            return s;
         }
+        if (ElementNullable) s += "?";
         for (int i = 0; i < ArrayRank; i++)
         {
             s += "[]";
         }
+        if (Nullable) s += "?";
         return s;
     }
 }
