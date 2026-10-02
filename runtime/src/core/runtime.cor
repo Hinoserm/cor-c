@@ -236,8 +236,8 @@ static class Tls
 /// process ends, for tools/sym to name. Nothing here allocates.
 static class AllocSamples
 {
-    const long Slots = 65536;           // entries of five words: site, caller, bytes, count, freed
-    const long Words = 5;
+    const long Slots = 65536;           // entries of six words: site, caller, bytes, count, freed, collected
+    const long Words = 6;
     static long _table;
     static long _lost;
 
@@ -351,6 +351,26 @@ static class AllocSamples
         }
     }
 
+    /// A block the collector swept up: charged to the entry that made it, if
+    /// sampled. What an entry made and neither count took was alive at the end.
+    public static void Collected(long block)
+    {
+        long h = PlaceOf(block);
+        for (long probe = 0; probe < 32; probe++)
+        {
+            long p = _places + ((h + probe) & (Places - 1)) * 3 * WordSize.Bytes;
+            long at = Sys.Peek(p);
+            if (at == 0) return;
+            if (at == block)
+            {
+                long e = Sys.Peek(p + WordSize.Bytes);
+                Sys.Poke(e + 5 * WordSize.Bytes, Sys.Peek(e + 5 * WordSize.Bytes) + Sys.Peek(p + 2 * WordSize.Bytes));
+                Sys.Poke(p, -1);
+                return;
+            }
+        }
+    }
+
     public static void Dump()
     {
         long table = _table;
@@ -372,6 +392,7 @@ static class AllocSamples
             // it reaches this way.
             Runtime.SayWhere("alloc sample where ", (Sys.Peek(e) & ((1L << 30) - 1)) - 1);
             Gc.SayNumber("alloc sample freed ", Sys.Peek(e + 4 * WordSize.Bytes));
+            Gc.SayNumber("alloc sample collected ", Sys.Peek(e + 5 * WordSize.Bytes));
             Gc.SayNumber("alloc sample count ", Sys.Peek(e + 3 * WordSize.Bytes));
         }
         Gc.SayNumber("alloc sample lost ", _lost);
