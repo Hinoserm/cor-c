@@ -32,8 +32,13 @@ public sealed class IntegerValueReuse : IPass
         // block, and kept for its successors, was the pass's whole allocation
         // and none of it freed. Per run, not per pass: the pipeline runs one
         // pass object on many functions at once (FunctionWorkers).
-        cfg.WalkSolePredecessors(new Scope(), dominating: false);
+        // ONE SCOPE A THREAD, kept: its tables are empty again when a walk
+        // ends (every change is undone), and keep their storage for the next
+        // function -- made per run, they and their growth were the collector's.
+        cfg.WalkSolePredecessors(_scope ??= new Scope(), dominating: false);
     }
+
+    [ThreadStatic] private static Scope? _scope;
 
     private sealed class Scope : Cfg.IScopedWalk
     {

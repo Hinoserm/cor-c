@@ -176,6 +176,9 @@ public sealed class Cfg
             nextSibling[block.Order] = firstChild[parent];
             firstChild[parent] = block.Order;
         }
+        // A walker kept between walks starts clean even if the last one was
+        // abandoned part way: everything it logged is undone.
+        walker.Undo(0);
         Stack<(int Block, int Mark)> walk = new();
         foreach (Block root in order)
         {

@@ -36,17 +36,23 @@ public sealed class LoadReuse : IPass
         // ended, and what it adds is undone when the walk leaves it. A table
         // copied for every such block was this pass's whole allocation, and
         // the collector's.
-        cfg.WalkSolePredecessors(new Scope(Stable), dominating: true);
+        // ONE SCOPE A THREAD, kept: its tables are empty again when a walk
+        // ends (every change is undone), and keep their storage for the next
+        // function -- made per run, they and their growth were the collector's.
+        Scope scope = _scope ??= new Scope();
+        scope.Stable = Stable;
+        cfg.WalkSolePredecessors(scope, dominating: true);
+        scope.Stable = null!;
     }
+
+    [ThreadStatic] private static Scope? _scope;
 
     private sealed class Scope : Cfg.IScopedWalk
     {
-        private readonly Func<VReg, Block, int, Block, int, bool> _stable;
+        public Func<VReg, Block, int, Block, int, bool> Stable = null!;
         private readonly Dictionary<Key, Entry> _memory = new();
         private readonly List<(Key Key, Entry Was, bool Had)> _undo = new();
         private readonly List<Key> _all = new();
-
-        public Scope(Func<VReg, Block, int, Block, int, bool> stable) { _stable = stable; }
 
         public int Mark => _undo.Count;
 
@@ -89,9 +95,9 @@ public sealed class LoadReuse : IPass
                     && Address(i, out Key key))
                 {
                     if (_memory.TryGetValue(key, out Entry prior)
-                        && _stable(prior.Load.Dest!, prior.Block, prior.Index + 1, block, index)
+                        && Stable(prior.Load.Dest!, prior.Block, prior.Index + 1, block, index)
                         && (i.Operands[0] is not RegOperand address
-                            || _stable(address.Reg, prior.Block, prior.Index, block, index)))
+                            || Stable(address.Reg, prior.Block, prior.Index, block, index)))
                     {
                         block.Instrs[index] = IrInfo.CopyOf(i, new RegOperand(prior.Load.Dest!));
                         continue;

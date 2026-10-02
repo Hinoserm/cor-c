@@ -14,8 +14,13 @@ public sealed class LocalCopies : IPass
         // they stood at its end -- every way in is through it -- and what it
         // learns is undone when the walk leaves it. A table copied for every
         // such block, kept for its successors, was this pass's whole cost.
-        new Cfg(f).WalkSolePredecessors(new Scope(), dominating: false);
+        // ONE SCOPE A THREAD, kept: its tables are empty again when a walk
+        // ends (every change is undone), and keep their storage for the next
+        // function -- made per run, they and their growth were the collector's.
+        new Cfg(f).WalkSolePredecessors(_scope ??= new Scope(), dominating: false);
     }
+
+    [ThreadStatic] private static Scope? _scope;
 
     private sealed class Scope : Cfg.IScopedWalk
     {
