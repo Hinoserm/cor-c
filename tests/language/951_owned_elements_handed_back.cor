@@ -1,0 +1,173 @@
+// test: owned_elements_handed_back
+// expect-exit: 0
+// expect-output:
+// lex 26000 True
+// apart 26000 True
+// twice 26000 True
+// table 26000 True
+// added 76000 True
+// kept 26000 first 2
+// stored 26 held 26
+// either 1500
+// kept intact ok 2 26
+//
+// A collection made in one function, filled with objects made for it and
+// handed back, then walked by its caller and dropped: the caller's free
+// gives its elements back too (OwnedElements, a fresh return). Whether the
+// maker is inlined or not, and through a function that hands back what it
+// was handed. A caller that keeps an element, keeps the collection, or a
+// maker that may hand back another collection, frees nothing it should not.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+sealed class Tok { public int K; public string T; public Tok(int k, string t) { K = k; T = t; } }
+
+static class P
+{
+    const string Text = "the quick brown fox jumps over the lazy dog";
+
+    static List<Tok> _first = new();
+    static List<List<Tok>> _lists = new();
+
+    static List<Tok> Lex(string s)
+    {
+        List<Tok> l = new();
+        foreach (string w in s.Split(' ')) l.Add(new Tok(w.Length - 1, w));
+        return l;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static List<Tok> LexApart(string s)
+    {
+        List<Tok> l = new();
+        foreach (string w in s.Split(' ')) l.Add(new Tok(w.Length - 1, w));
+        return l;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static List<Tok> Twice(string s)
+    {
+        List<Tok> l = LexApart(s);
+        l.Add(new Tok(0, "end"));
+        return l;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Dictionary<int, Tok> Table(string s)
+    {
+        Dictionary<int, Tok> d = new();
+        int i = 0;
+        foreach (string w in s.Split(' ')) { d[i] = new Tok(w.Length - 1, w); i++; }
+        return d;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static List<Tok> Either(bool first)
+    {
+        List<Tok> a = new();
+        a.Add(new Tok(1, "a"));
+        List<Tok> b = new();
+        b.Add(new Tok(2, "b"));
+        List<Tok> c = first ? a : b;
+        return c;
+    }
+
+    static string Freed(long before, long least) => Gc.Frees - before >= least ? "True" : "False";
+
+    static void Main()
+    {
+        long before = Gc.Frees;
+        long sum = 0;
+        for (int r = 0; r < 1000; r++)
+        {
+            List<Tok> toks = Lex(Text);
+            foreach (Tok t in toks) sum += t.K;
+        }
+        Console.WriteLine("lex " + sum + " " + Freed(before, 9000));
+
+        before = Gc.Frees;
+        sum = 0;
+        for (int r = 0; r < 1000; r++)
+        {
+            List<Tok> toks = LexApart(Text);
+            for (int i = 0; i < toks.Count; i++) sum += toks[i].K;
+        }
+        Console.WriteLine("apart " + sum + " " + Freed(before, 9000));
+
+        before = Gc.Frees;
+        sum = 0;
+        for (int r = 0; r < 1000; r++)
+        {
+            List<Tok> toks = Twice(Text);
+            foreach (Tok t in toks) sum += t.K;
+        }
+        Console.WriteLine("twice " + sum + " " + Freed(before, 10000));
+
+        before = Gc.Frees;
+        sum = 0;
+        for (int r = 0; r < 1000; r++)
+        {
+            Dictionary<int, Tok> d = Table(Text);
+            foreach (Tok t in d.Values) sum += t.K;
+        }
+        Console.WriteLine("table " + sum + " " + Freed(before, 9000));
+
+        // The caller adds objects of its own to what it was handed.
+        before = Gc.Frees;
+        sum = 0;
+        for (int r = 0; r < 1000; r++)
+        {
+            List<Tok> toks = LexApart(Text);
+            toks.Add(new Tok(50, "more"));
+            foreach (Tok t in toks) sum += t.K;
+        }
+        Console.WriteLine("added " + sum + " " + Freed(before, 10000));
+
+        // An element kept by the caller: nothing of that list may be freed.
+        sum = 0;
+        for (int r = 0; r < 1000; r++)
+        {
+            List<Tok> toks = LexApart(Text);
+            foreach (Tok t in toks)
+            {
+                sum += t.K;
+                if (r == 7 && t.T == "fox") _first.Add(t);
+            }
+        }
+        Console.WriteLine("kept " + sum + " first " + _first[0].K);
+
+        // The collection itself kept.
+        for (int r = 0; r < 3; r++) _lists.Add(LexApart(Text));
+        int stored = 0;
+        foreach (Tok t in _lists[1]) stored += t.K;
+        Console.WriteLine("stored " + stored + " held " + Count(_lists[2]));
+
+        sum = 0;
+        for (int r = 0; r < 1000; r++)
+        {
+            List<Tok> l = Either((r & 1) == 0);
+            foreach (Tok t in l) sum += t.K;
+        }
+        Console.WriteLine("either " + sum);
+
+        // The memory freed made again: what was kept must be untouched.
+        long churn = 0;
+        for (int r = 0; r < 3000; r++)
+        {
+            List<Tok> toks = LexApart(Text);
+            foreach (Tok t in toks) churn += t.K;
+            Dictionary<int, Tok> d = Table(Text);
+            foreach (Tok t in d.Values) churn += t.K;
+        }
+        Console.WriteLine("kept intact " + (churn == 3000L * 52 ? "ok" : "churn " + churn) + " " + _first[0].K + " " + Count(_lists[0]));
+    }
+
+    static int Count(List<Tok> l)
+    {
+        int s = 0;
+        for (int i = 0; i < l.Count; i++) s += l[i].K;
+        return s;
+    }
+}

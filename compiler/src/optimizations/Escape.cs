@@ -169,8 +169,7 @@ public sealed partial class Escape : IModulePass
         // program with no window -- made every exception anywhere the
         // collector's.
         _reachedFunctions = !m.PreserveExports && m.Entry is not null ? Reached(m) : null;
-        if (canFree)
-            foreach (Function f in m.Functions) ConfirmOwnedElements(f, summaries);
+        if (canFree) ConfirmOwnedElements(m, summaries);
         foreach (Function f in m.Functions)
         {
             PromoteIn(f, summaries, canFree, fields);
@@ -1938,6 +1937,8 @@ continue;
 
         HashSet<VReg>? pending = null;
         RegisterWrites? writes = null;
+        // A Dictionary's views taken for the object's own (OwnedElements.ViewOf).
+        HashSet<VReg>? views = null;
         // FRAME MEMORY HOLDING THE OBJECT: a struct made for a moment -- the
         // Enumerator `foreach` keeps, lowered as a block the pass then puts
         // in the frame -- or a frame slot it is copied into. A pointer stored
@@ -2118,6 +2119,37 @@ continue;
                             // The collector told of a reference (a write
                             // barrier): it keeps no pointer the program can
                             // use, and refuses to mark a block given back.
+                            break;
+
+                        case Opcode.Call when i.Operands.Count == 2 && i.Operands[0] is RegOperand walked && flow.Derived.Contains(walked.Reg)
+                            && OwnedElements.WalkerOf(f, i, _inserted) is { } walker:
+                            // A FOREACH OVER IT, the enumerator kept a call
+                            // (OwnedElements): the struct in the frame holds
+                            // it, and is handed only to its own MoveNext,
+                            // Current and Dispose. Its address is the object
+                            // here -- each of those calls a use, judged by its
+                            // summary -- and the walk keeps it alive. Not the
+                            // slot's address, which a loop's invariant code
+                            // takes once before the object is made.
+                            foreach (VReg w in walker) Derive(w);
+                            break;
+
+                        case Opcode.Call when i.Operands.Count == 1 && i.Operands[0] is RegOperand viewed && flow.Derived.Contains(viewed.Reg)
+                            && OwnedElements.ViewOf(f, i, _inserted) is { } view:
+                            // ITS VALUES OR KEYS, the view kept a call: an object
+                            // holding it, handed only to the view's own walk
+                            // (above) and Count. The view is the object here
+                            // too -- but an object of its own, which this pass
+                            // may have given back after its last use.
+                            foreach (VReg seen in view) Derive(seen);
+                            (views ??= new()).UnionWith(view);
+                            break;
+
+                        case Opcode.Call when views is not null && IsFreeCall(i.Callee) && _inserted?.Contains(i) == true
+                            && i.Operands.All(o => o is not RegOperand { Reg: var r } || !flow.Derived.Contains(r) || views.Contains(r)):
+                            // THE VIEW GIVEN BACK by this pass, a fresh object
+                            // handed over by Values: the view goes, not what
+                            // it holds.
                             break;
 
                         case Opcode.Call:
@@ -3678,6 +3710,7 @@ continue;
         if (repeats)
         {
             after.Add(new Instr { Op = Opcode.Load, Size = word, Dest = prev, Operands = { new RegOperand(addr) }, Line = call.Line });
+            AppendElementFree(f, after, call, prev, call.Line);
             record.Frees.Add((block, AppendFree(f, after, prev, call.Line), prev));
         }
         after.Add(call.Dest!.Type == IrTypes.Word
@@ -3700,6 +3733,7 @@ continue;
                 new Instr { Op = Opcode.Copy, Dest = a, Operands = { new SlotOperand(slot) }, Line = exitLine },
                 new Instr { Op = Opcode.Load, Size = word, Dest = p, Operands = { new RegOperand(a) }, Line = exitLine },
             };
+            AppendElementFree(f, releaseExit, call, p, exitLine);
             record.Frees.Add((b, AppendFree(f, releaseExit, p, exitLine), p));
             b.Instrs.InsertRange(r, releaseExit);
             _bookkeeping.UnionWith(releaseExit);

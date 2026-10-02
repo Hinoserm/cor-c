@@ -36,13 +36,34 @@ internal static class OwnedElements
 
     public const string Freer = "m_Runtime_FreeOwnedElements_1_V$Any";
 
-    private static readonly Regex Method = new(@"^m_(List|Dictionary)\$.+?_(set_Item|get_Item|Add|TryAdd|TryGetValue|ContainsKey|get_Count|Remove|RemoveAt|Clear|GetValueOrDefault|Insert)_(\d+)(_|$)", RegexOptions.Compiled);
+    private static readonly Regex Method = new(@"^m_(List|Dictionary)\$.+?_(set_Item|get_Item|Add|TryAdd|TryGetValue|ContainsKey|get_Count|Remove|RemoveAt|Clear|GetValueOrDefault|Insert|GetEnumerator|get_Values|get_Keys)_(\d+)(_|$)", RegexOptions.Compiled);
 
-    /// <summary>What a known call does with its operands: the adder's value operand, the out-slot operand, whether it answers an element.</summary>
-    internal readonly record struct Role(bool Known, int Adds = -1, int OutSlot = -1, bool Reads = false);
+    /// <summary>
+    /// What a known call does with its operands: the adder's value operand,
+    /// the out-slot operand, whether it answers an element, whether it makes
+    /// an enumerator of the collection (a foreach) or a view of it (a
+    /// Dictionary's Values or Keys, walked by one).
+    /// </summary>
+    internal readonly record struct Role(bool Known, int Adds = -1, int OutSlot = -1, bool Reads = false, bool Enumerates = false, bool Views = false);
+
+    /// <summary>
+    /// The types declared inside List and Dictionary, whose names begin with
+    /// the collection's own -- "Dictionary$ValueCollection$int$Tok" -- and
+    /// are none of it: a ValueCollection handed back by Values was taken for
+    /// a Dictionary, and its Count for the table's.
+    /// </summary>
+    private static readonly string[] Nested = { "Enumerator$", "KeyCollection$", "KeyEnumerator$", "ValueCollection$", "ValueEnumerator$" };
+
+    private static bool IsNested(string name, int at)
+    {
+        foreach (string n in Nested)
+            if (string.CompareOrdinal(name, at, n, 0, n.Length) == 0) return true;
+        return false;
+    }
 
     internal static Role RoleOf(string kind, string callee)
     {
+        if (callee.StartsWith("m_" + kind + "$", StringComparison.Ordinal) && IsNested(callee, kind.Length + 3)) return new(false);
         // A constructor: the type's own name again, after the type -- AFTER
         // it: "m_List$" holds "_List$" itself, and searched from the start
         // every method of the type, ToArray included, read as a constructor.
@@ -65,6 +86,8 @@ internal static class OwnedElements
             ("List", "set_Item", 2) or ("List", "Insert", 2) => new(true, Adds: 2),
             ("List", "get_Item", 1) => new(true, Reads: true),
             ("List", "get_Count", 0) or ("List", "Clear", 0) or ("List", "RemoveAt", 1) => new(true),
+            ("List", "GetEnumerator", 0) or ("Dictionary", "GetEnumerator", 0) => new(true, Enumerates: true),
+            ("Dictionary", "get_Values", 0) or ("Dictionary", "get_Keys", 0) => new(true, Views: true),
             _ => new(false),
         };
     }
@@ -77,8 +100,8 @@ internal static class OwnedElements
                 if (i.Op == Opcode.Store && i.Offset == 0 && i.Operands.Count >= 2 && i.Operands[0] is RegOperand bas
                     && container.Contains(bas.Reg) && i.Operands[1] is SymOperand vt)
                 {
-                    if (vt.Name.StartsWith("t_List$0024", StringComparison.Ordinal)) return "List";
-                    if (vt.Name.StartsWith("t_Dictionary$0024", StringComparison.Ordinal)) return "Dictionary";
+                    if (vt.Name.StartsWith("t_List$0024", StringComparison.Ordinal) && !IsNested(vt.Name.Replace("$0024", "$"), "t_List$".Length)) return "List";
+                    if (vt.Name.StartsWith("t_Dictionary$0024", StringComparison.Ordinal) && !IsNested(vt.Name.Replace("$0024", "$"), "t_Dictionary$".Length)) return "Dictionary";
                     return null;
                 }
         return null;
@@ -115,10 +138,15 @@ internal static class OwnedElements
         return true;
     }
 
-    /// <summary>Whether every use of the collection is one this rule follows; the calls among them, with their roles.</summary>
-    internal static List<(Block B, Instr Call, Role Role)>? Uses(Function f, string kind, HashSet<VReg> container, Instr alloc)
+    /// <summary>
+    /// Whether every use of the collection is one this rule follows; the
+    /// calls among them, with their roles. A return of it is one when the
+    /// function hands it back (`returned`), and then every return must be.
+    /// </summary>
+    internal static List<(Block B, Instr Call, Role Role)>? Uses(Function f, Defs defs, string kind, HashSet<VReg> container, Instr alloc, out bool returned)
     {
         List<(Block, Instr, Role)> calls = new();
+        returned = false;
         foreach (Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
             {
@@ -139,6 +167,9 @@ internal static class OwnedElements
                     case Opcode.Load when at == 0 && (i.Offset == 0 || i.Field is null):
                     case Opcode.Branch:
                         continue;
+                    case Opcode.Ret when count == 1 && i.Operands.Count == 1:
+                        returned = true;
+                        continue;
                     case Opcode.Store when at == 0 && count == 1 && i.Offset == 0 && i.Operands[1] is SymOperand:
                         continue;
                     // An inlined constructor filling the collection's own fields
@@ -155,6 +186,8 @@ internal static class OwnedElements
                         Role role = RoleOf(kind, i.Callee);
                         if (!role.Known) { Say(f, $"unknown call: {i.Callee}"); return null; }
                         calls.Add((b, i, role));
+                        if (role.Enumerates && Walker(f, defs, kind, i, calls) is null) { Say(f, $"enumerator not followed: {i}"); return null; }
+                        if (role.Views && View(f, defs, i, calls) is null) { Say(f, $"view not followed: {i}"); return null; }
                         continue;
                     default:
                         if (IrInfo.IsIntCompare(i.Op)) continue;
@@ -162,17 +195,283 @@ internal static class OwnedElements
                         return null;
                 }
             }
+        // HANDED BACK, the function's answer must be this collection on every
+        // path: its caller takes what it is given for it (MarkOwnedElements).
+        if (returned)
+            foreach (Block b in f.Blocks)
+                if (b.Terminator is { Op: Opcode.Ret } ret && (ret.Operands.Count != 1 || ret.Operands[0] is not RegOperand back || !container.Contains(back.Reg)))
+                { Say(f, $"returns something else: {ret}"); return null; }
         return calls;
+    }
+
+    /// <summary>
+    /// The enumerator registers of a GetEnumerator call this rule keeps, for
+    /// the lifetime pass (Escape.Analyse): the collection is held in the slot,
+    /// and every use of the slot is a call of its enumerator, so those
+    /// registers are the collection's own -- its uses, and its escape if the
+    /// enumerator's methods let them go. Null for any other call.
+    /// </summary>
+    internal static HashSet<VReg>? WalkerOf(Function f, Instr get, IReadOnlySet<Instr>? ignore)
+    {
+        if (get.Callee is not { } callee || !callee.EndsWith("_GetEnumerator_0", StringComparison.Ordinal)) return null;
+        if (ViewEnumerator(callee) is { } enumerator) return Walker(f, new Defs(f, buildCfg: false), "Dictionary", get, null, enumerator, reads: false, ignore);
+        string? kind = callee.StartsWith("m_List$", StringComparison.Ordinal) ? "List"
+            : callee.StartsWith("m_Dictionary$", StringComparison.Ordinal) ? "Dictionary" : null;
+        if (kind is null || !RoleOf(kind, callee).Enumerates) return null;
+        return Walker(f, new Defs(f, buildCfg: false), kind, get, null, ignore: ignore);
+    }
+
+    /// <summary>
+    /// The view registers of a Values or Keys call this rule keeps, for the
+    /// lifetime pass, as WalkerOf; null for any other call. What that pass
+    /// has written (`ignore`) is passed over: the view handed back fresh is
+    /// owned and freed by it, and that is no use of the table.
+    /// </summary>
+    internal static HashSet<VReg>? ViewOf(Function f, Instr get, IReadOnlySet<Instr>? ignore)
+    {
+        if (get.Callee is not { } callee || get.Operands.Count != 1
+            || !callee.EndsWith("_get_Values_0", StringComparison.Ordinal) && !callee.EndsWith("_get_Keys_0", StringComparison.Ordinal)
+            || !RoleOf("Dictionary", callee).Views) return null;
+        return View(f, new Defs(f, buildCfg: false), get, null, ignore);
+    }
+
+    /// <summary>The enumerator a Dictionary view's GetEnumerator makes, by its methods' prefix; null for another callee.</summary>
+    private static string? ViewEnumerator(string callee)
+    {
+        if (callee.StartsWith("m_Dictionary$ValueCollection$", StringComparison.Ordinal)) return "m_Dictionary$ValueEnumerator$";
+        if (callee.StartsWith("m_Dictionary$KeyCollection$", StringComparison.Ordinal)) return "m_Dictionary$KeyEnumerator$";
+        return null;
+    }
+
+    /// <summary>
+    /// A DICTIONARY'S VALUES OR KEYS: an object holding the table, walked by
+    /// an enumerator of its own (`foreach (var v in table.Values)`). Followed
+    /// as the table is: the view's registers handed only to its own
+    /// GetEnumerator, whose walk is followed as the table's is (Walker), and
+    /// its Count. A value its enumerator answers is an element read; a key is
+    /// not one. The view's registers, or null.
+    /// </summary>
+    private static HashSet<VReg>? View(Function f, Defs defs, Instr get, List<(Block B, Instr Call, Role Role)>? calls, IReadOnlySet<Instr>? ignore = null)
+    {
+        if (get.Dest is null) return null;
+        bool values = get.Callee!.EndsWith("_get_Values_0", StringComparison.Ordinal);
+        string collection = values ? "m_Dictionary$ValueCollection$" : "m_Dictionary$KeyCollection$";
+        HashSet<VReg> view = new() { get.Dest };
+        bool grew = true;
+        while (grew)
+        {
+            grew = false;
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Dest is not null && !view.Contains(i.Dest) && defs.IsSingle(i.Dest) && i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32
+                        && i.Operands[0] is RegOperand r && view.Contains(r.Reg))
+                    { view.Add(i.Dest); grew = true; }
+        }
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+            {
+                if (ignore?.Contains(i) == true) continue;
+                int at = -1, count = 0;
+                for (int k = 0; k < i.Operands.Count; k++)
+                    if (i.Operands[k] is RegOperand r && view.Contains(r.Reg)) { at = k; count++; }
+                if (count == 0) continue;
+                if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && i.Dest is not null && view.Contains(i.Dest)) continue;
+                // Its vtable read, as a call on it checks it is there.
+                if (i.Op == Opcode.Load && at == 0 && count == 1 && i.Offset == 0) continue;
+                if (i.Op != Opcode.Call || i.Callee is not { } callee || count != 1) return null;
+                if (callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive || Escape.IsCollectorNote(callee)) continue;
+                if (at != 0 || !callee.StartsWith(collection, StringComparison.Ordinal)) return null;
+                if (callee.EndsWith("_get_Count_0", StringComparison.Ordinal) && i.Operands.Count == 1) calls?.Add((b, i, new(true)));
+                else if (callee.EndsWith("_GetEnumerator_0", StringComparison.Ordinal) && ViewEnumerator(callee) is { } enumerator
+                    && Walker(f, defs, "Dictionary", i, calls, enumerator, reads: values, ignore) is not null)
+                    calls?.Add((b, i, new(true)));
+                else return null;
+            }
+        return view;
+    }
+
+    /// <summary>
+    /// A FOREACH OVER THE COLLECTION: GetEnumerator writes a struct
+    /// enumerator into a frame slot and answers its address, and the loop
+    /// moves it on and takes each element from it. The struct holds the
+    /// collection and, in its Current, an element -- memory no use of the
+    /// collection's registers shows -- so the slot is followed too: only its
+    /// address taken, that address (and the answer, the same address) handed
+    /// only to the enumerator's MoveNext, Current and Dispose. Current then
+    /// answers an element as the indexer does, and those calls are kept from
+    /// the inliner with the rest, since inlined MoveNext would copy an element
+    /// out of the storage and into the slot unseen. The registers holding
+    /// GetEnumerator's answer, or null when a use is not one of those; the
+    /// enumerator's calls added to `calls` when it is given.
+    /// </summary>
+    internal static HashSet<VReg>? Walker(Function f, Defs defs, string kind, Instr get, List<(Block B, Instr Call, Role Role)>? calls,
+        string? enumerator = null, bool reads = true, IReadOnlySet<Instr>? ignore = null)
+    {
+        if (get.Operands.Count != 2 || get.Operands[1] is not RegOperand given) return null;
+        // The slot the enumerator lives in, through copies of its address.
+        FrameSlot? slot = null;
+        Operand o = given;
+        for (int hops = 0; hops < 4 && slot is null; hops++)
+        {
+            if (o is SlotOperand s) { slot = s.Slot; break; }
+            if (o is not RegOperand r || !defs.IsSingle(r.Reg) || defs.Definition(r.Reg) is not { Op: Opcode.Copy } d) return null;
+            o = d.Operands[0];
+        }
+        if (slot is null) return null;
+        // Every register holding its address, through copies written once:
+        // the slot's own, which only GetEnumerator is handed, and the answer's,
+        // which only the enumerator's calls are.
+        HashSet<VReg> walker = new(), address = new();
+        if (get.Dest is not null) walker.Add(get.Dest);
+        bool grew = true;
+        while (grew)
+        {
+            grew = false;
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Dest is null || walker.Contains(i.Dest) || address.Contains(i.Dest) || !defs.IsSingle(i.Dest)
+                        || i.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32)) continue;
+                    if (i.Operands[0] is RegOperand r && walker.Contains(r.Reg)) { walker.Add(i.Dest); grew = true; }
+                    else if (i.Operands[0] is RegOperand a && address.Contains(a.Reg) || i.Operands[0] is SlotOperand s && s.Slot == slot)
+                    { address.Add(i.Dest); grew = true; }
+                }
+        }
+        string prefix = enumerator ?? "m_" + kind + "$Enumerator$";
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+            {
+                if (ignore?.Contains(i) == true) continue;
+                int at = -1, count = 0, addresses = 0;
+                for (int k = 0; k < i.Operands.Count; k++)
+                {
+                    if (i.Operands[k] is RegOperand r && walker.Contains(r.Reg)) { at = k; count++; }
+                    if (i.Operands[k] is RegOperand a && address.Contains(a.Reg) || i.Operands[k] is SlotOperand s && s.Slot == slot) { addresses++; if (!ReferenceEquals(i, get) || k != 1) at = -2; }
+                }
+                if (count == 0 && addresses == 0) continue;
+                if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && i.Dest is not null && (walker.Contains(i.Dest) || address.Contains(i.Dest))) continue;
+                if (ReferenceEquals(i, get) && count == 0 && addresses == 1 && at == -1) continue;
+                if (i.Op != Opcode.Call || i.Callee is not { } callee || count != 1 || addresses != 0) return null;
+                if (callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive || Escape.IsCollectorNote(callee)) continue;
+                if (at == 0 && i.Operands.Count == 2 && enumerator is null && kind == "Dictionary" && callee.StartsWith(prefix, StringComparison.Ordinal)
+                    && callee.EndsWith("_get_Current_0", StringComparison.Ordinal))
+                {
+                    if (!Pair(f, defs, b, i, calls, ignore)) return null;
+                    continue;
+                }
+                if (at != 0 || i.Operands.Count != 1 || !callee.StartsWith(prefix, StringComparison.Ordinal)) return null;
+                if (callee.EndsWith("_MoveNext_0", StringComparison.Ordinal) || callee.EndsWith("_Dispose_0", StringComparison.Ordinal)) calls?.Add((b, i, new(true)));
+                else if (callee.EndsWith("_get_Current_0", StringComparison.Ordinal)) calls?.Add((b, i, new(true, Reads: reads)));
+                else return null;
+            }
+        return walker;
+    }
+
+    /// <summary>
+    /// A DICTIONARY'S PAIR: its enumerator's Current writes a KeyValuePair
+    /// into a frame slot of its own and answers the slot's address, and the
+    /// loop's `kv` is a block that pair is copied into, read by Key and Value.
+    /// Followed as the enumerator is: the slot's address handed only to
+    /// Current, the answer only copied into such blocks, each block made here
+    /// and given only to the pair's Key and Value -- Value answering an
+    /// element, as the indexer does, and both kept from the inliner, since
+    /// inlined they read the block unseen.
+    /// </summary>
+    private static bool Pair(Function f, Defs defs, Block at, Instr current, List<(Block B, Instr Call, Role Role)>? calls, IReadOnlySet<Instr>? ignore)
+    {
+        if (current.Operands[1] is not RegOperand given) return false;
+        FrameSlot? slot = null;
+        Operand o = given;
+        for (int hops = 0; hops < 4 && slot is null; hops++)
+        {
+            if (o is SlotOperand s) { slot = s.Slot; break; }
+            if (o is not RegOperand r || !defs.IsSingle(r.Reg) || defs.Definition(r.Reg) is not { Op: Opcode.Copy } d) return false;
+            o = d.Operands[0];
+        }
+        if (slot is null) return false;
+        // The slot's address, the answer, and the blocks the pair is copied into.
+        HashSet<VReg> address = new(), answer = new(), pair = new();
+        if (current.Dest is not null) answer.Add(current.Dest);
+        HashSet<Instr> made = new(ReferenceEqualityComparer.Instance);
+        HashSet<FrameSlot> frames = new();
+        bool grew = true;
+        while (grew)
+        {
+            grew = false;
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Op == Opcode.MemCopy && i.Operands.Count == 3 && i.Operands[1] is RegOperand from && answer.Contains(from.Reg)
+                        && i.Operands[0] is RegOperand to && !pair.Contains(to.Reg))
+                    {
+                        // Into a block made here, through copies written once --
+                        // or the frame slot the lifetime pass has put it in.
+                        VReg r = to.Reg;
+                        for (int hops = 0; hops < 4 && defs.IsSingle(r) && defs.Definition(r) is { Op: Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 } c && c.Operands[0] is RegOperand back; hops++)
+                            r = back.Reg;
+                        if (!defs.IsSingle(r) || defs.Definition(r) is not { } alloc) return false;
+                        if (alloc is { Op: Opcode.Copy, Operands: [SlotOperand framed] }) frames.Add(framed.Slot);
+                        else if (alloc.Op != Opcode.Call || !Escape.IsAllocator(alloc.Callee)) return false;
+                        else made.Add(alloc);
+                        if (pair.Add(r)) grew = true;
+                        continue;
+                    }
+                    if (i.Dest is null || answer.Contains(i.Dest) || address.Contains(i.Dest) || pair.Contains(i.Dest) || !defs.IsSingle(i.Dest)
+                        || i.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32)) continue;
+                    if (i.Operands[0] is RegOperand r1 && answer.Contains(r1.Reg)) { answer.Add(i.Dest); grew = true; }
+                    else if (i.Operands[0] is RegOperand r2 && pair.Contains(r2.Reg) || i.Operands[0] is SlotOperand p && frames.Contains(p.Slot))
+                    { pair.Add(i.Dest); grew = true; }
+                    else if (i.Operands[0] is RegOperand r3 && address.Contains(r3.Reg) || i.Operands[0] is SlotOperand s && s.Slot == slot)
+                    { address.Add(i.Dest); grew = true; }
+                }
+        }
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+            {
+                if (made.Contains(i) || ignore?.Contains(i) == true) continue;
+                int answers = 0, addresses = 0, pairs = 0, pairAt = -1;
+                for (int k = 0; k < i.Operands.Count; k++)
+                {
+                    if (i.Operands[k] is SlotOperand s && s.Slot == slot) addresses++;
+                    if (i.Operands[k] is SlotOperand p && frames.Contains(p.Slot)) { pairs++; pairAt = k; }
+                    if (i.Operands[k] is not RegOperand r) continue;
+                    if (answer.Contains(r.Reg)) answers++;
+                    if (address.Contains(r.Reg)) addresses++;
+                    if (pair.Contains(r.Reg)) { pairs++; pairAt = k; }
+                }
+                if (answers + addresses + pairs == 0) continue;
+                if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && i.Dest is not null
+                    && (answer.Contains(i.Dest) || address.Contains(i.Dest) || pair.Contains(i.Dest))) continue;
+                if (ReferenceEquals(i, current) && addresses == 1 && answers + pairs == 0) continue;
+                if (i.Op == Opcode.MemCopy && answers == 1 && pairs == 1 && pairAt == 0 && addresses == 0) continue;
+                // The frame slot's block zeroed as it is made.
+                if (i.Op == Opcode.MemSet && answers + addresses == 0 && pairs == 1 && pairAt == 0 && frames.Count > 0) continue;
+                if (i.Op != Opcode.Call || i.Callee is not { } callee || answers + addresses != 0 || pairs != 1) return false;
+                if (callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive || Escape.IsCollectorNote(callee)) continue;
+                if (pairAt != 0 || i.Operands.Count != 1 || !callee.StartsWith("m_KeyValuePair$", StringComparison.Ordinal)) return false;
+                if (callee.EndsWith("_get_Value_0", StringComparison.Ordinal)) calls?.Add((b, i, new(true, Reads: true)));
+                else if (callee.EndsWith("_get_Key_0", StringComparison.Ordinal)) calls?.Add((b, i, new(true)));
+                else return false;
+            }
+        calls?.Add((at, current, new(true)));
+        return true;
     }
 }
 
-/// <summary>Before inlining: the candidates, and their calls kept from the inliner (OwnedElements).</summary>
+/// <summary>
+/// Before inlining: the candidates, and their calls kept from the inliner
+/// (OwnedElements). A function that hands its collection back makes the
+/// calls of it candidates too, in callers that use what they are given only
+/// as this rule follows: `var toks = Lex(text); foreach (var t in toks)`.
+/// </summary>
 public sealed class MarkOwnedElements : IModulePass
 {
     public string Name => "mark-owned-elements";
 
     public void Run(Module m)
     {
+        // What each function handing back a candidate hands back.
+        Dictionary<string, string> handsBack = new(StringComparer.Ordinal);
         foreach (Function f in m.Functions)
         {
             if (f.Async is not null) continue;
@@ -184,12 +483,37 @@ public sealed class MarkOwnedElements : IModulePass
                     defs ??= new Defs(f, buildCfg: false);
                     HashSet<VReg> container = OwnedElements.Container(f, defs, i);
                     if (OwnedElements.KindOf(f, i, container) is not { } kind) continue;
-                    if (OwnedElements.Uses(f, kind, container, i) is not { } calls) { OwnedElements.Say(f, $"{kind} at {i.Line}: a use not followed"); continue; }
-                    if (!calls.Any(c => c.Role.Adds >= 0)) continue;
-                    OwnedElements.Say(f, $"{kind} at {i.Line}: candidate");
+                    if (OwnedElements.Uses(f, defs, kind, container, i, out bool returned) is not { } calls) { OwnedElements.Say(f, $"{kind} at {i.Line}: a use not followed"); continue; }
+                    if (!returned && !calls.Any(c => c.Role.Adds >= 0)) continue;
+                    OwnedElements.Say(f, $"{kind} at {i.Line}: candidate{(returned ? ", handed back" : "")}");
                     i.Field = Instr.OwnsCandidate;
                     foreach (var c in calls) m.KeepCalls.Add(c.Call);
+                    if (returned) handsBack[f.Name] = kind;
                 }
+        }
+        // The callers, until no more hand back what they were handed.
+        bool grew = handsBack.Count > 0;
+        for (int round = 0; grew && round < 8; round++)
+        {
+            grew = false;
+            foreach (Function f in m.Functions)
+            {
+                if (f.Async is not null) continue;
+                Defs? defs = null;
+                foreach (Block b in f.Blocks)
+                    foreach (Instr i in b.Instrs)
+                    {
+                        if (i.Op != Opcode.Call || i.Callee is null || i.Dest is null || i.Field is not null
+                            || !handsBack.TryGetValue(i.Callee, out string? kind)) continue;
+                        defs ??= new Defs(f, buildCfg: false);
+                        HashSet<VReg> container = OwnedElements.Container(f, defs, i);
+                        if (OwnedElements.Uses(f, defs, kind, container, i, out bool returned) is not { } calls) { OwnedElements.Say(f, $"{kind} from {i.Callee}: a use not followed"); continue; }
+                        OwnedElements.Say(f, $"{kind} from {i.Callee}: candidate{(returned ? ", handed back" : "")}");
+                        i.Field = Instr.OwnsCandidate;
+                        foreach (var c in calls) m.KeepCalls.Add(c.Call);
+                        if (returned && handsBack.TryAdd(f.Name, kind)) grew = true;
+                    }
+            }
         }
     }
 }
@@ -200,29 +524,61 @@ public sealed partial class Escape
     public int ElementsOwned { get; private set; }
 
     /// <summary>
-    /// The candidates of one function judged with every summary known
-    /// (OwnedElements): proved ones marked OwnsElements, with a KeepAlive of
-    /// the collection after every use of what it holds; the rest unmarked.
+    /// Every candidate judged with every summary known (OwnedElements):
+    /// first the collections made, then the calls of functions proved to hand
+    /// back one whose elements it owns, callees before callers.
     /// </summary>
-    private void ConfirmOwnedElements(Function f, Dictionary<string, bool[]> summaries)
+    private void ConfirmOwnedElements(Module m, Dictionary<string, bool[]> summaries)
+    {
+        Dictionary<string, string> handedBack = new(StringComparer.Ordinal);
+        foreach (Function f in m.Functions) ConfirmOwnedElements(f, summaries, handedBack, calls: false);
+        for (int round = 0; round < 8; round++)
+        {
+            int before = handedBack.Count;
+            foreach (Function f in m.Functions) ConfirmOwnedElements(f, summaries, handedBack, calls: true);
+            if (handedBack.Count == before) break;
+        }
+        // A call whose callee was never proved: nothing it was given is known.
+        foreach (Function f in m.Functions)
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.Call && i.Field == Instr.OwnsCandidate) i.Field = null;
+    }
+
+    /// <summary>
+    /// The candidates of one function: proved ones marked OwnsElements, with a
+    /// KeepAlive of the collection after every use of what it holds; the rest
+    /// unmarked. One handed back is not freed here: the function is noted as
+    /// handing back a collection that owns its elements, and the call in its
+    /// caller is the candidate there -- the collection arrives holding objects
+    /// nothing else holds, as if the caller had made and filled it.
+    /// </summary>
+    private void ConfirmOwnedElements(Function f, Dictionary<string, bool[]> summaries, Dictionary<string, string> handedBack, bool calls)
     {
         List<Instr> candidates = new();
         foreach (Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
-                if (i.Op == Opcode.Call && i.Field == Instr.OwnsCandidate) candidates.Add(i);
+                if (i.Op == Opcode.Call && i.Field == Instr.OwnsCandidate
+                    && (calls ? i.Callee is not null && handedBack.ContainsKey(i.Callee) : IsAllocator(i.Callee)))
+                    candidates.Add(i);
         if (candidates.Count == 0) return;
-        foreach (Instr alloc in candidates)
+        foreach (Instr made in candidates)
         {
-            alloc.Field = null;
-            if (f.Async is not null || alloc.Dest is null) continue;
+            made.Field = null;
+            if (f.Async is not null || made.Dest is null) continue;
             Defs defs = new(f);
-            HashSet<VReg> container = OwnedElements.Container(f, defs, alloc);
-            if (OwnedElements.KindOf(f, alloc, container) is not { } kind) continue;
-            if (OwnedElements.Uses(f, kind, container, alloc) is not { } calls) continue;
-            if (ProveOwnedElements(f, defs, alloc, container, calls, summaries) is not { } keepAlive) { OwnedElements.Say(f, $"at {alloc.Line}: not proved ({_elementWhy})"); continue; }
-            OwnedElements.Say(f, $"at {alloc.Line}: OWNS ELEMENTS");
+            HashSet<VReg> container = OwnedElements.Container(f, defs, made);
+            if ((calls ? handedBack[made.Callee!] : OwnedElements.KindOf(f, made, container)) is not { } kind) continue;
+            if (OwnedElements.Uses(f, defs, kind, container, made, out bool returned) is not { } uses) continue;
+            if (ProveOwnedElements(f, defs, made, container, uses, summaries, filled: calls || returned) is not { } keepAlive)
+            {
+                OwnedElements.Say(f, $"at {made.Line}: not proved ({_elementWhy})");
+                // Its calls the late inliner's again: nothing here needs them kept.
+                foreach (var use in uses) _module?.KeepCalls.Remove(use.Call);
+                continue;
+            }
             // The collection kept alive past every use of what it holds.
-            VReg holder = alloc.Dest;
+            VReg holder = made.Dest;
             foreach ((Block b, Instr after) in keepAlive)
             {
                 int at = b.Instrs.IndexOf(after);
@@ -231,7 +587,14 @@ public sealed partial class Escape
                 if (ReferenceEquals(after, b.Terminator)) b.Instrs.Insert(at, keep);
                 else b.Instrs.Insert(at + 1, keep);
             }
-            alloc.Field = Instr.OwnsElements;
+            if (returned)
+            {
+                OwnedElements.Say(f, $"at {made.Line}: HANDS BACK OWNED ELEMENTS");
+                handedBack.TryAdd(f.Name, kind);
+                continue;
+            }
+            OwnedElements.Say(f, $"at {made.Line}: OWNS ELEMENTS");
+            made.Field = Instr.OwnsElements;
             ElementsOwned++;
         }
     }
@@ -239,7 +602,7 @@ public sealed partial class Escape
     private string _elementWhy = "";
 
     private List<(Block B, Instr After)>? ProveOwnedElements(Function f, Defs defs, Instr alloc, HashSet<VReg> container,
-        List<(Block B, Instr Call, OwnedElements.Role Role)> calls, Dictionary<string, bool[]> summaries)
+        List<(Block B, Instr Call, OwnedElements.Role Role)> calls, Dictionary<string, bool[]> summaries, bool filled = false)
     {
         Cfg cfg = new(f);
         Block allocBlock = f.Blocks.First(b => b.Instrs.Contains(alloc));
@@ -295,7 +658,9 @@ public sealed partial class Escape
             if (flow.Escapes) { _elementWhy = "rule 6"; return null; }
             held.Add(flow.Derived);
         }
-        if (adderOf.Count == 0) { _elementWhy = "rule 7"; return null; }
+        // Nothing added here is nothing gained -- unless it arrived filled, or
+        // is handed back to be.
+        if (adderOf.Count == 0 && !filled) { _elementWhy = "rule 7"; return null; }
         // Every slot store puts one of those objects there.
         foreach (var st in slotStores)
             if (st.Store.Operands[1] is not RegOperand v || !held.Any(h => h.Contains(v.Reg))) { _elementWhy = "rule 8"; return null; }
@@ -331,6 +696,15 @@ public sealed partial class Escape
                 if (!dominated) { _elementWhy = "rule 11"; return null; }
                 keep.Add((b, i));
             }
+        // And every move of an enumerator over it, which reads its storage
+        // through the struct rather than the collection's registers.
+        foreach ((Block b, Instr call, OwnedElements.Role _) in calls)
+        {
+            if (call.Operands.Count == 0 || call.Operands[0] is RegOperand r && container.Contains(r.Reg)) continue;
+            bool dominated = ReferenceEquals(b, allocBlock) ? b.Instrs.IndexOf(alloc) < b.Instrs.IndexOf(call) : cfg.Dominates(allocBlock, b);
+            if (!dominated) { _elementWhy = "rule 12"; return null; }
+            if (!keep.Any(k => ReferenceEquals(k.After, call))) keep.Add((b, call));
+        }
         return keep;
     }
 

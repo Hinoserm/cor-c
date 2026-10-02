@@ -215,7 +215,7 @@ public sealed class Inline : IParallelModulePass
         RemoveDeadFunctions(m, addressTaken);
     }
 
-    private IReadOnlySet<Instr> _keepCalls = new HashSet<Instr>();
+    private HashSet<Instr> _keepCalls = new(ReferenceEqualityComparer.Instance);
 
     private readonly Dictionary<Function, bool> _storesField = new(ReferenceEqualityComparer.Instance);
 
@@ -365,7 +365,7 @@ public sealed class Inline : IParallelModulePass
                     if (Environment.GetEnvironmentVariable("CORC_INLINE_DEBUG") is { } dbg && caller.Name.Contains(dbg, StringComparison.Ordinal))
                         Console.Error.WriteLine($"inline debug: {callee.Name} into {caller.Name} async={caller.Async is not null} stores={StoresField(callee)}");
                     TraceDecision?.Invoke(caller, callee, $"expand: body={calleeSize} small-limit={smallBody} caller={size} single={single} constant-branch={specializesBranch} fresh-owner={exposesChildren}");
-                    Expand(caller, b, i, call, callee);
+                    Expand(caller, b, i, call, callee, _keepCalls);
                     callerDefs = null;
                     callerFresh = null;
                     size += calleeSize;
@@ -662,9 +662,10 @@ public sealed class Inline : IParallelModulePass
 
     /// <summary>
     /// Replaces the call at <paramref name="index"/> of <paramref name="site"/>
-    /// with a clone of the callee's body.
+    /// with a clone of the callee's body. A call of the body that `keep`
+    /// holds is kept in its clone as well.
     /// </summary>
-    internal static void Expand(Function caller, Block site, int index, Instr call, Function callee)
+    internal static void Expand(Function caller, Block site, int index, Instr call, Function callee, HashSet<Instr>? keep = null)
     {
         Dictionary<VReg, VReg> regs = new();
         Dictionary<FrameSlot, FrameSlot> slots = new();
@@ -760,6 +761,11 @@ public sealed class Inline : IParallelModulePass
                 {
                     made.Targets.Add(blocks[t]);
                 }
+                // A CALL KEPT IS KEPT WHEREVER ITS BODY GOES: a function whose
+                // collection owns its elements (OwnedElements) inlined into its
+                // caller brings the candidate with it, and its calls cloned
+                // unkept were inlined there in turn, the candidate refused.
+                if (keep is not null && keep.Contains(i)) keep.Add(made);
                 into.Instrs.Add(made);
             }
         }

@@ -1,0 +1,163 @@
+// test: owned_elements_walked_across_units
+// units: tests/language/support/910_owned_elements_units.cor
+// expect-exit: 0
+// expect-output:
+// walk 22500
+// early 1500
+// keeps 22500 kept 4500
+// pairs 45000
+// values 22500
+// keys 27500
+// pair keeps 22500 kept 1000
+// nested 4500
+// kept intact 4500 1000
+//
+// 950 as a unit of its own, the libraries in another: what is freed is the
+// link's to decide, and every walk must find every element, the kept ones
+// intact.
+
+using System;
+using System.Collections.Generic;
+
+sealed class Tok { public int K; public string T; public Tok(int k, string t) { K = k; T = t; } }
+
+static class P
+{
+    static List<Tok> _kept = new();
+    static List<Tok> _keptPairs = new();
+
+    static int Walk(int n)
+    {
+        List<Tok> l = new();
+        for (int i = 0; i < n; i++) l.Add(new Tok(i, "w"));
+        int s = 0;
+        foreach (Tok t in l) s += t.K;
+        return s;
+    }
+
+    static int Early(int n)
+    {
+        List<Tok> l = new();
+        for (int i = 0; i < n; i++) l.Add(new Tok(i, "e"));
+        int s = 0;
+        foreach (Tok t in l)
+        {
+            if (t.K == 3) break;
+            s += t.K;
+        }
+        return s;
+    }
+
+    static int Keeps(int n)
+    {
+        List<Tok> l = new();
+        for (int i = 0; i < n; i++) l.Add(new Tok(i, "k"));
+        int s = 0;
+        foreach (Tok t in l)
+        {
+            s += t.K;
+            if (t.K == n - 1) _kept.Add(t);
+        }
+        return s;
+    }
+
+    static int Pairs(int n)
+    {
+        Dictionary<int, Tok> d = new();
+        for (int i = 0; i < n; i++) d[i] = new Tok(i, "p");
+        int s = 0;
+        foreach (var kv in d) s += kv.Key + kv.Value.K;
+        return s;
+    }
+
+    static int Values(int n)
+    {
+        Dictionary<int, Tok> d = new();
+        for (int i = 0; i < n; i++) d[i] = new Tok(i, "v");
+        int s = 0;
+        foreach (Tok t in d.Values) s += t.K;
+        return s;
+    }
+
+    static int Keys(int n)
+    {
+        Dictionary<int, Tok> d = new();
+        for (int i = 0; i < n; i++) d[i] = new Tok(i, "k");
+        int s = 0;
+        foreach (int k in d.Keys) s += k;
+        return s + d.Values.Count;
+    }
+
+    static int PairKeeps(int n)
+    {
+        Dictionary<int, Tok> d = new();
+        for (int i = 0; i < n; i++) d[i] = new Tok(i, "q");
+        int s = 0;
+        foreach (var kv in d)
+        {
+            s += kv.Value.K;
+            if (kv.Key == 2) _keptPairs.Add(kv.Value);
+        }
+        return s;
+    }
+
+    static int Nested(int n)
+    {
+        List<Tok> l = new();
+        for (int i = 0; i < n; i++) l.Add(new Tok(i, "n"));
+        int s = 0;
+        foreach (Tok a in l)
+            foreach (Tok b in l)
+                if (a.K == b.K) s += a.K;
+        return s;
+    }
+
+
+    static void Main()
+    {
+        long sum = 0;
+        for (int r = 0; r < 500; r++) sum += Walk(10);
+        Console.WriteLine("walk " + sum);
+
+        sum = 0;
+        for (int r = 0; r < 500; r++) sum += Early(10);
+        Console.WriteLine("early " + sum);
+
+        sum = 0;
+        for (int r = 0; r < 500; r++) sum += Keeps(10);
+        Console.WriteLine("keeps " + sum + " kept " + Total(_kept));
+
+        sum = 0;
+        for (int r = 0; r < 500; r++) sum += Pairs(10);
+        Console.WriteLine("pairs " + sum);
+
+        sum = 0;
+        for (int r = 0; r < 500; r++) sum += Values(10);
+        Console.WriteLine("values " + sum);
+
+        sum = 0;
+        for (int r = 0; r < 500; r++) sum += Keys(10);
+        Console.WriteLine("keys " + sum);
+
+        sum = 0;
+        for (int r = 0; r < 500; r++) sum += PairKeeps(10);
+        Console.WriteLine("pair keeps " + sum + " kept " + Total(_keptPairs));
+
+        sum = 0;
+        for (int r = 0; r < 100; r++) sum += Nested(10);
+        Console.WriteLine("nested " + sum);
+
+        // What was freed made again, many times over: the kept objects must
+        // be untouched by it.
+        long churn = 0;
+        for (int r = 0; r < 2000; r++) churn += Walk(10) + Pairs(10);
+        Console.WriteLine("kept intact " + Total(_kept) + " " + Total(_keptPairs) + (churn == 2000L * (45 + 90) ? "" : " churn " + churn));
+    }
+
+    static int Total(List<Tok> l)
+    {
+        int s = 0;
+        for (int i = 0; i < l.Count; i++) s += l[i].K;
+        return s;
+    }
+}

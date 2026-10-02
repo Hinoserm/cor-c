@@ -29,6 +29,14 @@ public sealed class ConstantSpecialize : IModulePass
         Dictionary<string, int> counts = new(StringComparer.Ordinal);
         Dictionary<string, int> growth = new(StringComparer.Ordinal);
         HashSet<string> rejected = new(StringComparer.Ordinal);
+        // A FUNCTION WITH CALLS KEPT (OwnedElements) STAYS ITSELF: a version
+        // of it would hold them unkept and the candidate be refused; kept in
+        // the version, its calls left it small enough that the late inliner
+        // took it whole into its callers and dropped it, while the IR the
+        // link reruns those passes over still called it.
+        HashSet<string> keeping = new(StringComparer.Ordinal);
+        foreach (Function f in module.Functions)
+            if (f.Blocks.Any(b => b.Instrs.Any(module.KeepCalls.Contains))) keeping.Add(f.Name);
         Pipeline cleanup = new() { Rounds = 3 };
         cleanup.Passes.Add(new ConstantAndCopyPropagation());
         cleanup.Passes.Add(new ConstantFold());
@@ -43,7 +51,7 @@ public sealed class ConstantSpecialize : IModulePass
             Instr call = block.Instrs[at];
             if (call.Op != Opcode.Call || call.Callee is null
                 || !originals.TryGetValue(call.Callee, out Function? target)
-                || recursive.Contains(target) || !Inline.Inlineable(target, addressed)
+                || recursive.Contains(target) || keeping.Contains(target.Name) || !Inline.Inlineable(target, addressed)
                 || (module.LibraryCodeIsShared && target.FromLibrary)
                 || call.Operands.Count != target.Params.Count
                 || target.Blocks.Sum(b => b.Instrs.Count) > BodyLimit
