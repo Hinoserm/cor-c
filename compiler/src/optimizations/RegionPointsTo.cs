@@ -82,7 +82,11 @@ public sealed class RegionPointsTo : IModulePass
     private readonly Queue<int> _work = new();
     private long _steps;
 
-    private static long Loc(int o, long offset) => ((long)o << 24) | (offset is < 0 or >= Any ? Any : offset);
+    // Past this an offset is any offset: no field lies that far into an
+    // object, and a pointer walked further is walking an array.
+    private const long FarthestField = 4096;
+
+    private static long Loc(int o, long offset) => ((long)o << 24) | (offset is < 0 or > FarthestField ? Any : offset);
     private static int ObjectOf(long loc) => (int)(loc >> 24);
     private static long OffsetOf(long loc) => loc & Any;
     private static long Shifted(long loc, long shift) =>
@@ -305,6 +309,7 @@ public sealed class RegionPointsTo : IModulePass
     /// <summary>The node of one of an object's cells, made on first use.</summary>
     private int Cell(int o, long offset)
     {
+        if (offset is < 0 or > FarthestField) offset = Any;
         Dictionary<long, int> cells = _cells[o];
         if (cells.TryGetValue(offset, out int node)) return node;
         node = NewNode();
@@ -414,7 +419,7 @@ public sealed class RegionPointsTo : IModulePass
             // they would reach every load from a static and every call on one.
             if (o == Global) { Add(dest, Loc(Global, Any)); return; }
             long at = OffsetOf(l) == Any ? Any : OffsetOf(l) + offset;
-            if (at is < 0 or >= Any) at = Any;
+            if (at is < 0 or > FarthestField) at = Any;
             Edge(Cell(o, at), dest, 0);
             if (at == Any) EachCell(o, (_, cell) => Edge(cell, dest, 0));
         });
@@ -427,7 +432,7 @@ public sealed class RegionPointsTo : IModulePass
         {
             int o = ObjectOf(l);
             long at = o == Global || OffsetOf(l) == Any ? Any : OffsetOf(l) + offset;
-            if (at is < 0 or >= Any) at = Any;
+            if (at is < 0 or > FarthestField) at = Any;
             Edge(value, Cell(o, at), 0);
         });
     }
@@ -460,7 +465,11 @@ public sealed class RegionPointsTo : IModulePass
                 // An address: the pointer moved by a constant, or by an index
                 // to somewhere in it.
                 if (dest < 0) return;
-                bool constant = i.Operands.Count == 2 && i.Operands[1] is ImmOperand;
+                // A POINTER WALKED IN A LOOP -- moved by a constant and joined
+                // back into what it was moved from -- is anywhere in its
+                // object: followed offset by offset, every turn made another
+                // location, and the analysis ran out of memory counting them.
+                bool constant = i.Operands.Count == 2 && i.Operands[1] is ImmOperand && !Walked(f, i);
                 long by = constant ? ((ImmOperand)i.Operands[1]).Value * (i.Op == Opcode.Sub ? -1 : 1) : long.MinValue;
                 foreach (Operand o in i.Operands)
                     if (Value(copy, o) is int v and >= 0) Edge(v, dest, by);
@@ -525,6 +534,25 @@ public sealed class RegionPointsTo : IModulePass
             default:
                 return;
         }
+    }
+
+    // Whether an address computation's source is a join its own result flows
+    // back into: `p = phi(start, next); next = p + 4`.
+    private bool Walked(Function f, Instr add)
+    {
+        if (add.Dest is null || add.Operands[0] is not RegOperand { Reg: var from }) return false;
+        HashSet<VReg> seen = new();
+        Stack<VReg> next = new();
+        next.Push(from);
+        while (next.TryPop(out VReg? r))
+        {
+            if (!seen.Add(r) || seen.Count > 16) continue;
+            if (r == add.Dest) return true;
+            if (Single(f, r) is { Op: Opcode.Phi or Opcode.Copy } w)
+                foreach (Operand o in w.Operands)
+                    if (o is RegOperand { Reg: var q }) next.Push(q);
+        }
+        return false;
     }
 
     // Bytes move: what the source's cells hold, the destination's matching
