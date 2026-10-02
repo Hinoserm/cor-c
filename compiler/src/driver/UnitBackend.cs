@@ -19,7 +19,7 @@ public sealed class UnitBackend : IUnitBackend
     private const long PreLateDecodeLimit = 512L * 1024 * 1024;
 
     public ObjectFile Recompile(ObjectFile original, IReadOnlyList<IrImport> imports, IReadOnlySet<string>? retained = null,
-        LifetimeFacts? facts = null)
+        LifetimeFacts? facts = null, IrArchive? archive = null)
     {
         _lifetimes = 0;
         // Where the unit's time went, for corc link --timings (LinkTimings).
@@ -38,7 +38,10 @@ public sealed class UnitBackend : IUnitBackend
             Target.X86.X86Profile = X86Cpu.Parse(cpu.Arguments());
             Target.X86.Cpu = Target.X86.X86Profile.Name;
         }
-        IrArchive archive = IrArchive.Read(original) ?? throw new InvalidDataException("Backend input has no IR archive");
+        // The link's own reading, where it handed one in: checked against
+        // this object's native content then, and read again it was every
+        // unit's whole object written out and hashed a second time.
+        archive ??= IrArchive.Read(original) ?? throw new InvalidDataException("Backend input has no IR archive");
         var visibility = original.Symbols.Where(symbol => symbol.IsDefined && symbol.IsFunction)
             .ToDictionary(symbol => symbol.Name, symbol => symbol.Global, StringComparer.Ordinal);
         // A VERSION 2 ARCHIVE holds the IR from before the late passes, and

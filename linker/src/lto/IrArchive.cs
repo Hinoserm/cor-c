@@ -134,13 +134,18 @@ public sealed class IrArchive
                 byte flags = reader.ReadByte(); int instructions = reader.ReadInt32(), callCount = reader.ReadInt32();
                 if (flags > 1 || instructions < 0 || callCount < 0 || callCount > 100000 || callCount > (bodyStart - stream.Position) / 5)
                     throw new ElfFormatException("Invalid IR import summary");
-                List<string> calls = new(callCount);
-                for (int call = 0; call < callCount; call++) calls.Add(ReadName(reader));
+                // Arrays, the empty one shared, and the references the calls
+                // themselves when they are the same names: a link holds every
+                // unit's directory -- the compiler's own, 366 thousand records
+                // -- from the first phase to the last.
+                string[] calls = callCount == 0 ? Array.Empty<string>() : new string[callCount];
+                for (int call = 0; call < callCount; call++) calls[call] = ReadName(reader);
                 int referenceCount = reader.ReadInt32();
                 if (referenceCount < 0 || referenceCount > 100000 || referenceCount > (bodyStart - stream.Position) / 5)
                     throw new ElfFormatException("Invalid IR reference summary");
-                List<string> references = new(referenceCount);
-                for (int reference = 0; reference < referenceCount; reference++) references.Add(ReadName(reader));
+                string[] references = referenceCount == 0 ? Array.Empty<string>() : new string[referenceCount];
+                for (int reference = 0; reference < referenceCount; reference++) references[reference] = ReadName(reader);
+                if (references.SequenceEqual(calls)) references = calls;
                 long decodeBytes = reader.ReadInt64();
                 if (decodeBytes < 0) throw new ElfFormatException("Invalid IR decode estimate");
                 int offset = reader.ReadInt32(), length = reader.ReadInt32(); byte[] hash = reader.ReadBytes(32);

@@ -6,7 +6,8 @@ namespace Corsac.Lang.Lto;
 /// WHERE A LINK SPENDS ITS TIME AND ITS MEMORY (corc link --timings): a line
 /// at the end of each phase with the phase's wall time, the process's
 /// resident set then and its high-water mark so far (Linux VmRSS, VmHWM),
-/// what of it is swapped out (VmSwap), and the collector's live heap. Off,
+/// what of it is swapped out (VmSwap), and the collector's live heap, found
+/// by a full collection whose own time is left out of every phase's. Off,
 /// every call is a test of one flag. What the link decides never depends
 /// on it.
 /// </summary>
@@ -30,10 +31,11 @@ public static class LinkTimings
         if (!Enabled) return;
         long now = Clock.ElapsedMilliseconds;
         (long rss, long peak, long swap) = Resident();
+        long live = GC.GetTotalMemory(true);
         Console.Error.WriteLine("link phase: " + name + " " + (now - last) + "ms (at "
             + now + "ms) rss=" + rss / (1024 * 1024) + "M peak=" + peak / (1024 * 1024)
-            + "M swap=" + swap / (1024 * 1024) + "M heap=" + GC.GetTotalMemory(false) / (1024 * 1024) + "M");
-        last = now;
+            + "M swap=" + swap / (1024 * 1024) + "M live=" + live / (1024 * 1024) + "M");
+        last = Clock.ElapsedMilliseconds;
     }
 
     private static (long Rss, long Peak, long Swap) Resident()

@@ -201,7 +201,7 @@ internal sealed class PruningBackend : IUnitBackend
 {
     public List<IReadOnlySet<string>?> Retained { get; } = new();
     public ObjectFile Recompile(ObjectFile original, IReadOnlyList<IrImport> imports, IReadOnlySet<string>? retained = null,
-        LifetimeFacts? facts = null)
+        LifetimeFacts? facts = null, IrArchive? archive = null)
     {
         Retained.Add(retained);
         ObjectFile kept = new();

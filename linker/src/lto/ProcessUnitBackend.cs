@@ -28,7 +28,7 @@ public sealed class ProcessUnitBackend : IUnitBackend, IDisposable
     }
 
     public ObjectFile Recompile(ObjectFile original, IReadOnlyList<IrImport> imports, IReadOnlySet<string>? retained = null,
-        LifetimeFacts? facts = null)
+        LifetimeFacts? facts = null, IrArchive? archive = null)
     {
         // The unit's own file when it was read from one and is unchanged:
         // written out again, every unit's IR passed through the link's memory.

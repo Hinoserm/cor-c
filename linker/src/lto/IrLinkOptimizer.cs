@@ -21,12 +21,15 @@ public static class IrLinkOptimizer
         // IN LINK ORDER, not by name: an object's name is a digest of its
         // source's full path, and the same tree checked out elsewhere was
         // ordered otherwise -- other owners, other symbol order, other bytes.
+        // Every unit's hints read through one pool: what they state alike is
+        // held once (LifetimeHintPool). The link never changes them.
+        LifetimeHintPool pool = new();
         foreach (var input in inputs)
         {
             IrArchive? archive = IrArchive.Read(input.Object);
             if (archive is not null) archives.Add(input.Object, archive);
             // Hints without the IR they would recompile are nothing to act on.
-            if (archive is not null && LifetimeHints.Read(input.Object) is LifetimeHints unit)
+            if (archive is not null && LifetimeHints.Read(input.Object, pool) is LifetimeHints unit)
             { hints.Add(input.Object, unit); hintOrder.Add(unit); }
             if (archive is not null && input.Object.Sections.Any(section => section.Name == RegionHints.SectionName)) regionHints.Add(input.Object);
             foreach (Symbol symbol in input.Object.Symbols.Where(symbol => symbol.Global && symbol.IsDefined))
@@ -243,7 +246,7 @@ public static class IrLinkOptimizer
                     service ??= backend();
                     ObjectFile original = inputs[plan.Index].Object;
                     IrImport[] imports = plan.Imports.Select(import => Imported(import.Symbol, import.Archive, import.Body)).ToArray();
-                    ObjectFile replacement = service.Recompile(original, imports, plan.Retained, FactsFor(k));
+                    ObjectFile replacement = service.Recompile(original, imports, plan.Retained, FactsFor(k), archives[original]);
                     X86CodeGenerationContract.ValidateRegeneration(original, replacement);
                     TargetContract.Validate(new[] { ("original", original), ("regenerated", replacement) });
                     ManagedLayoutContract.Validate(new[] { ("original", original), ("regenerated", replacement) });
@@ -264,8 +267,11 @@ public static class IrLinkOptimizer
                     // What is still asked of it is its identity (owners, the
                     // region and hint maps) and its archive, which is read
                     // from its file.
-                    original.Sections.Clear(); original.Sections.TrimExcess();
-                    original.Symbols.Clear(); original.Symbols.TrimExcess();
+                    if (!ReferenceEquals(replacement, original))
+                    {
+                        original.Sections.Clear(); original.Sections.TrimExcess();
+                        original.Symbols.Clear(); original.Symbols.TrimExcess();
+                    }
                 }
             }
             catch (Exception error) { Interlocked.CompareExchange(ref failure, error, null); }

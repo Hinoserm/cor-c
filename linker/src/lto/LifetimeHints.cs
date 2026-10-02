@@ -348,15 +348,20 @@ public sealed class LifetimeHints
         return result;
     }
 
-    public static LifetimeHints? Read(ObjectFile obj)
+    public static LifetimeHints? Read(ObjectFile obj, LifetimeHintPool? pool = null)
     {
         Section[] sections = obj.Sections.Where(section => section.Name == SectionName).ToArray();
         if (sections.Length == 0) return null;
         if (sections.Length != 1 || sections[0].Size > MaximumBytes) throw new ElfFormatException("Invalid lifetime hint section");
-        return Read(sections[0].Content());
+        return Read(sections[0].Content(), pool);
     }
 
-    public static LifetimeHints Read(byte[] bytes)
+    /// <summary>
+    /// The hints in `bytes`. With a pool, every condition and field summary
+    /// alike another read through it is that one (LifetimeHintPool): hints
+    /// read so are never changed after.
+    /// </summary>
+    public static LifetimeHints Read(byte[] bytes, LifetimeHintPool? pool = null)
     {
         using MemoryStream stream = new(bytes, writable: false);
         using BinaryReader reader = new(stream, Utf8);
@@ -407,7 +412,7 @@ public sealed class LifetimeHints
                     string callee = Name(); int argument = reader.ReadInt32();
                     if (argument < 0 || !condition.Fields.Add((callee, argument))) throw new ElfFormatException("Invalid lifetime condition");
                 }
-                return condition;
+                return pool is null ? condition : pool.Share(condition);
             }
             LifetimeFields? Fields()
             {
@@ -427,7 +432,7 @@ public sealed class LifetimeHints
                     if (argument < -1 || !fields.Merges.Add((callee, argument))) throw new ElfFormatException("Invalid lifetime fields");
                 }
                 if (!fields.Bounded) throw new ElfFormatException("Lifetime field summary exceeds its bound");
-                return fields;
+                return pool is null ? fields : pool.Share(fields);
             }
             LifetimeHints hints = new();
             for (int i = Count(4); i > 0; i--) hints.Helpers.Add(Name());
@@ -490,5 +495,65 @@ public sealed class LifetimeHints
         }
         catch (EndOfStreamException) { throw new ElfFormatException("Truncated lifetime hints"); }
         catch (DecoderFallbackException) { throw new ElfFormatException("Invalid lifetime hint UTF-8"); }
+    }
+}
+
+/// <summary>
+/// ONE COPY OF EACH CONDITION AND FIELD SUMMARY, for a link that reads every
+/// unit's hints and only reads them after: the compiler's own build states
+/// 468 thousand conditions, 5 thousand of them different and 287 thousand
+/// empty, and 323 thousand field summaries, each with its own sets -- most of
+/// the 280 MB its hints took decoded. Alike is what the encoding says: the
+/// same names, arguments, offsets and flags, conditional entries in order.
+/// </summary>
+public sealed class LifetimeHintPool
+{
+    private readonly Dictionary<LifetimeCondition, LifetimeCondition> _conditions = new();
+    private readonly Dictionary<LifetimeFields, LifetimeFields> _fields = new(FieldsAlike.Instance);
+
+    public LifetimeCondition Share(LifetimeCondition condition)
+    {
+        if (_conditions.TryGetValue(condition, out LifetimeCondition? known)) return known;
+        _conditions.Add(condition, condition);
+        return condition;
+    }
+
+    /// <summary>Its conditions are shared already, so alike conditions are the same object.</summary>
+    public LifetimeFields Share(LifetimeFields fields)
+    {
+        if (_fields.TryGetValue(fields, out LifetimeFields? known)) return known;
+        _fields.Add(fields, fields);
+        return fields;
+    }
+
+    private sealed class FieldsAlike : IEqualityComparer<LifetimeFields>
+    {
+        public static readonly FieldsAlike Instance = new();
+        public bool Equals(LifetimeFields? a, LifetimeFields? b)
+        {
+            if (a is null || b is null) return a is null && b is null;
+            if (a.Opaque != b.Opaque || !a.Dirty.SetEquals(b.Dirty) || !a.Fresh.SetEquals(b.Fresh) || !a.Merges.SetEquals(b.Merges)
+                || a.Conditional.Count != b.Conditional.Count) return false;
+            for (int i = 0; i < a.Conditional.Count; i++)
+            {
+                var x = a.Conditional[i]; var y = b.Conditional[i];
+                if (x.Offset != y.Offset || x.Stores != y.Stores || !ReferenceEquals(x.Condition, y.Condition)) return false;
+            }
+            return true;
+        }
+
+        public int GetHashCode(LifetimeFields fields)
+        {
+            HashCode hash = new();
+            hash.Add(fields.Opaque);
+            foreach (long offset in fields.Dirty) hash.Add(offset);
+            hash.Add(-1);
+            foreach (long offset in fields.Fresh) hash.Add(offset);
+            hash.Add(-2);
+            foreach ((long offset, LifetimeCondition condition, bool stores) in fields.Conditional)
+            { hash.Add(offset); hash.Add(stores); hash.Add(condition.GetHashCode()); }
+            foreach ((string callee, int argument) in fields.Merges) { hash.Add(callee, StringComparer.Ordinal); hash.Add(argument); }
+            return hash.ToHashCode();
+        }
     }
 }
