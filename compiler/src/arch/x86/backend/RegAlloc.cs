@@ -1352,11 +1352,22 @@ internal sealed class Allocator
         return map;
     }
 
+    // ONE SET OF SCRATCH TABLES for every instruction rewritten, cleared at
+    // each: four collections an instruction, and the closure Place was over
+    // them, were the register allocator's own garbage.
+    private readonly List<MInstr> _rwBefore = new();
+    private readonly List<MInstr> _rwAfter = new();
+    private readonly HashSet<int> _rwDone = new();
+    private readonly Dictionary<int, Role> _rwRoles = new();
+
     private void RewriteInstr(MInstr i, int index, List<MInstr> outList, HashSet<int> saved)
     {
-        List<MInstr> before = new();
-        List<MInstr> after = new();
-        HashSet<int> done = new();
+        List<MInstr> before = _rwBefore;
+        List<MInstr> after = _rwAfter;
+        before.Clear();
+        after.Clear();
+        _rwDone.Clear();
+        _rwRoles.Clear();
         MInstr n = new(i.Op) { Width = i.Width, Cond = i.Cond, Lock = i.Lock, Table = i.Table, CallReloc = i.CallReloc, Line = i.Line, Native = i.Native };
 
         if (_liveAtCall.TryGetValue(index, out List<int>? live))
@@ -1367,51 +1378,12 @@ internal sealed class Allocator
         // A register named twice in one instruction (`movzx v, v8`) is
         // reloaded and stored according to everything the instruction does
         // with it, not just the first mention.
-        Dictionary<int, Role> roles = new();
         foreach ((MReg r, Role role, _, _) in RegsOf(i))
         {
             if (!r.IsPhys)
             {
-                roles[r.Id] = roles.GetValueOrDefault(r.Id) | role;
+                _rwRoles[r.Id] = _rwRoles.GetValueOrDefault(r.Id) | role;
             }
-        }
-
-        MReg Place(MReg r)
-        {
-            if (r.IsPhys)
-            {
-                saved.Add(r.Id);
-                return r;
-            }
-            int reg = RegAt(r.Id, index);
-            if (reg < 0)
-            {
-                throw new InvalidOperationException($"{_m.Source.Name}: v{r.Id} has no register at instruction {index} ({i.Op}): live {_start[r.Id]}..{_end[r.Id]}, {_occ[r.Id].Count} occurrence(s), assigned {_assigned[r.Id]}, spilled from {_spilledFrom[r.Id]}, {_shortReg.Count} short, {_lin.Count} instruction(s), {_n} register(s)");
-            }
-            saved.Add(reg);
-            if (_spilledFrom[r.Id] != int.MaxValue && done.Add(r.Id))
-            {
-                Role role = roles[r.Id];
-                bool held = _noReload.Contains((r.Id, index))
-                    || (index < _spilledFrom[r.Id] && _keepBefore.Contains(r.Id));
-                if (_remat[r.Id] is MImm imm)
-                {
-                    if (!held)
-                        before.Add(new MInstr(MOp.Mov, new MReg(reg), imm) { Line = i.Line });
-                }
-                else
-                {
-                    if ((role & Role.Use) != 0 && !held)
-                    {
-                        before.Add(new MInstr(MOp.Mov, new MReg(reg), MMem.Spill(_slot[r.Id])) { Line = i.Line });
-                    }
-                    if ((role & Role.Def) != 0)
-                    {
-                        after.Add(new MInstr(MOp.Mov, MMem.Spill(_slot[r.Id]), new MReg(reg)) { Line = i.Line });
-                    }
-                }
-            }
-            return new MReg(reg);
         }
 
         // The defining move of a spilled constant is dropped: see Spill.
@@ -1430,7 +1402,7 @@ internal sealed class Allocator
                     n.Operands.Add(_remat[r.Id] is MImm imm ? imm : MMem.Spill(_slot[r.Id]));
                     break;
                 case MReg r:
-                    n.Operands.Add(Place(r));
+                    n.Operands.Add(Place(r, i, index, saved));
                     break;
                 case MMem m:
                     // Everything about the operand but its registers survives.
@@ -1438,9 +1410,9 @@ internal sealed class Allocator
                     // an absolute address, which a shared object can only
                     // honour with a text relocation -- and not needing one is
                     // the whole point of position-independent code.
-                    n.Operands.Add(new MMem(m.Base is null ? null : Place(m.Base), m.Disp)
+                    n.Operands.Add(new MMem(m.Base is null ? null : Place(m.Base, i, index, saved), m.Disp)
                     {
-                        Index = m.Index is null ? null : Place(m.Index),
+                        Index = m.Index is null ? null : Place(m.Index, i, index, saved),
                         Scale = m.Scale,
                         Symbol = m.Symbol,
                         Reloc = m.Reloc,
@@ -1466,6 +1438,44 @@ internal sealed class Allocator
             outList.Add(n);
         }
         outList.AddRange(after);
+    }
+
+    private MReg Place(MReg r, MInstr i, int index, HashSet<int> saved)
+    {
+        if (r.IsPhys)
+        {
+            saved.Add(r.Id);
+            return r;
+        }
+        int reg = RegAt(r.Id, index);
+        if (reg < 0)
+        {
+            throw new InvalidOperationException($"{_m.Source.Name}: v{r.Id} has no register at instruction {index} ({i.Op}): live {_start[r.Id]}..{_end[r.Id]}, {_occ[r.Id].Count} occurrence(s), assigned {_assigned[r.Id]}, spilled from {_spilledFrom[r.Id]}, {_shortReg.Count} short, {_lin.Count} instruction(s), {_n} register(s)");
+        }
+        saved.Add(reg);
+        if (_spilledFrom[r.Id] != int.MaxValue && _rwDone.Add(r.Id))
+        {
+            Role role = _rwRoles[r.Id];
+            bool held = _noReload.Contains((r.Id, index))
+                || (index < _spilledFrom[r.Id] && _keepBefore.Contains(r.Id));
+            if (_remat[r.Id] is MImm imm)
+            {
+                if (!held)
+                    _rwBefore.Add(new MInstr(MOp.Mov, new MReg(reg), imm) { Line = i.Line });
+            }
+            else
+            {
+                if ((role & Role.Use) != 0 && !held)
+                {
+                    _rwBefore.Add(new MInstr(MOp.Mov, new MReg(reg), MMem.Spill(_slot[r.Id])) { Line = i.Line });
+                }
+                if ((role & Role.Def) != 0)
+                {
+                    _rwAfter.Add(new MInstr(MOp.Mov, MMem.Spill(_slot[r.Id]), new MReg(reg)) { Line = i.Line });
+                }
+            }
+        }
+        return new MReg(reg);
     }
 }
 
