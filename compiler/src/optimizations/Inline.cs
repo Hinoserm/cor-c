@@ -598,15 +598,24 @@ public sealed class Inline : IParallelModulePass
     {
         HashSet<Block> seen = new(ReferenceEqualityComparer.Instance);
         Stack<Block> work = new();
-        foreach (Block s in from.Successors) work.Push(s);
+        PushSuccessors(from, work);
         while (work.Count > 0)
         {
             Block b = work.Pop();
             if (ReferenceEquals(b, from)) return true;
             if (!seen.Add(b)) continue;
-            foreach (Block s in b.Successors) work.Push(s);
+            PushSuccessors(b, work);
         }
         return false;
+
+        // Block.Successors without its iterator: one per block walked, on
+        // every call site the inliner weighed.
+        static void PushSuccessors(Block b, Stack<Block> work)
+        {
+            if (b.Terminator is not { } end) return;
+            foreach (Block t in end.Targets) work.Push(t);
+            if (end.Default is not null) work.Push(end.Default);
+        }
     }
 
     private static int HotSize(Function f)

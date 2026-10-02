@@ -31,13 +31,18 @@ public sealed class Dse : IPass
 
     public void Run(Function f)
     {
+        // ONE PAIR OF TABLES FOR THE FUNCTION, emptied per block: made per
+        // block, with a string key built for every store and load, this pass
+        // was a stream of garbage the size of the function each time it ran.
+        Dictionary<(string Sym, int Slot), List<Region>> covered = new();
+        Dictionary<(string Sym, int Slot), List<Region>> slotReads = new();
         foreach (Block b in f.Blocks)
         {
-            Dictionary<string, List<Region>> covered = new();
+            covered.Clear();
+            slotReads.Clear();
             // After a return no slot is read again; a slot load seen on the
             // way back marks just its region as read.
             bool slotsDead = b.Terminator?.Op == Opcode.Ret;
-            Dictionary<string, List<Region>> slotReads = new();
 
             for (int k = b.Instrs.Count - 1; k >= 0; k--)
             {
@@ -57,10 +62,10 @@ public sealed class Dse : IPass
                                 slotsDead = false;
                                 continue;
                             }
-                            (string key, long off) = Key(addr, i.Offset);
+                            ((string Sym, int Slot) key, long off) = Key(addr, i.Offset);
                             bool dead = addr is SlotOperand && slotsDead
                                 && !(slotReads.TryGetValue(key, out List<Region>? reads)
-                                     && reads.Any(r => r.Offset < off + i.Size && off < r.Offset + r.Size));
+                                     && Overlaps(reads, off, i.Size));
                             if (!dead && covered.TryGetValue(key, out List<Region>? regions))
                             {
                                 dead = Covers(regions, off, i.Size);
@@ -88,7 +93,7 @@ public sealed class Dse : IPass
                                 slotsDead = false;
                                 continue;
                             }
-                            (string key, long off) = Key(addr, i.Offset);
+                            ((string Sym, int Slot) key, long off) = Key(addr, i.Offset);
                             if (covered.TryGetValue(key, out List<Region>? regions))
                             {
                                 regions.RemoveAll(r => r.Offset < off + i.Size && off < r.Offset + r.Size);
@@ -112,11 +117,11 @@ public sealed class Dse : IPass
                     case Opcode.MemSet when i.Operands.Count == 3 && i.Operands[0] is SymOperand or SlotOperand
                                             && i.Operands[2] is ImmOperand { Value: > 0 and <= int.MaxValue } count:
                         {
-                            (string key, long off) = Key(i.Operands[0], 0);
+                            ((string Sym, int Slot) key, long off) = Key(i.Operands[0], 0);
                             int size = (int)count.Value;
                             bool dead = i.Operands[0] is SlotOperand && slotsDead
                                 && !(slotReads.TryGetValue(key, out List<Region>? reads)
-                                     && reads.Any(r => r.Offset < off + size && off < r.Offset + r.Size));
+                                     && Overlaps(reads, off, size));
                             if (!dead && covered.TryGetValue(key, out List<Region>? regions)) dead = Covers(regions, off, size);
                             if (dead)
                             {
@@ -172,10 +177,17 @@ public sealed class Dse : IPass
         return at >= end;
     }
 
-    private static (string Key, long Offset) Key(Operand addr, long offset) => addr switch
+    private static bool Overlaps(List<Region> reads, long offset, int size)
     {
-        SymOperand s => ($"s{s.Name}", s.Offset + offset),
-        SlotOperand s => ($"l{s.Slot.Id}", offset),
+        foreach (Region r in reads)
+            if (r.Offset < offset + size && offset < r.Offset + r.Size) return true;
+        return false;
+    }
+
+    private static ((string Sym, int Slot) Key, long Offset) Key(Operand addr, long offset) => addr switch
+    {
+        SymOperand s => ((s.Name, -1), s.Offset + offset),
+        SlotOperand s => (("", s.Slot.Id), offset),
         _ => throw new InvalidOperationException(),
     };
 }

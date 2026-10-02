@@ -429,6 +429,12 @@ public sealed class Devirtualize : IModulePass
                 return false;
             }
 
+            (Block B, int I) FirstReaching(List<(Block B, int I)> from, Block lb, int li)
+            {
+                foreach (var w in from) if (Reaches(w, lb, li)) return w;
+                return default;
+            }
+
             foreach (Block lb in f.Blocks)
                 for (int li = 0; li < lb.Instrs.Count; li++)
                 {
@@ -442,22 +448,33 @@ public sealed class Devirtualize : IModulePass
                     // Only the stores that can come before this load on the same
                     // object: one after it (the `state = 0` of the branch the
                     // test chooses) is no business of the load's.
-                    var touching = stores.Where(st => st.At < at + l.Size && at < st.At + st.Size && Reaches((st.B, st.I), lb, li)).ToList();
                     // THE VTABLE, wherever it is read: the object's one store of
                     // word 0 is its making's, and a load through it anywhere --
                     // a finally's Dispose, which the graph shows no edge into --
                     // reads that.
                     if (at == 0 && l.Size == word)
                     {
-                        var all = stores.Where(st => st.At < word && 0 < st.At + st.Size).ToList();
-                        if (all.Count == 1 && all[0].At == 0 && all[0].Value is SymOperand vt)
+                        int all = 0;
+                        (Block B, int I, long At, int Size, Operand Value) only = default;
+                        foreach (var st in stores)
+                            if (st.At < word && 0 < st.At + st.Size && all++ == 0) only = st;
+                        if (all == 1 && only.At == 0 && only.Value is SymOperand vt)
                         {
                             lb.Instrs[li] = new Instr { Op = Opcode.Copy, Dest = l.Dest, Line = l.Line, Operands = { new SymOperand(vt.Name, vt.Offset) } };
                             continue;
                         }
                     }
-                    if (touching.Count != 1) { if (trace) Console.Error.WriteLine($"forward {f.Name} {l}: {touching.Count} stores"); continue; }
-                    var s0 = touching[0];
+                    // Counted in a loop, to two: a lambda over `at` made a cell,
+                    // an iterator and a list for every load in the function.
+                    int touching = 0;
+                    (Block B, int I, long At, int Size, Operand Value) s0 = default;
+                    foreach (var st in stores)
+                        if (st.At < at + l.Size && at < st.At + st.Size && Reaches((st.B, st.I), lb, li) && touching++ == 0)
+                        {
+                            s0 = st;
+                        }
+                        else if (touching > 1) break;
+                    if (touching != 1) { if (trace) Console.Error.WriteLine($"forward {f.Name} {l}: {touching} stores"); continue; }
                     if (s0.At != at || s0.Size != l.Size || l.Size > word) continue;
                     bool first = ReferenceEquals(s0.B, lb) ? s0.I < li : G().Dominates(s0.B, lb);
                     if (!first)
@@ -468,7 +485,7 @@ public sealed class Devirtualize : IModulePass
                     // captured variable's cell keeps its value in word 0, and
                     // the lambda writes it.
                     bool vtableWord = at == 0 && s0.Value is SymOperand;
-                    if (!vtableWord && writers.FirstOrDefault(w => Reaches(w, lb, li)) is { B: not null } bad)
+                    if (!vtableWord && FirstReaching(writers, lb, li) is { B: not null } bad)
                     { if (trace) Console.Error.WriteLine($"forward {f.Name} {l}: writer {bad.B.Instrs[bad.I]}"); continue; }
                     Operand value = s0.Value switch
                     {

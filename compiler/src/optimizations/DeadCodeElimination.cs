@@ -25,14 +25,16 @@ public sealed class DeadCodeElimination : IPass
 
     public void Run(Function f)
     {
-        Dictionary<VReg, int> uses = new();
+        // By register number: a dictionary here was rebuilt, and outgrown, on
+        // every run of the pass over every function.
+        int[] uses = new int[f.RegCount];
         foreach (Block b in f.Blocks)
         {
             foreach (Instr i in b.Instrs)
             {
                 foreach (Operand rOperand in (i).Operands) if (rOperand is RegOperand { Reg: var r })
                 {
-                    uses[r] = uses.GetValueOrDefault(r) + 1;
+                    uses[r.Id]++;
                 }
             }
         }
@@ -47,7 +49,7 @@ public sealed class DeadCodeElimination : IPass
                 {
                     // An object made and never looked at is no allocation at
                     // all: making it changes nothing anything can see.
-                    if (i.Dest is null || uses.GetValueOrDefault(i.Dest) > 0
+                    if (i.Dest is null || uses[i.Dest.Id] > 0
                         || !IrInfo.IsPure(i) && !(i.Op == Opcode.Call && Escape.IsAllocator(i.Callee)))
                     {
                         return false;
@@ -55,7 +57,7 @@ public sealed class DeadCodeElimination : IPass
                     // Its operands lose a use each; that may free them next round.
                     foreach (Operand rOperand in (i).Operands) if (rOperand is RegOperand { Reg: var r })
                     {
-                        uses[r]--;
+                        uses[r.Id]--;
                     }
                     return true;
                 });
@@ -74,7 +76,7 @@ public sealed class DeadCodeElimination : IPass
         {
             foreach (Instr i in b.Instrs)
             {
-                if (i.Dest is not null && uses.GetValueOrDefault(i.Dest) == 0
+                if (i.Dest is not null && uses[i.Dest.Id] == 0
                     && i.Op is (Opcode.Call or Opcode.CallIndirect) && i.Callee != "__exception")
                 {
                     i.Dest = null;
@@ -92,7 +94,7 @@ public sealed class DeadCodeElimination : IPass
     /// first value: no call, no load, no division -- a store only into an
     /// object just made, which cannot fault.
     /// </summary>
-    private static void Overwritten(Function f, Dictionary<VReg, int> uses)
+    private static void Overwritten(Function f, int[] uses)
     {
         HashSet<VReg>? fresh = null;
         foreach (Block b in f.Blocks)
@@ -104,11 +106,11 @@ public sealed class DeadCodeElimination : IPass
                 for (int n = k + 1; n < b.Instrs.Count; n++)
                 {
                     Instr next = b.Instrs[n];
-                    if (next.Operands.Any(o => o is RegOperand r && ReferenceEquals(r.Reg, d))) break;
+                    if (Reads(next, d)) break;
                     if (ReferenceEquals(next.Dest, d))
                     {
                         foreach (Operand o in first.Operands)
-                            if (o is RegOperand r) uses[r.Reg]--;
+                            if (o is RegOperand r) uses[r.Reg.Id]--;
                         b.Instrs.RemoveAt(k--);
                         break;
                     }
@@ -124,13 +126,20 @@ public sealed class DeadCodeElimination : IPass
         }
     }
 
+    private static bool Reads(Instr i, VReg r)
+    {
+        foreach (Operand o in i.Operands)
+            if (o is RegOperand read && ReferenceEquals(read.Reg, r)) return true;
+        return false;
+    }
+
     /// <summary>Registers written once, with an object an allocator just made (or a copy of one).</summary>
     private static HashSet<VReg> Fresh(Function f)
     {
-        Dictionary<VReg, int> writes = new();
+        int[] writes = new int[f.RegCount];
         foreach (Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
-                if (i.Dest is { } d) writes[d] = writes.GetValueOrDefault(d) + 1;
+                if (i.Dest is { } d) writes[d.Id]++;
         HashSet<VReg> fresh = new();
         bool grew = true;
         while (grew)
@@ -138,7 +147,7 @@ public sealed class DeadCodeElimination : IPass
             grew = false;
             foreach (Block b in f.Blocks)
                 foreach (Instr i in b.Instrs)
-                    if (i.Dest is { } d && writes[d] == 1 && !f.Params.Contains(d) && !fresh.Contains(d)
+                    if (i.Dest is { } d && writes[d.Id] == 1 && !f.Params.Contains(d) && !fresh.Contains(d)
                         && (i.Op == Opcode.Call && Escape.IsAllocator(i.Callee)
                             || i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && i.Operands[0] is RegOperand r && fresh.Contains(r.Reg)))
                     { fresh.Add(d); grew = true; }

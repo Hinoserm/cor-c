@@ -65,10 +65,13 @@ public sealed class ConstantAndCopyPropagation : IPass
         {
             for (int k = 0; k < b.Instrs.Count; k++)
             {
-                Instr i = b.Instrs[k];
-                Block useBlock = b;
-                int useIndex = k;
-                IrInfo.ReplaceUses(i, r => Resolve(r, defs, copies, useBlock, useIndex));
+                // In a loop, not ReplaceUses with a lambda: the lambda held the
+                // position, a closure for every instruction of the function.
+                List<Operand> operands = b.Instrs[k].Operands;
+                for (int o = 0; o < operands.Count; o++)
+                    if (operands[o] is RegOperand { Reg: var r } && copies.ContainsKey(r)
+                        && Resolve(r, defs, copies, b, k) is { } resolved)
+                        operands[o] = resolved;
             }
         }
     }
@@ -77,9 +80,11 @@ public sealed class ConstantAndCopyPropagation : IPass
     private static Operand? Resolve(VReg r, Defs defs, Dictionary<VReg, (Operand Value, Block Block, int Index)> copies, Block useBlock, int useIndex)
     {
         Operand? best = null;
-        HashSet<VReg> seen = new();
         VReg cur = r;
-        while (copies.TryGetValue(cur, out (Operand Value, Block Block, int Index) c) && seen.Add(cur))
+        // A chain longer than there are copies has come round on itself: the
+        // bound is the cycle test, where a set of the registers seen was one
+        // more allocation for every use.
+        for (int steps = 0; steps <= copies.Count && copies.TryGetValue(cur, out (Operand Value, Block Block, int Index) c); steps++)
         {
             if (c.Value is ImmOperand imm)
             {
