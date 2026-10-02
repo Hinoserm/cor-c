@@ -34,11 +34,12 @@ public sealed class LoadReuse : IPass
         Dictionary<Block, Dictionary<Key, Entry>> outgoing = new();
         foreach (Block block in cfg.ReversePostorder)
         {
-            Dictionary<Key, Entry> memory = new();
+            // One table a block: made empty, then made again from the
+            // predecessor's, was two, and the first the collector's.
             var predecessors = cfg.Preds(block);
-            if (!cfg.IsRoot(block) && predecessors.Count == 1 && cfg.Dominates(predecessors[0], block)
-                && outgoing.TryGetValue(predecessors[0], out var inherited))
-                memory = new(inherited);
+            Dictionary<Key, Entry> memory = !cfg.IsRoot(block) && predecessors.Count == 1 && cfg.Dominates(predecessors[0], block)
+                && outgoing.TryGetValue(predecessors[0], out var inherited)
+                ? new(inherited) : new();
             for (int index = 0; index < block.Instrs.Count; index++)
             {
                 Instr i = block.Instrs[index];
