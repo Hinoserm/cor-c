@@ -1,0 +1,60 @@
+// test: region_front_end_tree_kept_across_units
+// units: tests/language/support/1201_region_front_end_kept_units.cor
+// expect-exit: 0
+// expect-output:
+// 312000
+// kept intact True
+//
+// 1200 with each instruction keeping the node it came from: the tree is
+// handed back with the module, and what was taken in 1200 must not be here.
+// The modules of earlier calls are kept while later calls' regions are made
+// and given back over the same memory; each kept node still names its line
+// and the type its binding gave it.
+
+using System;
+using System.Collections.Generic;
+
+static class P
+{
+    static int Run(IrModule m)
+    {
+        int[] slots = new int[m.Slots];
+        int[] stack = new int[64];
+        int sp = 0;
+        foreach (Instr i in m.Code)
+            switch (i.Op)
+            {
+                case 1: stack[sp++] = i.A; break;
+                case 2: stack[sp++] = slots[i.A]; break;
+                case 3: sp--; stack[sp - 1] += stack[sp]; break;
+                case 4: slots[i.A] = stack[--sp]; break;
+            }
+        int sum = 0;
+        foreach (int s in slots) sum += s;
+        return sum;
+    }
+
+    static bool Intact(IrModule m)
+    {
+        foreach (Instr i in m.Code)
+            if (i.From is not { } n || n.Line < 0 || n.Line > 4 || n.Type is not { } t || t.Name != "int") return false;
+        return true;
+    }
+
+    static void Main()
+    {
+        string source = "a = 1 + 2 + 3; b = a + 4; c = b + a + 10; d = c + c; e = d + 1 + 2 + 3 + 4;";
+        long total = 0;
+        List<IrModule> kept = new();
+        for (int k = 0; k < 2000; k++)
+        {
+            IrModule m = Front.CompileUnit(source);
+            total += Run(m);
+            if (k % 40 == 0) kept.Add(m);
+        }
+        bool intact = true;
+        foreach (IrModule m in kept) intact &= Intact(m);
+        Console.WriteLine(total);
+        Console.WriteLine("kept intact " + intact);
+    }
+}
