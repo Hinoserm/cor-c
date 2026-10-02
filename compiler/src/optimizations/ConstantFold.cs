@@ -25,17 +25,126 @@ public sealed class ConstantFold : IPass
 
     public void Run(Function f)
     {
+        Known? known = null;
         foreach (Block b in f.Blocks)
         {
             for (int k = 0; k < b.Instrs.Count; k++)
             {
                 Instr i = b.Instrs[k];
                 Instr? folded = Fold(i);
+                if (folded is null && i.Op is Opcode.Eq or Opcode.Ne or Opcode.Branch)
+                {
+                    known ??= new Known(f);
+                    folded = known.Fold(i);
+                }
                 if (folded is not null)
                 {
                     b.Instrs[k] = folded;
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// WHAT A REGISTER IS, ACROSS THE FUNCTION, for the tests the guarded
+    /// walks and casts leave behind once Devirtualize has forwarded an
+    /// object's vtable:
+    ///
+    /// - TWO TYPES' DESCRIPTORS ARE TWO ADDRESSES: each is its own data,
+    ///   laid down once and never merged, so a forwarded vtable compared
+    ///   with a type a walk asks about (`is List&lt;E&gt;`, a foreach's mode)
+    ///   is answered here.
+    /// - A FRESH OBJECT IS NOT NULL: the allocators throw rather than answer
+    ///   zero.
+    /// - A REGISTER EVERY ONE OF WHOSE WRITES IS THE SAME CONSTANT is that
+    ///   constant wherever it is read -- a conditional's join (`cond = 0` on
+    ///   both arms, once each arm's test has folded) that propagation, which
+    ///   follows registers written once, leaves.
+    /// </summary>
+    private sealed class Known
+    {
+        private readonly Dictionary<VReg, (string Name, long Offset)> _descriptors = new();
+        private readonly HashSet<VReg> _fresh = new();
+        private readonly Dictionary<VReg, long> _constant = new();
+
+        public Known(Function f)
+        {
+            Dictionary<VReg, int> writes = new();
+            Dictionary<VReg, Instr> only = new();
+            Dictionary<VReg, long?> value = new();
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Dest is not { } d) continue;
+                    int n = writes.GetValueOrDefault(d) + 1;
+                    writes[d] = n;
+                    only[d] = i;
+                    long? v = i.Op == Opcode.Copy && i.Operands[0] is ImmOperand imm ? imm.Value : null;
+                    value[d] = n == 1 ? v : value[d] == v ? v : null;
+                }
+            foreach (VReg p in f.Params) writes[p] = 2;
+            foreach ((VReg d, int n) in writes)
+            {
+                if (n > 1)
+                {
+                    if (!f.Params.Contains(d) && value.GetValueOrDefault(d) is long same && d.Type.IsInt()) _constant[d] = same;
+                    continue;
+                }
+                Instr i = only[d];
+                if (i.Op == Opcode.Copy && i.Operands[0] is SymOperand s && IsDescriptor(s.Name)) _descriptors[d] = (s.Name, s.Offset);
+                else if (i.Op == Opcode.Call && Escape.IsAllocator(i.Callee)) _fresh.Add(d);
+            }
+            // Through the copies and width changes of a fresh object.
+            bool grew = true;
+            while (grew)
+            {
+                grew = false;
+                foreach ((VReg d, Instr i) in only)
+                    if (writes[d] == 1 && !_fresh.Contains(d) && i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32
+                        && i.Operands[0] is RegOperand r && _fresh.Contains(r.Reg))
+                    { _fresh.Add(d); grew = true; }
+            }
+        }
+
+        private static bool IsDescriptor(string name) =>
+            name.StartsWith("t_", StringComparison.Ordinal) || name.StartsWith("q_array_", StringComparison.Ordinal);
+
+        private (string Name, long Offset)? Descriptor(Operand o) => o switch
+        {
+            SymOperand s when IsDescriptor(s.Name) => (s.Name, s.Offset),
+            RegOperand r when _descriptors.TryGetValue(r.Reg, out var held) => held,
+            _ => null,
+        };
+
+        private long? Constant(Operand o) => o switch
+        {
+            ImmOperand imm => imm.Value,
+            RegOperand r when _constant.TryGetValue(r.Reg, out long v) => v,
+            _ => null,
+        };
+
+        private bool Fresh(Operand o) => o is RegOperand r && _fresh.Contains(r.Reg);
+
+        public Instr? Fold(Instr i)
+        {
+            if (i.Op == Opcode.Branch)
+            {
+                if (Fresh(i.Operands[0]))
+                    return new Instr { Op = Opcode.Jump, Targets = { i.Targets[0] }, Line = i.Line };
+                if (i.Operands[0] is RegOperand r && _constant.TryGetValue(r.Reg, out long c))
+                    return new Instr { Op = Opcode.Jump, Targets = { IrInfo.Normalise(c, IrType.I32) != 0 ? i.Targets[0] : i.Targets[1] }, Line = i.Line };
+                return null;
+            }
+            if (i.Dest is null || i.Operands.Count != 2) return null;
+            Operand x = i.Operands[0], y = i.Operands[1];
+            bool eq = i.Op == Opcode.Eq;
+            if (Descriptor(x) is { } a && Descriptor(y) is { } b && a.Offset == b.Offset)
+                return IrInfo.CopyOf(i, new ImmOperand((a.Name == b.Name) == eq ? 1 : 0, i.Dest.Type));
+            if (Fresh(x) && Constant(y) == 0 || Fresh(y) && Constant(x) == 0)
+                return IrInfo.CopyOf(i, new ImmOperand(eq ? 0 : 1, i.Dest.Type));
+            if (Constant(x) is long cx && Constant(y) is long cy && (x is RegOperand || y is RegOperand))
+                return IrInfo.CopyOf(i, new ImmOperand((IrInfo.Normalise(cx, x.Type) == IrInfo.Normalise(cy, y.Type)) == eq ? 1 : 0, i.Dest.Type));
+            return null;
         }
     }
 

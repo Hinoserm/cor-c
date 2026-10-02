@@ -3351,21 +3351,32 @@ continue;
     /// enumerator, and that made every iterator a loop walks look alive at
     /// the next one's making, so none was ever freed.
     /// </summary>
-    internal static HashSet<VReg> PadLiveAt(Liveness liveness, Block at)
+    internal static HashSet<VReg> PadLiveAt(Liveness liveness, Block at, int index = int.MaxValue)
     {
         // Kept with the analysis it was made from: one liveness, one function.
         Dictionary<Block, HashSet<VReg>>? table = liveness.PadRegions;
         if (table is null)
         {
             table = new(ReferenceEqualityComparer.Instance);
-            BuildPadRegions(liveness, table);
+            liveness.PadFrom = new(ReferenceEqualityComparer.Instance);
+            BuildPadRegions(liveness, table, liveness.PadFrom);
             liveness.PadRegions = table;
         }
-        return table.TryGetValue(at, out HashSet<VReg>? live) ? live : Empty;
+        HashSet<VReg> live = table.TryGetValue(at, out HashSet<VReg>? whole) ? whole : Empty;
+        // In a push's own block, the pad is entered only after the push: an
+        // allocation before it, in the same block, is outside its reach.
+        if (liveness.PadFrom!.TryGetValue(at, out var from) && from.Any(p => index > p.After))
+        {
+            live = new HashSet<VReg>(live);
+            foreach ((int after, HashSet<VReg> reads) in from)
+                if (index > after) live.UnionWith(reads);
+        }
+        return live;
     }
     private static readonly HashSet<VReg> Empty = new();
 
-    private static void BuildPadRegions(Liveness liveness, Dictionary<Block, HashSet<VReg>> table)
+    private static void BuildPadRegions(Liveness liveness, Dictionary<Block, HashSet<VReg>> table,
+        Dictionary<Block, List<(int After, HashSet<VReg> Reads)>> partial)
     {
         Function f = liveness.Cfg.Function;
         Cfg cfg = liveness.Cfg;
@@ -3395,8 +3406,8 @@ continue;
             else
             {
                 bool Pops(Block b) => b.Instrs.Any(i => i.Op == Opcode.Load && i.Offset == 0 && i.Operands[0] is SlotOperand s && s.Slot == p.Record);
-                region = new() { p.B };
-                HashSet<Block> seen = new(ReferenceEqualityComparer.Instance) { p.B };
+                region = new();
+                HashSet<Block> seen = new(ReferenceEqualityComparer.Instance);
                 Stack<Block> work = new();
                 // A pop later in the push's own block ends it there.
                 bool closedHere = p.B.Instrs.Skip(p.I + 1).Any(i => i.Op == Opcode.Load && i.Offset == 0 && i.Operands[0] is SlotOperand s && s.Slot == p.Record);
@@ -3408,6 +3419,13 @@ continue;
                     region.Add(b);
                     if (Pops(b)) continue;
                     foreach (Block n in cfg.Succs(b)) work.Push(n);
+                }
+                // The push's own block, unless a path round a loop comes back
+                // into it with the handler still pushed: from the push on.
+                if (!seen.Contains(p.B))
+                {
+                    if (!partial.TryGetValue(p.B, out var list)) partial[p.B] = list = new();
+                    list.Add((p.I, reads));
                 }
             }
             foreach (Block b in region)
@@ -3427,7 +3445,7 @@ continue;
     internal static bool LiveAtSelf(Liveness liveness, HashSet<VReg> pads, Block b, Instr alloc, HashSet<VReg> derived)
     {
         // Only the pads that can be entered here keep what they read alive here.
-        HashSet<VReg> padsHere = pads.Count == 0 ? pads : PadLiveAt(liveness, b);
+        HashSet<VReg> padsHere = pads.Count == 0 ? pads : PadLiveAt(liveness, b, b.Instrs.IndexOf(alloc));
         foreach (VReg r in derived)
         {
             if (padsHere.Contains(r) || !liveness.Tracks(r)) return true;

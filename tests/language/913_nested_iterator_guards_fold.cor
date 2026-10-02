@@ -1,0 +1,35 @@
+// test: nested_iterator_guards_fold
+// expect-exit: 0
+// expect-output:
+// 44999550000
+//
+// An iterator walking another iterator, walked in turn by foreach. Once the
+// inner object's vtable is known, the guarded walk's tests fold: two type
+// descriptors are two addresses, a fresh object is not null, and a join
+// every write of which is the same constant is that constant. The List
+// walker's box left unread is then no allocation at all, the enumerator's
+// clearing write before its setting goes, and the pad of the foreach's
+// finally reaches only what follows its push in the block they now share.
+
+using System;
+using System.Collections.Generic;
+static class P
+{
+    static IEnumerable<int> Regs(int i)
+    {
+        yield return i;
+        yield return i + 1;
+    }
+    static IEnumerable<(int, bool)> AllRegs(int i)
+    {
+        foreach (int r in Regs(i)) yield return (r, false);
+        yield return (i * 3, true);
+    }
+    static void Main()
+    {
+        long sum = 0;
+        for (int k = 0; k < 300000; k++)
+            foreach ((int r, bool d) in AllRegs(k)) sum += d ? r : -r;
+        Console.WriteLine(sum);
+    }
+}

@@ -26,6 +26,8 @@ public sealed class Liveness
 
     /// <summary>Where each landing pad can be entered, with what it reads (Escape.PadLiveAt); made once.</summary>
     internal Dictionary<Block, HashSet<VReg>>? PadRegions { get; set; }
+    /// <summary>A push's own block, where its pad can be entered only after the push: (that index, what the pad reads).</summary>
+    internal Dictionary<Block, List<(int After, HashSet<VReg> Reads)>>? PadFrom { get; set; }
     private readonly int _words;
     private readonly int _registers;
     private readonly Dictionary<Block, ulong[]> _in = new(ReferenceEqualityComparer.Instance);

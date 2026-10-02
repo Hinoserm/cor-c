@@ -504,7 +504,7 @@ public readonly struct Edges : IReadOnlyList<Block>
 
     public Enumerator GetEnumerator() => new(this);
     IEnumerator<Block> IEnumerable<Block>.GetEnumerator() => ((IEnumerable<Block>)ToArray()).GetEnumerator();
-    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => ToArray().GetEnumerator();
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => ((System.Collections.IEnumerable)ToArray()).GetEnumerator();
 
     public Block[] ToArray()
     {
