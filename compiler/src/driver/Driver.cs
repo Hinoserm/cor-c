@@ -130,7 +130,7 @@ public static class Driver
               corc link <file.o> ... -o <output> [--entry <symbol>]
               corc link @objects.list -o <output> [--entry <symbol>]
               corc index --assembly <identity> <sources...> -o <declarations.idx>
-              corc project <file.csproj> [--configuration Release] [--framework net10.0] [--jobs N] [--link-only | --runtime-only] [-o output]
+              corc project <file.csproj> [--configuration Release] [--framework net10.0] [--jobs N] [--link-only | --runtime-only] [--region-report NAMES] [-o output]
               corc compile-project --units <units.tsv> --decl-index <idx> --assembly <identity> [--unit-census]
               corc build [target/path] [Name=Value ...] [--file corsac.build] [--jobs N]
               corc asm --target x86-16 <file.asm> -o <output.bin>

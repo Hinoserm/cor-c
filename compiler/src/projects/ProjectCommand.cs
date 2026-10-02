@@ -21,7 +21,7 @@ public static class ProjectCommand
 
     public static int Run(string[] arguments)
     {
-        string? path = null, output = null, framework = null, targetName = null;
+        string? path = null, output = null, framework = null, targetName = null, regionReport = null;
         string configuration = "Release";
         int workers = Environment.ProcessorCount;
         bool linkOnly = false, runtimeOnly = false;
@@ -49,6 +49,8 @@ public static class ProjectCommand
                 // units too.
                 case "--runtime-only": linkOnly = runtimeOnly = true; break;
                 case "--target": targetName = Value(); break;
+                // The link's region report (corc link --region-report NAMES).
+                case "--region-report": regionReport = Value(); break;
                 case "--cpu": case "--tune": case "--fpu":
                     profileArguments.Add(arguments[i]); profileArguments.Add(Value()); break;
                 case "--enable-mmx": case "--disable-mmx": case "--enable-3dnow": case "--disable-3dnow":
@@ -82,8 +84,15 @@ public static class ProjectCommand
             : global::Corsac.Lang.X86.X86Cpu.Parse(defaults).Contract.Arguments();
         // The link validates each object's CPU contract against the i386
         // profile; a long-mode object carries its own (k8/sse2).
-        string[] linkArguments = target == Target.X86_64 ? Array.Empty<string>() : cpuArguments;
+        List<string> linkArguments = new(target == Target.X86_64 ? Array.Empty<string>() : cpuArguments);
         if (project.OutputType is not ("Exe" or "WinExe")) throw new InvalidDataException("Standalone native library packaging is not yet implemented");
+        // AN EXECUTABLE LINKED AGAINST NO SHARED LIBRARY IS THE WHOLE PROGRAM
+        // (corc link --closed): what only a closed image's link decides --
+        // regions over every unit, the fields that own what they hold, what
+        // each catch keeps -- is decided for a project too. Linked open, the
+        // compiler's own build made no region at all.
+        linkArguments.Add("--closed");
+        if (regionReport is not null) { linkArguments.Add("--region-report"); linkArguments.Add(regionReport); }
         string directory = Path.GetDirectoryName(project.Path)!;
         string work = Path.Combine(directory, "obj", "cor-c", configuration, project.Framework);
         Directory.CreateDirectory(work);
