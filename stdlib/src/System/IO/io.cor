@@ -696,9 +696,20 @@ sealed class NullStream : Stream
     public override void Write(byte[] buffer, int offset, int count) { }
 }
 
-class MemoryStream : Stream
+class MemoryStream : Stream, IOwnsStorage
 {
     byte[] _bytes;
+    /// Whether GetBuffer handed the array out: it is then the caller's too,
+    /// and neither growing nor dying gives it back.
+    bool _lent;
+
+    /// THE ARRAY GIVEN BACK with a stream proved dead (Runtime.Free), when
+    /// the stream made it and never lent it.
+    public void FreeStorage()
+    {
+        if (_expandable && !_lent && _bytes != null) Runtime.Free((nint)Sys.Word(_bytes));
+        _bytes = null!;
+    }
     /// Where the stream's first byte is in _bytes, and how much of it the
     /// stream may use: all of an array it made, a window of one it was
     /// given. Positions and lengths are the stream's, from _origin.
@@ -741,9 +752,11 @@ class MemoryStream : Stream
             if (!_expandable) throw new NotSupportedException("memory stream is not expandable");
             byte[] bigger = new byte[length];
             Array.Copy(_bytes, _origin, bigger, 0, _length);
+            byte[] outgrown = _bytes;
             _bytes = bigger;
             _origin = 0;
             _capacity = length;
+            if (!_lent) Runtime.Free((nint)Sys.Word(outgrown));
         }
         if (length > _length) Array.Clear(_bytes, _origin + _length, length - _length);
         _length = length;
@@ -839,8 +852,11 @@ class MemoryStream : Stream
             }
             byte[] bigger = new byte[size];
             Array.Copy(_bytes, 0, bigger, 0, _length);
+            byte[] outgrown = _bytes;
             _bytes = bigger;
             _capacity = size;
+            // Outgrown: given back unless GetBuffer lent it out.
+            if (!_lent) Runtime.Free((nint)Sys.Word(outgrown));
         }
         // Bytes between the old end and a position seeked past it are zero.
         if (_position > _length) Array.Clear(_bytes, _origin + _length, _position - _length);
@@ -864,6 +880,7 @@ class MemoryStream : Stream
     public byte[] GetBuffer()
     {
         if (!_visible) throw new UnauthorizedAccessException("the MemoryStream's internal buffer cannot be accessed");
+        _lent = true;
         return _bytes;
     }
 }
