@@ -110,13 +110,55 @@ public sealed class RegionPointsTo : IModulePass
         NewObject(null, null, -1, null, 0);          // Global
 
         if (_byName.TryGetValue(m.Entry, out Function? entry)) CopyOf(entry, -1);
-        if (!Solve())
+        bool rooted = false;
+        while (true)
         {
-            Console.Error.WriteLine($"regions: gave up at {_pts.Count} nodes, {_copies.Count} copies, {_objects.Count} objects");
-            return;
+            if (!Solve())
+            {
+                if (Report is not null) Console.Error.WriteLine($"regions: gave up at {_pts.Count} nodes, {_copies.Count} copies, {_objects.Count} objects");
+                return;
+            }
+            // AN INSTANCE CALL NOTHING WAS SEEN TO BE MADE ON still runs: its
+            // callee's context-free copy, so its stores and calls are counted.
+            bool more = false;
+            foreach (var (seen, bind) in _unbound)
+                if (seen.Count == 0) { seen.Add(-3); bind(); more = true; }
+            // CODE THIS NEVER SAW CALL may call anything whose address it was
+            // given, with anything: once any call goes where this cannot
+            // follow, every function whose address is taken is called from
+            // there too.
+            if (_unknownCalls && !rooted)
+            {
+                rooted = true;
+                foreach (Function f in AddressTaken(m))
+                {
+                    int copy = CopyOf(f, -1);
+                    for (int k = 0; k < f.Params.Count; k++) Add(Reg(copy, f.Params[k]), Loc(Global, Any));
+                    Edge(ReturnNode(copy), Cell(Global, Any), 0);
+                }
+                more = true;
+            }
+            if (!more) break;
         }
         if (Report is not null) Judge();
         Apply();
+    }
+
+    private readonly List<(HashSet<int> Seen, Action Bind)> _unbound = new();
+    private bool _unknownCalls;
+
+    // Every function named as a value -- in code, or in data (a vtable, a
+    // delegate's table) -- rather than only called.
+    private IEnumerable<Function> AddressTaken(Module m)
+    {
+        HashSet<string> named = new(StringComparer.Ordinal);
+        foreach (Function f in m.Functions)
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    foreach (Operand o in i.Operands)
+                        if (o is SymOperand { Name: var n }) named.Add(n);
+        foreach (DataItem d in m.Data) foreach (DataReloc r in d.Relocs) named.Add(r.Symbol);
+        foreach (string n in named) if (_byName.TryGetValue(n, out Function? f)) yield return f;
     }
 
     // ---- applying -------------------------------------------------------------
@@ -407,6 +449,16 @@ public sealed class RegionPointsTo : IModulePass
         return _constants[(copy, o)] = n;
     }
 
+    /// <summary>An address operand's node: a constant address is somewhere unknown.</summary>
+    private int Base(int copy, Operand o)
+    {
+        if (o is not ImmOperand) return Value(copy, o);
+        if (_constants.TryGetValue((copy, o), out int known)) return known;
+        int n = NewNode();
+        Add(n, Loc(Global, Any));
+        return _constants[(copy, o)] = n;
+    }
+
     // What is read at `offset` from where `baseNode` points.
     private void Load(int dest, int baseNode, long offset)
     {
@@ -454,6 +506,9 @@ public sealed class RegionPointsTo : IModulePass
             case Opcode.Phi:
             case Opcode.And:
             case Opcode.Or:
+            // A tag shifted in can be shifted out again (Escape's rule too):
+            // what is shifted left may still be the pointer.
+            case Opcode.Shl:
                 if (dest < 0) return;
                 foreach (Operand o in i.Operands)
                     if (Value(copy, o) is int v and >= 0) Edge(v, dest, 0);
@@ -477,25 +532,28 @@ public sealed class RegionPointsTo : IModulePass
             }
 
             case Opcode.Load:
-                Load(dest, Value(copy, i.Operands[0]), i.Offset);
+                Load(dest, Base(copy, i.Operands[0]), i.Offset);
                 return;
 
             case Opcode.Store:
             case Opcode.InitArrayLength:
-                if (i.Operands.Count >= 2) Store(Value(copy, i.Operands[0]), i.Offset, Value(copy, i.Operands[1]));
+                if (i.Operands.Count >= 2) Store(Base(copy, i.Operands[0]), i.Offset, Value(copy, i.Operands[1]));
                 return;
 
             case Opcode.AtomicSwap:
             case Opcode.AtomicCas:
+            case Opcode.AtomicAdd:
+            case Opcode.AtomicAnd:
             {
-                int at = Value(copy, i.Operands[0]);
+                // A read of the word and a write to it.
+                int at = Base(copy, i.Operands[0]);
                 Load(dest, at, i.Offset);
                 for (int k = 1; k < i.Operands.Count; k++) Store(at, i.Offset, Value(copy, i.Operands[k]));
                 return;
             }
 
             case Opcode.MemCopy:
-                MemCopy(Value(copy, i.Operands[0]), Value(copy, i.Operands[1]),
+                MemCopy(Base(copy, i.Operands[0]), Base(copy, i.Operands[1]),
                     i.Operands.Count > 2 && i.Operands[2] is ImmOperand n ? n.Value : Any);
                 return;
 
@@ -521,16 +579,31 @@ public sealed class RegionPointsTo : IModulePass
                     {
                         int o = ObjectOf(l);
                         if (!seen.Add(o)) return;
-                        if (o == Global) { Indirect(copy, i); return; }
-                        if (Stamp(o) is var (table, at) && _data.TryGetValue(table, out DataItem? d))
+                        if (o != Global && Stamp(o) is var (table, at) && _data.TryGetValue(table, out DataItem? d))
                             foreach (DataReloc rel in d.Relocs)
                                 if (rel.Offset == at + slot && rel.Addend == 0) { Bind(copy, i, rel.Symbol, 1, o); return; }
+                        // An object whose descriptor is not known here -- the
+                        // unknown one, one kept in a frame slot, one whose
+                        // stamp was not found -- runs any of the call's targets.
+                        if (!seen.Contains(-4)) { seen.Add(-4); Indirect(copy, i); }
                     });
                     return;
                 }
                 Indirect(copy, i);
                 return;
 
+            // What this does not follow -- a system call's answer, a frame's
+            // or the stack's address, a label's -- may be anything.
+            case Opcode.Syscall:
+            case Opcode.FramePointer:
+            case Opcode.StackPointer:
+            case Opcode.LabelAddr:
+                if (dest >= 0) Add(dest, Loc(Global, Any));
+                return;
+
+            // Numbers made of anything: a pointer multiplied, mixed, divided
+            // or shifted right is a hash, and nothing in managed code turns
+            // one back into a reference (Escape's rule too).
             default:
                 return;
         }
@@ -638,12 +711,14 @@ public sealed class RegionPointsTo : IModulePass
                 int o = OffsetOf(l) == 0 && ObjectOf(l) != Global ? ObjectOf(l) : -1;
                 if (seen.Add(o)) To(CopyOf(target, o));
             });
+            _unbound.Add((seen, () => To(CopyOf(target, -1))));
         }
         else To(CopyOf(target, -1));
     }
 
     private void Unknown(int copy, Instr i, int first)
     {
+        _unknownCalls = true;
         for (int k = first; k < i.Operands.Count; k++) Leak(Value(copy, i.Operands[k]));
         if (i.Dest is not null) Add(Reg(copy, i.Dest), Loc(Global, Any));
     }
@@ -675,22 +750,34 @@ public sealed class RegionPointsTo : IModulePass
         return defs.TryGetValue(r, out Instr? one) ? one : null;
     }
 
-    private readonly Dictionary<Instr, (string, long)?> _stamps = new();
+    private readonly Dictionary<object, (string, long)?> _stamps = new();
 
     /// <summary>The descriptor an object is stamped with and where in it its table begins, or null.</summary>
     private (string Table, long At)? Stamp(int o)
     {
         var obj = _objects[o];
-        if (obj.Site is null || obj.F is null || obj.Site.Dest is not VReg made) return null;
-        if (_stamps.TryGetValue(obj.Site, out var known)) return known;
+        if (obj.F is null) return null;
+        object key = (object?)obj.Site ?? obj.Slot!;
+        if (key is null) return null;
+        if (_stamps.TryGetValue(key, out var known)) return known;
+        // ONE STAMP, from one store: the site the only writer of its register
+        // (two allocations that share one would name two types), or the
+        // slot's own first word. Two different stamps say nothing.
         (string, long)? found = null;
+        bool many = false;
+        VReg? made = obj.Site?.Dest;
+        if (obj.Site is not null && (made is null || Single(obj.F, made) != obj.Site)) return _stamps[key] = null;
         foreach (Block b in obj.F.Blocks)
             foreach (Instr i in b.Instrs)
-                if (found is null && i.Op == Opcode.Store && i.Offset == 0 && i.Operands.Count >= 2
+                if (i.Op == Opcode.Store && i.Offset == 0 && i.Operands.Count >= 2
                     && i.Operands[1] is SymOperand { Name: var t, Offset: var at }
-                    && i.Operands[0] is RegOperand { Reg: var to } && Derives(obj.F, to, made, 0))
+                    && (obj.Slot is not null ? i.Operands[0] is SlotOperand { Slot: var s0 } && s0 == obj.Slot
+                        : i.Operands[0] is RegOperand { Reg: var to } && Derives(obj.F, to, made!, 0)))
+                {
+                    if (found is { } f0 && (f0.Item1 != t || f0.Item2 != at)) many = true;
                     found = (t, at);
-        return _stamps[obj.Site] = found;
+                }
+        return _stamps[key] = many ? null : found;
     }
 
     private bool Derives(Function f, VReg r, VReg made, int depth)
