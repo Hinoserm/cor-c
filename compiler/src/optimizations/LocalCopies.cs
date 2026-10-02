@@ -14,10 +14,7 @@ public sealed class LocalCopies : IPass
         // a block that has one: most blocks copy nothing, and a dictionary
         // made for each of them, on every round, was this pass's whole cost.
         Dictionary<Corsac.Lang.Ir.Block, Dictionary<VReg, Operand>> atEnd = new();
-        // One delegate for the function, reading whichever table the block
-        // has: made in the loop, it was a closure for every instruction.
         Dictionary<VReg, Operand>? copies = null;
-        Func<VReg, Operand?> current = r => copies!.GetValueOrDefault(r);
         List<VReg> stale = new();
         foreach (var block in cfg.ReversePostorder)
         {
@@ -33,7 +30,7 @@ public sealed class LocalCopies : IPass
             {
                 // Phi operands refer to predecessor edges, not this position.
                 if (i.Op == Opcode.Phi) { copies?.Clear(); continue; }
-                if (copies is { Count: > 0 }) IrInfo.ReplaceUses(i, current);
+                if (copies is { Count: > 0 }) IrInfo.ReplaceUses(i, copies);
                 if (i.Dest is not { } dest) continue;
                 // Entries are canonical one-hop values. Redefining their
                 // source invalidates every captured alias before new facts.

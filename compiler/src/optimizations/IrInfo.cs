@@ -144,6 +144,23 @@ public static class IrInfo
         }
     }
 
+    /// <summary>
+    /// The same from a table: a register it holds becomes what it holds. No
+    /// delegate -- a lambda over a pass's table captured the variable, and
+    /// every table it was ever given was written into the closure's cell,
+    /// which the lifetime rules take for an escape.
+    /// </summary>
+    public static void ReplaceUses<T>(Instr i, Dictionary<VReg, T> map) where T : Operand
+    {
+        for (int k = 0; k < i.Operands.Count; k++)
+        {
+            if (i.Operands[k] is RegOperand r && map.TryGetValue(r.Reg, out T? o))
+            {
+                i.Operands[k] = o;
+            }
+        }
+    }
+
     /// <summary>Replaces the instruction at an index with an equivalent one, keeping the source line.</summary>
     public static void Replace(Block b, int index, Instr with)
     {

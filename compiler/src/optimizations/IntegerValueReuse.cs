@@ -30,7 +30,6 @@ public sealed class IntegerValueReuse : IPass
         // ONE ALIAS TABLE, emptied per block, and the operand each alias
         // becomes made once per alias, not once per use.
         Dictionary<VReg, RegOperand> aliases = new();
-        Func<VReg, Operand?> alias = r => aliases.TryGetValue(r, out RegOperand? source) ? source : null;
         List<VReg> staleAliases = new();
         List<Key> staleValues = new();
         foreach (var block in cfg.ReversePostorder)
@@ -51,7 +50,7 @@ public sealed class IntegerValueReuse : IPass
                 // A CSE result is available to later expressions immediately,
                 // not only after another whole pipeline round. Aliases are
                 // canonical snapshots and are invalidated on either write.
-                if (aliases.Count != 0) IrInfo.ReplaceUses(i, alias);
+                if (aliases.Count != 0) IrInfo.ReplaceUses(i, aliases);
                 Key? key = KeyOf(i);
                 RegOperand? reused = null;
                 if (key is { } found && values is not null && values.TryGetValue(found, out Value existing))

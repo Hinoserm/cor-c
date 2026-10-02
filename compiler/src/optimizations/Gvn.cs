@@ -150,7 +150,7 @@ public sealed class Gvn : IPass
         for (int k = 0; k < b.Instrs.Count; k++)
         {
             Instr i = b.Instrs[k];
-            IrInfo.ReplaceUses(i, r => _leader.GetValueOrDefault(r));
+            IrInfo.ReplaceUses(i, _leader);
             if (ThreadBlockRead(b, k, undo)) continue;
 
             switch (i.Op)
