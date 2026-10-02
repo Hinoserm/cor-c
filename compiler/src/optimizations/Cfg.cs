@@ -143,14 +143,15 @@ public sealed class Cfg
         {
             if (_rpo is null)
             {
-                List<Block> post = new();
-                HashSet<Block> seen = new(ReferenceEqualityComparer.Instance);
+                List<Block> post = new(Function.Blocks.Count);
+                bool[] seen = new bool[Function.Blocks.Count];
+                Stack<(Block, int)> stack = new();
                 // The entry goes first so it ends up last in postorder, ahead
                 // of every pad, and the pads follow in block order so the
                 // result is deterministic.
-                foreach (Block root in Function.Blocks.Where(IsRoot))
+                foreach (Block root in Function.Blocks)
                 {
-                    Postorder(root, seen, post);
+                    if (IsRoot(root)) Postorder(root, seen, post, stack);
                 }
                 post.Reverse();
                 _rpo = post;
@@ -159,25 +160,27 @@ public sealed class Cfg
         }
     }
 
-    private void Postorder(Block start, HashSet<Block> seen, List<Block> post)
+    private void Postorder(Block start, bool[] seen, List<Block> post, Stack<(Block, int)> stack)
     {
         // Iterative, because lowering can emit a chain of thousands of
         // blocks for a long method and recursion would overflow the stack.
-        if (!seen.Add(start))
+        // Seen by position, as the edges are kept (one array, not a set).
+        if (seen[start.Order])
         {
             return;
         }
-        Stack<(Block, int)> stack = new();
+        seen[start.Order] = true;
         stack.Push((start, 0));
         while (stack.Count > 0)
         {
             (Block b, int k) = stack.Pop();
-            IReadOnlyList<Block> succs = Succs(b);
+            Edges succs = Succs(b);
             if (k < succs.Count)
             {
                 stack.Push((b, k + 1));
-                if (seen.Add(succs[k]))
+                if (!seen[succs[k].Order])
                 {
+                    seen[succs[k].Order] = true;
                     stack.Push((succs[k], 0));
                 }
             }
@@ -503,8 +506,23 @@ public readonly struct Edges : IReadOnlyList<Block>
     }
 
     public Enumerator GetEnumerator() => new(this);
-    IEnumerator<Block> IEnumerable<Block>.GetEnumerator() => ((IEnumerable<Block>)ToArray()).GetEnumerator();
-    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => ((System.Collections.IEnumerable)ToArray()).GetEnumerator();
+    // Behind an interface (LINQ, a set made from the edges): one object over
+    // the run, not a copy of it as well.
+    IEnumerator<Block> IEnumerable<Block>.GetEnumerator() => new Boxed(_all, _start, Count);
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => new Boxed(_all, _start, Count);
+
+    private sealed class Boxed : IEnumerator<Block>
+    {
+        private readonly Block[] _all;
+        private readonly int _start, _count;
+        private int _at = -1;
+        public Boxed(Block[] all, int start, int count) { _all = all; _start = start; _count = count; }
+        public Block Current => _all[_start + _at];
+        object System.Collections.IEnumerator.Current => Current;
+        public bool MoveNext() => ++_at < _count;
+        public void Reset() => _at = -1;
+        public void Dispose() { }
+    }
 
     public Block[] ToArray()
     {

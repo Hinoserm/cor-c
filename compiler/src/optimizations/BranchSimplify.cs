@@ -236,7 +236,9 @@ public sealed class BranchSimplify : IPass
         Dictionary<Block, HashSet<Block>> preds = new(ReferenceEqualityComparer.Instance);
         foreach (Block b in f.Blocks)
         {
-            preds[b] = new HashSet<Block>(cfg.Preds(b), ReferenceEqualityComparer.Instance);
+            HashSet<Block> into = new(ReferenceEqualityComparer.Instance);
+            foreach (Block p in cfg.Preds(b)) into.Add(p);
+            preds[b] = into;
         }
 
         HashSet<Block> gone = new(ReferenceEqualityComparer.Instance);

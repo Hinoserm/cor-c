@@ -91,7 +91,7 @@ public sealed class Gvn : IPass
 
                 Dictionary<string, MemEntry> mem;
                 Block? idom = _cfg.Idom(b);
-                IReadOnlyList<Block> preds = _cfg.Preds(b);
+                Edges preds = _cfg.Preds(b);
                 if (idom is not null && preds.Count == 1 && ReferenceEquals(preds[0], idom)
                     && memAtEnd.TryGetValue(idom, out Dictionary<string, MemEntry>? inherited))
                 {
