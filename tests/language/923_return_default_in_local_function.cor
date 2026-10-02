@@ -1,0 +1,35 @@
+// test: return_default_in_local_function
+// expect-exit: 0
+// expect-output:
+// a True
+// b b True 0
+//
+// `return default;` is the zero of what the body it is in returns: a local
+// function's own tuple, not the int of the method around it (the parser
+// typed it from the enclosing method, and the self-build's Devirtualize
+// failed on a local function inside a void method), and a block lambda's
+// is whatever the lambda is converted to.
+
+using System;
+using System.Collections.Generic;
+public static class Program
+{
+    static (string S, int I) Top(List<(string S, int I)> xs)
+    {
+        foreach (var x in xs) if (x.I > 1) return x;
+        return default;
+    }
+    public static int Main()
+    {
+        List<(string S, int I)> xs = new() { ("a", 1), ("b", 2) };
+        (string S, int I) Local(int min)
+        {
+            foreach (var x in xs) if (x.I > min) return x;
+            return default;
+        }
+        Func<int, (string S, int I)> lam = min => { foreach (var x in xs) if (x.I > min) return x; return default; };
+        Console.WriteLine(lam(0).S + " " + (lam(9).S is null));
+        Console.WriteLine(Top(xs).S + " " + Local(1).S + " " + (Local(5).S is null) + " " + Local(5).I);
+        return 0;
+    }
+}

@@ -2674,8 +2674,14 @@ public sealed class Parser
                          ? new TypeRef { Name = "object", Line = line, Col = col }
                          : null;
         _iteratorSawYield = false;
+        // `return default;` IS THE ZERO OF WHAT THIS BODY RETURNS (BareDefault):
+        // a local function's own type, not the method around it, whose int
+        // or void it was given.
+        TypeRef? savedReturns = _returns;
+        _returns = produces;
 
         Block body = ParseBlock();
+        _returns = savedReturns;
 
         if (_iteratorSawYield)
         {
@@ -4606,9 +4612,14 @@ public sealed class Parser
     /// </summary>
     private LambdaExpr Finish(LambdaExpr made, List<string> names, List<Tok>? modifiers = null)
     {
+        // A block lambda's `return default;` waits for the binder, which knows
+        // what the lambda is converted to; the method's return type is not it.
+        TypeRef? savedReturns = _returns;
+        _returns = null;
         LambdaExpr done = At(Tok.LBrace)
             ? new LambdaExpr { BlockBody = ParseBlock(), Line = made.Line, Col = made.Col, Async = made.Async }
             : new LambdaExpr { Body = ParseExpr(), Line = made.Line, Col = made.Col, Async = made.Async };
+        _returns = savedReturns;
 
         for (int k = 0; k < names.Count; k++)
         {
