@@ -234,7 +234,7 @@ public sealed partial class Escape
             uint[] bits = new uint[(words + 31) / 32];
             foreach (long o in mine) bits[(int)(o / w) / 32] |= 1u << (int)(o / w % 32);
             byte[] block = new byte[(1 + bits.Length) * w];
-            for (int k = 0; k < w; k++) block[k] = (byte)(words >> (8 * k));
+            for (int k = 0; k < w; k++) block[k] = (byte)((long)words >> (8 * k));
             for (int i = 0; i < bits.Length; i++) for (int k = 0; k < 4; k++) block[(1 + i) * w + k] = (byte)(bits[i] >> (8 * k));
             string sym = "om_" + d.Name[2..];
             m.Data.Add(new DataItem(sym, block) { ReadOnly = true, Exported = false, Align = w });

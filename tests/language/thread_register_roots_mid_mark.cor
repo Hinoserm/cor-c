@@ -1,5 +1,6 @@
 // test: a root range registered while a mark is under way is marked from
 // expect-exit: 0
+// timeout: 60
 // expect-output:
 // rounds 40
 // windows True

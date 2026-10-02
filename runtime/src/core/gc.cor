@@ -2250,11 +2250,20 @@ static class Gc
     /// words are; past a header that does not read as a block (never, while
     /// the thread is stopped or is the one copying) the rest whole, which is
     /// never wrong. Answers how many words it wrote.
+    ///
+    /// ONLY THE WORDS THAT COULD MARK SOMETHING: not a null, and not an
+    /// address in the arena itself, which is no heap block and marks
+    /// nothing. An arena a loop has filled -- a thread's body making objects
+    /// until it is told to stop, every one dead at its return -- is four
+    /// megabytes of such words, written into fresh pages at every cycle and
+    /// read again; three threads' arenas were most of a small heap's run.
     public static long CopyRegion(long tb, long copy)
     {
         long w = WordSize.Bytes;
         long p = Sys.Peek(tb + Tls.RegionBase);
         if (p == 0) return 0;
+        long arena = p;
+        long limit = Sys.Peek(tb + Tls.RegionEnd);
         long end = Sys.Peek(tb + Tls.RegionAt);
         long n = 0;
         while (p < end)
@@ -2274,8 +2283,13 @@ static class Gc
             }
             while (from < to)
             {
-                Sys.Poke(copy + n * w, Sys.Peek(from));
-                n = n + 1;
+                long word = Sys.Peek(from);
+                long address = word & WordSize.AddressMask;
+                if (word != 0 && (address < arena || address >= limit))
+                {
+                    Sys.Poke(copy + n * w, word);
+                    n = n + 1;
+                }
                 from = from + w;
             }
             p = p + size;
