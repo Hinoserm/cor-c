@@ -14,8 +14,8 @@ using Block = Corsac.Lang.Ir.Block;
 /// definitions: the register may hold another object on another path, so
 /// nothing about "this" object can be said through it. But when EVERY value
 /// the variable is ever given is null, static data (a string literal, which is
-/// no heap block), or a fresh object -- an allocation or a fresh function's
-/// result -- and nothing the variable holds escapes, then the variable owns
+/// no heap block), an object this pass put in the frame (no heap block either),
+/// or a fresh object -- an allocation or a fresh function's result -- and nothing the variable holds escapes, then the variable owns
 /// whatever it holds: at each assignment the previous value is given back
 /// (Runtime.FreeReplaced, which ignores the same object assigned twice, and
 /// Free ignores a null or a literal), and on every return the last one.
@@ -57,6 +57,10 @@ public sealed partial class Escape
             // owned at the link if those are fresh (EscapeHints).
             List<string> waiting = new();
             Dictionary<Instr, HashSet<VReg>> carried = new(ReferenceEqualityComparer.Instance);
+            // Assignments of an object this pass put in the frame (a promoted
+            // allocation): no heap block, so nothing to give back -- the
+            // shadow is told null there, and the next assignment frees nothing.
+            HashSet<Instr> framed = new(ReferenceEqualityComparer.Instance);
             bool ok = true;
             foreach ((Block _, Instr d) in list)
             {
@@ -82,6 +86,16 @@ public sealed partial class Escape
                         break;
                     }
                     if (from.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || from.Operands.Count != 1) { ok = false; break; }
+                    // A PROMOTED OBJECT: `x = new long[1]` before a loop of `x =
+                    // Grow(x)`, proved to live no longer than the frame once x
+                    // is followed as a borrow of it. The heap objects assigned
+                    // after it are owned all the same.
+                    if (from.Operands[0] is SlotOperand)
+                    {
+                        if (_promotedMade.Contains(from)) framed.Add(d);
+                        else ok = false;
+                        break;
+                    }
                     o = from.Operands[0];
                 }
                 carried[d] = chain;
@@ -155,7 +169,8 @@ public sealed partial class Escape
                 };
                 VReg oldArg = Widen(f, after, old, d.Line), curArg = Widen(f, after, v, d.Line);
                 after.Add(new Instr { Op = Opcode.Call, Callee = ReplacedFreer, Operands = { new RegOperand(oldArg), new RegOperand(curArg) }, Line = d.Line });
-                after.Add(new Instr { Op = Opcode.Store, Size = word, Operands = { new RegOperand(addr), new RegOperand(v) }, Line = d.Line });
+                Operand shadow = framed.Contains(d) ? new ImmOperand(0, IrTypes.Word) : new RegOperand(v);
+                after.Add(new Instr { Op = Opcode.Store, Size = word, Operands = { new RegOperand(addr), shadow }, Line = d.Line });
                 b.Instrs.InsertRange(at + 1, after);
                 _bookkeeping.UnionWith(after);
             }
