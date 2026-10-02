@@ -104,6 +104,15 @@ public sealed class Module
     public Corsac.Lang.Lto.RegionHints? RegionHints { get; set; }
 
     /// <summary>
+    /// The link's answer, for a unit it regenerates: which parameters of the
+    /// functions the unit calls, and of its own, escape, solved over every
+    /// unit (Lto.LifetimeSolver). What the owned-elements rule judges its
+    /// candidates with where the unit alone could only say "escapes". Null:
+    /// the unit's own answers alone.
+    /// </summary>
+    public Dictionary<string, bool[]>? LinkEscapes { get; set; }
+
+    /// <summary>
     /// Call sites no inliner may fold away: the allocations the link may yet
     /// place or free (Escape's pending hints), which it must still be able
     /// to tell from any other call when it reads this module's IR back.

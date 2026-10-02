@@ -2,11 +2,11 @@
 // units: tests/language/support/910_owned_elements_units.cor
 // expect-exit: 0
 // expect-output:
-// lex 26000
-// apart 26000
-// twice 26000
-// table 26000
-// added 76000
+// lex 26000 True
+// apart 26000 True
+// twice 26000 True
+// table 26000 True
+// added 76000 True
 // kept 26000 first 2
 // stored 26 held 26
 // either 1500
@@ -72,42 +72,48 @@ static class P
         return c;
     }
 
+    static string Freed(long before, long least) => Gc.Frees - before >= least ? "True" : "False";
 
     static void Main()
     {
+        long before = Gc.Frees;
         long sum = 0;
         for (int r = 0; r < 1000; r++)
         {
             List<Tok> toks = Lex(Text);
             foreach (Tok t in toks) sum += t.K;
         }
-        Console.WriteLine("lex " + sum);
+        Console.WriteLine("lex " + sum + " " + Freed(before, 9000));
 
+        before = Gc.Frees;
         sum = 0;
         for (int r = 0; r < 1000; r++)
         {
             List<Tok> toks = LexApart(Text);
             for (int i = 0; i < toks.Count; i++) sum += toks[i].K;
         }
-        Console.WriteLine("apart " + sum);
+        Console.WriteLine("apart " + sum + " " + Freed(before, 9000));
 
+        before = Gc.Frees;
         sum = 0;
         for (int r = 0; r < 1000; r++)
         {
             List<Tok> toks = Twice(Text);
             foreach (Tok t in toks) sum += t.K;
         }
-        Console.WriteLine("twice " + sum);
+        Console.WriteLine("twice " + sum + " " + Freed(before, 10000));
 
+        before = Gc.Frees;
         sum = 0;
         for (int r = 0; r < 1000; r++)
         {
             Dictionary<int, Tok> d = Table(Text);
             foreach (Tok t in d.Values) sum += t.K;
         }
-        Console.WriteLine("table " + sum);
+        Console.WriteLine("table " + sum + " " + Freed(before, 9000));
 
         // The caller adds objects of its own to what it was handed.
+        before = Gc.Frees;
         sum = 0;
         for (int r = 0; r < 1000; r++)
         {
@@ -115,7 +121,7 @@ static class P
             toks.Add(new Tok(50, "more"));
             foreach (Tok t in toks) sum += t.K;
         }
-        Console.WriteLine("added " + sum);
+        Console.WriteLine("added " + sum + " " + Freed(before, 10000));
 
         // An element kept by the caller: nothing of that list may be freed.
         sum = 0;

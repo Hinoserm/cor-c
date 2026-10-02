@@ -26,7 +26,13 @@ public static class IrFunctionCodec
         return bytes;
     }
 
-    public static byte[] Write(Function function)
+    /// <summary>
+    /// The function's record. `kept`: the calls the inliner is to leave
+    /// calls (Module.KeepCalls) -- an owned-elements candidate's, recorded
+    /// with the IR the link runs the late passes over, so that run keeps them
+    /// as the compile did and judges the same candidate.
+    /// </summary>
+    public static byte[] Write(Function function, IReadOnlySet<Instr>? kept = null)
     {
         // An async body is written before its lowering too -- a unit's IR for
         // the link is taken before the late passes and the async transform --
@@ -36,7 +42,7 @@ public static class IrFunctionCodec
             throw new InvalidDataException("An async body's suspension result is not a constant");
         using MemoryStream stream = new();
         using BinaryWriter writer = new(stream, IrBinary.Utf8, leaveOpen: true);
-        writer.Write(4); IrBinary.Text(writer, function.Name); writer.Write((byte)function.Returns);
+        writer.Write(5); IrBinary.Text(writer, function.Name); writer.Write((byte)function.Returns);
         writer.Write(function.Exported); writer.Write(function.Coalescible); writer.Write(function.FromLibrary);
         writer.Write(function.NoInlining);
         IrBinary.Text(writer, function.SourceFile); writer.Write(function.Line); IrBinary.Text(writer, function.Display);
@@ -98,10 +104,24 @@ public static class IrFunctionCodec
                 writer.Write(instruction.Default is null ? -1 : blocks[instruction.Default]);
             }
         }
+        // The kept calls, by their place among the function's instructions.
+        List<int> keeping = new();
+        if (kept is { Count: > 0 })
+        {
+            int at = 0;
+            foreach (Instr instruction in function.Blocks.SelectMany(block => block.Instrs))
+            {
+                if (instruction.Op == Opcode.Call && kept.Contains(instruction)) keeping.Add(at);
+                at++;
+            }
+        }
+        writer.Write(keeping.Count);
+        foreach (int at in keeping) writer.Write(at);
         return stream.ToArray();
     }
 
-    public static Function Read(byte[] payload, IrReadBudget? budget = null)
+    /// <summary>The function a record holds; the calls it keeps (Write) added to `kept` when one is given.</summary>
+    public static Function Read(byte[] payload, IrReadBudget? budget = null, ICollection<Instr>? kept = null)
     {
         budget ??= new();
         budget.Charge(512L + payload.Length, 1, "function payload");
@@ -109,7 +129,7 @@ public static class IrFunctionCodec
         using BinaryReader reader = new(stream, IrBinary.Utf8);
         try
         {
-            if (reader.ReadInt32() != 4) throw new InvalidDataException("Unsupported IR function version");
+            if (reader.ReadInt32() != 5) throw new InvalidDataException("Unsupported IR function version");
             Function function = new(IrBinary.Name(reader, budget), IrBinary.Type(reader))
             {
                 Exported = IrBinary.Flag(reader), Coalescible = IrBinary.Flag(reader), FromLibrary = IrBinary.Flag(reader),
@@ -188,6 +208,21 @@ public static class IrFunctionCodec
                     if (otherwise < -1) throw new InvalidDataException("Invalid IR default target");
                     if (otherwise >= 0) instruction.Default = At(blocks, otherwise);
                     block.Instrs.Add(instruction);
+                }
+            }
+            // Each a place among the instructions already read and charged,
+            // its four bytes among the payload's (DecodeCost).
+            int keeping = IrBinary.Count(reader);
+            if (keeping > 0)
+            {
+                Instr[] all = blocks.SelectMany(block => block.Instrs).ToArray();
+                int last = -1;
+                for (int k = 0; k < keeping; k++)
+                {
+                    int at = reader.ReadInt32();
+                    if (at <= last || at >= all.Length || all[at].Op != Opcode.Call) throw new InvalidDataException("Invalid IR kept call");
+                    last = at;
+                    kept?.Add(all[at]);
                 }
             }
             IrBinary.End(reader); Verifier.Check(function, "IR import");

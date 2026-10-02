@@ -63,8 +63,11 @@ public sealed class UnitBackend : IUnitBackend
             // with the regenerated object. Named alike, they were symbols
             // nobody defined -- or the compile's sites of another field, with
             // that field's verdict: they matched only while the run here
-            // repeated the compile's exactly, which nothing promises (the
-            // calls a unit keeps, m.KeepCalls, are not archived).
+            // repeated the compile's exactly, which nothing promises.
+            // The calls the compile kept from the inliner (m.KeepCalls) come
+            // with the IR (IrFunctionCodec), so the run here inlines as the
+            // compile's did, and an owned-elements candidate's calls are
+            // still calls when Escape judges it.
             module.AtLink = true;
             // The whole program's answers the late passes read, for a closed image.
             if (facts?.ForeignCatchable is string[] catchable) module.ForeignCatchable = new(catchable, StringComparer.Ordinal);
@@ -76,6 +79,7 @@ public sealed class UnitBackend : IUnitBackend
                 module.RegionFacts = regions;
                 RegionPointsTo.MarkSites(module, regions);
             }
+            module.LinkEscapes = facts?.Escapes;
             foreach (Function function in module.Functions)
                 if (visibility.TryGetValue(function.Name, out bool exported) && exported != function.Exported)
                     throw new InvalidDataException("Archived IR identity disagrees with native symbol " + function.Name);

@@ -530,6 +530,7 @@ public sealed partial class Escape
     /// </summary>
     private void ConfirmOwnedElements(Module m, Dictionary<string, bool[]> summaries)
     {
+        summaries = WithLinkEscapes(summaries, m.LinkEscapes);
         Dictionary<string, string> handedBack = new(StringComparer.Ordinal);
         foreach (Function f in m.Functions) ConfirmOwnedElements(f, summaries, handedBack, calls: false);
         for (int round = 0; round < 8; round++)
@@ -543,6 +544,29 @@ public sealed partial class Escape
             foreach (Block b in f.Blocks)
                 foreach (Instr i in b.Instrs)
                     if (i.Op == Opcode.Call && i.Field == Instr.OwnsCandidate) i.Field = null;
+    }
+
+    /// <summary>
+    /// AT THE LINK, the whole program's answers beside the unit's own: a
+    /// parameter stays put if either says it does. The unit's answer for a
+    /// function another unit defines is "escapes", whatever it does; the
+    /// link's is that function's, solved over every unit, as the lifetime
+    /// pass the link runs after this one reads it (RunAtLink). Both hold of
+    /// the function whatever was inlined into it, so either is enough.
+    /// </summary>
+    private static Dictionary<string, bool[]> WithLinkEscapes(Dictionary<string, bool[]> summaries, Dictionary<string, bool[]>? link)
+    {
+        if (link is null || link.Count == 0) return summaries;
+        Dictionary<string, bool[]> both = new(summaries, StringComparer.Ordinal);
+        foreach ((string name, bool[] escapes) in link)
+        {
+            if (!both.TryGetValue(name, out bool[]? own)) { both[name] = escapes; continue; }
+            if (own.Length != escapes.Length) continue;
+            bool[] joined = new bool[own.Length];
+            for (int p = 0; p < own.Length; p++) joined[p] = own[p] && escapes[p];
+            both[name] = joined;
+        }
+        return both;
     }
 
     /// <summary>

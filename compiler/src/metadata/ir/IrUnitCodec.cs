@@ -60,7 +60,7 @@ public static class IrUnitCodec
                 && !instructions.SelectMany(instruction => instruction.Operands).OfType<SymOperand>().Any(address => locals.Contains(address.Name));
             string[] references = calls.Concat(instructions.SelectMany(instruction => instruction.Operands).OfType<SymOperand>()
                 .Select(address => address.Name)).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
-            byte[] body = IrFunctionCodec.Write(function);
+            byte[] body = IrFunctionCodec.Write(function, module.KeepCalls);
             records.Add(new("F:" + function.Name, importable, instructions.Length, calls, body, references, IrFunctionCodec.DecodeCost(function, body.Length)));
         }
         foreach (DataItem item in module.Data)
@@ -161,7 +161,7 @@ public static class IrUnitCodec
                         module.Functions.Add(new Function(name, IrType.Void) { Exported = exported });
                         continue;
                     }
-                    Function function = IrFunctionCodec.Read(archive.ReadBody(entry.Key), budget);
+                    Function function = IrFunctionCodec.Read(archive.ReadBody(entry.Key), budget, module.KeepCalls);
                     if (entry.Key != "F:" + function.Name) throw new InvalidDataException("IR function key mismatch");
                     module.Functions.Add(function);
                 }

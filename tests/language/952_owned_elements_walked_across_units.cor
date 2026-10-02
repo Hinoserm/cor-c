@@ -2,14 +2,14 @@
 // units: tests/language/support/910_owned_elements_units.cor
 // expect-exit: 0
 // expect-output:
-// walk 22500
-// early 1500
+// walk 22500 True
+// early 1500 True
 // keeps 22500 kept 4500
-// pairs 45000
-// values 22500
-// keys 27500
+// pairs 45000 True
+// values 22500 True
+// keys 27500 True
 // pair keeps 22500 kept 1000
-// nested 4500
+// nested 4500 True
 // kept intact 4500 1000
 //
 // 950 as a unit of its own, the libraries in another: what is freed is the
@@ -112,40 +112,47 @@ static class P
         return s;
     }
 
+    static string Freed(long before, long least) => Gc.Frees - before >= least ? "True" : "False";
 
     static void Main()
     {
+        long before = Gc.Frees;
         long sum = 0;
         for (int r = 0; r < 500; r++) sum += Walk(10);
-        Console.WriteLine("walk " + sum);
+        Console.WriteLine("walk " + sum + " " + Freed(before, 5000));
 
+        before = Gc.Frees;
         sum = 0;
         for (int r = 0; r < 500; r++) sum += Early(10);
-        Console.WriteLine("early " + sum);
+        Console.WriteLine("early " + sum + " " + Freed(before, 5000));
 
         sum = 0;
         for (int r = 0; r < 500; r++) sum += Keeps(10);
         Console.WriteLine("keeps " + sum + " kept " + Total(_kept));
 
+        before = Gc.Frees;
         sum = 0;
         for (int r = 0; r < 500; r++) sum += Pairs(10);
-        Console.WriteLine("pairs " + sum);
+        Console.WriteLine("pairs " + sum + " " + Freed(before, 5000));
 
+        before = Gc.Frees;
         sum = 0;
         for (int r = 0; r < 500; r++) sum += Values(10);
-        Console.WriteLine("values " + sum);
+        Console.WriteLine("values " + sum + " " + Freed(before, 5000));
 
+        before = Gc.Frees;
         sum = 0;
         for (int r = 0; r < 500; r++) sum += Keys(10);
-        Console.WriteLine("keys " + sum);
+        Console.WriteLine("keys " + sum + " " + Freed(before, 5000));
 
         sum = 0;
         for (int r = 0; r < 500; r++) sum += PairKeeps(10);
         Console.WriteLine("pair keeps " + sum + " kept " + Total(_keptPairs));
 
+        before = Gc.Frees;
         sum = 0;
         for (int r = 0; r < 100; r++) sum += Nested(10);
-        Console.WriteLine("nested " + sum);
+        Console.WriteLine("nested " + sum + " " + Freed(before, 1000));
 
         // What was freed made again, many times over: the kept objects must
         // be untouched by it.

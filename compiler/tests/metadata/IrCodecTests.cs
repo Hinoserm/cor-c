@@ -43,6 +43,19 @@ public static class IrCodecTests
               && resumed.Async.StateMachine == resumed.Params[0], "Async frame lost in the archive");
         Check(budget.Used == IrFunctionCodec.DecodeCost(stepped, bytes.Length), "Async decode cost differs from actual accounting");
         Check(bytes.SequenceEqual(IrFunctionCodec.Write(resumed)), "Async IR reserialization differs");
+        // The calls kept from the inliner go with the body, by their place
+        // among its instructions, and only calls are taken for them.
+        Function keeper = new("keeper", IrType.Void);
+        var entry = keeper.NewBlock();
+        Instr first = new() { Op = Opcode.Call, Callee = "first" }, second = new() { Op = Opcode.Call, Callee = "second" };
+        entry.Instrs.Add(first); entry.Instrs.Add(second); entry.Instrs.Add(new Instr { Op = Opcode.Ret });
+        bytes = IrFunctionCodec.Write(keeper, new HashSet<Instr>(ReferenceEqualityComparer.Instance) { second });
+        List<Instr> keptBack = new();
+        Function kept = IrFunctionCodec.Read(bytes, null, keptBack);
+        Check(keptBack.Count == 1 && ReferenceEquals(keptBack[0], kept.Blocks[0].Instrs[1]), "Kept calls lost in the archive");
+        Check(bytes.SequenceEqual(IrFunctionCodec.Write(kept, new HashSet<Instr>(keptBack, ReferenceEqualityComparer.Instance))), "Kept calls reserialization differs");
+        damaged = (byte[])bytes.Clone(); damaged[^4] = 2;
+        Reject(() => IrFunctionCodec.Read(damaged));
         DataItem data = new("table", new byte[8]) { ReadOnly = true, Coalescible = true };
         data.Relocs.Add(new(0, "target", 4));
         bytes = IrDataCodec.Write(data);
