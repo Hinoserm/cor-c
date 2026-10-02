@@ -784,6 +784,20 @@ public sealed class Monomorphiser
         return null;
     }
 
+    /// <summary>A namespace's enclosing one ("" at the top), remembered: every lookup walks outwards.</summary>
+    private string Parent(string scope)
+    {
+        if (_parents.TryGetValue(scope, out string? known)) return known;
+        int dot = scope.LastIndexOf('.');
+        string parent = dot < 0 ? "" : scope[..dot];
+        _parents[scope] = parent;
+        return parent;
+    }
+
+    private readonly Dictionary<string, string> _parents = new(StringComparer.Ordinal);
+    private readonly HashSet<(string Scope, string Name, int Arity)> _absent = new();
+    private int _absentAt = -1;
+
     private string? GenericPath(string name, int arity, Node location)
     {
         bool Candidate(string candidate)
@@ -802,6 +816,19 @@ public sealed class Monomorphiser
             catch (Metadata.DeclarationDemand demand) { _templateBatch.Add(demand); }
             return false;
         }
+        // A NAME ASKED IN A NAMESPACE THAT HAS NO SUCH TEMPLATE is asked again
+        // from every use, and was spelt `scope.name` and its arity key each time
+        // to be told no. Remembered by its parts while the templates known stay
+        // the same (a demanded declaration arriving adds one and clears it).
+        bool Joined(string scope, out string candidate)
+        {
+            if (_generic.Count != _absentAt) { _absent.Clear(); _absentAt = _generic.Count; }
+            if (_absent.Contains((scope, name, arity))) { candidate = ""; return false; }
+            candidate = scope + "." + name;
+            if (Candidate(candidate)) return true;
+            if (_generic.Count == _absentAt) _absent.Add((scope, name, arity));
+            return false;
+        }
         string? Imports(string scope)
         {
             if (_usings is null) return null;
@@ -811,8 +838,7 @@ public sealed class Monomorphiser
             foreach (var import in _usings.Imports)
             {
                 if (import.In != scope) continue;
-                string candidate = import.Namespace + "." + name;
-                if (!Candidate(candidate)) continue;
+                if (!Joined(import.Namespace, out string candidate)) continue;
                 if (found is not null && found != candidate)
                     throw new CompileError(_file, location.Line, location.Col, "ambiguous generic type '" + name + "': " + found + " or " + candidate);
                 found = candidate;
@@ -828,10 +854,9 @@ public sealed class Monomorphiser
         foreach (string from in new[] { _scope, _inNamespace })
             for (string scope = from; scope.Length > 0; )
             {
-                string candidate = scope + "." + name;
-                if (Candidate(candidate)) return candidate;
+                if (Joined(scope, out string candidate)) return candidate;
                 if (Imports(scope) is { } imported) return imported;
-                int dot = scope.LastIndexOf('.'); scope = dot < 0 ? "" : scope[..dot];
+                scope = Parent(scope);
             }
         if (Candidate(name)) return name;
         if (Imports("") is { } global) return global;

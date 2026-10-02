@@ -213,12 +213,18 @@ public sealed partial class Binder
     /// The type a nested name is written inside, or null once the walk reaches
     /// the top level: `A.B.C` gives `A.B`, and `A` gives null.
     /// </summary>
-    private static string? Enclosing(string key)
+    private string? Enclosing(string key)
     {
+        // REMEMBERED: every type lookup walks outwards namespace by namespace,
+        // and each step cut a new string of the same few parents.
+        if (_enclosing.TryGetValue(key, out string? known)) return known;
         int cut = key.LastIndexOf('.');
-
-        return cut < 0 ? null : key[..cut];
+        string? parent = cut < 0 ? null : key[..cut];
+        _enclosing[key] = parent;
+        return parent;
     }
+
+    private readonly Dictionary<string, string?> _enclosing = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Finds a type by the name the source wrote, from wherever the source
