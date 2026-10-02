@@ -26,6 +26,8 @@ public static class VirtualTargets
 
     /// <summary>A descriptor's display and interface list, in words (Escape.DescriptorDisplay, DescriptorInterfaces).</summary>
     private const int Display = 3, Interfaces = 4;
+    /// <summary>A descriptor's own words (Lowering's Desc*), and how many there are before its method table (Target.DescriptorBytes).</summary>
+    private const int DescSelf = 5, DescFlags = 6, DescRefMap = 8, DescGcFlags = 9, DescriptorWords = 12;
 
     private static bool IsDescriptor(string name) => name.Length > 2 && name[1] == '_' && name[0] is 't' or 'q' or 'v' or 'b';
 
@@ -56,6 +58,10 @@ public static class VirtualTargets
     /// </summary>
     public static string? MethodAt(List<(string Name, ObjectFile Object)> inputs, string descriptor, long offset)
         => IndexOf(inputs).MethodAt(descriptor, offset);
+
+    /// <summary>Whether a word of an object stamped with a descriptor is never read as a reference (Index.HoldsNoReference).</summary>
+    public static bool HoldsNoReference(List<(string Name, ObjectFile Object)> inputs, string descriptor, long at, long? offset)
+        => IndexOf(inputs).HoldsNoReference(descriptor, at, offset);
 
     /// <summary>Every type each of <paramref name="types"/> is, itself and all its ancestors, together.</summary>
     public static HashSet<string> Ancestry(List<(string Name, ObjectFile Object)> inputs, IEnumerable<string> types)
@@ -89,6 +95,10 @@ public static class VirtualTargets
         // Every descriptor definition: each global name once, every local one
         // (a closure's type, say) as the separate descriptor it is.
         private readonly List<(string Name, Section Section, long Offset, long Size)> _descriptors = new();
+        // The object each descriptor is defined in: its reference map is a
+        // local symbol of that object (Lowering.ReferenceMap).
+        private readonly List<ObjectFile> _descriptorObjects = new();
+        private readonly Dictionary<int, Symbol?> _maps = new();
         private readonly HashSet<string> _functions = new(StringComparer.Ordinal);
         private readonly HashSet<long> _bases = new();
         public readonly Dictionary<string, int> ByName = new(StringComparer.Ordinal);
@@ -116,7 +126,10 @@ public static class VirtualTargets
                     if (symbol.Section!.Kind is SectionKind.Code or SectionKind.Note) continue;
                     _tables.TryAdd(symbol.Name, (symbol.Section, symbol.Offset, symbol.Size));
                     if (IsDescriptor(symbol.Name) && (!symbol.Global || globalDescriptors.Add(symbol.Name)))
+                    {
                         _descriptors.Add((symbol.Name, symbol.Section, symbol.Offset, symbol.Size));
+                        _descriptorObjects.Add(input.Object);
+                    }
                 }
                 // Where method tables begin: the addends objects are stamped with.
                 foreach (Section section in input.Object.Sections)
@@ -173,6 +186,48 @@ public static class VirtualTargets
             foreach (var (at, symbol, addend) in Relocs(d))
                 if (at == offset) return addend == 0 && _functions.Contains(symbol) ? symbol : null;
             return null;
+        }
+
+        /// <summary>
+        /// Whether the word <paramref name="offset"/> bytes into an object
+        /// stamped with <paramref name="descriptor"/> at <paramref name="at"/>
+        /// is one the collector never reads as a reference (null: any word of
+        /// it). The collector's rules (Gc.ScanBlockWithin) and its own checks
+        /// first: the stamp is where the method table begins, and the
+        /// descriptor names itself. An array of numbers or a string holds
+        /// none; an instance holds one only where its reference map says. No
+        /// answer -- more than one descriptor by the name, bytes not here --
+        /// is false.
+        /// </summary>
+        public bool HoldsNoReference(string descriptor, long at, long? offset)
+        {
+            int w = _word;
+            if (at != DescriptorWords * w || _named.GetValueOrDefault(descriptor) != 1 || !ByName.TryGetValue(descriptor, out int d)) return false;
+            var (_, section, start, _) = _descriptors[d];
+            List<(long Offset, string Symbol, long Addend)> relocs = Relocs(d);
+            if (!relocs.Any(r => r.Offset == DescSelf * w && r.Symbol == descriptor && r.Addend == 0)) return false;
+            if (Word(section, start + DescFlags * w) is not long flags) return false;
+            if ((flags & 1) != 0)
+                return (flags & 2) != 0 || Word(section, start + DescGcFlags * w) is long gc && (gc & 1) == 0;
+            int mapAt = relocs.FindIndex(r => r.Offset == DescRefMap * w);
+            if (mapAt < 0) return true;
+            if (offset is not long o || relocs[mapAt].Addend != 0) return false;
+            if (o % w != 0) return true;
+            if (!_maps.TryGetValue(d, out Symbol? map))
+                _maps[d] = map = _descriptorObjects[d].Symbols.FirstOrDefault(s => s.IsDefined && s.Name == relocs[mapAt].Symbol);
+            if (map is null || Word(map.Section!, map.Offset) is not long words) return false;
+            long word = o / w;
+            if (word >= words || Word(map.Section!, map.Offset + (1 + word / 32) * w) is not long bits) return false;
+            return ((bits >> (int)(word % 32)) & 1) == 0;
+        }
+
+        // A word of a section's bytes, as the target stores it; null when not here.
+        private long? Word(Section section, long at)
+        {
+            if (section.FileBacked is not null || section.HandedOver is not null || at < 0 || at + _word > section.Bytes.Count) return null;
+            long value = 0;
+            for (int k = _word - 1; k >= 0; k--) value = value << 8 | section.Bytes[(int)at + k];
+            return value;
         }
 
         /// <summary>The functions a virtual call reaches; empty when no object of the type exists; null when a slot is not code.</summary>

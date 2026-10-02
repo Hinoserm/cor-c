@@ -251,7 +251,9 @@ public static class RegionSummary
             {
                 int site = _sites.Count;
                 (string? table, long at) = Stamp(i) ?? (null, 0);
-                _sites.Add(new(RegionPointsTo.IsRewritable(callee), i.Line, table, at));
+                // How the collector reads its words (RegionPointsTo.HoldsNoReference).
+                RegionWords words = callee == Escape.LeafAllocator ? RegionWords.Leaf : callee == Escape.ObjectAllocator ? RegionWords.Described : RegionWords.Any;
+                _sites.Add(new(RegionPointsTo.IsRewritable(callee), i.Line, table, at, words));
                 if (dest >= 0) _constraints.Add(new(RegionConstraintKind.Site, dest, site, 0));
                 return;
             }

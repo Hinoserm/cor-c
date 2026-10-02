@@ -23,7 +23,7 @@ public sealed class RegionHints
     public const string SectionName = ".corsac.regions";
     public const int MaximumBytes = 64 * 1024 * 1024;
     private const uint Magic = 0x47455243; // "CREG"
-    private const int Version = 1;
+    private const int Version = 2;
     private static readonly UTF8Encoding Utf8 = new(false, true);
 
     public List<RegionFunction> Functions { get; } = new();
@@ -87,7 +87,7 @@ public sealed class RegionHints
             Var(function.Sites.Length);
             foreach (RegionSite site in function.Sites)
             {
-                writer.Write(site.Rewritable); Var(site.Line);
+                writer.Write((byte)((site.Rewritable ? 1 : 0) | (int)site.Words << 1)); Var(site.Line);
                 Var(site.Table is null ? -1 : index[site.Table]); Var(site.At);
             }
             Var(function.Constraints.Count);
@@ -169,11 +169,11 @@ public sealed class RegionHints
                 RegionSite[] sites = new RegionSite[Count()];
                 for (int s = 0; s < sites.Length; s++)
                 {
-                    bool rewritable = reader.ReadBoolean();
+                    byte bits = reader.ReadByte();
                     int line = Int(), table = Int();
                     long at = Var();
-                    if (table < -1 || table >= names.Length) throw new ElfFormatException("Invalid region hint stamp");
-                    sites[s] = new RegionSite(rewritable, line, table < 0 ? null : names[table], at);
+                    if (bits > 5 || table < -1 || table >= names.Length) throw new ElfFormatException("Invalid region hint stamp");
+                    sites[s] = new RegionSite((bits & 1) != 0, line, table < 0 ? null : names[table], at, (RegionWords)(bits >> 1));
                 }
                 RegionFunction function = new(name, (flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0, parameters, nodes, slots, sites);
                 bool Node(int n) => n >= 0 && n < nodes;
@@ -246,9 +246,21 @@ public sealed class RegionFunction
 /// An allocation site: whether a region may take it (a collecting allocator's
 /// call), its line for reports, and the descriptor its object is stamped
 /// with and where in it the method table begins (null: none known) -- what
-/// a virtual call made on the object runs.
+/// a virtual call made on the object runs; and how the collector reads its
+/// words (Words), which says where no reference is ever kept.
 /// </summary>
-public readonly record struct RegionSite(bool Rewritable, int Line, string? Table, long At);
+public readonly record struct RegionSite(bool Rewritable, int Line, string? Table, long At, RegionWords Words = RegionWords.Any);
+
+/// <summary>How the collector reads an allocation's words (Gc.ScanBlockWithin): by the allocator its site calls.</summary>
+public enum RegionWords : byte
+{
+    /// <summary>Any word may be a reference.</summary>
+    Any,
+    /// <summary>A leaf (AllocLeaf): never scanned, no word a reference.</summary>
+    Leaf,
+    /// <summary>Made with a descriptor (AllocObject): scanned by the descriptor it is stamped with.</summary>
+    Described,
+}
 
 public enum RegionConstraintKind : byte
 {
