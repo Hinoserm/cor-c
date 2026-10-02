@@ -11,6 +11,7 @@ public sealed class SyntaxTokenCache
         public Entry(Token[] tokens, long bytes, long used) { Tokens = tokens; Bytes = bytes; Used = used; }
     }
     private readonly Dictionary<(string Text, string File, string Symbols), Entry> entries = new();
+    private readonly HashSet<int> seen = new();
     private readonly long budget;
     private long bytes, clock;
     private readonly object gate = new();
@@ -45,14 +46,17 @@ public sealed class SyntaxTokenCache
             // Lexing and parsing do not hold the cache gate. Future project
             // workers can share immutable snapshots without serializing work.
             tokens = Lexer.Tokenize(text, file, 1, 1, symbols);
-            // Conservative accounting includes source/key strings and token text.
-            long size = 256L + text.Length * 2L + file.Length * 2L + key.Item3.Length * 2L
-                + tokens.Sum(token => 48L + token.Text.Length * 2L);
             lock (gate)
             {
                 if (entries.TryGetValue(key, out Entry? raced))
                 { raced.Used = ++clock; snapshot = raced.Tokens; }
-                else if (size <= budget)
+                // KEPT ONLY ONCE ASKED FOR TWICE. A unit's declarations are
+                // each lexed once, and every list was copied into the cache
+                // for an asking that never came (hits=0 over a whole
+                // self-build) and kept until it was pushed out, the
+                // collector's. A second asking is known by the text's hash.
+                else if (seen.Add(HashCode.Combine(key.Item1, key.Item2, key.Item3))) { }
+                else if (Size(text, file, key.Item3, tokens) is long size && size <= budget)
                 {
                     while (bytes + size > budget && entries.Count != 0)
                     {
@@ -70,5 +74,13 @@ public sealed class SyntaxTokenCache
             : new Parser(snapshot, file, declarationsOnly, includeTemplateBodies) { Source = text }.ParseUnit();
     }
 
-    public void Clear() { lock (gate) { entries.Clear(); bytes = 0; } }
+    /// <summary>Conservative accounting: the source and key strings, and every token with its text.</summary>
+    private static long Size(string text, string file, string symbols, List<Token> tokens)
+    {
+        long size = 256L + text.Length * 2L + file.Length * 2L + symbols.Length * 2L;
+        foreach (Token token in tokens) size += 48L + token.Text.Length * 2L;
+        return size;
+    }
+
+    public void Clear() { lock (gate) { entries.Clear(); seen.Clear(); bytes = 0; } }
 }
