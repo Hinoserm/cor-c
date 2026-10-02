@@ -650,8 +650,8 @@ public sealed class RegionPointsTo : IModulePass
         return made;
     }
 
-    // The region opened on entry, given back on every return; a throw is
-    // the runtime's to notice (Gc.PopStale).
+    // The region opened where the call first needs it, given back on every
+    // return; a throw is the runtime's to notice (Gc.PopStale).
     private static void Open(Function f)
     {
         // Never inlined: the record names the boundary's own frame, and a
@@ -660,11 +660,17 @@ public sealed class RegionPointsTo : IModulePass
         VReg frame = f.NewReg(IrTypes.Word, "regionframe");
         VReg handle = f.NewReg(IrTypes.Word, "region");
         Block entry = f.Blocks[0];
-        entry.Instrs.InsertRange(0, new[]
+        (Block at, int k0) = OpenAt(f);
+        Instr[] open =
         {
             new Instr { Op = Opcode.FramePointer, Dest = frame, Line = f.Line },
             new Instr { Op = Opcode.Call, Callee = Enter, Dest = handle, Operands = { new RegOperand(frame) }, Line = f.Line },
-        });
+        };
+        at.Instrs.InsertRange(k0, open);
+        // Opened further in: a return that never passed there hands RegionLeave
+        // the -1 a region that could not be opened hands it, and it does nothing.
+        if (at != entry || k0 != 0)
+            entry.Instrs.Insert(0, new Instr { Op = Opcode.Copy, Dest = handle, Operands = { new ImmOperand(-1, IrTypes.Word) }, Line = f.Line });
         foreach (Block b in f.Blocks)
             for (int k = 0; k < b.Instrs.Count; k++)
                 if (b.Instrs[k].Op == Opcode.Ret)
@@ -672,6 +678,72 @@ public sealed class RegionPointsTo : IModulePass
                     b.Instrs.Insert(k, new Instr { Op = Opcode.Call, Callee = Leave, Operands = { new RegOperand(handle) }, Line = b.Instrs[k].Line });
                     k++;
                 }
+    }
+
+    // Past this many blocks the region is opened on entry: the dominators
+    // below are bit sets, a pair of blocks at a time.
+    private const int OpenAtBlocks = 256;
+
+    /// <summary>
+    /// WHERE A BOUNDARY OPENS ITS REGION: on entry, or -- when every call that
+    /// can make anything there lies beneath one block that runs at most once
+    /// a call -- in that block, just before the first such call. A hot
+    /// function whose only allocation is on a path seldom taken (a message
+    /// built for a bad argument) then pays for no region on the path it
+    /// usually takes. Where it opens is a matter of cost and never of
+    /// soundness: every site made in the innermost region is proved dead by
+    /// the end of every boundary it can run beneath, so whatever is made
+    /// before the region opens goes to an outer one, or to the heap, and is
+    /// as dead by its end. It must only never open twice in one call (a
+    /// second record at the same frame closes the first, PopStale), so not
+    /// in a block on a cycle, nor in a function a handler is entered by an
+    /// unwind into -- an edge the graph does not hold.
+    ///
+    /// The calls that count are those on a path to a return: a path that
+    /// only throws closes the region it leaves anyway. Its objects go to an
+    /// outer region, or the heap.
+    /// </summary>
+    private static (Block At, int Index) OpenAt(Function f)
+    {
+        Block entry = f.Blocks[0];
+        if (f.Blocks.Count > OpenAtBlocks || f.Blocks.Skip(1).Any(b => b.IsLandingPad)
+            || f.Blocks.Any(b => b.Instrs.Any(i => i.Op == Opcode.LabelAddr)))
+            return (entry, 0);
+        Cfg cfg = new(f);
+        if (cfg.Roots.Count != 1 || cfg.InCycle(entry)) return (entry, 0);
+
+        // The blocks from which a return is reached.
+        HashSet<Block> returning = new(ReferenceEqualityComparer.Instance);
+        Queue<Block> next = new();
+        foreach (Block b in f.Blocks)
+            if (b.Terminator is { Op: Opcode.Ret } && returning.Add(b)) next.Enqueue(b);
+        while (next.TryDequeue(out Block? b))
+            foreach (Block p in cfg.Preds(b))
+                if (returning.Add(p)) next.Enqueue(p);
+
+        // A type's initialiser is not counted: run once, what it keeps is
+        // kept by its statics, and the rest it makes once is no cost.
+        bool Needs(Instr i) => i.Op == Opcode.CallIndirect || i.Op == Opcode.Call && i.Callee is { } c && !Harmless(c) && c != Leave && c != Enter
+            && !c.Contains("StaticInit", StringComparison.Ordinal);
+        List<Block> needing = f.Blocks.Where(b => returning.Contains(b) && b.Instrs.Any(Needs)).ToList();
+        if (needing.Count == 0) return (entry, 0);
+
+        // The blocks that dominate every one that needs it: a chain, from the
+        // entry down. The lowest that is on no cycle.
+        Block? best = null;
+        foreach (Block d in f.Blocks)
+        {
+            if (!needing.All(b => cfg.Dominates(d, b)) || cfg.InCycle(d)) continue;
+            if (best is null || cfg.Dominates(best, d)) best = d;
+        }
+        if (best is null || best == entry) return (entry, 0);
+        int first = best.Instrs.FindIndex(Needs);
+        if (first < 0)
+        {
+            first = 0;
+            while (first < best.Instrs.Count && best.Instrs[first].Op == Opcode.Phi) first++;
+        }
+        return (best, first);
     }
 
     /// <summary>Everything reachable from Global, from what copy `c` is handed, and from what it hands back.</summary>

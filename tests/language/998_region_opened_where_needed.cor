@@ -1,0 +1,85 @@
+// test: region_opened_where_needed
+// expect-exit: 0
+// expect-output:
+// total 116503 thrown 25 kept 400 81290 bad 0
+//
+// A boundary opens its region where it first needs it, not always on
+// entry: RgnSeldom makes its Boxes only on a path it seldom takes, and on
+// the others opens nothing, returns, and gives back nothing. Its seldom path
+// sometimes throws after making them; the region a throw left is closed
+// later (PopStale), and what Main makes after the catch survives it.
+// RgnCarry makes a Box every time round a loop and reads the one before it
+// on the next: the region must open once, before the loop, and never again
+// inside it -- a second opening at the same frame would close the first and
+// give back the Box still to be read. Every kept Box is read back after
+// collections.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public sealed class Box
+{
+    public int V;
+    public string N;
+    public Box? Prev;
+    public Box(int v, string n, Box? prev) { V = v; N = n; Prev = prev; }
+}
+
+public static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Box Make(int k, Box? prev) => new Box(k, "b" + k.ToString(), prev);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int RgnSeldom(int i, int[] table)
+    {
+        int v = table[i & 63];
+        if (v % 5 != 0) return v & 7;
+        Box chain = Make(v, Make(v + 1, null));
+        if (v % 15 == 0) throw new InvalidOperationException("bad " + chain.N);
+        return chain.N.Length + chain.Prev!.V;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int RgnCarry(int n)
+    {
+        int s = 0;
+        Box? prev = null;
+        for (int k = 0; k < n; k++)
+        {
+            Box b = Make(k * 7, null);
+            if (prev is not null) s += prev.V + prev.N.Length;
+            prev = b;
+            if (k % 16 == 0) GC.Collect();
+        }
+        return s + (prev is null ? 0 : prev.V);
+    }
+
+    public static int Main()
+    {
+        int[] table = new int[64];
+        for (int i = 0; i < 64; i++) table[i] = i * 11 + 3;
+        List<Box> kept = new();
+        long total = 0;
+        int thrown = 0;
+        for (int i = 0; i < 400; i++)
+        {
+            try { total += RgnSeldom(i, table); }
+            catch (InvalidOperationException e) { thrown++; total += e.Message.Length; }
+            kept.Add(Make(i, null));
+            if (i % 50 == 0) total += RgnCarry(40 + i / 10);
+            if (i % 25 == 0) GC.Collect();
+        }
+        GC.Collect();
+        long ks = 0; int bad = 0;
+        for (int i = 0; i < kept.Count; i++)
+        {
+            Box b = kept[i];
+            if (b.V != i || b.N != "b" + i.ToString() || b.Prev is not null) bad++;
+            ks += b.V + b.N.Length;
+        }
+        Console.WriteLine("total " + total + " thrown " + thrown + " kept " + kept.Count + " " + ks + " bad " + bad);
+        return 0;
+    }
+}
