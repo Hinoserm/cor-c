@@ -55,16 +55,21 @@ public sealed class RegionPointsTo : IModulePass
     // Past this many pairs of source and destination a block copy is one
     // node, everything from every source to anywhere in every destination.
     private const int MostPairs = 1024;
+    // Past this many objects' copies of one method, the rest share its copy
+    // in no object's context.
+    private const int MostContexts = 16;
+    private readonly Dictionary<Function, int> _contexts = new();
 
     // GIVING UP IS SOUND: nothing is rewritten. Past this many locations held
     // in all, the program is more than this analysis answers in the memory a
-    // compile has, and it stops rather than taking the compiler down.
-    private const long HeldBudget = 2_000_000;
+    // compile has, and it stops rather than taking the compiler down. A
+    // location held in a set of more than a few is one bit (LocSet).
+    private const long HeldBudget = 40_000_000;
     private long _held;
     // And past this much more heap than the compile had when the pass began,
     // whatever holds it: edges, watchers, pairs of copies.
     private const long HeapBudget = 200L * 1024 * 1024;
-    private long _heapAtStart;
+    private long _heapAtStart, _heapLimit = HeapBudget;
 
     private Module _m = null!;
     private Dictionary<string, Function> _byName = null!;
@@ -815,6 +820,15 @@ public sealed class RegionPointsTo : IModulePass
         if (!IsInstance(f)) { if (context >= 0) context = -1; }
         else if (context < -1 || context >= 0 && (_objects[context].Site is null && _objects[context].Slot is null || _objects[context].Depth >= MaxDepth)) context = -1;
         if (_copyIds.TryGetValue((f, context), out int known)) return known;
+        // A METHOD CALLED IN MANY CONTEXTS is called in the rest without one:
+        // each object (or call) its own copy multiplied the objects made in
+        // them, and those the copies, past what a compile holds.
+        if (context != -1)
+        {
+            _contexts.TryGetValue(f, out int made);
+            if (made >= MostContexts) return CopyOf(f, -1);
+            _contexts[f] = made + 1;
+        }
         int copy = _copies.Count;
         _copies.Add((f, context));
         _copyIds[(f, context)] = copy;
@@ -891,11 +905,43 @@ public sealed class RegionPointsTo : IModulePass
         from = Find(from);
         to = Find(to);
         if (from == to && shift == 0) return;
-        if (!(_edgeSet[from] ??= new()).Add((to, shift))) return;
-        (_edges[from] ??= new()).Add((to, shift));
+        if (!NewEdge(from, to, shift)) return;
         _edgeCount++;
-        foreach (int id in _pts[from].Ids())
-            if (shift == 0) Held(to, id); else Add(to, Shifted(_locs[id], shift));
+        LocSet held = _pts[from];
+        if (from == to) { foreach (int id in held.Ids()) Add(to, Shifted(_locs[id], shift)); return; }
+        // Walked in place: what is added goes to another node.
+        if (held.Bits is { } bits)
+        {
+            for (int w = 0; w < bits.Length; w++)
+                for (ulong word = bits[w]; word != 0; word &= word - 1)
+                {
+                    int id = w * 64 + System.Numerics.BitOperations.TrailingZeroCount(word);
+                    if (shift == 0) Held(to, id); else Add(to, Shifted(_locs[id], shift));
+                }
+            return;
+        }
+        for (int k = 0; k < held.Count; k++)
+            if (shift == 0) Held(to, held.Few![k]); else Add(to, Shifted(_locs[held.Few![k]], shift));
+    }
+
+    // An edge not had before, recorded: a short list searched while short,
+    // a set beside it past that -- most nodes have one or two edges.
+    private bool NewEdge(int from, int to, long shift)
+    {
+        List<(int To, long Shift)> list = _edges[from] ??= new();
+        if (_edgeSet[from] is not { } set)
+        {
+            if (list.Count < 16)
+            {
+                if (list.Contains((to, shift))) return false;
+                list.Add((to, shift));
+                return true;
+            }
+            _edgeSet[from] = set = new(list);
+        }
+        if (!set.Add((to, shift))) return false;
+        list.Add((to, shift));
+        return true;
     }
 
     private void Add(int node, long loc)
@@ -918,7 +964,7 @@ public sealed class RegionPointsTo : IModulePass
         // Checked here, not only between steps: one step's watchers can add
         // without end (a copy between two growing sets), and the compile died
         // inside it before the loop looked again.
-        if ((++_held & 4095) == 0 && (_held > HeldBudget || GC.GetTotalMemory(false) - _heapAtStart > HeapBudget))
+        if ((++_held & 4095) == 0 && (_held > HeldBudget || OverHeap()))
             throw new OverBudget();
         List<int>? delta = _delta[node];
         if (delta is null) { _delta[node] = delta = new(); _work.Enqueue(node); }
@@ -1460,12 +1506,24 @@ public sealed class RegionPointsTo : IModulePass
         catch (OverBudget) { return false; }
     }
 
+    // Past the heap budget. Counted without a collection, the heap is garbage
+    // too: what is still held after one decides, and the next look waits for
+    // garbage to pile up again.
+    private bool OverHeap()
+    {
+        if (GC.GetTotalMemory(false) - _heapAtStart <= _heapLimit) return false;
+        long live = GC.GetTotalMemory(true) - _heapAtStart;
+        if (live > HeapBudget) return true;
+        _heapLimit = Math.Max(HeapBudget, live + HeapBudget / 4);
+        return false;
+    }
+
     private bool SolveSteps()
     {
         while (_work.TryDequeue(out int node))
         {
             if (_pts.Count > NodeBudget || _held > HeldBudget) return false;
-            if ((_steps & 63) == 0 && GC.GetTotalMemory(false) - _heapAtStart > HeapBudget) return false;
+            if ((_steps & 63) == 0 && OverHeap()) return false;
             if (++_steps % 500_000 == 0)
                 Console.Error.WriteLine($"regions: step {_steps}: {_pts.Count} nodes, {_copies.Count} copies, {_objects.Count} objects, {_work.Count} waiting");
             if (_edgeCount >= _nextMerge) MergeCycles();
@@ -1601,15 +1659,11 @@ public sealed class RegionPointsTo : IModulePass
             delta.AddRange(owed);
         }
         if (_edges[from] is { } edges)
-        {
-            HashSet<(int, long)> set = _edgeSet[into] ??= new();
-            List<(int To, long Shift)> list = _edges[into] ??= new();
             foreach (var edge in edges)
             {
                 int to = Find(edge.To);
-                if (!(to == into && edge.Shift == 0) && set.Add((to, edge.Shift))) list.Add((to, edge.Shift));
+                if (!(to == into && edge.Shift == 0)) NewEdge(into, to, edge.Shift);
             }
-        }
         _edges[from] = null;
         _edgeSet[from] = null;
         if (_watchers[from] is { } watchers) (_watchers[into] ??= new()).AddRange(watchers);
@@ -1631,6 +1685,8 @@ public sealed class RegionPointsTo : IModulePass
         public LocSet(List<long> named) => _named = named;
 
         public int Count { get; private set; }
+        public int[]? Few => _few;
+        public ulong[]? Bits => _bits;
 
         public bool Contains(int id) => _bits is { } bits
             ? id >> 6 < bits.Length && (bits[id >> 6] & 1UL << id) != 0
