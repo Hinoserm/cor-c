@@ -82,7 +82,78 @@ internal sealed class OwnedFieldEscape
                 }
             }
         } while (changed);
+        JoinedAliases(f, defs, result);
         return result;
+    }
+
+    /// <summary>
+    /// REGISTERS WRITTEN MORE THAN ONCE that hold nothing but the object (or
+    /// null): `x ??= new T()` is `nc = x; if (nc == null) nc = made; x = nc`,
+    /// x from null or nc, nc from x or the object -- both are its addresses.
+    /// The largest such group whose every write is null, a known address or
+    /// another of the group, all at one offset; to a fixed point, since each
+    /// waits on the other.
+    /// </summary>
+    private static void JoinedAliases(Function f, Defs defs, Dictionary<VReg, long> result)
+    {
+        Dictionary<VReg, List<Instr>>? writes = null;
+        while (true)
+        {
+            writes ??= MultiWrites(f, defs);
+            HashSet<VReg> group = new();
+            foreach ((VReg r, List<Instr> all) in writes)
+                if (!result.ContainsKey(r) && all.All(w => w is { Op: Opcode.Copy, Operands: [ImmOperand { Value: 0 } or RegOperand] }))
+                    group.Add(r);
+            bool shrank = true;
+            while (shrank)
+            {
+                shrank = false;
+                foreach (VReg r in group.ToList())
+                    if (!writes[r].All(w => w.Operands[0] is ImmOperand || w.Operands[0] is RegOperand { Reg: var from } && (result.ContainsKey(from) || group.Contains(from))))
+                    { group.Remove(r); shrank = true; }
+            }
+            // One offset for the group, from the addresses written into it.
+            long? offset = null;
+            bool agree = true;
+            foreach (VReg r in group)
+                foreach (Instr w in writes[r])
+                    if (w.Operands[0] is RegOperand { Reg: var from } && result.TryGetValue(from, out long at))
+                    {
+                        if (offset is null) offset = at;
+                        else if (offset != at) agree = false;
+                    }
+            if (group.Count == 0 || offset is null || !agree) return;
+            foreach (VReg r in group) result[r] = offset.Value;
+            // Whatever follows from them, as the single writes do.
+            bool more;
+            do
+            {
+                more = false;
+                foreach (var b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Dest is null || !defs.IsSingle(i.Dest) || result.ContainsKey(i.Dest)
+                        || i.Operands.Count == 0 || i.Operands[0] is not RegOperand r || !result.TryGetValue(r.Reg, out long off)) continue;
+                    if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) { result[i.Dest] = off; more = true; }
+                    else if (i.Op is Opcode.Add or Opcode.Sub && i.Operands.Count == 2 && i.Operands[1] is ImmOperand amount
+                             && Math.Abs(amount.Value) < 1048576)
+                    { result[i.Dest] = i.Op == Opcode.Add ? off + amount.Value : off - amount.Value; more = true; }
+                }
+            } while (more);
+        }
+    }
+
+    private static Dictionary<VReg, List<Instr>> MultiWrites(Function f, Defs defs)
+    {
+        Dictionary<VReg, List<Instr>> writes = new();
+        foreach (var b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Dest is { } d && !defs.IsSingle(d))
+                {
+                    if (!writes.TryGetValue(d, out List<Instr>? list)) writes[d] = list = new();
+                    list.Add(i);
+                }
+        return writes;
     }
 
     /// <summary>Check direct aliases and every ancestor path that can reload the owner.</summary>

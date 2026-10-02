@@ -1032,14 +1032,7 @@ public sealed partial class Escape : IModulePass
         bool HandedOver(Function f, Block b, Instr st, HashSet<VReg> derived)
         {
             if (!sinkLiveness.TryGetValue(f, out Liveness? live)) sinkLiveness[f] = live = new Liveness(f);
-            if (derived.Any(r => !live.Tracks(r) || live.IsLiveOut(b, r))) return false;
-            for (int after = b.Instrs.IndexOf(st) + 1; after < b.Instrs.Count; after++)
-            {
-                Instr i = b.Instrs[after];
-                if (_bookkeeping.Contains(i)) continue;
-                if (i.Operands.Any(o => o is RegOperand r && derived.Contains(r.Reg))) return false;
-            }
-            return true;
+            return HandedOverWithField(f, b, st, derived, live);
         }
 
         // Where a value comes from, through copies and joins.
@@ -2244,6 +2237,46 @@ continue;
                         changed = true;
                     }
                 }
+                // REGISTERS THAT ONLY HOLD EACH OTHER: `x ??= new T()` is
+                // `nc = x; if (nc == null) { nc = made; } x = nc` -- x from
+                // null or nc, nc from x or the object -- and each waited on
+                // the other above, so every lazily made helper escaped. The
+                // largest group of pending registers whose every write is
+                // null, the object, the frame or another of the group can
+                // hold nothing else: all of it is the object's.
+                if (!resolved && pending.Count > 0)
+                {
+                    HashSet<VReg> group = new(pending);
+                    // And every register they are copied from, back to the
+                    // first that is not: `x` above is only ever read from.
+                    Stack<VReg> sources = new(group);
+                    while (sources.TryPop(out VReg? d))
+                        if (writes.TryGetValue(d, out WriteList from))
+                            foreach (Instr w in from)
+                                if (w.Op is Opcode.Copy && w.Operands is [RegOperand { Reg: var r }]
+                                    && !flow.Derived.Contains(r) && group.Count < 64 && group.Add(r))
+                                    sources.Push(r);
+                    group.RemoveWhere(f.Params.Contains);
+                    bool shrank = true;
+                    while (shrank && group.Count > 0)
+                    {
+                        shrank = false;
+                        foreach (VReg d in group.ToList())
+                        {
+                            bool closed = writes.TryGetValue(d, out WriteList all) && all.All(w =>
+                                w.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 && w.Operands.Count == 1
+                                && (w.Operands[0] is ImmOperand { Value: 0 } || Literal(w.Operands[0], writes)
+                                    || FrameAddress(w.Operands[0], writes)
+                                    || w.Operands[0] is RegOperand { Reg: var from } && (flow.Derived.Contains(from) || group.Contains(from))));
+                            if (!closed) { group.Remove(d); shrank = true; }
+                        }
+                    }
+                    foreach (VReg d in group)
+                    {
+                        pending.Remove(d);
+                        if (flow.Derived.Add(d)) { resolved = true; changed = true; }
+                    }
+                }
                 // Still some that can hold another value, and nothing more to
                 // learn: those are the escape.
                 if (!resolved && pending.Count > 0)
@@ -3076,6 +3109,63 @@ continue;
             }
         }
         }
+    }
+
+    /// <summary>
+    /// WHETHER A REFERENCE STORED INTO A FIELD IS HANDED OVER WITH IT: after
+    /// `st`, the registers holding it (`derived`) are only ever used to reach
+    /// into it -- read or written through, measured, compared -- and nothing
+    /// while any of them is live could replace the field or free its owner: no
+    /// call but an allocation or a note to the collector, no other store to
+    /// that field. A constructor fills the array it has just stored through
+    /// the register it made it in; refused, no array field was ever owned.
+    /// </summary>
+    private static readonly bool HandTrace = Environment.GetEnvironmentVariable("CORSAC_HANDED_TRACE") is { Length: > 0 };
+
+    private bool HandedOverWithField(Function f, Block b, Instr st, HashSet<VReg> derived, Liveness live)
+    {
+        if (derived.Any(r => !live.Tracks(r))) { if (HandTrace) Console.Error.WriteLine($"handed {f.Name} {st}: untracked"); return false; }
+        // ONLY WHAT RUNS AFTER THE STORE: the blocks reachable from it (its
+        // own block again only round a loop). Before it, the object is
+        // handed to its constructor, as it must be.
+        HashSet<Block> after = new(ReferenceEqualityComparer.Instance);
+        Stack<Block> reach = new();
+        foreach (Block s in live.Cfg.Succs(b)) reach.Push(s);
+        while (reach.TryPop(out Block? next))
+            if (after.Add(next)) foreach (Block s in live.Cfg.Succs(next)) reach.Push(s);
+        foreach (Block x in f.Blocks)
+        {
+            if (!ReferenceEquals(x, b) && !after.Contains(x)) continue;
+            int start = ReferenceEquals(x, b) && !after.Contains(b) ? b.Instrs.IndexOf(st) : -1;
+            int at = x.Instrs.Count;
+            foreach ((Instr i, ulong[] liveAfter) in live.WalkBackwards(x, skipNewer: true))
+            {
+                at--;
+                if (at <= start) break;
+                if (ReferenceEquals(i, st) || _bookkeeping.Contains(i)) continue;
+                bool reads = false;
+                for (int k = 0; k < i.Operands.Count; k++)
+                {
+                    if (i.Operands[k] is not RegOperand r || !derived.Contains(r.Reg)) continue;
+                    reads = true;
+                    bool through = k == 0 && i.Op is Opcode.Load or Opcode.Store or Opcode.ArrayLength or Opcode.InitArrayLength
+                        || IrInfo.IsIntCompare(i.Op)
+                        || i.Op == Opcode.Call && IsCollectorNote(i.Callee)
+                        || i.Op is Opcode.Add or Opcode.Sub or Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && i.Dest is { } d && derived.Contains(d);
+                    if (!through) { if (HandTrace) Console.Error.WriteLine($"handed {f.Name} {st}: read by {i}"); return false; }
+                }
+                bool holding = reads;
+                // A register this instruction writes holds its new value after
+                // it, not the stored one: a loop's next `x = Make()`.
+                if (!holding) foreach (VReg r in derived) if (!ReferenceEquals(r, i.Dest) && Liveness.Test(liveAfter, r.Id)) { holding = true; break; }
+                if (!holding) continue;
+                if (i.Op == Opcode.Call && i.Callee is not null && !IsAllocator(i.Callee) && !IsCollectorNote(i.Callee)
+                    || i.Op is Opcode.CallIndirect or Opcode.Unwind
+                    || i.Op == Opcode.Store && i.Field is not null && i.Field == st.Field)
+                { if (HandTrace) Console.Error.WriteLine($"handed {f.Name} {st}: held across {i}"); return false; }
+            }
+        }
+        return true;
     }
 
     /// <summary>The runtime's release of a frame-made collection's storage (Runtime.FreeStorageInFrame).</summary>

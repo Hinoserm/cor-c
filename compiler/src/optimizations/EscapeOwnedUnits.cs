@@ -481,17 +481,7 @@ public sealed partial class Escape
 
         // HANDED OVER AT THE STORE (OwnedFields' HandedOver).
         bool HandedOver(Function f, Block b, Instr st, HashSet<VReg> derived)
-        {
-            Liveness live = LivenessOf(f);
-            if (derived.Any(r => !live.Tracks(r) || live.IsLiveOut(b, r))) return false;
-            for (int after = b.Instrs.IndexOf(st) + 1; after < b.Instrs.Count; after++)
-            {
-                Instr i = b.Instrs[after];
-                if (_bookkeeping.Contains(i)) continue;
-                if (i.Operands.Any(o => o is RegOperand r && derived.Contains(r.Reg))) return false;
-            }
-            return true;
-        }
+            => HandedOverWithField(f, b, st, derived, LivenessOf(f));
 
         // THE STORES, each as OwnedFields judges it.
         foreach ((Function f, Block b, Instr st) in stores)
