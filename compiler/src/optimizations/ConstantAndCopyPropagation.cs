@@ -46,7 +46,11 @@ public sealed class ConstantAndCopyPropagation : IPass
                 Operand src = i.Operands[0];
                 // A register copied to itself is a curiosity lowering can
                 // produce for a self-assignment; nothing to forward.
-                if (src is ImmOperand || src is RegOperand r && !ReferenceEquals(r.Reg, i.Dest) && defs.IsSingle(r.Reg))
+                // A copy between registers of two widths is a width change:
+                // `%r:I32 = copy %w:I64`. Forwarded, %w would stand where an
+                // I32 is read -- a native call's argument pushed as two words,
+                // every argument after it off by one.
+                if (src is ImmOperand || src is RegOperand r && !ReferenceEquals(r.Reg, i.Dest) && defs.IsSingle(r.Reg) && r.Reg.Type == i.Dest.Type)
                 {
                     copies[i.Dest] = (src, b, k);
                 }
@@ -77,9 +81,10 @@ public sealed class ConstantAndCopyPropagation : IPass
         VReg cur = r;
         while (copies.TryGetValue(cur, out (Operand Value, Block Block, int Index) c) && seen.Add(cur))
         {
-            if (c.Value is ImmOperand)
+            if (c.Value is ImmOperand imm)
             {
-                return c.Value;
+                // At the width of the register it stands for.
+                return imm.Type == r.Type ? imm : new ImmOperand(IrInfo.Normalise(imm.Value, r.Type), r.Type);
             }
             VReg next = ((RegOperand)c.Value).Reg;
             // The copy read `next` at its own position; the use is elsewhere.

@@ -49,7 +49,9 @@ static class Program
         {
             _garbage = Runtime.Alloc(70000);
         }
-        return Gc.MinorCollections != minors ? 0 : 4;
+        // The garbage is read: a block nothing ever reads is no allocation at
+        // all to the compiler, and without it no cycle would come.
+        return Gc.MinorCollections != minors ? (_garbage != 0 ? 0 : 5) : 4;
     }
 
     static int Main(string[] args)
