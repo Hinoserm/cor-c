@@ -1958,6 +1958,7 @@ public sealed partial class Lowering
         WriteWord(block, DescSize * w, Math.Max(t.InstanceSize, t.Kind == TypeKind.Class ? _t.ObjectHeaderBytes : 1));
         WriteWord(block, DescDepth * w, t.Depth);
         WriteWord(block, DescPayload * w, _t.ObjectHeaderBytes);
+        if (t.Kind == TypeKind.Class && OwnsStorage(t)) WriteWord(block, DescGcFlags * w, GcOwnsStorage);
 
         DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), Coalescible = t.Structural || t.Decl?.Specialised == true,
             Exported = t.Decl?.LocalOnly != true };
@@ -2102,11 +2103,27 @@ public sealed partial class Lowering
         WriteWord(block, DescSize * w, Math.Max(t.InstanceSize, _t.ObjectHeaderBytes));
         WriteWord(block, DescDepth * w, t.Depth);
         WriteWord(block, DescPayload * w, _t.ObjectHeaderBytes);
+        if (OwnsStorage(t)) WriteWord(block, DescGcFlags * w, GcOwnsStorage);
         DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, Exported = false };
         for (int i = 0; i < slots; i++)
             if (table[i] is { } m && m.Decl is not null && m.Owner?.Decl?.Elsewhere == true && m.Owner.Decl.Template is null)
                 item.Relocs.Add(new DataReloc(_t.DescriptorBytes + i * w, CallLabel(m), 0));
         _m.ShadowData[sym] = item;
+    }
+
+    /// <summary>DescGcFlags on a class: it gives its storage back when freed (Runtime.FreeStorageOf, IOwnsStorage).</summary>
+    private const long GcOwnsStorage = 2;
+
+    /// <summary>Whether the class or an ancestor implements IOwnsStorage.</summary>
+    private static bool OwnsStorage(TypeSymbol t)
+    {
+        for (TypeSymbol? s = t; s is not null; s = s.Base)
+        {
+            List<TypeSymbol> faces = new();
+            foreach (TypeSymbol face in s.Interfaces) AddInterfaceClosure(face, faces);
+            if (faces.Any(face => face.Name == "IOwnsStorage")) return true;
+        }
+        return false;
     }
 
     private static void AddInterfaceClosure(TypeSymbol face, List<TypeSymbol> into)

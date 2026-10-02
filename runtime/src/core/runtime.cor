@@ -392,13 +392,18 @@ sealed class IteratorStopSignal : Exception
 /// (Opt.OwnedElements): it proved each one was made for the collection, is
 /// held by nothing else, and is dead by then. Every instantiation's vtable
 /// carries the method, so one call reaches whichever it is.
-interface IOwnsElements
+/// THE ARRAYS A COLLECTION KEEPS ITS ELEMENTS IN, given back with it when
+/// it is proved dead (Runtime.Free): they never leave the collection (a List
+/// that lent its array out keeps it), so nothing else can hold them. Marked
+/// in the type's descriptor (DescGcFlags, OwnsStorage) by lowering.
+interface IOwnsStorage
+{
+    void FreeStorage();
+}
+
+interface IOwnsElements : IOwnsStorage
 {
     void FreeOwnedElements();
-    /// The arrays the collection keeps its elements in, given back with it
-    /// when it is proved dead: they never leave the collection (a List that
-    /// lent its array out keeps it), so nothing else can hold them.
-    void FreeStorage();
 }
 
 static class Runtime
@@ -958,8 +963,24 @@ static class Runtime
         if (at != 0 && Gc.LiveObject(at))
         {
             FreeOwnedFields(at);
+            FreeStorageOf(at);
         }
         Gc.Free(at);
+    }
+
+    /// A dying collection's storage, given back with it (IOwnsStorage): what
+    /// the owned-field rules never could, the arrays being read through the
+    /// collection's own methods everywhere it is used. The descriptor says
+    /// whether the type has any, so every other object costs one load.
+    const long OwnsStorageFlag = 2;
+
+    static void FreeStorageOf(long at)
+    {
+        long vtable = Sys.Peek(at) & WordSize.AddressMask;
+        if (vtable == 0) return;
+        // The descriptor is twelve words before the vtable; its GC flags the tenth.
+        if ((Sys.Peek(vtable - 12 * WordSize.Bytes + 9 * WordSize.Bytes) & OwnsStorageFlag) == 0) return;
+        if (Sys.FromWord(at) is IOwnsStorage owner) owner.FreeStorage();
     }
 
     /// THE FIELDS AN OBJECT OWNS GO WITH IT. A type's descriptor word 11 is its

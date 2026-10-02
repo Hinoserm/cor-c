@@ -6758,10 +6758,8 @@ static class CollectionExpressionBuilder {
 // one when it dies (Opt.OwnedElements). A value type has nothing to free.
 static class OwnedElements {
     internal static void Release<E>(E element) {
-        if (Sys.IsObject(element) && Sys.Word(element) != 0) {
-            if ((object?)element is IOwnsElements collection) { collection.FreeStorage(); }
-            Runtime.Free((nint)Sys.Word(element));
-        }
+        // A collection given back takes its storage with it (Runtime.Free).
+        if (Sys.IsObject(element) && Sys.Word(element) != 0) { Runtime.Free((nint)Sys.Word(element)); }
     }
 }
 
@@ -11715,9 +11713,17 @@ class Random {
     }
 }
 
-class StringBuilder {
+class StringBuilder : IOwnsStorage {
     private string buffer;
     private int used;
+
+    // THE BUFFER GIVEN BACK with a builder proved dead (Runtime.Free): it is
+    // never handed out -- ToString copies out of it.
+    public void FreeStorage() {
+        if (buffer != null) { Runtime.Free((nint)Sys.Word(buffer)); }
+        buffer = null!;
+        used = 0;
+    }
 
     public StringBuilder() {
         buffer = Sys.NewChars(32);
@@ -12036,7 +12042,7 @@ class HashSetEnumerator<T> : IEnumerator<T> {
     }
 }
 
-class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
+class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
@@ -12262,6 +12268,20 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
         filled = 0;
         ordered = 0;
         vacancies = 0;
+    }
+
+    // THE STORAGE GIVEN BACK with a set proved dead (Runtime.Free): no array
+    // of it ever leaves the set.
+    public void FreeStorage() {
+        OutgrownStorage.Release(items);
+        OutgrownStorage.Release(state);
+        OutgrownStorage.Release(hashes);
+        OutgrownStorage.Release(order);
+        OutgrownStorage.Release(placeOf);
+        OutgrownStorage.Release(vacant);
+        items = null!; state = null!; hashes = null!;
+        order = null; placeOf = null; vacant = null;
+        count = 0; filled = 0;
     }
 
     /// .NET's UnionWith takes an IEnumerable<T>; the HashSet overload below is
