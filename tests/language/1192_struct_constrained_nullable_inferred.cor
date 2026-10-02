@@ -1,0 +1,60 @@
+// test: struct_constrained_nullable_inferred
+// expect-exit: 0
+// expect-output:
+// True False False
+// True True False
+// x f
+// True 5
+// 3 2
+//
+// A struct-constrained `T?` parameter infers T from INSIDE the cell, as C#
+// does: a Path? argument and a plain Path both make T Path, and a bare null
+// says nothing about T. Inferring T = Path? from the nullable argument made
+// the copy take Path? where it was meant to take Path, so `Equal(plain, a)`
+// was refused and `Or(n, plain)` handed back a Path? with no member C.
+
+using System;
+
+static class Lift
+{
+    public static bool Equal<T>(T? a, T? b) where T : struct
+    {
+        if (a.HasValue != b.HasValue) return false;
+        if (!a.HasValue) return true;
+        return a.Value.Equals(b.Value);
+    }
+
+    public static T Or<T>(T? a, T fallback) where T : struct => a.HasValue ? a.Value : fallback;
+
+    public static T? Wrap<T>(T v) where T : struct => v;
+
+    public static int Count<T>(T?[] items) where T : struct
+    {
+        int n = 0;
+        foreach (T? item in items) if (item.HasValue) n++;
+        return n;
+    }
+}
+
+readonly record struct Path(int P, string C);
+
+static class Program
+{
+    static int Main()
+    {
+        Path? a = new Path(1, "x");
+        Path? n = null;
+        Path plain = new Path(1, "x");
+        Path other = new Path(2, "y");
+        Console.WriteLine(Lift.Equal(a, a) + " " + Lift.Equal(a, n) + " " + Lift.Equal(n, a));
+        Console.WriteLine(Lift.Equal(a, plain) + " " + Lift.Equal(plain, a) + " " + Lift.Equal(other, a));
+        Path fallback = new Path(0, "f");
+        Console.WriteLine(Lift.Or(a, fallback).C + " " + Lift.Or(n, fallback).C);
+        int? w = Lift.Wrap(5);
+        Console.WriteLine(w.HasValue + " " + w.Value);
+        int?[] numbers = new int?[] { 1, null, 2, 3 };
+        Path?[] paths = new Path?[] { a, n, plain };
+        Console.WriteLine(Lift.Count(numbers) + " " + Lift.Count(paths));
+        return 0;
+    }
+}

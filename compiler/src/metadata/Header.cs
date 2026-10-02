@@ -179,6 +179,7 @@ public static class Header
             s.Append(" : ").Append(string.Join(", ", t.Bases.Select(b => Spell(b, made))));
         }
 
+        StructConstraints(s, t.TypeParams);
         s.Append("\n{\n");
 
         if (t.Kind == TypeKind.Enum)
@@ -234,7 +235,9 @@ public static class Header
                 TypeParams(s, d.WritableTypeParams);
                 s.Append('(');
                 s.Append(string.Join(", ", d.Params.Select(p => Parameter(p, made))));
-                s.Append(");\n");
+                s.Append(')');
+                StructConstraints(s, d.WritableTypeParams);
+                s.Append(";\n");
                 break;
 
             case PropertyDecl d:
@@ -329,6 +332,22 @@ public static class Header
         if (ps.Count > 0)
         {
             s.Append('<').Append(string.Join(", ", ps.Select(p => p.Name))).Append('>');
+        }
+    }
+
+    /// <summary>
+    /// `where T : struct` for each parameter that has it. The one constraint
+    /// a consumer cannot do without: it decides whether `T?` in the signature
+    /// is Nullable&lt;T&gt; or an annotation (TypeParam.Struct).
+    /// </summary>
+    private static void StructConstraints(StringBuilder s, List<TypeParam> ps)
+    {
+        foreach (TypeParam p in ps)
+        {
+            if (p.Struct)
+            {
+                s.Append(" where ").Append(p.Name).Append(" : struct");
+            }
         }
     }
 

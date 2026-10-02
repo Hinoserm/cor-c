@@ -1,0 +1,28 @@
+// The unit 1195_struct_constrained_nullable_across_units uses: a
+// struct-constrained `T?` in a generic method of a plain class and in a
+// generic type, both compiled here and copied by the consumer.
+
+namespace LiftUnits;
+
+public static class Lift
+{
+    public static bool Equal<T>(T? a, T? b) where T : struct
+    {
+        if (a.HasValue != b.HasValue) return false;
+        if (!a.HasValue) return true;
+        return a.Value.Equals(b.Value);
+    }
+
+    public static T Or<T>(T? a, T fallback) where T : struct => a.HasValue ? a.Value : fallback;
+
+    public static int Seven() => Or<int>(null, 7);
+}
+
+public class Box<T> where T : struct
+{
+    T? v;
+
+    public bool Has => v.HasValue;
+    public void Set(T? value) { v = value; }
+    public T? Get() => v;
+}

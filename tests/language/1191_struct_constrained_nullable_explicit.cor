@@ -1,0 +1,55 @@
+// test: struct_constrained_nullable_explicit
+// expect-exit: 0
+// expect-output:
+// True False True
+// False True
+// x 0
+// True 5 False
+// 7 -1
+//
+// `T?` OVER `where T : struct` IS Nullable<T>, a real cell, also once T is
+// bound to a value type. Only an UNCONSTRAINED T's '?' is an annotation (507).
+// With the constraint dropped the copy took plain Paths, and
+// `Lift.Equal<Path>(a, a)` over a Path? was refused: "argument 1 of 'Equal':
+// 'Path?' may have no value". Explicit type arguments here; 1192 infers them.
+
+using System;
+
+static class Lift
+{
+    public static bool Equal<T>(T? a, T? b) where T : struct
+    {
+        if (a.HasValue != b.HasValue) return false;
+        if (!a.HasValue) return true;
+        return a.Value.Equals(b.Value);
+    }
+
+    public static T Or<T>(T? a, T fallback) where T : struct => a.HasValue ? a.Value : fallback;
+
+    public static T? Wrap<T>(T v) where T : struct => v;
+
+    public static T? None<T>() where T : struct => null;
+}
+
+readonly record struct Path(int P, string C);
+
+static class Program
+{
+    static int Main()
+    {
+        Path? a = new Path(1, "x");
+        Path? b = new Path(2, "y");
+        Path? n = null;
+        Console.WriteLine(Lift.Equal<Path>(a, a) + " " + Lift.Equal<Path>(a, b) + " " + Lift.Equal<Path>(n, null));
+        Console.WriteLine(Lift.Equal<Path>(a, n) + " " + Lift.Equal<int>(null, null));
+        Path fallback = new Path(0, "f");
+        Path got = Lift.Or<Path>(a, fallback);
+        Path none = Lift.Or<Path>(n, fallback);
+        Console.WriteLine(got.C + " " + none.P);
+        int? w = Lift.Wrap<int>(5);
+        int? z = Lift.None<int>();
+        Console.WriteLine(w.HasValue + " " + w.Value + " " + z.HasValue);
+        Console.WriteLine(Lift.Or<int>(7, -1) + " " + Lift.Or<int>(z, -1));
+        return 0;
+    }
+}

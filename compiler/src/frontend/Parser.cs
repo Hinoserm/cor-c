@@ -2093,13 +2093,23 @@ public sealed class Parser
                 // and ParseTypeRef met `class` and stopped -- so ordinary C#
                 // carrying any of them did not parse at all.
                 //
-                // They are read and dropped. This compiler makes a COPY of a
-                // generic per type argument, so what a constraint rules out is
-                // ruled out by that copy failing to compile, on the line that
-                // depended on it rather than on the declaration; there is
-                // nothing here for a constraint to be checked against.
+                // They are read and dropped, all but `struct`. This compiler
+                // makes a COPY of a generic per type argument, so what a
+                // constraint rules out is ruled out by that copy failing to
+                // compile, on the line that depended on it rather than on the
+                // declaration; there is nothing here for a constraint to be
+                // checked against.
+                //
+                // `struct` IS KEPT because it changes what `T?` means: over a
+                // struct-constrained T it is Nullable<T>, a real cell, where
+                // over any other T the '?' is an annotation and a value-type
+                // T? is plain T (TypeParam.Struct).
                 if (At(Tok.KwClass) || At(Tok.KwStruct))
                 {
+                    if (At(Tok.KwStruct))
+                    {
+                        target.Struct = true;
+                    }
                     _i++;
                     Take(Tok.Question);
                     continue;

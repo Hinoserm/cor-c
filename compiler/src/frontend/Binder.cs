@@ -777,7 +777,7 @@ public sealed partial class Binder
     private static bool IsTemplate(TypeSymbol t) => t.Decl?.TypeParams.Count > 0;
 
     /// <summary>The type parameters of the method signature being declared.</summary>
-    private List<string>? _signature;
+    private List<TypeParam>? _signature;
 
     /// <summary>Accessor methods invented for properties, checked like any other body.</summary>
     /// <summary>
@@ -2975,7 +2975,7 @@ public sealed partial class Binder
                     // when signatures were declared. So every generic method
                     // ever written reported that 'T' is not a known type, and
                     // the feature read as absent when it was only unreachable.
-                    _signature = new(); AddNames(_signature, md.TypeParams);
+                    _signature = md.TypeParams;
 
                     MethodSymbol ms = new()
                     {
@@ -3595,6 +3595,17 @@ public sealed partial class Binder
         return made;
     }
 
+    /// <summary>Whether the named one of these type parameters is `where T : struct`.</summary>
+    private static bool StructIn(List<TypeParam>? parameters, string name)
+    {
+        if (parameters is null) return false;
+        foreach (TypeParam p in parameters)
+        {
+            if (p.Name == name) return p.Struct;
+        }
+        return false;
+    }
+
     /// <summary>The names of type parameters, added in a loop (as ResolveAll).</summary>
     private static void AddNames(List<string> into, List<TypeParam> parameters)
     {
@@ -3763,19 +3774,19 @@ public sealed partial class Binder
 
         if (context != null && context.TypeParams.Contains(r.Name))
         {
-            return new Type { Prim = Prim.Void, ParamName = r.Name };
+            return new Type { Prim = Prim.Void, ParamName = r.Name, StructParam = StructIn(context.Decl?.TypeParams, r.Name) };
         }
 
         if (_method != null && _method.TypeParams.Contains(r.Name))
         {
-            return new Type { Prim = Prim.Void, ParamName = r.Name };
+            return new Type { Prim = Prim.Void, ParamName = r.Name, StructParam = StructIn(_method.Decl?.TypeParams, r.Name) };
         }
 
         // The same, for a signature being declared -- there is no method symbol
         // to ask yet, because this is what is building one.
-        if (_signature != null && _signature.Contains(r.Name))
+        if (_signature != null && _signature.Exists(p => p.Name == r.Name))
         {
-            return new Type { Prim = Prim.Void, ParamName = r.Name };
+            return new Type { Prim = Prim.Void, ParamName = r.Name, StructParam = StructIn(_signature, r.Name) };
         }
 
         // A NAME THE MONOMORPHISER HAS ALREADY SPELT OUT IN FULL (TypeRef.
@@ -9175,6 +9186,16 @@ public sealed partial class Binder
     {
         if (want.ParamName is string name && m.TypeParams.Contains(name))
         {
+            // `T?` OVER `where T : struct` takes T from inside the cell: a
+            // Path? argument and a plain Path both make T Path (C# 12.6.3.9's
+            // lower-bound inference through Nullable<T>), and a bare null says
+            // nothing about T at all.
+            if (want.Nullable && want.StructParam)
+            {
+                if (got.Prim == Prim.NullLiteral) return true;
+                if (got.IsNullableValue) got = got.AsNonNullable();
+            }
+
             if (!bound.TryGetValue(name, out Type? already))
             {
                 bound[name] = got;
@@ -9359,6 +9380,14 @@ public sealed partial class Binder
 
         if (t.ParamName is string name && bound.TryGetValue(name, out Type? actual))
         {
+            // `T?` OVER `where T : struct` IS Nullable<T>, so the '?' stays on
+            // what T is bound to. Over any other T it is an annotation and the
+            // bound type is the whole answer (Monomorphiser.Sub, the same rule
+            // for the copy this call will reach).
+            if (t.Nullable && t.StructParam && !actual.IsError && actual.Prim != Prim.Any && actual.ParamName is null)
+            {
+                return actual.AsNullable();
+            }
             return actual;
         }
 

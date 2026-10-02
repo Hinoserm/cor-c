@@ -14,6 +14,13 @@ public sealed class TypeParam : Node
     /// </summary>
     public Variance Variance { get; init; }
 
+    /// <summary>
+    /// `where T : struct`: T is a non-nullable value type, and so `T?` over it
+    /// is Nullable&lt;T&gt;, a cell with a HasValue -- where on an unconstrained
+    /// T the '?' is only an annotation and a value-type T? is still T (C# 9).
+    /// </summary>
+    public bool Struct { get; set; }
+
     /// <summary>Constraints as written: <c>where T : Component</c>.</summary>
     public List<TypeRef> Constraints { get; } = new();
 }

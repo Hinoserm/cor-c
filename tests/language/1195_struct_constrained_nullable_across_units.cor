@@ -1,0 +1,35 @@
+// test: struct_constrained_nullable_across_units
+// units: tests/language/support/1195_struct_nullable_units.cor
+// expect-exit: 0
+// expect-output:
+// True False True
+// x f 7
+// False True 3
+//
+// `where T : struct` travels with a generic declared in a unit compiled
+// apart (the template format and the header carry TypeParam.Struct), so the
+// consumer's own copies keep `T?` as Nullable<T>: dropped on the way through,
+// the copy of Equal<Path> here took plain Paths and refused a Path?.
+
+using System;
+using LiftUnits;
+
+readonly record struct Path(int P, string C);
+
+static class Program
+{
+    static int Main()
+    {
+        Path? a = new Path(1, "x");
+        Path? n = null;
+        Path plain = new Path(1, "x");
+        Console.WriteLine(Lift.Equal<Path>(a, a) + " " + Lift.Equal(a, n) + " " + Lift.Equal(plain, a));
+        Console.WriteLine(Lift.Or(a, new Path(0, "f")).C + " " + Lift.Or(n, new Path(0, "f")).C + " " + Lift.Seven());
+
+        Box<int> b = new Box<int>();
+        bool before = b.Has;
+        b.Set(3);
+        Console.WriteLine(before + " " + b.Has + " " + b.Get().Value);
+        return 0;
+    }
+}
