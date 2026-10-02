@@ -733,12 +733,24 @@ internal sealed class Allocator
             {
                 continue;
             }
-            List<Interval> group = _active.Where(a => a.Reg == r && Overlaps(a, cur)).ToList();
-            if (group.Count == 0 || group.Any(a => a.Short && a.Served is null))
+            // Loops, not lambdas: each lambda was a closure over the
+            // allocator, and handed to LINQ it took the allocator with it --
+            // the one object of the pass the collector, not the pass, freed.
+            List<Interval> group = new();
+            bool unservedShort = false;
+            int next = int.MaxValue;
+            foreach (Interval a in _active)
+            {
+                if (a.Reg != r || !Overlaps(a, cur)) continue;
+                group.Add(a);
+                if (a.Short && a.Served is null) { unservedShort = true; break; }
+                int use = a.Short ? NextServed(a, at) : NextUse(a.VReg, at);
+                if (use < next) next = use;
+            }
+            if (group.Count == 0 || unservedShort)
             {
                 continue;
             }
-            int next = group.Min(a => a.Short ? NextServed(a, at) : NextUse(a.VReg, at));
             if (next <= cur.Start)
             {
                 // Used by the very instruction the current interval starts at: not evictable.
