@@ -2731,17 +2731,17 @@ continue;
         // function makes after it -- a List a foreach's enumerator holds --
         // is judged before its owner is promoted, and is anchored to it only
         // on a second look. Nothing is hinted the second time round.
-        bool anchorLater = false;
+        HashSet<Instr>? anchorLater = null;
         for (int sweep = 0; sweep < 2; sweep++)
         {
-        if (sweep == 1 && (!anchorLater || owners.Count == 0)) break;
+        if (sweep == 1 && (anchorLater is null || owners.Count == 0)) break;
         foreach (Block b in PromotionOrder(f))
         {
             for (int k = 0; k < b.Instrs.Count; k++)
             {
                 Instr i = b.Instrs[k];
                 if (i.Op != Opcode.Call || !IsAllocator(i.Callee) || i.Dest is null || i.Operands.Count != 1
-                    || _owned.Contains(i))
+                    || _owned.Contains(i) || sweep == 1 && !anchorLater!.Contains(i))
                 {
                     continue;
                 }
@@ -2827,7 +2827,7 @@ continue;
                 if (tracing) Console.Error.WriteLine($"promote {f.Name}: {i} escapes={flow.Escapes} via {flow.Why}");
                 if (flow.Escapes)
                 {
-                    if (sized && flow.Why is { Op: Opcode.Store }) anchorLater = true;
+                    if (sweep == 0 && sized && flow.Why is { Op: Opcode.Store }) (anchorLater ??= new(ReferenceEqualityComparer.Instance)).Add(i);
                     // Left to the collector: say why, for the link (EscapeHints).
                     if (_hinting && sweep == 0)
                     {
