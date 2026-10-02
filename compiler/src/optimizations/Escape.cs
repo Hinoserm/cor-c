@@ -2694,6 +2694,37 @@ continue;
         return f.Blocks.OrderByDescending(b => depth.GetValueOrDefault(b)).ToList();
     }
 
+    /// <summary>Whether every write of the register is a copy of an allocation's result (or null).</summary>
+    private static bool WrittenOnlyFresh(Function f, VReg joined)
+    {
+        Dictionary<VReg, Instr> single = new();
+        HashSet<VReg> many = new();
+        List<Instr> writes = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+            {
+                if (i.Dest is not { } d) continue;
+                if (ReferenceEquals(d, joined)) writes.Add(i);
+                else if (!single.TryAdd(d, i)) many.Add(d);
+            }
+        if (writes.Count < 2) return false;
+        foreach (Instr w in writes)
+        {
+            if (w.Op == Opcode.Copy && w.Operands[0] is ImmOperand { Value: 0 }) continue;
+            if (w.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || w.Operands[0] is not RegOperand from) return false;
+            VReg r = from.Reg;
+            bool made = false;
+            for (int depth = 0; depth < 8 && !many.Contains(r) && single.TryGetValue(r, out Instr? d); depth++)
+            {
+                if (d.Op == Opcode.Call && IsAllocator(d.Callee)) { made = true; break; }
+                if (d.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || d.Operands[0] is not RegOperand next) break;
+                r = next.Reg;
+            }
+            if (!made) return false;
+        }
+        return true;
+    }
+
     /// <summary>CORSAC_PROMOTE_TRACE=&lt;function&gt;: each allocation PromoteIn looks at there, and what it decided.</summary>
     private static readonly string? PromoteTrace = Environment.GetEnvironmentVariable("CORSAC_PROMOTE_TRACE") is { Length: > 0 } t ? t : null;
 
@@ -2823,6 +2854,16 @@ continue;
                 {
                     Flow together = Analyse(f, group.Select(g => g.Dest!).Concat(promotedMembers).ToList(), summaries, i);
                     if (!together.Escapes) flow = together;
+                }
+                // A HEAP OBJECT JOINED WITH OTHERS EACH MADE HERE -- an inlined
+                // factory's paths (an iterator over a List, an array, anything
+                // else) writing one result -- is followed through the join:
+                // each is owned on its own (its own slot), so whichever one
+                // the join holds is freed once.
+                if (flow.Escapes && !sized && flow.Why is { Op: Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32, Dest: { } heapJoin }
+                    && WrittenOnlyFresh(f, heapJoin))
+                {
+                    flow = Analyse(f, new[] { i.Dest }, summaries, i, joinable: new HashSet<VReg> { heapJoin }, closure: IsClosure(f, i));
                 }
                 if (tracing) Console.Error.WriteLine($"promote {f.Name}: {i} escapes={flow.Escapes} via {flow.Why}");
                 if (flow.Escapes)

@@ -93,8 +93,10 @@ public sealed class UnitBackend : IUnitBackend
             ? record.Calls.Where(available.ContainsKey).Select(name => available[name]).ToArray() : Array.Empty<IrImport>();
         long Cost(int index) => checked(3 * ((archive.Entries.TryGetValue("F:" + module.Functions[index].Name, out IrArchiveEntry? record) ? record.DecodeBytes : 0)
             + Selected(index).Sum(import => import.DecodeBytes)) + 512 * 1024);
+        Dictionary<string, DataItem>? items = null;
         Function Load(int index)
         {
+            Devirtualize devirtualize = new();
             Function header = module.Functions[index];
             Function function;
             if (preLate) function = header;
@@ -132,6 +134,17 @@ public sealed class UnitBackend : IUnitBackend
                 : facts.Fresh.Append(Escape.Allocator).Append(Escape.LeafAllocator).Append(Escape.ObjectAllocator).Order(StringComparer.Ordinal).ToArray();
             new Inline { SmallBody = 40, GrowthLimit = 1024, ConstantBranchBody = 160, FreshOwnerBody = 0, Keep = allocators }.Run(local);
             cleanup.Run(local);
+            // WHAT THE LINK'S INLINING PUT IN SIGHT, made direct: a consumer
+            // imported from the library (ToList, a List built from a
+            // sequence) now walks an iterator this function made, whose
+            // type its descriptor says -- the unit's own, or another unit's
+            // as this one knew it (ShadowData).
+            items ??= Devirtualize.ReadOnlyItems(module);
+            for (int round = 0; round < 2; round++)
+            {
+                devirtualize.Run(function, items);
+                cleanup.Run(local);
+            }
             if (facts is not null)
             {
                 // Kept as it was, to be taken back if a free the pass places

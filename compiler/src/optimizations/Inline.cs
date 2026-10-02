@@ -63,6 +63,23 @@ public sealed class Inline : IParallelModulePass
     /// The normal growth, recursion and exception-region guards still apply.</summary>
     public int FreshOwnerBody { get; init; } = 320;
 
+    /// <summary>
+    /// A callee this size or smaller that makes a virtual call on an object
+    /// its caller has just made and handed it -- a List built from an
+    /// iterator Select made, a sequence walked by foreach -- comes into the
+    /// caller, where the object's type is known: the call through it is then
+    /// direct (Devirtualize) and the object the caller's to free.
+    /// </summary>
+    public int FreshArgumentBody { get; init; } = 200;
+
+    /// <summary>
+    /// A callee this size or smaller every return of which is an object it
+    /// has just made -- an iterator method's machine, a factory -- comes into
+    /// the caller, which then knows the object's type (FreshArgumentBody,
+    /// Devirtualize).
+    /// </summary>
+    public int FreshResultBody { get; init; } = 120;
+
     /// <summary>Optional separate growth cap for exposing child allocations.
     /// Zero keeps the ordinary growth cap; size policies can preserve this
     /// opportunity without expanding unrelated arithmetic helpers.</summary>
@@ -242,6 +259,7 @@ public sealed class Inline : IParallelModulePass
         // Many rejected call sites ask the same definition/CFG questions.
         // Reuse the analysis only until Expand mutates this caller.
         Defs? callerDefs = null;
+        FreshValues? callerFresh = null;
 
         while (changed)
         {
@@ -307,6 +325,11 @@ public sealed class Inline : IParallelModulePass
                         && calleeSize <= FreshOwnerBody
                         && callee.Blocks.Any(x => x.Instrs.Any(y => y.Op == Opcode.Call && Escape.IsAllocator(y.Callee)))
                         && FreshOwner(caller, b, i, call, ref callerDefs);
+                    bool dispatchesFresh = ordinaryCost > smallBody && !single && !specializesBranch && !exposesChildren
+                        && size + calleeSize <= GrowthLimit
+                        && (calleeSize <= FreshArgumentBody && FreshDispatched(caller, call, callee, ref callerFresh)
+                            || calleeSize <= FreshResultBody && call.Dest is not null && MakesWhatItReturns(callee));
+                    exposesChildren |= dispatchesFresh;
                     if (ordinaryCost > smallBody && !single && !specializesBranch && !exposesChildren)
                     {
                         TraceDecision?.Invoke(caller, callee, $"keep: body={calleeSize} cost={ordinaryCost} small-limit={smallBody} caller={size} sites={callers.GetValueOrDefault(callee.Name)}");
@@ -323,6 +346,7 @@ public sealed class Inline : IParallelModulePass
                     TraceDecision?.Invoke(caller, callee, $"expand: body={calleeSize} small-limit={smallBody} caller={size} single={single} constant-branch={specializesBranch} fresh-owner={exposesChildren}");
                     Expand(caller, b, i, call, callee);
                     callerDefs = null;
+                    callerFresh = null;
                     size += calleeSize;
                     callers[callee.Name] = callers.GetValueOrDefault(callee.Name) - 1;
                     foreach (Instr inner in callee.Blocks.SelectMany(x => x.Instrs))
@@ -416,6 +440,92 @@ public sealed class Inline : IParallelModulePass
             }
         }
         return true;
+    }
+
+    /// <summary>
+    /// Whether an argument the call passes is an object the caller made (an
+    /// allocator's result, through copies) on which the callee makes a
+    /// virtual call: the call FreshArgumentBody brings into sight.
+    /// </summary>
+    private static bool FreshDispatched(Function caller, Instr call, Function callee, ref FreshValues? cached)
+    {
+        FreshValues fresh = cached ??= new FreshValues(caller);
+        for (int k = 0; k < call.Operands.Count && k < callee.Params.Count; k++)
+        {
+            if (call.Operands[k] is not RegOperand value || !fresh.Made(value.Reg)) continue;
+            // The parameter, through the copies the callee makes of it, as
+            // the receiver of a call through a vtable.
+            HashSet<VReg> param = new() { callee.Params[k] };
+            bool grew = true;
+            while (grew)
+            {
+                grew = false;
+                foreach (Block b in callee.Blocks)
+                    foreach (Instr i in b.Instrs)
+                        if (i.Dest is { } dest && !param.Contains(dest) && i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32
+                            && i.Operands[0] is RegOperand from && param.Contains(from.Reg))
+                        { param.Add(dest); grew = true; }
+            }
+            foreach (Block b in callee.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.CallIndirect && i.Operands.Count > 1 && i.Operands[1] is RegOperand receiver && param.Contains(receiver.Reg))
+                        return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Whether every return hands back an object the function made: an
+    /// allocator's result, through copies -- and through a variable every
+    /// write of which is such a copy (the result an inlined body joins).
+    /// </summary>
+    private static bool MakesWhatItReturns(Function f)
+    {
+        FreshValues fresh = new(f);
+        bool any = false;
+        foreach (Block b in f.Blocks)
+        {
+            if (b.Terminator is not { Op: Opcode.Ret } ret) continue;
+            if (ret.Operands.Count != 1 || ret.Operands[0] is not RegOperand back || !fresh.Made(back.Reg)) return false;
+            any = true;
+        }
+        return any;
+    }
+
+    /// <summary>
+    /// The registers of a function that hold only objects it made: an
+    /// allocator's result, through copies, and a variable every write of
+    /// which is such a copy (what an inlined factory's paths join).
+    /// </summary>
+    private sealed class FreshValues
+    {
+        private readonly Dictionary<VReg, List<Instr>> _writes = new();
+        private readonly Dictionary<VReg, bool> _known = new();
+        public FreshValues(Function f)
+        {
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Dest is { } d)
+                    {
+                        if (!_writes.TryGetValue(d, out List<Instr>? list)) _writes[d] = list = new();
+                        list.Add(i);
+                    }
+        }
+        public bool Made(VReg r) => Made(r, 0);
+        private bool Made(VReg r, int depth)
+        {
+            if (_known.TryGetValue(r, out bool answer)) return answer;
+            if (depth > 8 || !_writes.TryGetValue(r, out List<Instr>? defs)) return false;
+            _known[r] = false;   // a cycle of copies is no allocation
+            foreach (Instr d in defs)
+            {
+                bool ok = d.Op == Opcode.Call && Escape.IsAllocator(d.Callee)
+                    || d.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && d.Operands[0] is RegOperand next && Made(next.Reg, depth + 1);
+                if (!ok) return false;
+            }
+            _known[r] = true;
+            return true;
+        }
     }
 
     private static bool FreshOwner(Function caller, Block block, int index, Instr call, ref Defs? cached)
