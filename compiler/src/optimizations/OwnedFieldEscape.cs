@@ -9,6 +9,8 @@ internal sealed class OwnedFieldEscape
     private readonly Dictionary<string, bool[]> _summaries;
     private readonly Dictionary<(string, int, string), bool> _memo = new();
     internal readonly record struct Field(long Offset, int Width);
+    /// <summary>The instruction the last refused read stopped at (CORSAC_PROMOTE_TRACE).</summary>
+    [ThreadStatic] internal static Instr? LastRefusal;
     internal sealed class Owner
     {
         public required Corsac.Lang.Ir.Block Block { get; init; }
@@ -144,7 +146,7 @@ internal sealed class OwnedFieldEscape
             if (i.Op == Opcode.Call && Escape.IsCollectorNote(i.Callee)) continue;
             if (i.Op == Opcode.Call)
             {
-                if (i.Callee is null || !_functions.TryGetValue(i.Callee, out Function? callee)) return false;
+                if (i.Callee is null || !_functions.TryGetValue(i.Callee, out Function? callee)) { LastRefusal = i; return false; }
                 for (int a = 0; a < i.Operands.Count; a++)
                     if (i.Operands[a] is RegOperand arg && addresses.TryGetValue(arg.Reg, out long offset))
                     {
@@ -153,7 +155,7 @@ internal sealed class OwnedFieldEscape
                         catch (OverflowException) { return false; }
                         List<Field> relativePath = new(path);
                         relativePath[0] = new(relative, width);
-                        if (!Safe(callee, a, relativePath)) return false;
+                        if (!Safe(callee, a, relativePath)) { LastRefusal = i; return false; }
                     }
                 continue;
             }
@@ -162,6 +164,7 @@ internal sealed class OwnedFieldEscape
             if (IrInfo.IsIntCompare(i.Op)) continue;
             // No copies of the owner's bytes, indirect calls, syscalls,
             // variable field addresses, returns or unknown operations.
+            LastRefusal = i;
             return false;
         }
         return true;

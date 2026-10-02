@@ -70,7 +70,7 @@ public sealed class Inline : IParallelModulePass
     /// caller, where the object's type is known: the call through it is then
     /// direct (Devirtualize) and the object the caller's to free.
     /// </summary>
-    public int FreshArgumentBody { get; init; } = 200;
+    public int FreshArgumentBody { get; init; } = 320;
 
     /// <summary>
     /// Whether a callee with a try of its own may come in (Inlineable); never

@@ -1955,6 +1955,14 @@ continue;
                     {
                         continue;
                     }
+                    // THIS PASS'S OWN BOOKKEEPING: the store that remembers an
+                    // owned object in its slot. Judging the rest of a group
+                    // after one of it was owned, that store of the one already
+                    // owned was taken for the group's escape.
+                    if (i.Op == Opcode.Store && _inserted?.Contains(i) == true)
+                    {
+                        continue;
+                    }
 
                     // The operands read directly: IrInfo.Uses is an iterator, and
                     // this is every instruction of the function, for every
@@ -2147,6 +2155,11 @@ continue;
                             // summarised as escaping it.
                             break;
                         }
+
+                        case Opcode.CallIndirect when i.DispatchType == Devirtualize.NoTarget:
+                            // No object made here has the method (Devirtualize.
+                            // Guarded): what is derived from one never runs it.
+                            break;
 
                         case Opcode.CallIndirect when (invokeReceiverStays || closure) && i.Field == Instr.DelegateInvoke
                             && !i.Operands.Skip(2).Any(o => o is RegOperand q && flow.Derived.Contains(q.Reg)):
@@ -2886,7 +2899,7 @@ continue;
                                 OwnedFieldEscape.Field referenceField = new(field, store.Size);
                                 if (!fields.ReadsOwner(f, owner, new[] { referenceField }, loaded))
                                 {
-                                    if (tracing) Console.Error.WriteLine($"promote {f.Name}: {i} owner {owner.Root} field +{field}: a read of it goes further");
+                                    if (tracing) Console.Error.WriteLine($"promote {f.Name}: {i} owner {owner.Root} field +{field}: a read of it goes further, at {OwnedFieldEscape.LastRefusal}");
                                     continue;
                                 }
                                 var childAddresses = OwnedFieldEscape.Addresses(f, promotedOwner.Aliases);
@@ -2913,6 +2926,7 @@ continue;
                     Flow together = Analyse(f, group.Select(g => g.Dest!).Concat(promotedMembers).ToList(), summaries, i);
                     if (!together.Escapes) flow = together;
                 }
+                bool judgedWithGroup = false;
                 // A HEAP OBJECT JOINED WITH OTHERS EACH MADE HERE -- an inlined
                 // factory's paths (an iterator over a List, an array, anything
                 // else) writing one result -- is followed through the join:
@@ -2925,6 +2939,7 @@ continue;
                     // what each join after it holds -- the enumerator each one's
                     // GetEnumerator hands back -- is then one of the group's.
                     Flow together = Analyse(f, heapGroup, summaries, i, closure: IsClosure(f, i));
+                    judgedWithGroup = true;
                     // And the objects made here that a later join takes in with
                     // them: an inlined GetEnumerator's copy of a started iterator.
                     for (int widen = 0; widen < 4 && together.Escapes && together.Why is { Op: Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32, Dest: { } later }
@@ -2959,7 +2974,10 @@ continue;
                 // A group's members already promoted this pass hold their own
                 // slots, reached through registers made after the liveness was
                 // solved: not this slot's previous object.
-                HashSet<VReg> selfDerived = promotedMembers.Count == 0 ? flow.Derived
+                // Judged with a group, what is derived holds the others too, and
+                // the registers owning one of them added (its slot, its copy)
+                // are newer than the liveness: not this object's.
+                HashSet<VReg> selfDerived = promotedMembers.Count == 0 && !judgedWithGroup ? flow.Derived
                     : flow.Derived.Where(r => liveness.Tracks(r)).ToHashSet();
                 if (LiveAtSelf(liveness, pads, b, i, selfDerived))
                 {

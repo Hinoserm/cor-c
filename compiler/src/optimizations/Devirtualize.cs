@@ -202,17 +202,30 @@ public sealed class Devirtualize : IModulePass
                     || vd[0] is not { Op: Opcode.Load, Offset: 0 } vtLoad || vtLoad.Operands[0] is not RegOperand recv) continue;
                 List<Instr> origins = new();
                 if (!Origins(recv.Reg, origins, new HashSet<VReg>(), 0) || origins.Count < 2) continue;
-                // Each type's method in the slot read.
+                // Each type's method in the slot read. A type with nothing
+                // there cannot be the receiver -- the call would fault -- as
+                // when a cast to an interface it lacks guards the call.
                 List<(SymOperand Vtable, string Target)> cases = new();
                 bool known = true;
                 foreach (Instr origin in origins)
                 {
                     if (!stamped.TryGetValue(origin, out SymOperand? table) || !items.TryGetValue(table.Name, out DataItem? item)) { known = false; break; }
                     long at = table.Offset + slotLoad.Offset;
-                    if (item.Relocs.FirstOrDefault(rel => rel.Offset == at) is not { Symbol: { } target, Addend: 0 } || !target.StartsWith("m_", StringComparison.Ordinal)) { known = false; break; }
+                    if (at >= item.Bytes.Length || at < 0) { known = false; break; }
+                    int found = item.Relocs.FindIndex(rel => rel.Offset == at);
+                    if (found < 0) continue;
+                    DataReloc there = item.Relocs[found];
+                    if (there.Symbol is not { } target || there.Addend != 0 || !target.StartsWith("m_", StringComparison.Ordinal)) { known = false; break; }
                     if (!cases.Any(c => c.Vtable.Name == table.Name && c.Vtable.Offset == table.Offset)) cases.Add((table, target));
                 }
-                if (!known || cases.Count == 0 || cases.Count > 4) continue;
+                if (!known || cases.Count > 4) continue;
+                if (cases.Count == 0)
+                {
+                    // None of them has it: whatever runs this call, it is not
+                    // one of these objects (Escape reads the mark).
+                    i.DispatchType = NoTarget;
+                    continue;
+                }
                 Instr Direct(string target, VReg? into)
                 {
                     Instr call = new() { Op = Opcode.Call, Dest = into, Line = i.Line, Callee = target };
@@ -480,6 +493,9 @@ public sealed class Devirtualize : IModulePass
                 }
         }
     }
+
+    /// <summary>A call through a vtable no object this function made can be the receiver of (Guarded).</summary>
+    public const string NoTarget = "\u0001no-target";
 
     /// <summary>Lowering's DescFlags: the descriptor word a type's kind is in.</summary>
     private const int DescFlagsWord = 6;
