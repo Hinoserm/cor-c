@@ -1,0 +1,101 @@
+// 1200's front end with each instruction keeping the node it was made
+// from (Instr.From): the tree is handed back with the module, and no node
+// may be made in CompileUnit's region.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+sealed class Token { public int Kind; public string Text; public Token(int k, string t) { Kind = k; Text = t; } }
+public sealed class TypeRef { public string Name; public TypeRef? Element; public TypeRef(string n) { Name = n; } }
+public abstract class Node
+{
+    public int Line;
+    public TypeRef? Type;
+    public abstract void Bind(Dictionary<string, int> slots);
+    public abstract void Emit(IrModule m, Dictionary<string, int> slots);
+}
+sealed class Name : Node
+{
+    public string Id;
+    public Name(string id, int line) { Id = id; Line = line; }
+    public override void Bind(Dictionary<string, int> slots) { Type = new TypeRef("int"); }
+    public override void Emit(IrModule m, Dictionary<string, int> slots) => m.Code.Add(new Instr(2, slots[Id], 0) { From = this });
+}
+sealed class Num : Node
+{
+    public int Value;
+    public Num(int v, int line) { Value = v; Line = line; }
+    public override void Bind(Dictionary<string, int> slots) { Type = new TypeRef("int"); }
+    public override void Emit(IrModule m, Dictionary<string, int> slots) => m.Code.Add(new Instr(1, Value, 0) { From = this });
+}
+sealed class Add : Node
+{
+    public Node L, R;
+    public Add(Node l, Node r, int line) { L = l; R = r; Line = line; }
+    public override void Bind(Dictionary<string, int> slots) { L.Bind(slots); R.Bind(slots); Type = new TypeRef("int") { Element = L.Type }; }
+    public override void Emit(IrModule m, Dictionary<string, int> slots) { L.Emit(m, slots); R.Emit(m, slots); m.Code.Add(new Instr(3, 0, 0) { From = this }); }
+}
+sealed class Assign : Node
+{
+    public string Target; public Node Value;
+    public Assign(string t, Node v, int line) { Target = t; Value = v; Line = line; }
+    public override void Bind(Dictionary<string, int> slots) { Value.Bind(slots); if (!slots.ContainsKey(Target)) slots[Target] = slots.Count; Type = Value.Type; }
+    public override void Emit(IrModule m, Dictionary<string, int> slots) { Value.Emit(m, slots); m.Code.Add(new Instr(4, slots[Target], 0) { From = this }); }
+}
+
+public sealed class Instr { public int Op, A, B; public Node? From; public Instr(int op, int a, int b) { Op = op; A = a; B = b; } }
+public sealed class IrModule
+{
+    public readonly List<Instr> Code = new();
+    public int Slots;
+}
+
+public static class Front
+{
+    static List<Token> Lex(string source)
+    {
+        List<Token> tokens = new();
+        int i = 0;
+        while (i < source.Length)
+        {
+            char c = source[i];
+            if (c == ' ' || c == '\n') { i++; continue; }
+            int start = i;
+            if (char.IsDigit(c)) { while (i < source.Length && char.IsDigit(source[i])) i++; tokens.Add(new Token(1, source.Substring(start, i - start))); }
+            else if (char.IsLetter(c)) { while (i < source.Length && char.IsLetter(source[i])) i++; tokens.Add(new Token(2, source.Substring(start, i - start))); }
+            else { i++; tokens.Add(new Token(3, source.Substring(start, 1))); }
+        }
+        return tokens;
+    }
+
+    static List<Node> Parse(List<Token> tokens)
+    {
+        List<Node> statements = new();
+        int at = 0, line = 0;
+        while (at < tokens.Count)
+        {
+            string target = tokens[at].Text; at += 2;
+            Node value = Atom(tokens[at++], line);
+            while (at < tokens.Count && tokens[at].Text == "+") { at++; value = new Add(value, Atom(tokens[at++], line), line); }
+            at++;
+            statements.Add(new Assign(target, value, line++));
+        }
+        return statements;
+    }
+
+    static Node Atom(Token t, int line) => t.Kind == 1 ? new Num(int.Parse(t.Text), line) : new Name(t.Text, line);
+
+    /// The front end of one unit: everything but the module dies here.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static IrModule CompileUnit(string source)
+    {
+        List<Node> tree = Parse(Lex(source));
+        Dictionary<string, int> slots = new();
+        foreach (Node n in tree) n.Bind(slots);
+        IrModule m = new();
+        foreach (Node n in tree) n.Emit(m, slots);
+        m.Slots = slots.Count;
+        return m;
+    }
+}

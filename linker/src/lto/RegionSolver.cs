@@ -311,6 +311,10 @@ public static class RegionSolver
         private readonly Queue<int> _work = new();
         private long _held, _steps, _edgesSinceCollapse;
         private bool _over;
+        // For a report: the node being carried on (~node: one saturating),
+        // and per object, what first put it where nobody follows.
+        private int _from = -1;
+        private readonly Dictionary<int, int> _escapedFrom = new();
         private readonly long _heapAtStart = GC.GetTotalMemory(false);
         private long _heapLimit = HeapBudget;
 
@@ -420,10 +424,22 @@ public static class RegionSolver
             return null;
         }
 
+        /// <summary>
+        /// The context of a root's copy: CODE NOBODY FOLLOWS CALLS IT with
+        /// the unknown object, in a copy of its own. Called so in the copy
+        /// every call that is followed runs, every function whose address is
+        /// taken -- each virtual method, through its descriptor -- had the
+        /// unknown object for parameters wherever it was called: a foreach
+        /// over a list, whose enumerator lives in a frame and runs MoveNext's
+        /// context-free copy, put each element where nobody follows, and the
+        /// compiler's syntax trees all outlived every boundary.
+        /// </summary>
+        private const int Unseen = -2;
+
         // A function called from where nobody can say, with anything, its return going anywhere.
         private void Root(int f)
         {
-            int copy = CopyOf(f, -1);
+            int copy = CopyOf(f, Unseen);
             if (!_roots.Add(copy)) return;
             RegionFunction function = _functions[f];
             for (int k = 0; k < function.Parameters; k++) Add(Node(copy, k), GlobalLocation);
@@ -476,11 +492,12 @@ public static class RegionSolver
 
         private int Node(int copy, int local) => _copyBase[copy] + local;
 
-        /// <summary>A function's copy for an object it is called on (-1: none), made on first use with its constraints.</summary>
+        /// <summary>A function's copy for an object it is called on (-1: none; Unseen: code nobody follows calls it), made on first use with its constraints.</summary>
         private int CopyOf(int f, int context)
         {
             RegionFunction function = _functions[f];
-            if (!function.Instance) context = -1;
+            if (context == Unseen) { }
+            else if (!function.Instance) context = -1;
             else if (context >= 0 && (_objectSite[context] < 0 || _objectDepth[context] >= _maxDepth)) context = -1;
             if (_copyIds.TryGetValue(Key(f, context), out int known)) return known;
             // A METHOD CALLED ON MANY OBJECTS is called on the rest without a
@@ -712,6 +729,8 @@ public static class RegionSolver
             else if (_saturated[node] && _locationObject[loc] != Global) { Escape(loc); loc = GlobalLocation; }
             SparseSet set = _pts[node] ??= new();
             if (!set.Add(loc)) return;
+            // For a report: what first put each location where nobody follows.
+            if (_report is not null && _locationObject[loc] != Global && node == Rep(Cell(GlobalLocation))) _escapedFrom.TryAdd(_locationObject[loc], _from);
             // Checked here, not only between steps: one step's watchers can
             // add without end, and the link died inside it before the loop
             // looked again.
@@ -736,6 +755,8 @@ public static class RegionSolver
         /// </summary>
         private void Saturate(int node)
         {
+            int from = _from;
+            _from = ~node;
             _saturated[node] = true;
             int[] held = _pts[node]!.ToArray();
             _pts[node] = new SparseSet();
@@ -747,6 +768,7 @@ public static class RegionSolver
             _pts[node]!.Add(GlobalLocation);
             _held++;
             delta.Add(GlobalLocation);
+            _from = from;
         }
 
         private void Escape(int loc) => Add(Cell(GlobalLocation), loc);
@@ -780,18 +802,24 @@ public static class RegionSolver
             edges.Add((to, shift));
             if (shift == 0) _edgesSinceCollapse++;
             if (_pts[from] is not { } pts) return;
+            int carried = _from;
+            _from = from;
             // The unknown object's cell takes what escapes while this walks (Saturate).
-            if (from == to || from == Rep(Cell(GlobalLocation))) { foreach (int loc in pts.ToArray()) AddShifted(to, loc, shift); return; }
-            // Walked in place: what is added goes to another node.
-            for (int b = 0; b < pts.Blocks; b++)
+            if (from == to || from == Rep(Cell(GlobalLocation))) { foreach (int loc in pts.ToArray()) AddShifted(to, loc, shift); }
+            else
             {
-                int key = pts.KeyAt(b) << 6;
-                for (ulong bits = pts.BitsAt(b); bits != 0; bits &= bits - 1)
+                // Walked in place: what is added goes to another node.
+                for (int b = 0; b < pts.Blocks; b++)
                 {
-                    int loc = key + System.Numerics.BitOperations.TrailingZeroCount(bits);
-                    if (shift == 0) Add(to, loc); else AddShifted(to, loc, shift);
+                    int key = pts.KeyAt(b) << 6;
+                    for (ulong bits = pts.BitsAt(b); bits != 0; bits &= bits - 1)
+                    {
+                        int loc = key + System.Numerics.BitOperations.TrailingZeroCount(bits);
+                        if (shift == 0) Add(to, loc); else AddShifted(to, loc, shift);
+                    }
                 }
             }
+            _from = carried;
         }
 
         private void Leak(int node) => Edge(node, Cell(GlobalLocation), 0);
@@ -969,7 +997,8 @@ public static class RegionSolver
             if (binding.Direct is not null)
             {
                 binding.Unbound = false;
-                int context = _locationOffset[loc] == 0 && o != Global ? o : -1;
+                // On the unknown object, the copy code nobody follows runs (Unseen).
+                int context = o == Global ? Unseen : _locationOffset[loc] == 0 ? o : -1;
                 foreach (int g in binding.Direct) Handed(binding, CopyOf(g, context), loc);
                 return;
             }
@@ -990,7 +1019,7 @@ public static class RegionSolver
                 foreach (int g in Resolve(_unitOf[caller], target)!)
                 {
                     _named[caller].Add(g);
-                    Handed(binding, CopyOf(g, -1), loc);
+                    Handed(binding, CopyOf(g, o == Global ? Unseen : -1), loc);
                 }
         }
 
@@ -1073,6 +1102,7 @@ public static class RegionSolver
 
         private void Propagate(int node, int loc)
         {
+            _from = node;
             if (_edges[node] is { } edges)
                 for (int e = 0; e < edges.Count; e++) AddShifted(edges[e].To, loc, edges[e].Shift);
             Uses? uses = _uses[node];
@@ -1262,10 +1292,27 @@ public static class RegionSolver
 
         private bool IsSite(int o) => o > Global && _objectSite[o] >= 0;
 
+        // Sites one of whose objects code nobody follows may make and keep.
+        private readonly HashSet<(int, int)> _unseenKept = new();
+
         private RegionFacts?[]? Judge()
         {
             _globalReach = new();
             Reach(new[] { Global }, _globalReach, null);
+            // WHAT CODE NOBODY FOLLOWS MAKES AND KEEPS is never taken. A copy
+            // a root reaches may run beneath a call this cannot see, inside a
+            // region opened above that call and above no copy of it here: an
+            // object such a copy makes that the unknown object reaches would
+            // be made in that region and outlive it. Its site goes to the heap
+            // wherever it runs.
+            HashSet<int> unseen = new(_roots);
+            Stack<int> walk = new(_roots);
+            while (walk.TryPop(out int c))
+                foreach (int callee in _callees[c])
+                    if (unseen.Add(callee)) walk.Push(callee);
+            for (int o = 1; o < _objectFunction.Count; o++)
+                if (IsSite(o) && _globalReach.Contains(o) && _objectMakers[o].Any(unseen.Contains))
+                    _unseenKept.Add((_objectFunction[o], _objectSite[o]));
             bool[] recursive = Recursive(), beforeBlock = BeforeThreadBlock();
             // Nor what the entry calls itself -- Main, the runtime's start --
             // as RegionPointsTo.EntryCalls: Main never (its summary says it
@@ -1435,7 +1482,7 @@ public static class RegionSolver
             foreach (((int, int) key, List<int> objects) in bySite)
             {
                 bool anywhere = objects.Any(above.ContainsKey);
-                if (!anywhere) continue;
+                if (!anywhere || _unseenKept.Contains(key)) continue;
                 if (!objects.Any(refuser.ContainsKey))
                 {
                     verdict.Taken.Add(key);
@@ -1884,7 +1931,7 @@ public static class RegionSolver
                 }
                 HashSet<(int, int)> taken = new();
                 foreach (((int, int) key, List<int> objects) in bySite)
-                    if (objects.Any(o => verdict.Above.ContainsKey(o) || under.Contains(o))
+                    if (objects.Any(o => verdict.Above.ContainsKey(o) || under.Contains(o)) && !_unseenKept.Contains(key)
                         && !objects.Any(o => verdict.Refuser.ContainsKey(o) || refused.Contains(o)))
                         taken.Add(key);
                 int before = loops.Count;
@@ -1927,13 +1974,44 @@ public static class RegionSolver
                             if (outlives) kept++; else local++;
                             string verdict = outlives ? "outlives" : taken.Contains((_objectFunction[o], _objectSite[o])) ? "region  " : "local   ";
                             string reason = !outlives && !taken.Contains((_objectFunction[o], _objectSite[o]))
-                                && why.TryGetValue((_objectFunction[o], _objectSite[o]), out string? because) ? " (refused: " + because + ")" : "";
+                                && why.TryGetValue((_objectFunction[o], _objectSite[o]), out string? because) ? " (refused: " + because + ")"
+                                : outlives ? " (" + WhyOutlives(o) + ")" : "";
                             lines.Add("  " + verdict + " " + DescribeObject(o) + reason);
                         }
                 string state = opened.Contains(f) ? "opened" : chosen.Contains(f) ? "chosen, nothing taken" : "not chosen";
                 Log($"boundary {name} context {_copyContext[b]} ({state}): {local} local, {kept} outlive it");
                 foreach (string line in lines) Console.Error.WriteLine(line);
             }
+        }
+
+        // For a report: each object reached from the unknown object, by the
+        // object it was first reached through (Global for one put there).
+        private Dictionary<int, int>? _escapeParent;
+        private Dictionary<int, int>? _cellOf;
+
+        /// <summary>Why an object outlives a boundary, for a report: the way the unknown object reaches it, and what put the first of that way there.</summary>
+        private string WhyOutlives(int o)
+        {
+            if (!_globalReach.Contains(o)) return "kept by what the boundary is handed or hands back";
+            if (_escapeParent is null)
+            {
+                _escapeParent = new() { [Global] = -1 };
+                Queue<int> next = new();
+                next.Enqueue(Global);
+                while (next.TryDequeue(out int at))
+                    foreach (int held in _pointsInto![at])
+                        if (_escapeParent.TryAdd(held, at)) next.Enqueue(held);
+                _cellOf = new();
+                for (int loc = 0; loc < _cellNode.Count; loc++) if (_cellNode[loc] >= 0) _cellOf[Rep(_cellNode[loc])] = loc;
+            }
+            List<int> way = new();
+            for (int at = o; at != Global && at >= 0 && way.Count < 12; at = _escapeParent.GetValueOrDefault(at, -1)) way.Add(at);
+            int first = way[^1];
+            string put = _escapedFrom.TryGetValue(first, out int from)
+                ? from < 0 ? (from == -1 ? "nothing seen" : "a node past " + MostHeld + ": " + DescribeNode(~from, _cellOf!)) : DescribeNode(from, _cellOf!)
+                : "unknown";
+            return "escapes " + (way.Count > 1 ? "through " + DescribeObject(first) + (way.Count > 2 ? " and " + (way.Count - 2) + " more" : "") + ", " : "")
+                + "put where nobody follows by " + put;
         }
 
         // What holds the most, for a report: where the sets grew.
@@ -1973,7 +2051,8 @@ public static class RegionSolver
                 if (_copyBase[c] <= node)
                 {
                     RegionFunction f = _functions[_copyFunction[c]];
-                    return node - _copyBase[c] < f.Nodes ? f.Name + " context " + _copyContext[c] + " node " + (node - _copyBase[c]) : "a node";
+                    return node - _copyBase[c] < f.Nodes ? f.Name + " context " + _copyContext[c] + " node " + (node - _copyBase[c])
+                        + (node - _copyBase[c] == f.Parameters ? " (its return)" : node - _copyBase[c] < f.Parameters ? " (a parameter)" : "") : "a node";
                 }
             return "a node";
         }

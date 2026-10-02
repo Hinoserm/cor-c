@@ -1852,6 +1852,7 @@ public sealed class RegionPointsTo : IModulePass
         // stored was stored where nobody follows: 1180's tokens, 1100's.
         if (!NewEdge(from, to, shift)) return;
         _edgeCount++;
+        _from = from;
         LocSet held = _pts[from];
         if (from == to) { foreach (int id in held.Ids()) AddShifted(to, _locs[id], shift); return; }
         // Walked in place: what is added goes to another node.
@@ -1889,6 +1890,27 @@ public sealed class RegionPointsTo : IModulePass
         return true;
     }
 
+    // For a report: the node being carried on, and per object, the node that
+    // first put it where nobody follows.
+    private int _from = -1;
+    private readonly Dictionary<int, int> _escapedFrom = new();
+
+    /// <summary>A node, for a report: the function copy whose register (or return) it is, or a cell.</summary>
+    private string DescribeNode(int node)
+    {
+        if (node < 0) return "nothing seen";
+        for (int c = _copyBase.Count - 1; c >= 0; c--)
+            if (_copyBase[c] <= node)
+            {
+                (Function f, int context) = _copies[c];
+                int r = node - _copyBase[c];
+                if (r > f.RegCount) return "a cell";
+                string name = r == f.RegCount ? "its return" : f.Params.FirstOrDefault(p => p.Id == r) is { } p ? "parameter " + p.Name : "register " + r;
+                return f.Name + " context " + context + " " + name;
+            }
+        return "a node";
+    }
+
     private void Add(int node, long loc)
     {
         int o = ObjectOf(loc);
@@ -1912,6 +1934,9 @@ public sealed class RegionPointsTo : IModulePass
             id = _globalId;
         }
         if (!_pts[node].Add(id)) return;
+        // For a report: what first put each object where nobody follows.
+        if (Report is not null && ObjectOf(_locs[id]) != Global && node == Find(Cell(Global, Any)))
+            _escapedFrom.TryAdd(ObjectOf(_locs[id]), _from);
         // Checked here, not only between steps: one step's watchers can add
         // without end (a copy between two growing sets), and the compile died
         // inside it before the loop looked again.
@@ -2510,6 +2535,7 @@ public sealed class RegionPointsTo : IModulePass
             // A node merged into another since it was queued: its delta went too.
             if (_delta[node] is not { } delta) continue;
             _delta[node] = null;
+            _from = node;
             // Merges owe a node what each side lacked, often the same
             // locations many times over: each is carried once.
             if (_owedTwice.Remove(node) || delta.Count > _pts[node].Count) delta = Distinct(delta);
@@ -2742,7 +2768,8 @@ public sealed class RegionPointsTo : IModulePass
                 if (obj.Site is null || !beneath.Contains(CopyIdOfObject(o))) continue;
                 bool outlives = reached.Contains(o);
                 if (outlives) kept++; else local++;
-                lines.Add($"  {(outlives ? "outlives" : "local   ")} {obj.F!.Name} line {obj.Site.Line} {TypeOf(o)}{(IsCallContext(obj.Context) ? " called from line " + CallContextAt(obj.Context).Site.Line : "")}");
+                lines.Add($"  {(outlives ? "outlives" : "local   ")} {obj.F!.Name} line {obj.Site.Line} {TypeOf(o)}{(IsCallContext(obj.Context) ? " called from line " + CallContextAt(obj.Context).Site.Line : "")}"
+                    + (!outlives ? "" : _fromGlobal!.Contains(o) ? " (reached from the unknown object" + EscapeWay(o) + ")" : " (kept by what the boundary is handed or hands back)"));
             }
             Console.Error.WriteLine($"regions: boundary {f.Name} ctx {context}: {local} local, {kept} outlive it");
             foreach (string line in lines) Console.Error.WriteLine(line);
@@ -2804,6 +2831,29 @@ public sealed class RegionPointsTo : IModulePass
         else if (obj.Site is not null && IsCallContext(obj.Context)) what += " [called from line " + CallContextAt(obj.Context).Site.Line + "]";
         else if (obj.Site is not null && obj.Context == -1 && IsInstance(obj.F!)) what += " [no object's]";
         return what;
+    }
+
+    private Dictionary<int, int>? _escapeParent;
+
+    // For a report: the way from the unknown object to `o`, by its first
+    // object, and what put that one where nobody follows.
+    private string EscapeWay(int o)
+    {
+        if (_escapeParent is null)
+        {
+            _escapeParent = new() { [Global] = -1 };
+            Queue<int> next = new();
+            next.Enqueue(Global);
+            while (next.TryDequeue(out int at))
+                foreach (int held in _pointsInto![at])
+                    if (_escapeParent.TryAdd(held, at)) next.Enqueue(held);
+        }
+        int first = o, hops = 0;
+        while (_escapeParent.TryGetValue(first, out int parent) && parent != Global && parent >= 0 && hops < 64) { first = parent; hops++; }
+        var obj = _objects[first];
+        string what = obj.Site is not null ? obj.F!.Name + " line " + obj.Site.Line + " " + TypeOf(first) : "an object";
+        return (hops > 0 ? ", through " + what + (hops > 1 ? " and " + (hops - 1) + " more" : "") : "")
+            + ", put there by " + (_escapedFrom.TryGetValue(first, out int from) ? DescribeNode(from) : "unknown");
     }
 
     // The copy an object was made in: its function in its context.

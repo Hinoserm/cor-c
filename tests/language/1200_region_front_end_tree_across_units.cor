@@ -1,0 +1,59 @@
+// test: region_front_end_tree_across_units
+// units: tests/language/support/1200_region_front_end_units.cor
+// expect-exit: 0
+// expect-output:
+// 312000
+// tree given back True
+// freed by regions True
+//
+// A front end in a unit of its own, shaped as the compiler's: tokens, a tree
+// whose nodes bind and emit themselves through virtual methods, read by
+// foreach over lists, and an IR module made from them, the module alone
+// handed back (Front.CompileUnit). Every node dies when CompileUnit returns,
+// and the link makes it there in CompileUnit's region.
+//
+// Every virtual method is called from code nobody follows -- its address is
+// in a descriptor -- and that copy took the unknown object for `this` in the
+// copy every followed call on an object of no context runs: List's
+// enumerator lives in the caller's frame, so a foreach ran MoveNext's
+// context-free copy, whose store of the element through `this` put every
+// node of the tree where nobody follows. The tree outlived every boundary,
+// and the compiler's own syntax with it; now code nobody follows runs a copy
+// of its own, and a call on the unknown object runs that one.
+
+using System;
+using System.Collections.Generic;
+
+static class P
+{
+    static int Run(IrModule m)
+    {
+        int[] slots = new int[m.Slots];
+        int[] stack = new int[64];
+        int sp = 0;
+        foreach (Instr i in m.Code)
+            switch (i.Op)
+            {
+                case 1: stack[sp++] = i.A; break;
+                case 2: stack[sp++] = slots[i.A]; break;
+                case 3: sp--; stack[sp - 1] += stack[sp]; break;
+                case 4: slots[i.A] = stack[--sp]; break;
+            }
+        int sum = 0;
+        foreach (int s in slots) sum += s;
+        return sum;
+    }
+
+    static void Main()
+    {
+        string source = "a = 1 + 2 + 3; b = a + 4; c = b + a + 10; d = c + c; e = d + 1 + 2 + 3 + 4;";
+        long total = 0;
+        long freedBefore = Gc.RegionFreedBytes, blocksBefore = Gc.RegionBlocks;
+        for (int k = 0; k < 2000; k++) total += Run(Front.CompileUnit(source));
+        long freed = Gc.RegionFreedBytes - freedBefore, perCall = (Gc.RegionBlocks - blocksBefore) / 2000;
+        Console.WriteLine(total);
+        // 31 nodes a call; the rest of a call's region holds 44 blocks.
+        Console.WriteLine("tree given back " + (perCall >= 70));
+        Console.WriteLine("freed by regions " + (freed >= 2000L * 2400));
+    }
+}
