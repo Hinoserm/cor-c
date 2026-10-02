@@ -36,7 +36,7 @@ namespace Corsac.Lang.Lto;
 public static class RegionSolver
 {
     /// <summary>The most nodes, locations held, and locations made, before giving up.</summary>
-    public const int NodeBudget = 4_000_000, HeldBudget = 12_000_000, LocationBudget = 2_000_000;
+    public const int NodeBudget = 3_000_000, HeldBudget = 10_000_000, LocationBudget = 1_500_000;
     /// <summary>The most objects and calls walked judging the boundaries, before giving up.</summary>
     public const long JudgeBudget = 200_000_000;
 
@@ -49,9 +49,9 @@ public static class RegionSolver
     public static RegionFacts?[]? Solve(IReadOnlyList<RegionHints> units, Dictionary<string, string[]> virtuals,
         Func<string, long, string?> methodAt, string entry, IReadOnlySet<string> foreign, string? report, Func<int, string, bool>? live = null)
     {
-        // CONTEXTS AS FAR AS THE BUDGET GOES: an object's two deep, then none
+        // CONTEXTS AS FAR AS THE BUDGET GOES: two objects deep, then one, then none
         // at all -- every function one copy, coarser but far smaller.
-        foreach (int depth in new[] { 2, 0 })
+        foreach (int depth in new[] { 2, 1, 0 })
         {
             Solver solver = new(units, virtuals, methodAt, entry, foreign, report, live, depth);
             if (solver.Run() is { } facts) return facts;
@@ -148,6 +148,18 @@ public static class RegionSolver
         public bool Exact;
     }
 
+    // A node's uses beyond the copies out of it: the loads and stores it is
+    // the address of, the block copies at either end, the calls it is the
+    // receiver of; and its copies as a set, once there are many.
+    private sealed class Uses
+    {
+        public List<(int Dest, long Offset)>? Loads;
+        public List<(int Value, long Offset)>? Stores;
+        public List<int>? MemCopies;
+        public List<int>? Receivers;
+        public HashSet<(int, long)>? EdgeSet;
+    }
+
     private sealed class MemCopyRecord
     {
         public int To, From;
@@ -229,11 +241,9 @@ public static class RegionSolver
         private readonly List<SparseSet?> _pts = new();
         private readonly List<List<int>?> _delta = new();
         private readonly List<List<(int To, long Shift)>?> _edges = new();
-        private readonly List<HashSet<(int, long)>?> _edgeSets = new();
-        private readonly List<List<(int Dest, long Offset)>?> _loads = new();
-        private readonly List<List<(int Value, long Offset)>?> _stores = new();
-        private readonly List<List<int>?> _memcopies = new();
-        private readonly List<List<int>?> _receivers = new();
+        // What else a node is used for, made only for the nodes that are:
+        // most are copied from and into, and nothing more.
+        private readonly List<Uses?> _uses = new();
         private readonly List<MemCopyRecord> _memcopyRecords = new();
         private readonly List<Binding> _bindings = new();
         private readonly HashSet<long> _readers = new();
@@ -342,11 +352,7 @@ public static class RegionSolver
             _pts.Add(null);
             _delta.Add(null);
             _edges.Add(null);
-            _edgeSets.Add(null);
-            _loads.Add(null);
-            _stores.Add(null);
-            _memcopies.Add(null);
-            _receivers.Add(null);
+            _uses.Add(null);
             return _parent.Count - 1;
         }
 
@@ -506,7 +512,7 @@ public static class RegionSolver
             from = Rep(from); to = Rep(to);
             if (from == to && shift == 0) return;
             List<(int To, long Shift)> edges = _edges[from] ??= new();
-            if (_edgeSets[from] is { } set) { if (!set.Add((to, shift))) return; }
+            if (_uses[from]?.EdgeSet is { } set) { if (!set.Add((to, shift))) return; }
             else
             {
                 for (int e = 0; e < edges.Count; e++) if (edges[e].To == to && edges[e].Shift == shift) return;
@@ -515,7 +521,7 @@ public static class RegionSolver
                     HashSet<(int, long)> made = new();
                     foreach (var e in edges) made.Add((e.To, e.Shift));
                     made.Add((to, shift));
-                    _edgeSets[from] = made;
+                    Use(from).EdgeSet = made;
                 }
             }
             edges.Add((to, shift));
@@ -526,10 +532,12 @@ public static class RegionSolver
 
         private void Leak(int node) => Edge(node, Cell(GlobalLocation), 0);
 
+        private Uses Use(int node) => _uses[node] ??= new Uses();
+
         private void Load(int dest, int baseNode, long offset)
         {
             baseNode = Rep(baseNode);
-            (_loads[baseNode] ??= new()).Add((dest, offset));
+            (Use(baseNode).Loads ??= new()).Add((dest, offset));
             if (_pts[baseNode] is { } pts) foreach (int loc in pts.ToArray()) Loaded(loc, dest, offset);
         }
 
@@ -548,7 +556,7 @@ public static class RegionSolver
         private void Store(int baseNode, long offset, int value)
         {
             baseNode = Rep(baseNode);
-            (_stores[baseNode] ??= new()).Add((value, offset));
+            (Use(baseNode).Stores ??= new()).Add((value, offset));
             if (_pts[baseNode] is { } pts) foreach (int loc in pts.ToArray()) Stored(loc, value, offset);
         }
 
@@ -564,8 +572,8 @@ public static class RegionSolver
             int id = _memcopyRecords.Count;
             _memcopyRecords.Add(new MemCopyRecord { To = to, From = from, Count = count });
             to = Rep(to); from = Rep(from);
-            (_memcopies[to] ??= new()).Add(id);
-            if (from != to) (_memcopies[from] ??= new()).Add(id);
+            (Use(to).MemCopies ??= new()).Add(id);
+            if (from != to) (Use(from).MemCopies ??= new()).Add(id);
             if (_pts[from] is { } pts) foreach (int loc in pts.ToArray()) Copied(id, loc, true);
         }
 
@@ -647,7 +655,7 @@ public static class RegionSolver
             int id = _bindings.Count;
             _bindings.Add(binding);
             receiver = Rep(receiver);
-            (_receivers[receiver] ??= new()).Add(id);
+            (Use(receiver).Receivers ??= new()).Add(id);
             if (_pts[receiver] is { } pts) foreach (int loc in pts.ToArray()) Received(id, loc);
         }
 
@@ -753,18 +761,20 @@ public static class RegionSolver
         {
             if (_edges[node] is { } edges)
                 for (int e = 0; e < edges.Count; e++) Add(edges[e].To, Shifted(loc, edges[e].Shift));
-            if (_loads[node] is { } loads)
+            Uses? uses = _uses[node];
+            if (uses is null) return;
+            if (uses.Loads is { } loads)
                 for (int k = 0; k < loads.Count; k++) Loaded(loc, loads[k].Dest, loads[k].Offset);
-            if (_stores[node] is { } stores)
+            if (uses.Stores is { } stores)
                 for (int k = 0; k < stores.Count; k++) Stored(loc, stores[k].Value, stores[k].Offset);
-            if (_memcopies[node] is { } copies)
+            if (uses.MemCopies is { } copies)
                 for (int k = 0; k < copies.Count; k++)
                 {
                     MemCopyRecord r = _memcopyRecords[copies[k]];
                     if (Rep(r.From) == node) Copied(copies[k], loc, true);
                     if (Rep(r.To) == node) Copied(copies[k], loc, false);
                 }
-            if (_receivers[node] is { } receivers)
+            if (uses.Receivers is { } receivers)
                 for (int k = 0; k < receivers.Count; k++) Received(receivers[k], loc);
         }
 
@@ -838,18 +848,19 @@ public static class RegionSolver
             _parent[a] = b;
             SparseSet? held = _pts[a];
             List<(int To, long Shift)>? edges = _edges[a];
-            List<(int Dest, long Offset)>? loads = _loads[a];
-            List<(int Value, long Offset)>? stores = _stores[a];
-            List<int>? copies = _memcopies[a];
-            List<int>? receivers = _receivers[a];
-            _pts[a] = null; _edges[a] = null; _edgeSets[a] = null; _loads[a] = null; _stores[a] = null; _memcopies[a] = null; _receivers[a] = null;
+            Uses? uses = _uses[a];
+            List<(int Dest, long Offset)>? loads = uses?.Loads;
+            List<(int Value, long Offset)>? stores = uses?.Stores;
+            List<int>? copies = uses?.MemCopies;
+            List<int>? receivers = uses?.Receivers;
+            _pts[a] = null; _edges[a] = null; _uses[a] = null;
             if (edges is not null) foreach (var e in edges) Edge(b, e.To, e.Shift);
             if (loads is not null) foreach (var l in loads) Load(l.Dest, b, l.Offset);
             if (stores is not null) foreach (var s in stores) Store(b, s.Offset, s.Value);
             if (copies is not null)
                 foreach (int id in copies)
                 {
-                    (_memcopies[b] ??= new()).Add(id);
+                    (Use(b).MemCopies ??= new()).Add(id);
                     if (_pts[b] is { } pts)
                         foreach (int loc in pts.ToArray())
                         {
@@ -861,7 +872,7 @@ public static class RegionSolver
             if (receivers is not null)
                 foreach (int id in receivers)
                 {
-                    (_receivers[b] ??= new()).Add(id);
+                    (Use(b).Receivers ??= new()).Add(id);
                     if (_pts[b] is { } pts) foreach (int loc in pts.ToArray()) Received(id, loc);
                 }
             if (held is not null) foreach (int loc in held.ToArray()) Add(b, loc);
