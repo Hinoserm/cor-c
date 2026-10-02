@@ -170,6 +170,7 @@ public sealed class Inline : IParallelModulePass
             // What the region pass calls (RegionPointsTo), after the inliner has run.
             pinned.Add(RegionPointsTo.Enter);
             pinned.Add(RegionPointsTo.Leave);
+            pinned.Add(RegionPointsTo.LoopTop);
             pinned.Add(RegionPointsTo.InRegion);
             pinned.Add(RegionPointsTo.Near);
             pinned.Add(RegionPointsTo.Catch);

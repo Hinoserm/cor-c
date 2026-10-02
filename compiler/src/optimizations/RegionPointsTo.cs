@@ -292,7 +292,7 @@ public sealed class RegionPointsTo : IModulePass
                 foreach (Instr i in b.Instrs)
                     if (i.RegionSite && i.Op == Opcode.Call && IsRewritable(i.Callee)) sites++;
         foreach (Function f in m.Functions)
-            if (facts.Boundaries.Contains(f.Name)) { Open(f); opened++; }
+            if (facts.Boundaries.Contains(f.Name)) { Open(f, false); opened++; }
         if (sites > 0 || opened > 0) CatchUp(m);
         if ((sites > 0 || opened > 0) && report)
             Console.Error.WriteLine($"regions: {opened} boundaries, {sites} sites in the innermost region, from the link");
@@ -341,20 +341,54 @@ public sealed class RegionPointsTo : IModulePass
     /// </summary>
     private void Apply()
     {
-        HashSet<Function> chosenBoundaries = Nearest();
+        // WHAT A LOOP MAKES AND DROPS EVERY TIME ROUND is no boundary's to
+        // keep: those objects go to the heap, and a boundary chosen only for
+        // them is not one (FindChurn). Found again over the boundaries left,
+        // as a boundary dropped lets a loop reach further down.
+        HashSet<int> churn = new();
+        HashSet<Function> chosenBoundaries = Nearest(churn);
+        for (int round = 0; round < 4 && FindChurn(chosenBoundaries, churn); round++)
+            chosenBoundaries = Nearest(churn);
+        if (Report is not null) foreach (Function f in chosenBoundaries) Console.Error.WriteLine($"regions: boundary chosen {f.Name}");
         List<int> boundaries = new();
         for (int c = 0; c < _copies.Count; c++)
             if (chosenBoundaries.Contains(_copies[c].F)) boundaries.Add(c);
-        if (boundaries.Count == 0) return;
 
-        // For each boundary: what outlives it, and the copies beneath it.
-        List<(HashSet<int> Outlives, HashSet<int> Beneath)> judged = new();
-        foreach (int c in boundaries) judged.Add((OutlivingOf(c), Beneath(c)));
+        // For each boundary: what outlives it, and the copies beneath it --
+        // and for a loop's, its own copy and the sites in its body.
+        List<Judged> judged = new();
+        foreach (int c in boundaries) judged.Add(new Judged(OutlivingOf(c), Beneath(c), -1, null));
+        int functionBoundaries = judged.Count;
 
         // Each site's objects, and the copy each is made in.
         Dictionary<Instr, List<(int, int)>> bySite = new(ReferenceEqualityComparer.Instance);
         foreach (var ((copy, site), o) in _madeIn)
             (bySite.TryGetValue(site, out List<(int, int)>? l) ? l : bySite[site] = new()).Add((o, copy));
+
+        // Whether object `o`, made in `copy`, can be kept past the end of
+        // boundary `k` while made in its region.
+        bool Fails(Judged k, int o, int copy, bool beside)
+        {
+            if (!k.Under(copy, _objects[o].Site!)) return false;
+            int context = _objects[o].Context;
+            // Beside an object that is never in this boundary's
+            // region -- one that outlives it, or one in a frame --
+            // never in it either, so nothing to prove.
+            if (beside && context >= 0 && (k.Outlives.Contains(context) || _objects[context].Site is null)) return false;
+            return k.Outlives.Contains(o);
+        }
+
+        // Whether the functions' boundaries, or a loop that drops it, send
+        // object `o` to the heap whatever a loop's region would prove.
+        bool FailsAnyway(int o, int copy, bool beside)
+        {
+            if (churn.Contains(o)) return true;
+            for (int k = 0; k < functionBoundaries; k++) if (Fails(judged[k], o, copy, beside)) return true;
+            return false;
+        }
+
+        Dictionary<Function, List<int>> loopRegions = SelectLoops(chosenBoundaries, judged, churn, FailsAnyway, Fails);
+        if (judged.Count == 0) return;
 
         // How a site's objects -- all of them, or those of the copies one
         // version runs -- are made: null for on the heap, as they were.
@@ -366,16 +400,12 @@ public sealed class RegionPointsTo : IModulePass
             bool anywhere = false;
             foreach ((int o, int copy) in objects)
             {
-                int context = _objects[o].Context;
-                for (int k = 0; k < boundaries.Count; k++)
+                if (churn.Contains(o)) return null;
+                foreach (Judged k in judged)
                 {
-                    if (!judged[k].Beneath.Contains(copy)) continue;
+                    if (!k.Under(copy, _objects[o].Site!)) continue;
                     anywhere = true;
-                    // Beside an object that is never in this boundary's
-                    // region -- one that outlives it, or one in a frame --
-                    // never in it either, so nothing to prove.
-                    if (beside && context >= 0 && (judged[k].Outlives.Contains(context) || _objects[context].Site is null)) continue;
-                    if (judged[k].Outlives.Contains(o)) return null;
+                    if (Fails(k, o, copy, beside)) return null;
                 }
             }
             return anywhere ? beside ? Near : InRegion : null;
@@ -410,7 +440,8 @@ public sealed class RegionPointsTo : IModulePass
             Rewrite(f, chosen.GetValueOrDefault, i => _roots.TryGetValue(i, out Version? to) && to.Same is { } same && made.TryGetValue(same, out var b) ? b.Body.Name : null);
         HashSet<Function> opened = new();
         foreach (int c in boundaries)
-            if (opened.Add(_copies[c].F)) Open(_copies[c].F);
+            if (opened.Add(_copies[c].F)) Open(_copies[c].F, loopRegions.ContainsKey(_copies[c].F));
+        foreach ((Function f, List<int> headers) in loopRegions) OpenLoops(f, headers);
 
         int versionSites = 0;
         foreach (Version v in versions)
@@ -426,12 +457,13 @@ public sealed class RegionPointsTo : IModulePass
                 }
             foreach (var (call, to) in v.Calls) if (to.Same is { } same && made.TryGetValue(same, out var b)) calls[from[call]] = b.Body.Name;
             Rewrite(body, helpers.GetValueOrDefault, calls.GetValueOrDefault);
-            if (opened.Contains(v.F)) Open(body);
+            if (opened.Contains(v.F)) Open(body, loopRegions.ContainsKey(v.F));
+            if (loopRegions.TryGetValue(v.F, out List<int>? loopHeaders)) OpenLoops(body, loopHeaders);
             if (Report is not null) Console.Error.WriteLine($"regions: version {body.Name} for {v.Copies.Length} of its copies");
         }
-        if (opened.Count > 0 || inRegion + near > 0) CatchUp(_m);
+        if (opened.Count > 0 || loopRegions.Count > 0 || inRegion + near > 0) CatchUp(_m);
         if (Report is not null)
-            Console.Error.WriteLine($"regions: {opened.Count} boundaries, {inRegion} sites in the innermost region, {near} beside their object, {versions.Count} versions making {versionSites} more");
+            Console.Error.WriteLine($"regions: {opened.Count} boundaries, {loopRegions.Values.Sum(l => l.Count)} loops, {inRegion} sites in the innermost region, {near} beside their object, {versions.Count} versions making {versionSites} more, {churn.Count} objects loops drop");
     }
 
     /// <summary>
@@ -685,16 +717,17 @@ public sealed class RegionPointsTo : IModulePass
     /// <summary>
     /// THE NEAREST CALL EACH OBJECT DIES IN: from the copy that makes it up
     /// through its callers, nearest first, the first whose return it is
-    /// proved not to outlive.
+    /// proved not to outlive. Not for an object a loop drops (FindChurn):
+    /// that goes to the heap.
     /// </summary>
-    private HashSet<Function> Nearest()
+    private HashSet<Function> Nearest(HashSet<int> churn)
     {
         const int Reach = 8;
         HashSet<Function> found = new();
         for (int o = 1; o < _objects.Count; o++)
         {
             var obj = _objects[o];
-            if (obj.Site?.Callee is not (Opt.Escape.Allocator or Opt.Escape.LeafAllocator or Opt.Escape.ObjectAllocator)) continue;
+            if (obj.Site?.Callee is not (Opt.Escape.Allocator or Opt.Escape.LeafAllocator or Opt.Escape.ObjectAllocator) || churn.Contains(o)) continue;
             int made = CopyIdOfObject(o);
             if (made < 0) continue;
             Dictionary<int, int> depth = new() { [made] = 0 };
@@ -709,7 +742,6 @@ public sealed class RegionPointsTo : IModulePass
                     if (depth.TryAdd(caller, depth[c] + 1)) next.Enqueue(caller);
             }
         }
-        if (Report is not null) foreach (Function f in found) Console.Error.WriteLine($"regions: boundary chosen {f.Name}");
         return found;
     }
 
@@ -729,8 +761,10 @@ public sealed class RegionPointsTo : IModulePass
     }
 
     // The region opened where the call first needs it, given back on every
-    // return; a throw is the runtime's to notice (Gc.PopStale).
-    private static void Open(Function f)
+    // return; a throw is the runtime's to notice (Gc.PopStale). On entry
+    // where the function has loop regions too (OpenLoops): opened later, at
+    // the same frame, it would close the loop's.
+    private static void Open(Function f, bool onEntry)
     {
         // Never inlined: the record names the boundary's own frame, and a
         // caller's would outlive a throw the caller catches.
@@ -738,7 +772,7 @@ public sealed class RegionPointsTo : IModulePass
         VReg frame = f.NewReg(IrTypes.Word, "regionframe");
         VReg handle = f.NewReg(IrTypes.Word, "region");
         Block entry = f.Blocks[0];
-        (Block at, int k0) = OpenAt(f);
+        (Block at, int k0) = onEntry ? (entry, 0) : OpenAt(f);
         Instr[] open =
         {
             new Instr { Op = Opcode.FramePointer, Dest = frame, Line = f.Line },
@@ -822,6 +856,495 @@ public sealed class RegionPointsTo : IModulePass
             while (first < best.Instrs.Count && best.Instrs[first].Op == Opcode.Phi) first++;
         }
         return (best, first);
+    }
+
+    // ---- loops ----------------------------------------------------------------
+    //
+    // A BOUNDARY THAT LOOPS keeps everything every time round makes, until it
+    // returns: a thread's body making a node a lap until it is told to stop
+    // filled its arena, and the collector read and copied the whole of it at
+    // every cycle. Two answers, each a loop's:
+    //
+    // A LOOP REGION, where what a lap makes is proved dead by the end of that
+    // lap: not reachable from anything live where the lap ends -- going round
+    // again, or out of the loop -- nor from the function's frame slots, what
+    // it was handed, what it hands back or a static. The function opens the
+    // region at the top of the loop and gives back what is in it at the top
+    // of every lap after (Gc.RegionLoop), and closes it on every way out. To
+    // Decide it is one more boundary, beneath which run the sites in the
+    // body and the copies the body's calls reach.
+    //
+    // THE HEAP, for what a lap makes, drops, and no loop region can take:
+    // made in one lap and carried into the next only by the registers the
+    // loop writes (a list's newest node, a string grown by concatenation) --
+    // nothing kept before the loop holds it -- or proved dead by the lap's
+    // end in a loop no region could be given. A boundary above would hold
+    // every lap's.
+
+    /// <summary>
+    /// A boundary as Decide judges it: what outlives it and the copies that
+    /// run beneath it -- and for a loop's region, the copy it is in and the
+    /// sites in its body, its copy's others being made outside it.
+    /// </summary>
+    private sealed record Judged(HashSet<int> Outlives, HashSet<int> Beneath, int Host, HashSet<Instr>? Body)
+    {
+        public bool Under(int copy, Instr site) => Beneath.Contains(copy) || copy == Host && Body!.Contains(site);
+    }
+
+    /// <summary>
+    /// A natural loop of a function, by its header's place in the blocks:
+    /// the instructions in its body and the calls among them -- and those
+    /// made in every lap that goes round, in blocks that dominate each back
+    /// edge -- the registers live where a lap ends, and those live into the
+    /// header that the body never writes: what was there before the loop
+    /// and stays.
+    /// </summary>
+    private sealed class LoopShape
+    {
+        public required int Header;
+        public required HashSet<Instr> Instrs;
+        public required List<Instr> Calls;
+        public required List<Instr> Always;
+        public required List<VReg> Live;
+        public required List<VReg> Invariant;
+        public required List<FrameSlot> KeptSlots;
+    }
+
+    private readonly Dictionary<Function, List<LoopShape>> _loops = new();
+    private Dictionary<int, List<(int Object, Instr Site)>>? _madeBy;
+    // Past this many blocks a function's loops are not looked for: the
+    // dominators are bit sets, a pair of blocks at a time.
+    private const int LoopBlocks = 1024;
+    // Past this many copies walked, no further loop is judged: those left
+    // keep what their boundaries keep, as they always did.
+    private const long LoopBudget = 20_000_000;
+    private long _loopWork;
+
+    public const string LoopTop = Corsac.Lang.Lto.RuntimeAbi.RegionLoop;
+
+    /// <summary>Each loop's header and body: the blocks round a back edge to a block that dominates it, merged by header.</summary>
+    private static List<(Block Header, HashSet<Block> Body, List<Block> Latches)> NaturalLoops(Function f, Cfg cfg)
+    {
+        List<(Block, HashSet<Block>, List<Block>)> loops = new();
+        Dictionary<Block, List<Block>> latches = new(ReferenceEqualityComparer.Instance);
+        List<Block> headers = new();
+        bool[] live = cfg.Live;
+        foreach (Block b in f.Blocks)
+        {
+            if (!live[b.Order]) continue;
+            foreach (Block h in cfg.Succs(b))
+            {
+                if (!cfg.Dominates(h, b)) continue;
+                if (!latches.TryGetValue(h, out List<Block>? l)) { latches[h] = l = new(); headers.Add(h); }
+                l.Add(b);
+            }
+        }
+        foreach (Block h in headers)
+        {
+            HashSet<Block> body = new(ReferenceEqualityComparer.Instance) { h };
+            Stack<Block> next = new();
+            foreach (Block l in latches[h]) if (body.Add(l)) next.Push(l);
+            while (next.TryPop(out Block? b))
+                foreach (Block p in cfg.Preds(b))
+                    if (body.Add(p)) next.Push(p);
+            loops.Add((h, body, latches[h]));
+        }
+        return loops;
+    }
+
+    private List<LoopShape> LoopsOf(Function f)
+    {
+        if (_loops.TryGetValue(f, out List<LoopShape>? known)) return known;
+        List<LoopShape> found = new();
+        _loops[f] = found;
+        if (f.Async is not null || f.Blocks.Count < 2 || f.Blocks.Count > LoopBlocks) return found;
+        Cfg cfg = new(f);
+        var natural = NaturalLoops(f, cfg);
+        if (natural.Count == 0) return found;
+        Liveness liveness = new(cfg);
+        (HashSet<FrameSlot> aliased, Func<Instr, IEnumerable<FrameSlot>> writes) = SlotUses(f);
+        foreach ((Block header, HashSet<Block> body, List<Block> latches) in natural)
+        {
+            if (cfg.IsRoot(header)) continue;
+            HashSet<Instr> instrs = new(ReferenceEqualityComparer.Instance);
+            HashSet<VReg> written = new(), live = new();
+            List<Instr> calls = new(), always = new();
+            foreach (Block b in body)
+            {
+                bool everyLap = latches.All(l => cfg.Dominates(b, l));
+                foreach (Instr i in b.Instrs)
+                {
+                    instrs.Add(i);
+                    if (i.Dest is { } d) written.Add(d);
+                    if (i.Op is Opcode.Call or Opcode.CallIndirect) { calls.Add(i); if (everyLap) always.Add(i); }
+                }
+                // A lap ends going round again, or out: what is live into
+                // where it goes, and what that block's joins take from here.
+                foreach (Block s in cfg.Succs(b))
+                    if (s == header || !body.Contains(s))
+                    {
+                        foreach (VReg r in liveness.LiveIn(s)) live.Add(r);
+                        foreach (Instr phi in s.Instrs)
+                        {
+                            if (phi.Op != Opcode.Phi) break;
+                            for (int k = 0; k < phi.Operands.Count && k < phi.Targets.Count; k++)
+                                if (phi.Targets[k] == b && phi.Operands[k] is RegOperand { Reg: var r }) live.Add(r);
+                        }
+                    }
+            }
+            List<VReg> invariant = new();
+            foreach (VReg r in liveness.LiveIn(header))
+            {
+                live.Add(r);
+                if (!written.Contains(r)) invariant.Add(r);
+            }
+            // A frame slot the body writes, whose address goes nowhere else
+            // (SlotUses), is the loop's own as a register it writes is; any
+            // other is kept from before the loop.
+            HashSet<FrameSlot> stored = new();
+            foreach (Instr i in instrs) stored.UnionWith(writes(i));
+            List<FrameSlot> keptSlots = f.Slots.Where(s => !stored.Contains(s) || aliased.Contains(s)).ToList();
+            found.Add(new LoopShape
+            {
+                Header = header.Order, Instrs = instrs, Calls = calls, Always = always, Live = live.ToList(), Invariant = invariant, KeptSlots = keptSlots,
+            });
+        }
+        return found;
+    }
+
+    /// <summary>
+    /// How a function uses its frame slots' addresses: named, or copied into
+    /// a register only ever written so. A slot is written by a store there
+    /// or by a call of the runtime's frees handed its address -- they replace
+    /// what an owned slot holds and keep no address (Harmless); one whose
+    /// address goes anywhere else is aliased, and may be written by anything.
+    /// </summary>
+    private static (HashSet<FrameSlot> Aliased, Func<Instr, IEnumerable<FrameSlot>> Writes) SlotUses(Function f)
+    {
+        Dictionary<VReg, FrameSlot?> held = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Dest is { } d)
+                    held[d] = i.Op == Opcode.Copy && i.Operands.Count == 1 && i.Operands[0] is SlotOperand { Slot: var s }
+                        && (!held.TryGetValue(d, out FrameSlot? was) || was == s) ? s : null;
+        FrameSlot? SlotOf(Operand o) => o switch
+        {
+            SlotOperand { Slot: var s } => s,
+            RegOperand { Reg: var r } => held.GetValueOrDefault(r),
+            _ => null,
+        };
+        bool Freer(Instr i) => i.Op == Opcode.Call && i.Callee is { } c && Harmless(c);
+        HashSet<FrameSlot> aliased = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                for (int k = 0; k < i.Operands.Count; k++)
+                    if (SlotOf(i.Operands[k]) is { } s && !(k == 0 && i.Op is Opcode.Load or Opcode.Store) && !Freer(i)
+                        && !(i.Op == Opcode.Copy && i.Dest is { } d && held.GetValueOrDefault(d) == s))
+                        aliased.Add(s);
+        IEnumerable<FrameSlot> Writes(Instr i)
+        {
+            if (i.Op == Opcode.Store && i.Operands.Count > 0 && SlotOf(i.Operands[0]) is { } s) yield return s;
+            else if (Freer(i)) foreach (Operand o in i.Operands) if (SlotOf(o) is { } t) yield return t;
+        }
+        return (aliased, Writes);
+    }
+
+    // The objects each copy makes, and where.
+    private List<(int Object, Instr Site)> MadeBy(int copy)
+    {
+        if (_madeBy is null)
+        {
+            _madeBy = new();
+            foreach (var ((c, site), o) in _madeIn)
+                if (site.Callee is Opt.Escape.Allocator or Opt.Escape.LeafAllocator or Opt.Escape.ObjectAllocator)
+                    (_madeBy.TryGetValue(c, out var l) ? l : _madeBy[c] = new()).Add((o, site));
+        }
+        return _madeBy.TryGetValue(copy, out var made) ? made : new();
+    }
+
+    /// <summary>
+    /// The copies a loop's body runs, in copy `c`: every one its calls reach
+    /// (all), and those reached through no boundary of `stop` (near) -- where
+    /// what is made is made in the region the loop runs in. A call this
+    /// cannot follow reaches only the copies of functions whose address is
+    /// taken, handed everything: what they make that a region may take is
+    /// dead by their own return, as it is beneath a function's boundary.
+    /// </summary>
+    private (HashSet<int> All, HashSet<int> Near) Reached(int c, List<Instr> calls, HashSet<int> stop)
+    {
+        HashSet<int> all = new(), near = new();
+        Stack<int> next = new(), nearNext = new();
+        foreach (Instr i in calls)
+        {
+            if (!_callTargets.TryGetValue((c, i), out HashSet<int>? targets)) continue;
+            foreach (int t in targets)
+            {
+                if (all.Add(t)) next.Push(t);
+                if (!stop.Contains(t) && near.Add(t)) nearNext.Push(t);
+            }
+        }
+        while (next.TryPop(out int k))
+        {
+            _loopWork++;
+            foreach (int callee in _callees[k]) if (all.Add(callee)) next.Push(callee);
+        }
+        while (nearNext.TryPop(out int k))
+            foreach (int callee in _callees[k])
+                if (!stop.Contains(callee) && near.Add(callee)) nearNext.Push(callee);
+        return (all, near);
+    }
+
+    // What outlives a lap of a loop in copy `c`: what outlives the copy, and
+    // what the registers and frame slots given reach.
+    private HashSet<int> LapOutlives(int c, List<VReg> registers, IEnumerable<FrameSlot> slots)
+    {
+        HashSet<int> reached = new(OutlivingOf(c));
+        List<int> start = new();
+        Function f = _copies[c].F;
+        foreach (VReg r in registers)
+            if (r.Id < f.RegCount)
+                foreach (long l in _pts[Reg(c, r)]) start.Add(ObjectOf(l));
+        foreach (FrameSlot slot in slots)
+            if (_slotObjects.TryGetValue((c, slot), out int o)) start.Add(o);
+        _loopWork += reached.Count;
+        return Reachable(start, reached);
+    }
+
+    // The objects made in one lap, in the region the loop runs in: by the
+    // sites in its body, and in the copies its calls reach through no boundary.
+    private IEnumerable<(int Object, int Copy)> MadeInLap(int c, LoopShape loop, HashSet<int> near)
+    {
+        foreach ((int o, Instr site) in MadeBy(c)) if (loop.Instrs.Contains(site) || near.Contains(c)) yield return (o, c);
+        foreach (int k in near) if (k != c) foreach ((int o, _) in MadeBy(k)) yield return (o, k);
+    }
+
+    // Whether one of `calls`, made from copy `c`, always makes something
+    // `takes` -- in a block of its callee that every return passes through,
+    // or in a call made from such a block, through no boundary of `stop`.
+    private bool AlwaysMakes(int c, List<Instr> calls, HashSet<int> stop, Func<int, int, bool> takes, HashSet<int> seen, int depth)
+    {
+        if (depth > 6) return false;
+        foreach (Instr i in calls)
+        {
+            if (!_callTargets.TryGetValue((c, i), out HashSet<int>? targets)) continue;
+            foreach (int t in targets)
+            {
+                if (stop.Contains(t) || !seen.Add(t)) continue;
+                List<Instr> must = MustRun(_copies[t].F);
+                if (MadeBy(t).Any(m => must.Contains(m.Site) && takes(m.Object, t))) return true;
+                if (AlwaysMakes(t, must, stop, takes, seen, depth + 1)) return true;
+            }
+        }
+        return false;
+    }
+
+    private readonly Dictionary<Function, List<Instr>> _mustRun = new();
+
+    // The calls a function makes on every way to a return: in the blocks
+    // that dominate each block that returns.
+    private List<Instr> MustRun(Function f)
+    {
+        if (_mustRun.TryGetValue(f, out List<Instr>? known)) return known;
+        List<Instr> must = new();
+        _mustRun[f] = must;
+        if (f.Blocks.Count > LoopBlocks) return must;
+        Cfg cfg = new(f);
+        List<Block> returns = f.Blocks.Where(b => b.Terminator is { Op: Opcode.Ret } && cfg.Live[b.Order]).ToList();
+        if (returns.Count == 0) return must;
+        foreach (Block b in f.Blocks)
+            if (cfg.Live[b.Order] && returns.All(r => cfg.Dominates(b, r)))
+                foreach (Instr i in b.Instrs)
+                    if (i.Op is Opcode.Call or Opcode.CallIndirect) must.Add(i);
+        return must;
+    }
+
+    private HashSet<int> BoundaryCopies(HashSet<Function> boundaries)
+    {
+        HashSet<int> copies = new();
+        for (int c = 0; c < _copies.Count; c++) if (boundaries.Contains(_copies[c].F)) copies.Add(c);
+        return copies;
+    }
+
+    /// <summary>
+    /// THE OBJECTS LOOPS CARRY AND DROP: made in a lap, reachable where a lap
+    /// ends, but only through what the loop itself writes -- nothing live
+    /// into the loop that the loop leaves alone keeps them. Added to `churn`;
+    /// whether any were.
+    /// </summary>
+    private bool FindChurn(HashSet<Function> boundaries, HashSet<int> churn)
+    {
+        HashSet<int> stop = BoundaryCopies(boundaries);
+        bool grew = false;
+        for (int c = 0; c < _copies.Count && _loopWork < LoopBudget; c++)
+        {
+            Function f = _copies[c].F;
+            if (f.Name == _m.Entry) continue;
+            foreach (LoopShape loop in LoopsOf(f))
+            {
+                (_, HashSet<int> near) = Reached(c, loop.Calls, stop);
+                List<int> made = MadeInLap(c, loop, near).Select(m => m.Object).Where(o => !churn.Contains(o)).Distinct().ToList();
+                if (made.Count == 0) continue;
+                HashSet<int> lap = LapOutlives(c, loop.Live, f.Slots), kept = LapOutlives(c, loop.Invariant, loop.KeptSlots);
+                foreach (int o in made)
+                    if (lap.Contains(o) && !kept.Contains(o) && churn.Add(o))
+                    {
+                        grew = true;
+                        if (Report is not null) Console.Error.WriteLine($"regions: dropped by a loop in {f.Name}: {_objects[o].F!.Name} line {_objects[o].Site!.Line} {TypeOf(o)}");
+                    }
+            }
+        }
+        return grew;
+    }
+
+    /// <summary>
+    /// THE LOOPS GIVEN A REGION: by function, their headers' places. A loop
+    /// is given one where, in every copy of its function, every object made
+    /// beneath it that the functions' boundaries would put in a region is
+    /// proved dead by the end of a lap -- so that no site made in a region
+    /// before goes to the heap for it -- and where every lap that goes round
+    /// makes one, with no boundary between: a loop that makes something only
+    /// on a path seldom taken (a message for a bad record) pays for no call
+    /// at the top of every lap. Each copy's loop is added to `judged`, and Decide
+    /// proves every site beneath it against it. What a loop not given one
+    /// makes and drops in a lap goes to the heap (`churn`).
+    ///
+    /// Only in a function with no landing pad: a throw caught in the loop's
+    /// own frame, and the region it left open there, would be the region the
+    /// catch went on making in. Never the program's entry, nor a type's
+    /// initialiser, nor an async or iterator body.
+    /// </summary>
+    private Dictionary<Function, List<int>> SelectLoops(HashSet<Function> boundaries, List<Judged> judged, HashSet<int> churn,
+        Func<int, int, bool, bool> failsAnyway, Func<Judged, int, int, bool, bool> fails)
+    {
+        Dictionary<Function, List<int>> chosen = new();
+        HashSet<int> stop = BoundaryCopies(boundaries);
+        Dictionary<Function, List<int>> copiesOf = new();
+        for (int c = 0; c < _copies.Count; c++)
+            (copiesOf.TryGetValue(_copies[c].F, out List<int>? l) ? l : copiesOf[_copies[c].F] = new()).Add(c);
+        bool helper = _byName.ContainsKey(LoopTop);
+        List<(int Copy, LoopShape Loop, HashSet<int> Near, HashSet<int> Lap)> refused = new();
+
+        foreach ((Function f, List<int> copies) in copiesOf)
+        {
+            List<LoopShape> loops = LoopsOf(f);
+            if (loops.Count == 0) continue;
+            bool may = helper && f.Name != _m.Entry && !f.Name.Contains("StaticInit", StringComparison.Ordinal)
+                && !f.Blocks.Any(b => b.IsLandingPad) && !f.Blocks.Any(b => b.Instrs.Any(i => i.Op == Opcode.LabelAddr));
+            foreach (LoopShape loop in loops)
+            {
+                if (_loopWork >= LoopBudget) break;
+                List<Judged> mine = new();
+                List<(int, LoopShape, HashSet<int>, HashSet<int>)> lapsHere = new();
+                bool sound = may, worth = false;
+                foreach (int c in copies)
+                {
+                    (HashSet<int> all, HashSet<int> near) = Reached(c, loop.Calls, stop);
+                    HashSet<int> lap = LapOutlives(c, loop.Live, f.Slots);
+                    lapsHere.Add((c, loop, near, lap));
+                    if (!sound) continue;
+                    Judged k = new(lap, all, c, loop.Instrs);
+                    mine.Add(k);
+                    // Under it: the body's own sites, and every copy its calls reach.
+                    IEnumerable<(int Object, int Copy)> under = MadeBy(c).Where(m => k.Under(c, m.Site)).Select(m => (m.Object, c))
+                        .Concat(all.Where(a => a != c).SelectMany(a => MadeBy(a).Select(m => (m.Object, a))));
+                    foreach ((int o, int copy) in under)
+                    {
+                        foreach (bool beside in new[] { false, true })
+                            if (!failsAnyway(o, copy, beside) && fails(k, o, copy, beside)) { sound = false; break; }
+                        if (!sound) break;
+                    }
+                    if (!sound || worth) continue;
+                    // Worth a call at the top of every lap: a lap that goes
+                    // round always makes something the region takes.
+                    bool Takes(int o, int copy) => !failsAnyway(o, copy, false) && !lap.Contains(o);
+                    worth = MadeBy(c).Any(m => loop.Always.Contains(m.Site) && Takes(m.Object, c))
+                        || AlwaysMakes(c, loop.Always, stop, Takes, new HashSet<int>(), 0);
+                }
+                if (sound && worth)
+                {
+                    judged.AddRange(mine);
+                    (chosen.TryGetValue(f, out List<int>? headers) ? headers : chosen[f] = new()).Add(loop.Header);
+                    if (Report is not null) Console.Error.WriteLine($"regions: loop region {f.Name} at block {loop.Header}");
+                }
+                else refused.AddRange(lapsHere);
+            }
+        }
+
+        // WHAT A LAP OF A LOOP WITH NO REGION MAKES AND DROPS goes to the heap,
+        // unless a loop region inside it takes it.
+        foreach ((int c, LoopShape loop, HashSet<int> near, HashSet<int> lap) in refused)
+            foreach ((int o, int copy) in MadeInLap(c, loop, near))
+            {
+                if (lap.Contains(o) || churn.Contains(o)) continue;
+                bool taken = false;
+                foreach (Judged k in judged)
+                    if (k.Body is not null && k.Under(copy, _objects[o].Site!) && !k.Outlives.Contains(o)) { taken = true; break; }
+                if (taken) continue;
+                churn.Add(o);
+                if (Report is not null) Console.Error.WriteLine($"regions: dropped by a loop in {_copies[c].F.Name}: {_objects[o].F!.Name} line {_objects[o].Site!.Line} {TypeOf(o)}");
+            }
+        return chosen;
+    }
+
+    /// <summary>
+    /// A REGION FOR EACH LOOP NAMED, by its header's place in the blocks:
+    /// RegionLoop at the top of every lap -- opening it the first time, giving
+    /// back what the lap before made in it after -- and RegionLeave on every
+    /// edge out of the loop and before every return, each handle -1 wherever
+    /// its loop is not running, which RegionLeave does nothing with. The
+    /// function is never inlined: the record names its own frame.
+    /// </summary>
+    private static void OpenLoops(Function f, List<int> headers)
+    {
+        Cfg cfg = new(f);
+        var loops = NaturalLoops(f, cfg).Where(l => headers.Contains(l.Header.Order) && !cfg.IsRoot(l.Header)).ToList();
+        if (loops.Count == 0) return;
+        f.NoInlining = true;
+        VReg frame = f.NewReg(IrTypes.Word, "loopframe");
+        List<Instr> onEntry = new() { new Instr { Op = Opcode.FramePointer, Dest = frame, Line = f.Line } };
+        Dictionary<Block, List<Instr>> leaves = new(ReferenceEqualityComparer.Instance), tops = new(ReferenceEqualityComparer.Instance);
+        List<VReg> handles = new();
+        foreach ((Block header, HashSet<Block> body, _) in loops)
+        {
+            VReg handle = f.NewReg(IrTypes.Word, "loopregion");
+            handles.Add(handle);
+            int line = header.Instrs.Count > 0 ? header.Instrs[0].Line : f.Line;
+            onEntry.Add(new Instr { Op = Opcode.Copy, Dest = handle, Operands = { new ImmOperand(-1, IrTypes.Word) }, Line = f.Line });
+            (tops.TryGetValue(header, out List<Instr>? t) ? t : tops[header] = new()).Add(
+                new Instr { Op = Opcode.Call, Callee = LoopTop, Dest = handle, Operands = { new RegOperand(handle), new RegOperand(frame) }, Line = line });
+            HashSet<Block> outs = new(ReferenceEqualityComparer.Instance);
+            foreach (Block b in body)
+                foreach (Block s in cfg.Succs(b))
+                    if (!body.Contains(s) && outs.Add(s))
+                    {
+                        List<Instr> l = leaves.TryGetValue(s, out List<Instr>? have) ? have : leaves[s] = new();
+                        int at = s.Instrs.Count > 0 ? s.Instrs[0].Line : line;
+                        l.Add(new Instr { Op = Opcode.Call, Callee = Leave, Operands = { new RegOperand(handle) }, Line = at });
+                        l.Add(new Instr { Op = Opcode.Copy, Dest = handle, Operands = { new ImmOperand(-1, IrTypes.Word) }, Line = at });
+                    }
+        }
+        foreach (Block b in f.Blocks)
+        {
+            List<Instr> put = new();
+            if (leaves.TryGetValue(b, out List<Instr>? l)) put.AddRange(l);
+            if (tops.TryGetValue(b, out List<Instr>? t)) put.AddRange(t);
+            if (put.Count > 0)
+            {
+                int k0 = 0;
+                while (k0 < b.Instrs.Count && b.Instrs[k0].Op == Opcode.Phi) k0++;
+                b.Instrs.InsertRange(k0, put);
+            }
+            for (int k = 0; k < b.Instrs.Count; k++)
+                if (b.Instrs[k].Op == Opcode.Ret)
+                {
+                    foreach (VReg h in handles)
+                    {
+                        b.Instrs.Insert(k, new Instr { Op = Opcode.Call, Callee = Leave, Operands = { new RegOperand(h) }, Line = b.Instrs[k].Line });
+                        k++;
+                    }
+                }
+        }
+        f.Blocks[0].Instrs.InsertRange(0, onEntry);
     }
 
     /// <summary>Everything reachable from Global, from what copy `c` is handed, and from what it hands back.</summary>
@@ -1515,6 +2038,7 @@ public sealed class RegionPointsTo : IModulePass
             _callees[copy].Add(callee);
             if (i.Op == Opcode.Call)
                 (_bindings.TryGetValue((copy, i), out HashSet<int>? reached) ? reached : _bindings[(copy, i)] = new()).Add(callee);
+            (_callTargets.TryGetValue((copy, i), out HashSet<int>? targets) ? targets : _callTargets[(copy, i)] = new()).Add(callee);
             Function g = _copies[callee].F;
             int self = _copies[callee].Context;
             for (int k = 0; k < args.Count && k < g.Params.Count; k++)
@@ -1572,6 +2096,9 @@ public sealed class RegionPointsTo : IModulePass
     // the object each allocation makes in each copy.
     private readonly Dictionary<(int Copy, Instr Call), HashSet<int>> _bindings = new();
     private readonly Dictionary<(int Copy, Instr Site), int> _madeIn = new();
+    // The copies every call reaches, direct or indirect, from each copy that
+    // makes it.
+    private readonly Dictionary<(int Copy, Instr Call), HashSet<int>> _callTargets = new();
 
     // A call context is numbered below -1: -2 the first.
     private static bool IsCallContext(int context) => context < -1;

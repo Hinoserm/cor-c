@@ -1,0 +1,179 @@
+// test: region_loop_laps
+// expect-exit: 0
+// expect-output:
+// laps 20002000000 carried 4999950160 nested 562972500 thrown 30500
+// bounded True
+//
+// A boundary that loops keeps what every lap makes until it returns: a
+// thread's body that makes a node a lap until it is told to stop filled its
+// four-megabyte arena, and the collector read the whole of it at every
+// cycle. What a lap makes and leaves dead by the lap's end now goes to the
+// loop's own region, given back at the top of the next lap (Laps, Nested);
+// what a lap makes and carries into the next only through the loop's own
+// registers goes to the heap (Carried). Either way the arena stays small
+// through the run: the most it held, looked at after collections in the
+// laps, is reported as bounded. Nested breaks out of an inner loop and
+// returns from inside the outer one; Thrower throws out of a loop, and the
+// region it left is closed by the catch, under which AfterThrow goes on
+// keeping what it made in its own region. Everything is read back after
+// collections.
+//
+// Carried's chain also caught an owned result given back too soon: `keep =
+// Chain(i, keep)` handed the last Link to the call that made the next, whose
+// Next field kept it, and the lifetime pass freed it after the call all the
+// same -- hidden while the Links were in Carried's region, where a free
+// does nothing. The chain must be 160 Links long at the end.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public sealed class Pair
+{
+    public int A;
+    public int[] B;
+    public Pair(int a, int[] b) { A = a; B = b; }
+}
+
+public sealed class Link
+{
+    public Link? Next;
+    public int V;
+    public Link(int v, Link? next) { V = v; Next = next; }
+}
+
+public static class Program
+{
+    static long _most;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Note()
+    {
+        long words = Gc.RegionWords(Sys.ThreadBlock());
+        if (words > _most) _most = words;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int[] Buf(int n)
+    {
+        int[] b = new int[n];
+        for (int i = 0; i < n; i++) b[i] = i;
+        return b;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Pair Make(int a, int[] b) => new Pair(a, b);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Link Chain(int v, Link? next) => new Link(v, next);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Laps(int n)
+    {
+        long sum = 0;
+        for (int i = 0; i < n; i++)
+        {
+            Pair p = Make(i, Buf(8 + (i & 7)));
+            sum += p.A + p.B[p.B.Length - 1];
+            if ((i & 4095) == 0)
+            {
+                GC.Collect();
+                Note();
+            }
+        }
+        return sum;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Carried(int n)
+    {
+        Link? keep = null;
+        long s = 0;
+        for (int i = 0; i < n; i++)
+        {
+            keep = Chain(i, (i & 255) == 0 ? null : keep);
+            s += keep.V;
+            if ((i & 4095) == 0)
+            {
+                GC.Collect();
+                Note();
+            }
+        }
+        int length = 0;
+        for (Link? l = keep; l is not null; l = l.Next) length++;
+        return s + length;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Nested(int n)
+    {
+        long s = 0;
+        for (int i = 0; i < n; i++)
+        {
+            Pair outer = Make(i, Buf(4));
+            for (int j = 0; j < 50; j++)
+            {
+                Pair inner = Make(j, Buf(1 + (j & 3)));
+                if (inner.A == 40 && (i & 1) == 0) break;
+                s += inner.B.Length + outer.A;
+            }
+            if ((i & 1023) == 0)
+            {
+                GC.Collect();
+                Note();
+            }
+            s += outer.B[3];
+            if (i == n - 1) return s;
+        }
+        return -1;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Thrower(int n)
+    {
+        int s = 0;
+        for (int i = 0; i < n; i++)
+        {
+            Pair p = Make(i, Buf(2));
+            s += p.B.Length + p.A;
+            if (i == n / 2 && (n & 1) == 0) throw new InvalidOperationException("at " + i.ToString());
+        }
+        return s;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long AfterThrow(int rounds)
+    {
+        long s = 0;
+        List<Pair> local = new();
+        for (int k = 0; k < rounds; k++)
+        {
+            try { s += Thrower(10 + k); }
+            catch (InvalidOperationException e) { s += e.Message.Length; }
+            local.Add(Make(k, Buf(3 + k)));
+            if (k % 7 == 0) GC.Collect();
+        }
+        GC.Collect();
+        foreach (Pair p in local)
+            if (p.B.Length != 3 + p.A || p.B[2 + p.A] != 2 + p.A) s -= 1000000;
+        return s + local.Count;
+    }
+
+    // Not Main's own calls: what the entry calls is never a boundary.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Run()
+    {
+        long laps = Laps(200000);
+        long carried = Carried(100000);
+        long nested = Nested(5000);
+        long thrown = AfterThrow(60);
+        Console.WriteLine("laps " + laps + " carried " + carried + " nested " + nested + " thrown " + thrown);
+    }
+
+    public static int Main()
+    {
+        Run();
+        Console.WriteLine("bounded " + (_most < 4096));
+        return 0;
+    }
+}

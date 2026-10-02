@@ -781,6 +781,14 @@ static class Runtime
         Gc.RegionCatch((long)(nuint)frame);
     }
 
+    /// A loop's region at the top of a lap: opened on the first (`record`
+    /// -1), what the last lap made in it given back on every other. What it
+    /// answers is the next lap's `record`, and RegionLeave's on the way out.
+    public static nint RegionLoop(nint record, nint frame)
+    {
+        return (nint)Gc.RegionLoop(record == -1 ? -1 : (long)(nuint)record, (long)(nuint)frame);
+    }
+
     public static void RegionLeave(nint outer)
     {
         Gc.RegionLeave(outer == -1 ? -1 : (long)(nuint)outer);

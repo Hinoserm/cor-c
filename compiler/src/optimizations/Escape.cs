@@ -1997,6 +1997,25 @@ continue;
                 {
                     if (ReferenceEquals(i, source))
                     {
+                        // A CALL HANDED THE LAST OBJECT IT MADE -- `keep =
+                        // Chain(i, keep)` round a loop -- may keep it, in the
+                        // object it hands back as much as anywhere: owned,
+                        // the old one was given back while the new one's
+                        // field still held it. An argument goes where the
+                        // callee's summary says, as at any other call.
+                        if (i.Op == Opcode.Call && i.Callee is { } made && !IsAllocator(made))
+                        {
+                            summaries.TryGetValue(made, out bool[]? kept);
+                            for (int a = 0; a < i.Operands.Count; a++)
+                            {
+                                if (i.Operands[a] is not RegOperand arg || !flow.Derived.Contains(arg.Reg)) continue;
+                                if (kept is not null && a < kept.Length && !kept[a]) continue;
+                                if (needs is not null && needs.Allow(made, a)) continue;
+                                flow.Escapes = true;
+                                flow.Why ??= i;
+                            }
+                            if (flow.Escapes) break;
+                        }
                         continue;
                     }
                     // THIS PASS'S OWN BOOKKEEPING: the store that remembers an

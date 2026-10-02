@@ -2097,6 +2097,44 @@ static class Gc
         // Every region opened at or below this frame is one a throw has left:
         // two live calls never share a frame.
         PopStale(tb, frame, true);
+        return OpenRecord(tb, frame);
+    }
+
+    /// A LOOP'S REGION, at the top of every lap of a loop whose laps each
+    /// leave dead what they make in it (RegionPointsTo, "loops"). `record`
+    /// is what the last lap's call answered, -1 on the first: the region is
+    /// opened then, and from the next lap on what the last made in it is
+    /// given back -- the pointer set back to just past the record, and the
+    /// bytes zeroed -- with any region still open inside it. Opened inside
+    /// a region of the same frame, the function's own, and never closing
+    /// it: two regions of one frame are one call's.
+    public static long RegionLoop(long record, long frame)
+    {
+        long tb = Sys.ThreadBlock();
+        if (tb == 0) return -1;
+        long end = Sys.Peek(tb + Tls.RegionAt);
+        if (record >= 0 && record < end && Sys.Peek(record + HeaderBytes + WordSize.Bytes) == frame)
+        {
+            long start = record + RecordBytes;
+            // The pointer first, as RegionLeave sets it.
+            Sys.Poke(tb + Tls.RegionAt, start);
+            Sys.Poke(tb + Tls.RegionOpen, record);
+            if (end > start)
+            {
+                Sys.MemorySet(start, 0, end - start);
+                RegionFreedBytes = RegionFreedBytes + (end - start);
+                FreedBytes = FreedBytes + (end - start);
+            }
+            return record;
+        }
+        if (Sys.Peek(tb + Tls.RegionBase) == 0) return RegionEnter(frame);
+        PopStale(tb, frame, false);
+        return OpenRecord(tb, frame);
+    }
+
+    // A region's record laid down at the arena's pointer: -1 when it does not fit.
+    static long OpenRecord(long tb, long frame)
+    {
         long record = Sys.Peek(tb + Tls.RegionAt);
         if (record + RecordBytes > Sys.Peek(tb + Tls.RegionEnd)) return -1;
         Stamp(record, RecordBytes, 0);
