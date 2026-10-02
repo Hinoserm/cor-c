@@ -114,6 +114,8 @@ public sealed partial class Escape
             Needs needs = new(this);
             Flow flow = Analyse(f, new[] { param }, summaries, null, needs: needs);
             result[p] = flow.Escapes ? null : needs.Condition;
+            if (PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal))
+                Console.Error.WriteLine($"param {f.Name}:{p} escapes={flow.Escapes} via {flow.Why} needs={string.Join(",", needs.Condition.Stays.Select(s => s.Callee + ":" + s.Argument))}");
         }
         return result;
     }

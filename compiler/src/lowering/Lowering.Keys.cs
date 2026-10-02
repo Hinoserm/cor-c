@@ -181,8 +181,14 @@ public sealed partial class Lowering
             e.Jump(word);
         }
 
+        // IDENTITY, AS object.GetHashCode ANSWERS IT (ObjectHashStub): the
+        // address without its low three bits. The address itself was what
+        // this answered, which disagreed with an array's own GetHashCode --
+        // and, handed back, made every key a comparer hashed look like an
+        // argument returned to the caller, which the lifetime rules take for
+        // an escape. A shifted address is a number.
         e.SetBlock(word);
-        e.Ret(new RegOperand(IrTypes.Word == IrType.I64 ? e.Unary(Opcode.Trunc64, a) : a));
+        e.Ret(new RegOperand(e.Binary(Opcode.ShrU, IrTypes.Word == IrType.I64 ? e.Unary(Opcode.Trunc64, a) : a, 3)));
 
         e.SetBlock(ask);
         VReg fn = e.Load(IrTypes.Word, vt, (long)_b.HashSlot * _t.WordSize);

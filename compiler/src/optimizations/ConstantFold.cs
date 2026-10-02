@@ -25,6 +25,7 @@ public sealed class ConstantFold : IPass
 
     public void Run(Function f)
     {
+        EdgeConstants(f);
         Known? known = null;
         foreach (Block b in f.Blocks)
         {
@@ -41,6 +42,61 @@ public sealed class ConstantFold : IPass
                 {
                     b.Instrs[k] = folded;
                 }
+            }
+        }
+    }
+
+    /// <summary>
+    /// WHAT A BRANCH HAS JUST TESTED: past `branch x` on its false edge, or
+    /// past `branch (x == k)` / `(x != k)` on the edge where they agree, x is
+    /// k -- in a successor that edge is the only way into. A comparer's
+    /// `return (int)Sys.Word(value)` under `if (value is an object)` is then
+    /// the zero it is, and not the pointer handed back, which made every key
+    /// a table was asked about escape.
+    /// </summary>
+    private static void EdgeConstants(Function f)
+    {
+        Dictionary<Block, int> into = new(ReferenceEqualityComparer.Instance);
+        HashSet<Block> entered = new(ReferenceEqualityComparer.Instance) { f.Entry };
+        Dictionary<VReg, Instr> single = new();
+        HashSet<VReg> many = new();
+        foreach (Block b in f.Blocks)
+        {
+            if (b.IsLandingPad) entered.Add(b);
+            foreach (Instr i in b.Instrs)
+            {
+                if (i.Dest is { } d && !single.TryAdd(d, i)) many.Add(d);
+                if (i.Op == Opcode.LabelAddr) foreach (Block t in i.Targets) entered.Add(t);
+            }
+            if (b.Terminator is not { } end) continue;
+            foreach (Block t in end.Targets) into[t] = into.GetValueOrDefault(t) + 1;
+            if (end.Default is not null) into[end.Default] = into.GetValueOrDefault(end.Default) + 1;
+        }
+        foreach (VReg p in f.Params) many.Add(p);
+        foreach (Block b in f.Blocks)
+        {
+            if (b.Terminator is not { Op: Opcode.Branch, Targets.Count: 2 } branch || branch.Operands[0] is not RegOperand { Reg: var c }) continue;
+            VReg? x = null;
+            long k = 0;
+            Block? where = null;
+            if (!many.Contains(c) && single.TryGetValue(c, out Instr? test) && test.Op is Opcode.Eq or Opcode.Ne
+                && test.Operands[0] is RegOperand { Reg: var tested } && test.Operands[1] is ImmOperand imm)
+            {
+                x = tested; k = imm.Value;
+                where = test.Op == Opcode.Eq ? branch.Targets[0] : branch.Targets[1];
+            }
+            // A branch tests the I32 (an I64's top half is not looked at).
+            else if (c.Type == IrType.I32)
+            {
+                x = c; k = 0; where = branch.Targets[1];
+            }
+            if (x is null || where is null || ReferenceEquals(where, b) || entered.Contains(where) || into.GetValueOrDefault(where) != 1) continue;
+            foreach (Instr i in where.Instrs)
+            {
+                for (int o = 0; o < i.Operands.Count; o++)
+                    if (i.Operands[o] is RegOperand r && ReferenceEquals(r.Reg, x) && i.Op != Opcode.Phi)
+                        i.Operands[o] = new ImmOperand(IrInfo.Normalise(k, x.Type), x.Type);
+                if (ReferenceEquals(i.Dest, x)) break;
             }
         }
     }

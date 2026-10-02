@@ -1,0 +1,36 @@
+// test: built_keys_across_units
+// units: tests/language/support/915_builder_units.cor
+// expect-exit: 0
+// expect-output:
+// 750000
+//
+// Names built to be looked up in a HashSet and a Dictionary of strings,
+// in a unit that does not hold the library: the key reaches the comparer's
+// GetHashCode through an interface, which hashes an object without handing
+// its address back (KeyHash's identity is object.GetHashCode's, address
+// shifted), and the link's condition on every override of object's
+// GetHashCode is not cut off at a fixed width.
+
+using System;
+using System.Collections.Generic;
+static class P
+{
+    static HashSet<string> paths = new() { "a.n1", "b.n2", "c.n3" };
+    static HashSet<string> ordinal = new(StringComparer.Ordinal) { "a.n1", "b.n2" };
+    static Dictionary<string, int> table = new() { ["a.n1"] = 1, ["b.n2"] = 2 };
+    static int Look(string ns, string name)
+    {
+        int s = 0;
+        if (paths.Contains(ns + "." + name)) s += 1;
+        if (ordinal.Contains(ns + "." + name)) s += 2;
+        if (table.TryGetValue(ns + "." + name, out int v)) s += v;
+        return s;
+    }
+    static void Main()
+    {
+        string[] nss = { "a", "b", "c", "d" };
+        long t = 0;
+        for (int k = 0; k < 300000; k++) t += Look(nss[k % 4], "n" + (k % 4 + 1));
+        Console.WriteLine(t);
+    }
+}

@@ -98,7 +98,12 @@ public sealed class LifetimeSolver
                 {
                     LifetimeCondition each = new();
                     foreach (string target in virtuals[name]) each.Stays.Add((target, a));
-                    parameters[a] = each.Count <= LifetimeCondition.Limit ? each : null;
+                    // However many: the condition is the solver's own, never
+                    // written anywhere, and each override is one edge of the
+                    // graph SolveEscapes walks. Bounded like a unit's, every
+                    // object.GetHashCode -- one per class that has one -- was
+                    // an escape, and so was every key a table was asked about.
+                    parameters[a] = each;
                 }
                 _globals.TryAdd(name, new LifetimeFunction(name, true, parameters, null));
             }
@@ -225,13 +230,13 @@ public sealed class LifetimeSolver
             for (int p = 0; p < escapes.Length; p++)
             {
                 LifetimeCondition? condition = function.Parameters[p];
-                if (condition is null) { escapes[p] = true; escaped.Enqueue((name, p)); continue; }
+                if (condition is null) { escapes[p] = true; escaped.Enqueue((name, p)); _why?.TryAdd((name, p), "its own unit found it escapes"); continue; }
                 foreach ((string callee, int argument) in condition.Stays)
                 {
                     // Nothing summarised it: it escapes from the start.
                     if (!_escapes.TryGetValue(callee, out bool[]? known) || argument >= known.Length)
                     {
-                        if (!escapes[p]) { escapes[p] = true; escaped.Enqueue((name, p)); }
+                        if (!escapes[p]) { escapes[p] = true; escaped.Enqueue((name, p)); _why?.TryAdd((name, p), "nothing summarises " + callee + ":" + argument); }
                         continue;
                     }
                     if (!dependents.TryGetValue((callee, argument), out var list)) dependents[(callee, argument)] = list = new();
@@ -243,9 +248,29 @@ public sealed class LifetimeSolver
         {
             if (!dependents.TryGetValue(done, out var list)) continue;
             foreach ((bool[] escapes, int p, string owner) in list)
-                if (!escapes[p]) { escapes[p] = true; escaped.Enqueue((owner, p)); }
+                if (!escapes[p]) { escapes[p] = true; escaped.Enqueue((owner, p)); _why?.TryAdd((owner, p), "through " + done.Item1 + ":" + done.Item2); }
         }
+        // CORC_TRACE_ESCAPES=<name part>: why each such parameter escapes, link by link.
+        if (_why is not null)
+            foreach (((string name, int p), string reason) in _why.OrderBy(w => w.Key.Item1, StringComparer.Ordinal))
+                if (name.Contains(Environment.GetEnvironmentVariable("CORC_TRACE_ESCAPES")!, StringComparison.Ordinal))
+                {
+                    Console.Error.Write("link escape " + name + ":" + p);
+                    (string, int) at = (name, p);
+                    for (int hops = 0; hops < 12 && _why.TryGetValue(at, out string? why); hops++)
+                    {
+                        Console.Error.Write(" <- " + why);
+                        if (!why.StartsWith("through ", StringComparison.Ordinal)) break;
+                        string link = why[8..];
+                        int colon = link.LastIndexOf(':');
+                        at = (link[..colon], int.Parse(link[(colon + 1)..], System.Globalization.CultureInfo.InvariantCulture));
+                    }
+                    Console.Error.WriteLine();
+                }
     }
+
+    private readonly Dictionary<(string, int), string>? _why =
+        Environment.GetEnvironmentVariable("CORC_TRACE_ESCAPES") is { Length: > 0 } ? new() : null;
 
     private void SolveFresh()
     {

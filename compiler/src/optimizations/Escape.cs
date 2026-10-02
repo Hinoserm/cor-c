@@ -2455,8 +2455,18 @@ continue;
             || method.Op != Opcode.Load || method.Operands.Count < 1 || method.Operands[0] is not RegOperand { Reg: var table }
             || many.Contains(table) || !single.TryGetValue(table, out Instr? header)
             || header.Op != Opcode.Load || header.Offset != 0 || header.Operands.Count < 1
-            || header.Operands[0] is not RegOperand { Reg: var from } || from != self) return null;
+            || header.Operands[0] is not RegOperand { Reg: var from } || Origin(from) != Origin(self)) return null;
         return (declaring, method.Offset);
+
+        // The same object through the copies an inlined helper makes of its
+        // argument (KeyHash's, in a comparer's GetHashCode).
+        VReg Origin(VReg r)
+        {
+            for (int hops = 0; hops < 8 && !many.Contains(r) && single.TryGetValue(r, out Instr? d)
+                 && d.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && d.Operands[0] is RegOperand { Reg: var next }; hops++)
+                r = next;
+            return r;
+        }
     }
 
     /// <summary>
@@ -2476,11 +2486,15 @@ continue;
                     if (i.Dest is not null && !single.TryAdd(i.Dest, i)) many.Add(i.Dest);
             foreach (Block b in f.Blocks)
                 foreach (Instr i in b.Instrs)
+                {
+                    if (i.Op == Opcode.CallIndirect && PromoteTrace is { } tv && f.Name.Contains(tv, StringComparison.Ordinal))
+                        Console.Error.WriteLine($"virtual {f.Name}: {i} dispatch={i.DispatchType} slot={VirtualSlot(i, single, many)}");
                     if (i.Op == Opcode.CallIndirect && VirtualSlot(i, single, many) is var (declaring, slot))
                     {
                         string name = VirtualCallee(declaring, slot);
                         if (known is null || known(name)) result[i] = new[] { name };
                     }
+                }
         }
         return result;
     }
@@ -3097,7 +3111,19 @@ continue;
             Flow flow = Analyse(f, new[] { call.Dest! }, summaries, call);
             bool tracing = PromoteTrace is { } traced && f.Name.Contains(traced, StringComparison.Ordinal);
             if (tracing) Console.Error.WriteLine($"fresh {f.Name}: {call} escapes={flow.Escapes} via {flow.Why}");
-            if (flow.Escapes) continue;
+            if (flow.Escapes)
+            {
+                // Into another unit's function, perhaps only: a condition for
+                // the link, as an allocation's is -- a name built and handed
+                // to a table's lookup is the link's to free.
+                if (_hinting)
+                {
+                    liveness ??= new Liveness(f);
+                    pads ??= PadLive(liveness);
+                    Pending(f, b, call, summaries, liveness, pads, call.Callee);
+                }
+                continue;
+            }
             liveness ??= new Liveness(f);
             pads ??= PadLive(liveness);
             if (LiveAtSelf(liveness, pads, b, call, flow.Derived))
