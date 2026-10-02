@@ -145,6 +145,7 @@ public sealed class Pipeline
         p.LatePasses.Add(Inliner(keepFree: true));
         p.LatePasses.Add(new LateCleanup());
         p.LatePasses.Add(new ScalarObjects());
+        p.LatePasses.Add(new RegionPointsTo());
         p.LatePasses.Add(new Escape());
         p.LatePasses.Add(Inliner());
         // The card marks written out, last: to every pass above they are a
