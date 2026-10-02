@@ -1,0 +1,58 @@
+// The other unit of 1150_forwarded_fresh_results_across_units: functions
+// that hand back what a virtual call hands back -- a static wrapper, a
+// wrapper of that wrapper, a property, a generic helper -- over overrides
+// that each hand over an array they made. None is taken into its caller,
+// so each stays a function that hands back what it was handed.
+using System.Runtime.CompilerServices;
+using System.Text;
+abstract class Maker<T>
+{
+    public abstract T[] Make(int n);
+}
+sealed class Counting : Maker<int>
+{
+    public override int[] Make(int n)
+    {
+        int[] made = new int[n];
+        for (int i = 0; i < n; i++) made[i] = i;
+        return made;
+    }
+}
+sealed class Falling : Maker<int>
+{
+    public override int[] Make(int n)
+    {
+        int[] made = new int[n + 1];
+        for (int i = 0; i <= n; i++) made[i] = n - i;
+        return made;
+    }
+}
+static class Makers
+{
+    public static Maker<int> Pick(int k) { if (k % 2 == 0) return new Counting(); return new Falling(); }
+}
+static class Codec
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static byte[] Encode(string s) => Encoding.UTF8.GetBytes(s);
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static byte[] Pack(string s) => Encode(s);
+}
+static class Forms
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int[] Made(Maker<int> maker) => maker.Make(8);
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int[] Again(Maker<int> maker) => Made(maker);
+}
+static class Build
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static T[] Of<T>(Maker<T> maker, int n) => maker.Make(n);
+}
+sealed class Holder
+{
+    private readonly Maker<int> _maker;
+    public Holder(Maker<int> maker) { _maker = maker; }
+    public int[] Made { [MethodImpl(MethodImplOptions.NoInlining)] get => _maker.Make(8); }
+}

@@ -240,6 +240,22 @@ public sealed partial class Escape
                     else oneHint.Opaque = true;
                 }
             }
+            // A virtual call's: what each override it reaches left in it,
+            // together -- whichever ran. A unit's one symbol for them all
+            // is another unit's function here, merged at the link.
+            else if (origin.Op == Opcode.CallIndirect)
+            {
+                string[] targets = _indirect is not null && _indirect.TryGetValue(origin, out string[]? t) ? t : Array.Empty<string>();
+                if (targets.Length == 0) { one.Opaque = true; if (oneHint is not null) oneHint.Opaque = true; }
+                foreach (string target in targets)
+                {
+                    one.Merge(_freshFields.GetValueOrDefault(target));
+                    if (oneHint is null) continue;
+                    if (!_defined.Contains(target)) oneHint.Merges.Add((target, -1));
+                    else if (_freshFieldHints.GetValueOrDefault(target) is LifetimeFields made) oneHint.Absorb(made);
+                    else oneHint.Opaque = true;
+                }
+            }
             merged.Merge(one);
             if (oneHint is not null) hint!.Absorb(oneHint);
         }

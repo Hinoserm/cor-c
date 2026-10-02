@@ -1891,6 +1891,18 @@ continue;
                     origins.Add(d);
                     continue;
                 }
+                // HANDED BACK FROM A VIRTUAL CALL: fresh when every override
+                // it reaches is (FreshOverrides), or, in a unit, when the link
+                // finds the one symbol standing for them all fresh -- a
+                // condition like another unit's function. A wrapper of
+                // Encoding.UTF8.GetBytes is then as fresh as GetBytes, and
+                // so, in turn, is a wrapper of the wrapper.
+                if (d.Op == Opcode.CallIndirect && d.Dest is not null
+                    && (FreshOverrides(d, fresh) || needs is not null && VirtualSymbol(d) is string overrides && needs.AllowFresh(overrides)))
+                {
+                    origins.Add(d);
+                    continue;
+                }
                 if (d.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 or Opcode.Phi)
                 {
                     if (d.Operands.Count == 0 || (d.Op != Opcode.Phi && d.Operands.Count != 1)) return false;

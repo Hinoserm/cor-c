@@ -1,0 +1,66 @@
+// test: forwarded_fresh_results_across_units
+// units: tests/language/support/1150_forwarded_fresh_units.cor
+// expect-exit: 0
+// expect-output:
+// 0
+// encoded freed True
+// packed freed True
+// local freed True
+// made freed True
+// again freed True
+// property freed True
+// generic freed True
+//
+// What a function hands back when it returns a virtual call's result: the
+// function is as fresh as every override the call reaches, so its callers
+// own the object as they own the override's. In a unit compiled apart the
+// call stays virtual, so the wrapper's freshness is a condition on the
+// call's one symbol, and on that wrapper the next one's -- a wrapper of the
+// wrapper, one in another unit, a property, a generic helper -- which the
+// link answers with whether each override is fresh.
+
+using System;
+using System.Runtime.CompilerServices;
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static byte[] Local(string s) => Codec.Pack(s);
+
+    static void Main()
+    {
+        string text = "forwarded across units, " + 12345;
+        long total = 0;
+        long before = Gc.Frees;
+        for (int k = 0; k < 200000; k++) total += Codec.Encode(text).Length - 29;
+        long encoded = Gc.Frees - before;
+        before = Gc.Frees;
+        for (int k = 0; k < 200000; k++) total += Codec.Pack(text).Length - 29;
+        long packed = Gc.Frees - before;
+        before = Gc.Frees;
+        for (int k = 0; k < 200000; k++) total += Local(text).Length - 29;
+        long local = Gc.Frees - before;
+        Maker<int> falling = Makers.Pick(1);
+        before = Gc.Frees;
+        for (int k = 0; k < 200000; k++) total += Forms.Made(falling).Length - 9;
+        long made = Gc.Frees - before;
+        before = Gc.Frees;
+        for (int k = 0; k < 200000; k++) total += Forms.Again(falling).Length - 9;
+        long again = Gc.Frees - before;
+        Holder held = new Holder(Makers.Pick(1));
+        before = Gc.Frees;
+        for (int k = 0; k < 200000; k++) total += held.Made.Length - 9;
+        long property = Gc.Frees - before;
+        Maker<int> counting = Makers.Pick(0);
+        before = Gc.Frees;
+        for (int k = 0; k < 200000; k++) total += Build.Of(counting, 8).Length - 8;
+        long generic = Gc.Frees - before;
+        Console.WriteLine(total);
+        Console.WriteLine("encoded freed " + (encoded >= 190000));
+        Console.WriteLine("packed freed " + (packed >= 190000));
+        Console.WriteLine("local freed " + (local >= 190000));
+        Console.WriteLine("made freed " + (made >= 190000));
+        Console.WriteLine("again freed " + (again >= 190000));
+        Console.WriteLine("property freed " + (property >= 190000));
+        Console.WriteLine("generic freed " + (generic >= 190000));
+    }
+}
