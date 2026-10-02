@@ -125,6 +125,137 @@ public sealed class Devirtualize : IModulePass
                 b.Instrs[k] = call;
                 Resolved++;
             }
+
+        // 4. A call on one of a few objects made here: one test of the vtable
+        //    for each, a direct call under it.
+        Guarded(f, items);
+    }
+
+    /// <summary>
+    /// GUARDED, WHEN THE RECEIVER IS ONE OF A KNOWN FEW: a register every
+    /// write of which is an object made in this function -- an inlined
+    /// factory's paths (Select's iterator over an array, a List, anything
+    /// else) joined in one result -- has one of those objects' types, each
+    /// known from the vtable stored into it. A call through its vtable
+    /// becomes a test against each and a direct call under each test: what
+    /// each callee does with its arguments is then known, and the objects
+    /// are this function's to free. The last type takes no test.
+    /// </summary>
+    private void Guarded(Function f, Dictionary<string, DataItem> items)
+    {
+        if (!f.Blocks.Any(b => b.Instrs.Any(i => i.Op == Opcode.CallIndirect))) return;
+        int word = IrTypes.Word.Bytes();
+        Dictionary<VReg, List<Instr>> writes = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Dest is { } d)
+                {
+                    if (!writes.TryGetValue(d, out List<Instr>? list)) writes[d] = list = new();
+                    list.Add(i);
+                }
+        foreach (VReg p in f.Params) writes.Remove(p);
+        // The vtable stored into each object as it is made.
+        Dictionary<Instr, SymOperand> stamped = new(ReferenceEqualityComparer.Instance);
+        Instr? MadeBy(VReg r)
+        {
+            for (int depth = 0; depth < 8 && writes.TryGetValue(r, out List<Instr>? list) && list.Count == 1; depth++)
+            {
+                Instr d = list[0];
+                if (d.Op == Opcode.Call && Escape.IsAllocator(d.Callee)) return d;
+                if (d.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || d.Operands[0] is not RegOperand next) return null;
+                r = next.Reg;
+            }
+            return null;
+        }
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Op == Opcode.Store && i.Offset == 0 && i.Operands.Count >= 2 && i.Operands[0] is RegOperand at
+                    && i.Operands[1] is SymOperand { Name: var t } vt && t.StartsWith("t_", StringComparison.Ordinal)
+                    && MadeBy(at.Reg) is { } alloc)
+                    stamped.TryAdd(alloc, vt);
+        if (stamped.Count == 0) return;
+        // The objects a register can hold, when they are all made here.
+        bool Origins(VReg r, List<Instr> into, HashSet<VReg> seen, int depth)
+        {
+            if (depth > 8 || !seen.Add(r)) return depth <= 8;
+            if (MadeBy(r) is { } one) { into.Add(one); return true; }
+            if (!writes.TryGetValue(r, out List<Instr>? list)) return false;
+            foreach (Instr d in list)
+            {
+                // Null before it is set (a foreach's enumerator): no call is
+                // made through it then.
+                if (d.Op == Opcode.Copy && d.Operands[0] is ImmOperand { Value: 0 }) continue;
+                if (d.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || d.Operands[0] is not RegOperand next
+                    || !Origins(next.Reg, into, seen, depth + 1)) return false;
+            }
+            return true;
+        }
+        for (int bi = 0; bi < f.Blocks.Count; bi++)
+        {
+            Block b = f.Blocks[bi];
+            for (int k = 0; k < b.Instrs.Count; k++)
+            {
+                Instr i = b.Instrs[k];
+                if (i.Op != Opcode.CallIndirect || i.Operands.Count < 2 || i.Operands[0] is not RegOperand fn
+                    || !writes.TryGetValue(fn.Reg, out List<Instr>? fd) || fd.Count != 1 || fd[0] is not { Op: Opcode.Load } slotLoad
+                    || slotLoad.Operands[0] is not RegOperand vt || !writes.TryGetValue(vt.Reg, out List<Instr>? vd) || vd.Count != 1
+                    || vd[0] is not { Op: Opcode.Load, Offset: 0 } vtLoad || vtLoad.Operands[0] is not RegOperand recv) continue;
+                List<Instr> origins = new();
+                if (!Origins(recv.Reg, origins, new HashSet<VReg>(), 0) || origins.Count < 2) continue;
+                // Each type's method in the slot read.
+                List<(SymOperand Vtable, string Target)> cases = new();
+                bool known = true;
+                foreach (Instr origin in origins)
+                {
+                    if (!stamped.TryGetValue(origin, out SymOperand? table) || !items.TryGetValue(table.Name, out DataItem? item)) { known = false; break; }
+                    long at = table.Offset + slotLoad.Offset;
+                    if (item.Relocs.FirstOrDefault(rel => rel.Offset == at) is not { Symbol: { } target, Addend: 0 } || !target.StartsWith("m_", StringComparison.Ordinal)) { known = false; break; }
+                    if (!cases.Any(c => c.Vtable.Name == table.Name && c.Vtable.Offset == table.Offset)) cases.Add((table, target));
+                }
+                if (!known || cases.Count == 0 || cases.Count > 4) continue;
+                Instr Direct(string target, VReg? into)
+                {
+                    Instr call = new() { Op = Opcode.Call, Dest = into, Line = i.Line, Callee = target };
+                    for (int a = 1; a < i.Operands.Count; a++) call.Operands.Add(i.Operands[a]);
+                    return call;
+                }
+                Resolved++;
+                if (cases.Select(c => c.Target).Distinct(StringComparer.Ordinal).Count() == 1)
+                {
+                    b.Instrs[k] = Direct(cases[0].Target, i.Dest);
+                    continue;
+                }
+                // Split: the tests where the call was, the rest after them.
+                Block after = f.NewBlock("devirt");
+                after.Instrs.AddRange(b.Instrs.Skip(k + 1));
+                b.Instrs.RemoveRange(k, b.Instrs.Count - k);
+                if (after.Terminator is { } end)
+                {
+                    foreach (Block s in end.Targets) Phi.Rename(s, b, after);
+                    if (end.Default is { } d) Phi.Rename(d, b, after);
+                }
+                Block test = b;
+                for (int c = 0; c < cases.Count; c++)
+                {
+                    Block each = f.NewBlock("devirt");
+                    VReg? got = i.Dest is null ? null : f.NewReg(i.Dest.Type, i.Dest.Name);
+                    each.Instrs.Add(Direct(cases[c].Target, got));
+                    if (got is not null) each.Instrs.Add(new Instr { Op = Opcode.Copy, Dest = i.Dest, Operands = { new RegOperand(got) }, Line = i.Line });
+                    each.Instrs.Add(new Instr { Op = Opcode.Jump, Targets = { after }, Line = i.Line });
+                    if (c == cases.Count - 1)
+                    {
+                        test.Instrs.Add(new Instr { Op = Opcode.Jump, Targets = { each }, Line = i.Line });
+                        break;
+                    }
+                    Block next = f.NewBlock("devirt");
+                    VReg same = f.NewReg(IrType.I32, "isType");
+                    test.Instrs.Add(new Instr { Op = Opcode.Eq, Dest = same, Operands = { new RegOperand(vt.Reg), new SymOperand(cases[c].Vtable.Name, cases[c].Vtable.Offset) }, Line = i.Line });
+                    test.Instrs.Add(new Instr { Op = Opcode.Branch, Operands = { new RegOperand(same) }, Targets = { each, next }, Line = i.Line });
+                    test = next;
+                }
+                break;   // the block was split; the rest of it is `after`, met later
+            }
+        }
     }
 
     private static bool KeepsFields(string? callee) =>

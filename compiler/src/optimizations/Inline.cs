@@ -290,7 +290,13 @@ public sealed class Inline : IParallelModulePass
                     // The collector's own notes stay calls: the escape rules
                     // know them by name, and inlined their ring store reads
                     // as the reported object escaping.
-                    if (!Inlineable(callee, pinned, handlers: InlineHandlers && caller.Async is null) || recursive.Contains(callee) || Escape.IsCollectorLeaf(callee.Name))
+                    // A callee with a try of its own comes in only to show its
+                    // caller's fresh object to the calls it makes on it
+                    // (FreshDispatched) -- a List built from an iterator, a
+                    // Join over one -- or everywhere, with InlineHandlers.
+                    bool handlers = caller.Async is null && (InlineHandlers
+                        || !Inlineable(callee, pinned) && Size(callee) <= FreshArgumentBody && FreshDispatched(caller, call, callee, ref callerFresh));
+                    if (!Inlineable(callee, pinned, handlers) || recursive.Contains(callee) || Escape.IsCollectorLeaf(callee.Name))
                     {
                         continue;
                     }

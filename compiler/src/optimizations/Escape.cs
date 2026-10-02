@@ -1623,7 +1623,10 @@ continue;
     {
         if (f.Params.Count == 0 || f.Params[0].Type is not (IrType.I32 or IrType.I64)) return;
         if (!summaries.TryGetValue(f.Name, out bool[]? escapes) || escapes.Length == 0 || !escapes[0]) return;
-        if (!Analyse(f, new[] { f.Params[0] }, summaries, null, returnsAny: true).Escapes) (_returnsFirst ??= new(StringComparer.Ordinal)).Add(f.Name);
+        Flow returned = Analyse(f, new[] { f.Params[0] }, summaries, null, returnsAny: true);
+        if (PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal))
+            Console.Error.WriteLine($"returnsfirst {f.Name}: {!returned.Escapes} via {returned.Why}");
+        if (!returned.Escapes) (_returnsFirst ??= new(StringComparer.Ordinal)).Add(f.Name);
     }
 
     internal static void SeedKnown(Dictionary<string, bool[]> summaries)
@@ -2694,6 +2697,61 @@ continue;
         return f.Blocks.OrderByDescending(b => depth.GetValueOrDefault(b)).ToList();
     }
 
+    /// <summary>
+    /// The allocations' results among a join's writes, through copies and
+    /// through the joins it is written from, whatever their other writes are.
+    /// </summary>
+    private static List<VReg>? FreshWrites(Function f, VReg joined)
+    {
+        Dictionary<VReg, List<Instr>> writes = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Dest is { } d)
+                {
+                    if (!writes.TryGetValue(d, out List<Instr>? list)) writes[d] = list = new();
+                    list.Add(i);
+                }
+        if (!writes.TryGetValue(joined, out List<Instr>? top) || top.Count < 2) return null;
+        List<VReg> made = new();
+        HashSet<VReg> seen = new();
+        void Walk(VReg r, int depth)
+        {
+            if (depth > 8 || !seen.Add(r) || !writes.TryGetValue(r, out List<Instr>? list)) return;
+            foreach (Instr d in list)
+            {
+                if (d.Op == Opcode.Call && IsAllocator(d.Callee)) { if (!made.Contains(d.Dest!)) made.Add(d.Dest!); continue; }
+                if (d.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && d.Operands[0] is RegOperand next) Walk(next.Reg, depth + 1);
+            }
+        }
+        Walk(joined, 0);
+        return made;
+    }
+
+    /// <summary>The allocations' results a join holds, when every write of it is one (WrittenOnlyFresh).</summary>
+    private static List<VReg>? FreshGroup(Function f, VReg joined)
+    {
+        if (!WrittenOnlyFresh(f, joined)) return null;
+        Dictionary<VReg, Instr> single = new();
+        HashSet<VReg> many = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Dest is { } d && !ReferenceEquals(d, joined) && !single.TryAdd(d, i)) many.Add(d);
+        List<VReg> group = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr w in b.Instrs)
+            {
+                if (!ReferenceEquals(w.Dest, joined) || w.Operands[0] is not RegOperand from) continue;
+                VReg r = from.Reg;
+                for (int depth = 0; depth < 8 && !many.Contains(r) && single.TryGetValue(r, out Instr? d); depth++)
+                {
+                    if (d.Op == Opcode.Call && IsAllocator(d.Callee)) { if (!group.Contains(d.Dest!)) group.Add(d.Dest!); break; }
+                    if (d.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || d.Operands[0] is not RegOperand next) break;
+                    r = next.Reg;
+                }
+            }
+        return group.Count > 1 ? group : null;
+    }
+
     /// <summary>Whether every write of the register is a copy of an allocation's result (or null).</summary>
     private static bool WrittenOnlyFresh(Function f, VReg joined)
     {
@@ -2861,9 +2919,22 @@ continue;
                 // each is owned on its own (its own slot), so whichever one
                 // the join holds is freed once.
                 if (flow.Escapes && !sized && flow.Why is { Op: Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32, Dest: { } heapJoin }
-                    && WrittenOnlyFresh(f, heapJoin))
+                    && FreshGroup(f, heapJoin) is { } heapGroup && heapGroup.Contains(i.Dest))
                 {
-                    flow = Analyse(f, new[] { i.Dest }, summaries, i, joinable: new HashSet<VReg> { heapJoin }, closure: IsClosure(f, i));
+                    // Judged together, as JoinedAllocations judges sized ones:
+                    // what each join after it holds -- the enumerator each one's
+                    // GetEnumerator hands back -- is then one of the group's.
+                    Flow together = Analyse(f, heapGroup, summaries, i, closure: IsClosure(f, i));
+                    // And the objects made here that a later join takes in with
+                    // them: an inlined GetEnumerator's copy of a started iterator.
+                    for (int widen = 0; widen < 4 && together.Escapes && together.Why is { Op: Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32, Dest: { } later }
+                         && FreshWrites(f, later) is { Count: > 0 } more && more.Any(m => !heapGroup.Contains(m)); widen++)
+                    {
+                        foreach (VReg m in more) if (!heapGroup.Contains(m)) heapGroup.Add(m);
+                        together = Analyse(f, heapGroup, summaries, i, closure: IsClosure(f, i));
+                    }
+                    if (tracing) Console.Error.WriteLine($"promote {f.Name}: {i} with its group of {heapGroup.Count}: escapes={together.Escapes} via {together.Why}");
+                    if (!together.Escapes) flow = together;
                 }
                 if (tracing) Console.Error.WriteLine($"promote {f.Name}: {i} escapes={flow.Escapes} via {flow.Why}");
                 if (flow.Escapes)
