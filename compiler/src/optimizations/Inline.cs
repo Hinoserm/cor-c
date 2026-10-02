@@ -172,6 +172,7 @@ public sealed class Inline : IParallelModulePass
             pinned.Add(RegionPointsTo.Leave);
             pinned.Add(RegionPointsTo.InRegion);
             pinned.Add(RegionPointsTo.Near);
+            pinned.Add(RegionPointsTo.Catch);
             // What a program that needs no collector allocates and frees with.
             pinned.Add(Escape.ManualAllocator);
             pinned.Add(Escape.ManualObjectAllocator);

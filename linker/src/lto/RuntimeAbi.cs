@@ -30,5 +30,7 @@ public static class RuntimeAbi
     /// <summary>Regions (RegionPointsTo, RegionSolver): opened on a boundary's entry, given back on its return, allocated in.</summary>
     public const string RegionEnter = "m_Runtime_RegionEnter_1_" + Word;
     public const string RegionLeave = "m_Runtime_RegionLeave_1_" + Word;
+    /// <summary>A catch closes the regions it caught out of (every landing pad of a program with regions).</summary>
+    public const string RegionCatch = "m_Runtime_RegionCatch_1_" + Word;
     public const string AllocRegion = "m_Runtime_AllocRegion_3_" + Word + "_" + Word + "_" + Word;
 }

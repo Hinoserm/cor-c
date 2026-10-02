@@ -2126,6 +2126,14 @@ static class Gc
         FreedBytes = FreedBytes + (end - record - RecordBytes);
     }
 
+    /// A catch in the frame `frame`: the regions a throw it caught left open,
+    /// every one opened by a frame below it.
+    public static void RegionCatch(long frame)
+    {
+        long tb = Sys.ThreadBlock();
+        if (tb != 0 && Sys.Peek(tb + Tls.RegionOpen) != 0) PopStale(tb, frame, false);
+    }
+
     /// Regions whose calls a throw has left: every one opened by a frame
     /// below `frame` (deeper in the stack), or at it too when `at` -- a new
     /// region is opened there, so whatever was opened there is gone.

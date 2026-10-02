@@ -43,6 +43,7 @@ public sealed class RegionPointsTo : IModulePass
     public const string Leave = Corsac.Lang.Lto.RuntimeAbi.RegionLeave;
     public const string InRegion = Corsac.Lang.Lto.RuntimeAbi.AllocRegion;
     public const string Near = "m_Runtime_AllocNear_4_V$NInt_V$NInt_V$NInt_V$NInt";
+    public const string Catch = "m_Runtime_RegionCatch_1_V$NInt";
     private const long LeafKind = 0x4C454146, ObjectKind = 0x4F424A54;
 
     private const int Global = 0;
@@ -137,11 +138,11 @@ public sealed class RegionPointsTo : IModulePass
         // (Lto.RegionSolver): nothing to solve here, only to apply.
         if (m.RegionFacts is { } facts)
         {
-            ApplyFacts(m, facts);
+            ApplyFacts(m, facts, Report is not null);
             return;
         }
         if (m.Entry is null) return;
-        if (new[] { Enter, Leave, InRegion, Near }.Where(h => !m.Functions.Any(f => f.Name == h)).ToList() is { Count: > 0 } missing)
+        if (new[] { Enter, Leave, InRegion, Near, Catch }.Where(h => !m.Functions.Any(f => f.Name == h)).ToList() is { Count: > 0 } missing)
         {
             if (Report is not null) Console.Error.WriteLine("regions: no " + string.Join(", ", missing) + " in this program; nothing made a region");
             return;
@@ -278,7 +279,7 @@ public sealed class RegionPointsTo : IModulePass
     /// placed it in a frame, took it apart -- it is no longer a call, and
     /// nothing is made of it.
     /// </summary>
-    private static void ApplyFacts(Module m, Corsac.Lang.Lto.RegionFacts facts)
+    private static void ApplyFacts(Module m, Corsac.Lang.Lto.RegionFacts facts, bool report)
     {
         int sites = 0, opened = 0;
         foreach (Function f in m.Functions)
@@ -295,7 +296,8 @@ public sealed class RegionPointsTo : IModulePass
                 }
         foreach (Function f in m.Functions)
             if (facts.Boundaries.Contains(f.Name)) { Open(f); opened++; }
-        if (sites > 0 || opened > 0)
+        if (sites > 0 || opened > 0) CatchUp(m);
+        if ((sites > 0 || opened > 0) && report)
             Console.Error.WriteLine($"regions: {opened} boundaries, {sites} sites in the innermost region, from the link");
     }
 
@@ -404,7 +406,36 @@ public sealed class RegionPointsTo : IModulePass
             if (opened.Contains(v.F)) Open(body);
             if (Report is not null) Console.Error.WriteLine($"regions: version {body.Name} for {v.Copies.Length} of its copies");
         }
-        Console.Error.WriteLine($"regions: {opened.Count} boundaries, {inRegion} sites in the innermost region, {near} beside their object, {versions.Count} versions making {versionSites} more");
+        if (opened.Count > 0 || inRegion + near > 0) CatchUp(_m);
+        if (Report is not null)
+            Console.Error.WriteLine($"regions: {opened.Count} boundaries, {inRegion} sites in the innermost region, {near} beside their object, {versions.Count} versions making {versionSites} more");
+    }
+
+    /// <summary>
+    /// A CATCH CLOSES WHAT IT CAUGHT OUT OF. A throw leaves a boundary with no
+    /// RegionLeave, and its region stays open; a call made from the catching
+    /// function then ran at the very depth the thrown-out-of boundary had
+    /// run, no frame below the region's, and was given that region -- what
+    /// it made was kept by the catcher and zeroed by the next region opened
+    /// there. Every boundary a handler catches out of ran below the
+    /// handler's own frame, so on entry to it each region opened by a frame
+    /// below is closed (Runtime.RegionCatch).
+    /// </summary>
+    private static void CatchUp(Module m)
+    {
+        foreach (Function f in m.Functions)
+            foreach (Block b in f.Blocks)
+            {
+                if (!b.IsLandingPad) continue;
+                // After the pad's fetch of what was thrown, which must come first.
+                int at = b.Instrs.Count > 0 && b.Instrs[0] is { Op: Opcode.Call, Callee: "__exception" } ? 1 : 0;
+                VReg frame = f.NewReg(IrTypes.Word, "catchframe");
+                b.Instrs.InsertRange(at, new[]
+                {
+                    new Instr { Op = Opcode.FramePointer, Dest = frame, Line = b.Instrs.Count > 0 ? b.Instrs[0].Line : f.Line },
+                    new Instr { Op = Opcode.Call, Callee = Catch, Operands = { new RegOperand(frame) }, Line = b.Instrs.Count > 0 ? b.Instrs[0].Line : f.Line },
+                });
+            }
     }
 
     // ---- versions -------------------------------------------------------------
@@ -602,7 +633,24 @@ public sealed class RegionPointsTo : IModulePass
     // type's initialiser (run once, wherever first asked), not an async or
     // iterator body (its frame outlives a return).
     private bool MayBeBoundary(Function f) =>
-        f.Async is null && f.Name != _m.Entry && !f.Name.Contains("StaticInit", StringComparison.Ordinal);
+        f.Async is null && f.Name != _m.Entry && !EntryCalls().Contains(f.Name)
+        && !f.Name.Contains("StaticInit", StringComparison.Ordinal);
+
+    private HashSet<string>? _entryCalls;
+
+    // WHAT THE ENTRY CALLS IS THE PROGRAM -- Main, and the stub's own setup:
+    // a region opened there lasts the whole run, so what it holds is never
+    // given back before the end, and only fills the arena.
+    private HashSet<string> EntryCalls()
+    {
+        if (_entryCalls is not null) return _entryCalls;
+        _entryCalls = new(StringComparer.Ordinal);
+        if (_m.Entry is string entry && _byName.TryGetValue(entry, out Function? start))
+            foreach (Block b in start.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.Call && i.Callee is string callee) _entryCalls.Add(callee);
+        return _entryCalls;
+    }
 
     /// <summary>
     /// THE NEAREST CALL EACH OBJECT DIES IN: from the copy that makes it up

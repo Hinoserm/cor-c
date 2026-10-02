@@ -774,6 +774,13 @@ static class Runtime
         return (nint)Gc.RegionEnter((long)(nuint)frame);
     }
 
+    /// A catch's own frame: every region opened by a frame below it -- a
+    /// boundary the throw it caught came out of -- is closed (Gc.PopStale).
+    public static void RegionCatch(nint frame)
+    {
+        Gc.RegionCatch((long)(nuint)frame);
+    }
+
     public static void RegionLeave(nint outer)
     {
         Gc.RegionLeave(outer == -1 ? -1 : (long)(nuint)outer);

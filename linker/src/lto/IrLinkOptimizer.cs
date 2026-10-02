@@ -72,7 +72,7 @@ public static class IrLinkOptimizer
                 + (Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 0 } ? ": " + string.Join(" ", ownedFields.Fields.Keys.Order(StringComparer.Ordinal)) : ""));
         bool regionsPossible = lifetimes is not null && closedImageEntry is not null && archives.Keys.All(hints.ContainsKey)
             && archives.Keys.All(regionHints.Contains)
-            && new[] { RuntimeAbi.RegionEnter, RuntimeAbi.RegionLeave, RuntimeAbi.AllocRegion }.All(owners.ContainsKey);
+            && new[] { RuntimeAbi.RegionEnter, RuntimeAbi.RegionLeave, RuntimeAbi.AllocRegion, RuntimeAbi.RegionCatch }.All(owners.ContainsKey);
         // A closed image keeps only what is reached, and reaching is judged
         // on the IR as the units left it. Two kinds of call are made later:
         // those a regenerated unit gains when the lifetime rules run again
@@ -83,7 +83,7 @@ public static class IrLinkOptimizer
         if (lifetimes is not null) foreach (LifetimeHints unit in hints.Values) linkRoots.UnionWith(unit.Helpers);
         if (hints.Values.Any(unit => unit.FieldSites.Count > 0)) { linkRoots.Add(LifetimeHints.FieldFreer); linkRoots.Add(LifetimeHints.FieldKeeper); }
         // And what regions call, wherever a regenerated unit may open one.
-        if (regionsPossible) { linkRoots.Add(RuntimeAbi.RegionEnter); linkRoots.Add(RuntimeAbi.RegionLeave); linkRoots.Add(RuntimeAbi.AllocRegion); }
+        if (regionsPossible) { linkRoots.Add(RuntimeAbi.RegionEnter); linkRoots.Add(RuntimeAbi.RegionLeave); linkRoots.Add(RuntimeAbi.AllocRegion); linkRoots.Add(RuntimeAbi.RegionCatch); }
         // An iterator's or an async method's card mark is a call AsyncTransform
         // writes after the IR was archived: the archive never shows it, and a
         // closed image without lifetime hints dropped the helper and failed
