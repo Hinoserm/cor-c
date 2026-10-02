@@ -1101,8 +1101,11 @@ public sealed class Monomorphiser
                 ArrayRank = r.ArrayRank + bound.ArrayRank,
                 Nullable = arrayFromUse ? r.Nullable
                          : ((r.Nullable && !valueBound) || bound.Nullable),
+                // An ARRAY bound's own `?` marks the inner array (InnerNullable
+                // below), not the element: T = long[]? in T[] is long[]?[],
+                // whose longs are not long?.
                 ElementNullable = arrayFromUse
-                                ? bound.Nullable || bound.ElementNullable
+                                ? bound.Nullable && bound.ArrayRank == 0 || bound.ElementNullable
                                 : r.ElementNullable || bound.ElementNullable,
                 // The bound's marks sit inside; the use's marks sit above
                 // them, shifted by the bound's rank, and the bound's own

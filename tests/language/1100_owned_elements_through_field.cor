@@ -200,21 +200,26 @@ static class P
     [MethodImpl(MethodImplOptions.NoInlining)]
     static int Followed() => new Follower(Lexer.Tokenize(Text)).Pairs();
 
-    static string Freed(long before, long least) => Gc.Frees - before >= least ? "True" : "False";
+    // GIVEN BACK BY THE PROGRAM, one free at a time or a region at once: the
+    // elements may go either way (a region closing gives back every token
+    // it held), and neither is the collector's.
+    static long regionBefore;
+    static string Freed(long before, long least)
+        => Gc.Frees - before >= least || Gc.RegionFreedBytes - regionBefore >= least * 12 ? "True" : "False";
 
     static void Main()
     {
-        long before = Gc.Frees;
+        long before = Gc.Frees; regionBefore = Gc.RegionFreedBytes; regionBefore = Gc.RegionFreedBytes;
         long sum = 0;
         for (int r = 0; r < 1000; r++) sum += Once();
         Console.WriteLine("parse " + sum + " " + Freed(before, 9000));
 
-        before = Gc.Frees;
+        before = Gc.Frees; regionBefore = Gc.RegionFreedBytes;
         sum = 0;
         for (int r = 0; r < 1000; r++) sum += Bagged();
         Console.WriteLine("bag " + sum + " " + Freed(before, 9000));
 
-        before = Gc.Frees;
+        before = Gc.Frees; regionBefore = Gc.RegionFreedBytes;
         sum = 0;
         for (int r = 0; r < 1000; r++) sum += Indexed();
         Console.WriteLine("table " + sum + " " + Freed(before, 9000));

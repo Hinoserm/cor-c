@@ -5011,15 +5011,27 @@ public sealed class Parser
         return j < _t.Count && _t[j].Kind == Tok.Ident
             && (_t[j].Text is not ("or" or "and" or "when")
                 || _t[j].Text is "or" or "and"
-                && j + 1 < _t.Count && !StartsPattern(_t[j + 1].Kind))
+                && j + 1 < _t.Count && !StartsPattern(_t[j + 1].Kind)
+                || WhenNames(j))
              ? _t[j].Text
              : null;
     }
 
+    /// <summary>
+    /// `when` NAMING WHAT A PATTERN MATCHED, not a guard: a guard is
+    /// followed by its condition, a designation by what ends the pattern --
+    /// `if (c is not Condition when) continue;` names the condition `when`.
+    /// </summary>
+    private bool WhenNames(int j)
+        => j + 1 < _t.Count && _t[j].Kind == Tok.Ident && _t[j].Text == "when"
+        && _t[j + 1].Kind is Tok.RParen or Tok.Semi or Tok.Comma or Tok.AndAnd or Tok.OrOr
+            or Tok.Question or Tok.RBracket or Tok.RBrace or Tok.Colon;
+
     private string? PeekBinding()
         => At(Tok.Ident)
         && (Cur.Text is not ("or" or "and" or "when")
-            || Cur.Text is "or" or "and" && !StartsPattern(Ahead().Kind))
+            || Cur.Text is "or" or "and" && !StartsPattern(Ahead().Kind)
+            || WhenNames(_i))
          ? Cur.Text
          : null;
 
@@ -5728,7 +5740,8 @@ public sealed class Parser
         int end = members ? SkipBalanced(after, Tok.LBrace, Tok.RBrace) : after;
         string? designation = end < _t.Count && _t[end].Kind == Tok.Ident
             && (_t[end].Text is not ("or" or "and" or "when")
-                || _t[end].Text is "or" or "and" && end + 1 < _t.Count && !StartsPattern(_t[end + 1].Kind))
+                || _t[end].Text is "or" or "and" && end + 1 < _t.Count && !StartsPattern(_t[end + 1].Kind)
+                || WhenNames(end))
             ? _t[end].Text : null;
 
         Expr built;
