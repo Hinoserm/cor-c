@@ -1,0 +1,77 @@
+// test: owned_field_walked_through_interface
+// expect-exit: 0
+// expect-output:
+// 130003
+// seen list freed True
+//
+// A List field handed to LINQ's Any: the walk asks IEnumerable for an
+// enumerator, a virtual call every override in the program could answer,
+// some of them keeping what they are handed. But every store into `_seen`
+// puts a List<int> made for it there, so what is read from it is one --
+// the call reaches List's GetEnumerator alone, which keeps the list only in
+// the box it hands back; that box's own MoveNext and Dispose (its stamp
+// says which) keep nothing; the foreach's finally that disposes it counts
+// as where the list is live wherever it can be entered; and freeing the box
+// frees nothing else. Refused, the field was never the worker's own and each
+// worker's list was the collector's; now it goes with the worker.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.CompilerServices;
+
+sealed class Worker
+{
+    private readonly List<int> _seen = new();
+    private readonly int _n;
+
+    public Worker(int n) { _n = n; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Run()
+    {
+        int hits = 0;
+        for (int i = 0; i < _n; i++)
+        {
+            int x = i * 3 % 5;
+            if (_seen.Any(s => s == x)) hits++;
+            _seen.Add(x);
+        }
+        return hits;
+    }
+}
+
+sealed class Holder
+{
+    public Worker? Current;
+}
+
+static class P
+{
+    const int N = 20000;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Worker Make(int n) => new Worker(n);
+
+    static void Main()
+    {
+        long total = 0, frees = 0;
+        try
+        {
+            Holder h = new();
+            h.Current = Make(8);
+            total += h.Current.Run();
+            long before = Gc.Frees;
+            for (int k = 0; k < N; k++)
+            {
+                h.Current = Make(8 + (k & 7));
+                total += h.Current.Run();
+            }
+            frees = (Gc.Frees - before) / N;
+        }
+        catch (InvalidOperationException e) { Console.WriteLine(e.Message); }
+        Console.WriteLine(total);
+        // Before: no frees a lap; the list and its array given back now.
+        Console.WriteLine("seen list freed " + (frees >= 2));
+    }
+}

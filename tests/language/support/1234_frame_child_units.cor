@@ -1,0 +1,6 @@
+// The other unit of 1224_frame_child_seen_through_callees_across_units: the
+// libraries, Random's among them, and nothing of the test's own but this.
+public static class Units
+{
+    public static int Seed() => 0;
+}

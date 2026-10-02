@@ -1,0 +1,49 @@
+// test: owned_field_walked_through_interface_across_units
+// units: tests/language/support/1233_walked_field_units.cor
+// expect-exit: 0
+// expect-output:
+// 130003
+// seen list freed True
+//
+// 1222 with the worker in the other unit. There the walk's GetEnumerator is
+// a virtual call the link answers, and asked of every override it can never
+// keep nothing. The unit judges the read as of the one type its stores put
+// in `_seen` and tells the link so; the link holds every unit's stores to
+// that type (the field's kinds) and finds the field owned.
+
+using System;
+using System.Runtime.CompilerServices;
+
+sealed class Holder
+{
+    public Worker? Current;
+}
+
+static class P
+{
+    const int N = 20000;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Worker Make(int n) => new Worker(n);
+
+    static void Main()
+    {
+        long total = 0, frees = 0;
+        try
+        {
+            Holder h = new();
+            h.Current = Make(8);
+            total += h.Current.Run();
+            long before = Gc.Frees;
+            for (int k = 0; k < N; k++)
+            {
+                h.Current = Make(8 + (k & 7));
+                total += h.Current.Run();
+            }
+            frees = (Gc.Frees - before) / N;
+        }
+        catch (InvalidOperationException e) { Console.WriteLine(e.Message); }
+        Console.WriteLine(total);
+        Console.WriteLine("seen list freed " + (frees >= 2));
+    }
+}

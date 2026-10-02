@@ -73,7 +73,7 @@ public sealed partial class Escape : IModulePass
         // thread's static (_inserted); left set, it kept the last unit's IR
         // alive for as long as the thread lived.
         try { RunCore(m); }
-        finally { _inserted = null; _indirect = null; _held = null; _fieldsOf = null; _heldStamps = null; _copies = null; _typeItems = null; _typedFieldsOf = null; }
+        finally { _inserted = null; _indirect = null; _held = null; _fieldsOf = null; _heldStamps = null; _copies = null; _typeItems = null; _typedFieldsOf = null; _stampItems = null; }
     }
 
     private void RunCore(Module m)
@@ -179,6 +179,7 @@ public sealed partial class Escape : IModulePass
         bool canFree = Provided(Freer);
         _storageFreer = Provided(StorageFreer);
         _descriptors = _items ??= m.Data.ToDictionary(d => d.Name, StringComparer.Ordinal);
+        _stampItems = _descriptors;
         bool canFreeFields = canFree && Provided(FieldFreer);
         _fieldSites = canFreeFields && Provided(FieldKeeper);
         // At the link's own run of a unit's late passes (Module.AtLink), a key
@@ -357,6 +358,13 @@ public sealed partial class Escape : IModulePass
     private readonly HashSet<Instr> _promotedMade = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>
+    /// The zeroing that stands where a promoted object's allocation was: its
+    /// making, as the allocator's call was, and no use of the object a lap
+    /// before stored somewhere (HandedOverWithField).
+    /// </summary>
+    private readonly HashSet<Instr> _promotedZeroing = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
     /// Whether `made` makes an object no other thread can see: a promoted
     /// object, or an allocation of this function that never escapes it.
     /// Replacing an owned field's value frees the old one only in such an
@@ -400,6 +408,35 @@ public sealed partial class Escape : IModulePass
     /// Those are the caller's to free wherever the call is owned.
     /// </summary>
     private readonly Dictionary<string, HashSet<Instr>> _freshOrigins = new(StringComparer.Ordinal);
+
+    /// <summary>Each fresh origin's answer to HandsBackLeafOrBox: a leaf, or a block stamped a box.</summary>
+    private Dictionary<Instr, bool>? _boxOrigins;
+
+    /// <summary>
+    /// WHETHER EVERY OBJECT A FRESH FUNCTION HANDS BACK IS A LEAF OR A BOX --
+    /// a List's enumerator boxed for IEnumerable -- through the fresh calls
+    /// it hands on. Given back, such an object takes nothing with it: a leaf
+    /// holds no reference, and a box (a struct's copy) has no owned fields
+    /// and no storage (only a class owns storage), so its free cannot free
+    /// what a read of an owned field gave, even one the box holds.
+    /// </summary>
+    private bool HandsBackLeafOrBox(string callee, int depth = 0)
+    {
+        if (depth > 8 || !_freshOrigins.TryGetValue(callee, out HashSet<Instr>? origins) || origins.Count == 0 || _module is null) return false;
+        if (_boxOrigins is null)
+        {
+            _boxOrigins = new(ReferenceEqualityComparer.Instance);
+            HashSet<Instr> all = new(_freshOrigins.Values.SelectMany(o => o), ReferenceEqualityComparer.Instance);
+            foreach (Function g in _module.Functions)
+                foreach (Block b in g.Blocks)
+                    foreach (Instr i in b.Instrs)
+                        if (all.Contains(i) && i.Op == Opcode.Call && i.Dest is not null && (i.Callee == LeafAllocator
+                            || IsAllocator(i.Callee) && StampOf(g, i.Dest) is { Descriptor: var stamp } && stamp.StartsWith("b_", StringComparison.Ordinal)))
+                            _boxOrigins[i] = true;
+        }
+        return origins.All(o => _boxOrigins.ContainsKey(o)
+            || o is { Op: Opcode.Call, Callee: { } next } && !IsAllocator(next) && HandsBackLeafOrBox(next, depth + 1));
+    }
 
     /// <summary>The runtime's routine a catch body's end calls (Lowering.EndCatch).</summary>
     /// <summary>The runtime's end of a catch body's hold on its exception (Runtime.CatchEnd).</summary>
@@ -1226,6 +1263,33 @@ public sealed partial class Escape : IModulePass
                 || Origin(Defs(g), baseReg.Reg) is { Op: Opcode.Call } made && IsAllocator(made.Callee));
 
         HashSet<string> refused = new(StringComparer.Ordinal);
+        Dictionary<string, (string Name, long Offset)?>? fieldStamps = null;
+        // Each type's fields stored or read anywhere, by its descriptor.
+        Dictionary<string, List<string>> fieldsOfType = new(StringComparer.Ordinal);
+        foreach (string c in candidates)
+        {
+            int split = c.IndexOf("::", StringComparison.Ordinal);
+            if (split <= 0) continue;
+            string owner = "t_" + c[..split];
+            if (!fieldsOfType.TryGetValue(owner, out List<string>? list)) fieldsOfType[owner] = list = new();
+            list.Add(c);
+        }
+        // A TYPE THAT CAN OWN NOTHING: every field of it and its ancestors
+        // refused already -- a number, a field stored from anywhere -- so
+        // its owned-field map will be empty; and no storage of its own.
+        // Refusals only grow, so a yes stays a yes.
+        HashSet<string> ownsNothing = new(StringComparer.Ordinal);
+        bool OwnsNothing(string type)
+        {
+            if (ownsNothing.Contains(type)) return true;
+            int w = Target.Current.WordSize;
+            Dictionary<string, DataItem> items = _items ??= m.Data.ToDictionary(d => d.Name, StringComparer.Ordinal);
+            bool none = type.StartsWith("t_", StringComparison.Ordinal) && items.TryGetValue(type, out DataItem? item)
+                && item.Bytes.Length >= 10 * w && (item.Bytes[9 * w] & 2) == 0
+                && Ancestry(items, type).All(t => !fieldsOfType.TryGetValue(t, out List<string>? fields) || fields.All(refused.Contains));
+            if (none) ownsNothing.Add(type);
+            return none;
+        }
         bool reporting = Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 0 };
         void Refuse(string field, string why, Function f, Instr at)
         {
@@ -1233,6 +1297,9 @@ public sealed partial class Escape : IModulePass
         }
         foreach ((Function f, _, Instr at) in fieldAddresses) Refuse(at.Field!, "its address is taken (ref, out)", f, at);
         List<(Instr Origin, Instr Store)> held = new();
+        // Stores whose object is used after them, with the object made: each a
+        // read of its field from the store on (ForwardedRead).
+        Dictionary<Instr, VReg> forwarded = new(ReferenceEqualityComparer.Instance);
         foreach ((Function f, Block b, Instr st) in stores)
         {
             // AN ASYNC BODY'S STORES ARE JUDGED AS ANY OTHER'S. The analysis
@@ -1283,7 +1350,11 @@ public sealed partial class Escape : IModulePass
                     continue;
                 case RegOperand v when Origin(Defs(f), v.Reg) is Instr made && Fresh(made) && made.Dest is not null
                     && Analyse(f, new[] { made.Dest }, summaries, made, new HashSet<Instr>(ReferenceEqualityComparer.Instance) { st }) is { Escapes: false } alone:
-                    if (!HandedOver(f, b, st, alone.Derived)) { Refuse(st.Field!, $"stores {st.Operands[1]}, which is used after it is stored", f, st); continue; }
+                    // USED AFTER IT IS STORED -- a constructor's `_items.Add(..)`
+                    // once the field's read was forwarded to what was stored --
+                    // is a read of the field from the store on, and judged as
+                    // one below (ForwardedRead).
+                    if (!HandedOver(f, b, st, alone.Derived)) forwarded[st] = made.Dest;
                     held.Add((made, st));
                     continue;
                 case RegOperand v when Sources(f, v.Reg) is { } sources && sources.All(src => src.Kind != SourceKind.Unknown):
@@ -1408,12 +1479,15 @@ continue;
 
         // One liveness per function, however many loads it has.
         Dictionary<Function, Liveness> livenessOf = new();
+        Dictionary<Function, FirstStores> firstOf = new();
+        FirstStores FirstOf(Function f) => firstOf.TryGetValue(f, out FirstStores? known) ? known : firstOf[f] = new FirstStores(f, Defs(f), _promotedMade, _promotedZeroing);
         Dictionary<Function, HashSet<VReg>> padsOf = new();
         // A BORROWED RETURN: a getter handing back what its object's owned
         // field holds. The value is the object's still, so every call to the
         // getter is a read of the field, judged as one where it is made (the
         // calls are added to the reads below).
         List<(Function F, Block B, Instr I, string Field)> reads = loads.Select(l => (l.F, l.B, l.I, l.I.Field!)).ToList();
+        foreach ((Function f, Block b, Instr st) in stores) if (forwarded.ContainsKey(st)) reads.Add((f, b, st, st.Field!));
         HashSet<(string Function, string Field)> borrowing = new();
         Dictionary<Function, HashSet<VReg>> returnedOf = new();
         HashSet<VReg> Returned(Function f)
@@ -1449,24 +1523,53 @@ continue;
                 // AN OWNED SLOT'S FREE -- what the slot held, loaded where the
                 // function leaves -- is its record's: the object it made there.
                 if (made is { Op: Opcode.Load } && RecordedOrigin(f, free) is Instr recordedOrigin) made = recordedOrigin;
+                // A VIRTUAL CALL'S FRESH RESULT -- an enumerator asked of an
+                // interface -- where every override it reaches hands back a
+                // leaf or a box: those the receiver's own type answers, when a
+                // field every store fills with one type gave it (FieldStamps),
+                // or else every override the program has.
+                if (made is { Op: Opcode.CallIndirect } && IsFreshCall(made))
+                {
+                    string[]? targets = made.Operands.Count > 1 && made.Operands[1] is RegOperand { Reg: var receiver }
+                        && Origin(Defs(f), receiver) is { Op: Opcode.Load, Field: string from }
+                        && (fieldStamps ??= FieldStamps(stores, Defs)).GetValueOrDefault(from) is { } typed
+                        && StampTarget(f, Defs(f), made, typed) is string one ? new[] { one }
+                        : _indirect is not null && _indirect.TryGetValue(made, out string[]? all) ? all : null;
+                    return targets is { Length: > 0 } && targets.All(t => HandsBackLeafOrBox(t));
+                }
                 if (made is not { Op: Opcode.Call, Callee: { } callee }) return false;
                 if (callee == LeafAllocator) return true;
-                return IsFreshCall(made) && _freshOrigins.TryGetValue(callee, out HashSet<Instr>? origins)
-                    && origins.Count > 0 && origins.All(o => o.Callee == LeafAllocator);
+                // Or a box made here or handed back fresh (HandsBackLeafOrBox),
+                // or an object made here of a type that can own nothing: no
+                // field of it or its ancestors is stored or read anywhere --
+                // so none is owned, and its free takes no field's value with
+                // it -- and it keeps no storage (a closure of numbers).
+                if (IsAllocator(callee) && made.Dest is not null && StampOf(f, made.Dest) is { Descriptor: var stamp }
+                    && (stamp.StartsWith("b_", StringComparison.Ordinal) || OwnsNothing(stamp))) return true;
+                return IsFreshCall(made) && HandsBackLeafOrBox(callee);
             }
             if (refused.Contains(field)) continue;
             // An async body's reads too: only one still held across a
             // suspension is refused (below), where code that runs meanwhile
             // could replace the field and free what was read.
-            if (ld.Dest is null) { Refuse(field, "odd load", f, ld); continue; }
+            // A FORWARDED READ is the object a store put there, from the store
+            // on: the uses of it the store's own judgement found after it.
+            VReg? value = ld.Op == Opcode.Store ? forwarded.GetValueOrDefault(ld) : ld.Dest;
+            if (value is null) { Refuse(field, "odd load", f, ld); continue; }
             // Handed back again by a caller is followed too, once per function
             // (borrowing), so the chain of getters ends.
             HashSet<VReg>? back = f.Name == m.Entry ? null : Returned(f);
             // Stored back by a `??=`: through its variable, into the field it came from.
             restoring.TryGetValue(ld, out var restored);
-            Flow flow = Analyse(f, new[] { ld.Dest }, summaries, ld, returnable: back is { Count: > 0 } ? back : null,
-                ownedStores: restored.Store is null ? null : new HashSet<Instr>(ReferenceEqualityComparer.Instance) { restored.Store },
-                joinable: restored.Fill?.Joins);
+            // What is loaded is of the one type every store puts there, where
+            // there is one (FieldStamps): a virtual call on it is that type's.
+            fieldStamps ??= FieldStamps(stores, Defs);
+            HashSet<Instr>? putBack = restored.Store is null && ld.Op != Opcode.Store ? null : new HashSet<Instr>(ReferenceEqualityComparer.Instance);
+            if (restored.Store is not null) putBack!.Add(restored.Store);
+            if (ld.Op == Opcode.Store) putBack!.Add(ld);
+            Flow flow = Analyse(f, new[] { value }, summaries, ld, returnable: back is { Count: > 0 } ? back : null,
+                ownedStores: putBack, joinable: restored.Fill?.Joins,
+                exact: ld.Op == Opcode.Load ? fieldStamps.GetValueOrDefault(field) : null);
             if (flow.Escapes) { Refuse(field, $"read escapes via {flow.Why?.Op} {flow.Why?.Callee}", f, ld); continue; }
             if (back is not null && flow.Derived.Overlaps(back))
             {
@@ -1483,35 +1586,23 @@ continue;
             // DEAD BEFORE ANYTHING THAT COULD FREE IT: wherever what was read
             // is live -- in this block after the read, and in every block it
             // is live into or out of, around a loop too -- nothing may store
-            // to the field, free, or call what might. Not into a handler,
-            // where liveness does not follow it.
+            // to the field, free, or call what might. Into a handler --
+            // a foreach's finally disposing the box a walk of it is held in --
+            // liveness does not follow it, so wherever that handler can be
+            // entered from counts as where it is live (PadLiveAt).
             if (!livenessOf.TryGetValue(f, out Liveness? liveness)) livenessOf[f] = liveness = new Liveness(f);
             if (!padsOf.TryGetValue(f, out HashSet<VReg>? pads)) padsOf[f] = pads = PadLive(liveness);
-            if (flow.Derived.Any(r => !liveness.Tracks(r) || pads.Contains(r))) { Refuse(field, "read lives into a handler", f, ld); continue; }
+            if (flow.Derived.Any(r => !liveness.Tracks(r))) { Refuse(field, "read lives where liveness does not follow it", f, ld); continue; }
+            bool intoPad = flow.Derived.Overlaps(pads);
             HashSet<string> writers = MayWrite(field);
             Instr? unsafeAt = null;
-            bool Uses(Instr i) => i.Operands.Any(o => o is RegOperand r && flow.Derived.Contains(r.Reg));
+            HashSet<VReg> inside = ReadInterior(f, Defs(f), value);
             foreach (Block x in f.Blocks)
             {
-                bool liveIn = flow.Derived.Any(r => liveness.IsLiveIn(x, r));
-                bool liveOut = flow.Derived.Any(r => liveness.IsLiveOut(x, r));
-                int from = liveIn ? 0 : ReferenceEquals(x, b) ? b.Instrs.IndexOf(ld) + 1 : -1;
-                if (from < 0)
+                (int from, int to) = LiveStretch(liveness, x, ReferenceEquals(x, b) ? b.Instrs.IndexOf(ld) : -1, flow.Derived);
+                for (int k = 0; k < x.Instrs.Count && unsafeAt is null; k++)
                 {
-                    // Made here by a copy of what was read, in a block the
-                    // read is not live into: from that copy on.
-                    int made = x.Instrs.FindIndex(i => i.Dest is not null && flow.Derived.Contains(i.Dest));
-                    if (made < 0) continue;
-                    from = made + 1;
-                }
-                int to = x.Instrs.Count;
-                if (!liveOut)
-                {
-                    to = from;
-                    for (int k = from; k < x.Instrs.Count; k++) if (Uses(x.Instrs[k])) to = k;
-                }
-                for (int k = from; k < to && unsafeAt is null; k++)
-                {
+                    if ((k < from || k >= to) && !(intoPad && PadLiveAt(liveness, x, k).Overlaps(flow.Derived))) continue;
                     Instr i = x.Instrs[k];
                     bool danger = i.Op == Opcode.CallIndirect && (_indirect is null || !_indirect.TryGetValue(i, out _))
                         || i.Op == Opcode.CallIndirect && _indirect!.TryGetValue(i, out string[]? t) && t.Any(writers.Contains)
@@ -1524,15 +1615,17 @@ continue;
                         // replacing o.A frees o.A.B -- the value read here.
                         // Not a field already refused, which is never owned and
                         // whose stores free nothing; not a `??=`, nor the first
-                        // store into an object just made, which replace nothing.
+                        // store into an object just made (FirstFill, FirstStores),
+                        // which replace nothing; nor a store into the value read
+                        // itself (StoreIntoRead).
                         || i.Op == Opcode.Store && i.Field is not null && candidates.Contains(i.Field) && !refused.Contains(i.Field)
-                           && !fills.ContainsKey(i) && !FirstFill(f, i)
+                           && !fills.ContainsKey(i) && !FirstFill(f, i) && !StoreIntoRead(i, inside) && !FirstOf(f).Fills(x, k)
                         || i.Op == Opcode.Call && i.Callee == AsyncFrame.Suspend;
                     if (danger) unsafeAt = i;
                 }
                 if (unsafeAt is not null) break;
             }
-            if (unsafeAt is not null) Refuse(field, $"read live across {unsafeAt.Op} {unsafeAt.Callee}", f, unsafeAt);
+            if (unsafeAt is not null) Refuse(field, $"read live across {unsafeAt.Op} {unsafeAt.Callee}" + (unsafeAt.Operands.FirstOrDefault() is RegOperand { Reg: var what } && Origin(Defs(f), what) is Instr maker ? $" of {maker.Op} {maker.Callee} {(maker.Op == Opcode.Load ? RecordedOrigin(f, unsafeAt) : null)}" : ""), f, unsafeAt);
         }
 
         HashSet<string> owned = new(candidates.Where(c => !refused.Contains(c)), StringComparer.Ordinal);
@@ -1880,6 +1973,38 @@ continue;
     private static long[]? Held(string callee, int argument)
         => _held is not null && _held.TryGetValue(callee, out long[]?[]? held) && argument >= 0 && argument < held.Length ? held[argument] : null;
 
+    /// <summary>The descriptors a stamp is looked up in (ExactOverrides): the module's, or the link's.</summary>
+    [ThreadStatic] private static Dictionary<string, DataItem>? _stampItems;
+
+    /// <summary>
+    /// The method a virtual call reaches on a receiver stamped
+    /// <paramref name="stamp"/>: read from the table the receiver's first word
+    /// points at, at a constant slot; null where the call is not that shape.
+    /// </summary>
+    private static string? StampTarget(Function f, Dictionary<VReg, Instr> defs, Instr call, (string Name, long Offset) stamp)
+    {
+        if (_stampItems is null || call.Op != Opcode.CallIndirect || call.Operands.Count < 2
+            || call.Operands[0] is not RegOperand { Reg: var method } || call.Operands[1] is not RegOperand { Reg: var receiver }
+            || !defs.TryGetValue(method, out Instr? slotLoad) || slotLoad is not { Op: Opcode.Load, Operands: [RegOperand { Reg: var table }] }
+            || !defs.TryGetValue(table, out Instr? header) || header is not { Op: Opcode.Load, Offset: 0, Operands: [RegOperand { Reg: var self }] }
+            || !ReferenceEquals(Origin(defs, self), Origin(defs, receiver)) || Origin(defs, self) is null
+            || !_stampItems.TryGetValue(stamp.Name, out DataItem? item)) return null;
+        long at = stamp.Offset + slotLoad.Offset;
+        foreach (DataReloc reloc in item.Relocs)
+            if (reloc.Offset == at && reloc.Addend == 0) return reloc.Symbol;
+        return null;
+
+        static Instr? Origin(Dictionary<VReg, Instr> defs, VReg r)
+        {
+            for (int hop = 0; hop < 8 && defs.TryGetValue(r, out Instr? d); hop++)
+            {
+                if (d.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && d.Operands is [RegOperand from]) { r = from.Reg; continue; }
+                return d;
+            }
+            return null;
+        }
+    }
+
     /// <summary>
     /// Which parameters `f` keeps only in the box it returns: escaping by its
     /// summary, and kept by nothing once returning a block made here, stamped
@@ -1893,6 +2018,9 @@ continue;
         long[]?[]? held = null;
         Stamp[]?[]? stamps = null;
         LifetimeHeld?[]? hints = null;
+        // One stamp for every box any parameter is held in, or none.
+        (string Name, long Offset)? stamp = null;
+        bool stamped = true;
         for (int p = 0; p < f.Params.Count && p < escapes.Length; p++)
         {
             if (!escapes[p] || f.Params[p].Type is not (IrType.I32 or IrType.I64)) continue;
@@ -2156,15 +2284,19 @@ continue;
     /// </summary>
     private static bool StampedBox(Function f, VReg made) => OwnsNoField(StampOf(f, made)?.Descriptor);
 
-    /// <summary>The descriptor stored into the first word of the block `made` makes, where it is made; or null.</summary>
+    /// <summary>The descriptor stored into the first word of the block `made` makes, where it is made; null for none, or for two different.</summary>
     private static Stamp? StampOf(Function f, VReg made)
     {
+        Stamp? found = null;
         foreach (Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
                 if (i.Op == Opcode.Store && i.Offset == 0 && i.Operands.Count >= 2 && i.Operands[1] is SymOperand { Name: var t, Offset: var at }
-                    && i.Operands[0] is RegOperand { Reg: var into } && (into == made || Stamped(f, into, made)))
-                    return new Stamp(t, at);
-        return null;
+                    && IsDescriptor(t) && i.Operands[0] is RegOperand { Reg: var into } && (into == made || Stamped(f, into, made)))
+                {
+                    if (found is { } had && had != new Stamp(t, at)) return null;
+                    found = new Stamp(t, at);
+                }
+        return found;
     }
 
     /// <summary>An iterator's MoveNext: a body run a step at a time in its machine (Lowering.Iterator), not an async method's.</summary>
@@ -2531,7 +2663,8 @@ continue;
     internal static Flow Analyse(Function f, IEnumerable<VReg> roots, Dictionary<string, bool[]> summaries, Instr? source,
         HashSet<Instr>? ownedStores = null, HashSet<VReg>? returnable = null, HashSet<VReg>? joinable = null,
         Needs? needs = null, bool handOff = false, HashSet<Instr>? consumers = null,
-        bool invokeReceiverStays = false, bool closure = false, bool returnsAny = false, bool returnsHolder = false, HashSet<Instr>? holderConsumers = null)
+        bool invokeReceiverStays = false, bool closure = false, bool returnsAny = false, bool returnsHolder = false, HashSet<Instr>? holderConsumers = null,
+        (string Name, long Offset)? exact = null)
     {
         Flow flow = new() { Source = source };
         foreach (VReg r in roots)
@@ -2590,6 +2723,9 @@ continue;
         // that cannot be handed to a call as a box (`refusedRoots`).
         Dictionary<object, Stamp[]?>? kinds = null;
         HashSet<object>? refusedRoots = null;
+        // The registers that hold the object itself, or null, and nothing
+        // else: the roots, and what is only ever copied from them (exact).
+        HashSet<VReg>? bases = null;
         bool changed = true;
         while (changed && !flow.Escapes)
         {
@@ -2897,7 +3033,7 @@ continue;
                             // itself is being invoked (its body cannot let it go).
                             break;
 
-                        case Opcode.CallIndirect when _indirect is not null && _indirect.TryGetValue(i, out string[]? overrides):
+                        case Opcode.CallIndirect when IndirectOverrides(i) is string[] overrides:
                         {
                             // Every override it can reach, together: an
                             // argument stays put only if it does in each.
@@ -2925,6 +3061,8 @@ continue;
                                         continue;
                                     }
                                     if (needs is not null && needs.Allow(o, a - 1)) continue;
+                                    if (PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal))
+                                        Console.Error.WriteLine($"indirect {f.Name}: {i} argument {a - 1} kept by override {o}");
                                     flow.Escapes = true;
                                     break;
                                 }
@@ -3343,6 +3481,69 @@ continue;
             return found.ToArray();
         }
 
+        // A VIRTUAL CALL'S OVERRIDES: the one the receiver's own table holds
+        // where its stamp is known (ExactOverrides), or else every override
+        // the program has for the slot (_indirect).
+        string[]? IndirectOverrides(Instr call)
+        {
+            if (ExactOverrides(call) is string[] exactly) return exactly;
+            return _indirect is not null && _indirect.TryGetValue(call, out string[]? all) ? all : null;
+        }
+
+        // THROUGH A TABLE WHOSE STAMP IS KNOWN: the receiver is the object
+        // itself, stamped `exact` (an owned field every store fills with an
+        // object made of one type) -- a box's own types are TypedTargets';
+        // the method is read from the table its
+        // first word points at, at a constant slot -- the descriptor's own
+        // entry there, and nothing else, is what runs.
+        string[]? ExactOverrides(Instr call)
+        {
+            if (_stampItems is null || call.Op != Opcode.CallIndirect || call.Operands.Count < 2
+                || call.Operands[0] is not RegOperand { Reg: var method } || call.Operands[1] is not RegOperand { Reg: var receiver }) return null;
+            if (exact is null) return null;
+            writes ??= new(f);
+            if (!writes.TryGetValue(method, out WriteList methodWrites) || methodWrites.Count != 1
+                || methodWrites[0] is not { Op: Opcode.Load, Operands: [RegOperand { Reg: var table }] } slotLoad
+                || !writes.TryGetValue(table, out WriteList tableWrites) || tableWrites.Count != 1
+                || tableWrites[0] is not { Op: Opcode.Load, Offset: 0, Operands: [RegOperand { Reg: var self }] }) return null;
+            (string Name, long Offset)? stamp = IsBase(receiver) && IsBase(self) ? exact : null;
+            if (stamp is not { } known || !_stampItems.TryGetValue(known.Name, out DataItem? item)) return null;
+            long at = known.Offset + slotLoad.Offset;
+            foreach (DataReloc reloc in item.Relocs)
+                if (reloc.Offset == at && reloc.Addend == 0) return new[] { reloc.Symbol };
+            return null;
+        }
+
+        // Whether `r` holds the object itself or null and nothing else: a
+        // root, or written only by copies of such registers and by null.
+        bool IsBase(VReg r)
+        {
+            if (bases is null)
+            {
+                bases = new(roots);
+                writes ??= new(f);
+                for (bool grew = true; grew;)
+                {
+                    grew = false;
+                    foreach (Block bb in f.Blocks)
+                        foreach (Instr w in bb.Instrs)
+                        {
+                            if (w.Dest is not { } d || bases.Contains(d) || f.Params.Contains(d)
+                                || w.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || w.Operands is not [RegOperand { Reg: var from }]
+                                || !bases.Contains(from) || !writes.TryGetValue(d, out WriteList all)) continue;
+                            bool only = true;
+                            for (int k = 0; k < all.Count && only; k++)
+                                only = all[k].Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && all[k].Operands.Count == 1
+                                    && (all[k].Operands[0] is ImmOperand { Value: 0 } || all[k].Operands[0] is RegOperand { Reg: var y } && bases.Contains(y));
+                            if (!only) continue;
+                            bases.Add(d);
+                            grew = true;
+                        }
+                }
+            }
+            return bases.Contains(r);
+        }
+
         // A HOLDER HANDED TO A CALL: a box -- a block made here and stamped
         // one, or a call's result that holds the object -- at its base, to
         // functions that each keep nothing of that argument and whose field
@@ -3368,7 +3569,7 @@ continue;
                 string[]? targets = i.Op == Opcode.Call ? (i.Callee is null ? null : new[] { i.Callee })
                     // On the receiver of a type known here: that type's method.
                     : o == first && TypedTargets(i, box) is { } typed ? typed
-                    : _indirect is not null && _indirect.TryGetValue(i, out string[]? found) ? found
+                    : IndirectOverrides(i) is string[] found ? found
                     // Through the one function's address (Devirtualize's
                     // answer for a box it saw made): that function.
                     : i.Operands[0] is RegOperand { Reg: var method } && (writes ??= new(f)).TryGetValue(method, out WriteList known) && known.Count == 1
@@ -4212,6 +4413,7 @@ continue;
                 b.Instrs.RemoveAt(k);
                 b.Instrs.InsertRange(k, replacement);
                 _promotedMade.Add(replacement[0]);
+                _promotedZeroing.Add(replacement[1]);
                 // ONLY ROUND A CYCLE IS THERE A PREVIOUS OCCUPANT: off every
                 // loop (pads' re-entry included, Repeating) the slot is made
                 // at most once a call, and before that it holds what entry
@@ -4301,7 +4503,9 @@ continue;
             {
                 at--;
                 if (at <= start) break;
-                if (ReferenceEquals(i, st) || _bookkeeping.Contains(i)) continue;
+                // Nor the zeroing that makes a promoted object again round a
+                // loop: the next one's making, as an allocator's call is.
+                if (ReferenceEquals(i, st) || _bookkeeping.Contains(i) || _promotedZeroing.Contains(i)) continue;
                 bool reads = false;
                 for (int k = 0; k < i.Operands.Count; k++)
                 {

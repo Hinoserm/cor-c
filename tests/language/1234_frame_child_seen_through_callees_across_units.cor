@@ -1,0 +1,59 @@
+// test: frame_child_seen_through_callees_across_units
+// units: tests/language/support/1234_frame_child_units.cor
+// expect-exit: 0
+// expect-output:
+// 7920040
+// ring in the frame True
+//
+// The link's lifetime run sees one function at a time. Here the library's
+// Random(int) is brought in and inlined into Main there, so the Random and
+// the ring of 56 numbers its constructor makes both come into sight only at
+// the link, and the Random goes in the frame. The ring is the Random's
+// child, read by Draw -- this unit's, never inlined -- and through it by
+// the library's Next. Draw is now looked into as its unit archived it (the
+// frame's check reads the callees' bodies, UnitBackend), and a library
+// function whose body the link has not brought in is answered by the whole
+// program's summary of what it does to its argument's fields: Next keeps
+// the ring nowhere. So the ring goes in the frame with the Random. Before,
+// it was refused at the call of Draw, made on the heap each lap and freed
+// (255 bytes given back a lap).
+
+using System;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    const int N = 20000;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Draw(Random r)
+    {
+        int s = 0;
+        for (int i = 0; i < 8; i++) s += r.Next(100);
+        return s;
+    }
+
+    static void Main()
+    {
+        long total = 0, freed = -1, left = -1;
+        try
+        {
+            total += Draw(new Random(1)) + Units.Seed();
+            Gc.Collect();
+            long before = Gc.FreedBytes, taken = Gc.CollectedBytes;
+            for (int k = 0; k < N; k++)
+            {
+                Random r = new Random(k);
+                total += Draw(r);
+            }
+            Gc.Collect();
+            freed = (Gc.FreedBytes - before) / N;
+            left = (Gc.CollectedBytes - taken) / N;
+        }
+        catch (InvalidOperationException e) { Console.WriteLine(e.Message); }
+        Console.WriteLine(total);
+        // Nothing made on the heap a lap: nothing given back, nothing
+        // collected. Before, the ring was freed each lap: 255 bytes.
+        Console.WriteLine("ring in the frame " + (freed >= 0 && freed < 64 && left == 0));
+    }
+}

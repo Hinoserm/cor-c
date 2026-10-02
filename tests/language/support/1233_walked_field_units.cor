@@ -1,0 +1,26 @@
+// The other unit of 1223_owned_field_walked_through_interface_across_units:
+// the worker whose list LINQ's Any walks, compiled with the libraries.
+using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.CompilerServices;
+
+public sealed class Worker
+{
+    private readonly List<int> _seen = new();
+    private readonly int _n;
+
+    public Worker(int n) { _n = n; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Run()
+    {
+        int hits = 0;
+        for (int i = 0; i < _n; i++)
+        {
+            int x = i * 3 % 5;
+            if (_seen.Any(s => s == x)) hits++;
+            _seen.Add(x);
+        }
+        return hits;
+    }
+}
