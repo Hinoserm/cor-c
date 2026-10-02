@@ -1,0 +1,34 @@
+// test: linq_over_list_across_units
+// units: tests/language/support/915_builder_units.cor
+// expect-exit: 0
+// expect-output:
+// 966668
+//
+// Any, All, Count, First and FirstOrDefault over a List of references, in
+// a unit that does not hold the library: each walks the list's own array
+// (Enumerable.Items). A type test on that array failed -- the code every
+// list of references shares makes it with the shared element type -- and
+// each call made a boxed enumerator instead.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+sealed class Op { public int V; public Op(int v) { V = v; } }
+static class P
+{
+    static void Main()
+    {
+        List<Op> ops = new();
+        for (int i = 0; i < 10; i++) ops.Add(new Op(i));
+        long t = 0;
+        for (int k = 0; k < 100000; k++)
+        {
+            if (ops.Any(o => o.V == k % 12)) t++;
+            if (ops.All(o => o.V < 10)) t += 2;
+            t += ops.Count(o => o.V % 3 == k % 3);
+            t += ops.First(o => o.V >= k % 10).V;
+            t += ops.FirstOrDefault(o => o.V > 20)?.V ?? -1;
+        }
+        Console.WriteLine(t);
+    }
+}

@@ -8675,6 +8675,10 @@ static class Enumerable {
     /// one, not a subclass, which may enumerate itself otherwise -- as an
     /// array and how many of it count, or null. What the questions below ask
     /// is then asked by index, with no enumerator made to ask it.
+    // A NULL TEST, NOT A TYPE TEST, ON WHAT THIS ANSWERS: a List's array
+    // made by the code all lists of references share holds those references
+    // under the shared element type, and `is T[]` turned every Any, First
+    // and Count over a List away from its array and onto a boxed enumerator.
     private static T[]? Items<T>(IEnumerable<T> source, out int count) {
         if (source.GetType() == typeof(T[])) { T[] array = (T[])source; count = array.Length; return array; }
         if (source.GetType() == typeof(List<T>)) { List<T> list = (List<T>)source; count = list.Count; return list.Backing(); }
@@ -8692,7 +8696,7 @@ static class Enumerable {
 
     public static T First<T>(this IEnumerable<T> source, Func<T, bool> predicate) {
         NotNull(source, "source"); NotNull(predicate, "predicate");
-        if (Items(source, out int count) is T[] items) {
+        if (Items(source, out int count) is { } items) {
             for (int i = 0; i < count; i++) { if (predicate(items[i])) { return items[i]; } }
             throw NoMatch();
         }
@@ -8713,7 +8717,7 @@ static class Enumerable {
 
     public static T FirstOrDefault<T>(this IEnumerable<T> source, Func<T, bool> predicate, T defaultValue) {
         NotNull(source, "source"); NotNull(predicate, "predicate");
-        if (Items(source, out int count) is T[] items) {
+        if (Items(source, out int count) is { } items) {
             for (int i = 0; i < count; i++) { if (predicate(items[i])) { return items[i]; } }
             return defaultValue;
         }
@@ -8844,7 +8848,7 @@ static class Enumerable {
 
     public static bool Any<T>(this IEnumerable<T> source, Func<T, bool> predicate) {
         NotNull(source, "source"); NotNull(predicate, "predicate");
-        if (Items(source, out int count) is T[] items) {
+        if (Items(source, out int count) is { } items) {
             for (int i = 0; i < count; i++) { if (predicate(items[i])) { return true; } }
             return false;
         }
@@ -8854,7 +8858,7 @@ static class Enumerable {
 
     public static bool All<T>(this IEnumerable<T> source, Func<T, bool> predicate) {
         NotNull(source, "source"); NotNull(predicate, "predicate");
-        if (Items(source, out int count) is T[] items) {
+        if (Items(source, out int count) is { } items) {
             for (int i = 0; i < count; i++) { if (!predicate(items[i])) { return false; } }
             return true;
         }
@@ -8902,7 +8906,7 @@ static class Enumerable {
     public static int Count<T>(this IEnumerable<T> source, Func<T, bool> predicate) {
         NotNull(source, "source"); NotNull(predicate, "predicate");
         int count = 0;
-        if (Items(source, out int length) is T[] items) {
+        if (Items(source, out int length) is { } items) {
             for (int i = 0; i < length; i++) { if (predicate(items[i])) { count = count + 1; } }
             return count;
         }
