@@ -58,6 +58,14 @@ public sealed class UnitBackend : IUnitBackend
         module.PreserveExports = true;
         if (preLate)
         {
+            // NO HINTS FROM THE LINK'S OWN RUN OF THE LATE PASSES: nothing after
+            // the link reads them, and the field sites they named were new
+            // symbols nobody defined -- or, named alike by serial, the unit's
+            // compile-time sites with another field's verdict. That they once
+            // matched rested on the run here repeating the compile's exactly,
+            // which nothing promises (the calls a unit keeps, m.KeepCalls, are
+            // not archived). What the link knows it frees directly (RunAtLink).
+            module.LeavesLinkHints = false;
             // The whole program's answers the late passes read, for a closed image.
             if (facts?.ForeignCatchable is string[] catchable) module.ForeignCatchable = new(catchable, StringComparer.Ordinal);
             module.OwnedFields = facts?.OwnedFields;
