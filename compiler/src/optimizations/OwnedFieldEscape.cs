@@ -219,11 +219,19 @@ internal sealed class OwnedFieldEscape
                     || !StartOf(i.Operands[1], addresses, slots, out long from)) continue;
                 if (!(from < field + width && field < from + length)) continue;
                 if (field < from || field + width > from + length) return false;
-                // The destination as a slot, directly or through the one copy
-                // of its address that made the register.
+                // ONLY INTO THE FRAME: a slot, directly or through the one copy
+                // of its address that made the register. Anywhere else -- an
+                // element of a list's array, a caller's return buffer -- the
+                // bytes outlive this function and are read where these rules
+                // cannot see, and a child judged by them was put in the frame
+                // and read back zeroed by the self-built compiler.
                 FrameSlot? slot = i.Operands[0] as SlotOperand is { } direct ? direct.Slot : null;
                 if (i.Operands[0] is RegOperand target)
                 {
+                    if (!defs.IsSingle(target.Reg) || defs.Site(target.Reg) is not { } site
+                        || site.Block.Instrs[site.Index] is not { Op: Opcode.Copy, Operands: [SlotOperand { Slot: var held }] })
+                        return false;
+                    slot = held;
                     if (addresses.TryGetValue(target.Reg, out long known))
                     {
                         if (known != from) return false;
@@ -237,11 +245,8 @@ internal sealed class OwnedFieldEscape
                         }
                         changed = true;
                     }
-                    if (defs.IsSingle(target.Reg) && defs.Site(target.Reg) is { } site
-                        && site.Block.Instrs[site.Index] is { Op: Opcode.Copy, Operands: [SlotOperand { Slot: var held }] })
-                        slot = held;
                 }
-                if (slot is null) continue;
+                if (slot is null) return false;
                 if (slots.TryGetValue(slot, out long at))
                 {
                     if (at != from) return false;

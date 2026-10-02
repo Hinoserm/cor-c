@@ -1,0 +1,42 @@
+// test: struct_copied_out_of_frame
+// expect-exit: 0
+// expect-output:
+// 308 n0n1n2n3n4n5n6n7
+//
+// A struct holding an object just made, copied by value into a static array's
+// element and returned by value: the copies outlive the frame, so the object
+// is not the frame's. Following a copy of an owner's bytes anywhere but into
+// a frame slot put every Node in one slot, and each element read the last.
+
+using System;
+sealed class Node { public int V; public string S; public Node(int v) { V = v; S = "n" + v; } }
+struct Holder { public Node N; public int K; }
+public static class Program
+{
+    static Holder[] kept = new Holder[8];
+    static void Make(int i)
+    {
+        Holder h;
+        h.N = new Node(i);
+        h.K = i;
+        kept[i] = h;
+    }
+    static Holder Made(int i)
+    {
+        Holder h;
+        h.N = new Node(i * 10);
+        h.K = i;
+        return h;
+    }
+    public static int Main()
+    {
+        for (int i = 0; i < 8; i++) Make(i);
+        Holder[] more = new Holder[8];
+        for (int i = 0; i < 8; i++) more[i] = Made(i);
+        int sum = 0;
+        string all = "";
+        for (int i = 0; i < 8; i++) { sum += kept[i].N.V + more[i].N.V; all += kept[i].N.S; }
+        Console.WriteLine(sum + " " + all);
+        return 0;
+    }
+}
