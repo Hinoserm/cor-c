@@ -6569,6 +6569,14 @@ static class Gc
         {
             return;
         }
+        // A FINISHED COROUTINE'S FRAME -- no descriptor, its state word -1 --
+        // keeps what its last run left in its saved slots, and nothing reads
+        // them again: an iterator gives back what it made when it ends, and
+        // its machine, still held by whoever walked it, is no holder.
+        if (vt == 0 && (int)Sys.Peek(holder + 2 * WordSize.Bytes) == -1)
+        {
+            return;
+        }
         _danglingReports = _danglingReports + 1;
         SayNumber("gc: checked free: a live object still holds a freed block, holder ", holder);
         SayNumber("gc:   holder's vtable ", vt);
