@@ -11,7 +11,7 @@ using Block = Corsac.Lang.Ir.Block;
 public sealed class LoadReuse : IPass
 {
     public string Name => "load-reuse";
-    private sealed record Entry(Instr Load, Block Block, int Index);
+    private readonly record struct Entry(Instr Load, Block Block, int Index);
     private readonly record struct Key(object Base, long Offset, int Size, bool Signed, IrType Type);
 
     public void Run(Function function)
@@ -45,7 +45,7 @@ public sealed class LoadReuse : IPass
                 if (i.Op == Opcode.Load && i.Dest is { } result && result.Type.IsInt()
                     && Address(i, out Key key))
                 {
-                    if (memory.TryGetValue(key, out Entry? prior)
+                    if (memory.TryGetValue(key, out Entry prior)
                         && Stable(prior.Load.Dest!, prior.Block, prior.Index + 1, block, index)
                         && (i.Operands[0] is not RegOperand address
                             || Stable(address.Reg, prior.Block, prior.Index, block, index)))

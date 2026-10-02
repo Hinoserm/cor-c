@@ -31,16 +31,16 @@ public sealed class Cfg
     // hashing a reference has to reach into the object's header word. A block
     // already has a position in its function; the graph is a snapshot of that
     // function, so the position is a dense key and the maps are arrays.
-    // Made when an edge arrives, not for every block: an entry has no
-    // predecessor, a return no successor, and most of the rest have one or
-    // two, so two full lists a block was most of what building a graph
-    // allocated -- a hundred and ten thousand graphs for one source.
-    private readonly List<Block>?[] _preds;
-    private readonly List<Block>?[] _succs;
-    // An IReadOnlyList already: an array cast to one is wrapped where it is
-    // cast, so a cast in Preds and Succs made a wrapper on every call for a
-    // block with none.
-    private static readonly IReadOnlyList<Block> None = Array.Empty<Block>();
+    // EVERY EDGE IN TWO ARRAYS, one a direction, each block's run of it
+    // found by its start: a list a block (and the list's own array) was
+    // four allocations a block for every graph any pass builds, and a
+    // hundred and ten thousand graphs are built for one source. Preds and
+    // Succs answer a view of the run (Edges), which foreach walks without
+    // an enumerator object.
+    private readonly Block[] _predEdges;
+    private readonly Block[] _succEdges;
+    private readonly int[] _predStart;
+    private readonly int[] _succStart;
     private readonly bool[] _root;
     private readonly List<Block> _roots = new();
     private List<Block>? _rpo;
@@ -54,8 +54,6 @@ public sealed class Cfg
     {
         Function = f;
         int count = f.Blocks.Count;
-        _preds = new List<Block>?[count];
-        _succs = new List<Block>?[count];
         _root = new bool[count];
         for (int k = 0; k < count; k++) f.Blocks[k].Order = k;
 
@@ -76,35 +74,47 @@ public sealed class Cfg
                     }
                 }
             }
-            // The terminator's targets, then its default, as Block.Successors
-            // yields them -- read here without the iterator, which was an
-            // allocation per block for every pass that builds a graph.
-            Instr? end = b.Terminator;
-            if (end is not null)
-            {
-                foreach (Block s in end.Targets)
-                {
-                    Edge(b, s);
-                }
-                if (end.Default is not null)
-                {
-                    Edge(b, end.Default);
-                }
-            }
         }
-        void Edge(Block from, Block s)
+
+        // The terminator's targets, then its default, as Block.Successors
+        // yields them -- read here without the iterator, which was an
+        // allocation per block for every pass that builds a graph. A Switch
+        // may list the same block many times; one edge is enough for every
+        // analysis here, and it keeps the predecessor count honest for "sole
+        // predecessor" checks.
+        int most = 0;
+        foreach (Block b in f.Blocks)
+            if (b.Terminator is { } end) most += end.Targets.Count + (end.Default is null ? 0 : 1);
+        _succEdges = most == 0 ? Array.Empty<Block>() : new Block[most];
+        _succStart = new int[count + 1];
+        int[] incoming = new int[count + 1];
+        int edges = 0;
+        for (int k = 0; k < count; k++)
         {
-            // A Switch may list the same block many times; one edge is
-            // enough for every analysis here, and it keeps the
-            // predecessor count honest for "sole predecessor" checks.
-            List<Block> outgoing = _succs[from.Order] ??= new List<Block>(2);
-            if (!outgoing.Contains(s))
+            _succStart[k] = edges;
+            if (f.Blocks[k].Terminator is not { } end) continue;
+            int targets = end.Targets.Count;
+            for (int t = 0; t <= targets; t++)
             {
-                outgoing.Add(s);
-                (_preds[s.Order] ??= new List<Block>(2)).Add(from);
+                Block? s = t < targets ? end.Targets[t] : end.Default;
+                if (s is null) continue;
+                bool seen = false;
+                for (int e = _succStart[k]; e < edges && !seen; e++) seen = ReferenceEquals(_succEdges[e], s);
+                if (seen) continue;
+                _succEdges[edges++] = s;
+                incoming[s.Order]++;
             }
         }
-    
+        _succStart[count] = edges;
+        _predStart = new int[count + 1];
+        for (int k = 0; k < count; k++) _predStart[k + 1] = _predStart[k] + incoming[k];
+        _predEdges = edges == 0 ? Array.Empty<Block>() : new Block[edges];
+        // Filled in block order, as the lists were: a block's predecessors
+        // in the order their branches appear.
+        for (int k = 0; k < count; k++) incoming[k] = _predStart[k];
+        for (int k = 0; k < count; k++)
+            for (int e = _succStart[k]; e < _succStart[k + 1]; e++)
+                _predEdges[incoming[_succEdges[e].Order]++] = f.Blocks[k];
     }
 
     /// <summary>Records a block control can reach other than by a branch.</summary>
@@ -115,8 +125,8 @@ public sealed class Cfg
         _roots.Add(b);
     }
 
-    public IReadOnlyList<Block> Preds(Block b) => _preds[b.Order] ?? None;
-    public IReadOnlyList<Block> Succs(Block b) => _succs[b.Order] ?? None;
+    public Edges Preds(Block b) => new(_predEdges, _predStart[b.Order], _predStart[b.Order + 1] - _predStart[b.Order]);
+    public Edges Succs(Block b) => new(_succEdges, _succStart[b.Order], _succStart[b.Order + 1] - _succStart[b.Order]);
 
     /// <summary>Whether control can enter the block by something other than a branch from a predecessor.</summary>
     public bool IsRoot(Block b) => _root[b.Order];
@@ -468,5 +478,47 @@ public sealed class Cfg
                 _domChildren[best].Add(b);
             }
         }
+    }
+}
+
+/// <summary>
+/// One block's run of a graph's edges (Cfg.Preds, Cfg.Succs): a view, made
+/// where it is asked for and walked by foreach without an enumerator object.
+/// </summary>
+public readonly struct Edges : IReadOnlyList<Block>
+{
+    private readonly Block[] _all;
+    private readonly int _start;
+    public int Count { get; }
+
+    internal Edges(Block[] all, int start, int count) { _all = all; _start = start; Count = count; }
+
+    public Block this[int index] => (uint)index < (uint)Count ? _all[_start + index] : throw new ArgumentOutOfRangeException(nameof(index));
+
+    public bool Contains(Block b)
+    {
+        for (int k = 0; k < Count; k++)
+            if (ReferenceEquals(_all[_start + k], b)) return true;
+        return false;
+    }
+
+    public Enumerator GetEnumerator() => new(this);
+    IEnumerator<Block> IEnumerable<Block>.GetEnumerator() => ((IEnumerable<Block>)ToArray()).GetEnumerator();
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => ToArray().GetEnumerator();
+
+    public Block[] ToArray()
+    {
+        Block[] copy = new Block[Count];
+        Array.Copy(_all, _start, copy, 0, Count);
+        return copy;
+    }
+
+    public struct Enumerator
+    {
+        private readonly Edges _edges;
+        private int _at;
+        internal Enumerator(Edges edges) { _edges = edges; _at = -1; }
+        public Block Current => _edges._all[_edges._start + _at];
+        public bool MoveNext() => ++_at < _edges.Count;
     }
 }
