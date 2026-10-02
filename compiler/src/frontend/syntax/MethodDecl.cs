@@ -5,7 +5,13 @@ public sealed class MethodDecl : MemberDecl
 {
     /// <summary>Null for a constructor.</summary>
     public TypeRef? Returns { get; init; }
-    public List<TypeParam> TypeParams { get; } = new();
+    // Made only when written: most have none, and a list each was the collector's.
+    private static readonly List<TypeParam> NoTypeParams = new();
+    private List<TypeParam>? _typeParams;
+    /// <summary>To read: one shared empty list when there are none, never written through.</summary>
+    public List<TypeParam> TypeParams => _typeParams ?? NoTypeParams;
+    /// <summary>To write: made on first use.</summary>
+    public List<TypeParam> WritableTypeParams => _typeParams ??= new();
     public List<Param> Params { get; } = new();
     public Block? Body { get; init; }
     public bool IsCtor { get; init; }

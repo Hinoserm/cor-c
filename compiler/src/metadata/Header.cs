@@ -225,7 +225,7 @@ public static class Header
                 }
 
                 s.Append(d.Name);
-                TypeParams(s, d.TypeParams);
+                TypeParams(s, d.WritableTypeParams);
                 s.Append('(');
                 s.Append(string.Join(", ", d.Params.Select(p => Parameter(p, made))));
                 s.Append(");\n");

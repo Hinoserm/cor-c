@@ -24,7 +24,13 @@ public sealed class MethodSymbol
     /// </summary>
     public string? ExplicitInterface { get; init; }
     public string? ExplicitMember { get; init; }
-    public List<string> TypeParams { get; } = new();
+    // Made only when written: most have none, and a list each was the collector's.
+    private static readonly List<string> NoTypeParams = new();
+    private List<string>? _typeParams;
+    /// <summary>To read: one shared empty list when there are none, never written through.</summary>
+    public List<string> TypeParams => _typeParams ?? NoTypeParams;
+    /// <summary>To write: made on first use.</summary>
+    public List<string> WritableTypeParamNames => _typeParams ??= new();
 
     /// <summary>
     /// A GENERIC VIRTUAL METHOD: `virtual T GetValue&lt;T&gt;()`, an override of

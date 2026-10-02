@@ -133,7 +133,7 @@ public sealed class Monomorphiser
 
         MethodDecl made = (MethodDecl)m.RewriteMember(template, map, template.Name);
 
-        made.TypeParams.Clear();
+        made.WritableTypeParams.Clear();
         made.Name = name;
 
         // A COPY IS NEVER VIRTUAL. A generic virtual method has no slot for its
@@ -160,7 +160,7 @@ public sealed class Monomorphiser
             LocalCopy = made.LocalCopy, File = made.File, TemplateIndex = made.TemplateIndex,
             Scope = made.Scope, Namespace = made.Namespace, OwnedImplementation = made.OwnedImplementation,
         };
-        plain.Attributes.AddRange(made.Attributes);
+        plain.WritableAttributes.AddRange(made.Attributes);
         plain.Params.AddRange(made.Params);
         return plain;
     }
@@ -1465,7 +1465,7 @@ public sealed class Monomorphiser
                     Line = f.Line, Col = f.Col,
                 };
 
-                copy.Attributes.AddRange(f.Attributes);
+                copy.WritableAttributes.AddRange(f.Attributes);
                 return copy;
             }
 
@@ -1535,10 +1535,10 @@ public sealed class Monomorphiser
                 // dropping them makes the copy's signature name a type nothing
                 // declares, and every generic method in the image then reports
                 // that its own T is not a known type.
-                made.TypeParams.AddRange(md.TypeParams);
+                made.WritableTypeParams.AddRange(md.TypeParams);
                 // And its attributes: [DoesNotReturn] is read off the
                 // declaration by the checker (Binder.NeverReturns).
-                made.Attributes.AddRange(md.Attributes);
+                made.WritableAttributes.AddRange(md.Attributes);
 
                 foreach (Param p in md.Params)
                 {

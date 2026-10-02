@@ -2974,7 +2974,7 @@ public sealed partial class Binder
                         IsCtor = md.IsCtor,
                         Decl = md,
                     };
-                    AddNames(ms.TypeParams, md.TypeParams);
+                    if (md.TypeParams.Count > 0) AddNames(ms.WritableTypeParamNames, md.TypeParams);
 
                     foreach (Param p in md.Params)
                     {

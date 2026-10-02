@@ -10,7 +10,13 @@ public abstract class MemberDecl : Node
     /// Empty for the overwhelming majority of members, which is why it is a
     /// plain list rather than anything cleverer.
     /// </summary>
-    public List<AttributeRef> Attributes { get; } = new();
+    // Made only when written: most have none, and a list each was the collector's.
+    private static readonly List<AttributeRef> NoAttributes = new();
+    private List<AttributeRef>? _attributes;
+    /// <summary>To read: one shared empty list when there are none, never written through.</summary>
+    public List<AttributeRef> Attributes => _attributes ?? NoAttributes;
+    /// <summary>To write: made on first use.</summary>
+    public List<AttributeRef> WritableAttributes => _attributes ??= new();
 
     /// <summary>
     /// The using directives of the file THIS MEMBER was written in, which is

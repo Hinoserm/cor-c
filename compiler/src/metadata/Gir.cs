@@ -1346,10 +1346,10 @@ public static class Gir
 
                     foreach (string one in typeParams)
                     {
-                        d.TypeParams.Add(new TypeParam { Name = one });
+                        d.WritableTypeParams.Add(new TypeParam { Name = one });
                     }
 
-                    d.Attributes.AddRange(attributes);
+                    d.WritableAttributes.AddRange(attributes);
                     d.Params.AddRange(ps);
                     return d;
                 }

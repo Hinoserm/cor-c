@@ -2242,7 +2242,7 @@ public sealed class Parser
             {
                 throw Error("a conversion operator takes one operand");
             }
-            conversion.Attributes.AddRange(attributes);
+            conversion.WritableAttributes.AddRange(attributes);
             return FinishMethod(conversion);
         }
 
@@ -2407,8 +2407,8 @@ public sealed class Parser
             };
             // `[DoesNotReturn]` and the rest, which the checker reads off the
             // declaration (Binder.NeverReturns).
-            m.Attributes.AddRange(attributes);
-            ParseTypeParams(m.TypeParams);
+            m.WritableAttributes.AddRange(attributes);
+            if (At(Tok.Lt)) ParseTypeParams(m.WritableTypeParams);
             ParseParams(m.Params);
             ParseConstraints(m.TypeParams);
             return FinishMethod(m);
@@ -2435,7 +2435,7 @@ public sealed class Parser
                 DeclaredInit = value, Line = also.Line, Col = also.Col,
             };
 
-            more.Attributes.AddRange(attributes);
+            more.WritableAttributes.AddRange(attributes);
             rest.Add(more);
         }
 
@@ -2447,7 +2447,7 @@ public sealed class Parser
             DeclaredInit = init, Line = start.Line, Col = start.Col,
         };
 
-        first.Attributes.AddRange(attributes);
+        first.WritableAttributes.AddRange(attributes);
         first.More.AddRange(rest);
         return first;
     }
@@ -5196,7 +5196,7 @@ public sealed class Parser
             Mods = _memberStatic ? Mods.Static | Mods.Private : Mods.Private,
             Line = at.Line, Col = at.Col, Body = null,
         };
-        ParseTypeParams(m.TypeParams);
+        if (At(Tok.Lt)) ParseTypeParams(m.WritableTypeParams);
         ParseParams(m.Params);
         ParseConstraints(m.TypeParams);
         MethodDecl finished = FinishMethod(m);
@@ -7827,9 +7827,9 @@ internal static class MethodDeclExtensions
     /// <summary>Copies the list-valued parts a record-style rebuild would drop.</summary>
     public static MethodDecl CopyListsFrom(this MethodDecl to, MethodDecl from)
     {
-        to.TypeParams.AddRange(from.TypeParams);
+        to.WritableTypeParams.AddRange(from.TypeParams);
         to.Params.AddRange(from.Params);
-        to.Attributes.AddRange(from.Attributes);
+        to.WritableAttributes.AddRange(from.Attributes);
         return to;
     }
 }
