@@ -343,7 +343,7 @@ public sealed class Inline : IParallelModulePass
                     bool dispatchesFresh = ordinaryCost > smallBody && !single && !specializesBranch && !exposesChildren
                         && size + calleeSize <= GrowthLimit
                         && (calleeSize <= FreshArgumentBody && FreshDispatched(caller, call, callee, ref callerFresh)
-                            || calleeSize <= FreshResultBody && call.Dest is not null && MakesWhatItReturns(callee));
+                            || calleeSize <= FreshResultBody && call.Dest is not null && MakesWhatItReturnsOnce(callee));
                     exposesChildren |= dispatchesFresh;
                     if (ordinaryCost > smallBody && !single && !specializesBranch && !exposesChildren)
                     {
@@ -495,6 +495,18 @@ public sealed class Inline : IParallelModulePass
                         return true;
         }
         return false;
+    }
+
+    // Asked at every call site of a callee: answered once a callee, while
+    // nothing has been inlined into it (its size says so).
+    private readonly Dictionary<Function, (int Size, bool Answer)> _makes = new(ReferenceEqualityComparer.Instance);
+    private bool MakesWhatItReturnsOnce(Function callee)
+    {
+        int size = Size(callee);
+        if (_makes.TryGetValue(callee, out var known) && known.Size == size) return known.Answer;
+        bool answer = MakesWhatItReturns(callee);
+        _makes[callee] = (size, answer);
+        return answer;
     }
 
     /// <summary>
