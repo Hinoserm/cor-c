@@ -1,0 +1,88 @@
+// test: static_init_guard_repeats
+// expect-exit: 0
+// expect-output:
+// half 0 0
+// whole 5 6 runs 1
+// first TypeInitializationException
+// second TypeInitializationException
+// third TypeInitializationException
+// tries 1
+// looped 4950 runs 1
+//
+// A TYPE TOUCHED AGAIN BEHIND A TOUCH THAT ALREADY TESTED IT: the second
+// test of its ready word goes (StaticInitGuards), and what C# says still
+// holds. Touched from inside its own initialiser, twice over, both reads see
+// the half-built type and nothing runs twice; touched after an initialiser
+// that threw, every touch throws again, the one after the handler included,
+// and the body is not tried a second time; touched round a loop, it runs
+// once.
+using System;
+using System.Runtime.CompilerServices;
+
+static class Count
+{
+    public static int Runs;
+    public static int Tries;
+}
+
+static class Half
+{
+    public static int A = Peek();
+    public static int B = A + 1;
+    static int Peek()
+    {
+        Count.Runs++;
+        // Both read the type this initialiser is still making.
+        int a = Half.A;
+        int b = Half.B;
+        Console.WriteLine("half " + a + " " + b);
+        return 5;
+    }
+}
+
+static class Broken
+{
+    public static int X = Fail();
+    public static int Y = 2;
+    static int Fail()
+    {
+        Count.Tries++;
+        if (Count.Tries > 0) throw new InvalidOperationException("no");
+        return 1;
+    }
+}
+
+static class Looped
+{
+    public static int Step = Make();
+    static int Make() { Count.Runs++; return 1; }
+}
+
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Twice() => Broken.X + Broken.Y;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Touches()
+    {
+        try { Console.WriteLine(Twice()); }
+        catch (TypeInitializationException) { Console.WriteLine("first TypeInitializationException"); }
+        try { Console.WriteLine(Broken.X); }
+        catch (TypeInitializationException) { Console.WriteLine("second TypeInitializationException"); }
+        try { Console.WriteLine(Broken.Y + Broken.X); }
+        catch (TypeInitializationException) { Console.WriteLine("third TypeInitializationException"); }
+    }
+
+    static void Main()
+    {
+        int a = Half.A, b = Half.B;
+        Console.WriteLine("whole " + a + " " + b + " runs " + Count.Runs);
+        Touches();
+        Console.WriteLine("tries " + Count.Tries);
+        Count.Runs = 0;
+        int sum = 0;
+        for (int i = 0; i < 100; i++) sum += i * Looped.Step;
+        Console.WriteLine("looped " + sum + " runs " + Count.Runs);
+    }
+}

@@ -3283,23 +3283,34 @@ continue;
                 b.Instrs.RemoveAt(k);
                 b.Instrs.InsertRange(k, replacement);
                 _promotedMade.Add(replacement[0]);
-                Record(f, new OwnedRecord { Origin = replacement[1], Root = i.Dest, SlotAddress = addr, Slot = slot, Renew = replacement[1], Bytes = bytes });
+                // ONLY ROUND A CYCLE IS THERE A PREVIOUS OCCUPANT: off every
+                // loop (pads' re-entry included, Repeating) the slot is made
+                // at most once a call, and before that it holds what entry
+                // left there -- zeros -- so a free before it finds nothing
+                // and is not placed. The return frees stay: a path may leave
+                // without making it, and they read the entry's zeros then.
+                repeating ??= Repeating(f);
+                bool repeats = repeating.Contains(b);
+                Record(f, new OwnedRecord { Origin = replacement[1], Root = i.Dest, SlotAddress = addr, Slot = slot, Renew = repeats ? replacement[1] : null, Bytes = bytes });
                 k += replacement.Count - 1;
                 bool storage = _storageFreer && OwnsStorage(b, replacement[^1]);
                 if (i.Field == Instr.OwnsElements || storage)
                 {
-                    // Its elements given back before the slot is filled again,
-                    // and on every return; the slot's first word zeroed on
+                    // Its elements given back before the slot is filled again
+                    // round a loop, and on every return; the slot's first word zeroed on
                     // entry, so the first such call finds no collection there.
                     // Then its storage: the arrays a collection made in the
                     // frame grows are the heap's (FreeStorageInFrame).
-                    List<Instr> before = new();
-                    AppendElementFree(f, before, i, addr, i.Line);
-                    if (storage) AppendStorageFree(f, before, addr, i.Line);
-                    int renewAt = b.Instrs.IndexOf(replacement[1]);
-                    b.Instrs.InsertRange(renewAt, before);
-                    _bookkeeping.UnionWith(before);
-                    k += before.Count;
+                    if (repeats)
+                    {
+                        List<Instr> before = new();
+                        AppendElementFree(f, before, i, addr, i.Line);
+                        if (storage) AppendStorageFree(f, before, addr, i.Line);
+                        int renewAt = b.Instrs.IndexOf(replacement[1]);
+                        b.Instrs.InsertRange(renewAt, before);
+                        _bookkeeping.UnionWith(before);
+                        k += before.Count;
+                    }
                     foreach (Block exit in f.Blocks)
                     {
                         if (exit.Terminator is not { Op: Opcode.Ret }) continue;

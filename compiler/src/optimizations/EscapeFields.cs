@@ -733,9 +733,11 @@ public sealed partial class Escape
         f.Entry.Instrs.InsertRange(0, entry);
         _bookkeeping.UnionWith(entry);
 
-        // Before the slot is zeroed for the next object: the last one's fields.
+        // Before the slot is zeroed for the next object: the last one's
+        // fields. None off a loop, where no last one can be there.
         foreach (Block b in f.Blocks)
         {
+            if (r.Renew is null) break;
             int at = b.Instrs.IndexOf(r.Renew!);
             if (at < 0) continue;
             List<Instr> before = new();
