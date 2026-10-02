@@ -328,6 +328,29 @@ public sealed partial class Escape
         Liveness liveness = new(f);
         HashSet<VReg> pads = PadLive(liveness);
         Dictionary<Instr, string[]> virtuals = VirtualCallees(new[] { f });
+        Dictionary<VReg, Instr> defs = SingleDefs(f);
+        HashSet<VReg> written = new();
+        foreach (Block b in f.Blocks) foreach (Instr i in b.Instrs) if (i.Dest is not null) written.Add(i.Dest);
+        HashSet<VReg> parameters = f.Params.Where(p => !written.Contains(p)).ToHashSet();
+        // Through copies, address arithmetic and loads, to a parameter never
+        // written again or to a static: what the function was handed.
+        bool Handed(VReg r, int depth = 0)
+        {
+            if (parameters.Contains(r)) return true;
+            if (depth > 16 || !defs.TryGetValue(r, out Instr? d)) return false;
+            return d.Op switch
+            {
+                Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 or Opcode.Add or Opcode.Sub or Opcode.Load
+                    => d.Operands.Count > 0 && d.Operands.All(o => o switch
+                    {
+                        RegOperand from => Handed(from.Reg, depth + 1),
+                        SymOperand => true,
+                        ImmOperand => d.Op is not Opcode.Load,
+                        _ => false,
+                    }),
+                _ => false,
+            };
+        }
         foreach (Block b in f.Blocks)
             foreach (Instr read in b.Instrs)
             {
@@ -337,6 +360,15 @@ public sealed partial class Escape
                     || read.Op == Opcode.CallIndirect && owned.Borrowers.Count > 0
                        && (!virtuals.TryGetValue(read, out string[]? targets) || targets.Any(owned.Borrowers.Contains));
                 if (!reads) continue;
+                // AN OWNER THE FUNCTION WAS HANDED -- a parameter, a static, or
+                // what is read from one -- no free placed here can reach:
+                // each frees only an object the function made or was handed
+                // fresh, and kept to itself, with what that object's owned
+                // fields hold, and nothing kept to itself was ever stored
+                // where a parameter or a static reaches. Its `this._paths`
+                // read across a string's free took Monomorphiser.Named back
+                // whole once HashSet.Contains was inlined into it.
+                if (read.Operands.All(o => o is not RegOperand r || Handed(r.Reg))) continue;
                 // What was read, and every copy and address made from it.
                 HashSet<VReg> derived = new() { read.Dest };
                 for (bool grew = true; grew;)
