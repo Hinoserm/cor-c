@@ -1,0 +1,39 @@
+// test: owned_elements_through_joins
+// units: tests/language/support/915_builder_units.cor
+// expect-exit: 0
+// expect-output:
+// 1652000
+//
+// 909's walk with the table chosen in one expression (`m = c ? new(x) :
+// new()`): the value added is a copy of the conditional's own result,
+// itself a join of two fresh tables, and both are followed to the objects
+// made for the table that owns them.
+
+using System;
+using System.Collections.Generic;
+static class P
+{
+    static int Walk(int[] preds)
+    {
+        Dictionary<int, Dictionary<int, int>> outgoing = new();
+        int total = 0;
+        for (int block = 0; block < preds.Length; block++)
+        {
+            Dictionary<int, int> memory = preds[block] >= 0 && outgoing.TryGetValue(preds[block], out Dictionary<int, int>? inherited)
+                ? new Dictionary<int, int>(inherited) : new();
+            for (int k = 0; k < 6; k++) memory[(block * 7 + k) % 23] = k;
+            total += memory.Count;
+            outgoing[block] = memory;
+        }
+        return total + outgoing.Count;
+    }
+    static void Main()
+    {
+        int[] preds = new int[64];
+        for (int i = 0; i < preds.Length; i++) preds[i] = i % 3 == 0 ? -1 : i - 1;
+        long sum = 0;
+        for (int r = 0; r < 2000; r++) sum += Walk(preds);
+        Console.WriteLine(sum);
+    }
+}
+

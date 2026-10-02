@@ -388,26 +388,53 @@ public sealed partial class Escape
     /// </summary>
     private static List<Instr>? VariableOrigins(Function f, Defs defs, Operand value, HashSet<VReg> joins)
     {
-        if (value is not RegOperand r || defs.IsSingle(r.Reg)) return null;
-        List<Instr> origins = new();
+        if (value is not RegOperand start) return null;
+        // Copies written once, back to the join they read.
+        VReg r = start.Reg;
+        for (int hops = 0; hops < 8 && defs.IsSingle(r); hops++)
+        {
+            if (defs.Definition(r) is not { Op: Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 } d || d.Operands[0] is not RegOperand from) return null;
+            r = from.Reg;
+        }
+        if (defs.IsSingle(r)) return null;
+        Dictionary<VReg, List<Instr>> writes = new();
         foreach (Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
+                if (i.Dest is { } d && !defs.IsSingle(d))
+                {
+                    if (!writes.TryGetValue(d, out List<Instr>? list)) writes[d] = list = new();
+                    list.Add(i);
+                }
+        List<Instr> origins = new();
+        // Through joins of joins as well -- a conditional's own result, then
+        // the variable it is assigned to (`m = c ? new(x) : new()`).
+        bool Collect(VReg join, int depth)
+        {
+            if (!joins.Add(join)) return true;
+            if (depth > 4 || !writes.TryGetValue(join, out List<Instr>? list)) return false;
+            foreach (Instr i in list)
             {
-                if (i.Dest != r.Reg) continue;
-                if (i.Op != Opcode.Copy || i.Operands[0] is not RegOperand from) return null;
+                if (i.Op != Opcode.Copy || i.Operands[0] is not RegOperand from) return false;
                 Operand o = new RegOperand(from.Reg);
                 Instr? made = null;
                 for (int hops = 0; hops < 8 && made is null; hops++)
                 {
-                    if (o is not RegOperand q || !defs.IsSingle(q.Reg) || defs.Definition(q.Reg) is not { } d) return null;
+                    if (o is not RegOperand q) return false;
+                    if (!defs.IsSingle(q.Reg))
+                    {
+                        if (!Collect(q.Reg, depth + 1)) return false;
+                        break;
+                    }
+                    if (defs.Definition(q.Reg) is not { } d) return false;
                     if (d.Op == Opcode.Call && IsAllocator(d.Callee)) made = d;
                     else if (d.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) o = d.Operands[0];
-                    else return null;
+                    else return false;
                 }
-                if (made is null) return null;
-                origins.Add(made);
+                if (made is not null) origins.Add(made);
             }
-        joins.Add(r.Reg);
+            return true;
+        }
+        if (!Collect(r, 0)) return null;
         return origins.Count > 0 ? origins : null;
     }
 
