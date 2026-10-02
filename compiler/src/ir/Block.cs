@@ -16,6 +16,15 @@ public sealed class Block
     public bool IsLandingPad { get; set; }
 
     /// <summary>
+    /// The header of a loop the link gave a region of its own
+    /// (Lto.RegionFacts.Loops, marked by Opt.RegionPointsTo.MarkLoops on the
+    /// IR it regenerates the unit from), opened when the late passes reach
+    /// the region pass. Never copied with the block: a copy is not the loop
+    /// the link judged.
+    /// </summary>
+    public bool RegionLoop { get; set; }
+
+    /// <summary>
     /// This block's position in its function, as the control-flow graph last
     /// saw it. Owned by <see cref="Opt.Cfg"/>, which is a snapshot of one
     /// function and numbers the blocks it was built from: a dense key lets

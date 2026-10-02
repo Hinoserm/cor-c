@@ -1,0 +1,156 @@
+// test: region_loop_laps_across_units
+// units: tests/language/support/1170_region_loop_units.cor
+// expect-exit: 0
+// expect-output:
+// laps 1400114125 carried 49995016 kept 2249250 thrown 1810
+// bounded True
+// 174975000
+// in regions True
+//
+// A loop's laps get a region of their own at the link, where only the whole
+// program shows that what a lap makes is dead by the lap's end: every
+// object here is made in the other unit (Parser.Parse makes a record, its
+// list and its fields), so the unit's own pass had to let each lap's go.
+// Laps is a boundary that loops: what its laps make goes to the loop's
+// region, given back at the top of the next lap, and the most the arena
+// held, looked at after collections in the laps, is reported as bounded.
+// Lines, which Main calls, is never a boundary, and its loop's records were
+// left to the collector; now they are made in the loop's region (in
+// regions). What a lap carries into the next through the loop's own state
+// -- a chain grown a link a lap (Carried) -- what it hands to a cache the
+// other unit keeps (Kept), and a loop thrown out of in the other unit and
+// caught by the caller (AfterThrow) all stay right; everything is read
+// back after collections.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+using LoopUnits;
+
+public static class Program
+{
+    static long _most;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Note()
+    {
+        long words = Gc.RegionWords(Sys.ThreadBlock());
+        if (words > _most) _most = words;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Laps(int n)
+    {
+        long sum = 0;
+        for (int i = 0; i < n; i++)
+        {
+            Record r = Parser.Parse(i, 4);
+            sum += r.Sums[3] + r.Fields[1].Text.Length;
+            if ((i & 1023) == 0)
+            {
+                GC.Collect();
+                Note();
+            }
+        }
+        return sum;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Carried(int n)
+    {
+        Link? keep = null;
+        long s = 0;
+        for (int i = 0; i < n; i++)
+        {
+            keep = Parser.Chain(i, (i & 127) == 0 ? null : keep);
+            s += keep.V;
+            if ((i & 1023) == 0) GC.Collect();
+        }
+        int length = 0;
+        for (Link? l = keep; l is not null; l = l.Next) length++;
+        return s + length;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Kept(int n)
+    {
+        long s = 0;
+        for (int i = 0; i < n; i++)
+        {
+            Entry e = Parser.Make(i, 2);
+            if ((i & 15) == 0) Cache.Keep(e);
+            s += e.Values[1];
+            if ((i & 255) == 0) GC.Collect();
+        }
+        GC.Collect();
+        return s + Cache.Total() + Cache.Count;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Thrower(int n, int bad)
+    {
+        int s = 0;
+        for (int i = 0; i < n; i++)
+        {
+            Record r = Parser.Parse(i, 1 + (i & 3));
+            s += Parser.Check(r, bad);
+        }
+        return s;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long AfterThrow(int rounds)
+    {
+        long s = 0;
+        List<Entry> local = new();
+        for (int k = 0; k < rounds; k++)
+        {
+            try { s += Thrower(10 + k, (k & 1) == 0 ? 4 : 9); }
+            catch (InvalidOperationException e) { s += e.Message.Length; }
+            local.Add(Parser.Make(k, 3 + k));
+            if (k % 7 == 0) GC.Collect();
+        }
+        GC.Collect();
+        foreach (Entry e in local)
+            if (e.Values.Length < 3 || e.Values[2] != e.Values[0] + 2) s -= 1000000;
+        return s + local.Count;
+    }
+
+    // Not Main's own calls: what the entry calls is never a boundary.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Run()
+    {
+        long laps = Laps(20000);
+        long carried = Carried(10000);
+        long kept = Kept(2000);
+        long thrown = AfterThrow(40);
+        Console.WriteLine("laps " + laps + " carried " + carried + " kept " + kept + " thrown " + thrown);
+    }
+
+    // Called by Main, which the entry calls: never a boundary, so what its
+    // laps make was left to the collector until its loop had a region.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Lines(int n)
+    {
+        long total = 0;
+        for (int i = 0; i < n; i++)
+        {
+            Record r = Parser.Parse(i, 3);
+            total += r.Sums[0] + r.Fields[2].Value;
+            if ((i & 511) == 0) GC.Collect();
+        }
+        return total;
+    }
+
+    public static int Main()
+    {
+        Run();
+        Console.WriteLine("bounded " + (_most < 4096));
+        long before = Gc.RegionBlocks;
+        long total = Lines(5000);
+        long blocks = Gc.RegionBlocks - before;
+        Console.WriteLine(total);
+        Console.WriteLine("in regions " + (blocks >= 5000));
+        return 0;
+    }
+}

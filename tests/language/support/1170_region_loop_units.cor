@@ -1,0 +1,82 @@
+// The other unit of 1170_region_loop_laps_across_units: what the loops there
+// call -- a parser making a record and its fields for every line, a chain
+// grown by one link, entries a cache keeps, and a check that throws.
+namespace LoopUnits;
+
+public sealed class Field
+{
+    public readonly string Text;
+    public readonly int Value;
+
+    public Field(string text, int value) { Text = text; Value = value; }
+}
+
+public sealed class Record
+{
+    public readonly List<Field> Fields = new List<Field>();
+    public int[] Sums;
+
+    public Record(int width) { Sums = new int[width]; }
+}
+
+public sealed class Entry
+{
+    public readonly int[] Values;
+
+    public Entry(int n) { Values = new int[n]; }
+}
+
+public sealed class Link
+{
+    public readonly Link? Next;
+    public readonly int V;
+
+    public Link(int v, Link? next) { V = v; Next = next; }
+}
+
+public static class Parser
+{
+    public static Record Parse(int line, int width)
+    {
+        Record r = new Record(width);
+        for (int k = 0; k < width; k++)
+        {
+            int v = line * 7 + k;
+            r.Fields.Add(new Field("f" + v.ToString(), v));
+            r.Sums[k] = v;
+        }
+        return r;
+    }
+
+    public static Link Chain(int v, Link? next) => new Link(v, next);
+
+    public static Entry Make(int v, int n)
+    {
+        Entry e = new Entry(n);
+        for (int k = 0; k < n; k++) e.Values[k] = v + k;
+        return e;
+    }
+
+    public static int Check(Record r, int bad)
+    {
+        if (r.Fields.Count == bad) throw new InvalidOperationException("bad record of " + bad.ToString());
+        return r.Fields.Count;
+    }
+}
+
+public static class Cache
+{
+    static readonly List<Entry> _kept = new List<Entry>();
+
+    public static void Keep(Entry e) => _kept.Add(e);
+
+    public static int Count => _kept.Count;
+
+    public static long Total()
+    {
+        long s = 0;
+        foreach (Entry e in _kept)
+            foreach (int v in e.Values) s += v;
+        return s;
+    }
+}

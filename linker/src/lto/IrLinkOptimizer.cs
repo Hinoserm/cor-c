@@ -84,6 +84,9 @@ public static class IrLinkOptimizer
         if (hints.Values.Any(unit => unit.FieldSites.Count > 0)) { linkRoots.Add(LifetimeHints.FieldFreer); linkRoots.Add(LifetimeHints.FieldKeeper); }
         // And what regions call, wherever a regenerated unit may open one.
         if (regionsPossible) { linkRoots.Add(RuntimeAbi.RegionEnter); linkRoots.Add(RuntimeAbi.RegionLeave); linkRoots.Add(RuntimeAbi.AllocRegion); linkRoots.Add(RuntimeAbi.RegionCatch); }
+        // And a loop's region at the top of every lap, where the runtime has one.
+        bool loopRegionsPossible = regionsPossible && owners.ContainsKey(RuntimeAbi.RegionLoop);
+        if (loopRegionsPossible) linkRoots.Add(RuntimeAbi.RegionLoop);
         // An iterator's or an async method's card mark is a call AsyncTransform
         // writes after the IR was archived: the archive never shows it, and a
         // closed image without lifetime hints dropped the helper and failed
@@ -119,7 +122,7 @@ public static class IrLinkOptimizer
             RegionFacts?[]? solved = RegionSolver.Solve(regionUnits, regionVirtuals, (table, offset) => VirtualTargets.MethodAt(inputs, table, offset),
                 closedImageEntry!, foreign, regionReport,
                 (u, name) => reachability?.GetValueOrDefault(regionOrder[u]) is not { } kept || kept.Contains("F:" + name),
-                (table, at, offset) => VirtualTargets.HoldsNoReference(inputs, table, at, offset));
+                (table, at, offset) => VirtualTargets.HoldsNoReference(inputs, table, at, offset), loopRegionsPossible);
             if (solved is not null)
             {
                 regionFacts = new();
@@ -189,7 +192,8 @@ public static class IrLinkOptimizer
         // boundary that can be open above any of them outlives none of its
         // objects), and the caller's call is one of those, so it holds where
         // the inlined copy runs. And a boundary is never inlined: its region
-        // is opened in its own unit (RegionPointsTo.Open).
+        // is opened in its own unit (RegionPointsTo.Open); nor is a function
+        // with a loop given a region, which is opened there too (OpenLoops).
         Dictionary<ObjectFile, RegionFacts>? siteFacts = regionFacts;
         IrImport Imported(string symbol, IrArchive archive, IrArchiveEntry body)
         {
@@ -197,7 +201,8 @@ public static class IrLinkOptimizer
             if (siteFacts is null || !owners.TryGetValue(symbol, out ObjectFile? owner) || !siteFacts.TryGetValue(owner, out RegionFacts? chosen))
                 return new IrImport(symbol, bytes, body.DecodeBytes);
             int[] sites = chosen.Sites.GetViewBetween((symbol, int.MinValue), (symbol, int.MaxValue)).Select(site => site.Ordinal).ToArray();
-            return new IrImport(symbol, bytes, body.DecodeBytes, sites.Length == 0 ? null : sites, chosen.Boundaries.Contains(symbol));
+            bool opens = chosen.Boundaries.Contains(symbol) || chosen.Loops.GetViewBetween((symbol, int.MinValue), (symbol, int.MaxValue)).Count > 0;
+            return new IrImport(symbol, bytes, body.DecodeBytes, sites.Length == 0 ? null : sites, opens);
         }
         ObjectFile?[] regenerated = new ObjectFile?[plans.Count];
         string?[] reports = new string?[plans.Count];

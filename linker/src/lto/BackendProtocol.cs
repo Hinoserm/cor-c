@@ -8,7 +8,7 @@ public static class BackendProtocol
     public static readonly UTF8Encoding Utf8 = new(false, true);
     public static void WriteRequest(BinaryWriter writer, BackendRequest request)
     {
-        writer.Write((byte)0x52); writer.Write(8);
+        writer.Write((byte)0x52); writer.Write(9);
         WriteText(writer, request.Input); WriteText(writer, request.Output); writer.Write(request.Imports.Count);
         foreach (IrImport import in request.Imports)
         {
@@ -67,7 +67,8 @@ public static class BackendProtocol
                 writer.Write(owned.Borrowers.Count);
                 foreach (string name in owned.Borrowers.Order(StringComparer.Ordinal)) WriteText(writer, name);
             }
-            // The regions: boundaries by name, then sites by function and ordinal.
+            // The regions: boundaries by name, then sites by function and
+            // ordinal, then loops by function and header.
             RegionFacts? regions = facts.Regions;
             writer.Write(regions?.Boundaries.Count ?? -1);
             if (regions is not null)
@@ -75,6 +76,8 @@ public static class BackendProtocol
                 foreach (string name in regions.Boundaries) WriteText(writer, name);
                 writer.Write(regions.Sites.Count);
                 foreach ((string function, int ordinal) in regions.Sites) { WriteText(writer, function); writer.Write(ordinal); }
+                writer.Write(regions.Loops.Count);
+                foreach ((string function, int header) in regions.Loops) { WriteText(writer, function); writer.Write(header); }
             }
         }
         writer.Flush();
@@ -83,7 +86,7 @@ public static class BackendProtocol
     {
         int marker = reader.BaseStream.ReadByte();
         if (marker == -1) return null;
-        if (marker != 0x52 || reader.ReadInt32() != 8) throw new InvalidDataException("Unsupported backend protocol");
+        if (marker != 0x52 || reader.ReadInt32() != 9) throw new InvalidDataException("Unsupported backend protocol");
         string input = ReadText(reader), output = ReadText(reader);
         int count = reader.ReadInt32(), bytes = 0;
         if (count < 0 || count > 256) throw new InvalidDataException("Backend import count exceeds budget");
@@ -203,6 +206,13 @@ public static class BackendProtocol
                 {
                     string function = ReadText(reader); int ordinal = reader.ReadInt32();
                     if (ordinal < 0 || !regions.Sites.Add((function, ordinal))) throw new InvalidDataException("Invalid backend region site");
+                }
+                int loops = reader.ReadInt32();
+                if (loops < 0 || loops > 10000000) throw new InvalidDataException("Invalid backend region fact");
+                for (int i = 0; i < loops; i++)
+                {
+                    string function = ReadText(reader); int header = reader.ReadInt32();
+                    if (header < 0 || !regions.Loops.Add((function, header))) throw new InvalidDataException("Invalid backend region loop");
                 }
                 facts.Regions = regions;
             }

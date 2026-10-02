@@ -16,14 +16,16 @@ namespace Corsac.Lang.Lto;
 /// numbers again the same way when it regenerates the unit; its frame slots
 /// are objects too, and anything it cannot follow is the unknown object.
 /// Calls are named: a function, a virtual call's symbol (Escape.
-/// VirtualCallee), or nothing for a call nobody can name.
+/// VirtualCallee), or nothing for a call nobody can name. And its loops that
+/// may be given a region of their own, with what RegionPointsTo's "loops"
+/// judge them by, over the same nodes (RegionLoopShape).
 /// </summary>
 public sealed class RegionHints
 {
     public const string SectionName = ".corsac.regions";
     public const int MaximumBytes = 64 * 1024 * 1024;
     private const uint Magic = 0x47455243; // "CREG"
-    private const int Version = 3;
+    private const int Version = 4;
     private static readonly UTF8Encoding Utf8 = new(false, true);
 
     public List<RegionFunction> Functions { get; } = new();
@@ -99,6 +101,19 @@ public sealed class RegionHints
                 Var(call.Dest);
                 Var(call.Arguments.Length);
                 foreach (int argument in call.Arguments) Var(argument);
+            }
+            void Ints(int[] values)
+            {
+                Var(values.Length);
+                foreach (int value in values) Var(value);
+            }
+            Ints(function.MustCalls); Ints(function.MustSites);
+            Var(function.Loops.Count);
+            foreach (RegionLoopShape loop in function.Loops)
+            {
+                Var(loop.Header);
+                Ints(loop.Sites); Ints(loop.Calls); Ints(loop.AlwaysSites); Ints(loop.AlwaysCalls);
+                Ints(loop.Live); Ints(loop.Invariant); Ints(loop.KeptSlots);
             }
         }
         writer.Flush();
@@ -201,6 +216,23 @@ public sealed class RegionHints
                     if (dest < -1 || dest >= nodes || arguments.Any(a => a < -1 || a >= nodes)) throw new ElfFormatException("Invalid region hint call");
                     function.Calls.Add(new RegionCall(named, dest, arguments));
                 }
+                // Indices each below its bound: a call's, a site's, a node's, a slot's.
+                int[] Ints(int bound)
+                {
+                    int[] values = new int[Count()];
+                    for (int k = 0; k < values.Length; k++)
+                        if ((values[k] = Int()) < 0 || values[k] >= bound) throw new ElfFormatException("Invalid region hint loop");
+                    return values;
+                }
+                function.MustCalls = Ints(function.Calls.Count);
+                function.MustSites = Ints(sites.Length);
+                for (int k = Count(); k > 0; k--)
+                {
+                    int header = Int();
+                    if (header < 0) throw new ElfFormatException("Invalid region hint loop");
+                    function.Loops.Add(new RegionLoopShape(header, Ints(sites.Length), Ints(function.Calls.Count), Ints(sites.Length), Ints(function.Calls.Count),
+                        Ints(nodes), Ints(nodes), Ints(slots)));
+                }
                 hints.Functions.Add(function);
             }
             if (stream.Position != bytes.Length) throw new ElfFormatException("Trailing region hint data");
@@ -242,7 +274,23 @@ public sealed class RegionFunction
     public RegionSite[] Sites { get; }
     public List<RegionConstraint> Constraints { get; } = new();
     public List<RegionCall> Calls { get; } = new();
+    /// <summary>Its calls, by their place in Calls, and its sites, by ordinal, made on every way to a return (RegionPointsTo.MustRun).</summary>
+    public int[] MustCalls { get; set; } = Array.Empty<int>();
+    public int[] MustSites { get; set; } = Array.Empty<int>();
+    /// <summary>Its loops that may be given a region: none in an async or iterator body, a type's initialiser, or a function with a landing pad or a label's address.</summary>
+    public List<RegionLoopShape> Loops { get; } = new();
 }
+
+/// <summary>
+/// A NATURAL LOOP OF A FUNCTION, as RegionPointsTo.LoopShape states it: its
+/// header's place among the function's blocks (Block.Order over the IR the
+/// link regenerates the unit from, which names the loop to it); the sites,
+/// by ordinal, and calls, by their place in the function's Calls, in its
+/// body, and those of them in blocks every lap that goes round runs; the
+/// nodes live where a lap ends; those live into the header that the body
+/// never writes; and the frame slots, by index, kept from before the loop.
+/// </summary>
+public sealed record RegionLoopShape(int Header, int[] Sites, int[] Calls, int[] AlwaysSites, int[] AlwaysCalls, int[] Live, int[] Invariant, int[] KeptSlots);
 
 /// <summary>
 /// An allocation site: whether a region may take it (a collecting allocator's
@@ -300,14 +348,17 @@ public sealed record RegionCall(string? Callee, int Dest, int[] Arguments);
 
 /// <summary>
 /// The link's region answer for one unit (RegionSolver): the functions to
-/// open a region on entry, and the allocation sites -- by function and
-/// ordinal -- to make in the innermost open region (Runtime.AllocRegion).
+/// open a region on entry, the allocation sites -- by function and ordinal
+/// -- to make in the innermost open region (Runtime.AllocRegion), and the
+/// loops -- by function and their header's place in its blocks -- whose laps
+/// each get a region (Runtime.RegionLoop).
 /// </summary>
 public sealed class RegionFacts
 {
     public SortedSet<string> Boundaries { get; } = new(StringComparer.Ordinal);
     public SortedSet<(string Function, int Ordinal)> Sites { get; } = new(SiteOrder.Instance);
-    public bool IsEmpty => Boundaries.Count == 0 && Sites.Count == 0;
+    public SortedSet<(string Function, int Header)> Loops { get; } = new(SiteOrder.Instance);
+    public bool IsEmpty => Boundaries.Count == 0 && Sites.Count == 0 && Loops.Count == 0;
 
     public sealed class SiteOrder : IComparer<(string Function, int Ordinal)>
     {

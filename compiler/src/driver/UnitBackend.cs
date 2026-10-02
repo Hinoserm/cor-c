@@ -80,12 +80,14 @@ public sealed class UnitBackend : IUnitBackend
             // The whole program's answers the late passes read, for a closed image.
             if (facts?.ForeignCatchable is string[] catchable) module.ForeignCatchable = new(catchable, StringComparer.Ordinal);
             module.OwnedFields = facts?.OwnedFields;
-            // The regions the whole program found: sites marked on this IR,
-            // which the compile numbered the same way, before any pass moves them.
+            // The regions the whole program found: sites and loops marked on
+            // this IR, which the compile numbered the same way, before any
+            // pass moves them.
             if (facts?.Regions is { IsEmpty: false } regions)
             {
                 module.RegionFacts = regions;
                 RegionPointsTo.MarkSites(module, regions);
+                RegionPointsTo.MarkLoops(module, regions);
             }
             module.LinkEscapes = facts?.Escapes;
             foreach (Function function in module.Functions)

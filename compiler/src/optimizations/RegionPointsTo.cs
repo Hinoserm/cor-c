@@ -273,6 +273,37 @@ public sealed class RegionPointsTo : IModulePass
     }
 
     /// <summary>
+    /// THE LOOPS THE LINK GAVE A REGION, marked on the same IR: each header
+    /// by its place among its function's blocks, which the unit's compile
+    /// named it by in its RegionHints (RegionSummary), over the same IR. The
+    /// function is never inlined from here on, as OpenLoops leaves it: the
+    /// loop the link judged is its own. A header the late passes take away,
+    /// or that heads no loop by the time the region pass opens them, opens
+    /// nothing, and that is sound: what a lap leaves dead is dead by the end
+    /// of whatever region is open outside it.
+    /// </summary>
+    public static int MarkLoops(Module m, Corsac.Lang.Lto.RegionFacts facts)
+    {
+        int marked = 0;
+        if (facts.Loops.Count == 0) return 0;
+        foreach (Function f in m.Functions)
+        {
+            var named = facts.Loops.GetViewBetween((f.Name, int.MinValue), (f.Name, int.MaxValue));
+            if (named.Count == 0) continue;
+            // Each a loop's header here too, or the IR is not the one judged.
+            HashSet<int> headers = Shapes(f).Select(loop => loop.Header).ToHashSet();
+            foreach ((string _, int header) in named)
+                if (headers.Contains(header))
+                {
+                    f.Blocks[header].RegionLoop = true;
+                    f.NoInlining = true;
+                    marked++;
+                }
+        }
+        return marked;
+    }
+
+    /// <summary>
     /// The sites the link chose of another unit's body it brought in to
     /// inline (IrImport.RegionSites), marked as its own unit's are: by
     /// ordinal, over the same IR its unit numbered them on.
@@ -305,16 +336,40 @@ public sealed class RegionPointsTo : IModulePass
     /// </summary>
     private static void ApplyFacts(Module m, Corsac.Lang.Lto.RegionFacts facts, bool report)
     {
-        int sites = 0, opened = 0;
+        int sites = 0, opened = 0, loops = 0;
         foreach (Function f in m.Functions)
             foreach (Block b in f.Blocks)
                 foreach (Instr i in b.Instrs)
                     if (i.RegionSite && i.Op == Opcode.Call && IsRewritable(i.Callee)) sites++;
         foreach (Function f in m.Functions)
-            if (facts.Boundaries.Contains(f.Name)) { Open(f, false); opened++; }
-        if (sites > 0 || opened > 0) CatchUp(m);
-        if ((sites > 0 || opened > 0) && report)
-            Console.Error.WriteLine($"regions: {opened} boundaries, {sites} sites in the innermost region, from the link");
+        {
+            List<int> headers = MarkedLoops(f);
+            if (facts.Boundaries.Contains(f.Name)) { Open(f, headers.Count > 0); opened++; }
+            if (headers.Count > 0) { OpenLoops(f, headers); loops += headers.Count; }
+        }
+        if (sites > 0 || opened > 0 || loops > 0) CatchUp(m);
+        if ((sites > 0 || opened > 0 || loops > 0) && report)
+            Console.Error.WriteLine($"regions: {opened} boundaries, {loops} loops, {sites} sites in the innermost region, from the link");
+    }
+
+    /// <summary>
+    /// The loops of a function the link marked (MarkLoops) that still head a
+    /// loop, by their place in its blocks now -- none where the late passes
+    /// brought a landing pad or a label's address in, as the link's own
+    /// judgement would have given none (RegionSummary).
+    /// </summary>
+    private static List<int> MarkedLoops(Function f)
+    {
+        List<int> headers = new();
+        if (!f.Blocks.Any(b => b.RegionLoop)) return headers;
+        if (f.Async is null && f.Blocks.Count <= LoopBlocks && !f.Blocks.Any(b => b.IsLandingPad || b.Instrs.Any(i => i.Op == Opcode.LabelAddr)))
+        {
+            Cfg cfg = new(f);
+            foreach ((Block header, _, _) in NaturalLoops(f, cfg))
+                if (header.RegionLoop && !cfg.IsRoot(header)) headers.Add(header.Order);
+        }
+        foreach (Block b in f.Blocks) b.RegionLoop = false;
+        return headers;
     }
 
     /// <summary>
@@ -952,7 +1007,7 @@ public sealed class RegionPointsTo : IModulePass
     /// header that the body never writes: what was there before the loop
     /// and stays.
     /// </summary>
-    private sealed class LoopShape
+    internal sealed class LoopShape
     {
         public required int Header;
         public required HashSet<Instr> Instrs;
@@ -967,7 +1022,7 @@ public sealed class RegionPointsTo : IModulePass
     private Dictionary<int, List<(int Object, Instr Site)>>? _madeBy;
     // Past this many blocks a function's loops are not looked for: the
     // dominators are bit sets, a pair of blocks at a time.
-    private const int LoopBlocks = 1024;
+    internal const int LoopBlocks = 1024;
     // Past this many copies walked, no further loop is judged: those left
     // keep what their boundaries keep, as they always did.
     private const long LoopBudget = 20_000_000;
@@ -976,7 +1031,7 @@ public sealed class RegionPointsTo : IModulePass
     public const string LoopTop = Corsac.Lang.Lto.RuntimeAbi.RegionLoop;
 
     /// <summary>Each loop's header and body: the blocks round a back edge to a block that dominates it, merged by header.</summary>
-    private static List<(Block Header, HashSet<Block> Body, List<Block> Latches)> NaturalLoops(Function f, Cfg cfg)
+    internal static List<(Block Header, HashSet<Block> Body, List<Block> Latches)> NaturalLoops(Function f, Cfg cfg)
     {
         List<(Block, HashSet<Block>, List<Block>)> loops = new();
         Dictionary<Block, List<Block>> latches = new(ReferenceEqualityComparer.Instance);
@@ -1008,8 +1063,18 @@ public sealed class RegionPointsTo : IModulePass
     private List<LoopShape> LoopsOf(Function f)
     {
         if (_loops.TryGetValue(f, out List<LoopShape>? known)) return known;
+        return _loops[f] = Shapes(f);
+    }
+
+    /// <summary>
+    /// Every natural loop of a function but one headed by a root, as
+    /// LoopShape states it: none in an async or iterator body, nor past
+    /// LoopBlocks. The unit's summary for the link states the same loops
+    /// over the same IR (RegionSummary).
+    /// </summary>
+    internal static List<LoopShape> Shapes(Function f)
+    {
         List<LoopShape> found = new();
-        _loops[f] = found;
         if (f.Async is not null || f.Blocks.Count < 2 || f.Blocks.Count > LoopBlocks) return found;
         Cfg cfg = new(f);
         var natural = NaturalLoops(f, cfg);
@@ -1072,7 +1137,7 @@ public sealed class RegionPointsTo : IModulePass
     /// what an owned slot holds and keep no address (Harmless); one whose
     /// address goes anywhere else is aliased, and may be written by anything.
     /// </summary>
-    private static (HashSet<FrameSlot> Aliased, Func<Instr, IEnumerable<FrameSlot>> Writes) SlotUses(Function f)
+    internal static (HashSet<FrameSlot> Aliased, Func<Instr, IEnumerable<FrameSlot>> Writes) SlotUses(Function f)
     {
         Dictionary<VReg, FrameSlot?> held = new();
         foreach (Block b in f.Blocks)
@@ -1198,8 +1263,13 @@ public sealed class RegionPointsTo : IModulePass
     private List<Instr> MustRun(Function f)
     {
         if (_mustRun.TryGetValue(f, out List<Instr>? known)) return known;
+        return _mustRun[f] = MustRunCalls(f);
+    }
+
+    /// <summary>MustRun's answer, uncached: also what a unit's summary states for the link (RegionSummary).</summary>
+    internal static List<Instr> MustRunCalls(Function f)
+    {
         List<Instr> must = new();
-        _mustRun[f] = must;
         if (f.Blocks.Count > LoopBlocks) return must;
         Cfg cfg = new(f);
         List<Block> returns = f.Blocks.Where(b => b.Terminator is { Op: Opcode.Ret } && cfg.Live[b.Order]).ToList();

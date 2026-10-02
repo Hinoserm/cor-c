@@ -58,6 +58,11 @@ public static class RegionSummary
         private readonly List<RegionCall> _calls = new();
         private Dictionary<Instr, string[]>? _virtuals;
         private Dictionary<VReg, Instr?>? _defs;
+        // Each call named in _calls by its place there, and each site by its ordinal.
+        private readonly Dictionary<Instr, int> _callOf = new(ReferenceEqualityComparer.Instance);
+        private readonly Dictionary<Instr, int> _siteOf = new(ReferenceEqualityComparer.Instance);
+        // Nodes kept whatever they are used for: a loop judges by what they hold.
+        private readonly HashSet<int> _forced = new();
 
         private readonly bool _main;
 
@@ -129,8 +134,28 @@ public static class RegionSummary
                 foreach (int node in _slotNodes.Values.ToArray()) Leak(node);
                 Leak(Return);
             }
-            return Reduce();
+            // ITS LOOPS, for the link to give a region of their own where
+            // RegionPointsTo would (its "loops"): stated over this IR, by the
+            // header's place, which the link names back to the regenerated
+            // unit (RegionPointsTo.MarkLoops). Only where one may be given:
+            // not in a type's initialiser, nor where a throw is caught in the
+            // function's own frame -- a region a throw left open there would
+            // be the one the catch went on making in -- nor where a label's
+            // address is taken. A register live where a lap ends is judged by
+            // what it holds, however it is used, so it is never left out.
+            List<RegionPointsTo.LoopShape> loops = _f.Name.Contains("StaticInit", StringComparison.Ordinal)
+                || _f.Blocks.Any(b => b.IsLandingPad || b.Instrs.Any(i => i.Op == Opcode.LabelAddr))
+                ? new() : RegionPointsTo.Shapes(_f);
+            foreach (RegionPointsTo.LoopShape loop in loops)
+                foreach (VReg r in loop.Live.Concat(loop.Invariant)) _forced.Add(Reg(r));
+            return Reduce(loops);
         }
+
+        private int[] Sorted(IEnumerable<int> values) => values.Distinct().Order().ToArray();
+
+        private int[] CallsAmong(IEnumerable<Instr> instrs) => Sorted(instrs.Where(_callOf.ContainsKey).Select(i => _callOf[i]));
+
+        private int[] SitesAmong(IEnumerable<Instr> instrs) => Sorted(instrs.Where(_siteOf.ContainsKey).Select(i => _siteOf[i]));
 
         private void Constrain(Instr i)
         {
@@ -215,6 +240,7 @@ public static class RegionSummary
                     // A virtual call: every override the link finds for its
                     // declaring type and slot. Any other: nobody can say.
                     string? callee = _virtuals!.TryGetValue(i, out string[]? named) && named.Length == 1 ? named[0] : null;
+                    _callOf[i] = _calls.Count;
                     _calls.Add(new(callee, dest, Arguments(i, 1)));
                     return;
                 }
@@ -249,13 +275,14 @@ public static class RegionSummary
         private void Call(Instr i, int dest)
         {
             string? callee = i.Callee;
-            if (callee is null) { _calls.Add(new(null, dest, Arguments(i, 0))); return; }
+            if (callee is null) { _callOf[i] = _calls.Count; _calls.Add(new(null, dest, Arguments(i, 0))); return; }
             if (RegionPointsTo.IsSiteCall(i))
             {
                 int site = _sites.Count;
                 (string? table, long at) = Stamp(i) ?? (null, 0);
                 // How the collector reads its words (RegionPointsTo.HoldsNoReference).
                 RegionWords words = callee == Escape.LeafAllocator ? RegionWords.Leaf : callee == Escape.ObjectAllocator ? RegionWords.Described : RegionWords.Any;
+                _siteOf[i] = site;
                 _sites.Add(new(RegionPointsTo.IsRewritable(callee), i.Line, table, at, words));
                 if (dest >= 0) _constraints.Add(new(RegionConstraintKind.Site, dest, site, 0));
                 return;
@@ -271,6 +298,7 @@ public static class RegionSummary
                 Copy(dest, Unknown(), 0);
                 return;
             }
+            _callOf[i] = _calls.Count;
             _calls.Add(new(callee, dest, Arguments(i, 0)));
         }
 
@@ -344,7 +372,7 @@ public static class RegionSummary
         /// plain copy of another is that other. What is left is numbered
         /// again: parameters, the return, then the rest.
         /// </summary>
-        private RegionFunction Reduce()
+        private RegionFunction Reduce(List<RegionPointsTo.LoopShape> loops)
         {
             int count = _next;
             List<int>?[] copiesFrom = new List<int>?[count];   // per node: the nodes it copies from
@@ -383,6 +411,7 @@ public static class RegionSummary
                 foreach (int a in call.Arguments) if (a >= 0) sink[a] = true;
             }
             for (int k = 0; k < _params; k++) incoming[k] += 2;
+            foreach (int n in _forced) sink[n] = true;
             bool[] holds = Spread(source, copiesTo), used = Spread(sink, copiesFrom);
             bool Kept(int n) => n >= 0 && (n <= _params || holds[n] && used[n]);
 
@@ -428,10 +457,20 @@ public static class RegionSummary
                 for (int k = 0; k < arguments.Length; k++) arguments[k] = Node(call.Arguments[k]);
                 calls.Add(new(call.Callee, Node(call.Dest), arguments));
             }
+            // Numbered before the count is taken: a node only a loop names is one.
+            int[] Nodes(IEnumerable<VReg> registers) => Sorted(registers.Select(r => Node(Reg(r))).Where(n => n >= 0));
+            List<RegionLoopShape> shapes = new();
+            foreach (RegionPointsTo.LoopShape loop in loops)
+                shapes.Add(new RegionLoopShape(loop.Header, SitesAmong(loop.Instrs), CallsAmong(loop.Calls), SitesAmong(loop.Always), CallsAmong(loop.Always),
+                    Nodes(loop.Live), Nodes(loop.Invariant), Sorted(loop.KeptSlots.Where(_slots.ContainsKey).Select(slot => _slots[slot]))));
+            List<Instr> must = RegionPointsTo.MustRunCalls(_f);
             RegionFunction result = new(_f.Name, _f.Exported, _f.Async is null && !_f.Name.Contains("StaticInit", StringComparison.Ordinal) && !_main,
                 _params > 0 && _f.Params[0].Name == "this", _params, next, _slots.Count, _sites.ToArray()) { Main = _main };
             result.Constraints.AddRange(kept);
             result.Calls.AddRange(calls);
+            result.MustCalls = CallsAmong(must);
+            result.MustSites = SitesAmong(must);
+            result.Loops.AddRange(shapes);
             return result;
         }
 
