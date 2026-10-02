@@ -1,0 +1,111 @@
+// test: what a borrow holds lives as long as the borrow is read
+// expect-exit: 0
+// expect-output:
+// carry 2450
+// owner 123
+// owner 50023
+// held 7 8
+// fields 3 30
+//
+// A borrow -- a variable holding the object or something else -- is read
+// through after the object's own register is done with it, so every free
+// the compiler places must wait for the borrow: across the loop's next
+// allocation (Carry), across the reassignment that frees a variable's last
+// object (Owner), and a borrow stored away is the object kept (Hold). Each
+// allocation made after the borrow's object would take its bytes if it had
+// been given back early, and the sums would show it.
+
+using System.Collections.Generic;
+
+class Box
+{
+    public int V;
+    public Box(int v) { V = v; }
+}
+
+class Holder
+{
+    public Box? Item;
+}
+
+class Pair
+{
+    public Box First;
+    public Box Second;
+    public Pair(Box first, Box second) { First = first; Second = second; }
+}
+
+static class Program
+{
+    static Box s_shared = new(1000);
+
+    // `prev` holds last time's object, or the shared one, when the next is made.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static int Carry(int n)
+    {
+        Box? prev = null;
+        int sum = 0;
+        for (int i = 0; i < n; i++)
+        {
+            Box b = new(i * 10);
+            Box junk = new(-1);
+            if (prev != null) sum += prev.V + junk.V + 1;
+            if (i % 4 == 3) prev = s_shared;
+            else prev = b;
+        }
+        return sum + (prev != null ? prev.V : 0) - 1000;
+    }
+
+    // The variable's first object is still the borrow's when it is reassigned.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static int Owner(Box other)
+    {
+        Box v = new(1);
+        Box cur = v;
+        if (other.V > 100) cur = other;
+        v = new Box(2);
+        Box w = new(3);
+        return cur.V * 100 + v.V * 10 + w.V;
+    }
+
+    // A borrow stored into a field keeps what it holds.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static Holder Hold(bool second, Box other)
+    {
+        Box a = new(7);
+        Box cur = a;
+        if (second) cur = other;
+        Holder h = new();
+        h.Item = cur;
+        return h;
+    }
+
+    // Borrows handed to a constructor that keeps them.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static Pair Fields(int k)
+    {
+        Box a = new(3);
+        Box b = new(30);
+        Box x = a, y = b;
+        if (k > 10) { x = b; y = a; }
+        return new Pair(x, y);
+    }
+
+    static int Main()
+    {
+        Console.WriteLine("carry " + Carry(12));
+        Console.WriteLine("owner " + Owner(new Box(5)));
+        Console.WriteLine("owner " + Owner(new Box(500)));
+        Holder h1 = Hold(false, new Box(8));
+        Box eight = new(8);
+        Holder h2 = Hold(true, eight);
+        List<Box> churn = new();
+        for (int i = 0; i < 2000; i++) churn.Add(new Box(i));
+        Pair p = Fields(1);
+        for (int i = 0; i < 2000; i++) churn.Add(new Box(i));
+        GC.Collect();
+        Console.WriteLine("held " + h1.Item!.V + " " + h2.Item!.V);
+        Console.WriteLine("fields " + p.First.V + " " + p.Second.V);
+        return 0;
+    }
+}

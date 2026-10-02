@@ -1,0 +1,148 @@
+// test: a variable walking a structure borrows the objects it holds
+// expect-exit: 0
+// expect-output:
+// tree unit(t0 t1 t2 t3 t4 t5(t6(t7 t8 t9 t10 t11 t12(t13(t14)))))
+// count 16
+// rounds 3000 total 48000
+// late 11 33 44
+// late 22 33 44
+// walked 5 sum 15
+// picked 7 other 9
+//
+// A variable that holds one object or another as it goes -- `cur = root`,
+// then `cur = n` further down -- is only read through: loaded from, written
+// into, compared, handed to a call that keeps nothing. Such a BORROW does not
+// make the objects it may hold escape, so the root is still the fresh object
+// Build returns, and the caller frees it. A borrow's uses are the object's
+// uses: an object freed at its last use waits for the borrow's too (Late,
+// where the objects made after the last direct use of `a` would take its
+// bytes), and a borrow handed on -- returned, stored -- still escapes.
+
+using System.Collections.Generic;
+
+class Tok
+{
+    public string Text;
+    public int Kind;
+    public Tok(string text, int kind) { Text = text; Kind = kind; }
+}
+
+class Node
+{
+    public string Name;
+    public List<Node> Kids = new();
+    public Node(string name) { Name = name; }
+}
+
+class Box
+{
+    public int V;
+    public Box? Next;
+    public Box(int v) { V = v; }
+}
+
+static class Program
+{
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static Node Build(List<Tok> toks)
+    {
+        Node root = new("unit");
+        Node cur = root;
+        foreach (Tok t in toks)
+        {
+            Node n = new(t.Text);
+            cur.Kids.Add(n);
+            if (t.Kind > 4) cur = n;
+        }
+        return root;
+    }
+
+    static string Show(Node n)
+    {
+        if (n.Kids.Count == 0) return n.Name;
+        string s = n.Name + "(";
+        for (int k = 0; k < n.Kids.Count; k++)
+        {
+            if (k > 0) s += " ";
+            s += Show(n.Kids[k]);
+        }
+        return s + ")";
+    }
+
+    static int Count(Node n)
+    {
+        int c = 1;
+        foreach (Node k in n.Kids) c += Count(k);
+        return c;
+    }
+
+    // `a` is last read directly where `cur` takes it; c and d are made after.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static string Late(int k)
+    {
+        Box a = new(11);
+        Box cur = a;
+        if (k > 3) cur = new Box(22);
+        Box c = new(33);
+        Box d = new(44);
+        return cur.V + " " + c.V + " " + d.V;
+    }
+
+    // Walked down a chain made here: every link is borrowed in turn.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static string Walk(int n)
+    {
+        Box head = new(1);
+        Box tail = head;
+        for (int i = 2; i <= n; i++)
+        {
+            Box b = new(i);
+            tail.Next = b;
+            tail = b;
+        }
+        int count = 0, sum = 0;
+        for (Box? at = head; at != null; at = at.Next)
+        {
+            count++;
+            sum += at.V;
+        }
+        return "walked " + count + " sum " + sum;
+    }
+
+    // A borrow handed back is the object handed back: it escapes.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static Box Pick(bool second, Box other)
+    {
+        Box a = new(5);
+        Box cur = a;
+        if (second) cur = other;
+        cur.V += 2;
+        return cur;
+    }
+
+    static int Main()
+    {
+        List<Tok> toks = new();
+        for (int i = 0; i < 15; i++) toks.Add(new Tok("t" + i, i % 7));
+        Node tree = Build(toks);
+        Console.WriteLine("tree " + Show(tree));
+        Console.WriteLine("count " + Count(tree));
+        long total = 0;
+        for (int r = 0; r < 3000; r++)
+        {
+            Node root = Build(toks);
+            total += Count(root);
+        }
+        Console.WriteLine("rounds 3000 total " + total);
+        Console.WriteLine("late " + Late(1));
+        Console.WriteLine("late " + Late(5));
+        Console.WriteLine(Walk(5));
+        Box other = new(9);
+        Box kept = Pick(false, other);
+        List<Box> churn = new();
+        for (int i = 0; i < 1000; i++) churn.Add(new Box(i));
+        GC.Collect();
+        Console.WriteLine("picked " + kept.V + " other " + other.V);
+        return 0;
+    }
+}

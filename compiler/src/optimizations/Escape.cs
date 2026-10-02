@@ -1896,6 +1896,13 @@ continue;
     internal sealed class Flow
     {
         public HashSet<VReg> Derived { get; } = new();
+        /// <summary>
+        /// The derived registers that may hold something else as well -- a
+        /// variable walking a structure, `cur = root` then `cur = n` -- and
+        /// only borrow the object: a use of one is a use of the object, but
+        /// what it hands on need not be the object.
+        /// </summary>
+        public HashSet<VReg> Borrowed { get; } = new();
         public bool Escapes { get; set; }
         public Instr? Source { get; init; }
         /// <summary>The instruction the object escaped through, for a diagnostic.</summary>
@@ -1991,6 +1998,20 @@ continue;
                     {
                         continue;
                     }
+                    // Read through a borrow: whatever it hands on may be
+                    // something else, so nothing may take it over.
+                    bool borrowing = false;
+                    if (flow.Borrowed.Count > 0)
+                    {
+                        foreach (Operand o in i.Operands)
+                        {
+                            if (o is RegOperand r && flow.Borrowed.Contains(r.Reg))
+                            {
+                                borrowing = true;
+                                break;
+                            }
+                        }
+                    }
 
                     switch (i.Op)
                     {
@@ -1998,7 +2019,7 @@ continue;
                         case Opcode.Trunc64:
                         case Opcode.ZExt32:
                         case Opcode.SExt32:
-                            Derive(i.Dest);
+                            Derive(i.Dest, borrowing);
                             break;
 
                         case Opcode.Add:
@@ -2012,7 +2033,7 @@ continue;
                             {
                                 flow.Escapes = true;
                             }
-                            Derive(i.Dest);
+                            Derive(i.Dest, borrowing);
                             break;
 
                         case Opcode.Load:
@@ -2043,10 +2064,16 @@ continue;
                         case Opcode.InitArrayLength:
                             // Writing INTO the object is fine; writing the
                             // pointer itself somewhere is the escape.
+                            // A store that hands the object to its owner
+                            // hands on what a borrow holds, which may be
+                            // something else: kept by nothing, or twice.
                             if (i.Operands[1] is RegOperand v && flow.Derived.Contains(v.Reg)
-                                && (ownedStores is null || !ownedStores.Contains(i)))
+                                && (ownedStores is null || !ownedStores.Contains(i) || flow.Borrowed.Contains(v.Reg)))
                             {
-                                if (i.Op == Opcode.Store && HolderAt(i.Operands[0], 0) is var (root, delta)) Hold(root, delta + i.Offset);
+                                // Not a borrow into frame memory: what is loaded
+                                // back out is taken for the object itself.
+                                if (i.Op == Opcode.Store && !flow.Borrowed.Contains(v.Reg)
+                                    && HolderAt(i.Operands[0], 0) is var (root, delta)) Hold(root, delta + i.Offset);
                                 else flow.Escapes = true;
                             }
                             break;
@@ -2075,7 +2102,7 @@ continue;
                             // pointer: the runtime's contract with this pass.
                             break;
 
-                        case Opcode.Ret when returnsAny:
+                        case Opcode.Ret when returnsAny && !borrowing:
                             // Handed back to the caller, who is told so
                             // (ReturnsFirst): its result is the argument.
                             break;
@@ -2093,16 +2120,16 @@ continue;
                         case Opcode.Phi when returnable is not null && i.Dest is not null && returnable.Contains(i.Dest):
                             // Joining it with another of the returned origins,
                             // or with null, on the way to the return.
-                            Derive(i.Dest);
+                            Derive(i.Dest, borrowing);
                             break;
 
-                        case Opcode.Call when IsCatchEnd(i.Callee):
+                        case Opcode.Call when IsCatchEnd(i.Callee) && !borrowing:
                             // A catch body's hold on its exception ending: a
                             // use, and the free the pass may make it.
                             break;
 
-                        case Opcode.Unwind when handOff:
-                        case Opcode.Call when handOff && i.Callee == Unhandled:
+                        case Opcode.Unwind when handOff && !borrowing:
+                        case Opcode.Call when handOff && !borrowing && i.Callee == Unhandled:
                             // Thrown: handed to whatever catches it, or to
                             // the program's end. Not kept here.
                             break;
@@ -2131,7 +2158,7 @@ continue;
                             // summary -- and the walk keeps it alive. Not the
                             // slot's address, which a loop's invariant code
                             // takes once before the object is made.
-                            foreach (VReg w in walker) Derive(w);
+                            foreach (VReg w in walker) Derive(w, borrowing);
                             break;
 
                         case Opcode.Call when i.Operands.Count == 1 && i.Operands[0] is RegOperand viewed && flow.Derived.Contains(viewed.Reg)
@@ -2141,7 +2168,7 @@ continue;
                             // (above) and Count. The view is the object here
                             // too -- but an object of its own, which this pass
                             // may have given back after its last use.
-                            foreach (VReg seen in view) Derive(seen);
+                            foreach (VReg seen in view) Derive(seen, borrowing);
                             (views ??= new()).UnionWith(view);
                             break;
 
@@ -2166,7 +2193,7 @@ continue;
                             // A call that takes the object over (a sink
                             // parameter, OwnedFields, a field's replaced value
                             // given back): handed on, not lost.
-                            if (consumers is not null && consumers.Contains(i)) break;
+                            if (consumers is not null && consumers.Contains(i) && !borrowing) break;
                             if (IsFreeCall(i.Callee) && _inserted?.Contains(i) != true)
                             {
                                 foreach (Operand o in i.Operands)
@@ -2188,7 +2215,7 @@ continue;
                                 // result is the object again (a builder's
                                 // Append, an iterator's GetEnumerator) -- known
                                 // here, not a condition on the link.
-                                if (a == 0 && ReturnsFirst(i.Callee)) { Derive(i.Dest); continue; }
+                                if (a == 0 && ReturnsFirst(i.Callee)) { Derive(i.Dest, borrowing); continue; }
                                 if (needs is not null && needs.Allow(i.Callee, a)) continue;
                                 flow.Escapes = true;
                             }
@@ -2272,7 +2299,7 @@ continue;
                         w.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 && w.Operands.Count == 1
                         && (w.Operands[0] is ImmOperand { Value: 0 } || Literal(w.Operands[0], writes)
                             || FrameAddress(w.Operands[0], writes)
-                            || w.Operands[0] is RegOperand { Reg: var from } && flow.Derived.Contains(from)));
+                            || w.Operands[0] is RegOperand { Reg: var from } && flow.Derived.Contains(from) && !flow.Borrowed.Contains(from)));
                     if (!mine) continue;
                     pending.Remove(d);
                     // Resolved only when it adds something: one already known
@@ -2315,7 +2342,7 @@ continue;
                                 w.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 && w.Operands.Count == 1
                                 && (w.Operands[0] is ImmOperand { Value: 0 } || Literal(w.Operands[0], writes)
                                     || FrameAddress(w.Operands[0], writes)
-                                    || w.Operands[0] is RegOperand { Reg: var from } && (flow.Derived.Contains(from) || group.Contains(from))));
+                                    || w.Operands[0] is RegOperand { Reg: var from } && (flow.Derived.Contains(from) && !flow.Borrowed.Contains(from) || group.Contains(from))));
                             if (!closed) { group.Remove(d); shrank = true; }
                         }
                     }
@@ -2326,11 +2353,26 @@ continue;
                     }
                 }
                 // Still some that can hold another value, and nothing more to
-                // learn: those are the escape.
+                // learn: each is at most a BORROW -- `cur = root`, then `cur =
+                // n` as it walks down -- and is followed as one. Read through,
+                // written through, compared, handed to a call that keeps
+                // nothing: the object is used and no more, whatever else the
+                // register holds at other times. Anything that hands on what
+                // it holds -- stored, returned, joined into a variable the
+                // object's owner frees, taken over by a call -- is the escape,
+                // judged where it happens. Its uses are the object's uses, so
+                // a free placed at the object's last use waits for them too.
                 if (!resolved && pending.Count > 0)
                 {
-                    flow.Escapes = true;    // shared with another value; unknowable
-                    flow.Why ??= writes.TryGetValue(pending.First(), out WriteList w0) ? w0[0] : null;
+                    foreach (VReg d in pending)
+                    {
+                        if (flow.Derived.Add(d))
+                        {
+                            flow.Borrowed.Add(d);
+                            changed = true;
+                        }
+                    }
+                    pending.Clear();
                 }
             }
         }
@@ -2479,11 +2521,23 @@ continue;
             return true;
         }
 
-        void Derive(VReg? d)
+        void Derive(VReg? d, bool borrowed = false)
         {
             if (d is null)
             {
                 return;
+            }
+            if (borrowed)
+            {
+                // What a borrow holds is not known to be the object: it may
+                // not join what is returned or owned as the object, nor a
+                // register already taken to hold the object alone.
+                if (returnable is not null && returnable.Contains(d) || joinable is not null && joinable.Contains(d)
+                    || flow.Derived.Contains(d) && !flow.Borrowed.Contains(d))
+                {
+                    flow.Escapes = true;
+                    return;
+                }
             }
             if (flow.Derived.Contains(d))
             {
@@ -2501,6 +2555,7 @@ continue;
             }
             if (flow.Derived.Add(d))
             {
+                if (borrowed) flow.Borrowed.Add(d);
                 changed = true;
             }
         }
