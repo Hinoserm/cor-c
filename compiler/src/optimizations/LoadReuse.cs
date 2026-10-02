@@ -31,41 +31,77 @@ public sealed class LoadReuse : IPass
                 && (from != function.Entry || site.Index < fromIndex)
                 && cfg.Dominates(function.Entry, from) && cfg.Dominates(function.Entry, use);
         }
-        // By the graph's block order; a table only for a block that has
-        // something in it and a successor it is the only way into.
-        Dictionary<Key, Entry>?[] outgoing = new Dictionary<Key, Entry>?[function.Blocks.Count];
-        foreach (Block block in cfg.ReversePostorder)
+        // ONE TABLE, SCOPED (Cfg.WalkSolePredecessors): a block whose sole
+        // predecessor dominates it starts from that predecessor's table as it
+        // ended, and what it adds is undone when the walk leaves it. A table
+        // copied for every such block was this pass's whole allocation, and
+        // the collector's.
+        cfg.WalkSolePredecessors(new Scope(Stable), dominating: true);
+    }
+
+    private sealed class Scope : Cfg.IScopedWalk
+    {
+        private readonly Func<VReg, Block, int, Block, int, bool> _stable;
+        private readonly Dictionary<Key, Entry> _memory = new();
+        private readonly List<(Key Key, Entry Was, bool Had)> _undo = new();
+        private readonly List<Key> _all = new();
+
+        public Scope(Func<VReg, Block, int, Block, int, bool> stable) { _stable = stable; }
+
+        public int Mark => _undo.Count;
+
+        public void Undo(int mark)
         {
-            // One table a block: made empty, then made again from the
-            // predecessor's, was two, and the first the collector's.
-            var predecessors = cfg.Preds(block);
-            Dictionary<Key, Entry>? memory = !cfg.IsRoot(block) && predecessors.Count == 1 && cfg.Dominates(predecessors[0], block)
-                && outgoing[predecessors[0].Order] is { } inherited
-                ? new(inherited) : null;
+            for (int u = _undo.Count - 1; u >= mark; u--)
+            {
+                (Key key, Entry was, bool had) = _undo[u];
+                if (had) _memory[key] = was;
+                else _memory.Remove(key);
+            }
+            _undo.RemoveRange(mark, _undo.Count - mark);
+        }
+
+        private void Set(Key key, Entry entry)
+        {
+            bool had = _memory.TryGetValue(key, out Entry was);
+            _undo.Add((key, was, had));
+            _memory[key] = entry;
+        }
+
+        private void ForgetAll()
+        {
+            if (_memory.Count == 0) return;
+            foreach (var pair in _memory) _all.Add(pair.Key);
+            foreach (Key key in _all)
+            {
+                _undo.Add((key, _memory[key], true));
+                _memory.Remove(key);
+            }
+            _all.Clear();
+        }
+
+        public void Visit(Block block)
+        {
             for (int index = 0; index < block.Instrs.Count; index++)
             {
                 Instr i = block.Instrs[index];
                 if (i.Op == Opcode.Load && i.Dest is { } result && result.Type.IsInt()
                     && Address(i, out Key key))
                 {
-                    if (memory is not null && memory.TryGetValue(key, out Entry prior)
-                        && Stable(prior.Load.Dest!, prior.Block, prior.Index + 1, block, index)
+                    if (_memory.TryGetValue(key, out Entry prior)
+                        && _stable(prior.Load.Dest!, prior.Block, prior.Index + 1, block, index)
                         && (i.Operands[0] is not RegOperand address
-                            || Stable(address.Reg, prior.Block, prior.Index, block, index)))
+                            || _stable(address.Reg, prior.Block, prior.Index, block, index)))
                     {
                         block.Instrs[index] = IrInfo.CopyOf(i, new RegOperand(prior.Load.Dest!));
                         continue;
                     }
-                    memory ??= new();
-                    if (memory.Count >= 64) memory.Clear();
-                    memory[key] = new(i, block, index);
+                    if (_memory.Count >= 64) ForgetAll();
+                    Set(key, new(i, block, index));
                 }
                 else if (!IrInfo.IsPure(i) && i.Op is not (Opcode.Branch or Opcode.Jump))
-                    memory?.Clear();
+                    ForgetAll();
             }
-            if (memory is { Count: > 0 })
-                foreach (Block next in cfg.Succs(block))
-                    if (cfg.Preds(next).Count == 1) { outgoing[block.Order] = memory; break; }
         }
     }
 

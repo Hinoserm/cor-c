@@ -137,6 +137,66 @@ public sealed class Cfg
         _roots.Add(b);
     }
 
+    /// <summary>What a pass that carries facts down the tree of sole predecessors does at each block (WalkSolePredecessors).</summary>
+    public interface IScopedWalk
+    {
+        /// <summary>A position in the walker's log of changes, to undo back to.</summary>
+        int Mark { get; }
+        void Visit(Block block);
+        void Undo(int mark);
+    }
+
+    /// <summary>
+    /// THE TREE OF SOLE PREDECESSORS, depth first in reverse postorder: a block
+    /// that is not a root and has one predecessor (that, with `dominating`,
+    /// also dominates it) is visited right after it, with what the walker
+    /// learnt there still in place; leaving a block's subtree undoes what was
+    /// learnt in it, so its siblings and every other tree start from what they
+    /// should. One set of tables for the function instead of one per block.
+    /// </summary>
+    public void WalkSolePredecessors(IScopedWalk walker, bool dominating)
+    {
+        IReadOnlyList<Block> order = ReversePostorder;
+        int count = Function.Blocks.Count;
+        int[] firstChild = new int[count];
+        int[] nextSibling = new int[count];
+        bool[] child = new bool[count];
+        Array.Fill(firstChild, -1);
+        Array.Fill(nextSibling, -1);
+        // Linked by prepending in RPO, so each list runs in reverse RPO and,
+        // pushed in that order, the children pop in RPO.
+        for (int r = 0; r < order.Count; r++)
+        {
+            Block block = order[r];
+            Edges predecessors = Preds(block);
+            if (IsRoot(block) || predecessors.Count != 1 || ReferenceEquals(predecessors[0], block)
+                || dominating && !Dominates(predecessors[0], block)) continue;
+            int parent = predecessors[0].Order;
+            child[block.Order] = true;
+            nextSibling[block.Order] = firstChild[parent];
+            firstChild[parent] = block.Order;
+        }
+        Stack<(int Block, int Mark)> walk = new();
+        foreach (Block root in order)
+        {
+            if (child[root.Order]) continue;
+            walk.Push((root.Order, 0));
+            while (walk.Count > 0)
+            {
+                (int at, int mark) = walk.Pop();
+                if (at < 0)
+                {
+                    walker.Undo(mark);
+                    continue;
+                }
+                // Undone once the subtree is done: pushed under its children.
+                walk.Push((-1, walker.Mark));
+                walker.Visit(Function.Blocks[at]);
+                for (int c = firstChild[at]; c >= 0; c = nextSibling[c]) walk.Push((c, 0));
+            }
+        }
+    }
+
     public Edges Preds(Block b) => new(_predEdges, _predStart[b.Order], _predStart[b.Order + 1] - _predStart[b.Order]);
     public Edges Succs(Block b) => new(_succEdges, _succStart[b.Order], _succStart[b.Order + 1] - _succStart[b.Order]);
 
