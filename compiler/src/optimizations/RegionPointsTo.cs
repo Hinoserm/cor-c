@@ -110,6 +110,10 @@ public sealed class RegionPointsTo : IModulePass
     // Every location named so far, by number: what sets hold is the number.
     private readonly Dictionary<long, int> _locIds = new();
     private readonly List<long> _locs = new();
+    private int _globalId = -1;
+    // Per node: a cell no reference is ever kept in (HoldsNoReference),
+    // which holds the unknown at most.
+    private readonly List<bool> _noReference = new();
     private readonly Queue<int> _work = new();
     private long _steps;
 
@@ -721,6 +725,7 @@ public sealed class RegionPointsTo : IModulePass
     private int NewNode()
     {
         _rep.Add(_pts.Count);
+        _noReference.Add(false);
         _pts.Add(new LocSet(_locs));
         _delta.Add(null);
         _edges.Add(null);
@@ -748,6 +753,7 @@ public sealed class RegionPointsTo : IModulePass
         if (offset != Any && cells.Count >= MostCells) return Collapse(o);
         node = NewNode();
         cells[offset] = node;
+        if (HoldsNoReference(o, offset)) _noReference[node] = true;
         if (_allCells[o] >= 0) Edge(node, _allCells[o], 0);
         // A cell read at any offset reads this one too; one written at any
         // offset is read wherever this one is.
@@ -757,6 +763,47 @@ public sealed class RegionPointsTo : IModulePass
             if (_cellWatchers[o] is { } watchers) for (int w = 0; w < watchers.Count; w++) watchers[w](offset, node);
         }
         return node;
+    }
+
+    /// <summary>
+    /// A WORD THE COLLECTOR NEVER READS AS A REFERENCE holds none: nothing
+    /// kept there is an object anyone reaches by it, and what is read from it
+    /// is a number, or the unknown at most -- never the objects an integer was
+    /// merely thought to carry. A leaf (a string, an array of bytes) is never
+    /// scanned; an object made with a descriptor is scanned by it: an array
+    /// of numbers not at all, an instance by its reference map. The
+    /// collector's own rules (Gc.ScanBlockWithin), and its own checks first:
+    /// the stamp names a descriptor that names itself.
+    /// </summary>
+    private bool HoldsNoReference(int o, long offset)
+    {
+        Instr? site = _objects[o].Site;
+        if (site?.Callee == Opt.Escape.LeafAllocator) return true;
+        if (site?.Callee != Opt.Escape.ObjectAllocator || Stamp(o) is not var (table, at)) return false;
+        int w = Target.Current.WordSize;
+        if (at != Target.Current.DescriptorBytes || !_data.TryGetValue(table, out DataItem? d) || d.Bytes.Length < at
+            || !d.Relocs.Any(r => r.Offset == DescSelf * w && r.Symbol == table && r.Addend == 0))
+            return false;
+        long flags = Word(d, DescFlags * w);
+        if ((flags & 1) != 0)
+            return (flags & 2) != 0 || (Word(d, DescGcFlags * w) & 1) == 0;
+        int mapIndex = d.Relocs.FindIndex(r => r.Offset == DescRefMap * w);
+        if (mapIndex < 0) return true;
+        DataReloc mapAt = d.Relocs[mapIndex];
+        if (offset == Any || mapAt.Addend != 0 || !_data.TryGetValue(mapAt.Symbol, out DataItem? map)) return false;
+        if (offset % w != 0) return true;
+        long word = offset / w;
+        if (word >= Word(map, 0) || (1 + word / 32 + 1) * w > map.Bytes.Length) return false;
+        return ((Word(map, (int)(1 + word / 32) * w) >> (int)(word % 32)) & 1) == 0;
+    }
+
+    private const int DescSelf = 5, DescFlags = 6, DescRefMap = 8, DescGcFlags = 9;
+
+    private static long Word(DataItem d, int at)
+    {
+        long value = 0;
+        for (int k = Target.Current.WordSize - 1; k >= 0; k--) value = value << 8 | (at + k < d.Bytes.Length ? d.Bytes[at + k] : 0);
+        return value;
     }
 
     /// <summary>
@@ -781,6 +828,7 @@ public sealed class RegionPointsTo : IModulePass
         Cell(o, Any);
         int all = NewNode();
         _allCells[o] = all;
+        if (HoldsNoReference(o, Any)) _noReference[all] = true;
         foreach (int cell in _cells[o].Values.ToArray()) Edge(cell, all, 0);
         return all;
     }
@@ -905,6 +953,9 @@ public sealed class RegionPointsTo : IModulePass
         from = Find(from);
         to = Find(to);
         if (from == to && shift == 0) return;
+        // A node that holds no reference holds the unknown at most, and
+        // gives no more: no edge, only that.
+        if (_noReference[from] || _noReference[to]) { Add(to, Loc(Global, Any)); return; }
         if (!NewEdge(from, to, shift)) return;
         _edgeCount++;
         LocSet held = _pts[from];
@@ -952,6 +1003,7 @@ public sealed class RegionPointsTo : IModulePass
         {
             _locIds[loc] = id = _locs.Count;
             _locs.Add(loc);
+            if (loc == Loc(Global, Any)) _globalId = id;
         }
         Held(node, id);
     }
@@ -960,6 +1012,11 @@ public sealed class RegionPointsTo : IModulePass
     private void Held(int node, int id)
     {
         node = Find(node);
+        if (_noReference[node])
+        {
+            if (_globalId < 0) { Add(node, Loc(Global, Any)); return; }
+            id = _globalId;
+        }
         if (!_pts[node].Add(id)) return;
         // Checked here, not only between steps: one step's watchers can add
         // without end (a copy between two growing sets), and the compile died
@@ -1608,7 +1665,9 @@ public sealed class RegionPointsTo : IModulePass
                     (int to, long shift) = edges[e++];
                     if (shift != 0) continue;
                     int w = Find(to);
-                    if (w == v) continue;
+                    // A cell that holds no reference is never merged: it holds
+                    // less than what feeds it.
+                    if (w == v || _noReference[w]) continue;
                     if (index[w] == 0)
                     {
                         calls.Push((v, e));
