@@ -10,10 +10,13 @@
 // may make them in a region Count opens. Collections run while regions are
 // open and between them; every count must still be right.
 
+using System.Runtime.CompilerServices;
 using RegionUnits;
 
 static class Program
 {
+    // A call of its own, the boundary: inlined into Main, nothing would be.
+    [MethodImpl(MethodImplOptions.NoInlining)]
     static int Count(string line, out int letters)
     {
         List<Token> tokens = Lexer.Lex(line);

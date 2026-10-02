@@ -1,0 +1,66 @@
+// test: a boundary in one unit over objects another unit's override makes
+// units: tests/language/support/972_region_units.cor
+// expect-exit: 0
+// expect-output:
+// 3283500 4950 4950
+//
+// Runner.Sum, in the other unit, calls Maker.Make, an abstract method;
+// the makers here answer with squares and rectangles this unit makes. The
+// shapes Sum gathers are dead by its return, whoever made them. A maker that
+// also puts every shape it makes on a shelf has its shapes outlive Sum --
+// the shelf was handed to it before Sum was called -- and the shelf's total
+// read at the end must still be every one of them.
+
+using RegionMakers;
+
+sealed class Square : Shape
+{
+    readonly int _side;
+    public Square(int side) { _side = side; }
+    public override int Area() => _side * _side;
+}
+
+sealed class Rectangle : Shape
+{
+    readonly int _w, _h;
+    public Rectangle(int w, int h) { _w = w; _h = h; }
+    public override int Area() => _w * _h;
+}
+
+sealed class Squares : Maker
+{
+    public override Shape Make(int k) => new Square(k);
+}
+
+sealed class Strips : Maker
+{
+    readonly Shelf _shelf;
+    public Strips(Shelf shelf) { _shelf = shelf; }
+
+    public override Shape Make(int k)
+    {
+        Shape made = new Rectangle(k, 1);
+        _shelf.Keep(made);
+        return made;
+    }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Squares squares = new Squares();
+        Shelf shelf = new Shelf();
+        Strips strips = new Strips(shelf);
+        long total = 0;
+        int last = 0;
+        for (int round = 0; round < 10; round++)
+        {
+            total += Runner.Sum(squares, 100);
+            if (round == 9) last = Runner.Sum(strips, 100);
+            GC.Collect();
+        }
+        System.Console.WriteLine(total + " " + last + " " + shelf.Total());
+        return 0;
+    }
+}

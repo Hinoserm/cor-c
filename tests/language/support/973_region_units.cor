@@ -1,0 +1,35 @@
+// The other unit of 973_region_throw_across_units: a parser of sums that
+// builds a list of terms, and throws, with what it was reading, on a term
+// that is not a number.
+namespace RegionThrow;
+
+public sealed class Term
+{
+    public readonly int Value;
+    public Term(int value) { Value = value; }
+}
+
+public sealed class BadTerm : Exception
+{
+    public readonly string Text;
+    public BadTerm(string text) : base("bad term " + text) { Text = text; }
+}
+
+public static class Sums
+{
+    public static List<Term> Terms(string line)
+    {
+        List<Term> terms = new List<Term>();
+        foreach (string part in line.Split('+'))
+        {
+            int value = 0;
+            foreach (char c in part)
+            {
+                if (c < '0' || c > '9') throw new BadTerm(part);
+                value = value * 10 + (c - '0');
+            }
+            terms.Add(new Term(value));
+        }
+        return terms;
+    }
+}

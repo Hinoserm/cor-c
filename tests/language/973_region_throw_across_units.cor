@@ -1,0 +1,50 @@
+// test: a throw out of a region boundary, the thrown object made in another unit
+// units: tests/language/support/973_region_units.cor
+// expect-exit: 0
+// expect-output:
+// 40800 300 x7 bad term x7
+//
+// Total adds up a line of terms the other unit's parser makes; the terms and
+// their list are dead by its return. A line with a bad term throws out of the
+// parser and out of Total, which never returns to give its region back: the
+// next region opened, or the next allocation made from a frame above it,
+// finds it left and closes it. What was thrown outlives the boundary -- it is
+// caught here -- and its text must survive the regions after it and the
+// collections between them.
+
+using System.Runtime.CompilerServices;
+using RegionThrow;
+
+static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Total(string line)
+    {
+        int total = 0;
+        foreach (Term t in Sums.Terms(line)) total += t.Value;
+        return total;
+    }
+
+    static int Main()
+    {
+        string[] lines = { "1+2+3", "10+20", "4+x7+5", "100" };
+        int total = 0, bad = 0;
+        BadTerm? first = null;
+        for (int k = 0; k < 300; k++)
+        {
+            foreach (string line in lines)
+            {
+                try { total += Total(line); }
+                catch (BadTerm e)
+                {
+                    bad++;
+                    if (first is null) first = e;
+                }
+            }
+            if (k % 50 == 0) GC.Collect();
+        }
+        GC.Collect();
+        System.Console.WriteLine(total + " " + bad + " " + first!.Text + " " + first.Message);
+        return 0;
+    }
+}

@@ -48,6 +48,15 @@ public static class VirtualTargets
         return answers;
     }
 
+    /// <summary>
+    /// The function the descriptor <paramref name="descriptor"/> holds
+    /// <paramref name="offset"/> bytes in -- what a virtual call made on an
+    /// object stamped with it runs -- or null: no function there, or more
+    /// than one descriptor by that name (two units' local types).
+    /// </summary>
+    public static string? MethodAt(List<(string Name, ObjectFile Object)> inputs, string descriptor, long offset)
+        => IndexOf(inputs).MethodAt(descriptor, offset);
+
     /// <summary>Every type each of <paramref name="types"/> is, itself and all its ancestors, together.</summary>
     public static HashSet<string> Ancestry(List<(string Name, ObjectFile Object)> inputs, IEnumerable<string> types)
     {
@@ -83,6 +92,8 @@ public static class VirtualTargets
         private readonly HashSet<string> _functions = new(StringComparer.Ordinal);
         private readonly HashSet<long> _bases = new();
         public readonly Dictionary<string, int> ByName = new(StringComparer.Ordinal);
+        // How many descriptors carry each name: a local one may be several.
+        private readonly Dictionary<string, int> _named = new(StringComparer.Ordinal);
         private readonly Dictionary<int, List<(long Offset, string Symbol, long Addend)>> _relocs = new();
         // The tables a descriptor's display and interface list point at are
         // data symbols of their own, not descriptors: found by name anywhere.
@@ -113,7 +124,11 @@ public static class VirtualTargets
                         foreach (Relocation r in section.Relocs)
                             if (r.Addend > 0 && IsDescriptor(r.Symbol)) _bases.Add(r.Addend);
             }
-            for (int d = 0; d < _descriptors.Count; d++) ByName.TryAdd(_descriptors[d].Name, d);
+            for (int d = 0; d < _descriptors.Count; d++)
+            {
+                ByName.TryAdd(_descriptors[d].Name, d);
+                _named[_descriptors[d].Name] = _named.GetValueOrDefault(_descriptors[d].Name) + 1;
+            }
         }
 
         private List<(long Offset, string Symbol, long Addend)> Relocs(int d)
@@ -150,6 +165,14 @@ public static class VirtualTargets
                                 pending.Push(upper);
             }
             return _ancestry[d] = found;
+        }
+
+        public string? MethodAt(string descriptor, long offset)
+        {
+            if (_named.GetValueOrDefault(descriptor) != 1 || !ByName.TryGetValue(descriptor, out int d)) return null;
+            foreach (var (at, symbol, addend) in Relocs(d))
+                if (at == offset) return addend == 0 && _functions.Contains(symbol) ? symbol : null;
+            return null;
         }
 
         /// <summary>The functions a virtual call reaches; empty when no object of the type exists; null when a slot is not code.</summary>

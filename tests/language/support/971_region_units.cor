@@ -1,0 +1,38 @@
+// The other unit of 971_region_static_cache_across_units: a table of names
+// that keeps the first spelling of each word it is shown, and a splitter
+// whose words and list are the caller's to drop.
+namespace RegionCache;
+
+public static class Names
+{
+    static readonly Dictionary<string, string> _kept = new Dictionary<string, string>();
+
+    /// The spelling kept for `word`: the first one seen, in a static that
+    /// outlives every call.
+    public static string Intern(string word)
+    {
+        if (_kept.TryGetValue(word, out string? known)) return known;
+        string copy = new string(word.ToCharArray());
+        _kept[word] = copy;
+        return copy;
+    }
+
+    public static int Count => _kept.Count;
+}
+
+public static class Splitter
+{
+    public static List<string> Words(string line)
+    {
+        List<string> words = new List<string>();
+        int at = 0;
+        while (at < line.Length)
+        {
+            if (line[at] == ',') { at++; continue; }
+            int start = at;
+            while (at < line.Length && line[at] != ',') at++;
+            words.Add(line.Substring(start, at - start));
+        }
+        return words;
+    }
+}

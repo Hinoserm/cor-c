@@ -1,0 +1,46 @@
+// The other unit of 972_region_virtual_maker_across_units: a runner that
+// asks a maker it is handed for shapes and adds up their areas, keeping
+// none of them -- and a shelf that keeps what it is given.
+using System.Runtime.CompilerServices;
+
+namespace RegionMakers;
+
+public abstract class Shape
+{
+    public abstract int Area();
+}
+
+public abstract class Maker
+{
+    public abstract Shape Make(int k);
+}
+
+public sealed class Shelf
+{
+    readonly List<Shape> _kept = new List<Shape>();
+
+    public void Keep(Shape s) { _kept.Add(s); }
+
+    public int Total()
+    {
+        int total = 0;
+        foreach (Shape s in _kept) total += s.Area();
+        return total;
+    }
+}
+
+public static class Runner
+{
+    // The boundary: what the maker makes for it is dead by its return,
+    // though another unit's code made it, through a virtual call this unit
+    // cannot name the target of.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int Sum(Maker maker, int n)
+    {
+        List<Shape> shapes = new List<Shape>();
+        for (int k = 0; k < n; k++) shapes.Add(maker.Make(k));
+        int total = 0;
+        foreach (Shape s in shapes) total += s.Area();
+        return total;
+    }
+}

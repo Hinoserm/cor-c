@@ -1,0 +1,43 @@
+// test: what a boundary's callee keeps in another unit's static outlives the boundary
+// units: tests/language/support/971_region_units.cor
+// expect-exit: 0
+// expect-output:
+// 15600 5 alpha beta gamma delta epsilon
+//
+// Measure splits a line with the other unit's Splitter and hands each word
+// to Names.Intern, which keeps a copy of the first spelling of each in a
+// static dictionary. The list and the words are dead by Measure's return;
+// the copies the dictionary keeps are not, whichever unit's code is running
+// when they are made. Were they made in the region Measure opens, the
+// region's end would zero them, and the names read back at the end -- after
+// thousands of regions and several collections -- would be gone.
+
+using System.Runtime.CompilerServices;
+using RegionCache;
+
+static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Measure(string line)
+    {
+        List<string> words = Splitter.Words(line);
+        int total = 0;
+        foreach (string word in words) total += Names.Intern(word).Length;
+        return total;
+    }
+
+    static int Main()
+    {
+        string[] lines = { "alpha,beta,gamma", "delta,alpha", "epsilon,beta,beta" };
+        int total = 0;
+        for (int k = 0; k < 400; k++)
+        {
+            foreach (string line in lines) total += Measure(line);
+            if (k % 100 == 0) GC.Collect();
+        }
+        GC.Collect();
+        System.Console.WriteLine(total + " " + Names.Count + " " + Names.Intern("alpha") + " " + Names.Intern("beta") + " "
+            + Names.Intern("gamma") + " " + Names.Intern("delta") + " " + Names.Intern("epsilon"));
+        return 0;
+    }
+}

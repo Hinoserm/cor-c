@@ -12,7 +12,7 @@ using Block = Corsac.Lang.Ir.Block;
 /// function for RegionSolver to solve over every unit. Taken from the IR the
 /// link regenerates the unit from -- the module as the late passes find it
 /// -- so an allocation site named here by its function and ordinal is the
-/// same call when the link numbers it again (RegionPointsTo.SiteCalls).
+/// same call when the link numbers it again (RegionPointsTo.MarkSites).
 ///
 /// The rules are RegionPointsTo's: what is not followed -- a call nobody can
 /// name, a system call's answer, a frame's, the stack's or a label's address,
@@ -233,7 +233,8 @@ public static class RegionSummary
             if (RegionPointsTo.IsSiteCall(i))
             {
                 int site = _sites.Count;
-                _sites.Add(new(RegionPointsTo.IsRewritable(callee), i.Line));
+                (string? table, long at) = Stamp(i) ?? (null, 0);
+                _sites.Add(new(RegionPointsTo.IsRewritable(callee), i.Line, table, at));
                 if (dest >= 0) _constraints.Add(new(RegionConstraintKind.Site, dest, site, 0));
                 // What the allocator calls (a collection, what it runs) is
                 // beneath every allocation.
@@ -241,7 +242,58 @@ public static class RegionSummary
                 return;
             }
             if (RegionPointsTo.Harmless(callee)) { _calls.Add(new(callee, true, -1, Array.Empty<int>())); return; }
+            // An instruction the backend makes of a call -- the thread's block,
+            // the exception being caught -- calls no code: what it answers is
+            // unknown, what it is handed goes where nobody follows.
+            if (Escape.IsIntrinsic(callee))
+            {
+                foreach (int argument in Arguments(i, 0)) Leak(argument);
+                Copy(dest, Unknown(), 0);
+                return;
+            }
             _calls.Add(new(callee, false, dest, Arguments(i, 0)));
+        }
+
+        // Each register written once, to its instruction; null where written more.
+        private Dictionary<VReg, Instr?> Defs()
+        {
+            if (_defs is not null) return _defs;
+            _defs = new();
+            foreach (Block b in _f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Dest is { } d) _defs[d] = _defs.ContainsKey(d) ? null : i;
+            return _defs;
+        }
+
+        /// <summary>
+        /// The descriptor a site's object is stamped with and where in it its
+        /// method table begins (RegionPointsTo.Stamp): one store of a symbol
+        /// into its first word, from the one writer of the site's register.
+        /// Two different stamps say nothing.
+        /// </summary>
+        private (string Table, long At)? Stamp(Instr site)
+        {
+            VReg? made = site.Dest;
+            if (made is null || !Defs().TryGetValue(made, out Instr? only) || only != site) return null;
+            (string, long)? found = null;
+            foreach (Block b in _f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.Store && i.Offset == 0 && i.Operands.Count >= 2
+                        && i.Operands[1] is SymOperand { Name: var t, Offset: var at }
+                        && i.Operands[0] is RegOperand { Reg: var to } && Derives(to, made, 0))
+                    {
+                        if (found is { } f0 && (f0.Item1 != t || f0.Item2 != at)) return null;
+                        found = (t, at);
+                    }
+            return found;
+        }
+
+        private bool Derives(VReg r, VReg made, int depth)
+        {
+            if (r == made) return true;
+            if (depth > 3) return false;
+            return Defs().TryGetValue(r, out Instr? w) && w is { Op: Opcode.Trunc64 or Opcode.Copy } && w.Operands[0] is RegOperand { Reg: var from }
+                && Derives(from, made, depth + 1);
         }
 
         // Whether an address computation's source is a join its own result
@@ -249,13 +301,7 @@ public static class RegionSummary
         private bool Walked(Instr add)
         {
             if (add.Dest is null || add.Operands[0] is not RegOperand { Reg: var from }) return false;
-            if (_defs is null)
-            {
-                _defs = new();
-                foreach (Block b in _f.Blocks)
-                    foreach (Instr i in b.Instrs)
-                        if (i.Dest is { } d) _defs[d] = _defs.ContainsKey(d) ? null : i;
-            }
+            Dictionary<VReg, Instr?> defs = Defs();
             HashSet<VReg> seen = new();
             Stack<VReg> next = new();
             next.Push(from);
@@ -263,7 +309,7 @@ public static class RegionSummary
             {
                 if (!seen.Add(r) || seen.Count > 16) continue;
                 if (r == add.Dest) return true;
-                if (_defs.TryGetValue(r, out Instr? w) && w is { Op: Opcode.Phi or Opcode.Copy })
+                if (defs.TryGetValue(r, out Instr? w) && w is { Op: Opcode.Phi or Opcode.Copy })
                     foreach (Operand o in w.Operands)
                         if (o is RegOperand { Reg: var q }) next.Push(q);
             }
@@ -363,7 +409,7 @@ public static class RegionSummary
                 calls.Add(new(call.Callee, call.GraphOnly, Node(call.Dest), arguments));
             }
             RegionFunction result = new(_f.Name, _f.Exported, _f.Async is null && !_f.Name.Contains("StaticInit", StringComparison.Ordinal),
-                _params, next, _slots.Count, _sites.ToArray());
+                _params > 0 && _f.Params[0].Name == "this", _params, next, _slots.Count, _sites.ToArray());
             result.Constraints.AddRange(kept);
             result.Calls.AddRange(calls);
             return result;

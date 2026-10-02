@@ -12,7 +12,7 @@ namespace Corsac.Lang.Lto;
 /// the link runs those passes over again -- over nodes of its own: its
 /// parameters, its return, the registers that can hold an address. Its
 /// allocation sites are objects keyed by the function and their ordinal
-/// among its allocator calls (RegionPointsTo.SiteCalls), which the link
+/// among its allocator calls (RegionPointsTo.MarkSites), which the link
 /// numbers again the same way when it regenerates the unit; its frame slots
 /// are objects too, and anything it cannot follow is the unknown object.
 /// Calls are named: a function, a virtual call's symbol (Escape.
@@ -55,6 +55,7 @@ public sealed class RegionHints
         {
             names.Add(function.Name);
             foreach (RegionCall call in function.Calls) if (call.Callee is not null) names.Add(call.Callee);
+            foreach (RegionSite site in function.Sites) if (site.Table is not null) names.Add(site.Table);
         }
         Dictionary<string, int> index = new(StringComparer.Ordinal);
         foreach (string name in names) index.Add(name, index.Count);
@@ -74,10 +75,14 @@ public sealed class RegionHints
         foreach (RegionFunction function in Functions)
         {
             writer.Write(index[function.Name]);
-            writer.Write((byte)((function.Global ? 1 : 0) | (function.MayBeBoundary ? 2 : 0)));
+            writer.Write((byte)((function.Global ? 1 : 0) | (function.MayBeBoundary ? 2 : 0) | (function.Instance ? 4 : 0)));
             writer.Write(function.Parameters); writer.Write(function.Nodes); writer.Write(function.Slots);
             writer.Write(function.Sites.Length);
-            foreach (RegionSite site in function.Sites) { writer.Write(site.Rewritable); writer.Write(site.Line); }
+            foreach (RegionSite site in function.Sites)
+            {
+                writer.Write(site.Rewritable); writer.Write(site.Line);
+                writer.Write(site.Table is null ? -1 : index[site.Table]); writer.Write(site.At);
+            }
             writer.Write(function.Constraints.Count);
             foreach (RegionConstraint c in function.Constraints) { writer.Write((byte)c.Kind); writer.Write(c.A); writer.Write(c.B); writer.Write(c.C); }
             writer.Write(function.Calls.Count);
@@ -135,9 +140,16 @@ public sealed class RegionHints
                 int parameters = reader.ReadInt32(), nodes = reader.ReadInt32(), slots = reader.ReadInt32();
                 if (parameters < 0 || nodes <= parameters || nodes > RegionFunction.NodeLimit || slots < 0 || slots > RegionFunction.NodeLimit)
                     throw new ElfFormatException("Invalid region hint function");
-                RegionSite[] sites = new RegionSite[Count(5)];
-                for (int s = 0; s < sites.Length; s++) sites[s] = new RegionSite(reader.ReadBoolean(), reader.ReadInt32());
-                RegionFunction function = new(name, (flags & 1) != 0, (flags & 2) != 0, parameters, nodes, slots, sites);
+                RegionSite[] sites = new RegionSite[Count(17)];
+                for (int s = 0; s < sites.Length; s++)
+                {
+                    bool rewritable = reader.ReadBoolean();
+                    int line = reader.ReadInt32(), table = reader.ReadInt32();
+                    long at = reader.ReadInt64();
+                    if (table < -1 || table >= names.Length) throw new ElfFormatException("Invalid region hint stamp");
+                    sites[s] = new RegionSite(rewritable, line, table < 0 ? null : names[table], at);
+                }
+                RegionFunction function = new(name, (flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0, parameters, nodes, slots, sites);
                 bool Node(int n) => n >= 0 && n < nodes;
                 for (int k = Count(17); k > 0; k--)
                 {
@@ -183,9 +195,9 @@ public sealed class RegionFunction
     /// <summary>No function states more nodes, or more frame slots, than this.</summary>
     public const int NodeLimit = 1 << 22;
 
-    public RegionFunction(string name, bool global, bool mayBeBoundary, int parameters, int nodes, int slots, RegionSite[] sites)
+    public RegionFunction(string name, bool global, bool mayBeBoundary, bool instance, int parameters, int nodes, int slots, RegionSite[] sites)
     {
-        Name = name; Global = global; MayBeBoundary = mayBeBoundary;
+        Name = name; Global = global; MayBeBoundary = mayBeBoundary; Instance = instance;
         Parameters = parameters; Nodes = nodes; Slots = slots; Sites = sites;
     }
 
@@ -194,17 +206,24 @@ public sealed class RegionFunction
     public bool Global { get; }
     /// <summary>Not an async or iterator body (its frame outlives a return) nor a type's initialiser (run wherever first asked).</summary>
     public bool MayBeBoundary { get; }
+    /// <summary>An instance method: its first parameter the object it is called on, by which the link tells its calls apart.</summary>
+    public bool Instance { get; }
     public int Parameters { get; }
     public int Nodes { get; }
     public int Slots { get; }
-    /// <summary>Its allocator calls, by ordinal (RegionPointsTo.SiteCalls).</summary>
+    /// <summary>Its allocator calls, by ordinal (RegionPointsTo.MarkSites).</summary>
     public RegionSite[] Sites { get; }
     public List<RegionConstraint> Constraints { get; } = new();
     public List<RegionCall> Calls { get; } = new();
 }
 
-/// <summary>An allocation site: whether a region may take it (a collecting allocator's call), and its line for reports.</summary>
-public readonly record struct RegionSite(bool Rewritable, int Line);
+/// <summary>
+/// An allocation site: whether a region may take it (a collecting allocator's
+/// call), its line for reports, and the descriptor its object is stamped
+/// with and where in it the method table begins (null: none known) -- what
+/// a virtual call made on the object runs.
+/// </summary>
+public readonly record struct RegionSite(bool Rewritable, int Line, string? Table, long At);
 
 public enum RegionConstraintKind : byte
 {

@@ -109,7 +109,8 @@ public static class IrLinkOptimizer
             foreach (var input in inputs)
                 if (!archives.ContainsKey(input.Object))
                     foreach (Section section in input.Object.Sections) foreach (Relocation reloc in section.Relocs) foreign.Add(reloc.Symbol);
-            RegionFacts?[]? solved = RegionSolver.Solve(regionUnits, regionVirtuals, closedImageEntry!, foreign, regionReport,
+            RegionFacts?[]? solved = RegionSolver.Solve(regionUnits, regionVirtuals, (table, offset) => VirtualTargets.MethodAt(inputs, table, offset),
+                closedImageEntry!, foreign, regionReport,
                 (u, name) => reachability?.GetValueOrDefault(regionOrder[u]) is not { } kept || kept.Contains("F:" + name));
             if (solved is not null)
             {
