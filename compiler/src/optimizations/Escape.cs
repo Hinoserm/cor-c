@@ -3094,9 +3094,19 @@ continue;
         if (_descriptors is null) return false;
         int word = IrTypes.Word.Bytes();
         int at = b.Instrs.IndexOf(made);
+        if (made.Dest is null) return false;
+        // THIS object's vtable: stored through its own register or a copy of
+        // it -- not the next allocation's, a few instructions on, which is
+        // what a look for any vtable store found after an object whose own
+        // store had gone (a four-byte object holding no storage was "freed").
+        HashSet<VReg> mine = new() { made.Dest };
         for (int k = at + 1; k < b.Instrs.Count && k <= at + 4; k++)
         {
-            if (b.Instrs[k] is not { Op: Opcode.Store, Operands: [_, SymOperand { Name: var table, Offset: var offset }] }) continue;
+            Instr next = b.Instrs[k];
+            if (next.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && next.Dest is not null
+                && next.Operands is [RegOperand { Reg: var from }] && mine.Contains(from)) { mine.Add(next.Dest); continue; }
+            if (next is not { Op: Opcode.Store, Operands: [RegOperand { Reg: var into }, SymOperand { Name: var table, Offset: var offset }] }
+                || !mine.Contains(into)) continue;
             if (!table.StartsWith("t_", StringComparison.Ordinal) || offset != 12 * word) return false;
             if (!_descriptors.TryGetValue(table, out DataItem? descriptor) || descriptor.Bytes.Length < 10 * word) return false;
             long flags = word == 8 ? BitConverter.ToInt64(descriptor.Bytes, 9 * word) : BitConverter.ToInt32(descriptor.Bytes, 9 * word);
