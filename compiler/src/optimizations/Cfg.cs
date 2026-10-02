@@ -44,11 +44,23 @@ public sealed class Cfg
     private readonly bool[] _root;
     private readonly List<Block> _roots = new();
     private List<Block>? _rpo;
-    private Dictionary<Block, HashSet<Block>>? _reach;
-    private ulong[][]? _dom;
-    private Dictionary<Block, Block?>? _idom;
-    private Dictionary<Block, List<Block>>? _domChildren;
-    private Dictionary<Block, HashSet<Block>>? _frontier;
+    // THE ANALYSES, BY POSITION TOO: a row of bits a block (reachability,
+    // dominators), a slot a block (the immediate dominator), the tree's
+    // children as the edges are kept. Tables of sets keyed by block left a
+    // set for every block to the collector each time a graph died.
+    private int _words;
+    private ulong[]? _reachBits;
+    private bool[]? _reachDone;
+    private ulong[]? _dom;
+    private bool[]? _live;
+    private Block?[]? _idom;
+    private Block[]? _children;
+    private int[]? _childStart;
+    private HashSet<Block>?[]? _frontier;
+    private static readonly HashSet<Block> NoFrontier = new(ReferenceEqualityComparer.Instance);
+    private Stack<Block>? _walk;
+    private int[]? _mark;
+    private int _stamp;
 
     public Cfg(Function f)
     {
@@ -191,6 +203,20 @@ public sealed class Cfg
         }
     }
 
+    /// <summary>The blocks reachable from a root, by position.</summary>
+    public bool[] Live
+    {
+        get
+        {
+            if (_live is null)
+            {
+                _live = new bool[Function.Blocks.Count];
+                foreach (Block b in ReversePostorder) _live[b.Order] = true;
+            }
+            return _live;
+        }
+    }
+
     /// <summary>The blocks reachable from a root.</summary>
     public HashSet<Block> Reachable()
     {
@@ -202,33 +228,38 @@ public sealed class Cfg
         return seen;
     }
 
+    private int Words => _words != 0 ? _words : _words = Math.Max(1, (Function.Blocks.Count + 63) >> 6);
+
     /// <summary>
     /// Whether there is a path of one or more edges from <paramref name="from"/>
-    /// to <paramref name="to"/>. Cached per source; a function with n blocks
-    /// costs at most n such walks, which the propagation passes stay well
-    /// under because they only ask about definition blocks.
+    /// to <paramref name="to"/>. Cached per source, a row of bits each; a
+    /// function with n blocks costs at most n such walks, which the
+    /// propagation passes stay well under because they only ask about
+    /// definition blocks.
     /// </summary>
     public bool Reaches(Block from, Block to)
     {
-        _reach ??= new Dictionary<Block, HashSet<Block>>(ReferenceEqualityComparer.Instance);
-        if (!_reach.TryGetValue(from, out HashSet<Block>? set))
+        int n = Function.Blocks.Count, words = Words;
+        _reachBits ??= new ulong[n * words];
+        _reachDone ??= new bool[n];
+        int row = from.Order * words;
+        if (!_reachDone[from.Order])
         {
-            set = new HashSet<Block>(ReferenceEqualityComparer.Instance);
-            Stack<Block> work = new(Succs(from));
+            _reachDone[from.Order] = true;
+            Stack<Block> work = _walk ??= new Stack<Block>();
+            work.Clear();
+            foreach (Block s0 in Succs(from)) work.Push(s0);
             while (work.Count > 0)
             {
                 Block b = work.Pop();
-                if (set.Add(b))
-                {
-                    foreach (Block s in Succs(b))
-                    {
-                        work.Push(s);
-                    }
-                }
+                int at = row + (b.Order >> 6);
+                ulong bit = 1UL << (b.Order & 63);
+                if ((_reachBits[at] & bit) != 0) continue;
+                _reachBits[at] |= bit;
+                foreach (Block s1 in Succs(b)) work.Push(s1);
             }
-            _reach[from] = set;
         }
-        return set.Contains(to);
+        return (_reachBits[row + (to.Order >> 6)] & (1UL << (to.Order & 63))) != 0;
     }
 
     /// <summary>Whether the block lies on a cycle: its own instructions can execute more than once.</summary>
@@ -241,7 +272,8 @@ public sealed class Cfg
     /// returns to the block they started in re-executes the instruction
     /// they are reasoning from, so it does not count. Not cached, because
     /// the callers ask about few blocks and a cache keyed on the pair
-    /// would mostly miss.
+    /// would mostly miss; the walk marks blocks with a stamp, so it makes
+    /// nothing either.
     /// </summary>
     public bool ReachesWithoutReentering(Block from, Block to)
     {
@@ -249,20 +281,26 @@ public sealed class Cfg
         {
             return false;
         }
-        HashSet<Block> seen = new(ReferenceEqualityComparer.Instance) { from };
-        Stack<Block> work = new(Succs(from));
+        int[] mark = _mark ??= new int[Function.Blocks.Count];
+        int stamp = ++_stamp;
+        mark[from.Order] = stamp;
+        Stack<Block> work = _walk ??= new Stack<Block>();
+        work.Clear();
+        foreach (Block s0 in Succs(from)) work.Push(s0);
         while (work.Count > 0)
         {
             Block b = work.Pop();
             if (ReferenceEquals(b, to))
             {
+                work.Clear();
                 return true;
             }
-            if (seen.Add(b))
+            if (mark[b.Order] != stamp)
             {
-                foreach (Block s in Succs(b))
+                mark[b.Order] = stamp;
+                foreach (Block s1 in Succs(b))
                 {
-                    work.Push(s);
+                    work.Push(s1);
                 }
             }
         }
@@ -282,14 +320,14 @@ public sealed class Cfg
     {
         _dom ??= ComputeDominators();
         int ia = a.Order;
-        return (_dom[b.Order][ia >> 6] & (1UL << (ia & 63))) != 0;
+        return (_dom[b.Order * Words + (ia >> 6)] & (1UL << (ia & 63))) != 0;
     }
 
-    private ulong[][] ComputeDominators()
+    private ulong[] ComputeDominators()
     {
         int n = Function.Blocks.Count;
-        int words = (n + 63) >> 6;
-        ulong[][] dom = new ulong[n][];
+        int words = Words;
+        ulong[] dom = new ulong[n * words];
         ulong[] all = new ulong[words];
         for (int k = 0; k < n; k++)
         {
@@ -297,13 +335,13 @@ public sealed class Cfg
         }
         for (int k = 0; k < n; k++)
         {
-            dom[k] = (ulong[])all.Clone();
+            Array.Copy(all, 0, dom, k * words, words);
         }
         foreach (Block root in _roots)
         {
             int r = root.Order;
-            Array.Clear(dom[r]);
-            dom[r][r >> 6] |= 1UL << (r & 63);
+            Array.Clear(dom, r * words, words);
+            dom[r * words + (r >> 6)] |= 1UL << (r & 63);
         }
 
         IReadOnlyList<Block> order = ReversePostorder;
@@ -322,19 +360,19 @@ public sealed class Cfg
                 Array.Copy(all, tmp, words);
                 foreach (Block p in Preds(b))
                 {
-                    ulong[] dp = dom[p.Order];
+                    int dp = p.Order * words;
                     for (int w = 0; w < words; w++)
                     {
-                        tmp[w] &= dp[w];
+                        tmp[w] &= dom[dp + w];
                     }
                 }
                 tmp[ib >> 6] |= 1UL << (ib & 63);
-                ulong[] db = dom[ib];
+                int db = ib * words;
                 for (int w = 0; w < words; w++)
                 {
-                    if (db[w] != tmp[w])
+                    if (dom[db + w] != tmp[w])
                     {
-                        db[w] = tmp[w];
+                        dom[db + w] = tmp[w];
                         changed = true;
                     }
                 }
@@ -351,14 +389,14 @@ public sealed class Cfg
     public static bool RemoveUnreachable(Function f)
     {
         Cfg cfg = new(f);
-        HashSet<Block> live = cfg.Reachable();
-        if (live.Count == f.Blocks.Count)
+        bool[] live = cfg.Live;
+        if (cfg.ReversePostorder.Count == f.Blocks.Count)
         {
             return false;
         }
         foreach (Block dead in f.Blocks)
         {
-            if (live.Contains(dead))
+            if (live[dead.Order])
             {
                 continue;
             }
@@ -366,13 +404,17 @@ public sealed class Cfg
             // go on naming it.
             foreach (Block s in cfg.Succs(dead))
             {
-                if (live.Contains(s))
+                if (live[s.Order])
                 {
                     Phi.RemoveIncoming(s, dead);
                 }
             }
         }
-        f.Blocks.RemoveAll(b => !live.Contains(b));
+        // By position, as the graph saw them (RemoveAll would ask a closure).
+        int kept = 0;
+        for (int k = 0; k < f.Blocks.Count; k++)
+            if (live[f.Blocks[k].Order]) f.Blocks[kept++] = f.Blocks[k];
+        f.Blocks.RemoveRange(kept, f.Blocks.Count - kept);
         return true;
     }
 
@@ -385,56 +427,52 @@ public sealed class Cfg
     public Block? Idom(Block b)
     {
         BuildTree();
-        return _idom![b];
+        return _idom![b.Order];
     }
 
     /// <summary>The blocks whose immediate dominator this is, in block order.</summary>
-    public IReadOnlyList<Block> DomChildren(Block b)
+    public Edges DomChildren(Block b)
     {
         BuildTree();
-        return _domChildren![b];
+        return new Edges(_children!, _childStart![b.Order], _childStart[b.Order + 1] - _childStart[b.Order]);
     }
 
     /// <summary>
     /// The dominance frontier: blocks with a predecessor this dominates
     /// that are not themselves strictly dominated by it. Where SSA puts
     /// phis. Cooper, Harvey and Kennedy's walk up the dominator tree from
-    /// each join block's predecessors.
+    /// each join block's predecessors. A set only for a block that has one.
     /// </summary>
     public IReadOnlySet<Block> Frontier(Block b)
     {
         if (_frontier is null)
         {
             BuildTree();
-            _frontier = new Dictionary<Block, HashSet<Block>>(ReferenceEqualityComparer.Instance);
-            foreach (Block x in Function.Blocks)
-            {
-                _frontier[x] = new HashSet<Block>(ReferenceEqualityComparer.Instance);
-            }
-            HashSet<Block> live = Reachable();
+            _frontier = new HashSet<Block>?[Function.Blocks.Count];
+            bool[] live = Live;
             foreach (Block join in Function.Blocks)
             {
-                if (Preds(join).Count < 2 || !live.Contains(join))
+                if (Preds(join).Count < 2 || !live[join.Order])
                 {
                     continue;
                 }
-                Block? stop = _idom![join];
+                Block? stop = _idom![join.Order];
                 foreach (Block p in Preds(join))
                 {
-                    if (!live.Contains(p))
+                    if (!live[p.Order])
                     {
                         continue;
                     }
                     Block? runner = p;
                     while (runner is not null && !ReferenceEquals(runner, stop))
                     {
-                        _frontier[runner].Add(join);
-                        runner = _idom[runner];
+                        (_frontier[runner.Order] ??= new HashSet<Block>(ReferenceEqualityComparer.Instance)).Add(join);
+                        runner = _idom[runner.Order];
                     }
                 }
             }
         }
-        return _frontier[b];
+        return _frontier[b.Order] ?? NoFrontier;
     }
 
     private void BuildTree()
@@ -444,43 +482,46 @@ public sealed class Cfg
             return;
         }
         _dom ??= ComputeDominators();
-        _idom = new Dictionary<Block, Block?>(ReferenceEqualityComparer.Instance);
-        _domChildren = new Dictionary<Block, List<Block>>(ReferenceEqualityComparer.Instance);
-        foreach (Block b in Function.Blocks)
+        int n = Function.Blocks.Count, words = Words;
+        _idom = new Block?[n];
+        bool[] live = Live;
+        int[] size = new int[n];
+        for (int k = 0; k < n; k++)
         {
-            _domChildren[b] = new List<Block>();
-        }
-        HashSet<Block> live = Reachable();
-        int[] size = new int[Function.Blocks.Count];
-        for (int k = 0; k < size.Length; k++)
-        {
-            foreach (ulong w in _dom[k])
+            for (int w = 0; w < words; w++)
             {
-                size[k] += System.Numerics.BitOperations.PopCount(w);
+                size[k] += System.Numerics.BitOperations.PopCount(_dom[k * words + w]);
             }
         }
+        int[] childCount = new int[n + 1];
         foreach (Block b in Function.Blocks)
         {
             Block? best = null;
-            if (live.Contains(b) && !IsRoot(b))
+            if (live[b.Order] && !IsRoot(b))
             {
                 int ib = b.Order;
                 foreach (Block d in Function.Blocks)
                 {
                     int id = d.Order;
-                    if (id != ib && (_dom[ib][id >> 6] & (1UL << (id & 63))) != 0
+                    if (id != ib && (_dom[ib * words + (id >> 6)] & (1UL << (id & 63))) != 0
                         && (best is null || size[id] > size[best.Order]))
                     {
                         best = d;
                     }
                 }
             }
-            _idom[b] = best;
-            if (best is not null)
-            {
-                _domChildren[best].Add(b);
-            }
+            _idom[b.Order] = best;
+            if (best is not null) childCount[best.Order]++;
         }
+        // The tree's children as the edges are kept: one array, a run a
+        // block, in block order.
+        _childStart = new int[n + 1];
+        for (int k = 0; k < n; k++) _childStart[k + 1] = _childStart[k] + childCount[k];
+        _children = _childStart[n] == 0 ? Array.Empty<Block>() : new Block[_childStart[n]];
+        int[] at = new int[n];
+        for (int k = 0; k < n; k++) at[k] = _childStart[k];
+        foreach (Block b in Function.Blocks)
+            if (_idom[b.Order] is { } parent) _children[at[parent.Order]++] = b;
     }
 }
 
