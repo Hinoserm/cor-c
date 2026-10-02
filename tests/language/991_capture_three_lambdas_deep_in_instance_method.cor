@@ -1,0 +1,52 @@
+// test: capture_three_lambdas_deep_in_instance_method
+// expect-exit: 0
+// expect-output:
+// 216
+//
+// An instance method's parameter read only by the innermost of three nested
+// lambdas: the middle closure must take it from the outer one's capture
+// fields, or the innermost has nothing to read it from ("'count' is not
+// declared", which stopped the compiler building itself).
+
+using System;
+using System.Collections.Generic;
+public sealed class Solver
+{
+    List<Action<long>> watchers = new();
+    List<Action<long, int>> cells = new();
+    long total;
+    void Watch(int node, Action<long> act) { watchers.Add(act); }
+    void EachCell(int o, Action<long, int> act) { cells.Add(act); }
+    void Edge(int a, int b, long c) { total += a + b + c; }
+    int Cell(int o, long at) => (int)(o + at);
+    public void MemCopy(int to, int from, long count)
+    {
+        if (to < 0 || from < 0) return;
+        HashSet<(long, long)> pairs = new();
+        Watch(from, src => Watch(to, dst =>
+        {
+            if (!pairs.Add((src, dst))) return;
+            int os = (int)src, od = (int)dst;
+            long ds = src, dd = dst;
+            bool exact = ds != 99 && dd != 99;
+            EachCell(os, (offset, cell) =>
+            {
+                if (!exact) { Edge(cell, Cell(od, 99), 0); return; }
+                if (offset >= ds && (count == 99 || offset - ds < count)) Edge(cell, Cell(od, dd + offset - ds), 0);
+            });
+            Edge(Cell(os, 99), Cell(od, 99), 0);
+        }));
+    }
+    public long Run()
+    {
+        MemCopy(1, 2, 10);
+        watchers[0](3);
+        watchers[1](4);
+        cells[0](5, 1);
+        return total;
+    }
+}
+public static class Program
+{
+    public static int Main() { Console.WriteLine(new Solver().Run()); return 0; }
+}

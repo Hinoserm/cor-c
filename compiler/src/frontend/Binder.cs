@@ -6141,7 +6141,15 @@ public sealed partial class Binder
         {
             foreach ((string name, Type held) in captured)
             {
-                if (Lookup(name) is LocalSym or ParamSym)
+                // A local or parameter of the enclosing code, or -- the
+                // enclosing lambda itself being checked inside an outer
+                // closure -- one of that closure's capture fields: three
+                // lambdas deep in an instance method, the middle one never
+                // took what only the innermost read, and the innermost found
+                // nothing to read it from.
+                if (Lookup(name) is LocalSym or ParamSym
+                    || _thisType is { } enclosing && enclosing.Name.StartsWith("Lambda$", StringComparison.Ordinal)
+                       && (enclosing.FindField(name) ?? enclosing.FindField("<" + name + ">")) is not null)
                 {
                     outerCaptured[name] = held;
                 }
@@ -14619,7 +14627,12 @@ public sealed partial class Binder
             // of them is a place that source could not compile here.
             // Numeric primitives use the same receiver-first library
             // representation as String (for example Int64.CompareTo).
-            if (Alias(target.ToString()) is { } primitiveName
+            // A REFERENCE'S `?` IS NOT ANOTHER TYPE: `s.Split` on a string? is
+            // String's Split, with the warning already given above that s may
+            // be null. Spelt with its `?`, the name matched nothing and a
+            // warning became an error.
+            Type unmarked = target.Nullable && target.IsReference ? target.AsNonNullable() : target;
+            if (Alias(unmarked.ToString()) is { } primitiveName
                 && _r.Types.TryGetValue(primitiveName, out TypeSymbol? str))
             {
                 List<MethodSymbol> onString = str.FindMethods(m.Name)

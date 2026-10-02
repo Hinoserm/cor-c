@@ -5638,6 +5638,7 @@ static class Gc
         long freeBytes = 0;
         long chunks = 0;
         long tails = 0;
+        long classTails = 0, classChunks = 0, pooledTails = 0, ownedTails = 0, plainTails = 0;
         long inPlaceBytes = 0;
         long inPlaceBig = 0;
         long listedBig = 0;
@@ -5650,6 +5651,13 @@ static class Gc
             long block = HeapChunks.First(chunk);
             long end = chunk == _current ? _bump : HeapChunks.End(chunk);
             tails = tails + HeapChunks.Limit(chunk) - end;
+            // Whose the tail is: a class page's (only its class can use it),
+            // a thread's buffer, the pool's, or the mixed heap's.
+            long tail = HeapChunks.Limit(chunk) - end;
+            if (HeapChunks.PageClass(chunk) != 0) { classTails = classTails + tail; classChunks = classChunks + 1; }
+            else if (HeapChunks.IsPooled(chunk)) pooledTails = pooledTails + tail;
+            else if (HeapChunks.Owner(chunk) != 0) ownedTails = ownedTails + tail;
+            else plainTails = plainTails + tail;
             long step = 0;
             while (block < end)
             {
@@ -5698,6 +5706,11 @@ static class Gc
         SayNumber("heap shape: free listed, 8 KB or more ", listedBig);
         SayNumber("heap shape: a listed block of 8 KB found by BinOf ", NextNonEmpty(BinOf(8192) + 1));
         SayNumber("heap shape: chunk tails unbumped ", tails);
+        SayNumber("heap shape:   of class pages ", classTails);
+        SayNumber("heap shape:   class pages ", classChunks);
+        SayNumber("heap shape:   of pooled chunks ", pooledTails);
+        SayNumber("heap shape:   of threads' chunks ", ownedTails);
+        SayNumber("heap shape:   of the mixed heap ", plainTails);
         for (long b = 0; b < 32; b++)
         {
             long n = Sys.Peek(counts + b * WordSize.Bytes);

@@ -54,7 +54,7 @@ public sealed class RegionPointsTo : IModulePass
     private long _held;
     // And past this much more heap than the compile had when the pass began,
     // whatever holds it: edges, watchers, pairs of copies.
-    private const long HeapBudget = 300L * 1024 * 1024;
+    private const long HeapBudget = 200L * 1024 * 1024;
     private long _heapAtStart;
 
     private Module _m = null!;
@@ -120,7 +120,15 @@ public sealed class RegionPointsTo : IModulePass
         _heapAtStart = GC.GetTotalMemory(false);
         NewObject(null, null, -1, null, 0);          // Global
 
-        if (_byName.TryGetValue(m.Entry, out Function? entry)) CopyOf(entry, -1);
+        try
+        {
+            if (_byName.TryGetValue(m.Entry, out Function? entry)) CopyOf(entry, -1);
+        }
+        catch (OverBudget)
+        {
+            if (Report is not null) Console.Error.WriteLine("regions: gave up while building the constraints");
+            return;
+        }
         bool rooted = false;
         while (true)
         {
@@ -437,7 +445,11 @@ public sealed class RegionPointsTo : IModulePass
     private void Add(int node, long loc)
     {
         if (!_pts[node].Add(loc)) return;
-        _held++;
+        // Checked here, not only between steps: one step's watchers can add
+        // without end (a copy between two growing sets), and the compile died
+        // inside it before the loop looked again.
+        if ((++_held & 4095) == 0 && (_held > HeldBudget || GC.GetTotalMemory(false) - _heapAtStart > HeapBudget))
+            throw new OverBudget();
         List<long>? delta = _delta[node];
         if (delta is null) { _delta[node] = delta = new(); _work.Enqueue(node); }
         delta.Add(loc);
@@ -802,12 +814,21 @@ public sealed class RegionPointsTo : IModulePass
 
     // ---- solving ------------------------------------------------------------
 
+    /// <summary>The analysis has outgrown its budget: it stops, and nothing is rewritten.</summary>
+    private sealed class OverBudget : Exception { }
+
     private bool Solve()
+    {
+        try { return SolveSteps(); }
+        catch (OverBudget) { return false; }
+    }
+
+    private bool SolveSteps()
     {
         while (_work.TryDequeue(out int node))
         {
             if (_pts.Count > NodeBudget || _held > HeldBudget) return false;
-            if ((_steps & 1023) == 0 && GC.GetTotalMemory(false) - _heapAtStart > HeapBudget) return false;
+            if ((_steps & 63) == 0 && GC.GetTotalMemory(false) - _heapAtStart > HeapBudget) return false;
             if (++_steps % 500_000 == 0)
                 Console.Error.WriteLine($"regions: step {_steps}: {_pts.Count} nodes, {_copies.Count} copies, {_objects.Count} objects, {_work.Count} waiting");
             List<long> delta = _delta[node]!;

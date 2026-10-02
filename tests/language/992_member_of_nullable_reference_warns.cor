@@ -1,0 +1,23 @@
+// test: member_of_nullable_reference_warns
+// expect-exit: 0
+// expect-compile-warning: warning CS8602
+// expect-output:
+// 3
+//
+// A member of a string? is String's member, with C#'s warning that it may be
+// null -- not an error that string? has no such member.
+
+using System;
+public sealed class Holder
+{
+    public string? Report { get; init; }
+    public int Parts() => Report.Split(',').Length;
+}
+public static class Program
+{
+    public static int Main()
+    {
+        Console.WriteLine(new Holder { Report = "a,b,c" }.Parts());
+        return 0;
+    }
+}
