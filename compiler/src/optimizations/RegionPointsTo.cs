@@ -36,9 +36,9 @@ public sealed class RegionPointsTo : IModulePass
     /// </summary>
     public string? Report { get; init; }
 
-    public const string Enter = "m_Runtime_RegionEnter_1_V$NInt";
-    public const string Leave = "m_Runtime_RegionLeave_1_V$NInt";
-    public const string InRegion = "m_Runtime_AllocRegion_3_V$NInt_V$NInt_V$NInt";
+    public const string Enter = Corsac.Lang.Lto.RuntimeAbi.RegionEnter;
+    public const string Leave = Corsac.Lang.Lto.RuntimeAbi.RegionLeave;
+    public const string InRegion = Corsac.Lang.Lto.RuntimeAbi.AllocRegion;
     public const string Near = "m_Runtime_AllocNear_4_V$NInt_V$NInt_V$NInt_V$NInt";
     private const long LeafKind = 0x4C454146, ObjectKind = 0x4F424A54;
 
@@ -104,6 +104,13 @@ public sealed class RegionPointsTo : IModulePass
 
     public void Run(Module m)
     {
+        // A UNIT THE LINK REGENERATES with the whole program's answer
+        // (Lto.RegionSolver): nothing to solve here, only to apply.
+        if (m.RegionFacts is { } facts)
+        {
+            ApplyFacts(m, facts);
+            return;
+        }
         if (m.Entry is null) return;
         if (new[] { Enter, Leave, InRegion, Near }.Where(h => !m.Functions.Any(f => f.Name == h)).ToList() is { Count: > 0 } missing)
         {
@@ -178,6 +185,69 @@ public sealed class RegionPointsTo : IModulePass
                         if (o is SymOperand { Name: var n }) named.Add(n);
         foreach (DataItem d in m.Data) foreach (DataReloc r in d.Relocs) named.Add(r.Symbol);
         foreach (string n in named) if (_byName.TryGetValue(n, out Function? f)) yield return f;
+    }
+
+    // ---- sites, as a separately compiled unit names them --------------------
+
+    /// <summary>An allocation site: a call of any allocator, collecting or manual.</summary>
+    internal static bool IsSiteCall(Instr i) =>
+        i.Op == Opcode.Call && (Opt.Escape.IsAllocator(i.Callee) || i.Callee == Opt.Escape.ManualAllocator || i.Callee == Opt.Escape.ManualObjectAllocator);
+
+    /// <summary>Whether a region may take a site's objects: the collecting allocators' calls only.</summary>
+    internal static bool IsRewritable(string? callee) =>
+        callee is Opt.Escape.Allocator or Opt.Escape.LeafAllocator or Opt.Escape.ObjectAllocator;
+
+    /// <summary>
+    /// THE SITES THE LINK CHOSE, marked on the IR it regenerates the unit
+    /// from, before the late passes: a site is its function and its ordinal
+    /// among the function's allocator calls, numbered here as the unit's
+    /// compile numbered them for its RegionHints (RegionSummary), over the
+    /// same IR. The mark rides on every copy the inliner makes of the call.
+    /// </summary>
+    public static int MarkSites(Module m, Corsac.Lang.Lto.RegionFacts facts)
+    {
+        int marked = 0;
+        if (facts.Sites.Count == 0) return 0;
+        foreach (Function f in m.Functions)
+        {
+            int ordinal = 0;
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (IsSiteCall(i))
+                    {
+                        if (facts.Sites.Contains((f.Name, ordinal))) { i.RegionSite = true; marked++; }
+                        ordinal++;
+                    }
+        }
+        return marked;
+    }
+
+    /// <summary>
+    /// The link's answer applied: every marked site still a collecting
+    /// allocator's call made in the innermost open region, and every
+    /// boundary named made one. Whatever the late passes did to a site --
+    /// placed it in a frame, took it apart -- it is no longer a call, and
+    /// nothing is made of it.
+    /// </summary>
+    private static void ApplyFacts(Module m, Corsac.Lang.Lto.RegionFacts facts)
+    {
+        int sites = 0, opened = 0;
+        foreach (Function f in m.Functions)
+            foreach (Block b in f.Blocks)
+                for (int k = 0; k < b.Instrs.Count; k++)
+                {
+                    Instr i = b.Instrs[k];
+                    if (!i.RegionSite || i.Op != Opcode.Call || !IsRewritable(i.Callee)) continue;
+                    VReg frame = f.NewReg(IrTypes.Word, "allocframe");
+                    b.Instrs.Insert(k, new Instr { Op = Opcode.FramePointer, Dest = frame, Line = i.Line });
+                    k++;
+                    b.Instrs[k] = Retarget(f, i, InRegion, frame);
+                    sites++;
+                }
+        foreach (Function f in m.Functions)
+            if (facts.Boundaries.Contains(f.Name)) { Open(f); opened++; }
+        if (sites > 0 || opened > 0)
+            Console.Error.WriteLine($"regions: {opened} boundaries, {sites} sites in the innermost region, from the link");
     }
 
     // ---- applying -------------------------------------------------------------
@@ -775,7 +845,7 @@ public sealed class RegionPointsTo : IModulePass
     }
 
     // The collector's notes and the runtime's frees keep no pointer.
-    private static bool Harmless(string callee) =>
+    internal static bool Harmless(string callee) =>
         Opt.Escape.IsCollectorNote(callee) || callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive
         || callee.StartsWith("m_Runtime_Free", StringComparison.Ordinal)
         || callee.StartsWith("m_Runtime_Card", StringComparison.Ordinal)

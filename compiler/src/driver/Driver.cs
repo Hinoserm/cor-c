@@ -115,7 +115,7 @@ public static class Driver
     private static int LinkUsage()
     {
         Console.WriteLine("corc link <file.o> ... -o <output> [--entry symbol] [--flat] "
-            + "[--base address] [--paddr address] [--shared] [--cpu name] [--no-lto]");
+            + "[--base address] [--paddr address] [--shared] [--cpu name] [--no-lto] [--region-report names]");
         return 0;
     }
 
@@ -170,7 +170,8 @@ public static class Driver
               --opt-size         use experimental size-oriented inlining budgets
               --region-report <names> say, for the boundaries whose names hold one of
                                  these (comma-separated), which allocations their return
-                                 is proved to leave dead
+                                 is proved to leave dead; corc link takes it too, for
+                                 the regions it finds over every unit of a closed image
               --experimental-batch enable the staged large-batch optimizer checkpoint
               --batch-without <pass> omit one experimental pass for regression isolation
               --experimental-ssa run verified SSA optimisations after the default pipeline
@@ -651,10 +652,18 @@ public static class Driver
             // THE IR THE LINK GETS is the module as the late passes find it,
             // with what they read of this compile, so a link can run them
             // again knowing the whole program (UnitBackend).
-            Action<Module>? beforeLate = !module.LeavesLinkHints ? null : m => linkRecords = Corsac.Lang.Metadata.IrUnitCodec.Snapshot(m,
-                !args.Contains("--no-stackmaps"),
-                new(true, m.NoCollector, m.CallsCollector, m.LeavesLinkHints, args.Contains("--opt-size"), args.Contains("--experimental-batch"),
-                    m.RuntimeHelpers.ToArray()));
+            // And what its functions do with pointers, from the same IR, for
+            // the link to find regions over every unit (RegionSummary).
+            Action<Module>? beforeLate = !module.LeavesLinkHints ? null : m =>
+            {
+                linkRecords = Corsac.Lang.Metadata.IrUnitCodec.Snapshot(m,
+                    !args.Contains("--no-stackmaps"),
+                    new(true, m.NoCollector, m.CallsCollector, m.LeavesLinkHints, args.Contains("--opt-size"), args.Contains("--experimental-batch"),
+                        m.RuntimeHelpers.ToArray()));
+                // Not without an operating system: no arena there (baremetal.cor),
+                // and a unit with no summary keeps the link from finding regions.
+                m.RegionHints = freestanding ? null : Corsac.Lang.Opt.RegionSummary.Of(m);
+            };
             Optimise(module, Value(args, "--trace-opt"), args.Contains("--experimental-ssa"), args.Contains("--opt-size"), args.Contains("--experimental-batch"), Value(args, "--batch-without"), workers, beforeLate, Value(args, "--region-report"), regions: !freestanding);
             Phase("optimise");
             if (args.Contains("--dump-opt"))
@@ -861,6 +870,7 @@ public static class Driver
                 // The lifetime hints first: the IR archive's integrity hash
                 // covers every other section, these included.
                 if (module.LeavesLinkHints && module.LifetimeHints is { IsEmpty: false } hints) hints.Attach(obj);
+                if (linkRecords is not null && module.RegionHints is { } regions) regions.Attach(obj);
                 if (linkRecords is not null) Corsac.Lang.Lto.IrArchive.Attach(obj, linkRecords);
                 else IrUnitCodec.Attach(obj, module, x86Backend.StackMaps);
             }

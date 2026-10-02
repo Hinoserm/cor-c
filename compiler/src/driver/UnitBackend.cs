@@ -69,6 +69,13 @@ public sealed class UnitBackend : IUnitBackend
             // The whole program's answers the late passes read, for a closed image.
             if (facts?.ForeignCatchable is string[] catchable) module.ForeignCatchable = new(catchable, StringComparer.Ordinal);
             module.OwnedFields = facts?.OwnedFields;
+            // The regions the whole program found: sites marked on this IR,
+            // which the compile numbered the same way, before any pass moves them.
+            if (facts?.Regions is { IsEmpty: false } regions)
+            {
+                module.RegionFacts = regions;
+                RegionPointsTo.MarkSites(module, regions);
+            }
             foreach (Function function in module.Functions)
                 if (visibility.TryGetValue(function.Name, out bool exported) && exported != function.Exported)
                     throw new InvalidDataException("Archived IR identity disagrees with native symbol " + function.Name);

@@ -29,6 +29,7 @@ public static class ObjectLinkCommand
         List<string> paths = new();
         List<string> sharedLibraries = new();
         string? runpath = null;
+        string? regionReport = null;
         List<string> cpuArguments = new();
         for (int i = 0; i < args.Length; i++)
         {
@@ -37,6 +38,15 @@ public static class ObjectLinkCommand
             {
                 if (++i == args.Length) return Fail("missing value for " + arg);
                 if (arg == "--runpath") runpath = args[i]; else sharedLibraries.Add(args[i]);
+                continue;
+            }
+            // The regions the link finds over every unit (RegionSolver): for
+            // the boundaries whose names hold one of these, what is local and
+            // what outlives them.
+            if (arg == "--region-report")
+            {
+                if (++i == args.Length) return Fail("missing value for " + arg);
+                regionReport = args[i];
                 continue;
             }
             if (arg is "--cpu" or "--tune" or "--fpu")
@@ -108,7 +118,7 @@ public static class ObjectLinkCommand
         if (selected is not null) X86CodeGenerationContract.ValidateTarget(inputs, selected);
         ManagedLayoutContract.Validate(inputs);
         int regenerated = IrLinkOptimizer.Run(inputs, () => backend ?? new ProcessUnitBackend(backendPath), lto, importBytes,
-            closedImageEntry: flat || closed || physicalAddress is not null ? entry : null, parallelBackends: backend is null);
+            closedImageEntry: flat || closed || physicalAddress is not null ? entry : null, parallelBackends: backend is null, regionReport: regionReport);
         int folded = LinkTimeOptimizer.Run(inputs, lto);
         if (selected is not null) X86CodeGenerationContract.ValidateTarget(inputs, selected);
         // Long mode is read before the notes that say so go.

@@ -1,0 +1,47 @@
+// test: a region boundary in one unit over allocations made in another
+// units: tests/language/support/970_region_units.cor
+// expect-exit: 0
+// expect-output:
+// 9000 22000
+//
+// Count lexes a line with the other unit's Lexer and hands back only
+// numbers: the tokens, their list and the words they hold die by its return,
+// whichever unit made them, and the link -- which alone sees both units --
+// may make them in a region Count opens. Collections run while regions are
+// open and between them; every count must still be right.
+
+using RegionUnits;
+
+static class Program
+{
+    static int Count(string line, out int letters)
+    {
+        List<Token> tokens = Lexer.Lex(line);
+        int numbers = 0;
+        letters = 0;
+        foreach (Token t in tokens)
+        {
+            if (t.Kind == 1) numbers++;
+            letters += t.Text.Length;
+        }
+        if (tokens.Count == 7) GC.Collect();
+        return numbers;
+    }
+
+    static int Main()
+    {
+        string[] lines = { "let x 1 in 2 3", "a 4 b 5 c 6 d", "7 8 9 ten" };
+        int numbers = 0, letters = 0;
+        for (int k = 0; k < 1000; k++)
+        {
+            foreach (string line in lines)
+            {
+                numbers += Count(line, out int n);
+                letters += n;
+            }
+            if (k % 250 == 0) GC.Collect();
+        }
+        System.Console.WriteLine(numbers + " " + letters);
+        return 0;
+    }
+}

@@ -27,4 +27,8 @@ public static class RuntimeAbi
     public const string WriteBarrierValues = "m_Runtime_WriteBarrierValues_2_" + Word + "_" + Word;
     public const string CardMark = "m_Runtime_CardMark_1_" + Word;
     public const string CardMarkObject = "m_Runtime_CardMarkObject_1_" + Word;
+    /// <summary>Regions (RegionPointsTo, RegionSolver): opened on a boundary's entry, given back on its return, allocated in.</summary>
+    public const string RegionEnter = "m_Runtime_RegionEnter_1_" + Word;
+    public const string RegionLeave = "m_Runtime_RegionLeave_1_" + Word;
+    public const string AllocRegion = "m_Runtime_AllocRegion_3_" + Word + "_" + Word + "_" + Word;
 }

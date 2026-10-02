@@ -94,6 +94,16 @@ public sealed class Module
     public Corsac.Lang.Lto.OwnedFieldFacts? OwnedFields { get; set; }
 
     /// <summary>
+    /// The link's region answer, for a unit of a closed image it regenerates
+    /// (Lto.RegionSolver): the boundaries to open and the sites already
+    /// marked (Instr.RegionSite) to make in a region. Null: none.
+    /// </summary>
+    public Corsac.Lang.Lto.RegionFacts? RegionFacts { get; set; }
+
+    /// <summary>The unit's pointer constraints, for the link to solve (RegionSummary); written beside its IR.</summary>
+    public Corsac.Lang.Lto.RegionHints? RegionHints { get; set; }
+
+    /// <summary>
     /// Call sites no inliner may fold away: the allocations the link may yet
     /// place or free (Escape's pending hints), which it must still be able
     /// to tell from any other call when it reads this module's IR back.

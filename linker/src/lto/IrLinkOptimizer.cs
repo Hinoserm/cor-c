@@ -7,7 +7,8 @@ namespace Corsac.Lang.Lto;
 public static class IrLinkOptimizer
 {
     public static int Run(List<(string Name, ObjectFile Object)> inputs, Func<IUnitBackend> backend,
-        bool enabled = true, int importBytes = 1024 * 1024, int bodyLimit = 32, string? closedImageEntry = null, bool parallelBackends = false)
+        bool enabled = true, int importBytes = 1024 * 1024, int bodyLimit = 32, string? closedImageEntry = null, bool parallelBackends = false,
+        string? regionReport = null)
     {
         if (importBytes < 0 || bodyLimit < 0) throw new ArgumentOutOfRangeException(nameof(importBytes));
         TargetContract.Validate(inputs); ManagedLayoutContract.Validate(inputs);
@@ -15,6 +16,7 @@ public static class IrLinkOptimizer
         Dictionary<ObjectFile, IrArchive> archives = new();
         Dictionary<ObjectFile, LifetimeHints> hints = new();
         List<LifetimeHints> hintOrder = new();
+        Dictionary<ObjectFile, RegionHints> regionHints = new();
         Dictionary<string, ObjectFile> owners = new(StringComparer.Ordinal);
         // IN LINK ORDER, not by name: an object's name is a digest of its
         // source's full path, and the same tree checked out elsewhere was
@@ -26,6 +28,7 @@ public static class IrLinkOptimizer
             // Hints without the IR they would recompile are nothing to act on.
             if (archive is not null && LifetimeHints.Read(input.Object) is LifetimeHints unit)
             { hints.Add(input.Object, unit); hintOrder.Add(unit); }
+            if (archive is not null && RegionHints.Read(input.Object) is RegionHints regions) regionHints.Add(input.Object, regions);
             foreach (Symbol symbol in input.Object.Symbols.Where(symbol => symbol.Global && symbol.IsDefined))
                 owners.TryAdd(symbol.Name, input.Object);
         }
@@ -67,6 +70,9 @@ public static class IrLinkOptimizer
             Console.Error.WriteLine("LTO owned fields: " + ownedFields.Fields.Count + " of "
                 + hintOrder.SelectMany(unit => unit.Owned!.Fields.Keys).Distinct(StringComparer.Ordinal).Count()
                 + (Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 0 } ? ": " + string.Join(" ", ownedFields.Fields.Keys.Order(StringComparer.Ordinal)) : ""));
+        bool regionsPossible = lifetimes is not null && closedImageEntry is not null && archives.Keys.All(hints.ContainsKey)
+            && archives.Keys.All(regionHints.ContainsKey)
+            && new[] { RuntimeAbi.RegionEnter, RuntimeAbi.RegionLeave, RuntimeAbi.AllocRegion }.All(owners.ContainsKey);
         // A closed image keeps only what is reached, and reaching is judged
         // on the IR as the units left it. Two kinds of call are made later:
         // those a regenerated unit gains when the lifetime rules run again
@@ -76,6 +82,8 @@ public static class IrLinkOptimizer
         SortedSet<string> linkRoots = new(StringComparer.Ordinal);
         if (lifetimes is not null) foreach (LifetimeHints unit in hints.Values) linkRoots.UnionWith(unit.Helpers);
         if (hints.Values.Any(unit => unit.FieldSites.Count > 0)) { linkRoots.Add(LifetimeHints.FieldFreer); linkRoots.Add(LifetimeHints.FieldKeeper); }
+        // And what regions call, wherever a regenerated unit may open one.
+        if (regionsPossible) { linkRoots.Add(RuntimeAbi.RegionEnter); linkRoots.Add(RuntimeAbi.RegionLeave); linkRoots.Add(RuntimeAbi.AllocRegion); }
         // An iterator's or an async method's card mark is a call AsyncTransform
         // writes after the IR was archived: the archive never shows it, and a
         // closed image without lifetime hints dropped the helper and failed
@@ -83,6 +91,33 @@ public static class IrLinkOptimizer
         linkRoots.Add(RuntimeAbi.CardMarkObject);
         Dictionary<ObjectFile, HashSet<string>>? reachability = enabled && closedImageEntry is not null
             ? IrReachability.Find(inputs, archives, owners, closedImageEntry, linkRoots) : null;
+        // REGIONS OVER EVERY UNIT (RegionSolver): the boundaries to open and
+        // the allocation sites to make in the innermost open region, for a
+        // closed image whose every unit with IR said what its functions do
+        // with pointers, and whose runtime has regions. Every unit given an
+        // answer is regenerated with it; giving up answers nothing.
+        // Only what the image keeps is analysed: a function nothing reaches
+        // calls nothing, and what it would hand its callees is nobody's.
+        Dictionary<ObjectFile, RegionFacts>? regionFacts = null;
+        if (regionsPossible)
+        {
+            List<ObjectFile> regionOrder = inputs.Select(input => input.Object).Where(regionHints.ContainsKey).ToList();
+            List<RegionHints> regionUnits = regionOrder.Select(obj => regionHints[obj]).ToList();
+            Dictionary<string, string[]> regionVirtuals = VirtualTargets.Resolve(inputs, RegionSolver.VirtualNames(regionUnits));
+            // What code outside the IR names: it may call any of it, with anything.
+            SortedSet<string> foreign = new(StringComparer.Ordinal);
+            foreach (var input in inputs)
+                if (!archives.ContainsKey(input.Object))
+                    foreach (Section section in input.Object.Sections) foreach (Relocation reloc in section.Relocs) foreign.Add(reloc.Symbol);
+            RegionFacts?[]? solved = RegionSolver.Solve(regionUnits, regionVirtuals, closedImageEntry!, foreign, regionReport,
+                (u, name) => reachability?.GetValueOrDefault(regionOrder[u]) is not { } kept || kept.Contains("F:" + name));
+            if (solved is not null)
+            {
+                regionFacts = new();
+                for (int u = 0; u < regionOrder.Count; u++)
+                    if (solved[u] is { IsEmpty: false } unitFacts) regionFacts[regionOrder[u]] = unitFacts;
+            }
+        }
         int lifetimeUnits = 0;
         List<(int Index, List<(string Symbol, IrArchive Archive, IrArchiveEntry Body)> Imports, HashSet<string>? Retained)> plans = new();
         if (enabled)
@@ -98,7 +133,7 @@ public static class IrLinkOptimizer
                 // Every unit of a closed image the whole program has answers for
                 // gains by them (its catches), whatever its pending conditions.
                 bool gains = lifetimes is not null && hints.TryGetValue(obj, out LifetimeHints? unitHints)
-                    && (programFacts || ownedFields is not null || unitHints.Pending.Any(lifetimes.Holds));
+                    && (programFacts || ownedFields is not null || regionFacts is not null && regionFacts.ContainsKey(obj) || unitHints.Pending.Any(lifetimes.Holds));
                 if (gains) lifetimeUnits++;
                 List<(string Symbol, IrArchive Archive, IrArchiveEntry Body)> imports = new(); int used = 0;
                 // The runtime's frees are calls such a unit is about to make.
@@ -129,7 +164,11 @@ public static class IrLinkOptimizer
                     .Concat(plan.Imports.SelectMany(import => import.Body.Calls))
                     .Concat(own.Named().Select(named => named.Callee).Where(virtuals.ContainsKey)).Distinct(StringComparer.Ordinal))
                 : null;
-            if (facts is not null) { facts.ForeignCatchable = catchable; facts.OwnedFields = ownedFields; }
+            if (facts is not null)
+            {
+                facts.ForeignCatchable = catchable; facts.OwnedFields = ownedFields;
+                facts.Regions = regionFacts?.GetValueOrDefault(original);
+            }
             planFacts[k] = facts;
         }
         ObjectFile?[] regenerated = new ObjectFile?[plans.Count];
@@ -199,7 +238,8 @@ public static class IrLinkOptimizer
             if (LifetimeHints.Read(replacement.Object) is LifetimeHints regeneratedSites) siteOrder.Add(regeneratedSites);
         (int sites, int sitesFreed) = DefineFieldSites(inputs, siteOrder, lifetimes);
         foreach (var input in inputs)
-            input.Object.Sections.RemoveAll(section => section.Name == IrArchive.SectionName || section.Name == LifetimeHints.SectionName);
+            input.Object.Sections.RemoveAll(section => section.Name == IrArchive.SectionName || section.Name == LifetimeHints.SectionName
+                || section.Name == RegionHints.SectionName);
         if (lifetimes is not null || sites > 0)
             Console.Error.WriteLine("LTO lifetimes: units with hints=" + hints.Count + ", units gaining=" + lifetimeUnits
                 + ", field sites=" + sites + " freed=" + sitesFreed);

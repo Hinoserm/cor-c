@@ -1,0 +1,29 @@
+// The other unit of 970_region_boundary_across_units: a lexer making a token
+// for every word, a list of them, and the substrings they hold.
+namespace RegionUnits;
+
+public sealed class Token
+{
+    public readonly int Kind;
+    public readonly string Text;
+
+    public Token(int kind, string text) { Kind = kind; Text = text; }
+}
+
+public static class Lexer
+{
+    public static List<Token> Lex(string source)
+    {
+        List<Token> tokens = new List<Token>();
+        int at = 0;
+        while (at < source.Length)
+        {
+            if (source[at] == ' ') { at++; continue; }
+            int start = at;
+            while (at < source.Length && source[at] != ' ') at++;
+            string word = source.Substring(start, at - start);
+            tokens.Add(new Token(char.IsDigit(word[0]) ? 1 : 2, word));
+        }
+        return tokens;
+    }
+}

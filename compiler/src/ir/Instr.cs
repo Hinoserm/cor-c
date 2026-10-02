@@ -35,6 +35,13 @@ public sealed class Instr
     public string? Field { get; set; }
 
     /// <summary>
+    /// An allocator call the link chose to make in the innermost open region
+    /// (Lto.RegionSolver; RegionPointsTo.MarkSites): the late passes' copies
+    /// of it are chosen too.
+    /// </summary>
+    public bool RegionSite { get; set; }
+
+    /// <summary>
     /// What a call's Field says when its result is a struct its callee made
     /// for it: a struct value is returned as a block nobody else holds (every
     /// `return` copies what it did not just make), whoever the callee is, so

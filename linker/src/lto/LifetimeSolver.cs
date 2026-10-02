@@ -27,6 +27,11 @@ public sealed class LifetimeFacts
     /// what they hold (OwnedFieldSolver). Null: none may be taken as owned.
     /// </summary>
     public OwnedFieldFacts? OwnedFields { get; set; }
+    /// <summary>
+    /// For a unit of a closed image: the regions the whole program found
+    /// (RegionSolver) -- boundaries to open, sites to make in one. Null: none.
+    /// </summary>
+    public RegionFacts? Regions { get; set; }
 }
 
 /// <summary>What the whole program does to one object's fields: the owned field rules' summary, solved.</summary>
