@@ -1,0 +1,52 @@
+// test: reference_marks_share_specialisation
+// expect-exit: 0
+// expect-output:
+// 1 1 5
+// 2 True
+// a True 1
+// 7
+//
+// A reference's `?` is the use's, not a type of its own: List<(int, Box?)>
+// and List<(int, Box)> are one specialisation, as List<Box?> and List<Box>
+// are, and each use still reads and passes what it wrote -- a Box? out of
+// the first, a Box out of the second, a null into a List<Box?>.Add and into
+// a KeyValuePair<string, Box?>'s constructor.
+
+using System;
+using System.Linq;
+using System.Collections.Generic;
+
+public sealed class Box { public int V; public Box(int v) { V = v; } }
+
+public static class Program
+{
+    static int Held(List<(int Key, Box? Was)> undo)
+    {
+        int n = 0;
+        foreach (var e in undo) if (e.Was is not null) n++;
+        return n;
+    }
+
+    public static int Main()
+    {
+        List<(int Key, Box? Was)> maybe = new() { (1, null), (2, new Box(2)) };
+        List<(int Dest, Box Src)> moves = new() { (1, new Box(1)), (2, new Box(5)) };
+        List<(int Dest, Box Src)> kept = moves.Where(m => m.Src.V > 1).ToList();
+        Console.WriteLine(Held(maybe) + " " + kept.Count + " " + kept[0].Src.V);
+
+        (int, Box?) last = maybe[maybe.Count - 1];
+        Console.WriteLine(last.Item2!.V + " " + (maybe[0].Item2 is null));
+
+        Box? none = null;
+        KeyValuePair<string, Box?> pair = new KeyValuePair<string, Box?>("a", none);
+        List<Box?> boxes = new List<Box?>();
+        boxes.Add(none);
+        Console.WriteLine(pair.Key + " " + (pair.Value is null) + " " + boxes.Count);
+
+        Dictionary<string, Box?> named = new() { ["x"] = null, ["y"] = new Box(7) };
+        int sum = 0;
+        foreach (KeyValuePair<string, Box?> one in named) sum += one.Value?.V ?? 0;
+        Console.WriteLine(sum);
+        return 0;
+    }
+}

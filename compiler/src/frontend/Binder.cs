@@ -3657,6 +3657,7 @@ public sealed partial class Binder
                 Prim = Prim.Void,
                 Symbol = TupleType(elements, r.TupleNames),
                 Names = r.TupleNames?.ToArray(),
+                UseArgs = elements,
             };
         }
 
@@ -8152,6 +8153,18 @@ public sealed partial class Binder
     /// true. Nothing in C# source that this compiler has to read does that, and
     /// giving one out here would mean claiming a bit after they were numbered.
     /// </summary>
+    /// <summary>A reference without its `?`; anything else as it is.</summary>
+    private static Type Unmarked(Type e) => e.Nullable && e.IsReference && !e.IsPointer ? e.AsNonNullable() : e;
+
+    /// <summary>
+    /// Item <paramref name="which"/> of a tuple as THIS use wrote it: `(int,
+    /// Box?)` reads a Box? where the shared shape stores a Box.
+    /// </summary>
+    private static Type TupleItem(Type tuple, TypeSymbol shape, int which)
+        => tuple.UseArgs is { } items && items.Count == shape.Fields.Count(f => !f.Static) && which < items.Count
+            && Unmarked(items[which]).Equals(shape.Fields[which].Type)
+            ? items[which] : shape.Fields[which].Type;
+
     private TypeSymbol TupleType(IReadOnlyList<Type> elements, IReadOnlyList<string>? names = null)
     {
         // SPELLED THE WAY THE MONOMORPHISER SPELLS IT. A specialisation's name
@@ -8179,7 +8192,7 @@ public sealed partial class Binder
         {
             TypeSymbol transient = new() { Name = name, Kind = TypeKind.Struct, Structural = true };
             for (int i = 0; i < elements.Count; i++)
-                transient.Fields.Add(new FieldSymbol { Name = "Item" + (i + 1), Type = elements[i], Owner = transient });
+                transient.Fields.Add(new FieldSymbol { Name = "Item" + (i + 1), Type = Unmarked(elements[i]), Owner = transient });
             return transient;
         }
 
@@ -8192,7 +8205,9 @@ public sealed partial class Binder
 
         for (int i = 0; i < elements.Count; i++)
         {
-            tuple.Fields.Add(new FieldSymbol { Name = "Item" + (i + 1), Type = elements[i], Owner = tuple });
+            // ITS ITEMS AS STORAGE HAS THEM: a reference's `?` is the use's
+            // (Type.UseArgs), and one shape serves `(int, Box?)` and `(int, Box)`.
+            tuple.Fields.Add(new FieldSymbol { Name = "Item" + (i + 1), Type = Unmarked(elements[i]), Owner = tuple });
         }
 
         // VALUETUPLE'S OWN MEMBERS, written by the code generator from the
@@ -9367,7 +9382,7 @@ public sealed partial class Binder
             && shape.Fields.Any(f => !f.Static && bound.Keys.Any(k => Mentions(f.Type, k))))
         {
             List<Type> elements = shape.Fields.Where(f => !f.Static).Select(f => Close(f.Type, bound)).ToList();
-            Type remade = new() { Prim = Prim.Void, Symbol = TupleType(elements, shape.TupleNames) };
+            Type remade = new() { Prim = Prim.Void, Symbol = TupleType(elements, shape.TupleNames), UseArgs = elements };
             return made.Nullable ? remade.AsNullable() : remade;
         }
         if (bound is not null && made.IsArray && made.Element is Type inner && Close(inner, bound) is { } closedInner
@@ -9411,7 +9426,7 @@ public sealed partial class Binder
         // KEEPING ITS `?`: `IComparer<K>? comparer` closed over string is an
         // IComparer$string that may be null, and dropping the annotation had
         // every null a caller passed for it refused.
-        if (_r.Types.TryGetValue(Monomorphiser.MangledName(Bare(template.Key), args), out TypeSymbol? real))
+        if (_r.Types.TryGetValue(Monomorphiser.MangledName(Bare(template.Key), SpecialisationKeys(args, closed)), out TypeSymbol? real))
         {
             Type specialised = new()
             {
@@ -9786,9 +9801,9 @@ public sealed partial class Binder
                     : new List<string>(tupleNames),
             };
 
-            foreach (FieldSymbol field in tuple.Fields)
+            for (int which = 0; which < tuple.Fields.Count; which++)
             {
-                if (RefOf(field.Type) is not TypeRef element)
+                if (RefOf(TupleItem(bare, tuple, which)) is not TypeRef element)
                 {
                     return null;
                 }
@@ -10414,7 +10429,7 @@ public sealed partial class Binder
                     made.Inits.Add(one);
                 }
 
-                Type shaped = new() { Prim = Prim.Void, Symbol = shape, Names = tup.Names.ToArray() };
+                Type shaped = new() { Prim = Prim.Void, Symbol = shape, Names = tup.Names.ToArray(), UseArgs = elements };
 
                 // The construction is a node the code generator will ask the
                 // type of, and nothing else ever checks it -- so it is answered
@@ -11257,7 +11272,7 @@ public sealed partial class Binder
 
                 if (type.Symbol is TypeSymbol constructed)
                 {
-                    if (ResolveConstructor(nw, constructed, constructorArgs) is MethodSymbol ctor)
+                    if (ResolveConstructor(nw, constructed, constructorArgs, made: type) is MethodSymbol ctor)
                     {
                         _r.NewConstructors[nw] = ctor;
                     }
@@ -14368,7 +14383,7 @@ public sealed partial class Binder
             {
                 RequireNonNull(target, m.Target, "read");
                 _r.Resolved[m] = new FieldSym(shaped.Fields[which]);
-                return shaped.Fields[which].Type;
+                return TupleItem(target, shaped, which);
             }
         }
 
@@ -14674,6 +14689,9 @@ public sealed partial class Binder
             FieldSym read = new(field);
             _r.Resolved[m] = read;
             Type fieldType = Close(ContextualFieldResult(target, field), received);
+            // `t.Item2` of an `(int, Box?)` is the use's Box?.
+            if (owner.Structural && owner.Fields.IndexOf(field) is int item and >= 0 && !field.Static)
+                fieldType = TupleItem(target, owner, item);
             if (!fieldType.IsNullableValue
                 && ((Path(m) is string path && _notNullPaths.Contains(path)) || _notNull.Contains(read)))
             {
@@ -14762,7 +14780,7 @@ public sealed partial class Binder
     /// with an error, when none accepts them; <paramref name="except"/> is a
     /// constructor that may not be chosen, the one a `: this(...)` is on.
     /// </summary>
-    private MethodSymbol? ResolveConstructor(NewExpr nw, TypeSymbol constructed, List<Type> constructorArgs, MethodDecl? except = null)
+    private MethodSymbol? ResolveConstructor(NewExpr nw, TypeSymbol constructed, List<Type> constructorArgs, MethodDecl? except = null, Type? made = null)
     {
         List<MethodSymbol> methods = except is null ? constructed.Methods
             : constructed.Methods.Where(m => !ReferenceEquals(m.Decl, except)).ToList();
@@ -14889,9 +14907,10 @@ public sealed partial class Binder
                     constructorArgs[i] = CheckExpr(nw.Args[i]);
                     _wanted = saved;
                 }
-                constructorArgs[i] = Settle(nw.Args[i], ctor.Params[i].Type, constructorArgs[i]);
-                CheckAssignable(constructorArgs[i], ctor.Params[i].Type,
-                                nw.Args[i], $"constructor argument {i + 1}");
+                // `new List<Node?>(...)` takes what the use says, `?` and all.
+                Type want = made is null ? ctor.Params[i].Type : ContextualParameterType(made, ctor, i);
+                constructorArgs[i] = Settle(nw.Args[i], want, constructorArgs[i]);
+                CheckAssignable(constructorArgs[i], want, nw.Args[i], $"constructor argument {i + 1}");
             }
         }
         // A STRUCT'S `new S()` NEEDS NO CONSTRUCTOR: every struct has the
@@ -16523,7 +16542,11 @@ public sealed partial class Binder
 
             if (!passed)
             {
-                Type want = Close(best.Params[i].Type, bound);
+                // `_values.Add(v)` on a List<Node?> takes a Node?: the `?` is the
+                // receiver's use, not the specialisation's.
+                Type want = Close(!c.ReceiverAdded && c.Target is MemberExpr wantOn
+                    ? ContextualParameterType(_r.TypeOf(wantOn.Target), best, i)
+                    : best.Params[i].Type, bound);
                 if (best.TypeParams.Count > 0 && HasTupleUse(want)
                     && IsFunctionSource(c.Args[i]) && RefOf(want) is TypeRef argumentUse)
                 {

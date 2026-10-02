@@ -1,0 +1,17 @@
+using System.Collections.Generic;
+namespace MarkUnits;
+
+public sealed class Box { public int V; public Box(int v) { V = v; } }
+
+public static class Undo
+{
+    /// One unit's (int, Box?) list, the other's (int, Box): one specialisation.
+    public static List<(int Key, Box? Was)> Log() => new() { (1, null), (2, new Box(2)) };
+
+    public static int Held(List<(int Key, Box? Was)> undo)
+    {
+        int n = 0;
+        foreach (var e in undo) if (e.Was is not null) n++;
+        return n;
+    }
+}

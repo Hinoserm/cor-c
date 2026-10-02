@@ -25,7 +25,7 @@ public sealed class LocalCopies : IPass
     private sealed class Scope : Cfg.IScopedWalk
     {
         private readonly Dictionary<VReg, Operand> _copies = new();
-        private readonly List<(VReg Key, Operand Was, bool Had)> _undo = new();
+        private readonly List<(VReg Key, Operand? Was)> _undo = new();
         private readonly List<VReg> _stale = new();
 
         public int Mark => _undo.Count;
@@ -34,8 +34,8 @@ public sealed class LocalCopies : IPass
         {
             for (int u = _undo.Count - 1; u >= mark; u--)
             {
-                (VReg key, Operand was, bool had) = _undo[u];
-                if (had) _copies[key] = was;
+                (VReg key, Operand? was) = _undo[u];
+                if (was is not null) _copies[key] = was;
                 else _copies.Remove(key);
             }
             _undo.RemoveRange(mark, _undo.Count - mark);
@@ -44,7 +44,7 @@ public sealed class LocalCopies : IPass
         private void Forget(VReg key)
         {
             if (!_copies.TryGetValue(key, out Operand? was)) return;
-            _undo.Add((key, was, true));
+            _undo.Add((key, was));
             _copies.Remove(key);
         }
 
@@ -75,8 +75,8 @@ public sealed class LocalCopies : IPass
                 if (i.Op == Opcode.Copy && i.Operands.Count == 1 && i.Operands[0].Type == dest.Type
                     && (i.Operands[0] is ImmOperand || i.Operands[0] is RegOperand r && r.Reg != dest))
                 {
-                    bool had = _copies.TryGetValue(dest, out Operand? was);
-                    _undo.Add((dest, was!, had));
+                    _copies.TryGetValue(dest, out Operand? was);
+                    _undo.Add((dest, was));
                     _copies[dest] = i.Operands[0];
                 }
             }

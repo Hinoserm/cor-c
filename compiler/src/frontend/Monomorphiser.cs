@@ -889,6 +889,31 @@ public sealed class Monomorphiser
                                        .Select(_ => new TypeRef { Name = CanonName })
                                        .ToList());
 
+    /// <summary>
+    /// A type argument as the specialisation is named and made: a reference's
+    /// `?` dropped, here and in a tuple's elements, a nullable VALUE type's
+    /// kept (Nullable&lt;T&gt; is a type of its own).
+    /// </summary>
+    private TypeRef WithoutReferenceMarks(TypeRef a)
+    {
+        bool reference = a.Nullable && (a.ArrayRank > 0 || a.PointerDepth == 0 && IsWord(a));
+        bool tuple = a.Name == TypeRef.Tuple && a.Args.Count > 0;
+        if (!reference && !tuple) return a;
+        List<TypeRef> args = a.Args;
+        if (tuple)
+        {
+            args = new List<TypeRef>(a.Args.Count);
+            foreach (TypeRef item in a.Args) args.Add(WithoutReferenceMarks(item));
+        }
+        return new TypeRef
+        {
+            Name = a.Name, Arguments = args, UseArgs = a.UseArgs, ArrayRank = a.ArrayRank,
+            Nullable = a.Nullable && !reference, ElementNullable = a.ElementNullable,
+            InnerNullable = a.InnerNullable, PointerDepth = a.PointerDepth, TupleNames = a.TupleNames,
+            Line = a.Line, Col = a.Col,
+        };
+    }
+
     /// <summary>Records that a specialisation is needed and returns its name.</summary>
     private string Instantiate(string name, List<TypeRef> args, Node at)
     {
@@ -900,6 +925,13 @@ public sealed class Monomorphiser
         // importantly, mangles to a different specialisation from a list of
         // Assembler.Section.
         args = args.Select(Qualify).ToList();
+        // ONE SPECIALISATION PER TYPE, AS C# HAS IT: a reference argument's `?`
+        // is an annotation, not part of the type. List<(int, Box?)> and
+        // List<(int, Box)> are one class at run time and one here; the marks
+        // stay with the use (UseArgs), where the checker reads them
+        // (Binder.ContextualResult). Spelled with the marks, they were two
+        // specialisations the checker could not convert between.
+        args = args.Select(WithoutReferenceMarks).ToList();
 
         string writtenName = name;
         name = GenericPath(name, args.Count, at) ?? Path(name);

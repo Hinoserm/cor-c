@@ -1,0 +1,24 @@
+// test: reference_marks_share_specialisation_across_units
+// units: tests/language/support/935_reference_marks_units.cor
+// expect-exit: 0
+// expect-output:
+// 1 1 5
+//
+// Test 934's two tuple lists, one from each unit.
+
+using System;
+using System.Linq;
+using System.Collections.Generic;
+using MarkUnits;
+
+public static class Program
+{
+    public static int Main()
+    {
+        List<(int Key, Box? Was)> maybe = Undo.Log();
+        List<(int Dest, Box Src)> moves = new() { (1, new Box(1)), (2, new Box(5)) };
+        List<(int Dest, Box Src)> kept = moves.Where(m => m.Src.V > 1).ToList();
+        Console.WriteLine(Undo.Held(maybe) + " " + kept.Count + " " + kept[0].Src.V);
+        return 0;
+    }
+}
