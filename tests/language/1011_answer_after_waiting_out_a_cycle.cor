@@ -1,0 +1,132 @@
+// test: a thread that waited out a collection for room answers the next one's STAMP before it takes a page
+// expect-exit: 0
+// expect-output:
+// count 406203
+// bad 0
+//
+// A concurrent collection writes down where every object starts (the
+// snapshot); each thread writes in its own buffer's and pages' objects as it
+// answers STAMP, and copies its stack then. Space the snapshot does not cover
+// -- a page mapped since, one laid out afresh -- holds only newcomers: kept by
+// the sweep, never traced. So a thread that owes STAMP answers it before its
+// slow path takes any such space (Gc.AnswerBeforeTaking).
+//
+// It was asked only as the slow path came in. Under a cap a small allocation
+// finds no page, waits out the collection under way (WaitOutCycle) and tries
+// again -- and by the time it has the heap lock back the next collection may
+// have taken its snapshot, with this thread still owing its answer. It took a
+// fresh page there, made the names array in it, and filled it with no
+// barrier (an initializer of a new array). The array was a newcomer, never
+// traced; the string only it held was in the snapshot, unmarked, and swept:
+// the chains below read a live name back as nothing, or as another thread's
+// (the rs repro, 2026-10-02). It needs the race to land, so it does not
+// fail every run: before the fix, a few runs in a hundred here, one in
+// seven at a 12 MB cap, which is too close to running out to keep.
+
+using System.Runtime.CompilerServices;
+
+class Holder
+{
+    public string? S;
+    public Holder? Next;
+}
+
+class Node
+{
+    public string[]? Names;
+    public int Value;
+    public Node? Next;
+}
+
+class Worker : Action
+{
+    public static Node?[] Sink = new Node?[1024];
+    public int Seed;
+    public long Bad;
+    public long Count;
+
+    public Worker(int seed) { Seed = seed; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Holder? Chain(int v, int len)
+    {
+        Holder? head = null;
+        for (int k = 0; k < len; k++)
+        {
+            Holder h = new Holder();
+            h.S = "n" + v;
+            h.Next = head;
+            head = h;
+        }
+        return head;
+    }
+
+    // The name is made first; the array that alone holds it once this
+    // returns is made after, with no barrier on its elements.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Node Make(int v)
+    {
+        Holder? c = Chain(v, 8);
+        for (int k = 0; k < 4; k++)
+        {
+            Sink[(v * 4 + k) & 1023] = new Node();
+        }
+        Node n = new Node();
+        n.Value = v;
+        Holder p = c!;
+        while (p.Next != null) p = p.Next;
+        n.Names = new string[] { p.S!, p.S! };
+        return n;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public void Invoke()
+    {
+        Node? head = null;
+        int live = 0;
+        for (int i = 0; i < Program.Steps; i++)
+        {
+            Node n = Make(Seed * 1000000 + i);
+            n.Next = head;
+            head = n;
+            live++;
+            if (live > 2000)
+            {
+                Node? p = head;
+                while (p != null)
+                {
+                    if (p.Names![1] != "n" + p.Value) Bad++;
+                    Count++;
+                    p = p.Next;
+                }
+                head = null;
+                live = 0;
+            }
+        }
+    }
+}
+
+static class Program
+{
+    public static int Steps = 60000;
+
+    static int Main()
+    {
+        // A cap the threads' garbage reaches between collections: small
+        // allocations find no page and wait out the collection under way.
+        int workers = 6;
+        Gc.SetLimit(16777216);
+        Worker[] w = new Worker[workers];
+        Thread[] t = new Thread[workers];
+        for (int i = 0; i < workers; i++) { w[i] = new Worker(i); t[i] = Thread.Start(w[i]); }
+        Worker solo = new Worker(9);
+        solo.Invoke();
+        for (int i = 0; i < workers; i++) t[i].Join();
+        long bad = solo.Bad;
+        long count = solo.Count;
+        for (int i = 0; i < workers; i++) { bad += w[i].Bad; count += w[i].Count; }
+        System.Console.WriteLine("count " + count);
+        System.Console.WriteLine("bad " + bad);
+        return 0;
+    }
+}

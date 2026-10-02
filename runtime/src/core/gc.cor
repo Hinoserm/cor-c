@@ -4205,6 +4205,49 @@ static class Gc
         }
     }
 
+    /// NOTHING NEW BEFORE THIS THREAD'S STAMP ANSWER. A page or a buffer
+    /// taken between the snapshot and that answer may be one the snapshot
+    /// does not cover -- a pooled page laid out afresh, a chunk mapped
+    /// since, a hole in an old chunk a minor cycle skipped -- and its
+    /// objects are newcomers, never traced. Made before the answer, they
+    /// could hold what was then only on this thread's stack: a string put
+    /// into a new array, with no barrier, and dropped before the answer
+    /// copied the stack. So the answer comes first, waiting out the few
+    /// instructions between the snapshot and the round being asked. Not
+    /// on top of the allocator (an interrupt's allocation, on a kernel):
+    /// that cannot answer, and goes on as it always has.
+    ///
+    /// WHEREVER THE ALLOCATOR HAS LET GO OF THE HEAP LOCK, not only as it
+    /// comes in: a cycle may have begun while it was let go of. Asked only
+    /// on the way in, a thread that waited out one cycle for room
+    /// (WaitOutCycle) came back inside the next one's stamping, still owing
+    /// its answer, and took a fresh page: the array it made there was never
+    /// traced, and the string only that array held was swept from under it.
+    /// The heap lock is held, and let go of and taken again while waiting.
+    static void AnswerBeforeTaking(long tb)
+    {
+        while (tb != 0 && Sys.Peek(tb + Tls.InAlloc) == 0 && _stamping && !StampedAlready(tb))
+        {
+            GcLock.Exit();
+            GcThreads.Park();
+            Sys.Pause();
+            GcLock.Enter();
+        }
+
+        // A buffer limit taken away to ask for that answer (GcThreads.Round)
+        // is given back: the buffer was this thread's all along.
+        if (tb != 0 && Sys.Peek(tb + Tls.AllocLimit) == 0 && Sys.Peek(tb + Tls.AllocSaved) != 0)
+        {
+            Sys.Poke(tb + Tls.AllocLimit, Sys.Peek(tb + Tls.AllocSaved));
+            Sys.Poke(tb + Tls.AllocSaved, Zero);
+        }
+        if (tb != 0 && Sys.Peek(tb + Tls.Classes) == 0 && Sys.Peek(tb + Tls.ClassesSaved) != 0)
+        {
+            Sys.Poke(tb + Tls.Classes, Sys.Peek(tb + Tls.ClassesSaved));
+            Sys.Poke(tb + Tls.ClassesSaved, Zero);
+        }
+    }
+
     /// Everything the fast path does not: the free list, a collection when
     /// one is due, a new chunk, and out of memory.
     ///
@@ -4234,38 +4277,7 @@ static class Gc
         }
 
         GcLock.Enter();
-
-        // NOTHING NEW BEFORE THIS THREAD'S STAMP ANSWER. A page or a buffer
-        // taken between the snapshot and that answer may be one the snapshot
-        // does not cover -- a pooled page laid out afresh, a chunk mapped
-        // since, a hole in an old chunk a minor cycle skipped -- and its
-        // objects are newcomers, never traced. Made before the answer, they
-        // could hold what was then only on this thread's stack: a string put
-        // into a new array, with no barrier, and dropped before the answer
-        // copied the stack. So the answer comes first, waiting out the few
-        // instructions between the snapshot and the round being asked. Not
-        // on top of the allocator (an interrupt's allocation, on a kernel):
-        // that cannot answer, and goes on as it always has.
-        while (tb != 0 && Sys.Peek(tb + Tls.InAlloc) == 0 && _stamping && !StampedAlready(tb))
-        {
-            GcLock.Exit();
-            GcThreads.Park();
-            Sys.Pause();
-            GcLock.Enter();
-        }
-
-        // A buffer limit taken away to ask for that answer (GcThreads.Round)
-        // is given back: the buffer was this thread's all along.
-        if (Sys.Peek(tb + Tls.AllocLimit) == 0 && Sys.Peek(tb + Tls.AllocSaved) != 0)
-        {
-            Sys.Poke(tb + Tls.AllocLimit, Sys.Peek(tb + Tls.AllocSaved));
-            Sys.Poke(tb + Tls.AllocSaved, Zero);
-        }
-        if (Sys.Peek(tb + Tls.Classes) == 0 && Sys.Peek(tb + Tls.ClassesSaved) != 0)
-        {
-            Sys.Poke(tb + Tls.Classes, Sys.Peek(tb + Tls.ClassesSaved));
-            Sys.Poke(tb + Tls.ClassesSaved, Zero);
-        }
+        AnswerBeforeTaking(tb);
         FoldClassBytes(tb);
 
         if (!_ready)
@@ -7651,7 +7663,9 @@ static class Gc
     /// With the heap lock held, waits until the collection in progress has
     /// finished -- letting go of the lock to do it, since that collection
     /// needs it for its second stop -- as a thread that is blocked, readable
-    /// and counted as stopped.
+    /// and counted as stopped. The next one may have begun by the time the
+    /// lock is had again: its STAMP is answered before the allocator that
+    /// waited takes anything (AnswerBeforeTaking).
     static void WaitOutCycle()
     {
         long cycling = GcLock.Words() + GcLock.Cycling;
@@ -7665,6 +7679,7 @@ static class Gc
 
         GcThreads.EndBlocking();
         GcLock.Enter();
+        AnswerBeforeTaking(Sys.ThreadBlock());
     }
 
     // ---- a collection ---------------------------------------------------------
