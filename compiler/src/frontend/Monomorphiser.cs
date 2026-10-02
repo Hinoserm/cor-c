@@ -232,7 +232,7 @@ public sealed class Monomorphiser
         return new TypeRef
         {
             Name = full,
-            Args = args,
+            Arguments = args,
             ArrayRank = r.ArrayRank,
             Nullable = r.Nullable,
             ElementNullable = r.ElementNullable,
@@ -993,6 +993,23 @@ public sealed class Monomorphiser
     private bool MentionsMethodParameter(TypeRef a)
         => (a.Args.Count == 0 && _methodParams.Contains(a.Name)) || a.Args.Any(MentionsMethodParameter);
 
+    /// <summary>
+    /// Each of a list of types substituted, in a loop: `Select(a => Sub(a,
+    /// map))` made a closure over the map for every type with arguments the
+    /// copies were made of, a million a self-hosted unit, all the collector's.
+    /// </summary>
+    private List<TypeRef> SubAll(List<TypeRef> types, Dictionary<string, TypeRef> map)
+    {
+        List<TypeRef> made = new(types.Count);
+        SubInto(made, types, map);
+        return made;
+    }
+
+    private void SubInto(List<TypeRef> into, List<TypeRef> types, Dictionary<string, TypeRef> map)
+    {
+        foreach (TypeRef t in types) into.Add(Sub(t, map));
+    }
+
     private TypeRef Sub(TypeRef r, Dictionary<string, TypeRef> map)
     {
         // A bare type parameter becomes whatever it was bound to, keeping any
@@ -1057,7 +1074,7 @@ public sealed class Monomorphiser
                 InnerNullable = bound.InnerNullable | (r.InnerNullable << bound.ArrayRank)
                     | (bound.ArrayRank > 0 && r.ArrayRank > 0 && bound.Nullable ? 1 << (bound.ArrayRank - 1) : 0),
                 PointerDepth = r.PointerDepth + bound.PointerDepth,
-                Args = bound.Args.ToList(),
+                Arguments = bound.Args.ToList(),
                 UseArgs = bound.UseArgs,
 
                 // AND THE ELEMENT NAMES, when what T was bound to is a tuple.
@@ -1086,7 +1103,7 @@ public sealed class Monomorphiser
                 Line = r.Line, Col = r.Col,
             };
 
-            tuple.Args.AddRange(r.Args.Select(a => Sub(a, map)));
+            SubInto(tuple.Arguments, r.Args, map);
             return tuple;
         }
 
@@ -1116,7 +1133,7 @@ public sealed class Monomorphiser
             return new TypeRef
             {
                 Name = r.Name, ArrayRank = r.ArrayRank, Nullable = r.Nullable,
-                UseArgs = r.UseArgs?.Select(a => Sub(a, map)).ToList(),
+                UseArgs = r.UseArgs is null ? null : SubAll(r.UseArgs, map),
                 ElementNullable = r.ElementNullable,
                 InnerNullable = r.InnerNullable,
                 PointerDepth = r.PointerDepth,
@@ -1124,7 +1141,7 @@ public sealed class Monomorphiser
             };
         }
 
-        List<TypeRef> args = r.Args.Select(a => Sub(a, map)).ToList();
+        List<TypeRef> args = SubAll(r.Args, map);
 
         // A TYPE ARGUMENT THAT IS STILL A METHOD'S TYPE PARAMETER IS LEFT
         // ALONE.
@@ -1170,7 +1187,7 @@ public sealed class Monomorphiser
                 Line = r.Line, Col = r.Col,
             };
 
-            named.Args.AddRange(args);
+            named.Arguments.AddRange(args);
             _tupleNamings.Add(named);
         }
 
@@ -1192,7 +1209,7 @@ public sealed class Monomorphiser
             // These annotations cross into the template's scope too, including
             // arguments already hidden inside a nested specialised type name.
             UseArgs = args.Count > 0 && name != r.Name ? args.Select(Qualify).ToList()
-                : r.UseArgs?.Select(a => Sub(a, map)).ToList(),
+                : r.UseArgs is null ? null : SubAll(r.UseArgs, map),
             ElementNullable = r.ElementNullable,
             InnerNullable = r.InnerNullable,
             PointerDepth = r.PointerDepth,
@@ -1205,7 +1222,7 @@ public sealed class Monomorphiser
         // what the checker has to do with it.
         if (args.Count > 0 && name == r.Name)
         {
-            made.Args.AddRange(args);
+            made.Arguments.AddRange(args);
         }
         return made;
     }
@@ -1229,7 +1246,7 @@ public sealed class Monomorphiser
 
         TypeRef element = new()
         {
-            Name = r.Name, Args = args, Nullable = r.ElementNullable,
+            Name = r.Name, Arguments = args, Nullable = r.ElementNullable,
             PointerDepth = r.PointerDepth, TupleNames = r.TupleNames,
             Line = r.Line, Col = r.Col,
         };
@@ -1903,7 +1920,7 @@ public sealed class Monomorphiser
                     return new NameExpr { Name = n.Name, Global = n.Global, Line = n.Line, Col = n.Col };
                 }
 
-                List<TypeRef> args = n.TypeArgs.Select(a => Sub(a, map)).ToList();
+                List<TypeRef> args = SubAll(n.TypeArgs, map);
 
                 // OPEN WHILE THE METHOD'S OWN TYPE PARAMETERS ARE IN IT, as Sub
                 // keeps a type open: `Comparer<T>.Default` inside a generic
@@ -1947,7 +1964,7 @@ public sealed class Monomorphiser
                     Guarded = m.Guarded,
                     Line = m.Line, Col = m.Col,
                 };
-                made.TypeArgs.AddRange(m.TypeArgs.Select(a => Sub(a, map)));
+                SubInto(made.TypeArgs, m.TypeArgs, map);
                 return made;
             }
 
@@ -1960,7 +1977,7 @@ public sealed class Monomorphiser
                     // instantiation drops unknown names, which used to erase
                     // the only inference input of parameterless M<T>() calls.
                     NameExpr named = new() { Name = method.Name, Line = method.Line, Col = method.Col };
-                    named.TypeArgs.AddRange(method.TypeArgs.Select(argument => Sub(argument, map)));
+                    SubInto(named.TypeArgs, method.TypeArgs, map);
                     target = named;
                 }
                 else target = Rewrite(c.Target, map);

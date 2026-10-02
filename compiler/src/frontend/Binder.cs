@@ -9792,7 +9792,7 @@ public sealed partial class Binder
                 {
                     return null;
                 }
-                structural.Args.Add(element);
+                structural.Arguments.Add(element);
             }
             return structural;
         }
@@ -9823,7 +9823,7 @@ public sealed partial class Binder
         return new TypeRef
         {
             Name = typeArguments.Count == 0 ? spelt : Bare(spelt),
-            Args = typeArguments,
+            Arguments = typeArguments,
             UseArgs = useArgs,
             ArrayRank = rank,
             Nullable = rank == 0 ? bare.Nullable : t.Nullable,
@@ -10893,7 +10893,7 @@ public sealed partial class Binder
                     {
                         Type = new TypeRef
                         {
-                            Name = cell.Name, Args = cell.Args, ArrayRank = cell.ArrayRank,
+                            Name = cell.Name, Arguments = cell.Args, ArrayRank = cell.ArrayRank,
                             PointerDepth = cell.PointerDepth, TupleNames = cell.TupleNames,
                             Nullable = true, Line = ix.Line, Col = ix.Col,
                         },
@@ -13989,7 +13989,7 @@ public sealed partial class Binder
         if (n.TypeArgs.Count > 0)
         {
             TypeRef written = new() { Name = n.Name, Line = n.Line, Col = n.Col };
-            written.Args.AddRange(n.TypeArgs);
+            written.Arguments.AddRange(n.TypeArgs);
             Type made = Resolve(written, _thisType);
             if (!made.IsError && made.Symbol is TypeSymbol generic)
             {
@@ -14449,7 +14449,7 @@ public sealed partial class Binder
                     {
                         Type = new TypeRef
                         {
-                            Name = cell.Name, Args = cell.Args, ArrayRank = cell.ArrayRank,
+                            Name = cell.Name, Arguments = cell.Args, ArrayRank = cell.ArrayRank,
                             PointerDepth = cell.PointerDepth, TupleNames = cell.TupleNames,
                             Nullable = true, Line = m.Line, Col = m.Col,
                         },

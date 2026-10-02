@@ -1180,7 +1180,7 @@ public static class Gir
             {
                 if (TypeOrNull() is TypeRef a)
                 {
-                    t.Args.Add(a);
+                    t.Arguments.Add(a);
                 }
             }
             return t;

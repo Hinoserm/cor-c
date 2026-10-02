@@ -51,7 +51,21 @@ public sealed class TypeRef : Node
     public const string ManagedFunction = "__fnptr$managed";
 
     public bool IsFunctionPointer => Name is UnmanagedFunction or ManagedFunction;
-    public List<TypeRef> Args { get; init; } = new();
+    // A GENERIC'S ARGUMENTS, made only for a type that has some: a list for
+    // every type reference -- the arguments of `int`, `string`, every name --
+    // was three and a half million empty lists in a self-hosted compile.
+    private static readonly List<TypeRef> NoArguments = new();
+    private List<TypeRef>? _arguments;
+
+    /// <summary>The arguments, to read: one shared empty list for a type with none, never written through.</summary>
+    public List<TypeRef> Args => _arguments ?? NoArguments;
+
+    /// <summary>The arguments, to write: made on first use; given the shared empty list, it keeps none.</summary>
+    public List<TypeRef> Arguments
+    {
+        get => _arguments ??= new();
+        init => _arguments = ReferenceEquals(value, NoArguments) ? null : value;
+    }
     // Use-site arguments retained after Args is folded into a specialization
     // name. These annotations do not request another runtime specialization.
     public List<TypeRef>? UseArgs { get; init; }

@@ -820,7 +820,7 @@ public sealed class Parser
                 {
                     if ((reference.Name != inner.Name && reference.Name != path) || reference.Args.Count != own) return;
                     for (int k = inner.OuterParams - 1; k >= 0; k--)
-                        reference.Args.Insert(0, new TypeRef { Name = inner.TypeParams[k].Name, Line = reference.Line, Col = reference.Col });
+                        reference.Arguments.Insert(0, new TypeRef { Name = inner.TypeParams[k].Name, Line = reference.Line, Col = reference.Col });
                     if (reference.Name == inner.Name) reference.Name = path;
                 });
             }
@@ -3139,7 +3139,7 @@ public sealed class Parser
                 Name = unmanaged ? TypeRef.UnmanagedFunction : TypeRef.ManagedFunction,
                 Line = at.Line, Col = at.Col,
             };
-            pointer.Args.AddRange(parts);
+            pointer.Arguments.AddRange(parts);
             return Suffixes(pointer, !pattern);
         }
 
@@ -3162,7 +3162,7 @@ public sealed class Parser
 
             do
             {
-                tuple.Args.Add(ParseTypeRef());
+                tuple.Arguments.Add(ParseTypeRef());
                 tuple.TupleNames.Add(At(Tok.Ident) ? _t[_i++].Text : "");
             }
             while (Take(Tok.Comma));
@@ -3215,7 +3215,7 @@ public sealed class Parser
 
         TypeRef type = new() { Name = name, Line = at.Line, Col = at.Col };
 
-        type.Args.AddRange(args);
+        type.Arguments.AddRange(args);
         return Suffixes(type, !pattern);
     }
 
@@ -3390,7 +3390,7 @@ public sealed class Parser
             Line = bare.Line, Col = bare.Col,
         };
 
-        type.Args.AddRange(bare.Args);
+        type.Arguments.AddRange(bare.Args);
         return type;
     }
 
@@ -5309,11 +5309,11 @@ public sealed class Parser
                 Line = at.Line, Col = at.Col,
             };
 
-            shape.Args.AddRange(takes);
+            shape.Arguments.AddRange(takes);
 
             if (returns != null)
             {
-                shape.Args.Add(returns);
+                shape.Arguments.Add(returns);
             }
         }
 
@@ -6853,7 +6853,7 @@ public sealed class Parser
             // and reported the null as one.
             Type = new TypeRef
             {
-                Name = declared.Name, Args = declared.Args,
+                Name = declared.Name, Arguments = declared.Args,
                 Nullable = declared.ArrayRank == 1 ? declared.ElementNullable : (declared.InnerNullable & 1) != 0,
                 ElementNullable = declared.ArrayRank > 1 && declared.ElementNullable,
                 InnerNullable = declared.InnerNullable >> 1,
@@ -7358,7 +7358,7 @@ public sealed class Parser
                     Type = new TypeRef
                     {
                         Name = "ReadOnlySpan",
-                        Args = { new TypeRef { Name = "byte", Line = at.Line, Col = at.Col } },
+                        Arguments = { new TypeRef { Name = "byte", Line = at.Line, Col = at.Col } },
                         Line = at.Line, Col = at.Col,
                     },
                     Line = at.Line, Col = at.Col,
@@ -7466,7 +7466,7 @@ public sealed class Parser
                     {
                         Type = new TypeRef
                         {
-                            Name = type.Name, Args = type.Args,
+                            Name = type.Name, Arguments = type.Args,
                             Nullable = type.ArrayRank == 1 ? type.ElementNullable : (type.InnerNullable & 1) != 0,
                             ElementNullable = type.ArrayRank > 1 && type.ElementNullable,
                             InnerNullable = type.InnerNullable >> 1,
@@ -7524,7 +7524,7 @@ public sealed class Parser
                         type = new TypeRef
                         {
                             Name = type.Name,
-                            Args = type.Args,
+                            Arguments = type.Args,
                             Nullable = false,
                             ElementNullable = type.ArrayRank > 0 ? type.ElementNullable : type.Nullable,
                             InnerNullable = type.InnerNullable | (type.ArrayRank > 0 && type.Nullable ? 1 << (type.ArrayRank - 1) : 0),
