@@ -1241,10 +1241,9 @@ class Regex
         {
             names[i] = String.FromInt(i);
         }
-        List<string> keys = _names.Keys;
-        for (int i = 0; i < keys.Count; i = i + 1)
+        foreach (KeyValuePair<string, int> named in _names)
         {
-            names[_names[keys[i]]] = keys[i];
+            names[named.Value] = named.Key;
         }
         return names;
     }
@@ -1528,10 +1527,9 @@ class Regex
             }
             groups[g] = one;
         }
-        List<string> keys = _names.Keys;
-        for (int i = 0; i < keys.Count; i = i + 1)
+        foreach (KeyValuePair<string, int> named in _names)
         {
-            groups[_names[keys[i]]].Name = keys[i];
+            groups[named.Value].Name = named.Key;
         }
         int next = groups[0].Length == 0 ? groups[0].Index + 1
                  : groups[0].Index + groups[0].Length;

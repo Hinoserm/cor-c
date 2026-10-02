@@ -17,6 +17,7 @@
 // before q0 -- as .NET's free list gives it.
 
 using System;
+using System.Linq;
 using System.Collections.Generic;
 
 class P
@@ -45,7 +46,7 @@ class P
         }
 
         Console.WriteLine(line);
-        Console.WriteLine("keys " + map.Keys.Count + " " + map.Keys[0] + " " + map.Values.Count + " " + map.Values[0]);
+        Console.WriteLine("keys " + map.Keys.Count + " " + map.Keys.First() + " " + map.Values.Count + " " + map.Values.First());
 
         HashSet<int> set = new() { 9, 3, 7, 1 };
 

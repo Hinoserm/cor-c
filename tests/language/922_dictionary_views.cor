@@ -1,0 +1,56 @@
+// test: dictionary_views
+// expect-exit: 0
+// expect-output:
+// keys a b c 3
+// values 1 2 3 6
+// list 3 c 3
+// linq 6 b
+// contains True False True False
+// copy a b c | 1 2 3
+// readonly keys values
+// idictionary 2 x
+// walks 3000000
+//
+// A dictionary's Keys and Values are views onto the table, as .NET's
+// KeyCollection and ValueCollection: walked with a struct enumerator in
+// the table's order, counted, searched, copied out, handed to LINQ and to
+// a List, read-only through every interface -- and asked for in a loop
+// without making the table again each time.
+
+using System;
+using System.Linq;
+using System.Collections.Generic;
+
+static class P
+{
+    static void Main()
+    {
+        Dictionary<string, int> map = new();
+        map["a"] = 1; map["b"] = 2; map["c"] = 3;
+        string keys = "";
+        foreach (string k in map.Keys) keys += k + " ";
+        Console.WriteLine("keys " + keys + map.Keys.Count);
+        int sum = 0;
+        string values = "";
+        foreach (int v in map.Values) { values += v + " "; sum += v; }
+        Console.WriteLine("values " + values + sum);
+        List<string> listed = new(map.Keys);
+        Console.WriteLine("list " + listed.Count + " " + listed[2] + " " + new List<int>(map.Values)[2]);
+        Console.WriteLine("linq " + map.Values.Sum() + " " + map.Keys.Where(k => k != "a").First());
+        Console.WriteLine("contains " + map.Keys.Contains("b") + " " + map.Keys.Contains("z") + " " + map.Values.Contains(3) + " " + map.Values.Contains(9));
+        string[] ks = new string[3]; map.Keys.CopyTo(ks, 0);
+        int[] vs = new int[3]; map.Values.CopyTo(vs, 0);
+        Console.WriteLine("copy " + string.Join(" ", ks) + " | " + string.Join(" ", vs));
+        string refused = "";
+        try { ((ICollection<string>)map.Keys).Add("z"); } catch (NotSupportedException) { refused += "keys "; }
+        try { ((ICollection<int>)map.Values).Clear(); } catch (NotSupportedException) { refused += "values"; }
+        Console.WriteLine("readonly " + refused);
+        IDictionary<string, string> named = new Dictionary<string, string>();
+        named["k"] = "x"; named["j"] = "y";
+        Console.WriteLine("idictionary " + named.Keys.Count + " " + named.Values.First());
+        long walks = 0;
+        for (int round = 0; round < 1000000; round++)
+            foreach (int v in map.Values) walks++;
+        Console.WriteLine("walks " + walks);
+    }
+}

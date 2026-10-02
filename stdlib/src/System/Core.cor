@@ -10547,19 +10547,87 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     // since an interface's enumerator is one.
     IEnumerator<KeyValuePair<K, V>> IEnumerable<KeyValuePair<K, V>>.GetEnumerator() { return GetEnumerator(); }
 
-    // .NET answers a KeyCollection and a ValueCollection, which are views onto
-    // the table; these are lists, copied out. The difference shows only if the
-    // dictionary is written to while one is being walked -- which .NET's view
-    // refuses outright and this simply does not see.
-    public List<K> Keys {
-        get {
-            List<K> found = new List<K>();
-            for (int n = 0; n < ordered; n++) {
-                int i = SlotAt(n);
-                if (i >= 0) { found.Add(keys[i]); }
-            }
-            return found;
+    // VIEWS ONTO THE TABLE, as .NET's KeyCollection and ValueCollection: a
+    // foreach over one walks the table itself with a struct enumerator. They
+    // were lists copied out -- every `foreach (var v in map.Values)` made the
+    // whole table again for the collector, and a loop asking for them in
+    // its body did it on every turn.
+    public KeyCollection Keys => new KeyCollection(this);
+
+    public sealed class KeyCollection : ICollection<K>, IReadOnlyCollection<K> {
+        private readonly Dictionary<K, V> over;
+        public KeyCollection(Dictionary<K, V> dictionary) { over = dictionary; }
+        public int Count => over.Count;
+        public bool IsReadOnly => true;
+        public KeyEnumerator GetEnumerator() { return new KeyEnumerator(over); }
+        IEnumerator<K> IEnumerable<K>.GetEnumerator() { return GetEnumerator(); }
+        IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+        public bool Contains(K item) => over.ContainsKey(item);
+        public void CopyTo(K[] array, int arrayIndex) {
+            foreach (K key in this) { array[arrayIndex] = key; arrayIndex = arrayIndex + 1; }
         }
+        public void Add(K item) { throw new NotSupportedException("a dictionary's keys are read-only"); }
+        public void Clear() { throw new NotSupportedException("a dictionary's keys are read-only"); }
+        public bool Remove(K item) { throw new NotSupportedException("a dictionary's keys are read-only"); }
+    }
+
+    public struct KeyEnumerator : IEnumerator<K>, IDisposable {
+        private readonly Dictionary<K, V> over;
+        private int at;
+        private int slot;
+        internal KeyEnumerator(Dictionary<K, V> table) { over = table; at = -1; slot = -1; }
+        public K Current => over.keys[slot];
+        object? IEnumerator.Current => Current;
+        public bool MoveNext() {
+            at = at + 1;
+            slot = over.SlotAt(at);
+            while (slot == -1) {
+                at = at + 1;
+                slot = over.SlotAt(at);
+            }
+            return slot >= 0;
+        }
+        public void Reset() { at = -1; slot = -1; }
+        public void Dispose() { }
+    }
+
+    public ValueCollection Values => new ValueCollection(this);
+
+    public sealed class ValueCollection : ICollection<V>, IReadOnlyCollection<V> {
+        private readonly Dictionary<K, V> over;
+        public ValueCollection(Dictionary<K, V> dictionary) { over = dictionary; }
+        public int Count => over.Count;
+        public bool IsReadOnly => true;
+        public ValueEnumerator GetEnumerator() { return new ValueEnumerator(over); }
+        IEnumerator<V> IEnumerable<V>.GetEnumerator() { return GetEnumerator(); }
+        IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+        public bool Contains(V item) => over.ContainsValue(item);
+        public void CopyTo(V[] array, int arrayIndex) {
+            foreach (V value in this) { array[arrayIndex] = value; arrayIndex = arrayIndex + 1; }
+        }
+        public void Add(V item) { throw new NotSupportedException("a dictionary's values are read-only"); }
+        public void Clear() { throw new NotSupportedException("a dictionary's values are read-only"); }
+        public bool Remove(V item) { throw new NotSupportedException("a dictionary's values are read-only"); }
+    }
+
+    public struct ValueEnumerator : IEnumerator<V>, IDisposable {
+        private readonly Dictionary<K, V> over;
+        private int at;
+        private int slot;
+        internal ValueEnumerator(Dictionary<K, V> table) { over = table; at = -1; slot = -1; }
+        public V Current => over.values[slot];
+        object? IEnumerator.Current => Current;
+        public bool MoveNext() {
+            at = at + 1;
+            slot = over.SlotAt(at);
+            while (slot == -1) {
+                at = at + 1;
+                slot = over.SlotAt(at);
+            }
+            return slot >= 0;
+        }
+        public void Reset() { at = -1; slot = -1; }
+        public void Dispose() { }
     }
 
     IEnumerable<K> IReadOnlyDictionary<K, V>.Keys => Keys;
@@ -10568,8 +10636,8 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     // AS IDictionary: the keys and values as read-only collections, which is
     // what .NET's KeyCollection and ValueCollection are to a caller holding
     // the interface -- adding to one throws, it does not add to a copy.
-    ICollection<K> IDictionary<K, V>.Keys => Keys.AsReadOnly();
-    ICollection<V> IDictionary<K, V>.Values => Values.AsReadOnly();
+    ICollection<K> IDictionary<K, V>.Keys => Keys;
+    ICollection<V> IDictionary<K, V>.Values => Values;
     bool ICollection<KeyValuePair<K, V>>.IsReadOnly => false;
 
     void ICollection<KeyValuePair<K, V>>.Add(KeyValuePair<K, V> item) {
@@ -10607,17 +10675,6 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         }
         value = default!;
         return false;
-    }
-
-    public List<V> Values {
-        get {
-            List<V> found = new List<V>();
-            for (int n = 0; n < ordered; n++) {
-                int i = SlotAt(n);
-                if (i >= 0) { found.Add(values[i]); }
-            }
-            return found;
-        }
     }
 
     public bool ContainsKey(K key) {
