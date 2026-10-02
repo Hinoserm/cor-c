@@ -1,0 +1,37 @@
+// test: region_sites_inlined_across_units
+// units: tests/language/support/1110_region_sites_inlined_units.cor
+// expect-exit: 0
+// expect-output:
+// 312340000
+// buffers in regions True
+//
+// A site the link chose in one unit, inlined at the link into a caller in
+// another: Packet's constructor makes its buffer, the link takes the
+// constructor into Checksum, and the copy there is made in Checksum's region
+// as the constructor's own would be. The mark rides with the body the link
+// brings in; without it the copy was a heap allocation left to the collector.
+
+using System;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Checksum(int seed)
+    {
+        Packet packet = new(16);
+        PacketWriter writer = new(packet);
+        for (int i = 0; i < 12; i++) writer.Write(seed + i);
+        return packet.Sum() + packet.Length;
+    }
+
+    static void Main()
+    {
+        long total = 0;
+        long before = Gc.RegionBlocks;
+        for (int k = 0; k < 20000; k++) total += Checksum(k & 7) * 100 + 17;
+        long blocks = Gc.RegionBlocks - before;
+        Console.WriteLine(total);
+        Console.WriteLine("buffers in regions " + (blocks >= 20000));
+    }
+}

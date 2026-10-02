@@ -175,6 +175,24 @@ public static class IrLinkOptimizer
             }
             planFacts[k] = facts;
         }
+        // A BODY BROUGHT IN CARRIES WHAT ITS OWN UNIT WAS TOLD OF IT: the
+        // sites chosen of it, which ride on every copy the inliner makes, so
+        // a constructor's buffer inlined into a caller in another unit is
+        // made in the region as the constructor's own would be. The choice
+        // is the site's over every copy of its function that makes it (every
+        // boundary that can be open above any of them outlives none of its
+        // objects), and the caller's call is one of those, so it holds where
+        // the inlined copy runs. And a boundary is never inlined: its region
+        // is opened in its own unit (RegionPointsTo.Open).
+        Dictionary<ObjectFile, RegionFacts>? siteFacts = regionFacts;
+        IrImport Imported(string symbol, IrArchive archive, IrArchiveEntry body)
+        {
+            byte[] bytes = archive.ReadBody(body.Key);
+            if (siteFacts is null || !owners.TryGetValue(symbol, out ObjectFile? owner) || !siteFacts.TryGetValue(owner, out RegionFacts? chosen))
+                return new IrImport(symbol, bytes, body.DecodeBytes);
+            int[] sites = chosen.Sites.GetViewBetween((symbol, int.MinValue), (symbol, int.MaxValue)).Select(site => site.Ordinal).ToArray();
+            return new IrImport(symbol, bytes, body.DecodeBytes, sites.Length == 0 ? null : sites, chosen.Boundaries.Contains(symbol));
+        }
         ObjectFile?[] regenerated = new ObjectFile?[plans.Count];
         string?[] reports = new string?[plans.Count];
         int next = -1;
@@ -191,7 +209,7 @@ public static class IrLinkOptimizer
                     var plan = plans[k];
                     service ??= backend();
                     ObjectFile original = inputs[plan.Index].Object;
-                    IrImport[] imports = plan.Imports.Select(import => new IrImport(import.Symbol, import.Archive.ReadBody(import.Body.Key), import.Body.DecodeBytes)).ToArray();
+                    IrImport[] imports = plan.Imports.Select(import => Imported(import.Symbol, import.Archive, import.Body)).ToArray();
                     ObjectFile replacement = service.Recompile(original, imports, plan.Retained, planFacts[k]);
                     X86CodeGenerationContract.ValidateRegeneration(original, replacement);
                     TargetContract.Validate(new[] { ("original", original), ("regenerated", replacement) });

@@ -126,10 +126,16 @@ public sealed class UnitBackend : IUnitBackend
             LandingPadHomes.Strip(function);
             Module local = new(module.Name) { Entry = function.Name, PreserveExports = true, NeedsHeap = module.NeedsHeap };
             local.Functions.Add(function);
+            // Another unit's sites the link chose come marked on its body, and
+            // the inliner carries the mark to every copy; a boundary of its
+            // own unit stays a call, and opens its region there.
+            bool importedSites = false;
             foreach (IrImport import in Selected(index))
             {
                 Function body = IrFunctionCodec.Read(import.Body, new IrReadBudget(import.DecodeBytes));
                 if (body.Name != import.Symbol) throw new InvalidDataException("Conflicting IR import identity");
+                if (import.RegionBoundary) body.NoInlining = true;
+                if (import.RegionSites is { } sites && RegionPointsTo.MarkSites(body, sites) > 0) importedSites = true;
                 local.Functions.Add(body);
             }
             Pipeline cleanup = new() { Rounds = 3, Workers = 1 };
@@ -196,7 +202,8 @@ public sealed class UnitBackend : IUnitBackend
             // THE LINK'S REGION SITES, what is left of them now its lifetime
             // rules are done (RegionPointsTo.ApplyFacts): an object they placed
             // in the frame or freed where it dies was never the region's.
-            if (module.RegionFacts is not null) RegionPointsTo.MakeSitesInRegion(function);
+            // And those of the bodies brought in that it inlined.
+            if (module.RegionFacts is not null || importedSites) RegionPointsTo.MakeSitesInRegion(function);
             // Written out last here too: the link's lifetime pass saw them as
             // notes to the collector (CardMarks).
             new CardMarks().Run(local);

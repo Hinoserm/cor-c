@@ -8,10 +8,16 @@ public static class BackendProtocol
     public static readonly UTF8Encoding Utf8 = new(false, true);
     public static void WriteRequest(BinaryWriter writer, BackendRequest request)
     {
-        writer.Write((byte)0x52); writer.Write(7);
+        writer.Write((byte)0x52); writer.Write(8);
         WriteText(writer, request.Input); WriteText(writer, request.Output); writer.Write(request.Imports.Count);
         foreach (IrImport import in request.Imports)
-        { WriteText(writer, import.Symbol); writer.Write(import.DecodeBytes); writer.Write(import.Body.Length); writer.Write(import.Body); }
+        {
+            WriteText(writer, import.Symbol); writer.Write(import.DecodeBytes); writer.Write(import.Body.Length); writer.Write(import.Body);
+            // Its region sites by ordinal, and whether it is a boundary.
+            writer.Write(import.RegionSites?.Length ?? 0);
+            foreach (int ordinal in import.RegionSites ?? Array.Empty<int>()) writer.Write(ordinal);
+            writer.Write(import.RegionBoundary);
+        }
         writer.Write(request.Retained?.Count ?? -1);
         if (request.Retained is not null)
             foreach (string key in request.Retained.Order(StringComparer.Ordinal)) WriteText(writer, key);
@@ -67,7 +73,7 @@ public static class BackendProtocol
     {
         int marker = reader.BaseStream.ReadByte();
         if (marker == -1) return null;
-        if (marker != 0x52 || reader.ReadInt32() != 7) throw new InvalidDataException("Unsupported backend protocol");
+        if (marker != 0x52 || reader.ReadInt32() != 8) throw new InvalidDataException("Unsupported backend protocol");
         string input = ReadText(reader), output = ReadText(reader);
         int count = reader.ReadInt32(), bytes = 0;
         if (count < 0 || count > 256) throw new InvalidDataException("Backend import count exceeds budget");
@@ -79,7 +85,12 @@ public static class BackendProtocol
             if (length < 0 || length > 16 * 1024 * 1024 - bytes) throw new InvalidDataException("Backend import bytes exceed budget");
             byte[] body = reader.ReadBytes(length);
             if (body.Length != length) throw new EndOfStreamException("Truncated backend import");
-            imports.Add(new(symbol, body, decodeBytes)); bytes += length;
+            int sites = reader.ReadInt32();
+            if (sites < 0 || sites > 1000000) throw new InvalidDataException("Invalid imported region sites");
+            int[] ordinals = new int[sites];
+            for (int s = 0; s < sites; s++) ordinals[s] = reader.ReadInt32();
+            bool boundary = reader.ReadBoolean();
+            imports.Add(new(symbol, body, decodeBytes, sites == 0 ? null : ordinals, boundary)); bytes += length;
         }
         int retainedCount = reader.ReadInt32();
         if (retainedCount < -1 || retainedCount > 100000) throw new InvalidDataException("Invalid backend retention count");

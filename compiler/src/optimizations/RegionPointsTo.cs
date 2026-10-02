@@ -273,6 +273,25 @@ public sealed class RegionPointsTo : IModulePass
     }
 
     /// <summary>
+    /// The sites the link chose of another unit's body it brought in to
+    /// inline (IrImport.RegionSites), marked as its own unit's are: by
+    /// ordinal, over the same IR its unit numbered them on.
+    /// </summary>
+    public static int MarkSites(Function f, IReadOnlyCollection<int> ordinals)
+    {
+        int marked = 0, ordinal = 0;
+        if (ordinals.Count == 0) return 0;
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (IsSiteCall(i))
+                {
+                    if (ordinals.Contains(ordinal)) { i.RegionSite = true; marked++; }
+                    ordinal++;
+                }
+        return marked;
+    }
+
+    /// <summary>
     /// The link's answer applied: every boundary named made one. Its marked
     /// sites stay calls of the collecting allocators until the regenerated
     /// unit's last lifetime run is done (MakeSitesInRegion): the link brings

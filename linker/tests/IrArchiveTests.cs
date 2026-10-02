@@ -61,11 +61,13 @@ public static class IrArchiveTests
 
         using MemoryStream wire = new();
         using BinaryWriter writer = new(wire, BackendProtocol.Utf8, leaveOpen: true);
-        BackendProtocol.WriteRequest(writer, new("in.o", "out.o", new[] { new IrImport("callee", new byte[] { 3, 2, 1 }) }));
+        BackendProtocol.WriteRequest(writer, new("in.o", "out.o", new[] { new IrImport("callee", new byte[] { 3, 2, 1 }), new IrImport("sited", new byte[] { 4 }, 0, new[] { 0, 2 }, true) }));
         wire.Position = 0;
         using BinaryReader reader = new(wire, BackendProtocol.Utf8, leaveOpen: true);
         BackendRequest request = BackendProtocol.ReadRequest(reader)!;
-        Check(request.Input == "in.o" && request.Output == "out.o" && request.Imports.Single().Body[0] == 3, "backend request round trip");
+        Check(request.Input == "in.o" && request.Output == "out.o" && request.Imports[0].Body[0] == 3
+            && request.Imports[0].RegionSites is null && !request.Imports[0].RegionBoundary, "backend request round trip");
+        Check(request.Imports[1].RegionSites is [0, 2] && request.Imports[1].RegionBoundary, "imported region sites round trip");
         Check(BackendProtocol.ReadRequest(reader) is null, "clean protocol EOF");
         Console.WriteLine("  indexed IR integrity, lazy bodies, budgets, import selection and backend protocol passed");
     }

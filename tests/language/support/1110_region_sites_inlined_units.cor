@@ -1,0 +1,50 @@
+// The other unit of 1110_region_sites_inlined_across_units: a small packet
+// whose constructor makes its buffer, and grows it as bytes are put, as a
+// MemoryStream does, and a writer that holds one, as a BinaryWriter holds
+// its stream. The constructors are small enough for the link to take into a
+// caller in the test's unit.
+public sealed class Packet
+{
+    private byte[] _data;
+    private int _length;
+
+    public Packet(int capacity)
+    {
+        _data = new byte[capacity];
+    }
+
+    public void Put(byte value)
+    {
+        if (_length == _data.Length)
+        {
+            byte[] grown = new byte[_data.Length * 2];
+            for (int i = 0; i < _length; i++) grown[i] = _data[i];
+            _data = grown;
+        }
+        _data[_length++] = value;
+    }
+
+    public int Length => _length;
+
+    public int Sum()
+    {
+        int sum = 0;
+        for (int i = 0; i < _length; i++) sum += _data[i];
+        return sum;
+    }
+}
+
+public sealed class PacketWriter
+{
+    private readonly Packet _packet;
+
+    public PacketWriter(Packet packet)
+    {
+        _packet = packet;
+    }
+
+    public void Write(int value)
+    {
+        for (int shift = 0; shift < 32; shift += 8) _packet.Put((byte)(value >> shift));
+    }
+}
