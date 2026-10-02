@@ -1132,9 +1132,17 @@ static partial class Os
     /// System.Environment answers with this; execve needs it here, and the
     /// entry stack is this library's business rather than the class
     /// library's.
+    /// THE MAIN THREAD'S ENTRY STACK, wherever this is asked: argc, argv and
+    /// the environment are above it alone. Sys.EntryStack is the top of the
+    /// stack of the thread asking, and a worker reading a flag -- the
+    /// collector's exit report after running out of memory on one -- or the
+    /// environment first walked its own stack as envp: it faulted, or found
+    /// nothing and kept that for every thread.
+    public static long MainEntryStack() => Sys.Peek(Sys.MainThreadBlock() + Tls.StackBase);
+
     public static long EnvironAddress()
     {
-        long sp = Sys.EntryStack();
+        long sp = MainEntryStack();
         return sp + WordSize.Bytes + WordSize.Bytes * Sys.Peek(sp) + WordSize.Bytes;
     }
 
@@ -1956,9 +1964,9 @@ static partial class Os
             return have;
         }
 
-        // EntryStack is ESP exactly as the kernel handed it over, before
-        // _start's own prologue: argc at [sp], then the argv pointers.
-        long sp = Sys.EntryStack();
+        // The main thread's entry stack is ESP exactly as the kernel handed
+        // it over, before _start's own prologue: argc at [sp], then argv.
+        long sp = MainEntryStack();
         int argc = (int)Sys.Peek(sp);
 
         if (argc < 0)

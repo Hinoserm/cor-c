@@ -1,0 +1,38 @@
+// test: environment_from_a_worker_thread
+// expect-exit: 0
+// expect-output:
+// worker found True
+// same True
+// args True
+//
+// The environment and the command line are above the MAIN thread's entry
+// stack, whichever thread asks first: a worker reading them walked its own
+// stack top as envp -- found nothing, and kept that for every thread, or
+// faulted (the collector's exit report after running out of memory on one).
+
+using System;
+using System.Threading;
+class Reader : Action
+{
+    public string? Path;
+    public int Args;
+    public void Invoke()
+    {
+        Path = Environment.GetEnvironmentVariable("PATH");
+        Args = Environment.GetCommandLineArgs().Length;
+    }
+}
+static class P
+{
+    static int Main()
+    {
+        Reader r = new Reader();
+        Thread t = Thread.Start(r);
+        t.Join();
+        string? mine = Environment.GetEnvironmentVariable("PATH");
+        Console.WriteLine("worker found " + (r.Path != null && r.Path.Length > 0));
+        Console.WriteLine("same " + (r.Path == mine));
+        Console.WriteLine("args " + (r.Args >= 1 && r.Args == Environment.GetCommandLineArgs().Length));
+        return 0;
+    }
+}
