@@ -73,6 +73,15 @@ public sealed class Inline : IParallelModulePass
     public int FreshArgumentBody { get; init; } = 200;
 
     /// <summary>
+    /// Whether a callee with a try of its own may come in (Inlineable); never
+    /// into an async body or iterator. Off: on, a LINQ test went from 59% of
+    /// its blocks freed by the program to 48% -- whole consumers came in, and
+    /// what they walked then reached calls through a vtable that nothing made
+    /// direct. Kept for the pass that devirtualizes after it.
+    /// </summary>
+    public bool InlineHandlers { get; init; }
+
+    /// <summary>
     /// A callee this size or smaller every return of which is an object it
     /// has just made -- an iterator method's machine, a factory -- comes into
     /// the caller, which then knows the object's type (FreshArgumentBody,
@@ -281,7 +290,7 @@ public sealed class Inline : IParallelModulePass
                     // The collector's own notes stay calls: the escape rules
                     // know them by name, and inlined their ring store reads
                     // as the reported object escaping.
-                    if (!Inlineable(callee, pinned) || recursive.Contains(callee) || Escape.IsCollectorLeaf(callee.Name))
+                    if (!Inlineable(callee, pinned, handlers: InlineHandlers && caller.Async is null) || recursive.Contains(callee) || Escape.IsCollectorLeaf(callee.Name))
                     {
                         continue;
                     }
@@ -400,7 +409,7 @@ public sealed class Inline : IParallelModulePass
     }
 
     /// <summary>Whether a body can be moved into a caller at all.</summary>
-    internal static bool Inlineable(Function callee, HashSet<string> pinned)
+    internal static bool Inlineable(Function callee, HashSet<string> pinned, bool handlers = false)
     {
         if (callee.Blocks.Count == 0 || pinned.Contains(callee.Name) || callee.Async is not null || callee.NoInlining)
         {
@@ -419,6 +428,14 @@ public sealed class Inline : IParallelModulePass
             return false;
         }
 
+        // A TRY IN THE CALLEE comes along whole when the caller asks for it
+        // (handlers): its record is a frame slot cloned with the others, its
+        // pad a block cloned and named by the cloned labeladdr, the stack and
+        // frame it saves the caller's -- where the pad then runs -- and the
+        // record links to whatever handler the caller has open, as a call's
+        // would. A foreach over a sequence has one, for Dispose, and a List
+        // built from an iterator was a call that let the iterator go.
+        if (handlers) return true;
         foreach (Block b in callee.Blocks)
         {
             if (b.IsLandingPad)
@@ -657,7 +674,9 @@ public sealed class Inline : IParallelModulePass
 
         foreach (Block b in callee.Blocks)
         {
-            blocks[b] = caller.NewBlock(b.Label + "$");
+            Block made = caller.NewBlock(b.Label + "$");
+            made.IsLandingPad = b.IsLandingPad;
+            blocks[b] = made;
         }
 
         // Arguments into the cloned parameters.
