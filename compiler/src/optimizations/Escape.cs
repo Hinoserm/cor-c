@@ -90,6 +90,8 @@ public sealed partial class Escape : IModulePass
         _inserted = _bookkeeping;
         _unresolvedWhy = Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 0 } ? new() : null;
         _module = m;
+        _fieldElements.Clear();
+        _storedParameters = null;
         _items = null;
         _indirect = IndirectTargets(m, byName);
         _reachGraphs = null;
@@ -169,6 +171,7 @@ public sealed partial class Escape : IModulePass
         // program with no window -- made every exception anywhere the
         // collector's.
         _reachedFunctions = !m.PreserveExports && m.Entry is not null ? Reached(m) : null;
+        _marksElements = canFree && !m.PreserveExports && m.Entry is not null && Provided(OwnedElements.Marker);
         if (canFree) ConfirmOwnedElements(m, summaries);
         foreach (Function f in m.Functions)
         {
@@ -185,6 +188,7 @@ public sealed partial class Escape : IModulePass
         // A unit of a larger program: its side of the same judgement, as
         // hints, or the link's answer applied (EscapeOwnedUnits).
         if (canFree) OwnedFieldsInUnit(m, byName, summaries);
+        MarkElementsThroughFields();
         m.NeedsHeap = AnyAllocationReachable(m, byName);
         // A PROGRAM THAT SAID IT RUNS WITHOUT A COLLECTOR gets none: what is
         // left is named, one note each, and is never given back.

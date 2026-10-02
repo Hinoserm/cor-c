@@ -6783,6 +6783,9 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
     // and LINQ's span paths): one that has may be read after the list grows,
     // as .NET promises, so it is left to the collector rather than freed.
     private bool lent;
+    // WHETHER ITS ELEMENTS GO WITH ITS STORAGE (OwnElements), set by the
+    // compiler's call alone.
+    private bool ownsElements;
     // WHAT CHANGED IT LAST, counted: every change moves it on, and an
     // enumerator that finds it moved throws, as .NET's does.
     internal int version;
@@ -7373,7 +7376,13 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
         count = 0;
     }
 
+    // ITS ELEMENTS GIVEN BACK WITH ITS STORAGE, by the compiler's call alone
+    // (OwnedElements, through a field): it proved every element is made for
+    // this list and dead whenever the list is freed, however that comes.
+    public void OwnElements() { ownsElements = true; }
+
     public void FreeStorage() {
+        if (ownsElements) { ownsElements = false; FreeOwnedElements(); }
         if (!lent) { OutgrownStorage.Release(items); }
         items = null!;
         count = 0;
@@ -10248,6 +10257,8 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     // add d, and the walk is a, d, c there and here.
     private int[]? vacant;
     private int vacancies;
+    // WHETHER ITS VALUES GO WITH ITS STORAGE (OwnElements).
+    private bool ownsElements;
 
     private void Placed(int slot) {
         if (vacancies > 0 && order != null && placeOf != null) {
@@ -10761,7 +10772,11 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         }
     }
 
+    // ITS VALUES GIVEN BACK WITH ITS STORAGE, as List's (OwnElements).
+    public void OwnElements() { ownsElements = true; }
+
     public void FreeStorage() {
+        if (ownsElements) { ownsElements = false; FreeOwnedElements(); }
         OutgrownStorage.Release(keys);
         OutgrownStorage.Release(values);
         OutgrownStorage.Release(state);

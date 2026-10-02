@@ -36,6 +36,91 @@ internal static class OwnedElements
 
     public const string Freer = "m_Runtime_FreeOwnedElements_1_V$Any";
 
+    /// <summary>The runtime's mark on a collection whose elements go with its storage (Runtime.OwnElements).</summary>
+    public const string Marker = "m_Runtime_OwnElements_1_V$Any";
+
+    /// <summary>
+    /// WHERE A COLLECTION IS HANDED TO A FIELD: a store of it into an
+    /// object's field, or a call whose parameter is stored into one and put
+    /// to no other use (a constructor's `_t = tokens`, Stores answering which
+    /// field for a callee and an operand). One at most: Uses records it here,
+    /// and refuses either use when it is not given one.
+    /// </summary>
+    internal sealed class HandOff
+    {
+        public Func<string, int, string?>? Stores;
+        public Instr? At;
+        public string? Field;
+        public int Operand;
+    }
+
+    /// <summary>
+    /// The parameters a function stores into a field and puts to no other
+    /// use, by index, with the field: `Parser(List&lt;Token&gt; tokens) { _t = tokens; }`.
+    /// </summary>
+    internal static Dictionary<int, string> StoredParameters(Function g)
+    {
+        Dictionary<int, string> stored = new();
+        if (g.Async is not null || g.Params.Count < 2) return stored;
+        Defs defs = new(g, buildCfg: false);
+        for (int p = 1; p < g.Params.Count; p++)
+        {
+            HashSet<VReg> regs = Container(g, defs, g.Params[p]);
+            string? field = null;
+            bool ok = true;
+            foreach (Block b in g.Blocks)
+            {
+                foreach (Instr i in b.Instrs)
+                {
+                    int count = 0;
+                    foreach (Operand o in i.Operands) if (o is RegOperand r && regs.Contains(r.Reg)) count++;
+                    if (count == 0) continue;
+                    if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && i.Dest is not null && regs.Contains(i.Dest)) continue;
+                    // The store's note to the collector, which keeps nothing.
+                    if (i.Op == Opcode.Call && Escape.IsCollectorNote(i.Callee)) continue;
+                    if (i.Op == Opcode.Store && count == 1 && field is null && i.Field is not null && i.Operands.Count >= 2
+                        && i.Operands[0] is RegOperand && i.Operands[1] is RegOperand v && regs.Contains(v.Reg))
+                    { field = i.Field; continue; }
+                    Say(g, $"parameter {p}: not only stored: {i}");
+                    ok = false;
+                    break;
+                }
+                if (!ok) break;
+            }
+            if (ok && field is not null) stored[p] = field;
+        }
+        return stored;
+    }
+
+    /// <summary>
+    /// EVERY READ OF A FIELD in the program, each a load whose value goes
+    /// only to the collection's known methods (Uses) -- never handed back,
+    /// stored or passed on -- with those calls; null when one is not, or the
+    /// field's address is taken. What is stored into the field is the
+    /// owned-field rules' to judge (Escape.OwnedFields).
+    /// </summary>
+    internal static List<(Function F, Instr Load, List<(Block B, Instr Call, Role Role)> Calls)>? FieldReads(Module m, string field, string kind)
+    {
+        List<(Function, Instr, List<(Block, Instr, Role)>)> reads = new();
+        foreach (Function g in m.Functions)
+        {
+            Defs? defs = null;
+            foreach (Block b in g.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Field != field || i.Op == Opcode.Store) continue;
+                    if (i.Op != Opcode.Load || i.Dest is null || g.Async is not null || i.Operands.Count < 1 || i.Operands[0] is not RegOperand)
+                    { Say(g, $"field {field}: not followed: {i}"); return null; }
+                    defs ??= new Defs(g, buildCfg: false);
+                    HashSet<VReg> container = Container(g, defs, i);
+                    if (Uses(g, defs, kind, container, i, out bool returned) is not { } calls || returned)
+                    { Say(g, $"field {field}: a read not followed: {i}"); return null; }
+                    reads.Add((g, i, calls));
+                }
+        }
+        return reads;
+    }
+
     private static readonly Regex Method = new(@"^m_(List|Dictionary)\$.+?_(set_Item|get_Item|Add|TryAdd|TryGetValue|ContainsKey|get_Count|Remove|RemoveAt|Clear|GetValueOrDefault|Insert|GetEnumerator|get_Values|get_Keys)_(\d+)(_|$)", RegexOptions.Compiled);
 
     /// <summary>
@@ -108,9 +193,12 @@ internal static class OwnedElements
     }
 
     /// <summary>The registers that hold the allocation's object, through copies of registers written once.</summary>
-    internal static HashSet<VReg> Container(Function f, Defs defs, Instr alloc)
+    internal static HashSet<VReg> Container(Function f, Defs defs, Instr alloc) => Container(f, defs, alloc.Dest!);
+
+    /// <summary>The registers that hold what `root` holds, through copies of registers written once.</summary>
+    internal static HashSet<VReg> Container(Function f, Defs defs, VReg root)
     {
-        HashSet<VReg> set = new() { alloc.Dest! };
+        HashSet<VReg> set = new() { root };
         bool grew = true;
         while (grew)
         {
@@ -143,7 +231,8 @@ internal static class OwnedElements
     /// calls among them, with their roles. A return of it is one when the
     /// function hands it back (`returned`), and then every return must be.
     /// </summary>
-    internal static List<(Block B, Instr Call, Role Role)>? Uses(Function f, Defs defs, string kind, HashSet<VReg> container, Instr alloc, out bool returned)
+    internal static List<(Block B, Instr Call, Role Role)>? Uses(Function f, Defs defs, string kind, HashSet<VReg> container, Instr alloc, out bool returned,
+        HandOff? handOff = null)
     {
         List<(Block, Instr, Role)> calls = new();
         returned = false;
@@ -188,6 +277,19 @@ internal static class OwnedElements
                         calls.Add((b, i, role));
                         if (role.Enumerates && Walker(f, defs, kind, i, calls) is null) { Say(f, $"enumerator not followed: {i}"); return null; }
                         if (role.Views && View(f, defs, i, calls) is null) { Say(f, $"view not followed: {i}"); return null; }
+                        continue;
+                    // HANDED TO A FIELD, once (HandOff): stored into an
+                    // object's field, or passed to a function that does that
+                    // and nothing else with it.
+                    case Opcode.Store when handOff is not null && handOff.At is null && at == 1 && count == 1 && i.Field is not null
+                        && i.Operands[0] is RegOperand:
+                        handOff.At = i; handOff.Field = i.Field; handOff.Operand = 1;
+                        continue;
+                    case Opcode.Call when handOff is not null && at > 0 && Escape.IsCollectorNote(i.Callee):
+                        continue;
+                    case Opcode.Call when handOff?.Stores is not null && handOff.At is null && at > 0 && count == 1 && i.Callee is not null
+                        && handOff.Stores(i.Callee, at) is { } stored:
+                        handOff.At = i; handOff.Field = stored; handOff.Operand = at;
                         continue;
                     default:
                         if (IrInfo.IsIntCompare(i.Op)) continue;
@@ -470,6 +572,34 @@ public sealed class MarkOwnedElements : IModulePass
 
     public void Run(Module m)
     {
+        // THROUGH A FIELD only in a whole program, where every read of the
+        // field is in sight (OwnedElements.FieldReads).
+        Func<string, int, string?>? stores = null;
+        Dictionary<string, List<(Function F, Instr Load, List<(Block B, Instr Call, OwnedElements.Role Role)> Calls)>?> readsOf = new(StringComparer.Ordinal);
+        if (!m.PreserveExports && m.Entry is not null)
+        {
+            Dictionary<string, Function> byName = new(StringComparer.Ordinal);
+            foreach (Function g in m.Functions) byName[g.Name] = g;
+            Dictionary<string, Dictionary<int, string>> stored = new(StringComparer.Ordinal);
+            stores = (callee, at) =>
+            {
+                if (!byName.TryGetValue(callee, out Function? g)) return null;
+                if (!stored.TryGetValue(callee, out Dictionary<int, string>? map)) stored[callee] = map = OwnedElements.StoredParameters(g);
+                return map.GetValueOrDefault(at);
+            };
+        }
+        // A candidate handed to a field: every read of the field followed,
+        // and its calls kept too.
+        bool ThroughField(Function f, OwnedElements.HandOff? handOff, string kind, bool returned)
+        {
+            if (handOff?.Field is not { } field) return true;
+            if (returned) return false;
+            if (!readsOf.TryGetValue(field, out var reads)) readsOf[field] = reads = OwnedElements.FieldReads(m, field, kind);
+            if (reads is null) return false;
+            foreach (var read in reads) foreach (var c in read.Calls) m.KeepCalls.Add(c.Call);
+            OwnedElements.Say(f, $"handed to {field}, read {reads.Count} time(s)");
+            return true;
+        }
         // What each function handing back a candidate hands back.
         Dictionary<string, string> handsBack = new(StringComparer.Ordinal);
         foreach (Function f in m.Functions)
@@ -483,8 +613,10 @@ public sealed class MarkOwnedElements : IModulePass
                     defs ??= new Defs(f, buildCfg: false);
                     HashSet<VReg> container = OwnedElements.Container(f, defs, i);
                     if (OwnedElements.KindOf(f, i, container) is not { } kind) continue;
-                    if (OwnedElements.Uses(f, defs, kind, container, i, out bool returned) is not { } calls) { OwnedElements.Say(f, $"{kind} at {i.Line}: a use not followed"); continue; }
+                    OwnedElements.HandOff? handOff = stores is null ? null : new() { Stores = stores };
+                    if (OwnedElements.Uses(f, defs, kind, container, i, out bool returned, handOff) is not { } calls) { OwnedElements.Say(f, $"{kind} at {i.Line}: a use not followed"); continue; }
                     if (!returned && !calls.Any(c => c.Role.Adds >= 0)) continue;
+                    if (!ThroughField(f, handOff, kind, returned)) { OwnedElements.Say(f, $"{kind} at {i.Line}: handed to a field not followed"); continue; }
                     OwnedElements.Say(f, $"{kind} at {i.Line}: candidate{(returned ? ", handed back" : "")}");
                     i.Field = Instr.OwnsCandidate;
                     foreach (var c in calls) m.KeepCalls.Add(c.Call);
@@ -507,7 +639,9 @@ public sealed class MarkOwnedElements : IModulePass
                             || !handsBack.TryGetValue(i.Callee, out string? kind)) continue;
                         defs ??= new Defs(f, buildCfg: false);
                         HashSet<VReg> container = OwnedElements.Container(f, defs, i);
-                        if (OwnedElements.Uses(f, defs, kind, container, i, out bool returned) is not { } calls) { OwnedElements.Say(f, $"{kind} from {i.Callee}: a use not followed"); continue; }
+                        OwnedElements.HandOff? handOff = stores is null ? null : new() { Stores = stores };
+                        if (OwnedElements.Uses(f, defs, kind, container, i, out bool returned, handOff) is not { } calls) { OwnedElements.Say(f, $"{kind} from {i.Callee}: a use not followed"); continue; }
+                        if (!ThroughField(f, handOff, kind, returned)) { OwnedElements.Say(f, $"{kind} from {i.Callee}: handed to a field not followed"); continue; }
                         OwnedElements.Say(f, $"{kind} from {i.Callee}: candidate{(returned ? ", handed back" : "")}");
                         i.Field = Instr.OwnsCandidate;
                         foreach (var c in calls) m.KeepCalls.Add(c.Call);
@@ -593,8 +727,14 @@ public sealed partial class Escape
             Defs defs = new(f);
             HashSet<VReg> container = OwnedElements.Container(f, defs, made);
             if ((calls ? handedBack[made.Callee!] : OwnedElements.KindOf(f, made, container)) is not { } kind) continue;
-            if (OwnedElements.Uses(f, defs, kind, container, made, out bool returned) is not { } uses) continue;
-            if (ProveOwnedElements(f, defs, made, container, uses, summaries, filled: calls || returned) is not { } keepAlive)
+            OwnedElements.HandOff? handOff = _marksElements ? new() { Stores = StoredParameter } : null;
+            if (OwnedElements.Uses(f, defs, kind, container, made, out bool returned, handOff) is not { } uses) continue;
+            bool throughField = handOff?.At is not null;
+            List<HashSet<VReg>>? held = throughField ? new() : null;
+            if (throughField && returned) _elementWhy = "handed to a field and back";
+            if (throughField && returned
+                || ProveOwnedElements(f, defs, made, container, uses, summaries, filled: calls || returned, held) is not { } keepAlive
+                || throughField && (HeldAcross(f, made, held!) && Why("rule 13") || !FieldElementsProved(handOff!.Field!, kind, summaries)))
             {
                 OwnedElements.Say(f, $"at {made.Line}: not proved ({_elementWhy})");
                 // Its calls the late inliner's again: nothing here needs them kept.
@@ -602,14 +742,15 @@ public sealed partial class Escape
                 continue;
             }
             // The collection kept alive past every use of what it holds.
-            VReg holder = made.Dest;
-            foreach ((Block b, Instr after) in keepAlive)
+            KeepAlives(made.Dest, keepAlive);
+            if (throughField)
             {
-                int at = b.Instrs.IndexOf(after);
-                if (at < 0) continue;
-                Instr keep = new() { Op = Opcode.Call, Callee = Corsac.Lang.X86.MachineIntrinsics.KeepAlive, Operands = { new RegOperand(holder) }, Line = after.Line };
-                if (ReferenceEquals(after, b.Terminator)) b.Instrs.Insert(at, keep);
-                else b.Instrs.Insert(at + 1, keep);
+                // Marked where it is handed over (MarkElementsThroughFields),
+                // once the lifetime rules have judged the field.
+                OwnedElements.Say(f, $"at {made.Line}: OWNS ELEMENTS THROUGH {handOff!.Field}");
+                _elementMarks.Add((f, handOff.At!, handOff.Operand));
+                ElementsOwned++;
+                continue;
             }
             if (returned)
             {
@@ -625,8 +766,157 @@ public sealed partial class Escape
 
     private string _elementWhy = "";
 
+    private bool Why(string why)
+    {
+        _elementWhy = why;
+        return true;
+    }
+
+    /// <summary>A KeepAlive of `holder` after each instruction named.</summary>
+    private static void KeepAlives(VReg holder, List<(Block B, Instr After)> keepAlive)
+    {
+        foreach ((Block b, Instr after) in keepAlive)
+        {
+            int at = b.Instrs.IndexOf(after);
+            if (at < 0) continue;
+            Instr keep = new() { Op = Opcode.Call, Callee = Corsac.Lang.X86.MachineIntrinsics.KeepAlive, Operands = { new RegOperand(holder) }, Line = after.Line };
+            if (ReferenceEquals(after, b.Terminator)) b.Instrs.Insert(at, keep);
+            else b.Instrs.Insert(at + 1, keep);
+        }
+    }
+
+    // ---- elements owned through a field -------------------------------------------------
+    //
+    // A COLLECTION HANDED TO A FIELD -- `new Parser(Lexer.Tokenize(text))`,
+    // the parser keeping the tokens in `_t` and reading them through it --
+    // owns its elements as one dropped where it was made does, when every
+    // read of the field anywhere in the program is followed as this rule
+    // follows the collection's own uses: what it answers going nowhere, and
+    // the field's value kept alive (a KeepAlive of the read) past every use
+    // of it. Then wherever an element is in use, so is the collection, and
+    // whatever proves the collection dead -- the owned-field rules freeing it
+    // with the object that holds it (Runtime.FreeField, FreeOwnedFields), or
+    // when the field is given another (FreeOwnedReplaced) -- proves its
+    // elements dead too, each of those judged on the liveness of what was
+    // read from the field. Nothing here frees it: the collection is
+    // marked where it is handed over (Runtime.OwnElements), and its storage,
+    // whenever it goes, takes its elements with it (IOwnsElements). An
+    // element in use across the read that answered it -- a loop reading the
+    // field again while one from the last lap is still held -- would have
+    // the read's register no longer the collection it came from, and is
+    // refused (HeldAcross).
+
+    /// <summary>Whether a field rule's marks are made in this run: a whole program, with the runtime's marker.</summary>
+    private bool _marksElements;
+
+    /// <summary>Each collection proved to own its elements through a field: where it is handed over, and which operand it is there.</summary>
+    private readonly List<(Function F, Instr At, int Operand)> _elementMarks = new();
+
+    /// <summary>Each field's verdict, its reads judged once for every collection handed to it.</summary>
+    private readonly Dictionary<string, bool> _fieldElements = new(StringComparer.Ordinal);
+
+    private Dictionary<string, Dictionary<int, string>>? _storedParameters;
+
+    /// <summary>The field a callee stores its parameter at `at` into, and nothing more (OwnedElements.StoredParameters).</summary>
+    private string? StoredParameter(string callee, int at)
+    {
+        _storedParameters ??= new(StringComparer.Ordinal);
+        if (!_storedParameters.TryGetValue(callee, out Dictionary<int, string>? map))
+        {
+            Function? g = _module?.Functions.FirstOrDefault(x => x.Name == callee);
+            _storedParameters[callee] = map = g is null ? new() : OwnedElements.StoredParameters(g);
+        }
+        return map.GetValueOrDefault(at);
+    }
+
+    /// <summary>
+    /// EVERY READ OF THE FIELD, judged as the collection's own uses are
+    /// (ProveOwnedElements, as if each read made it, filled): each read's
+    /// register written once and kept alive past every use of what it
+    /// answers, nothing it answered still held where it reads the field
+    /// again. Judged once per field; the KeepAlives placed only when every
+    /// read is proved.
+    /// </summary>
+    private bool FieldElementsProved(string field, string kind, Dictionary<string, bool[]> summaries)
+    {
+        if (_fieldElements.TryGetValue(field, out bool known)) { if (!known) _elementWhy = $"a read of {field}"; return known; }
+        _fieldElements[field] = false;
+        _elementWhy = $"a read of {field}";
+        if (OwnedElements.FieldReads(_module!, field, kind) is not { } reads) return false;
+        List<(VReg Holder, List<(Block B, Instr After)> Keep)> keeps = new();
+        bool proved = true;
+        foreach ((Function g, Instr load, var calls) in reads)
+        {
+            Defs defs = new(g);
+            HashSet<VReg> container = OwnedElements.Container(g, defs, load);
+            List<HashSet<VReg>> held = new();
+            if (!defs.IsSingle(load.Dest!) || ProveOwnedElements(g, defs, load, container, calls, summaries, filled: true, held) is not { } keep
+                || HeldAcross(g, load, held) && Why("rule 13"))
+            {
+                OwnedElements.Say(g, $"read of {field} at {load.Line}: not proved ({_elementWhy})");
+                proved = false;
+                break;
+            }
+            keeps.Add((load.Dest!, keep));
+        }
+        if (!proved)
+        {
+            foreach (var read in reads) foreach (var c in read.Calls) _module?.KeepCalls.Remove(c.Call);
+            _elementWhy = $"a read of {field}";
+            return false;
+        }
+        foreach ((VReg holder, var keep) in keeps) KeepAlives(holder, keep);
+        return _fieldElements[field] = true;
+    }
+
+    /// <summary>Whether anything in `held` is live just before `at` runs: held over from before it, or round a loop.</summary>
+    private static bool HeldAcross(Function f, Instr at, List<HashSet<VReg>> held)
+    {
+        HashSet<VReg> all = new();
+        foreach (HashSet<VReg> h in held) all.UnionWith(h);
+        if (all.Count == 0) return false;
+        Block? b = f.Blocks.FirstOrDefault(x => x.Instrs.Contains(at));
+        if (b is null) return true;
+        Liveness live = new(f);
+        HashSet<VReg> now = new();
+        foreach (VReg r in all)
+        {
+            if (!live.Tracks(r)) return true;
+            if (live.IsLiveOut(b, r)) now.Add(r);
+        }
+        for (int k = b.Instrs.Count - 1; k >= 0; k--)
+        {
+            Instr i = b.Instrs[k];
+            if (i.Dest is not null) now.Remove(i.Dest);
+            foreach (Operand o in i.Operands) if (o is RegOperand r && all.Contains(r.Reg)) now.Add(r.Reg);
+            if (ReferenceEquals(i, at)) return now.Count > 0;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// The marks, placed after every lifetime rule has judged the field: a
+    /// call of the runtime's marker just before each collection is handed
+    /// over (Runtime.OwnElements), bookkeeping no analysis need follow.
+    /// </summary>
+    private void MarkElementsThroughFields()
+    {
+        foreach ((Function f, Instr at, int operand) in _elementMarks)
+        {
+            Block? b = f.Blocks.FirstOrDefault(x => x.Instrs.Contains(at));
+            if (b is null || operand >= at.Operands.Count || at.Operands[operand] is not RegOperand collection) continue;
+            List<Instr> mark = new();
+            VReg word = Word(f, mark, collection.Reg, at.Line, "elementsOf");
+            mark.Add(new Instr { Op = Opcode.Call, Callee = OwnedElements.Marker, Operands = { new RegOperand(word) }, Line = at.Line });
+            b.Instrs.InsertRange(b.Instrs.IndexOf(at), mark);
+            _bookkeeping.UnionWith(mark);
+        }
+        _elementMarks.Clear();
+    }
+
     private List<(Block B, Instr After)>? ProveOwnedElements(Function f, Defs defs, Instr alloc, HashSet<VReg> container,
-        List<(Block B, Instr Call, OwnedElements.Role Role)> calls, Dictionary<string, bool[]> summaries, bool filled = false)
+        List<(Block B, Instr Call, OwnedElements.Role Role)> calls, Dictionary<string, bool[]> summaries, bool filled = false,
+        List<HashSet<VReg>>? heldOut = null)
     {
         Cfg cfg = new(f);
         Block allocBlock = f.Blocks.First(b => b.Instrs.Contains(alloc));
@@ -729,6 +1019,7 @@ public sealed partial class Escape
             if (!dominated) { _elementWhy = "rule 12"; return null; }
             if (!keep.Any(k => ReferenceEquals(k.After, call))) keep.Add((b, call));
         }
+        heldOut?.AddRange(held);
         return keep;
     }
 

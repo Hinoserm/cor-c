@@ -1,0 +1,231 @@
+// test: owned_elements_through_field_across_units
+// units: tests/language/support/910_owned_elements_units.cor
+// expect-exit: 0
+// expect-output:
+// parse 52000
+// bag 26000
+// table 26000
+// kept 26000 first 2
+// best 4000
+// pairs 24000
+// kept intact ok 2 26
+//
+// 1100 as a unit of its own, the libraries in another. Every read of a field
+// is in sight only in a whole program, so here the rule leaves the elements
+// to the collector -- what is checked is that the runtime's side (a freed
+// field's collection given back with its storage) and the libraries' kept
+// calls arrive whole across units: the sums right, the kept token intact.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+sealed class Tok { public int K; public string T; public Tok(int k, string t) { K = k; T = t; } }
+
+static class Lexer
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static List<Tok> Tokenize(string s)
+    {
+        List<Tok> l = new();
+        foreach (string w in s.Split(' ')) l.Add(new Tok(w.Length - 1, w));
+        return l;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static Dictionary<int, Tok> Table(string s)
+    {
+        Dictionary<int, Tok> d = new();
+        int i = 0;
+        foreach (string w in s.Split(' ')) { d[i] = new Tok(w.Length - 1, w); i++; }
+        return d;
+    }
+}
+
+// The compiler's own shape: the tokens in a field, read by index, by count
+// and by foreach, by methods the parser is not inlined into.
+sealed class Parser
+{
+    private readonly List<Tok> _t;
+    private int _i;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public Parser(List<Tok> tokens) { _t = tokens; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private int KindAt(int i) => _t[Math.Min(i, _t.Count - 1)].K;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Parse()
+    {
+        int sum = 0;
+        while (_i < _t.Count)
+        {
+            Tok t = _t[_i];
+            sum += KindAt(_i) + t.T.Length - t.K - 1;
+            _i++;
+        }
+        foreach (Tok t in _t) sum += t.K;
+        return sum;
+    }
+}
+
+// Filled where it is made and stored into a field of an object made there.
+sealed class Bag
+{
+    public List<Tok>? Items;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Sum()
+    {
+        int s = 0;
+        for (int i = 0; i < Items!.Count; i++) s += Items[i].K;
+        return s;
+    }
+}
+
+sealed class Lookup
+{
+    private readonly Dictionary<int, Tok> _d;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public Lookup(Dictionary<int, Tok> d) { _d = d; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Sum()
+    {
+        int s = 0;
+        for (int i = 0; i < 9; i++)
+            if (_d.TryGetValue(i, out Tok? t)) s += t.K;
+        return s;
+    }
+}
+
+// A reader that keeps an element: nothing of what the field holds is freed.
+sealed class Keeper
+{
+    public static List<Tok> Kept = new();
+    private readonly List<Tok> _t;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public Keeper(List<Tok> tokens) { _t = tokens; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Walk(int round)
+    {
+        int s = 0;
+        for (int i = 0; i < _t.Count; i++)
+        {
+            s += _t[i].K;
+            if (round == 7 && _t[i].T == "fox") Kept.Add(_t[i]);
+        }
+        return s;
+    }
+}
+
+// One element held while the field is read again round a loop.
+sealed class Scanner
+{
+    private readonly List<Tok> _t;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public Scanner(List<Tok> tokens) { _t = tokens; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Best()
+    {
+        Tok? best = null;
+        for (int i = 0; i < _t.Count; i++)
+        {
+            Tok t = _t[i];
+            if (best == null || t.K > best.K) best = t;
+        }
+        return best!.K;
+    }
+}
+
+// One element from the last lap held as the field is read in the next.
+sealed class Follower
+{
+    private readonly List<Tok> _t;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public Follower(List<Tok> tokens) { _t = tokens; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Pairs()
+    {
+        Tok? last = null;
+        int s = 0;
+        for (int i = 0; i < _t.Count; i++)
+        {
+            Tok t = _t[i];
+            if (last != null) s += last.K;
+            last = t;
+        }
+        return s;
+    }
+}
+
+static class P
+{
+    const string Text = "the quick brown fox jumps over the lazy dog";
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Once() => new Parser(Lexer.Tokenize(Text)).Parse();
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Bagged()
+    {
+        Bag b = new();
+        List<Tok> l = new();
+        foreach (string w in Text.Split(' ')) l.Add(new Tok(w.Length - 1, w));
+        b.Items = l;
+        return b.Sum();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Indexed() => new Lookup(Lexer.Table(Text)).Sum();
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Kept(int round) => new Keeper(Lexer.Tokenize(Text)).Walk(round);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Scanned() => new Scanner(Lexer.Tokenize(Text)).Best();
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Followed() => new Follower(Lexer.Tokenize(Text)).Pairs();
+
+    static void Main()
+    {
+        long sum = 0;
+        for (int r = 0; r < 1000; r++) sum += Once();
+        Console.WriteLine("parse " + sum);
+
+        sum = 0;
+        for (int r = 0; r < 1000; r++) sum += Bagged();
+        Console.WriteLine("bag " + sum);
+
+        sum = 0;
+        for (int r = 0; r < 1000; r++) sum += Indexed();
+        Console.WriteLine("table " + sum);
+
+        sum = 0;
+        for (int r = 0; r < 1000; r++) sum += Kept(r);
+        Console.WriteLine("kept " + sum + " first " + Keeper.Kept[0].K);
+
+        sum = 0;
+        for (int r = 0; r < 1000; r++) sum += Scanned();
+        Console.WriteLine("best " + sum);
+
+        sum = 0;
+        for (int r = 0; r < 1000; r++) sum += Followed();
+        Console.WriteLine("pairs " + sum);
+
+        // What was freed made again, many times over: the kept token must be
+        // untouched by it.
+        long churn = 0;
+        for (int r = 0; r < 2000; r++) churn += Once() + Bagged() + Scanned() + Followed();
+        Console.WriteLine("kept intact " + (churn == 2000L * (52 + 26 + 4 + 24) ? "ok" : "churn " + churn) + " " + Keeper.Kept[0].K + " " + Keeper.Kept.Count * 26);
+    }
+}

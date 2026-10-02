@@ -435,6 +435,12 @@ interface IOwnsStorage
 interface IOwnsElements : IOwnsStorage
 {
     void FreeOwnedElements();
+    /// From here on its elements go with its storage (FreeStorage), however
+    /// it comes to be freed: an owned field's collection, freed with the
+    /// object that holds it (Runtime.FreeField, Runtime.FreeOwnedFields), is
+    /// freed by no code the compiler placed beside it (Opt.OwnedElements,
+    /// through a field).
+    void OwnElements();
 }
 
 static class Runtime
@@ -446,6 +452,15 @@ static class Runtime
     {
         if (collection == null || (Sys.Peek(Sys.Word(collection)) & WordSize.AddressMask) == 0) return;
         if (collection is IOwnsElements owner) owner.FreeOwnedElements();
+    }
+
+    /// A collection whose elements the compiler proved are the collection's
+    /// own wherever it is read -- through the one field it is handed to, by
+    /// code that keeps the field's value alive past every use of what it read
+    /// -- gives them back whenever its storage goes (IOwnsElements.OwnElements).
+    public static void OwnElements(object? collection)
+    {
+        if (collection is IOwnsElements owner) owner.OwnElements();
     }
 
     /// A collection the compiler made in a frame instead of the heap (Escape's
@@ -1172,7 +1187,12 @@ static class Runtime
                 Gc.FreeFieldChecked(held);
                 return;
             }
-            Gc.Free(held);
+            // As any object proved dead is given back (Free): with its own
+            // owned fields, and a collection with its storage -- and its
+            // elements, where the compiler marked them its own
+            // (IOwnsElements.OwnElements). Given back alone, a parser's token
+            // list left its array and every token to the collector.
+            Free((nint)held);
         }
     }
 
