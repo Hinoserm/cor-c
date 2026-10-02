@@ -61,37 +61,44 @@ public sealed class RegionHints
         foreach (string name in names) index.Add(name, index.Count);
         using MemoryStream stream = new();
         using BinaryWriter writer = new(stream, Utf8, leaveOpen: true);
+        // Numbers as seven bits a byte, signed ones zigzagged: most are small.
+        void Var(long value)
+        {
+            ulong bits = (ulong)((value << 1) ^ (value >> 63));
+            while (bits >= 0x80) { writer.Write((byte)(bits | 0x80)); bits >>= 7; }
+            writer.Write((byte)bits);
+        }
         writer.Write(Magic); writer.Write(Version); writer.Write(0); // length, filled below
-        writer.Write(names.Count);
+        Var(names.Count);
         foreach (string name in names)
         {
             byte[] bytes = Utf8.GetBytes(name);
             if (bytes.Length == 0 || bytes.Length > 16384 || name.Contains('\0')) throw new ElfFormatException("Invalid region hint name");
-            writer.Write(bytes.Length); writer.Write(bytes);
+            Var(bytes.Length); writer.Write(bytes);
         }
-        writer.Write(AddressTaken.Count);
-        foreach (string name in AddressTaken) writer.Write(index[name]);
-        writer.Write(Functions.Count);
+        Var(AddressTaken.Count);
+        foreach (string name in AddressTaken) Var(index[name]);
+        Var(Functions.Count);
         foreach (RegionFunction function in Functions)
         {
-            writer.Write(index[function.Name]);
+            Var(index[function.Name]);
             writer.Write((byte)((function.Global ? 1 : 0) | (function.MayBeBoundary ? 2 : 0) | (function.Instance ? 4 : 0)));
-            writer.Write(function.Parameters); writer.Write(function.Nodes); writer.Write(function.Slots);
-            writer.Write(function.Sites.Length);
+            Var(function.Parameters); Var(function.Nodes); Var(function.Slots);
+            Var(function.Sites.Length);
             foreach (RegionSite site in function.Sites)
             {
-                writer.Write(site.Rewritable); writer.Write(site.Line);
-                writer.Write(site.Table is null ? -1 : index[site.Table]); writer.Write(site.At);
+                writer.Write(site.Rewritable); Var(site.Line);
+                Var(site.Table is null ? -1 : index[site.Table]); Var(site.At);
             }
-            writer.Write(function.Constraints.Count);
-            foreach (RegionConstraint c in function.Constraints) { writer.Write((byte)c.Kind); writer.Write(c.A); writer.Write(c.B); writer.Write(c.C); }
-            writer.Write(function.Calls.Count);
+            Var(function.Constraints.Count);
+            foreach (RegionConstraint c in function.Constraints) { writer.Write((byte)c.Kind); Var(c.A); Var(c.B); Var(c.C); }
+            Var(function.Calls.Count);
             foreach (RegionCall call in function.Calls)
             {
-                writer.Write(call.Callee is null ? -1 : index[call.Callee]);
-                writer.Write(call.GraphOnly); writer.Write(call.Dest);
-                writer.Write(call.Arguments.Length);
-                foreach (int argument in call.Arguments) writer.Write(argument);
+                Var(call.Callee is null ? -1 : index[call.Callee]);
+                Var(call.Dest);
+                Var(call.Arguments.Length);
+                foreach (int argument in call.Arguments) Var(argument);
             }
         }
         writer.Flush();
@@ -109,16 +116,35 @@ public sealed class RegionHints
         {
             if (reader.ReadUInt32() != Magic || reader.ReadInt32() != Version) throw new ElfFormatException("Unsupported region hints");
             if (reader.ReadInt32() != bytes.Length) throw new ElfFormatException("Invalid region hint length");
-            int Count(int size)
+            long Var()
             {
-                int count = reader.ReadInt32();
-                if (count < 0 || count > (bytes.Length - stream.Position) / size) throw new ElfFormatException("Invalid region hint count");
+                ulong bits = 0;
+                for (int shift = 0; ; shift += 7)
+                {
+                    if (shift > 63) throw new ElfFormatException("Invalid region hint number");
+                    byte b = reader.ReadByte();
+                    bits |= (ulong)(b & 0x7F) << shift;
+                    if (b < 0x80) break;
+                }
+                return (long)(bits >> 1) ^ -(long)(bits & 1);
+            }
+            int Int()
+            {
+                long value = Var();
+                if (value < int.MinValue || value > int.MaxValue) throw new ElfFormatException("Invalid region hint number");
+                return (int)value;
+            }
+            // Every element takes a byte at least: no count is more than what is left.
+            int Count()
+            {
+                int count = Int();
+                if (count < 0 || count > bytes.Length - stream.Position) throw new ElfFormatException("Invalid region hint count");
                 return count;
             }
-            string[] names = new string[Count(5)];
+            string[] names = new string[Count()];
             for (int i = 0; i < names.Length; i++)
             {
-                int length = reader.ReadInt32();
+                int length = Int();
                 if (length < 1 || length > 16384 || length > bytes.Length - stream.Position) throw new ElfFormatException("Invalid region hint name");
                 string name = Utf8.GetString(reader.ReadBytes(length));
                 if (name.Contains('\0') || i > 0 && string.CompareOrdinal(names[i - 1], name) >= 0) throw new ElfFormatException("Invalid region hint name table");
@@ -127,33 +153,33 @@ public sealed class RegionHints
             }
             string Name()
             {
-                int at = reader.ReadInt32();
+                int at = Int();
                 if (at < 0 || at >= names.Length) throw new ElfFormatException("Invalid region hint name index");
                 return names[at];
             }
             RegionHints hints = new();
-            for (int i = Count(4); i > 0; i--) hints.AddressTaken.Add(Name());
-            for (int i = Count(22); i > 0; i--)
+            for (int i = Count(); i > 0; i--) hints.AddressTaken.Add(Name());
+            for (int i = Count(); i > 0; i--)
             {
                 string name = Name();
                 byte flags = reader.ReadByte();
-                int parameters = reader.ReadInt32(), nodes = reader.ReadInt32(), slots = reader.ReadInt32();
+                int parameters = Int(), nodes = Int(), slots = Int();
                 if (parameters < 0 || nodes <= parameters || nodes > RegionFunction.NodeLimit || slots < 0 || slots > RegionFunction.NodeLimit)
                     throw new ElfFormatException("Invalid region hint function");
-                RegionSite[] sites = new RegionSite[Count(17)];
+                RegionSite[] sites = new RegionSite[Count()];
                 for (int s = 0; s < sites.Length; s++)
                 {
                     bool rewritable = reader.ReadBoolean();
-                    int line = reader.ReadInt32(), table = reader.ReadInt32();
-                    long at = reader.ReadInt64();
+                    int line = Int(), table = Int();
+                    long at = Var();
                     if (table < -1 || table >= names.Length) throw new ElfFormatException("Invalid region hint stamp");
                     sites[s] = new RegionSite(rewritable, line, table < 0 ? null : names[table], at);
                 }
                 RegionFunction function = new(name, (flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0, parameters, nodes, slots, sites);
                 bool Node(int n) => n >= 0 && n < nodes;
-                for (int k = Count(17); k > 0; k--)
+                for (int k = Count(); k > 0; k--)
                 {
-                    RegionConstraint c = new((RegionConstraintKind)reader.ReadByte(), reader.ReadInt32(), reader.ReadInt32(), reader.ReadInt64());
+                    RegionConstraint c = new((RegionConstraintKind)reader.ReadByte(), Int(), Int(), Var());
                     bool valid = c.Kind switch
                     {
                         RegionConstraintKind.Site => Node(c.A) && c.B >= 0 && c.B < sites.Length,
@@ -165,16 +191,15 @@ public sealed class RegionHints
                     if (!valid) throw new ElfFormatException("Invalid region hint constraint");
                     function.Constraints.Add(c);
                 }
-                for (int k = Count(13); k > 0; k--)
+                for (int k = Count(); k > 0; k--)
                 {
-                    int callee = reader.ReadInt32();
+                    int callee = Int();
                     string? named = callee == -1 ? null : callee >= 0 && callee < names.Length ? names[callee] : throw new ElfFormatException("Invalid region hint call");
-                    bool graphOnly = reader.ReadBoolean();
-                    int dest = reader.ReadInt32();
-                    int[] arguments = new int[Count(4)];
-                    for (int a = 0; a < arguments.Length; a++) arguments[a] = reader.ReadInt32();
+                    int dest = Int();
+                    int[] arguments = new int[Count()];
+                    for (int a = 0; a < arguments.Length; a++) arguments[a] = Int();
                     if (dest < -1 || dest >= nodes || arguments.Any(a => a < -1 || a >= nodes)) throw new ElfFormatException("Invalid region hint call");
-                    function.Calls.Add(new RegionCall(named, graphOnly, dest, arguments));
+                    function.Calls.Add(new RegionCall(named, dest, arguments));
                 }
                 hints.Functions.Add(function);
             }
@@ -255,10 +280,9 @@ public readonly record struct RegionConstraint(RegionConstraintKind Kind, int A,
 /// <summary>
 /// A call: of a function or a virtual call's symbol, or of something nobody
 /// can name (null). Its arguments' nodes in order (-1: none that can hold an
-/// address) and its result's. A call only for the call graph (an allocator's,
-/// the collector's notes) binds nothing.
+/// address) and its result's.
 /// </summary>
-public sealed record RegionCall(string? Callee, bool GraphOnly, int Dest, int[] Arguments);
+public sealed record RegionCall(string? Callee, int Dest, int[] Arguments);
 
 /// <summary>
 /// The link's region answer for one unit (RegionSolver): the functions to

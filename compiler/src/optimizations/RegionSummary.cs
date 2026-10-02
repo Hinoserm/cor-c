@@ -212,7 +212,7 @@ public static class RegionSummary
                     // A virtual call: every override the link finds for its
                     // declaring type and slot. Any other: nobody can say.
                     string? callee = _virtuals!.TryGetValue(i, out string[]? named) && named.Length == 1 ? named[0] : null;
-                    _calls.Add(new(callee, false, dest, Arguments(i, 1)));
+                    _calls.Add(new(callee, dest, Arguments(i, 1)));
                     return;
                 }
 
@@ -246,19 +246,17 @@ public static class RegionSummary
         private void Call(Instr i, int dest)
         {
             string? callee = i.Callee;
-            if (callee is null) { _calls.Add(new(null, false, dest, Arguments(i, 0))); return; }
+            if (callee is null) { _calls.Add(new(null, dest, Arguments(i, 0))); return; }
             if (RegionPointsTo.IsSiteCall(i))
             {
                 int site = _sites.Count;
                 (string? table, long at) = Stamp(i) ?? (null, 0);
                 _sites.Add(new(RegionPointsTo.IsRewritable(callee), i.Line, table, at));
                 if (dest >= 0) _constraints.Add(new(RegionConstraintKind.Site, dest, site, 0));
-                // What the allocator calls (a collection, what it runs) is
-                // beneath every allocation.
-                _calls.Add(new(callee, true, -1, Array.Empty<int>()));
                 return;
             }
-            if (RegionPointsTo.Harmless(callee)) { _calls.Add(new(callee, true, -1, Array.Empty<int>())); return; }
+            // The collector's notes and the runtime's frees keep no pointer.
+            if (RegionPointsTo.Harmless(callee)) return;
             // An instruction the backend makes of a call -- the thread's block,
             // the exception being caught -- calls no code: what it answers is
             // unknown, what it is handed goes where nobody follows.
@@ -268,7 +266,7 @@ public static class RegionSummary
                 Copy(dest, Unknown(), 0);
                 return;
             }
-            _calls.Add(new(callee, false, dest, Arguments(i, 0)));
+            _calls.Add(new(callee, dest, Arguments(i, 0)));
         }
 
         // Each register written once, to its instruction; null where written more.
@@ -423,7 +421,7 @@ public static class RegionSummary
             {
                 int[] arguments = new int[call.Arguments.Length];
                 for (int k = 0; k < arguments.Length; k++) arguments[k] = Node(call.Arguments[k]);
-                calls.Add(new(call.Callee, call.GraphOnly, Node(call.Dest), arguments));
+                calls.Add(new(call.Callee, Node(call.Dest), arguments));
             }
             RegionFunction result = new(_f.Name, _f.Exported, _f.Async is null && !_f.Name.Contains("StaticInit", StringComparison.Ordinal),
                 _params > 0 && _f.Params[0].Name == "this", _params, next, _slots.Count, _sites.ToArray());

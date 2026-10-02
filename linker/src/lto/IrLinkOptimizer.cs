@@ -16,7 +16,7 @@ public static class IrLinkOptimizer
         Dictionary<ObjectFile, IrArchive> archives = new();
         Dictionary<ObjectFile, LifetimeHints> hints = new();
         List<LifetimeHints> hintOrder = new();
-        Dictionary<ObjectFile, RegionHints> regionHints = new();
+        HashSet<ObjectFile> regionHints = new();
         Dictionary<string, ObjectFile> owners = new(StringComparer.Ordinal);
         // IN LINK ORDER, not by name: an object's name is a digest of its
         // source's full path, and the same tree checked out elsewhere was
@@ -28,7 +28,7 @@ public static class IrLinkOptimizer
             // Hints without the IR they would recompile are nothing to act on.
             if (archive is not null && LifetimeHints.Read(input.Object) is LifetimeHints unit)
             { hints.Add(input.Object, unit); hintOrder.Add(unit); }
-            if (archive is not null && RegionHints.Read(input.Object) is RegionHints regions) regionHints.Add(input.Object, regions);
+            if (archive is not null && input.Object.Sections.Any(section => section.Name == RegionHints.SectionName)) regionHints.Add(input.Object);
             foreach (Symbol symbol in input.Object.Symbols.Where(symbol => symbol.Global && symbol.IsDefined))
                 owners.TryAdd(symbol.Name, input.Object);
         }
@@ -71,7 +71,7 @@ public static class IrLinkOptimizer
                 + hintOrder.SelectMany(unit => unit.Owned!.Fields.Keys).Distinct(StringComparer.Ordinal).Count()
                 + (Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 0 } ? ": " + string.Join(" ", ownedFields.Fields.Keys.Order(StringComparer.Ordinal)) : ""));
         bool regionsPossible = lifetimes is not null && closedImageEntry is not null && archives.Keys.All(hints.ContainsKey)
-            && archives.Keys.All(regionHints.ContainsKey)
+            && archives.Keys.All(regionHints.Contains)
             && new[] { RuntimeAbi.RegionEnter, RuntimeAbi.RegionLeave, RuntimeAbi.AllocRegion }.All(owners.ContainsKey);
         // A closed image keeps only what is reached, and reaching is judged
         // on the IR as the units left it. Two kinds of call are made later:
@@ -101,8 +101,10 @@ public static class IrLinkOptimizer
         Dictionary<ObjectFile, RegionFacts>? regionFacts = null;
         if (regionsPossible)
         {
-            List<ObjectFile> regionOrder = inputs.Select(input => input.Object).Where(regionHints.ContainsKey).ToList();
-            List<RegionHints> regionUnits = regionOrder.Select(obj => regionHints[obj]).ToList();
+            // Read only now, and let go once solved: the backends to come,
+            // in this process or beside it, want the memory.
+            List<ObjectFile> regionOrder = inputs.Select(input => input.Object).Where(regionHints.Contains).ToList();
+            List<RegionHints> regionUnits = regionOrder.Select(obj => RegionHints.Read(obj)!).ToList();
             Dictionary<string, string[]> regionVirtuals = VirtualTargets.Resolve(inputs, RegionSolver.VirtualNames(regionUnits));
             // What code outside the IR names: it may call any of it, with anything.
             SortedSet<string> foreign = new(StringComparer.Ordinal);
@@ -119,6 +121,7 @@ public static class IrLinkOptimizer
                     if (solved[u] is { IsEmpty: false } unitFacts) regionFacts[regionOrder[u]] = unitFacts;
             }
         }
+
         int lifetimeUnits = 0;
         List<(int Index, List<(string Symbol, IrArchive Archive, IrArchiveEntry Body)> Imports, HashSet<string>? Retained)> plans = new();
         if (enabled)

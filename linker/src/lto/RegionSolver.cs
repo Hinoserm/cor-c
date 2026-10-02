@@ -280,6 +280,8 @@ public static class RegionSolver
 
         private void Log(string text) => Console.Error.WriteLine("regions: " + text);
 
+        private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
+
         public RegionFacts?[]? Run()
         {
             NewObject(-1, -1, -1, 0);                               // Global
@@ -321,7 +323,7 @@ public static class RegionSolver
             // and never taken, and the rest is dead by its return -- before
             // any region open above it, wherever, is given back.
             Log($"contexts {_maxDepth} deep: {_functions.Count} functions, {_copyFunction.Count} copies, {_objectFunction.Count} objects, {_parent.Count} nodes, "
-                + $"{_locationObject.Count} locations, {_held} held, {_steps} steps");
+                + $"{_locationObject.Count} locations, {_held} held, {_steps} steps, {_clock.ElapsedMilliseconds} ms");
             return Judge();
         }
 
@@ -618,10 +620,6 @@ public static class RegionSolver
         {
             int u = _unitOf[_copyFunction[copy]];
             if (call.Callee is not { } name) { Unknown(copy, call); return; }
-            // An allocator's call, the collector's notes: what the runtime
-            // runs there calls the program back only through what its
-            // address is taken for (a hook), a root.
-            if (call.GraphOnly) return;
             if (name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal))
             {
                 List<string> overrides = new();
@@ -921,8 +919,15 @@ public static class RegionSolver
             List<int> start = new();
             for (int k = 0; k <= f.Parameters; k++) start.AddRange(ObjectsHeld(Node(c, k)));
             Reach(start, reached, _globalReach);
+            // What is kept of these answers has a bound of its own: past it
+            // they are forgotten, and asked again when wanted.
+            _outlivingHeld += reached.Count;
+            if (_outlivingHeld > OutlivingBudget) { _outliving.Clear(); _outlivingHeld = reached.Count; }
             return _outliving[c] = reached;
         }
+
+        private const long OutlivingBudget = 8_000_000;
+        private long _outlivingHeld;
 
         private bool Outlives(int o, int c) => _globalReach.Contains(o) || Outliving(c).Contains(o);
 
@@ -944,41 +949,42 @@ public static class RegionSolver
                     (bySite.TryGetValue(key, out List<int>? list) ? list : bySite[key] = new()).Add(o);
                 }
 
-            // THE NEAREST CALL EACH OBJECT DIES IN (RegionPointsTo.Nearest):
-            // from each copy that makes it up through its callers, nearest
-            // first, the first whose return it is proved not to outlive.
-            SortedSet<int> chosen = new();
+            Dictionary<int, List<int>> madeBy = new();
             foreach (List<int> objects in bySite.Values)
                 foreach (int o in objects)
+                    foreach (int maker in _objectMakers[o])
+                        (madeBy.TryGetValue(maker, out List<int>? list) ? list : madeBy[maker] = new()).Add(o);
+
+            // THE NEAREST CALL EACH OBJECT DIES IN (RegionPointsTo.Nearest):
+            // from each copy that makes it up through its callers, nearest
+            // first, the first whose return it is proved not to outlive. One
+            // walk a making copy, for all it makes.
+            SortedSet<int> chosen = new();
+            foreach ((int made, List<int> objects) in madeBy.OrderBy(pair => pair.Key))
+            {
+                List<int> open = objects.Where(o => !_globalReach.Contains(o)).ToList();
+                if (open.Count == 0) continue;
+                Dictionary<int, int> depth = new() { [made] = 0 };
+                Queue<int> next = new();
+                next.Enqueue(made);
+                while (open.Count > 0 && next.TryDequeue(out int c))
                 {
-                    if (_globalReach.Contains(o)) continue;
-                    foreach (int made in _objectMakers[o])
-                    {
-                        Dictionary<int, int> depth = new() { [made] = 0 };
-                        Queue<int> next = new();
-                        next.Enqueue(made);
-                        while (next.TryDequeue(out int c))
-                        {
-                            if (MayBeBoundary(_copyFunction[c]) && !Outlives(o, c)) { chosen.Add(_copyFunction[c]); break; }
-                            if (depth[c] >= NearestReach) continue;
-                            foreach (int caller in _callers[c].Order())
-                                if (depth.TryAdd(caller, depth[c] + 1)) next.Enqueue(caller);
-                        }
-                    }
-                    if (_walked > JudgeBudget) return GiveUp("too much to judge");
+                    _walked++;
+                    if (MayBeBoundary(_copyFunction[c]))
+                        for (int k = open.Count - 1; k >= 0; k--)
+                            if (!Outlives(open[k], c)) { chosen.Add(_copyFunction[c]); open.RemoveAt(k); }
+                    if (depth[c] >= NearestReach) continue;
+                    foreach (int caller in _callers[c].Order())
+                        if (depth.TryAdd(caller, depth[c] + 1)) next.Enqueue(caller);
                 }
+                if (_walked > JudgeBudget) return GiveUp("too much to judge");
+            }
             if (_report is not null) foreach (int f in chosen) Log("boundary chosen " + _functions[f].Name);
             if (chosen.Count == 0)
             {
                 Log("no boundary found");
                 return new RegionFacts?[_units.Count];
             }
-
-            Dictionary<int, List<int>> madeBy = new();
-            foreach (List<int> objects in bySite.Values)
-                foreach (int o in objects)
-                    foreach (int maker in _objectMakers[o])
-                        (madeBy.TryGetValue(maker, out List<int>? list) ? list : madeBy[maker] = new()).Add(o);
 
             // A BOUNDARY THAT COSTS MORE THAN IT GIVES IS DROPPED: one whose
             // own allocations it frees are fewer than the sites it alone keeps
@@ -1018,7 +1024,7 @@ public static class RegionSolver
             foreach (int f in opened) For(f).Boundaries.Add(_functions[f].Name);
             foreach ((int f, int site) in taken) For(f).Sites.Add((_functions[f].Name, site));
             if (_report is not null) Report(chosen, opened, taken, madeBy);
-            Log($"{opened.Count} boundaries, {taken.Count} sites in the innermost region, of {bySite.Count}");
+            Log($"{opened.Count} boundaries, {taken.Count} sites in the innermost region, of {bySite.Count}; judged by {_clock.ElapsedMilliseconds} ms, {_walked} walked");
             return facts;
         }
 
