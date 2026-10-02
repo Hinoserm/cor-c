@@ -57,12 +57,13 @@ static class Program
 
     static int Main()
     {
-        long before = Gc.Frees;
+        // Given back one at a time, or with the region they were made in.
+        long before = Gc.Frees + Gc.RegionBlocks;
         string s = "";
         for (int k = 0; k < 400; k++) s = s + (char)('a' + (k % 26));
         long[] x = new long[1];
         for (int k = 0; k < 500; k++) x = Grow(x);
-        long freed = Gc.Frees - before;
+        long freed = Gc.Frees + Gc.RegionBlocks - before;
 
         long[] kept = new long[2];
         for (int k = 0; k < 50; k++) { kept = Fresh(3); kept[1] = 5; _kept = kept; }

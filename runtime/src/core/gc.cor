@@ -2060,6 +2060,9 @@ static class Gc
     /// innermost region full (made on the heap: a bigger arena would take them).
     public static long RegionFreedBytes;
     public static long RegionMisses;
+    /// Blocks made in regions: each given back when its region ends, as a
+    /// free would have given it back (what Frees counts for the heap).
+    public static long RegionBlocks;
     // Asked of the platform once; no initialiser, which would give Gc a
     // static constructor that runs before any thread has a block.
     static long _regionSlice;
@@ -2172,6 +2175,7 @@ static class Gc
         // The block laid down before the pointer passes it: a scan sees it
         // whole or not at all.
         Sys.Poke(tb + Tls.RegionAt, at + need);
+        RegionBlocks = RegionBlocks + 1;
         return (nint)(at + HeaderBytes);
     }
 

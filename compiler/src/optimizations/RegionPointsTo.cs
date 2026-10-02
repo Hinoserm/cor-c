@@ -47,6 +47,16 @@ public sealed class RegionPointsTo : IModulePass
     private const long Any = 0xFFFFFF;
     private const int NodeBudget = 6_000_000;
 
+    // GIVING UP IS SOUND: nothing is rewritten. Past this many locations held
+    // in all, the program is more than this analysis answers in the memory a
+    // compile has, and it stops rather than taking the compiler down.
+    private const long HeldBudget = 2_000_000;
+    private long _held;
+    // And past this much more heap than the compile had when the pass began,
+    // whatever holds it: edges, watchers, pairs of copies.
+    private const long HeapBudget = 300L * 1024 * 1024;
+    private long _heapAtStart;
+
     private Module _m = null!;
     private Dictionary<string, Function> _byName = null!;
     private Dictionary<Instr, string[]>? _indirect;
@@ -107,6 +117,7 @@ public sealed class RegionPointsTo : IModulePass
         _data = new(StringComparer.Ordinal);
         foreach (DataItem d in m.Data) _data[d.Name] = d;
 
+        _heapAtStart = GC.GetTotalMemory(false);
         NewObject(null, null, -1, null, 0);          // Global
 
         if (_byName.TryGetValue(m.Entry, out Function? entry)) CopyOf(entry, -1);
@@ -426,6 +437,7 @@ public sealed class RegionPointsTo : IModulePass
     private void Add(int node, long loc)
     {
         if (!_pts[node].Add(loc)) return;
+        _held++;
         List<long>? delta = _delta[node];
         if (delta is null) { _delta[node] = delta = new(); _work.Enqueue(node); }
         delta.Add(loc);
@@ -794,7 +806,8 @@ public sealed class RegionPointsTo : IModulePass
     {
         while (_work.TryDequeue(out int node))
         {
-            if (_pts.Count > NodeBudget) return false;
+            if (_pts.Count > NodeBudget || _held > HeldBudget) return false;
+            if ((_steps & 1023) == 0 && GC.GetTotalMemory(false) - _heapAtStart > HeapBudget) return false;
             if (++_steps % 500_000 == 0)
                 Console.Error.WriteLine($"regions: step {_steps}: {_pts.Count} nodes, {_copies.Count} copies, {_objects.Count} objects, {_work.Count} waiting");
             List<long> delta = _delta[node]!;
