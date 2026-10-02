@@ -1,0 +1,52 @@
+// test: owned_elements_freed_across_units
+// units: tests/language/support/910_owned_elements_units.cor
+// expect-exit: 0
+// expect-output:
+// 2032000
+//
+// 909 as a unit of its own: the element free is a runtime helper the link
+// keeps although only a call written by the lifetime passes names it, and
+// the dictionary's inlined constructor (field stores, write barriers) and
+// Count (an untagged field load) are uses the proof follows.
+
+using System;
+using System.Collections.Generic;
+static class P
+{
+    static int Walk(int[] preds)
+    {
+        Dictionary<int, Dictionary<int, int>> outgoing = new();
+        int total = 0;
+        for (int block = 0; block < preds.Length; block++)
+        {
+            Dictionary<int, int> memory = new();
+            if (preds[block] >= 0 && outgoing.TryGetValue(preds[block], out Dictionary<int, int>? inherited))
+                memory = new Dictionary<int, int>(inherited);
+            for (int k = 0; k < 6; k++) memory[(block * 7 + k) % 23] = k;
+            total += memory.Count;
+            outgoing[block] = memory;
+        }
+        return total + outgoing.Count;
+    }
+    static int Rows(int n)
+    {
+        List<List<int>> rows = new();
+        for (int i = 0; i < n; i++)
+        {
+            List<int> row = new();
+            for (int j = 0; j <= i % 9; j++) row.Add(i * j);
+            rows.Add(row);
+        }
+        int sum = 0;
+        for (int i = 0; i < rows.Count; i++) sum += rows[i].Count + rows[i][0];
+        return sum;
+    }
+    static void Main()
+    {
+        int[] preds = new int[64];
+        for (int i = 0; i < preds.Length; i++) preds[i] = i % 3 == 0 ? -1 : i - 1;
+        long sum = 0;
+        for (int r = 0; r < 2000; r++) sum += Walk(preds) + Rows(40);
+        Console.WriteLine(sum);
+    }
+}

@@ -147,6 +147,8 @@ public sealed partial class Escape : IModulePass
         // program with no window -- made every exception anywhere the
         // collector's.
         _reachedFunctions = !m.PreserveExports && m.Entry is not null ? Reached(m) : null;
+        if (canFree)
+            foreach (Function f in m.Functions) ConfirmOwnedElements(f, summaries);
         foreach (Function f in m.Functions)
         {
             PromoteIn(f, summaries, canFree, fields);
@@ -2811,6 +2813,36 @@ continue;
                 _promotedMade.Add(replacement[0]);
                 Record(f, new OwnedRecord { Origin = replacement[1], Root = i.Dest, SlotAddress = addr, Slot = slot, Renew = replacement[1], Bytes = bytes });
                 k += replacement.Count - 1;
+                if (i.Field == Instr.OwnsElements)
+                {
+                    // Its elements given back before the slot is filled again,
+                    // and on every return; the slot's first word zeroed on
+                    // entry, so the first such call finds no collection there.
+                    List<Instr> before = new();
+                    AppendElementFree(f, before, i, addr, i.Line);
+                    int renewAt = b.Instrs.IndexOf(replacement[1]);
+                    b.Instrs.InsertRange(renewAt, before);
+                    _bookkeeping.UnionWith(before);
+                    k += before.Count;
+                    foreach (Block exit in f.Blocks)
+                    {
+                        if (exit.Terminator is not { Op: Opcode.Ret }) continue;
+                        VReg at = f.NewReg(IrTypes.Word, "elementsAt");
+                        List<Instr> last = new() { new Instr { Op = Opcode.Copy, Dest = at, Operands = { new SlotOperand(slot) }, Line = exit.Instrs[^1].Line } };
+                        AppendElementFree(f, last, i, at, exit.Instrs[^1].Line);
+                        exit.Instrs.InsertRange(exit.Instrs.Count - 1, last);
+                        _bookkeeping.UnionWith(last);
+                    }
+                    VReg zeroAt = f.NewReg(IrTypes.Word, "elementsAt");
+                    List<Instr> entry = new()
+                    {
+                        new Instr { Op = Opcode.Copy, Dest = zeroAt, Operands = { new SlotOperand(slot) }, Line = EntryLine(f, i.Line) },
+                        new Instr { Op = Opcode.Store, Size = IrTypes.Word.Bytes(), Operands = { new RegOperand(zeroAt), new ImmOperand(0, IrTypes.Word) }, Line = EntryLine(f, i.Line) },
+                    };
+                    f.Entry.Instrs.InsertRange(0, entry);
+                    _bookkeeping.UnionWith(entry);
+                    if (ReferenceEquals(b, f.Entry)) k += entry.Count;
+                }
                 budget -= bytes;
                 Promoted++;
                 // Only base references may anchor another generation: an
@@ -2885,6 +2917,7 @@ continue;
         {
             VReg prev = f.NewReg(IrTypes.Word, "owned");
             releasePrevious.Add(new Instr { Op = Opcode.Load, Size = word, Dest = prev, Operands = { new RegOperand(addr) }, Line = alloc.Line });
+            AppendElementFree(f, releasePrevious, alloc, prev, alloc.Line);
             record.Frees.Add((block, AppendFree(f, releasePrevious, prev, alloc.Line), prev));
         }
         block.Instrs.InsertRange(at, releasePrevious);
@@ -2915,6 +2948,7 @@ continue;
                 new Instr { Op = Opcode.Copy, Dest = a, Operands = { new SlotOperand(slot) }, Line = exitLine },
                 new Instr { Op = Opcode.Load, Size = word, Dest = p, Operands = { new RegOperand(a) }, Line = exitLine },
             };
+            AppendElementFree(f, releaseExit, alloc, p, exitLine);
             record.Frees.Add((b, AppendFree(f, releaseExit, p, exitLine), p));
             b.Instrs.InsertRange(r, releaseExit);
             _bookkeeping.UnionWith(releaseExit);
@@ -3176,6 +3210,7 @@ continue;
         // A branch on it: there is no after in this block.
         if (last is not null && ReferenceEquals(last, b.Terminator)) return false;
         List<Instr> free = new();
+        AppendElementFree(f, free, made, made.Dest, b.Instrs[lastAt].Line);
         Instr call = AppendFree(f, free, made.Dest, b.Instrs[lastAt].Line);
         b.Instrs.InsertRange(lastAt + 1, free);
         _bookkeeping.UnionWith(free);

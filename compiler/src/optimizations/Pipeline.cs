@@ -116,6 +116,9 @@ public sealed class Pipeline
         if (experimentalBatch) p.Passes.Add(new CommonTailMerge());
         p.ModulePasses.Add(new DeadStatics());
         p.ModulePasses.Add(new DeadClosureThis());
+        // Before any inlining: the collections whose every use is still a
+        // call this rule knows, and those calls kept (OwnedElements).
+        p.ModulePasses.Add(new MarkOwnedElements());
         p.ModulePasses.Add(new ConstantSpecialize());
         p.ModulePasses.Add(Inliner(keepFree: true));
         // After inlining, because a literal's length is only visible once

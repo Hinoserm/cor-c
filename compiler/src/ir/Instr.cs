@@ -51,6 +51,12 @@ public sealed class Instr
     /// </summary>
     public const string DelegateInvoke = "\u0001invoke";
 
+    /// <summary>An allocation of a List or Dictionary used only through the calls OwnedElements knows: a candidate.</summary>
+    public const string OwnsCandidate = "\u0001owns-candidate";
+
+    /// <summary>The same, proved: whatever frees the collection gives back its elements first (Runtime.FreeOwnedElements).</summary>
+    public const string OwnsElements = "\u0001owns-elements";
+
     /// <summary>Whether this call hands back a struct made for it (FreshStruct).</summary>
     public bool ReturnsFreshStruct => Op is Opcode.Call or Opcode.CallIndirect && Field == FreshStruct;
 

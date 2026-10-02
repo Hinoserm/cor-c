@@ -161,7 +161,7 @@ public sealed partial class Lowering
         l.Run(unit);
         // The frees the lifetime passes may add (Escape), by the label they
         // call: declared is enough, the body may be another unit's.
-        foreach ((string helper, int arity) in new[] { ("Free", 1), ("FreeField", 2), ("FreeReplaced", 2), ("FreeOwnedReplaced", 2), ("KeepField", 2), ("CardMarkObject", 1) })
+        foreach ((string helper, int arity) in new[] { ("Free", 1), ("FreeField", 2), ("FreeReplaced", 2), ("FreeOwnedReplaced", 2), ("KeepField", 2), ("CardMarkObject", 1), ("FreeOwnedElements", 1) })
             if (l.RuntimeMethod(helper, arity) is MethodSymbol provided) l._m.RuntimeHelpers.Add(Label(provided));
         errors.AddRange(l.Errors);
         if (entries is not null)
@@ -400,7 +400,7 @@ public sealed partial class Lowering
             // the program: the passes run after lowering, and a call they add
             // to a routine nothing else reached would name a symbol no one
             // defines.
-            foreach ((string helper, int arity) in new[] { ("Free", 1), ("FreeReplaced", 2), ("FreeOwnedReplaced", 2) })
+            foreach ((string helper, int arity) in new[] { ("Free", 1), ("FreeReplaced", 2), ("FreeOwnedReplaced", 2), ("FreeOwnedElements", 1) })
                 if (RuntimeMethod(helper, arity) is MethodSymbol provided) Require(provided);
         }
 

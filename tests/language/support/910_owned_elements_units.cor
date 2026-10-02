@@ -1,0 +1,6 @@
+// The other unit of 910_owned_elements_freed_across_units: nothing of its
+// own the test needs, so the runtime and the libraries are all it brings.
+static class OwnedElementsUnitHelper
+{
+    public static int One() { return 1; }
+}

@@ -388,8 +388,30 @@ sealed class IteratorStopSignal : Exception
     public IteratorStopSignal() : base("The iterator was disposed.") { }
 }
 
+/// A collection the compiler may give the elements of back as it dies
+/// (Opt.OwnedElements): it proved each one was made for the collection, is
+/// held by nothing else, and is dead by then. Every instantiation's vtable
+/// carries the method, so one call reaches whichever it is.
+interface IOwnsElements
+{
+    void FreeOwnedElements();
+    /// The arrays the collection keeps its elements in, given back with it
+    /// when it is proved dead: they never leave the collection (a List that
+    /// lent its array out keeps it), so nothing else can hold them.
+    void FreeStorage();
+}
+
 static class Runtime
 {
+    /// The elements of a dying collection, given back (IOwnsElements). Null,
+    /// a frame slot not yet filled (no vtable yet), or anything that is not
+    /// such a collection is nothing to do.
+    public static void FreeOwnedElements(object? collection)
+    {
+        if (collection == null || (Sys.Peek(Sys.Word(collection)) & WordSize.AddressMask) == 0) return;
+        if (collection is IOwnsElements owner) owner.FreeOwnedElements();
+    }
+
     /// Delegate equality. Two closures are the same delegate when they are
     /// the same class -- which, for a method group, means the same method,
     /// because the compiler names those classes by the method -- and hold

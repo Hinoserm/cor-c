@@ -1,0 +1,53 @@
+// test: owned_elements_freed
+// expect-exit: 0
+// expect-output:
+// 2032000
+//
+// Collections whose every element was made for them, added once and held by
+// nothing else: when the collection dies its elements go with it, storage
+// and all (Runtime.FreeOwnedElements, IOwnsElements.FreeStorage). A value
+// reassigned before it is added (memory = new(inherited)) is still each
+// add's own object, and the entry-time free of a frame slot not yet filled
+// is nothing to do.
+
+using System;
+using System.Collections.Generic;
+static class P
+{
+    static int Walk(int[] preds)
+    {
+        Dictionary<int, Dictionary<int, int>> outgoing = new();
+        int total = 0;
+        for (int block = 0; block < preds.Length; block++)
+        {
+            Dictionary<int, int> memory = new();
+            if (preds[block] >= 0 && outgoing.TryGetValue(preds[block], out Dictionary<int, int>? inherited))
+                memory = new Dictionary<int, int>(inherited);
+            for (int k = 0; k < 6; k++) memory[(block * 7 + k) % 23] = k;
+            total += memory.Count;
+            outgoing[block] = memory;
+        }
+        return total + outgoing.Count;
+    }
+    static int Rows(int n)
+    {
+        List<List<int>> rows = new();
+        for (int i = 0; i < n; i++)
+        {
+            List<int> row = new();
+            for (int j = 0; j <= i % 9; j++) row.Add(i * j);
+            rows.Add(row);
+        }
+        int sum = 0;
+        for (int i = 0; i < rows.Count; i++) sum += rows[i].Count + rows[i][0];
+        return sum;
+    }
+    static void Main()
+    {
+        int[] preds = new int[64];
+        for (int i = 0; i < preds.Length; i++) preds[i] = i % 3 == 0 ? -1 : i - 1;
+        long sum = 0;
+        for (int r = 0; r < 2000; r++) sum += Walk(preds) + Rows(40);
+        Console.WriteLine(sum);
+    }
+}

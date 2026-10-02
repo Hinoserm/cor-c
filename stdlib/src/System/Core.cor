@@ -6758,7 +6758,10 @@ static class CollectionExpressionBuilder {
 // one when it dies (Opt.OwnedElements). A value type has nothing to free.
 static class OwnedElements {
     internal static void Release<E>(E element) {
-        if (Sys.IsObject(element) && Sys.Word(element) != 0) { Runtime.Free((nint)Sys.Word(element)); }
+        if (Sys.IsObject(element) && Sys.Word(element) != 0) {
+            if ((object?)element is IOwnsElements collection) { collection.FreeStorage(); }
+            Runtime.Free((nint)Sys.Word(element));
+        }
     }
 }
 
@@ -6768,7 +6771,7 @@ static class OutgrownStorage {
     }
 }
 
-class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
+class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
@@ -7363,12 +7366,18 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
     // THE ELEMENTS GIVEN BACK, by the compiler's call alone (OwnedElements):
     // it proved every element this list holds was made for it, is held by
     // nothing else, and is dead. Each is freed and its place cleared.
-    internal void FreeOwnedElements() {
+    public void FreeOwnedElements() {
         if (items == null) { return; }
         for (int i = 0; i < count; i++) {
             OwnedElements.Release(items[i]);
             items[i] = default(T)!;
         }
+        count = 0;
+    }
+
+    public void FreeStorage() {
+        if (!lent) { OutgrownStorage.Release(items); }
+        items = null!;
         count = 0;
     }
     // ---- the rest of .NET's List<T> ---------------------------------------
@@ -10186,7 +10195,7 @@ interface IReadOnlyDictionary<K, V> : IEnumerable<KeyValuePair<K, V>> {
     bool TryGetValue(K key, out V value);
 }
 
-class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>> {
+class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>>, IOwnsElements {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
@@ -10668,7 +10677,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     // THE VALUES GIVEN BACK, by the compiler's call alone (OwnedElements):
     // every value this table holds was proved made for it, held by nothing
     // else, and dead. Each is freed and its place cleared.
-    internal void FreeOwnedValues() {
+    public void FreeOwnedElements() {
         if (state == null) { return; }
         for (int i = 0; i < state.Length; i++) {
             if (state[i] == 1) {
@@ -10676,6 +10685,19 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
                 values[i] = default(V)!;
             }
         }
+    }
+
+    public void FreeStorage() {
+        OutgrownStorage.Release(keys);
+        OutgrownStorage.Release(values);
+        OutgrownStorage.Release(state);
+        OutgrownStorage.Release(hashes);
+        OutgrownStorage.Release(order);
+        OutgrownStorage.Release(placeOf);
+        OutgrownStorage.Release(vacant);
+        keys = null!; values = null!; state = null!; hashes = null!;
+        order = null; placeOf = null; vacant = null;
+        count = 0; filled = 0;
     }
 
     private void Grow() {
