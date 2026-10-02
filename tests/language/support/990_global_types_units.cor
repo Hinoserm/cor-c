@@ -1,0 +1,21 @@
+using System.Collections.Generic;
+
+// A global type -- no namespace -- declared in this unit, which is compiled
+// as a library, and a List of it made here as well as in the other unit.
+public sealed class GlobalThing
+{
+    public int Value;
+    public GlobalThing(int value) { Value = value; }
+}
+
+public static class GlobalThings
+{
+    public static List<GlobalThing> Some()
+    {
+        List<GlobalThing> made = new();
+        for (int i = 1; i <= 3; i++) made.Add(new GlobalThing(i * 10));
+        return made;
+    }
+
+    public static string NameOf(object o) => o.GetType().FullName ?? "?";
+}
