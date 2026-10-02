@@ -520,7 +520,7 @@ public sealed class Monomorphiser
         // library the one copy that was going to exist somewhere anyway.
         if (_library)
         {
-            foreach (TypeDecl t in unit.Types.Where(t => t.TypeParams.Count > 0 && !t.External && !t.Elsewhere))
+            foreach (TypeDecl t in unit.Types.Where(t => t.TypeParams.Count > 0 && !t.External && !t.Elsewhere && Shareable(t)))
             {
                 Canonicalise(t);
             }
@@ -537,7 +537,7 @@ public sealed class Monomorphiser
         //
         // External, so this declares the name and imports the code; it does not
         // compile a second copy of anything.
-        foreach (TypeDecl t in unit.Types.Where(t => t.TypeParams.Count > 0 && t.External))
+        foreach (TypeDecl t in unit.Types.Where(t => t.TypeParams.Count > 0 && t.External && Shareable(t)))
         {
             Canonicalise(t);
         }
@@ -661,6 +661,14 @@ public sealed class Monomorphiser
         output.TupleNamings.AddRange(_tupleNamings);
         return output;
     }
+
+    /// <summary>
+    /// Whether a template can have the shared word-shaped copy at all: not
+    /// when a parameter is `where T : struct`, which no machine word can be
+    /// -- that copy made its `T?` an `object?` with no HasValue, and a unit
+    /// owning `Box<T> where T : struct` could not compile.
+    /// </summary>
+    private static bool Shareable(TypeDecl template) => !template.TypeParams.Any(p => p.Struct);
 
     /// <summary>
     /// Queues the canonical copy of a template and answers what it is called.

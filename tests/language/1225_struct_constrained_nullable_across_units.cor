@@ -1,5 +1,5 @@
 // test: struct_constrained_nullable_across_units
-// units: tests/language/support/1195_struct_nullable_units.cor
+// units: tests/language/support/1225_struct_nullable_units.cor
 // expect-exit: 0
 // expect-output:
 // True False True
