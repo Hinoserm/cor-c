@@ -1,0 +1,27 @@
+// test: global_type_named_alike_in_every_unit
+// units: tests/language/support/990_global_types_units.cor
+// expect-exit: 0
+// expect-output:
+// 60 3 1
+// GlobalThing GlobalThing
+//
+// A global type declared in a unit compiled as a library was named
+// System.GlobalThing there and GlobalThing everywhere else, so the List of
+// it each unit makes was certified twice and the link refused the pair.
+
+using System;
+using System.Collections.Generic;
+
+public static class Program
+{
+    public static int Main()
+    {
+        List<GlobalThing> mine = new() { new GlobalThing(5) };
+        List<GlobalThing> theirs = GlobalThings.Some();
+        int sum = 0;
+        foreach (GlobalThing g in theirs) sum += g.Value;
+        Console.WriteLine(sum + " " + theirs.Count + " " + mine.Count);
+        Console.WriteLine(GlobalThings.NameOf(mine[0]) + " " + typeof(GlobalThing).FullName);
+        return 0;
+    }
+}

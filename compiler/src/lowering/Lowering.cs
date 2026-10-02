@@ -1535,7 +1535,13 @@ public sealed partial class Lowering
         {
             return t.Name;
         }
-        string space = d.Namespace.Length > 0 ? d.Namespace : d.FromLibrary ? LibraryHome(t.Name) : "";
+        // A GLOBAL TYPE'S HOME IS System ONLY IF THE SYSTEM LIBRARY DECLARES
+        // IT. FromLibrary says only that its source was compiled as a
+        // library -- every unit of a project after the first is (--lib) --
+        // so the unit declaring a kernel's global type named it System.X and
+        // every other unit, reading it from the index, plain X: List<X> was
+        // two certificates, and the link refused the shared instance.
+        string space = d.Namespace.Length > 0 ? d.Namespace : SystemType(t) ? LibraryHome(t.Name) : "";
         // The outer types: the declaration's path less its namespace.
         string outer = d.Outer ?? "";
         if (space.Length > 0 && (outer == space || outer.StartsWith(space + ".", StringComparison.Ordinal)))
