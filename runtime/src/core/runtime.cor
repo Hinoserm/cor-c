@@ -1132,7 +1132,7 @@ static class Runtime
             if (held != 0)
             {
                 Sys.Poke(field, 0);
-                Free((nint)held);
+                FreeHeld(held);
             }
         }
     }
@@ -1143,7 +1143,7 @@ static class Runtime
     {
         if (old != 0 && old != current && Gc.IgnoredFrees != 'r')
         {
-            Free(old);
+            FreeHeld((long)(nuint)old);
         }
     }
 
@@ -1192,8 +1192,25 @@ static class Runtime
             // elements, where the compiler marked them its own
             // (IOwnsElements.OwnElements). Given back alone, a parser's token
             // list left its array and every token to the collector.
-            Free((nint)held);
+            FreeHeld(held);
         }
+    }
+
+    /// WHAT AN OWNED FIELD HELD, given back. One made in this thread's region
+    /// goes with the region, but what it owns may be the heap's -- a parser's
+    /// token wrapper made in a region, its list and tokens on the heap -- and
+    /// only it leads there: its owned fields and storage go now. Read from a
+    /// field of an object still alive, it is no region memory a loop's lap
+    /// has given back already, as a pointer kept in a register might be.
+    static void FreeHeld(long held)
+    {
+        if (Gc.IgnoredFrees != 'p' && Gc.InOwnRegion(held))
+        {
+            FreeOwnedFields(held);
+            FreeStorageOf(held);
+            return;
+        }
+        Free((nint)held);
     }
 
     // THE FIELD FREES, LOGGED (CORSAC_FREE_LOG). A ring of the last entries,
