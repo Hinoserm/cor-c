@@ -115,6 +115,17 @@ public static class RegionSummary
             foreach (Block b in _f.Blocks)
                 foreach (Instr i in b.Instrs)
                     Constrain(i);
+            // AN ASYNC OR ITERATOR BODY'S FRAME OUTLIVES ITS RETURN: what its
+            // registers and slots hold across a suspension is moved into a
+            // frame on the heap after this IR (AsyncTransform), there for as
+            // long as the task or the enumerator is. Nothing it holds is
+            // dead by any return.
+            if (_f.Async is not null)
+            {
+                foreach (int node in _regs.Values.ToArray()) Leak(node);
+                foreach (int node in _slotNodes.Values.ToArray()) Leak(node);
+                Leak(Return);
+            }
             return Reduce();
         }
 
@@ -205,8 +216,14 @@ public static class RegionSummary
                     return;
                 }
 
-                // What this does not follow may be anything.
+                // What a system call is handed, the kernel may keep and hand
+                // back later (an event's data, a thread's argument).
                 case Opcode.Syscall:
+                    foreach (Operand o in i.Operands) Leak(Value(o));
+                    Copy(dest, Unknown(), 0);
+                    return;
+
+                // What this does not follow may be anything.
                 case Opcode.FramePointer:
                 case Opcode.StackPointer:
                 case Opcode.LabelAddr:
