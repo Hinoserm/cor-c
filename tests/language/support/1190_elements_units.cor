@@ -1,0 +1,58 @@
+// The other unit of 1190_owned_elements_handed_across_units: the classes
+// that keep a collection in a field and read it there, handed one by the
+// test's unit through their constructors.
+
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public sealed class Tok { public int K; public string T; public Tok(int k, string t) { K = k; T = t; } }
+
+// The tokens kept in a field, read by index, by count and by foreach.
+public sealed class TokParser
+{
+    private readonly List<Tok> _t;
+
+    public TokParser(List<Tok> tokens) { _t = tokens; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Parse()
+    {
+        int s = 0;
+        for (int i = 0; i < _t.Count; i++) s += _t[i].K;
+        foreach (Tok t in _t) s += t.T.Length - t.K;
+        return s;
+    }
+}
+
+public sealed class TokTable
+{
+    private readonly Dictionary<int, Tok> _d;
+
+    public TokTable(Dictionary<int, Tok> d) { _d = d; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Sum()
+    {
+        int s = 0;
+        for (int i = 0; i < 9; i++)
+            if (_d.TryGetValue(i, out Tok? t)) s += t.K;
+        return s;
+    }
+}
+
+// A field read here as the others are, and by the test's unit too, which
+// keeps one of its elements.
+public sealed class TokBox
+{
+    public List<Tok> Items;
+
+    public TokBox(List<Tok> items) { Items = items; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Sum()
+    {
+        int s = 0;
+        for (int i = 0; i < Items.Count; i++) s += Items[i].K;
+        return s;
+    }
+}

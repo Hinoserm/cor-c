@@ -15,6 +15,19 @@ public sealed class OwnedFieldFacts
     /// an owned field holds: a call to one is a read of the field.
     /// </summary>
     public HashSet<string> Borrowers { get; } = new(StringComparer.Ordinal);
+    /// <summary>
+    /// The fields a collection handed to them gives its elements back
+    /// through, by the collection's kind: every read of the field in the
+    /// program proved (Opt.OwnedElements, through a field).
+    /// </summary>
+    public Dictionary<string, string> Elements { get; } = new(StringComparer.Ordinal);
+    /// <summary>The parameters, by function, a collection handed to one of those fields goes through: the field each stores it into.</summary>
+    public Dictionary<(string Callee, int Argument), string> ElementCallees { get; } = new();
+    /// <summary>The fields some unit kept the reads of from the inliner for that rule: where not proved, its calls are the inliner's again.</summary>
+    public HashSet<string> ElementKept { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>Whether there is nothing here for a unit to apply.</summary>
+    public bool IsEmpty => Fields.Count == 0 && Elements.Count == 0 && ElementKept.Count == 0;
 }
 
 /// <summary>
@@ -94,8 +107,12 @@ public static class OwnedFieldSolver
             bool grew = false;
             foreach ((string callee, int argument) in sinkOrder)
             {
-                if (sinks.Contains((callee, argument)) || addressed.Contains(callee) || callee == entry
-                    || !directCallers.TryGetValue(callee, out List<int>? callers)) continue;
+                // A function nothing calls directly, and whose address nothing
+                // takes, is called by nobody: every caller hands over. One the
+                // compile's inliner took into every caller is such a function,
+                // its store judged where it was taken (`new Parser(tokens)`).
+                if (sinks.Contains((callee, argument)) || addressed.Contains(callee) || callee == entry) continue;
+                List<int> callers = directCallers.GetValueOrDefault(callee) ?? new List<int>();
                 if (callers.All(u => !all[u].Kept.Contains((callee, argument))
                         && (!all[u].Sinks.TryGetValue((callee, argument), out OwnedSink? sink)
                             || solver.Holds(sink.Needs) && sink.Sinks.All(sinks.Contains))))
@@ -236,6 +253,7 @@ public static class OwnedFieldSolver
             if (fields.Any(facts.Fields.ContainsKey)) facts.Borrowers.Add(function);
         foreach ((string symbol, string[] targets) in virtuals)
             if (targets.Any(facts.Borrowers.Contains)) facts.Borrowers.Add(symbol);
+        Elements(all, solver, facts, report);
         return facts;
 
         string Describe(LifetimeCondition c)
@@ -244,5 +262,49 @@ public static class OwnedFieldSolver
             IEnumerable<string> fresh = c.Fresh.Where(name => !solver.IsFresh(name)).Select(name => name + " fresh");
             return string.Join(", ", stays.Concat(fresh).Take(3));
         }
+    }
+
+    /// <summary>
+    /// ELEMENTS OWNED THROUGH A FIELD OVER EVERY UNIT: Escape's
+    /// FieldElementsProved for a whole program, from the units' hints. A
+    /// field is proved when some unit hands it a collection whose elements
+    /// are its own -- into the field itself, or to a parameter of another
+    /// unit's function that stores it there and does nothing else with it --
+    /// every such collection of one kind, and every unit that reads the
+    /// field, or takes its address, proved every read it has of it as reads
+    /// of that kind. A unit that reads it and judged nothing refuses it.
+    /// </summary>
+    private static void Elements(List<OwnedFieldHints> all, LifetimeSolver solver, OwnedFieldFacts facts, Action<string>? report)
+    {
+        // Each function's stored parameter, as every unit that defines it says.
+        Dictionary<(string, int), string?> stored = new();
+        foreach (OwnedFieldHints unit in all)
+            foreach (((string callee, int argument), string field) in unit.StoredParameters)
+                stored[(callee, argument)] = stored.TryGetValue((callee, argument), out string? known) && known != field ? null : field;
+        // A hand-off whose condition fails is no hand-off: the collection
+        // is not proved, and its unit marks nothing.
+        SortedDictionary<string, string?> handed = new(StringComparer.Ordinal);
+        void Hand(string field, OwnedElementRecord record)
+        {
+            if (!solver.Holds(record.Needs)) { report?.Invoke(field + " elements: a hand-off needs what does not hold"); return; }
+            handed[field] = handed.TryGetValue(field, out string? known) && known != record.Kind ? null : record.Kind;
+        }
+        foreach (OwnedFieldHints unit in all)
+        {
+            foreach ((string field, OwnedElementRecord record) in unit.ElementHandOffs) Hand(field, record);
+            foreach (((string callee, int argument), OwnedElementRecord record) in unit.ElementCalls)
+                if (stored.GetValueOrDefault((callee, argument)) is string field) Hand(field, record);
+            facts.ElementKept.UnionWith(unit.ElementKept);
+        }
+        foreach ((string field, string? kind) in handed)
+        {
+            if (kind is null) { report?.Invoke(field + " elements refused: collections of two kinds are handed to it"); continue; }
+            if (all.FirstOrDefault(unit => unit.Loaded.Contains(field)
+                    && !(unit.ElementReads.TryGetValue(field, out OwnedElementRecord? reads) && reads.Kind == kind && solver.Holds(reads.Needs))) is not null)
+            { report?.Invoke(field + " elements refused: a unit reads it otherwise"); continue; }
+            facts.Elements[field] = kind;
+        }
+        foreach (((string callee, int argument), string? field) in stored)
+            if (field is not null && facts.Elements.ContainsKey(field)) facts.ElementCallees[(callee, argument)] = field;
     }
 }

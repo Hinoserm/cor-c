@@ -1077,10 +1077,16 @@ static class Runtime
         // In a region: given back with it, and not a block LiveObject's lock
         // need be taken to ask about.
         if (Gc.InOwnRegion(at)) return;
+        // A collection's storage before its owned fields: a collection that
+        // owns its elements (IOwnsElements.OwnElements) reads them out of
+        // its arrays as it gives them back, and an array that is an owned
+        // field as well was freed and cleared first -- a table's values
+        // gone, and every element it held left to the collector. Its
+        // storage, given back, is cleared, and finds no owned field after.
         if (at != 0 && Gc.LiveObject(at))
         {
-            FreeOwnedFields(at);
             FreeStorageOf(at);
+            FreeOwnedFields(at);
         }
         Gc.Free(at);
     }

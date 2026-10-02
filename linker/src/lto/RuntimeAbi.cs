@@ -41,4 +41,6 @@ public static class RuntimeAbi
     /// -- it, and every function that calls it -- may open one.
     /// </summary>
     public const string SetThreadBlock = "m_Platform_SetThreadBlock_1_V$I64";
+    /// <summary>Made in the region of another object, or on the heap beside one there is none of (RegionPointsTo.Near).</summary>
+    public const string AllocNear = "m_Runtime_AllocNear_4_" + Word + "_" + Word + "_" + Word + "_" + Word;
 }

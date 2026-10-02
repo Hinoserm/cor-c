@@ -856,6 +856,23 @@ public sealed class RegionPointsTo : IModulePass
     private readonly Dictionary<int, HashSet<int>> _outliving = new();
     private HashSet<int> OutlivingOf(int c) => _outliving.TryGetValue(c, out HashSet<int>? known) ? known : _outliving[c] = Outliving(c);
 
+    /// <summary>
+    /// An allocation made beside another object instead (AllocNear): in that
+    /// object's region if it is in the innermost one open, or on the heap.
+    /// The instructions to put in its place.
+    /// </summary>
+    public static Instr[] Beside(Function f, Instr alloc, VReg owner)
+    {
+        VReg frame = f.NewReg(IrTypes.Word, "allocframe");
+        long kind = alloc.Callee == Opt.Escape.LeafAllocator ? LeafKind : alloc.Callee == Opt.Escape.ObjectAllocator ? ObjectKind : 0;
+        Instr made = new() { Op = Opcode.Call, Callee = Near, Dest = alloc.Dest, Line = alloc.Line };
+        made.Operands.Add(alloc.Operands[0]);
+        made.Operands.Add(new ImmOperand(kind, IrTypes.Word));
+        made.Operands.Add(new RegOperand(owner));
+        made.Operands.Add(new RegOperand(frame));
+        return new[] { new Instr { Op = Opcode.FramePointer, Dest = frame, Line = alloc.Line }, made };
+    }
+
     private static Instr Retarget(Function f, Instr alloc, string helper, VReg frame)
     {
         Operand bytes = alloc.Operands[0];

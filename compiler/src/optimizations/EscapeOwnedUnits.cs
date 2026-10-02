@@ -39,7 +39,12 @@ public sealed partial class Escape
             ApplyOwnedFields(m, decided, summaries);
             return;
         }
-        if (_hinting && m.LifetimeHints is not null) m.LifetimeHints.Owned = OwnedFieldHintsOf(m, summaries);
+        if (_hinting && m.LifetimeHints is not null)
+        {
+            m.LifetimeHints.Owned = OwnedFieldHintsOf(m, summaries);
+            // And of elements owned through a field, the link's to decide too.
+            if (_elementMode == ElementMode.Hints) ElementHints(m, m.LifetimeHints.Owned);
+        }
     }
 
     /// <summary>

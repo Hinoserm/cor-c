@@ -3,7 +3,7 @@
 // expect-exit: 0
 // expect-output:
 // parse 52000
-// bag 26000
+// bag 26000 True
 // table 26000
 // kept 26000 first 2
 // best 4000
@@ -11,10 +11,13 @@
 // kept intact ok 2 26
 //
 // 1100 as a unit of its own, the libraries in another. Every read of a field
-// is in sight only in a whole program, so here the rule leaves the elements
-// to the collector -- what is checked is that the runtime's side (a freed
-// field's collection given back with its storage) and the libraries' kept
-// calls arrive whole across units: the sums right, the kept token intact.
+// is in sight of the unit alone, so the unit judges its own and the link
+// decides each field over every unit (Lto.OwnedFieldSolver): the bag's
+// tokens go back with it as in a whole program, the kept token stays intact,
+// and what is read held across another read frees nothing. The parser's
+// list and the table are made by the lexer, which hands them back, and the
+// link makes them in a region, choosing from what the unit's compile could
+// see; their elements stay where it chose, and only the sums are checked.
 
 using System;
 using System.Collections.Generic;
@@ -196,15 +199,18 @@ static class P
     [MethodImpl(MethodImplOptions.NoInlining)]
     static int Followed() => new Follower(Lexer.Tokenize(Text)).Pairs();
 
+    static string Freed(long before, long least) => Gc.Frees - before >= least ? "True" : "False";
+
     static void Main()
     {
         long sum = 0;
         for (int r = 0; r < 1000; r++) sum += Once();
         Console.WriteLine("parse " + sum);
 
+        long before = Gc.Frees;
         sum = 0;
         for (int r = 0; r < 1000; r++) sum += Bagged();
-        Console.WriteLine("bag " + sum);
+        Console.WriteLine("bag " + sum + " " + Freed(before, 9000));
 
         sum = 0;
         for (int r = 0; r < 1000; r++) sum += Indexed();

@@ -70,10 +70,11 @@ public static class IrLinkOptimizer
             ? OwnedFieldSolver.Solve(hintOrder, lifetimes, virtuals, closedImageEntry,
                 Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 0 } which
                     ? line => { if (which.Length == 1 || line.Contains(which, StringComparison.Ordinal)) Console.Error.WriteLine("alloc report: field " + line); } : null) : null;
-        if (ownedFields is { Fields.Count: 0 }) ownedFields = null;
+        if (ownedFields is { IsEmpty: true }) ownedFields = null;
         if (ownedFields is not null)
             Console.Error.WriteLine("LTO owned fields: " + ownedFields.Fields.Count + " of "
                 + hintOrder.SelectMany(unit => unit.Owned!.Fields.Keys).Distinct(StringComparer.Ordinal).Count()
+                + ", elements owned through " + ownedFields.Elements.Count
                 + (Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 0 } ? ": " + string.Join(" ", ownedFields.Fields.Keys.Order(StringComparer.Ordinal)) : ""));
         LinkTimings.Phase("catches and owned fields");
         bool regionsPossible = lifetimes is not null && closedImageEntry is not null && archives.Keys.All(hints.ContainsKey)
@@ -89,7 +90,9 @@ public static class IrLinkOptimizer
         if (lifetimes is not null) foreach (LifetimeHints unit in hints.Values) linkRoots.UnionWith(unit.Helpers);
         if (hints.Values.Any(unit => unit.FieldSites.Count > 0)) { linkRoots.Add(LifetimeHints.FieldFreer); linkRoots.Add(LifetimeHints.FieldKeeper); }
         // And what regions call, wherever a regenerated unit may open one.
-        if (regionsPossible) { linkRoots.Add(RuntimeAbi.RegionEnter); linkRoots.Add(RuntimeAbi.RegionLeave); linkRoots.Add(RuntimeAbi.AllocRegion); linkRoots.Add(RuntimeAbi.RegionCatch); }
+        // And the allocator a collection's elements are made beside it with,
+        // where the link proved it owns them (Escape, elements through a field).
+        if (regionsPossible) { linkRoots.Add(RuntimeAbi.RegionEnter); linkRoots.Add(RuntimeAbi.RegionLeave); linkRoots.Add(RuntimeAbi.AllocRegion); linkRoots.Add(RuntimeAbi.RegionCatch); linkRoots.Add(RuntimeAbi.AllocNear); }
         // And a loop's region at the top of every lap, where the runtime has one.
         bool loopRegionsPossible = regionsPossible && owners.ContainsKey(RuntimeAbi.RegionLoop);
         if (loopRegionsPossible) linkRoots.Add(RuntimeAbi.RegionLoop);

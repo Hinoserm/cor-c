@@ -56,6 +56,26 @@ public sealed class OwnedFieldHints
     /// <summary>A virtual call the unit could not name by declaring type and slot.</summary>
     public bool UnresolvedVirtual { get; set; }
 
+    // ---- elements owned through a field (Opt.OwnedElements) ----
+
+    /// <summary>Every field the unit reads, or takes the address of: anything but a store.</summary>
+    public SortedSet<string> Loaded { get; } = new(StringComparer.Ordinal);
+    /// <summary>
+    /// The fields every read of which here is proved, as a collection of a
+    /// kind ("List", "Dictionary"), to keep the field's value alive past every
+    /// use of an element it answered, letting none go -- if what it names of
+    /// other units' functions holds.
+    /// </summary>
+    public SortedDictionary<string, OwnedElementRecord> ElementReads { get; } = new(StringComparer.Ordinal);
+    /// <summary>The fields a collection of a kind, whose elements are its own if the condition holds, is handed to here.</summary>
+    public SortedDictionary<string, OwnedElementRecord> ElementHandOffs { get; } = new(StringComparer.Ordinal);
+    /// <summary>Another unit's parameters such a collection is handed to here: the field is the one that callee stores it into.</summary>
+    public SortedDictionary<(string Callee, int Argument), OwnedElementRecord> ElementCalls { get; } = new(PairOrder.Instance);
+    /// <summary>The unit's own parameters stored into a field and put to no other use, with the field.</summary>
+    public SortedDictionary<(string Callee, int Argument), string> StoredParameters { get; } = new(PairOrder.Instance);
+    /// <summary>The fields whose reads here were kept from the inliner for this rule: the link's answer lets them go again.</summary>
+    public SortedSet<string> ElementKept { get; } = new(StringComparer.Ordinal);
+
     public sealed class PairOrder : IComparer<(string, int)>
     {
         public static readonly PairOrder Instance = new();
@@ -106,6 +126,11 @@ public sealed class OwnedFieldHints
         }
         foreach ((string callee, int _) in Kept) names.Add(callee);
         names.UnionWith(Addressed); names.UnionWith(CodeNamed); names.UnionWith(Slotted);
+        names.UnionWith(Loaded); names.UnionWith(ElementKept);
+        foreach ((string field, OwnedElementRecord record) in ElementReads) { names.Add(field); names.Add(record.Kind); Condition(record.Needs); }
+        foreach ((string field, OwnedElementRecord record) in ElementHandOffs) { names.Add(field); names.Add(record.Kind); Condition(record.Needs); }
+        foreach (((string callee, int _), OwnedElementRecord record) in ElementCalls) { names.Add(callee); names.Add(record.Kind); Condition(record.Needs); }
+        foreach (((string callee, int _), string field) in StoredParameters) { names.Add(callee); names.Add(field); }
         Dictionary<string, int> index = new(StringComparer.Ordinal);
         writer.Write(names.Count);
         foreach (string name in names)
@@ -151,6 +176,14 @@ public sealed class OwnedFieldHints
         Pairs(Kept);
         Names(Addressed, Addressed.Count); Names(CodeNamed, CodeNamed.Count); Names(Slotted, Slotted.Count);
         writer.Write(UnresolvedVirtual);
+        Names(Loaded, Loaded.Count); Names(ElementKept, ElementKept.Count);
+        void Map(SortedDictionary<string, OwnedElementRecord> map)
+        { writer.Write(map.Count); foreach ((string key, OwnedElementRecord value) in map) { writer.Write(index[key]); writer.Write(index[value.Kind]); Needs(value.Needs); } }
+        void PairMap(SortedDictionary<(string, int), OwnedElementRecord> map)
+        { writer.Write(map.Count); foreach (((string callee, int argument), OwnedElementRecord value) in map) { writer.Write(index[callee]); writer.Write(argument); writer.Write(index[value.Kind]); Needs(value.Needs); } }
+        Map(ElementReads); Map(ElementHandOffs); PairMap(ElementCalls);
+        writer.Write(StoredParameters.Count);
+        foreach (((string callee, int argument), string field) in StoredParameters) { writer.Write(index[callee]); writer.Write(argument); writer.Write(index[field]); }
     }
 
     internal static OwnedFieldHints Read(BinaryReader reader, long length)
@@ -231,6 +264,32 @@ public sealed class OwnedFieldHints
         Pairs(hints.Kept);
         NameSet(hints.Addressed); NameSet(hints.CodeNamed); NameSet(hints.Slotted);
         hints.UnresolvedVirtual = reader.ReadBoolean();
+        NameSet(hints.Loaded); NameSet(hints.ElementKept);
+        OwnedElementRecord Element()
+        {
+            OwnedElementRecord record = new(Name());
+            record.Needs.Add(Needs());
+            return record;
+        }
+        void Map(SortedDictionary<string, OwnedElementRecord> into)
+        {
+            for (int i = Count(20); i > 0; i--)
+                if (!into.TryAdd(Name(), Element())) throw new ElfFormatException("Duplicate owned-elements hint");
+        }
+        void PairMap(SortedDictionary<(string, int), OwnedElementRecord> into)
+        {
+            for (int i = Count(24); i > 0; i--)
+            {
+                string callee = Name(); int argument = reader.ReadInt32();
+                if (argument < 0 || !into.TryAdd((callee, argument), Element())) throw new ElfFormatException("Invalid owned-elements hint");
+            }
+        }
+        Map(hints.ElementReads); Map(hints.ElementHandOffs); PairMap(hints.ElementCalls);
+        for (int i = Count(12); i > 0; i--)
+        {
+            string callee = Name(); int argument = reader.ReadInt32();
+            if (argument < 0 || !hints.StoredParameters.TryAdd((callee, argument), Name())) throw new ElfFormatException("Invalid owned-elements hint");
+        }
         return hints;
     }
 }
@@ -272,6 +331,14 @@ public sealed class OwnedCallRead
     public SortedSet<string> DangerFields { get; } = new(StringComparer.Ordinal);
     /// <summary>The functions that hand it back again: they hand back whatever the callee does.</summary>
     public SortedSet<string> ReturnedBy { get; } = new(StringComparer.Ordinal);
+}
+
+/// <summary>A collection's kind, as a unit found it of a field (OwnedFieldHints.ElementReads and the rest), and what that needs of other units.</summary>
+public sealed class OwnedElementRecord
+{
+    public OwnedElementRecord(string kind) { Kind = kind; }
+    public string Kind { get; }
+    public LifetimeCondition Needs { get; } = new();
 }
 
 /// <summary>An argument every call of one unit hands over, if what it names holds.</summary>

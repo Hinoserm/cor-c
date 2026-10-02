@@ -81,7 +81,14 @@ public sealed partial class Escape
             // The same notes as CardMarks writes them out, last of the late
             // passes: the link runs its lifetime pass after them (RunAtLink),
             // and took every object a field store was barriered for as gone.
-            or "__x86.i.barrier" or "__x86.i.cardmark";
+            or "__x86.i.barrier" or "__x86.i.cardmark"
+            // The mark on a collection whose elements go with its storage
+            // (OwnedElements.Marker), a flag set and nothing kept: placed by
+            // the unit's late passes, it is a call the link's lifetime pass
+            // reads after them, and took the collection for gone -- a
+            // parser's tokens, stored into the parser, then no field of the
+            // parser freed with it.
+            or OwnedElements.Marker;
 
     /// <summary>
     /// The notes the barrier is built from, which are never inlined. Whether

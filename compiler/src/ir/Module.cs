@@ -126,6 +126,14 @@ public sealed class Module
     public HashSet<Instr> KeepCalls { get; } = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>
+    /// A unit's fields whose reads MarkOwnedElements kept from the inliner,
+    /// by the kind of collection they read: the lifetime pass of the same
+    /// compile judges them for the link (Escape, elements through a field).
+    /// Empty in a whole program and when the link runs the late passes.
+    /// </summary>
+    public SortedDictionary<string, string> ElementFields { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>
     /// Drops everything a shared object already contains, so that a program
     /// linked against one carries no second copy of it. Answers how many
     /// definitions went.

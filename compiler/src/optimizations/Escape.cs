@@ -93,6 +93,7 @@ public sealed partial class Escape : IModulePass
         _unresolvedWhy = Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 0 } ? new() : null;
         _module = m;
         _fieldElements.Clear();
+        _elementReadHints.Clear(); _elementHandOffHints.Clear(); _elementCallHints.Clear();
         _storedParameters = null;
         _items = null;
         _indirect = IndirectTargets(m, byName);
@@ -174,7 +175,14 @@ public sealed partial class Escape : IModulePass
         // program with no window -- made every exception anywhere the
         // collector's.
         _reachedFunctions = !m.PreserveExports && m.Entry is not null ? Reached(m) : null;
-        _marksElements = canFree && !m.PreserveExports && m.Entry is not null && Provided(OwnedElements.Marker);
+        // Elements owned through a field: judged over a whole program; in a
+        // unit's compile, for the link; in the link's run of a unit's late
+        // passes, with its answer (OwnedElements).
+        _elementFacts = m.AtLink ? m.OwnedFields : null;
+        _elementMode = !canFree || !Provided(OwnedElements.Marker) ? ElementMode.Off
+            : !m.PreserveExports && m.Entry is not null ? ElementMode.Whole
+            : m.AtLink ? _elementFacts is not null ? ElementMode.Linked : ElementMode.Off
+            : _hinting ? ElementMode.Hints : ElementMode.Off;
         if (canFree) ConfirmOwnedElements(m, summaries);
         foreach (Function f in m.Functions)
         {
@@ -192,6 +200,7 @@ public sealed partial class Escape : IModulePass
         // hints, or the link's answer applied (EscapeOwnedUnits).
         if (canFree) OwnedFieldsInUnit(m, byName, summaries);
         MarkElementsThroughFields();
+        ElementSites();
         m.NeedsHeap = AnyAllocationReachable(m, byName);
         // A PROGRAM THAT SAID IT RUNS WITHOUT A COLLECTOR gets none: what is
         // left is named, one note each, and is never given back.

@@ -102,6 +102,83 @@ internal static class OwnedElements
     }
 
     /// <summary>
+    /// A UNIT'S PARAMETERS STORED INTO A FIELD (StoredParameters): for the
+    /// link, those of the functions another unit can call; each function
+    /// looked at only when it stores one of its parameters into a field at all.
+    /// </summary>
+    internal static IEnumerable<(string Function, int Argument, string Field)> StoredParametersOf(Module m, bool exportedOnly = true)
+    {
+        foreach (Function g in m.Functions)
+        {
+            if (exportedOnly && !g.Exported || g.Async is not null || g.Params.Count < 2) continue;
+            HashSet<VReg> parameters = new(g.Params.Skip(1));
+            // And their copies, one step on: lowering may give a parameter a
+            // register of its own before it is stored.
+            foreach (Block b in g.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.Copy && i.Dest is not null && i.Operands.Count == 1 && i.Operands[0] is RegOperand from && g.Params.IndexOf(from.Reg) > 0)
+                        parameters.Add(i.Dest);
+            bool any = false;
+            foreach (Block b in g.Blocks)
+            {
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.Store && i.Field is not null && i.Operands.Count >= 2 && i.Operands[1] is RegOperand v && parameters.Contains(v.Reg))
+                    { any = true; break; }
+                if (any) break;
+            }
+            if (!any) continue;
+            foreach ((int p, string field) in StoredParameters(g)) yield return (g.Name, p, field);
+        }
+    }
+
+    /// <summary>
+    /// A HAND-OFF TO ANOTHER UNIT'S FUNCTION, in a unit's compile: what
+    /// field its parameter goes to is that unit's to say, and the link's to
+    /// match (Lto.OwnedFieldSolver). Named here as a field no instruction
+    /// has, read nowhere.
+    /// </summary>
+    internal static string CallField(string callee, int argument) => "\u0002" + argument.ToString(System.Globalization.CultureInfo.InvariantCulture) + ":" + callee;
+
+    /// <summary>The callee and argument a CallField names, or null for a field.</summary>
+    internal static (string Callee, int Argument)? CalleeOf(string field)
+    {
+        if (field.Length < 3 || field[0] != '\u0002') return null;
+        int colon = field.IndexOf(':');
+        return colon > 1 && int.TryParse(field.AsSpan(1, colon - 1), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int argument)
+            ? (field[(colon + 1)..], argument) : null;
+    }
+
+    /// <summary>
+    /// Which of `fields` some read hands straight to a List's or a
+    /// Dictionary's method, and so which kind; one pass over the module,
+    /// before the far dearer FieldReads is asked of any of them. A field read
+    /// both ways is neither.
+    /// </summary>
+    internal static Dictionary<string, string> CollectionFields(Module m, IReadOnlySet<string> fields)
+    {
+        Dictionary<string, string?> kinds = new(StringComparer.Ordinal);
+        foreach (Function g in m.Functions)
+        {
+            Dictionary<VReg, string>? loaded = null;
+            foreach (Block b in g.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Op == Opcode.Load && i.Field is { } field && i.Dest is not null && fields.Contains(field)) (loaded ??= new())[i.Dest] = field;
+                    else if (loaded is not null && i.Op == Opcode.Call && i.Callee is { } callee && i.Operands.Count > 0 && i.Operands[0] is RegOperand r
+                        && loaded.TryGetValue(r.Reg, out string? read))
+                    {
+                        string? kind = RoleOf("List", callee).Known ? "List" : RoleOf("Dictionary", callee).Known ? "Dictionary" : null;
+                        if (kind is null) continue;
+                        kinds[read] = kinds.TryGetValue(read, out string? known) && known != kind ? null : kind;
+                    }
+                }
+        }
+        Dictionary<string, string> found = new(StringComparer.Ordinal);
+        foreach ((string field, string? kind) in kinds) if (kind is not null) found[field] = kind;
+        return found;
+    }
+
+    /// <summary>
     /// EVERY READ OF A FIELD in the program, each a load whose value goes
     /// only to the collection's known methods (Uses) -- never handed back,
     /// stored or passed on -- with those calls; null when one is not, or the
@@ -462,9 +539,11 @@ internal static class OwnedElements
     /// function hands it back (`returned`), and then every return must be.
     /// </summary>
     internal static List<(Block B, Instr Call, Role Role)>? Uses(Function f, Defs defs, string kind, HashSet<VReg> container, Instr? alloc, out bool returned,
-        HandOff? handOff = null, IReadOnlySet<Instr>? allowed = null)
+        HandOff? handOff = null, IReadOnlySet<Instr>? allowed = null, List<(Block B, Instr Call, Role Role)>? into = null)
     {
-        List<(Block, Instr, Role)> calls = new();
+        // The calls found are gathered in `into` when given, a refusal
+        // included: what was kept of them can be let go (ReleaseFieldReads).
+        List<(Block, Instr, Role)> calls = into ?? new();
         returned = false;
         foreach (Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
@@ -804,24 +883,38 @@ public sealed class MarkOwnedElements : IModulePass
 
     public void Run(Module m)
     {
-        // THROUGH A FIELD only in a whole program, where every read of the
-        // field is in sight (OwnedElements.FieldReads).
+        // THROUGH A FIELD in a whole program, where every read of the field
+        // is in sight (OwnedElements.FieldReads) -- and in a unit the link
+        // will finish, which follows the reads it has and leaves the rest of
+        // the program to the link: a collection handed to another unit's
+        // function goes to whatever field that unit says it stores it into
+        // (CallField).
+        bool whole = !m.PreserveExports && m.Entry is not null;
+        bool unit = m.PreserveExports && m.LeavesLinkHints && !m.AtLink;
         Func<string, int, string?>? stores = null;
+        bool inner = false;
         Dictionary<string, List<(Function F, List<(Block B, Instr Call, OwnedElements.Role Role)> Calls)>?> readsOf = new(StringComparer.Ordinal);
         HashSet<string>? addressed = null;
-        if (!m.PreserveExports && m.Entry is not null)
+        if (whole || unit)
         {
             Dictionary<string, Function> byName = new(StringComparer.Ordinal);
             foreach (Function g in m.Functions) byName[g.Name] = g;
             Dictionary<string, Dictionary<int, string>> stored = new(StringComparer.Ordinal);
             stores = (callee, at) =>
             {
-                if (!byName.TryGetValue(callee, out Function? g)) return null;
+                // Another unit's function, in a unit: the field its parameter
+                // goes to is that unit's to say (CallField). Only at the
+                // hand-off itself: a parameter passed on to another unit's
+                // function is stored by nothing this unit can name.
+                if (!byName.TryGetValue(callee, out Function? g)) return unit && !inner ? OwnedElements.CallField(callee, at) : null;
                 if (!stored.TryGetValue(callee, out Dictionary<int, string>? map))
                 {
                     // Empty while it is judged: a cycle of calls stores nothing.
                     stored[callee] = new();
+                    bool outer = inner;
+                    inner = true;
                     stored[callee] = map = OwnedElements.StoredParameters(g, stores);
+                    inner = outer;
                 }
                 return map.GetValueOrDefault(at);
             };
@@ -832,14 +925,22 @@ public sealed class MarkOwnedElements : IModulePass
         {
             if (handOff?.Field is not { } field) return true;
             if (returned) return false;
+            if (OwnedElements.CalleeOf(field) is not null) return true;
             addressed ??= OwnedElements.AddressTaken(m);
             if (!readsOf.TryGetValue(field, out var reads))
             {
-                readsOf[field] = reads = OwnedElements.FieldUses(m, field, kind, addressed);
-                if (reads is not null && kind == "List") KeepStashes(m, field, reads, addressed);
+                // In a unit, plain reads alone: what the field's accessors do
+                // in other units is no hint's to say (FieldElementsProved).
+                if (unit) readsOf[field] = reads = OwnedElements.FieldReads(m, field, kind)?.Select(r => (r.F, r.Calls)).ToList();
+                else
+                {
+                    readsOf[field] = reads = OwnedElements.FieldUses(m, field, kind, addressed);
+                    if (reads is not null && kind == "List") KeepStashes(m, field, reads, addressed);
+                }
             }
             if (reads is null) return false;
             foreach (var read in reads) foreach (var c in read.Calls) m.KeepCalls.Add(c.Call);
+            if (unit) m.ElementFields.TryAdd(field, kind);
             OwnedElements.Say(f, $"handed to {field}, read {reads.Count} time(s)");
             return true;
         }
@@ -892,6 +993,23 @@ public sealed class MarkOwnedElements : IModulePass
                         if (returned && handsBack.TryAdd(f.Name, kind)) grew = true;
                     }
             }
+        }
+        // IN A UNIT, the reads of every field one of its functions stores a
+        // parameter into and puts to no other use (`_t = tokens`): another
+        // unit may hand that function a collection to keep there, and only
+        // reads still calls when the lifetime pass judges them can be proved
+        // for the link. A field some read hands straight to a collection's
+        // method, every read followed.
+        if (!unit) return;
+        HashSet<string> parameterFields = new(StringComparer.Ordinal);
+        foreach ((string _, int _, string field) in OwnedElements.StoredParametersOf(m, exportedOnly: false))
+            if (!readsOf.ContainsKey(field)) parameterFields.Add(field);
+        if (parameterFields.Count == 0) return;
+        foreach ((string field, string kind) in OwnedElements.CollectionFields(m, parameterFields).OrderBy(pair => pair.Key, StringComparer.Ordinal))
+        {
+            if (OwnedElements.FieldReads(m, field, kind) is not { } reads) continue;
+            foreach (var read in reads) foreach (var c in read.Calls) m.KeepCalls.Add(c.Call);
+            m.ElementFields.TryAdd(field, kind);
         }
     }
 
@@ -981,18 +1099,20 @@ public sealed partial class Escape
     {
         summaries = WithLinkEscapes(summaries, m.LinkEscapes);
         Dictionary<string, string> handedBack = new(StringComparer.Ordinal);
+        _handedBackIf.Clear();
         foreach (Function f in m.Functions) ConfirmOwnedElements(f, summaries, handedBack, calls: false);
         for (int round = 0; round < 8; round++)
         {
-            int before = handedBack.Count;
+            int before = handedBack.Count + _handedBackIf.Count;
             foreach (Function f in m.Functions) ConfirmOwnedElements(f, summaries, handedBack, calls: true);
-            if (handedBack.Count == before) break;
+            if (handedBack.Count + _handedBackIf.Count == before) break;
         }
         // A call whose callee was never proved: nothing it was given is known.
         foreach (Function f in m.Functions)
             foreach (Block b in f.Blocks)
                 foreach (Instr i in b.Instrs)
                     if (i.Op == Opcode.Call && i.Field == Instr.OwnsCandidate) i.Field = null;
+        FieldsInUnit(m, summaries);
     }
 
     /// <summary>
@@ -1032,7 +1152,7 @@ public sealed partial class Escape
         foreach (Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
                 if (i.Op == Opcode.Call && i.Field == Instr.OwnsCandidate
-                    && (calls ? i.Callee is not null && handedBack.ContainsKey(i.Callee) : IsAllocator(i.Callee)))
+                    && (calls ? i.Callee is not null && (handedBack.ContainsKey(i.Callee) || _handedBackIf.ContainsKey(i.Callee)) : IsAllocator(i.Callee)))
                     candidates.Add(i);
         if (candidates.Count == 0) return;
         foreach (Instr made in candidates)
@@ -1041,19 +1161,60 @@ public sealed partial class Escape
             if (f.Async is not null || made.Dest is null) continue;
             Defs defs = new(f);
             HashSet<VReg> container = OwnedElements.Container(f, defs, made);
-            if ((calls ? handedBack[made.Callee!] : OwnedElements.KindOf(f, made, container)) is not { } kind) continue;
-            OwnedElements.HandOff? handOff = _marksElements ? new() { Stores = StoredParameter } : null;
+            // Handed back only if other units do what a unit's compile could
+            // not see (_handedBackIf): good for a hand-off to a field alone.
+            (string Kind, Corsac.Lang.Lto.LifetimeCondition Needs)? handedIf = calls && !handedBack.ContainsKey(made.Callee!) ? _handedBackIf[made.Callee!] : null;
+            if ((calls ? handedIf?.Kind ?? handedBack[made.Callee!] : OwnedElements.KindOf(f, made, container)) is not { } kind) continue;
+            OwnedElements.HandOff? handOff = _elementMode != ElementMode.Off ? new() { Stores = StoredParameter } : null;
             if (OwnedElements.Uses(f, defs, kind, container, made, out bool returned, handOff) is not { } uses) continue;
             bool throughField = handOff?.At is not null;
             List<HashSet<VReg>>? held = throughField ? new() : null;
             if (throughField && returned) _elementWhy = "handed to a field and back";
-            if (throughField && returned
-                || ProveOwnedElements(f, defs, made, container, uses, summaries, filled: calls || returned, held) is not { } keepAlive
-                || throughField && (HeldAcross(f, made, held!) && Why("rule 13") || !FieldElementsProved(handOff!.Field!, kind, summaries)))
+            // IN A UNIT'S COMPILE, a collection handed to a field or handed
+            // back is judged on what the calls it meets in other units do, as
+            // a condition for the link (Needs): a field's elements are the
+            // link's to decide in any case, and a collection handed back on a
+            // condition can go only to one.
+            Needs? needs = _elementMode == ElementMode.Hints && (throughField || returned) ? new(this) : null;
+            if (handedIf is { } inherited && (needs is null || !needs.Condition.Add(inherited.Needs))) { _elementWhy = "handed back on a condition"; needs = null; returned = throughField = true; }
+            _elementNeeds = needs;
+            List<(Block B, Instr After)>? keepAlive = null;
+            List<Instr> added = new();
+            bool proved = !(throughField && returned)
+                && (keepAlive = ProveOwnedElements(f, defs, made, container, uses, summaries, filled: calls || returned, held)) is not null
+                && (added = _lastAdded) is not null
+                && !(throughField && (HeldAcross(f, made, held!) && Why("rule 13") || !FieldElementsProved(handOff!.Field!, kind, summaries)));
+            _elementNeeds = null;
+            if (!proved)
             {
                 OwnedElements.Say(f, $"at {made.Line}: not proved ({_elementWhy})");
                 // Its calls the late inliner's again: nothing here needs them kept.
                 foreach (var use in uses) _module?.KeepCalls.Remove(use.Call);
+                continue;
+            }
+            if (throughField && _elementMode == ElementMode.Hints)
+            {
+                // A unit's compile: the hand-off, for the link to match with
+                // every read of the field; nothing is marked or kept alive
+                // here, and the calls are the late inliner's again -- the IR
+                // the link runs these passes over again is the archive's.
+                OwnedElements.Say(f, $"at {made.Line}: handed to {handOff!.Field} for the link");
+                Corsac.Lang.Lto.OwnedElementRecord record = new(kind);
+                record.Needs.Add(needs!.Condition);
+                if (OwnedElements.CalleeOf(handOff.Field!) is { } callee) Hint(_elementCallHints, callee, record);
+                else Hint(_elementHandOffHints, handOff.Field!, record);
+                foreach (var use in uses) _module?.KeepCalls.Remove(use.Call);
+                continue;
+            }
+            // Its elements made where it is, with the link's answer: only where
+            // it is owned, never handed back -- a caller that does not own it
+            // may keep one.
+            if (_elementMode == ElementMode.Linked && !returned && added.Count > 0) _elementSites.Add((f, made, added));
+            if (returned && needs is { Condition.IsTrue: false })
+            {
+                OwnedElements.Say(f, $"at {made.Line}: hands back owned elements if other units do as they need");
+                foreach (var use in uses) _module?.KeepCalls.Remove(use.Call);
+                if (!handedBack.ContainsKey(f.Name)) _handedBackIf.TryAdd(f.Name, (kind, needs.Condition));
                 continue;
             }
             // The collection kept alive past every use of what it holds.
@@ -1121,8 +1282,36 @@ public sealed partial class Escape
     // the read's register no longer the collection it came from, and is
     // refused (HeldAcross).
 
-    /// <summary>Whether a field rule's marks are made in this run: a whole program, with the runtime's marker.</summary>
-    private bool _marksElements;
+    /// <summary>
+    /// How this run takes the rule: not at all; over a whole program; in a
+    /// unit's compile, as hints for the link (Lto.OwnedFieldHints); or in the
+    /// link's run of a unit's late passes, with its answer (Lto.OwnedFieldFacts.Elements).
+    /// </summary>
+    private enum ElementMode { Off, Whole, Hints, Linked }
+
+    private ElementMode _elementMode;
+
+    /// <summary>A unit compile's proofs of what is added and read back, made on what other units' calls do: the condition, for the link.</summary>
+    private Needs? _elementNeeds;
+
+    /// <summary>In a unit's compile, the functions handing back a collection whose elements are its own if the condition holds.</summary>
+    private readonly Dictionary<string, (string Kind, Corsac.Lang.Lto.LifetimeCondition Needs)> _handedBackIf = new(StringComparer.Ordinal);
+
+    /// <summary>One more of a unit's findings for a key: of one kind, every condition together, or none if past the bound or of two kinds.</summary>
+    private static void Hint<K>(SortedDictionary<K, Corsac.Lang.Lto.OwnedElementRecord?> hints, K key, Corsac.Lang.Lto.OwnedElementRecord record) where K : notnull
+    {
+        if (!hints.TryGetValue(key, out Corsac.Lang.Lto.OwnedElementRecord? known)) { hints[key] = record; return; }
+        if (known is null) return;
+        if (known.Kind != record.Kind || !known.Needs.Add(record.Needs)) hints[key] = null;
+    }
+
+    /// <summary>The link's answer, in its run of a unit's late passes.</summary>
+    private Corsac.Lang.Lto.OwnedFieldFacts? _elementFacts;
+
+    /// <summary>A unit compile's findings, for the link (ElementHints): the fields every read here is proved of, and the hand-offs.</summary>
+    private readonly SortedDictionary<string, Corsac.Lang.Lto.OwnedElementRecord?> _elementReadHints = new(StringComparer.Ordinal);
+    private readonly SortedDictionary<string, Corsac.Lang.Lto.OwnedElementRecord?> _elementHandOffHints = new(StringComparer.Ordinal);
+    private readonly SortedDictionary<(string Callee, int Argument), Corsac.Lang.Lto.OwnedElementRecord?> _elementCallHints = new(Corsac.Lang.Lto.OwnedFieldHints.PairOrder.Instance);
 
     /// <summary>Each collection proved to own its elements through a field: where it is handed over, and which operand it is there.</summary>
     private readonly List<(Function F, Instr At, int Operand)> _elementMarks = new();
@@ -1132,16 +1321,28 @@ public sealed partial class Escape
 
     private Dictionary<string, Dictionary<int, string>>? _storedParameters;
 
-    /// <summary>The field a callee stores its parameter at `at` into, and nothing more (OwnedElements.StoredParameters).</summary>
+    /// <summary>
+    /// The field a callee stores its parameter at `at` into, and nothing more
+    /// (OwnedElements.StoredParameters). Another unit's function: in its
+    /// compile, the hand-off is named for the link (CallField); with the
+    /// link's answer, the field it proved that function stores it into.
+    /// </summary>
     private string? StoredParameter(string callee, int at)
     {
         _storedParameters ??= new(StringComparer.Ordinal);
         if (!_storedParameters.TryGetValue(callee, out Dictionary<int, string>? map))
         {
             Function? g = _module?.Functions.FirstOrDefault(x => x.Name == callee);
+            if (g is null)
+                return _elementMode switch
+                {
+                    ElementMode.Hints => OwnedElements.CallField(callee, at),
+                    ElementMode.Linked => _elementFacts!.ElementCallees.GetValueOrDefault((callee, at)),
+                    _ => null,
+                };
             // Empty while it is judged: a cycle of calls stores nothing.
             _storedParameters[callee] = new();
-            _storedParameters[callee] = map = g is null ? new() : OwnedElements.StoredParameters(g, StoredParameter);
+            _storedParameters[callee] = map = OwnedElements.StoredParameters(g, StoredParameter);
         }
         return map.GetValueOrDefault(at);
     }
@@ -1161,22 +1362,55 @@ public sealed partial class Escape
         if (_fieldElements.TryGetValue(field, out bool known)) { if (!known) _elementWhy = $"a read of {field}"; return known; }
         _fieldElements[field] = false;
         _elementWhy = $"a read of {field}";
+        // Another unit's function's parameter, in a unit's compile: its field,
+        // and every read of it, are the link's to judge.
+        if (_elementMode == ElementMode.Hints && OwnedElements.CalleeOf(field) is not null) return _fieldElements[field] = true;
+        // With the link's answer, a field it did not prove for this kind is not.
+        if (_elementMode == ElementMode.Linked && _elementFacts!.Elements.GetValueOrDefault(field) != kind)
+        {
+            ReleaseFieldReads(field);
+            return false;
+        }
         List<(VReg Holder, List<(Block B, Instr After)> Keep)> keeps = new();
         var reads = OwnedElements.FieldReads(_module!, field, kind);
+        // In a unit's compile, on what other units' calls do: the link's to check.
+        Needs? outer = _elementNeeds;
+        Needs? needs = _elementNeeds = _elementMode == ElementMode.Hints ? new(this) : null;
         bool proved = reads is not null && ReadsProved(field, reads, summaries, keeps);
-        // Or through the field's accessors (AccessorsProved), a list's only.
+        _elementNeeds = outer;
+        // Or through the field's accessors (AccessorsProved), a list's only --
+        // in a whole program alone. A unit sees its own getters and setters,
+        // not the calls of them other units make, each of which is a read of
+        // the field there: it hints plain reads only, and the link proves no
+        // field another way, so its answer is never one the accessors made.
         HashSet<Instr> kept = new(ReferenceEqualityComparer.Instance);
-        if (!proved && kind == "List")
+        if (!proved && kind == "List" && _elementMode == ElementMode.Whole)
         {
             keeps.Clear();
             proved = AccessorsProved(field, summaries, keeps, kept);
         }
         if (!proved)
         {
+            Unproved(field, reads is null ? "a read is not followed" : $"a read is not ({_elementWhy})");
             if (reads is not null) foreach (var read in reads) foreach (var c in read.Calls) _module?.KeepCalls.Remove(c.Call);
             foreach (Instr c in kept) _module?.KeepCalls.Remove(c);
+            if (_elementMode is ElementMode.Hints or ElementMode.Linked) ReleaseFieldReads(field);
             _elementWhy = $"a read of {field}";
             return false;
+        }
+        if (_elementMode == ElementMode.Hints)
+        {
+            // In a unit's compile the reads' calls are the late inliner's
+            // again: what is kept from it is the archive's, for the link's run
+            // of these passes. Nothing is kept alive here.
+            foreach (var read in reads!) foreach (var c in read.Calls) _module?.KeepCalls.Remove(c.Call);
+            if (reads.Count > 0)
+            {
+                Corsac.Lang.Lto.OwnedElementRecord record = new(kind);
+                record.Needs.Add(needs!.Condition);
+                Hint(_elementReadHints, field, record);
+            }
+            return _fieldElements[field] = true;
         }
         foreach ((VReg holder, var keep) in keeps) KeepAlives(holder, keep);
         return _fieldElements[field] = true;
@@ -1202,6 +1436,98 @@ public sealed partial class Escape
         return true;
     }
 
+    /// <summary>
+    /// A field the link proved whose reads here are not: this unit's compile
+    /// proved every one of them over the same IR, or the link would not have,
+    /// and a collection another unit marks is freed with its elements while
+    /// a read here may still be using them. Never a build that frees one.
+    /// </summary>
+    private void Unproved(string field, string why)
+    {
+        if (_elementMode == ElementMode.Linked)
+            throw new InvalidOperationException($"owned elements: the link proved {field}, and {why} in {_module?.Name}");
+    }
+
+    /// <summary>
+    /// The calls of a field's reads kept from the inliner for this rule, let
+    /// go: whatever of each read could be followed, of either kind.
+    /// </summary>
+    private void ReleaseFieldReads(string field)
+    {
+        if (_module is not { KeepCalls.Count: > 0 } m) return;
+        foreach (Function g in m.Functions)
+        {
+            Defs? defs = null;
+            foreach (Block b in g.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Op != Opcode.Load || i.Field != field || i.Dest is null) continue;
+                    defs ??= new Defs(g, buildCfg: false);
+                    HashSet<VReg> container = OwnedElements.Container(g, defs, i);
+                    foreach (string kind in new[] { "List", "Dictionary" })
+                    {
+                        List<(Block B, Instr Call, OwnedElements.Role Role)> found = new();
+                        OwnedElements.Uses(g, defs, kind, container, i, out _, into: found);
+                        foreach (var c in found) m.KeepCalls.Remove(c.Call);
+                    }
+                }
+        }
+    }
+
+    /// <summary>
+    /// A UNIT'S FIELDS, after its candidates: in its compile, every field
+    /// whose reads MarkOwnedElements kept is judged for the link; with the
+    /// link's answer, every field it proved that this unit reads has its
+    /// reads kept alive as a whole program's are, and the reads of every one
+    /// it did not are the inliner's again.
+    /// </summary>
+    private void FieldsInUnit(Module m, Dictionary<string, bool[]> summaries)
+    {
+        if (_elementMode == ElementMode.Hints)
+        {
+            foreach ((string field, string kind) in m.ElementFields) FieldElementsProved(field, kind, summaries);
+            return;
+        }
+        if (_elementMode != ElementMode.Linked) return;
+        HashSet<string> loaded = LoadedFields(m);
+        foreach ((string field, string kind) in _elementFacts!.Elements.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+            if (loaded.Contains(field)) FieldElementsProved(field, kind, summaries);
+        foreach (string field in _elementFacts.ElementKept.Order(StringComparer.Ordinal))
+            if (loaded.Contains(field) && !_elementFacts.Elements.ContainsKey(field)) ReleaseFieldReads(field);
+    }
+
+    /// <summary>Every field the module reads or takes the address of: anything but a store, and no call's own tag.</summary>
+    private static HashSet<string> LoadedFields(Module m)
+    {
+        HashSet<string> loaded = new(StringComparer.Ordinal);
+        foreach (Function g in m.Functions)
+            foreach (Block b in g.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Field is { Length: > 0 } field && field[0] != '\u0001' && i.Op != Opcode.Store && i.Op != Opcode.Call) loaded.Add(field);
+        return loaded;
+    }
+
+    /// <summary>
+    /// THE UNIT'S HINTS FOR ELEMENTS OWNED THROUGH A FIELD (Lto.OwnedFieldHints):
+    /// what it reads, the fields every read of which it proved, the
+    /// collections it proved handed to a field or to another unit's
+    /// parameter, the parameters its functions store into a field, and the
+    /// fields whose reads it kept from the inliner.
+    /// </summary>
+    private void ElementHints(Module m, Corsac.Lang.Lto.OwnedFieldHints hints)
+    {
+        hints.Loaded.UnionWith(LoadedFields(m));
+        foreach ((string field, Corsac.Lang.Lto.OwnedElementRecord? record) in _elementReadHints) if (record is not null) hints.ElementReads[field] = record;
+        foreach ((string field, Corsac.Lang.Lto.OwnedElementRecord? record) in _elementHandOffHints)
+            if (record is not null) hints.ElementHandOffs[field] = record;
+            // Handed collections of two kinds: neither, which the link must hear of.
+            else hints.ElementHandOffs[field] = new("?");
+        foreach (((string callee, int argument), Corsac.Lang.Lto.OwnedElementRecord? record) in _elementCallHints)
+            hints.ElementCalls[(callee, argument)] = record ?? new("?");
+        foreach ((string function, int argument, string field) in OwnedElements.StoredParametersOf(m)) hints.StoredParameters[(function, argument)] = field;
+        hints.ElementKept.UnionWith(m.ElementFields.Keys);
+    }
+
     /// <summary>Whether anything in `held` is live just before `at` runs: held over from before it, or round a loop.</summary>
     private static bool HeldAcross(Function f, Instr at, List<HashSet<VReg>> held)
     {
@@ -1225,6 +1551,54 @@ public sealed partial class Escape
             if (ReferenceEquals(i, at)) return now.Count > 0;
         }
         return true;
+    }
+
+    /// <summary>What the last proof found added to the collection: the makings of its elements.</summary>
+    private List<Instr> _lastAdded = new();
+
+    /// <summary>Each collection proved, with the link's answer, to own what it adds: its making, and the makings of what it adds.</summary>
+    private readonly List<(Function F, Instr Made, List<Instr> Added)> _elementSites = new();
+
+    /// <summary>
+    /// WHAT IS ADDED TO A COLLECTION THAT OWNS IT, made where the collection
+    /// is, once every rule here has had it. The link chose its region sites
+    /// from what the unit's compile found, where nothing gave the elements
+    /// back, and an element in a region is freed by no free -- given back
+    /// with the whole region however long its collection lives, and one the
+    /// region does not take is the collector's whatever frees its collection.
+    /// So: on the heap where the collection is in a frame (no longer the
+    /// allocation it was) or on the heap, where its storage takes them;
+    /// beside it where the link made it a region's (AllocNear), each that the
+    /// collection's making comes before -- in its region, given back with it,
+    /// the elements being dead whenever it is. One made before the collection
+    /// is left as the link chose. The collection itself stays where the link
+    /// put it: on the heap, its storage made in a region all the same, it
+    /// would read arrays gone with the region when it is freed.
+    /// </summary>
+    private void ElementSites()
+    {
+        foreach ((Function f, Instr made, List<Instr> added) in _elementSites)
+        {
+            Block? home = f.Blocks.FirstOrDefault(b => b.Instrs.Contains(made));
+            if (!made.RegionSite || home is null || made.Dest is null)
+            {
+                foreach (Instr origin in added) origin.RegionSite = false;
+                continue;
+            }
+            Cfg cfg = new(f);
+            foreach (Instr origin in added)
+            {
+                if (origin.Op != Opcode.Call || !RegionPointsTo.IsRewritable(origin.Callee) || origin.Dest is null) continue;
+                Block? at = f.Blocks.FirstOrDefault(b => b.Instrs.Contains(origin));
+                if (at is null) continue;
+                bool after = ReferenceEquals(at, home) ? home.Instrs.IndexOf(made) < at.Instrs.IndexOf(origin) : cfg.Dominates(home, at);
+                if (!after) continue;
+                int k = at.Instrs.IndexOf(origin);
+                at.Instrs.RemoveAt(k);
+                at.Instrs.InsertRange(k, RegionPointsTo.Beside(f, origin, made.Dest));
+            }
+        }
+        _elementSites.Clear();
     }
 
     /// <summary>
@@ -1301,7 +1675,7 @@ public sealed partial class Escape
             HashSet<Instr> stores = new(ReferenceEqualityComparer.Instance);
             foreach (var st in slotStores) stores.Add(st.Store);
             Flow flow = Analyse(f, origins.Select(o => o.Dest!).ToArray(), summaries, origins.Count == 1 ? origins[0] : null, stores,
-                joinable: joins.Count > 0 ? joins : null, consumers: new(ReferenceEqualityComparer.Instance) { call });
+                joinable: joins.Count > 0 ? joins : null, needs: _elementNeeds, consumers: new(ReferenceEqualityComparer.Instance) { call });
             if (flow.Escapes) { _elementWhy = "rule 6"; return null; }
             held.Add(flow.Derived);
         }
@@ -1316,14 +1690,14 @@ public sealed partial class Escape
         foreach ((Block b, Instr call, OwnedElements.Role role) in calls)
             if (role.Reads && call.Dest is { } got)
             {
-                Flow flow = Analyse(f, new[] { got }, summaries, null);
+                Flow flow = Analyse(f, new[] { got }, summaries, null, needs: _elementNeeds);
                 if (flow.Escapes) { _elementWhy = "rule 9"; return null; }
                 held.Add(flow.Derived);
             }
         foreach ((Block b, Instr load) in slotLoads)
         {
             if (load.Dest is null) continue;
-            Flow flow = Analyse(f, new[] { load.Dest }, summaries, null);
+            Flow flow = Analyse(f, new[] { load.Dest }, summaries, null, needs: _elementNeeds);
             if (flow.Escapes) { _elementWhy = "rule 10"; return null; }
             held.Add(flow.Derived);
         }
@@ -1353,6 +1727,9 @@ public sealed partial class Escape
             if (!keep.Any(k => ReferenceEquals(k.After, call))) keep.Add((b, call));
         }
         heldOut?.AddRange(held);
+        // What was added, for the link's answer to make where the collection
+        // is (ElementSites).
+        _lastAdded = adderOf.Keys.ToList();
         return keep;
     }
 

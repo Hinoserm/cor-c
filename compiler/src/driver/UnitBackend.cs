@@ -153,6 +153,11 @@ public sealed class UnitBackend : IUnitBackend
                 Function body = IrFunctionCodec.Read(import.Body, new IrReadBudget(import.DecodeBytes));
                 if (body.Name != import.Symbol) throw new InvalidDataException("Conflicting IR import identity");
                 if (import.RegionBoundary) body.NoInlining = true;
+                // A body that reads a field elements are owned through comes
+                // as its unit archived it, before the reads were kept alive
+                // past every use of what they answered: it is called, in its
+                // own unit, where they are (Escape, elements through a field).
+                if (facts?.OwnedFields is { Elements.Count: > 0 } owned && ReadsElementField(body, owned)) body.NoInlining = true;
                 if (import.RegionSites is { } sites && RegionPointsTo.MarkSites(body, sites) > 0) importedSites = true;
                 local.Functions.Add(body);
             }
@@ -284,6 +289,15 @@ public sealed class UnitBackend : IUnitBackend
             sites.Attach(result);
         }
         return result;
+    }
+
+    /// <summary>Whether a body touches, other than by storing into it, a field the link proved elements are owned through.</summary>
+    private static bool ReadsElementField(Function body, OwnedFieldFacts owned)
+    {
+        foreach (Corsac.Lang.Ir.Block b in body.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Field is { } field && i.Op != Opcode.Store && owned.Elements.ContainsKey(field)) return true;
+        return false;
     }
 
     /// <summary>

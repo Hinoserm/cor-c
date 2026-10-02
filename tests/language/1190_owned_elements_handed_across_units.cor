@@ -1,0 +1,108 @@
+// test: owned_elements_handed_across_units
+// units: tests/language/support/1190_elements_units.cor
+// expect-exit: 0
+// expect-output:
+// parse 35000 True
+// table 26000 True
+// lexed 35000
+// box 26000
+// kept 2 1
+// kept intact ok 2 1
+//
+// A collection handed to another unit's constructor, which keeps it in a
+// field and reads it there: this unit says what it hands to which parameter,
+// on what the other unit's functions must do (the elements are its
+// constructor's), and that unit which field the parameter is stored into
+// and that every read of the field there is proved; the link matches the
+// two (Lto.OwnedFieldSolver), so the parser's tokens and the table's go back
+// with their owners -- or, the link having made the collection a region's,
+// are made in that region beside it (AllocNear) and go with it: given back
+// by the program either way, freed or with the region. A list a lexer hands
+// back is handed over the same way, the sums right. The box's field is read
+// here as well, and one element kept: nothing it holds is freed, and the
+// kept token stays intact while the memory of what was freed is used again.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+static class Lexer
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static List<Tok> Tokenize(string s)
+    {
+        List<Tok> l = new();
+        foreach (string w in s.Split(' ')) l.Add(new Tok(w.Length - 1, w));
+        return l;
+    }
+}
+
+static class P
+{
+    const string Text = "the quick brown fox jumps over the lazy dog";
+
+    static List<Tok> Kept = new();
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Once()
+    {
+        List<Tok> l = new();
+        foreach (string w in Text.Split(' ')) l.Add(new Tok(w.Length - 1, w));
+        return new TokParser(l).Parse();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Indexed()
+    {
+        Dictionary<int, Tok> d = new();
+        int i = 0;
+        foreach (string w in Text.Split(' ')) { d[i] = new Tok(w.Length - 1, w); i++; }
+        return new TokTable(d).Sum();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Lexed() => new TokParser(Lexer.Tokenize(Text)).Parse();
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Boxed(int round)
+    {
+        List<Tok> l = new();
+        foreach (string w in Text.Split(' ')) l.Add(new Tok(w.Length - 1, w));
+        TokBox b = new(l);
+        int s = b.Sum();
+        if (round == 7) Kept.Add(b.Items[3]);
+        return s;
+    }
+
+    // Given back by the program: freed, or made in a region given back whole.
+    static long Given() => Gc.Frees + Gc.RegionBlocks;
+    static string Freed(long before, long least) => Given() - before >= least ? "True" : "False";
+
+    static void Main()
+    {
+        long before = Given();
+        long sum = 0;
+        for (int r = 0; r < 1000; r++) sum += Once();
+        Console.WriteLine("parse " + sum + " " + Freed(before, 9000));
+
+        before = Given();
+        sum = 0;
+        for (int r = 0; r < 1000; r++) sum += Indexed();
+        Console.WriteLine("table " + sum + " " + Freed(before, 9000));
+
+        sum = 0;
+        for (int r = 0; r < 1000; r++) sum += Lexed();
+        Console.WriteLine("lexed " + sum);
+
+        sum = 0;
+        for (int r = 0; r < 1000; r++) sum += Boxed(r);
+        Console.WriteLine("box " + sum);
+        Console.WriteLine("kept " + Kept[0].K + " " + Kept.Count);
+
+        // What was freed made again, many times over: the kept token must be
+        // untouched by it.
+        long churn = 0;
+        for (int r = 0; r < 2000; r++) churn += Once() + Indexed() + Lexed() + Boxed(0);
+        Console.WriteLine("kept intact " + (churn == 2000L * (35 + 26 + 35 + 26) ? "ok" : "churn " + churn) + " " + Kept[0].K + " " + Kept.Count);
+    }
+}
