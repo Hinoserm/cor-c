@@ -2878,21 +2878,27 @@ static class Gc
                 return true;
             }
             // Its list dry: the next of its kilobytes laid out, while any
-            // are left (FormatPage). Not while stamping is open: the blocks
-            // would be laid past what the snapshot recorded for the page.
-            long more = _stamping ? Zero : FormatMore(page, c);
+            // are left (FormatPage). WHILE STAMPING IS OPEN TOO: the blocks
+            // have no start in the snapshot, and what is made in them is
+            // written in by this thread's STAMP answer if it comes after,
+            // and new and kept if it came before (StampedAlready). Given up
+            // with its tail unlaid instead, a page went on no list, and
+            // under a small cap, which stamps for much of its time, half of
+            // an 8 MB heap was the tails of pages nobody could reach.
+            long more = FormatMore(page, c);
             if (more != 0)
             {
                 Sys.Poke(slot + WordSize.Bytes, more);
                 return true;
             }
             // Used up: nobody's, on no list, until a sweep finds room in it.
-            // WHILE STAMPING IS OPEN its objects are written in first, as a
-            // retired buffer's are (Retire): the snapshot stepped over it
-            // as this thread's, and this thread's STAMP answer will look
-            // only at the pages it owns then. Unstamped they were kept and
-            // never traced, and what only they held was swept.
-            if (_stamping) StampPage(page);
+            // WHILE STAMPING IS OPEN, AND THIS THREAD HAS NOT ANSWERED, its
+            // objects are written in first, as a retired buffer's are
+            // (Retire): the snapshot stepped over it as this thread's, and
+            // this thread's STAMP answer will look only at the pages it owns
+            // then. Unstamped they were kept and never traced, and what only
+            // they held was swept.
+            if (_stamping && !StampedAlready(tb)) StampPage(page);
             HeapChunks.SetOwner(page, Zero);
             Sys.Poke(slot, Zero);
         }
@@ -2962,8 +2968,9 @@ static class Gc
             }
             // A page given up with its list dry but not all laid out: more
             // laid out, so that it goes on its class's list and its room is
-            // found (FormatPage). Not while stamping is open.
-            if (HeapChunks.PageFree(page) == 0 && !_stamping)
+            // found (FormatPage). While stamping is open too, as in
+            // ClassRefill: the blocks have no start in the snapshot.
+            if (HeapChunks.PageFree(page) == 0)
             {
                 long more = FormatMore(page, c);
                 if (more != 0)
@@ -3331,6 +3338,23 @@ static class Gc
         {
             StampPage(Sys.Peek(cache + c * (2 * WordSize.Bytes)));
         }
+    }
+
+    /// WHETHER THREAD `tb` HAS ANSWERED THIS CYCLE'S STAMP: the round is
+    /// the open one and its epoch is the round's. What it made before it
+    /// answered, its answer wrote in; what it has made since is new, and
+    /// must NOT be written in. Written in, an object made after the answer
+    /// is one the marker looks for and must find -- and nothing need lead
+    /// to it: a string held only by an array just made, whose elements are
+    /// stored with no barrier, would never be marked, and would be swept
+    /// from under the array. Laid out while stamping, a page holds more of
+    /// what its thread made after answering when it is given up. Before
+    /// the round is asked, nobody has answered it. The heap lock is held.
+    static bool StampedAlready(long tb)
+    {
+        long ctl = GcLock.Words();
+        return Sys.Peek(ctl + GcLock.Request) == GcThreads.Stamp
+            && Sys.Peek(tb + Tls.Epoch) == Sys.Peek(ctl + GcLock.Epoch);
     }
 
     /// One owned page's objects written into the snapshot (StampPages).
@@ -4014,7 +4038,8 @@ static class Gc
         // WHILE STAMPING IS OPEN a buffer's objects are written into the
         // snapshot before it goes: the snapshot stepped over it, and once
         // it is retired its owner's STAMP answer would look in the next one.
-        if (_stamping)
+        // Not once its owner has answered (StampedAlready).
+        if (_stamping && !StampedAlready(block))
         {
             StampBuffer(block);
         }
@@ -4350,6 +4375,7 @@ static class Gc
     static long AllocClass(long tb, long need, long kind)
     {
         long c = Sys.Peek(_classOf + (need >> 3) * WordSize.Bytes);
+        long failedAt = -1;
         for (long attempt = 0; attempt < 4; attempt++)
         {
             long cache = EnsureCache(tb);
@@ -4387,7 +4413,23 @@ static class Gc
             if (attempt == 3) break;
             ClassStarved = ClassStarved + 1;
             _forceMajor = true;
-            if (_collecting) WaitOutCycle();
+            // A CYCLE ALREADY UNDER WAY when this thread first came up short
+            // is waited out without counting as a try: it frees only what was
+            // garbage when it began, and under a small cap with several
+            // threads a cycle is nearly always under way, so the tries went
+            // to cycles begun before the need. Only that first one can be
+            // such a cycle, so the loop still ends.
+            if (failedAt < 0) failedAt = _cycle;
+            if (_collecting)
+            {
+                long waited = _cycle;
+                WaitOutCycle();
+                if (waited <= failedAt)
+                {
+                    attempt = attempt - 1;
+                    continue;
+                }
+            }
             else CollectLocked();
             _growPast = attempt == 2;
             if (attempt == 2) DrainPool();
@@ -5639,6 +5681,7 @@ static class Gc
         long chunks = 0;
         long tails = 0;
         long classTails = 0, classChunks = 0, pooledTails = 0, ownedTails = 0, plainTails = 0;
+        long ownedPageTails = 0, listedPageTails = 0, unlistedPageTails = 0, unlistedPages = 0, pooledPages = 0;
         long inPlaceBytes = 0;
         long inPlaceBig = 0;
         long listedBig = 0;
@@ -5654,7 +5697,21 @@ static class Gc
             // Whose the tail is: a class page's (only its class can use it),
             // a thread's buffer, the pool's, or the mixed heap's.
             long tail = HeapChunks.Limit(chunk) - end;
-            if (HeapChunks.PageClass(chunk) != 0) { classTails = classTails + tail; classChunks = classChunks + 1; }
+            if (HeapChunks.PageClass(chunk) != 0)
+            {
+                classTails = classTails + tail;
+                classChunks = classChunks + 1;
+                // Whose a class page's tail is: a thread's own page's, a
+                // listed one's, or one on no list, which nobody can reach.
+                if (HeapChunks.IsPooled(chunk)) pooledPages = pooledPages + 1;
+                else if (HeapChunks.Owner(chunk) != 0) ownedPageTails = ownedPageTails + tail;
+                else if (HeapChunks.IsListed(chunk)) listedPageTails = listedPageTails + tail;
+                else if (end + ClassSize(HeapChunks.PageClass(chunk) - 1) <= HeapChunks.PageBlockLimit(chunk))
+                {
+                    unlistedPageTails = unlistedPageTails + tail;
+                    unlistedPages = unlistedPages + 1;
+                }
+            }
             else if (HeapChunks.IsPooled(chunk)) pooledTails = pooledTails + tail;
             else if (HeapChunks.Owner(chunk) != 0) ownedTails = ownedTails + tail;
             else plainTails = plainTails + tail;
@@ -5708,6 +5765,11 @@ static class Gc
         SayNumber("heap shape: chunk tails unbumped ", tails);
         SayNumber("heap shape:   of class pages ", classTails);
         SayNumber("heap shape:   class pages ", classChunks);
+        SayNumber("heap shape:     pooled ", pooledPages);
+        SayNumber("heap shape:     tails of threads' own pages ", ownedPageTails);
+        SayNumber("heap shape:     tails of listed pages ", listedPageTails);
+        SayNumber("heap shape:     tails of pages on no list ", unlistedPageTails);
+        SayNumber("heap shape:     pages on no list with a tail ", unlistedPages);
         SayNumber("heap shape:   of pooled chunks ", pooledTails);
         SayNumber("heap shape:   of threads' chunks ", ownedTails);
         SayNumber("heap shape:   of the mixed heap ", plainTails);
