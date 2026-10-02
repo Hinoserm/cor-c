@@ -29,6 +29,15 @@ public sealed class Type : IEquatable<Type>
     public string? ParamName { get; init; }
 
     /// <summary>
+    /// A type parameter declared `where T : struct` (TypeParam.Struct). Over
+    /// one, `T?` is Nullable&lt;T&gt; once T is bound -- Binder.Substitute
+    /// keeps the '?' -- where over any other T it is an annotation and the
+    /// bound type is taken as it is. Not part of equality: it says what the
+    /// parameter allows, and the name already says which parameter it is.
+    /// </summary>
+    public bool StructParam { get; init; }
+
+    /// <summary>
     /// What each element of a TUPLE type was called, and null for every other
     /// type.
     ///
@@ -201,14 +210,14 @@ public sealed class Type : IEquatable<Type>
     private Type With(bool nullable) => new()
     {
         Prim = Prim, Symbol = Symbol, Nullable = nullable, Element = Element,
-        ArrayRank = ArrayRank, Args = Args, ParamName = ParamName,
+        ArrayRank = ArrayRank, Args = Args, ParamName = ParamName, StructParam = StructParam,
         Names = Names, PointerDepth = PointerDepth, Pointee = Pointee, UseArgs = UseArgs, Function = Function,
     };
 
     public Type WithNames(IReadOnlyList<string>? names) => new()
     {
         Prim = Prim, Symbol = Symbol, Nullable = Nullable, Element = Element,
-        ArrayRank = ArrayRank, Args = Args, ParamName = ParamName,
+        ArrayRank = ArrayRank, Args = Args, ParamName = ParamName, StructParam = StructParam,
         Names = names, PointerDepth = PointerDepth, Pointee = Pointee, UseArgs = UseArgs, Function = Function,
     };
 

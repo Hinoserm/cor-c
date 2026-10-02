@@ -129,6 +129,7 @@ public sealed class Monomorphiser
         {
             m.Settled(args[i]);
             map[template.TypeParams[i].Name] = args[i];
+            if (template.TypeParams[i].Struct) m._structParams.Add(template.TypeParams[i].Name);
         }
 
         MethodDecl made = (MethodDecl)m.RewriteMember(template, map, template.Name);
@@ -593,10 +594,12 @@ public sealed class Monomorphiser
 
             Dictionary<string, TypeRef> map = new(StringComparer.Ordinal);
 
+            _structParams.Clear();
             for (int i = 0; i < job.Template.TypeParams.Count && i < job.Args.Count; i++)
             {
                 Settled(job.Args[i]);
                 map[job.Template.TypeParams[i].Name] = job.Args[i];
+                if (job.Template.TypeParams[i].Struct) _structParams.Add(job.Template.TypeParams[i].Name);
             }
 
             // A WORD-SHAPED COPY TAKES NO BODIES. Canon names the one copy
@@ -1013,6 +1016,13 @@ public sealed class Monomorphiser
     /// </summary>
     private readonly HashSet<string> _methodParams = new(StringComparer.Ordinal);
 
+    /// <summary>
+    /// The type parameters of the template being copied that are `where T :
+    /// struct`: over them `T?` is Nullable of what T is bound to, not T
+    /// (see Sub).
+    /// </summary>
+    private readonly HashSet<string> _structParams = new(StringComparer.Ordinal);
+
     /// <summary>Specialisations queued or finished, by name.</summary>
     private readonly HashSet<string> _claimed = new(StringComparer.Ordinal);
 
@@ -1084,6 +1094,11 @@ public sealed class Monomorphiser
             //
             // A '?' written at the USE site -- `Pick<string?>` -- is the
             // bound type's own and is kept.
+            //
+            // `where T : struct` IS THE EXCEPTION C# MAKES: over it `T?` is
+            // Nullable<T>, a real cell with a HasValue, and stays one in the
+            // copy. Without this `Equal<T>(T? a, T? b) where T : struct` over
+            // Path took two Paths and refused the Path? it was written for.
             // A STRUCT SPECIALISATION IS A VALUE TOO: `KeyValuePair<string,
             // Source>` arrives as the copy `KeyValuePair$string$Source` or as
             // the template's name with its arguments, and MinBy's `T?` over it
@@ -1100,12 +1115,15 @@ public sealed class Monomorphiser
                 Name = bound.Name,
                 ArrayRank = r.ArrayRank + bound.ArrayRank,
                 Nullable = arrayFromUse ? r.Nullable
-                         : ((r.Nullable && !valueBound) || bound.Nullable),
+                         : ((r.Nullable && (!valueBound || _structParams.Contains(r.Name))) || bound.Nullable),
                 // An ARRAY bound's own `?` marks the inner array (InnerNullable
                 // below), not the element: T = long[]? in T[] is long[]?[],
                 // whose longs are not long?.
                 ElementNullable = arrayFromUse
                                 ? bound.Nullable && bound.ArrayRank == 0 || bound.ElementNullable
+                                  // `T?[]` over a struct-constrained T is an
+                                  // array of Nullable<T>, as `T?` is one.
+                                  || r.ElementNullable && bound.ArrayRank == 0 && _structParams.Contains(r.Name)
                                 : r.ElementNullable || bound.ElementNullable,
                 // The bound's marks sit inside; the use's marks sit above
                 // them, shifted by the bound's rank, and the bound's own

@@ -51,7 +51,10 @@ public static class Gir
     // its generic local functions.
     // 11: a method carries its attributes' targets and names, for
     // [DoesNotReturn], which the checker reads off the declaration.
-    public const ushort Major = 12;              // 12: members carry their explicit interface
+    // 12: members carry their explicit interface.
+    // 13: a type parameter carries whether it is `where T : struct`, which
+    // decides whether `T?` is Nullable<T> or an annotation (TypeParam.Struct).
+    public const ushort Major = 13;
 
     /// <summary>Bumped when something is APPENDED that an old reader can ignore.</summary>
     public const ushort Minor = 0;
@@ -370,6 +373,7 @@ public static class Gir
             foreach (TypeParam p in d.TypeParams)
             {
                 Str(p.Name);
+                U8(p.Struct ? (byte)1 : (byte)0);
                 I32(p.Constraints.Count);
 
                 // THE CONSTRAINTS TRAVEL WITH IT, so a consumer can check its
@@ -448,6 +452,7 @@ public static class Gir
                     foreach (TypeParam p in d.TypeParams)
                     {
                         Str(p.Name);
+                        U8(p.Struct ? (byte)1 : (byte)0);
                     }
 
                     I32(d.Params.Count);
@@ -1226,7 +1231,7 @@ public static class Gir
 
             for (int i = 0; i < typeParams; i++)
             {
-                TypeParam p = new() { Name = Str() };
+                TypeParam p = new() { Name = Str(), Struct = Bool() };
                 int constraints = Count();
 
                 for (int c = 0; c < constraints; c++)
@@ -1300,12 +1305,12 @@ public static class Gir
                         attributes.Add(new AttributeRef { Target = target, Name = Str() });
                     }
 
-                    List<string> typeParams = new();
+                    List<TypeParam> typeParams = new();
                     int tp = Count();
 
                     for (int i = 0; i < tp; i++)
                     {
-                        typeParams.Add(Str());
+                        typeParams.Add(new TypeParam { Name = Str(), Struct = Bool() });
                     }
 
                     List<Param> ps = new();
@@ -1346,10 +1351,7 @@ public static class Gir
                         ExplicitInterface = explicitInterface.Length == 0 ? null : explicitInterface,
                     };
 
-                    foreach (string one in typeParams)
-                    {
-                        d.WritableTypeParams.Add(new TypeParam { Name = one });
-                    }
+                    d.WritableTypeParams.AddRange(typeParams);
 
                     d.WritableAttributes.AddRange(attributes);
                     d.Params.AddRange(ps);

@@ -1,0 +1,56 @@
+// test: unconstrained_nullable_annotation
+// expect-exit: 0
+// expect-output:
+// 5 0
+// one none
+// 7 3
+// 4 True
+//
+// `T?` on an UNCONSTRAINED T stays an annotation beside the struct-
+// constrained kind (1191-1193): over a value type the type is still T, so a
+// FirstOrDefault-shaped method over ints hands back an int, not a cell, and a
+// generic class's `T?` field over int is an int. A `where T : class` T? is a
+// nullable reference. The two kinds side by side in one class must not leak
+// into each other.
+
+using System;
+
+static class Pick
+{
+    public static T? First<T>(T[] items) => items.Length > 0 ? items[0] : default(T);
+
+    public static T? FirstRef<T>(T[] items) where T : class => items.Length > 0 ? items[0] : null;
+
+    public static int Mixed<T, U>(T? plain, U? cell) where U : struct
+    {
+        return cell.HasValue ? 1 : 0;
+    }
+}
+
+class Slot<T>
+{
+    public T? Held;
+}
+
+static class Program
+{
+    static int Main()
+    {
+        int first = Pick.First(new int[] { 5, 6 });
+        int empty = Pick.First(new int[0]);
+        Console.WriteLine(first + " " + empty);
+
+        string? one = Pick.FirstRef(new string[] { "one" });
+        string? none = Pick.FirstRef(new string[0]);
+        Console.WriteLine((one ?? "null") + " " + (none ?? "none"));
+
+        Slot<int> s = new Slot<int>();
+        s.Held = 7;
+        int plain = s.Held;
+        Console.WriteLine(plain + " " + (plain - 4));
+
+        int? cell = 2;
+        Console.WriteLine((Pick.Mixed<int, int>(3, cell) + 3) + " " + (Pick.Mixed(3, cell) == 1));
+        return 0;
+    }
+}

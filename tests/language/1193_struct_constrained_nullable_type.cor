@@ -1,0 +1,57 @@
+// test: struct_constrained_nullable_type
+// expect-exit: 0
+// expect-output:
+// False 0
+// True 4
+// False
+// True y 2
+// True 9
+//
+// A struct-constrained generic TYPE: in `Box<T> where T : struct` a `T?`
+// field, parameter or result is Nullable<T> in every copy, so Box<int>'s
+// field is an int? with a HasValue and Box<Path>'s a Path?. Without the
+// constraint the copy had plain fields and `v.HasValue` named nothing.
+
+using System;
+
+class Box<T> where T : struct
+{
+    T? v;
+
+    public bool Has => v.HasValue;
+    public T? Get() => v;
+    public void Set(T? value) { v = value; }
+    public T Or(T fallback) => v.HasValue ? v.Value : fallback;
+}
+
+struct Pair<T> where T : struct
+{
+    public T? First;
+    public T? Second;
+    public int Count => (First.HasValue ? 1 : 0) + (Second.HasValue ? 1 : 0);
+}
+
+readonly record struct Path(int P, string C);
+
+static class Program
+{
+    static int Main()
+    {
+        Box<int> b = new Box<int>();
+        Console.WriteLine(b.Has + " " + b.Or(0));
+        b.Set(4);
+        Console.WriteLine(b.Has + " " + b.Get().Value);
+        b.Set(null);
+        Console.WriteLine(b.Get().HasValue);
+
+        Box<Path> p = new Box<Path>();
+        p.Set(new Path(2, "y"));
+        Path? held = p.Get();
+        Console.WriteLine(held.HasValue + " " + held.Value.C + " " + p.Or(new Path(0, "z")).P);
+
+        Pair<int> pair = new Pair<int>();
+        pair.Second = 9;
+        Console.WriteLine((pair.Count == 1) + " " + pair.Second.Value);
+        return 0;
+    }
+}
