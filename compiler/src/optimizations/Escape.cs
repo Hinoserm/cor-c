@@ -921,6 +921,29 @@ public sealed partial class Escape : IModulePass
                     else fieldAddresses.Add((f, b, i));
                 }
         HashSet<string> candidates = new(stores.Select(s => s.I.Field!).Concat(loads.Select(l => l.I.Field!)), StringComparer.Ordinal);
+
+        // A `??=` OF A FIELD (FillStoreShape): `o.f ??= new
+        // T()` stores back the value it read of o.f, or an object made where
+        // that read found it null. It replaces nothing -- when nothing that
+        // may store into the field runs between the test and the store
+        // (FillsReplaceNothing, below) -- so it is no writer of the field and
+        // no danger to a read of it; the object made is held by the field as
+        // any fresh object stored is; and the value read, stored back and
+        // used after, is a read of the field, judged as one.
+        Dictionary<Instr, Fill> fills = new(ReferenceEqualityComparer.Instance);
+        Dictionary<Instr, (Instr Store, Fill Fill)> restoring = new(ReferenceEqualityComparer.Instance);
+        {
+            Dictionary<Function, (Defs, RegisterWrites)> shapes = new();
+            foreach ((Function f, Block _, Instr st) in stores)
+            {
+                if (st.Operands.Count < 2 || st.Operands[1] is not RegOperand) continue;
+                if (!loads.Any(l => ReferenceEquals(l.F, f) && l.I.Field == st.Field)) continue;
+                if (!shapes.TryGetValue(f, out var shape)) shapes[f] = shape = (new Defs(f), new RegisterWrites(f));
+                if (FillStoreShape(f, shape.Item1, shape.Item2, st) is not { } fill) continue;
+                fills[st] = fill;
+                foreach (Instr restore in fill.Restores) restoring[restore] = (st, fill);
+            }
+        }
         if (candidates.Count == 0) return;
 
         // Who may store into each field: the functions that do, and every
@@ -947,7 +970,7 @@ public sealed partial class Escape : IModulePass
         {
             if (mayWrite.TryGetValue(field, out HashSet<string>? known)) return known;
             HashSet<string> set = new(StringComparer.Ordinal);
-            Stack<string> work = new(stores.Where(s => s.I.Field == field && !initializing(s.F, s.I)).Select(s => s.F.Name));
+            Stack<string> work = new(stores.Where(s => s.I.Field == field && !initializing(s.F, s.I) && !fills.ContainsKey(s.I)).Select(s => s.F.Name));
             while (work.Count > 0)
             {
                 string name = work.Pop();
@@ -1194,6 +1217,40 @@ public sealed partial class Escape : IModulePass
             // refused, for every object of the type, the fields of a List
             // whose Add was spliced into one iterator's MoveNext.
             if (st.Operands.Count < 2) { Refuse(st.Field!, "odd store", f, st); continue; }
+            if (fills.TryGetValue(st, out Fill? filling))
+            {
+                // What it made held by the field from the store on; the
+                // variable it went through is the field's value after, a read.
+                if (filling.Made.Any(x => x.Dest is null)) { Refuse(st.Field!, "odd ??=", f, st); continue; }
+                if (filling.Made.Count > 0)
+                {
+                    Flow alone = Analyse(f, filling.Made.Select(x => x.Dest!).ToList(), summaries, filling.Made.Count == 1 ? filling.Made[0] : null,
+                        new HashSet<Instr>(ReferenceEqualityComparer.Instance) { st }, joinable: filling.Joins);
+                    // Dead once stored, but for the variable: a `??=` round a
+                    // loop makes the next lap's object in the same registers.
+                    if (!sinkLiveness.TryGetValue(f, out Liveness? fillLive)) sinkLiveness[f] = fillLive = new Liveness(f);
+                    int stAt = b.Instrs.IndexOf(st);
+                    // The variable and its copies are the field's value after
+                    // the store, judged as the read they hold (below).
+                    HashSet<VReg> fieldValue = new(filling.Joins);
+                    for (bool grew = true; grew;)
+                    {
+                        grew = false;
+                        foreach (Block x in f.Blocks)
+                            foreach (Instr i in x.Instrs)
+                                if (i.Dest is { } d && !fieldValue.Contains(d) && Defs(f).ContainsKey(d) && i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32
+                                    && i.Operands[0] is RegOperand { Reg: var from } && fieldValue.Contains(from))
+                                { fieldValue.Add(d); grew = true; }
+                    }
+                    bool usedAfter = alone.Derived.Any(r => !fieldValue.Contains(r)
+                        && (!fillLive.Tracks(r) || fillLive.IsLiveOut(b, r)
+                            || b.Instrs.Skip(stAt + 1).Any(i => i.Operands.Any(o => o is RegOperand q && q.Reg == r))));
+                    if (alone.Escapes || usedAfter)
+                    { Refuse(st.Field!, $"??= stores {st.Operands[1]}, which is used after it is stored", f, st); continue; }
+                    foreach (Instr made in filling.Made) held.Add((made, st));
+                }
+                continue;
+            }
             switch (st.Operands[1])
             {
                 case ImmOperand { Value: 0 }:
@@ -1261,6 +1318,69 @@ continue;
             }
         }
 
+        // FILLS REPLACE NOTHING: between the test that found the field null
+        // and the store, nothing that may store into it -- else what it
+        // stored there would be replaced, and a fill no writer.
+        foreach ((Instr st, Fill fill) in fills)
+        {
+            if (fill.Made.Count == 0 || refused.Contains(st.Field!)) continue;
+            (Function f, Block at, _) = stores.First(x => ReferenceEquals(x.I, st));
+            HashSet<string> writers = MayWrite(st.Field!);
+            Cfg cfg = new(f);
+            Instr? unsafeAt = null;
+            foreach (Block x in f.Blocks)
+            {
+                if (!fill.Guards.Any(g => cfg.Dominates(g, x)) || !ReferenceEquals(x, at) && !cfg.Reaches(x, at)) continue;
+                int end = ReferenceEquals(x, at) ? x.Instrs.IndexOf(st) : x.Instrs.Count;
+                for (int k = 0; k < end && unsafeAt is null; k++)
+                {
+                    Instr i = x.Instrs[k];
+                    if (i.Op == Opcode.CallIndirect && (_indirect is null || !_indirect.TryGetValue(i, out string[]? t) || t.Any(writers.Contains))
+                        || i.Op == Opcode.Call && i.Callee is not null && writers.Contains(i.Callee) && !NeverWritesFields(i.Callee)
+                        || i.Op == Opcode.Store && i.Field == st.Field)
+                        unsafeAt = i;
+                }
+            }
+            if (unsafeAt is not null) Refuse(st.Field!, $"??= may meet another store at {unsafeAt.Op} {unsafeAt.Callee}", f, st);
+        }
+
+        // THE FIRST STORE INTO AN OBJECT JUST MADE -- a record's `with` filling
+        // its copy -- replaces nothing: the object's memory is zero where it
+        // is made, and this store is the field's only one there, not round a
+        // loop. No danger to a read of anything.
+        Dictionary<Instr, bool> firstFill = new(ReferenceEqualityComparer.Instance);
+        Dictionary<Function, Cfg> cfgOf = new();
+        bool FirstFill(Function f, Instr st)
+        {
+            if (firstFill.TryGetValue(st, out bool known)) return known;
+            firstFill[st] = false;
+            if (st.Operands[0] is not RegOperand { Reg: var baseReg } || Origin(Defs(f), baseReg) is not { Op: Opcode.Call } made
+                || !IsAllocator(made.Callee) || made.Dest is null) return false;
+            HashSet<VReg> names = new() { made.Dest };
+            for (bool grew = true; grew;)
+            {
+                grew = false;
+                foreach (Block x in f.Blocks)
+                    foreach (Instr i in x.Instrs)
+                        if (i.Dest is not null && !names.Contains(i.Dest) && i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32
+                            && i.Operands[0] is RegOperand r && names.Contains(r.Reg) && Defs(f).ContainsKey(i.Dest))
+                        { names.Add(i.Dest); grew = true; }
+            }
+            int count = 0;
+            Block? at = null, madeIn = null;
+            foreach (Block x in f.Blocks)
+                foreach (Instr i in x.Instrs)
+                {
+                    if (ReferenceEquals(i, made)) madeIn = x;
+                    if (ReferenceEquals(i, st)) at = x;
+                    if (i.Op == Opcode.Store && i.Field == st.Field && i.Operands[0] is RegOperand { Reg: var q } && names.Contains(q)) count++;
+                }
+            if (count != 1 || at is null || madeIn is null) return false;
+            if (!cfgOf.TryGetValue(f, out Cfg? cfg)) cfgOf[f] = cfg = new Cfg(f);
+            if (ReachesAvoiding(cfg, at, at, madeIn)) return false;
+            return firstFill[st] = true;
+        }
+
         // One liveness per function, however many loads it has.
         Dictionary<Function, Liveness> livenessOf = new();
         Dictionary<Function, HashSet<VReg>> padsOf = new();
@@ -1317,7 +1437,11 @@ continue;
             // Handed back again by a caller is followed too, once per function
             // (borrowing), so the chain of getters ends.
             HashSet<VReg>? back = f.Name == m.Entry ? null : Returned(f);
-            Flow flow = Analyse(f, new[] { ld.Dest }, summaries, ld, returnable: back is { Count: > 0 } ? back : null);
+            // Stored back by a `??=`: through its variable, into the field it came from.
+            restoring.TryGetValue(ld, out var restored);
+            Flow flow = Analyse(f, new[] { ld.Dest }, summaries, ld, returnable: back is { Count: > 0 } ? back : null,
+                ownedStores: restored.Store is null ? null : new HashSet<Instr>(ReferenceEqualityComparer.Instance) { restored.Store },
+                joinable: restored.Fill?.Joins);
             if (flow.Escapes) { Refuse(field, $"read escapes via {flow.Why?.Op} {flow.Why?.Callee}", f, ld); continue; }
             if (back is not null && flow.Derived.Overlaps(back))
             {
@@ -1373,7 +1497,11 @@ continue;
                         // free a replacement gets (below) frees the old value's
                         // own owned fields too (Runtime.FreeOwnedFields), so
                         // replacing o.A frees o.A.B -- the value read here.
-                        || i.Op == Opcode.Store && i.Field is not null && candidates.Contains(i.Field)
+                        // Not a field already refused, which is never owned and
+                        // whose stores free nothing; not a `??=`, nor the first
+                        // store into an object just made, which replace nothing.
+                        || i.Op == Opcode.Store && i.Field is not null && candidates.Contains(i.Field) && !refused.Contains(i.Field)
+                           && !fills.ContainsKey(i) && !FirstFill(f, i)
                         || i.Op == Opcode.Call && i.Callee == AsyncFrame.Suspend;
                     if (danger) unsafeAt = i;
                 }
@@ -1474,6 +1602,71 @@ continue;
             m.Data.Add(new DataItem(sym, block) { ReadOnly = true, Exported = false, Align = w });
             d.Relocs.Add(new DataReloc(11 * w, sym, 0));
         }
+        if (byName.ContainsKey(FieldFreer) || m.RuntimeHelpers.Contains(FieldFreer)) FreeFramedOwnedFields(items, offsets);
+    }
+
+    /// <summary>
+    /// A FRAME OBJECT'S OWNED FIELDS GO WITH IT: an object promoted to the
+    /// frame (PromoteIn) is never handed to Runtime.Free, whose
+    /// FreeOwnedFields reads the map above, so what its owned fields held --
+    /// the parser a function makes and drops, its tokens' wrapper in `_t` --
+    /// was left to the collector. They are freed where it dies, as its clean
+    /// fields are (SlotFieldFrees): before the slot is made again round a
+    /// loop, and on every return. A field freed there already is found empty.
+    /// </summary>
+    private void FreeFramedOwnedFields(Dictionary<string, DataItem> items, Dictionary<string, List<long>> offsets)
+    {
+        if (offsets.Count == 0) return;
+        int word = IrTypes.Word.Bytes();
+        foreach ((Function f, List<OwnedRecord> records) in _records)
+            foreach (OwnedRecord r in records)
+            {
+                if (r.Slot is null || r.SlotAddress is null) continue;
+                // Its type, by the descriptor stamped into it.
+                HashSet<VReg> names = Derivations(f, new[] { r.Root, r.SlotAddress });
+                string? type = null;
+                bool several = false;
+                foreach (Block b in f.Blocks)
+                    foreach (Instr i in b.Instrs)
+                        if (i.Op == Opcode.Store && i.Offset == 0 && i.Operands.Count >= 2 && i.Operands[1] is SymOperand { Name: var table } && table.StartsWith("t_", StringComparison.Ordinal)
+                            && (i.Operands[0] is SlotOperand { Slot: var into } && into == r.Slot || i.Operands[0] is RegOperand { Reg: var at } && names.Contains(at)))
+                        {
+                            if (type is null) type = table;
+                            else if (type != table) several = true;
+                        }
+                if (type is null || several || !items.ContainsKey(type)) continue;
+                List<long> mine = Ancestry(items, type).Where(offsets.ContainsKey).SelectMany(a => offsets[a]).Distinct()
+                    .Where(o => o >= word && (r.Bytes < 0 || o + word <= r.Bytes)).OrderBy(o => o).ToList();
+                // Where it dies, nothing read from such a field or stored
+                // there still in use: round a loop, the next lap's object is
+                // made while the last one's may be held; at a return, what is
+                // handed back.
+                Liveness? liveness = null;
+                HashSet<VReg>? pads = null;
+                mine.RemoveAll(o =>
+                {
+                    List<VReg> values = new();
+                    foreach (Block b in f.Blocks)
+                        foreach (Instr i in b.Instrs)
+                        {
+                            if (i.Op is not (Opcode.Load or Opcode.Store) || i.Offset != o || i.Operands.Count < 1) continue;
+                            if (!(i.Operands[0] is SlotOperand { Slot: var s } && s == r.Slot || i.Operands[0] is RegOperand { Reg: var at } && names.Contains(at))) continue;
+                            if (i.Op == Opcode.Load && i.Dest is not null) values.Add(i.Dest);
+                            else if (i.Op == Opcode.Store && i.Operands.Count >= 2 && i.Operands[1] is RegOperand { Reg: var v }) values.Add(v);
+                        }
+                    if (values.Count == 0) return false;
+                    HashSet<VReg> held = Derivations(f, values);
+                    foreach (Block b in f.Blocks)
+                        if (b.Terminator is { Op: Opcode.Ret } ret && ret.Operands.Any(x => x is RegOperand { Reg: var back } && held.Contains(back))) return true;
+                    if (r.Renew is null) return false;
+                    liveness ??= new Liveness(f);
+                    pads ??= PadLive(liveness);
+                    return LiveAt(f, liveness, pads, r.Renew, held);
+                });
+                if (mine.Count == 0) continue;
+                OwnedElements.Say(f, $"frame {type}: owned fields at {string.Join(",", mine)} freed where it dies");
+                SlotFieldFrees(f, r, mine.Select(o => (o, FieldFreer)).ToList());
+            }
     }
 
     /// <summary>Whether control can go from block `from` to block `to` (not counting staying in `from`), unwinds included.</summary>
@@ -2035,7 +2228,7 @@ continue;
     internal static Flow Analyse(Function f, IEnumerable<VReg> roots, Dictionary<string, bool[]> summaries, Instr? source,
         HashSet<Instr>? ownedStores = null, HashSet<VReg>? returnable = null, HashSet<VReg>? joinable = null,
         Needs? needs = null, bool handOff = false, HashSet<Instr>? consumers = null,
-        bool invokeReceiverStays = false, bool closure = false, bool returnsAny = false, bool returnsHolder = false)
+        bool invokeReceiverStays = false, bool closure = false, bool returnsAny = false, bool returnsHolder = false, HashSet<Instr>? holderConsumers = null)
     {
         Flow flow = new() { Source = source };
         foreach (VReg r in roots)
@@ -2704,6 +2897,11 @@ continue;
                     // what it holds goes with it to the caller and nowhere
                     // else, and the caller takes the result for a holder.
                     if (!(flow.HeldRoots ??= new()).Contains(returned)) flow.HeldRoots.Add(returned);
+                    return;
+                // Frame memory holding it handed to a call that takes what it
+                // holds over (OwnedElements: a tuple put into a stash), as a
+                // consumer takes the object itself.
+                case Opcode.Call when holderConsumers?.Contains(i) == true:
                     return;
                 case Opcode.Call or Opcode.CallIndirect when !IsCollectorNote(i.Callee) && i.Callee != Corsac.Lang.X86.MachineIntrinsics.KeepAlive:
                     if (!HolderCall(i)) flow.Escapes = true;

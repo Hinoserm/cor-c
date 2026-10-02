@@ -57,8 +57,12 @@ internal static class OwnedElements
     /// <summary>
     /// The parameters a function stores into a field and puts to no other
     /// use, by index, with the field: `Parser(List&lt;Token&gt; tokens) { _t = tokens; }`.
+    /// Or hands, once and to nothing else, to a call that does (`through`,
+    /// answering for a callee and an operand): a constructor that wraps the
+    /// list -- `Parser(List&lt;Token&gt; t) : this(new ParserTokens(t))` --
+    /// stores it in the wrapper's field.
     /// </summary>
-    internal static Dictionary<int, string> StoredParameters(Function g)
+    internal static Dictionary<int, string> StoredParameters(Function g, Func<string, int, string?>? through = null)
     {
         Dictionary<int, string> stored = new();
         if (g.Async is not null || g.Params.Count < 2) return stored;
@@ -81,6 +85,11 @@ internal static class OwnedElements
                     if (i.Op == Opcode.Store && count == 1 && field is null && i.Field is not null && i.Operands.Count >= 2
                         && i.Operands[0] is RegOperand && i.Operands[1] is RegOperand v && regs.Contains(v.Reg))
                     { field = i.Field; continue; }
+                    if (through is not null && i.Op == Opcode.Call && count == 1 && field is null && i.Callee is { } callee)
+                    {
+                        int at = i.Operands.FindIndex(o => o is RegOperand r && regs.Contains(r.Reg));
+                        if (at > 0 && through(callee, at) is { } passed) { field = passed; continue; }
+                    }
                     Say(g, $"parameter {p}: not only stored: {i}");
                     ok = false;
                     break;
@@ -119,6 +128,227 @@ internal static class OwnedElements
                 }
         }
         return reads;
+    }
+
+    // ---- reached through accessors ------------------------------------------------------
+    //
+    // THE COMPILER'S OWN PARSER keeps its tokens one step further away: the
+    // list is a field of a wrapper (ParserTokens.mutable) that is a field of
+    // the parser (Parser._t), read by an indexer that hands an element back,
+    // through Cur and Ahead that hand it back again, and written through a
+    // getter that fills the field when it is empty (`mutable ??= new(...)`).
+    // The values below are what a function holds of the field's collection:
+    // its reads, the calls of a getter that hands the field's value back, and
+    // the variables of a `??=` that hold one of those or a list made there.
+
+    /// <summary>What a function holds of a field's collection (FieldValues).</summary>
+    internal sealed class FieldValueSet
+    {
+        /// <summary>Every register holding the field's value, or a list a `??=` made to fill it.</summary>
+        public readonly HashSet<VReg> Values = new();
+        /// <summary>The reads of the field, and the calls of getters handing it back.</summary>
+        public readonly List<Instr> Seeds = new();
+        /// <summary>The stores into the field of one of those values: a `??=` putting back what it read, or what it made.</summary>
+        public readonly HashSet<Instr> Stores = new(ReferenceEqualityComparer.Instance);
+    }
+
+    /// <summary>A register that holds an object made here: an allocation, through copies written once.</summary>
+    internal static bool FreshHere(Defs defs, VReg r)
+    {
+        for (int hops = 0; hops < 6; hops++)
+        {
+            if (!defs.IsSingle(r) || defs.Definition(r) is not { } d) return false;
+            if (d.Op == Opcode.Call && Escape.IsAllocator(d.Callee)) return true;
+            if (d.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || d.Operands[0] is not RegOperand from) return false;
+            r = from.Reg;
+        }
+        return false;
+    }
+
+    /// <summary>Whether a function reads the field or calls one of its getters: what FieldValues need look at.</summary>
+    internal static bool Touches(Function g, string field, IReadOnlySet<string> getters)
+    {
+        foreach (Block b in g.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Field == field || i.Op == Opcode.Call && i.Callee is { } c && getters.Contains(c)) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// The registers of a function that hold a field's collection: each read
+    /// of it, each call of a getter in `getters`, copies of those -- and a
+    /// variable written more than once when every write is one of them, null,
+    /// another such variable, or a list made here (the `nc` of `x ??= new()`).
+    /// Null when the field is used any other way (its address taken).
+    /// </summary>
+    internal static FieldValueSet? FieldValues(Function g, Defs defs, string field, IReadOnlySet<string> getters)
+    {
+        FieldValueSet set = new();
+        foreach (Block b in g.Blocks)
+            foreach (Instr i in b.Instrs)
+            {
+                if (i.Field == field)
+                {
+                    if (i.Op == Opcode.Store) continue;
+                    if (i.Op != Opcode.Load || i.Dest is null || i.Operands.Count < 1 || i.Operands[0] is not RegOperand) return null;
+                    set.Seeds.Add(i);
+                    set.Values.Add(i.Dest);
+                }
+                else if (i.Op == Opcode.Call && i.Callee is { } c && i.Dest is not null && getters.Contains(c))
+                {
+                    set.Seeds.Add(i);
+                    set.Values.Add(i.Dest);
+                }
+            }
+        if (set.Seeds.Count == 0) return set;
+        RegisterWrites writes = new(g);
+        for (bool grew = true; grew;)
+        {
+            grew = false;
+            foreach (Block b in g.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Dest is not null && !set.Values.Contains(i.Dest) && defs.IsSingle(i.Dest) && i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32
+                        && i.Operands[0] is RegOperand r && set.Values.Contains(r.Reg))
+                    { set.Values.Add(i.Dest); grew = true; }
+            // The variables: a group of them, each written only with a value,
+            // null, a list made here or another of the group.
+            HashSet<VReg> group = new();
+            foreach (Block b in g.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Dest is not null && !set.Values.Contains(i.Dest) && !defs.IsSingle(i.Dest) && i.Op == Opcode.Copy
+                        && i.Operands[0] is RegOperand r && set.Values.Contains(r.Reg) && !g.Params.Contains(i.Dest))
+                        group.Add(i.Dest);
+            for (bool shrank = true; shrank && group.Count > 0;)
+            {
+                shrank = false;
+                foreach (VReg d in group.ToList())
+                {
+                    bool closed = writes.TryGetValue(d, out WriteList all) && all.All(w => w.Op == Opcode.Copy && w.Operands.Count == 1
+                        && (w.Operands[0] is ImmOperand { Value: 0 }
+                            || w.Operands[0] is RegOperand { Reg: var from } && (set.Values.Contains(from) || group.Contains(from) || FreshHere(defs, from))));
+                    if (!closed) { group.Remove(d); shrank = true; }
+                }
+            }
+            foreach (VReg d in group) if (set.Values.Add(d)) grew = true;
+        }
+        foreach (Block b in g.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Op == Opcode.Store && i.Field == field && i.Operands.Count >= 2 && i.Operands[1] is RegOperand v && set.Values.Contains(v.Reg))
+                    set.Stores.Add(i);
+        return set;
+    }
+
+    /// <summary>Functions whose address is taken -- named by code or by a descriptor -- and may be called where no call shows.</summary>
+    internal static HashSet<string> AddressTaken(Module m)
+    {
+        HashSet<string> addressed = new(StringComparer.Ordinal);
+        foreach (DataItem d in m.Data) foreach (DataReloc r in d.Relocs) addressed.Add(r.Symbol);
+        foreach (Function f in m.Functions) foreach (Block b in f.Blocks) foreach (Instr i in b.Instrs)
+            foreach (Operand o in i.Operands) if (o is SymOperand sym) addressed.Add(sym.Name);
+        return addressed;
+    }
+
+    /// <summary>
+    /// THE GETTERS OF A FIELD'S COLLECTION: functions every return of which
+    /// hands back the field's value (FieldValues) -- `Writable() =&gt; mutable
+    /// ??= new List&lt;Token&gt;(snapshot)` -- called only where a call shows.
+    /// A call of one is a read of the field.
+    /// </summary>
+    internal static HashSet<string> CollectionGetters(Module m, string field, IReadOnlySet<string> addressed)
+    {
+        HashSet<string> getters = new(StringComparer.Ordinal);
+        for (int round = 0; round < 6; round++)
+        {
+            int before = getters.Count;
+            foreach (Function g in m.Functions)
+            {
+                if (g.Async is not null || getters.Contains(g.Name) || addressed.Contains(g.Name) || g.Name == m.Entry || !Touches(g, field, getters)) continue;
+                Defs defs = new(g, buildCfg: false);
+                if (FieldValues(g, defs, field, getters) is not { Seeds.Count: > 0 } values) continue;
+                bool any = false, all = true;
+                foreach (Block b in g.Blocks)
+                    if (b.Terminator is { Op: Opcode.Ret } ret)
+                    {
+                        any = true;
+                        if (ret.Operands.Count != 1 || ret.Operands[0] is not RegOperand back || !values.Values.Contains(back.Reg)) all = false;
+                    }
+                if (any && all) getters.Add(g.Name);
+            }
+            if (getters.Count == before) break;
+        }
+        return getters;
+    }
+
+    /// <summary>
+    /// Before inlining, every use of a field's collection, as FieldReads, but
+    /// through its getters and `??=` too: each function holding one, with the
+    /// collection's calls there. Null when one is not followed. Whether what
+    /// those calls answer goes anywhere is judged after inlining.
+    /// </summary>
+    internal static List<(Function F, List<(Block B, Instr Call, Role Role)> Calls)>? FieldUses(Module m, string field, string kind, IReadOnlySet<string> addressed)
+    {
+        HashSet<string> getters = CollectionGetters(m, field, addressed);
+        List<(Function, List<(Block, Instr, Role)>)> uses = new();
+        foreach (Function g in m.Functions)
+        {
+            if (!Touches(g, field, getters)) continue;
+            Defs defs = new(g, buildCfg: false);
+            if (FieldValues(g, defs, field, getters) is not { } values) { Say(g, $"field {field}: not followed"); return null; }
+            if (values.Seeds.Count == 0) continue;
+            if (g.Async is not null) { Say(g, $"field {field}: read in an async body"); return null; }
+            if (Uses(g, defs, kind, values.Values, null, out bool returned, allowed: values.Stores) is not { } calls
+                || returned && !getters.Contains(g.Name))
+            { Say(g, $"field {field}: a read not followed"); return null; }
+            uses.Add((g, calls));
+        }
+        return uses;
+    }
+
+    /// <summary>
+    /// THE PARAMETER A VALUE IS REACHED FROM, through copies written once and
+    /// reads of reference fields -- `this._t`, then its `mutable` -- with the
+    /// fields read on the way: -1 when it is not (a static, a call's result,
+    /// an object made here). An object reached from a parameter is no
+    /// function's own: it is held by the heap, and a store frees what it
+    /// replaces only in an object its function made and kept to itself
+    /// (Escape.PrivateOwner).
+    /// </summary>
+    internal static int Root(Function g, Defs defs, Operand o, List<string>? fields = null)
+    {
+        for (int hops = 0; hops < 12; hops++)
+        {
+            if (o is not RegOperand { Reg: var r }) return -1;
+            int p = g.Params.IndexOf(r);
+            if (p >= 0) return defs.Count(r) == 1 ? p : -1;
+            if (!defs.IsSingle(r) || defs.Definition(r) is not { } d) return -1;
+            if (d.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) { o = d.Operands[0]; continue; }
+            if (d.Op == Opcode.Load && d.Field is { } field && d.Operands.Count == 1 && d.Operands[0] is RegOperand)
+            {
+                fields?.Add(field);
+                o = d.Operands[0];
+                continue;
+            }
+            return -1;
+        }
+        return -1;
+    }
+
+    /// <summary>The registers on the way to a function's returns, through copies and joins.</summary>
+    internal static HashSet<VReg> Returned(Function f)
+    {
+        HashSet<VReg> chain = new();
+        RegisterWrites writes = new(f);
+        Stack<VReg> work = new();
+        foreach (Block rb in f.Blocks)
+            if (rb.Terminator is { Op: Opcode.Ret, Operands: [RegOperand back] }) work.Push(back.Reg);
+        while (work.TryPop(out VReg? r))
+        {
+            if (!chain.Add(r) || !writes.TryGetValue(r, out WriteList ws)) continue;
+            foreach (Instr w in ws)
+                if (w.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.Phi)
+                    foreach (Operand o in w.Operands) if (o is RegOperand from) work.Push(from.Reg);
+        }
+        return chain;
     }
 
     private static readonly Regex Method = new(@"^m_(List|Dictionary)\$.+?_(set_Item|get_Item|Add|TryAdd|TryGetValue|ContainsKey|get_Count|Remove|RemoveAt|Clear|GetValueOrDefault|Insert|GetEnumerator|get_Values|get_Keys)_(\d+)(_|$)", RegexOptions.Compiled);
@@ -213,7 +443,7 @@ internal static class OwnedElements
     }
 
     /// <summary>A field's address that only a write barrier or a card mark is given.</summary>
-    private static bool BarrierOnly(Function f, VReg address)
+    internal static bool BarrierOnly(Function f, VReg address)
     {
         foreach (Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
@@ -231,15 +461,15 @@ internal static class OwnedElements
     /// calls among them, with their roles. A return of it is one when the
     /// function hands it back (`returned`), and then every return must be.
     /// </summary>
-    internal static List<(Block B, Instr Call, Role Role)>? Uses(Function f, Defs defs, string kind, HashSet<VReg> container, Instr alloc, out bool returned,
-        HandOff? handOff = null)
+    internal static List<(Block B, Instr Call, Role Role)>? Uses(Function f, Defs defs, string kind, HashSet<VReg> container, Instr? alloc, out bool returned,
+        HandOff? handOff = null, IReadOnlySet<Instr>? allowed = null)
     {
         List<(Block, Instr, Role)> calls = new();
         returned = false;
         foreach (Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
             {
-                if (ReferenceEquals(i, alloc)) continue;
+                if (ReferenceEquals(i, alloc) || allowed?.Contains(i) == true) continue;
                 int at = -1, count = 0;
                 for (int k = 0; k < i.Operands.Count; k++)
                     if (i.Operands[k] is RegOperand r && container.Contains(r.Reg)) { at = k; count++; }
@@ -285,7 +515,9 @@ internal static class OwnedElements
                         && i.Operands[0] is RegOperand:
                         handOff.At = i; handOff.Field = i.Field; handOff.Operand = 1;
                         continue;
-                    case Opcode.Call when handOff is not null && at > 0 && Escape.IsCollectorNote(i.Callee):
+                    // The store's note to the collector, which keeps nothing:
+                    // the store itself is what is judged.
+                    case Opcode.Call when (handOff is not null || allowed is not null) && at > 0 && Escape.IsCollectorNote(i.Callee):
                         continue;
                     case Opcode.Call when handOff?.Stores is not null && handOff.At is null && at > 0 && count == 1 && i.Callee is not null
                         && handOff.Stores(i.Callee, at) is { } stored:
@@ -575,7 +807,8 @@ public sealed class MarkOwnedElements : IModulePass
         // THROUGH A FIELD only in a whole program, where every read of the
         // field is in sight (OwnedElements.FieldReads).
         Func<string, int, string?>? stores = null;
-        Dictionary<string, List<(Function F, Instr Load, List<(Block B, Instr Call, OwnedElements.Role Role)> Calls)>?> readsOf = new(StringComparer.Ordinal);
+        Dictionary<string, List<(Function F, List<(Block B, Instr Call, OwnedElements.Role Role)> Calls)>?> readsOf = new(StringComparer.Ordinal);
+        HashSet<string>? addressed = null;
         if (!m.PreserveExports && m.Entry is not null)
         {
             Dictionary<string, Function> byName = new(StringComparer.Ordinal);
@@ -584,7 +817,12 @@ public sealed class MarkOwnedElements : IModulePass
             stores = (callee, at) =>
             {
                 if (!byName.TryGetValue(callee, out Function? g)) return null;
-                if (!stored.TryGetValue(callee, out Dictionary<int, string>? map)) stored[callee] = map = OwnedElements.StoredParameters(g);
+                if (!stored.TryGetValue(callee, out Dictionary<int, string>? map))
+                {
+                    // Empty while it is judged: a cycle of calls stores nothing.
+                    stored[callee] = new();
+                    stored[callee] = map = OwnedElements.StoredParameters(g, stores);
+                }
                 return map.GetValueOrDefault(at);
             };
         }
@@ -594,7 +832,12 @@ public sealed class MarkOwnedElements : IModulePass
         {
             if (handOff?.Field is not { } field) return true;
             if (returned) return false;
-            if (!readsOf.TryGetValue(field, out var reads)) readsOf[field] = reads = OwnedElements.FieldReads(m, field, kind);
+            addressed ??= OwnedElements.AddressTaken(m);
+            if (!readsOf.TryGetValue(field, out var reads))
+            {
+                readsOf[field] = reads = OwnedElements.FieldUses(m, field, kind, addressed);
+                if (reads is not null && kind == "List") KeepStashes(m, field, reads, addressed);
+            }
             if (reads is null) return false;
             foreach (var read in reads) foreach (var c in read.Calls) m.KeepCalls.Add(c.Call);
             OwnedElements.Say(f, $"handed to {field}, read {reads.Count} time(s)");
@@ -602,6 +845,7 @@ public sealed class MarkOwnedElements : IModulePass
         }
         // What each function handing back a candidate hands back.
         Dictionary<string, string> handsBack = new(StringComparer.Ordinal);
+
         foreach (Function f in m.Functions)
         {
             if (f.Async is not null) continue;
@@ -648,6 +892,77 @@ public sealed class MarkOwnedElements : IModulePass
                         if (returned && handsBack.TryAdd(f.Name, kind)) grew = true;
                     }
             }
+        }
+    }
+
+    /// <summary>
+    /// A STASH: another list, in a field, that what is read of the field's
+    /// list is put into to be put back later -- the parser's `_splits`,
+    /// keeping the token a split replaced. Its calls are kept from the
+    /// inliner too, so that after inlining what goes in and comes out of it
+    /// is still a call's operand and answer (Escape.StashProved). Found where
+    /// the field's collection is used, or a function using it is called: a
+    /// list's Add, Insert or set_Item handed one of those calls' answers, or
+    /// a block made here holding one (a tuple).
+    /// </summary>
+    private static void KeepStashes(Module m, string field, List<(Function F, List<(Block B, Instr Call, OwnedElements.Role Role)> Calls)> reads,
+        IReadOnlySet<string> addressed)
+    {
+        HashSet<string> touching = new(reads.Select(r => r.F.Name), StringComparer.Ordinal);
+        Dictionary<Function, HashSet<Instr>> answers = new();
+        foreach (var (g, calls) in reads)
+        {
+            if (!answers.TryGetValue(g, out var mine)) answers[g] = mine = new(ReferenceEqualityComparer.Instance);
+            foreach (var c in calls) if (c.Role.Reads) mine.Add(c.Call);
+        }
+        HashSet<string> stashes = new(StringComparer.Ordinal);
+        foreach (Function h in m.Functions)
+        {
+            if (h.Async is not null) continue;
+            answers.TryGetValue(h, out HashSet<Instr>? read);
+            // What may be an element here: a read's answer, or what a function
+            // using the field hands back.
+            HashSet<VReg> elements = new();
+            foreach (Block b in h.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.Call && i.Dest is not null && (read?.Contains(i) == true || i.Callee is { } c && touching.Contains(c)))
+                        elements.Add(i.Dest);
+            if (elements.Count == 0) continue;
+            Defs defs = new(h, buildCfg: false);
+            for (bool grew = true; grew;)
+            {
+                grew = false;
+                foreach (Block b in h.Blocks)
+                    foreach (Instr i in b.Instrs)
+                        if (i.Dest is not null && !elements.Contains(i.Dest) && i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32
+                            && i.Operands[0] is RegOperand r && elements.Contains(r.Reg))
+                        { elements.Add(i.Dest); grew = true; }
+            }
+            // Blocks made here an element is stored into.
+            HashSet<VReg> holders = new();
+            foreach (Block b in h.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.Store && i.Operands.Count >= 2 && i.Operands[1] is RegOperand v && elements.Contains(v.Reg)
+                        && i.Operands[0] is RegOperand at && OwnedElements.FreshHere(defs, at.Reg))
+                        holders.UnionWith(OwnedElements.Container(h, defs, at.Reg));
+            foreach (Block b in h.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Op != Opcode.Call || i.Callee is not { } callee || i.Operands.Count < 2 || i.Operands[0] is not RegOperand list) continue;
+                    OwnedElements.Role role = OwnedElements.RoleOf("List", callee);
+                    if (role.Adds < 0 || role.Adds >= i.Operands.Count || i.Operands[role.Adds] is not RegOperand value
+                        || !elements.Contains(value.Reg) && !holders.Contains(value.Reg)) continue;
+                    // The list a field holds, other than the field itself.
+                    VReg r = list.Reg;
+                    for (int hops = 0; hops < 4 && defs.IsSingle(r) && defs.Definition(r) is { Op: Opcode.Copy, Operands: [RegOperand back] }; hops++) r = back.Reg;
+                    if (defs.Definition(r) is { Op: Opcode.Load, Field: { } stash } && stash != field) stashes.Add(stash);
+                }
+        }
+        foreach (string stash in stashes)
+        {
+            if (OwnedElements.FieldUses(m, stash, "List", addressed) is not { } uses) continue;
+            foreach (var use in uses) foreach (var c in use.Calls) m.KeepCalls.Add(c.Call);
+            if (uses.Count > 0) OwnedElements.Say(uses[0].F, $"{field}: stash {stash} kept");
         }
     }
 }
@@ -824,7 +1139,9 @@ public sealed partial class Escape
         if (!_storedParameters.TryGetValue(callee, out Dictionary<int, string>? map))
         {
             Function? g = _module?.Functions.FirstOrDefault(x => x.Name == callee);
-            _storedParameters[callee] = map = g is null ? new() : OwnedElements.StoredParameters(g);
+            // Empty while it is judged: a cycle of calls stores nothing.
+            _storedParameters[callee] = new();
+            _storedParameters[callee] = map = g is null ? new() : OwnedElements.StoredParameters(g, StoredParameter);
         }
         return map.GetValueOrDefault(at);
     }
@@ -834,17 +1151,41 @@ public sealed partial class Escape
     /// (ProveOwnedElements, as if each read made it, filled): each read's
     /// register written once and kept alive past every use of what it
     /// answers, nothing it answered still held where it reads the field
-    /// again. Judged once per field; the KeepAlives placed only when every
-    /// read is proved.
+    /// again. A list's field read through accessors -- getters handing back
+    /// its value or an element, setters adding to it, a stash -- is judged
+    /// as one (AccessorsProved). Judged once per field; the KeepAlives placed
+    /// only when every read is proved.
     /// </summary>
     private bool FieldElementsProved(string field, string kind, Dictionary<string, bool[]> summaries)
     {
         if (_fieldElements.TryGetValue(field, out bool known)) { if (!known) _elementWhy = $"a read of {field}"; return known; }
         _fieldElements[field] = false;
         _elementWhy = $"a read of {field}";
-        if (OwnedElements.FieldReads(_module!, field, kind) is not { } reads) return false;
         List<(VReg Holder, List<(Block B, Instr After)> Keep)> keeps = new();
-        bool proved = true;
+        var reads = OwnedElements.FieldReads(_module!, field, kind);
+        bool proved = reads is not null && ReadsProved(field, reads, summaries, keeps);
+        // Or through the field's accessors (AccessorsProved), a list's only.
+        HashSet<Instr> kept = new(ReferenceEqualityComparer.Instance);
+        if (!proved && kind == "List")
+        {
+            keeps.Clear();
+            proved = AccessorsProved(field, summaries, keeps, kept);
+        }
+        if (!proved)
+        {
+            if (reads is not null) foreach (var read in reads) foreach (var c in read.Calls) _module?.KeepCalls.Remove(c.Call);
+            foreach (Instr c in kept) _module?.KeepCalls.Remove(c);
+            _elementWhy = $"a read of {field}";
+            return false;
+        }
+        foreach ((VReg holder, var keep) in keeps) KeepAlives(holder, keep);
+        return _fieldElements[field] = true;
+    }
+
+    /// <summary>Every read of the field a load whose collection is used only here (FieldReads), each judged alone.</summary>
+    private bool ReadsProved(string field, List<(Function F, Instr Load, List<(Block B, Instr Call, OwnedElements.Role Role)> Calls)> reads,
+        Dictionary<string, bool[]> summaries, List<(VReg Holder, List<(Block B, Instr After)> Keep)> keeps)
+    {
         foreach ((Function g, Instr load, var calls) in reads)
         {
             Defs defs = new(g);
@@ -854,19 +1195,11 @@ public sealed partial class Escape
                 || HeldAcross(g, load, held) && Why("rule 13"))
             {
                 OwnedElements.Say(g, $"read of {field} at {load.Line}: not proved ({_elementWhy})");
-                proved = false;
-                break;
+                return false;
             }
             keeps.Add((load.Dest!, keep));
         }
-        if (!proved)
-        {
-            foreach (var read in reads) foreach (var c in read.Calls) _module?.KeepCalls.Remove(c.Call);
-            _elementWhy = $"a read of {field}";
-            return false;
-        }
-        foreach ((VReg holder, var keep) in keeps) KeepAlives(holder, keep);
-        return _fieldElements[field] = true;
+        return true;
     }
 
     /// <summary>Whether anything in `held` is live just before `at` runs: held over from before it, or round a loop.</summary>
@@ -1156,6 +1489,1174 @@ public sealed partial class Escape
             foreach (Block n in cfg.Succs(b)) work.Push(n);
         }
         return false;
+    }
+
+    // ---- elements owned through a field's accessors -------------------------------------
+    //
+    // THE PARSER'S SHAPE: the list in a wrapper's field (ParserTokens.mutable),
+    // the wrapper in the parser's (Parser._t), the elements read by an indexer
+    // that hands one back and by Cur and Ahead that hand it back again, the
+    // list written through a getter that fills the field when it is empty
+    // (`mutable ??= new(...)`) and by setters whose parameter is only added
+    // to it, and a token a split replaced kept in another list (`_splits`)
+    // to be put back. Each piece is followed as a read of the field is:
+    //
+    // - A GETTER of the field's value (OwnedElements.CollectionGetters) is a
+    //   read of the field wherever it is called; a `??=` variable holding the
+    //   field's value or the list made to fill it is one of its values.
+    // - AN ELEMENT HANDED BACK makes its function an element getter, and each
+    //   call of it is an element read in the caller. What reads an element
+    //   through a getter has no register of the collection to keep alive: it
+    //   keeps alive the PARAMETER the collection is reached from instead
+    //   (OwnedElements.Root: `this`, through `_t` and `mutable`). An object
+    //   reached from a parameter is held by the heap, so no function made it
+    //   for itself, and a store frees what it replaces only in an object its
+    //   function made and kept (Escape.PrivateOwner): while the parameter
+    //   lives, so does everything owned through it.
+    // - A SETTER (an adder) adds its parameter to the field's list and does
+    //   nothing else with it; each call of it is an add in the caller, judged
+    //   there: an object made for it, as any add.
+    // - PUT BACK: an element added again to the list it came from -- reached
+    //   from the same parameter by the same fields (ListPath), every store
+    //   of which fills the object as it is made or fills an empty field
+    //   (FieldsFixed), so it is the same list -- is no new owner. The same
+    //   element twice in the list is given back once (List.FreeStorage:
+    //   OwnedElements.ReleaseDistinct).
+    // - A STASH (StashProved): another list in a field of the same object,
+    //   into which an element is put, alone or in a tuple, to be put back.
+    //   Whatever is read out of it at a place that goes back into the list
+    //   was put there as an element of that list, and goes nowhere else.
+    //
+    // An element answered by an array the wrapper keeps instead -- the
+    // indexer's `mutable is null ? snapshot[i] : mutable[i]` -- is followed
+    // with the element it is joined with when it is read only where the
+    // field was just found empty (NullGuarded): put back, it goes into a
+    // list that was filled from empty, which owns nothing.
+
+    /// <summary>What one function does with the field's collection (AccessorsProved).</summary>
+    private sealed class AccessScan
+    {
+        public required Function F;
+        public required Defs Defs;
+        public required OwnedElements.FieldValueSet Values;
+        public required RegisterWrites Writes;
+        public List<(Block B, Instr Call, OwnedElements.Role Role)> Calls = new();
+    }
+
+    /// <summary>
+    /// WHERE A LIST IS REACHED FROM: a parameter of the function, and the
+    /// fields read on the way from it, outermost first ("Parser::_t/
+    /// ParserTokens::mutable"). Two values with one path in one call of a
+    /// function are one object, when every field on it is filled once
+    /// (FieldsFixed).
+    /// </summary>
+    private readonly record struct ListPath(int Param, string Chain)
+    {
+        public ListPath Then(string more) => new(Param, Chain.Length == 0 ? more : more.Length == 0 ? Chain : Chain + "/" + more);
+    }
+
+    /// <summary>The path of an operand, through copies and reads of reference fields to a parameter; null when it reaches none.</summary>
+    private static ListPath? RootPath(Function g, Defs defs, Operand o)
+    {
+        List<string> fields = new();
+        int p = OwnedElements.Root(g, defs, o, fields);
+        if (p < 0) return null;
+        fields.Reverse();
+        return new ListPath(p, string.Join("/", fields));
+    }
+
+    /// <summary>An element read: a collection call's answer, or an element getter's; with the path of the list it is read from.</summary>
+    private readonly record struct ElementSource(Instr At, VReg Dest, VReg? Container, ListPath? Path);
+
+    /// <summary>An element parked in a stash: where, the stash's path and the element's list's.</summary>
+    private readonly record struct Parking(Function F, Instr Add, string Stash, ListPath StashPath, ListPath ListPath, HashSet<VReg> Derived);
+
+    /// <summary>
+    /// A FIELD'S LIST READ THROUGH ITS ACCESSORS, over the whole program: every
+    /// value of it followed (FieldValues, Uses), every element read -- by the
+    /// collection's calls or an element getter's -- going nowhere but back
+    /// (handed back by a getter, put back into the list, put into a stash),
+    /// every add an object made for it, a setter's parameter or an element
+    /// put back. The KeepAlives each needs are added to `keeps`; the calls
+    /// kept from the inliner that nothing needs if it fails, to `kept`.
+    /// </summary>
+    private bool AccessorsProved(string field, Dictionary<string, bool[]> summaries, List<(VReg Holder, List<(Block B, Instr After)> Keep)> keeps,
+        HashSet<Instr> kept)
+    {
+        Module m = _module!;
+        HashSet<string> addressed = OwnedElements.AddressTaken(m);
+        HashSet<string> collectionGetters = OwnedElements.CollectionGetters(m, field, addressed);
+        Dictionary<string, AccessScan> scans = new(StringComparer.Ordinal);
+        bool Refuse(Function g, string why)
+        {
+            _elementWhy = $"a read of {field}: {why}";
+            OwnedElements.Say(g, $"through accessors of {field}: {why}");
+            return false;
+        }
+        foreach (Function g in m.Functions)
+        {
+            if (!OwnedElements.Touches(g, field, collectionGetters)) continue;
+            Defs defs = new(g);
+            if (OwnedElements.FieldValues(g, defs, field, collectionGetters) is not { } values) return Refuse(g, "not followed");
+            if (values.Seeds.Count == 0) continue;
+            if (g.Async is not null) return Refuse(g, "read in an async body");
+            if (OwnedElements.Uses(g, defs, "List", values.Values, null, out bool returned, allowed: values.Stores) is not { } calls)
+                return Refuse(g, "a use not followed");
+            if (returned && !collectionGetters.Contains(g.Name)) return Refuse(g, "handed back");
+            foreach (var c in calls) kept.Add(c.Call);
+            if (calls.Any(c => c.Role.Enumerates || c.Role.Views || c.Role.OutSlot >= 0))
+                return Refuse(g, "walked through an accessor");
+            scans[g.Name] = new AccessScan { F = g, Defs = defs, Values = values, Writes = new RegisterWrites(g), Calls = calls };
+        }
+
+        // Where each getter of the collection reaches it from, by its parameters.
+        Dictionary<string, ListPath> getterPath = new(StringComparer.Ordinal);
+        ListPath? CollectionPath(AccessScan s, VReg v)
+        {
+            ListPath? path = null;
+            HashSet<VReg> seen = new();
+            Stack<VReg> work = new();
+            work.Push(v);
+            while (work.TryPop(out VReg? r))
+            {
+                if (!seen.Add(r)) continue;
+                if (s.F.Params.Contains(r)) return null;
+                ListPath? here;
+                if (s.Defs.IsSingle(r) && s.Defs.Definition(r) is { } d)
+                {
+                    if (d.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && d.Operands[0] is RegOperand from) { work.Push(from.Reg); continue; }
+                    if (OwnedElements.FreshHere(s.Defs, r)) continue;
+                    if (d.Op == Opcode.Load && d.Field == field) here = RootPath(s.F, s.Defs, d.Operands[0])?.Then(field);
+                    else if (d.Op == Opcode.Call && d.Callee is { } c && getterPath.TryGetValue(c, out ListPath inner) && inner.Param < d.Operands.Count)
+                        here = RootPath(s.F, s.Defs, d.Operands[inner.Param])?.Then(inner.Chain);
+                    else return null;
+                }
+                else if (s.Writes.TryGetValue(r, out WriteList ws))
+                {
+                    foreach (Instr w in ws)
+                    {
+                        if (w.Op != Opcode.Copy || w.Operands.Count != 1) return null;
+                        if (w.Operands[0] is RegOperand from) work.Push(from.Reg);
+                        else if (w.Operands[0] is not ImmOperand { Value: 0 }) return null;
+                    }
+                    continue;
+                }
+                else return null;
+                if (here is null || path is not null && path != here) return null;
+                path = here;
+            }
+            return path;
+        }
+        for (int round = 0; round < 6; round++)
+        {
+            bool changed = false;
+            foreach (string name in collectionGetters)
+            {
+                if (getterPath.ContainsKey(name) || !scans.TryGetValue(name, out AccessScan? s)) continue;
+                ListPath? path = null;
+                bool agree = true;
+                foreach (Block b in s.F.Blocks)
+                    if (b.Terminator is { Op: Opcode.Ret, Operands: [RegOperand back] })
+                    {
+                        ListPath? here = CollectionPath(s, back.Reg);
+                        if (here is null || path is not null && path != here) agree = false;
+                        path = here;
+                    }
+                if (!agree || path is not { } found) continue;
+                getterPath[name] = found;
+                changed = true;
+            }
+            if (!changed) break;
+        }
+
+        // THE ADDERS: a parameter added to the collection and put to no
+        // other use, with the path of the list it is added to.
+        Dictionary<string, (ListPath Target, HashSet<int> Values)> adders = new(StringComparer.Ordinal);
+        for (int round = 0; round < 4; round++)
+        {
+            bool changed = false;
+            foreach (AccessScan s in scans.Values)
+            {
+                Function g = s.F;
+                if (addressed.Contains(g.Name) || g.Name == m.Entry) continue;
+                for (int p = 1; p < g.Params.Count; p++)
+                {
+                    if (adders.TryGetValue(g.Name, out var known) && known.Values.Contains(p)) continue;
+                    HashSet<VReg> regs = OwnedElements.Container(g, s.Defs, g.Params[p]);
+                    ListPath? target = null;
+                    bool ok = true, any = false;
+                    foreach (Block b in g.Blocks)
+                    {
+                        foreach (Instr i in b.Instrs)
+                        {
+                            int at = -1, count = 0;
+                            for (int k = 0; k < i.Operands.Count; k++)
+                                if (i.Operands[k] is RegOperand r && regs.Contains(r.Reg)) { at = k; count++; }
+                            if (count == 0) continue;
+                            if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && i.Dest is not null && regs.Contains(i.Dest)) continue;
+                            if (i.Op == Opcode.Call && at > 0 && IsCollectorNote(i.Callee)) continue;
+                            ListPath? here = null;
+                            if (count == 1 && s.Calls.FirstOrDefault(c => ReferenceEquals(c.Call, i)) is { Call: not null } call && call.Role.Adds == at
+                                && i.Operands[0] is RegOperand list && s.Values.Values.Contains(list.Reg))
+                                here = CollectionPath(s, list.Reg);
+                            else if (count == 1 && i.Op == Opcode.Call && i.Callee is { } c && adders.TryGetValue(c, out var adder) && adder.Values.Contains(at)
+                                && adder.Target.Param < i.Operands.Count)
+                                here = RootPath(g, s.Defs, i.Operands[adder.Target.Param])?.Then(adder.Target.Chain);
+                            if (here is null || target is not null && target != here) { ok = false; break; }
+                            target = here;
+                            any = true;
+                        }
+                        if (!ok) break;
+                    }
+                    if (!ok || !any || target is not { } found) continue;
+                    if (!adders.TryGetValue(g.Name, out var entry)) adders[g.Name] = entry = (found, new());
+                    if (entry.Target != found) continue;
+                    entry.Values.Add(p);
+                    changed = true;
+                }
+            }
+            if (!changed) break;
+        }
+        _adders = adders.ToDictionary(a => a.Key, a => (a.Value.Target.Param, a.Value.Values), StringComparer.Ordinal);
+        _adderPaths = adders.ToDictionary(a => a.Key, a => a.Value.Target, StringComparer.Ordinal);
+
+        // The element getters, found below, and the functions calling an accessor.
+        Dictionary<string, ListPath> elementGetters = new(StringComparer.Ordinal);
+        AccessScan ScanOf(Function g)
+        {
+            if (scans.TryGetValue(g.Name, out AccessScan? s)) return s;
+            return scans[g.Name] = new AccessScan { F = g, Defs = new Defs(g), Values = new(), Writes = new RegisterWrites(g) };
+        }
+        bool CallsAccessor(Function g) => g.Blocks.Any(b => b.Instrs.Any(i => i.Op == Opcode.Call && i.Callee is { } c
+            && (elementGetters.ContainsKey(c) || adders.ContainsKey(c))));
+
+        List<ElementSource> Sources(AccessScan s)
+        {
+            List<ElementSource> sources = new();
+            foreach ((Block _, Instr call, OwnedElements.Role role) in s.Calls)
+                if (role.Reads && call.Dest is not null && call.Operands[0] is RegOperand c)
+                    sources.Add(new(call, call.Dest, c.Reg, CollectionPath(s, c.Reg)));
+            foreach (Block b in s.F.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.Call && i.Dest is not null && i.Callee is { } callee && elementGetters.TryGetValue(callee, out ListPath inner)
+                        && inner.Param < i.Operands.Count)
+                        sources.Add(new(i, i.Dest, null, RootPath(s.F, s.Defs, i.Operands[inner.Param])?.Then(inner.Chain)));
+            return sources;
+        }
+
+        // What may take an element back in a function: the list's own adds
+        // and the adders, each with the path of the list it adds to; and the
+        // adds of a stash, a list read from another field.
+        List<(Instr Call, ListPath? Target)> PutsOf(AccessScan s)
+        {
+            List<(Instr, ListPath?)> puts = new();
+            foreach ((Block _, Instr call, OwnedElements.Role role) in s.Calls)
+                if (role.Adds > 0 && call.Operands[0] is RegOperand list)
+                    puts.Add((call, CollectionPath(s, list.Reg)));
+            foreach (Block b in s.F.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.Call && i.Callee is { } callee && adders.TryGetValue(callee, out var adder) && adder.Target.Param < i.Operands.Count)
+                        puts.Add((i, RootPath(s.F, s.Defs, i.Operands[adder.Target.Param])?.Then(adder.Target.Chain)));
+            return puts;
+        }
+        List<(Instr Call, string Stash, ListPath? StashPath)> StashAddsOf(AccessScan s)
+        {
+            List<(Instr, string, ListPath?)> adds = new();
+            foreach (Block b in s.F.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.Call && i.Callee is { } callee && !adders.ContainsKey(callee)
+                        && OwnedElements.RoleOf("List", callee) is { Adds: > 0 } role && i.Operands.Count > role.Adds
+                        && StashOf(s.Defs, i.Operands[0], field) is ({ } stash, var load))
+                        adds.Add((i, stash, RootPath(s.F, s.Defs, load.Operands[0])?.Then(stash)));
+            return adds;
+        }
+
+        // One element read judged: where it goes, given what may take it back.
+        Dictionary<Function, HashSet<VReg>> returnedOf = new();
+        HashSet<VReg> ReturnedOf(Function g) => returnedOf.TryGetValue(g, out var r) ? r : returnedOf[g] = OwnedElements.Returned(g);
+        // Every read of one list in a function together, kept by its
+        // parameter; one reached from none alone, kept by its own read.
+        List<List<ElementSource>> Groups(AccessScan s)
+        {
+            List<List<ElementSource>> groups = new();
+            foreach (var byPath in Sources(s).GroupBy(x => x.Path))
+            {
+                if (byPath.Key is null) foreach (ElementSource alone in byPath) groups.Add(new() { alone });
+                else groups.Add(byPath.ToList());
+            }
+            return groups;
+        }
+        (Flow Flow, bool Returns, List<Instr> Puts, List<(Instr Add, string Stash, ListPath StashPath)> Parks) Follow(AccessScan s, List<ElementSource> group)
+        {
+            Function g = s.F;
+            HashSet<Instr> consumers = new(ReferenceEqualityComparer.Instance);
+            HashSet<Instr> holderConsumers = new(ReferenceEqualityComparer.Instance);
+            var stashAdds = StashAddsOf(s);
+            if (group[0].Path is { } path)
+            {
+                foreach (var put in PutsOf(s)) if (put.Target == path) consumers.Add(put.Call);
+                foreach (var add in stashAdds)
+                    if (add.StashPath is { } at && at.Param == path.Param) { holderConsumers.Add(add.Call); consumers.Add(add.Call); }
+            }
+            HashSet<VReg> back = ReturnedOf(g);
+            Flow flow = Analyse(g, group.SelectMany(x => ElementRoots(s, x, field)).Distinct().ToArray(), summaries, null, returnable: back.Count > 0 ? back : null,
+                consumers: consumers, holderConsumers: holderConsumers);
+            bool returns = flow.Derived.Overlaps(back);
+            // Handed back joined with what is not the element (a borrow):
+            // its callers could not tell, and might put that back.
+            if (returns && flow.Borrowed.Overlaps(back)) flow.Escapes = true;
+            List<Instr> puts = consumers.Where(c => !holderConsumers.Contains(c) && c.Operands.Any(o => o is RegOperand r && flow.Derived.Contains(r.Reg))).ToList();
+            List<(Instr, string, ListPath)> parks = stashAdds.Where(a => holderConsumers.Contains(a.Call) && Parks(g, s.Defs, a.Call, flow.Derived))
+                .Select(a => (a.Call, a.Stash, a.StashPath!.Value)).ToList();
+            return (flow, returns, puts, parks);
+        }
+
+        // THE ELEMENT GETTERS: what hands back an element of the list, by
+        // the path it reaches the list from; found until no more are.
+        for (int round = 0; round < 8; round++)
+        {
+            bool changed = false;
+            foreach (Function g in m.Functions)
+            {
+                if (g.Async is not null || elementGetters.ContainsKey(g.Name) || ReturnedOf(g).Count == 0) continue;
+                if (!scans.ContainsKey(g.Name) && !CallsAccessor(g)) continue;
+                AccessScan s = ScanOf(g);
+                ListPath? path = null;
+                bool agree = true, any = false;
+                foreach (List<ElementSource> group in Groups(s))
+                {
+                    if (!Follow(s, group).Returns) continue;
+                    any = true;
+                    if (group[0].Path is not { } here || path is not null && path != here) agree = false;
+                    path = group[0].Path;
+                }
+                if (!any) continue;
+                if (!agree || path is not { } found || addressed.Contains(g.Name) || g.Name == m.Entry)
+                    return Refuse(g, "an element handed back from no one list, or by a function called unseen");
+                elementGetters[g.Name] = found;
+                changed = true;
+            }
+            if (!changed) break;
+        }
+
+        // EACH FUNCTION, judged.
+        HashSet<string> fixedFields = new(StringComparer.Ordinal) { field };
+        void Fixed(ListPath path) { foreach (string f in path.Chain.Split('/', StringSplitOptions.RemoveEmptyEntries)) fixedFields.Add(f); }
+        bool putBack = false;
+        List<Parking> parked = new();
+        HashSet<string> stashes = new(StringComparer.Ordinal);
+        foreach (Function g in m.Functions)
+        {
+            if (!scans.ContainsKey(g.Name) && !CallsAccessor(g)) continue;
+            if (g.Async is not null) return Refuse(g, "an accessor called in an async body");
+            AccessScan s = ScanOf(g);
+            Defs defs = s.Defs;
+            Cfg cfg = defs.Cfg;
+            List<HashSet<VReg>> derivedAll = new();
+            foreach (List<ElementSource> group in Groups(s))
+            {
+                ElementSource source = group[0];
+                (Flow flow, bool returns, List<Instr> puts, var parks) = Follow(s, group);
+                if (flow.Escapes) return Refuse(g, $"an element read at {source.At.Line} escapes via {flow.Why?.Op} {flow.Why?.Callee}");
+                if (returns && (!elementGetters.TryGetValue(g.Name, out ListPath handed) || handed != source.Path))
+                    return Refuse(g, $"an element handed back at {source.At.Line} from another list");
+                // Taken back or put into a stash: through fields that never change.
+                if (puts.Count > 0 || parks.Count > 0)
+                {
+                    putBack = true;
+                    Fixed(source.Path!.Value);
+                    foreach (var park in parks)
+                    {
+                        if (!ParkedOnly(g, defs, park.Add, flow.Derived)) return Refuse(g, $"a stash's tuple at {park.Add.Line} used otherwise");
+                        stashes.Add(park.Stash);
+                        Fixed(park.StashPath);
+                        parked.Add(new Parking(g, park.Add, park.Stash, park.StashPath, source.Path!.Value, flow.Derived));
+                    }
+                }
+                // What keeps the list alive while the element is used: the
+                // register the list was read into, when that is all; else
+                // the parameter it is reached from.
+                VReg keeper;
+                Instr? anchor = null;
+                if (source.Path is null && source.Container is { } local && defs.IsSingle(local)
+                    && FieldLoadOf(defs, local, field) is { } loaded)
+                {
+                    keeper = local;
+                    anchor = defs.Definition(local);
+                    if (HeldAcross(g, loaded, new() { flow.Derived })) return Refuse(g, $"an element read at {source.At.Line} held across another read");
+                }
+                else if (source.Path is { } path) keeper = g.Params[path.Param];
+                else return Refuse(g, $"an element read at {source.At.Line} through no parameter");
+                if (KeepAfterUses(g, cfg, anchor, flow.Derived) is not { } keep) return Refuse(g, $"an element read at {source.At.Line} used where its list is not");
+                keeps.Add((keeper, keep));
+                derivedAll.Add(flow.Derived);
+            }
+
+            // THE ADDS: an object made for it, a setter's own parameter, or
+            // an element put back (judged above, or read out of a stash).
+            var unparked = Unparked(s, field);
+            Dictionary<Instr, Instr> adderOf = new(ReferenceEqualityComparer.Instance);
+            List<(Instr Call, int Value, VReg? Container, ListPath? Target)> adds = new();
+            foreach ((Block _, Instr call, OwnedElements.Role role) in s.Calls)
+                if (role.Adds > 0 && call.Operands[0] is RegOperand list)
+                    adds.Add((call, role.Adds, list.Reg, CollectionPath(s, list.Reg)));
+            foreach (Block b in g.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.Call && i.Callee is { } callee && adders.TryGetValue(callee, out var adder) && adder.Target.Param < i.Operands.Count)
+                        foreach (int v in adder.Values)
+                            if (v < i.Operands.Count) adds.Add((i, v, null, RootPath(g, defs, i.Operands[adder.Target.Param])?.Then(adder.Target.Chain)));
+            foreach ((Instr call, int value, VReg? container, ListPath? target) in adds)
+            {
+                Operand given = call.Operands[value];
+                if (given is RegOperand pr && g.Params.IndexOf(pr.Reg) is int p && p > 0 && adders.TryGetValue(g.Name, out var mine) && mine.Values.Contains(p)) continue;
+                if (given is RegOperand er && derivedAll.Any(d => d.Contains(er.Reg))) continue;
+                if (given is RegOperand ur && unparked.TryGetValue(ur.Reg, out var fromStash))
+                {
+                    // Judged with the stash: what it read out goes back where it came from.
+                    if (target is null) return Refuse(g, $"put back at {call.Line} through no parameter");
+                    putBack = true;
+                    stashes.Add(fromStash.Stash);
+                    continue;
+                }
+                Block at = g.Blocks.First(x => x.Instrs.Contains(call));
+                List<Instr> origins = new();
+                HashSet<VReg> joins = new();
+                if (Origin(g, defs, at, call, given, new()) is { } single) origins.Add(single);
+                else if (VariableOrigins(g, defs, given, joins) is { } several) origins.AddRange(several);
+                else return Refuse(g, $"adds at {call.Line} what was not made for it");
+                foreach (Instr origin in origins)
+                    if (!adderOf.TryAdd(origin, call)) return Refuse(g, $"adds at {call.Line} what another add takes");
+                HashSet<Block> renewing = new(ReferenceEqualityComparer.Instance);
+                foreach (Instr origin in origins) renewing.Add(g.Blocks.First(x => x.Instrs.Contains(origin)));
+                if (ReachesAvoiding(cfg, at, at, renewing)) return Refuse(g, $"adds at {call.Line} the same object round a loop");
+                Flow flow = Analyse(g, origins.Select(o => o.Dest!).ToArray(), summaries, origins.Count == 1 ? origins[0] : null, null,
+                    joinable: joins.Count > 0 ? joins : null, consumers: new(ReferenceEqualityComparer.Instance) { call });
+                if (flow.Escapes) return Refuse(g, $"what is added at {call.Line} escapes");
+                // Its uses once it is in the list: made, filled and read
+                // before, it was nobody's.
+                HashSet<Instr> later = new(ReferenceEqualityComparer.Instance);
+                int callAt = at.Instrs.IndexOf(call);
+                foreach (Block x in g.Blocks)
+                {
+                    bool loops = cfg.Reaches(at, at);
+                    if (!ReferenceEquals(x, at) && !cfg.Reaches(at, x)) continue;
+                    for (int k = ReferenceEquals(x, at) && !loops ? callAt + 1 : 0; k < x.Instrs.Count; k++)
+                        if (x.Instrs[k].Operands.Any(o => o is RegOperand r && flow.Derived.Contains(r.Reg))) later.Add(x.Instrs[k]);
+                }
+                if (later.Count == 0) continue;
+                VReg keeper;
+                Instr? anchor = null;
+                if (container is { } local && defs.IsSingle(local) && FieldLoadOf(defs, local, field) is { } loaded)
+                {
+                    keeper = local;
+                    anchor = defs.Definition(local);
+                    if (HeldAcross(g, loaded, new() { flow.Derived })) return Refuse(g, $"what is added at {call.Line} held across another read");
+                }
+                else if (target is { } path) keeper = g.Params[path.Param];
+                else return Refuse(g, $"adds at {call.Line} through no parameter");
+                if (KeepAfterUses(g, cfg, anchor, flow.Derived, later) is not { } keep) return Refuse(g, $"what is added at {call.Line} used where its list is not");
+                keeps.Add((keeper, keep));
+            }
+        }
+
+        // What is put back is the element of the same list: every field on
+        // the way to it, and every stash, filled once as its object is made,
+        // or filled when empty.
+        if (stashes.Count > 0 && !StashProved(field, stashes, parked, scans, addressed, fixedFields, kept, CollectionPath)) return false;
+        if (putBack && !FieldsFixed(fixedFields, field, scans, addressed)) return false;
+        OwnedElements.Say(scans.Values.First().F, $"through accessors of {field}: proved{(putBack ? ", put back" : "")}");
+        return true;
+    }
+
+    /// <summary>The adders' list paths (AccessorsProved), for Unparking.</summary>
+    private Dictionary<string, ListPath>? _adderPaths;
+
+    /// <summary>The read of `field` a register holds, through copies written once; null for anything else.</summary>
+    private static Instr? FieldLoadOf(Defs defs, VReg r, string field)
+    {
+        for (int hops = 0; hops < 6; hops++)
+        {
+            if (!defs.IsSingle(r) || defs.Definition(r) is not { } d) return null;
+            if (d.Op == Opcode.Load && d.Field == field) return d;
+            if (d.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || d.Operands[0] is not RegOperand from) return null;
+            r = from.Reg;
+        }
+        return null;
+    }
+
+    /// <summary>The stash a call's receiver is -- a list read from another field -- with that read; (null, null) for anything else.</summary>
+    private static (string? Field, Instr Load) StashOf(Defs defs, Operand receiver, string field)
+    {
+        if (receiver is not RegOperand { Reg: var r }) return (null, null!);
+        for (int hops = 0; hops < 6; hops++)
+        {
+            if (!defs.IsSingle(r) || defs.Definition(r) is not { } d) return (null, null!);
+            if (d.Op == Opcode.Load && d.Field is { } stash && stash != field && d.Operands.Count == 1 && d.Operands[0] is RegOperand) return (stash, d);
+            if (d.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || d.Operands[0] is not RegOperand from) return (null, null!);
+            r = from.Reg;
+        }
+        return (null, null!);
+    }
+
+    /// <summary>
+    /// The registers an element read starts from: the answer, and what it is
+    /// joined with that was read only where the field was found empty
+    /// (NullGuarded) -- the wrapper's array, read instead of its list.
+    /// </summary>
+    private static VReg[] ElementRoots(AccessScan s, ElementSource source, string field)
+    {
+        List<VReg> roots = new() { source.Dest };
+        if (source.Container is not { } c || FieldLoadOf(s.Defs, c, field) is not { } load || OwnerOf(s.Defs, load.Operands[0]) is not { } owner) return roots.ToArray();
+        // Copies of the answer written once, then the variables they are joined into.
+        HashSet<VReg> answer = OwnedElements.Container(s.F, s.Defs, source.Dest);
+        foreach (Block b in s.F.Blocks)
+            foreach (Instr i in b.Instrs)
+            {
+                if (i.Op != Opcode.Copy || i.Dest is not { } join || s.Defs.IsSingle(join) || i.Operands[0] is not RegOperand from || !answer.Contains(from.Reg)) continue;
+                if (!s.Writes.TryGetValue(join, out WriteList ws)) continue;
+                List<VReg> others = new();
+                bool guarded = true;
+                foreach (Instr w in ws)
+                {
+                    if (ReferenceEquals(w, i)) continue;
+                    if (w.Op != Opcode.Copy || w.Operands is not [RegOperand other]) { guarded = false; break; }
+                    if (answer.Contains(other.Reg)) continue;
+                    Block at = s.F.Blocks.First(x => x.Instrs.Contains(w));
+                    if (!NullGuarded(s, at, owner, field)) { guarded = false; break; }
+                    others.Add(other.Reg);
+                }
+                if (guarded) roots.AddRange(others);
+            }
+        return roots.Distinct().ToArray();
+    }
+
+    /// <summary>
+    /// Whether a block runs only where `owner`'s field was just read and found
+    /// null: dominated by the null edge of a test of that read, an edge into a
+    /// block nothing else enters. That edge's block, or null.
+    /// </summary>
+    internal static Block? NullGuard(Function f, Defs defs, Block at, object owner, string field)
+    {
+        Cfg cfg = defs.Cfg;
+        foreach (Block b in f.Blocks)
+        {
+            if (b.Terminator is not { Op: Opcode.Branch, Operands: [RegOperand tested] } branch || branch.Targets.Count != 2) continue;
+            Block? nullEdge = null;
+            if (IsOwnersRead(defs, tested.Reg, owner, field)) nullEdge = branch.Targets[1];
+            else if (defs.IsSingle(tested.Reg) && defs.Definition(tested.Reg) is { Op: Opcode.Eq or Opcode.Ne } cmp && cmp.Operands.Count == 2)
+            {
+                RegOperand? read = cmp.Operands[0] is ImmOperand { Value: 0 } ? cmp.Operands[1] as RegOperand
+                    : cmp.Operands[1] is ImmOperand { Value: 0 } ? cmp.Operands[0] as RegOperand : null;
+                if (read is not null && IsOwnersRead(defs, read.Reg, owner, field)) nullEdge = cmp.Op == Opcode.Eq ? branch.Targets[0] : branch.Targets[1];
+            }
+            if (nullEdge is null || ReferenceEquals(branch.Targets[0], branch.Targets[1]) || cfg.Preds(nullEdge).Count != 1) continue;
+            if (cfg.Dominates(nullEdge, at)) return nullEdge;
+        }
+        return null;
+    }
+
+    private static bool NullGuarded(AccessScan s, Block at, object owner, string field) => NullGuard(s.F, s.Defs, at, owner, field) is not null;
+
+    private static bool IsOwnersRead(Defs defs, VReg r, object owner, string field)
+        => FieldLoadOf(defs, r, field) is { Operands: [var from] } && ReferenceEquals(OwnerOf(defs, from), owner);
+
+    /// <summary>
+    /// The object an operand addresses, for telling two of its uses are of
+    /// one object: its frame slot (an object promoted to the frame), or the
+    /// register its copies written once start from.
+    /// </summary>
+    internal static object? OwnerOf(Defs defs, Operand o)
+    {
+        for (int hops = 0; hops < 8; hops++)
+        {
+            if (o is SlotOperand { Slot: var slot }) return slot;
+            if (o is not RegOperand { Reg: var r }) return null;
+            if (!defs.IsSingle(r) || defs.Definition(r) is not { Op: Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 } d) return r;
+            o = d.Operands[0];
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Where a KeepAlive goes for every use of `derived`: after each, each
+    /// dominated by `anchor` (the keeper's definition; a parameter has none).
+    /// Null when one is not.
+    /// </summary>
+    private static List<(Block B, Instr After)>? KeepAfterUses(Function f, Cfg cfg, Instr? anchor, HashSet<VReg> derived, IReadOnlySet<Instr>? only = null)
+    {
+        Block? anchorBlock = anchor is null ? null : f.Blocks.First(b => b.Instrs.Contains(anchor));
+        List<(Block, Instr)> keep = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+            {
+                bool uses = false;
+                foreach (Operand o in i.Operands) if (o is RegOperand r && derived.Contains(r.Reg)) { uses = true; break; }
+                if (!uses || only is not null && !only.Contains(i)) continue;
+                if (anchorBlock is not null)
+                {
+                    bool dominated = ReferenceEquals(b, anchorBlock) ? b.Instrs.IndexOf(anchor!) < b.Instrs.IndexOf(i) : cfg.Dominates(anchorBlock, b);
+                    if (!dominated) return null;
+                }
+                keep.Add((b, i));
+            }
+        return keep;
+    }
+
+    /// <summary>The memory a stash's add is handed -- a frame slot, or a block made here -- as its operands name it.</summary>
+    private static (FrameSlot? Slot, HashSet<VReg>? Block) HolderOf(Function g, Defs defs, Operand value)
+    {
+        if (SlotOf(defs, value) is { } slot) return (slot, null);
+        if (value is RegOperand { Reg: var r } && OwnedElements.FreshHere(defs, r))
+        {
+            VReg root = r;
+            for (int hops = 0; hops < 6 && defs.Definition(root) is { Op: Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32, Operands: [RegOperand back] }; hops++) root = back.Reg;
+            return (null, OwnedElements.Container(g, defs, root));
+        }
+        return (null, null);
+    }
+
+    /// <summary>Whether `i` addresses the holder: its slot, or a register of its block.</summary>
+    private static bool Addresses(Defs defs, Operand o, FrameSlot? slot, HashSet<VReg>? block)
+        => slot is not null && SlotOf(defs, o) == slot || block is not null && o is RegOperand { Reg: var r } && block.Contains(r);
+
+    /// <summary>Whether a stash's add is handed an element: the element itself, or memory it was stored into.</summary>
+    private static bool Parks(Function g, Defs defs, Instr add, HashSet<VReg> derived)
+    {
+        int value = OwnedElements.RoleOf("List", add.Callee!).Adds;
+        if (add.Operands[value] is RegOperand v && derived.Contains(v.Reg)) return true;
+        (FrameSlot? slot, HashSet<VReg>? block) = HolderOf(g, defs, add.Operands[value]);
+        if (slot is null && block is null) return false;
+        foreach (Block b in g.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Op == Opcode.Store && i.Operands.Count >= 2 && i.Operands[1] is RegOperand s && derived.Contains(s.Reg) && Addresses(defs, i.Operands[0], slot, block))
+                    return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Whether the memory an element was stored into for a stash is used for
+    /// nothing else: written, read, zeroed, told to the collector, and handed
+    /// to the stash's add (Analyse follows the element in it; this keeps an
+    /// address of it from going anywhere Analyse does not look).
+    /// </summary>
+    private static bool ParkedOnly(Function g, Defs defs, Instr add, HashSet<VReg> derived)
+    {
+        int value = OwnedElements.RoleOf("List", add.Callee!).Adds;
+        if (add.Operands[value] is RegOperand v && derived.Contains(v.Reg)) return true;
+        (FrameSlot? slot, HashSet<VReg>? block) = HolderOf(g, defs, add.Operands[value]);
+        HashSet<VReg> addresses = new();
+        foreach (Block b in g.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Dest is not null && i.Op is Opcode.Copy && i.Operands is [var o] && (Addresses(defs, o, slot, block) || o is RegOperand { Reg: var a } && addresses.Contains(a)))
+                    addresses.Add(i.Dest);
+        foreach (Block b in g.Blocks)
+            foreach (Instr i in b.Instrs)
+                for (int k = 0; k < i.Operands.Count; k++)
+                {
+                    Operand o = i.Operands[k];
+                    if (!Addresses(defs, o, slot, block) && !(o is RegOperand { Reg: var a } && addresses.Contains(a))) continue;
+                    if (i.Op is Opcode.Copy && i.Dest is not null && addresses.Contains(i.Dest)) continue;
+                    if (k == 0 && i.Op is Opcode.Store or Opcode.Load or Opcode.MemSet) continue;
+                    if (k == 0 && i.Op == Opcode.Add && i.Operands[1] is ImmOperand && i.Dest is not null && OwnedElements.BarrierOnly(g, i.Dest)) continue;
+                    if (i.Op == Opcode.Call && (IsCollectorNote(i.Callee) || i.Callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive)) continue;
+                    if (ReferenceEquals(i, add) && k == value) continue;
+                    // The block made for the tuple: its allocation.
+                    if (block is not null && i.Op is Opcode.Trunc64 or Opcode.ZExt32 && i.Dest is not null && block.Contains(i.Dest)) continue;
+                    return false;
+                }
+        return true;
+    }
+
+    /// <summary>
+    /// WHAT IS READ OUT OF A STASH in a function, by register: the stash, the
+    /// parameter it is reached from, and the offset in the tuple the value
+    /// was loaded from (0 for a stash of elements). Its get_Item answers a
+    /// tuple in the frame (the out operand, and the address it hands back),
+    /// copied whole into more frame memory, and read word by word.
+    /// </summary>
+    private static Dictionary<VReg, (string Stash, ListPath? StashPath, long Offset, int Size, Instr Read)> Unparked(AccessScan s, string field)
+    {
+        Dictionary<VReg, (string, ListPath?, long, int, Instr)> found = new();
+        Function g = s.F;
+        Defs defs = s.Defs;
+        foreach (Block b in g.Blocks)
+            foreach (Instr call in b.Instrs)
+            {
+                if (call.Op != Opcode.Call || call.Callee is not { } callee || !OwnedElements.RoleOf("List", callee).Reads || call.Operands.Count < 2) continue;
+                if (StashOf(defs, call.Operands[0], field) is not ({ } stash, var load)) continue;
+                ListPath? root = RootPath(g, defs, load.Operands[0])?.Then(stash);
+                if (call.Operands.Count == 2)
+                {
+                    if (call.Dest is not null)
+                        foreach (VReg r in OwnedElements.Container(g, defs, call.Dest)) found[r] = (stash, root, 0, 0, call);
+                    continue;
+                }
+                foreach ((Instr loaded, long offset, int size) in TupleReadsOrNull(g, defs, call) ?? new())
+                    foreach (VReg r in OwnedElements.Container(g, defs, loaded.Dest!)) found[r] = (stash, root, offset, size, call);
+            }
+        return found;
+    }
+
+    /// <summary>
+    /// The frame memory a tuple read out of a stash lands in (its out slot,
+    /// and wherever it is copied whole), with every load from it; null when
+    /// that memory is used any other way.
+    /// </summary>
+    private static List<(Instr Load, long Offset, int Size)>? TupleReadsOrNull(Function g, Defs defs, Instr call)
+    {
+        List<(FrameSlot? Slot, HashSet<VReg>? Block)> holders = new();
+        HashSet<VReg> addresses = new();
+        if (call.Operands.Count != 3) return null;
+        var first = HolderOf(g, defs, call.Operands[2]);
+        if (first.Slot is null && first.Block is null) return null;
+        holders.Add(first);
+        if (call.Dest is not null) addresses.Add(call.Dest);
+        bool Held(Operand o) => o is RegOperand { Reg: var r } && addresses.Contains(r) || holders.Any(h => Addresses(defs, o, h.Slot, h.Block));
+        for (bool grew = true; grew;)
+        {
+            grew = false;
+            foreach (Block b in g.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && i.Dest is not null && i.Operands is [var o] && Held(o) && addresses.Add(i.Dest)) grew = true;
+                    if (i.Op == Opcode.MemCopy && i.Operands.Count == 3 && Held(i.Operands[1]) && !Held(i.Operands[0]))
+                    {
+                        var to = HolderOf(g, defs, i.Operands[0]);
+                        if (to.Slot is null && to.Block is null) return null;
+                        holders.Add(to);
+                        grew = true;
+                    }
+                }
+        }
+        List<(Instr, long, int)> loads = new();
+        foreach (Block b in g.Blocks)
+            foreach (Instr i in b.Instrs)
+                for (int k = 0; k < i.Operands.Count; k++)
+                {
+                    if (!Held(i.Operands[k])) continue;
+                    if (ReferenceEquals(i, call)) continue;
+                    if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && i.Dest is not null && addresses.Contains(i.Dest)) continue;
+                    if (k == 0 && i.Op == Opcode.Load && i.Dest is not null) { loads.Add((i, i.Offset, i.Size)); continue; }
+                    if (i.Op == Opcode.MemCopy && k <= 1) continue;
+                    if (k == 0 && i.Op is Opcode.Store or Opcode.MemSet) continue;
+                    if (i.Op == Opcode.Call && (IsCollectorNote(i.Callee) || i.Callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive)) continue;
+                    return null;
+                }
+        return loads;
+    }
+
+    /// <summary>
+    /// THE STASHES: lists in fields, into which an element of the field's list
+    /// is put, alone or in a tuple, to be put back into it. Each filled once
+    /// as its object is made (FieldsFixed), used only by the list's own calls
+    /// (FieldUses), and what is read out of it put back only into the list it
+    /// was read from -- the stash and the list reached from one parameter by
+    /// the same fields wherever it is put in or taken out -- or else used as
+    /// a number: compared, counted with, handed to an index operand of a
+    /// list's call. Every word read out and put back was put in, wherever
+    /// anything is put into the stash, as an element read from that list
+    /// (`parked`, judged by AccessorsProved), or the memory holding it zeroed.
+    /// </summary>
+    private bool StashProved(string field, HashSet<string> stashes, List<Parking> parked,
+        Dictionary<string, AccessScan> scans, HashSet<string> addressed, HashSet<string> fixedFields, HashSet<Instr> kept,
+        Func<AccessScan, VReg, ListPath?> collectionPath)
+    {
+        Module m = _module!;
+        bool Refuse(Function g, string why)
+        {
+            _elementWhy = $"a read of {field}: {why}";
+            OwnedElements.Say(g, $"through accessors of {field}: {why}");
+            return false;
+        }
+        foreach (string stash in stashes)
+        {
+            fixedFields.Add(stash);
+            if (OwnedElements.FieldUses(m, stash, "List", addressed) is not { } uses) return Refuse(m.Functions[0], $"stash {stash} used otherwise");
+            // One place for the stash and one for the list, from the one parameter.
+            (string Stash, string List)? pair = null;
+            bool Same(ListPath stashPath, ListPath listPath)
+            {
+                if (stashPath.Param != listPath.Param) return false;
+                if (pair is { } known) return known == (stashPath.Chain, listPath.Chain);
+                pair = (stashPath.Chain, listPath.Chain);
+                return true;
+            }
+            foreach (Parking p in parked)
+                if (p.Stash == stash && !Same(p.StashPath, p.ListPath)) return Refuse(p.F, $"stash {stash} given at {p.Add.Line} an element of another list");
+            // What is read out, and which words of it are put back.
+            HashSet<(long Offset, int Size)> putBack = new();
+            foreach ((Function g, var calls) in uses)
+            {
+                AccessScan s = scans.TryGetValue(g.Name, out AccessScan? sc) ? sc
+                    : new AccessScan { F = g, Defs = new Defs(g), Values = new(), Writes = new RegisterWrites(g) };
+                foreach ((Block _, Instr call, OwnedElements.Role role) in calls)
+                {
+                    kept.Add(call);
+                    if (role.Enumerates || role.Views || role.OutSlot >= 0) return Refuse(g, $"stash {stash} walked");
+                    if (!role.Reads) continue;
+                    if (call.Operands.Count > 3 || call.Operands.Count == 3 && TupleReadsOrNull(g, s.Defs, call) is null)
+                        return Refuse(g, $"stash {stash}'s tuple used otherwise at {call.Line}");
+                }
+                foreach ((VReg value, var (from, stashPath, offset, size, read)) in Unparked(s, field))
+                {
+                    if (from != stash) continue;
+                    List<ListPath?> targets = new();
+                    switch (Unparking(s, value, field, targets, collectionPath, 0))
+                    {
+                        case null: return Refuse(g, $"what is read out of stash {stash} at {read.Line} is used otherwise");
+                        case true:
+                            foreach (ListPath? target in targets)
+                            {
+                                if (stashPath is not { } sp || target is not { } t || !Same(sp, t))
+                                    return Refuse(g, $"what is read out of stash {stash} at {read.Line} is put into another list");
+                                foreach (string f in t.Chain.Split('/', StringSplitOptions.RemoveEmptyEntries)) fixedFields.Add(f);
+                                foreach (string f in sp.Chain.Split('/', StringSplitOptions.RemoveEmptyEntries)) fixedFields.Add(f);
+                            }
+                            putBack.Add((offset, size));
+                            break;
+                    }
+                }
+            }
+            if (putBack.Count == 0) continue;
+            // What is put in, wherever it is.
+            foreach ((Function g, var calls) in uses)
+            {
+                Defs defs = scans.TryGetValue(g.Name, out AccessScan? sc) ? sc.Defs : new Defs(g);
+                foreach ((Block _, Instr call, OwnedElements.Role role) in calls)
+                {
+                    if (role.Adds <= 0) continue;
+                    HashSet<VReg> mine = new();
+                    foreach (Parking p in parked) if (ReferenceEquals(p.Add, call)) mine.UnionWith(p.Derived);
+                    Operand value = call.Operands[role.Adds];
+                    (FrameSlot? slot, HashSet<VReg>? block) = HolderOf(g, defs, value);
+                    if (slot is null && block is null)
+                    {
+                        if (value is not RegOperand v || !mine.Contains(v.Reg)) return Refuse(g, $"stash {stash} given at {call.Line} what its list did not hold");
+                        continue;
+                    }
+                    bool zeroed = false;
+                    HashSet<long> words = new();
+                    foreach (Block b in g.Blocks)
+                        foreach (Instr i in b.Instrs)
+                        {
+                            if (i.Op == Opcode.MemSet && i.Operands.Count >= 1 && Addresses(defs, i.Operands[0], slot, block)) { zeroed = true; continue; }
+                            if (i.Op == Opcode.MemCopy && i.Operands.Count >= 1 && Addresses(defs, i.Operands[0], slot, block)) return Refuse(g, $"stash {stash}'s tuple copied into at {i.Line}");
+                            if (i.Op != Opcode.Store || i.Operands.Count < 2 || !Addresses(defs, i.Operands[0], slot, block)) continue;
+                            foreach ((long offset, int size) in putBack)
+                            {
+                                long to = i.Offset + Math.Max(i.Size, 1), end = offset + Math.Max(size, 1);
+                                if (to <= offset || i.Offset >= end) continue;
+                                if (i.Offset != offset || i.Operands[1] is not RegOperand v || !mine.Contains(v.Reg))
+                                    return Refuse(g, $"stash {stash} given at {i.Line} what its list did not hold");
+                                words.Add(offset);
+                            }
+                        }
+                    if (!zeroed && putBack.Any(w => !words.Contains(w.Offset))) return Refuse(g, $"stash {stash}'s tuple at {call.Line} not all written");
+                }
+            }
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// How a value read out of a stash is used: true when some use puts it
+    /// back into a list (whose path is added to `targets`), false when it is
+    /// only a number, null for anything else.
+    /// </summary>
+    private bool? Unparking(AccessScan s, VReg value, string field, List<ListPath?> targets, Func<AccessScan, VReg, ListPath?> collectionPath, int depth)
+    {
+        if (depth > 4) return null;
+        bool put = false;
+        Function g = s.F;
+        foreach (Block b in g.Blocks)
+            foreach (Instr i in b.Instrs)
+                for (int k = 0; k < i.Operands.Count; k++)
+                {
+                    if (i.Operands[k] is not RegOperand { Reg: var r } || r != value) continue;
+                    if (IrInfo.IsIntCompare(i.Op) || i.Op is Opcode.Branch or Opcode.Switch) continue;
+                    if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 && i.Dest is not null && s.Defs.IsSingle(i.Dest)
+                        || i.Op is Opcode.Add or Opcode.Sub && i.Dest is not null && s.Defs.IsSingle(i.Dest) && i.Operands.Count == 2 && i.Operands[1 - k] is ImmOperand)
+                    {
+                        switch (Unparking(s, i.Dest!, field, targets, collectionPath, depth + 1))
+                        {
+                            case null: return null;
+                            case true: put = true; break;
+                        }
+                        continue;
+                    }
+                    if (i.Op == Opcode.Call && i.Callee is { } callee && k > 0)
+                    {
+                        // Into the list: by its own call, or a setter.
+                        if (s.Calls.FirstOrDefault(c => ReferenceEquals(c.Call, i)) is { Call: not null } known
+                            && i.Operands[0] is RegOperand list && s.Values.Values.Contains(list.Reg))
+                        {
+                            if (k != known.Role.Adds) continue;
+                            targets.Add(collectionPath(s, list.Reg));
+                            put = true;
+                            continue;
+                        }
+                        if (_adders?.TryGetValue(callee, out var adder) == true && _adderPaths?.TryGetValue(callee, out ListPath into) == true && k != adder.Receiver)
+                        {
+                            if (!adder.Values.Contains(k)) continue;
+                            targets.Add(adder.Receiver < i.Operands.Count ? RootPath(g, s.Defs, i.Operands[adder.Receiver])?.Then(into.Chain) : null);
+                            put = true;
+                            continue;
+                        }
+                        // An index of any list's own call.
+                        OwnedElements.Role role = OwnedElements.RoleOf("List", callee);
+                        if (role.Known && k != role.Adds) continue;
+                    }
+                    return null;
+                }
+        return put;
+    }
+
+    /// <summary>The adders of the field being judged (AccessorsProved), for Unparking.</summary>
+    private Dictionary<string, (int Receiver, HashSet<int> Values)>? _adders;
+
+    /// <summary>
+    /// WHETHER EVERY FIELD ON THE WAY TO THE LIST IS FILLED ONCE: each store
+    /// into it, anywhere, is into an object as it is made -- one its function
+    /// made, before that object is used any other way, once and not round a
+    /// loop; or a constructor's own, every call of which is handed an object
+    /// just made -- or, for the list's own field, a `??=` putting back what
+    /// it read of the same object or filling it, from empty, with a list made
+    /// there. Then an object reached from a parameter holds the same list as
+    /// long as it lives, and what was read from it and is put back goes home.
+    /// </summary>
+    private bool FieldsFixed(HashSet<string> fields, string field, Dictionary<string, AccessScan> scans, HashSet<string> addressed)
+    {
+        Module m = _module!;
+        Dictionary<string, Function> byName = new(StringComparer.Ordinal);
+        foreach (Function g in m.Functions) byName[g.Name] = g;
+        HashSet<string> constructors = ConstructorLike(m, addressed);
+        foreach (Function g in m.Functions)
+        {
+            Defs? defs = null;
+            foreach (Block b in g.Blocks)
+                foreach (Instr st in b.Instrs)
+                {
+                    if (st.Field is not { } x || !fields.Contains(x)) continue;
+                    if (st.Op == Opcode.Load) continue;
+                    if (st.Op != Opcode.Store)
+                    {
+                        // Its address taken: written where no store shows.
+                        _elementWhy = $"a read of {field}: {x}'s address taken at {st.Line}";
+                        OwnedElements.Say(g, $"through accessors of {field}: {x}'s address taken at {st.Line}");
+                        return false;
+                    }
+                    defs ??= scans.TryGetValue(g.Name, out AccessScan? sc) ? sc.Defs : new Defs(g);
+                    if (x == field && scans.TryGetValue(g.Name, out AccessScan? s) && s.Values.Stores.Contains(st) && FillStore(s, st, field)) continue;
+                    if (Initializing(g, defs, b, st, x, constructors, byName)) continue;
+                    _elementWhy = $"a read of {field}: {x} stored at {st.Line} after its object was made";
+                    OwnedElements.Say(g, $"through accessors of {field}: {x} stored at {st.Line} after its object was made");
+                    return false;
+                }
+        }
+        return true;
+    }
+
+    /// <summary>A `??=` of the list's field (FillStoreShape).</summary>
+    private static bool FillStore(AccessScan s, Instr st, string field) => FillStoreShape(s.F, s.Defs, s.Writes, st) is not null;
+
+    /// <summary>What a `??=` of a field stores (FillStoreShape).</summary>
+    internal sealed class Fill
+    {
+        /// <summary>The reads of the field, of the same object, whose value is stored back.</summary>
+        public readonly List<Instr> Restores = new();
+        /// <summary>The objects made to fill it, each where the field was found null.</summary>
+        public readonly List<Instr> Made = new();
+        /// <summary>The variables on the way to the store.</summary>
+        public readonly HashSet<VReg> Joins = new();
+        /// <summary>The null edges the objects are made behind.</summary>
+        public readonly HashSet<Block> Guards = new(ReferenceEqualityComparer.Instance);
+    }
+
+    /// <summary>
+    /// A `??=` OF A FIELD -- `f ??= new T()`, lowered `nc = o.f; if (nc ==
+    /// null) nc = new T(); o.f = nc` -- what is stored is, on every path, the
+    /// field's own value read from the same object (put back as it was), or
+    /// an object made where that read was found null. Null for any other store.
+    /// </summary>
+    internal static Fill? FillStoreShape(Function f, Defs defs, RegisterWrites writes, Instr st)
+    {
+        if (st.Op != Opcode.Store || st.Field is not { } field || st.Operands.Count < 2
+            || OwnerOf(defs, st.Operands[0]) is not { } owner || st.Operands[1] is not RegOperand value) return null;
+        Fill fill = new();
+        HashSet<VReg> seen = new();
+        Stack<(VReg Reg, Instr? Write)> work = new();
+        work.Push((value.Reg, null));
+        while (work.TryPop(out var item))
+        {
+            (VReg r, Instr? write) = item;
+            if (!seen.Add(r) || seen.Count > 32) { if (seen.Count > 32) return null; continue; }
+            if (f.Params.Contains(r)) return null;
+            if (defs.IsSingle(r) && defs.Definition(r) is { } d)
+            {
+                if (d.Op == Opcode.Load && d.Field == field)
+                {
+                    if (!ReferenceEquals(OwnerOf(defs, d.Operands[0]), owner)) return null;
+                    fill.Restores.Add(d);
+                    continue;
+                }
+                if (d.Op == Opcode.Call && Escape.IsAllocator(d.Callee))
+                {
+                    // Copied into the variable where the field was found empty.
+                    if (write is null) return null;
+                    Block where = f.Blocks.First(x => x.Instrs.Contains(write));
+                    if (NullGuard(f, defs, where, owner, field) is not { } guard) return null;
+                    fill.Guards.Add(guard);
+                    fill.Made.Add(d);
+                    continue;
+                }
+                if (d.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && d.Operands[0] is RegOperand back) { work.Push((back.Reg, write)); continue; }
+                return null;
+            }
+            if (!writes.TryGetValue(r, out WriteList ws)) return null;
+            fill.Joins.Add(r);
+            foreach (Instr w in ws)
+            {
+                if (w.Op != Opcode.Copy || w.Operands is not [RegOperand from]) return null;
+                work.Push((from.Reg, w));
+            }
+        }
+        return fill.Restores.Count > 0 ? fill : null;
+    }
+
+    /// <summary>A store into an object as it is made (FieldsFixed).</summary>
+    private static bool Initializing(Function g, Defs defs, Block at, Instr st, string x, HashSet<string> constructors, Dictionary<string, Function> byName)
+    {
+        Operand baseOperand = st.Operands[0];
+        // A constructor's own `this`: the only store of the field in it, not
+        // round a loop, and no constructor it calls on `this` storing the
+        // field again.
+        if (baseOperand is RegOperand { Reg: var self } && g.Params.Count > 0 && self == g.Params[0] && defs.Count(self) == 1)
+        {
+            if (!constructors.Contains(g.Name)) return false;
+            int stores = 0;
+            foreach (Block b in g.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Op == Opcode.Store && i.Field == x) stores++;
+                    if (i.Op == Opcode.Call && i.Operands.Count > 0 && i.Operands[0] is RegOperand { Reg: var passed } && passed == self && i.Callee is { } c
+                        && StoresOnThis(c, x, byName, 0)) return false;
+                }
+            return stores == 1 && !defs.Cfg.Reaches(at, at);
+        }
+        // An object this function made: an allocation, or one promoted to the frame.
+        object? origin = null;
+        Block? made = null;
+        if (SlotOf(defs, baseOperand) is { } slot)
+        {
+            origin = slot;
+            made = g.Blocks.FirstOrDefault(b => b.Instrs.Any(i => i.Op == Opcode.MemSet && i.Operands.Count > 0 && SlotOf(defs, i.Operands[0]) == slot));
+        }
+        else if (baseOperand is RegOperand { Reg: var r } && OwnedElements.FreshHere(defs, r))
+        {
+            VReg root = r;
+            for (int hops = 0; hops < 6 && defs.Definition(root) is { Op: Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32, Operands: [RegOperand back] }; hops++) root = back.Reg;
+            origin = root;
+            made = g.Blocks.First(b => b.Instrs.Contains(defs.Definition(root)!));
+        }
+        if (origin is null || made is null) return false;
+        HashSet<VReg>? names = origin is VReg v0 ? OwnedElements.Container(g, defs, v0) : null;
+        bool Same(Operand o) => origin is FrameSlot fs ? SlotOf(defs, o) == fs : o is RegOperand { Reg: var q } && names!.Contains(q);
+        int count = 0;
+        foreach (Block b in g.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Op == Opcode.Store && i.Field == x && Same(i.Operands[0])) count++;
+        if (count != 1 || ReachesAvoiding(defs.Cfg, at, at, made)) return false;
+        // Nothing done with the object before it is filled but filling it.
+        int stIndex = at.Instrs.IndexOf(st);
+        bool loops = defs.Cfg.Reaches(at, at);
+        foreach (Block b in g.Blocks)
+        {
+            if (!ReferenceEquals(b, at) && !defs.Cfg.Reaches(b, at)) continue;
+            int end = ReferenceEquals(b, at) && !loops ? stIndex : b.Instrs.Count;
+            for (int k = 0; k < end; k++)
+            {
+                Instr i = b.Instrs[k];
+                for (int o = 0; o < i.Operands.Count; o++)
+                {
+                    if (!Same(i.Operands[o])) continue;
+                    if (o == 0 && i.Op is Opcode.Store or Opcode.Load or Opcode.MemSet) continue;
+                    if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && i.Dest is not null) continue;
+                    if (o == 0 && i.Op == Opcode.Add && i.Operands[1] is ImmOperand && i.Dest is not null && OwnedElements.BarrierOnly(g, i.Dest)) continue;
+                    if (i.Op == Opcode.Call && (IsCollectorNote(i.Callee) || i.Callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive)) continue;
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    /// <summary>Whether a constructor, or one it calls on its `this`, stores the field there.</summary>
+    private static bool StoresOnThis(string name, string x, Dictionary<string, Function> byName, int depth)
+    {
+        if (depth > 4 || !byName.TryGetValue(name, out Function? g)) return true;
+        foreach (Block b in g.Blocks)
+            foreach (Instr i in b.Instrs)
+            {
+                if (i.Op == Opcode.Store && i.Field == x) return true;
+                if (i.Op == Opcode.Call && i.Callee is { } c && i.Operands.Count > 0 && i.Operands[0] is RegOperand { Reg: var r } && g.Params.Count > 0 && r == g.Params[0]
+                    && StoresOnThis(c, x, byName, depth + 1)) return true;
+            }
+        return false;
+    }
+
+    /// <summary>
+    /// CONSTRUCTORS, as the owned-field rules find them: functions every call
+    /// of which passes as its first argument an object just made -- nothing
+    /// between but its descriptor stamped -- or the caller's own first
+    /// argument, the caller being one.
+    /// </summary>
+    private static HashSet<string> ConstructorLike(Module m, HashSet<string> addressed)
+    {
+        Dictionary<string, List<(Function G, Block B, int At)>> sites = new(StringComparer.Ordinal);
+        foreach (Function g in m.Functions)
+            foreach (Block b in g.Blocks)
+                for (int k = 0; k < b.Instrs.Count; k++)
+                    if (b.Instrs[k] is { Op: Opcode.Call, Callee: string callee })
+                    {
+                        if (!sites.TryGetValue(callee, out var list)) sites[callee] = list = new();
+                        list.Add((g, b, k));
+                    }
+        HashSet<string> made = new(StringComparer.Ordinal);
+        bool FreshFirst(Function g, Block at, int index)
+        {
+            if (at.Instrs[index].Operands is not [RegOperand r, ..]) return false;
+            if (g.Params.Count > 0 && r.Reg == g.Params[0]) return made.Contains(g.Name);
+            int from = -1;
+            HashSet<VReg> names = new() { r.Reg };
+            for (int k = index - 1; k >= 0; k--)
+            {
+                Instr i = at.Instrs[k];
+                if (i.Dest is null || !names.Contains(i.Dest)) continue;
+                if (i.Op == Opcode.Call && IsAllocator(i.Callee)) { from = k; break; }
+                if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && i.Operands[0] is RegOperand back) { names.Add(back.Reg); continue; }
+                return false;
+            }
+            if (from < 0) return false;
+            for (int k = from + 1; k < index; k++)
+            {
+                Instr i = at.Instrs[k];
+                if (!i.Operands.Any(o => o is RegOperand u && names.Contains(u.Reg))) continue;
+                if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && i.Dest is not null) { names.Add(i.Dest); continue; }
+                if (i.Op == Opcode.Store && i.Operands[1] is SymOperand) continue;
+                return false;
+            }
+            return true;
+        }
+        for (bool grew = true; grew;)
+        {
+            grew = false;
+            foreach (Function g in m.Functions)
+            {
+                if (made.Contains(g.Name) || g.Params.Count == 0 || addressed.Contains(g.Name) || !sites.TryGetValue(g.Name, out var calls) || calls.Count == 0) continue;
+                if (calls.All(c => FreshFirst(c.G, c.B, c.At))) { made.Add(g.Name); grew = true; }
+            }
+        }
+        return made;
     }
 
     /// <summary>The call that gives back an owning collection's elements, before whatever frees the collection.</summary>

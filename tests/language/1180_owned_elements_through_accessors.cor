@@ -1,0 +1,223 @@
+// test: owned_elements_through_accessors
+// expect-exit: 0
+// expect-output:
+// parse 3461000 True
+// doubled 1000 True
+// shared 692200 kept 4
+// churn ok 4
+//
+// The compiler's own parser keeps its tokens one step further away than a
+// field of the parser: the lexer's list is a field of a wrapper
+// (ParserTokens.mutable), the wrapper a field of the parser (Parser._t);
+// tokens are read by an indexer that hands one back, through Cur and Ahead
+// that hand it back again; the list is written through a getter that fills
+// the field when it is empty (`mutable ??= new(...)`); and a token a split
+// replaces is kept in a list of tuples (`_splits`) and put back. The list
+// still gives its tokens back when the parser is dropped (OwnedElements,
+// through accessors): every element read keeps the parameter the list is
+// reached from alive past its last use, what is put back goes into the list
+// it came from, and a token put back twice is given back once. The array a
+// cache shares is never the list's, and what it holds stays intact while
+// the memory of what was freed is used again.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public enum Tok { Ident, Int, Lt, Gt, Shr, UShr, Comma, Semi, End }
+
+public sealed record Token(Tok Kind, string Text, int Line, int Col, int Pos, bool Global = false);
+
+public static class Lexer
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static List<Token> Tokenize(string s)
+    {
+        List<Token> l = new();
+        int pos = 0;
+        foreach (string w in s.Split(' '))
+        {
+            Tok k = w == "<" ? Tok.Lt : w == ">" ? Tok.Gt : w == ">>" ? Tok.Shr : w == "," ? Tok.Comma : w == ";" ? Tok.Semi
+                : w.Length > 0 && char.IsDigit(w[0]) ? Tok.Int : Tok.Ident;
+            l.Add(new Token(k, w, 1, pos + 1, pos));
+            pos += w.Length + 1;
+        }
+        l.Add(new Token(Tok.End, "", 1, pos + 1, pos));
+        return l;
+    }
+}
+
+// Read the array a cache shares directly; copy only when a split writes.
+public sealed class ParserTokens
+{
+    private readonly Token[]? snapshot;
+    private List<Token>? mutable;
+    public ParserTokens(List<Token> tokens) { mutable = tokens; }
+    public ParserTokens(Token[] tokens) { snapshot = tokens; }
+    public int Count => mutable is null ? snapshot!.Length : mutable.Count;
+    public Token this[int index]
+    {
+        get => mutable is null ? snapshot![index] : mutable[index];
+        set => Writable()[index] = value;
+    }
+    private List<Token> Writable() => mutable ??= new List<Token>(snapshot!);
+    public void Insert(int index, Token token) => Writable().Insert(index, token);
+    public void RemoveAt(int index) => Writable().RemoveAt(index);
+}
+
+public sealed class Parser
+{
+    private readonly ParserTokens _t;
+    private readonly string _file;
+    private int _i;
+    private readonly List<(int At, Token Was)> _splits = new();
+
+    public Parser(List<Token> tokens, string file = "<source>") : this(new ParserTokens(tokens), file) { }
+    public Parser(Token[] tokens, string file = "<source>") : this(new ParserTokens(tokens), file) { }
+    private Parser(ParserTokens tokens, string file) { _t = tokens; _file = file; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long ParseText(string source)
+    {
+        List<Token> tokens = Lexer.Tokenize(source);
+        return new Parser(tokens, "a").ParseUnit();
+    }
+
+    // The first token put back twice: in the list at two places.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long Doubled(string source)
+    {
+        List<Token> tokens = Lexer.Tokenize(source);
+        return new Parser(tokens, "d").Twice();
+    }
+
+    private Token Cur => _t[Math.Min(_i, _t.Count - 1)];
+    private Token Ahead(int n = 1) => _t[Math.Min(_i + n, _t.Count - 1)];
+    private bool At(Tok k) => Cur.Kind == k;
+    private bool Take(Tok k) { if (!At(k)) return false; _i++; return true; }
+
+    private Token Expect(Tok k, string what)
+    {
+        if (!At(k)) throw new Exception($"{_file}: expected {what}, found '{Cur.Text}'");
+        return _t[_i++];
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public long ParseUnit()
+    {
+        long sum = 0;
+        while (!At(Tok.End))
+        {
+            Token start = Cur;
+            if (At(Tok.Ident) && Ahead().Kind == Tok.Lt)
+            {
+                _i++;
+                int mark = _splits.Count;
+                if (TryTypeArgs()) sum += 1000;
+                else Unsplit(mark);
+            }
+            else if (At(Tok.Int)) sum += Expect(Tok.Int, "a number").Text.Length;
+            else _i++;
+            sum += start.Pos;
+        }
+        return sum;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public long Twice()
+    {
+        Token first = _t[0];
+        _t[1] = first;
+        return _t[0].Pos + _t[1].Pos + _t.Count;
+    }
+
+    private bool TryTypeArgs()
+    {
+        if (!Take(Tok.Lt)) return false;
+        int mark = _splits.Count;
+        do
+        {
+            if (!At(Tok.Ident)) { Unsplit(mark); return false; }
+            _i++;
+            if (At(Tok.Lt) && !TryTypeArgs()) { Unsplit(mark); return false; }
+        }
+        while (Take(Tok.Comma));
+        if (!TakeAngle()) { Unsplit(mark); return false; }
+        return true;
+    }
+
+    private bool TakeAngle()
+    {
+        if (Take(Tok.Gt)) return true;
+        if (!At(Tok.Shr) && !At(Tok.UShr)) return false;
+        Token was = _t[_i];
+        Token half = was with { Kind = Tok.Gt, Text = ">" };
+        _t[_i] = was.Kind == Tok.UShr
+            ? was with { Kind = Tok.Shr, Text = ">>", Col = was.Col + 1, Pos = was.Pos + 1 }
+            : half with { Col = was.Col + 1, Pos = was.Pos + 1 };
+        _t.Insert(_i, half);
+        _splits.Add((_i, was));
+        _i++;
+        return true;
+    }
+
+    private void Unsplit(int mark)
+    {
+        for (int i = _splits.Count - 1; i >= mark; i--)
+        {
+            (int at, Token was) = _splits[i];
+            _t.RemoveAt(at);
+            _t[at] = was;
+            _splits.RemoveAt(i);
+        }
+    }
+}
+
+public static class Cache
+{
+    static Token[]? _kept;
+
+    // The shared path: the lexer's list copied into an array kept here and
+    // read by a parser, the list read by another. Neither gives tokens back.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long Shared(string source)
+    {
+        List<Token> tokens = Lexer.Tokenize(source);
+        Token[] snapshot = tokens.ToArray();
+        _kept = snapshot;
+        return new Parser(snapshot, "b").ParseUnit() + new Parser(tokens, "c").ParseUnit();
+    }
+
+    public static int KeptPos => _kept![2].Pos;
+}
+
+static class P
+{
+    const string Text = "a < b , c >> ; d < 1 ; x 12 y < z > w ; List < List < int >> q ; u < v";
+
+    static string Freed(long before, long least) => Gc.Frees - before >= least ? "True" : "False";
+
+    static void Main()
+    {
+        long before = Gc.Frees;
+        long sum = 0;
+        for (int r = 0; r < 1000; r++) sum += Parser.ParseText(Text);
+        // Some 35 tokens a parse given back, with the parser's list and wrapper.
+        Console.WriteLine("parse " + sum + " " + Freed(before, 30000));
+
+        before = Gc.Frees;
+        sum = 0;
+        for (int r = 0; r < 1000; r++) sum += Parser.Doubled("p q r");
+        Console.WriteLine("doubled " + (sum / 4) + " " + Freed(before, 2000));
+
+        sum = 0;
+        for (int r = 0; r < 100; r++) sum += Cache.Shared(Text);
+        Console.WriteLine("shared " + sum + " kept " + Cache.KeptPos);
+
+        // What was freed made again, many times over: the shared tokens must
+        // be untouched by it.
+        long churn = 0;
+        for (int r = 0; r < 2000; r++) churn += Parser.ParseText(Text) + Parser.Doubled("p q r");
+        Console.WriteLine("churn " + (churn == 2000L * (3461 + 4) ? "ok" : "bad " + churn) + " " + Cache.KeptPos);
+    }
+}

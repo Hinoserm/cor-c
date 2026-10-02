@@ -6761,6 +6761,44 @@ static class OwnedElements {
         // A collection given back takes its storage with it (Runtime.Free).
         if (Sys.IsObject(element) && Sys.Word(element) != 0) { Runtime.Free((nint)Sys.Word(element)); }
     }
+
+    // EACH ELEMENT GIVEN BACK ONCE, however often the list holds it: an
+    // element read from a list and put back into it (Opt.OwnedElements, put
+    // back) may be there twice. The array dies with the list, so it is
+    // sorted by address where it is -- a heap sort, nothing allocated while
+    // memory is being given back; the collector moves nothing -- and each
+    // run of one object released once.
+    internal static void ReleaseDistinct<E>(E[] items, int count) {
+        for (int start = count / 2 - 1; start >= 0; start--) { SiftDown(items, start, count); }
+        for (int end = count - 1; end > 0; end--) {
+            E top = items[0];
+            items[0] = items[end];
+            items[end] = top;
+            SiftDown(items, 0, end);
+        }
+        long last = 0;
+        for (int i = 0; i < count; i++) {
+            E element = items[i];
+            items[i] = default(E)!;
+            long word = Sys.Word(element);
+            if (word == last) { continue; }
+            last = word;
+            Release(element);
+        }
+    }
+
+    private static void SiftDown<E>(E[] items, int root, int end) {
+        while (true) {
+            int child = 2 * root + 1;
+            if (child >= end) { return; }
+            if (child + 1 < end && (ulong)Sys.Word(items[child + 1]) > (ulong)Sys.Word(items[child])) { child++; }
+            if ((ulong)Sys.Word(items[child]) <= (ulong)Sys.Word(items[root])) { return; }
+            E swap = items[root];
+            items[root] = items[child];
+            items[child] = swap;
+            root = child;
+        }
+    }
 }
 
 static class OutgrownStorage {
@@ -7382,7 +7420,13 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
     public void OwnElements() { ownsElements = true; }
 
     public void FreeStorage() {
-        if (ownsElements) { ownsElements = false; FreeOwnedElements(); }
+        // Marked through a field, its elements may have been put back into
+        // it: each given back once.
+        if (ownsElements) {
+            ownsElements = false;
+            if (items != null) { OwnedElements.ReleaseDistinct(items, count); }
+            count = 0;
+        }
         if (!lent) { OutgrownStorage.Release(items); }
         items = null!;
         count = 0;

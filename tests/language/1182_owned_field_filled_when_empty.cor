@@ -1,0 +1,108 @@
+// test: owned_field_filled_when_empty
+// expect-exit: 0
+// expect-output:
+// lazy 3000 True
+// looped 4000 True
+// meddled 4000 ok
+// intact 14 16 21
+//
+// A field filled when it is empty -- `_list ??= new List<int>()`, lowered as
+// a read of the field, a list made where it was null, and the value stored
+// back -- owns what it holds (Escape.OwnedFields): the store puts back what
+// was read of the same object, or fills it from empty, so it replaces
+// nothing and is no writer of the field; the list made is held by the field
+// from the store on. And an object promoted to the frame gives its owned
+// fields back where it dies, as Runtime.Free does for one on the heap: the
+// list and its array, each round. A `??=` filled by a call, which may
+// itself store into the field (Meddler: the maker sets it), is no such
+// store, and what it replaced is kept intact.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+sealed class Lazy
+{
+    private List<int>? _list;
+    public List<int> List => _list ??= new List<int>();
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Sum()
+    {
+        int s = 0;
+        for (int i = 0; i < List.Count; i++) s += List[i];
+        return s;
+    }
+}
+
+sealed class Meddler
+{
+    public static List<int>? Seen;
+    private List<int>? _list;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private List<int> Make()
+    {
+        List<int> made = new() { 1 };
+        _list = made;
+        return new List<int> { 2 };
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Fill()
+    {
+        _list ??= Make();
+        Seen = _list;
+        return _list.Count;
+    }
+}
+
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Once()
+    {
+        Lazy lazy = new();
+        lazy.List.Add(1);
+        lazy.List.Add(2);
+        return lazy.Sum();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Looped()
+    {
+        int s = 0;
+        for (int r = 0; r < 2; r++)
+        {
+            Lazy lazy = new();
+            lazy.List.Add(r + 1);
+            lazy.List.Add(2);
+            s += lazy.Sum();
+        }
+        return s - 3;
+    }
+
+    static string Freed(long before, long least) => Gc.Frees - before >= least ? "True" : "False " + (Gc.Frees - before);
+
+    static void Main()
+    {
+        long before = Gc.Frees;
+        long sum = 0;
+        for (int r = 0; r < 1000; r++) sum += Once();
+        // The list and its array, each round.
+        Console.WriteLine("lazy " + sum + " " + Freed(before, 2000));
+
+        before = Gc.Frees;
+        sum = 0;
+        for (int r = 0; r < 1000; r++) sum += Looped();
+        Console.WriteLine("looped " + sum + " " + Freed(before, 4000));
+
+        sum = 0;
+        for (int r = 0; r < 1000; r++) sum += new Meddler().Fill() + Meddler.Seen![0] + 1;
+        Console.WriteLine("meddled " + sum + " " + (Meddler.Seen![0] == 2 ? "ok" : "bad"));
+
+        long churn = 0;
+        for (int r = 0; r < 2000; r++) churn += Once() + Looped();
+        Console.WriteLine("intact " + (churn / 1000) + " " + (Once() + Looped() + Once() * 2 + 3) + " " + Meddler.Seen![0] + Meddler.Seen.Count);
+    }
+}

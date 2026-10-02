@@ -1,0 +1,199 @@
+// test: owned_elements_through_accessors_refused
+// expect-exit: 0
+// expect-output:
+// kept 6000 few True first 1
+// crossed 3000 few True
+// stash 3000 few True
+// replaced 2000 few True
+// intact ok 1 c
+//
+// What keeps a list read through its accessors from owning its elements
+// (OwnedElements, through accessors): an element a getter hands back that is
+// kept; one put into another list of the same object (`_u[0] = _t[0]`, two
+// fields of one type); what is read out of a stash used as more than a
+// number; a field on the way to the list replaced after its object is
+// made, while an element is put back. Each wrapper is a
+// type of its own, so each refusal is judged alone: nothing of its tokens is
+// given back (a few frees a round, the lists and wrappers), and what was kept
+// stays intact while the memory of what was freed is used again.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public sealed record Token(int Kind, string Text, int Pos);
+
+public static class Lexer
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static List<Token> Tokenize(string s)
+    {
+        List<Token> l = new();
+        int pos = 0;
+        foreach (string w in s.Split(' ')) { l.Add(new Token(w.Length, w, pos)); pos += w.Length + 1; }
+        return l;
+    }
+}
+
+// An element handed back by a getter, kept.
+public sealed class BoxA
+{
+    private List<Token>? mutable;
+    public BoxA(List<Token> tokens) { mutable = tokens; }
+    public int Count => mutable!.Count;
+    public Token this[int i] => mutable![i];
+}
+
+public sealed class HolderA
+{
+    public static List<Token> Kept = new();
+    private readonly BoxA _t;
+    public HolderA(List<Token> tokens) { _t = new BoxA(tokens); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Walk(int round)
+    {
+        int s = 0;
+        for (int i = 0; i < _t.Count; i++)
+        {
+            s += _t[i].Kind;
+            if (round == 3 && i == 2) Kept.Add(_t[i]);
+        }
+        return s;
+    }
+}
+
+// An element of one list put into another of the same object.
+public sealed class BoxB
+{
+    private List<Token>? mutable;
+    public BoxB(List<Token> tokens) { mutable = tokens; }
+    public int Count => mutable!.Count;
+    public Token this[int i] { get => mutable![i]; set => mutable![i] = value; }
+}
+
+public sealed class HolderB
+{
+    private readonly BoxB _t, _u;
+    public HolderB(List<Token> a, List<Token> b) { _t = new BoxB(a); _u = new BoxB(b); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Cross()
+    {
+        _u[0] = _t[0];
+        return _u[0].Kind + _t[_t.Count - 1].Kind;
+    }
+}
+
+// What a stash hands back read, not only put back: the parser's split and
+// undo, but for the length of the token taken out.
+public sealed class BoxC
+{
+    private List<Token>? mutable;
+    public BoxC(List<Token> tokens) { mutable = tokens; }
+    public int Count => mutable!.Count;
+    public Token this[int i] { get => mutable![i]; [MethodImpl(MethodImplOptions.NoInlining)] set => mutable![i] = value; }
+}
+
+public sealed class HolderC
+{
+    private readonly BoxC _t;
+    private readonly List<(int At, Token Was)> _saved = new();
+    public HolderC(List<Token> tokens) { _t = new BoxC(tokens); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void Split(int at)
+    {
+        Token was = _t[at];
+        _t[at] = was with { Pos = 99 };
+        _saved.Add((at, was));
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private int Undo()
+    {
+        (int at, Token back) = _saved[_saved.Count - 1];
+        int length = back.Text.Length;
+        _t[at] = back;
+        _saved.RemoveAt(_saved.Count - 1);
+        return length;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Round()
+    {
+        Split(1);
+        return Undo() + _t[1].Kind;
+    }
+}
+
+// A field on the way to the list replaced, while an element is put back.
+public sealed class BoxD
+{
+    private List<Token>? mutable;
+    public BoxD(List<Token> tokens) { mutable = tokens; }
+    public Token this[int i] { get => mutable![i]; set => mutable![i] = value; }
+}
+
+public sealed class HolderD
+{
+    private BoxD _t;
+    public HolderD(List<Token> tokens) { _t = new BoxD(tokens); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Swap(List<Token> other)
+    {
+        Token first = _t[0];
+        _t = new BoxD(other);
+        _t[1] = first;
+        return _t[1].Kind + _t[0].Kind;
+    }
+}
+
+static class P
+{
+    const string Text = "aa bbb c dddd";
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Kept(int round) => new HolderA(Lexer.Tokenize(Text)).Walk(round);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Crossed() => new HolderB(Lexer.Tokenize(Text), Lexer.Tokenize(Text)).Cross();
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Stashed() => new HolderC(Lexer.Tokenize(Text)).Round();
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Replaced() => new HolderD(Lexer.Tokenize(Text)).Swap(Lexer.Tokenize(Text));
+
+    // Fewer frees a round than the wrappers, lists and arrays and its four
+    // tokens: none of them were given back.
+    static string Few(long before, long rounds) => Gc.Frees - before < rounds * 6 ? "True" : "False " + (Gc.Frees - before);
+
+    static void Main()
+    {
+        long before = Gc.Frees;
+        long sum = 0;
+        for (int r = 0; r < 600; r++) sum += Kept(r);
+        Console.WriteLine("kept " + sum + " few " + Few(before, 600) + " first " + HolderA.Kept[0].Kind);
+
+        before = Gc.Frees;
+        sum = 0;
+        for (int r = 0; r < 500; r++) sum += Crossed();
+        Console.WriteLine("crossed " + sum + " few " + Few(before, 500));
+
+        before = Gc.Frees;
+        sum = 0;
+        for (int r = 0; r < 500; r++) sum += Stashed();
+        Console.WriteLine("stash " + sum + " few " + Few(before, 500));
+
+        before = Gc.Frees;
+        sum = 0;
+        for (int r = 0; r < 500; r++) sum += Replaced();
+        Console.WriteLine("replaced " + sum + " few " + Few(before, 500));
+
+        long churn = 0;
+        for (int r = 0; r < 3000; r++) churn += Kept(1) + Crossed() + Stashed() + Replaced();
+        Console.WriteLine("intact " + (churn == 3000L * (10 + 6 + 6 + 4) ? "ok" : "bad " + churn) + " " + HolderA.Kept[0].Kind + " " + HolderA.Kept[0].Text);
+    }
+}
