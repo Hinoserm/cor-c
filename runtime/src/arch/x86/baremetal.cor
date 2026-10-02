@@ -365,11 +365,13 @@ static class Platform
         return 0;
     }
 
-    /// Each thread's region arena (Gc, "regions"): one megabyte, mapped when
-    /// the thread first opens a region.
+    /// No region arena on a machine with no operating system: a thread block
+    /// here is a processor's, and the tasks that park and resume on any
+    /// processor would share it. Regions wait for the task switch to carry
+    /// the arena's words with the task.
     public static long RegionBytes()
     {
-        return 1024 * 1024;
+        return 0;
     }
 
     public static long HeapLimit()

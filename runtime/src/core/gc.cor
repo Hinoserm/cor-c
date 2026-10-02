@@ -2065,6 +2065,9 @@ static class Gc
     static long _regionSlice;
     static bool _regionAsked;
 
+    // A record's block: header, the two words, footer, rounded as blocks are.
+    const long RecordBytes = (Overhead + 2 * WordSize.Bytes + 7) & SizeMask;
+
     // EACH REGION BEGINS WITH ITS RECORD, a leaf block of two words: the
     // region it is inside (0 for none) and the frame of the call that opened
     // it. A throw that leaves that call runs no RegionLeave; the next region
@@ -2088,14 +2091,16 @@ static class Gc
             Sys.Poke(tb + Tls.RegionEnd, arena + _regionSlice);
             Sys.Poke(tb + Tls.RegionBase, arena);
         }
-        PopStale(tb, frame);
+        // Every region opened at or below this frame is one a throw has left:
+        // two live calls never share a frame.
+        PopStale(tb, frame, true);
         long record = Sys.Peek(tb + Tls.RegionAt);
-        if (record + Smallest > Sys.Peek(tb + Tls.RegionEnd)) return -1;
-        Stamp(record, Smallest, 0);
+        if (record + RecordBytes > Sys.Peek(tb + Tls.RegionEnd)) return -1;
+        Stamp(record, RecordBytes, 0);
         Sys.Poke(record + KindAt, KindLeaf);
         Sys.Poke(record + HeaderBytes, Sys.Peek(tb + Tls.RegionOpen));
         Sys.Poke(record + HeaderBytes + WordSize.Bytes, frame);
-        Sys.Poke(tb + Tls.RegionAt, record + Smallest);
+        Sys.Poke(tb + Tls.RegionAt, record + RecordBytes);
         Sys.Poke(tb + Tls.RegionOpen, record);
         return record;
     }
@@ -2114,31 +2119,39 @@ static class Gc
         Sys.Poke(tb + Tls.RegionOpen, Sys.Peek(record + HeaderBytes));
         Sys.MemorySet(record, 0, end - record);
         // The record is the region's own, not anything the program made.
-        RegionFreedBytes = RegionFreedBytes + (end - record - Smallest);
-        FreedBytes = FreedBytes + (end - record - Smallest);
+        RegionFreedBytes = RegionFreedBytes + (end - record - RecordBytes);
+        FreedBytes = FreedBytes + (end - record - RecordBytes);
     }
 
     /// Regions whose calls a throw has left: every one opened by a frame
-    /// below `frame` (deeper in the stack) is closed.
-    static void PopStale(long tb, long frame)
+    /// below `frame` (deeper in the stack), or at it too when `at` -- a new
+    /// region is opened there, so whatever was opened there is gone.
+    static void PopStale(long tb, long frame, bool at)
     {
         long open = Sys.Peek(tb + Tls.RegionOpen);
-        while (open != 0 && (Sys.Peek(open + HeaderBytes + WordSize.Bytes) & WordSize.AddressMask) < (frame & WordSize.AddressMask))
+        while (open != 0 && Below(Sys.Peek(open + HeaderBytes + WordSize.Bytes), frame, at))
         {
             RegionLeave(open);
             open = Sys.Peek(tb + Tls.RegionOpen);
         }
     }
 
+    static bool Below(long opened, long frame, bool at)
+    {
+        long a = opened & WordSize.AddressMask, b = frame & WordSize.AddressMask;
+        return a < b || at && a == b;
+    }
+
     /// A block in the innermost open region -- when `owner` is 0, or is
-    /// itself in that region -- or on the heap.
-    public static nint AllocRegion(nint bytes, nint kind, long owner)
+    /// itself in that region -- or on the heap. `frame` is the allocating
+    /// function's: a region opened below it is one a throw has left.
+    public static nint AllocRegion(nint bytes, nint kind, long owner, long frame)
     {
         nint tb = (nint)Sys.ThreadBlock();
         long open = tb == 0 ? 0 : Sys.Peek(tb + Tls.RegionOpen);
-        if (open != 0 && (Sys.Peek(open + HeaderBytes + WordSize.Bytes) & WordSize.AddressMask) < (Sys.FramePointer() & WordSize.AddressMask))
+        if (open != 0 && Below(Sys.Peek(open + HeaderBytes + WordSize.Bytes), frame, false))
         {
-            PopStale(tb, Sys.FramePointer());
+            PopStale(tb, frame, false);
             open = Sys.Peek(tb + Tls.RegionOpen);
         }
         long at = open == 0 ? 0 : Sys.Peek(tb + Tls.RegionAt);
@@ -2160,6 +2173,26 @@ static class Gc
         // whole or not at all.
         Sys.Poke(tb + Tls.RegionAt, at + need);
         return (nint)(at + HeaderBytes);
+    }
+
+    /// Whether `at` is in the calling thread's arena.
+    public static bool InOwnRegion(long at)
+    {
+        long tb = Sys.ThreadBlock();
+        return tb != 0 && at != 0 && InRegion(tb, at);
+    }
+
+    /// A thread's arena given back as the thread ends.
+    public static void ReleaseRegion(long tb)
+    {
+        long arena = tb == 0 ? 0 : Sys.Peek(tb + Tls.RegionBase);
+        if (arena == 0) return;
+        long end = Sys.Peek(tb + Tls.RegionEnd);
+        Sys.Poke(tb + Tls.RegionBase, 0);
+        Sys.Poke(tb + Tls.RegionAt, 0);
+        Sys.Poke(tb + Tls.RegionOpen, 0);
+        Sys.Poke(tb + Tls.RegionEnd, 0);
+        Platform.Unmap(arena, end - arena);
     }
 
     /// Whether `at` is in this thread's arena.

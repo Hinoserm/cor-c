@@ -38,8 +38,8 @@ public sealed class RegionPointsTo : IModulePass
 
     public const string Enter = "m_Runtime_RegionEnter_1_V$NInt";
     public const string Leave = "m_Runtime_RegionLeave_1_V$NInt";
-    public const string InRegion = "m_Runtime_AllocRegion_2_V$NInt_V$NInt";
-    public const string Near = "m_Runtime_AllocNear_3_V$NInt_V$NInt_V$NInt";
+    public const string InRegion = "m_Runtime_AllocRegion_3_V$NInt_V$NInt_V$NInt";
+    public const string Near = "m_Runtime_AllocNear_4_V$NInt_V$NInt_V$NInt_V$NInt";
     private const long LeafKind = 0x4C454146, ObjectKind = 0x4F424A54;
 
     private const int Global = 0;
@@ -175,7 +175,14 @@ public sealed class RegionPointsTo : IModulePass
             foreach (Block b in f.Blocks)
                 for (int k = 0; k < b.Instrs.Count; k++)
                     if (chosen.TryGetValue(b.Instrs[k], out string? helper))
-                        b.Instrs[k] = Retarget(f, b.Instrs[k], helper);
+                    {
+                        // The allocating function's own frame: a region a throw
+                        // left below it is closed before this one is used.
+                        VReg frame = f.NewReg(IrTypes.Word, "allocframe");
+                        b.Instrs.Insert(k, new Instr { Op = Opcode.FramePointer, Dest = frame, Line = b.Instrs[k].Line });
+                        k++;
+                        b.Instrs[k] = Retarget(f, b.Instrs[k], helper, frame);
+                    }
 
         HashSet<Function> opened = new();
         foreach (int c in boundaries)
@@ -223,7 +230,7 @@ public sealed class RegionPointsTo : IModulePass
     private readonly Dictionary<int, HashSet<int>> _outliving = new();
     private HashSet<int> OutlivingOf(int c) => _outliving.TryGetValue(c, out HashSet<int>? known) ? known : _outliving[c] = Outliving(c);
 
-    private static Instr Retarget(Function f, Instr alloc, string helper)
+    private static Instr Retarget(Function f, Instr alloc, string helper, VReg frame)
     {
         Operand bytes = alloc.Operands[0];
         long kind = alloc.Callee == Opt.Escape.LeafAllocator ? LeafKind : alloc.Callee == Opt.Escape.ObjectAllocator ? ObjectKind : 0;
@@ -231,6 +238,7 @@ public sealed class RegionPointsTo : IModulePass
         made.Operands.Add(bytes);
         made.Operands.Add(new ImmOperand(kind, IrTypes.Word));
         if (helper == Near) made.Operands.Add(new RegOperand(f.Params[0]));
+        made.Operands.Add(new RegOperand(frame));
         return made;
     }
 
@@ -238,6 +246,9 @@ public sealed class RegionPointsTo : IModulePass
     // the runtime's to notice (Gc.PopStale).
     private static void Open(Function f)
     {
+        // Never inlined: the record names the boundary's own frame, and a
+        // caller's would outlive a throw the caller catches.
+        f.NoInlining = true;
         VReg frame = f.NewReg(IrTypes.Word, "regionframe");
         VReg handle = f.NewReg(IrTypes.Word, "region");
         Block entry = f.Blocks[0];

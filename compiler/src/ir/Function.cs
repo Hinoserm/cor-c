@@ -34,7 +34,7 @@ public sealed class Function
     /// so the method keeps its own frame in a stack trace and its own entry
     /// for a profiler, as the attribute promises in .NET.
     /// </summary>
-    public bool NoInlining { get; init; }
+    public bool NoInlining { get; set; }
 
     /// <summary>
     /// Set on the body of an async method: the function suspends at its

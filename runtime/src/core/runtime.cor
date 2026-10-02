@@ -620,12 +620,14 @@ static class Runtime
     public static void ForgetThread(long block)
     {
         GcThreads.Deregister(block);
+        Gc.ReleaseRegion(block);
     }
 
     /// This thread's stack is about to stop being one.
     public static void EndThread()
     {
         GcThreads.Deregister(Sys.ThreadBlock());
+        Gc.ReleaseRegion(Sys.ThreadBlock());
     }
 
     /// About to wait for something only another thread can provide. The
@@ -780,19 +782,24 @@ static class Runtime
     /// An allocation proved dead by the return of whichever region is open
     /// innermost: made in that region, or on the heap when none is open or
     /// it is full. `kind` is Gc's: 0, LeafKind or ObjectKind.
-    public static long AllocRegion(nint bytes, nint kind)
+    /// `frame` is the allocating function's own: a region opened beneath it
+    /// that a throw has left is closed first (Gc.PopStale).
+    public static long AllocRegion(nint bytes, nint kind, nint frame)
     {
-        long at = (long)(nuint)Gc.AllocRegion(bytes, kind, 0);
-        if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes | (3L << 40), at);
+        long at = (long)(nuint)Gc.AllocRegion(bytes, kind, 0, (long)(nuint)frame);
+        if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes | (SampleKind(kind) << 40), at);
         return at;
     }
 
+    // The sampler's kind of a block: 1 scanned word by word, 2 a leaf, 3 an object.
+    static long SampleKind(nint kind) => kind == (nint)Gc.LeafKind ? 2 : kind == (nint)Gc.ObjectKind ? 3 : 1;
+
     /// Storage made for `owner` and dead when it is: in owner's region when
     /// owner is in the innermost open one, on the heap otherwise.
-    public static long AllocNear(nint bytes, nint kind, nint owner)
+    public static long AllocNear(nint bytes, nint kind, nint owner, nint frame)
     {
-        long at = (long)(nuint)Gc.AllocRegion(bytes, kind, owner == 0 ? -1 : (long)(nuint)owner);
-        if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes | (3L << 40), at);
+        long at = (long)(nuint)Gc.AllocRegion(bytes, kind, owner == 0 ? -1 : (long)(nuint)owner, (long)(nuint)frame);
+        if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes | (SampleKind(kind) << 40), at);
         return at;
     }
 
@@ -1037,6 +1044,9 @@ static class Runtime
         {
             return;
         }
+        // In a region: given back with it, and not a block LiveObject's lock
+        // need be taken to ask about.
+        if (Gc.InOwnRegion(at)) return;
         if (at != 0 && Gc.LiveObject(at))
         {
             FreeOwnedFields(at);
