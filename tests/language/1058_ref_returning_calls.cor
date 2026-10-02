@@ -1,0 +1,178 @@
+// test: ref returning calls
+// expect-exit: 0
+// expect-output:
+// find 3 70 5
+// through 71 72 75
+// passed 76
+// slot 30 31
+// pair 5 7 copy 9
+// readonly 8 8
+// larger 3 20
+// generic first 11
+// virtual 2 42
+// fresh 9 10
+// long 4294967298
+// struct field 13
+//
+// A method that returns by reference answers a variable, and its call is
+// one: assigned to (`Find(a, 7) = 70`), incremented, compound-assigned,
+// taken by a ref local, passed on by `ref`, and read as a value. Through an
+// expression body, a ref readonly result, a by-reference parameter handed
+// back, a generic method, a virtual one, a struct element written in place
+// through the call while a value copy of it stays apart, and an element of
+// an array made inside the callee and kept alive only by the reference to it
+// across collections.
+
+using System;
+
+struct Pair
+{
+    public int A;
+    public int B;
+}
+
+abstract class Store
+{
+    public abstract ref int Cell(int i);
+}
+
+sealed class ArrayStore : Store
+{
+    readonly int[] _cells = new int[4];
+
+    public override ref int Cell(int i) => ref _cells[i];
+}
+
+class Table
+{
+    readonly int[] _items = new int[8];
+    readonly Pair[] _pairs = new Pair[3];
+    int _peeked = 8;
+    Pair _held;
+
+    public ref int Slot(int i) => ref _items[i];
+
+    public ref Pair At(int i)
+    {
+        return ref _pairs[i];
+    }
+
+    public ref readonly int Peek() => ref _peeked;
+
+    public ref int HeldB() => ref _held.B;
+
+    public int Held => _held.B;
+}
+
+static class Program
+{
+    static ref int Find(int[] items, int value)
+    {
+        for (int i = 0; i < items.Length; i++)
+        {
+            if (items[i] == value)
+            {
+                return ref items[i];
+            }
+        }
+        return ref items[0];
+    }
+
+    static ref int Larger(ref int a, ref int b)
+    {
+        if (a > b)
+        {
+            return ref a;
+        }
+        return ref b;
+    }
+
+    static ref T First<T>(T[] items) => ref items[0];
+
+    static ref int Fresh()
+    {
+        int[] made = new int[4];
+        made[2] = 9;
+        return ref made[2];
+    }
+
+    static ref long Big(long[] values) => ref values[1];
+
+    static void Bump(ref int value) => value++;
+
+    static void Churn()
+    {
+        object[] junk = new object[64];
+        for (int i = 0; i < 3000; i++) junk[i & 63] = new int[12];
+    }
+
+    static void Main()
+    {
+        int[] items = new int[] { 3, 7, 5 };
+        int seven = 7;
+        Find(items, seven) = 70;
+        Console.WriteLine("find " + items.Length + " " + items[1] + " " + Find(items, 5));
+
+        ref int found = ref Find(items, 70);
+        found++;
+        Console.Write("through " + items[1]);
+        Find(items, 71)++;
+        Console.Write(" " + items[1]);
+        Find(items, 72) += 3;
+        Console.WriteLine(" " + items[1]);
+
+        Bump(ref Find(items, 75));
+        Console.WriteLine("passed " + items[1]);
+
+        Table table = new Table();
+        ref int slot = ref table.Slot(3);
+        Churn();
+        GC.Collect();
+        slot = 30;
+        Console.Write("slot " + table.Slot(3));
+        table.Slot(3)++;
+        Console.WriteLine(" " + slot);
+
+        table.At(1).A = 5;
+        ref Pair pair = ref table.At(1);
+        pair.B = 7;
+        Pair copy = table.At(1);
+        copy.A = 9;
+        Console.WriteLine("pair " + table.At(1).A + " " + table.At(1).B + " copy " + copy.A);
+
+        int peeked = table.Peek();
+        ref readonly int view = ref table.Peek();
+        Console.WriteLine("readonly " + peeked + " " + view);
+
+        int small = 3, large = 4;
+        Larger(ref small, ref large) = 20;
+        Console.WriteLine("larger " + small + " " + large);
+
+        int[] elevens = new int[] { 10 };
+        First(elevens)++;
+        Console.WriteLine("generic first " + First(elevens));
+
+        Store store = new ArrayStore();
+        store.Cell(2) = 2;
+        ref int cell = ref store.Cell(3);
+        cell = store.Cell(2) * 21;
+        Console.WriteLine("virtual " + store.Cell(2) + " " + store.Cell(3));
+
+        ref int fresh = ref Fresh();
+        Churn();
+        GC.Collect();
+        Console.Write("fresh " + fresh);
+        Churn();
+        GC.Collect();
+        fresh++;
+        Console.WriteLine(" " + fresh);
+
+        long[] longs = new long[3];
+        Big(longs) = 4294967296L;
+        Big(longs) += 2;
+        Console.WriteLine("long " + longs[1]);
+
+        table.HeldB() = 13;
+        Console.WriteLine("struct field " + table.Held);
+    }
+}

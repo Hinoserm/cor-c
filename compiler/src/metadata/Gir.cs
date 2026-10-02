@@ -531,7 +531,9 @@ public static class Gir
                     Type(d.Type);
                     Str(d.Name);
                     Expr(d.Init);
-                    U8(d.LocalFunction ? (byte)1 : (byte)0);
+                    // One byte of flags: a local function, a ref local, a
+                    // `ref readonly` one.
+                    U8((byte)((d.LocalFunction ? 1 : 0) | (d.IsRef ? 2 : 0) | (d.IsReadOnlyRef ? 4 : 0)));
                     I32(d.Also.Count);
                     foreach (LocalDecl also in d.Also) { Stmt(also); }
                     break;
@@ -1421,11 +1423,12 @@ public static class Gir
                     TypeRef? type = TypeOrNull();
                     string name = Str();
                     Expr? init = Expr();
-                    bool localFunction = U8() != 0;
+                    byte flags = U8();
                     int count = Count();
                     LocalDecl made = new()
                     {
-                        Type = type, Name = name, Init = init, LocalFunction = localFunction,
+                        Type = type, Name = name, Init = init, LocalFunction = (flags & 1) != 0,
+                        IsRef = (flags & 2) != 0, IsReadOnlyRef = (flags & 4) != 0,
                     };
                     for (int i = 0; i < count; i++)
                     {

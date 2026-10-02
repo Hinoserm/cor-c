@@ -1,0 +1,164 @@
+// test: ref local fields and structs
+// expect-exit: 0
+// expect-output:
+// class field 6
+// own field 15
+// inline field 4 9
+// whole 1 1
+// static 3
+// struct local 7 8
+// struct field 11
+// nested 6 12
+// param 21
+// elements 31 32
+// struct own 40 41
+// ref struct local 50 51
+// generic 5 6
+// readonly class 77
+//
+// A ref local to a field: of an object (which the reference alone keeps
+// alive across a collection, the object's last named holder dropped), of
+// `this`, of a struct held in line in an object, of a struct local, of a
+// struct inside a struct local, of a by-value struct parameter, of a struct
+// array element, a struct's own field, and a static. A ref local to a whole
+// struct reads and writes the struct itself. Assigning a struct variable a
+// whole new value is seen through every ref local into it, as C# has it.
+
+using System;
+
+struct Pair
+{
+    public int A;
+    public int B;
+
+    public int Own()
+    {
+        ref int mine = ref A;
+        mine = 40;
+        ref int other = ref B;
+        other = mine + 1;
+        return A;
+    }
+}
+
+struct Holder
+{
+    public long L;
+    public Pair P;
+}
+
+class Box
+{
+    public int Count;
+    public Pair Inner;
+    public static int Shared;
+
+    public int Mine()
+    {
+        ref int mine = ref Count;
+        mine += 15;
+        return Count;
+    }
+}
+
+static class Program
+{
+    static void Churn()
+    {
+        object[] junk = new object[64];
+        for (int i = 0; i < 2000; i++) junk[i & 63] = new Box();
+    }
+
+    static int Param(Pair q)
+    {
+        ref int qa = ref q.A;
+        q = new Pair { A = 21 };
+        return qa;
+    }
+
+    static T Swap<T>(T[] items, int at, T value)
+    {
+        ref T slot = ref items[at];
+        T was = slot;
+        slot = value;
+        return was;
+    }
+
+    static void Main()
+    {
+        Box? box = new Box();
+        ref int count = ref box.Count;
+        box = null;
+        Churn();
+        GC.Collect();
+        count = 5;
+        Churn();
+        GC.Collect();
+        count++;
+        Console.WriteLine("class field " + count);
+
+        Box mine = new Box();
+        Console.WriteLine("own field " + mine.Mine());
+
+        Box held = new Box();
+        ref int innerA = ref held.Inner.A;
+        innerA = 4;
+        ref Pair whole = ref held.Inner;
+        whole.B = 9;
+        Console.WriteLine("inline field " + held.Inner.A + " " + held.Inner.B);
+        whole = new Pair { A = 1, B = 2 };
+        Console.WriteLine("whole " + held.Inner.A + " " + innerA);
+
+        ref int shared = ref Box.Shared;
+        shared = 3;
+        Console.WriteLine("static " + Box.Shared);
+
+        Pair p = new Pair();
+        ref Pair rp = ref p;
+        rp.A = 4;
+        p = new Pair { A = 7, B = 8 };
+        Console.WriteLine("struct local " + rp.A + " " + rp.B);
+
+        ref int pb = ref p.B;
+        p = new Pair { A = 0, B = 11 };
+        Console.WriteLine("struct field " + pb);
+
+        Holder h = default;
+        h.L = 2;
+        ref int deep = ref h.P.A;
+        deep = 6;
+        Console.Write("nested " + h.P.A);
+        h.P = new Pair { A = 12 };
+        Console.WriteLine(" " + deep);
+
+        Console.WriteLine("param " + Param(new Pair { A = 1 }));
+
+        Pair[] pairs = new Pair[3];
+        ref Pair element = ref pairs[1];
+        Churn();
+        GC.Collect();
+        element.A = 31;
+        Console.Write("elements " + pairs[1].A);
+        pairs[1] = new Pair { A = 32 };
+        Console.WriteLine(" " + element.A);
+
+        Pair self = new Pair();
+        self.Own();
+        Console.WriteLine("struct own " + self.A + " " + self.B);
+
+        Pair copy = new Pair { A = 50 };
+        ref Pair rc = ref copy;
+        Pair taken = rc;
+        rc.B = 51;
+        taken.B = 99;
+        Console.WriteLine("ref struct local " + copy.A + " " + copy.B);
+
+        int[] numbers = new int[] { 5, 0 };
+        Console.WriteLine("generic " + Swap(numbers, 0, 6) + " " + numbers[0]);
+
+        // Through a ref readonly to an object, the object is not read-only.
+        ref readonly Box readOnlyBox = ref held;
+        readOnlyBox.Count = 77;
+        Console.WriteLine("readonly class " + held.Count);
+    }
+}

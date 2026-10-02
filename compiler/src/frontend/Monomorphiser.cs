@@ -1669,6 +1669,7 @@ public sealed class Monomorphiser
                     // two of them -- then read the names as types nobody
                     // declared.
                     IsConst = d.IsConst,
+                    IsRef = d.IsRef, IsReadOnlyRef = d.IsReadOnlyRef,
                     Line = d.Line, Col = d.Col,
                 };
 

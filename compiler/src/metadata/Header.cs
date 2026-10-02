@@ -221,6 +221,12 @@ public static class Header
                 // A constructor has no return type and keeps its name.
                 if (!d.IsCtor)
                 {
+                    // A method that returns by reference says so before its
+                    // type, as it was written (Mods.RefReturn).
+                    if ((d.Mods & Mods.RefReturn) != 0)
+                    {
+                        s.Append((d.Mods & Mods.RefReadonlyReturn) != 0 ? "ref readonly " : "ref ");
+                    }
                     s.Append(Spell(d.Returns, made)).Append(' ');
                 }
 

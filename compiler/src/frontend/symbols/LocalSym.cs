@@ -22,6 +22,22 @@ public sealed record LocalSym(int Slot, Type Type, string Name) : Sym
     public bool Boxed { get; set; }
 
     /// <summary>
+    /// A REF LOCAL (LocalDecl.IsRef): it holds the address of the variable it
+    /// names, as a by-reference parameter does, and every read and write goes
+    /// through that address. Never boxed -- C# refuses one inside a lambda.
+    /// </summary>
+    public bool IsRef { get; init; }
+
+    /// <summary>A `ref readonly` local: read through, never written through.</summary>
+    public bool ReadOnlyRef { get; init; }
+
+    /// <summary>
+    /// A ref local whose variable outlives the method -- on the heap, or a
+    /// caller's -- so a reference through it may be returned (Binder.RefEscapes).
+    /// </summary>
+    public bool RefEscapes { get; init; }
+
+    /// <summary>
     /// WHICH LOCAL THIS IS, and not where it happens to live.
     ///
     /// A record compares every field it holds, and <see cref="Boxed"/> is set

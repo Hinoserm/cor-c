@@ -1,0 +1,40 @@
+// The unit 1062_ref_returns_across_units uses: methods that return by
+// reference, a ref readonly one, a generic one, a virtual one, and ref locals
+// inside the unit's own code.
+
+namespace RefUnits;
+
+public struct Cell
+{
+    public int Value;
+    public int Hits;
+}
+
+public class Grid
+{
+    readonly Cell[] _cells = new Cell[4];
+    readonly long[] _totals = new long[2];
+
+    public ref Cell At(int i) => ref _cells[i];
+
+    public ref readonly long Total(int i) => ref _totals[i];
+
+    public virtual ref long Sum(int i) => ref _totals[i];
+
+    public void Touch(int i)
+    {
+        ref Cell cell = ref _cells[i];
+        cell.Hits++;
+        ref long total = ref _totals[i & 1];
+        total += cell.Value;
+    }
+}
+
+public static class Slots
+{
+    public static ref T Last<T>(T[] items)
+    {
+        ref T last = ref items[items.Length - 1];
+        return ref last;
+    }
+}

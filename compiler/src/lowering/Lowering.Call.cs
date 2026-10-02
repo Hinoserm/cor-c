@@ -20,7 +20,7 @@ public sealed partial class Lowering
     /// that calls C, nor an async one, whose result goes into a Task.
     /// </summary>
     private bool Buffered(MethodSymbol m)
-        => IsStructValue(m.Returns) && StructOf(m.Returns).HeldInline && !m.Async && !m.IsCtor
+        => IsStructValue(m.Returns) && StructOf(m.Returns).HeldInline && !m.Async && !m.IsCtor && !m.RefReturn
         && NativeImportOf(m) is null && !CalledByC(m) && m.Decl is not { File: "<prelude>" };
 
     /// <summary>
@@ -56,6 +56,25 @@ public sealed partial class Lowering
         }
     }
 
+    /// <summary>
+    /// What a method answers in a register: its value's, or for one that
+    /// returns by reference (MethodSymbol.RefReturn) the address of the
+    /// variable, a word whatever the variable holds.
+    /// </summary>
+    private static IrType ReturnIr(MethodSymbol m) => m.RefReturn ? IrTypes.Word : IrTypes.Of(m.Returns);
+
+    /// <summary>The method a call returns a variable of, or null (ReturnIr).</summary>
+    private MethodSymbol? RefCallee(CallExpr call)
+        => _b.Calls.TryGetValue(call, out MethodSymbol? m) && m.RefReturn && !_b.Invocations.ContainsKey(call) ? m : null;
+
+    /// <summary>
+    /// The variable a ref-returning call answers: the call made, and its
+    /// address the place -- a struct's the address of its bytes, as a
+    /// by-reference parameter's is.
+    /// </summary>
+    private MemPlace RefCallPlace(CallExpr call, MethodSymbol m)
+        => new(R(EmitCall(call)), 0, m.Returns, false, IsStructValue(m.Returns));
+
     /// <summary>A direct call by label; the callee is marked reachable.</summary>
     private VReg? CallDirect(MethodSymbol m, IrType returns, List<Operand> args)
     {
@@ -72,7 +91,7 @@ public sealed partial class Lowering
         if (buffer is not null) MarkBuffer(buffer, m.Returns);
         // A struct a method of source returns other than through a buffer is
         // made for this caller.
-        if (!Buffered(m) && IsStructValue(m.Returns) && m.Decl is { File: not "<prelude>" }) _e.Block.Instrs[^1].Field = Instr.FreshStruct;
+        if (!Buffered(m) && !m.RefReturn && IsStructValue(m.Returns) && m.Decl is { File: not "<prelude>" }) _e.Block.Instrs[^1].Field = Instr.FreshStruct;
         return made;
     }
 
@@ -82,7 +101,7 @@ public sealed partial class Lowering
     /// </summary>
     private VReg? CallMethod(MethodSymbol m, VReg? receiver, List<Operand> args, bool viaBase = false)
     {
-        IrType returns = IrTypes.Of(m.Returns);
+        IrType returns = ReturnIr(m);
 
         // EVERY CALL INTO A TYPE TOUCHES IT (Lowering.StaticInit), whichever
         // path made it: a static property's getter or setter, a compound
@@ -116,7 +135,7 @@ public sealed partial class Lowering
             if (buffer is not null) MarkBuffer(buffer, m.Returns);
             // Whatever implementation answers, a struct it returns other than
             // through a buffer is a copy made for this caller.
-            if (!Buffered(m) && IsStructValue(m.Returns)) _e.Block.Instrs[^1].Field = Instr.FreshStruct;
+            if (!Buffered(m) && !m.RefReturn && IsStructValue(m.Returns)) _e.Block.Instrs[^1].Field = Instr.FreshStruct;
             else if (m.Name == "Invoke" && m.Owner.Kind == TypeKind.Interface) _e.Block.Instrs[^1].Field = Instr.DelegateInvoke;
             return called;
         }
@@ -367,7 +386,10 @@ public sealed partial class Lowering
     /// </summary>
     private VReg? GenericVirtualDispatch(GenericDispatch dispatch, VReg receiver, List<Operand> args)
     {
-        IrType returns = IrTypes.Of(dispatch.Returns);
+        // Each copy answers as its method does (ReturnIr): an address when
+        // the method returns by reference.
+        IrType returns = dispatch.Fallback is MethodSymbol answering ? ReturnIr(answering)
+            : dispatch.Targets.Count > 0 ? ReturnIr(dispatch.Targets[0].Copy) : IrTypes.Of(dispatch.Returns);
         VReg? result = dispatch.Returns.IsVoid ? null : _f.NewReg(returns, "gvm");
         Block end = _f.NewBlock("gvmend");
 

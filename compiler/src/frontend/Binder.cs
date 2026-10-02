@@ -4296,6 +4296,12 @@ public sealed partial class Binder
                     break;
                 }
 
+                if (d.IsRef)
+                {
+                    CheckRefLocal(d);
+                    break;
+                }
+
                 Type type;
 
                 if (d.Type is null)
@@ -4689,6 +4695,13 @@ public sealed partial class Binder
                 {
                     Error(r, "an iterator cannot return a value; use 'yield return' to produce one and 'yield break' to stop");
                     if (r.Value is not null) CheckExpr(r.Value);
+                    break;
+                }
+
+                // `return ref x;` (Binder.RefLocals).
+                if (r.Value is RefArgExpr { IsOut: false, Name: null } || _method is { RefReturn: true })
+                {
+                    CheckRefReturn(r);
                     break;
                 }
 
@@ -6133,6 +6146,7 @@ public sealed partial class Binder
         Look(lam, ContextualMemberResult(wanted, invoke));
         PopScope();
         _quiet--;
+        RefuseCapturedRefLocals(lam, captured.Keys);
         _captured = outerCaptured;
         _capturedConstants = outerConstants;
         _lambdaFloor = outerFloor;
@@ -11533,6 +11547,21 @@ public sealed partial class Binder
                     Error(a, $"'{readOnlyTarget.Name}' is an 'in' parameter and cannot be assigned to");
                 }
 
+                // `r = ref other;` POINTS A REF LOCAL ELSEWHERE; nothing is
+                // written through it (Binder.RefLocals).
+                if (a.Op is null && a.Value is RefArgExpr { IsOut: false, Name: null } rebound)
+                {
+                    return CheckRefAssignment(a, rebound);
+                }
+
+                // AND A `ref readonly` LOCAL IS NEVER WRITTEN THROUGH. A field
+                // of the struct it refers to is asked once the target has
+                // been checked, below.
+                if (a.Target is NameExpr readOnlyLocal && Lookup(readOnlyLocal.Name) is LocalSym { ReadOnlyRef: true })
+                {
+                    Error(a, $"'{readOnlyLocal.Name}' is a ref readonly local and cannot be written through");
+                }
+
                 // WRITING TO SOMETHING FORGETS WHAT WAS PROVED ABOUT IT.
                 //
                 // `for (Node? t = this; t != null; t = t.Base)` proves t is not
@@ -11681,6 +11710,14 @@ public sealed partial class Binder
                 else
                 {
                     target = targetPrechecked ? assignmentWanted! : CheckExpr(a.Target);
+
+                    // A FIELD WRITTEN THROUGH SOMETHING READ-ONLY -- a `ref
+                    // readonly` local's struct, an `in` struct, a ref readonly
+                    // call's -- writes the read-only variable itself.
+                    if (a.Target is not NameExpr && ReadOnlyVariable(a.Target) is string readOnlyHolder)
+                    {
+                        Error(a, $"{readOnlyHolder} and cannot be written through");
+                    }
 
                     // A WRITE THROUGH `a![i]` STORES INTO THE ARRAY AS IT WAS
                     // DECLARED. Suppressing an array strips its elements'
@@ -12590,6 +12627,12 @@ public sealed partial class Binder
                 Type target = CheckExpr(ra.Target);
 
                 RequireReferenceVariable(ra.Target);
+                // A WRITABLE REFERENCE TO SOMETHING READ-ONLY would let the
+                // write the read-only promise refuses happen through it.
+                if (!_readOnlyReference && ReadOnlyVariable(ra.Target) is string fixedVariable)
+                {
+                    Error(ra, $"{fixedVariable}, so it can only be referred to by 'ref readonly' or 'in'");
+                }
                 return target;
             }
 
@@ -13043,12 +13086,18 @@ public sealed partial class Binder
             // `*p = v` is a store, and `&*p` is p. A dereference is a place,
             // which is the whole reason a pointer is worth having.
             UnaryExpr { Op: UnOp.Deref } => true,
+            // So is the variable a ref-returning call answers.
+            CallExpr call => RefCallee(call) is not null,
             _           => false,
         };
 
         if (!ok)
         {
             Error(target, $"cannot {what} this expression");
+        }
+        else if (ReadOnlyVariable(target) is string readOnly)
+        {
+            Error(target, $"{readOnly}, so it cannot {what} it");
         }
     }
 
@@ -13072,6 +13121,8 @@ public sealed partial class Binder
                 && (_r.TypeOf(index.Target).IsArray
                     || _r.TypeOf(index.Target).IsPointer),
             UnaryExpr { Op: UnOp.Deref } => true,
+            // A CALL OF A METHOD THAT RETURNS BY REFERENCE IS A VARIABLE.
+            CallExpr call => RefCallee(call) is not null,
             _ => false,
         };
 

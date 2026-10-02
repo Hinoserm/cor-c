@@ -1,0 +1,146 @@
+// test: ref local elements and locals
+// expect-exit: 0
+// expect-output:
+// bits 37 0 1 4096
+// element 7 70 71
+// local 12 13 26
+// var 5 6
+// pair 3 9
+// param 42 43
+// passed 100 101
+// long 4294967306
+// double 2.5
+// byte 255 0
+// string after-gc
+// readonly 70 13
+//
+// A ref local names a variable that lives elsewhere: an array element (a
+// bitset word set through `ref ulong word = ref _bits[id >> 6]`, the case the
+// compiler's own region pass wants), a local, a by-reference parameter, and
+// another ref local. Reading, writing, compound assignment and increments go
+// through it; it is passed on as a ref argument; `ref var` takes the
+// variable's type; one declaration names two. A collection runs between
+// taking each heap reference and using it, with garbage made first, so an
+// interior pointer into an array must keep the array alive and correct.
+
+using System;
+
+static class Program
+{
+    static ulong[] _bits = new ulong[4];
+
+    static void Set(int id)
+    {
+        ref ulong word = ref _bits[id >> 6];
+        word |= 1UL << id;
+    }
+
+    static void Bump(ref int value) => value++;
+
+    static void Through(ref int value)
+    {
+        ref int again = ref value;
+        again += 42;
+        Bump(ref again);
+    }
+
+    static void Churn()
+    {
+        object[] junk = new object[64];
+        for (int i = 0; i < 2000; i++) junk[i & 63] = new int[16];
+    }
+
+    static int[] Fresh(int n)
+    {
+        int[] made = new int[n];
+        for (int i = 0; i < n; i++) made[i] = i * 10;
+        return made;
+    }
+
+    static void Main()
+    {
+        int id = 37;
+        Set(id);
+        Set(64);
+        Set(140);
+        Console.WriteLine("bits " + id + " " + (_bits[0] >> 38) + " " + _bits[1] + " " + _bits[2]);
+
+        int[] values = Fresh(8);
+        int at = 7;
+        ref int element = ref values[at];
+        values = Fresh(2);
+        Churn();
+        GC.Collect();
+        Console.Write("element " + at + " " + element);
+        element++;
+        Console.WriteLine(" " + element);
+
+        int count = 12;
+        ref int alias = ref count;
+        Console.Write("local " + alias);
+        alias++;
+        Console.Write(" " + count);
+        count *= 2;
+        Console.WriteLine(" " + alias);
+
+        int five = 5;
+        ref var inferred = ref five;
+        inferred = inferred + 1;
+        Console.WriteLine("var 5 " + five);
+
+        int a = 1, b = 2;
+        ref int first = ref a, second = ref b;
+        first = 3;
+        second = first * 3;
+        Console.WriteLine("pair " + a + " " + b);
+
+        int given = 0;
+        Through(ref given);
+        Console.WriteLine("param " + (given - 1) + " " + given);
+
+        int handed = 100;
+        ref int r1 = ref handed;
+        ref int r2 = ref r1;
+        Console.Write("passed " + r2);
+        Bump(ref r2);
+        Console.WriteLine(" " + handed);
+
+        long[] wide = new long[3];
+        int slot = 2;
+        ref long big = ref wide[slot];
+        Churn();
+        GC.Collect();
+        big = 4294967296L;
+        big += 10;
+        Console.WriteLine("long " + wide[2]);
+
+        double[] reals = new double[2];
+        ref double real = ref reals[1];
+        real = 1.25;
+        real *= 2;
+        Console.WriteLine("double " + reals[1]);
+
+        byte[] small = new byte[2];
+        ref byte low = ref small[0];
+        low = 254;
+        low++;
+        Console.Write("byte " + small[0]);
+        low++;
+        Console.WriteLine(" " + small[0]);
+
+        string[] names = new string[] { "before" };
+        ref string name = ref names[0];
+        Churn();
+        GC.Collect();
+        name = "after-" + "gc".ToString();
+        Churn();
+        GC.Collect();
+        Console.WriteLine("string " + names[0]);
+
+        int[] seen = Fresh(8);
+        ref readonly int look = ref seen[at];
+        ref readonly int lookLocal = ref count;
+        count = 13;
+        Console.WriteLine("readonly " + look + " " + lookLocal);
+    }
+}

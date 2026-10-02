@@ -1,0 +1,53 @@
+// test: ref returns across units
+// units: tests/language/support/1062_ref_units.cor
+// expect-exit: 0
+// expect-output:
+// cell 5 2
+// totals 10 0
+// sum 11
+// sub 4 104
+// last 9 z
+//
+// Methods that return by reference, declared in a unit compiled apart and
+// called here against its declarations: a struct element written in place
+// through the call and through a ref local taken from it, a ref readonly
+// result read, a virtual one assigned to and overridden on this side, and a
+// generic one specialised here for two element types.
+
+using System;
+using RefUnits;
+
+sealed class Doubled : Grid
+{
+    readonly long[] _mine = new long[2];
+
+    public override ref long Sum(int i) => ref _mine[i];
+}
+
+static class Program
+{
+    static void Main()
+    {
+        Grid grid = new Grid();
+        grid.At(1).Value = 5;
+        ref Cell cell = ref grid.At(1);
+        grid.Touch(1);
+        grid.Touch(1);
+        Console.WriteLine("cell " + cell.Value + " " + cell.Hits);
+        Console.WriteLine("totals " + grid.Total(1) + " " + grid.Total(0));
+
+        grid.Sum(1)++;
+        Console.WriteLine("sum " + grid.Sum(1));
+
+        Grid other = new Doubled();
+        other.Sum(0) = 4;
+        other.Sum(0 + 1) = 104;
+        Console.WriteLine("sub " + other.Sum(0) + " " + other.Sum(1));
+
+        int[] numbers = new int[] { 1, 8 };
+        Slots.Last(numbers)++;
+        string[] words = new string[] { "a", "y" };
+        Slots.Last(words) = "z";
+        Console.WriteLine("last " + numbers[1] + " " + words[1]);
+    }
+}

@@ -1,0 +1,22 @@
+// test: ref return of local refused
+// expect-compile-error: cannot return a reference to this variable: it lives in this method
+// A reference returned outlives the method, so it may not be to one of the
+// method's own locals -- nor through a ref local that refers to one (C#'s
+// CS8157/CS8168).
+
+using System;
+
+static class Program
+{
+    static ref int Escape(int[] items)
+    {
+        int local = items[0];
+        ref int alias = ref local;
+        return ref alias;
+    }
+
+    static void Main()
+    {
+        Console.WriteLine(Escape(new int[] { 1 }));
+    }
+}

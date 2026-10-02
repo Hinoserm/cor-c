@@ -164,6 +164,13 @@ public sealed partial class Lowering
     }
 
     /// <summary>
+    /// `ref x` where a reference is held rather than passed: the address of
+    /// the variable, made as a by-reference argument's is -- a struct's the
+    /// address of its bytes (StructReference).
+    /// </summary>
+    private VReg Reference(RefArgExpr referred, Type type) => EvalAs(referred, type, byRef: true);
+
+    /// <summary>
     /// Whether an expression denotes STORAGE rather than a value -- a variable,
     /// a field, an array element, what is at a pointer. C# calls it a variable,
     /// and it is exactly what AddressOf below can answer for.
@@ -176,6 +183,7 @@ public sealed partial class Lowering
             MemberExpr me => _b.Resolved.TryGetValue(me, out Sym? s) && s is FieldSym,
             UnaryExpr { Op: UnOp.Deref } => true,
             NameExpr n => _b.Resolved.ContainsKey(n),
+            CallExpr call => RefCallee(call) is not null,
             _ => false,
         };
 
@@ -238,6 +246,9 @@ public sealed partial class Lowering
         {
             e = instead;
         }
+        // Not a call that returns by reference: what it answers is a variable
+        // somewhere else, and taking its value is a copy like any other's.
+        if (e is CallExpr call && RefCallee(call) is not null) return false;
         return e is NewExpr or CallExpr or DefaultExpr or WithExpr or TupleExpr or ConditionalExpr or SwitchExpr;
     }
 
@@ -725,6 +736,11 @@ public sealed partial class Lowering
                 VReg vt = _e.Load(IrTypes.Word, obj, 0);
                 return _e.Binary(Opcode.Sub, vt, _t.DescriptorBytes);
             }
+
+            // A CALL THAT RETURNS BY REFERENCE answers where the variable is;
+            // as a value, it is what is there.
+            case CallExpr call when RefCallee(call) is MethodSymbol answers:
+                return LoadPlace(RefCallPlace(call, answers));
 
             case CallExpr call:
                 return EmitCall(call);
@@ -2244,6 +2260,16 @@ public sealed partial class Lowering
 
         Type targetType = _b.TypeOf(a.Target);
 
+        // `r = ref other;` points the ref local at another variable: its
+        // register takes the new address, and nothing is stored through it.
+        if (a.Op is null && a.Value is RefArgExpr { IsOut: false, Name: null } referred
+            && a.Target is NameExpr pointed && _b.Resolved.TryGetValue(pointed, out Sym? pointedSym)
+            && pointedSym is LocalSym { IsRef: true } refLocal && DeclOf(refLocal) is LocalDecl refDecl)
+        {
+            _e.CopyTo(LocalReg(refDecl), R(Reference(referred, refLocal.Type)));
+            return LoadPlace(PlaceOfSym(refLocal, a)!);
+        }
+
         if (a.Op is null)
         {
             if (_b.PropertySetters.TryGetValue(a.Target, out MethodSymbol? propertySetter))
@@ -2775,12 +2801,23 @@ public sealed partial class Lowering
             return Eval(deref.Operand);
         }
 
+        // A ref-returning call's answer is the address.
+        if (target is CallExpr call && RefCallee(call) is not null)
+        {
+            return EmitCall(call);
+        }
+
         if (target is NameExpr n && _b.Resolved.TryGetValue(n, out Sym? sym))
         {
             if (sym is ParamSym { ByRef: true } p)
             {
                 // Already an address: pass it on rather than the address of it.
                 return _params[p.Index];
+            }
+            if (sym is LocalSym { IsRef: true } && PlaceOfSym(sym, at) is MemPlace { Address: RegOperand held })
+            {
+                // So is a ref local.
+                return held.Reg;
             }
             Place? place = PlaceOfSym(sym, at);
             if (place is null)
@@ -2850,6 +2887,15 @@ public sealed partial class Lowering
             StorePlace(place, made);
             return made;
         }
+        return StructBlock(place, target, type);
+    }
+
+    /// <summary>
+    /// The block a struct variable held as a pointer points at, made first,
+    /// zero, when it has none yet.
+    /// </summary>
+    private VReg StructBlock(Place place, Node target, Type type)
+    {
         VReg held = LoadPlace(place);
         VReg result = _f.NewReg(IrTypes.Word, "sref");
         Block make = _f.NewBlock("srefmake");

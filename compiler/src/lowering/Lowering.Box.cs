@@ -365,7 +365,7 @@ public sealed partial class Lowering
         _boxStubs.Add(label);
         Require(m);
 
-        IrType returns = IrTypes.Of(m.Returns);
+        IrType returns = ReturnIr(m);
         Function f = new(label, returns) { Coalescible = true };
         VReg self = f.NewReg(IrTypes.Word, "this");
         f.Params.Add(self);

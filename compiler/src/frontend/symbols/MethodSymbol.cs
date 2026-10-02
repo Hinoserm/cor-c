@@ -15,6 +15,12 @@ public sealed class MethodSymbol
     public bool IsCtor { get; init; }
     public MethodDecl? Decl { get; init; }
 
+    /// <summary>Returns by reference (Mods.RefReturn): a call to it is a variable.</summary>
+    public bool RefReturn => Decl is { } d && (d.Mods & Mods.RefReturn) != 0;
+
+    /// <summary>Returns by `ref readonly`: a variable that is only read.</summary>
+    public bool RefReturnReadOnly => Decl is { } d && (d.Mods & Mods.RefReadonlyReturn) != 0;
+
     /// <summary>
     /// An explicit interface implementation's interface (its simple name) and
     /// the member of it this fills, which is the name without the qualifier;

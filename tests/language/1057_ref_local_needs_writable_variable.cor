@@ -1,0 +1,21 @@
+// test: ref local needs writable variable
+// expect-compile-error: 'value' is an 'in' parameter, so it can only be referred to by 'ref readonly' or 'in'
+// A writable ref local to an `in` parameter would let a write the parameter
+// forbids happen through it; C# asks for `ref readonly` (CS8329).
+
+using System;
+
+static class Program
+{
+    static int Bump(in int value)
+    {
+        ref int writable = ref value;
+        writable++;
+        return writable;
+    }
+
+    static void Main()
+    {
+        Console.WriteLine(Bump(4));
+    }
+}

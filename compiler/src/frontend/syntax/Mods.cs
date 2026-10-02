@@ -50,4 +50,15 @@ public enum Mods
 
     /// <summary>Hides an inherited member of the same name; accepted and otherwise ignored.</summary>
     New       = 1 << 17,
+
+    /// <summary>
+    /// `ref int Find(...)`: the method answers a VARIABLE, not a value -- the
+    /// address of an element, a field, a caller's variable -- and its call is
+    /// one, read, written and referred to again (MethodSymbol.RefReturn).
+    /// Carried as a modifier so every copy of a declaration keeps it.
+    /// </summary>
+    RefReturn = 1 << 18,
+
+    /// <summary>`ref readonly int Find(...)`: a variable the caller may only read.</summary>
+    RefReadonlyReturn = 1 << 19,
 }

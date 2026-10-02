@@ -1,0 +1,19 @@
+// test: ref local narrower scope
+// expect-compile-error: cannot point 'element' at this variable
+// A ref local's reach is fixed where it is declared. One that refers into
+// the heap may be used beyond the method, so pointing it at a local of the
+// method is refused (C#'s CS8374).
+
+using System;
+
+static class Program
+{
+    static void Main()
+    {
+        int[] data = new int[] { 1, 2 };
+        int local = 3;
+        ref int element = ref data[0];
+        element = ref local;
+        Console.WriteLine(element);
+    }
+}

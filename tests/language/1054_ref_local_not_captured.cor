@@ -1,0 +1,17 @@
+// test: ref local not captured
+// expect-compile-error: cannot use ref local 'count' inside a lambda or a local function
+// A lambda is an object on the heap and may outlive the frame a ref local
+// points into, so C# refuses to let one name a ref local (CS8175).
+
+using System;
+
+static class Program
+{
+    static void Main()
+    {
+        int total = 0;
+        ref int count = ref total;
+        Func<int> read = () => count + 1;
+        Console.WriteLine(read());
+    }
+}

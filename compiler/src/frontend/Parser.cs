@@ -2246,7 +2246,21 @@ public sealed class Parser
             return FinishMethod(conversion);
         }
 
+        // `ref int Find(...)` RETURNS A VARIABLE (Mods.RefReturn). Only a
+        // method does here; a ref-returning property or indexer is refused
+        // below rather than read as one returning a value.
+        if (Take(Tok.KwRef))
+        {
+            mods |= Mods.RefReturn;
+            if (Take(Tok.KwReadonly)) mods |= Mods.RefReadonlyReturn;
+        }
+
         TypeRef type = At(Tok.KwVoid) ? VoidType() : ParseTypeRef();
+
+        if ((mods & Mods.RefReturn) != 0 && !(At(Tok.Ident) && Ahead().Kind is Tok.LParen or Tok.Lt))
+        {
+            throw Error("only a method can return by reference here; a ref-returning property, indexer or operator is not supported");
+        }
 
         // AN OPERATOR: `public static TimeSpan operator -(DateTime a, DateTime b)`.
         //
@@ -3593,7 +3607,8 @@ public sealed class Parser
 
     private Expr ReadBodyExpression()
     {
-        if (!SkipImplementation) return ParseExpr();
+        // `=> ref _items[i]`: a ref-returning method's body is a reference.
+        if (!SkipImplementation) return At(Tok.KwRef) ? ParseRefValue() : ParseExpr();
         Token start = Cur;
         Stack<Tok> close = new();
         while (!At(Tok.Semi) || close.Count != 0)
@@ -4022,7 +4037,9 @@ public sealed class Parser
             case Tok.KwReturn:
             {
                 _i++;
-                Expr? value = At(Tok.Semi) ? null : BareDefault(_returns) ?? ParseExpr();
+                // `return ref x;` answers the variable itself, from a method
+                // that returns by reference (ParseRefValue).
+                Expr? value = At(Tok.Semi) ? null : At(Tok.KwRef) ? ParseRefValue() : BareDefault(_returns) ?? ParseExpr();
                 Expect(Tok.Semi, "';' after 'return'");
                 return new ReturnStmt { Value = value, Line = at.Line, Col = at.Col };
             }
@@ -6212,6 +6229,35 @@ public sealed class Parser
     {
         Token at = Cur;
 
+        // A REF LOCAL: `ref ulong word = ref _bits[i];`, `ref readonly var p
+        // = ref points[0];`. No expression statement starts with `ref`, so
+        // the word alone says this is one. `scoped` in front narrows how far
+        // the reference may escape, which a ref local's own rules already
+        // keep to this method, so it is read and has nothing more to do.
+        if (At(Tok.KwRef) || (At(Tok.Ident) && Cur.Text == "scoped" && Ahead().Kind == Tok.KwRef))
+        {
+            if (At(Tok.Ident)) _i++;
+            _i++;
+            bool readOnly = Take(Tok.KwReadonly);
+            TypeRef? type = Take(Tok.KwVar) ? null : ParseTypeRef();
+            LocalDecl RefLocal(Token where)
+            {
+                string name = Expect(Tok.Ident, "a variable name").Text;
+                Expect(Tok.Assign, "'=' -- a ref local must be initialised with 'ref' and a variable");
+                return new LocalDecl
+                {
+                    Type = type, Name = name, Init = ParseRefValue(), IsRef = true, IsReadOnlyRef = readOnly,
+                    Line = where.Line, Col = where.Col,
+                };
+            }
+            LocalDecl first = RefLocal(at);
+            while (Take(Tok.Comma))
+            {
+                first.Also.Add(RefLocal(Cur));
+            }
+            return first;
+        }
+
         // `var (a, b) = …` is a DECONSTRUCTION and is handled below; `var x =`
         // is a declaration and is handled here.
         if (At(Tok.KwVar) && Ahead().Kind != Tok.LParen)
@@ -6462,8 +6508,27 @@ public sealed class Parser
         }
 
         _i++;
+        // `r = ref other;` POINTS A REF LOCAL ELSEWHERE rather than writing
+        // through it: the value is the reference itself (ParseRefValue).
+        if (compound is null && At(Tok.KwRef))
+        {
+            return new AssignExpr { Target = left, Value = ParseRefValue(), Line = at.Line, Col = at.Col };
+        }
         // Right associative: a = b = c groups as a = (b = c).
         return new AssignExpr { Op = compound, Target = left, Value = ParseAssign(), Line = at.Line, Col = at.Col };
+    }
+
+    /// <summary>
+    /// `ref x`, where a REFERENCE is wanted rather than a value: a ref local's
+    /// initialiser, what a ref local is pointed at again. It is the node a
+    /// by-reference argument already is (RefArgExpr) -- the address of a
+    /// variable -- so everything that walks one walks this.
+    /// </summary>
+    private Expr ParseRefValue()
+    {
+        Token at = Cur;
+        Expect(Tok.KwRef, "'ref' and the variable referred to");
+        return new RefArgExpr { Target = ParseConditional(), Line = at.Line, Col = at.Col };
     }
 
     /// <summary>Switch arms must yield a value, so "no" needs a shape to return.</summary>

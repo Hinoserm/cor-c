@@ -46,6 +46,9 @@ public sealed partial class Lowering
     private readonly HashSet<LocalSym> _addressTakenSyms = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<LocalSym, FrameSlot> _symSlots = new(ReferenceEqualityComparer.Instance);
 
+    /// <summary>Struct variables a ref local refers into, kept in one block (PlaceOfSym).</summary>
+    private readonly HashSet<Sym> _refAliased = new();
+
     /// <summary>
     /// The CELL of a captured local that no declaration statement made: an
     /// `out var`, a pattern's binding, a foreach cursor.
@@ -107,6 +110,7 @@ public sealed partial class Lowering
         _addressTakenLocals.Clear();
         _addressTakenParams.Clear();
         _addressTakenSyms.Clear();
+        _refAliased.Clear();
         _symSlots.Clear();
         _symCells.Clear();
         _loops.Clear();
@@ -155,7 +159,7 @@ public sealed partial class Lowering
             return;
         }
 
-        _f = new Function(Label(m), IrTypes.Of(m.Returns))
+        _f = new Function(Label(m), ReturnIr(m))
         {
             SourceFile = _in, Line = decl.Line, Display = Display(m), FromLibrary = IsLibrary(m.Owner),
             Coalescible = decl.LocalCopy || m.Owner.Decl?.Specialised == true,
@@ -214,7 +218,7 @@ public sealed partial class Lowering
         _returnBlock = _f.NewBlock("ret");
         if (!m.Returns.IsVoid)
         {
-            _returnValue = _f.NewReg(IrTypes.Of(m.Returns), "result");
+            _returnValue = _f.NewReg(ReturnIr(m), "result");
         }
 
         // A chained constructor runs before the body, on the same object.
@@ -329,6 +333,12 @@ public sealed partial class Lowering
     {
         switch (n)
         {
+            case LocalDecl { IsRef: true, Init: RefArgExpr referred }:
+                MarkRefAliased(referred.Target);
+                break;
+            case AssignExpr { Op: null, Value: RefArgExpr { IsOut: false, Name: null } referred }:
+                MarkRefAliased(referred.Target);
+                break;
             case RefArgExpr ra:
                 MarkAddressTaken(ra.Target);
                 break;
@@ -387,6 +397,23 @@ public sealed partial class Lowering
         }
     }
 
+    /// <summary>
+    /// The struct local or by-value parameter a ref local refers to, or holds
+    /// a field of (PlaceOfSym): kept in one block for as long as it lives.
+    /// </summary>
+    private void MarkRefAliased(Expr target)
+    {
+        while (target is MemberExpr { Target: { } inner } && IsStructValue(_b.TypeOf(inner)))
+        {
+            target = inner;
+        }
+        if (target is NameExpr name && _b.Resolved.TryGetValue(name, out Sym? sym)
+            && sym is LocalSym { IsRef: false } or ParamSym { ByRef: false })
+        {
+            _refAliased.Add(sym);
+        }
+    }
+
     private void MarkAddressTaken(Expr target)
     {
         if (target is not NameExpr name || !_b.Resolved.TryGetValue(name, out Sym? sym))
@@ -395,6 +422,8 @@ public sealed partial class Lowering
         }
         switch (sym)
         {
+            case LocalSym { IsRef: true }:
+                break;
             case LocalSym { Boxed: false } l:
                 _addressTakenSyms.Add(l);
                 foreach ((LocalDecl d, LocalSym s) in _b.LocalSymbols)
@@ -638,7 +667,7 @@ public sealed partial class Lowering
             Type t = _b.LocalType.TryGetValue(d, out Type? declared) ? declared
                    : d.Init is not null ? _b.TypeOf(d.Init) : Type.I32;
             bool boxed = _b.BoxedLocals.Contains(d);
-            r = _f.NewReg(boxed ? IrTypes.Word : IrTypes.Of(t), d.Name);
+            r = _f.NewReg(boxed || d.IsRef ? IrTypes.Word : IrTypes.Of(t), d.Name);
             _localRegs[d] = r;
             if (_b.LocalSlot.TryGetValue(d, out int slot))
             {
@@ -1009,8 +1038,40 @@ public sealed partial class Lowering
     /// <summary>The place a resolved name denotes, or null with an error.</summary>
     private Place? PlaceOfSym(Sym sym, Node at)
     {
+        Place? storage = StorageOfSym(sym, at);
+
+        // A STRUCT VARIABLE A REF LOCAL REFERS TO IS ITS BLOCK, in place
+        // (ScanAddressTaken's _refAliased). Assigning the variable a whole new
+        // value otherwise points it at a new block, and the ref local -- the
+        // address of the old one -- would go on reading what was there. So it
+        // is held as a struct in line is: read as the address of its bytes,
+        // written by copying into them, and both names see every write.
+        if (storage is not null and not MemPlace { Inline: true } && _refAliased.Contains(sym) && IsStructValue(storage.Type))
+        {
+            return new MemPlace(new RegOperand(StructBlock(storage, at, storage.Type)), 0, storage.Type, false, true);
+        }
+        return storage;
+    }
+
+    /// <summary>Where a resolved name's own storage is: a register, a slot, a cell.</summary>
+    private Place? StorageOfSym(Sym sym, Node at)
+    {
         switch (sym)
         {
+            // A REF LOCAL HOLDS AN ADDRESS, as a by-reference parameter does:
+            // its place is what is there. A struct one is the address of the
+            // struct's bytes, read as that address and written by a copy in.
+            case LocalSym { IsRef: true } reference:
+            {
+                LocalDecl? d = DeclOf(reference);
+                if (d is null)
+                {
+                    Error(at, $"'{reference.Name}' has no declaration");
+                    return null;
+                }
+                return new MemPlace(new RegOperand(LocalReg(d)), 0, reference.Type, false, IsStructValue(reference.Type));
+            }
+
             case LocalSym { Boxed: true } b:
             {
                 LocalDecl? d = DeclOf(b);
@@ -1186,6 +1247,9 @@ public sealed partial class Lowering
 
             case SubjectExpr subject when _b.Resolved.TryGetValue(subject, out Sym? where):
                 return PlaceOfSym(where, subject);
+
+            case CallExpr call when RefCallee(call) is MethodSymbol answers:
+                return RefCallPlace(call, answers);
 
             default:
                 Error(target, "this assignment target is not implemented yet");

@@ -309,7 +309,9 @@ public sealed partial class Lowering
                     // Through a buffer the value is copied in at the end, so
                     // it is not copied here as well.
                     Type wanted = _returnType ?? _method.Returns;
-                    VReg v = _resultBuffer is not null && _openHandlers.Count == 0
+                    // `return ref x;` answers the variable's address.
+                    VReg v = _method.RefReturn && r.Value is RefArgExpr referred ? Reference(referred, wanted)
+                        : _resultBuffer is not null && _openHandlers.Count == 0
                         ? InlineValue(new MemPlace(R(_resultBuffer), 0, wanted, Inline: true), r.Value, wanted)
                         : EvalAs(r.Value, wanted);
                     _e.CopyTo(_returnValue, new RegOperand(v));
@@ -426,6 +428,21 @@ public sealed partial class Lowering
 
     private void EmitLocalDecl(LocalDecl d)
     {
+        // A REF LOCAL is given the address of the variable it names, and
+        // that is all it ever holds (PlaceOfSym).
+        if (d.IsRef)
+        {
+            if (d.Init is RefArgExpr referred && _b.LocalType.TryGetValue(d, out Type? referredType))
+            {
+                _e.CopyTo(LocalReg(d), R(Reference(referred, referredType)));
+            }
+            foreach (LocalDecl also in d.Also)
+            {
+                EmitLocalDecl(also);
+            }
+            return;
+        }
+
         bool boxed = _b.BoxedLocals.Contains(d);
         Type type = _b.LocalType.TryGetValue(d, out Type? declared)
                   ? declared

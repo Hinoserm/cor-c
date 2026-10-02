@@ -24,6 +24,17 @@ public sealed class LocalDecl : Stmt
     public bool IsConst { get; init; }
 
     /// <summary>
+    /// `ref ulong word = ref _bits[i];` -- a REF LOCAL: not storage of its own
+    /// but a second name for a variable somewhere else, an element, a field,
+    /// another local. Its initialiser is the `ref` expression (a RefArgExpr)
+    /// naming that variable, and every read and write of the local goes there.
+    /// </summary>
+    public bool IsRef { get; init; }
+
+    /// <summary>`ref readonly T x = ref ...;`: a ref local nothing may write through.</summary>
+    public bool IsReadOnlyRef { get; init; }
+
+    /// <summary>
     /// The others in the same declaration: `int line = _line, col = _col;`.
     ///
     /// One statement declaring several is C#, and they share the type and the

@@ -1,0 +1,28 @@
+// test: ref return of struct local field refused
+// expect-compile-error: cannot return a reference to this variable: it lives in this method
+// A field of a struct held in a local is part of the local, so a reference
+// to it is as short-lived as the local is (C#'s CS8169); a call's reference
+// built from one is too (CS8347).
+
+using System;
+
+struct Pair
+{
+    public int A;
+}
+
+static class Program
+{
+    static ref int Pass(ref int value) => ref value;
+
+    static ref int Escape()
+    {
+        Pair pair = new Pair { A = 3 };
+        return ref Pass(ref pair.A);
+    }
+
+    static void Main()
+    {
+        Console.WriteLine(Escape());
+    }
+}

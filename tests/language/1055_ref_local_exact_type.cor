@@ -1,0 +1,16 @@
+// test: ref local exact type
+// expect-compile-error: 'wide' refers to a 'long', and this variable is a 'int'
+// A reference is to exactly its type: no conversion happens through an
+// address, so `ref long` cannot name an int (C#'s CS8173).
+
+using System;
+
+static class Program
+{
+    static void Main()
+    {
+        int narrow = 3;
+        ref long wide = ref narrow;
+        Console.WriteLine(wide);
+    }
+}

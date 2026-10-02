@@ -1,0 +1,124 @@
+// test: ref local reassignment
+// expect-exit: 0
+// expect-output:
+// largest 9 at 1: 4 0 2 7
+// pointed 30 4
+// value 7
+// readonly 2 30
+// pairs 0 11 22 33
+// list 1 2 3 4
+// in 12 13
+// gc 4000 5
+//
+// `r = ref other;` points a ref local at another variable rather than
+// writing through it: walking an array to its largest element and writing
+// there, moving from an element to a local, the reference assignment's own
+// value, a `ref readonly` local moved along, a walk over struct elements,
+// and the linked-list append that walks `ref link.Next` to the end. A `ref
+// readonly` local may refer to an `in` parameter. A reference taken into an
+// array that is then the only holder of it survives a collection.
+
+using System;
+
+struct Pair
+{
+    public int A;
+}
+
+class Node
+{
+    public int V;
+    public Node? Next;
+}
+
+static class Program
+{
+    static void Churn()
+    {
+        object[] junk = new object[64];
+        for (int i = 0; i < 3000; i++) junk[i & 63] = new long[8];
+    }
+
+    static int Peek(in int value)
+    {
+        ref readonly int seen = ref value;
+        return seen + 1;
+    }
+
+    static void Main()
+    {
+        int[] data = new int[] { 4, 9, 2, 7 };
+        ref int best = ref data[0];
+        int bestAt = 0;
+        for (int i = 1; i < data.Length; i++)
+        {
+            if (data[i] > best)
+            {
+                best = ref data[i];
+                bestAt = i;
+            }
+        }
+        Console.Write("largest " + best + " at " + bestAt + ":");
+        best = 0;
+        Console.WriteLine(" " + data[0] + " " + data[1] + " " + data[2] + " " + data[3]);
+
+        int local = 3;
+        int spare = 0;
+        ref int r = ref spare;
+        r = ref data[0];
+        r = ref local;
+        r = 30;
+        Console.WriteLine("pointed " + local + " " + data[0]);
+
+        int v = (r = ref data[3]);
+        Console.WriteLine("value " + v);
+
+        ref readonly int view = ref spare;
+        view = ref data[2];
+        Console.Write("readonly " + view);
+        view = ref local;
+        Console.WriteLine(" " + view);
+
+        Pair[] pairs = new Pair[4];
+        ref Pair cur = ref pairs[0];
+        for (int i = 0; i < pairs.Length; i++)
+        {
+            cur = ref pairs[i];
+            cur.A = i * 11;
+        }
+        Console.WriteLine("pairs " + pairs[0].A + " " + pairs[1].A + " " + pairs[2].A + " " + pairs[3].A);
+
+        Node? head = null;
+        for (int n = 1; n <= 4; n++)
+        {
+            ref Node? link = ref head;
+            while (link != null)
+            {
+                link = ref link.Next;
+            }
+            link = new Node { V = n };
+        }
+        Console.Write("list");
+        for (Node? walk = head; walk != null; walk = walk.Next)
+        {
+            Console.Write(" " + walk.V);
+        }
+        Console.WriteLine();
+
+        int twelve = 12;
+        Console.WriteLine("in " + twelve + " " + Peek(twelve));
+
+        int[]? big = new int[1000];
+        ref int last = ref big[999];
+        big = null;
+        for (int round = 0; round < 4; round++)
+        {
+            Churn();
+            GC.Collect();
+            last += 1000;
+        }
+        int[] other = new int[] { 5 };
+        ref int moved = ref other[0];
+        Console.WriteLine("gc " + last + " " + moved);
+    }
+}

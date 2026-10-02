@@ -1,0 +1,20 @@
+// test: ref readonly return not written
+// expect-compile-error: 'Peek' returns a ref readonly variable
+// What a `ref readonly` method answers is only read: taking a writable
+// reference to it is refused, as C# refuses it (CS8329).
+
+using System;
+
+static class Program
+{
+    static readonly int[] Items = new int[] { 4 };
+
+    static ref readonly int Peek() => ref Items[0];
+
+    static void Main()
+    {
+        ref int writable = ref Peek();
+        writable = 5;
+        Console.WriteLine(Items[0]);
+    }
+}

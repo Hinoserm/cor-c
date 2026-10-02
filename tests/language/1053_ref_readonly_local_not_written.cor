@@ -1,0 +1,17 @@
+// test: ref readonly local not written
+// expect-compile-error: 'view' is a ref readonly local and cannot be written through
+// A `ref readonly` local is read through and never written through: C#
+// refuses the assignment (CS0131), as it refuses one to an `in` parameter.
+
+using System;
+
+static class Program
+{
+    static void Main()
+    {
+        int[] data = new int[] { 1, 2 };
+        ref readonly int view = ref data[1];
+        view = 5;
+        Console.WriteLine(data[1]);
+    }
+}

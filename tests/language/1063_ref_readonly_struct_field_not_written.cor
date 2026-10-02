@@ -1,0 +1,22 @@
+// test: ref readonly struct field not written
+// expect-compile-error: 'view' is a ref readonly local and cannot be written through
+// A field of a struct is part of it: writing one through a `ref readonly`
+// local writes the read-only variable itself, which C# refuses (CS0131).
+
+using System;
+
+struct Pair
+{
+    public int A;
+}
+
+static class Program
+{
+    static void Main()
+    {
+        Pair[] pairs = new Pair[2];
+        ref readonly Pair view = ref pairs[1];
+        view.A = 5;
+        Console.WriteLine(pairs[1].A);
+    }
+}
