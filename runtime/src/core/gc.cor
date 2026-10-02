@@ -4395,13 +4395,22 @@ static class Gc
     /// megabytes of it answered a 56-byte request with out of memory
     /// (252_concurrent_mark, once in a loaded run). The chunk being left
     /// gives its own tail to the free lists first, as Grow's does.
+    ///
+    /// Only an ordinary chunk: not a size-class page (its tail is laid out for
+    /// its class), not one a thread allocates in, not one in the pool, and
+    /// not while a collection may be sweeping. And the tail is cleared: what
+    /// a sweep handed back above the end holds its dead blocks' bytes, and the
+    /// bump pointer hands out what is above it without clearing it.
     static bool AdoptTail(long need)
     {
+        if (_collecting || _sweeping || Runtime.Marking != 0) return false;
         long chunk = HeapChunks.Newest();
         while (chunk != 0)
         {
-            if (chunk != _current && HeapChunks.Limit(chunk) - HeapChunks.End(chunk) >= need)
+            if (chunk != _current && HeapChunks.PageClass(chunk) == 0 && HeapChunks.Owner(chunk) == 0 && !HeapChunks.IsPooled(chunk)
+                && HeapChunks.Limit(chunk) - HeapChunks.End(chunk) >= need)
             {
+                Sys.MemorySet(HeapChunks.End(chunk), 0, HeapChunks.Limit(chunk) - HeapChunks.End(chunk));
                 if (_current != 0)
                 {
                     long tail = _limit - _bump;
