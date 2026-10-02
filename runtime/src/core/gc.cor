@@ -458,7 +458,12 @@ static class Gc
                             long seen = Sys.Peek(target);
                             long home = HeapChunks.OfSnapshot(target + HeaderBytes);
                             if ((seen & (FlagMark | FlagFree)) == 0 && home != 0 && !Newcomer(home, target, seen)
-                                && Sys.Peek(p) == target + HeaderBytes)
+                                && Sys.Peek(p) == target + HeaderBytes
+                                // A NUMBER IN AN ARRAY OF NUMBERS -- an identity hash
+                                // above all -- that equals an address is no pointer:
+                                // the marker rightly never reads it, and forty such
+                                // reports in one int[] were all the verifier said.
+                                && !NumbersOnly(block))
                             {
                                 SayNumber("gc verify major: marked block ", block);
                                 SayNumber("gc verify major:   its vtable ", Sys.Peek(block + HeaderBytes));
@@ -7664,6 +7669,21 @@ static class Gc
     /// and ScanObject's rules, for the verifier (VerifyMinor), which must
     /// not report a number in an object's int field that looks like an
     /// address: the marker never follows it, and nothing depends on it.
+    /// Whether a block is an array of numbers: one the marker never scans.
+    static bool NumbersOnly(long block)
+    {
+        long w = WordSize.Bytes;
+        long payload = block + HeaderBytes;
+        if (Sys.Peek(block + KindAt) != KindObject) return false;
+        long vt = Sys.Peek(payload) & WordSize.AddressMask;
+        if (vt == 0) return false;
+        long desc = vt - DescWords * w;
+        if ((Sys.Peek(desc + DescSelfWord * w) & WordSize.AddressMask) != desc) return false;
+        long flags = Sys.Peek(desc + DescFlagsWord * w);
+        return (flags & SequenceFlag) != 0 && (flags & StringFlag) == 0
+            && (Sys.Peek(desc + DescGcFlagsWord * w) & ElementsAreReferences) == 0;
+    }
+
     static bool MarkerReads(long block, long size, long at)
     {
         long w = WordSize.Bytes;
