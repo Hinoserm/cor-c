@@ -1785,9 +1785,9 @@ public sealed class RegionPointsTo : IModulePass
                 _few = null;
             }
             if (id >> 6 >= _bits.Length) Array.Resize(ref _bits, Math.Max(id >> 6, _named.Count / 64) + 1);
-            ref ulong word = ref _bits[id >> 6];
-            if ((word & 1UL << id) != 0) return false;
-            word |= 1UL << id;
+            int at = id >> 6;
+            if ((_bits[at] & 1UL << id) != 0) return false;
+            _bits[at] |= 1UL << id;
             Count++;
             return true;
         }
