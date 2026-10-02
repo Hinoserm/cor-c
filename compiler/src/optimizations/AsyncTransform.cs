@@ -98,6 +98,7 @@ public static class AsyncTransform
             next = Align(next + s.Bytes, 8);
         }
 
+        HashSet<VReg> fieldAddrs = new();
         foreach (Block b in f.Blocks)
         {
             for (int k = 0; k < b.Instrs.Count; k++)
@@ -117,6 +118,55 @@ public static class AsyncTransform
                     });
                     k++;
                     i.Operands[o] = new RegOperand(addr);
+                    fieldAddrs.Add(addr);
+                }
+            }
+        }
+
+        // A WRITE INTO A SLOT IS A WRITE INTO THE MACHINE, which is the heap's
+        // and may be old: a store, a copy or a fill through a slot's address --
+        // or through a register copied or moved from one -- marks the
+        // machine's cards, as a store into any object does. Written for the
+        // stack -- an owned pointer's slot, an object promoted to one, a struct
+        // copied in -- none carried a mark, and an iterator's machine kept a
+        // young object no minor cycle could see, freed under it.
+        if (cards is not null && fieldAddrs.Count > 0)
+        {
+            for (bool grew = true; grew;)
+            {
+                grew = false;
+                foreach (Block b in f.Blocks)
+                    foreach (Instr i in b.Instrs)
+                        if (i.Dest is { } d && !fieldAddrs.Contains(d)
+                            && i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 or Opcode.Add or Opcode.Sub or Opcode.Phi
+                            && i.Operands.Any(x => x is RegOperand { Reg: var r } && fieldAddrs.Contains(r)))
+                        { fieldAddrs.Add(d); grew = true; }
+            }
+            // One mark covers every write before it back to the last thing
+            // that can collect -- a call, a trap, the block's end: the mark
+            // names the whole machine, and nothing between the writes and it
+            // can make a cycle. An exception record's four words take one.
+            foreach (Block b in f.Blocks)
+            {
+                bool pending = false;
+                for (int k = 0; k <= b.Instrs.Count; k++)
+                {
+                    Instr? i = k < b.Instrs.Count ? b.Instrs[k] : null;
+                    if (pending && (i is null || i.IsTerminator
+                        || i.Op is Opcode.Call or Opcode.CallIndirect or Opcode.Syscall or Opcode.Trap or Opcode.Pause or Opcode.Unwind or Opcode.Unreachable))
+                    {
+                        List<Instr> mark = new();
+                        VReg at = Escape.Word(f, mark, machine, i?.Line ?? b.Instrs[^1].Line, "cardp");
+                        mark.Add(new Instr { Op = Opcode.Call, Callee = cards, Operands = { new RegOperand(at) }, Line = i?.Line ?? b.Instrs[^1].Line });
+                        b.Instrs.InsertRange(k, mark);
+                        k += mark.Count;
+                        pending = false;
+                    }
+                    if (i is null
+                        || i.Op is not (Opcode.Store or Opcode.MemCopy or Opcode.MemSet or Opcode.AtomicCas or Opcode.AtomicAdd or Opcode.AtomicAnd or Opcode.AtomicOr or Opcode.AtomicXor)
+                        || i.Operands.Count == 0 || i.Operands[0] is not RegOperand { Reg: var into } || !fieldAddrs.Contains(into)
+                        || i.Op == Opcode.Store && (i.Size < wordSize || i.Operands.Count > 1 && i.Operands[1] is not RegOperand)) continue;
+                    pending = true;
                 }
             }
         }

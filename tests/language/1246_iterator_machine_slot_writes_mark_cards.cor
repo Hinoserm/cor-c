@@ -1,0 +1,39 @@
+// test: iterator_machine_slot_writes_mark_cards
+// expect-exit: 0
+// expect-output:
+// bad 0
+//
+// A frame slot of an iterator lives in its machine, which is a heap object
+// and old once it survives a collection. A write through a slot's address --
+// or through a register copied from it, as an owned slot, an array's element
+// pointer or a struct copy are written -- must mark the machine's cards, or a
+// minor cycle never sees the young object the old machine holds. The native
+// compiler's lexer iterators lost their tokens this way (AsyncTransform).
+
+using System.Collections.Generic;
+static class P
+{
+    static IEnumerable<int> Steps(int laps)
+    {
+        for (int lap = 0; lap < laps; lap++)
+        {
+            string[] made = new string[64];
+            for (int i = 0; i < 64; i++) made[i] = "s" + lap + "_" + i;
+            int n = 0;
+            foreach (string s in made)
+            {
+                for (int j = 0; j < 200; j++) { string junk = "junk" + j; }
+                if (s != "s" + lap + "_" + n) yield return 1; else yield return 0;
+                n++;
+            }
+        }
+    }
+    static void Main()
+    {
+        IEnumerator<int> e = Steps(100).GetEnumerator();
+        for (int k = 0; k < 4; k++) GC.Collect();
+        long bad = 0;
+        while (e.MoveNext()) bad += e.Current;
+        Console.WriteLine("bad " + bad);
+    }
+}
