@@ -21,10 +21,15 @@ internal sealed class OwnedFieldEscape
     public OwnedFieldEscape(Dictionary<string, Function> functions, Dictionary<string, bool[]> summaries)
     { _functions = functions; _summaries = summaries; }
 
-    /// <summary>Every repeat of the child must pass through a fresh owner lifetime.</summary>
+    /// <summary>
+    /// Every repeat of the child must pass through a fresh owner lifetime.
+    /// The owner may be made before the child or after it -- a List made,
+    /// then the foreach enumerator that holds it -- as long as one of the two
+    /// is on every path to the other.
+    /// </summary>
     internal static bool OwnerRenews(Cfg cfg, Corsac.Lang.Ir.Block owner, Corsac.Lang.Ir.Block child)
     {
-        if (!cfg.Dominates(owner, child)) return false;
+        if (!cfg.Dominates(owner, child) && !cfg.Dominates(child, owner)) return false;
         // The caller has already established instruction order in this case.
         if (owner == child) return true;
         HashSet<Corsac.Lang.Ir.Block> seen = new();

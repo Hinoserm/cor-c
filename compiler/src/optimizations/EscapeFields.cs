@@ -77,7 +77,11 @@ public sealed partial class Escape
         callee is "m_Gc_MarkAt_1_V$I64" or "m_Gc_Report_1_V$I64"
             or Corsac.Lang.Lto.RuntimeAbi.WriteBarrier or "m_Gc_Barrier_2_V$I64_V$I64"
             or Corsac.Lang.Lto.RuntimeAbi.WriteBarrierValues or "m_Gc_BarrierValues_2_V$I64_V$I64"
-            or CardMarks.CardMark;
+            or CardMarks.CardMark
+            // The same notes as CardMarks writes them out, last of the late
+            // passes: the link runs its lifetime pass after them (RunAtLink),
+            // and took every object a field store was barriered for as gone.
+            or "__x86.i.barrier" or "__x86.i.cardmark";
 
     /// <summary>
     /// The notes the barrier is built from, which are never inlined. Whether

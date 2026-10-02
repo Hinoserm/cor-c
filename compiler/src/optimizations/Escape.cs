@@ -2713,6 +2713,14 @@ continue;
         HashSet<Block>? repeating = null;
         List<OwnedFieldEscape.Owner> owners = new();
 
+        // TWICE, WHEN AN OWNER CAME LATE: an object stored into another the
+        // function makes after it -- a List a foreach's enumerator holds --
+        // is judged before its owner is promoted, and is anchored to it only
+        // on a second look. Nothing is hinted the second time round.
+        bool anchorLater = false;
+        for (int sweep = 0; sweep < 2; sweep++)
+        {
+        if (sweep == 1 && (!anchorLater || owners.Count == 0)) break;
         foreach (Block b in PromotionOrder(f))
         {
             for (int k = 0; k < b.Instrs.Count; k++)
@@ -2754,7 +2762,11 @@ continue;
                             // pass through the owner creation again. An owner
                             // outside an inner allocation loop does not qualify.
                             if (!fieldDefs.IsSingle(owner.Root)
-                                || !OwnedFieldEscape.OwnerRenews(fieldDefs.Cfg, owner.Block, b)) continue;
+                                || !OwnedFieldEscape.OwnerRenews(fieldDefs.Cfg, owner.Block, b))
+                            {
+                                if (tracing) Console.Error.WriteLine($"promote {f.Name}: {i} owner {owner.Root} single={fieldDefs.IsSingle(owner.Root)} renews={OwnedFieldEscape.OwnerRenews(fieldDefs.Cfg, owner.Block, b)}");
+                                continue;
+                            }
                             var addresses = OwnedFieldEscape.Addresses(f, owner.Aliases);
                             foreach (var targetBlock in f.Blocks)
                             foreach (Instr store in targetBlock.Instrs)
@@ -2769,7 +2781,11 @@ continue;
                                 if (field > owner.Bytes - store.Size) continue;
                                 HashSet<VReg> loaded = new();
                                 OwnedFieldEscape.Field referenceField = new(field, store.Size);
-                                if (!fields.ReadsOwner(f, owner, new[] { referenceField }, loaded)) continue;
+                                if (!fields.ReadsOwner(f, owner, new[] { referenceField }, loaded))
+                                {
+                                    if (tracing) Console.Error.WriteLine($"promote {f.Name}: {i} owner {owner.Root} field +{field}: a read of it goes further");
+                                    continue;
+                                }
                                 var childAddresses = OwnedFieldEscape.Addresses(f, promotedOwner.Aliases);
                                 if (!childAddresses.TryGetValue(value.Reg, out long childOffset) || childOffset != 0)
                                     canAnchor = false;
@@ -2797,8 +2813,9 @@ continue;
                 if (tracing) Console.Error.WriteLine($"promote {f.Name}: {i} escapes={flow.Escapes} via {flow.Why}");
                 if (flow.Escapes)
                 {
+                    if (sized && flow.Why is { Op: Opcode.Store }) anchorLater = true;
                     // Left to the collector: say why, for the link (EscapeHints).
-                    if (_hinting)
+                    if (_hinting && sweep == 0)
                     {
                         liveness ??= new Liveness(f);
                         pads ??= PadLive(liveness);
@@ -2927,6 +2944,7 @@ continue;
                 // interior reference would need a translated descendant path.
                 if (canAnchor) owners.Add(promotedOwner);
             }
+        }
         }
     }
 
@@ -3077,10 +3095,16 @@ continue;
         {
             if (!defs.IsSingle(call.Dest!)) continue;
             Flow flow = Analyse(f, new[] { call.Dest! }, summaries, call);
+            bool tracing = PromoteTrace is { } traced && f.Name.Contains(traced, StringComparison.Ordinal);
+            if (tracing) Console.Error.WriteLine($"fresh {f.Name}: {call} escapes={flow.Escapes} via {flow.Why}");
             if (flow.Escapes) continue;
             liveness ??= new Liveness(f);
             pads ??= PadLive(liveness);
-            if (LiveAtSelf(liveness, pads, b, call, flow.Derived)) continue;
+            if (LiveAtSelf(liveness, pads, b, call, flow.Derived))
+            {
+                if (tracing) Console.Error.WriteLine($"fresh {f.Name}: {call} live at its own making");
+                continue;
+            }
             // BEFORE THE CALL WHEN THE CALL CANNOT BE READING IT (see below).
             bool readsPrevious = false;
             foreach (Operand o in call.Operands)

@@ -542,7 +542,10 @@ public sealed partial class Binder
         // rest of this pass -- and that is fine, because the pass is discarded
         // the moment anything was recorded. See DeclarationBatch.
         if (_namingOnly) return false;
-        try { _requireDeclaration?.Invoke(key); }
+        // A COPY TO THE DEMAND, which keeps it: the key is mostly a name built
+        // to be looked up (`ns + "." + name`) and dropped, and handed on here,
+        // on the rare path, it was the collector's on every path.
+        try { _requireDeclaration?.Invoke(key.Substring(0)); }
         catch (Metadata.DeclarationDemand demand) { _declarationBatch.Add(demand); }
         return false;
     }
