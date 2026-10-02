@@ -1,0 +1,89 @@
+// test: frame_held_object_fields
+// expect-exit: 0
+// expect-output:
+// total 1295705 22 42
+//
+// An object put in the frame and held by another object of the frame keeps
+// its fields known only while every use of the holder is in sight. Here the
+// Wrapper holding the Engine is handed to calls that are never inlined, and
+// through them the Engine keeps the caller's buffer in one field and, after
+// Done, another field's array in it. Freeing those fields with the Engine,
+// as if each held a fresh object of its own, gave the caller's buffer back
+// while Main still read it, and one array twice; with regions or without,
+// the buffer has to outlive both runs.
+
+using System;
+using System.Runtime.CompilerServices;
+
+sealed class Engine
+{
+    byte[] _input;
+    byte[] _empty;
+    long _sum;
+
+    public Engine(int n)
+    {
+        _input = new byte[n];
+        _empty = new byte[n];
+    }
+
+    public void Write(byte[] buffer)
+    {
+        _input = buffer;
+        for (int i = 0; i < _input.Length; i++) _sum += _input[i] * (i + 1);
+    }
+
+    public void Done()
+    {
+        _input = _empty;
+    }
+
+    public long Sum => _sum;
+}
+
+sealed class Wrapper
+{
+    Engine _engine;
+
+    public Wrapper(int n)
+    {
+        _engine = new Engine(n);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public void Write(byte[] buffer) => _engine.Write(buffer);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public void Done() => _engine.Done();
+
+    public long Sum => _engine.Sum;
+}
+
+static class Program
+{
+    static byte[] Make(int n, int salt)
+    {
+        byte[] b = new byte[n];
+        for (int i = 0; i < n; i++) b[i] = (byte)(i * 3 + salt);
+        return b;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Run(byte[] data, bool done)
+    {
+        Wrapper w = new Wrapper(data.Length);
+        w.Write(data);
+        if (done) w.Done();
+        return w.Sum;
+    }
+
+    static int Main(string[] args)
+    {
+        byte[] data = Make(100 + args.Length, 1);
+        long total = Run(data, false) + Run(data, true);
+        byte[] other = Make(100 + args.Length, 2);
+        total += other[7] + data[7];
+        Console.WriteLine("total " + total + " " + data[7] + " " + data[99]);
+        return 0;
+    }
+}

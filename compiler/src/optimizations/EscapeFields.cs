@@ -314,6 +314,16 @@ public sealed partial class Escape
         // with a hint, only a use that is opaque whatever other units do.
         bool Done() => hint is null ? fs.Opaque : hint.Opaque;
 
+        // AN OBJECT OF THE FRAME HELD BY ANOTHER: what is read back out of the
+        // holder is the object again, and its uses are the object's. Known
+        // only while every use of the holder is here.
+        if (framed)
+        {
+            (Dictionary<VReg, long>? aliases, Instr? why) = FrameHeldAliases(f, roots, addresses, defs);
+            if (aliases is null) { current = why; Opaque(); return fs; }
+            addresses = aliases;
+        }
+
         foreach (Block b in f.Blocks)
         {
             foreach (Instr i in b.Instrs)
@@ -350,10 +360,10 @@ public sealed partial class Escape
                         // EXCEPT, for an object the frame holds, into another
                         // object of the frame: a Defs kept in the frame holding
                         // the Cfg it was made over. Neither outlives the frame
-                        // (they were put there for that), and what this one's
-                        // fields hold stays its own: the whole program's rules
-                        // own those fields, every store into one a fresh object
-                        // and what it replaces given back, whoever stores it.
+                        // (they were put there for that), and every use of the
+                        // holder is here (FrameHeldAliases): what is read back
+                        // out of it is this object, its uses followed as this
+                        // object's own.
                         if (i.Operands[1] is RegOperand v0 && addresses.ContainsKey(v0.Reg))
                         {
                             if (framed && !(i.Operands[0] is RegOperand into && addresses.ContainsKey(into.Reg)) && FrameMemory(i.Operands[0], defs)) break;
@@ -607,17 +617,98 @@ public sealed partial class Escape
     /// through copies and width changes (an object put in the frame keeps its
     /// own register, a copy of the slot's address, and its truncation).
     /// </summary>
-    private static bool FrameMemory(Operand o, Defs defs)
+    private static bool FrameMemory(Operand o, Defs defs) => FrameSlotOf(o, defs) is not null;
+
+    /// <summary>The frame slot whose address `o` is, through copies and width changes; or null.</summary>
+    private static FrameSlot? FrameSlotOf(Operand o, Defs defs)
     {
         for (int depth = 0; depth < 8; depth++)
         {
-            if (o is SlotOperand) return true;
-            if (o is not RegOperand { Reg: var r } || !defs.IsSingle(r) || defs.Site(r) is not { } site) return false;
+            if (o is SlotOperand { Slot: var slot }) return slot;
+            if (o is not RegOperand { Reg: var r } || !defs.IsSingle(r) || defs.Site(r) is not { } site) return null;
             Instr made = site.Block.Instrs[site.Index];
-            if (made.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || made.Operands.Count != 1) return false;
+            if (made.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || made.Operands.Count != 1) return null;
             o = made.Operands[0];
         }
-        return false;
+        return null;
+    }
+
+    /// <summary>
+    /// THE HOLDERS OF AN OBJECT OF THE FRAME: frame memory its address is
+    /// stored into -- another object of the frame, or a slot. Its fields are
+    /// still known there only while every use of the holder is in this
+    /// function and can be followed: a load of it, a store into it, its
+    /// zeroing, a copy of its address. What is loaded back from where the
+    /// object was put is the object again, and joins its addresses. A holder
+    /// handed to a callee is the object handed on unseen: the callee reads
+    /// it back out and does what it likes with its fields -- a Deflater in
+    /// the frame, its DeflateStream holding it and called to Write, stored
+    /// the caller's buffer in one field and another field's array in it, and
+    /// both fields were freed with it as if each held a fresh object of its
+    /// own. Answers the object's addresses with every alias, or null with
+    /// the use that cannot be followed.
+    /// </summary>
+    private Dictionary<VReg, long>? FrameHeldAliasesCore(Function f, List<VReg> roots, Dictionary<VReg, long> addresses, Defs defs, out Instr? why)
+    {
+        why = null;
+        // The object's own slot is no holder of it: its address stored in
+        // itself.
+        HashSet<FrameSlot> own = new(ReferenceEqualityComparer.Instance);
+        foreach (VReg r in roots)
+            if (defs.IsSingle(r) && defs.Definition(r) is { Op: Opcode.Copy, Operands: [SlotOperand { Slot: var slot }] }) own.Add(slot);
+        while (true)
+        {
+            // Where the object is put: each holder, and the offsets in it.
+            Dictionary<FrameSlot, HashSet<long>> held = new(ReferenceEqualityComparer.Instance);
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Op != Opcode.Store || i.Operands.Count < 2 || _bookkeeping.Contains(i)) continue;
+                    if (i.Operands[1] is not RegOperand v || !addresses.TryGetValue(v.Reg, out long delta)) continue;
+                    if (i.Operands[0] is RegOperand into && addresses.ContainsKey(into.Reg)) continue;
+                    if (FrameSlotOf(i.Operands[0], defs) is not FrameSlot holder) continue;
+                    if (delta != 0 || own.Contains(holder)) { why = i; return null; }
+                    if (!held.TryGetValue(holder, out HashSet<long>? offsets)) held[holder] = offsets = new();
+                    offsets.Add(i.Offset);
+                }
+            if (held.Count == 0) return addresses;
+
+            // Every use of every holder, judged; the loads of the object back
+            // out of one become its addresses.
+            List<VReg> grown = new(roots);
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (_bookkeeping.Contains(i)) continue;
+                    for (int k = 0; k < i.Operands.Count; k++)
+                    {
+                        if (FrameSlotOf(i.Operands[k], defs) is not FrameSlot holder || !held.TryGetValue(holder, out HashSet<long>? offsets)) continue;
+                        bool followed = (i.Op, k) switch
+                        {
+                            (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32, 0) => i.Dest is not null && defs.IsSingle(i.Dest),
+                            (Opcode.Load, 0) => true,
+                            (Opcode.Store, 0) => true,
+                            (Opcode.MemSet, 0) => i.Operands.Count >= 2 && i.Operands[1] is ImmOperand { Value: 0 },
+                            _ => false,
+                        };
+                        if (!followed) { why = i; return null; }
+                        if (i.Op == Opcode.Load && offsets.Contains(i.Offset))
+                        {
+                            if (i.Dest is null || !defs.IsSingle(i.Dest)) { why = i; return null; }
+                            if (!addresses.ContainsKey(i.Dest)) grown.Add(i.Dest);
+                        }
+                    }
+                }
+            if (grown.Count == roots.Count) return addresses;
+            roots = grown;
+            addresses = OwnedFieldEscape.Addresses(f, roots);
+        }
+    }
+
+    private (Dictionary<VReg, long>? Aliases, Instr? Why) FrameHeldAliases(Function f, IEnumerable<VReg> roots, Dictionary<VReg, long> addresses, Defs defs)
+    {
+        Dictionary<VReg, long>? aliases = FrameHeldAliasesCore(f, roots.ToList(), addresses, defs, out Instr? why);
+        return (aliases, why);
     }
 
     internal static readonly bool FieldTraceAll = Environment.GetEnvironmentVariable("CORSAC_FIELD_TRACE_ALL") is { Length: > 0 };
