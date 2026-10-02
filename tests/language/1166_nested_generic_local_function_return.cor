@@ -1,0 +1,27 @@
+// test: nested_generic_local_function_return
+// expect-exit: 0
+// expect-output:
+// 4 1 1
+//
+// A local function whose return type ends in `>>` (`List<List<int>> Groups(...)`)
+// is a local function: the lexer reads the brackets' close as a shift, which
+// inside type arguments closes two at once.
+
+using System;
+using System.Collections.Generic;
+static class P
+{
+    static void Main()
+    {
+        int k = 3;
+        List<List<int>> Groups(int n)
+        {
+            List<List<int>> all = new();
+            for (int i = 0; i < n; i++) all.Add(new List<int> { i, k });
+            return all;
+        }
+        Dictionary<string, List<int>> Named() => new() { ["a"] = new List<int> { 1 } };
+        int shifted = k >> 1;
+        Console.WriteLine(Groups(4).Count + " " + Named()["a"][0] + " " + shifted);
+    }
+}

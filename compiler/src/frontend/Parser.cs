@@ -5176,10 +5176,16 @@ public sealed class Parser
             // Generic arguments and array brackets belong to the type.
             int depth = 0;
 
+            // `>>` and `>>>` close two and three at once -- the lexer reads
+            // `List<List<int>> Groups(...)` as a shift -- and only inside
+            // the arguments, where no shift can be.
             while (j < _t.Count && (depth > 0 || _t[j].Kind is Tok.Lt or Tok.LBracket))
             {
                 if (_t[j].Kind is Tok.Lt or Tok.LBracket) { depth++; }
                 else if (_t[j].Kind is Tok.Gt or Tok.RBracket) { depth--; }
+                else if (_t[j].Kind == Tok.Shr) { depth -= 2; }
+                else if (_t[j].Kind == Tok.UShr) { depth -= 3; }
+                if (depth < 0) { return false; }
                 j++;
             }
 
