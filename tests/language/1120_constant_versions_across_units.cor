@@ -1,0 +1,61 @@
+// test: constant_versions_across_units
+// units: tests/language/support/970_region_units.cor
+// expect-exit: 0
+// expect-output:
+// 24 57 6
+// 23 42 5
+//
+// A version of a function made for a constant argument that the compile
+// took whole into every caller, and the IR the link starts from still calls.
+// Pick's kind picks a branch, so each constant is a version of its own
+// (ConstantSpecialize), called from two places and too big to inline then.
+// In a version the branch is gone, the initialiser guards of Red, Green and
+// Blue in the arm it kept are followed by the same guards after the join,
+// and those go (StaticInitGuards): small enough now, the compile's late
+// inliner took every version into Main and dropped it. The unit's archived
+// IR is from before the late passes and calls the versions; the link,
+// reaching for them through the unit's object, which no longer defines
+// them, kept no body for them, and its run of the late passes left the
+// calls to symbols nothing defined. x and y come from the other unit, so
+// they are no constants.
+
+using System;
+
+static class Red
+{
+    public static int A, B;
+    static Red() { A = 1; B = 2; }
+}
+
+static class Green
+{
+    public static int A, B;
+    static Green() { A = 3; B = 4; }
+}
+
+static class Blue
+{
+    public static int A, B;
+    static Blue() { A = 5; B = 6; }
+}
+
+public static class Program
+{
+    static int Pick(int kind, int x)
+    {
+        int r;
+        if (kind == 0) r = Red.A + Green.A + Blue.A + x;
+        else if (kind == 1) r = Red.A * Green.A * Blue.A * x;
+        else r = x - Red.A - Green.A - Blue.A;
+        return r + Red.B + Green.B + Blue.B;
+    }
+
+    static int Main()
+    {
+        int x = RegionUnits.Lexer.Lex("a b c").Count;
+        int y = RegionUnits.Lexer.Lex("d e").Count;
+        Console.WriteLine(Pick(0, x) + " " + Pick(1, x) + " " + Pick(2, x));
+        Console.WriteLine(Pick(0, y) + " " + Pick(1, y) + " " + Pick(2, y));
+        return 0;
+    }
+}

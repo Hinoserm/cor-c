@@ -26,6 +26,16 @@ public static class IrReachability
             var reference = pending.Pop();
             ObjectFile? owner = reference.Origin is not null && locals[reference.Origin].Contains(reference.Symbol)
                 ? reference.Origin : owners.GetValueOrDefault(reference.Symbol);
+            // A DEFINITION THE UNIT'S IR HOLDS AND ITS OBJECT DOES NOT: the
+            // archive is the IR from before the late passes, and the compile's
+            // late inliner may have taken a function whole into every caller
+            // and dropped it -- a constant-specialised version of Unpack, once
+            // a guard behind another for the same type had gone and left it
+            // small (StaticInitGuards). The link runs those passes again over
+            // the archived callers, which still call it, so the body is kept.
+            if (owner is null && reference.Origin is not null && archives.TryGetValue(reference.Origin, out IrArchive? origin)
+                && (origin.Entries.ContainsKey("F:" + reference.Symbol) || origin.Entries.ContainsKey("D:" + reference.Symbol)))
+                owner = reference.Origin;
             if (owner is null || !archives.TryGetValue(owner, out IrArchive? archive)) continue;
             string key = "F:" + reference.Symbol;
             if (!archive.Entries.ContainsKey(key)) key = "D:" + reference.Symbol;
