@@ -4178,10 +4178,27 @@ public sealed partial class Binder
             if (methods is { Count: > 0 }) Declare(b, name, new MethodGroupSym(methods));
         }
 
-        // C# LOCAL FUNCTIONS ARE BLOCK-SCOPED, not declaration-scoped: a call
-        // above the declaration is valid and recursion requires the name to be
-        // present while its own body is checked. Reserve their slots and names
-        // before binding any statement in the block.
+        DeclareLocalFunctions(b);
+
+        bool labels = PushLabels(b);
+        foreach (Stmt s in b.Statements)
+        {
+            CheckStmt(s);
+        }
+        if (labels) _labels.RemoveAt(_labels.Count - 1);
+        PopScope();
+    }
+
+    /// <summary>
+    /// C# LOCAL FUNCTIONS ARE BLOCK-SCOPED, not declaration-scoped: a call
+    /// above the declaration is valid and recursion requires the name to be
+    /// present while its own body is checked. Their slots and names are
+    /// reserved before any statement of the block is bound -- a block, and a
+    /// local function's or lambda's own body, where one declared after the
+    /// `return` (EscapeFields' LiveFor) was not declared at all.
+    /// </summary>
+    private void DeclareLocalFunctions(Block b)
+    {
         foreach (Stmt statement in b.Statements)
         {
             if (statement is not LocalDecl { LocalFunction: true, Type: not null } local)
@@ -4202,14 +4219,6 @@ public sealed partial class Binder
             Declare(local, local.Name, symbol);
             _assigned.Add(symbol);
         }
-
-        bool labels = PushLabels(b);
-        foreach (Stmt s in b.Statements)
-        {
-            CheckStmt(s);
-        }
-        if (labels) _labels.RemoveAt(_labels.Count - 1);
-        PopScope();
     }
 
     /// <summary>
@@ -6520,6 +6529,7 @@ public sealed partial class Binder
     {
         if (lam.BlockBody != null)
         {
+            DeclareLocalFunctions(lam.BlockBody);
             bool labels = PushLabels(lam.BlockBody);
             foreach (Stmt s in lam.BlockBody.Statements)
             {
@@ -12089,6 +12099,19 @@ public sealed partial class Binder
                 if (CommonInterface(a2, b2) is Type shared)
                 {
                     return Joined(shared);
+                }
+
+                // TWO NUMBERS WITH NO NATURAL TYPE -- `signed ? ToInt32(...) :
+                // ToUInt32(...)` -- as an argument, where the type it is wanted
+                // as is not known until the overload is: the narrowest both
+                // convert to, which is what C#'s target typing makes of it for
+                // every target that takes both (long, double). A target that
+                // takes neither is refused where the argument is matched.
+                if (a2.Prim is not (Prim.Void or Prim.Any or Prim.String or Prim.NullLiteral) && b2.Prim is not (Prim.Void or Prim.Any or Prim.String or Prim.NullLiteral)
+                    && a2.Symbol is null && b2.Symbol is null && !a2.IsArray && !b2.IsArray && !a2.IsPointer && !b2.IsPointer)
+                {
+                    foreach (Type wider in new[] { Type.I64, Type.F64 })
+                        if (Convertible(a2, wider) && Convertible(b2, wider)) return Joined(wider);
                 }
 
                 Error(c2, $"the branches of a conditional have unrelated types '{a2}' and '{b2}'");

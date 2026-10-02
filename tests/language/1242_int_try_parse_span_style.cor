@@ -1,0 +1,21 @@
+// test: int_try_parse_span_style
+// expect-exit: 0
+// expect-output:
+// True 42 False
+//
+// int.TryParse over a span with a number style and a provider, as the
+// compiler's own field keys are read (OwnedElements).
+
+using System;
+using System.Globalization;
+static class P
+{
+    static void Main()
+    {
+        string field = "x42:rest";
+        int colon = field.IndexOf(':');
+        bool ok = int.TryParse(field.AsSpan(1, colon - 1), NumberStyles.None, CultureInfo.InvariantCulture, out int n);
+        bool bad = int.TryParse("zz".AsSpan(), NumberStyles.None, CultureInfo.InvariantCulture, out int _);
+        Console.WriteLine(ok + " " + n + " " + bad);
+    }
+}

@@ -1,0 +1,42 @@
+// test: nested_local_functions_and_numeric_conditionals
+// expect-exit: 0
+// expect-output:
+// 26 5 -1 4294967295 -1
+//
+// A local function declared after the `return` of another local function is
+// declared for that body (local functions are block-scoped, a local
+// function's body included), and a conditional of an int and a uint, as an
+// argument where its type is the overload's, is the long both convert to.
+
+using System;
+static class P
+{
+    static int Outer(int n)
+    {
+        return Inner(n) + 1;
+
+        int Inner(int m)
+        {
+            int total = 0;
+            for (int i = 0; i < m; i++) total += Twice(i);
+            return total;
+
+            int Twice(int x) => x * 2 + Bias();
+            int Bias() => n > 3 ? 1 : 0;
+        }
+    }
+    static void Main()
+    {
+        uint big = 7;
+        bool flag = big > 3;
+        long picked = flag ? 5 : big;
+        int neg = -1;
+        long x = flag ? neg : big;
+        Console.WriteLine(Outer(5) + " " + picked + " " + x + " " + Q.Make(false, new byte[] { 255, 255, 255, 255 }).Value + " " + Q.Make(true, new byte[] { 255, 255, 255, 255 }).Value);
+    }
+}
+readonly record struct Known(string? Sym, long Value);
+static class Q
+{
+    public static Known Make(bool signed, byte[] bytes) => new Known(null, signed ? BitConverter.ToInt32(bytes, 0) : BitConverter.ToUInt32(bytes, 0));
+}

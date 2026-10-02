@@ -1,0 +1,26 @@
+// test: struct_array_descriptor_one_stride
+// expect-exit: 0
+// expect-output:
+// 1 a 1
+//
+// An array of arrays of a struct names the inner arrays' descriptor with the
+// struct's own stride, as `new Stamp[n]` does: a word's stride made a second
+// descriptor of the same name in the unit.
+
+using System;
+using System.Collections.Generic;
+readonly record struct Stamp(string Descriptor, long Base);
+static class P
+{
+    static Dictionary<string, Stamp[]?[]>? held;
+    static Stamp[]? Kinds(int n) => n > 0 ? new[] { new Stamp("a", n) } : null;
+    static void Main()
+    {
+        held = new() { ["f"] = new Stamp[]?[] { Kinds(1), null } };
+        Stamp[]?[]? all = held.TryGetValue("f", out var got) ? got : null;
+        List<Stamp> found = new();
+        foreach (Stamp[]? one in all!) if (one is not null) found.AddRange(one);
+        Stamp[] arr = found.ToArray();
+        Console.WriteLine(arr.Length + " " + arr[0].Descriptor + " " + arr[0].Base);
+    }
+}

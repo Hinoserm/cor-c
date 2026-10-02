@@ -4228,6 +4228,10 @@ static class Int32 {
         return NumberFormat.Of(value, 32, format);
     }
 
+    public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider, out int value) {
+        return TryParse(s.ToString(), style, provider, out value);
+    }
+
     public static bool TryParse(string? s, NumberStyles style, IFormatProvider? provider, out int value) {
         // .NET's answer for no string at all: false, and the default.
         if (s is null) { value = default; return false; }

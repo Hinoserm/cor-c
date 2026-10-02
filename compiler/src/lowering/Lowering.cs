@@ -1336,7 +1336,11 @@ public sealed partial class Lowering
     {
         if (element.IsArray && element.Element is Type inner)
         {
-            return SequenceDescriptor(ElementKey(inner), Math.Max(1, inner.Size), isString: false, elementType: inner);
+            // ITS STRIDE AS ITS OWN ARRAYS ARE MADE WITH (ElementStride): an
+            // in-line struct's size, not a word -- `Stamp[]?[]` named the
+            // inner arrays' descriptor with a word's stride and `new Stamp[n]`
+            // with the struct's, two descriptors of one name in one unit.
+            return SequenceDescriptor(ElementKey(inner), ElementStride(inner), isString: false, elementType: inner);
         }
         if (element.Prim == Prim.String)
         {
