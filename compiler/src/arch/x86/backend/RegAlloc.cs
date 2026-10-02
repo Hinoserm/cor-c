@@ -166,6 +166,7 @@ internal sealed class Allocator
         // spill traffic for its dead copies. MOV changes no flags, and only
         // register/immediate sources qualify: memory reads can be observable.
         bool changed;
+        List<(MReg Reg, Role Role, int Operand, bool InMem)> regs = new();
         do
         {
             HashSet<MInstr> deadFlags = new();
@@ -186,7 +187,7 @@ internal sealed class Allocator
             HashSet<int> used = new();
             foreach (MBlock block in m.Blocks)
             foreach (MInstr instruction in block.Instrs)
-                foreach (var operand in RegsOf(instruction))
+                foreach (var operand in RegsOf(instruction, regs))
                     if ((operand.Role & Role.Use) != 0
                         // A dead two-address update does not make its own
                         // discarded value live. Kept flag-producing updates
@@ -221,8 +222,15 @@ internal sealed class Allocator
 
     // ---- occurrences ----------------------------------------------------------
 
-    private static IEnumerable<(MReg Reg, Role Role, int Operand, bool InMem)> RegsOf(MInstr i)
+    /// <summary>
+    /// The registers an instruction names, with what it does with each, into
+    /// `into` (emptied first), which is returned. A list the caller keeps for
+    /// the whole pass: as an iterator it was an object for every instruction
+    /// every walk looked at.
+    /// </summary>
+    private static List<(MReg Reg, Role Role, int Operand, bool InMem)> RegsOf(MInstr i, List<(MReg Reg, Role Role, int Operand, bool InMem)> into)
     {
+        into.Clear();
         // `xor v, v` zeroes v without caring what it held: a definition
         // only, so no reload of a spilled v is needed before it.
         bool zeroing = i.Op == MOp.Xor && i.Operands[0] is MReg x && i.Operands[1] is MReg y && x.Id == y.Id;
@@ -231,28 +239,29 @@ internal sealed class Allocator
             switch (i.Operands[k])
             {
                 case MReg r:
-                    yield return (r, zeroing ? Role.Def : Roles.Of(i.Op, k), k, false);
+                    into.Add((r, zeroing ? Role.Def : Roles.Of(i.Op, k), k, false));
                     break;
                 case MMem m:
                     if (m.Base is not null)
                     {
-                        yield return (m.Base, Role.Use, k, true);
+                        into.Add((m.Base, Role.Use, k, true));
                     }
                     if (m.Index is not null)
                     {
-                        yield return (m.Index, Role.Use, k, true);
+                        into.Add((m.Index, Role.Use, k, true));
                     }
                     break;
             }
         }
         foreach (Gpr g in Roles.ImplicitUses(i))
         {
-            yield return (MReg.Of(g), Role.Use, -1, false);
+            into.Add((MReg.Of(g), Role.Use, -1, false));
         }
         foreach (Gpr g in Roles.ImplicitDefs(i))
         {
-            yield return (MReg.Of(g), Role.Def, -1, false);
+            into.Add((MReg.Of(g), Role.Def, -1, false));
         }
+        return into;
     }
 
     private static bool Tracked(MReg r) => r.Id != (int)Gpr.Esp && r.Id != (int)Gpr.Ebp;
@@ -261,7 +270,7 @@ internal sealed class Allocator
     {
         for (int i = 0; i < _lin.Count; i++)
         {
-            foreach ((MReg r, Role role, int k, bool inMem) in RegsOf(_lin[i]))
+            foreach ((MReg r, Role role, int k, bool inMem) in RegsOf(_lin[i], _regsOf))
             {
                 if (Tracked(r))
                 {
@@ -343,7 +352,7 @@ internal sealed class Allocator
             live[b] = new BitSet(_n);
             for (int i = first[b]; i < first[b] + count[b]; i++)
             {
-                foreach ((MReg r, Role role, _, _) in RegsOf(_lin[i]))
+                foreach ((MReg r, Role role, _, _) in RegsOf(_lin[i], _regsOf))
                 {
                     if (!Tracked(r))
                     {
@@ -354,7 +363,7 @@ internal sealed class Allocator
                         use[b].Set(r.Id);
                     }
                 }
-                foreach ((MReg r, Role role, _, _) in RegsOf(_lin[i]))
+                foreach ((MReg r, Role role, _, _) in RegsOf(_lin[i], _regsOf))
                 {
                     if (Tracked(r) && (role & Role.Def) != 0)
                     {
@@ -447,14 +456,16 @@ internal sealed class Allocator
                     // live-out of the call is live ACROSS it: what the
                     // collector must find and, when it moves an object,
                     // must write back.
-                    _liveAtCall[i] = cur.Members().ToList();
+                    List<int> members = new();
+                    foreach (int r in cur.Members()) members.Add(r);
+                    _liveAtCall[i] = members;
                 }
                 foreach (int r in cur.Members())
                 {
                     Mark(r, p + 2);
                     Mark(r, p + 3);
                 }
-                foreach ((MReg r, Role role, _, _) in RegsOf(_lin[i]))
+                foreach ((MReg r, Role role, _, _) in RegsOf(_lin[i], _regsOf))
                 {
                     if (Tracked(r) && (role & Role.Def) != 0)
                     {
@@ -463,7 +474,7 @@ internal sealed class Allocator
                         cur.Clear(r.Id);
                     }
                 }
-                foreach ((MReg r, Role role, _, _) in RegsOf(_lin[i]))
+                foreach ((MReg r, Role role, _, _) in RegsOf(_lin[i], _regsOf))
                 {
                     if (Tracked(r) && (role & Role.Use) != 0)
                     {
@@ -1371,6 +1382,7 @@ internal sealed class Allocator
     private readonly List<MInstr> _rwAfter = new();
     private readonly HashSet<int> _rwDone = new();
     private readonly Dictionary<int, Role> _rwRoles = new();
+    private readonly List<(MReg Reg, Role Role, int Operand, bool InMem)> _regsOf = new();
 
     private void RewriteInstr(MInstr i, int index, List<MInstr> outList, HashSet<int> saved)
     {
@@ -1390,7 +1402,7 @@ internal sealed class Allocator
         // A register named twice in one instruction (`movzx v, v8`) is
         // reloaded and stored according to everything the instruction does
         // with it, not just the first mention.
-        foreach ((MReg r, Role role, _, _) in RegsOf(i))
+        foreach ((MReg r, Role role, _, _) in RegsOf(i, _regsOf))
         {
             if (!r.IsPhys)
             {
@@ -1522,17 +1534,28 @@ internal sealed class BitSet : IEquatable<BitSet>
 
     public void CopyFrom(BitSet o) => Array.Copy(o._bits, _bits, _bits.Length);
 
-    public IEnumerable<int> Members()
+    /// <summary>The members, lowest first, by a struct walk: an iterator here was an object for every instruction the intervals were built over.</summary>
+    public MemberWalk Members() => new(_bits);
+
+    public struct MemberWalk
     {
-        for (int k = 0; k < _bits.Length; k++)
+        private readonly ulong[] _bits;
+        private int _word;
+        private ulong _left;
+        private int _current;
+        public MemberWalk(ulong[] bits) { _bits = bits; _word = -1; _left = 0; _current = -1; }
+        public MemberWalk GetEnumerator() => this;
+        public int Current => _current;
+        public bool MoveNext()
         {
-            ulong w = _bits[k];
-            while (w != 0)
+            while (_left == 0)
             {
-                int bit = System.Numerics.BitOperations.TrailingZeroCount(w);
-                yield return k * 64 + bit;
-                w &= w - 1;
+                if (++_word >= _bits.Length) return false;
+                _left = _bits[_word];
             }
+            _current = _word * 64 + System.Numerics.BitOperations.TrailingZeroCount(_left);
+            _left &= _left - 1;
+            return true;
         }
     }
 

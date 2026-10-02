@@ -60,20 +60,9 @@ internal static class Peephole
                     use[b] |= 0xFF & ~def[b];
                     continue;
                 }
-                foreach ((MReg r, bool isDef) in AllRegs(i))
-                {
-                    if (!isDef && (def[b] & (1 << r.Id)) == 0)
-                    {
-                        use[b] |= 1 << r.Id;
-                    }
-                }
-                foreach ((MReg r, bool isDef) in AllRegs(i))
-                {
-                    if (isDef)
-                    {
-                        def[b] |= 1 << r.Id;
-                    }
-                }
+                Masks(i, out long reads, out long writes);
+                use[b] |= (int)reads & ~def[b];
+                def[b] |= (int)writes;
             }
         }
         int[][] succ = new int[nb][];
@@ -102,22 +91,45 @@ internal static class Peephole
         return live;
     }
 
-    /// <summary>Explicit and implicit register reads and writes of an instruction.</summary>
-    private static IEnumerable<(MReg Reg, bool IsDef)> AllRegs(MInstr i)
+    /// <summary>
+    /// An instruction's explicit and implicit register reads and writes as two masks, bit per register number, in a loop: the
+    /// iterators were two objects for every instruction asked about. A
+    /// register numbered past 63 shares a bit, which only ever makes an
+    /// answer more cautious.
+    /// </summary>
+    private static void Masks(MInstr i, out long reads, out long writes)
     {
-        foreach ((MReg r, bool isDef) in Regs(i))
+        reads = 0;
+        writes = 0;
+        if (i.Op == MOp.Xor && i.Operands[0] is MReg x && i.Operands[1] is MReg y && x.Id == y.Id)
         {
-            yield return (r, isDef);
+            writes = Bit(x.Id);
         }
-        foreach (Gpr g in Roles.ImplicitUses(i))
+        else
         {
-            yield return (MReg.Of(g), false);
+            for (int k = 0; k < i.Operands.Count; k++)
+            {
+                switch (i.Operands[k])
+                {
+                    case MReg r:
+                    {
+                        Roles.Role role = Roles.Of(i.Op, k);
+                        if ((role & Roles.Role.Use) != 0) reads |= Bit(r.Id);
+                        if ((role & Roles.Role.Def) != 0) writes |= Bit(r.Id);
+                        break;
+                    }
+                    case MMem m:
+                        if (m.Base is not null) reads |= Bit(m.Base.Id);
+                        if (m.Index is not null) reads |= Bit(m.Index.Id);
+                        break;
+                }
+            }
         }
-        foreach (Gpr g in Roles.ImplicitDefs(i))
-        {
-            yield return (MReg.Of(g), true);
-        }
+        foreach (Gpr g in Roles.ImplicitUses(i)) reads |= Bit(MReg.Of(g).Id);
+        foreach (Gpr g in Roles.ImplicitDefs(i)) writes |= Bit(MReg.Of(g).Id);
     }
+
+    private static long Bit(int id) => 1L << (id & 63);
 
     // ---- store, then reload from the same slot ----------------------------------
 
@@ -199,8 +211,8 @@ internal static class Peephole
                     if (Math.Abs((long)memory.Disp - slot.Disp) < 4) break;
                 }
                 else if (prev.Operands.Any(o => o is MMem) || !SpillTransparent(prev.Op)) break;
-                foreach ((MReg reg, bool isDef) in AllRegs(prev))
-                    if (isDef) clobbered |= 1 << reg.Id;
+                Masks(prev, out _, out long written);
+                clobbered |= (int)written;
                 if ((clobbered & (1 << (int)Gpr.Ebp)) != 0) break;
             }
         }
@@ -416,12 +428,14 @@ internal static class Peephole
     /// </summary>
     private static int FindCopy(List<MInstr> instrs, int k, HashSet<int> deadAfter)
     {
-        HashSet<int> touched = new();
+        // A mask, not a set: one for every call was a set's worth of garbage
+        // for every instruction the pass looked at.
+        long touched = 0;
         for (int j = k - 1; j >= 0 && j >= k - 6; j--)
         {
             MInstr c = instrs[j];
             if (IsMov(c) && c.Operands[0] is MReg a && c.Operands[1] is MReg b
-                && !touched.Contains(a.Id) && !touched.Contains(b.Id))
+                && (touched & Bit(a.Id)) == 0 && (touched & Bit(b.Id)) == 0)
             {
                 return ForwardCopy(c, instrs[k], deadAfter) ? j : -1;
             }
@@ -429,10 +443,8 @@ internal static class Peephole
             {
                 return -1;
             }
-            foreach ((MReg r, _) in AllRegs(c))
-            {
-                touched.Add(r.Id);
-            }
+            Masks(c, out long reads, out long writes);
+            touched |= reads | writes;
         }
         return -1;
     }
