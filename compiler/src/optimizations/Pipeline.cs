@@ -145,8 +145,10 @@ public sealed class Pipeline
         p.LatePasses.Add(Inliner(keepFree: true));
         p.LatePasses.Add(new LateCleanup());
         p.LatePasses.Add(new ScalarObjects());
-        p.LatePasses.Add(new RegionPointsTo());
         p.LatePasses.Add(new Escape());
+        // What the lifetime passes left to the collector, given to regions
+        // where a boundary's return is proved to leave it dead.
+        p.LatePasses.Add(new RegionPointsTo());
         p.LatePasses.Add(Inliner());
         // The card marks written out, last: to every pass above they are a
         // call that lets nothing go (CardMarks).

@@ -191,6 +191,16 @@ static class Platform
     /// whatever the pacing says -- for measuring what a nursery's size costs.
     public static long GcNursery() => EnvironmentNumber("CORSAC_GC_NURSERY=");
 
+    /// CORSAC_REGION_KB=<kilobytes>: each thread's region arena (Gc,
+    /// "regions"), mapped when the thread first opens a region; 0 turns
+    /// regions off, every allocation of one going to the heap. Four
+    /// megabytes when unset.
+    public static long RegionBytes()
+    {
+        long at = EnvironmentValue("CORSAC_REGION_KB=");
+        return at == 0 ? 4L * 1024 * 1024 : EnvironmentNumber("CORSAC_REGION_KB=") * 1024;
+    }
+
     /// CORSAC_HEAP_LIMIT=<bytes>: the heap's hard limit, as a container's
     /// memory.max would set it -- for trying a small machine on a big one.
     public static long HeapLimit() => EnvironmentNumber("CORSAC_HEAP_LIMIT=");

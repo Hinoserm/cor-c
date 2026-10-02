@@ -365,6 +365,13 @@ static class Platform
         return 0;
     }
 
+    /// Each thread's region arena (Gc, "regions"): one megabyte, mapped when
+    /// the thread first opens a region.
+    public static long RegionBytes()
+    {
+        return 1024 * 1024;
+    }
+
     public static long HeapLimit()
     {
         return 0;

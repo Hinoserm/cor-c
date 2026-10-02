@@ -30,6 +30,19 @@ public sealed class RegionPointsTo : IModulePass
 
     internal static readonly string? Report = Environment.GetEnvironmentVariable("CORSAC_REGION_REPORT") is { Length: > 0 } r ? r : null;
 
+    /// <summary>
+    /// The boundaries to make regions of (CORSAC_REGION_BOUNDARIES=name,...,
+    /// by part of a function's name): for trying the proof on a program
+    /// while the choice of boundaries is not yet the compiler's own.
+    /// </summary>
+    internal static readonly string? Boundaries = Environment.GetEnvironmentVariable("CORSAC_REGION_BOUNDARIES") is { Length: > 0 } b ? b : null;
+
+    public const string Enter = "m_Runtime_RegionEnter_1_V$NInt";
+    public const string Leave = "m_Runtime_RegionLeave_1_V$NInt";
+    public const string InRegion = "m_Runtime_AllocRegion_2_V$NInt_V$NInt";
+    public const string Near = "m_Runtime_AllocNear_3_V$NInt_V$NInt_V$NInt";
+    private const long LeafKind = 0x4C454146, ObjectKind = 0x4F424A54;
+
     private const int Global = 0;
     private const int MaxDepth = 2;
     private const long Any = 0xFFFFFF;
@@ -75,7 +88,12 @@ public sealed class RegionPointsTo : IModulePass
 
     public void Run(Module m)
     {
-        if (Report is null || m.Entry is null) return;
+        if (Report is null && Boundaries is null || m.Entry is null) return;
+        if (Boundaries is not null && new[] { Enter, Leave, InRegion, Near }.Where(h => !m.Functions.Any(f => f.Name == h)).ToList() is { Count: > 0 } missing)
+        {
+            Console.Error.WriteLine("regions: no " + string.Join(", ", missing) + " in this program; nothing made a region");
+            return;
+        }
         _m = m;
         _byName = new(StringComparer.Ordinal);
         foreach (Function f in m.Functions) _byName[f.Name] = f;
@@ -91,7 +109,124 @@ public sealed class RegionPointsTo : IModulePass
             Console.Error.WriteLine($"regions: gave up at {_pts.Count} nodes, {_copies.Count} copies, {_objects.Count} objects");
             return;
         }
-        Judge();
+        if (Report is not null) Judge();
+        if (Boundaries is not null) Apply();
+    }
+
+    // ---- applying -------------------------------------------------------------
+
+    /// <summary>
+    /// Every allocation site whose objects each boundary above it is proved to
+    /// outlive made in that boundary's region, and every boundary made one.
+    /// A site in an instance method is made beside the object it was called
+    /// on (AllocNear): what it makes for an object in a region must be dead
+    /// by that region's end. Any other site is made in the innermost region
+    /// open (AllocRegion): dead by the end of every boundary it runs beneath.
+    /// </summary>
+    private void Apply()
+    {
+        string[] names = Boundaries!.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        List<int> boundaries = new();
+        for (int c = 0; c < _copies.Count; c++)
+            if (_copies[c].F.Async is null && names.Any(n => _copies[c].F.Name.Contains(n, StringComparison.Ordinal)))
+                boundaries.Add(c);
+        if (boundaries.Count == 0) return;
+
+        // For each boundary: what outlives it, and the copies beneath it.
+        List<(HashSet<int> Outlives, HashSet<int> Beneath)> judged = new();
+        foreach (int c in boundaries) judged.Add((Outliving(c), Beneath(c)));
+
+        // Each site's objects, and the boundaries each is made beneath.
+        Dictionary<Instr, List<int>> bySite = new(ReferenceEqualityComparer.Instance);
+        for (int o = 1; o < _objects.Count; o++)
+            if (_objects[o].Site is { } site) (bySite.TryGetValue(site, out List<int>? l) ? l : bySite[site] = new()).Add(o);
+
+        int near = 0, inRegion = 0;
+        Dictionary<Instr, string> chosen = new(ReferenceEqualityComparer.Instance);
+        foreach ((Instr site, List<int> objects) in bySite)
+        {
+            if (site.Callee is not (Opt.Escape.Allocator or Opt.Escape.LeafAllocator or Opt.Escape.ObjectAllocator)) continue;
+            Function f = _objects[objects[0]].F!;
+            bool beside = IsInstance(f) && objects.Any(o => _objects[o].Context >= 0);
+            bool anywhere = false, ok = true;
+            foreach (int o in objects)
+            {
+                int copy = CopyIdOfObject(o);
+                int context = _objects[o].Context;
+                for (int k = 0; k < boundaries.Count && ok; k++)
+                {
+                    if (!judged[k].Beneath.Contains(copy)) continue;
+                    anywhere = true;
+                    // Beside an object that is never in this boundary's
+                    // region: never in it either, so nothing to prove.
+                    if (beside && context >= 0 && judged[k].Outlives.Contains(context)) continue;
+                    if (judged[k].Outlives.Contains(o)) ok = false;
+                }
+                if (!ok) break;
+            }
+            if (!ok || !anywhere) continue;
+            chosen[site] = beside ? Near : InRegion;
+            if (beside) near++; else inRegion++;
+        }
+
+        foreach (Function f in _m.Functions)
+            foreach (Block b in f.Blocks)
+                for (int k = 0; k < b.Instrs.Count; k++)
+                    if (chosen.TryGetValue(b.Instrs[k], out string? helper))
+                        b.Instrs[k] = Retarget(f, b.Instrs[k], helper);
+
+        HashSet<Function> opened = new();
+        foreach (int c in boundaries)
+            if (opened.Add(_copies[c].F)) Open(_copies[c].F);
+        Console.Error.WriteLine($"regions: {opened.Count} boundaries, {inRegion} sites in the innermost region, {near} beside their object");
+    }
+
+    private static Instr Retarget(Function f, Instr alloc, string helper)
+    {
+        Operand bytes = alloc.Operands[0];
+        long kind = alloc.Callee == Opt.Escape.LeafAllocator ? LeafKind : alloc.Callee == Opt.Escape.ObjectAllocator ? ObjectKind : 0;
+        Instr made = new() { Op = Opcode.Call, Callee = helper, Dest = alloc.Dest, Line = alloc.Line };
+        made.Operands.Add(bytes);
+        made.Operands.Add(new ImmOperand(kind, IrTypes.Word));
+        if (helper == Near) made.Operands.Add(new RegOperand(f.Params[0]));
+        return made;
+    }
+
+    // The region opened on entry, given back on every return; a throw is
+    // the runtime's to notice (Gc.PopStale).
+    private static void Open(Function f)
+    {
+        VReg frame = f.NewReg(IrTypes.Word, "regionframe");
+        VReg handle = f.NewReg(IrTypes.Word, "region");
+        Block entry = f.Blocks[0];
+        entry.Instrs.InsertRange(0, new[]
+        {
+            new Instr { Op = Opcode.FramePointer, Dest = frame, Line = f.Line },
+            new Instr { Op = Opcode.Call, Callee = Enter, Dest = handle, Operands = { new RegOperand(frame) }, Line = f.Line },
+        });
+        foreach (Block b in f.Blocks)
+            for (int k = 0; k < b.Instrs.Count; k++)
+                if (b.Instrs[k].Op == Opcode.Ret)
+                {
+                    b.Instrs.Insert(k, new Instr { Op = Opcode.Call, Callee = Leave, Operands = { new RegOperand(handle) }, Line = b.Instrs[k].Line });
+                    k++;
+                }
+    }
+
+    /// <summary>Everything reachable from Global, from what copy `c` is handed, and from what it hands back.</summary>
+    private HashSet<int> Outliving(int c)
+    {
+        Function f = _copies[c].F;
+        HashSet<int> reached = new();
+        Queue<int> next = new();
+        void Reach(long l) { if (reached.Add(ObjectOf(l))) next.Enqueue(ObjectOf(l)); }
+        Reach(Loc(Global, Any));
+        foreach (VReg p in f.Params) foreach (long l in _pts[Reg(c, p)]) Reach(l);
+        foreach (long l in _pts[ReturnNode(c)]) Reach(l);
+        while (next.TryDequeue(out int o))
+            foreach (int cell in _cells[o].Values)
+                foreach (long l in _pts[cell]) Reach(l);
+        return reached;
     }
 
     // ---- building -----------------------------------------------------------
@@ -515,17 +650,7 @@ public sealed class RegionPointsTo : IModulePass
         {
             (Function f, int context) = _copies[c];
             if (!wanted.Any(w => f.Name.Contains(w, StringComparison.Ordinal))) continue;
-            // What outlives the boundary: everything reachable from Global,
-            // from what it is handed, and from what it hands back.
-            HashSet<int> reached = new();
-            Queue<int> next = new();
-            void Reach(long l) { if (reached.Add(ObjectOf(l))) next.Enqueue(ObjectOf(l)); }
-            Reach(Loc(Global, Any));
-            foreach (VReg p in f.Params) foreach (long l in _pts[Reg(c, p)]) Reach(l);
-            foreach (long l in _pts[ReturnNode(c)]) Reach(l);
-            while (next.TryDequeue(out int o))
-                foreach (int cell in _cells[o].Values)
-                    foreach (long l in _pts[cell]) Reach(l);
+            HashSet<int> reached = Outliving(c);
 
             // What is made beneath it: in the copies it calls, transitively.
             HashSet<int> beneath = Beneath(c);

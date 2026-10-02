@@ -2042,6 +2042,147 @@ static class Gc
     // The largest request: leaves room for the rounding below.
     const long MaxRequest = 0x7FFFFFFF - Overhead - 7;
 
+    // ---- regions --------------------------------------------------------------
+    //
+    // A REGION IS A CALL whose every object certain allocations make is
+    // proved dead by the time it returns (the compiler's RegionPointsTo):
+    // those are bumped out of the thread's own arena and given back together,
+    // the bump pointer set back and the bytes zeroed, when it returns. Regions
+    // nest; each is the stretch of the arena above where it began. Blocks in
+    // the arena are laid out as the heap's are, header, kind and footer, so
+    // that the collector reads them: the arena's live part is scanned with
+    // the thread's stack, for what heap objects they hold, and never swept.
+    // A free of a block in it does nothing; the region's end gives it back.
+    // Nothing on the heap holds one (the proof), and the collector takes no
+    // pointer into the arena for a block of its own (ExactBlock: not a chunk).
+
+    /// Bytes given back by regions' ends, and allocations that found the
+    /// innermost region full or their owner outside it (made on the heap).
+    public static long RegionFreedBytes;
+    public static long RegionMisses;
+    // Asked of the platform once; no initialiser, which would give Gc a
+    // static constructor that runs before any thread has a block.
+    static long _regionSlice;
+    static bool _regionAsked;
+
+    // EACH REGION BEGINS WITH ITS RECORD, a leaf block of two words: the
+    // region it is inside (0 for none) and the frame of the call that opened
+    // it. A throw that leaves that call runs no RegionLeave; the next region
+    // opened or allocation made from a frame above it finds the frame gone
+    // and closes it then (PopStale), and an outer region's own leave sets the
+    // arena back below anything opened inside it.
+
+    /// Opens a region for the call whose frame is `frame`: what RegionLeave
+    /// is handed back, -1 when there is none (no arena, or no room in it).
+    public static long RegionEnter(long frame)
+    {
+        long tb = Sys.ThreadBlock();
+        if (tb == 0) return -1;
+        if (Sys.Peek(tb + Tls.RegionBase) == 0)
+        {
+            if (!_regionAsked) { _regionSlice = Platform.RegionBytes() & -8; _regionAsked = true; }
+            if (_regionSlice <= 0) return -1;
+            long arena = Platform.Map(_regionSlice);
+            if (arena == 0) { _regionSlice = 0; return -1; }
+            Sys.Poke(tb + Tls.RegionAt, arena);
+            Sys.Poke(tb + Tls.RegionEnd, arena + _regionSlice);
+            Sys.Poke(tb + Tls.RegionBase, arena);
+        }
+        PopStale(tb, frame);
+        long record = Sys.Peek(tb + Tls.RegionAt);
+        if (record + Smallest > Sys.Peek(tb + Tls.RegionEnd)) return -1;
+        Stamp(record, Smallest, 0);
+        Sys.Poke(record + KindAt, KindLeaf);
+        Sys.Poke(record + HeaderBytes, Sys.Peek(tb + Tls.RegionOpen));
+        Sys.Poke(record + HeaderBytes + WordSize.Bytes, frame);
+        Sys.Poke(tb + Tls.RegionAt, record + Smallest);
+        Sys.Poke(tb + Tls.RegionOpen, record);
+        return record;
+    }
+
+    /// Closes the region `record` begins, and any still open inside it:
+    /// everything made in them given back.
+    public static void RegionLeave(long record)
+    {
+        long tb = Sys.ThreadBlock();
+        if (record < 0 || tb == 0) return;
+        long end = Sys.Peek(tb + Tls.RegionAt);
+        if (record >= end) return;
+        // The pointer first: a scan that lands in the middle reads no further
+        // than the region's start, never the bytes being cleared.
+        Sys.Poke(tb + Tls.RegionAt, record);
+        Sys.Poke(tb + Tls.RegionOpen, Sys.Peek(record + HeaderBytes));
+        Sys.MemorySet(record, 0, end - record);
+        RegionFreedBytes = RegionFreedBytes + (end - record);
+        FreedBytes = FreedBytes + (end - record);
+    }
+
+    /// Regions whose calls a throw has left: every one opened by a frame
+    /// below `frame` (deeper in the stack) is closed.
+    static void PopStale(long tb, long frame)
+    {
+        long open = Sys.Peek(tb + Tls.RegionOpen);
+        while (open != 0 && (Sys.Peek(open + HeaderBytes + WordSize.Bytes) & WordSize.AddressMask) < (frame & WordSize.AddressMask))
+        {
+            RegionLeave(open);
+            open = Sys.Peek(tb + Tls.RegionOpen);
+        }
+    }
+
+    /// A block in the innermost open region -- when `owner` is 0, or is
+    /// itself in that region -- or on the heap.
+    public static nint AllocRegion(nint bytes, nint kind, long owner)
+    {
+        nint tb = (nint)Sys.ThreadBlock();
+        long open = tb == 0 ? 0 : Sys.Peek(tb + Tls.RegionOpen);
+        if (open != 0 && (Sys.Peek(open + HeaderBytes + WordSize.Bytes) & WordSize.AddressMask) < (Sys.FramePointer() & WordSize.AddressMask))
+        {
+            PopStale(tb, Sys.FramePointer());
+            open = Sys.Peek(tb + Tls.RegionOpen);
+        }
+        long at = open == 0 ? 0 : Sys.Peek(tb + Tls.RegionAt);
+        if (open == 0 || bytes < 0 || bytes > (nint)MaxRequest || owner != 0 && (owner < open || owner >= at))
+        {
+            if (open != 0) RegionMisses = RegionMisses + 1;
+            return AllocWord(bytes, kind);
+        }
+        long need = ((long)bytes + Overhead + 7) & SizeMask;
+        if (need < Smallest) need = Smallest;
+        if (at + need > Sys.Peek(tb + Tls.RegionEnd))
+        {
+            RegionMisses = RegionMisses + 1;
+            return AllocWord(bytes, kind);
+        }
+        Stamp(at, need, 0);
+        Sys.Poke(at + KindAt, kind);
+        // The block laid down before the pointer passes it: a scan sees it
+        // whole or not at all.
+        Sys.Poke(tb + Tls.RegionAt, at + need);
+        return (nint)(at + HeaderBytes);
+    }
+
+    /// Whether `at` is in this thread's arena.
+    static bool InRegion(long tb, long at)
+    {
+        long arena = Sys.Peek(tb + Tls.RegionBase);
+        return arena != 0 && at >= arena && at < Sys.Peek(tb + Tls.RegionEnd);
+    }
+
+    /// The arena's live blocks marked from, as a stack's words are.
+    public static void ScanRegion(long tb)
+    {
+        long p = Sys.Peek(tb + Tls.RegionBase);
+        if (p == 0) return;
+        long end = Sys.Peek(tb + Tls.RegionAt);
+        while (p < end)
+        {
+            long size = Sys.Peek(p) & SizeMask;
+            if (size < Smallest || p + size > end) break;
+            ScanBlock(p, size);
+            p = p + size;
+        }
+    }
+
     /// The heap. Zeroed memory for `bytes`, 8-aligned.
     ///
     /// THE FAST PATH, kept to a few instructions so the inliner can put it at
@@ -4302,6 +4443,8 @@ static class Gc
         SayNumber("gc: frees dropped while marking ", FreesDroppedMarking);
         SayNumber("gc: frees dropped otherwise ", FreesDropped);
         SayNumber("gc: freed by the collector MB ", CollectedBytes / 1048576);
+        SayNumber("gc: given back by regions MB ", RegionFreedBytes / 1048576);
+        SayNumber("gc: region misses ", RegionMisses);
         // WHO GAVE BACK WHAT WAS GIVEN BACK: the program's frees against the
         // collector's sweeps -- by the bytes each actually reclaimed.
         long given = FreedBytes + CollectedBytes;
@@ -4788,6 +4931,8 @@ static class Gc
             return;
         }
         long self = Sys.ThreadBlock();
+        // In a region: given back with the rest of it when it ends.
+        if (self != 0 && InRegion(self, at)) return;
         if (self != 0 && Sys.Peek(self + Tls.InAlloc) != 0 || GcLock.HeldByMe())
         {
             FreesDropped = FreesDropped + 1;
@@ -8123,6 +8268,9 @@ static class Gc
     public static void ScanStack(long block, long from)
     {
         long to = Sys.Peek(block + Tls.StackBase);
+        // The thread's region arena with its stack: what it made there holds
+        // heap objects, and nothing else marks them for it.
+        ScanRegion(block);
 
         if (from != 0 && to > from)
         {
@@ -10117,6 +10265,8 @@ static class GcRoots
         {
             Gc.ScanRootsAttributed(Sys.Stack(), top, 1, true);
         }
+        // And its region arena, as every other thread's is with its stack.
+        if (self != 0) Gc.ScanRegion(self);
         Gc.ScanRootsAttributed(Sys.DataStart(), Sys.DataEnd(), 2, false);
 
         long i = 0;

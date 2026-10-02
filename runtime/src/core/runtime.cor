@@ -124,7 +124,7 @@ static class WordSize
 static class Tls
 {
     // Every field is a word slot, numbered as lowering numbers them (its Tls*
-    // constants are these slots times four, scaled by the word): 34 slots.
+    // constants are these slots times four, scaled by the word): 42 slots.
     /// The block's own address. First, because gs:[0] is how it is found.
     public const long Self = 0 * WordSize.Bytes;
 
@@ -225,8 +225,18 @@ static class Tls
     /// where only this thread writes it.
     public const long ClassBytes = 37 * WordSize.Bytes;
 
+    /// This thread's region arena (Gc, "regions"): mapped on first use, its
+    /// bump pointer, its end, and where the innermost open region began (0
+    /// when none is open). A region is a call the compiler proved every
+    /// object made for it dead by its return; they are made here and given
+    /// back together when it returns.
+    public const long RegionBase = 38 * WordSize.Bytes;
+    public const long RegionAt = 39 * WordSize.Bytes;
+    public const long RegionEnd = 40 * WordSize.Bytes;
+    public const long RegionOpen = 41 * WordSize.Bytes;
+
     /// The size of the block. The compiler lays the first one down in .bss.
-    public const long Bytes = 38 * WordSize.Bytes;
+    public const long Bytes = 42 * WordSize.Bytes;
 }
 
 /// WHERE THE ALLOCATIONS COME FROM (CORSAC_ALLOC_SAMPLE=1): every sixteenth
@@ -749,6 +759,39 @@ static class Runtime
         long at = (long)(nuint)Gc.AllocWord(bytes, (nint)Gc.ObjectKind);
         // After the allocation, so the sampler knows the block (and whether
         // the program frees it or leaves it to the collector).
+        if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes | (3L << 40), at);
+        return at;
+    }
+
+    /// REGIONS: a call the compiler proved leaves dead, at its return, every
+    /// object certain allocations make for it opens one on entry and gives
+    /// it back on every way out. What it hands RegionLeave is what this
+    /// returned. See Gc, "regions".
+    public static nint RegionEnter(nint frame)
+    {
+        return (nint)Gc.RegionEnter((long)(nuint)frame);
+    }
+
+    public static void RegionLeave(nint outer)
+    {
+        Gc.RegionLeave(outer == -1 ? -1 : (long)(nuint)outer);
+    }
+
+    /// An allocation proved dead by the return of whichever region is open
+    /// innermost: made in that region, or on the heap when none is open or
+    /// it is full. `kind` is Gc's: 0, LeafKind or ObjectKind.
+    public static long AllocRegion(nint bytes, nint kind)
+    {
+        long at = (long)(nuint)Gc.AllocRegion(bytes, kind, 0);
+        if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes | (3L << 40), at);
+        return at;
+    }
+
+    /// Storage made for `owner` and dead when it is: in owner's region when
+    /// owner is in the innermost open one, on the heap otherwise.
+    public static long AllocNear(nint bytes, nint kind, nint owner)
+    {
+        long at = (long)(nuint)Gc.AllocRegion(bytes, kind, owner == 0 ? -1 : (long)(nuint)owner);
         if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes | (3L << 40), at);
         return at;
     }
