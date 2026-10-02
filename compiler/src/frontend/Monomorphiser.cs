@@ -34,6 +34,9 @@ public sealed class Monomorphiser
         bool External,
         string? Canon);
 
+    /// <summary>The names asked of the declarations already (GenericPath): once each.</summary>
+    private readonly HashSet<string> _demanded = new(StringComparer.Ordinal);
+
     /// <summary>Whether this compilation is building a library of its own.</summary>
     private bool _library;
 
@@ -778,9 +781,12 @@ public sealed class Monomorphiser
             // Recorded rather than raised, for the reason Binder.TypeCandidate
             // gives: one template's missing name must not abandon the rewrite
             // of everything else and cost a whole extra round.
-            // A copy, as Binder.TypeCandidate hands it: the key is built to be
-            // looked up and dropped.
-            try { _requireDeclaration?.Invoke(key.Substring(0)); }
+            // Once a name, and a copy, as Binder.TypeCandidate hands it: the key
+            // is built to be looked up and dropped.
+            if (_requireDeclaration is null || _demanded.Contains(key)) return false;
+            string kept = key.Substring(0);
+            _demanded.Add(kept);
+            try { _requireDeclaration(kept); }
             catch (Metadata.DeclarationDemand demand) { _templateBatch.Add(demand); }
             return false;
         }

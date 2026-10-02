@@ -542,13 +542,20 @@ public sealed partial class Binder
         // rest of this pass -- and that is fine, because the pass is discarded
         // the moment anything was recorded. See DeclarationBatch.
         if (_namingOnly) return false;
-        // A COPY TO THE DEMAND, which keeps it: the key is mostly a name built
-        // to be looked up (`ns + "." + name`) and dropped, and handed on here,
-        // on the rare path, it was the collector's on every path.
-        try { _requireDeclaration?.Invoke(key.Substring(0)); }
+        // ONCE A NAME, AND A COPY TO THE DEMAND, which keeps it: the key is
+        // mostly a name built to be looked up (`ns + "." + name`) and dropped,
+        // and handed on, it was the collector's on every path. A name asked
+        // again in this pass is already in the batch, or loaded and still
+        // missing: asking again does nothing either way.
+        if (_requireDeclaration is null || _demanded.Contains(key)) return false;
+        string kept = key.Substring(0);
+        _demanded.Add(kept);
+        try { _requireDeclaration(kept); }
         catch (Metadata.DeclarationDemand demand) { _declarationBatch.Add(demand); }
         return false;
     }
+
+    private readonly HashSet<string> _demanded = new(StringComparer.Ordinal);
 
     /// <summary>Whether this pass has already found declarations it must retry with.</summary>
     private bool Demanded => _declarationBatch.Any;
