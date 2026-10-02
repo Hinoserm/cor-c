@@ -64,7 +64,10 @@ public sealed partial class Lowering
             Block wrap = _f.NewBlock("viewwrap");
             Block done = _f.NewBlock("viewdone");
 
-            _e.CopyTo(held, R(v));
+            // Null on the way round, not the array: a view held as "the
+            // array, or what was made" was never the caller's own to free,
+            // and every conversion in a loop was left to the collector.
+            _e.CopyTo(held, Imm(0, IrTypes.Word));
             _e.Branch(v, wrap, done);
             _e.SetBlock(wrap);
 

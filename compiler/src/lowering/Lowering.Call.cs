@@ -95,11 +95,24 @@ public sealed partial class Lowering
         return made;
     }
 
+    /// <summary>Whether a type is, extends or implements another.</summary>
+    private static bool Derives(TypeSymbol type, TypeSymbol of)
+    {
+        for (TypeSymbol? at = type; at is not null; at = at.Base)
+        {
+            if (at == of) return true;
+            List<TypeSymbol> faces = new();
+            foreach (TypeSymbol face in at.Interfaces) AddInterfaceClosure(face, faces);
+            if (faces.Contains(of)) return true;
+        }
+        return false;
+    }
+
     /// <summary>
     /// A call on a receiver: virtual through the vtable when the method is,
     /// direct otherwise. The receiver, when there is one, is args[0].
     /// </summary>
-    private VReg? CallMethod(MethodSymbol m, VReg? receiver, List<Operand> args, bool viaBase = false)
+    private VReg? CallMethod(MethodSymbol m, VReg? receiver, List<Operand> args, bool viaBase = false, TypeSymbol? through = null)
     {
         IrType returns = ReturnIr(m);
 
@@ -131,7 +144,12 @@ public sealed partial class Lowering
             VReg? buffer = Buffered(m) ? ResultBuffer(_decl ?? (Node)new MethodDecl { Name = m.Name, Line = 0, Col = 0 }, m.Returns) : null;
             if (buffer is not null) args = new List<Operand>(args) { R(buffer) };
             VReg? called = _e.CallIndirect(R(fn), returns, args);
-            _e.Block.Instrs[^1].DispatchType = DescriptorOf(m.Owner);
+            // THE RECEIVER'S OWN TYPE when it is narrower than the method's:
+            // what can answer `walker.Dispose()` on an IEnumerator<int> is an
+            // enumerator, not every IDisposable in the program -- a
+            // TextWriter's Dispose among the targets let every foreach's
+            // sequence go (Escape.IndirectTargets reads this).
+            _e.Block.Instrs[^1].DispatchType = DescriptorOf(through is not null && through != m.Owner && Derives(through, m.Owner) ? through : m.Owner);
             if (buffer is not null) MarkBuffer(buffer, m.Returns);
             // Whatever implementation answers, a struct it returns other than
             // through a buffer is a copy made for this caller.
@@ -372,7 +390,8 @@ public sealed partial class Lowering
             return Fail(call, "the generic virtual call to '" + target.Signature + "' was never given its dispatch");
         }
 
-        VReg? result = CallMethod(target, receiver, args, viaBase);
+        TypeSymbol? through = call.Target is MemberExpr { Target: var throughExpr } && _b.TypeOf(throughExpr) is { IsArray: false, PointerDepth: 0, Symbol: TypeSymbol { Kind: TypeKind.Class or TypeKind.Interface } st } ? st : null;
+        VReg? result = CallMethod(target, receiver, args, viaBase, through);
         return result ?? _e.Const(0, IrTypes.Word);
     }
 

@@ -2078,6 +2078,9 @@ continue;
         // and how far into it; each root: the offsets that hold the object.
         Dictionary<VReg, (object Root, long Delta)>? holderRegs = null;
         Dictionary<object, HashSet<long>>? held = null;
+        // Frame blocks taken as one (MergeFrameWrites): each to the one that
+        // stands for them all.
+        Dictionary<object, object>? sameSlot = null;
         // Call results that hold the object (Held), and the holders handed to
         // calls, which the object must outlive.
         HashSet<VReg>? boxes = null;
@@ -2556,7 +2559,7 @@ continue;
         // The root and offset of a holder already holding the object, or null.
         (object Root, long Delta)? Holding(Operand o)
         {
-            if (o is SlotOperand { Slot: var slot }) return held!.ContainsKey(slot) ? (slot, 0) : null;
+            if (o is SlotOperand { Slot: var slot }) { object one = Canon(slot); return held!.ContainsKey(one) ? (one, 0) : null; }
             return o is RegOperand { Reg: var r } && holderRegs!.TryGetValue(r, out var at) ? at : null;
         }
 
@@ -2566,7 +2569,7 @@ continue;
         // Its registers are remembered, so every use of them is judged.
         (object Root, long Delta)? HolderAt(Operand o, int depth)
         {
-            if (o is SlotOperand { Slot: var slot }) return (slot, 0);
+            if (o is SlotOperand { Slot: var slot }) return (Canon(slot), 0);
             if (depth > 4 || o is not RegOperand { Reg: var r }) return null;
             holderRegs ??= new();
             if (holderRegs.TryGetValue(r, out var known)) return known;
@@ -2590,15 +2593,63 @@ continue;
             return at;
         }
 
+        object Canon(object root) => sameSlot is not null && sameSlot.TryGetValue(root, out object? one) ? one : root;
+
+        // The frame slot an operand is the address of, through single copies.
+        object? FrameSlotOf(Operand o, int depth)
+        {
+            if (o is SlotOperand { Slot: var slot }) return slot;
+            if (depth > 4 || o is not RegOperand { Reg: var r }) return null;
+            writes ??= new(f);
+            return writes.TryGetValue(r, out WriteList ws) && ws.Count == 1 && ws[0] is { Op: Opcode.Copy, Operands: [var from] }
+                ? FrameSlotOf(from, depth + 1) : null;
+        }
+
+        // A STRUCT VARIABLE POINTED AT MORE THAN ONE BLOCK -- the zeroed one
+        // it starts in, made here, then the frame slot a value was built in
+        // (a foreach's List walk) -- may hold the object wherever it points:
+        // those blocks are taken as one, what any holds held by all. Anything
+        // else written to it, and nothing can be said.
+        bool MergeFrameWrites(VReg d, object root)
+        {
+            writes ??= new(f);
+            if (!writes.TryGetValue(d, out WriteList ws)) return false;
+            List<object> slots = new();
+            foreach (Instr w in ws)
+            {
+                if (w is not { Op: Opcode.Copy, Operands: [var from] }) return false;
+                if (FrameSlotOf(from, 0) is object slot) slots.Add(slot);
+                else if (from is RegOperand { Reg: var source } && source != d && HolderAt(from, 1) is (object block, 0)) slots.Add(block);
+                else return false;
+            }
+            object one = Canon(root);
+            foreach (object slot in slots)
+            {
+                object was = Canon(slot);
+                if (was == one) continue;
+                sameSlot ??= new();
+                foreach (object k in sameSlot.Keys.ToList()) if (sameSlot[k] == was) sameSlot[k] = one;
+                sameSlot[was] = one;
+                if (held is not null && held.Remove(was, out HashSet<long>? offsets))
+                    foreach (long o in offsets) Hold(one, o);
+                if (holderRegs is not null)
+                    foreach ((VReg reg, (object Root, long Delta) at) in holderRegs.ToList())
+                        if (at.Root == was) holderRegs[reg] = (one, at.Delta);
+                changed = true;
+            }
+            return true;
+        }
+
         void Hold(object root, long offset)
         {
+            root = Canon(root);
             held ??= new();
             holderRegs ??= new();
             if (!held.TryGetValue(root, out HashSet<long>? offsets)) held[root] = offsets = new();
             if (offsets.Add(offset)) changed = true;
         }
 
-        bool Holds(object root, long offset) => held!.TryGetValue(root, out HashSet<long>? offsets) && offsets.Contains(offset);
+        bool Holds(object root, long offset) => held!.TryGetValue(Canon(root), out HashSet<long>? offsets) && offsets.Contains(offset);
 
         // A use of frame memory that holds the object.
         void HolderUse(Instr i)
@@ -2676,7 +2727,10 @@ continue;
                         w.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 && w.Operands.Count == 1
                         && (w.Operands[0] is ImmOperand { Value: 0 }
                             || w.Operands[0] is RegOperand { Reg: var from } && holderRegs!.TryGetValue(from, out var at) && Equals(at.Root, root) && at.Delta == delta)))
-                { flow.Escapes = true; return; }
+                {
+                    if (delta != 0 || !MergeFrameWrites(d, root)) { flow.Escapes = true; return; }
+                    root = Canon(root);
+                }
             }
             if (holderRegs!.TryAdd(d, (root, delta))) changed = true;
         }

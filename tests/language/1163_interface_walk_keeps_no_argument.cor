@@ -1,0 +1,56 @@
+// test: interface_walk_keeps_no_argument
+// expect-exit: 0
+// expect-output:
+// 1000000 1000000 1200000 1500000
+// array view kept off the heap True
+// indexed view kept off the heap True
+// list walked in place True
+//
+// A foreach over an IReadOnlyList parameter keeps nothing: the walk's
+// GetEnumerator reaches a List's, which boxes an enumerator around the
+// list and hands it back -- the list held by the result and by nothing
+// else (Escape.HeldByResult) -- and the foreach's List walk points its
+// struct variable at two blocks of the frame, taken as one. So the view an
+// array becomes as it is passed is the caller's to free or keep in its
+// frame, not the collector's.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+class Holder
+{
+    int[] items = new int[] { 1, 2, 3, 4 };
+    public IReadOnlyList<int> Items => items;
+}
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Sum(IReadOnlyList<int> xs) { int s = 0; foreach (int x in xs) s += x; return s; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int SumI(IReadOnlyList<int> xs) { int s = 0; for (int i = 0; i < xs.Count; i++) s += xs[i]; return s; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Run(Holder h, int mode)
+    {
+        long total = 0;
+        List<int> list = new List<int> { 1, 2, 3 };
+        for (int k = 0; k < 100000; k++) total += mode == 0 ? Sum(h.Items) : mode == 1 ? SumI(h.Items) : Sum(list) + Sum(list);
+        return total;
+    }
+    static void Main()
+    {
+        Holder h = new Holder();
+        long[] bytes = new long[3];
+        string line = "";
+        for (int m = 0; m < 3; m++)
+        {
+            long before = Gc.Allocated;
+            long t = Run(h, m);
+            bytes[m] = Gc.Allocated - before;
+            line += (m > 0 ? " " : "") + t;
+        }
+        Console.WriteLine(line + " " + (Sum(h.Items) * 150000));
+        Console.WriteLine("array view kept off the heap " + (bytes[0] < 100000));
+        Console.WriteLine("indexed view kept off the heap " + (bytes[1] < 100000));
+        Console.WriteLine("list walked in place " + (bytes[2] < 100000));
+    }
+}
