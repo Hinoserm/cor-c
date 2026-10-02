@@ -107,7 +107,7 @@ public sealed class OwnedFieldHints
         {
             names.Add(field); Condition(record.Needs);
             foreach (var sink in record.Sinks) names.Add(sink.Callee);
-            names.UnionWith(record.Danger);
+            names.UnionWith(record.Danger); names.UnionWith(record.Kinds); names.UnionWith(record.Assumes);
         }
         foreach ((string name, OwnedFunctionRecord record) in Functions)
         {
@@ -152,6 +152,7 @@ public sealed class OwnedFieldHints
         {
             writer.Write(index[field]); writer.Write(record.Offset); writer.Write(record.Refused); writer.Write(record.Stored);
             Needs(record.Needs); Pairs(record.Sinks); Names(record.Danger, record.Danger.Count);
+            Names(record.Kinds, record.Kinds.Count); Names(record.Assumes, record.Assumes.Count);
         }
         writer.Write(Functions.Count);
         foreach ((string name, OwnedFunctionRecord record) in Functions)
@@ -231,7 +232,7 @@ public sealed class OwnedFieldHints
         {
             string field = Name();
             OwnedFieldRecord record = new() { Offset = reader.ReadInt64(), Refused = reader.ReadBoolean(), Stored = reader.ReadBoolean() };
-            record.Needs.Add(Needs()); Pairs(record.Sinks); NameSet(record.Danger);
+            record.Needs.Add(Needs()); Pairs(record.Sinks); NameSet(record.Danger); NameSet(record.Kinds); NameSet(record.Assumes);
             if (!hints.Fields.TryAdd(field, record)) throw new ElfFormatException("Duplicate owned-field record");
         }
         for (int i = Count(20); i > 0; i--)
@@ -309,6 +310,21 @@ public sealed class OwnedFieldRecord
     public SortedSet<(string Callee, int Argument)> Sinks { get; } = new(OwnedFieldHints.PairOrder.Instance);
     /// <summary>The calls a read of it is live across: none may replace it.</summary>
     public SortedSet<string> Danger { get; } = new(StringComparer.Ordinal);
+    /// <summary>
+    /// What the unit's stores put in it, by the stamp of the object each
+    /// makes for it (`t_List$0024int+48`), or <see cref="UnknownKind"/> for
+    /// anything else; null stores say nothing.
+    /// </summary>
+    public SortedSet<string> Kinds { get; } = new(StringComparer.Ordinal);
+    /// <summary>
+    /// The one stamp the unit's reads were judged as holding (a virtual call
+    /// on what is read reaching that type's method alone): owned only if
+    /// every unit's stores put nothing else in it.
+    /// </summary>
+    public SortedSet<string> Assumes { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>A store of something whose type the unit cannot name.</summary>
+    public const string UnknownKind = "?";
 }
 
 /// <summary>

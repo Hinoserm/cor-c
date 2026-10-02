@@ -20,8 +20,44 @@ internal sealed class OwnedFieldEscape
         public HashSet<Instr> Stores { get; } = new();
         public List<(Owner Parent, Field Field)> Parents { get; } = new();
     }
-    public OwnedFieldEscape(Dictionary<string, Function> functions, Dictionary<string, bool[]> summaries)
-    { _functions = functions; _summaries = summaries; }
+    /// <summary>
+    /// A function this pass was not handed, looked up by name when a read
+    /// reaches a call of it: the link's lifetime run holds one function, and
+    /// the bodies it calls are the unit's archived IR (UnitBackend). Null for
+    /// one it cannot find, which keeps the read refused.
+    /// </summary>
+    private readonly Func<string, Function?>? _resolve;
+    /// <summary>
+    /// What a function does to each parameter's fields (Escape.FieldSummary),
+    /// for a callee no body is found for; null where none can be asked.
+    /// </summary>
+    private readonly Func<string, int, Escape.FieldSummary?>? _fieldsOf;
+    public OwnedFieldEscape(Dictionary<string, Function> functions, Dictionary<string, bool[]> summaries, Func<string, Function?>? resolve = null,
+        Func<string, int, Escape.FieldSummary?>? fieldsOf = null)
+    { _functions = functions; _summaries = summaries; _resolve = resolve; _fieldsOf = fieldsOf; }
+
+    /// <summary>
+    /// Whether a callee seen only by its summaries keeps its argument nowhere
+    /// and leaves the field a path of one names clean: what it reads there
+    /// goes nowhere, and only fresh objects are put there.
+    /// </summary>
+    private bool CleanInSummary(string callee, int parameter, IReadOnlyList<Field> path)
+    {
+        if (_fieldsOf is null || path.Count != 1 || path[0].Width != IrTypes.Word.Bytes() || path[0].Offset % IrTypes.Word.Bytes() != 0) return false;
+        if (!_summaries.TryGetValue(callee, out bool[]? keeps) || parameter >= keeps.Length || keeps[parameter]) return false;
+        return _fieldsOf(callee, parameter) is { Opaque: false } summary && !summary.Dirty.Contains(path[0].Offset);
+    }
+
+    /// <summary>The function named, from those handed over or else the resolver, decoded once.</summary>
+    private bool TryFunction(string name, out Function? function)
+    {
+        if (_functions.TryGetValue(name, out function)) return true;
+        if (_resolve is null) return false;
+        function = _resolve(name);
+        if (function is null) return false;
+        _functions[name] = function;
+        return true;
+    }
 
     /// <summary>
     /// Every repeat of the child must pass through a fresh owner lifetime.
@@ -227,7 +263,8 @@ internal sealed class OwnedFieldEscape
             if (i.Op == Opcode.Call && Escape.IsCollectorNote(i.Callee)) continue;
             if (i.Op == Opcode.Call)
             {
-                if (i.Callee is null || !_functions.TryGetValue(i.Callee, out Function? callee)) { LastRefusal = i; return false; }
+                if (i.Callee is null) { LastRefusal = i; return false; }
+                Function? callee = TryFunction(i.Callee, out Function? found) ? found : null;
                 for (int a = 0; a < i.Operands.Count; a++)
                     if (i.Operands[a] is RegOperand arg && addresses.TryGetValue(arg.Reg, out long offset)
                         || i.Operands[a] is SlotOperand argSlot && slots.TryGetValue(argSlot.Slot, out offset))
@@ -237,7 +274,20 @@ internal sealed class OwnedFieldEscape
                         catch (OverflowException) { return false; }
                         List<Field> relativePath = new(path);
                         relativePath[0] = new(relative, width);
-                        if (!Safe(callee, a, relativePath)) { LastRefusal = i; return false; }
+                        // A BODY NOT IN SIGHT -- another unit's, not brought in
+                        // -- answered by its field summary, for a child at one
+                        // remove: the whole program's word of what the callee
+                        // does to that field of its argument, clean if it never
+                        // lets go of what it reads there nor puts anything but
+                        // a fresh object in it.
+                        if (callee is null)
+                        {
+                            if (!CleanInSummary(i.Callee, a, relativePath)) { LastRefusal = i; return false; }
+                            continue;
+                        }
+                        LastRefusal = null;
+                        // The innermost refusal is the one worth naming (CORSAC_PROMOTE_TRACE).
+                        if (!Safe(callee, a, relativePath)) { LastRefusal ??= i; return false; }
                     }
                 continue;
             }
@@ -365,8 +415,8 @@ internal sealed class OwnedFieldEscape
         _memo[key] = false;
         HashSet<VReg> loaded = new();
         var addresses = Addresses(f, f.Params[parameter]);
-        bool safe = Reads(f, addresses, path, loaded)
-            && !Escape.Analyse(f, loaded, _summaries, null).Escapes;
+        bool safe = Reads(f, addresses, path, loaded);
+        if (safe && Escape.Analyse(f, loaded, _summaries, null) is { Escapes: true } lost) { safe = false; LastRefusal = lost.Why; }
         _memo[key] = safe;
         return safe;
     }

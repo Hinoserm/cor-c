@@ -1,0 +1,55 @@
+// test: owned_field_read_across_its_own_stores_across_units
+// units: tests/language/support/1221_owned_field_stores_units.cor
+// expect-exit: 0
+// expect-output:
+// 1847536
+// worker fields freed True
+// frees per lap True
+//
+// 1220 with the worker in the other unit, the libraries with it. That unit
+// judges the reads of the worker's lists for the link (Escape's owned fields
+// in a unit): a store into the list a read gave, or the first into an object
+// just made, endangers no read, and the link finds the fields owned over
+// both units. Before, the unit refused them, and each worker let go left its
+// lists to the collector (131 bytes a lap).
+
+using System;
+using System.Runtime.CompilerServices;
+
+sealed class Holder
+{
+    public Worker? Current;
+}
+
+static class P
+{
+    const int N = 20000;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Worker Make(int n) => new Worker(n);
+
+    static void Main()
+    {
+        long total = 0, left = -1, frees = 0;
+        try
+        {
+            Holder h = new();
+            h.Current = Make(8);
+            total += h.Current.Run();
+            Gc.Collect();
+            long taken = Gc.CollectedBytes, before = Gc.Frees;
+            for (int k = 0; k < N; k++)
+            {
+                h.Current = Make(8 + (k & 7));
+                total += h.Current.Run();
+            }
+            Gc.Collect();
+            left = (Gc.CollectedBytes - taken) / N;
+            frees = (Gc.Frees - before) / N;
+        }
+        catch (InvalidOperationException e) { Console.WriteLine(e.Message); }
+        Console.WriteLine(total);
+        Console.WriteLine("worker fields freed " + (left >= 0 && left < 64));
+        Console.WriteLine("frees per lap " + (frees >= 9));
+    }
+}

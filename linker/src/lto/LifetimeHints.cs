@@ -150,7 +150,7 @@ public sealed class LifetimeHints
     /// <summary>At most this many pending conditions per unit; a fixed bound, so the same everywhere.</summary>
     public const int PendingLimit = 4096;
     private const uint Magic = 0x46494c43; // "CLIF"
-    private const int Version = 6;
+    private const int Version = 7;
     private static readonly UTF8Encoding Utf8 = new(false, true);
 
     public List<LifetimeFunction> Functions { get; } = new();

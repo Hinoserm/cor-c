@@ -123,6 +123,24 @@ public sealed class UnitBackend : IUnitBackend
         long Cost(int index) => checked(3 * ((archive.Entries.TryGetValue("F:" + module.Functions[index].Name, out IrArchiveEntry? record) ? record.DecodeBytes : 0)
             + Selected(index).Sum(import => import.DecodeBytes)) + 512 * 1024);
         Dictionary<string, DataItem>? items = null;
+        // WHAT A FUNCTION CALLS, for the link's lifetime run to look into
+        // (Escape.RunAtLink): the body this unit archived, or another unit's
+        // the link handed over to import. Decoded fresh for each asker, as
+        // every worker loads its own, and never written; a body past the
+        // bound is not looked into, and what reaches it stays refused.
+        // A version 2 archive holds the body from before the late passes,
+        // which add only what the callee makes and frees of its own.
+        const long CalleeDecodeLimit = 4L * 1024 * 1024;
+        Function? Callee(string name)
+        {
+            if (archive.Entries.TryGetValue("F:" + name, out IrArchiveEntry? entry))
+                return entry.DecodeBytes > CalleeDecodeLimit ? null
+                    : IrFunctionCodec.Read(archive.ReadBody(entry.Key), new IrReadBudget(entry.DecodeBytes));
+            if (available.TryGetValue(name, out IrImport? import))
+                return import.DecodeBytes > CalleeDecodeLimit ? null
+                    : IrFunctionCodec.Read(import.Body, new IrReadBudget(import.DecodeBytes));
+            return null;
+        }
         Function Load(int index)
         {
             Devirtualize devirtualize = new();
@@ -192,7 +210,7 @@ public sealed class UnitBackend : IUnitBackend
                 // Kept as it was, to be taken back if a free the pass places
                 // would run under a read of an owned field (RunAtLink's -1).
                 byte[]? before = Escape.ReadsOwnedField(function, link!) ? IrFunctionCodec.Write(function) : null;
-                int taken = Escape.RunAtLink(function, link!, items);
+                int taken = Escape.RunAtLink(function, link!, items, Callee);
                 if (taken < 0)
                 {
                     function = IrFunctionCodec.Read(before!, new IrReadBudget(64L * 1024 * 1024));
@@ -208,7 +226,7 @@ public sealed class UnitBackend : IUnitBackend
                 // with no free. The objects owned above are frees already,
                 // which this run takes for escapes and leaves alone.
                 byte[]? again = Escape.ReadsOwnedField(function, link!) ? IrFunctionCodec.Write(function) : null;
-                int more = Escape.RunAtLink(function, link!, items);
+                int more = Escape.RunAtLink(function, link!, items, Callee);
                 if (more < 0)
                 {
                     function = IrFunctionCodec.Read(again!, new IrReadBudget(64L * 1024 * 1024));

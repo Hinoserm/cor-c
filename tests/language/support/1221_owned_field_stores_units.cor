@@ -1,0 +1,31 @@
+// The other unit of 1221_owned_field_read_across_its_own_stores_across_units:
+// the worker whose lists are read and then written into, compiled with the
+// libraries.
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public sealed class Worker
+{
+    private readonly List<int> _items = new();
+    private readonly List<int> _order = new();
+    private readonly int[] _marks;
+
+    public Worker(int n)
+    {
+        _marks = new int[n];
+        for (int i = 0; i < n; i++) _items.Add(i * 3 % n);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Run()
+    {
+        int sum = 0;
+        foreach (int x in _items)
+        {
+            _order.Add(x);
+            _marks[x] += _order.Count;
+            sum += _marks[x];
+        }
+        return sum;
+    }
+}

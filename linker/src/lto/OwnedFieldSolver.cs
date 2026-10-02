@@ -181,6 +181,7 @@ public static class OwnedFieldSolver
         HashSet<string> refused = new(StringComparer.Ordinal), stored = new(StringComparer.Ordinal);
         void Refuse(string field, string why) { if (refused.Add(field)) report?.Invoke(field + " refused: " + why); }
         Dictionary<string, HashSet<string>> danger = new(StringComparer.Ordinal);
+        Dictionary<string, SortedSet<string>> kinds = new(StringComparer.Ordinal), assumed = new(StringComparer.Ordinal);
         foreach (OwnedFieldHints unit in all)
             foreach ((string field, OwnedFieldRecord record) in unit.Fields)
             {
@@ -193,7 +194,20 @@ public static class OwnedFieldSolver
                     Refuse(field, "stored from " + lost.Callee + " argument " + lost.Argument + ", which a caller does not hand over");
                 if (!danger.TryGetValue(field, out HashSet<string>? set)) danger[field] = set = new(StringComparer.Ordinal);
                 set.UnionWith(record.Danger);
+                if (!kinds.TryGetValue(field, out SortedSet<string>? stamps)) kinds[field] = stamps = new(StringComparer.Ordinal);
+                stamps.UnionWith(record.Kinds);
+                if (record.Assumes.Count > 0)
+                {
+                    if (!assumed.TryGetValue(field, out SortedSet<string>? taken)) assumed[field] = taken = new(StringComparer.Ordinal);
+                    taken.UnionWith(record.Assumes);
+                }
             }
+        // A READ JUDGED AS OF ONE TYPE (a virtual call on it reaching that
+        // type's method alone) holds only if every unit's stores put nothing
+        // else in the field.
+        foreach ((string field, SortedSet<string> taken) in assumed)
+            if (taken.Count != 1 || kinds[field].Any(kind => !taken.Contains(kind)))
+                Refuse(field, "a read was judged as " + string.Join(", ", taken) + ", and it holds " + string.Join(", ", kinds[field]));
 
         // WHO HANDS BACK WHAT A FIELD HOLDS: the functions that said so, and
         // every function handing back what one of those returns.

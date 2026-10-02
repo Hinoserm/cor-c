@@ -286,7 +286,13 @@ public sealed partial class Escape
         }
     }
 
-    public static int RunAtLink(Function f, LinkFacts facts, Dictionary<string, DataItem>? descriptors = null)
+    /// <param name="callees">
+    /// The bodies of what <paramref name="f"/> calls, by name, for the frame's
+    /// own checks to look into (OwnedFieldEscape): seeing one function alone,
+    /// a child of an object in the frame handed on to a call that is never
+    /// inlined was refused at that call.
+    /// </param>
+    public static int RunAtLink(Function f, LinkFacts facts, Dictionary<string, DataItem>? descriptors = null, Func<string, Function?>? callees = null)
     {
 
         // The facts are shared by every function of the unit, on every
@@ -302,17 +308,22 @@ public sealed partial class Escape
         Dictionary<string, Function> byName = new(StringComparer.Ordinal) { [f.Name] = f };
         _inserted = pass._bookkeeping;
         _held = facts.Held;
+        _stampItems = descriptors;
         _fieldsOf = facts.ParameterFields;
         // Its virtual calls, each as every override the image has for it,
         // wherever the link could say (VirtualCallees; Lto.VirtualTargets).
         _indirect = VirtualCallees(new[] { f }, summaries.ContainsKey);
         try
         {
-            pass.PromoteIn(f, summaries, canFree, new OwnedFieldEscape(byName, summaries));
+            // What it calls, by the body the unit archived or the link brought
+            // in; where neither is to hand, by the whole program's field
+            // summaries (OwnedFieldEscape.CleanInSummary).
+            pass.PromoteIn(f, summaries, canFree, new OwnedFieldEscape(byName, summaries, callees,
+                (callee, parameter) => facts.ParameterFields.TryGetValue(callee, out FieldSummary?[]? fields) && parameter < fields.Length ? fields[parameter] : null));
             if (canFree && facts.Helpers.Contains(ReplacedFreer)) pass.OwnVariables(f, summaries);
             if (canFree && facts.Helpers.Contains(FieldFreer)) pass.OwnFields(f, summaries);
         }
-        finally { _inserted = null; _indirect = null; _held = null; _fieldsOf = null; }
+        finally { _inserted = null; _indirect = null; _held = null; _fieldsOf = null; _heldStamp = null; _stampItems = null; }
         // A READ OF AN OWNED FIELD was judged, by the unit and then the link,
         // among the frees the function had then: a free placed now, while
         // what was read is live, could free the field's owner under it. The
@@ -361,8 +372,14 @@ public sealed partial class Escape
         foreach (Block b in f.Blocks)
             foreach (Instr read in b.Instrs)
             {
-                if (read.Dest is null) continue;
-                bool reads = read.Op == Opcode.Load && read.Field is not null && owned.Fields.ContainsKey(read.Field)
+                // A STORE INTO AN OWNED FIELD whose object is used after it is
+                // one more read of the field (Escape.OwnedFields' forwarded
+                // reads): a free placed while it is live could free the
+                // field's owner under it.
+                VReg? value = read.Op == Opcode.Store && read.Field is not null && owned.Fields.ContainsKey(read.Field)
+                    && read.Operands.Count >= 2 && read.Operands[1] is RegOperand { Reg: var stored } ? stored : read.Dest;
+                if (value is null) continue;
+                bool reads = read.Op is Opcode.Load or Opcode.Store && read.Field is not null && owned.Fields.ContainsKey(read.Field)
                     || read.Op == Opcode.Call && read.Callee is not null && owned.Borrowers.Contains(read.Callee)
                     || read.Op == Opcode.CallIndirect && owned.Borrowers.Count > 0
                        && (!virtuals.TryGetValue(read, out string[]? targets) || targets.Any(owned.Borrowers.Contains));
@@ -375,9 +392,9 @@ public sealed partial class Escape
                 // where a parameter or a static reaches. Its `this._paths`
                 // read across a string's free took Monomorphiser.Named back
                 // whole once HashSet.Contains was inlined into it.
-                if (read.Operands.All(o => o is not RegOperand r || Handed(r.Reg))) continue;
+                if ((read.Op == Opcode.Store ? read.Operands.Take(1) : read.Operands).All(o => o is not RegOperand r || Handed(r.Reg))) continue;
                 // What was read, and every copy and address made from it.
-                HashSet<VReg> derived = new() { read.Dest };
+                HashSet<VReg> derived = new() { value };
                 for (bool grew = true; grew;)
                 {
                     grew = false;
@@ -390,9 +407,20 @@ public sealed partial class Escape
                 }
                 if (derived.Any(r => !liveness.Tracks(r) || pads.Contains(r))) return true;
                 bool Uses(Instr i) => i.Operands.Any(o => o is RegOperand r && derived.Contains(r.Reg));
+                // A store's object is the field's only from the store on: the
+                // blocks after it, its own block again only round a loop.
+                HashSet<Block>? after = null;
+                if (read.Op == Opcode.Store)
+                {
+                    after = new(ReferenceEqualityComparer.Instance);
+                    Stack<Block> reach = new(liveness.Cfg.Succs(b));
+                    while (reach.TryPop(out Block? next))
+                        if (after.Add(next)) foreach (Block s in liveness.Cfg.Succs(next)) reach.Push(s);
+                }
                 foreach (Block x in f.Blocks)
                 {
-                    bool liveIn = derived.Any(r => liveness.IsLiveIn(x, r));
+                    if (after is not null && !after.Contains(x) && !ReferenceEquals(x, b)) continue;
+                    bool liveIn = derived.Any(r => liveness.IsLiveIn(x, r)) && (after is null || after.Contains(x));
                     bool liveOut = derived.Any(r => liveness.IsLiveOut(x, r));
                     int from = liveIn ? 0 : ReferenceEquals(x, b) ? b.Instrs.IndexOf(read) + 1 : -1;
                     if (from < 0)
@@ -421,7 +449,7 @@ public sealed partial class Escape
         foreach (Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
             {
-                if (i.Op == Opcode.Load && i.Field is not null && owned.Fields.ContainsKey(i.Field)) return true;
+                if (i.Op is Opcode.Load or Opcode.Store && i.Field is not null && owned.Fields.ContainsKey(i.Field)) return true;
                 if (i.Dest is null) continue;
                 if (i.Op == Opcode.Call && i.Callee is not null && owned.Borrowers.Contains(i.Callee)) return true;
                 if (i.Op == Opcode.CallIndirect && owned.Borrowers.Count > 0)

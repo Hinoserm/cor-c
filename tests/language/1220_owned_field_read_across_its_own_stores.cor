@@ -1,0 +1,87 @@
+// test: owned_field_read_across_its_own_stores
+// expect-exit: 0
+// expect-output:
+// 1847536
+// worker fields freed True
+// frees per lap True
+//
+// A field read and then written into -- a constructor's `_items.Add`, a
+// List's Add inlined on what `_order` holds -- is still the field's own: the
+// stores land in the very list read, and a store into an owned field frees
+// what it replaces only in an object the function made, never in one read
+// out of a field. Nor does a store that fills a field of an object just
+// made replace anything. Refused for those stores, the worker's lists were
+// never in its owned-field map, and each worker the holder let go left its
+// lists and their arrays to the collector (131 bytes a lap); now freeing the
+// worker frees them.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+sealed class Worker
+{
+    private readonly List<int> _items = new();
+    private readonly List<int> _order = new();
+    private readonly int[] _marks;
+
+    public Worker(int n)
+    {
+        _marks = new int[n];
+        for (int i = 0; i < n; i++) _items.Add(i * 3 % n);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Run()
+    {
+        int sum = 0;
+        foreach (int x in _items)
+        {
+            _order.Add(x);
+            _marks[x] += _order.Count;
+            sum += _marks[x];
+        }
+        return sum;
+    }
+}
+
+sealed class Holder
+{
+    public Worker? Current;
+}
+
+static class P
+{
+    const int N = 20000;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Worker Make(int n) => new Worker(n);
+
+    static void Main()
+    {
+        long total = 0, left = -1, frees = 0;
+        // In a function with a handler, so the laps get no region of their
+        // own and what is measured is what the lifetime rules give back.
+        try
+        {
+            Holder h = new();
+            h.Current = Make(8);
+            total += h.Current.Run();
+            Gc.Collect();
+            long taken = Gc.CollectedBytes, before = Gc.Frees;
+            for (int k = 0; k < N; k++)
+            {
+                h.Current = Make(8 + (k & 7));
+                total += h.Current.Run();
+            }
+            Gc.Collect();
+            left = (Gc.CollectedBytes - taken) / N;
+            frees = (Gc.Frees - before) / N;
+        }
+        catch (InvalidOperationException e) { Console.WriteLine(e.Message); }
+        Console.WriteLine(total);
+        // Before: 131 bytes a lap left to the collector, 7 frees a lap.
+        Console.WriteLine("worker fields freed " + (left >= 0 && left < 64));
+        Console.WriteLine("frees per lap " + (frees >= 9));
+    }
+}
