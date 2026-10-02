@@ -1,0 +1,26 @@
+// test: nested_var_deconstruction
+// expect-exit: 0
+// expect-output:
+// 36 7ccc89
+//
+// `var (a, b)` as one target of a deconstruction list infers the names of a
+// nested element: `foreach ((VReg value, var (from, path)) in parked)`.
+
+using System;
+using System.Collections.Generic;
+static class P
+{
+    static IEnumerable<(int, (string, int, long))> Items()
+    {
+        yield return (1, ("a", 2, 3L));
+        yield return (4, ("bb", 5, 6L));
+    }
+    static void Main()
+    {
+        long sum = 0;
+        foreach ((int value, var (name, at, size)) in Items()) sum += value + name.Length + at + size;
+        (int k, var (s, n, z)) = (7, ("ccc", 8, 9L));
+        foreach (var (a, (b, c, d)) in Items()) sum += a + c;
+        Console.WriteLine(sum + " " + k + s + n + z);
+    }
+}

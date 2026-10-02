@@ -2651,6 +2651,23 @@ public sealed class Parser
                 continue;
             }
 
+            // `var (a, b)` IN A LIST, a nested list whose names are all
+            // inferred: `foreach ((VReg value, var (from, path)) in parked)`.
+            if (At(Tok.KwVar) && Ahead().Kind == Tok.LParen)
+            {
+                _i += 2;
+
+                List<Binding> inner = ReadBindings(true);
+
+                Expect(Tok.RParen, "')' after the names being bound");
+                bound.Add(new Binding
+                {
+                    Name = $"$nested${_hidden++}", Nested = inner,
+                    Line = where.Line, Col = where.Col,
+                });
+                continue;
+            }
+
             // `_` BINDS NOTHING, and has no type written before it.
             bool discard = At(Tok.Ident) && Cur.Text == "_"
                         && Ahead().Kind is Tok.Comma or Tok.RParen;
