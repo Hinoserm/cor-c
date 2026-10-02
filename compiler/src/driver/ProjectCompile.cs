@@ -64,10 +64,15 @@ public static class ProjectCompile
 
         // Everything that is not the source path or its outputs is passed
         // through to each compilation exactly as it was given.
+        // --unit-census: what each unit leaves live, after a full collection
+        // at its end -- everything else it made died inside it, the most a
+        // unit-wide region could ever free.
+        bool census = args.Contains("--unit-census");
         List<string> common = new();
         for (int i = 0; i < args.Length; i++)
         {
             if (args[i] is "--units" or "--jobs" or "--worker-pool") { i++; continue; }
+            if (args[i] is "--unit-census") continue;
             common.Add(args[i]);
         }
 
@@ -181,12 +186,7 @@ public static class ProjectCompile
                 return 1;
             }
             long after = GC.GetTotalAllocatedBytes();
-            // CORC_UNIT_CENSUS: what a unit leaves live behind it, after a full
-            // collection -- everything else it made died inside it, which is
-            // the most a unit-wide region could ever free.
-            string census = "";
-            if (Environment.GetEnvironmentVariable("CORC_UNIT_CENSUS") is { Length: > 0 })
-                census = " live-after=" + GC.GetTotalMemory(true);
+            string live = census ? " live-after=" + GC.GetTotalMemory(true) : "";
             if (code == 0)
             {
                 try { File.WriteAllText(unit.Receipt + ".stamp", Stamp(unit)); }
@@ -196,7 +196,7 @@ public static class ProjectCompile
             {
                 done++;
                 Console.Error.WriteLine("unit " + done + "/" + units.Count + " " + Path.GetFileName(unit.Source)
-                    + " unit-allocated=" + (after - before) + census + (code == 0 ? "" : " FAILED"));
+                    + " unit-allocated=" + (after - before) + live + (code == 0 ? "" : " FAILED"));
             }
             return code;
         }
