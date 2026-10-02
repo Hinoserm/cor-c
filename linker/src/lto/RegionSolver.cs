@@ -974,32 +974,30 @@ public static class RegionSolver
                 return new RegionFacts?[_units.Count];
             }
 
-            // EVERY BOUNDARY THAT CAN BE OPEN ABOVE A SITE, however far up,
-            // in any copy that makes it, must outlive none of its objects.
             Dictionary<int, List<int>> madeBy = new();
             foreach (List<int> objects in bySite.Values)
                 foreach (int o in objects)
                     foreach (int maker in _objectMakers[o])
                         (madeBy.TryGetValue(maker, out List<int>? list) ? list : madeBy[maker] = new()).Add(o);
-            HashSet<int> refused = new(), beneathOne = new();
-            List<int> boundaryCopies = new();
-            foreach (int f in chosen) boundaryCopies.AddRange(_copiesOf[f]!);
-            foreach (int b in boundaryCopies)
+
+            // A BOUNDARY THAT COSTS MORE THAN IT GIVES IS DROPPED: one whose
+            // own allocations it frees are fewer than the sites it alone keeps
+            // out of an outer boundary's region -- a parser's list returned
+            // through a split it chose for its own scratch array.
+            HashSet<(int, int)> taken = null!;
+            for (int round = 0; ; round++)
             {
-                foreach (int c in Beneath(b))
-                    if (madeBy.TryGetValue(c, out List<int>? made))
-                        foreach (int o in made)
-                        {
-                            beneathOne.Add(o);
-                            if (!refused.Contains(o) && Outlives(o, b)) { refused.Add(o); _refusedBy[o] = b; }
-                        }
-                if (_walked > JudgeBudget) return GiveUp("too much to judge");
+                if (Evaluate(chosen, bySite, madeBy) is not { } verdict) return GiveUp("too much to judge");
+                taken = verdict.Taken;
+                if (round == 3) break;
+                List<int> dropped = chosen.Where(f => verdict.Loss.GetValueOrDefault(f) > verdict.Gain.GetValueOrDefault(f)).ToList();
+                if (dropped.Count == 0) break;
+                foreach (int f in dropped)
+                {
+                    chosen.Remove(f);
+                    if (_report is not null) Log("boundary dropped " + _functions[f].Name + ": keeps " + verdict.Loss[f] + " sites out, takes " + verdict.Gain.GetValueOrDefault(f));
+                }
             }
-            // A site is taken when none of its objects is refused and one is
-            // beneath some boundary.
-            HashSet<(int, int)> taken = new();
-            foreach (((int, int) key, List<int> objects) in bySite)
-                if (objects.Any(beneathOne.Contains) && !objects.Any(refused.Contains)) taken.Add(key);
 
             // A boundary with nothing taken beneath it opens nothing worth opening.
             List<int> opened = new();
@@ -1022,6 +1020,77 @@ public static class RegionSolver
             if (_report is not null) Report(chosen, opened, taken, madeBy);
             Log($"{opened.Count} boundaries, {taken.Count} sites in the innermost region, of {bySite.Count}");
             return facts;
+        }
+
+        private sealed class Verdict
+        {
+            public readonly HashSet<(int, int)> Taken = new();
+            /// <summary>Per boundary: the sites it alone refuses that another boundary is above.</summary>
+            public readonly Dictionary<int, int> Loss = new();
+            /// <summary>Per boundary: the sites taken that only it is above.</summary>
+            public readonly Dictionary<int, int> Gain = new();
+        }
+
+        /// <summary>
+        /// EVERY BOUNDARY THAT CAN BE OPEN ABOVE A SITE, however far up, in any
+        /// copy that makes it, must outlive none of its objects: the sites
+        /// taken, and what each boundary costs and gives. Null past the budget.
+        /// </summary>
+        private Verdict? Evaluate(SortedSet<int> chosen, Dictionary<(int, int), List<int>> bySite, Dictionary<int, List<int>> madeBy)
+        {
+            // Per object: the boundary above it and the one refusing it, -1
+            // for none and -2 for more than one.
+            Dictionary<int, int> above = new(), refuser = new();
+            static void Note(Dictionary<int, int> into, int o, int f)
+            {
+                if (!into.TryGetValue(o, out int was)) into[o] = f;
+                else if (was != f) into[o] = -2;
+            }
+            _refusedBy.Clear();
+            foreach (int f in chosen)
+                foreach (int b in _copiesOf[f]!)
+                {
+                    foreach (int c in Beneath(b))
+                        if (madeBy.TryGetValue(c, out List<int>? made))
+                            foreach (int o in made)
+                            {
+                                Note(above, o, f);
+                                if (Outlives(o, b))
+                                {
+                                    Note(refuser, o, f);
+                                    _refusedBy.TryAdd(o, b);
+                                }
+                            }
+                    if (_walked > JudgeBudget) return null;
+                }
+            // A site is taken when none of its objects is refused and one is
+            // beneath some boundary.
+            Verdict verdict = new();
+            foreach (((int, int) key, List<int> objects) in bySite)
+            {
+                bool anywhere = objects.Any(above.ContainsKey);
+                if (!anywhere) continue;
+                if (!objects.Any(refuser.ContainsKey))
+                {
+                    verdict.Taken.Add(key);
+                    // Taken only for the one boundary above all of it.
+                    int only = -1;
+                    foreach (int o in objects)
+                        if (above.TryGetValue(o, out int f)) only = only == -1 || only == f ? f : -2;
+                    if (only >= 0) verdict.Gain[only] = verdict.Gain.GetValueOrDefault(only) + 1;
+                    continue;
+                }
+                // Refused by one boundary alone, with another above it too.
+                int sole = -1;
+                bool other = false;
+                foreach (int o in objects)
+                {
+                    if (refuser.TryGetValue(o, out int r)) sole = sole == -1 || sole == r ? r : -2;
+                    if (above.TryGetValue(o, out int a) && (a == -2 || refuser.GetValueOrDefault(o, -1) != a)) other = true;
+                }
+                if (sole >= 0 && other) verdict.Loss[sole] = verdict.Loss.GetValueOrDefault(sole) + 1;
+            }
+            return verdict;
         }
 
         // The copies a call of `start` can reach, itself among them.
