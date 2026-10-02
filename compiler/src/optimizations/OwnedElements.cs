@@ -43,8 +43,12 @@ internal static class OwnedElements
 
     internal static Role RoleOf(string kind, string callee)
     {
-        // A constructor: the type's own name again, after the type.
-        if (callee.StartsWith("m_" + kind + "$", StringComparison.Ordinal) && callee.Contains("_" + kind + "$", StringComparison.Ordinal)
+        // A constructor: the type's own name again, after the type -- AFTER
+        // it: "m_List$" holds "_List$" itself, and searched from the start
+        // every method of the type, ToArray included, read as a constructor.
+        string prefix = "m_" + kind + "$";
+        if (callee.StartsWith(prefix, StringComparison.Ordinal)
+            && callee.IndexOf("_" + kind + "$", prefix.Length, StringComparison.Ordinal) >= 0
             && !Method.IsMatch(callee))
             return new(true);
         Match match = Method.Match(callee);
