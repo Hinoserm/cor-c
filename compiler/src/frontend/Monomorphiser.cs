@@ -897,8 +897,12 @@ public sealed class Monomorphiser
     private TypeRef WithoutReferenceMarks(TypeRef a)
     {
         bool reference = a.Nullable && (a.ArrayRank > 0 || a.PointerDepth == 0 && IsWord(a));
+        // `Expr?[]` is `Expr[]`: a reference element's `?` is a mark, not a
+        // type. `int?[]` keeps its, the elements being Nullable<int>.
+        bool referenceElements = a.ElementNullable && a.ArrayRank > 0 && a.PointerDepth == 0
+            && IsWord(new TypeRef { Name = a.Name, Arguments = a.Args, UseArgs = a.UseArgs });
         bool tuple = a.Name == TypeRef.Tuple && a.Args.Count > 0;
-        if (!reference && !tuple) return a;
+        if (!reference && !referenceElements && !tuple) return a;
         List<TypeRef> args = a.Args;
         if (tuple)
         {
@@ -908,7 +912,7 @@ public sealed class Monomorphiser
         return new TypeRef
         {
             Name = a.Name, Arguments = args, UseArgs = a.UseArgs, ArrayRank = a.ArrayRank,
-            Nullable = a.Nullable && !reference, ElementNullable = a.ElementNullable,
+            Nullable = a.Nullable && !reference, ElementNullable = a.ElementNullable && !referenceElements,
             InnerNullable = a.InnerNullable, PointerDepth = a.PointerDepth, TupleNames = a.TupleNames,
             Line = a.Line, Col = a.Col,
         };

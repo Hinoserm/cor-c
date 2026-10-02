@@ -1,0 +1,29 @@
+// test: reference_element_marks_one_specialisation
+// expect-exit: 0
+// expect-output:
+// 1 1
+//
+// `E?[]` and `E[]` are one type when E is a class: the element's `?` is a
+// mark, so a List of tuples holding one and the enumerator its walk makes
+// are one specialisation, not two that refuse each other.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+class M { public string N = "m"; }
+class E { }
+static class P
+{
+    static void Main()
+    {
+        List<(M Method, E?[] Placed, int Filled)> fitting = new();
+        fitting.Add((new M(), new E?[] { null, new E() }, 2));
+        fitting.Add((new M(), new E?[1], 1));
+        (M _, E?[] chosen, int _) = fitting.OrderBy(f => f.Filled).First();
+        E[] plain = new E[3];
+        List<E[]> more = new() { plain };
+        List<E?[]> again = new();
+        again.AddRange(more);
+        Console.WriteLine(chosen.Length + " " + again.Count);
+    }
+}
