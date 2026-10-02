@@ -164,7 +164,11 @@ public sealed partial class Lowering
             SourceFile = _in, Line = decl.Line, Display = Display(m), FromLibrary = IsLibrary(m.Owner),
             Coalescible = decl.LocalCopy || m.Owner.Decl?.Specialised == true,
             Exported = m.Owner.Decl?.LocalOnly != true,
-            NoInlining = NoInlining(decl),
+            // Nor Main into the entry stub: what the stub calls is the program
+            // and its own setup, never a boundary (RegionPointsTo.EntryCalls,
+            // RegionSolver), and Main inlined there made everything Main
+            // calls the stub's own call.
+            NoInlining = NoInlining(decl) || m == _main,
         };
         Block entry = _f.NewBlock("entry");
         _e = new Builder(_f, entry);

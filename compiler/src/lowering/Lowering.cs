@@ -379,6 +379,9 @@ public sealed partial class Lowering
     private readonly HashSet<MethodSymbol> _required = new();
     private readonly Queue<MethodSymbol> _work = new();
 
+    // The program's Main, which the entry stub calls.
+    private MethodSymbol? _main;
+
     private void Run(CompilationUnit unit)
     {
         MethodSymbol? entry = null;
@@ -396,6 +399,7 @@ public sealed partial class Lowering
 
         if (entry is not null && !_library)
         {
+            _main = entry;
             EmitEntry(entry);
             // The frees the lifetime passes may call (Escape) have bodies in
             // the program: the passes run after lowering, and a call they add
