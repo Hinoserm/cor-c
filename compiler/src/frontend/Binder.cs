@@ -155,7 +155,7 @@ public sealed partial class Binder
             _r.Types.Remove(before);
         }
         TypeSymbol moved = new() { Name = library.Name, Key = after, Kind = library.Kind, Decl = library };
-        moved.TypeParams.AddRange(library.TypeParams.Select(p => p.Name));
+        AddNames(moved.TypeParams, library.TypeParams);
         _r.Types[after] = moved;
 
         // Its nested types declared already go with it; the rest are moved as
@@ -171,7 +171,7 @@ public sealed partial class Binder
             innerDecl.Outer = MovedPath(innerDecl.Outer) ?? innerDecl.Outer;
             if (innerDecl.Namespace.Length == 0) innerDecl.Namespace = LibraryHome;
             TypeSymbol movedInner = new() { Name = innerDecl.Name, Key = TypeKey(innerDecl), Kind = innerDecl.Kind, Decl = innerDecl };
-            movedInner.TypeParams.AddRange(innerDecl.TypeParams.Select(p => p.Name));
+            AddNames(movedInner.TypeParams, innerDecl.TypeParams);
             _r.Types[movedInner.Key] = movedInner;
         }
     }
@@ -1733,7 +1733,7 @@ public sealed partial class Binder
                 {
                     MoveToSystem(library);
                     TypeSymbol mine = new() { Name = d.Name, Key = key, Kind = d.Kind, Decl = d };
-                    mine.TypeParams.AddRange(d.TypeParams.Select(p => p.Name));
+                    AddNames(mine.TypeParams, d.TypeParams);
                     RegisterType(key, mine);
                     continue;
                 }
@@ -1754,7 +1754,7 @@ public sealed partial class Binder
             }
 
             TypeSymbol sym = new() { Name = d.Name, Key = key, Kind = d.Kind, Decl = d };
-            sym.TypeParams.AddRange(d.TypeParams.Select(p => p.Name));
+            AddNames(sym.TypeParams, d.TypeParams);
             RegisterType(key, sym);
         }
 
@@ -2945,7 +2945,7 @@ public sealed partial class Binder
                     // when signatures were declared. So every generic method
                     // ever written reported that 'T' is not a known type, and
                     // the feature read as absent when it was only unreachable.
-                    _signature = md.TypeParams.Select(p => p.Name).ToList();
+                    _signature = new(); AddNames(_signature, md.TypeParams);
 
                     MethodSymbol ms = new()
                     {
@@ -2966,7 +2966,7 @@ public sealed partial class Binder
                         IsCtor = md.IsCtor,
                         Decl = md,
                     };
-                    ms.TypeParams.AddRange(md.TypeParams.Select(p => p.Name));
+                    AddNames(ms.TypeParams, md.TypeParams);
 
                     foreach (Param p in md.Params)
                     {
@@ -3552,6 +3552,25 @@ public sealed partial class Binder
 
     // ---- types ----------------------------------------------------------
 
+    /// <summary>
+    /// THE TYPES OF A LIST OF REFERENCES, resolved in a loop: Select over a
+    /// lambda made an iterator and a closure every time a type with arguments
+    /// was resolved, and the binder resolves them by the hundred thousand.
+    /// </summary>
+    private Type[] ResolveAll(List<TypeRef> refs, TypeSymbol? context)
+    {
+        if (refs.Count == 0) return Array.Empty<Type>();
+        Type[] made = new Type[refs.Count];
+        for (int i = 0; i < made.Length; i++) made[i] = Resolve(refs[i], context);
+        return made;
+    }
+
+    /// <summary>The names of type parameters, added in a loop (as ResolveAll).</summary>
+    private static void AddNames(List<string> into, List<TypeParam> parameters)
+    {
+        foreach (TypeParam p in parameters) into.Add(p.Name);
+    }
+
     private Type Resolve(TypeRef r, TypeSymbol? context)
     {
         // A FUNCTION POINTER: an nint that knows its signature.
@@ -3623,7 +3642,7 @@ public sealed partial class Binder
         // element names it was written with. See TupleType.
         if (r.Name == TypeRef.Tuple && r.Args.Count > 1)
         {
-            List<Type> elements = r.Args.Select(a => Resolve(a, context)).ToList();
+            List<Type> elements = new(ResolveAll(r.Args, context));
 
             return new Type
             {
@@ -3746,7 +3765,7 @@ public sealed partial class Binder
             {
                 Prim = Prim.Void,
                 Symbol = generic,
-                Args = r.Args.Select(a => Resolve(a, context)).ToArray(),
+                Args = ResolveAll(r.Args, context),
             };
         }
 
@@ -3756,8 +3775,8 @@ public sealed partial class Binder
             {
                 Prim = path.Kind == TypeKind.Enum ? path.EnumUnderlying : Prim.Void,
                 Symbol = path,
-                Args = r.Args.Select(a => Resolve(a, context)).ToArray(),
-                UseArgs = r.UseArgs?.Select(a => Resolve(a, context)).ToArray(),
+                Args = ResolveAll(r.Args, context),
+                UseArgs = (r.UseArgs is null ? null : ResolveAll(r.UseArgs, context)),
             };
         }
 
@@ -3783,7 +3802,7 @@ public sealed partial class Binder
             {
                 Prim = system.Kind == TypeKind.Enum ? system.EnumUnderlying : Prim.Void,
                 Symbol = system,
-                Args = r.Args.Select(a => Resolve(a, context)).ToArray(),
+                Args = ResolveAll(r.Args, context),
             };
         }
 
@@ -3798,7 +3817,7 @@ public sealed partial class Binder
             {
                 Prim = Prim.Void,
                 Symbol = open,
-                Args = r.Args.Select(a => Resolve(a, context)).ToArray(),
+                Args = ResolveAll(r.Args, context),
             };
         }
 
@@ -3810,8 +3829,8 @@ public sealed partial class Binder
             {
                 Prim = sym.Kind == TypeKind.Enum ? sym.EnumUnderlying : Prim.Void,
                 Symbol = sym,
-                Args = r.Args.Select(a => Resolve(a, context)).ToArray(),
-                UseArgs = r.UseArgs?.Select(a => Resolve(a, context)).ToArray(),
+                Args = ResolveAll(r.Args, context),
+                UseArgs = (r.UseArgs is null ? null : ResolveAll(r.UseArgs, context)),
             };
         }
 
