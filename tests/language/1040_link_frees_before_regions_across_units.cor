@@ -1,0 +1,64 @@
+// test: link_frees_before_regions_across_units
+// units: tests/language/support/1040_link_frees_before_regions_units.cor
+// expect-exit: 0
+// expect-output:
+// 10000499500 -999 1000 True 0
+//
+// AN OBJECT OF ANOTHER UNIT'S CLASS, made, used and disposed here: Dispose
+// is the other unit's and calls Close through the object's own descriptor,
+// which only that unit holds. Inlined here, the call is through the stamp
+// the object was just given: made direct by the descriptor this unit knows
+// of the class (Devirtualize, ShadowData), it is no unknown call in what
+// this unit tells the link, and the object is the link's to judge. The
+// link may choose a region for it; its lifetime rules, with the other
+// unit's bodies brought in, place it in the frame instead, and a region
+// takes only what they leave -- Once allocates nothing at all. A Keeper
+// keeps every one it closes: those must outlive their region and the
+// collections made while they are held, and read back intact.
+
+using System;
+using System.Runtime.CompilerServices;
+using LinkFreesUnits;
+
+static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Once(int k)
+    {
+        using Sink s = new Sink();
+        s.Put(k);
+        s.Put(k + 1);
+        return s.Sum;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Kept(int k)
+    {
+        using Sink s = new Keeper();
+        s.Put(k);
+        return s.Sum;
+    }
+
+    static int Main()
+    {
+        long total = 0;
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        for (int k = 0; k < 100000; k++) total += Once(k);
+        long made = GC.GetAllocatedBytesForCurrentThread() - before;
+        for (int k = 0; k < 1000; k++)
+        {
+            total += Kept(k);
+            if (k % 250 == 0) GC.Collect();
+        }
+        GC.Collect();
+        long kept = 0;
+        bool intact = true;
+        for (int k = 0; k < Keeper.Kept.Count; k++)
+        {
+            kept += Keeper.Kept[k].Sum;
+            if (Keeper.Kept[k].Sum != k) intact = false;
+        }
+        Console.WriteLine(total + " " + (kept - 500499) + " " + Keeper.Kept.Count + " " + intact + " " + made);
+        return 0;
+    }
+}

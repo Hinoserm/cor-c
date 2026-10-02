@@ -34,9 +34,15 @@ public sealed class Devirtualize : IModulePass
 
     public void Run(Module m)
     {
-        Dictionary<string, DataItem> items = new(StringComparer.Ordinal);
-        foreach (DataItem d in m.Data)
-            if (d.ReadOnly && !d.Zero) items[d.Name] = d;
+        // ANOTHER UNIT'S CLASSES TOO, as this one knows them (ShadowData),
+        // as LateCleanup and the link read them: a stream made here and
+        // disposed, Stream.Dispose() inlined, called Dispose(true) through
+        // the MemoryStream descriptor only the library holds. Left indirect
+        // here, it was an unknown call in the IR this unit's link hints are
+        // taken from (RegionSummary, EscapeHints) -- the stream and what it
+        // holds handed to nobody knows what -- though the link's own late
+        // passes then made it direct.
+        Dictionary<string, DataItem> items = ReadOnlyItems(m);
         if (items.Count == 0) return;
         foreach (Function f in m.Functions) Run(f, items);
     }

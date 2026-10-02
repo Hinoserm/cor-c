@@ -193,6 +193,10 @@ public sealed class UnitBackend : IUnitBackend
                     cleanup.Run(local);
                 }
             }
+            // THE LINK'S REGION SITES, what is left of them now its lifetime
+            // rules are done (RegionPointsTo.ApplyFacts): an object they placed
+            // in the frame or freed where it dies was never the region's.
+            if (module.RegionFacts is not null) RegionPointsTo.MakeSitesInRegion(function);
             // Written out last here too: the link's lifetime pass saw them as
             // notes to the collector (CardMarks).
             new CardMarks().Run(local);

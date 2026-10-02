@@ -1,0 +1,21 @@
+// The other unit of 1040_link_frees_before_regions_across_units: a class
+// whose descriptor, and so the methods in its slots, only this unit holds,
+// and one deriving from it that keeps every object it disposes.
+namespace LinkFreesUnits;
+
+public class Sink : IDisposable
+{
+    private int _sum;
+    private readonly int[] _scratch = new int[8];
+
+    public virtual void Put(int value) { _scratch[value & 7] += value; _sum += value; }
+    public virtual int Sum => _sum + _scratch[1] - _scratch[1];
+    public virtual void Dispose() => Close();
+    protected virtual void Close() { _sum = -_sum; }
+}
+
+public sealed class Keeper : Sink
+{
+    public static readonly List<Sink> Kept = new();
+    protected override void Close() { Kept.Add(this); }
+}

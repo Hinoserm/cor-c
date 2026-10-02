@@ -273,32 +273,51 @@ public sealed class RegionPointsTo : IModulePass
     }
 
     /// <summary>
-    /// The link's answer applied: every marked site still a collecting
-    /// allocator's call made in the innermost open region, and every
-    /// boundary named made one. Whatever the late passes did to a site --
-    /// placed it in a frame, took it apart -- it is no longer a call, and
-    /// nothing is made of it.
+    /// The link's answer applied: every boundary named made one. Its marked
+    /// sites stay calls of the collecting allocators until the regenerated
+    /// unit's last lifetime run is done (MakeSitesInRegion): the link brings
+    /// other units' bodies in after these passes, and its lifetime rules
+    /// then see whole objects nothing here could follow -- a stream whose
+    /// constructor and Dispose are the library's -- and place them in the
+    /// frame or free them where they die, which they can do only to an
+    /// allocator's call. A region is the last resort before the collector,
+    /// not the first. Whatever happens to a site before then -- placed in a
+    /// frame, taken apart -- it is no longer a call, and nothing is made of it.
     /// </summary>
     private static void ApplyFacts(Module m, Corsac.Lang.Lto.RegionFacts facts, bool report)
     {
         int sites = 0, opened = 0;
         foreach (Function f in m.Functions)
             foreach (Block b in f.Blocks)
-                for (int k = 0; k < b.Instrs.Count; k++)
-                {
-                    Instr i = b.Instrs[k];
-                    if (!i.RegionSite || i.Op != Opcode.Call || !IsRewritable(i.Callee)) continue;
-                    VReg frame = f.NewReg(IrTypes.Word, "allocframe");
-                    b.Instrs.Insert(k, new Instr { Op = Opcode.FramePointer, Dest = frame, Line = i.Line });
-                    k++;
-                    b.Instrs[k] = Retarget(f, i, InRegion, frame);
-                    sites++;
-                }
+                foreach (Instr i in b.Instrs)
+                    if (i.RegionSite && i.Op == Opcode.Call && IsRewritable(i.Callee)) sites++;
         foreach (Function f in m.Functions)
             if (facts.Boundaries.Contains(f.Name)) { Open(f); opened++; }
         if (sites > 0 || opened > 0) CatchUp(m);
         if ((sites > 0 || opened > 0) && report)
             Console.Error.WriteLine($"regions: {opened} boundaries, {sites} sites in the innermost region, from the link");
+    }
+
+    /// <summary>
+    /// Every marked site of <paramref name="f"/> still a collecting
+    /// allocator's call made in the innermost open region (ApplyFacts):
+    /// what the link's lifetime rules left of the sites the link chose.
+    /// </summary>
+    public static int MakeSitesInRegion(Function f)
+    {
+        int sites = 0;
+        foreach (Block b in f.Blocks)
+            for (int k = 0; k < b.Instrs.Count; k++)
+            {
+                Instr i = b.Instrs[k];
+                if (!i.RegionSite || i.Op != Opcode.Call || !IsRewritable(i.Callee)) continue;
+                VReg frame = f.NewReg(IrTypes.Word, "allocframe");
+                b.Instrs.Insert(k, new Instr { Op = Opcode.FramePointer, Dest = frame, Line = i.Line });
+                k++;
+                b.Instrs[k] = Retarget(f, i, InRegion, frame);
+                sites++;
+            }
+        return sites;
     }
 
     // ---- applying -------------------------------------------------------------
