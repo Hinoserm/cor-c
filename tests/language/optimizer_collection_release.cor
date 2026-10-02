@@ -29,7 +29,7 @@ static class Program
         queue.Clear();
         stack.Pop();
         stack.Clear();
-        List<byte[]> keys = map.Keys;
+        List<byte[]> keys = new(map.Keys);
         foreach (byte[] key in keys) map.Remove(key);
         keys.Clear();
         map.Clear();

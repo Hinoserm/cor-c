@@ -375,9 +375,21 @@ public sealed class Monomorphiser
             return false;
         }
 
-        return r.Name is "string" or "object" or CanonName
-            || _byRef.Contains(r.Name);
+        if (r.Name is "string" or "object" or CanonName || _byRef.Contains(r.Name))
+        {
+            return true;
+        }
+
+        // A SPECIALISATION IS WHAT ITS TEMPLATE IS, from the moment it is
+        // claimed. Its declaration reaches _byRef only once it has been made,
+        // so `List<List<int>>` shared the canonical copy in a unit that had
+        // made List<int> first and was a copy of its own in one that had not
+        // -- two descriptors of one name, which the link refused.
+        return _claimedByRef.TryGetValue(r.Name, out bool reference) && reference;
     }
+
+    /// <summary>Every specialisation claimed (Instantiate), and whether its template is a reference type.</summary>
+    private readonly Dictionary<string, bool> _claimedByRef = new(StringComparer.Ordinal);
 
     private CompilationUnit Run(CompilationUnit unit)
     {
@@ -900,6 +912,7 @@ public sealed class Monomorphiser
         {
             return mangled;
         }
+        _claimedByRef[mangled] = template.Kind is not (TypeKind.Struct or TypeKind.Enum);
 
         // DOES THIS NEED CODE OF ITS OWN, or is it the same instructions as a
         // copy that already exists?

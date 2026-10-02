@@ -1,0 +1,55 @@
+// test: frame_collections_storage
+// units: tests/language/support/915_builder_units.cor
+// expect-exit: 0
+// expect-output:
+// 4499715000 599992
+//
+// Collections made, filled, walked and dropped in one call: a Dictionary
+// and a HashSet walked by foreach (each copied into the frame slot the loop
+// walks, its struct enumerator holding the collection), and sets copied as
+// snapshots and unioned back. All of them live in the frame; the arrays they
+// grow past their first storage are the heap's, given back when the slot is
+// filled again on the next call and when the function returns.
+
+using System;
+using System.Collections.Generic;
+sealed class L { public int V; public L(int v) { V = v; } }
+static class P
+{
+    static long Walk(int k)
+    {
+        Dictionary<int, int> d = new();
+        for (int i = 0; i < 40; i++) d[i] = i + k;
+        long s = 0;
+        foreach (KeyValuePair<int, int> p in d) s += p.Value - p.Key;
+        HashSet<int> h = new();
+        for (int i = 0; i < 40; i++) h.Add(i);
+        foreach (int x in h) s += x == 39 ? 1 : 0;
+        return s;
+    }
+    static readonly HashSet<L> Assigned = new(ReferenceEqualityComparer.Instance);
+    static int Snapshot(L a, L b, bool which)
+    {
+        HashSet<L> before = new(Assigned, ReferenceEqualityComparer.Instance);
+        Assigned.Add(a);
+        HashSet<L> afterThen = new(Assigned, ReferenceEqualityComparer.Instance);
+        Assigned.Clear();
+        Assigned.UnionWith(before);
+        if (which) Assigned.Add(b);
+        HashSet<L> afterElse = new(Assigned, ReferenceEqualityComparer.Instance);
+        Assigned.Clear();
+        Assigned.UnionWith(afterThen);
+        Assigned.IntersectWith(afterElse);
+        return Assigned.Count;
+    }
+    static void Main()
+    {
+        long walked = 0;
+        for (int k = 0; k < 15000; k++) walked += Walk(k);
+        L[] ls = new L[16];
+        for (int i = 0; i < 16; i++) ls[i] = new L(i);
+        long snap = 0;
+        for (int i = 0; i < 300000; i++) snap += Snapshot(ls[i & 15], ls[(i * 7) & 15], (i & 1) == 0);
+        Console.WriteLine(walked + " " + snap);
+    }
+}
