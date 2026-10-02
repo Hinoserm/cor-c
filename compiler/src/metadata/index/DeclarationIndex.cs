@@ -77,7 +77,7 @@ public sealed class DeclarationIndex : IDisposable
             while (low < high)
             {
                 long middle = low + (high - low) / 2;
-                string found = Read(middle, payload: false).Key;
+                string found = KeyAt(middle);
                 if (StringComparer.Ordinal.Compare(found, key) < 0) low = middle + 1;
                 else high = middle;
             }
@@ -88,13 +88,20 @@ public sealed class DeclarationIndex : IDisposable
             DeclarationRecord record;
             lock (gate)
             {
-                record = Read(i, payload: false);
-                if (prefix ? !record.Key.StartsWith(key, StringComparison.Ordinal) : record.Key != key) yield break;
+                string at = KeyAt(i);
+                if (prefix ? !at.StartsWith(key, StringComparison.Ordinal) : at != key) yield break;
                 record = Read(i, payload: true);
             }
             yield return record;
         }
     }
+
+    /// <summary>
+    /// A record's key, without a record made to carry it: every probe of the
+    /// binary search asked for one, and each was an object for the collector.
+    /// Checked when first read (Read), and kept from then on.
+    /// </summary>
+    private string KeyAt(long number) => keys[number] ?? Read(number, payload: false).Key;
 
     private DeclarationRecord Read(long number, bool payload)
     {

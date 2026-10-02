@@ -45,24 +45,31 @@ public sealed class DeadCodeElimination : IPass
             changed = false;
             foreach (Block b in f.Blocks)
             {
-                int removed = b.Instrs.RemoveAll(i =>
+                // Compacted in place, in order, as RemoveAll would: a lambda
+                // here captured the counts, and the array went with it to the
+                // collector on every run.
+                List<Instr> instrs = b.Instrs;
+                int kept = 0;
+                for (int k = 0; k < instrs.Count; k++)
                 {
+                    Instr i = instrs[k];
                     // An object made and never looked at is no allocation at
                     // all: making it changes nothing anything can see.
                     if (i.Dest is null || uses[i.Dest.Id] > 0
                         || !IrInfo.IsPure(i) && !(i.Op == Opcode.Call && Escape.IsAllocator(i.Callee)))
                     {
-                        return false;
+                        instrs[kept++] = i;
+                        continue;
                     }
                     // Its operands lose a use each; that may free them next round.
                     foreach (Operand rOperand in (i).Operands) if (rOperand is RegOperand { Reg: var r })
                     {
                         uses[r.Id]--;
                     }
-                    return true;
-                });
-                if (removed > 0)
+                }
+                if (kept < instrs.Count)
                 {
+                    instrs.RemoveRange(kept, instrs.Count - kept);
                     changed = true;
                 }
             }
