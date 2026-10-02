@@ -1,0 +1,41 @@
+// test: property_pattern_on_generic_default_struct
+// expect-exit: 0
+// expect-output:
+// lost beta argument 7
+// none
+// b 2
+// none
+//
+// FirstOrDefault<T> is declared to return T?, and for a T that is a value
+// tuple that is T itself, not a Nullable<T>: a property pattern naming the
+// result binds the tuple, its Callee the string and its Argument the int.
+// Bound as if it were a nullable's value, the name read the has-value flag
+// as Callee (1) and the string as Argument -- the self-built linker's
+// OwnedFieldSolver concatenated the pointer 1. Output checked against .NET.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+static class Program
+{
+    static T? Pick<T>(List<T> items, int at) => at < items.Count ? items[at] : default;
+
+    static void Main()
+    {
+        SortedSet<(string Callee, int Argument)> set = new();
+        set.Add(("alpha", 3)); set.Add(("beta", 7));
+        HashSet<(string, int)> known = new() { ("alpha", 3) };
+        if (set.FirstOrDefault(s => !known.Contains(s)) is { Callee: not null } lost)
+            Console.WriteLine("lost " + lost.Callee + " argument " + lost.Argument);
+        else Console.WriteLine("none");
+        known.Add(("beta", 7));
+        if (set.FirstOrDefault(s => !known.Contains(s)) is { Callee: not null } gone)
+            Console.WriteLine("lost " + gone.Callee);
+        else Console.WriteLine("none");
+
+        List<(string Name, int N)> pairs = new() { ("a", 1), ("b", 2) };
+        Console.WriteLine(Pick(pairs, 1) is { Name: not null } p ? p.Name + " " + p.N : "none");
+        Console.WriteLine(Pick(pairs, 5) is { Name: not null } q ? q.Name + " " + q.N : "none");
+    }
+}
