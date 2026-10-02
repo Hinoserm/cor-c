@@ -111,6 +111,8 @@ public sealed class UnitBackend : IUnitBackend
             // it and as it goes to the backend, on standard error.
             bool dumping = Environment.GetEnvironmentVariable("CORC_DUMP_FUNCTION") == function.Name;
             if (dumping) { System.Text.StringBuilder loaded = new(); function.Dump(loaded); Console.Error.WriteLine("== loaded\n" + loaded); }
+            // Unhomed for the rules below; homed again last (LandingPadHomes.Strip).
+            LandingPadHomes.Strip(function);
             Module local = new(module.Name) { Entry = function.Name, PreserveExports = true, NeedsHeap = module.NeedsHeap };
             local.Functions.Add(function);
             foreach (IrImport import in Selected(index))

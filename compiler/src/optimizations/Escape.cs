@@ -3303,6 +3303,44 @@ continue;
     /// object result from a number, which the IR types do not. One pass over
     /// the function, then back along the copies, for all of its calls at once.
     /// </summary>
+    /// <summary>
+    /// Which of a call's `operands` are objects, read off the callee's label
+    /// (Lowering.Label: `m_Owner_Name_N_p1_..._pN`, each parameter mangled
+    /// without an underscore of its own): arrays, classes and type
+    /// parameters; a receiver ahead of the N. Null when the label is not one.
+    /// Only ever a reason to ask the link about a result, which it answers
+    /// by the callee's own body, so a wrong guess costs a question, no more.
+    /// </summary>
+    private static bool[]? ReferenceParameters(string callee, int operands)
+    {
+        if (!callee.StartsWith("m_", StringComparison.Ordinal)) return null;
+        int end = callee.Length;
+        int conversion = callee.LastIndexOf("_to_", StringComparison.Ordinal);
+        if (conversion > 0) end = conversion;
+        bool[] references = new bool[operands];
+        int position = end;
+        for (int k = operands - 1; k >= 0; k--)
+        {
+            int start = callee.LastIndexOf('_', position - 1);
+            if (start < 0) return null;
+            int length = position - start - 1;
+            // The parameter count: everything before it is the receiver.
+            if (length > 0 && callee[start + 1] is >= '0' and <= '9')
+            {
+                if (!int.TryParse(callee.AsSpan(start + 1, length), out int count) || count != operands - 1 - k) return null;
+                for (int r = 0; r <= k; r++) references[r] = true;
+                return references;
+            }
+            if (length < 2 || callee[start + 2] != '$') return null;
+            references[k] = callee[start + 1] is 'A' or 'T' or 'G';
+            position = start;
+        }
+        // Every operand a parameter: the count must come next.
+        int before = callee.LastIndexOf('_', position - 1);
+        if (before < 0 || !int.TryParse(callee.AsSpan(before + 1, position - before - 1), out int all) || all != operands) return null;
+        return references;
+    }
+
     private static HashSet<VReg> AddressRegisters(Function f)
     {
         HashSet<VReg> used = new();
@@ -3313,6 +3351,14 @@ continue;
                 if (i.Op is Opcode.Load or Opcode.Store or Opcode.ArrayLength or Opcode.InitArrayLength
                     && i.Operands.Count > 0 && i.Operands[0] is RegOperand address)
                     used.Add(address.Reg);
+                // HANDED TO A CALL AS AN OBJECT: `HashData(stream.ToArray())`
+                // never reads the array here, it only passes it on. The
+                // callee's label spells its parameter types; a leading
+                // operand the label does not count is the receiver.
+                if (i.Op == Opcode.Call && i.Callee is not null && i.Operands.Count > 0
+                    && ReferenceParameters(i.Callee, i.Operands.Count) is { } references)
+                    for (int k = 0; k < i.Operands.Count; k++)
+                        if (references[k] && i.Operands[k] is RegOperand passed) used.Add(passed.Reg);
                 if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 && i.Dest is not null
                     && i.Operands.Count == 1 && i.Operands[0] is RegOperand from)
                 {

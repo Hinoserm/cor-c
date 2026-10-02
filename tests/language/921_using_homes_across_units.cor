@@ -1,0 +1,61 @@
+// test: using_homes_across_units
+// units: tests/language/support/915_builder_units.cor
+// expect-exit: 0
+// expect-output:
+// 39960 3333 29997 6666
+//
+// A writer and a stream in `using`, in a unit that does not hold the
+// library: the link loads the function with its landing-pad homes (a
+// variable a finally reads, stored to the frame and reloaded by the pad)
+// and takes them out while it judges lifetimes, then homes it again. The
+// finally must still dispose the very objects the body made, thrown out of
+// or not, and the array handed straight to another call (ToArray into
+// HashData) is a reference the link asks about.
+
+using System;
+using System.IO;
+using System.Security.Cryptography;
+sealed class Tracked : IDisposable
+{
+    public static int Disposed;
+    public readonly int Id;
+    public Tracked(int id) { Id = id; }
+    public void Dispose() { Disposed += Id; }
+}
+static class P
+{
+    static int Hash(int salt)
+    {
+        using MemoryStream stream = new();
+        using BinaryWriter writer = new(stream);
+        for (int i = 0; i < 8; i++) writer.Write(i * salt);
+        writer.Flush();
+        return SHA256.HashData(stream.ToArray())[0] >= 0 ? 4 : 0;
+    }
+    static int Guarded(int k)
+    {
+        Tracked t = new Tracked(1);
+        try
+        {
+            using Tracked u = new Tracked(2);
+            if (k % 3 == 0) throw new InvalidOperationException("k");
+            return u.Id;
+        }
+        catch (InvalidOperationException)
+        {
+            return t.Id;
+        }
+        finally
+        {
+            t.Dispose();
+        }
+    }
+    static void Main()
+    {
+        int h = 0;
+        for (int k = 0; k < 9990; k++) h += Hash(k);
+        int ones = 0, twos = 0;
+        for (int k = 0; k < 9999; k++) { if (Guarded(k) == 1) ones++; else twos++; }
+        Console.WriteLine(h + " " + ones + " " + Tracked.Disposed + " " + twos);
+    }
+}

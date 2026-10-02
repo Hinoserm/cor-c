@@ -142,6 +142,45 @@ public static class LandingPadHomes
         f.Entry.Instrs.InsertRange(0, onEntry);
     }
 
+    /// <summary>
+    /// The homes Place gave `f` taken out again: the stores after each
+    /// definition and the reloads at the pads, so the register is simply
+    /// live into the pad once more. What the link loads was archived homed,
+    /// and its lifetime rules -- written for the function as a compile sees
+    /// it, before homing -- took `using`'s variable, stored to its home and
+    /// reloaded by the finally, for an object written to memory: every
+    /// BinaryWriter and MemoryStream in a using was the collector's. Run
+    /// (Place) homes it again afterwards. A slot used in any other way is
+    /// left alone; an async method's homes are its state machine's.
+    /// </summary>
+    public static void Strip(Function f)
+    {
+        if (f.Async is not null || !f.Blocks.Any(b => b.IsLandingPad)) return;
+        Dictionary<FrameSlot, int> homes = new();
+        foreach (FrameSlot s in f.Slots)
+            if (s.Name is { } name && name.StartsWith("home", StringComparison.Ordinal) && int.TryParse(name.AsSpan(4), out int id))
+                homes[s] = id;
+        if (homes.Count == 0) return;
+        HashSet<FrameSlot> other = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                for (int k = 0; k < i.Operands.Count; k++)
+                    if (i.Operands[k] is SlotOperand { Slot: var s } && homes.TryGetValue(s, out int id) && !IsHoming(i, k, s, id, b))
+                        other.Add(s);
+        foreach (FrameSlot s in other) homes.Remove(s);
+        if (homes.Count == 0) return;
+        foreach (Block b in f.Blocks)
+            b.Instrs.RemoveAll(i => i.Operands.Count > 0 && i.Operands[0] is SlotOperand { Slot: var s } && homes.ContainsKey(s));
+        f.Slots.RemoveAll(homes.ContainsKey);
+
+        // A store of the register itself, whole, after its definition; a
+        // reload of it at a pad.
+        static bool IsHoming(Instr i, int k, FrameSlot s, int id, Block b)
+            => k == 0 && i.Offset == 0
+            && (i.Op == Opcode.Store && i.Operands.Count == 2 && i.Operands[1] is RegOperand { Reg.Id: var stored } && stored == id
+                || i.Op == Opcode.Load && i.Operands.Count == 1 && i.Dest?.Id == id && b.IsLandingPad);
+    }
+
     private static Instr StoreTo(FrameSlot slot, VReg r) => new()
     {
         Op = Opcode.Store, Size = r.Type.Bytes(),
