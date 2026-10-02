@@ -49,6 +49,12 @@ public sealed class RegionPointsTo : IModulePass
     private const int MaxDepth = 2;
     private const long Any = 0xFFFFFF;
     private const int NodeBudget = 6_000_000;
+    // Past this many cells an object is one cell: an object read or written
+    // at that many offsets is an array, or a pointer walked through memory.
+    private const int MostCells = 64;
+    // Past this many pairs of source and destination a block copy is one
+    // node, everything from every source to anywhere in every destination.
+    private const int MostPairs = 1024;
 
     // GIVING UP IS SOUND: nothing is rewritten. Past this many locations held
     // in all, the program is more than this analysis answers in the memory a
@@ -74,6 +80,10 @@ public sealed class RegionPointsTo : IModulePass
     private readonly Dictionary<(int Copy, FrameSlot), int> _slotObjects = new();
     private readonly List<Dictionary<long, int>> _cells = new();
     private readonly List<List<Action<long, int>>?> _cellWatchers = new();
+    // Per object: a node holding what every cell of it holds (-1 until
+    // asked for), and whether its cells were folded into the any-offset one.
+    private readonly List<int> _allCells = new();
+    private readonly List<bool> _collapsed = new();
 
     // Function copies: a function in a context (-1: none).
     private readonly List<(Function F, int Context)> _copies = new();
@@ -87,11 +97,14 @@ public sealed class RegionPointsTo : IModulePass
     // Nodes: a register of a copy, a copy's return, a cell. What each holds
     // is a set of locations; edges carry them on, moved by a constant or
     // made any-offset on the way.
-    private readonly List<HashSet<long>> _pts = new();
+    private readonly List<LocSet> _pts = new();
     private readonly List<List<(int To, long Shift)>?> _edges = new();
     private readonly List<HashSet<(int, long)>?> _edgeSet = new();
     private readonly List<List<Action<long>>?> _watchers = new();
-    private readonly List<List<long>?> _delta = new();
+    private readonly List<List<int>?> _delta = new();
+    // Every location named so far, by number: what sets hold is the number.
+    private readonly Dictionary<long, int> _locIds = new();
+    private readonly List<long> _locs = new();
     private readonly Queue<int> _work = new();
     private long _steps;
 
@@ -102,8 +115,12 @@ public sealed class RegionPointsTo : IModulePass
     private static long Loc(int o, long offset) => ((long)o << 24) | (offset is < 0 or > FarthestField ? Any : offset);
     private static int ObjectOf(long loc) => (int)(loc >> 24);
     private static long OffsetOf(long loc) => loc & Any;
+    // A pointer already inside an object moved again is anywhere in it: a
+    // field's address is the object's moved once, and a count that once held
+    // a pointer, stepped through memory where Walked cannot see the loop,
+    // made every object a location per step.
     private static long Shifted(long loc, long shift) =>
-        shift == long.MinValue || OffsetOf(loc) == Any ? Loc(ObjectOf(loc), Any) : Loc(ObjectOf(loc), OffsetOf(loc) + shift);
+        shift == long.MinValue || OffsetOf(loc) is not 0 ? Loc(ObjectOf(loc), Any) : Loc(ObjectOf(loc), shift);
 
     public void Run(Module m)
     {
@@ -169,6 +186,8 @@ public sealed class RegionPointsTo : IModulePass
             }
             if (!more) break;
         }
+        // Each merged node answers with its representative's set.
+        for (int n = 0; n < _pts.Count; n++) if (_rep[n] != n) _pts[n] = _pts[Find(n)];
         if (Report is not null) Judge();
         Apply();
     }
@@ -632,25 +651,48 @@ public sealed class RegionPointsTo : IModulePass
     private HashSet<int> Outliving(int c)
     {
         Function f = _copies[c].F;
-        HashSet<int> reached = new();
-        Queue<int> next = new();
-        void Reach(long l) { if (reached.Add(ObjectOf(l))) next.Enqueue(ObjectOf(l)); }
-        Reach(Loc(Global, Any));
-        foreach (VReg p in f.Params) foreach (long l in _pts[Reg(c, p)]) Reach(l);
-        foreach (long l in _pts[ReturnNode(c)]) Reach(l);
-        while (next.TryDequeue(out int o))
+        // What Global reaches is the same for every copy: found once, and a
+        // copy's own walk stops at it.
+        _fromGlobal ??= Reachable(new[] { Global }, new HashSet<int>());
+        HashSet<int> reached = new(_fromGlobal);
+        List<int> start = new();
+        foreach (VReg p in f.Params) foreach (long l in _pts[Reg(c, p)]) start.Add(ObjectOf(l));
+        foreach (long l in _pts[ReturnNode(c)]) start.Add(ObjectOf(l));
+        return Reachable(start, reached);
+    }
+
+    private HashSet<int>? _fromGlobal;
+    private int[][]? _pointsInto;
+
+    // The objects reachable from `start` through cells, added to `reached`;
+    // one already in it is not walked again.
+    private HashSet<int> Reachable(IEnumerable<int> start, HashSet<int> reached)
+    {
+        // Which objects each object's cells point into, found once.
+        if (_pointsInto is null)
         {
-            foreach (int cell in _cells[o].Values)
-                foreach (long l in _pts[cell]) Reach(l);
-            // A STATE MACHINE KEEPS WHAT ITS BODY SAVES across a suspension:
-            // the stores AsyncTransform writes later, followed now.
-            if (KeptBy().TryGetValue(o, out List<int>? machines))
-                foreach (int k in machines)
-                {
-                    foreach (int saved in _machines[k].Saved) foreach (long l in _pts[saved]) Reach(l);
-                    foreach (int slot in _machines[k].Slots) Reach(Loc(slot, 0));
-                }
+            _pointsInto = new int[_objects.Count][];
+            HashSet<int> into = new();
+            for (int o = 0; o < _objects.Count; o++)
+            {
+                into.Clear();
+                foreach (int cell in _cells[o].Values) foreach (long l in _pts[cell]) into.Add(ObjectOf(l));
+                // A STATE MACHINE KEEPS WHAT ITS BODY SAVES across a suspension:
+                // the stores AsyncTransform writes later, followed now.
+                if (KeptBy().TryGetValue(o, out List<int>? machines))
+                    foreach (int k in machines)
+                    {
+                        foreach (int saved in _machines[k].Saved) foreach (long l in _pts[saved]) into.Add(ObjectOf(l));
+                        foreach (int slot in _machines[k].Slots) into.Add(slot);
+                    }
+                _pointsInto[o] = into.ToArray();
+            }
         }
+        Stack<int> next = new();
+        foreach (int o in start) if (reached.Add(o)) next.Push(o);
+        while (next.TryPop(out int o))
+            foreach (int to in _pointsInto[o])
+                if (reached.Add(to)) next.Push(to);
         return reached;
     }
 
@@ -673,7 +715,8 @@ public sealed class RegionPointsTo : IModulePass
 
     private int NewNode()
     {
-        _pts.Add(new HashSet<long>());
+        _rep.Add(_pts.Count);
+        _pts.Add(new LocSet(_locs));
         _delta.Add(null);
         _edges.Add(null);
         _edgeSet.Add(null);
@@ -686,17 +729,21 @@ public sealed class RegionPointsTo : IModulePass
         _objects.Add((f, site, context, slot, depth));
         _cells.Add(new Dictionary<long, int>());
         _cellWatchers.Add(null);
+        _allCells.Add(-1);
+        _collapsed.Add(false);
         return _objects.Count - 1;
     }
 
     /// <summary>The node of one of an object's cells, made on first use.</summary>
     private int Cell(int o, long offset)
     {
-        if (offset is < 0 or > FarthestField) offset = Any;
+        if (offset is < 0 or > FarthestField || _collapsed[o]) offset = Any;
         Dictionary<long, int> cells = _cells[o];
         if (cells.TryGetValue(offset, out int node)) return node;
+        if (offset != Any && cells.Count >= MostCells) return Collapse(o);
         node = NewNode();
         cells[offset] = node;
+        if (_allCells[o] >= 0) Edge(node, _allCells[o], 0);
         // A cell read at any offset reads this one too; one written at any
         // offset is read wherever this one is.
         if (offset != Any)
@@ -705,6 +752,32 @@ public sealed class RegionPointsTo : IModulePass
             if (_cellWatchers[o] is { } watchers) for (int w = 0; w < watchers.Count; w++) watchers[w](offset, node);
         }
         return node;
+    }
+
+    /// <summary>
+    /// TOO MANY OFFSETS: the object becomes one any-offset cell. Each cell it
+    /// had flows into that one, which already flows into each, so whatever
+    /// is read from it anywhere is everything ever written to it; a location
+    /// in it is any offset from here on.
+    /// </summary>
+    private int Collapse(int o)
+    {
+        int any = Cell(o, Any);
+        _collapsed[o] = true;
+        foreach (var (offset, node) in _cells[o]) if (offset != Any) Edge(node, any, 0);
+        return any;
+    }
+
+    /// <summary>The node holding what every cell of an object holds: what a read at any offset reads.</summary>
+    private int AllCells(int o)
+    {
+        if (_collapsed[o]) return Cell(o, Any);
+        if (_allCells[o] >= 0) return _allCells[o];
+        Cell(o, Any);
+        int all = NewNode();
+        _allCells[o] = all;
+        foreach (int cell in _cells[o].Values.ToArray()) Edge(cell, all, 0);
+        return all;
     }
 
     /// <summary>Run `act` for every cell of an object, now and later.</summary>
@@ -815,30 +888,49 @@ public sealed class RegionPointsTo : IModulePass
 
     private void Edge(int from, int to, long shift)
     {
+        from = Find(from);
+        to = Find(to);
         if (from == to && shift == 0) return;
         if (!(_edgeSet[from] ??= new()).Add((to, shift))) return;
         (_edges[from] ??= new()).Add((to, shift));
-        foreach (long l in _pts[from]) Add(to, shift == 0 ? l : Shifted(l, shift));
+        _edgeCount++;
+        foreach (int id in _pts[from].Ids())
+            if (shift == 0) Held(to, id); else Add(to, Shifted(_locs[id], shift));
     }
 
     private void Add(int node, long loc)
     {
-        if (!_pts[node].Add(loc)) return;
+        int o = ObjectOf(loc);
+        if (_collapsed[o] && OffsetOf(loc) != Any) loc = Loc(o, Any);
+        if (!_locIds.TryGetValue(loc, out int id))
+        {
+            _locIds[loc] = id = _locs.Count;
+            _locs.Add(loc);
+        }
+        Held(node, id);
+    }
+
+    // Location number `id` is held by `node`, and owed to what it feeds.
+    private void Held(int node, int id)
+    {
+        node = Find(node);
+        if (!_pts[node].Add(id)) return;
         // Checked here, not only between steps: one step's watchers can add
         // without end (a copy between two growing sets), and the compile died
         // inside it before the loop looked again.
         if ((++_held & 4095) == 0 && (_held > HeldBudget || GC.GetTotalMemory(false) - _heapAtStart > HeapBudget))
             throw new OverBudget();
-        List<long>? delta = _delta[node];
+        List<int>? delta = _delta[node];
         if (delta is null) { _delta[node] = delta = new(); _work.Enqueue(node); }
-        delta.Add(loc);
+        delta.Add(id);
     }
 
     /// <summary>Run `act` for every location `node` holds, now and later.</summary>
     private void Watch(int node, Action<long> act)
     {
+        node = Find(node);
         (_watchers[node] ??= new()).Add(act);
-        foreach (long l in _pts[node].ToArray()) act(l);
+        foreach (int id in _pts[node].Ids()) act(_locs[id]);
     }
 
     /// <summary>The node holding what operand `o` points to, in a copy; -1 for none.</summary>
@@ -875,8 +967,7 @@ public sealed class RegionPointsTo : IModulePass
             if (o == Global) { Add(dest, Loc(Global, Any)); return; }
             long at = OffsetOf(l) == Any ? Any : OffsetOf(l) + offset;
             if (at is < 0 or > FarthestField) at = Any;
-            Edge(Cell(o, at), dest, 0);
-            if (at == Any) EachCell(o, (_, cell) => Edge(cell, dest, 0));
+            Edge(at == Any ? AllCells(o) : Cell(o, at), dest, 0);
         });
     }
 
@@ -1041,25 +1132,69 @@ public sealed class RegionPointsTo : IModulePass
     private void MemCopy(int to, int from, long count)
     {
         if (to < 0 || from < 0) return;
-        HashSet<(long, long)> pairs = new();
-        Watch(from, src => Watch(to, dst =>
+        // Each source location met with each destination once: two watchers
+        // and the two sets seen so far, not one watcher on the destination
+        // per source location.
+        HashSet<long> srcSeen = new(), dstSeen = new();
+        List<long> srcs = new(), dsts = new();
+        // A copy at any offset depends only on the two objects.
+        HashSet<(int, int)> anyPairs = new();
+        void Pair(long src, long dst)
         {
-            if (!pairs.Add((src, dst))) return;
             int os = ObjectOf(src), od = ObjectOf(dst);
-            long ds = OffsetOf(src), dd = OffsetOf(dst);
+            long ds = _collapsed[os] ? Any : OffsetOf(src), dd = _collapsed[od] ? Any : OffsetOf(dst);
             if (os == Global)
             {
                 Add(Cell(od, Any), Loc(Global, Any));
                 return;
             }
-            bool exact = ds != Any && dd != Any && od != Global;
+            if (ds == Any || dd == Any || od == Global)
+            {
+                if (anyPairs.Add((os, od))) Edge(AllCells(os), Cell(od, Any), 0);
+                return;
+            }
             EachCell(os, (offset, cell) =>
             {
-                if (!exact) { Edge(cell, Cell(od, Any), 0); return; }
                 if (offset >= ds && (count == Any || offset - ds < count)) Edge(cell, Cell(od, dd + offset - ds), 0);
             });
             Edge(Cell(os, Any), Cell(od, Any), 0);
-        }));
+        }
+        // TOO MANY PAIRS -- a copy through pointers that may each be any of
+        // hundreds of objects -- and every source is copied to every
+        // destination through one node, at any offset: a node per copy, not
+        // a pair of every source and destination.
+        int through = -1;
+        void Into(long src)
+        {
+            if (ObjectOf(src) == Global) Add(through, Loc(Global, Any));
+            else Edge(AllCells(ObjectOf(src)), through, 0);
+        }
+        void OutOf(long dst) => Edge(through, Cell(ObjectOf(dst), Any), 0);
+        bool Summarised()
+        {
+            if (through >= 0) return true;
+            if ((long)srcs.Count * dsts.Count <= MostPairs) return false;
+            through = NewNode();
+            foreach (long src in srcs) Into(src);
+            foreach (long dst in dsts) OutOf(dst);
+            return true;
+        }
+        Watch(from, src =>
+        {
+            if (!srcSeen.Add(src)) return;
+            srcs.Add(src);
+            if (through >= 0) { Into(src); return; }
+            if (Summarised()) return;
+            for (int k = 0; k < dsts.Count; k++) Pair(src, dsts[k]);
+        });
+        Watch(to, dst =>
+        {
+            if (!dstSeen.Add(dst)) return;
+            dsts.Add(dst);
+            if (through >= 0) { OutOf(dst); return; }
+            if (Summarised()) return;
+            for (int k = 0; k < srcs.Count; k++) Pair(srcs[k], dst);
+        });
     }
 
     private void Call(int copy, Function f, int context, Instr i)
@@ -1333,17 +1468,215 @@ public sealed class RegionPointsTo : IModulePass
             if ((_steps & 63) == 0 && GC.GetTotalMemory(false) - _heapAtStart > HeapBudget) return false;
             if (++_steps % 500_000 == 0)
                 Console.Error.WriteLine($"regions: step {_steps}: {_pts.Count} nodes, {_copies.Count} copies, {_objects.Count} objects, {_work.Count} waiting");
-            List<long> delta = _delta[node]!;
+            if (_edgeCount >= _nextMerge) MergeCycles();
+            // A node merged into another since it was queued: its delta went too.
+            if (_delta[node] is not { } delta) continue;
             _delta[node] = null;
-            foreach (long l in delta)
-            {
-                if (_edges[node] is { } edges)
-                    for (int e = 0; e < edges.Count; e++)
-                        Add(edges[e].To, edges[e].Shift == 0 ? l : Shifted(l, edges[e].Shift));
-                if (_watchers[node] is { } watchers) for (int w = 0; w < watchers.Count; w++) watchers[w](l);
-            }
+            // Merges owe a node what each side lacked, often the same
+            // locations many times over: each is carried once.
+            if (_owedTwice.Remove(node) || delta.Count > _pts[node].Count) delta = Distinct(delta);
+            if (_edges[node] is { } edges)
+                for (int e = 0; e < edges.Count; e++)
+                {
+                    (int to, long shift) = edges[e];
+                    if (shift == 0) foreach (int id in delta) Held(to, id);
+                    else foreach (int id in delta) Add(to, Shifted(_locs[id], shift));
+                }
+            if (_watchers[node] is { } watchers)
+                foreach (int id in delta)
+                    for (int w = 0; w < watchers.Count; w++) watchers[w](_locs[id]);
         }
         return true;
+    }
+
+    // ---- cycles -------------------------------------------------------------
+
+    // Each node's representative: nodes on a cycle of plain edges hold the
+    // same locations, and are merged into one (union-find, path halving).
+    private readonly List<int> _rep = new();
+    // A merged node's set while solving; its representative's once solved.
+    private static readonly LocSet Merged = new(new List<long>());
+    private long _edgeCount, _nextMerge = 20_000;
+    private readonly HashSet<int> _owedTwice = new();
+    private int[] _seenAt = Array.Empty<int>();
+    private int _seenStamp;
+
+    private List<int> Distinct(List<int> ids)
+    {
+        if (_seenAt.Length < _locs.Count) Array.Resize(ref _seenAt, _locs.Count * 2);
+        if (++_seenStamp == int.MaxValue) { Array.Clear(_seenAt); _seenStamp = 1; }
+        List<int> once = new(ids.Count);
+        foreach (int id in ids)
+            if (_seenAt[id] != _seenStamp) { _seenAt[id] = _seenStamp; once.Add(id); }
+        return once;
+    }
+
+    private int Find(int n)
+    {
+        while (_rep[n] != n) { _rep[n] = _rep[_rep[n]]; n = _rep[n]; }
+        return n;
+    }
+
+    /// <summary>
+    /// CYCLES OF PLAIN EDGES ARE ONE NODE. Whatever reaches one node of such
+    /// a cycle reaches every other, so each holds the same set: thousands of
+    /// copies of one set of locations, each carried edge by edge, until they
+    /// are one. Found (Tarjan's, over representatives) each time the edges
+    /// have grown by a quarter.
+    /// </summary>
+    private void MergeCycles()
+    {
+        _nextMerge = _edgeCount + Math.Max(20_000, _edgeCount / 4);
+        int n = _pts.Count;
+        int[] index = new int[n], low = new int[n];
+        bool[] onStack = new bool[n];
+        Stack<int> stack = new();
+        Stack<(int Node, int Edge)> calls = new();
+        int counter = 0;
+        for (int root = 0; root < n; root++)
+        {
+            if (index[root] != 0 || _rep[root] != root || _edges[root] is null) continue;
+            calls.Push((root, 0));
+            index[root] = low[root] = ++counter;
+            stack.Push(root);
+            onStack[root] = true;
+            while (calls.Count > 0)
+            {
+                (int v, int e) = calls.Pop();
+                List<(int To, long Shift)>? edges = _edges[v];
+                bool descended = false;
+                while (edges is not null && e < edges.Count)
+                {
+                    (int to, long shift) = edges[e++];
+                    if (shift != 0) continue;
+                    int w = Find(to);
+                    if (w == v) continue;
+                    if (index[w] == 0)
+                    {
+                        calls.Push((v, e));
+                        calls.Push((w, 0));
+                        index[w] = low[w] = ++counter;
+                        stack.Push(w);
+                        onStack[w] = true;
+                        descended = true;
+                        break;
+                    }
+                    if (onStack[w]) low[v] = Math.Min(low[v], index[w]);
+                }
+                if (descended) continue;
+                if (low[v] == index[v])
+                {
+                    int w;
+                    do
+                    {
+                        w = stack.Pop();
+                        onStack[w] = false;
+                        if (w != v) Merge(w, v);
+                    } while (w != v);
+                }
+                if (calls.Count > 0) { int parent = calls.Peek().Node; low[parent] = Math.Min(low[parent], low[v]); }
+            }
+        }
+    }
+
+    // Node `from` becomes part of `into`: its locations, edges and watchers
+    // move, and each side's edges and watchers are owed what only the other
+    // held, along with what either still had to carry.
+    private void Merge(int from, int into)
+    {
+        _rep[from] = into;
+        LocSet a = _pts[from], b = _pts[into];
+        List<int> owed = new();
+        foreach (int id in a.Ids()) if (!b.Contains(id)) owed.Add(id);
+        foreach (int id in b.Ids()) if (!a.Contains(id)) owed.Add(id);
+        _held -= a.Count;
+        foreach (int id in a.Ids()) if (b.Add(id)) _held++;
+        if (_delta[from] is { } pending) owed.AddRange(pending);
+        _delta[from] = null;
+        _pts[from] = Merged;
+        if (owed.Count > 0)
+        {
+            if (_delta[into] is not { } delta) { _delta[into] = delta = new(); _work.Enqueue(into); }
+            else _owedTwice.Add(into);
+            delta.AddRange(owed);
+        }
+        if (_edges[from] is { } edges)
+        {
+            HashSet<(int, long)> set = _edgeSet[into] ??= new();
+            List<(int To, long Shift)> list = _edges[into] ??= new();
+            foreach (var edge in edges)
+            {
+                int to = Find(edge.To);
+                if (!(to == into && edge.Shift == 0) && set.Add((to, edge.Shift))) list.Add((to, edge.Shift));
+            }
+        }
+        _edges[from] = null;
+        _edgeSet[from] = null;
+        if (_watchers[from] is { } watchers) (_watchers[into] ??= new()).AddRange(watchers);
+        _watchers[from] = null;
+    }
+
+    /// <summary>
+    /// A SET OF LOCATIONS, by number: a few in a short array, past that a bit
+    /// for every location the pass has named. Thousands of nodes hold the
+    /// same few hundred objects; a bit apiece is what that costs to hold.
+    /// </summary>
+    private sealed class LocSet : IEnumerable<long>
+    {
+        private const int Short = 32;
+        private readonly List<long> _named;
+        private int[]? _few;
+        private ulong[]? _bits;
+
+        public LocSet(List<long> named) => _named = named;
+
+        public int Count { get; private set; }
+
+        public bool Contains(int id) => _bits is { } bits
+            ? id >> 6 < bits.Length && (bits[id >> 6] & 1UL << id) != 0
+            : _few is { } few && Array.IndexOf(few, id, 0, Count) >= 0;
+
+        public bool Add(int id)
+        {
+            if (_bits is null)
+            {
+                if (_few is { } few && Array.IndexOf(few, id, 0, Count) >= 0) return false;
+                if (Count < Short)
+                {
+                    if (_few is null || Count == _few.Length) Array.Resize(ref _few, _few is null ? 4 : _few.Length * 2);
+                    _few[Count++] = id;
+                    return true;
+                }
+                _bits = new ulong[Math.Max(id, _named.Count) / 64 + 1];
+                for (int k = 0; k < Count; k++) _bits[_few![k] >> 6] |= 1UL << _few[k];
+                _few = null;
+            }
+            if (id >> 6 >= _bits.Length) Array.Resize(ref _bits, Math.Max(id >> 6, _named.Count / 64) + 1);
+            ref ulong word = ref _bits[id >> 6];
+            if ((word & 1UL << id) != 0) return false;
+            word |= 1UL << id;
+            Count++;
+            return true;
+        }
+
+        /// <summary>The numbers held, as they are now: adding while walking them is safe.</summary>
+        public int[] Ids()
+        {
+            int[] ids = new int[Count];
+            if (_bits is null) { if (Count > 0) Array.Copy(_few!, ids, Count); return ids; }
+            int n = 0;
+            for (int w = 0; w < _bits.Length; w++)
+                for (ulong word = _bits[w]; word != 0; word &= word - 1)
+                    ids[n++] = w * 64 + System.Numerics.BitOperations.TrailingZeroCount(word);
+            return ids;
+        }
+
+        public IEnumerator<long> GetEnumerator()
+        {
+            foreach (int id in Ids()) yield return _named[id];
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
     }
 
     // ---- judging ------------------------------------------------------------
@@ -1352,7 +1685,7 @@ public sealed class RegionPointsTo : IModulePass
     {
         string[] wanted = Report.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         long locations = 0;
-        foreach (HashSet<long> p in _pts) locations += p.Count;
+        foreach (LocSet p in _pts) locations += p.Count;
         Console.Error.WriteLine($"regions: {_copies.Count} function copies, {_objects.Count} objects, {_pts.Count} nodes, {locations} locations held, {_steps} steps");
         Console.Error.WriteLine($"regions: {_callContexts.Count} call contexts");
         for (int c = 0; c < _copies.Count; c++)
