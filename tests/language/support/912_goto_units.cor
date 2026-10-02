@@ -1,0 +1,18 @@
+// The other unit of 912_goto_labels_across_units: a generic method with
+// labels, whose body reaches the test's unit through the declaration index.
+using System.Collections.Generic;
+static class LabelUnit
+{
+    public static int CountUntil<T>(List<T> xs, T stop) where T : notnull
+    {
+        int n = 0;
+        foreach (T x in xs)
+        {
+            if (x.Equals(stop)) goto done;
+            n++;
+        }
+        n = -n;
+    done:
+        return n;
+    }
+}

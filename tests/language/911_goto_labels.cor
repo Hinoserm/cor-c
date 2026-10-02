@@ -1,0 +1,107 @@
+// test: goto_labels
+// expect-exit: 0
+// expect-output:
+// 101
+// not found 9
+// -1
+// 45
+// 19
+// abfcgg
+// afgg
+// 30
+// 10
+// one
+// end
+//
+// `goto name;` and `name: statement`: forward out of nested loops, backward,
+// `next:;` closing a loop body, out of two trys (each finally runs once), a
+// label inside a finally (emitted once for each way out of its try), in an
+// iterator across a yield, in a lambda's body, after a goto case.
+
+using System;
+using System.Collections.Generic;
+static class P
+{
+    static int Find(int[][] rows, int wanted)
+    {
+        int found = -1;
+        for (int r = 0; r < rows.Length; r++)
+            for (int c = 0; c < rows[r].Length; c++)
+                if (rows[r][c] == wanted) { found = r * 100 + c; goto done; }
+        Console.WriteLine("not found " + wanted);
+    done:
+        return found;
+    }
+    static int Backward(int n)
+    {
+        int total = 0, i = 0;
+    again:
+        total += i;
+        i++;
+        if (i < n) goto again;
+        return total;
+    }
+    static int Skips(List<int> xs)
+    {
+        int kept = 0;
+        foreach (int x in xs)
+        {
+            if (x % 3 == 0) goto next;
+            kept += x;
+        next:;
+        }
+        return kept;
+    }
+    static string Unwind(int k)
+    {
+        string log = "";
+        try
+        {
+            try
+            {
+                log += "a";
+                if (k > 0) goto out1;
+                log += "b";
+            }
+            finally { log += "f"; }
+            log += "c";
+        }
+        finally
+        {
+            int j = 0;
+        loop:
+            log += "g";
+            if (++j < 2) goto loop;
+        }
+    out1:
+        return log;
+    }
+    static IEnumerable<int> Gen(int n)
+    {
+        int i = 0;
+    top:
+        if (i >= n) yield break;
+        yield return i * i;
+        i++;
+        goto top;
+    }
+    static void Main()
+    {
+        int[][] rows = { new[] { 1, 2, 3 }, new[] { 4, 5, 6 } };
+        Console.WriteLine(Find(rows, 5));
+        Console.WriteLine(Find(rows, 9));
+        Console.WriteLine(Backward(10));
+        Console.WriteLine(Skips(new List<int> { 1, 2, 3, 4, 5, 6, 7 }));
+        Console.WriteLine(Unwind(0));
+        Console.WriteLine(Unwind(1));
+        int s = 0; foreach (int v in Gen(5)) s += v;
+        Console.WriteLine(s);
+        Func<int, int> f = x => { int r = 0; start: r += x; x--; if (x > 0) goto start; return r; };
+        Console.WriteLine(f(4));
+        int state = 0;
+        switch (state) { case 0: goto case 1; case 1: Console.WriteLine("one"); goto finish; }
+        Console.WriteLine("skipped");
+    finish:
+        Console.WriteLine("end");
+    }
+}

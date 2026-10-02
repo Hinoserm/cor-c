@@ -27,11 +27,12 @@ public sealed partial class Lowering
             _e.Line = s.Line;
         }
 
-        if (_e.Closed)
+        if (_e.Closed && s is not LabeledStmt)
         {
             // Control already left: a return, throw, break or continue above.
             // Anything after it in the block is dead, and emitting it would
-            // start an unreachable block nobody jumps to.
+            // start an unreachable block nobody jumps to -- up to a label,
+            // which a goto reaches.
             return;
         }
 
@@ -42,6 +43,18 @@ public sealed partial class Lowering
                 int outside = _checkedDepth;
                 if (b.ArithmeticContext != 0)
                     _checkedDepth = b.ArithmeticContext == 1 ? 1 : 0;
+                // THE BLOCK'S LABELS, each a block of its own made afresh every
+                // time this block is emitted (a finally is emitted once for
+                // every way out of its try), with the handlers open where it
+                // is: a goto leaves the trys opened since.
+                Dictionary<LabeledStmt, (Block Target, int Depth)>? labels = null;
+                foreach (Stmt statement in b.Statements)
+                    for (Stmt? at = statement; at is LabeledStmt l; at = l.Body)
+                    {
+                        labels ??= new(ReferenceEqualityComparer.Instance);
+                        labels[l] = (_f.NewBlock("label"), _openHandlers.Count);
+                    }
+                if (labels is not null) _labelTargets.Add(labels);
                 try
                 {
                 // A LOCAL FUNCTION IS CALLABLE FROM THE TOP OF ITS BLOCK, which is
@@ -87,17 +100,42 @@ public sealed partial class Lowering
                         continue;
                     }
 
-                    _inBlockList = true;
-                    EmitStmt(inner);
-                    if (_e.Closed)
+                    if (_e.Closed && labels is null)
                     {
                         break;
                     }
+                    _inBlockList = true;
+                    EmitStmt(inner);
                 }
                 }
-                finally { _checkedDepth = outside; }
+                finally
+                {
+                    _checkedDepth = outside;
+                    if (labels is not null) _labelTargets.RemoveAt(_labelTargets.Count - 1);
+                }
                 break;
             }
+
+            case LabeledStmt labeled:
+                if (LabelTarget(labeled) is { } here)
+                {
+                    if (!_e.Closed) _e.Jump(here.Target);
+                    _e.SetBlock(here.Target);
+                }
+                EmitStmt(labeled.Body);
+                break;
+
+            case GotoStmt jump:
+                if (_b.Gotos.TryGetValue(jump, out LabeledStmt? label) && LabelTarget(label) is { } there)
+                {
+                    UnwindTo(there.Depth);
+                    _e.Jump(there.Target);
+                }
+                else
+                {
+                    Error(jump, $"goto {jump.Label} has no bound label");
+                }
+                break;
 
             case LocalDecl d:
                 EmitLocalDecl(d);
@@ -958,6 +996,16 @@ public sealed partial class Lowering
     /// register, which the finally blocks do not touch.
     /// </summary>
     private void UnwindToReturn() => UnwindTo(0);
+
+    /// <summary>The labels of the blocks being emitted, innermost last (AstBlock, GotoStmt).</summary>
+    private readonly List<Dictionary<LabeledStmt, (Block Target, int Depth)>> _labelTargets = new();
+
+    private (Block Target, int Depth)? LabelTarget(LabeledStmt label)
+    {
+        for (int k = _labelTargets.Count - 1; k >= 0; k--)
+            if (_labelTargets[k].TryGetValue(label, out var found)) return found;
+        return null;
+    }
 
     /// <summary>
     /// Leaves every try opened since <paramref name="depth"/> handlers were

@@ -175,6 +175,7 @@ public static class BodyTypeNames
                     return;
                 case UsingDeclStmt s: Statement(s.Declaration); return;
                 case WhileStmt s: Expression(s.Cond); Statement(s.Body); return;
+                case LabeledStmt s: Statement(s.Body); return;
                 default: return;
             }
         }

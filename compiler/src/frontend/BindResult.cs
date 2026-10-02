@@ -382,6 +382,8 @@ public sealed partial class BindResult
     /// </summary>
     public Dictionary<SwitchStmt, int> SwitchSubject { get; } = new(ReferenceEqualityComparer.Instance);
     public Dictionary<GotoCaseStmt, SwitchCase> GotoCases { get; } = new(ReferenceEqualityComparer.Instance);
+    /// <summary>Each `goto name;` and the labelled statement it reaches.</summary>
+    public Dictionary<GotoStmt, LabeledStmt> Gotos { get; } = new(ReferenceEqualityComparer.Instance);
     public HashSet<AssignExpr> DiscardAssignments { get; } = new(ReferenceEqualityComparer.Instance);
     public Dictionary<CallExpr, FieldSymbol> CapturedReceivers { get; } = new(ReferenceEqualityComparer.Instance);
     public HashSet<CallExpr> EnumHasFlags { get; } = new(ReferenceEqualityComparer.Instance);
@@ -556,6 +558,7 @@ public sealed partial class BindResult
         ForeachSlot.Clear();
         SwitchSubject.Clear();
         GotoCases.Clear();
+        Gotos.Clear();
         DiscardAssignments.Clear();
         CapturedReceivers.Clear();
         EnumHasFlags.Clear();
@@ -640,6 +643,7 @@ public sealed partial class BindResult
         CopyEntries(ForeachSlot, copy.ForeachSlot);
         CopyEntries(SwitchSubject, copy.SwitchSubject);
         CopyEntries(GotoCases, copy.GotoCases);
+        CopyEntries(Gotos, copy.Gotos);
         foreach (var item in DiscardAssignments) copy.DiscardAssignments.Add(item);
         CopyEntries(CapturedReceivers, copy.CapturedReceivers);
         foreach (var item in EnumHasFlags) copy.EnumHasFlags.Add(item);

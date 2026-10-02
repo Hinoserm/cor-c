@@ -4028,6 +4028,23 @@ public sealed class Parser
                 Expect(Tok.Semi, "';' after 'continue'");
                 return new ContinueStmt { Line = at.Line, Col = at.Col };
 
+            case Tok.Ident when Cur.Text == "goto" && Ahead().Kind == Tok.Ident:
+            {
+                _i++;
+                string label = Cur.Text;
+                _i++;
+                Expect(Tok.Semi, "';' after 'goto' and its label");
+                return new GotoStmt { Label = label, Line = at.Line, Col = at.Col };
+            }
+
+            // `name: statement`. Nothing else starts a statement with a name
+            // and a colon.
+            case Tok.Ident when Ahead().Kind == Tok.Colon:
+            {
+                _i += 2;
+                return new LabeledStmt { Label = at.Text, Body = ParseStmt(), Line = at.Line, Col = at.Col };
+            }
+
             case Tok.Ident when Cur.Text == "goto"
                                   && Ahead().Kind is Tok.KwCase or Tok.KwDefault:
             {

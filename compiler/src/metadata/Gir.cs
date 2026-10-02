@@ -226,6 +226,7 @@ public static class Gir
         Block = 1, Local = 2, ExprStmt = 3, If = 4, While = 5, Do = 6, For = 7,
         Foreach = 8, Return = 9, Break = 10, Continue = 11, Throw = 12,
         Switch = 13, Try = 14, GotoCase = 15, Deconstruct = 16, UsingDecl = 17, Yield = 18,
+        Goto = 19, Labeled = 20,
     }
 
     private enum E : byte
@@ -604,6 +605,17 @@ public static class Gir
 
                 case ContinueStmt:
                     U8((byte)S.Continue);
+                    break;
+
+                case GotoStmt g:
+                    U8((byte)S.Goto);
+                    Str(g.Label);
+                    break;
+
+                case LabeledStmt l:
+                    U8((byte)S.Labeled);
+                    Str(l.Label);
+                    Stmt(l.Body);
                     break;
 
                 case GotoCaseStmt g:
@@ -1491,6 +1503,15 @@ public static class Gir
 
                 case S.Continue:
                     return new ContinueStmt();
+
+                case S.Goto:
+                    return new GotoStmt { Label = Str() };
+
+                case S.Labeled:
+                {
+                    string label = Str();
+                    return new LabeledStmt { Label = label, Body = NeedStmt() };
+                }
 
                 case S.GotoCase:
                     return new GotoCaseStmt { IsDefault = U8() != 0, Value = Expr() };

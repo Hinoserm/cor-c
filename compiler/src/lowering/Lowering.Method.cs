@@ -470,6 +470,7 @@ public sealed partial class Lowering
                 }
                 break;
             case WhileStmt w: yield return w.Cond; yield return w.Body; break;
+            case LabeledStmt l: yield return l.Body; break;
             case DoStmt d: yield return d.Body; yield return d.Cond; break;
             case ForStmt f:
                 if (f.Init is not null)

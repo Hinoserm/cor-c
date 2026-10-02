@@ -4132,11 +4132,48 @@ public sealed partial class Binder
             _assigned.Add(symbol);
         }
 
+        bool labels = PushLabels(b);
         foreach (Stmt s in b.Statements)
         {
             CheckStmt(s);
         }
+        if (labels) _labels.RemoveAt(_labels.Count - 1);
         PopScope();
+    }
+
+    /// <summary>
+    /// A LABEL IS SEEN FROM THE WHOLE BLOCK it is written in, and every block
+    /// inside it, as C# has it: a goto may leave blocks, never enter one. A
+    /// lambda's or local function's body is another method, which no goto
+    /// crosses into or out of. True when the block had labels to push.
+    /// </summary>
+    private bool PushLabels(Block b)
+    {
+        Dictionary<string, LabeledStmt>? labels = null;
+        foreach (Stmt statement in b.Statements)
+            for (Stmt? at = statement; at is LabeledStmt l; at = l.Body)
+            {
+                labels ??= new(StringComparer.Ordinal);
+                if (labels.ContainsKey(l.Label) || VisibleLabel(l.Label) is not null)
+                    Error(l, $"the label '{l.Label}' is already declared in this scope");
+                labels[l.Label] = l;
+            }
+        if (labels is null) return false;
+        _labels.Add((_method, _thisType, labels));
+        return true;
+    }
+
+    private readonly List<(MethodSymbol? Method, TypeSymbol? Type, Dictionary<string, LabeledStmt> Labels)> _labels = new();
+
+    private LabeledStmt? VisibleLabel(string name)
+    {
+        for (int k = _labels.Count - 1; k >= 0; k--)
+        {
+            var (method, type, labels) = _labels[k];
+            if (!ReferenceEquals(method, _method) || !ReferenceEquals(type, _thisType)) break;
+            if (labels.TryGetValue(name, out LabeledStmt? found)) return found;
+        }
+        return null;
     }
 
     private void CheckStmt(Stmt s)
@@ -4635,6 +4672,19 @@ public sealed partial class Binder
                 }
                 break;
             }
+
+            case GotoStmt jump:
+                if (VisibleLabel(jump.Label) is { } labeled) _r.Gotos[jump] = labeled;
+                else Error(jump, $"no label '{jump.Label}' within the scope of the goto statement");
+                break;
+
+            // A LABEL JOINS whatever jumps to it with what falls into it, and
+            // what one path proved about a nullable the other may not have.
+            case LabeledStmt marked:
+                _notNull.Clear();
+                _notNullPaths.Clear();
+                CheckStmt(marked.Body);
+                break;
 
             case BreakStmt or ContinueStmt:
                 if (_loopDepth == 0)
@@ -6377,10 +6427,12 @@ public sealed partial class Binder
     {
         if (lam.BlockBody != null)
         {
+            bool labels = PushLabels(lam.BlockBody);
             foreach (Stmt s in lam.BlockBody.Statements)
             {
                 CheckStmt(s);
             }
+            if (labels) _labels.RemoveAt(_labels.Count - 1);
             return;
         }
 
@@ -13474,7 +13526,7 @@ public sealed partial class Binder
     /// </summary>
     private static bool Leaves(Stmt s) => s switch
     {
-        ReturnStmt or ThrowStmt or BreakStmt or ContinueStmt => true,
+        ReturnStmt or ThrowStmt or BreakStmt or ContinueStmt or GotoStmt => true,
         Block b => b.Statements.Count > 0 && Leaves(b.Statements[^1]),
         IfStmt i => i.Else != null && Leaves(i.Then) && Leaves(i.Else),
         _ => false,
@@ -13514,7 +13566,7 @@ public sealed partial class Binder
     private static bool ReachesAfterSwitch(Stmt s) => s switch
     {
         BreakStmt => true,
-        ReturnStmt or ThrowStmt or ContinueStmt => false,
+        ReturnStmt or ThrowStmt or ContinueStmt or GotoStmt => false,
         Block b => b.Statements.Count == 0 || ReachesAfterSwitch(b.Statements[^1]!),
         IfStmt i when i.Else is not null
             => ReachesAfterSwitch(i.Then) || ReachesAfterSwitch(i.Else),

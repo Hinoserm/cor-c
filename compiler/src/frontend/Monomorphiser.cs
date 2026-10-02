@@ -1653,6 +1653,12 @@ public sealed class Monomorphiser
             case ContinueStmt:
                 return new ContinueStmt { Line = s.Line, Col = s.Col };
 
+            case GotoStmt g:
+                return new GotoStmt { Label = g.Label, Line = g.Line, Col = g.Col };
+
+            case LabeledStmt l:
+                return new LabeledStmt { Label = l.Label, Body = Rewrite(l.Body, map), Line = l.Line, Col = l.Col };
+
             case GotoCaseStmt g:
                 return new GotoCaseStmt
                 {
