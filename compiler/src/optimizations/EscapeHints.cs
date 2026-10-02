@@ -233,7 +233,7 @@ public sealed partial class Escape
         hints.FieldSites.AddRange(_fieldSiteRecords);
         ThrowHints(m, hints);
         m.KeepCalls.UnionWith(_keep);
-        foreach (string helper in new[] { Freer, FieldFreer, ReplacedFreer, FieldKeeper, OwnedReplacedFreer, OwnedElements.Freer })
+        foreach (string helper in new[] { Freer, FieldFreer, ReplacedFreer, FieldKeeper, OwnedReplacedFreer, OwnedElements.Freer, StorageFreer })
             if (provided(helper)) hints.Helpers.Add(helper);
         return hints;
     }
@@ -281,7 +281,7 @@ public sealed partial class Escape
         }
     }
 
-    public static int RunAtLink(Function f, LinkFacts facts)
+    public static int RunAtLink(Function f, LinkFacts facts, Dictionary<string, DataItem>? descriptors = null)
     {
 
         // The facts are shared by every function of the unit, on every
@@ -292,6 +292,8 @@ public sealed partial class Escape
         };
         Dictionary<string, bool[]> summaries = facts.Escapes;
         bool canFree = facts.Helpers.Contains(Freer);
+        pass._storageFreer = facts.Helpers.Contains(StorageFreer);
+        pass._descriptors = descriptors;
         Dictionary<string, Function> byName = new(StringComparer.Ordinal) { [f.Name] = f };
         _inserted = pass._bookkeeping;
         // Its virtual calls, each as every override the image has for it,

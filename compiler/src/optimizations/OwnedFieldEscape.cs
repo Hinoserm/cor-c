@@ -107,10 +107,16 @@ internal sealed class OwnedFieldEscape
         long field = path[0].Offset;
         int width = path[0].Width;
         Defs defs = new(f);
+        // COPIES OF THE OWNER'S BYTES, whole field and all: a struct that holds
+        // the reference -- a foreach's enumerator, returned by value and copied
+        // into the frame slot the loop walks -- is the owner again wherever it
+        // was copied to, and is read there under the same rules.
+        Dictionary<FrameSlot, long> slots = new();
+        if (!FollowCopies(f, defs, addresses, slots, field, width)) return false;
         foreach (var b in f.Blocks)
         foreach (Instr i in b.Instrs)
         {
-            if (!IrInfo.Uses(i).Any(addresses.ContainsKey)) continue;
+            if (!IrInfo.Uses(i).Any(addresses.ContainsKey) && !NamesSlot(i, slots)) continue;
             if (i.Dest is { } alias && addresses.ContainsKey(alias)
                 && i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.Add or Opcode.Sub) continue;
             if (i.Op is Opcode.Load or Opcode.Store)
@@ -119,8 +125,12 @@ internal sealed class OwnedFieldEscape
                 // local child. ReadsOwner checks their ancestor paths too.
                 if (i.Op == Opcode.Store && receiverStores is not null && receiverStores.Contains(i)
                     && i.Operands[1] is RegOperand stored && addresses.ContainsKey(stored.Reg)) continue;
-                if (i.Operands[0] is not RegOperand baseReg || !addresses.TryGetValue(baseReg.Reg, out long start)) return false;
+                long start;
+                if (i.Operands[0] is RegOperand baseReg && addresses.TryGetValue(baseReg.Reg, out long fromRegister)) start = fromRegister;
+                else if (i.Operands[0] is SlotOperand baseSlot && slots.TryGetValue(baseSlot.Slot, out long fromSlot)) start = fromSlot;
+                else return false;
                 if (i.Op == Opcode.Store && i.Operands[1] is RegOperand value && addresses.ContainsKey(value.Reg)) return false;
+                if (i.Op == Opcode.Store && i.Operands[1] is SlotOperand storedSlot && slots.ContainsKey(storedSlot.Slot)) return false;
                 long at;
                 try { at = checked(start + i.Offset); }
                 catch (OverflowException) { return false; }
@@ -148,7 +158,8 @@ internal sealed class OwnedFieldEscape
             {
                 if (i.Callee is null || !_functions.TryGetValue(i.Callee, out Function? callee)) { LastRefusal = i; return false; }
                 for (int a = 0; a < i.Operands.Count; a++)
-                    if (i.Operands[a] is RegOperand arg && addresses.TryGetValue(arg.Reg, out long offset))
+                    if (i.Operands[a] is RegOperand arg && addresses.TryGetValue(arg.Reg, out long offset)
+                        || i.Operands[a] is SlotOperand argSlot && slots.TryGetValue(argSlot.Slot, out offset))
                     {
                         long relative;
                         try { relative = checked(field - offset); }
@@ -161,6 +172,7 @@ internal sealed class OwnedFieldEscape
             }
             if (i.Op == Opcode.MemSet && i.Operands[0] is RegOperand target && addresses.ContainsKey(target.Reg)
                 && !i.Operands.Skip(1).OfType<RegOperand>().Any(r => addresses.ContainsKey(r.Reg))) continue;
+            if (i.Op == Opcode.MemCopy && CopyIsFollowed(i, addresses, slots, field, width)) continue;
             if (IrInfo.IsIntCompare(i.Op)) continue;
             // No copies of the owner's bytes, indirect calls, syscalls,
             // variable field addresses, returns or unknown operations.
@@ -168,6 +180,104 @@ internal sealed class OwnedFieldEscape
             return false;
         }
         return true;
+    }
+
+    /// <summary>Where a memory operand of the owner (register or frame slot) starts in it; false when it is not one.</summary>
+    private static bool StartOf(Operand o, Dictionary<VReg, long> addresses, Dictionary<FrameSlot, long> slots, out long start)
+    {
+        start = 0;
+        return o is RegOperand r && addresses.TryGetValue(r.Reg, out start)
+            || o is SlotOperand s && slots.TryGetValue(s.Slot, out start);
+    }
+
+    private static bool NamesSlot(Instr i, Dictionary<FrameSlot, long> slots)
+    {
+        if (slots.Count == 0) return false;
+        foreach (Operand o in i.Operands) if (o is SlotOperand s && slots.ContainsKey(s.Slot)) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Every memcopy out of the owner that carries the whole field makes its
+    /// destination -- a register's block, or a frame slot and every register
+    /// holding its address -- one more place the owner's bytes are, at the
+    /// offset they were copied from. To a fixed point, for a copy of a copy.
+    /// False for a copy that takes part of the field, or puts the owner's
+    /// bytes at two different offsets of one place.
+    /// </summary>
+    private static bool FollowCopies(Function f, Defs defs, Dictionary<VReg, long> addresses, Dictionary<FrameSlot, long> slots,
+        long field, int width)
+    {
+        bool changed = true;
+        while (changed)
+        {
+            changed = false;
+            foreach (var b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+            {
+                if (i.Op != Opcode.MemCopy || i.Operands.Count != 3 || i.Operands[2] is not ImmOperand { Value: var length }
+                    || !StartOf(i.Operands[1], addresses, slots, out long from)) continue;
+                if (!(from < field + width && field < from + length)) continue;
+                if (field < from || field + width > from + length) return false;
+                // The destination as a slot, directly or through the one copy
+                // of its address that made the register.
+                FrameSlot? slot = i.Operands[0] as SlotOperand is { } direct ? direct.Slot : null;
+                if (i.Operands[0] is RegOperand target)
+                {
+                    if (addresses.TryGetValue(target.Reg, out long known))
+                    {
+                        if (known != from) return false;
+                    }
+                    else
+                    {
+                        foreach (var alias in Addresses(f, target.Reg))
+                        {
+                            if (addresses.TryGetValue(alias.Key, out long was) && was != alias.Value + from) return false;
+                            addresses[alias.Key] = alias.Value + from;
+                        }
+                        changed = true;
+                    }
+                    if (defs.IsSingle(target.Reg) && defs.Site(target.Reg) is { } site
+                        && site.Block.Instrs[site.Index] is { Op: Opcode.Copy, Operands: [SlotOperand { Slot: var held }] })
+                        slot = held;
+                }
+                if (slot is null) continue;
+                if (slots.TryGetValue(slot, out long at))
+                {
+                    if (at != from) return false;
+                    continue;
+                }
+                slots[slot] = from;
+                changed = true;
+                // Every register given the slot's address reads it too.
+                foreach (var sb in f.Blocks)
+                foreach (Instr c in sb.Instrs)
+                    if (c.Op == Opcode.Copy && c.Dest is { } d && c.Operands is [SlotOperand { Slot: var named }] && named == slot)
+                        foreach (var alias in Addresses(f, d))
+                        {
+                            if (addresses.TryGetValue(alias.Key, out long was) && was != alias.Value + from) return false;
+                            addresses[alias.Key] = alias.Value + from;
+                        }
+            }
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// A memcopy in or out of the owner that the field takes no part in, or
+    /// one FollowCopies followed: the destination already holds the owner's
+    /// bytes at the offset they came from. A copy INTO the owner over the
+    /// field, from anywhere else, is not.
+    /// </summary>
+    private static bool CopyIsFollowed(Instr i, Dictionary<VReg, long> addresses, Dictionary<FrameSlot, long> slots, long field, int width)
+    {
+        if (i.Operands.Count != 3 || i.Operands[2] is not ImmOperand { Value: var length }) return false;
+        bool fromOwner = StartOf(i.Operands[1], addresses, slots, out long from);
+        bool intoOwner = StartOf(i.Operands[0], addresses, slots, out long into);
+        bool readsField = fromOwner && from < field + width && field < from + length;
+        bool writesField = intoOwner && into < field + width && field < into + length;
+        if (!readsField && !writesField) return true;
+        return readsField && intoOwner && into == from && field >= from && field + width <= from + length;
     }
 
     private bool Safe(Function f, int parameter, IReadOnlyList<Field> path)

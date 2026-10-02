@@ -155,6 +155,8 @@ public sealed partial class Escape : IModulePass
         _foreignTypes = !m.PreserveExports && m.Entry is not null ? ForeignThrows(m, summaries) : new HashSet<string>(StringComparer.Ordinal) { "*" };
         bool Provided(string helper) => byName.ContainsKey(helper) || m.RuntimeHelpers.Contains(helper);
         bool canFree = Provided(Freer);
+        _storageFreer = Provided(StorageFreer);
+        _descriptors = _items ??= m.Data.ToDictionary(d => d.Name, StringComparer.Ordinal);
         bool canFreeFields = canFree && Provided(FieldFreer);
         _fieldSites = canFreeFields && Provided(FieldKeeper);
         // At the link's own run of a unit's late passes (Module.AtLink), a key
@@ -3031,13 +3033,17 @@ continue;
                 _promotedMade.Add(replacement[0]);
                 Record(f, new OwnedRecord { Origin = replacement[1], Root = i.Dest, SlotAddress = addr, Slot = slot, Renew = replacement[1], Bytes = bytes });
                 k += replacement.Count - 1;
-                if (i.Field == Instr.OwnsElements)
+                bool storage = _storageFreer && OwnsStorage(b, replacement[^1]);
+                if (i.Field == Instr.OwnsElements || storage)
                 {
                     // Its elements given back before the slot is filled again,
                     // and on every return; the slot's first word zeroed on
                     // entry, so the first such call finds no collection there.
+                    // Then its storage: the arrays a collection made in the
+                    // frame grows are the heap's (FreeStorageInFrame).
                     List<Instr> before = new();
                     AppendElementFree(f, before, i, addr, i.Line);
+                    if (storage) AppendStorageFree(f, before, addr, i.Line);
                     int renewAt = b.Instrs.IndexOf(replacement[1]);
                     b.Instrs.InsertRange(renewAt, before);
                     _bookkeeping.UnionWith(before);
@@ -3048,6 +3054,7 @@ continue;
                         VReg at = f.NewReg(IrTypes.Word, "elementsAt");
                         List<Instr> last = new() { new Instr { Op = Opcode.Copy, Dest = at, Operands = { new SlotOperand(slot) }, Line = exit.Instrs[^1].Line } };
                         AppendElementFree(f, last, i, at, exit.Instrs[^1].Line);
+                        if (storage) AppendStorageFree(f, last, at, exit.Instrs[^1].Line);
                         exit.Instrs.InsertRange(exit.Instrs.Count - 1, last);
                         _bookkeeping.UnionWith(last);
                     }
@@ -3069,6 +3076,39 @@ continue;
             }
         }
         }
+    }
+
+    /// <summary>The runtime's release of a frame-made collection's storage (Runtime.FreeStorageInFrame).</summary>
+    public const string StorageFreer = "m_Runtime_FreeStorageInFrame_1_V$Any";
+    private bool _storageFreer;
+    /// <summary>The type descriptors this pass can read: the module's, or the link's (RunAtLink).</summary>
+    private Dictionary<string, DataItem>? _descriptors;
+
+    /// <summary>
+    /// Whether the object made just before `made` -- whose vtable the next few
+    /// instructions store, `@t_T+vtable` -- is of a type that owns storage:
+    /// its descriptor's GC flags say so (Lowering's GcOwnsStorage).
+    /// </summary>
+    private bool OwnsStorage(Block b, Instr made)
+    {
+        if (_descriptors is null) return false;
+        int word = IrTypes.Word.Bytes();
+        int at = b.Instrs.IndexOf(made);
+        for (int k = at + 1; k < b.Instrs.Count && k <= at + 4; k++)
+        {
+            if (b.Instrs[k] is not { Op: Opcode.Store, Operands: [_, SymOperand { Name: var table, Offset: var offset }] }) continue;
+            if (!table.StartsWith("t_", StringComparison.Ordinal) || offset != 12 * word) return false;
+            if (!_descriptors.TryGetValue(table, out DataItem? descriptor) || descriptor.Bytes.Length < 10 * word) return false;
+            long flags = word == 8 ? BitConverter.ToInt64(descriptor.Bytes, 9 * word) : BitConverter.ToInt32(descriptor.Bytes, 9 * word);
+            return (flags & 2) != 0;
+        }
+        return false;
+    }
+
+    private static void AppendStorageFree(Function f, List<Instr> output, VReg pointer, int line)
+    {
+        VReg argument = Word(f, output, pointer, line, "storageOf");
+        output.Add(new Instr { Op = Opcode.Call, Callee = StorageFreer, Operands = { new RegOperand(argument) }, Line = line });
     }
 
     /// <summary>

@@ -166,6 +166,7 @@ public sealed class Inline : IParallelModulePass
             pinned.Add(Escape.ReplacedFreer);
             pinned.Add(Escape.OwnedReplacedFreer);
             pinned.Add(OwnedElements.Freer);
+            pinned.Add(Escape.StorageFreer);
             // What a program that needs no collector allocates and frees with.
             pinned.Add(Escape.ManualAllocator);
             pinned.Add(Escape.ManualObjectAllocator);

@@ -12300,7 +12300,34 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
         return false;
     }
 
-    public IEnumerator<T> GetEnumerator() { return new HashSetEnumerator<T>(this); }
+    /// .NET's HashSet<T>.Enumerator: a struct, so a foreach over a set
+    /// allocates nothing -- and the set it walks is not handed to an object
+    /// on the heap, which the lifetime rules took for the set escaping: every
+    /// snapshot set that was walked once went to the collector.
+    public struct Enumerator : IEnumerator<T>, IDisposable {
+        private readonly HashSet<T> over;
+        private int at;
+        private int slot;
+        internal Enumerator(HashSet<T> set) { over = set; at = -1; slot = -1; }
+        public T Current => over.items[slot];
+        object? IEnumerator.Current => Current;
+        public bool MoveNext() {
+            at = at + 1;
+            slot = over.SlotAt(at);
+            while (slot == -1) {
+                at = at + 1;
+                slot = over.SlotAt(at);
+            }
+            return slot >= 0;
+        }
+        public void Reset() { at = -1; slot = -1; }
+        public void Dispose() { }
+    }
+
+    public Enumerator GetEnumerator() { return new Enumerator(this); }
+
+    // Through the interface: an object, since an interface's enumerator is one.
+    IEnumerator<T> IEnumerable<T>.GetEnumerator() { return new HashSetEnumerator<T>(this); }
 
     public bool Remove(T value) {
         int i = Hash(value);

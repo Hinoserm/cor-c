@@ -438,6 +438,17 @@ static class Runtime
         if (collection is IOwnsElements owner) owner.FreeOwnedElements();
     }
 
+    /// A collection the compiler made in a frame instead of the heap (Escape's
+    /// promotion) gives its storage back when that copy dies or the slot is
+    /// filled again: the arrays it grew are the heap's, and went to the
+    /// collector with nothing to free them. Nothing there yet (a zero vtable
+    /// word, as the slot starts) is nothing to do.
+    public static void FreeStorageInFrame(object? collection)
+    {
+        if (collection == null || (Sys.Peek(Sys.Word(collection)) & WordSize.AddressMask) == 0) return;
+        if (collection is IOwnsStorage owner) owner.FreeStorage();
+    }
+
     /// Delegate equality. Two closures are the same delegate when they are
     /// the same class -- which, for a method group, means the same method,
     /// because the compiler names those classes by the method -- and hold

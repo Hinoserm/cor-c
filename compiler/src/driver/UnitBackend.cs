@@ -152,7 +152,7 @@ public sealed class UnitBackend : IUnitBackend
                 // Kept as it was, to be taken back if a free the pass places
                 // would run under a read of an owned field (RunAtLink's -1).
                 byte[]? before = Escape.ReadsOwnedField(function, link!) ? IrFunctionCodec.Write(function) : null;
-                int taken = Escape.RunAtLink(function, link!);
+                int taken = Escape.RunAtLink(function, link!, items);
                 if (taken < 0)
                 {
                     function = IrFunctionCodec.Read(before!, new IrReadBudget(64L * 1024 * 1024));
@@ -168,7 +168,7 @@ public sealed class UnitBackend : IUnitBackend
                 // with no free. The objects owned above are frees already,
                 // which this run takes for escapes and leaves alone.
                 byte[]? again = Escape.ReadsOwnedField(function, link!) ? IrFunctionCodec.Write(function) : null;
-                int more = Escape.RunAtLink(function, link!);
+                int more = Escape.RunAtLink(function, link!, items);
                 if (more < 0)
                 {
                     function = IrFunctionCodec.Read(again!, new IrReadBudget(64L * 1024 * 1024));
