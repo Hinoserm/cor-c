@@ -2224,6 +2224,14 @@ public sealed partial class Binder
     /// order between classes, which is a different problem and not one anything
     /// needs yet.
     /// </summary>
+    /// <summary>One statement in a block of its own: a scope for what it declares.</summary>
+    private static Stmt Scoped(Stmt one)
+    {
+        Block block = new() { Line = one.Line, Col = one.Col };
+        block.Statements.Add(one);
+        return block;
+    }
+
     /// <summary>
     /// Moves a type's STATIC field initialisers into a method that runs before
     /// the program does.
@@ -2311,7 +2319,10 @@ public sealed partial class Binder
             }
             else continue;
 
-            body.Add(new ExprStmt
+            // EACH INITIALISER ITS OWN SCOPE, as C# has it: two of them that
+            // each name a pattern's match `t` -- Escape's PromoteTrace and
+            // EscapeFields' FieldTrace -- are not one `t` declared twice.
+            body.Add(Scoped(new ExprStmt
             {
                 Expr = new AssignExpr
                 {
@@ -2320,7 +2331,7 @@ public sealed partial class Binder
                     Line = m.Line, Col = m.Col,
                 },
                 Line = m.Line, Col = m.Col,
-            });
+            }));
         }
         d.Members.AddRange(initializerMethods);
 
@@ -2411,7 +2422,7 @@ public sealed partial class Binder
                     continue;
             }
 
-            prologue.Add(new ExprStmt
+            prologue.Add(Scoped(new ExprStmt
             {
                 Expr = new AssignExpr
                 {
@@ -2424,7 +2435,7 @@ public sealed partial class Binder
                     Line = m.Line, Col = m.Col,
                 },
                 Line = m.Line, Col = m.Col,
-            });
+            }));
         }
 
         d.Members.AddRange(initializerMethods);

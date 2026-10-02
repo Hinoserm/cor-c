@@ -1,0 +1,33 @@
+// test: field_initializer_scopes
+// expect-exit: 0
+// expect-output:
+// aa 3 none 2 3
+//
+// Each field initialiser is a scope of its own, as in C#: two that each name
+// a pattern's match `t` -- in one part of a partial class or across its
+// parts, static or instance -- are not one `t` declared twice.
+
+using System;
+static partial class Cfg
+{
+    static string? Pick(string s) => s.Length > 1 ? s : null;
+    internal static readonly string? A = Pick("aa") is { Length: > 0 } t ? t : null;
+    internal readonly static int N = Pick("bbb") is string t ? t.Length : -1;
+}
+static partial class Cfg
+{
+    internal static readonly string? B = Pick("c") is { Length: > 0 } t ? t : "none";
+}
+class Inst
+{
+    public int X = "xy" is { Length: var t } ? t : 0;
+    public int Y = "xyz" is { Length: var t } ? t : 0;
+}
+static class P
+{
+    static void Main()
+    {
+        Inst i = new Inst();
+        Console.WriteLine(Cfg.A + " " + Cfg.N + " " + Cfg.B + " " + i.X + " " + i.Y);
+    }
+}
