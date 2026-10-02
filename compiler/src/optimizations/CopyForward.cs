@@ -28,16 +28,20 @@ public sealed class CopyForward : IPass
     {
         // Which slot each register is the address of, where a copy made it.
         Dictionary<VReg, FrameSlot> slotOf = new();
-        Dictionary<VReg, int> writes = new();
+        // Counted by register number: a dictionary of every register here,
+        // on every run, was the pass's largest allocation.
+        int[] writes = new int[f.RegCount];
         foreach (Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
                 if (i.Dest is not null)
                 {
-                    writes[i.Dest] = writes.GetValueOrDefault(i.Dest) + 1;
+                    writes[i.Dest.Id]++;
                     if (i.Op == Opcode.Copy && i.Operands is [SlotOperand s]) slotOf[i.Dest] = s.Slot;
                 }
-        foreach (VReg p in f.Params) writes[p] = writes.GetValueOrDefault(p) + 1;
-        foreach (VReg r in slotOf.Keys.ToList()) if (writes[r] != 1) slotOf.Remove(r);
+        foreach (VReg p in f.Params) writes[p.Id]++;
+        List<VReg>? twice = null;
+        foreach (VReg r in slotOf.Keys) if (writes[r.Id] != 1) (twice ??= new()).Add(r);
+        if (twice is not null) foreach (VReg r in twice) slotOf.Remove(r);
         if (slotOf.Count == 0) return;
 
         bool changed = true;
