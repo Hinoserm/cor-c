@@ -2086,6 +2086,21 @@ public sealed class RegionPointsTo : IModulePass
                 return;
 
             case Opcode.CallIndirect:
+                // THROUGH A TABLE NAMED OUTRIGHT -- the method read from a
+                // descriptor the devirtualiser put in place of the receiver's
+                // first word (`%t = copy @t_T+48; %m = load %t +108`): the one
+                // method there, or, where the descriptor has none in the slot,
+                // no call at all. Run as every target, a view's Count handed
+                // the view, and the list's new array with it, to code nobody
+                // follows.
+                if (ConstantTable(f, i) is var (table, slotAt) && _data.TryGetValue(table, out DataItem? named))
+                {
+                    foreach (DataReloc rel in named.Relocs)
+                        if (rel.Offset == slotAt && rel.Addend == 0) { Bind(copy, i, rel.Symbol, 1); return; }
+                    if (!named.Relocs.Any(rel => rel.Offset == slotAt)) return;
+                    Indirect(copy, i);
+                    return;
+                }
                 // A virtual call: each object it is made on runs the method
                 // its own descriptor names in the slot.
                 if (VirtualSlot(f, i) is long slot && Value(copy, i.Operands[1]) is int self and >= 0)
@@ -2423,6 +2438,18 @@ public sealed class RegionPointsTo : IModulePass
     }
 
     /// <summary>The method slot a virtual call reads, from its receiver's own descriptor; null for any other indirect call.</summary>
+    // The descriptor a call's method is read from when it is named outright,
+    // and the offset in it the method is read at; null when it is read through
+    // the receiver or any other way.
+    private (string Table, long At)? ConstantTable(Function f, Instr i)
+    {
+        if (i.Operands.Count < 2 || i.Operands[0] is not RegOperand { Reg: var target }) return null;
+        if (Single(f, target) is not { Op: Opcode.Load, Operands: [RegOperand { Reg: var table }] } method) return null;
+        if (Single(f, table) is not { Op: Opcode.Copy, Operands: [SymOperand { Name: var name, Offset: var at }] }) return null;
+        if (!(name.StartsWith("t_", StringComparison.Ordinal) || name.StartsWith("b_", StringComparison.Ordinal))) return null;
+        return (name, at + method.Offset);
+    }
+
     private long? VirtualSlot(Function f, Instr i)
     {
         if (i.Operands.Count < 2 || i.Operands[0] is not RegOperand { Reg: var target } || i.Operands[1] is not RegOperand { Reg: var self })

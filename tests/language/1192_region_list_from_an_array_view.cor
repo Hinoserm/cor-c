@@ -1,0 +1,49 @@
+// test: region_list_from_an_array_view
+// expect-exit: 0
+// expect-output:
+// 780000 given back True
+//
+// A list made from an array (`new List<Tok>(array)`) inside a boundary,
+// while a list of the same type is kept in a static: the array's view is
+// asked whether it is an ICollection<Tok> -- a call through a table the
+// devirtualiser named outright, where the view has no method -- and Count is
+// read through it the same way. Taken for calls nobody follows, they handed
+// the view and the new list's array to the unknown object, and every Tok
+// made in the boundary outlived it (RegionPointsTo.ConstantTable).
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+public sealed class Tok { public int A; public Tok? Next; public Tok(int a) { A = a; } }
+public static class Keep { public static List<Tok> All = new(); }
+public static class W
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static List<Tok> Make(int n) { List<Tok> l = new(); for (int i = 0; i < n; i++) l.Add(new Tok(i)); return l; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long Work(int n) => Use(Make(n));
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Use(List<Tok> made)
+    {
+        long s = 0;
+        for (int i = 0; i < made.Count; i++) made[i].Next = new Tok(-i);
+        // A list made from an array of them: the array's view is an
+        // IEnumerable<Tok>, asked whether it is an ICollection<Tok> first.
+        Tok[] array = new Tok[made.Count];
+        for (int i = 0; i < made.Count; i++) array[i] = made[i];
+        List<Tok> copy = new List<Tok>(array);
+        for (int i = 0; i < copy.Count; i++) s += copy[i].A * 2 + copy[i].Next!.A;
+        return s;
+    }
+}
+static class P
+{
+    static void Main()
+    {
+        List<Tok> kept = W.Make(40);
+        for (int i = 0; i < kept.Count; i++) Keep.All.Add(kept[i]);
+        long s = 0; long before = Gc.RegionFreedBytes;
+        for (int k = 0; k < 1000; k++) s += W.Work(40);
+        Console.WriteLine(s + " given back " + (Gc.RegionFreedBytes - before >= 2400000L));
+    }
+}
