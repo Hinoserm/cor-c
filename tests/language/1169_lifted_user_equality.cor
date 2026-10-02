@@ -1,0 +1,37 @@
+// test: lifted_user_equality
+// expect-exit: 0
+// expect-output:
+// True True True False False True False True False
+// calls 4
+//
+// `==` and `!=` lifted over a nullable struct whose type declares them, as
+// C# 12.4.8 has it: two empty values are equal, an empty one equals no
+// value, and two values are the operator's own answer (op_Inequality for
+// !=). Each side is evaluated once, in order, held in a subject of its own.
+
+using System;
+readonly record struct Path(int P, string C);
+struct Money
+{
+    public long Cents;
+    public static bool operator ==(Money a, Money b) => a.Cents == b.Cents;
+    public static bool operator !=(Money a, Money b) => a.Cents != b.Cents;
+    public override bool Equals(object? o) => o is Money m && m.Cents == Cents;
+    public override int GetHashCode() => (int)Cents;
+}
+static class P
+{
+    static int calls;
+    static Path? Find(int k) => k > 0 ? new Path(k, "x") : null;
+    static Path? Counted(int k) { calls++; return Find(k); }
+    static void Main()
+    {
+        Path? a = Find(1), b = Find(1), c = Find(2), n = Find(0), m = Find(-1);
+        Path here = new Path(1, "x");
+        Money? x = new Money { Cents = 5 }, y = null;
+        Console.WriteLine((a == b) + " " + (a != c) + " " + (n == m) + " " + (a == n) + " " + (a != here) + " " + (here == a) + " " + (x == y) + " " + (y == null) + " " + (x != new Money { Cents = 5 }));
+        bool same = Counted(1) == Counted(1);
+        bool differ = Counted(0) != Counted(2);
+        Console.WriteLine("calls " + calls + (same && differ ? "" : " wrong"));
+    }
+}

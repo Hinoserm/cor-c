@@ -17107,6 +17107,24 @@ public sealed partial class Binder
         long? lc = IntegerConstant(b.Left, l), rc = IntegerConstant(b.Right, r);
         MethodSymbol? found = Operator(l.Symbol, name, l, r, lc, rc) ?? Operator(r.Symbol, name, l, r, lc, rc);
 
+        // LIFTED, C# 12.4.8: `==` and `!=` over a nullable struct whose
+        // underlying type declares them -- `path != here` with ListPath? on
+        // either side. Each operand is evaluated once, in order, into a
+        // subject of its own (two PatternExprs, the outer read through
+        // Outer = 1); empty against empty is equal, empty against a value is
+        // not, and two values are the operator's own answer.
+        if (b.Op is BinOp.Eq or BinOp.Ne && (l.IsNullableValue || r.IsNullableValue)
+            && (found is null || !found.Params[0].Type.IsNullableValue && !found.Params[1].Type.IsNullableValue))
+        {
+            Type lu = l.IsNullableValue ? l.Underlying : l, ru = r.IsNullableValue ? r.Underlying : r;
+            if (lu.Symbol is { Kind: TypeKind.Struct } && lu.Equals(ru)
+                && Operator(lu.Symbol, name, lu, ru) is MethodSymbol op)
+            {
+                _r.Rewrites[b] = LiftedEquality(b, op, name, l.IsNullableValue, r.IsNullableValue);
+                return CheckExpr(_r.Rewrites[b]);
+            }
+        }
+
         if (found is null)
         {
             return null;
@@ -17126,6 +17144,54 @@ public sealed partial class Binder
 
         _r.Rewrites[b] = call;
         return CheckExpr(call);
+    }
+
+    /// <summary>
+    /// `a == b` or `a != b` lifted over nullable structs, each side held once:
+    /// for ==, both empty or both holding equal values by the operator; for
+    /// !=, its negation by the type's own op_Inequality. A side that is not
+    /// nullable always holds its value.
+    /// </summary>
+    private Expr LiftedEquality(BinaryExpr b, MethodSymbol op, string name, bool leftMay, bool rightMay)
+    {
+        Expr Held(int outer) => new SubjectExpr { Outer = outer, Line = b.Line, Col = b.Col };
+        Expr Has(int outer) => new MemberExpr { Target = Held(outer), Name = "HasValue", Line = b.Line, Col = b.Col };
+        Expr Value(int outer, bool may) => may ? new MemberExpr { Target = Held(outer), Name = "Value", Line = b.Line, Col = b.Col } : Held(outer);
+        Expr Bin(BinOp o, Expr x, Expr y) => new BinaryExpr { Op = o, Left = x, Right = y, Line = b.Line, Col = b.Col };
+        Expr Not(Expr x) => new UnaryExpr { Op = UnOp.Not, Operand = x, Line = b.Line, Col = b.Col };
+
+        CallExpr call = new()
+        {
+            Target = new MemberExpr { Target = Qualified(op.Owner.Key, b), Name = name, Line = b.Line, Col = b.Col },
+            Line = b.Line, Col = b.Col,
+        };
+        call.Args.Add(Value(1, leftMay));
+        call.ArgNames.Add(null);
+        call.Args.Add(Value(0, rightMay));
+        call.ArgNames.Add(null);
+
+        bool eq = b.Op == BinOp.Eq;
+        Expr test;
+        if (leftMay && rightMay)
+        {
+            // ==: same emptiness, and empty or equal.   !=: different emptiness, or held and unequal.
+            test = eq
+                ? Bin(BinOp.AndAlso, Bin(BinOp.Eq, Has(1), Has(0)), Bin(BinOp.OrElse, Not(Has(1)), call))
+                : Bin(BinOp.OrElse, Bin(BinOp.Ne, Has(1), Has(0)), Bin(BinOp.AndAlso, Has(1), call));
+        }
+        else
+        {
+            // One side always holds a value: the other must, and then the operator.
+            Expr has = Has(leftMay ? 1 : 0);
+            test = eq ? Bin(BinOp.AndAlso, has, call) : Bin(BinOp.OrElse, Not(has), call);
+        }
+
+        return new PatternExpr
+        {
+            Subject = b.Left,
+            Test = new PatternExpr { Subject = b.Right, Test = test, Line = b.Line, Col = b.Col },
+            Line = b.Line, Col = b.Col,
+        };
     }
 
     /// <summary>
