@@ -16336,7 +16336,11 @@ public sealed partial class Binder
                 // out.
                 if (c.Args[i] is RefArgExpr && m.Params[i].ByRef && !m.Params[i].ReadOnly)
                 {
-                    if (args[i].IsError || args[i].AsNonNullable().Equals(want.AsNonNullable())) continue;
+                    // Nullability aside all the way down: `out C?[]?` is the
+                    // `C[]` slot of a Dictionary of them, a class element's
+                    // mark being no more part of the type than the array's.
+                    if (args[i].IsError || args[i].AsNonNullable().Equals(want.AsNonNullable())
+                        || MethodSignatures.SameType(args[i].AsNonNullable(), want.AsNonNullable())) continue;
                     return false;
                 }
 
@@ -16628,6 +16632,7 @@ public sealed partial class Binder
             Type wantByRef = Close(best.Params[i].Type, bound);
 
             if (passed && !args[i].AsNonNullable().Equals(wantByRef.AsNonNullable())
+                && !MethodSignatures.SameType(args[i].AsNonNullable(), wantByRef.AsNonNullable())
                 && !args[i].IsError)
             {
                 Error(c.Args[i],

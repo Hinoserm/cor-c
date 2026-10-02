@@ -1,0 +1,22 @@
+// test: reference_element_marks_out_argument
+// expect-exit: 0
+// expect-output:
+// 4
+//
+// A Dictionary of `C?[]` hands its value to an `out C?[]?`: the element's
+// mark leaves the specialisation's name alone and its members' types as
+// written, so the out argument is the parameter's own type.
+
+using System;
+using System.Collections.Generic;
+class C { }
+static class P
+{
+    static void Main()
+    {
+        Dictionary<string, C?[]> map = new() { ["a"] = new C?[] { null, new C() } };
+        int n = map.TryGetValue("a", out C?[]? got) ? got.Length : -1;
+        foreach ((string k, C?[] v) in map) n += v.Length;
+        Console.WriteLine(n);
+    }
+}
