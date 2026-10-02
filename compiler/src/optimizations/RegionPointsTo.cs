@@ -342,9 +342,34 @@ public sealed class RegionPointsTo : IModulePass
         foreach (VReg p in f.Params) foreach (long l in _pts[Reg(c, p)]) Reach(l);
         foreach (long l in _pts[ReturnNode(c)]) Reach(l);
         while (next.TryDequeue(out int o))
+        {
             foreach (int cell in _cells[o].Values)
                 foreach (long l in _pts[cell]) Reach(l);
+            // A STATE MACHINE KEEPS WHAT ITS BODY SAVES across a suspension:
+            // the stores AsyncTransform writes later, followed now.
+            if (KeptBy().TryGetValue(o, out List<int>? machines))
+                foreach (int k in machines)
+                {
+                    foreach (int saved in _machines[k].Saved) foreach (long l in _pts[saved]) Reach(l);
+                    foreach (int slot in _machines[k].Slots) Reach(Loc(slot, 0));
+                }
+        }
         return reached;
+    }
+
+    private Dictionary<int, List<int>> KeptBy()
+    {
+        if (_keptBy is not null) return _keptBy;
+        _keptBy = new();
+        for (int k = 0; k < _machines.Count; k++)
+        {
+            // A machine nothing was seen to make is anything's: Global's.
+            HashSet<int> machines = _pts[_machines[k].Machine].Select(ObjectOf).ToHashSet();
+            if (machines.Count == 0) machines.Add(Global);
+            foreach (int o in machines)
+                (_keptBy.TryGetValue(o, out List<int>? l) ? l : _keptBy[o] = new()).Add(k);
+        }
+        return _keptBy;
     }
 
     // ---- building -----------------------------------------------------------
@@ -431,7 +456,64 @@ public sealed class RegionPointsTo : IModulePass
         foreach (Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
                 Constrain(copy, f, context, i);
+        if (f.Async is { Lowered: false } frame)
+        {
+            // A SUSPENSION SAVES INTO THE STATE MACHINE, and the async
+            // transform that writes those saves runs after this pass: every
+            // register live across a suspension, and every frame slot (each
+            // becomes a field of the machine), is kept by the machine for as
+            // long as the machine lives. Kept here as reachability only: the
+            // values a resumption reloads are the registers' own, so nothing
+            // flows that does not flow already.
+            List<int> saved = new();
+            foreach (VReg r in SavedAcrossSuspensions(f, frame)) saved.Add(Reg(copy, r));
+            List<int> slots = new();
+            foreach (FrameSlot slot in f.Slots) slots.Add(SlotObject(copy, slot));
+            _machines.Add((Reg(copy, frame.StateMachine), saved, slots));
+        }
         return copy;
+    }
+
+    // Each async or iterator body copy: its machine's node, and what the
+    // machine keeps -- the registers saved across a suspension, the slots.
+    private readonly List<(int Machine, List<int> Saved, List<int> Slots)> _machines = new();
+    // Which of those each object is a machine of (Global among them), once solved.
+    private Dictionary<int, List<int>>? _keptBy;
+
+    private readonly Dictionary<Function, List<VReg>> _saved = new();
+
+    /// <summary>
+    /// What an async or iterator body keeps in its state machine across a
+    /// suspension, as AsyncTransform will: every register live after a resume
+    /// marker, and every register a landing pad reads (the transform homes
+    /// those in the machine too, since no liveness reaches a pad).
+    /// </summary>
+    private List<VReg> SavedAcrossSuspensions(Function f, AsyncFrame frame)
+    {
+        if (_saved.TryGetValue(f, out List<VReg>? known)) return known;
+        Dictionary<int, VReg> registers = new();
+        foreach (VReg p in f.Params) registers[p.Id] = p;
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+            {
+                if (i.Dest is not null) registers[i.Dest.Id] = i.Dest;
+                foreach (Operand o in i.Operands) if (o is RegOperand { Reg: var u }) registers[u.Id] = u;
+            }
+        HashSet<VReg> saved = new();
+        Liveness liveness = new(f);
+        foreach (Block b in f.Blocks)
+        {
+            foreach ((Instr i, ulong[] liveAfter) in liveness.WalkBackwards(b))
+            {
+                if (!b.IsLandingPad && !(i.Op == Opcode.Call && i.Callee == AsyncFrame.Resume)) continue;
+                foreach (VReg r in registers.Values)
+                    if (r.Id < f.RegCount && Liveness.Test(liveAfter, r.Id)) saved.Add(r);
+                if (b.IsLandingPad)
+                    foreach (Operand o in i.Operands) if (o is RegOperand { Reg: var u }) saved.Add(u);
+            }
+        }
+        saved.Remove(frame.StateMachine);
+        return _saved[f] = saved.ToList();
     }
 
     private void Edge(int from, int to, long shift)

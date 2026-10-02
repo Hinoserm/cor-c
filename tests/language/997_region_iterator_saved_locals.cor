@@ -1,0 +1,70 @@
+// test: region_iterator_saved_locals
+// expect-exit: 0
+// expect-output:
+// steps 200 good 200
+// list 5 True
+//
+// What an iterator holds across a yield is kept by the iterator, and the
+// call that moves it one step on is no region for it. Next is handed the
+// enumerator and asks it for one element; the iterator made a block and a
+// list before its first yield and reads both back at every later step,
+// after a collection and after scratch made where a freed region would
+// have put them.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    static int Spoil(int round)
+    {
+        byte[] scratch = new byte[256];
+        for (int j = 0; j < scratch.Length; j++) scratch[j] = 0xEE;
+        return scratch[round & 255];
+    }
+
+    static IEnumerable<int> Walk(int steps)
+    {
+        byte[] block = new byte[256];
+        for (int j = 0; j < block.Length; j++) block[j] = (byte)(j * 3);
+        List<string> names = new List<string>();
+        for (int i = 0; i < steps; i++)
+        {
+            if (i % 40 == 0) names.Add("n" + i);
+            yield return i;
+            GC.Collect();
+            byte[] scratch = new byte[Size + (i & 1)];
+            for (int j = 0; j < scratch.Length; j++) scratch[j] = 0xEE;
+            if (scratch[i & 255] != Spoil(i)) Good = -1000;
+            bool same = names.Count == i / 40 + 1 && names[names.Count - 1] == "n" + (i / 40 * 40);
+            for (int j = 0; j < block.Length; j++)
+                if (block[j] != (byte)(j * 3)) same = false;
+            if (same) Good++;
+        }
+        Names = names;
+    }
+
+    static int Size = 256;
+    static int Good;
+    static List<string>? Names;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static bool Next(IEnumerator<int> e)
+    {
+        Spoil(7);
+        return e.MoveNext();
+    }
+
+    static void Main()
+    {
+        IEnumerator<int> e = Walk(200).GetEnumerator();
+        int steps = 0;
+        while (Next(e)) steps++;
+        Console.WriteLine("steps " + steps + " good " + Good);
+        bool ok = Names!.Count == 5;
+        for (int k = 0; k < Names.Count; k++)
+            if (Names[k] != "n" + k * 40) ok = false;
+        Console.WriteLine("list " + Names.Count + " " + ok);
+    }
+}

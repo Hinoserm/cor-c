@@ -1,0 +1,116 @@
+// test: region_async_frame_slots
+// expect-exit: 0
+// expect-output:
+// struct 60 60
+// finally 60
+// catch 58 caught7
+//
+// An async method's frame memory is a field of its state machine: a struct
+// local whose address is taken, a value a finally reads and one a catch
+// reads all live there across an await. None of them may be given to the
+// region a scheduler call opens around the step that made them. Each is
+// read back after the await, after a collection and after scratch has been
+// made where a freed region would have put them.
+
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+
+struct Pair
+{
+    public byte[] Bytes;
+    public int Seed;
+}
+
+static class Program
+{
+    static int Spoil(int round)
+    {
+        byte[] scratch = new byte[128];
+        for (int j = 0; j < scratch.Length; j++) scratch[j] = 0xEE;
+        return scratch[round & 127];
+    }
+
+    static void Fill(ref Pair p, int seed)
+    {
+        p.Seed = seed;
+        p.Bytes = new byte[128];
+        for (int j = 0; j < p.Bytes.Length; j++) p.Bytes[j] = (byte)(seed + j);
+    }
+
+    static bool Same(byte[] b, int seed)
+    {
+        for (int j = 0; j < b.Length; j++)
+            if (b[j] != (byte)(seed + j)) return false;
+        return true;
+    }
+
+    static async Task<int> InStruct(int rounds)
+    {
+        int good = 0;
+        for (int i = 0; i < rounds; i++)
+        {
+            Pair p = default;
+            Fill(ref p, i * 3);
+            await Task.Yield();
+            GC.Collect();
+            Spoil(i);
+            if (Same(p.Bytes, p.Seed)) good++;
+        }
+        return good;
+    }
+
+    static async Task<int> InFinally(int rounds)
+    {
+        int good = 0;
+        for (int i = 0; i < rounds; i++)
+        {
+            byte[] held = new byte[128];
+            for (int j = 0; j < held.Length; j++) held[j] = (byte)(i + j);
+            try
+            {
+                await Task.Yield();
+                GC.Collect();
+                Spoil(i);
+            }
+            finally
+            {
+                if (Same(held, i)) good++;
+            }
+        }
+        return good;
+    }
+
+    static async Task<string> InCatch(int rounds)
+    {
+        int good = 0;
+        string last = "";
+        for (int i = 0; i < rounds; i++)
+        {
+            byte[] held = new byte[128];
+            for (int j = 0; j < held.Length; j++) held[j] = (byte)(i * 7 + j);
+            string name = "caught" + (i % 10);
+            try
+            {
+                await Task.Yield();
+                GC.Collect();
+                Spoil(i);
+                throw new InvalidOperationException("x");
+            }
+            catch (InvalidOperationException)
+            {
+                if (Same(held, i * 7)) good++;
+                last = name;
+            }
+        }
+        return good + " " + last;
+    }
+
+    static async Task Main()
+    {
+        int s = await InStruct(60);
+        Console.WriteLine("struct " + s + " 60");
+        Console.WriteLine("finally " + await InFinally(60));
+        Console.WriteLine("catch " + await InCatch(58));
+    }
+}

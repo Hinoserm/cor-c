@@ -1,0 +1,88 @@
+// test: region_async_saved_locals
+// expect-exit: 0
+// expect-output:
+// first 1 157
+// second 9 157
+// keep 4 True
+// tags tag1 tag9
+//
+// What an async method holds across an await is kept by its state machine,
+// and no region a scheduler call opens around one step of it may free it.
+// Each step makes a block and a list entry, awaits, then -- in the step the
+// scheduler runs next -- collects, makes scratch of its own, and reads the
+// block back. The scratch is made where the freed block was, if the block
+// was given to that earlier step's region; every value read must still be
+// what was written before the await.
+
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static int Spoil(int round)
+    {
+        byte[] scratch = new byte[256];
+        for (int j = 0; j < scratch.Length; j++) scratch[j] = 0xEE;
+        return scratch[round & 255];
+    }
+
+    static bool Check(List<byte[]> keep)
+    {
+        for (int n = 0; n < keep.Count; n++)
+            for (int j = 0; j < keep[n].Length; j++)
+                if (keep[n][j] != (byte)(n * 5 + j)) return false;
+        return true;
+    }
+
+    static async Task<int> Hold(int seed, int rounds)
+    {
+        List<byte[]> keep = new List<byte[]>();
+        string tag = "tag" + seed;
+        int good = 0;
+        for (int i = 0; i < rounds; i++)
+        {
+            byte[] block = new byte[256];
+            for (int j = 0; j < block.Length; j++) block[j] = (byte)(i + seed + j);
+            if (i % 40 == 0)
+            {
+                byte[] kept = new byte[32];
+                for (int j = 0; j < kept.Length; j++) kept[j] = (byte)(keep.Count * 5 + j);
+                keep.Add(kept);
+            }
+
+            await Task.Yield();
+
+            GC.Collect();
+            if (Spoil(i) != 0xEE) return -1;
+            bool same = true;
+            for (int j = 0; j < block.Length; j++)
+                if (block[j] != (byte)(i + seed + j)) same = false;
+            if (same) good++;
+        }
+        Console.WriteLine((seed == 1 ? "first " : "second ") + seed + " " + good);
+        if (!Check(keep)) return -2;
+        return tag == "tag" + seed ? good : -3;
+    }
+
+    static async Task<string> Tag(int seed)
+    {
+        string tag = "tag" + seed;
+        await Task.Yield();
+        GC.Collect();
+        Spoil(seed);
+        return tag;
+    }
+
+    static async Task Main()
+    {
+        Task<int> a = Hold(1, 157);
+        int ga = await a;
+        Task<int> b = Hold(9, 157);
+        int gb = await b;
+        Console.WriteLine("keep 4 " + (ga == 157 && gb == 157));
+        string ta = await Tag(1);
+        string tb = await Tag(9);
+        Console.WriteLine("tags " + ta + " " + tb);
+    }
+}
