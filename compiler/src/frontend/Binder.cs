@@ -12134,6 +12134,9 @@ public sealed partial class Binder
                 _subject.Add((held, subject));
                 Type result = Type.Error;
                 bool first = true;
+                // Every arm's type, and whether two disagreed pending the rest (below).
+                List<(SwitchArm Arm, Type Type)>? armTypes = null;
+                List<SwitchArm>? undecided = null;
                 bool exhaustive = false;
                 Coverage covered = new();
                 bool sawTrue = false, sawFalse = false, sawNull = false, sawSome = false;
@@ -12370,7 +12373,25 @@ public sealed partial class Binder
                     }
                     else if (!result.IsError)
                     {
-                        Error(arm, $"this arm is '{value}' and the ones before it are '{result}'");
+                        // NOT YET A MISMATCH: C# types a switch expression by the
+                        // best common type of ALL its arms, and a later arm may
+                        // be the one the others convert to --
+                        // `o switch { R r => new R(), S s => new S(), _ => o }`
+                        // is an Operand. Decided once every arm is seen.
+                        undecided ??= new();
+                    }
+                    if (!value.IsError && value.Prim != Prim.NullLiteral) (armTypes ??= new()).Add((arm, value));
+                }
+
+                if (undecided is not null && !result.IsError)
+                {
+                    bool nullable = result.Nullable;
+                    Type? common = armTypes!.Select(a => a.Type).FirstOrDefault(t => armTypes!.All(a => Convertible(a.Type, t)));
+                    if (common is not null) result = nullable ? common.AsNullable() : common;
+                    else
+                    {
+                        (SwitchArm bad, Type badType) = armTypes!.First(a => !Convertible(a.Type, armTypes![0].Type));
+                        Error(bad, $"this arm is '{badType}' and the ones before it are '{armTypes![0].Type}'");
                         result = Type.Error;
                     }
                 }

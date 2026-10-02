@@ -4827,9 +4827,11 @@ public sealed class Parser
     /// </summary>
     private static bool Rereadable(Expr subject)
     {
+        // An element only when its index is as simple as its array: `a[i++]`
+        // read twice moved i twice.
         return subject is NameExpr or LiteralExpr or SubjectExpr
                        or MemberExpr { Target: NameExpr or ThisExpr }
-                       or IndexExpr { Target: NameExpr, Args.Count: 1 };
+                       or IndexExpr { Target: NameExpr, Args: [NameExpr or LiteralExpr] };
     }
 
     private Expr ParseValuePattern(Expr subject, Token at)
@@ -6404,22 +6406,33 @@ public sealed class Parser
         {
             _i++;
 
-            if (!Rereadable(left))
+            Expr right = ParseAssign();
+            AssignExpr Coalescing(Expr target) => new()
             {
-                throw Error("the left of '??=' must be a name, a field or an element: "
-                          + "anything else would be evaluated twice");
-            }
-
-            return new AssignExpr
-            {
-                Target = left,
-                Value = new BinaryExpr
-                {
-                    Op = BinOp.Coalesce, Left = left, Right = ParseAssign(),
-                    Line = at.Line, Col = at.Col,
-                },
+                Target = target,
+                Value = new BinaryExpr { Op = BinOp.Coalesce, Left = target, Right = right, Line = at.Line, Col = at.Col },
                 Line = at.Line, Col = at.Col,
             };
+            if (Rereadable(left)) return Coalescing(left);
+
+            // WHAT THE TARGET IS READ THROUGH IS EVALUATED ONCE, as C# has it:
+            // `Use(n).Loads ??= new()` calls Use once, and the field of what it
+            // answered is read and written. The object -- and an element's
+            // index -- is put somewhere first (SubjectExpr), and the target
+            // names it there.
+            if (left is MemberExpr { Target: { } owner } field)
+            {
+                MemberExpr through = new() { Target = new SubjectExpr { Line = at.Line, Col = at.Col }, Name = field.Name, Line = field.Line, Col = field.Col };
+                return new PatternExpr { Subject = owner, Test = Coalescing(through), Line = at.Line, Col = at.Col };
+            }
+            if (left is IndexExpr { Target: { } array, Args.Count: 1 } element)
+            {
+                IndexExpr through = new() { Target = new SubjectExpr { Outer = 1, Line = at.Line, Col = at.Col }, Line = element.Line, Col = element.Col };
+                through.Args.Add(new SubjectExpr { Line = at.Line, Col = at.Col });
+                PatternExpr index = new() { Subject = element.Args[0], Test = Coalescing(through), Line = at.Line, Col = at.Col };
+                return new PatternExpr { Subject = array, Test = index, Line = at.Line, Col = at.Col };
+            }
+            throw Error("the left of '??=' must be a name, a field or an element");
         }
 
         // Two questions, not one: is this an assignment at all, and if so is it

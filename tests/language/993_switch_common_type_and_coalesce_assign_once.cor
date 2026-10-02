@@ -1,0 +1,41 @@
+// test: switch_common_type_and_coalesce_assign_once
+// expect-exit: 0
+// expect-output:
+// R2 S6 O 2 2 1 1
+//
+// A switch expression is typed by the best common type of all its arms --
+// a later arm may be the one the others convert to -- and `??=` evaluates
+// what its target is read through once: a call it reads a field of, and an
+// element's index (`slots[at++] ??= ...` moves at once).
+
+using System;
+using System.Collections.Generic;
+public abstract class Op { }
+public sealed class R : Op { public int N; public R(int n) { N = n; } }
+public sealed class S : Op { public int K; public S(int k) { K = k; } }
+public sealed class Other : Op { }
+public sealed class Uses { public List<int>? Loads; }
+public static class Program
+{
+    static int calls;
+    static Dictionary<int, Uses> table = new();
+    static Uses Use(int n) { calls++; if (!table.TryGetValue(n, out Uses? u)) table[n] = u = new Uses(); return u; }
+    static Op Remap(Op o) => o switch { R r => new R(r.N + 1), S s => new S(s.K * 2), _ => o };
+    public static int Main()
+    {
+        Op[] ops = { new R(1), new S(3), new Other() };
+        string seen = "";
+        foreach (Op o in ops)
+        {
+            Op m = Remap(o);
+            seen += m switch { R r => "R" + r.N, S s => "S" + s.K, _ => "O" } + " ";
+        }
+        (Use(5).Loads ??= new()).Add(1);
+        (Use(5).Loads ??= new()).Add(2);
+        List<int>?[] slots = new List<int>?[2];
+        int at = 0;
+        (slots[at++] ??= new()).Add(9);
+        Console.WriteLine(seen + table[5].Loads!.Count + " " + calls + " " + at + " " + slots[0]!.Count);
+        return 0;
+    }
+}
