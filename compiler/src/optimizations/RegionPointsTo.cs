@@ -21,21 +21,20 @@ using Block = Corsac.Lang.Ir.Block;
 /// method's context-free copy. A virtual call runs, for each object it is
 /// made on, the method that object's own descriptor names.
 ///
-/// For now a report (CORSAC_REGION_REPORT=name,...: the boundaries to judge,
-/// by part of a function's name); nothing is changed.
+/// Boundaries are the compiler's choice (Nearest): for each object the
+/// lifetime passes left to the collector, the nearest call whose return it is
+/// proved not to outlive. corc --region-report says what was proved.
 /// </summary>
 public sealed class RegionPointsTo : IModulePass
 {
     public string Name => "region-points-to";
 
-    internal static readonly string? Report = Environment.GetEnvironmentVariable("CORSAC_REGION_REPORT") is { Length: > 0 } r ? r : null;
-
     /// <summary>
-    /// The boundaries to make regions of (CORSAC_REGION_BOUNDARIES=name,...,
-    /// by part of a function's name): for trying the proof on a program
-    /// while the choice of boundaries is not yet the compiler's own.
+    /// The boundaries to report on (corc --region-report NAME,...: by part of
+    /// a function's name): which allocations beneath each are proved dead by
+    /// its return and which outlive it. Null for no report.
     /// </summary>
-    internal static readonly string? Boundaries = Environment.GetEnvironmentVariable("CORSAC_REGION_BOUNDARIES") is { Length: > 0 } b ? b : null;
+    public string? Report { get; init; }
 
     public const string Enter = "m_Runtime_RegionEnter_1_V$NInt";
     public const string Leave = "m_Runtime_RegionLeave_1_V$NInt";
@@ -67,6 +66,9 @@ public sealed class RegionPointsTo : IModulePass
     private readonly List<(Function F, int Context)> _copies = new();
     private readonly Dictionary<(Function, int), int> _copyIds = new();
     private readonly List<int> _copyBase = new();
+    // Which copies call each copy, and which each calls.
+    private readonly List<HashSet<int>> _callers = new();
+    private readonly List<HashSet<int>> _callees = new();
     private readonly Dictionary<(int, Operand), int> _constants = new();
 
     // Nodes: a register of a copy, a copy's return, a cell. What each holds
@@ -88,10 +90,10 @@ public sealed class RegionPointsTo : IModulePass
 
     public void Run(Module m)
     {
-        if (Report is null && Boundaries is null || m.Entry is null) return;
-        if (Boundaries is not null && new[] { Enter, Leave, InRegion, Near }.Where(h => !m.Functions.Any(f => f.Name == h)).ToList() is { Count: > 0 } missing)
+        if (m.Entry is null) return;
+        if (new[] { Enter, Leave, InRegion, Near }.Where(h => !m.Functions.Any(f => f.Name == h)).ToList() is { Count: > 0 } missing)
         {
-            Console.Error.WriteLine("regions: no " + string.Join(", ", missing) + " in this program; nothing made a region");
+            if (Report is not null) Console.Error.WriteLine("regions: no " + string.Join(", ", missing) + " in this program; nothing made a region");
             return;
         }
         _m = m;
@@ -110,7 +112,7 @@ public sealed class RegionPointsTo : IModulePass
             return;
         }
         if (Report is not null) Judge();
-        if (Boundaries is not null) Apply();
+        Apply();
     }
 
     // ---- applying -------------------------------------------------------------
@@ -125,16 +127,15 @@ public sealed class RegionPointsTo : IModulePass
     /// </summary>
     private void Apply()
     {
-        string[] names = Boundaries!.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        HashSet<Function> chosenBoundaries = Nearest();
         List<int> boundaries = new();
         for (int c = 0; c < _copies.Count; c++)
-            if (_copies[c].F.Async is null && names.Any(n => _copies[c].F.Name.Contains(n, StringComparison.Ordinal)))
-                boundaries.Add(c);
+            if (chosenBoundaries.Contains(_copies[c].F)) boundaries.Add(c);
         if (boundaries.Count == 0) return;
 
         // For each boundary: what outlives it, and the copies beneath it.
         List<(HashSet<int> Outlives, HashSet<int> Beneath)> judged = new();
-        foreach (int c in boundaries) judged.Add((Outliving(c), Beneath(c)));
+        foreach (int c in boundaries) judged.Add((OutlivingOf(c), Beneath(c)));
 
         // Each site's objects, and the boundaries each is made beneath.
         Dictionary<Instr, List<int>> bySite = new(ReferenceEqualityComparer.Instance);
@@ -166,6 +167,7 @@ public sealed class RegionPointsTo : IModulePass
             }
             if (!ok || !anywhere) continue;
             chosen[site] = beside ? Near : InRegion;
+            if (Report is not null) Console.Error.WriteLine($"regions: {(beside ? "beside" : "region")} {f.Name} line {site.Line} {TypeOf(objects[0])}");
             if (beside) near++; else inRegion++;
         }
 
@@ -180,6 +182,46 @@ public sealed class RegionPointsTo : IModulePass
             if (opened.Add(_copies[c].F)) Open(_copies[c].F);
         Console.Error.WriteLine($"regions: {opened.Count} boundaries, {inRegion} sites in the innermost region, {near} beside their object");
     }
+
+    // Whether a function may be a boundary at all: not the entry, not a
+    // type's initialiser (run once, wherever first asked), not an async or
+    // iterator body (its frame outlives a return).
+    private bool MayBeBoundary(Function f) =>
+        f.Async is null && f.Name != _m.Entry && !f.Name.Contains("StaticInit", StringComparison.Ordinal);
+
+    /// <summary>
+    /// THE NEAREST CALL EACH OBJECT DIES IN: from the copy that makes it up
+    /// through its callers, nearest first, the first whose return it is
+    /// proved not to outlive.
+    /// </summary>
+    private HashSet<Function> Nearest()
+    {
+        const int Reach = 8;
+        HashSet<Function> found = new();
+        for (int o = 1; o < _objects.Count; o++)
+        {
+            var obj = _objects[o];
+            if (obj.Site?.Callee is not (Opt.Escape.Allocator or Opt.Escape.LeafAllocator or Opt.Escape.ObjectAllocator)) continue;
+            int made = CopyIdOfObject(o);
+            if (made < 0) continue;
+            Dictionary<int, int> depth = new() { [made] = 0 };
+            Queue<int> next = new();
+            next.Enqueue(made);
+            while (next.TryDequeue(out int c))
+            {
+                Function f = _copies[c].F;
+                if (MayBeBoundary(f) && !OutlivingOf(c).Contains(o)) { found.Add(f); break; }
+                if (depth[c] >= Reach) continue;
+                foreach (int caller in _callers[c])
+                    if (depth.TryAdd(caller, depth[c] + 1)) next.Enqueue(caller);
+            }
+        }
+        if (Report is not null) foreach (Function f in found) Console.Error.WriteLine($"regions: boundary chosen {f.Name}");
+        return found;
+    }
+
+    private readonly Dictionary<int, HashSet<int>> _outliving = new();
+    private HashSet<int> OutlivingOf(int c) => _outliving.TryGetValue(c, out HashSet<int>? known) ? known : _outliving[c] = Outliving(c);
 
     private static Instr Retarget(Function f, Instr alloc, string helper)
     {
@@ -305,6 +347,8 @@ public sealed class RegionPointsTo : IModulePass
         _copies.Add((f, context));
         _copyIds[(f, context)] = copy;
         _copyBase.Add(_pts.Count);
+        _callers.Add(new HashSet<int>());
+        _callees.Add(new HashSet<int>());
         for (int k = 0; k <= f.RegCount; k++) NewNode();
         if (context >= 0) Add(Reg(copy, f.Params[0]), Loc(context, 0));
         foreach (Block b in f.Blocks)
@@ -539,6 +583,8 @@ public sealed class RegionPointsTo : IModulePass
         int dest = i.Dest is null ? -1 : Reg(copy, i.Dest);
         void To(int callee)
         {
+            _callers[callee].Add(copy);
+            _callees[copy].Add(callee);
             Function g = _copies[callee].F;
             for (int k = 0; k < args.Count && k < g.Params.Count; k++)
                 if (args[k] >= 0) Edge(args[k], Reg(callee, g.Params[k]), 0);
@@ -642,7 +688,7 @@ public sealed class RegionPointsTo : IModulePass
 
     private void Judge()
     {
-        string[] wanted = Report!.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        string[] wanted = Report.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         long locations = 0;
         foreach (HashSet<long> p in _pts) locations += p.Count;
         Console.Error.WriteLine($"regions: {_copies.Count} function copies, {_objects.Count} objects, {_pts.Count} nodes, {locations} locations held, {_steps} steps");
@@ -677,28 +723,15 @@ public sealed class RegionPointsTo : IModulePass
             : _copyIds.TryGetValue((obj.F!, -1), out int d) ? d : -1;
     }
 
+    // The copies a copy calls, transitively, and itself.
     private HashSet<int> Beneath(int start)
     {
-        Dictionary<Function, List<int>> copiesOf = new();
-        foreach (var ((cf, _), id) in _copyIds) (copiesOf.TryGetValue(cf, out List<int>? l) ? l : copiesOf[cf] = new()).Add(id);
         HashSet<int> seen = new() { start };
         Queue<int> next = new();
         next.Enqueue(start);
         while (next.TryDequeue(out int c))
-        {
-            Function f = _copies[c].F;
-            foreach (Block b in f.Blocks)
-                foreach (Instr i in b.Instrs)
-                {
-                    IEnumerable<string> callees = i.Op == Opcode.Call && i.Callee is { } one ? new[] { one }
-                        : i.Op == Opcode.CallIndirect && _indirect is not null && _indirect.TryGetValue(i, out string[]? t) ? t
-                        : Array.Empty<string>();
-                    foreach (string callee in callees)
-                        if (_byName.TryGetValue(callee, out Function? g) && copiesOf.TryGetValue(g, out List<int>? ids))
-                            foreach (int id in ids)
-                                if (seen.Add(id)) next.Enqueue(id);
-                }
-        }
+            foreach (int callee in _callees[c])
+                if (seen.Add(callee)) next.Enqueue(callee);
         return seen;
     }
 

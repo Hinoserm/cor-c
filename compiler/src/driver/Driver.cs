@@ -168,6 +168,9 @@ public static class Driver
               --jobs <count>     compiler task workers (positive count; default 1)
               --no-opt           skip the optimiser
               --opt-size         use experimental size-oriented inlining budgets
+              --region-report <names> say, for the boundaries whose names hold one of
+                                 these (comma-separated), which allocations their return
+                                 is proved to leave dead
               --experimental-batch enable the staged large-batch optimizer checkpoint
               --batch-without <pass> omit one experimental pass for regression isolation
               --experimental-ssa run verified SSA optimisations after the default pipeline
@@ -377,7 +380,7 @@ public static class Driver
             {
                 if (args[i] is "-o" or "--target" or "--entry" or "--link-shared" or "--base" or "--tag" or "--map"
                     or "--load" or "--paddr" or "--cpu" or "--tune" or "--fpu" or "--with" or "--asm-entry"
-                    or "--ref" or "--libdir" or "--runpath" or "--trace-opt" or "--batch-without"
+                    or "--ref" or "--libdir" or "--runpath" or "--trace-opt" or "--batch-without" or "--region-report"
                     or "-D" or "--define" or "--jobs" or "--decl-index" or "--assembly" or "--dependency-file" or "--main-type"
                     or "--subsystem" or "--resources" or "--icon-resource" or "--using")
                 {
@@ -652,7 +655,7 @@ public static class Driver
                 !args.Contains("--no-stackmaps"),
                 new(true, m.NoCollector, m.CallsCollector, m.LeavesLinkHints, args.Contains("--opt-size"), args.Contains("--experimental-batch"),
                     m.RuntimeHelpers.ToArray()));
-            Optimise(module, Value(args, "--trace-opt"), args.Contains("--experimental-ssa"), args.Contains("--opt-size"), args.Contains("--experimental-batch"), Value(args, "--batch-without"), workers, beforeLate);
+            Optimise(module, Value(args, "--trace-opt"), args.Contains("--experimental-ssa"), args.Contains("--opt-size"), args.Contains("--experimental-batch"), Value(args, "--batch-without"), workers, beforeLate, Value(args, "--region-report"));
             Phase("optimise");
             if (args.Contains("--dump-opt"))
             {
@@ -1167,9 +1170,9 @@ public static class Driver
     /// backend. Heavier passes slot in here as they arrive.
     /// </summary>
     private static void Optimise(Module module, string? traced = null, bool experimentalSsa = false, bool optimizeSize = false, bool experimentalBatch = false, string? batchWithout = null, int workers = 1,
-        Action<Module>? beforeLate = null)
+        Action<Module>? beforeLate = null, string? regionReport = null)
     {
-        Corsac.Lang.Opt.Pipeline pipeline = Corsac.Lang.Opt.Pipeline.Default(optimizeSize: optimizeSize, experimentalBatch: experimentalBatch);
+        Corsac.Lang.Opt.Pipeline pipeline = Corsac.Lang.Opt.Pipeline.Default(optimizeSize: optimizeSize, experimentalBatch: experimentalBatch, regionReport: regionReport);
         pipeline.Workers = workers;
         pipeline.BeforeLate = beforeLate;
         if (batchWithout is not null)
