@@ -769,8 +769,13 @@ public sealed class RegionPointsTo : IModulePass
                 return;
 
             // What this does not follow -- a system call's answer, a frame's
-            // or the stack's address, a label's -- may be anything.
+            // or the stack's address, a label's -- may be anything; and what
+            // a system call is handed, the kernel may keep and hand back
+            // later (an event's data, a thread's argument).
             case Opcode.Syscall:
+                foreach (Operand o in i.Operands) Leak(Value(copy, o));
+                if (dest >= 0) Add(dest, Loc(Global, Any));
+                return;
             case Opcode.FramePointer:
             case Opcode.StackPointer:
             case Opcode.LabelAddr:
