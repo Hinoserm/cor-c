@@ -4136,6 +4136,10 @@ static class Gc
             // NO PAGE TO BE HAD -- the cap, the ceiling: a free block of the
             // mixed heap serves as well, at the class's size.
             long block = TakeFree(ClassSize(c));
+            if (block == 0 && AdoptTail(ClassSize(c)))
+            {
+                block = TakeBump(ClassSize(c));
+            }
             if (block != 0)
             {
                 ZeroWords(block + HeaderBytes, block + SizeOfBlock(block) - FooterBytes);
@@ -4383,6 +4387,40 @@ static class Gc
         // minor collection walks and sweeps it (generations, below).
         HeapChunks.YoungAt(block);
         return block;
+    }
+
+    /// A CHUNK'S UNBUMPED TAIL, taken when nothing else answers. A sweep
+    /// lowers a chunk's end over the dead blocks at its top, and that space
+    /// was reachable only while the chunk was current: a capped heap with
+    /// megabytes of it answered a 56-byte request with out of memory
+    /// (252_concurrent_mark, once in a loaded run). The chunk being left
+    /// gives its own tail to the free lists first, as Grow's does.
+    static bool AdoptTail(long need)
+    {
+        long chunk = HeapChunks.Newest();
+        while (chunk != 0)
+        {
+            if (chunk != _current && HeapChunks.Limit(chunk) - HeapChunks.End(chunk) >= need)
+            {
+                if (_current != 0)
+                {
+                    long tail = _limit - _bump;
+                    if (tail >= Smallest)
+                    {
+                        Stamp(_bump, tail, FlagFree);
+                        Link(_bump);
+                        _bump = _limit;
+                    }
+                    HeapChunks.SetEnd(_current, _bump);
+                }
+                _current = chunk;
+                _bump = HeapChunks.End(chunk);
+                _limit = HeapChunks.Limit(chunk);
+                return true;
+            }
+            chunk = HeapChunks.Next(chunk);
+        }
+        return false;
     }
 
     static long TakeBump(long need)
