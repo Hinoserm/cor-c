@@ -184,7 +184,9 @@ public static class RegionSummary
                     // (RegionPointsTo.Walked).
                     bool constant = i.Operands.Count == 2 && i.Operands[1] is ImmOperand && !Walked(i);
                     long by = constant ? ((ImmOperand)i.Operands[1]).Value * (i.Op == Opcode.Sub ? -1 : 1) : RegionConstraint.Any;
-                    foreach (Operand o in i.Operands) Copy(dest, Value(o), by);
+                    // An index scaled into an address never brings the
+                    // unknown object (RegionPointsTo.IndexShift).
+                    foreach (Operand o in i.Operands) Copy(dest, Value(o), ScaledIndex(i, o) ? RegionConstraint.Index : by);
                     return;
                 }
 
@@ -343,6 +345,12 @@ public static class RegionSummary
             return Defs().TryGetValue(r, out Instr? w) && w is { Op: Opcode.Trunc64 or Opcode.Copy } && w.Operands[0] is RegOperand { Reg: var from }
                 && Derives(from, made, depth + 1);
         }
+
+        // Whether operand `o` of addition `i` is an index scaled into an
+        // address (RegionPointsTo.ScaledIndex).
+        private bool ScaledIndex(Instr i, Operand o) =>
+            i.Operands.Count == 2 && i.Operands.All(x => x is RegOperand) && o is RegOperand { Reg: var r }
+            && Defs().TryGetValue(r, out Instr? w) && w is { Op: Opcode.Shl, Operands: [RegOperand, ImmOperand { Value: > 0 }] };
 
         // Whether an address computation's source is a join its own result
         // flows back into: `p = phi(start, next); next = p + 4`.

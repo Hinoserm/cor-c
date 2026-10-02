@@ -90,6 +90,9 @@ public sealed class RegionPointsTo : IModulePass
     // asked for), and whether its cells were folded into the any-offset one.
     private readonly List<int> _allCells = new();
     private readonly List<bool> _collapsed = new();
+    // And a node holding what a read at any offset reads (ReadAnywhere):
+    // every cell but a stamped object's stamp (-1 until asked for).
+    private readonly List<int> _readCells = new();
 
     // Function copies: a function in a context (-1: none).
     private readonly List<(Function F, int Context)> _copies = new();
@@ -130,7 +133,33 @@ public sealed class RegionPointsTo : IModulePass
     // a pointer, stepped through memory where Walked cannot see the loop,
     // made every object a location per step.
     private static long Shifted(long loc, long shift) =>
-        shift == long.MinValue || OffsetOf(loc) is not 0 ? Loc(ObjectOf(loc), Any) : Loc(ObjectOf(loc), shift);
+        shift is long.MinValue or IndexShift || OffsetOf(loc) is not 0 ? Loc(ObjectOf(loc), Any) : Loc(ObjectOf(loc), shift);
+
+    /// <summary>
+    /// AN INDEX ADDED TO AN ADDRESS: an operand of an addition of two
+    /// registers made by shifting left by a constant -- an element's index
+    /// scaled by its size -- moves the address anywhere in its object, and is
+    /// never the address: a pointer shifted left is no pointer until it is
+    /// shifted right again, and what is shifted right (or multiplied) holds
+    /// nothing already (Constrain's default). What the index holds goes on
+    /// (a value tagged and kept), but not the unknown object: a count read
+    /// from where nobody follows, or a number an array of tuples holds beside
+    /// a reference, made every element written at it written where nobody
+    /// follows (1180's split positions). RegionConstraint.Index at the link.
+    /// </summary>
+    private const long IndexShift = Corsac.Lang.Lto.RegionConstraint.Index;
+
+    // A location carried along an edge: moved, or dropped (IndexShift).
+    private void AddShifted(int to, long loc, long shift)
+    {
+        if (shift == IndexShift && ObjectOf(loc) == Global) return;
+        Add(to, Shifted(loc, shift));
+    }
+
+    /// <summary>Whether operand `o` of addition `i` is an index scaled into an address (IndexShift).</summary>
+    private bool ScaledIndex(Function f, Instr i, Operand o) =>
+        i.Operands.Count == 2 && i.Operands.All(x => x is RegOperand) && o is RegOperand { Reg: var r }
+        && Single(f, r) is { Op: Opcode.Shl, Operands: [RegOperand, ImmOperand { Value: > 0 }] };
 
     public void Run(Module m)
     {
@@ -1572,6 +1601,7 @@ public sealed class RegionPointsTo : IModulePass
         _cellWatchers.Add(null);
         _allCells.Add(-1);
         _collapsed.Add(false);
+        _readCells.Add(-1);
         return _objects.Count - 1;
     }
 
@@ -1586,6 +1616,7 @@ public sealed class RegionPointsTo : IModulePass
         cells[offset] = node;
         if (HoldsNoReference(o, offset)) _noReference[node] = true;
         if (_allCells[o] >= 0) Edge(node, _allCells[o], 0);
+        if (_readCells[o] >= 0 && offset != 0) Edge(node, _readCells[o], 0);
         // A cell read at any offset reads this one too; one written at any
         // offset is read wherever this one is.
         if (offset != Any)
@@ -1662,6 +1693,34 @@ public sealed class RegionPointsTo : IModulePass
         if (HoldsNoReference(o, Any)) _noReference[all] = true;
         foreach (int cell in _cells[o].Values.ToArray()) Edge(cell, all, 0);
         return all;
+    }
+
+    /// <summary>
+    /// WHAT A READ AT ANY OFFSET READS: every cell of the object -- but the
+    /// stamp of one a descriptor stamps, which an element read never reads.
+    /// The word at offset 0 of such an object is written only by its stamp
+    /// (Stamp: one store of the descriptor's address there, from the one
+    /// writer of the site's register); a store at any offset still reaches
+    /// every read through the any-offset cell. The descriptor is read-only
+    /// data, read at its own offset (a virtual call's slot, a cast's check),
+    /// and nothing is ever stored through it. Read with the elements, the
+    /// address was the unknown object in every element read: every string a
+    /// string[] held (Split's words) was the unknown, and so was every number
+    /// an array of tuples held beside a reference -- 1180's split positions,
+    /// with which the list of tokens was written: each element the address
+    /// of a list's element was made from, as an index, was stored where
+    /// nobody follows. The link's solver reads the same (RegionSolver.ReadAnywhere).
+    /// </summary>
+    private int ReadAnywhere(int o)
+    {
+        if (_collapsed[o] || Stamp(o) is null) return AllCells(o);
+        if (_readCells[o] >= 0) return _readCells[o];
+        Cell(o, Any);
+        int read = NewNode();
+        _readCells[o] = read;
+        if (HoldsNoReference(o, Any)) _noReference[read] = true;
+        foreach (var (offset, cell) in _cells[o].ToArray()) if (offset != 0) Edge(cell, read, 0);
+        return read;
     }
 
     /// <summary>Run `act` for every cell of an object, now and later.</summary>
@@ -1784,13 +1843,17 @@ public sealed class RegionPointsTo : IModulePass
         from = Find(from);
         to = Find(to);
         if (from == to && shift == 0) return;
-        // A node that holds no reference holds the unknown at most, and
-        // gives no more: no edge, only that.
-        if (_noReference[from] || _noReference[to]) { Add(to, Loc(Global, Any)); return; }
+        // A node that holds no reference holds the unknown at most (Held),
+        // and gives no more -- and only once something is put in it, as the
+        // link's solver has it (RegionSolver.Edge): a word only ever written
+        // numbers holds nothing anyone follows. Given the unknown along every
+        // such edge at once, a list's count was the unknown, so was the
+        // address of its element at that count, and every element List.Add
+        // stored was stored where nobody follows: 1180's tokens, 1100's.
         if (!NewEdge(from, to, shift)) return;
         _edgeCount++;
         LocSet held = _pts[from];
-        if (from == to) { foreach (int id in held.Ids()) Add(to, Shifted(_locs[id], shift)); return; }
+        if (from == to) { foreach (int id in held.Ids()) AddShifted(to, _locs[id], shift); return; }
         // Walked in place: what is added goes to another node.
         if (held.Bits is { } bits)
         {
@@ -1798,12 +1861,12 @@ public sealed class RegionPointsTo : IModulePass
                 for (ulong word = bits[w]; word != 0; word &= word - 1)
                 {
                     int id = w * 64 + System.Numerics.BitOperations.TrailingZeroCount(word);
-                    if (shift == 0) Held(to, id); else Add(to, Shifted(_locs[id], shift));
+                    if (shift == 0) Held(to, id); else AddShifted(to, _locs[id], shift);
                 }
             return;
         }
         for (int k = 0; k < held.Count; k++)
-            if (shift == 0) Held(to, held.Few![k]); else Add(to, Shifted(_locs[held.Few![k]], shift));
+            if (shift == 0) Held(to, held.Few![k]); else AddShifted(to, _locs[held.Few![k]], shift);
     }
 
     // An edge not had before, recorded: a short list searched while short,
@@ -1901,7 +1964,7 @@ public sealed class RegionPointsTo : IModulePass
             if (o == Global) { Add(dest, Loc(Global, Any)); return; }
             long at = OffsetOf(l) == Any ? Any : OffsetOf(l) + offset;
             if (at is < 0 or > FarthestField) at = Any;
-            Edge(at == Any ? AllCells(o) : Cell(o, at), dest, 0);
+            Edge(at == Any ? ReadAnywhere(o) : Cell(o, at), dest, 0);
         });
     }
 
@@ -1955,7 +2018,7 @@ public sealed class RegionPointsTo : IModulePass
                 bool constant = i.Operands.Count == 2 && i.Operands[1] is ImmOperand && !Walked(f, i);
                 long by = constant ? ((ImmOperand)i.Operands[1]).Value * (i.Op == Opcode.Sub ? -1 : 1) : long.MinValue;
                 foreach (Operand o in i.Operands)
-                    if (Value(copy, o) is int v and >= 0) Edge(v, dest, by);
+                    if (Value(copy, o) is int v and >= 0) Edge(v, dest, ScaledIndex(f, i, o) ? IndexShift : by);
                 return;
             }
 
@@ -2008,8 +2071,18 @@ public sealed class RegionPointsTo : IModulePass
                         int o = ObjectOf(l);
                         if (!seen.Add(o)) return;
                         if (o != Global && Stamp(o) is var (table, at) && _data.TryGetValue(table, out DataItem? d))
+                        {
                             foreach (DataReloc rel in d.Relocs)
                                 if (rel.Offset == at + slot && rel.Addend == 0) { Bind(copy, i, rel.Symbol, 1, o); return; }
+                            // NO METHOD IN THE SLOT: its type does not have
+                            // the method -- an interface it does not implement,
+                            // tested for first -- and the call is never made
+                            // on it. Run as every target, it was a call nobody
+                            // follows: 1180's view of an array, which a List
+                            // is made from when it is an ICollection<T>, and
+                            // its CopyTo was handed the list's new array.
+                            if (!d.Relocs.Any(rel => rel.Offset == at + slot)) return;
+                        }
                         // An object whose descriptor is not known here -- the
                         // unknown one, one kept in a frame slot, one whose
                         // stamp was not found -- runs any of the call's targets.
@@ -2084,7 +2157,9 @@ public sealed class RegionPointsTo : IModulePass
             }
             if (ds == Any || dd == Any || od == Global)
             {
-                if (anyPairs.Add((os, od))) Edge(AllCells(os), Cell(od, Any), 0);
+                // From any offset, what a read there reads (ReadAnywhere): a
+                // struct copied out of an array of them.
+                if (ds == Any ? anyPairs.Add((~os, od)) : anyPairs.Add((os, od))) Edge(ds == Any ? ReadAnywhere(os) : AllCells(os), Cell(od, Any), 0);
                 return;
             }
             EachCell(os, (offset, cell) =>
@@ -2101,7 +2176,7 @@ public sealed class RegionPointsTo : IModulePass
         void Into(long src)
         {
             if (ObjectOf(src) == Global) Add(through, Loc(Global, Any));
-            else Edge(AllCells(ObjectOf(src)), through, 0);
+            else Edge(OffsetOf(src) == Any ? ReadAnywhere(ObjectOf(src)) : AllCells(ObjectOf(src)), through, 0);
         }
         void OutOf(long dst) => Edge(through, Cell(ObjectOf(dst), Any), 0);
         bool Summarised()
@@ -2371,12 +2446,25 @@ public sealed class RegionPointsTo : IModulePass
                 if (i.Op == Opcode.Store && i.Offset == 0 && i.Operands.Count >= 2
                     && i.Operands[1] is SymOperand { Name: var t, Offset: var at }
                     && (obj.Slot is not null ? i.Operands[0] is SlotOperand { Slot: var s0 } && s0 == obj.Slot
+                            || i.Operands[0] is RegOperand { Reg: var at0 } && AddressOf(obj.F, at0, obj.Slot, 0)
                         : i.Operands[0] is RegOperand { Reg: var to } && Derives(obj.F, to, made!, 0)))
                 {
                     if (found is { } f0 && (f0.Item1 != t || f0.Item2 != at)) many = true;
                     found = (t, at);
                 }
         return _stamps[key] = many ? null : found;
+    }
+
+    // Whether register `r` is the address of frame slot `slot`: an object
+    // the lifetime passes placed in the frame is stamped through a register
+    // that copies the slot's address (`%o = copy &slot; store %o @t_T+48`),
+    // as a site's object is through the site's register -- a view of an
+    // array an interface call is made on (ICollection<T>.CopyTo, 1180).
+    private bool AddressOf(Function f, VReg r, FrameSlot slot, int depth)
+    {
+        if (depth > 3 || Single(f, r) is not { Op: Opcode.Trunc64 or Opcode.Copy or Opcode.ZExt32 or Opcode.SExt32 } w) return false;
+        return w.Operands[0] is SlotOperand { Slot: var s } ? s == slot
+            : w.Operands[0] is RegOperand { Reg: var from } && AddressOf(f, from, slot, depth + 1);
     }
 
     private bool Derives(Function f, VReg r, VReg made, int depth)
@@ -2430,7 +2518,7 @@ public sealed class RegionPointsTo : IModulePass
                 {
                     (int to, long shift) = edges[e];
                     if (shift == 0) foreach (int id in delta) Held(to, id);
-                    else foreach (int id in delta) Add(to, Shifted(_locs[id], shift));
+                    else foreach (int id in delta) AddShifted(to, _locs[id], shift);
                 }
             if (_watchers[node] is { } watchers)
                 foreach (int id in delta)
@@ -2658,7 +2746,64 @@ public sealed class RegionPointsTo : IModulePass
             }
             Console.Error.WriteLine($"regions: boundary {f.Name} ctx {context}: {local} local, {kept} outlive it");
             foreach (string line in lines) Console.Error.WriteLine(line);
+            // WHY THE PROGRAM'S OWN OBJECTS OUTLIVE IT: the chain from what
+            // keeps each -- a static, what the boundary is handed or hands
+            // back -- to it.
+            Dictionary<int, int> from = WhyReached(c);
+            SortedSet<string> why = new(StringComparer.Ordinal);
+            for (int o = 1; o < _objects.Count; o++)
+            {
+                var obj = _objects[o];
+                if (obj.Site is null || obj.F!.FromLibrary || !reached.Contains(o) || !beneath.Contains(CopyIdOfObject(o))) continue;
+                List<string> chain = new();
+                for (int at = o, n = 0; n < 12 && from.TryGetValue(at, out int up); at = up, n++)
+                {
+                    chain.Add(Describe(at));
+                    if (up < 0) { chain.Add(up == -1 ? "a static, or code nobody follows" : "the boundary's parameters or return"); break; }
+                }
+                chain.Reverse();
+                why.Add("  kept    " + string.Join(" -> ", chain));
+            }
+            foreach (string line in why) Console.Error.WriteLine(line);
         }
+    }
+
+    // For each object copy `c`'s Outliving reaches: the object it was reached
+    // from, -1 for Global itself, -2 for what `c` is handed or hands back.
+    private Dictionary<int, int> WhyReached(int c)
+    {
+        Function f = _copies[c].F;
+        Dictionary<int, int> from = new();
+        Queue<int> next = new();
+        from[Global] = -1;
+        next.Enqueue(Global);
+        void Start(long l)
+        {
+            if (from.TryAdd(ObjectOf(l), -2)) next.Enqueue(ObjectOf(l));
+        }
+        while (next.TryDequeue(out int o))
+            foreach (int to in _pointsInto![o])
+                if (from.TryAdd(to, o)) next.Enqueue(to);
+        foreach (VReg p in f.Params) foreach (long l in _pts[Reg(c, p)]) Start(l);
+        foreach (long l in _pts[ReturnNode(c)]) Start(l);
+        while (next.TryDequeue(out int o))
+            foreach (int to in _pointsInto![o])
+                if (from.TryAdd(to, o)) next.Enqueue(to);
+        return from;
+    }
+
+    // An object as the report names it: its site, and the object or call it
+    // was made for.
+    private string Describe(int o, int depth = 0)
+    {
+        var obj = _objects[o];
+        if (o == Global) return "Global";
+        string what = obj.Site is not null ? $"{obj.F!.Name} line {obj.Site.Line} {TypeOf(o)}"
+            : obj.Slot is not null ? $"slot {obj.Slot.Name} of {obj.F!.Name}" : "?";
+        if (obj.Site is not null && obj.Context >= 0 && depth < 2) what += " [of " + Describe(obj.Context, depth + 1) + "]";
+        else if (obj.Site is not null && IsCallContext(obj.Context)) what += " [called from line " + CallContextAt(obj.Context).Site.Line + "]";
+        else if (obj.Site is not null && obj.Context == -1 && IsInstance(obj.F!)) what += " [no object's]";
+        return what;
     }
 
     // The copy an object was made in: its function in its context.

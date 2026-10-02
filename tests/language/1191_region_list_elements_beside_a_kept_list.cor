@@ -1,0 +1,99 @@
+// test: region_list_elements_beside_a_kept_list
+// expect-exit: 0
+// expect-output:
+// work 780000 True
+// kept 3 39
+// churn ok 3 39
+//
+// A list made by another function, filled and dropped beneath a boundary,
+// gives its elements back with the boundary's region, while another list of
+// the same type is kept in a static. Every List<T> of a reference type runs
+// the one shared Add, Grow and indexer; each list's array and the elements
+// stored in it are that list's (the points-to analysis's object context), so
+// the static list keeps only its own. The count a list's Add reads is a
+// number, never where an element is stored: read as the unknown object, the
+// address of the element at that count was the unknown too, and every
+// element any list held outlived every boundary. What a call gives back is
+// told from what the same work gives back over Toks it did not make.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public sealed class Tok
+{
+    public int A;
+    public string Text;
+    public Tok(int a, string text) { A = a; Text = text; }
+}
+
+public static class Keep
+{
+    public static List<Tok> All = new();
+}
+
+public static class W
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static List<Tok> Make(int n)
+    {
+        List<Tok> l = new();
+        for (int i = 0; i < n; i++) l.Add(new Tok(i, "t"));
+        return l;
+    }
+
+    // The same list, of Toks it did not make: the kept ones.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static List<Tok> Again(int n)
+    {
+        List<Tok> l = new();
+        for (int i = 0; i < n; i++) l.Add(Keep.All[i]);
+        return l;
+    }
+
+    // The boundary: both lists, and every Tok, are dead by its return.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long Work(int n) => Sum(Make(n));
+
+    // The same work over the kept Toks: what it gives back is the lists'.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long Over(int n) => Sum(Again(n));
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static long Sum(List<Tok> made)
+    {
+        List<Tok> odd = new();
+        for (int i = 0; i < made.Count; i++) if ((made[i].A & 1) == 1) odd.Add(made[i]);
+        long s = 0;
+        for (int i = 0; i < made.Count; i++) s += made[i].A;
+        for (int i = 0; i < odd.Count; i++) s += odd[i].Text.Length - 1;
+        return s;
+    }
+}
+
+static class P
+{
+    // GIVEN BACK BY THE PROGRAM, in bytes: one free at a time (some 16 bytes
+    // each at the least) or a region at once -- neither is the collector's.
+    static long Given() => Gc.Frees * 16 + Gc.RegionFreedBytes;
+
+    static void Main()
+    {
+        List<Tok> kept = W.Make(40);
+        for (int i = 0; i < kept.Count; i++) Keep.All.Add(kept[i]);
+        long s = 0, over = 0, before = Given();
+        for (int k = 0; k < 1000; k++) s += W.Work(40);
+        long work = Given() - before;
+        before = Given();
+        for (int k = 0; k < 1000; k++) over += W.Over(40);
+        long lists = Given() - before;
+        // Forty Toks a call, a thousand calls, some 16 bytes each at the least.
+        Console.WriteLine("work " + s + " " + (over == s && work - lists >= 40L * 1000 * 16));
+        Console.WriteLine("kept " + Keep.All[3].A + " " + Keep.All[39].A);
+        // What was given back made again, many times over: the kept list's
+        // elements must be untouched by it.
+        long churn = 0;
+        for (int k = 0; k < 2000; k++) churn += W.Work(40);
+        Console.WriteLine("churn " + (churn == 2000L * 780 ? "ok" : "bad " + churn) + " " + Keep.All[3].A + " " + Keep.All[39].A);
+    }
+}

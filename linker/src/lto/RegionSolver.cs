@@ -283,6 +283,9 @@ public static class RegionSolver
         // asked for), and whether its cells were folded into the any-offset one.
         private readonly List<int> _allCells = new();
         private readonly List<bool> _collapsed = new();
+        // And a node holding what a read at any offset reads (ReadAnywhere):
+        // every cell but a stamped object's stamp (-1 until asked for).
+        private readonly List<int> _readCells = new();
 
         // Locations: an object and an offset (Any: anywhere in it).
         private readonly Dictionary<long, int> _locations = new();
@@ -453,6 +456,7 @@ public static class RegionSolver
             _objectWatchers.Add(null);
             _allCells.Add(-1);
             _collapsed.Add(false);
+            _readCells.Add(-1);
             return _objectFunction.Count - 1;
         }
 
@@ -570,8 +574,17 @@ public static class RegionSolver
             if (shift == 0) return loc;
             int o = _locationObject[loc], offset = _locationOffset[loc];
             if (o == Global) return loc;
-            if (shift == RegionConstraint.Any || offset != 0 || shift > FarthestField || shift < -FarthestField) return Location(o, Any);
+            if (shift is RegionConstraint.Any or RegionConstraint.Index || offset != 0 || shift > FarthestField || shift < -FarthestField) return Location(o, Any);
             return Location(o, shift);
+        }
+
+        // A location carried along a copy: moved, or -- the unknown object
+        // along an index scaled into an address (RegionConstraint.Index,
+        // RegionPointsTo.IndexShift) -- dropped.
+        private void AddShifted(int to, int loc, long shift)
+        {
+            if (shift == RegionConstraint.Index && _locationObject[loc] == Global) return;
+            Add(to, Shifted(loc, shift));
         }
 
         /// <summary>The node of one of an object's cells, made on first use.</summary>
@@ -591,6 +604,7 @@ public static class RegionSolver
             _cellNode[loc] = node;
             if (HoldsNoReference(o, _locationOffset[loc])) _noReference[node] = true;
             if (_allCells[o] >= 0) Edge(node, _allCells[o], 0);
+            if (_readCells[o] >= 0 && _locationOffset[loc] != 0) Edge(node, _readCells[o], 0);
             if (fixedOffset)
             {
                 // A cell written at any offset is read wherever this one is.
@@ -632,6 +646,27 @@ public static class RegionSolver
             if (_objectCells[o] is { } cells)
                 foreach (int loc in cells.ToArray()) Edge(Cell(loc), all, 0);
             return all;
+        }
+
+        /// <summary>
+        /// WHAT A READ AT ANY OFFSET READS (RegionPointsTo.ReadAnywhere): every
+        /// cell of the object but the stamp of one its site stamps with a
+        /// descriptor -- read-only data, written there by the stamp alone and
+        /// read at its own offset. Read with the elements, it was the unknown
+        /// object in every element read.
+        /// </summary>
+        private int ReadAnywhere(int o)
+        {
+            if (_collapsed[o] || o == Global || _objectSite[o] < 0 || _functions[_objectFunction[o]].Sites[_objectSite[o]].Table is null) return AllCells(o);
+            if (_readCells[o] >= 0) return Rep(_readCells[o]);
+            int any = Cell(Location(o, Any));
+            int read = NewNode();
+            _readCells[o] = read;
+            if (HoldsNoReference(o, Any)) _noReference[read] = true;
+            Edge(any, read, 0);
+            if (_objectCells[o] is { } cells)
+                foreach (int loc in cells.ToArray()) if (_locationOffset[loc] != 0) Edge(Cell(loc), read, 0);
+            return read;
         }
 
         /// <summary>
@@ -746,7 +781,7 @@ public static class RegionSolver
             if (shift == 0) _edgesSinceCollapse++;
             if (_pts[from] is not { } pts) return;
             // The unknown object's cell takes what escapes while this walks (Saturate).
-            if (from == to || from == Rep(Cell(GlobalLocation))) { foreach (int loc in pts.ToArray()) Add(to, Shifted(loc, shift)); return; }
+            if (from == to || from == Rep(Cell(GlobalLocation))) { foreach (int loc in pts.ToArray()) AddShifted(to, loc, shift); return; }
             // Walked in place: what is added goes to another node.
             for (int b = 0; b < pts.Blocks; b++)
             {
@@ -754,7 +789,7 @@ public static class RegionSolver
                 for (ulong bits = pts.BitsAt(b); bits != 0; bits &= bits - 1)
                 {
                     int loc = key + System.Numerics.BitOperations.TrailingZeroCount(bits);
-                    Add(to, shift == 0 ? loc : Shifted(loc, shift));
+                    if (shift == 0) Add(to, loc); else AddShifted(to, loc, shift);
                 }
             }
         }
@@ -780,7 +815,7 @@ public static class RegionSolver
             int cell = Location(o, at);
             // A read at any offset reads one node per object, not an edge
             // from every cell to every such read.
-            Edge(_locationOffset[cell] == Any ? AllCells(o) : Cell(cell), dest, 0);
+            Edge(_locationOffset[cell] == Any ? ReadAnywhere(o) : Cell(cell), dest, 0);
         }
 
         private void Store(int baseNode, long offset, int value)
@@ -839,7 +874,7 @@ public static class RegionSolver
         {
             int o = _locationObject[src];
             if (o == Global) Add(r.Through, GlobalLocation);
-            else Edge(AllCells(o), r.Through, 0);
+            else Edge(_locationOffset[src] == Any ? ReadAnywhere(o) : AllCells(o), r.Through, 0);
         }
 
         private void OutOf(MemCopyRecord r, int dst) => Edge(r.Through, Cell(Location(_locationObject[dst], Any)), 0);
@@ -856,7 +891,9 @@ public static class RegionSolver
             // A copy at any offset depends only on the two objects.
             if (ds == Any || dd == Any || od == Global)
             {
-                if (r.AnyPairs.Add(((long)os << 32) | (uint)od)) Edge(AllCells(os), Cell(Location(od, Any)), 0);
+                // From any offset, what a read there reads (ReadAnywhere).
+                if (r.AnyPairs.Add(((long)(ds == Any ? ~os : os) << 32) | (uint)od))
+                    Edge(ds == Any ? ReadAnywhere(os) : AllCells(os), Cell(Location(od, Any)), 0);
                 return;
             }
             EachCell(os, new Watcher { To = od, From = ds, At = dd, Count = r.Count });
@@ -1037,7 +1074,7 @@ public static class RegionSolver
         private void Propagate(int node, int loc)
         {
             if (_edges[node] is { } edges)
-                for (int e = 0; e < edges.Count; e++) Add(edges[e].To, Shifted(loc, edges[e].Shift));
+                for (int e = 0; e < edges.Count; e++) AddShifted(edges[e].To, loc, edges[e].Shift);
             Uses? uses = _uses[node];
             if (uses is null) return;
             if (uses.Loads is { } loads)

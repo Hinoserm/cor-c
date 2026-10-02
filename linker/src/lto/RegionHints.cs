@@ -337,6 +337,12 @@ public readonly record struct RegionConstraint(RegionConstraintKind Kind, int A,
 {
     /// <summary>A copy's shift, or a copy's count, when it is no constant.</summary>
     public const long Any = long.MinValue;
+    /// <summary>
+    /// A copy's shift when B is an index scaled into an address
+    /// (RegionPointsTo.IndexShift): anywhere in its object, as Any, and
+    /// never the unknown object.
+    /// </summary>
+    public const long Index = long.MinValue + 1;
 }
 
 /// <summary>
