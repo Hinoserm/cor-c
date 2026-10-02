@@ -1938,6 +1938,15 @@ continue;
 
         HashSet<VReg>? pending = null;
         RegisterWrites? writes = null;
+        // FRAME MEMORY HOLDING THE OBJECT: a struct made for a moment -- the
+        // Enumerator `foreach` keeps, lowered as a block the pass then puts
+        // in the frame -- or a frame slot it is copied into. A pointer stored
+        // there has not left: what is loaded back out is the object again,
+        // and the holder itself must go nowhere but other frame memory.
+        // Each holder register: the block or slot it addresses (its root)
+        // and how far into it; each root: the offsets that hold the object.
+        Dictionary<VReg, (object Root, long Delta)>? holderRegs = null;
+        Dictionary<object, HashSet<long>>? held = null;
         bool changed = true;
         while (changed && !flow.Escapes)
         {
@@ -1957,6 +1966,12 @@ continue;
                     if (i.Op == Opcode.Store && _inserted?.Contains(i) == true)
                     {
                         continue;
+                    }
+
+                    if (held is not null && TouchesHolder(i))
+                    {
+                        HolderUse(i);
+                        if (flow.Escapes) { flow.Why ??= i; break; }
                     }
 
                     // The operands read directly: IrInfo.Uses is an iterator, and
@@ -2030,7 +2045,8 @@ continue;
                             if (i.Operands[1] is RegOperand v && flow.Derived.Contains(v.Reg)
                                 && (ownedStores is null || !ownedStores.Contains(i)))
                             {
-                                flow.Escapes = true;
+                                if (i.Op == Opcode.Store && HolderAt(i.Operands[0], 0) is var (root, delta)) Hold(root, delta + i.Offset);
+                                else flow.Escapes = true;
                             }
                             break;
 
@@ -2289,6 +2305,120 @@ continue;
 
         return flow;
 
+        bool TouchesHolder(Instr i)
+        {
+            foreach (Operand o in i.Operands)
+                if (Holding(o) is not null) return true;
+            return false;
+        }
+
+        // The root and offset of a holder already holding the object, or null.
+        (object Root, long Delta)? Holding(Operand o)
+        {
+            if (o is SlotOperand { Slot: var slot }) return held!.ContainsKey(slot) ? (slot, 0) : null;
+            return o is RegOperand { Reg: var r } && holderRegs!.TryGetValue(r, out var at) ? at : null;
+        }
+
+        // What may hold the object, and where in it: a frame slot, or a block
+        // made here by the allocator (not a leaf's), through copies and
+        // constant field addresses, every register of the chain written once.
+        // Its registers are remembered, so every use of them is judged.
+        (object Root, long Delta)? HolderAt(Operand o, int depth)
+        {
+            if (o is SlotOperand { Slot: var slot }) return (slot, 0);
+            if (depth > 4 || o is not RegOperand { Reg: var r }) return null;
+            holderRegs ??= new();
+            if (holderRegs.TryGetValue(r, out var known)) return known;
+            writes ??= new(f);
+            if (!writes.TryGetValue(r, out WriteList ws) || ws.Count != 1) return null;
+            Instr w = ws[0];
+            (object Root, long Delta)? at = w.Op switch
+            {
+                Opcode.Call when w.Callee is Allocator or ObjectAllocator && w.Dest is not null => (w.Dest, 0),
+                Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 => HolderAt(w.Operands[0], depth + 1),
+                Opcode.Add when w.Operands[1] is ImmOperand plus && HolderAt(w.Operands[0], depth + 1) is var (root, delta)
+                    => (root, delta + plus.Value),
+                _ => null,
+            };
+            if (at is not null)
+            {
+                holderRegs[r] = at.Value;
+                if (at.Value.Root is VReg made && made != r) holderRegs.TryAdd(made, (made, 0));
+                changed = true;
+            }
+            return at;
+        }
+
+        void Hold(object root, long offset)
+        {
+            held ??= new();
+            holderRegs ??= new();
+            if (!held.TryGetValue(root, out HashSet<long>? offsets)) held[root] = offsets = new();
+            if (offsets.Add(offset)) changed = true;
+        }
+
+        bool Holds(object root, long offset) => held!.TryGetValue(root, out HashSet<long>? offsets) && offsets.Contains(offset);
+
+        // A use of frame memory that holds the object.
+        void HolderUse(Instr i)
+        {
+            switch (i.Op)
+            {
+                case Opcode.Copy:
+                case Opcode.Trunc64:
+                case Opcode.ZExt32:
+                case Opcode.SExt32:
+                    if (i.Dest is null || Holding(i.Operands[0]) is not var (root, delta)) { flow.Escapes = true; return; }
+                    HolderAlias(i.Dest, root, delta);
+                    return;
+                case Opcode.Add:
+                    if (i.Dest is null || i.Operands[1] is not ImmOperand plus || Holding(i.Operands[0]) is not var (r2, d2))
+                    { flow.Escapes = true; return; }
+                    HolderAlias(i.Dest, r2, d2 + plus.Value);
+                    return;
+                case Opcode.Load:
+                    // What was stored at this offset is what is read back.
+                    if (Holding(i.Operands[0]) is not var (r3, d3)) { flow.Escapes = true; return; }
+                    if (Holds(r3, d3 + i.Offset)) Derive(i.Dest);
+                    return;
+                case Opcode.Store:
+                    // Into it is fine; its address stored anywhere is not.
+                    if (Holding(i.Operands[1]) is not null) flow.Escapes = true;
+                    return;
+                case Opcode.MemSet:
+                    if (Holding(i.Operands[0]) is null) flow.Escapes = true;
+                    return;
+                case Opcode.MemCopy:
+                    // Its bytes copied out are the object again: only into
+                    // more frame memory, at the same distance.
+                    if (Holding(i.Operands[1]) is var (from, fromDelta) && held!.TryGetValue(from, out HashSet<long>? offsets))
+                    {
+                        long count = i.Operands.Count > 2 && i.Operands[2] is ImmOperand n ? n.Value : long.MaxValue;
+                        List<long> moved = new();
+                        foreach (long o in offsets) if (o >= fromDelta && o - fromDelta < count) moved.Add(o - fromDelta);
+                        if (moved.Count == 0) return;
+                        if (count == long.MaxValue || HolderAt(i.Operands[0], 0) is not var (to, toDelta)) { flow.Escapes = true; return; }
+                        foreach (long o in moved) Hold(to, toDelta + o);
+                    }
+                    return;
+                case Opcode.Eq:
+                case Opcode.Ne:
+                case Opcode.Branch:
+                    return;
+                case Opcode.Call when IsCollectorNote(i.Callee) || i.Callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive:
+                    return;
+                default:
+                    flow.Escapes = true;
+                    return;
+            }
+        }
+
+        void HolderAlias(VReg d, object root, long delta)
+        {
+            if (d.Id < defs.Length && defs[d.Id] > 1) { flow.Escapes = true; return; }
+            if (holderRegs!.TryAdd(d, (root, delta))) changed = true;
+        }
+
         // A frame slot's address, or a register only ever given one.
         static bool FrameAddress(Operand o, RegisterWrites writes)
         {
@@ -2535,6 +2665,8 @@ continue;
         }
         return result;
     }
+
+    internal static Dictionary<Instr, string[]>? IndirectTargetsOf(Module m, Dictionary<string, Function> byName) => IndirectTargets(m, byName);
 
     private static Dictionary<Instr, string[]>? IndirectTargets(Module m, Dictionary<string, Function> byName)
     {

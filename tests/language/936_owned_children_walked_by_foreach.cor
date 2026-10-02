@@ -1,0 +1,66 @@
+// test: owned_children_walked_by_foreach
+// expect-exit: 0
+// expect-output:
+// 400000 20
+//
+// A tree whose children are an owned List, walked recursively by foreach.
+// The struct enumerator holds the list while it is a block the pass later
+// puts in the frame; storing the list into it is not the read escaping
+// (Escape.Analyse holders), so Node::Kids may own its list -- and every
+// walk must still find every child.
+
+using System;
+using System.Collections.Generic;
+
+public sealed class Tok { public int Kind; public string Text; public Tok(int k, string t) { Kind = k; Text = t; } }
+public sealed class Node { public string Name; public List<Node> Kids = new(); public Node(string n) { Name = n; } }
+public sealed class Session { public Dictionary<string, int> Seen = new(); public long Out; }
+
+public static class Program
+{
+    static List<Tok> Lex(string text)
+    {
+        List<Tok> toks = new();
+        foreach (string w in text.Split(' ')) toks.Add(new Tok(w.Length, w));
+        return toks;
+    }
+
+    static Node Parse(List<Tok> toks)
+    {
+        Node root = new("unit");
+        Node cur = root;
+        foreach (Tok t in toks)
+        {
+            Node n = new(t.Text);
+            cur.Kids.Add(n);
+            if (t.Kind > 4) cur = n;
+        }
+        return root;
+    }
+
+    static int Walk(Node n, Session s)
+    {
+        int count = 1;
+        if (!s.Seen.ContainsKey(n.Name)) s.Seen[n.Name] = s.Seen.Count;
+        foreach (Node k in n.Kids) count += Walk(k, s);
+        return count;
+    }
+
+    // The boundary: everything Lex and Parse make is dead when this returns;
+    // only the names (already in the source) reach the session.
+    static int CompileUnit(Session s, string text)
+    {
+        List<Tok> toks = Lex(text);
+        Node tree = Parse(toks);
+        return Walk(tree, s);
+    }
+
+    public static int Main()
+    {
+        Session s = new();
+        string text = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau";
+        for (int u = 0; u < 20000; u++) s.Out += CompileUnit(s, text);
+        Console.WriteLine(s.Out + " " + s.Seen.Count);
+        return 0;
+    }
+}
