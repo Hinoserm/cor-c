@@ -1,0 +1,177 @@
+// test: region_compile_unit
+// expect-exit: 0
+// expect-output:
+// units 6000 errors 0
+// results 37 vars 39
+// v0 = v0:-6001 [(5994 + a) * b - 4]
+// v17 = v17:-5981 [(5974 + a) * b - 4]
+// v36 = v36:-5999 [(5993 + a) * b - 3]
+// sum -221485 chars 1100 hash 959131811
+// log 60 first unit 0: v0 last unit 5900: v17
+//
+// A lexer, a parser and a tree walk behind one region boundary, run many
+// times. The tokens and the tree are dead when RgnCompileUnit returns and may
+// be given back with its region; what reaches the long-lived session -- the
+// variable name cut out of the source by the lexer, the result string built
+// by the walk, the source kept in a log -- must not be, and is read after
+// thousands more units and collections, inside the boundary and outside it.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public enum TokKind { Name, Number, Plus, Minus, Star, LParen, RParen, Assign, End }
+
+public sealed class Tok
+{
+    public TokKind Kind;
+    public string Text;
+    public long Value;
+    public Tok(TokKind kind, string text, long value) { Kind = kind; Text = text; Value = value; }
+}
+
+public abstract class Expr { public abstract long Eval(Session s); }
+public sealed class Num : Expr { public long V; public Num(long v) { V = v; } public override long Eval(Session s) => V; }
+public sealed class Var : Expr
+{
+    public string Name;
+    public Var(string n) { Name = n; }
+    public override long Eval(Session s) => s.Vars.TryGetValue(Name, out long v) ? v : 0;
+}
+public sealed class Bin : Expr
+{
+    public char Op; public Expr L; public Expr R;
+    public Bin(char op, Expr l, Expr r) { Op = op; L = l; R = r; }
+    public override long Eval(Session s)
+    {
+        long a = L.Eval(s), b = R.Eval(s);
+        if (Op == '+') return a + b;
+        if (Op == '-') return a - b;
+        return a * b;
+    }
+}
+
+public sealed class Session
+{
+    public Dictionary<string, string> Results = new();
+    public Dictionary<string, long> Vars = new();
+    public List<string> Log = new();
+    public int Errors;
+}
+
+public sealed class Parser
+{
+    List<Tok> _toks; int _at;
+    public Parser(List<Tok> toks) { _toks = toks; _at = 0; }
+    Tok Peek => _toks[_at];
+    Tok Next() => _toks[_at++];
+
+    public Expr Sum()
+    {
+        Expr l = Product();
+        while (Peek.Kind == TokKind.Plus || Peek.Kind == TokKind.Minus)
+        {
+            char op = Next().Kind == TokKind.Plus ? '+' : '-';
+            l = new Bin(op, l, Product());
+        }
+        return l;
+    }
+
+    Expr Product()
+    {
+        Expr l = Atom();
+        while (Peek.Kind == TokKind.Star) { Next(); l = new Bin('*', l, Atom()); }
+        return l;
+    }
+
+    Expr Atom()
+    {
+        Tok t = Next();
+        if (t.Kind == TokKind.Number) return new Num(t.Value);
+        if (t.Kind == TokKind.Name) return new Var(t.Text);
+        if (t.Kind == TokKind.LParen) { Expr e = Sum(); Next(); return e; }
+        throw new InvalidOperationException("unexpected " + t.Text);
+    }
+}
+
+public static class Program
+{
+    static List<Tok> Lex(string text)
+    {
+        List<Tok> toks = new();
+        int i = 0;
+        while (i < text.Length)
+        {
+            char c = text[i];
+            if (c == ' ') { i++; continue; }
+            if (char.IsDigit(c))
+            {
+                int start = i; long v = 0;
+                while (i < text.Length && char.IsDigit(text[i])) { v = v * 10 + (text[i] - '0'); i++; }
+                toks.Add(new Tok(TokKind.Number, text.Substring(start, i - start), v));
+                continue;
+            }
+            if (char.IsLetter(c))
+            {
+                int start = i;
+                while (i < text.Length && char.IsLetterOrDigit(text[i])) i++;
+                toks.Add(new Tok(TokKind.Name, text.Substring(start, i - start), 0));
+                continue;
+            }
+            TokKind k = c == '+' ? TokKind.Plus : c == '-' ? TokKind.Minus : c == '*' ? TokKind.Star
+                : c == '(' ? TokKind.LParen : c == ')' ? TokKind.RParen : TokKind.Assign;
+            toks.Add(new Tok(k, c.ToString(), 0));
+            i++;
+        }
+        toks.Add(new Tok(TokKind.End, "<end>", 0));
+        return toks;
+    }
+
+    // The boundary.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long RgnCompileUnit(Session s, string text, int unit)
+    {
+        List<Tok> toks = Lex(text);
+        string name = toks[0].Text;                 // made by the lexer, kept by the session
+        Parser p = new(toks.GetRange(2, toks.Count - 2));
+        Expr e = p.Sum();
+        if (unit % 500 == 250) GC.Collect();
+        long v = e.Eval(s);
+        s.Vars[name] = v;
+        int eq = text.IndexOf('=');
+        s.Results[name] = name + ":" + v.ToString() + " [" + text.Substring(eq + 2) + "]";
+        if (unit % 100 == 0) s.Log.Add("unit " + unit.ToString() + ": " + name);
+        return v;
+    }
+
+    public static int Main()
+    {
+        Session s = new();
+        s.Vars["a"] = 3;
+        s.Vars["b"] = -1;
+        long total = 0;
+        int units = 0;
+        for (int i = 0; i < 6000; i++)
+        {
+            string text = "v" + (i % 37).ToString() + " = (" + i.ToString() + " + a) * b - " + (i % 5).ToString();
+            total += RgnCompileUnit(s, text, i);
+            units++;
+            if (i % 1000 == 999) GC.Collect();
+        }
+        GC.Collect();
+        Console.WriteLine("units " + units + " errors " + s.Errors);
+        Console.WriteLine("results " + s.Results.Count + " vars " + s.Vars.Count);
+        foreach (string k in new[] { "v0", "v17", "v36" }) Console.WriteLine(k + " = " + s.Results[k]);
+        long sum = 0; int chars = 0; int hash = 17;
+        foreach (KeyValuePair<string, string> kv in s.Results)
+        {
+            sum += s.Vars[kv.Key];
+            chars += kv.Value.Length;
+            foreach (char c in kv.Value) hash = unchecked(hash * 31 + c);
+            foreach (char c in kv.Key) hash = unchecked(hash * 31 + c);
+        }
+        Console.WriteLine("sum " + sum + " chars " + chars + " hash " + hash);
+        Console.WriteLine("log " + s.Log.Count + " first " + s.Log[0] + " last " + s.Log[s.Log.Count - 1]);
+        return 0;
+    }
+}

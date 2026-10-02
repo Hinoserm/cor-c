@@ -1,0 +1,152 @@
+// test: region_arena_overflow
+// timeout: 60
+// expect-exit: 0
+// expect-output:
+// total 664805149024
+// r0 c0 c319 bad 0
+// bare 0 2495332
+// r1 c1000 c1319 bad 0
+// bare 1 14905340
+// r2 c2000 c2319 bad 0
+// bare 2 27315340
+// r3 c3000 c3319 bad 0
+// bare 3 39725340
+// r4 c4000 c4319 bad 0
+// bare 4 52135340
+// r5 c5000 c5319 bad 0
+// bare 5 64545340
+//
+// More made beneath one region boundary than a thread's region arena holds
+// (four megabytes by default; this makes about ten): once it is full, what
+// the boundary makes goes to the heap, and a boundary opened inside it while
+// it is full has no region of its own. Everything must still read back whole
+// after collections -- the arrays made in the arena, those that spilled to
+// the heap, the strings handed out to the caller -- and the arena must be
+// usable again for the next round once the boundary has returned.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public sealed class Chunk
+{
+    public int[] Data;
+    public string Tag;
+    public int Seed;
+    public Chunk(int n, int seed)
+    {
+        Data = new int[n];
+        for (int i = 0; i < n; i++) Data[i] = seed * 31 + i;
+        Tag = "c" + seed.ToString();
+        Seed = seed;
+    }
+    public long Sum()
+    {
+        long s = 0;
+        foreach (int x in Data) s += x;
+        return s;
+    }
+}
+
+public sealed class Seeded
+{
+    public int[] Data;
+    public int Seed;
+    public Seeded(int n, int seed)
+    {
+        Data = new int[n];
+        for (int i = 0; i < n; i++) Data[i] = seed * 31 + i;
+        Seed = seed;
+    }
+}
+
+public static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long RgnSmall(int round, int k)
+    {
+        List<Chunk> few = new();
+        for (int i = 0; i < 4; i++) few.Add(new Chunk(16 + i, round * 1000 + k * 10 + i));
+        int[] mine = new int[64];
+        for (int i = 0; i < mine.Length; i++) mine[i] = k + i;
+        GC.Collect();
+        long s = mine[63];
+        foreach (Chunk c in few) s += c.Sum() + c.Tag.Length;
+        return s;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long RgnBig(int round, List<string> keep)
+    {
+        List<Chunk> chunks = new();
+        List<int[]> raw = new();
+        long inner = 0;
+        // 320 chunks of 4096 ints and as many bare arrays: about ten megabytes.
+        for (int i = 0; i < 320; i++)
+        {
+            chunks.Add(new Chunk(4096, round * 1000 + i));
+            int[] r = new int[4096];
+            r[0] = i;
+            r[4095] = round * 7 + i;
+            raw.Add(r);
+            if (i % 64 == 63)
+            {
+                GC.Collect();
+                inner += RgnSmall(round, i);
+            }
+        }
+        GC.Collect();
+        long s = 0;
+        foreach (Chunk c in chunks) s += c.Sum();
+        int bad = 0;
+        for (int i = 0; i < chunks.Count; i++)
+            if (chunks[i].Tag != "c" + (round * 1000 + i).ToString() || chunks[i].Data[4095] != (round * 1000 + i) * 31 + 4095) bad++;
+        for (int i = 0; i < raw.Count; i++)
+        {
+            if (raw[i][0] != i || raw[i][4095] != round * 7 + i || raw[i][100] != 0) bad++;
+            s += raw[i][4095];
+        }
+        keep.Add("r" + round.ToString() + " c" + chunks[0].Seed.ToString() + " c" + chunks[319].Seed.ToString() + " bad " + bad.ToString());
+        return s + inner;
+    }
+
+    // Seeds and bare arrays, all dead at its return: about eight megabytes
+    // of them, live together until then.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long RgnBare(int round)
+    {
+        List<Seeded> seeded = new();
+        List<int[]> raw = new();
+        for (int i = 0; i < 320; i++)
+        {
+            seeded.Add(new Seeded(4096, round * 1000 + i));
+            int[] r = new int[4096];
+            r[5] = i;
+            raw.Add(r);
+            if (i % 64 == 63) GC.Collect();
+        }
+        // The arena is full now: this boundary opens no region of its own.
+        long s = RgnSmall(round, 7);
+        GC.Collect();
+        foreach (Seeded c in seeded) s += c.Data[2047] + c.Seed;
+        foreach (int[] r in raw) s += r[5] + r[6];
+        return s;
+    }
+
+    public static int Main()
+    {
+        List<string> keep = new();
+        long total = 0;
+        for (int round = 0; round < 6; round++)
+        {
+            total += RgnBig(round, keep);
+            total += RgnSmall(round, 99);
+            long bare = RgnBare(round);
+            keep.Add("bare " + round.ToString() + " " + bare.ToString());
+        }
+        GC.Collect();
+        Console.WriteLine("total " + total);
+        foreach (string k in keep) Console.WriteLine(k);
+        return 0;
+    }
+}

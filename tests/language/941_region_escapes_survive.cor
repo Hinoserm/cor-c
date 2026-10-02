@@ -1,0 +1,156 @@
+// test: region_escapes_survive
+// expect-exit: 0
+// expect-output:
+// sum 2398645546
+// returned 20 3117386 retx603 linkx605
+// param 80 40 3281873 parx3997 dictx3902
+// array 816585 arrx3990 arrx3969
+// out 10 738135 outx3604
+// static 100 34 8186986 stax4005 stax2006 namex3967
+//
+// Everything a region boundary lets out must outlive its region: an object
+// it returns, one it stores into an object it was handed, into an array it
+// was handed, into an out parameter, into a static field, a static list and
+// a static dictionary -- each with a string and a list of its own made inside
+// the boundary. The boundaries run thousands more times afterwards, each
+// making and dropping scratch of its own over the same arena, and collections
+// run between; then every survivor is read back.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public sealed class Item
+{
+    public int Id;
+    public string Name;
+    public List<int> Parts = new();
+    public Item? Link;
+    public Item(int id, string name)
+    {
+        Id = id;
+        Name = name;
+        for (int i = 0; i < 4; i++) Parts.Add(id * 10 + i);
+    }
+    public int Check()
+    {
+        int s = Id + Name.Length;
+        foreach (int p in Parts) s += p;
+        return s;
+    }
+}
+
+public sealed class Holder
+{
+    public List<Item> Items = new();
+    public Item? Best;
+    public Dictionary<string, Item> ByName = new();
+}
+
+public static class Program
+{
+    static List<Item> Registry = new();
+    static Item? LastMade;
+    static Dictionary<int, string> Names = new();
+
+    static List<string> Scratch(int i)
+    {
+        List<string> s = new();
+        for (int k = 0; k < 10; k++) s.Add("x" + (i + k).ToString());
+        return s;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Item RgnReturn(int i)
+    {
+        List<string> s = Scratch(i);
+        Item it = new(i, "ret" + s[3]);
+        it.Link = new Item(i + 1, "link" + s[5]);
+        return it;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int RgnIntoParam(int i, Holder h)
+    {
+        List<string> s = Scratch(i);
+        Item it = new(i, "par" + s[1]);
+        if (i % 50 == 0) h.Items.Add(it);
+        if (h.Best is null || i % 333 == 0) h.Best = it;
+        if (i % 100 == 0) h.ByName["k" + i.ToString()] = new Item(-i, "dict" + s[2]);
+        return s.Count;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int RgnIntoArray(int i, Item[] slots)
+    {
+        List<string> s = Scratch(i);
+        if (i % 7 == 0) slots[i % slots.Length] = new Item(i, "arr" + s[0]);
+        return s[9].Length;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static bool RgnOut(int i, out Item made)
+    {
+        List<string> s = Scratch(i);
+        made = new Item(i, "out" + s[4]);
+        return s.Count == 10;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int RgnIntoStatics(int i)
+    {
+        List<string> s = Scratch(i);
+        Item it = new(i, "sta" + s[6]);
+        LastMade = it;
+        if (i % 40 == 0) Registry.Add(it);
+        if (i % 120 == 0) Names[i] = "name" + s[7];
+        return it.Check();
+    }
+
+    public static int Main()
+    {
+        Holder h = new();
+        Item[] slots = new Item[5];
+        List<Item> returned = new();
+        List<Item> outs = new();
+        long sum = 0;
+        for (int i = 0; i < 4000; i++)
+        {
+            Item r = RgnReturn(i);
+            if (i % 200 == 0) returned.Add(r);
+            sum += r.Check() + r.Link!.Check();
+            sum += RgnIntoParam(i, h);
+            sum += RgnIntoArray(i, slots);
+            if (RgnOut(i, out Item o) && i % 400 == 0) outs.Add(o);
+            sum += RgnIntoStatics(i);
+            if (i % 997 == 0) GC.Collect();
+        }
+        // Thousands more over the same arena, the survivors untouched.
+        for (int i = 0; i < 3000; i++)
+        {
+            sum += RgnReturn(i + 10000).Check();
+            sum += RgnIntoArray(i * 7 + 1, slots);
+            if (i % 1000 == 0) GC.Collect();
+        }
+        GC.Collect();
+        Console.WriteLine("sum " + sum);
+        long rs = 0;
+        foreach (Item r in returned) rs += r.Check() + r.Link!.Check();
+        Console.WriteLine("returned " + returned.Count + " " + rs + " " + returned[3].Name + " " + returned[3].Link!.Name);
+        long hs = 0;
+        foreach (Item it in h.Items) hs += it.Check();
+        foreach (KeyValuePair<string, Item> kv in h.ByName) hs += kv.Value.Check() + kv.Key.Length;
+        Console.WriteLine("param " + h.Items.Count + " " + h.ByName.Count + " " + hs + " " + h.Best!.Name + " " + h.ByName["k3900"].Name);
+        long as_ = 0;
+        foreach (Item it in slots) as_ += it.Check();
+        Console.WriteLine("array " + as_ + " " + slots[0].Name + " " + slots[4].Name);
+        long os = 0;
+        foreach (Item it in outs) os += it.Check();
+        Console.WriteLine("out " + outs.Count + " " + os + " " + outs[outs.Count - 1].Name);
+        long ss = 0;
+        foreach (Item it in Registry) ss += it.Check();
+        foreach (KeyValuePair<int, string> kv in Names) ss += kv.Key + kv.Value.Length;
+        Console.WriteLine("static " + Registry.Count + " " + Names.Count + " " + ss + " " + LastMade!.Name + " " + Registry[50].Name + " " + Names[3960]);
+        return 0;
+    }
+}

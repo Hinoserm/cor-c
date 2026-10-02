@@ -1,0 +1,117 @@
+// test: region_throw_out_of_boundary
+// expect-exit: 0
+// expect-output:
+// total 129072302
+// messages 1000 bad 0/24042 bad 2997/78006 677987105
+// kept 600 4278200 42971815 box0 box-2990
+// outer 30 o0:40840 o2900:528840
+//
+// An exception thrown out of a region boundary and caught by its caller runs
+// no RegionLeave: the runtime closes the stale region later, when a region is
+// opened or an allocation made from a shallower frame. Everything made after
+// the catch -- by the caller, outside any live boundary, and by an outer
+// boundary that caught a throw from an inner one -- must survive more
+// boundary calls (some with fewer arguments, so a shallower frame than the
+// one that threw) and collections. The exception messages, built inside the
+// boundary and thrown out of it, must survive as well.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public sealed class Box
+{
+    public int Value;
+    public string Name;
+    public List<int> Bits = new();
+    public Box(int v, string n) { Value = v; Name = n; }
+}
+
+public static class Program
+{
+    // Called beneath every boundary, and from Main and RgnOuter directly.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Box MakeBox(int k)
+    {
+        Box b = new(k, "box" + k.ToString());
+        for (int i = 0; i < 3; i++) b.Bits.Add(k + i);
+        return b;
+    }
+
+    static int Check(Box b) => b.Name.Length * 1000 + b.Value + b.Bits[2];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int RgnThrowing(int i, int a, int b, int c, int d, int e, int f, int g)
+    {
+        List<Box> local = new();
+        int sum = 0;
+        for (int k = 0; k < 6; k++) local.Add(MakeBox(i + k + a + b + c + d + e + f + g - 28));
+        foreach (Box x in local) sum += Check(x);
+        if (i % 3 == 0) throw new InvalidOperationException("bad " + i.ToString() + "/" + sum.ToString());
+        if (i % 97 == 0) GC.Collect();
+        return sum;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int RgnQuiet(int i)
+    {
+        Box b = MakeBox(i * 2);
+        Box c = MakeBox(i * 2 + 1);
+        return Check(b) - Check(c);
+    }
+
+    // A boundary catching what a boundary inside it throws, then making and
+    // keeping objects of its own until it returns.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int RgnOuter(int i, List<string> sink)
+    {
+        List<Box> mine = new();
+        int caught = 0;
+        for (int r = 0; r < 4; r++)
+        {
+            try { caught += RgnThrowing(i + r, 1, 2, 3, 4, 5, 6, 7); }
+            catch (InvalidOperationException e) { caught += e.Message.Length; }
+            mine.Add(MakeBox(i * 10 + r));
+            caught += RgnQuiet(r);
+            mine.Add(MakeBox(i * 10 + r + 100));
+        }
+        GC.Collect();
+        int sum = 0;
+        foreach (Box b in mine) sum += Check(b);
+        sink.Add("o" + i.ToString() + ":" + sum.ToString());
+        return sum + caught;
+    }
+
+    public static int Main()
+    {
+        List<Box> kept = new();
+        List<string> messages = new();
+        List<string> outer = new();
+        long total = 0;
+        for (int i = 0; i < 3000; i++)
+        {
+            try { total += RgnThrowing(i, 1, 2, 3, 4, 5, 6, 7); }
+            catch (InvalidOperationException e) { messages.Add(e.Message); }
+            if (i % 10 == 0) kept.Add(MakeBox(i));
+            total += RgnQuiet(i);
+            if (i % 10 == 0) kept.Add(MakeBox(-i));
+            if (i % 100 == 0) total += RgnOuter(i, outer);
+            if (i % 500 == 0) GC.Collect();
+        }
+        GC.Collect();
+        Console.WriteLine("total " + total);
+        int mh = 0;
+        foreach (string m in messages) foreach (char c in m) mh = unchecked(mh * 31 + c);
+        Console.WriteLine("messages " + messages.Count + " " + messages[0] + " " + messages[messages.Count - 1] + " " + mh);
+        long ks = 0; int kh = 0;
+        foreach (Box b in kept)
+        {
+            ks += Check(b);
+            foreach (char c in b.Name) kh = unchecked(kh * 31 + c);
+            foreach (int x in b.Bits) kh = unchecked(kh * 7 + x);
+        }
+        Console.WriteLine("kept " + kept.Count + " " + ks + " " + kh + " " + kept[1].Name + " " + kept[kept.Count - 1].Name);
+        Console.WriteLine("outer " + outer.Count + " " + outer[0] + " " + outer[outer.Count - 1]);
+        return 0;
+    }
+}

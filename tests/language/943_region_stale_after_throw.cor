@@ -1,0 +1,69 @@
+// test: region_stale_after_throw
+// expect-exit: 0
+// expect-output:
+// total 110762 kept 200 20590 bad 0
+//
+// A throw out of a region boundary leaves its region open: the runtime
+// closes it later, when a region is opened or an allocation made from a
+// shallower frame than the boundary's. Main then makes a Box of its own
+// through Make -- a routine also called beneath the boundaries, whose
+// allocation is made in the innermost open region -- and keeps it. The next
+// boundary, RgnB, has fewer arguments than RgnA, so its frame is shallower
+// than the stale one's; opening its region must not give back what Main
+// made after the catch. Every kept Box is read back after collections.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public sealed class Box
+{
+    public int V;
+    public string N;
+    public Box(int v, string n) { V = v; N = n; }
+}
+
+public static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Box Make(int k) => new Box(k, "b" + k.ToString());
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int RgnA(int i, int a, int b, int c, int d, int e, int f, int g)
+    {
+        Box x = Make(i + a + b + c + d + e + f + g - 28);
+        if (i % 2 == 0) throw new InvalidOperationException("bad");
+        return x.V;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int RgnB(int i)
+    {
+        Box x = Make(i * 3);
+        return x.N.Length;
+    }
+
+    public static int Main()
+    {
+        List<Box> kept = new();
+        long total = 0;
+        for (int i = 0; i < 200; i++)
+        {
+            try { total += RgnA(i, 1, 2, 3, 4, 5, 6, 7); }
+            catch (InvalidOperationException) { total += 1000; }
+            kept.Add(Make(i));
+            total += RgnB(i);
+            if (i % 10 == 0) GC.Collect();
+        }
+        GC.Collect();
+        long ks = 0; int bad = 0;
+        for (int i = 0; i < kept.Count; i++)
+        {
+            Box b = kept[i];
+            if (b.V != i || b.N != "b" + i.ToString()) bad++;
+            ks += b.V + b.N.Length;
+        }
+        Console.WriteLine("total " + total + " kept " + kept.Count + " " + ks + " bad " + bad);
+        return 0;
+    }
+}

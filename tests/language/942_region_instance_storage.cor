@@ -1,0 +1,135 @@
+// test: region_instance_storage
+// expect-exit: 0
+// expect-output:
+// sum 14020847
+// keep 1200 2400 1 1448494 fe777 778
+// self 1200 3600 10 6492420 g7199-self
+// made 12 663518 made700 ma8411 5519
+//
+// Storage an instance method makes for `this` -- a List field's array
+// grown by Add, a Dictionary's buckets -- beneath a region boundary. When
+// the object lives on (made before the boundary, or handed back by it, or
+// the boundary is the long-lived object's own method) its storage must
+// outlive the region; when the object was made in the region its storage
+// may go with it, but must stay whole until the boundary returns, through
+// collections and through an inner boundary that grows it again.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public sealed class Bag
+{
+    public string Name;
+    public List<string> Lines = new();
+    public List<int> Numbers = new();
+    public Dictionary<string, int> Counts = new();
+
+    public Bag(string name) { Name = name; }
+
+    public void AddLine(string text)
+    {
+        Lines.Add(text);
+        Counts[text.Substring(0, 2)] = Counts.TryGetValue(text.Substring(0, 2), out int n) ? n + 1 : 1;
+    }
+
+    public void AddNumbers(int from, int count)
+    {
+        for (int i = 0; i < count; i++) Numbers.Add(from + i);
+    }
+
+    public long Sum()
+    {
+        long s = Name.Length;
+        foreach (int x in Numbers) s += x;
+        foreach (string l in Lines) s += l.Length;
+        foreach (KeyValuePair<string, int> kv in Counts) s += kv.Value * kv.Key.Length;
+        return s;
+    }
+
+    // A boundary that is the long-lived object's own method.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int RgnGrowSelf(int round)
+    {
+        List<string> scratch = new();
+        for (int i = 0; i < 6; i++) scratch.Add("g" + (round * 6 + i).ToString());
+        AddLine(scratch[round % 6] + "-self");
+        AddNumbers(round * 3, 3);
+        if (round % 64 == 0) GC.Collect();
+        return Lines.Count;
+    }
+}
+
+public static class Program
+{
+    // Grows a bag made before it and still wanted after it.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int RgnFeed(Bag keep, int round)
+    {
+        keep.AddLine("fe" + round.ToString());
+        keep.AddNumbers(round, 2);
+        if (round % 100 == 0) GC.Collect();
+        return keep.Numbers.Count;
+    }
+
+    // Makes a bag of its own, grows it, and grows it again inside an inner
+    // boundary; only a number leaves.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long RgnLocalBag(int round)
+    {
+        Bag mine = new("local" + round.ToString());
+        for (int i = 0; i < 40; i++) mine.AddLine("lo" + (round + i).ToString());
+        mine.AddNumbers(round, 50);
+        if (round % 30 == 0) GC.Collect();
+        int grown = RgnGrowInner(mine, round);
+        long s = mine.Sum();
+        if (mine.Lines[39] != "lo" + (round + 39).ToString() || mine.Numbers[49] != round + 49 || mine.Lines.Count != 40 + grown) s = -1;
+        return s;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int RgnGrowInner(Bag outer, int round)
+    {
+        for (int i = 0; i < 30; i++) outer.AddLine("in" + (round * 2 + i).ToString());
+        outer.AddNumbers(-round, 70);
+        if (round % 45 == 0) GC.Collect();
+        return 30;
+    }
+
+    // Makes a bag, grows it, and hands it back.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Bag RgnMakeBag(int round)
+    {
+        Bag b = new("made" + round.ToString());
+        for (int i = 0; i < 12; i++) b.AddLine("ma" + (round * 12 + i).ToString());
+        b.AddNumbers(round * 5, 20);
+        return b;
+    }
+
+    public static int Main()
+    {
+        Bag keep = new("keep");
+        Bag self = new("self");
+        List<Bag> made = new();
+        long sum = 0;
+        for (int round = 0; round < 1200; round++)
+        {
+            sum += RgnFeed(keep, round);
+            sum += self.RgnGrowSelf(round);
+            sum += RgnLocalBag(round);
+            Bag b = RgnMakeBag(round);
+            if (round % 100 == 0) made.Add(b);
+            else sum += b.Sum();
+        }
+        GC.Collect();
+        for (int round = 0; round < 500; round++) sum += RgnLocalBag(round + 5000);
+        GC.Collect();
+        Console.WriteLine("sum " + sum);
+        Console.WriteLine("keep " + keep.Lines.Count + " " + keep.Numbers.Count + " " + keep.Counts.Count + " " + keep.Sum() + " " + keep.Lines[777] + " " + keep.Numbers[1555]);
+        Console.WriteLine("self " + self.Lines.Count + " " + self.Numbers.Count + " " + self.Counts.Count + " " + self.Sum() + " " + self.Lines[1199]);
+        long ms = 0;
+        foreach (Bag b in made) ms += b.Sum();
+        Console.WriteLine("made " + made.Count + " " + ms + " " + made[7].Name + " " + made[7].Lines[11] + " " + made[11].Numbers[19]);
+        return 0;
+    }
+}

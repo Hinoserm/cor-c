@@ -1,0 +1,117 @@
+// test: region_nested_and_recursive
+// expect-exit: 0
+// expect-output:
+// sum 2540682 passes 16 folds 64
+// p0 s16/0 s36/1 s56/2 s76/3 s96/4 s116/5
+// p375 s37516/0 s37536/1 s37556/2 s37576/3 s37596/4 s37616/5
+// ((<27 129:((((<0>,<1>: ((<31
+// 283 (((((<32>,<33>:2),(<34>,<35>:6):0),((<36
+// hash -1916908682 collected True
+//
+// Region boundaries inside region boundaries. RgnOuterPass calls
+// RgnInnerPass several times and keeps what each returns in a list of its
+// own, read only after the later inner calls have opened and closed their
+// regions above it; RgnFold calls itself, every level a region inside its
+// caller's, and hands a string and a tree back up through all of them. What
+// a returning boundary hands back must outlive its region, and what an outer
+// boundary made must survive every inner region's end; the session strings
+// must survive all of it. Collections run at every depth.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public sealed class Leaf
+{
+    public int Key;
+    public string Label;
+    public Leaf? Next;
+    public Leaf(int key, string label, Leaf? next) { Key = key; Label = label; Next = next; }
+}
+
+public sealed class Session
+{
+    public Dictionary<int, string> Passes = new();
+    public List<string> Folds = new();
+}
+
+public static class Program
+{
+    static int _collections;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Leaf RgnInnerPass(int pass, int k)
+    {
+        // Scratch that dies here, and a chain that is handed back.
+        List<string> scratch = new();
+        for (int i = 0; i < 20; i++) scratch.Add("s" + (pass * 100 + k * 20 + i).ToString());
+        Leaf? chain = null;
+        for (int i = 0; i < 5; i++) chain = new Leaf(pass + k + i, scratch[i * 4] + "/" + k.ToString(), chain);
+        if ((pass + k) % 50 == 0) { GC.Collect(); _collections++; }
+        return chain!;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int RgnOuterPass(int pass, Session s)
+    {
+        List<Leaf> got = new();
+        for (int k = 0; k < 6; k++) got.Add(RgnInnerPass(pass, k));
+        if (pass % 40 == 0) { GC.Collect(); _collections++; }
+        int sum = 0;
+        string line = "p" + pass.ToString();
+        foreach (Leaf head in got)
+        {
+            for (Leaf? l = head; l is not null; l = l.Next) sum += l.Key + l.Label.Length;
+            line = line + " " + head.Label;
+        }
+        if (pass % 25 == 0) s.Passes[pass] = line;
+        return sum;
+    }
+
+    // A recursive boundary: every level is a region of its own.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string RgnFold(int depth, int seed, List<string> trail)
+    {
+        List<int> mine = new();
+        for (int i = 0; i < 8; i++) mine.Add(seed * 3 + i);
+        if (depth == 0)
+        {
+            if (seed % 7 == 0) { GC.Collect(); _collections++; }
+            return "<" + seed.ToString() + ">";
+        }
+        string left = RgnFold(depth - 1, seed * 2, trail);
+        string right = RgnFold(depth - 1, seed * 2 + 1, trail);
+        if (depth == 3) trail.Add(left.Substring(0, 3) + right.Length.ToString());
+        int total = 0;
+        foreach (int x in mine) total += x;
+        return "(" + left + "," + right + ":" + (total % 10).ToString() + ")";
+    }
+
+    public static int Main()
+    {
+        Session s = new();
+        long sum = 0;
+        for (int pass = 0; pass < 400; pass++)
+        {
+            sum += RgnOuterPass(pass, s);
+            if (pass % 20 == 0)
+            {
+                string folded = RgnFold(4, pass, s.Folds);
+                s.Folds.Add(folded.Length.ToString() + ":" + folded.Substring(0, 12));
+            }
+        }
+        GC.Collect();
+        string last = RgnFold(5, 1, s.Folds);
+        GC.Collect();
+        Console.WriteLine("sum " + sum + " passes " + s.Passes.Count + " folds " + s.Folds.Count);
+        Console.WriteLine(s.Passes[0]);
+        Console.WriteLine(s.Passes[375]);
+        Console.WriteLine(s.Folds[0] + " " + s.Folds[2] + " " + s.Folds[s.Folds.Count - 1]);
+        Console.WriteLine(last.Length + " " + last.Substring(0, 40));
+        int h = 0;
+        foreach (string f in s.Folds) foreach (char c in f) h = unchecked(h * 31 + c);
+        foreach (KeyValuePair<int, string> kv in s.Passes) foreach (char c in kv.Value) h = unchecked(h * 31 + c + kv.Key);
+        Console.WriteLine("hash " + h + " collected " + (_collections > 0));
+        return 0;
+    }
+}
