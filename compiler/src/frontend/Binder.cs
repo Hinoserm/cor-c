@@ -847,7 +847,9 @@ public sealed partial class Binder
         Binder b = new(file, requireDeclaration, indexedInterfaces, requireExtensions, libraryInterfaces, requireOverrides);
         b._freshOnly = freshOnly;
         b.Run(unit);
-        b._r = b._r.CopyForBodyChecking();
+        // The declarations' tables carry straight on into the bodies': a copy
+        // of every one, the original then dropped, was a unit's whole binding
+        // made twice for the collector.
         b.CheckBodyWork();
         b._r.StaticBytes = b._staticNext;
         return b._r;
@@ -7822,7 +7824,8 @@ public sealed partial class Binder
 
         void Walk(TypeSymbol at)
         {
-            found.AddRange(at.Methods.Where(m => m.Name == name));
+            foreach (MethodSymbol m in at.Methods)
+                if (m.Name == name) found.Add(m);
 
             if (at.Base != null)
             {

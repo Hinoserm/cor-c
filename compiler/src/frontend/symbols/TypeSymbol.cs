@@ -236,7 +236,8 @@ public sealed class TypeSymbol
 
         for (TypeSymbol? t = this; t != null; t = t.Base)
         {
-            found.AddRange(t.Methods.Where(m => m.Name == name));
+            foreach (MethodSymbol m in t.Methods)
+                if (m.Name == name) found.Add(m);
         }
         return found;
     }
