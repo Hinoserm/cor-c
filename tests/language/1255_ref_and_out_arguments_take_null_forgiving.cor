@@ -1,0 +1,31 @@
+// test: ref_and_out_arguments_take_null_forgiving
+// expect-exit: 0
+// expect-output:
+// a 2
+// b True
+// hi!
+//
+// `TryGetValue(key, out seen!)` is C#: the `!` says only that the variable
+// is not null. corc took `seen!` for an expression with no address and
+// refused it (and the compiler's own Monomorphiser.cs with it). The `!` is
+// dropped from a ref or out argument and the variable passed. The output
+// is real .NET's.
+
+using System;
+using System.Collections.Generic;
+
+static class P
+{
+    static void Bump(ref string text) { text = text + "!"; }
+
+    static void Main()
+    {
+        Dictionary<string, List<int>> lists = new() { ["a"] = new List<int> { 1, 2 } };
+        List<int> seen;
+        if (lists.TryGetValue("a", out seen!)) Console.WriteLine("a " + seen.Count);
+        if (!lists.TryGetValue("b", out seen!)) Console.WriteLine("b " + (seen is null));
+        string? word = "hi";
+        Bump(ref word!);
+        Console.WriteLine(word);
+    }
+}

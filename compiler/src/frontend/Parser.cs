@@ -208,9 +208,14 @@ public sealed class Parser
             _i = was;
         }
 
+        // `out seen!`: the `!` says only that the variable is not null, and
+        // is no expression of its own to pass the address of -- C# takes it,
+        // and the variable is what is passed.
+        Expr target = ParseExpr();
+        while (target is SuppressExpr { Operand: { } forgiven }) target = forgiven;
         return new RefArgExpr
         {
-            Target = ParseExpr(), IsOut = isOut, Line = at.Line, Col = at.Col,
+            Target = target, IsOut = isOut, Line = at.Line, Col = at.Col,
         };
     }
 
