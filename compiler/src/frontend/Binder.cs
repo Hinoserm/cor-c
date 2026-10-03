@@ -10747,7 +10747,11 @@ public sealed partial class Binder
             case SuppressExpr sure:
             {
                 Type suppressed = CheckExpr(sure.Operand);
-                if (suppressed.Prim == Prim.NullLiteral) { return Type.Any; }
+                // `null!` IS STILL THE NULL LITERAL, as C# has it: it converts
+                // to any reference type and takes no part in a best common
+                // type -- `new[] { "", null! }` is a string[], not an
+                // object[].
+                if (suppressed.Prim == Prim.NullLiteral) { return suppressed; }
 
                 // `x!` SAYS SO ABOUT x, not merely about this reading of it.
                 // C# sets the null state, which is what lets `_idom![b]` be

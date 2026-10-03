@@ -1,0 +1,28 @@
+// test: split_null_separators_and_null_bang
+// expect-exit: 0
+// expect-output:
+// warning|this|is|a|test
+// a|b|c
+// a|b||c
+// a b,c
+// a|b|c
+//
+// String.Split with no separators -- null or an empty array -- splits at
+// white space, as .NET's does; null and empty strings among string
+// separators match nothing. The library's dereferenced the null, and the
+// native compiler, splitting a #warning line's words that way, faulted.
+// `null!` is still the null literal: `new[] { "", null! }` is a string[].
+// The output is real .NET's.
+
+using System;
+static class P
+{
+    static void Main()
+    {
+        Console.WriteLine(string.Join("|", " warning  this is\ta  test ".Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)));
+        Console.WriteLine(string.Join("|", "a b\nc".Split(Array.Empty<char>())));
+        Console.WriteLine(string.Join("|", "a b  c".Split((string[]?)null, StringSplitOptions.None)));
+        Console.WriteLine(string.Join("|", "a b,c".Split(new[] { "", null! }, StringSplitOptions.None)));
+        Console.WriteLine(string.Join("|", "a,b,,c".Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)));
+    }
+}
