@@ -3238,7 +3238,12 @@ continue;
             holderRegs ??= new();
             if (holderRegs.TryGetValue(r, out var known)) return known;
             writes ??= new(f);
-            if (!writes.TryGetValue(r, out WriteList ws) || ws.Count != 1) return null;
+            if (!writes.TryGetValue(r, out WriteList ws) || ws.Count != 1)
+            {
+                if (PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal))
+                    Console.Error.WriteLine($"holderat {f.Name}: {r} written {(writes.TryGetValue(r, out WriteList seen) ? seen.Count : 0)} times");
+                return null;
+            }
             Instr w = ws[0];
             (object Root, long Delta)? at = w.Op switch
             {
@@ -3248,6 +3253,8 @@ continue;
                     => (root, delta + plus.Value),
                 _ => null,
             };
+            if (PromoteTrace is { } traced && f.Name.Contains(traced, StringComparison.Ordinal))
+                Console.Error.WriteLine($"holderat {f.Name}: {r} from {w} -> {(at is null ? "nothing" : at.Value.Root + " +" + at.Value.Delta)}");
             if (at is not null)
             {
                 holderRegs[r] = at.Value;
