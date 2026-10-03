@@ -12812,7 +12812,22 @@ public sealed partial class Binder
                         Error(isx, $"a '{operand}' can only match its held '{operand.Underlying}' value");
                     }
                 }
-                else if (!operand.IsReference && tested.Equals(operand))
+                else if (tested.Prim == Prim.Any && tested.Symbol is null && !tested.IsArray && (operand.IsReference || operand.Prim == Prim.Any))
+                {
+                    // `x is object y` OVER A REFERENCE asks only whether there is
+                    // one. Taken for a value pattern -- `object` is no class
+                    // here, so the operand looked like a value -- it was always
+                    // true, and the native compiler's escape analysis put a null
+                    // where `FrameSlotOf(from, 0) is object slot` had found none.
+                    _r.NonNullPatterns.Add(isx);
+                }
+                else if (tested.Prim == Prim.Any && tested.Symbol is null && !tested.IsArray && !operand.IsError && !operand.IsVoid)
+                {
+                    // A VALUE IS ALWAYS AN OBJECT: `5 is object` is true, and
+                    // `o` in `5 is object o` the value boxed.
+                    _r.BoxPatterns.Add(isx);
+                }
+                else if (!operand.IsReference && operand.Prim != Prim.Any && tested.Equals(operand))
                 {
                     // A value already known to be T always matches `is T x`;
                     // the declaration still has to receive the value.

@@ -1,0 +1,44 @@
+// test: is_object_tests_for_null
+// expect-exit: 0
+// expect-output:
+// held1, s2, held3, s4, held15
+// False True False True True
+// none
+// b x
+// c 42 Int32
+//
+// `x is object` and `x is object y` over a reference ask only whether x is
+// there: false for null. `object` is no class to the binder, so an operand
+// of type object? looked like a value and the test was taken as always true
+// -- `FrameSlotOf(from, 0) is object slot` in the compiler's own escape
+// analysis bound null and went on as though it had found a slot, and the
+// natively built compiler compiled programs differently from the managed
+// one. Over a value the test is true and the value boxed. The output is
+// real .NET's.
+
+using System;
+using System.Collections.Generic;
+static class P
+{
+    static string Run(List<int> froms)
+    {
+        Dictionary<int, string> slotsOf = new() { [2] = "s2", [4] = "s4" };
+        object? FrameSlotOf(int from, int depth) => depth > 4 ? null : slotsOf.TryGetValue(from, out string? s) ? s : from > 10 ? FrameSlotOf(from - 10, depth + 1) : null;
+        List<object> slots = new();
+        foreach (int from in froms)
+        {
+            if (FrameSlotOf(from, 0) is object slot) slots.Add(slot);
+            else slots.Add("held" + from);
+        }
+        return string.Join(", ", slots);
+    }
+    static void Main()
+    {
+        Console.WriteLine(Run(new List<int> { 1, 2, 3, 14, 15 }));
+        object? none = null; object some = "x"; string? text = null; int[]? arr = new int[1];
+        Console.WriteLine($"{none is object} {some is object} {text is object} {arr is object} {5 is object}");
+        Console.WriteLine(none is object a ? "a " + a : "none");
+        Console.WriteLine(some is object b ? "b " + b : "none");
+        Console.WriteLine(41 + 1 is object c ? "c " + c + " " + c.GetType().Name : "none");
+    }
+}

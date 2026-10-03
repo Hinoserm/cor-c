@@ -1983,6 +1983,27 @@ public sealed partial class Lowering
             return result;
         }
 
+        if (_b.NonNullPatterns.Contains(isx))
+        {
+            VReg present = Eval(isx.Operand);
+            if (_b.PatternSlot.TryGetValue(isx, out int named))
+            {
+                BindPattern(isx, named, Type.Any, present);
+            }
+            return _e.Binary(Opcode.Ne, R(present), Imm(0, present.Type), IrType.I32);
+        }
+
+        if (_b.BoxPatterns.Contains(isx))
+        {
+            Type held = _b.TypeOf(isx.Operand);
+            VReg value = Eval(isx.Operand);
+            if (_b.PatternSlot.TryGetValue(isx, out int named))
+            {
+                BindPattern(isx, named, Type.Any, BoxValue(isx, value, held));
+            }
+            return _e.Const(1, IrType.I32);
+        }
+
         if (_b.ValuePatterns.Contains(isx))
         {
             Type held = _b.TypeOf(isx.Operand);

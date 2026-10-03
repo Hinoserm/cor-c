@@ -191,6 +191,15 @@ public sealed partial class BindResult
     public HashSet<IsExpr> ValuePatterns { get; } = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>
+    /// `x is object` and `x is object y` over a reference: true exactly when x
+    /// is not null, as C# has it -- every object is an object, and null none.
+    /// </summary>
+    public HashSet<IsExpr> NonNullPatterns { get; } = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>`v is object` and `v is object y` over a value that is no nullable: always true, the value boxed.</summary>
+    public HashSet<IsExpr> BoxPatterns { get; } = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
     /// Type tests -- `is`, `as`, and a switch arm's pattern -- whose tested type
     /// is `string`.
     ///
@@ -525,6 +534,8 @@ public sealed partial class BindResult
         PatternSlot.Clear();
         NullablePatterns.Clear();
         ValuePatterns.Clear();
+        NonNullPatterns.Clear();
+        BoxPatterns.Clear();
         StringTests.Clear();
         TestedTypes.Clear();
         TestedArrays.Clear();
