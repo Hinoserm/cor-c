@@ -239,6 +239,9 @@ public sealed partial class Lowering
     /// <summary>The symbol of a static field: its own ELF symbol, so a library's statics are the library's.</summary>
     private static string StaticSymbol(FieldSymbol f) => $"s_{TypeKey(f.Owner)}_{f.Name}";
 
+    /// <summary>The word holding a [ThreadStatic] field's number (Runtime.ThreadStaticCell).</summary>
+    private static string ThreadStaticIndex(FieldSymbol f) => "ts_" + StaticSymbol(f);
+
     /// <summary>
     /// THE STORAGE OF A STATIC FIELD OF A WORD-SHAPED INSTANTIATION IS ITS
     /// CANONICAL COPY'S. Every word-shaped instantiation runs the canonical
@@ -364,7 +367,9 @@ public sealed partial class Lowering
     public const int TlsAllocLimit = 20;
     public const int TlsThreadId = 24;
     public const int TlsState = 28;
-    public const int TlsBytes = 168;
+    /// <summary>This thread's [ThreadStatic] cells: an object?[] (Tls.ThreadStatics).</summary>
+    public const int TlsThreadStatics = 168;
+    public const int TlsBytes = 172;
 
     /// <summary>The type the runtime library provides its hooks in.</summary>
     public const string RuntimeType = "Runtime";
@@ -517,6 +522,18 @@ public sealed partial class Lowering
                 continue;
             }
             int size = Math.Max(1, f.Type.Size);
+            // A [ThreadStatic]'s storage is each thread's cell; the image keeps
+            // its number among the program's thread statics, 0 until its first
+            // touch gives it one.
+            if (f.ThreadStatic)
+            {
+                _m.Data.Add(new DataItem(ThreadStaticIndex(f), new byte[_t.WordSize])
+                {
+                    Zero = true, Align = _t.WordSize, FromLibrary = IsLibrary(f.Owner),
+                    Coalescible = f.Owner.Decl?.Specialised == true,
+                });
+                continue;
+            }
             if (StaticArrayData(f) is string table)
             {
                 // A `static readonly` table's field is never written again, so

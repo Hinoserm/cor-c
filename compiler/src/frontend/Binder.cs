@@ -2537,6 +2537,10 @@ public sealed partial class Binder
     /// are declared one type at a time and in no particular order: the base's
     /// symbol may hold nothing yet, while the text of it is all there.
     /// </summary>
+    /// <summary>Whether a field declaration carries [ThreadStatic], however it is spelt.</summary>
+    internal static bool IsThreadStatic(FieldDecl f)
+        => f.Attributes.Any(a => a.Name is "ThreadStatic" or "System.ThreadStatic" or "ThreadStaticAttribute" or "System.ThreadStaticAttribute");
+
     private bool InheritsProperty(TypeDecl d, string name)
     {
         for (TypeDecl? up = BaseDeclOf(d); up != null; up = BaseDeclOf(up))
@@ -2759,6 +2763,7 @@ public sealed partial class Binder
                         Name = f.Name, Type = Resolve(f.Type, sym), Owner = sym,
                         Static = f.Mods.HasFlag(Mods.Static),
                         Volatile = f.Mods.HasFlag(Mods.Volatile),
+                        ThreadStatic = f.Mods.HasFlag(Mods.Static) && IsThreadStatic(f),
                         Required = f.Mods.HasFlag(Mods.Required),
                         Initialised = f.DeclaredInit is not null || f.Init is not null,
                     });

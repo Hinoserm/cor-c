@@ -20,8 +20,11 @@ public sealed partial class Binder
     /// </summary>
     private static StaticArray? StaticArrayOf(FieldDecl f)
     {
+        // A [ThreadStatic] has no word in the image to lay the table's address
+        // in: its initialiser runs, on the thread that sets the type up.
         if (f.Init is not NewExpr { Elements: { } elements, Body.Inits.Count: 0, Body.Adds.Count: 0, Body.Indexes.Count: 0 } made
-            || f.Type is not { ArrayRank: 1, PointerDepth: 0, Args.Count: 0 } declared)
+            || f.Type is not { ArrayRank: 1, PointerDepth: 0, Args.Count: 0 } declared
+            || IsThreadStatic(f))
         {
             return null;
         }

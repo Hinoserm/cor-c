@@ -273,7 +273,10 @@ public static class Header
                 break;
 
             case FieldDecl d:
-                s.Append("    ").Append(Modifiers(d.Mods)).Append(Spell(d.Type, made)).Append(' ').Append(Lexer.Identifier(d.Name));
+                s.Append("    ");
+                // The cell each thread keeps is how every unit reaches the field.
+                if ((d.Mods & Mods.Static) != 0 && Binder.IsThreadStatic(d)) s.Append("[ThreadStatic] ");
+                s.Append(Modifiers(d.Mods)).Append(Spell(d.Type, made)).Append(' ').Append(Lexer.Identifier(d.Name));
 
                 // A CONST KEEPS ITS VALUE, because a const is not storage: every
                 // use of one is the number written out where the name was, so a

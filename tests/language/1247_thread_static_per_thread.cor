@@ -1,0 +1,74 @@
+// test: thread_static_per_thread
+// expect-exit: 0
+// expect-output:
+// calls 1 wide 1 pair 2,-3 seen 1 name t0_0 started 0
+// calls 2 wide 2 pair 4,-6 seen 2 name t1_0 started 0
+// calls 3 wide 3 pair 6,-9 seen 3 name t2_0 started 0
+// calls 4 wide 4 pair 8,-12 seen 4 name t3_0 started 0
+// main calls 5 wide 5 pair 10,-15 seen 5 name main0 started 7
+//
+// [ThreadStatic] gives every thread a value of its own: an int, a long (two
+// words on 32-bit), a struct, a list made lazily, a string -- and an
+// initialiser, which C# runs once, on the thread that set the type up; every
+// other thread starts at the default. Collections run while the threads hold
+// what their cells hold. The output is real .NET's. The attribute was read
+// and dropped: the fields were the process's, every thread wrote the one
+// value, and the compiler's own escape analysis -- whose tables are
+// [ThreadStatic] while units compile in parallel -- read another worker's.
+
+using System;
+using System.Collections.Generic;
+using System.Threading;
+
+struct Pair { public int A; public long B; }
+
+static class Counters
+{
+    [ThreadStatic] static int _calls;
+    [ThreadStatic] static long _wide;
+    [ThreadStatic] static Pair _pair;
+    [ThreadStatic] static List<string>? _seen;
+    [ThreadStatic] static string? _name;
+    [ThreadStatic] static int _started = 7;
+
+    public static void Visit(string what)
+    {
+        _calls++;
+        _wide += 1L << 33;
+        _pair.A += 2;
+        _pair.B -= 3;
+        (_seen ??= new List<string>()).Add(what);
+        _name ??= what;
+    }
+
+    public static string Say() => $"calls {_calls} wide {_wide >> 33} pair {_pair.A},{_pair.B} seen {_seen?.Count ?? -1} name {_name ?? "-"} started {_started}";
+}
+
+static class P
+{
+    static void Main()
+    {
+        for (int i = 0; i < 5; i++) Counters.Visit("main" + i);
+        string[] said = new string[4];
+        Thread[] threads = new Thread[4];
+        for (int t = 0; t < threads.Length; t++)
+        {
+            int me = t;
+            threads[t] = new Thread(() =>
+            {
+                for (int i = 0; i <= me; i++)
+                {
+                    Counters.Visit("t" + me + "_" + i);
+                    for (int j = 0; j < 2000; j++) { string junk = "junk" + j; }
+                    GC.Collect();
+                }
+                said[me] = Counters.Say();
+            });
+        }
+        foreach (Thread t in threads) t.Start();
+        foreach (Thread t in threads) t.Join();
+        GC.Collect();
+        foreach (string s in said) Console.WriteLine(s);
+        Console.WriteLine("main " + Counters.Say());
+    }
+}

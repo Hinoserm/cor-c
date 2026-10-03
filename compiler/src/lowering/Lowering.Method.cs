@@ -1174,7 +1174,13 @@ public sealed partial class Lowering
             TouchType(f.Owner);
             FieldSymbol store = SharedStatic(f);
             _statics.Add(store);
-            MemPlace place = new MemPlace(new SymOperand(StaticSymbol(store)), 0, f.Type, f.Volatile, Field: store);
+            // [ThreadStatic]: this thread's cell for the field, made the first
+            // time this thread touches it. No field tag: the cell is no static's
+            // storage, and nothing shares it with another thread.
+            VReg? cell = store.ThreadStatic ? ThreadStaticCell(store, at) : null;
+            MemPlace place = cell is not null
+                ? new MemPlace(new RegOperand(cell), 0, f.Type, f.Volatile)
+                : new MemPlace(new SymOperand(StaticSymbol(store)), 0, f.Type, f.Volatile, Field: store);
 
             // A STATIC STRUCT FIELD IS A VALUE TOO, zero until written; static
             // storage starts as zero bytes, which for a struct held by pointer
@@ -1187,7 +1193,7 @@ public sealed partial class Lowering
             // on one block and a field written into the loser's is not lost.
             if (!f.Boxed && !f.Initialised && IsStructValue(f.Type))
             {
-                VReg at2 = _e.Address(StaticSymbol(store));
+                VReg at2 = cell ?? _e.Address(StaticSymbol(store));
                 VReg held = _e.Load(IrTypes.Word, at2, 0);
                 Block make = _f.NewBlock("szmake");
                 Block made = _f.NewBlock("szdone");
@@ -1212,6 +1218,24 @@ public sealed partial class Lowering
         }
 
         return new MemPlace(new RegOperand(obj), f.Offset, f.Type, f.Volatile, f.Inline, Field: f);
+    }
+
+    /// <summary>
+    /// A [ThreadStatic] field's cell on this thread: Runtime.ThreadStaticCell,
+    /// handed the word with the field's number and the bytes a cell needs --
+    /// a static's own size, a struct held by pointer being a word.
+    /// </summary>
+    private VReg ThreadStaticCell(FieldSymbol f, Node at)
+    {
+        if (RuntimeMethod("ThreadStaticCell", 2) is not MethodSymbol helper)
+        {
+            Error(at, $"[ThreadStatic] needs {RuntimeType}.ThreadStaticCell, which no compiled source provides; compile with the system library");
+            return _e.Const(0, IrTypes.Word);
+        }
+        Require(helper);
+        long bytes = Math.Max(_t.WordSize, Math.Max(1, f.Type.Size));
+        VReg cell = _e.Call(CallLabel(helper), IrTypes.Of(helper.Returns), R(_e.Address(ThreadStaticIndex(f))), R(_e.Const(bytes, IrTypes.Word)))!;
+        return cell.Type == IrTypes.Word ? cell : _e.Unary(Opcode.Trunc64, cell);
     }
 
     /// <summary>The place an assignable expression denotes.</summary>

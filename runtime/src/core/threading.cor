@@ -3627,3 +3627,121 @@ namespace System.Threading
     }
 }
 
+
+/// [ThreadStatic] FIELDS: a value of each on every thread. Each such field has
+/// a word in the image (Lowering.ThreadStaticIndex), 0 until the program's
+/// first touch of the field gives it a number; each thread has a table of
+/// cells, one for each number it has touched, made as it touches it: a block
+/// as large as the field (Runtime.Alloc), read word by word by the collector
+/// as a captured local's cell is. Slot 0 of a table is its node in the list of
+/// every thread's tables -- a static, so a root as every static is; the
+/// thread block's word (Tls.ThreadStatics) is only where the thread finds its
+/// own, and no collector reads it. A thread's table leaves the list as the
+/// thread ends.
+static class ThreadStatics
+{
+    /// The numbers given out so far.
+    static int _fields;
+    /// Every thread's table, through its node.
+    static ThreadStaticTable? _tables;
+    /// Held while the list changes.
+    static int _lock;
+
+    /// The cell of the field whose number is at `indexAt`, on this thread.
+    public static long Cell(long indexAt, long bytes)
+    {
+        long index = Sys.Peek(indexAt);
+        if (index == 0)
+        {
+            Sys.Cas(indexAt, 0, Interlocked.Increment(ref _fields));
+            index = Sys.Peek(indexAt);
+        }
+        long block = Sys.ThreadBlock();
+        object?[]? cells = Sys.FromWord(Sys.Peek(block + Tls.ThreadStatics)) as object?[];
+        if (cells is null || index >= cells.Length)
+        {
+            cells = Grow(block, cells, index);
+        }
+        object? cell = cells[index];
+        if (cell is null)
+        {
+            cell = Sys.FromWord(Runtime.Alloc(bytes));
+            cells[index] = cell;
+        }
+        return Sys.Word(cell);
+    }
+
+    /// This thread's table, long enough for `index`: its first, put on the
+    /// list, or a longer copy of the one it has.
+    static object?[] Grow(long block, object?[]? old, long index)
+    {
+        long size = old is null ? 8 : old.Length * 2;
+        while (size <= index)
+        {
+            size = size * 2;
+        }
+        object?[] cells = new object?[size];
+        ThreadStaticTable node;
+        if (old is null)
+        {
+            node = new ThreadStaticTable();
+            Enter();
+            node.Next = _tables;
+            if (_tables is not null) _tables.Previous = node;
+            _tables = node;
+            Leave();
+        }
+        else
+        {
+            node = (ThreadStaticTable)old[0]!;
+            for (int i = 1; i < old.Length; i++) cells[i] = old[i];
+        }
+        cells[0] = node;
+        // Kept by the list before the thread block names it.
+        node.Cells = cells;
+        Sys.Poke(block + Tls.ThreadStatics, Sys.Word(cells));
+        return cells;
+    }
+
+    /// A thread's table off the list as the thread ends: its cells are the
+    /// collector's once nothing else holds what is in them.
+    public static void Release(long block)
+    {
+        object?[]? cells = Sys.FromWord(Sys.Peek(block + Tls.ThreadStatics)) as object?[];
+        if (cells is null)
+        {
+            return;
+        }
+        Sys.Poke(block + Tls.ThreadStatics, 0);
+        ThreadStaticTable node = (ThreadStaticTable)cells[0]!;
+        Enter();
+        if (node.Previous is not null) node.Previous.Next = node.Next;
+        else _tables = node.Next;
+        if (node.Next is not null) node.Next.Previous = node.Previous;
+        Leave();
+        node.Cells = null;
+        node.Next = null;
+        node.Previous = null;
+    }
+
+    static void Enter()
+    {
+        while (Interlocked.CompareExchange(ref _lock, 1, 0) != 0)
+        {
+            Sys.Pause();
+        }
+    }
+
+    static void Leave()
+    {
+        Interlocked.Exchange(ref _lock, 0);
+    }
+}
+
+/// One thread's table on ThreadStatics' list.
+sealed class ThreadStaticTable
+{
+    public object?[]? Cells;
+    public ThreadStaticTable? Next;
+    public ThreadStaticTable? Previous;
+}

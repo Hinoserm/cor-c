@@ -10,6 +10,14 @@ public sealed class FieldSymbol
     public bool Volatile { get; init; }
 
     /// <summary>
+    /// [ThreadStatic]: a static with a value of its own on every thread. Its
+    /// storage is no symbol of the image but a cell each thread makes the first
+    /// time it touches the field (Runtime.ThreadStaticCell); the image holds
+    /// only the field's number among them, given out at that first touch.
+    /// </summary>
+    public bool ThreadStatic { get; init; }
+
+    /// <summary>
     /// This field holds the ADDRESS of a captured local's cell, not its value.
     ///
     /// A closure over a captured variable keeps a pointer to the one cell the

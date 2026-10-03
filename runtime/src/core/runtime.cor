@@ -236,7 +236,11 @@ static class Tls
     public const long RegionOpen = 41 * WordSize.Bytes;
 
     /// The size of the block. The compiler lays the first one down in .bss.
-    public const long Bytes = 42 * WordSize.Bytes;
+    /// This thread's [ThreadStatic] cells, an object?[] (ThreadStatics), or 0
+    /// before its first touch of one. Where the thread finds them, not what
+    /// keeps them: that is ThreadStatics' list, a static the collector reads.
+    public const long ThreadStatics = 42 * WordSize.Bytes;
+    public const long Bytes = 43 * WordSize.Bytes;
 }
 
 /// WHERE THE ALLOCATIONS COME FROM (CORSAC_ALLOC_SAMPLE=1): every sixteenth
@@ -634,6 +638,7 @@ static class Runtime
     /// Takes a thread out again: its parent could not start it after all.
     public static void ForgetThread(long block)
     {
+        ThreadStatics.Release(block);
         GcThreads.Deregister(block);
         Gc.ReleaseRegion(block);
     }
@@ -641,6 +646,7 @@ static class Runtime
     /// This thread's stack is about to stop being one.
     public static void EndThread()
     {
+        ThreadStatics.Release(Sys.ThreadBlock());
         GcThreads.Deregister(Sys.ThreadBlock());
         Gc.ReleaseRegion(Sys.ThreadBlock());
     }
@@ -1060,6 +1066,14 @@ static class Runtime
     public static bool CollectorLinked()
     {
         return true;
+    }
+
+    /// A [ThreadStatic] field's cell on this thread (ThreadStatics.Cell): what
+    /// lowering calls for every touch of one, handed the word that holds the
+    /// field's number and the bytes its cell needs.
+    public static nint ThreadStaticCell(nint indexAt, nint bytes)
+    {
+        return (nint)ThreadStatics.Cell((long)(nuint)indexAt, (long)bytes);
     }
 
     public static void Free(long at)
