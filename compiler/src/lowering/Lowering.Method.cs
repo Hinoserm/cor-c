@@ -912,7 +912,20 @@ public sealed partial class Lowering
         _e.SetBlock(notNull);
         VReg vt = _e.Load(IrTypes.Word, array, 0);
         VReg exact = _e.Address(SequenceDescriptor(ElementKey(element), ElementStride(element), isString: false, elementType: element), _t.DescriptorBytes);
-        _e.Branch(_e.Binary(Opcode.Eq, R(vt), R(exact), IrType.I32), done, slow);
+        Block byElement = _f.NewBlock("stelem");
+        _e.Branch(_e.Binary(Opcode.Eq, R(vt), R(exact), IrType.I32), done, byElement);
+        // OR THE VALUE IS EXACTLY THE ARRAY'S ELEMENT, or the array holds
+        // any object: what a shared generic copy's T[] -- a string[] since
+        // it reads its arguments (TypeContext) -- meets at every List.Add,
+        // never the type written there.
+        _e.SetBlock(byElement);
+        int w = _t.WordSize;
+        VReg held = _e.Load(IrTypes.Word, vt, (long)DescElement * w - _t.DescriptorBytes);
+        Block compare = _f.NewBlock("stsame");
+        _e.Branch(held, compare, done);
+        _e.SetBlock(compare);
+        VReg described = _e.Binary(Opcode.Sub, _e.Load(IrTypes.Word, value, 0), _t.DescriptorBytes);
+        _e.Branch(_e.Binary(Opcode.Eq, R(held), R(described), IrType.I32), done, slow);
         _e.SetBlock(slow);
         Require(check);
         _e.Call(CallLabel(check), IrType.Void, R(AsParam(array, check.Params[0].Type)), R(AsParam(value, check.Params[1].Type)));
