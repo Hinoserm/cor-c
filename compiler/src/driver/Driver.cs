@@ -54,7 +54,7 @@ public static class Driver
     }
 
     /// <summary>The process-wide flags this corc was given, for every corc it starts (Run).</summary>
-    public static readonly List<string> ChildFlags = new();
+    public static List<string> ChildFlags => Switches.ChildFlags;
 
     public static int Run(string[] args)
     {
@@ -71,8 +71,11 @@ public static class Driver
         // counts at exit (a switch .NET's own collector ignores), and
         // --trace-escape NAME has the escape analysis say how it judged the
         // functions whose names contain NAME. Every child corc a command
-        // starts is handed them again (ChildFlags).
-        List<string> taken = new(args);
+        // starts is handed them again (ChildFlags). The diagnostic switches
+        // are Switches'.
+        List<string> taken;
+        try { taken = Switches.Take(args); }
+        catch (ArgumentException e) { return Fail(e.Message); }
         int traceAt = taken.IndexOf("--trace-escape");
         if (traceAt >= 0 && traceAt + 1 < taken.Count)
         {
@@ -94,6 +97,9 @@ public static class Driver
             ChildFlags.Add("--trace-lifetimes"); ChildFlags.Add(taken[lifetimesAt + 1]);
             taken.RemoveRange(lifetimesAt, 2);
         }
+        // The collector's workers in a child a project build started: its
+        // share of the machine beside its siblings (ProjectCommand).
+        if (Switches.GcWorkers >= 0) AppContext.SetData("Corsac.GC.Workers", Switches.GcWorkers);
         if (taken.Remove("--gc-stats"))
         {
             ChildFlags.Add("--gc-stats");
@@ -615,7 +621,7 @@ public static class Driver
         // compiled, and only those get a DT_NEEDED.
         if (args.Contains("--dynamic"))
         {
-            string? dir = Value(args, "--libdir") ?? Environment.GetEnvironmentVariable("CORC_SO") ?? SharedLibraryDirectory();
+            string? dir = Value(args, "--libdir") ?? SharedLibraryDirectory();
             if (dir is null || !Directory.Exists(dir))
             {
                 return Fail($"--dynamic: no shared library directory{(dir is null ? "" : $" at {dir}")} (build one, or name it with --libdir)");
@@ -678,7 +684,7 @@ public static class Driver
             : new IndexedDeclarations(declarationIndex, Value(args, "--assembly")!, files);
         // WHERE A UNIT'S TIME AND ALLOCATION GO, by phase, when asked. The
         // frontend's own line covers what happened before this point.
-        bool phases = Environment.GetEnvironmentVariable("CORC_REPORT_PHASES") is not null;
+        bool phases = Switches.ReportPhases;
         System.Diagnostics.Stopwatch phaseClock = System.Diagnostics.Stopwatch.StartNew();
         long phaseBytes = GC.GetAllocatedBytesForCurrentThread();
         void Phase(string what)
@@ -1100,7 +1106,7 @@ public static class Driver
     /// <summary>
     /// The libraries every program links unless told otherwise: the standard
     /// library, the runtime, and the target's system library, in that order.
-    /// Located from CORC_LIB if set to the repository root, else from the
+    /// Located from --lib-root if given to the repository root, else from the
     /// repository the compiler
     /// was built in.
     /// </summary>
@@ -1159,7 +1165,7 @@ public static class Driver
 
     private static string? FindLibraryRoot()
     {
-        string? root = Environment.GetEnvironmentVariable("CORC_LIB");
+        string? root = Switches.LibRoot;
         if (root is null)
         {
             // bin/<config>/net10.0/corc.dll -> compiler/ -> repository root

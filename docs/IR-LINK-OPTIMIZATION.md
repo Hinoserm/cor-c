@@ -77,7 +77,7 @@ Selected payloads are loaded one consumer at a time, not all project bodies at
 once. The backend retains unit data and lightweight function headers, then loads
 functions in worker batches bounded by a working allowance sized from the memory
 the machine has available (`MachineMemory.WorkBudget`: a quarter of it, between
-8 and 512 MiB, less the unit's own headers; `CORC_WORK_BUDGET` forces a size).
+8 and 512 MiB, less the unit's own headers; `--work-budget BYTES` forces a size).
 Each function loads only its selected direct-call imports, performs bounded
 inlining and constant/copy/dead-code/branch cleanup, and releases analysis-only
 imports. Batch costs reserve three times decoded-node costs plus 512 KiB per
@@ -86,7 +86,7 @@ not a measured RSS ceiling. A function exceeding the whole allowance is compiled
 alone in a batch of its own: slower, never refused. The allowance decides how
 many functions are in memory at once and nothing else, so a link on a small
 machine produces the same bytes as on a large one (tests/integration/lifetimes.sh
-links once normally and once with `CORC_WORK_BUDGET=1` and compares). Emission remains ordered and releases decoded function bodies
+links once normally and once with `--work-budget 1` and compares). Emission remains ordered and releases decoded function bodies
 after their native bytes and compact metadata are emitted. Remaining calls bind to the
 original providers; imported copies are never accidentally emitted as new owners.
 Exports remain intact. Stack maps, frame tables and line tables are regenerated

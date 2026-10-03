@@ -60,13 +60,13 @@ public static class MachineMemory
 
     /// <summary>
     /// A working budget for one batch of work: a quarter of what is available,
-    /// between `floor` and `ceiling`. `CORC_WORK_BUDGET` (bytes) overrides it,
+    /// between `floor` and `ceiling`. --work-budget BYTES overrides it,
     /// so a large machine can be made to work as a small one does -- and must
     /// then produce the same bytes.
     /// </summary>
     public static long WorkBudget(long floor, long ceiling)
     {
-        if (long.TryParse(Environment.GetEnvironmentVariable("CORC_WORK_BUDGET"), out long forced) && forced > 0) return forced;
+        if (Switches.WorkBudget > 0) return Switches.WorkBudget;
         return Math.Clamp(Available() / 4, floor, ceiling);
     }
 }

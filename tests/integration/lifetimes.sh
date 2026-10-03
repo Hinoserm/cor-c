@@ -65,7 +65,7 @@ grep -q 'units gaining=0, field sites=[0-9]* freed=0' "$work/off.log" || fail "-
 #    one function at a time: memory sizes the work, never the answer.
 corlink "$work/caller.o" "$work/provider.o" -o "$work/again" > "$work/again.log" 2>&1
 cmp "$work/on" "$work/again" || fail "two links of the same objects differ"
-CORC_WORK_BUDGET=1 corlink "$work/caller.o" "$work/provider.o" -o "$work/small" > "$work/small.log" 2>&1
+corlink --work-budget 1 "$work/caller.o" "$work/provider.o" -o "$work/small" > "$work/small.log" 2>&1
 cmp "$work/on" "$work/small" || fail "the link on a one-function budget differs"
 grep -q 'peak batch functions=1,' "$work/small.log" || fail "the small budget did not batch one function at a time"
 echo 'PASS lifetimes: per-unit frees, link-time hints solved across units, fields across units, kept objects kept, identical under a one-function budget'

@@ -6465,7 +6465,7 @@ public sealed class Parser
             }
             catch (CompileError why)
             {
-                if (Environment.GetEnvironmentVariable("CORSAC_DECL") != null)
+                if (Switches.TraceDecl)
                 {
                     Console.Error.WriteLine($"[decl] gave up: {why}");
                 }

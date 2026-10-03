@@ -1156,7 +1156,7 @@ Everything the compiler emits a call to lives in COR-C# source under
 `lib/` and is linked by default; `corc compile program.cor` is a complete
 command. The default set, in link order, is `lib/std.cor`,
 `lib/rt/runtime.cor`, `lib/rt/gc.cor` (only when `Module.NeedsHeap`),
-`lib/threading.cor` and `lib/sys/linux.cor`; `CORC_LIB` points the driver
+`lib/threading.cor` and `lib/sys/linux.cor`; `--lib-root` points the driver
 at another tree and `--no-default-libs` turns the set off.
 
 - `lib/rt/runtime.cor`: the contract methods -- `Alloc`, `AllocManual`,

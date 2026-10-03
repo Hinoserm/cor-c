@@ -98,7 +98,7 @@ public sealed partial class Escape : IModulePass
         _bodies = _defined;
         _hinting = m.LeavesLinkHints;
         _inserted = _bookkeeping;
-        _unresolvedWhy = Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 0 } ? new() : null;
+        _unresolvedWhy = Switches.AllocReport ? new() : null;
         _module = m;
         _fieldElements.Clear();
         _elementReadHints.Clear(); _elementHandOffHints.Clear(); _elementCallHints.Clear();
@@ -227,7 +227,7 @@ public sealed partial class Escape : IModulePass
                 Console.Error.WriteLine($"note: --no-collector: an allocation in {site} is never given back");
             m.NeedsHeap = false;
         }
-        if (Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 0 }) AllocationReport(m, byName);
+        if (Switches.AllocReport) AllocationReport(m, byName);
         LastRun = (Promoted, Owned, OwnedReturns, _fresh.Count, FieldsOwned, VariablesOwned);
 
         // THE PROGRAM'S ANSWER TO Runtime.CollectorLinked(), now that it is
@@ -624,7 +624,7 @@ public sealed partial class Escape : IModulePass
                         return true;
                     });
                     if (!known) types.Add("*");
-                    if (Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 0 })
+                    if (Switches.AllocReport)
                         Console.Error.WriteLine($"alloc report: {f.Name} throws what it did not make ({(known ? "from " + stat : "unknown")}); catches that can take it keep it");
                 }
         }
@@ -913,7 +913,7 @@ public sealed partial class Escape : IModulePass
         if (f.Async is not null) return;
         // The parameters' answers too, in a unit as in a whole program: what
         // lets a callee's `this` go is what keeps every caller's object.
-        if (Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 1 } named && f.Name.Contains(named, StringComparison.Ordinal))
+        if (Switches.AllocReportOnly is { } named && f.Name.Contains(named, StringComparison.Ordinal))
             for (int p = 0; p < f.Params.Count; p++)
             {
                 Flow why = Analyse(f, new[] { f.Params[p] }, summaries, null);
@@ -923,7 +923,7 @@ public sealed partial class Escape : IModulePass
             foreach (Instr i in b.Instrs)
             {
                 if (i.Op != Opcode.Call || !IsAllocator(i.Callee) || i.Dest is null || _owned.Contains(i)) continue;
-                if (Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 1 } which && f.Name.Contains(which, StringComparison.Ordinal))
+                if (Switches.AllocReportOnly is { } which && f.Name.Contains(which, StringComparison.Ordinal))
                 {
                     Flow why = Analyse(f, new[] { i.Dest }, summaries, i, handOff: true);
                     Console.Error.WriteLine($"alloc report: {f.Name}:{i.Line} escapes={why.Escapes} via {why.Why?.Op} {why.Why?.Callee} {string.Join(" ", why.Why?.Operands.Select(o => o.ToString()) ?? Array.Empty<string>())}");
@@ -1290,7 +1290,7 @@ public sealed partial class Escape : IModulePass
             if (none) ownsNothing.Add(type);
             return none;
         }
-        bool reporting = Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 0 };
+        bool reporting = Switches.AllocReport;
         void Refuse(string field, string why, Function f, Instr at)
         {
             if (refused.Add(field) && reporting) _fieldReport.Add($"{field} refused: {why} in {f.Name}:{at.Line}");
@@ -3813,7 +3813,7 @@ continue;
     [ThreadStatic] private static Dictionary<string, bool[]>? _invokeOnly;
     /// <summary>Flow graphs Reaches has built this run, by function.</summary>
     [ThreadStatic] private static Dictionary<Function, Cfg>? _reachGraphs;
-    /// <summary>CORSAC_ALLOC_REPORT: why each virtual call it could not resolve was left.</summary>
+    /// <summary>--alloc-report: why each virtual call it could not resolve was left.</summary>
     [ThreadStatic] private static List<string>? _unresolvedWhy;
 
     /// <summary>
@@ -4183,7 +4183,7 @@ continue;
         return true;
     }
 
-    /// <summary>CORSAC_PROMOTE_TRACE=&lt;function&gt;: each allocation PromoteIn looks at there, and what it decided.</summary>
+    /// <summary>--trace-escape FUNCTION: each allocation PromoteIn looks at there, and what it decided.</summary>
     /// <summary>--trace-escape NAME: the functions whose decisions are said (Driver.Run).</summary>
     internal static string? PromoteTrace;
 
@@ -4506,7 +4506,7 @@ continue;
     /// that field. A constructor fills the array it has just stored through
     /// the register it made it in; refused, no array field was ever owned.
     /// </summary>
-    private static readonly bool HandTrace = Environment.GetEnvironmentVariable("CORSAC_HANDED_TRACE") is { Length: > 0 };
+    private static readonly bool HandTrace = Switches.HandedTrace;
 
     private bool HandedOverWithField(Function f, Block b, Instr st, HashSet<VReg> derived, Liveness live)
     {
@@ -5702,7 +5702,7 @@ continue;
     }
 
     /// <summary>
-    /// CORSAC_ALLOC_REPORT: every allocation a collector would still be needed
+    /// --alloc-report: every allocation a collector would still be needed
     /// for -- reachable from the entry over code and data as
     /// AnyAllocationReachable walks it, not promoted to the frame and not
     /// owned -- one line each, function and source line, on stderr. What is
@@ -5716,10 +5716,10 @@ continue;
             return;
         }
         List<string> sites = CollectorSites(m, byName, entry, paths: true);
-        foreach (string line in _fieldReport.Where(l => Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is not { Length: > 1 } which || l.Contains(which, StringComparison.Ordinal)))
+        foreach (string line in _fieldReport.Where(l => Switches.AllocReportOnly is not { } which || l.Contains(which, StringComparison.Ordinal)))
             Console.Error.WriteLine("alloc report: field " + line);
         Console.Error.WriteLine($"alloc report: thrown {_thrown.Count} ({_thrownType.Count} typed), catches keeping: {(_keptCatchAll ? "everything; " : "")}{string.Join(", ", _keptCatches.Take(12))}");
-        if (Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 1 } which)
+        if (Switches.AllocReportOnly is { } which)
             foreach (Function f in m.Functions.Where(f => f.Name.Contains(which, StringComparison.Ordinal)))
                 for (int p2 = 0; p2 < f.Params.Count; p2++)
                 {
@@ -5728,7 +5728,7 @@ continue;
                 }
         int indirect = m.Functions.Sum(f => f.Blocks.Sum(b => b.Instrs.Count(i => i.Op == Opcode.CallIndirect)));
         Console.Error.WriteLine($"alloc report: virtual calls resolved {_indirect?.Count ?? 0} of {indirect}"
-            + string.Concat((_indirect ?? new()).Values.Where(t => Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is not "1" && t.Any(x => x.Contains(Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT")!, StringComparison.Ordinal))).Take(3).Select(t => "; [" + string.Join(", ", t) + "]"))
+            + string.Concat((_indirect ?? new()).Values.Where(t => Switches.AllocReportOnly is { } only && t.Any(x => x.Contains(only, StringComparison.Ordinal))).Take(3).Select(t => "; [" + string.Join(", ", t) + "]"))
             + string.Concat(m.Functions.SelectMany(f => f.Blocks.SelectMany(b => b.Instrs)).Where(i => i.Op == Opcode.CallIndirect && i.DispatchType is not null && (_indirect is null || !_indirect.ContainsKey(i))).Select(i => i.DispatchType).Distinct().Take(12).Select(t => "; unresolved " + t)));
         foreach (string why in _unresolvedWhy ?? new()) Console.Error.WriteLine("alloc report: unresolved " + why);
         Console.Error.WriteLine("alloc report: thrown not just made: " + string.Join(", ", (_foreignTypes ?? new HashSet<string>()).Order(StringComparer.Ordinal).Take(20)));

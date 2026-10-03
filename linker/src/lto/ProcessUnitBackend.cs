@@ -15,10 +15,11 @@ public sealed class ProcessUnitBackend : IUnitBackend, IDisposable
 
     public ProcessUnitBackend(string? executable = null)
     {
-        string path = executable ?? Environment.GetEnvironmentVariable("CORC")
+        string path = executable
             ?? Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows() ? "corc.exe" : "corc");
-        if (!File.Exists(path)) throw new FileNotFoundException("IR LTO needs the compiler backend; set CORC or --lto-backend, or use --no-lto", path);
+        if (!File.Exists(path)) throw new FileNotFoundException("IR LTO needs the compiler backend; pass --lto-backend, or use --no-lto", path);
         ProcessStartInfo start = new(Path.GetFullPath(path)) { UseShellExecute = false, RedirectStandardInput = true, RedirectStandardOutput = true };
+        foreach (string flag in Switches.ChildFlags) start.ArgumentList.Add(flag);
         start.ArgumentList.Add("backend");
         work = Directory.CreateTempSubdirectory("corc-lto-").FullName;
         try { process = Process.Start(start) ?? throw new IOException("Could not start compiler backend"); }

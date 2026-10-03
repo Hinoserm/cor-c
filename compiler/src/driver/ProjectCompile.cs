@@ -76,9 +76,9 @@ public static class ProjectCompile
             common.Add(args[i]);
         }
 
-        long declBudget = long.TryParse(Environment.GetEnvironmentVariable("CORC_DECL_BUDGET"), out long d) ? d : 32L * 1024 * 1024;
-        long tokBudget = long.TryParse(Environment.GetEnvironmentVariable("CORC_TOKEN_BUDGET"), out long t) ? t : 0;
-        long srcBudget = long.TryParse(Environment.GetEnvironmentVariable("CORC_SOURCE_BUDGET"), out long c) ? c : 16L * 1024 * 1024;
+        long declBudget = Switches.DeclBudget >= 0 ? Switches.DeclBudget : 32L * 1024 * 1024;
+        long tokBudget = Switches.TokenBudget >= 0 ? Switches.TokenBudget : 0;
+        long srcBudget = Switches.SourceBudget >= 0 ? Switches.SourceBudget : 16L * 1024 * 1024;
         using DeclarationSession session = new(index, assembly, declBudget, tokBudget, srcBudget);
         using WorkerPool? pool = WorkerPool.Open(Driver.Value(args, "--worker-pool"));
         int limit = pool is null ? workers : Math.Max(workers, pool.Size);
@@ -404,19 +404,18 @@ public static class ProjectCompile
     static string? _compilerIdentity;
 
     /// <summary>The variable a project build hands its compile processes the compiler's identity in.</summary>
-    internal const string IdentityVariable = "CORSAC_COMPILER_IDENTITY";
 
     /// <summary>
     /// A hash of the running compiler's own executable, once per process --
     /// or once per BUILD: a child compile process started by a project build
     /// is the same executable, and is handed the hash its parent made
-    /// (IdentityVariable). Hashing the 53 MB native compiler took a third of
+    /// (--compiler-identity). Hashing the 53 MB native compiler took a third of
     /// a second, in every one of the processes a 32-bit build starts.
     /// </summary>
     internal static string CompilerIdentity()
     {
         if (_compilerIdentity is not null) return _compilerIdentity;
-        if (Environment.GetEnvironmentVariable(IdentityVariable) is { Length: 64 } handed)
+        if (Switches.CompilerIdentity is { Length: 64 } handed)
         {
             return _compilerIdentity = handed;
         }

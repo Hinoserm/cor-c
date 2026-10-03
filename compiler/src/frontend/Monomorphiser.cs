@@ -312,7 +312,38 @@ public sealed class Monomorphiser
             }
         }
 
+        // NOT YET LOADED IS NOT ABSENT. A type's private nested `Entry`, its
+        // declaration read from the index only where something asks for it,
+        // was missing from a unit that rewrote the type's field
+        // `Dictionary<..., Entry>`, and the one other nested `Entry` that unit
+        // had loaded -- DeclarationCatalog's -- was taken as the sole one: two
+        // layouts of the field's initialiser at the link, in whichever build
+        // happened to load them in that order. Asked of the index first, scope
+        // by scope; a demand reruns the pass with it loaded.
+        if (_requireDeclaration is not null && name.IndexOf('.') < 0)
+        {
+            foreach (string from in new[] { _scope, _inNamespace })
+            {
+                for (string at = from; at.Length > 0; )
+                {
+                    Demand(at + "." + name);
+                    int cut = at.LastIndexOf('.');
+                    at = cut < 0 ? "" : at[..cut];
+                }
+            }
+        }
+
         return _soleNested.TryGetValue(name, out string? sole) && sole is not null ? sole : name;
+    }
+
+    /// <summary>Asks the declaration index for one type, once, recording what it must load.</summary>
+    private void Demand(string key)
+    {
+        if (_requireDeclaration is null || _demanded.Contains(key)) return;
+        string kept = key.Substring(0);
+        _demanded.Add(kept);
+        try { _requireDeclaration(kept); }
+        catch (Metadata.DeclarationDemand demand) { _templateBatch.Add(demand); }
     }
 
     /// <summary>

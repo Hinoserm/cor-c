@@ -322,17 +322,18 @@ public static class ProjectCommand
             File.WriteAllLines(share, shares[i].Select(unit => unit.Source + "\t" + unit.Object + "\t" + unit.Object + ".deps\t" + (entry ? "entry" : "lib")));
             System.Diagnostics.ProcessStartInfo start = new() { FileName = Environment.ProcessPath!, UseShellExecute = false };
             // The same executable: its identity, hashed once here.
-            start.Environment[ProjectCompile.IdentityVariable] = ProjectCompile.CompilerIdentity();
+            start.ArgumentList.Add("--compiler-identity"); start.ArgumentList.Add(ProjectCompile.CompilerIdentity());
             // ITS SHARE OF THE MACHINE FOR ITS COLLECTOR: each child marks on
             // as many threads as the processors leave it beside its siblings,
             // less its own. Twelve children starting seven markers each put
             // eighty threads on thirty processors, and every pause of every
             // child ran at a fraction of its speed. One already asked for is
             // left as it is.
-            if (Environment.GetEnvironmentVariable("CORSAC_GC_WORKERS") is null)
+            if (Switches.GcWorkers < 0)
             {
                 int cores = Math.Max(1, Environment.ProcessorCount / Math.Max(1, processes));
-                start.Environment["CORSAC_GC_WORKERS"] = Math.Min(7, Math.Max(0, cores - 1)).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                start.ArgumentList.Add("--gc-workers");
+                start.ArgumentList.Add(Math.Min(7, Math.Max(0, cores - 1)).ToString(System.Globalization.CultureInfo.InvariantCulture));
             }
             foreach (string flag in Driver.ChildFlags) start.ArgumentList.Add(flag);
             start.ArgumentList.Add("compile-project");

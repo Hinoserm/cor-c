@@ -463,7 +463,7 @@ public sealed class Devirtualize : IModulePass
         callee is not null && (Escape.IsAllocator(callee) || Escape.NeverWritesFields(callee) || Escape.IsCollectorNote(callee)
             || callee == "m_Runtime_InvalidCastTo_2_V$Any_V$String" || callee.StartsWith("__x86.i.", StringComparison.Ordinal));
 
-    private static readonly string? Trace = Environment.GetEnvironmentVariable("CORC_TRACE_FORWARD");
+    private static readonly string? Trace = Switches.TraceForward;
 
     private static void ForwardFreshFields(Function f, Defs defs, Func<Operand, Instr?> made)
     {
@@ -742,7 +742,7 @@ public sealed class LateCleanup : IModulePass
                 devirtualize.Run(f, items);
                 foreach (IPass p in after) p.Run(f);
             }
-            if (Environment.GetEnvironmentVariable("CORC_DUMP_FUNCTION") == f.Name)
+            if (Switches.DumpFunction == f.Name)
             {
                 System.Text.StringBuilder text = new();
                 f.Dump(text);

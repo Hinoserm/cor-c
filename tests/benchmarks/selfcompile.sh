@@ -15,10 +15,9 @@ mkdir "$snapshot"
 printf 'selfcompile work: %s\n' "$work"
 git archive "$revision" compiler linker runtime stdlib tests/benchmarks/selfcompile-smoke.cor | tar -x -C "$snapshot"
 cd "$snapshot"
-export CORC_LIB="$snapshot"
-# CORC_LIB points at the snapshot, so the bootstrap compiler names the
+# --lib-root points at the snapshot, so the bootstrap compiler names the
 # snapshot's own library sources.
-mapfile -t libraries < <("$bootstrap" library-sources)
+mapfile -t libraries < <("$bootstrap" --lib-root "$snapshot" library-sources)
 test "${#libraries[@]}" -gt 0
 mapfile -t sources < <(rg --files compiler/src linker/src -g '*.cs' -g '!linker/src/driver/Program.cs' -g '!**/tests/**' -g '!**/bin/**' -g '!**/obj/**' -g '!**/Legacy/**' | LC_ALL=C sort)
 test "${#sources[@]}" -gt 0
@@ -54,10 +53,10 @@ measure() {
         exit "$status"
     fi
 }
-measure bootstrap "$bootstrap" compile "${flags[@]}" "${libraries[@]}" "${sources[@]}" -o "$work/stage1"
+measure bootstrap "$bootstrap" --lib-root "$snapshot" compile "${flags[@]}" "${libraries[@]}" "${sources[@]}" -o "$work/stage1"
 test -s "$work/stage1"
 file "$work/stage1" > "$work/stage1.file"
-measure reference-smoke-compile "$bootstrap" compile "${flags[@]}" "${libraries[@]}" tests/benchmarks/selfcompile-smoke.cor -o "$work/smoke-reference"
+measure reference-smoke-compile "$bootstrap" --lib-root "$snapshot" compile "${flags[@]}" "${libraries[@]}" tests/benchmarks/selfcompile-smoke.cor -o "$work/smoke-reference"
 measure reference-smoke-run "$work/smoke-reference"
 printf 'selfcompile smoke passed\n' | cmp - "$work/reference-smoke-run.log"
 measure smoke-compile "$work/stage1" compile "${flags[@]}" "${libraries[@]}" tests/benchmarks/selfcompile-smoke.cor -o "$work/smoke"

@@ -45,7 +45,7 @@ public static partial class Program
         // running. Reported at exit so it covers code generation and emission
         // too: an earlier mid-way figure made a whole-compile total look like
         // a regression against a frontend-only one.
-        if (Environment.GetEnvironmentVariable("CORC_REPORT_ALLOC") is null) return Driver.Run(args);
+        if (!args.Contains("--report-alloc")) return Driver.Run(args);
         try { return Driver.Run(args); }
         finally { Console.Error.WriteLine("run-allocated=" + GC.GetTotalAllocatedBytes()); }
 #endif

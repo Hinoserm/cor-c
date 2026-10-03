@@ -105,9 +105,9 @@ public sealed partial class Escape
     {
         /// <summary>Used some way the field rules cannot follow: no field is freed.</summary>
         public bool Opaque;
-        /// <summary>The first use that made it opaque or a field dirty (CORSAC_FIELD_TRACE).</summary>
+        /// <summary>The first use that made it opaque or a field dirty (--trace-fields).</summary>
         public string? Why;
-        /// <summary>The first reason each offset went dirty (CORSAC_FIELD_TRACE).</summary>
+        /// <summary>The first reason each offset went dirty (--trace-fields).</summary>
         public Dictionary<long, string>? DirtyWhy;
         public void Note(long at, string why)
         {
@@ -868,8 +868,8 @@ public sealed partial class Escape
         return (aliases, why);
     }
 
-    internal static readonly bool FieldTraceAll = Environment.GetEnvironmentVariable("CORSAC_FIELD_TRACE_ALL") is { Length: > 0 };
-    internal static readonly string? FieldTrace = Environment.GetEnvironmentVariable("CORSAC_FIELD_TRACE") is { Length: > 0 } t ? t : null;
+    internal static readonly bool FieldTraceAll = Switches.FieldTraceAll;
+    internal static readonly string? FieldTrace = Switches.FieldTrace;
 
     private void OwnFields(Function f, Dictionary<string, bool[]> summaries)
     {

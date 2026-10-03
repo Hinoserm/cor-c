@@ -24,12 +24,12 @@ public static class DefinitionSemantics
         {
             using SHA256 hash = SHA256.Create();
             using CryptoStream stream = new(Stream.Null, hash, CryptoStreamMode.Write);
-            // CORC_SEMANTICS_TRACE=<symbol>, CORC_SEMANTICS_OUT=<file>: why two
+            // --trace-semantics SYMBOL, --trace-semantics-out FILE: why two
             // units certify one definition differently. The references are
             // printed as they are walked and the bytes that would be hashed
             // are written to the file, for comparing unit with unit; that
             // symbol's own certificate is not a real one while traced.
-            bool tracing = Environment.GetEnvironmentVariable("CORC_SEMANTICS_TRACE") == name;
+            bool tracing = Switches.TraceSemantics == name && Switches.TraceSemanticsOut is not null;
             MemoryStream copy = new();
             using BinaryWriter writer = tracing ? new(copy, Encoding.UTF8, leaveOpen: true) : new(stream, Encoding.UTF8, leaveOpen: true);
             Dictionary<string, int> active = new(StringComparer.Ordinal);
@@ -109,7 +109,7 @@ public static class DefinitionSemantics
             writer.Write(2); writer.Write(Target.Current.Name); writer.Write(Target.Current.WordSize);
             Definition(name);
             writer.Flush();
-            if (tracing) File.WriteAllBytes(Environment.GetEnvironmentVariable("CORC_SEMANTICS_OUT")!, copy.ToArray());
+            if (tracing) File.WriteAllBytes(Switches.TraceSemanticsOut!, copy.ToArray());
             stream.FlushFinalBlock(); result.Add(name, hash.Hash!);
         }
         return result;

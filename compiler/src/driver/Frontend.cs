@@ -29,7 +29,7 @@ public static class Frontend
         {
             if (declarations is not null) declarations.Passes++;
             // A PASS THAT ENDS IN A DEMAND IS THROWN AWAY WHOLE, so what the
-            // discarded ones cost is its own line in CORC_REPORT_PASSES.
+            // discarded ones cost is its own line in --report-passes.
             Meter pass = Meter.Start();
             try
             {
@@ -40,7 +40,7 @@ public static class Frontend
             catch (DeclarationDemand demand) when (declarations is not null)
             {
                 pass.Stop("front:pass-discarded");
-                if (Environment.GetEnvironmentVariable("CORC_TRACE_DEMAND") is not null)
+                if (Switches.TraceDemand)
                     Console.Error.WriteLine("pass " + declarations.Passes + " demanded " + demand.Keys.Count + ": "
                         + string.Join(", ", demand.Keys.Select(k => k.Split('\n').Last())));
                 foreach (string key in demand.Keys)
@@ -284,7 +284,7 @@ public static class Frontend
                 declarations is null ? null : declarations.RequireExtensions, declarations?.LibraryInterfaces,
                 declarations is null ? null : declarations.RequireOverrides);
             rebinding.Stop("front:bind-round");
-            if (Environment.GetEnvironmentVariable("CORC_TRACE_WANTS") is not null)
+            if (Switches.TraceWants)
             {
                 foreach (var w in bound.Wanted)
                     Console.Error.WriteLine("full bind still wants " + w.Item2.Name + " in " + w.Item1.Line + " of " + w.Item2.File);
@@ -293,10 +293,10 @@ public static class Frontend
             }
         }
 
-        // WHAT THE UNIT GREW TO, for CORC_REPORT_UNIT: its declarations after
+        // WHAT THE UNIT GREW TO, for --report-unit: its declarations after
         // expansion by kind, and the members each kind carries -- where a
         // unit's memory goes before a line of it is lowered.
-        if (Environment.GetEnvironmentVariable("CORC_REPORT_UNIT") is not null)
+        if (Switches.ReportUnit)
         {
             foreach (var group in unit.Types.GroupBy(t => t.TypeParams.Count > 0 ? "template"
                          : t.Canon is not null ? "shared-copy" : t.Specialised ? "specialised" : t.SignatureOnly ? "imported" : "own"))
@@ -702,7 +702,7 @@ public static class Frontend
 
 /// <summary>
 /// Time and allocation over a stretch of the front end, reported with the
-/// optimiser's passes when CORC_REPORT_PASSES is set, and nothing otherwise.
+/// optimiser's passes when --report-passes is given, and nothing otherwise.
 /// </summary>
 internal readonly struct Meter
 {

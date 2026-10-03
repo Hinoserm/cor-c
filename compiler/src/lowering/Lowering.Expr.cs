@@ -3957,7 +3957,7 @@ public sealed partial class Lowering
                 return _e.Address(InternString(spelt));
             }
 
-            return Fail(at, $"'{type}' cannot be joined to a string" + (Environment.GetEnvironmentVariable("CORC_TRACE_JOIN") is null ? "" : " in " + _f.Name + " prim=" + type.Prim + " sym=" + type.Symbol?.Name + " param=" + type.ParamName + " nullable=" + type.Nullable));
+            return Fail(at, $"'{type}' cannot be joined to a string" + (!Switches.TraceJoin ? "" : " in " + _f.Name + " prim=" + type.Prim + " sym=" + type.Symbol?.Name + " param=" + type.ParamName + " nullable=" + type.Nullable));
         }
 
         // AN ENUM IS ITS MEMBER'S NAME, which .NET reads out of the type's

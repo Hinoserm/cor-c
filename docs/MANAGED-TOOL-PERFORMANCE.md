@@ -49,7 +49,7 @@ dotnet publish compiler/corc.csproj -c Release -r linux-x64 \
 ```
 
 Run `build/native-aot-trial/publish/compiler/corc` directly, without `dotnet`.
-Set `CORC_LIB` to this repository if moving the executable elsewhere. Native
+Pass `--lib-root` naming this repository if moving the executable elsewhere. Native
 project cache signatures hash the native executable, including its embedded
 linker; managed builds continue hashing their individual assemblies.
 

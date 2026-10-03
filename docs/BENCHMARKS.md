@@ -19,7 +19,7 @@ of an end-to-end compiler speedup.
 
 The build entry point is `bash tests/benchmarks/build.sh`. Set `CORC` to a preserved compiler,
 `OUT` to a separate output directory, and `PERF_LIBDIR` to matching shared
-libraries. The script explicitly sets `CORC_LIB`: relocated compilers must
+libraries. The script passes `--lib-root` explicitly: relocated compilers must
 not accidentally discover the partial source/header directory in build/lib.
 
 Run with `LD_LIBRARY_PATH` pointing to the same shared-library directory:

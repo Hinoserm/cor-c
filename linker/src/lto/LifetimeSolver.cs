@@ -374,10 +374,10 @@ public sealed class LifetimeSolver
             foreach ((bool[] escapes, int p, string owner) in list)
                 if (!escapes[p]) { escapes[p] = true; escaped.Enqueue((owner, p)); _why?.TryAdd((owner, p), "through " + done.Item1 + ":" + done.Item2); }
         }
-        // CORC_TRACE_ESCAPES=<name part>: why each such parameter escapes, link by link.
+        // --trace-escapes NAME: why each such parameter escapes, link by link.
         if (_why is not null)
             foreach (((string name, int p), string reason) in _why.OrderBy(w => w.Key.Item1, StringComparer.Ordinal))
-                if (name.Contains(Environment.GetEnvironmentVariable("CORC_TRACE_ESCAPES")!, StringComparison.Ordinal))
+                if (name.Contains(Switches.TraceEscapes!, StringComparison.Ordinal))
                 {
                     Console.Error.Write("link escape " + name + ":" + p);
                     (string, int) at = (name, p);
@@ -394,7 +394,7 @@ public sealed class LifetimeSolver
     }
 
     private readonly Dictionary<(string, int), string>? _why =
-        Environment.GetEnvironmentVariable("CORC_TRACE_ESCAPES") is { Length: > 0 } ? new() : null;
+        Switches.TraceEscapes is { Length: > 0 } ? new() : null;
 
     private void SolveFresh()
     {

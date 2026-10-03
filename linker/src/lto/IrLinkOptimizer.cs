@@ -68,14 +68,14 @@ public static class IrLinkOptimizer
         // not free what it replaces, or a type without its map.
         OwnedFieldFacts? ownedFields = lifetimes is not null && closedImageEntry is not null && archives.Keys.All(hints.ContainsKey)
             ? OwnedFieldSolver.Solve(hintOrder, lifetimes, virtuals, closedImageEntry,
-                Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 0 } which
-                    ? line => { if (which.Length == 1 || line.Contains(which, StringComparison.Ordinal)) Console.Error.WriteLine("alloc report: field " + line); } : null) : null;
+                Switches.AllocReport
+                    ? line => { if (Switches.AllocReportOnly is not { } which || line.Contains(which, StringComparison.Ordinal)) Console.Error.WriteLine("alloc report: field " + line); } : null) : null;
         if (ownedFields is { IsEmpty: true }) ownedFields = null;
         if (ownedFields is not null)
             Console.Error.WriteLine("LTO owned fields: " + ownedFields.Fields.Count + " of "
                 + hintOrder.SelectMany(unit => unit.Owned!.Fields.Keys).Distinct(StringComparer.Ordinal).Count()
                 + ", elements owned through " + ownedFields.Elements.Count
-                + (Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 0 } ? ": " + string.Join(" ", ownedFields.Fields.Keys.Order(StringComparer.Ordinal)) : ""));
+                + (Switches.AllocReport ? ": " + string.Join(" ", ownedFields.Fields.Keys.Order(StringComparer.Ordinal)) : ""));
         LinkTimings.Phase("catches and owned fields");
         bool regionsPossible = lifetimes is not null && closedImageEntry is not null && archives.Keys.All(hints.ContainsKey)
             && archives.Keys.All(regionHints.Contains)
@@ -282,8 +282,8 @@ public static class IrLinkOptimizer
         }
         // Several only where each worker's backend is a process of its own:
         // a backend the caller handed in is one object, and not to be shared.
-        int workerCount = !parallelBackends ? 1 : Math.Max(1, Math.Min(plans.Count, int.TryParse(Environment.GetEnvironmentVariable("CORC_LTO_JOBS"), out int asked) && asked > 0
-            ? asked : Math.Min(12, Math.Max(1, Environment.ProcessorCount / 2))));
+        int workerCount = !parallelBackends ? 1 : Math.Max(1, Math.Min(plans.Count, Switches.LtoJobs > 0
+            ? Switches.LtoJobs : Math.Min(12, Math.Max(1, Environment.ProcessorCount / 2))));
         if (workerCount == 1) Work();
         else
         {
@@ -397,7 +397,7 @@ public static class IrLinkOptimizer
                 {
                     bool clean = freer is not null && solved is { Opaque: false }
                         && solved.Fresh.Contains(offset) && !solved.Dirty.Contains(offset);
-                    if (Environment.GetEnvironmentVariable("CORC_TRACE_FIELD_SITES") is not null)
+                    if (Switches.TraceFieldSites)
                         Console.Error.WriteLine("field site " + name + " offset " + offset + (clean ? " FREED" : " kept")
                             + " solved fresh=[" + string.Join(",", solved?.Fresh ?? Array.Empty<long>()) + "] dirty=["
                             + string.Join(",", solved?.Dirty ?? Array.Empty<long>()) + "] opaque=" + (solved?.Opaque ?? true)

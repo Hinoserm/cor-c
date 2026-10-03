@@ -513,7 +513,7 @@ public sealed partial class Escape
             else if (record.Offset != offset) record.Refused = true;
             return record;
         }
-        bool reporting = Environment.GetEnvironmentVariable("CORSAC_ALLOC_REPORT") is { Length: > 0 };
+        bool reporting = Switches.AllocReport;
         void Refuse(OwnedFieldRecord record, string field, string why, Function f, Instr at)
         {
             if (!record.Refused && reporting) _fieldReport.Add($"{field} refused in this unit: {why} in {f.Name}:{at.Line}");

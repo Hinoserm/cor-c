@@ -90,10 +90,10 @@ public sealed class Pipeline
             KeepFreeHelper = keepFree,
         };
         Pipeline p = new() { Rounds = rounds };
-        // CORC_VERIFY_PASSES=1: the IR checked after every pass, late ones
+        // --verify-passes: the IR checked after every pass, late ones
         // included, so a pass that breaks the IR is named where it does it
         // and not at the link that imports the unit.
-        if (experimentalBatch || Environment.GetEnvironmentVariable("CORC_VERIFY_PASSES") == "1") p.Verify = true;
+        if (experimentalBatch || Switches.VerifyPasses) p.Verify = true;
         p.Passes.Add(new ConstantFold());
         p.Passes.Add(new Narrowing());
         p.Passes.Add(new ConstantAndCopyPropagation());
@@ -176,9 +176,9 @@ public sealed class Pipeline
         // call that lets nothing go (CardMarks).
         p.LatePasses.Add(new CardMarks());
         // A DIAGNOSTIC SWITCH, for finding which pass a miscompile comes out
-        // of: CORC_SKIP_PASSES=Escape,Inline leaves those out of every list.
+        // of: --skip-passes Escape,Inline leaves those out of every list.
         // Nothing is ever built with it set.
-        if (Environment.GetEnvironmentVariable("CORC_SKIP_PASSES") is { Length: > 0 } skip)
+        if (Switches.SkipPasses is { Length: > 0 } skip)
         {
             HashSet<string> names = new(skip.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), StringComparer.Ordinal);
             p.Passes.RemoveAll(pass => names.Contains(pass.GetType().Name));
@@ -228,10 +228,10 @@ public sealed class Pipeline
         Dump(m, "optimised");
     }
 
-    /// <summary>CORC_DUMP_FUNCTION=<symbol>: that function's IR as lowered and as optimised, on standard error.</summary>
+    /// <summary>--dump-function SYMBOL: that function's IR as lowered and as optimised, on standard error.</summary>
     private static void Dump(Module m, string when)
     {
-        if (Environment.GetEnvironmentVariable("CORC_DUMP_FUNCTION") is not { Length: > 0 } wanted) return;
+        if (Switches.DumpFunction is not { Length: > 0 } wanted) return;
         foreach (Function f in m.Functions)
         {
             if (f.Name != wanted) continue;
@@ -284,12 +284,12 @@ public sealed class Pipeline
 
     /// <summary>
     /// What each pass cost over the whole process, by name, kept only when
-    /// CORC_REPORT_PASSES is set. Allocation per pass is the number that
+    /// --report-passes is given. Allocation per pass is the number that
     /// matters: the collector's pauses are what stop eight workers from
     /// being eight times one, and a pass that allocates a gigabyte to reach
     /// its answer is where those pauses come from.
     /// </summary>
-    public static readonly bool Accounting = Environment.GetEnvironmentVariable("CORC_REPORT_PASSES") is not null;
+    public static readonly bool Accounting = Switches.ReportPasses;
     private static readonly Dictionary<string, (long Ticks, long Bytes, long Runs)> accounts = new(StringComparer.Ordinal);
     private static readonly object accountGate = new();
     public static void Account(string name, long ticks, long bytes)
@@ -309,8 +309,8 @@ public sealed class Pipeline
                     + (cost.Bytes >> 20) + "MiB runs=" + cost.Runs);
     }
 
-    /// <summary>CORC_TRACE_FUNCTIONS: each function's name and size as the pipeline starts on it, for finding one that never finishes.</summary>
-    private static readonly bool TraceFunctions = Environment.GetEnvironmentVariable("CORC_TRACE_FUNCTIONS") is not null;
+    /// <summary>--trace-functions: each function's name and size as the pipeline starts on it, for finding one that never finishes.</summary>
+    private static readonly bool TraceFunctions = Switches.TraceFunctions;
 
     public void Run(Function f)
     {

@@ -1608,8 +1608,8 @@ public sealed partial class Binder
 
     // ---- top level ------------------------------------------------------
 
-    /// <summary>CORC_DUMP_SLOTS: every interface method's slot as it is numbered, on standard error.</summary>
-    private static readonly bool DumpSlots = Environment.GetEnvironmentVariable("CORC_DUMP_SLOTS") is { Length: > 0 };
+    /// <summary>--dump-slots: every interface method's slot as it is numbered, on standard error.</summary>
+    private static readonly bool DumpSlots = Switches.DumpSlots;
 
     private void Run(CompilationUnit unit)
     {
@@ -2041,8 +2041,8 @@ public sealed partial class Binder
         Assign(true);
         // The table this unit numbered over, for diffing the two sides of a
         // link that stops with a layout conflict: a family present on one
-        // side only moves every slot after it. Set CORC_DUMP_FAMILIES.
-        if (Environment.GetEnvironmentVariable("CORC_DUMP_FAMILIES") is not null)
+        // side only moves every slot after it. Pass --dump-families.
+        if (Switches.DumpFamilies)
         {
             Console.Error.WriteLine("families library=" + families.Count + " project=" + local.Count
                 + " slots=" + _interfaceSlots);

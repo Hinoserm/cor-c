@@ -516,5 +516,30 @@ static class AppContext
         }
     }
 
-    public static object? GetData(string name) { return null; }
+    static Dictionary<string, object?>? _data;
+
+    public static object? GetData(string name)
+    {
+        if (name == null) throw new ArgumentNullException(nameof(name));
+        lock (_switchLock)
+        {
+            return _data is not null && _data.TryGetValue(name, out object? value) ? value : null;
+        }
+    }
+
+    public static void SetData(string name, object? data)
+    {
+        if (name == null) throw new ArgumentNullException(nameof(name));
+        lock (_switchLock)
+        {
+            _data ??= new Dictionary<string, object?>();
+            _data[name] = data;
+        }
+        // The collector's own: how many workers its first collection starts.
+        if (name == "Corsac.GC.Workers" && data is int workers)
+        {
+            Gc.WorkersAsked = workers < 0 ? 0 : workers > 15 ? 15 : workers;
+            Gc.WorkersSet = true;
+        }
+    }
 }

@@ -11,14 +11,13 @@ mkdir -p "$3"
 output=$(realpath "$3")
 root=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$root"
-export CORC_LIB="$root"
 printf 'mode,round,seconds,user_seconds,system_seconds,peak_kib\n' > "$output/timings.csv"
 for round in 1 2 3; do
     modes='jit aot'
     if [ "$round" = 2 ]; then modes='aot jit'; fi
     for mode in $modes; do
-        command=("$native")
-        if [ "$mode" = jit ]; then command=(dotnet "$managed"); fi
+        command=("$native" --lib-root "$root")
+        if [ "$mode" = jit ]; then command=(dotnet "$managed" --lib-root "$root"); fi
         /usr/bin/time -a -o "$output/timings.csv" \
             -f "$mode,$round,%e,%U,%S,%M" \
             "${command[@]}" compile --jobs 1 tests/benchmarks/allocation.cor \
@@ -31,8 +30,8 @@ for round in 1 2 3; do
     modes='jit aot'
     if [ "$round" = 2 ]; then modes='aot jit'; fi
     for mode in $modes; do
-        command=("$native")
-        if [ "$mode" = jit ]; then command=(dotnet "$managed"); fi
+        command=("$native" --lib-root "$root")
+        if [ "$mode" = jit ]; then command=(dotnet "$managed" --lib-root "$root"); fi
         /usr/bin/time -a -o "$output/unit-timings.csv" \
             -f "$mode,$round,%e,%U,%S,%M" \
             "${command[@]}" compile --nostdlib --lib --obj --jobs 1 \

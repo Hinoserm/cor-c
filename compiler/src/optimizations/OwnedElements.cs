@@ -28,7 +28,7 @@ using Block = Corsac.Lang.Ir.Block;
 /// </summary>
 internal static class OwnedElements
 {
-    internal static readonly string? Trace = Environment.GetEnvironmentVariable("CORSAC_ELEMENTS_TRACE") is { Length: > 0 } t ? t : null;
+    internal static readonly string? Trace = Switches.TraceElements;
     internal static void Say(Function f, string what)
     {
         if (Trace is { } t && f.Name.Contains(t, StringComparison.Ordinal)) Console.Error.WriteLine($"elements {f.Name}: {what}");

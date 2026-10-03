@@ -41,7 +41,7 @@ public sealed class DeclarationSession : IDisposable
     /// headers, decoded index payloads, and the verified text of the library
     /// files. The defaults come to a little over three hundred megabytes
     /// against a target with about a gigabyte, and the build may lower them
-    /// (CORC_TOKEN_BUDGET, CORC_DECL_BUDGET, CORC_SOURCE_BUDGET) for a
+    /// (--token-budget, --decl-budget, --source-budget) for a
     /// smaller machine. None of them is per worker: one session serves every
     /// thread, so raising --jobs does not raise this.
     /// </summary>

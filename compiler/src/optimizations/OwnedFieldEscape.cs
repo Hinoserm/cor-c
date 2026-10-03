@@ -9,7 +9,7 @@ internal sealed class OwnedFieldEscape
     private readonly Dictionary<string, bool[]> _summaries;
     private readonly Dictionary<(string, int, string), bool> _memo = new();
     internal readonly record struct Field(long Offset, int Width);
-    /// <summary>The instruction the last refused read stopped at (CORSAC_PROMOTE_TRACE).</summary>
+    /// <summary>The instruction the last refused read stopped at (--trace-escape).</summary>
     [ThreadStatic] internal static Instr? LastRefusal;
     internal sealed class Owner
     {
@@ -286,7 +286,7 @@ internal sealed class OwnedFieldEscape
                             continue;
                         }
                         LastRefusal = null;
-                        // The innermost refusal is the one worth naming (CORSAC_PROMOTE_TRACE).
+                        // The innermost refusal is the one worth naming (--trace-escape).
                         if (!Safe(callee, a, relativePath)) { LastRefusal ??= i; return false; }
                     }
                 continue;

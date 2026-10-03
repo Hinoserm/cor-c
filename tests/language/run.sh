@@ -126,7 +126,7 @@ if [ ! -e "$root/.run-snapshot" ]; then
             done
             export CORC_LIBS="${copied# }"
         fi
-        CORC="$CORC" CORC_LIB="$tree" bash "$tree/tests/language/run.sh" "$@"
+        CORC="$CORC --lib-root $tree" bash "$tree/tests/language/run.sh" "$@"
         exit $?
     fi
 fi

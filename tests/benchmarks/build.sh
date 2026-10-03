@@ -3,7 +3,6 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$root"
-export CORC_LIB="${CORC_LIB:-$root}"
 corc="${CORC:-$root/compiler/bin/managed/Release/net10.0/corc}"
 out="${OUT:-$root/build/perf}"
 mkdir -p "$out"
@@ -27,7 +26,7 @@ for workload in "${workloads[@]}"; do
     *) echo "Unknown benchmark: $workload" >&2; exit 2 ;;
   esac
   sources+=("tests/benchmarks/$workload.cor")
-  "$corc" compile "${libs[@]}" "${sources[@]}" -o "$out/$workload"
+  "$corc" --lib-root "$root" compile "${libs[@]}" "${sources[@]}" -o "$out/$workload"
   objdump -d "$out/$workload" > "$out/$workload.asm"
   nm -S --size-sort "$out/$workload" > "$out/$workload-symbols.txt"
   sha256sum "${sources[@]}" > "$out/$workload-sources.sha256"
