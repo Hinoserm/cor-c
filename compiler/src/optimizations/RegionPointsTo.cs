@@ -2884,6 +2884,17 @@ public sealed class RegionPointsTo : IModulePass
         foreach (LocSet p in _pts) locations += p.Count;
         Console.Error.WriteLine($"regions: {_copies.Count} function copies, {_objects.Count} objects, {_pts.Count} nodes, {locations} locations held, {_steps} steps");
         Console.Error.WriteLine($"regions: {_callContexts.Count} call contexts");
+        // --region-report copies: every function copy, in the order it was
+        // made, with its nodes and the locations they hold -- what two builds
+        // of the compiler that part on a program are compared by.
+        if (wanted.Contains("copies"))
+            for (int c = 0; c < _copies.Count; c++)
+            {
+                int end = c + 1 < _copyBase.Count ? _copyBase[c + 1] : _pts.Count;
+                long held = 0;
+                for (int k = _copyBase[c]; k < end; k++) held += _pts[k].Count;
+                Console.Error.WriteLine($"regions: copy {c} {_copies[c].F.Name} context {_copies[c].Context} nodes {end - _copyBase[c]} held {held}");
+            }
         for (int c = 0; c < _copies.Count; c++)
         {
             (Function f, int context) = _copies[c];
