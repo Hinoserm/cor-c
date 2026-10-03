@@ -336,12 +336,13 @@ public sealed partial class Binder
         // meant its own. A program's global `Rectangle` read back into
         // Control.Bounds -- System.Drawing's, by the library's using -- gave
         // the program's unit another layout of the method than the library's.
-        // Only a declaration another unit compiled (Elsewhere), and not this
-        // unit's own copy of one of its generic methods (LocalCopy): code
-        // this unit compiles itself -- OfType<Field>, Where<Op> -- names the
-        // program's types.
-        bool libraryOwn = written is { Elsewhere: true, FromLibrary: true, Specialised: false } && _member is not { LocalCopy: true };
-        if (TypeCandidate(name, out sym) && !(libraryOwn && sym?.Decl is { FromLibrary: false, Elsewhere: false }))
+        // Compiled with the program or read from another unit's declarations
+        // alike: a library is its own assembly to C#, and a program's global
+        // `Color` is no System.Drawing.Color to it. Not a copy of one of its
+        // generic methods for the program's types (LocalCopy) --
+        // OfType<Field>, Where<Op> -- which names them.
+        bool libraryOwn = written is { FromLibrary: true, Specialised: false } && _member is not { LocalCopy: true };
+        if (TypeCandidate(name, out sym) && !(libraryOwn && sym?.Decl is { FromLibrary: false }))
         {
             return true;
         }
