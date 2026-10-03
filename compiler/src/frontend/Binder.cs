@@ -601,7 +601,35 @@ public sealed partial class Binder
     /// ambiguous import rather than choosing between them, and so does this --
     /// choosing is how a file comes to mean something other than it says.
     /// </summary>
+    /// <summary>
+    /// What the using directives of one namespace declaration make this name
+    /// mean, asked once a pass for each file, level and name (ImportedNow):
+    /// asked at every enclosing level of every name a body mentions, it built
+    /// `namespace.name` for each import and looked it up, 2.6% of a native
+    /// self-compile. What it finds cannot change within a pass -- a declaration
+    /// a pass demands arrives in the next one, with a binder of its own -- so
+    /// the answer is kept, and a type found is marked asked for as the lookup
+    /// would have marked it. Not while a pass is still demanding, when a miss
+    /// may be a declaration on its way.
+    /// </summary>
     private bool Imported(FileScope file, string at, string name, out TypeSymbol? sym)
+    {
+        if (!_importedSeen.TryGetValue(file, out Dictionary<(string, string), TypeSymbol?>? known))
+            _importedSeen[file] = known = new Dictionary<(string, string), TypeSymbol?>();
+        if (known.TryGetValue((at, name), out sym))
+        {
+            if (sym is not null && !BindingElsewhere && !_namingOnly) sym.Used = true;
+            return sym is not null;
+        }
+        bool demandedBefore = _declarationBatch.Any;
+        bool found = ImportedNow(file, at, name, out sym);
+        if (!_namingOnly && !demandedBefore && !_declarationBatch.Any) known[(at, name)] = found ? sym : null;
+        return found;
+    }
+
+    private readonly Dictionary<FileScope, Dictionary<(string, string), TypeSymbol?>> _importedSeen = new(ReferenceEqualityComparer.Instance);
+
+    private bool ImportedNow(FileScope file, string at, string name, out TypeSymbol? sym)
     {
         foreach ((string In, string Alias, string Target) alias in file.Aliases)
         {
