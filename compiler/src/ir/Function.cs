@@ -37,6 +37,13 @@ public sealed class Function
     public bool NoInlining { get; set; }
 
     /// <summary>
+    /// What an analysis keeps of this function between questions, with the
+    /// instruction count it was made at (Escape.StampOf): asked again of a
+    /// function that has grown since, it is made again.
+    /// </summary>
+    internal KeptIndex? AnalysisIndex { get; set; }
+
+    /// <summary>
     /// Set on the body of an async method: the function suspends at its
     /// `__suspend`/`__resume` markers, and the async transform turns it into
     /// a resumable state machine before any backend sees it.
@@ -107,3 +114,6 @@ public sealed class Function
         }
     }
 }
+
+/// <summary>An analysis's index of a function, and the instruction count it was made at (Function.AnalysisIndex): one reference, so a reader never sees half of one.</summary>
+internal sealed record KeptIndex(int Instructions, object Index);

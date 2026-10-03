@@ -2286,17 +2286,48 @@ continue;
 
     /// <summary>The descriptor stored into the first word of the block `made` makes, where it is made; null for none, or for two different.</summary>
     private static Stamp? StampOf(Function f, VReg made)
+        => StampIndex(f).TryGetValue(made, out Stamp? stamp) ? stamp : null;
+
+    /// <summary>
+    /// EVERY ALLOCATION'S STAMP IN ONE WALK: each header store of a descriptor
+    /// counted for the register it stores into and for every register that
+    /// register is a copy of -- StampOf's answer, null where two stores
+    /// disagree. Asked once per question before, it walked the function for
+    /// every allocation and walked it again for every store: 5% of a native
+    /// self-compile. A stamp is written by lowering and never again, so the
+    /// index holds until the function grows (inlining brings its callee's).
+    /// </summary>
+    private static Dictionary<VReg, Stamp?> StampIndex(Function f)
     {
-        Stamp? found = null;
+        int count = 0;
+        foreach (Block b in f.Blocks) count += b.Instrs.Count;
+        if (f.AnalysisIndex is { Index: Dictionary<VReg, Stamp?> index } kept && kept.Instructions == count) return index;
+        Dictionary<VReg, List<VReg>> copiedFrom = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr d in b.Instrs)
+                if (d.Dest is { } dest && d.Op is Opcode.Copy or Opcode.Trunc64 && d.Operands.Count == 1 && d.Operands[0] is RegOperand { Reg: var from })
+                {
+                    if (!copiedFrom.TryGetValue(dest, out List<VReg>? sources)) copiedFrom[dest] = sources = new List<VReg>(1);
+                    sources.Add(from);
+                }
+        Dictionary<VReg, Stamp?> made = new();
+        void Note(VReg r, Stamp stamp)
+        {
+            if (!made.TryGetValue(r, out Stamp? had)) made[r] = stamp;
+            else if (had is { } h && h != stamp) made[r] = null;
+        }
         foreach (Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
                 if (i.Op == Opcode.Store && i.Offset == 0 && i.Operands.Count >= 2 && i.Operands[1] is SymOperand { Name: var t, Offset: var at }
-                    && IsDescriptor(t) && i.Operands[0] is RegOperand { Reg: var into } && (into == made || Stamped(f, into, made)))
+                    && IsDescriptor(t) && i.Operands[0] is RegOperand { Reg: var into })
                 {
-                    if (found is { } had && had != new Stamp(t, at)) return null;
-                    found = new Stamp(t, at);
+                    Stamp stamp = new(t, at);
+                    Note(into, stamp);
+                    if (copiedFrom.TryGetValue(into, out List<VReg>? sources))
+                        foreach (VReg source in sources) if (source != into) Note(source, stamp);
                 }
-        return found;
+        f.AnalysisIndex = new KeptIndex(count, made);
+        return made;
     }
 
     /// <summary>An iterator's MoveNext: a body run a step at a time in its machine (Lowering.Iterator), not an async method's.</summary>
