@@ -3948,6 +3948,7 @@ continue;
             foreach (Block b in f.Blocks)
                 foreach (Instr i in b.Instrs)
                     if (i.Dest is not null && !single.TryAdd(i.Dest, i)) many.Add(i.Dest);
+            bool traced = PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal);
             foreach (Block b in f.Blocks)
                 foreach (Instr i in b.Instrs)
                 {
@@ -3957,8 +3958,16 @@ continue;
                         || method.Op != Opcode.Load || method.Operands.Count < 1 || method.Operands[0] is not RegOperand { Reg: var table }
                         || many.Contains(table) || !single.TryGetValue(table, out Instr? header)
                         || header.Op != Opcode.Load || header.Offset != 0 || header.Operands.Count < 1
-                        || header.Operands[0] is not RegOperand { Reg: var from } || from != self) continue;
-                    if (i.DispatchType is not string declaring) continue;
+                        || header.Operands[0] is not RegOperand { Reg: var from } || from != self)
+                    {
+                        if (traced && i.Op == Opcode.CallIndirect) Console.Error.WriteLine($"targets {f.Name}: {i} not a table call");
+                        continue;
+                    }
+                    if (i.DispatchType is not string declaring)
+                    {
+                        if (traced) Console.Error.WriteLine($"targets {f.Name}: {i} no dispatch type");
+                        continue;
+                    }
                     // NO OBJECT OF THE TYPE EXISTS: no descriptor in the
                     // whole program is it or derives from it -- an interface
                     // the library tests for and nothing implements -- so the
@@ -3967,6 +3976,7 @@ continue;
                         instantiated[declaring] = made = declaring == "t_object" || descriptors.Any(d => Ancestors(d.Name).Contains(declaring));
                     if (!made)
                     {
+                        if (traced) Console.Error.WriteLine($"targets {f.Name}: {i} {declaring}: no object of the type");
                         result[i] = Array.Empty<string>();
                         continue;
                     }
@@ -3978,6 +3988,7 @@ continue;
                             + (targets.Length == 0 ? "no descriptor fills the slot" : "not code: " + string.Join(",", targets.Where(t => !byName.ContainsKey(t)).Take(4))));
                         continue;
                     }
+                    if (traced) Console.Error.WriteLine($"targets {f.Name}: {i} {declaring}+{method.Offset} -> {string.Join(",", targets.Order(StringComparer.Ordinal))}");
                     result[i] = targets;
                 }
         }
