@@ -10747,11 +10747,7 @@ public sealed partial class Binder
             case SuppressExpr sure:
             {
                 Type suppressed = CheckExpr(sure.Operand);
-                // `null!` IS STILL THE NULL LITERAL, as C# has it: it converts
-                // to any reference type and takes no part in a best common
-                // type -- `new[] { "", null! }` is a string[], not an
-                // object[].
-                if (suppressed.Prim == Prim.NullLiteral) { return suppressed; }
+                if (suppressed.Prim == Prim.NullLiteral) { return Type.Any; }
 
                 // `x!` SAYS SO ABOUT x, not merely about this reading of it.
                 // C# sets the null state, which is what lets `_idom![b]` be
@@ -11258,7 +11254,12 @@ public sealed partial class Binder
                     List<Type> had = new(written.Count);
                     foreach (Expr one in written)
                     {
-                        had.Add(nw.Type.Name.Length == 0 ? CheckExpr(one) : Type.Error);
+                        Type checkedOne = nw.Type.Name.Length == 0 ? CheckExpr(one) : Type.Error;
+                        // `null!` IS STILL THE NULL LITERAL to the best common
+                        // type, as C# has it: `new[] { "", null! }` is a
+                        // string[], not an object[].
+                        if (one is SuppressExpr { Operand: LiteralExpr { Kind: Lit.Null } }) checkedOne = Type.Null;
+                        had.Add(checkedOne);
                     }
                     Type element = type;
                     if (nw.Type.Name.Length == 0)
