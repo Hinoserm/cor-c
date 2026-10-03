@@ -1339,7 +1339,9 @@ public sealed partial class Lowering
 
     private const int DescName = 0, DescSize = 1, DescDepth = 2, DescDisplay = 3,
                       DescInterfaces = 4, DescSelf = 5, DescFlags = 6, DescPayload = 7,
-                      DescRefMap = 8, DescGcFlags = 9, DescElement = 10;
+                      DescRefMap = 8, DescGcFlags = 9, DescElement = 10,
+                      // A class's word 10, as an array's is its element's; 11 is its owned-field map (Escape).
+                      DescTypeContext = 10;
 
     // DescFlags beyond a sequence's 1 and a string's 2: what Type answers.
     private const int TypeFlagValue = 4, TypeFlagEnum = 8, TypeFlagInterface = 16, TypeFlagPrimitive = 32;
@@ -1885,6 +1887,81 @@ public sealed partial class Lowering
     }
 
     /// <summary>The symbol of a type's descriptor; the vtable follows it at DescriptorBytes.</summary>
+    /// <summary>
+    /// WHAT A SHARED GENERIC COPY'S TYPE ARGUMENTS ARE, for an object of this
+    /// class (ICanonSlot): word DescTypeContext of its descriptor, a table by
+    /// depth in its class chain -- an ancestor's shared code reads the entry
+    /// at its own depth, which is the same for every instantiation of it --
+    /// and at each depth that is a shared copy, two words for each of its
+    /// type parameters: the argument's descriptor and its array's. The
+    /// canonical copy's own objects answer object. Null for a class with no
+    /// shared copy in its chain, whose word stays zero and is never read.
+    /// </summary>
+    private string? TypeContext(TypeSymbol t, List<TypeSymbol> chain)
+    {
+        if (!chain.Any(SharedCopy))
+        {
+            return null;
+        }
+        int w = _t.WordSize;
+        DataItem context = new("tc_" + TypeKey(t), new byte[chain.Count * w]) { ReadOnly = true, Exported = false };
+        for (int d = 0; d < chain.Count; d++)
+        {
+            if (!SharedCopy(chain[d]))
+            {
+                continue;
+            }
+            List<Type> args = SharedArguments(chain[d]);
+            DataItem table = new("ta_" + TypeKey(t) + "$" + d, new byte[Math.Max(1, 2 * args.Count) * w]) { ReadOnly = true, Exported = false };
+            for (int i = 0; i < args.Count; i++)
+            {
+                table.Relocs.Add(new DataReloc(2 * i * w, ArgumentDescriptor(args[i]), 0));
+                table.Relocs.Add(new DataReloc((2 * i + 1) * w,
+                    SequenceDescriptor(ElementKey(args[i]), ElementStride(args[i]), isString: false, elementType: args[i]), 0));
+            }
+            _m.Data.Add(table);
+            context.Relocs.Add(new DataReloc(d * w, table.Name, 0));
+        }
+        _m.Data.Add(context);
+        return context.Name;
+    }
+
+    /// <summary>Whether a class runs a canonical copy's code: that copy, or an instantiation sharing it.</summary>
+    private static bool SharedCopy(TypeSymbol s)
+        => s.Kind == TypeKind.Class && s.Decl is { Specialised: true } d
+        && (d.Canon is not null || CanonicalCopy(s));
+
+    private static bool CanonicalCopy(TypeSymbol s)
+        => s.Decl is { Specialised: true, Template: string template } d && d.TemplateArgs.Count > 0
+        && Monomorphiser.CanonNameOf(template, d.TemplateArgs.Count) == s.Name;
+
+    /// <summary>A shared copy's type arguments as their descriptors are named: object for the canonical copy's own, and for any not resolved.</summary>
+    private static List<Type> SharedArguments(TypeSymbol s)
+    {
+        int count = s.Decl!.TemplateArgs.Count;
+        List<Type> args = new(count);
+        for (int i = 0; i < count; i++)
+        {
+            Type? a = !CanonicalCopy(s) && s.TemplateArgTypes.Count == count ? s.TemplateArgTypes[i] : null;
+            args.Add(a is not null && !a.IsError && a.ParamName is null && !IsStructValue(a) ? a : Type.Any);
+        }
+        return args;
+    }
+
+    /// <summary>The descriptor `typeof` and GetType() give for a reference type argument.</summary>
+    private string ArgumentDescriptor(Type a)
+    {
+        if (a.IsArray && a.Element is Type element)
+        {
+            return SequenceDescriptor(ElementKey(element), ElementStride(element), isString: false, elementType: element);
+        }
+        if (a.Symbol is TypeSymbol s && s.Kind is TypeKind.Class or TypeKind.Interface)
+        {
+            return DescriptorOf(s);
+        }
+        return PrimitiveDescriptor(a.Prim == Prim.String ? Prim.String : Prim.Any);
+    }
+
     private string DescriptorOf(TypeSymbol t)
         => t.Kind == TypeKind.Interface ? InterfaceDescriptor(t)
          // A STRUCT'S OR AN ENUM'S TYPE IS ITS BOX'S, which is what an object
@@ -2053,6 +2130,11 @@ public sealed partial class Lowering
             }
             _m.Data.Add(ifc);
             item.Relocs.Add(new DataReloc(DescInterfaces * w, ifc.Name, 0));
+        }
+
+        if (t.Kind == TypeKind.Class && TypeContext(t, chain) is string context)
+        {
+            item.Relocs.Add(new DataReloc(DescTypeContext * w, context, 0));
         }
 
         for (int i = 0; i < slots; i++)

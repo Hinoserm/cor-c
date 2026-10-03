@@ -642,6 +642,11 @@ public sealed class Monomorphiser
             // Across a compiler's worth of List, Dictionary and HashSet over
             // reference types that was most of the declarations in memory.
             _bodiesElsewhere = job.Canon != null;
+            // THE SHARED COPY OF A CLASS reads what its type arguments are from
+            // the object it runs for (ICanonSlot). Known by its name: it is
+            // queued by Canonicalise, or by a use written over __canon.
+            _canonParams = job.Template.Kind == TypeKind.Class && job.Canon is null
+                && job.Name == CanonNameOf(TemplatePath(job.Template), job.Template.TypeParams.Count) ? CanonParams(job.Template) : null;
             TypeDecl made;
             try
             {
@@ -650,6 +655,7 @@ public sealed class Monomorphiser
             finally
             {
                 _bodiesElsewhere = false;
+                _canonParams = null;
             }
 
             // WHERE ITS CODE LIVES, which is the whole of code sharing.
@@ -780,6 +786,58 @@ public sealed class Monomorphiser
             }
         }
         return null;
+    }
+
+    /// <summary>The type parameters of the canonical class copy being made, by name: their places (ICanonSlot).</summary>
+    private Dictionary<string, int>? _canonParams;
+
+    /// <summary>Whether the member being copied has a `this` to read them through.</summary>
+    private bool _canonSelf;
+
+    private static Dictionary<string, int> CanonParams(TypeDecl template)
+    {
+        Dictionary<string, int> places = new(StringComparer.Ordinal);
+        for (int i = 0; i < template.TypeParams.Count; i++) places[template.TypeParams[i].Name] = i;
+        return places;
+    }
+
+    /// <summary>
+    /// A copied expression of the canonical class copy that asks for a type
+    /// parameter at run time, marked with the entry that answers it
+    /// (ICanonSlot): the parameter itself, or -- `array`, or `arrayToo` and
+    /// written `T[]` -- an array of it. Anything else asked of T stays the
+    /// machine word's answer.
+    /// </summary>
+    private T Canon<T>(T made, T source, TypeRef written, bool arrayToo, bool array = false) where T : Expr, ICanonSlot
+    {
+        // A COPY ALREADY MARKED keeps its mark when it is copied again: a
+        // made declaration passes through the next round with its bodies
+        // rewritten.
+        if (source.CanonSlot >= 0)
+        {
+            made.CanonSlot = source.CanonSlot;
+            made.CanonSelf = new ThisExpr { Line = made.Line, Col = made.Col };
+            return made;
+        }
+        if (!_canonSelf || _canonParams is null || written.Args.Count != 0 || written.PointerDepth != 0
+            || !_canonParams.TryGetValue(written.Name, out int place))
+        {
+            return made;
+        }
+        if (written.ArrayRank == 0)
+        {
+            made.CanonSlot = 2 * place + (array ? 1 : 0);
+        }
+        else if (written.ArrayRank == 1 && arrayToo && !array)
+        {
+            made.CanonSlot = 2 * place + 1;
+        }
+        else
+        {
+            return made;
+        }
+        made.CanonSelf = new ThisExpr { Line = made.Line, Col = made.Col };
+        return made;
     }
 
     /// <summary>The name a specialisation gets. Readable on purpose: it appears in diagnostics.</summary>
@@ -1534,7 +1592,10 @@ public sealed class Monomorphiser
                 _usings = d.Members[i].Scope;
             }
 
-            MemberDecl copy = RewriteMember(d.Members[i], map, name);
+            _canonSelf = _canonParams is not null && !d.Members[i].Mods.HasFlag(Mods.Static);
+            MemberDecl copy;
+            try { copy = RewriteMember(d.Members[i], map, name); }
+            finally { _canonSelf = false; }
 
             copy.Scope = d.Members[i].Scope;
             copy.OwnedImplementation = d.TypeParams.Count != 0 ? true : d.Members[i].OwnedImplementation;
@@ -2152,7 +2213,7 @@ public sealed class Monomorphiser
                 return new SizeOfExpr { Type = Sub(size.Type, map), Line = size.Line, Col = size.Col };
 
             case TypeOfExpr typeOf:
-                return new TypeOfExpr { Type = Sub(typeOf.Type, map), Line = typeOf.Line, Col = typeOf.Col };
+                return Canon(new TypeOfExpr { Type = Sub(typeOf.Type, map), Line = typeOf.Line, Col = typeOf.Col }, typeOf, typeOf.Type, arrayToo: true);
 
             case RefArgExpr reference:
                 return new RefArgExpr
@@ -2290,7 +2351,8 @@ public sealed class Monomorphiser
                 // failure: a `new List<int> { 1, 2 }` whose copy lost them is
                 // an empty list that compiled.
                 CopyInitBody(nw.Body, made.Body, map);
-                return made;
+                // An array of a type parameter: its element, as written.
+                return nw.ArraySize is not null || nw.Elements is not null ? Canon(made, nw, nw.Type, arrayToo: false, array: true) : made;
             }
 
             // The expressions added with tuples, ranges, throw expressions and
@@ -2372,10 +2434,10 @@ public sealed class Monomorphiser
                 return new CastExpr { Type = Sub(cast.Type, map), Operand = Rewrite(cast.Operand, map), Line = cast.Line, Col = cast.Col };
 
             case IsExpr isx:
-                return new IsExpr { Operand = Rewrite(isx.Operand, map), Type = Sub(isx.Type, map), Binding = isx.Binding, Line = isx.Line, Col = isx.Col };
+                return Canon(new IsExpr { Operand = Rewrite(isx.Operand, map), Type = Sub(isx.Type, map), Binding = isx.Binding, Line = isx.Line, Col = isx.Col }, isx, isx.Type, arrayToo: false);
 
             case AsExpr asx:
-                return new AsExpr { Operand = Rewrite(asx.Operand, map), Type = Sub(asx.Type, map), Line = asx.Line, Col = asx.Col };
+                return Canon(new AsExpr { Operand = Rewrite(asx.Operand, map), Type = Sub(asx.Type, map), Line = asx.Line, Col = asx.Col }, asx, asx.Type, arrayToo: false);
 
             case AwaitExpr aw:
                 return new AwaitExpr { Operand = Rewrite(aw.Operand, map), Line = aw.Line, Col = aw.Col };

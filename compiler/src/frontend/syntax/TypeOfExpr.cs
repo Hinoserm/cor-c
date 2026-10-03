@@ -8,7 +8,12 @@ namespace Corsac.Lang;
 /// constant, and comparing two of them is comparing two addresses.
 ///
 /// See docs/image-format.md.
-public sealed class TypeOfExpr : Expr
+public sealed class TypeOfExpr : Expr, ICanonSlot
 {
+    /// <summary>The descriptor entry a shared copy reads for its type argument (ICanonSlot), or -1.</summary>
+    public int CanonSlot { get; set; } = -1;
+    /// <summary>The `this` that entry is read through (ICanonSlot).</summary>
+    public Expr? CanonSelf { get; set; }
+
     public required TypeRef Type { get; init; }
 }

@@ -11201,6 +11201,7 @@ public sealed partial class Binder
 
             case NewExpr nw:
             {
+                if (nw.CanonSelf is { } nwSelf) CheckExpr(nwSelf);
                 // A TARGET-TYPED `new()` THAT NOBODY TOLD THE TYPE. The parser
                 // leaves the name empty and the declaration is supposed to fill
                 // it in; reaching here means it was written somewhere with no
@@ -12610,6 +12611,7 @@ public sealed partial class Binder
 
             case TypeOfExpr to:
             {
+                if (to.CanonSelf is { } toSelf) CheckExpr(toSelf);
                 // typeof(T). Recorded the same way and for the same reason as
                 // sizeof: the code generator has a TypeRef and nowhere to
                 // resolve it, and inside a generic the answer depends on which
@@ -12733,6 +12735,7 @@ public sealed partial class Binder
             case IsExpr isx:
             {
                 Type operand = CheckExpr(isx.Operand);
+                if (isx.CanonSelf is { } isxSelf) CheckExpr(isxSelf);
 
                 // A VAR PATTERN ASKS NOTHING AND NAMES WHAT IT FOUND. The name
                 // has the subject's own type, nullability and all: C# says a
@@ -12936,6 +12939,7 @@ public sealed partial class Binder
             case AsExpr asx:
             {
                 CheckExpr(asx.Operand);
+                if (asx.CanonSelf is { } asxSelf) CheckExpr(asxSelf);
                 Type type = Resolve(asx.Type, _thisType);
 
                 if (type.Symbol is { } asSymbol)
@@ -12947,7 +12951,8 @@ public sealed partial class Binder
                     _r.TestedArrays[asx] = type;
                 }
 
-                if (!type.IsReference && !type.IsError)
+                // `as object` -- and a shared copy's `as T`, which is one -- is C#.
+                if (!type.IsReference && !(type.Prim == Prim.Any && type.Symbol is null && !type.IsNullableValue) && !type.IsError)
                 {
                     Error(asx, $"'as' needs a reference type, and '{type}' is a value type");
                 }

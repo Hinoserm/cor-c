@@ -1,0 +1,51 @@
+// test: shared_generic_copies_know_their_type_arguments
+// expect-exit: 0
+// expect-output:
+// String[] Exception[] String[]
+// String Exception String[] True
+// True False True False
+// x True
+// String[] String[] False
+// True True True
+//
+// One compiled copy of a generic class serves every reference type
+// argument, and in it T is a machine word: `new T[n]` made an object[],
+// typeof(T) was object, and `is T` asked only for an object. Each class's
+// descriptor now says what its shared copies' arguments are, and the copy
+// reads it through `this` -- in a lambda as well, and for a class deriving
+// from an instantiation. List<string>.ToArray() is a string[], as the
+// native compiler's own link needs it to be. The output is real .NET's.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+class Box<T> where T : class
+{
+    public T[] Make(int n) => new T[n];
+    public T[] Listed(T a, T b) => new T[] { a, b };
+    public Type Arg() => typeof(T);
+    public Type Arrays() => typeof(T[]);
+    public bool Is(object o) => o is T;
+    public T? As(object o) => o as T;
+    public Func<int, T[]> Later() => n => new T[n];
+}
+
+class Strings : Box<string> { }
+
+static class P
+{
+    static void Main()
+    {
+        Box<string> s = new();
+        Box<Exception> e = new();
+        Console.WriteLine(s.Make(2).GetType().Name + " " + e.Make(1).GetType().Name + " " + s.Listed("a", "b").GetType().Name);
+        Console.WriteLine(s.Arg().Name + " " + e.Arg().Name + " " + s.Arrays().Name + " " + (s.Arg() == typeof(string)));
+        Console.WriteLine(s.Is("x") + " " + s.Is(new object()) + " " + e.Is(new ArgumentException()) + " " + e.Is("x"));
+        Console.WriteLine((s.As("x") ?? "null") + " " + (e.As("x") is null));
+        Console.WriteLine(s.Later()(3).GetType().Name + " " + new Strings().Make(1).GetType().Name + " " + new Strings().Is(5));
+        object made = new List<string> { "b", "a" }.ToArray();
+        object ordered = new HashSet<string> { "b", "a" }.Order(StringComparer.Ordinal).ToArray();
+        Console.WriteLine((made is string[]) + " " + (ordered is string[]) + " " + (new List<Exception>().ToArray() is Exception[]));
+    }
+}

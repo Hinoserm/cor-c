@@ -828,6 +828,9 @@ public sealed partial class Lowering
             // AN ENUM'S OR A STRUCT'S TYPE IS ITS BOX'S, as a primitive's is:
             // what GetType() on one reads is the box, and typeof has to be
             // that same descriptor for the two to compare equal.
+            case TypeOfExpr { CanonSlot: >= 0 } canonType:
+                return CanonEntry(canonType);
+
             case TypeOfExpr to when _b.TypeOfs.TryGetValue(to, out TypeSymbol? named):
                 return _e.Address(named.Kind is TypeKind.Enum or TypeKind.Struct
                     ? BoxDescriptor(new Type { Symbol = named }) : DescriptorOf(named));
@@ -883,6 +886,22 @@ public sealed partial class Lowering
             case IsExpr isx:
                 return EmitIs(isx);
 
+            case AsExpr { CanonSlot: >= 0 } canonAs when HeldByReference(_b.TypeOf(canonAs.Operand)):
+            {
+                VReg v = Eval(canonAs.Operand);
+                VReg test = DescribedTest(v, CanonEntry(canonAs));
+                VReg result = _f.NewReg(IrTypes.Word, "ascanon");
+                Block yes = _f.NewBlock("ascyes");
+                Block end = _f.NewBlock("ascend");
+                _e.CopyTo(result, Imm(0, IrTypes.Word));
+                _e.Branch(test, yes, end);
+                _e.SetBlock(yes);
+                _e.CopyTo(result, R(v));
+                _e.Jump(end);
+                _e.SetBlock(end);
+                return result;
+            }
+
             case AsExpr asx:
             {
                 VReg v = Eval(asx.Operand);
@@ -893,6 +912,11 @@ public sealed partial class Lowering
                 if (_b.TestedArrays.TryGetValue(asx, out Type? asArray))
                 {
                     return AsArray(v, asArray);
+                }
+                // Any object is an object.
+                if (_b.TypeOf(asx) is { Prim: Prim.Any, Symbol: null } && HeldByReference(_b.TypeOf(asx.Operand)))
+                {
+                    return v;
                 }
                 TypeSymbol? want = _b.TestedTypes.TryGetValue(asx, out TypeSymbol? resolved) ? resolved
                                  : _b.Types.TryGetValue(asx.Type.Name, out TypeSymbol? found) ? found : null;
@@ -1271,7 +1295,7 @@ public sealed partial class Lowering
         {
             Type element = type.Element ?? Type.I32;
             VReg count = _e.Const(written.Count, IrType.I32);
-            VReg array = AllocateArray(nw, count, element);
+            VReg array = AllocateArray(nw, count, element, nw.CanonSlot >= 0 ? CanonEntry(nw) : null);
             int stride = ElementStride(element);
             for (int i = 0; i < written.Count; i++)
             {
@@ -1285,7 +1309,7 @@ public sealed partial class Lowering
         {
             Type element = type.Element ?? Type.I32;
             VReg count = EvalAs(nw.ArraySize, Type.I32);
-            return AllocateArray(nw, count, element);
+            return AllocateArray(nw, count, element, nw.CanonSlot >= 0 ? CanonEntry(nw) : null);
         }
 
         // `new object()`: a header and nothing else, the thing to lock on.
@@ -1377,7 +1401,12 @@ public sealed partial class Lowering
     }
 
     /// <summary>An array: header, count, and count times the stride, zeroed.</summary>
-    private VReg AllocateArray(Node at, VReg count, Type element)
+    /// <summary>
+    /// A new array of `element`, described as such -- or by `described`, the
+    /// descriptor a shared copy read for its `T[]` (CanonEntry), which says
+    /// what the instantiation's element is where `element` is the machine word.
+    /// </summary>
+    private VReg AllocateArray(Node at, VReg count, Type element, VReg? described = null)
     {
         int stride = ElementStride(element);
         CheckArrayCount(count, stride);
@@ -1386,8 +1415,15 @@ public sealed partial class Lowering
         bool inline = InlineElement(element);
         bool references = inline && InlineHasReferences(StructOf(element));
         VReg array = AllocateDynamic(at, total, inline ? !references : LeafElement(element), described: true);
-        string desc = SequenceDescriptor(ElementKey(element), stride, isString: false, inline ? references : null, elementType: element);
-        _e.Store(R(array), new SymOperand(desc, _t.DescriptorBytes), 0, _t.WordSize);
+        if (described is not null)
+        {
+            _e.Store(R(array), R(_e.Binary(Opcode.Add, described, _t.DescriptorBytes)), 0, _t.WordSize);
+        }
+        else
+        {
+            string desc = SequenceDescriptor(ElementKey(element), stride, isString: false, inline ? references : null, elementType: element);
+            _e.Store(R(array), new SymOperand(desc, _t.DescriptorBytes), 0, _t.WordSize);
+        }
         _e.Emit(Opcode.InitArrayLength, null, R(array), R(count));
 
         // Held in line, every element is zero already: its default.
@@ -1958,8 +1994,59 @@ public sealed partial class Lowering
         return text.Append(']').Append(at + 1 <= full.Length ? full[(at + 1)..] : "").ToString();
     }
 
+    /// <summary>
+    /// THE ENTRY A SHARED COPY READS FOR ITS TYPE ARGUMENT (ICanonSlot):
+    /// through its `this`'s descriptor, the table at the copy's own depth in
+    /// that object's class chain (TypeContext).
+    /// </summary>
+    private VReg CanonEntry<T>(T at) where T : Expr, ICanonSlot
+    {
+        int w = _t.WordSize;
+        TypeSymbol shared = _b.TypeOf(at.CanonSelf!).Symbol ?? throw new InvalidOperationException("a shared copy's `this` has no class");
+        VReg self = Eval(at.CanonSelf!);
+        VReg vt = _e.Load(IrTypes.Word, self, 0);
+        VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes);
+        VReg table = _e.Load(IrTypes.Word, context, (long)shared.Depth * w);
+        return _e.Load(IrTypes.Word, table, (long)at.CanonSlot * w);
+    }
+
+    /// <summary>Whether a value is an object's address: a reference type, or object -- which a shared copy's T is.</summary>
+    private static bool HeldByReference(Type t) => t.IsReference || t.Prim == Prim.Any && t.Symbol is null && !t.IsNullableValue;
+
+    /// <summary>Whether an object, null being none, is of the type a descriptor read at run time names (Runtime.DescribedAs).</summary>
+    private VReg DescribedTest(VReg obj, VReg want)
+    {
+        MethodSymbol described = RuntimeMethod("DescribedAs", 2) ?? throw new InvalidOperationException("the runtime has no DescribedAs");
+        VReg result = _f.NewReg(IrType.I32, "isdesc");
+        Block some = _f.NewBlock("isdsome");
+        Block end = _f.NewBlock("isdend");
+        _e.CopyTo(result, Imm(0, IrType.I32));
+        _e.Branch(obj, some, end);
+        _e.SetBlock(some);
+        VReg desc = _e.Binary(Opcode.Sub, _e.Load(IrTypes.Word, obj, 0), _t.DescriptorBytes);
+        Require(described);
+        VReg answer = _e.Call(CallLabel(described), IrTypes.Of(described.Returns),
+            R(AsParam(desc, described.Params[0].Type)), R(AsParam(want, described.Params[1].Type)))!;
+        _e.CopyTo(result, R(answer.Type == IrType.I32 ? answer : _e.Unary(Opcode.Trunc64, R(answer), IrType.I32)));
+        _e.Jump(end);
+        _e.SetBlock(end);
+        return result;
+    }
+
     private VReg EmitIs(IsExpr isx)
     {
+        // `x is T` IN A SHARED COPY: of what T is for the object at hand.
+        if (isx.CanonSlot >= 0 && HeldByReference(_b.TypeOf(isx.Operand)))
+        {
+            VReg tested = Eval(isx.Operand);
+            VReg answer = DescribedTest(tested, CanonEntry(isx));
+            if (_b.PatternSlot.TryGetValue(isx, out int canonNamed))
+            {
+                BindPattern(isx, canonNamed, Type.Any, tested);
+            }
+            return answer;
+        }
+
         if (_b.NullablePatterns.Contains(isx))
         {
             // `nullable is T value`: null is false; a present cell is opened.
