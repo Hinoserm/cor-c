@@ -346,6 +346,34 @@ public sealed partial class Lowering
                 VReg two = ToWord(Arg(call, target, 1));
                 return _e.Call(KeyEqualsStub(), IrType.I32, R(one), R(two))!;
             }
+            case "CompareValues":
+            {
+                Type of = _b.TypeOf(call.Args[0]);
+                VReg x = Eval(call.Args[0]), y = Eval(call.Args[1]);
+                if (of.IsFloat)
+                {
+                    VReg below = _e.Binary(Opcode.FLt, R(x), R(y), IrType.I32);
+                    VReg above = _e.Binary(Opcode.FGt, R(x), R(y), IrType.I32);
+                    VReg same = _e.Binary(Opcode.FEq, R(x), R(y), IrType.I32);
+                    // Unordered: NaN is below every number and equal to itself.
+                    VReg xNaN = _e.Binary(Opcode.FNe, R(x), R(x), IrType.I32);
+                    VReg yNaN = _e.Binary(Opcode.FNe, R(y), R(y), IrType.I32);
+                    VReg ordered = _e.Binary(Opcode.Or, R(_e.Binary(Opcode.Or, R(below), R(above), IrType.I32)), R(same), IrType.I32);
+                    VReg unordered = _e.Binary(Opcode.Xor, R(ordered), Imm(1, IrType.I32), IrType.I32);
+                    // x NaN: 0 when y is too, else -1; y alone NaN: 1.
+                    VReg xNumber = _e.Binary(Opcode.Xor, R(xNaN), Imm(1, IrType.I32), IrType.I32);
+                    VReg yNumber = _e.Binary(Opcode.Xor, R(yNaN), Imm(1, IrType.I32), IrType.I32);
+                    VReg nanOrder = _e.Binary(Opcode.Sub, R(xNumber), R(_e.Binary(Opcode.And, R(xNaN), R(yNumber), IrType.I32)), IrType.I32);
+                    VReg plain = _e.Binary(Opcode.Sub, R(above), R(below), IrType.I32);
+                    return _e.Binary(Opcode.Add, R(plain), R(_e.Binary(Opcode.Mul, R(unordered), R(nanOrder), IrType.I32)), IrType.I32);
+                }
+                bool unsigned = of.IsEnumValue && of.Symbol is { } named
+                    ? named.EnumUnderlying is Prim.U8 or Prim.U16 or Prim.U32 or Prim.U64 or Prim.Char or Prim.NUInt
+                    : of.IsUnsigned || of.Prim == Prim.Bool;
+                VReg less = _e.Binary(unsigned ? Opcode.LtU : Opcode.LtS, R(x), R(y), IrType.I32);
+                VReg more = _e.Binary(unsigned ? Opcode.GtU : Opcode.GtS, R(x), R(y), IrType.I32);
+                return _e.Binary(Opcode.Sub, R(more), R(less), IrType.I32);
+            }
             case "KeyCompare":
             {
                 if (NullableKey(call, "KeyCompare") is VReg nullableKey) return nullableKey;

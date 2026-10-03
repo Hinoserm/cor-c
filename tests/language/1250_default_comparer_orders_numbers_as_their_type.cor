@@ -1,0 +1,44 @@
+// test: default_comparer_orders_numbers_as_their_type
+// expect-exit: 0
+// expect-output:
+// -2.25,-0.5,0,1.5,3
+// -7,-2,0,3
+// -7,-2,0,3
+// 0,3,7,4000000000
+// Maz
+// Red,Green,Blue
+// -2147483648,-7,-2,0,3,2147483647
+// 5 -1 2
+// -1,0,3
+// -1,0,3
+//
+// Comparer<T>.Default orders a number as its own type does: a negative int
+// below zero, a float with its sign and NaN first, an enum by its underlying
+// type, a uint as unsigned. DefaultComparer<T> was one copy for every
+// word-sized T and compared words as the reference copy does -- unsigned,
+// and a float's bits as an integer's -- so Array.Sort, OrderBy, Min/Max and
+// SortedDictionary ordered negative numbers last, and the natively built
+// compiler, sorting classes by a depth of -1, laid out a generic virtual
+// call differently from the managed one. The output is real .NET's. A
+// program's own global `Color` beside the library's is fine as well.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+enum Color { Red = -2, Green = 0, Blue = 3 }
+static class P
+{
+    static void Main()
+    {
+        float[] f = { 1.5f, -2.25f, 0f, -0.5f, 3f }; Array.Sort(f); Console.WriteLine(string.Join(",", f));
+        short[] s = { 3, -2, 0, -7 }; Array.Sort(s); Console.WriteLine(string.Join(",", s));
+        sbyte[] b = { 3, -2, 0, -7 }; Array.Sort(b); Console.WriteLine(string.Join(",", b));
+        uint[] u = { 3, 4000000000, 0, 7 }; Array.Sort(u); Console.WriteLine(string.Join(",", u));
+        char[] c = { 'z', 'a', 'M' }; Array.Sort(c); Console.WriteLine(new string(c));
+        Color[] e = { Color.Blue, Color.Red, Color.Green }; Array.Sort(e); Console.WriteLine(string.Join(",", e));
+        int[] i = { 3, -2, 0, -7, int.MinValue, int.MaxValue }; Array.Sort(i); Console.WriteLine(string.Join(",", i));
+        Console.WriteLine(new List<int> { 5, -1, 2 }.Max() + " " + new List<int> { 5, -1, 2 }.Min() + " " + new[] { -3f, 2f }.Max());
+        var sd = new SortedDictionary<int, string> { [3] = "c", [-1] = "a", [0] = "b" }; Console.WriteLine(string.Join(",", sd.Keys));
+        Console.WriteLine(string.Join(",", new[] { 3, -1, 0 }.OrderBy(x => x)));
+    }
+}

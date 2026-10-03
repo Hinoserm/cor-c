@@ -12946,6 +12946,13 @@ interface Comparison<T> {
 /// class with an order of its own is sorted by passing its CompareTo as the
 /// comparison, which is one lambda at the call site.
 class DefaultComparer<T> : IComparer<T> {
+    // A COPY FOR EVERY T, which a static of its own gives it (Monomorphiser.
+    // HasStaticState): shared by every word-sized argument, an int was
+    // compared as the reference copy compares words -- unsigned, -1 above 0
+    // -- and a float's bits as an integer's, so sorts and OrderBy over
+    // negative numbers came out in the wrong order.
+    static readonly bool OneForEachType = true;
+
     public int Compare(T a, T b) {
         // AN OBJECT IS ASKED, through the slot every class keeps its CompareTo
         // at: text for strings, a tuple element by element, a class's own
@@ -12953,13 +12960,8 @@ class DefaultComparer<T> : IComparer<T> {
         if (Sys.IsObject(a) || Sys.IsObject(b)) {
             return Sys.KeyCompare(a, b);
         }
-
-        long x = Sys.Word(a);
-        long y = Sys.Word(b);
-
-        if (x < y) { return -1; }
-        if (x > y) { return 1; }
-        return 0;
+        // A number as its own type orders it (Sys.CompareValues).
+        return Sys.CompareValues(a, b);
     }
 }
 

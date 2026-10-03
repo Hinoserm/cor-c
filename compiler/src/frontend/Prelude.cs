@@ -865,6 +865,10 @@ public static class Prelude
             // The order of two such keys: text for strings, the key's own
             // CompareTo, a tuple element by element; null before anything.
             public static int KeyCompare(object a, object b) { return 0; }
+            // The order of two values of one number type, as its CompareTo
+            // has it, decided from their static type: signed or unsigned, an
+            // enum's by its underlying type, a float's with NaN first.
+            public static int CompareValues(object a, object b) { return 0; }
             // The same reference as a string, once IsString has said it is one.
             // A reinterpretation, not a conversion: no bytes move.
             public static string AsString(object x) { return ""; }
