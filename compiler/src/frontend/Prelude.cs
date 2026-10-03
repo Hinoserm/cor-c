@@ -869,6 +869,11 @@ public static class Prelude
             // has it, decided from their static type: signed or unsigned, an
             // enum's by its underlying type, a float's with NaN first.
             public static int CompareValues(object a, object b) { return 0; }
+            // Whether two values of one number type are equal as its Equals
+            // has it -- a float's 0 and -0 equal, NaN equal to NaN -- and the
+            // hash that agrees with that; the value's word otherwise.
+            public static bool EqualValues(object a, object b) { return false; }
+            public static long HashValue(object x) { return 0; }
             // The same reference as a string, once IsString has said it is one.
             // A reinterpretation, not a conversion: no bytes move.
             public static string AsString(object x) { return ""; }

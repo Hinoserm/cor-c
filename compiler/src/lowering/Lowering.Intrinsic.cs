@@ -346,6 +346,48 @@ public sealed partial class Lowering
                 VReg two = ToWord(Arg(call, target, 1));
                 return _e.Call(KeyEqualsStub(), IrType.I32, R(one), R(two))!;
             }
+            case "EqualValues":
+            {
+                VReg x = Arg(call, target, 0), y = Arg(call, target, 1);
+                if (x.Type is IrType.F32 or IrType.F64)
+                {
+                    // Equal as numbers (0 and -0 alike), or both NaN.
+                    VReg same = _e.Binary(Opcode.FEq, R(x), R(y), IrType.I32);
+                    VReg bothNaN = _e.Binary(Opcode.And, R(_e.Binary(Opcode.FNe, R(x), R(x), IrType.I32)),
+                                             R(_e.Binary(Opcode.FNe, R(y), R(y), IrType.I32)), IrType.I32);
+                    return _e.Binary(Opcode.Or, R(same), R(bothNaN), IrType.I32);
+                }
+                VReg wx = Widen(x), wy = Widen(y);
+                return _e.Binary(Opcode.Eq, R(wx), R(wy), IrType.I32);
+            }
+            case "HashValue":
+            {
+                VReg held = Arg(call, target, 0);
+                if (held.Type is IrType.F32 or IrType.F64)
+                {
+                    // Every zero hashes as 0 and every NaN alike, as they are equal.
+                    bool wide = held.Type == IrType.F64;
+                    VReg bits = wide ? _e.Unary(Opcode.Bits, R(held), IrType.I64) : Widen(_e.Unary(Opcode.Bits, R(held), IrType.I32));
+                    VReg zero = _e.Unary(Opcode.IToF, R(_e.Const(0, IrType.I32)), held.Type);
+                    VReg isZero = _e.Binary(Opcode.FEq, R(held), R(zero), IrType.I32);
+                    VReg isNaN = _e.Binary(Opcode.FNe, R(held), R(held), IrType.I32);
+                    VReg result = _f.NewReg(IrType.I64, "hashv");
+                    Block nan = _f.NewBlock("hvnan"), number = _f.NewBlock("hvnum"), zeroed = _f.NewBlock("hvzero"), end = _f.NewBlock("hvend");
+                    _e.Branch(isNaN, nan, number);
+                    _e.SetBlock(nan);
+                    _e.CopyTo(result, Imm(0x7FF8000000000000, IrType.I64));
+                    _e.Jump(end);
+                    _e.SetBlock(number);
+                    _e.CopyTo(result, R(bits.Type == IrType.I64 ? bits : _e.Unary(Opcode.ZExt32, R(bits), IrType.I64)));
+                    _e.Branch(isZero, zeroed, end);
+                    _e.SetBlock(zeroed);
+                    _e.CopyTo(result, Imm(0, IrType.I64));
+                    _e.Jump(end);
+                    _e.SetBlock(end);
+                    return Widen(result);
+                }
+                return Widen(held);
+            }
             case "CompareValues":
             {
                 Type of = _b.TypeOf(call.Args[0]);

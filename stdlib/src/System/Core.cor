@@ -6178,7 +6178,7 @@ public static class MemoryExtensions {
 
     // ---- any element type ------------------------------------------------
     static bool Same<T>(T a, T b) {
-        return Sys.IsObject(a) ? Sys.KeyEquals(a, b) : Sys.Word(a) == Sys.Word(b);
+        return Sys.IsObject(a) ? Sys.KeyEquals(a, b) : Sys.EqualValues(a, b);
     }
 
     public static bool SequenceEqual<T>(this ReadOnlySpan<T> span, ReadOnlySpan<T> other) {
@@ -6913,7 +6913,7 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
 
     public int IndexOf(T value) {
         for (int i = 0; i < count; i++) {
-            if ((Sys.IsObject(items[i]) ? Sys.KeyEquals(items[i], value) : Sys.Word(items[i]) == Sys.Word(value))) { return i; }
+            if ((Sys.IsObject(items[i]) ? Sys.KeyEquals(items[i], value) : Sys.EqualValues(items[i], value))) { return i; }
         }
         return -1;
     }
@@ -7176,7 +7176,7 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
 
     public int LastIndexOf(T value) {
         for (int i = count - 1; i >= 0; i--) {
-            if ((Sys.IsObject(items[i]) ? Sys.KeyEquals(items[i], value) : Sys.Word(items[i]) == Sys.Word(value))) { return i; }
+            if ((Sys.IsObject(items[i]) ? Sys.KeyEquals(items[i], value) : Sys.EqualValues(items[i], value))) { return i; }
         }
         return -1;
     }
@@ -7444,7 +7444,7 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
     // ---- the rest of .NET's List<T> ---------------------------------------
 
     private static bool Matches(T a, T b) {
-        return Sys.IsObject(a) ? Sys.KeyEquals(a, b) : Sys.Word(a) == Sys.Word(b);
+        return Sys.IsObject(a) ? Sys.KeyEquals(a, b) : Sys.EqualValues(a, b);
     }
 
     private void CheckRange(int index, int howMany) {
@@ -7791,9 +7791,9 @@ sealed class ReferenceEqualityComparer : IEqualityComparer<object> {
         }
     }
 
-    public bool Equals(object a, object b) { return Sys.Word(a) == Sys.Word(b); }
+    public bool Equals(object a, object b) { return Sys.EqualValues(a, b); }
 
-    public int GetHashCode(object value) { return (int)Sys.Word(value); }
+    public int GetHashCode(object value) { return (int)Sys.HashValue(value); }
 }
 
 /// A sequence that can be counted and indexed, and not written to.
@@ -9805,7 +9805,7 @@ static class Array {
     /// Element equality as IndexOf and LastIndexOf use it: an object's
     /// Equals, a value's bits.
     static bool Same<T>(T a, T b) {
-        return Sys.IsObject(a) ? Sys.KeyEquals(a, b) : Sys.Word(a) == Sys.Word(b);
+        return Sys.IsObject(a) ? Sys.KeyEquals(a, b) : Sys.EqualValues(a, b);
     }
 
     public static bool Contains<T>(this T[] items, T value) {
@@ -10097,7 +10097,7 @@ struct HashCode {
     private int _parts;
 
     public void Add<T>(T value) {
-        long part = Sys.IsObject(value) ? Sys.KeyHash(value) : Sys.Word(value);
+        long part = Sys.IsObject(value) ? Sys.KeyHash(value) : Sys.HashValue(value);
         _hash = Mix(_parts == 0 ? Seed : _hash, part);
         _parts = _parts + 1;
     }
@@ -10128,7 +10128,7 @@ struct HashCode {
     // in a box, and the box's address is different every time it is made.
     private static long Part(object value) {
         if (Sys.IsObject(value)) { return Sys.KeyHash(value); }
-        return Sys.Word(value);
+        return Sys.HashValue(value);
     }
 
     private static long Mix(long hash, long value) {
@@ -10488,7 +10488,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         // string, its own Equals for anything that has one -- a tuple, a type
         // made of types. A number is the word it is.
         if (Sys.IsObject(a)) { return Sys.KeyEquals(a, b); }
-        return Sys.Word(a) == Sys.Word(b);
+        return Sys.EqualValues(a, b);
     }
 
     private int Hash(K key) { return FullHash(key) & mask; }
@@ -10498,7 +10498,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         IEqualityComparer<K>? with = by;
         if (with != null) { return Mixed(with.GetHashCode(key)); }
         if (Sys.IsObject(key)) { return Mixed(Sys.KeyHash(key)); }
-        return Mixed(Sys.Word(key));
+        return Mixed(Sys.HashValue(key));
     }
 
     /// A cheap avalanche over the hash. Without it, sequential integer keys
@@ -10597,7 +10597,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     public bool ContainsValue(V value) {
         for (int n = 0; n < ordered; n++) {
             int i = SlotAt(n);
-            if (i >= 0 && (Sys.IsObject(values[i]) ? Sys.KeyEquals(values[i], value) : Sys.Word(values[i]) == Sys.Word(value))) { return true; }
+            if (i >= 0 && (Sys.IsObject(values[i]) ? Sys.KeyEquals(values[i], value) : Sys.EqualValues(values[i], value))) { return true; }
         }
         return false;
     }
@@ -12322,7 +12322,7 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
         IEqualityComparer<T>? with = by;
         if (with != null) { return with.Equals(a, b); }
         if (Sys.IsObject(a)) { return Sys.KeyEquals(a, b); }
-        return Sys.Word(a) == Sys.Word(b);
+        return Sys.EqualValues(a, b);
     }
 
     // The same avalanche Dictionary uses. Without it, sequential integer keys
@@ -12336,7 +12336,7 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
         IEqualityComparer<T>? with = by;
         if (with != null) { return Mixed(with.GetHashCode(value)); }
         if (Sys.IsObject(value)) { return Mixed(Sys.KeyHash(value)); }
-        return Mixed(Sys.Word(value));
+        return Mixed(Sys.HashValue(value));
     }
 
     private static int Mixed(long h) {
@@ -12995,12 +12995,12 @@ class DefaultEqualityComparer<T> : IEqualityComparer<T> {
         // string, its own Equals for anything that has one -- a tuple, a type
         // made of types. A number is the word it is.
         if (Sys.IsObject(a)) { return Sys.KeyEquals(a, b); }
-        return Sys.Word(a) == Sys.Word(b);
+        return Sys.EqualValues(a, b);
     }
 
     public int GetHashCode(T value) {
         if (Sys.IsObject(value)) { return Sys.KeyHash(value); }
-        return (int)Sys.Word(value);
+        return (int)Sys.HashValue(value);
     }
 }
 

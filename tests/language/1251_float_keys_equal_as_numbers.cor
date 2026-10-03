@@ -1,0 +1,28 @@
+// test: float_keys_equal_as_numbers
+// expect-exit: 0
+// expect-output:
+// 3 True True
+// True True True
+// 3
+// 0 1 True
+//
+// The collections' default equality takes a float as a number: 0 and -0
+// are one key, and NaN equals NaN, with hashes that agree -- as .NET's
+// float.Equals and GetHashCode have it. They compared and hashed the
+// float's bits, so -0 was a key of its own. The output is real .NET's.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+static class P
+{
+    static void Main()
+    {
+        var hf = new HashSet<float> { 0f, -0f, float.NaN, float.NaN, 1.5f };
+        Console.WriteLine(hf.Count + " " + hf.Contains(-0f) + " " + hf.Contains(float.NaN));
+        var d = new Dictionary<double, string> { [0.0] = "zero" };
+        Console.WriteLine(d.ContainsKey(-0.0) + " " + EqualityComparer<double>.Default.Equals(double.NaN, double.NaN) + " " + EqualityComparer<float>.Default.Equals(0f, -0f));
+        Console.WriteLine(new[] { 1f, -0f, 0f, float.NaN, float.NaN }.Distinct().Count());
+        Console.WriteLine(new List<int> { -1, 2, -1 }.IndexOf(-1) + " " + new List<float> { 2f, -0f }.IndexOf(0f) + " " + new List<float> { float.NaN }.Contains(float.NaN));
+    }
+}
