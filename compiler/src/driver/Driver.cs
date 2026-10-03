@@ -68,7 +68,7 @@ public static class Driver
 
         // FLAGS FOR THE WHOLE PROCESS, whatever the command, taken off before
         // the command reads its own: --gc-stats has the collector say its
-        // counts at exit (the native build; .NET's is not this collector), and
+        // counts at exit (a switch .NET's own collector ignores), and
         // --trace-escape NAME has the escape analysis say how it judged the
         // functions whose names contain NAME. Every child corc a command
         // starts is handed them again (ChildFlags).
@@ -83,9 +83,7 @@ public static class Driver
         if (taken.Remove("--gc-stats"))
         {
             ChildFlags.Add("--gc-stats");
-#if !NET
-            Gc.StatsAsked = true;
-#endif
+            AppContext.SetSwitch("Corsac.GC.Stats", true);
         }
         args = taken.ToArray();
         if (args.Length == 0)

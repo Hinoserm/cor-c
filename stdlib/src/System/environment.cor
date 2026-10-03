@@ -464,6 +464,35 @@ static class OperatingSystem
 /// class library beside itself.
 static class AppContext
 {
+    /// .NET's run-time switches: a name and whether it is on, set by the
+    /// program, read by whoever asks. The collector asks "Corsac.GC.Stats" as
+    /// the process ends (Gc.SayStats).
+    static Dictionary<string, bool>? _switches;
+    static readonly object _switchLock = new object();
+
+    public static void SetSwitch(string switchName, bool isEnabled)
+    {
+        if (switchName == null) throw new ArgumentNullException(nameof(switchName));
+        if (switchName.Length == 0) throw new ArgumentException("The switch name may not be empty.", nameof(switchName));
+        lock (_switchLock)
+        {
+            _switches ??= new Dictionary<string, bool>();
+            _switches[switchName] = isEnabled;
+        }
+    }
+
+    public static bool TryGetSwitch(string switchName, out bool isEnabled)
+    {
+        if (switchName == null) throw new ArgumentNullException(nameof(switchName));
+        if (switchName.Length == 0) throw new ArgumentException("The switch name may not be empty.", nameof(switchName));
+        lock (_switchLock)
+        {
+            if (_switches is not null && _switches.TryGetValue(switchName, out bool on)) { isEnabled = on; return true; }
+        }
+        isEnabled = false;
+        return false;
+    }
+
     public static string BaseDirectory
     {
         get
@@ -482,12 +511,6 @@ static class AppContext
             return directory == null ? (cwd == null ? "/" : cwd)
                                      : (directory.EndsWith("/") ? directory : directory + "/");
         }
-    }
-
-    public static bool TryGetSwitch(string switchName, out bool isEnabled)
-    {
-        isEnabled = false;
-        return false;
     }
 
     public static object? GetData(string name) { return null; }
