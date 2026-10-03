@@ -668,7 +668,28 @@ public sealed class Monomorphiser
     /// -- that copy made its `T?` an `object?` with no HasValue, and a unit
     /// owning `Box<T> where T : struct` could not compile.
     /// </summary>
-    private static bool Shareable(TypeDecl template) => !template.TypeParams.Any(p => p.Struct);
+    private static bool Shareable(TypeDecl template)
+        => !template.TypeParams.Any(p => p.Struct) && !HasStaticState(template);
+
+    /// <summary>
+    /// A GENERIC TYPE'S STATICS ARE EACH INSTANTIATION'S OWN in C#: EmptyArray
+    /// of string and of Exception hold two arrays, each of its own element
+    /// type. One copy shared by every reference argument held one static for
+    /// all of them, made with the shared element type: Array.Empty of string
+    /// was no string[], and the compiler built natively, asking that of an
+    /// empty target list, took a call that reaches nothing for an escape the
+    /// managed build did not see. A type with static storage -- a static
+    /// field, a static auto property, a static constructor -- is copied per
+    /// argument. A const is no storage.
+    /// </summary>
+    private static bool HasStaticState(TypeDecl template)
+        => template.Members.Any(m => m switch
+        {
+            FieldDecl f => f.Mods.HasFlag(Mods.Static) && !f.Mods.HasFlag(Mods.Const),
+            PropertyDecl p => p.Mods.HasFlag(Mods.Static) && p.Auto,
+            MethodDecl c => c.IsCtor && c.Mods.HasFlag(Mods.Static),
+            _ => false,
+        });
 
     /// <summary>
     /// Queues the canonical copy of a template and answers what it is called.
@@ -1000,7 +1021,7 @@ public sealed class Monomorphiser
         bool word = args.All(IsWord);
         string? canon = null;
 
-        if (word && template.TypeParams.Count > 0)
+        if (word && template.TypeParams.Count > 0 && Shareable(template))
         {
             canon = Canonicalise(template);
 
