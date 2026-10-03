@@ -45,7 +45,10 @@ public static class VirtualTargets
             int plus = name.LastIndexOf('+');
             if (plus <= Prefix.Length || !long.TryParse(name.AsSpan(plus + 1), out long slot)) continue;
             index ??= IndexOf(inputs);
-            if (index.Targets(name[Prefix.Length..plus], slot) is string[] targets) answers[name] = targets;
+            string[]? reached = index.Targets(name[Prefix.Length..plus], slot);
+            if (reached is string[] targets) answers[name] = targets;
+            if (Switches.TraceVirtuals)
+                Console.Error.WriteLine("virtual " + name + " slot " + slot + " -> " + (reached is null ? "unresolved" : "[" + string.Join(",", reached) + "]"));
         }
         return answers;
     }
@@ -141,6 +144,13 @@ public static class VirtualTargets
             {
                 ByName.TryAdd(_descriptors[d].Name, d);
                 _named[_descriptors[d].Name] = _named.GetValueOrDefault(_descriptors[d].Name) + 1;
+            }
+            if (Switches.TraceVirtuals)
+            {
+                Console.Error.WriteLine("virtual index: word " + _word + ", descriptors " + _descriptors.Count + ", functions " + _functions.Count
+                    + ", tables " + _tables.Count + ", bases " + string.Join(",", _bases.Order()));
+                foreach (var (name, section, offset, size) in _descriptors)
+                    Console.Error.WriteLine("virtual descriptor " + name + " " + section.Name + "+" + offset + " size " + size);
             }
         }
 
@@ -251,6 +261,9 @@ public static class VirtualTargets
             foreach (int descriptor in reaching)
             {
                 any = true;
+                if (Switches.TraceVirtuals)
+                    Console.Error.WriteLine("virtual   " + declaring + "+" + slot + " reaches " + _descriptors[descriptor].Name + " relocs "
+                        + string.Join(" ", Relocs(descriptor).Select(r => r.Offset + ":" + r.Symbol + (r.Addend == 0 ? "" : "+" + r.Addend))));
                 foreach (var (offset, symbol, addend) in Relocs(descriptor))
                     if (addend == 0 && _bases.Contains(offset - slot))
                     {
