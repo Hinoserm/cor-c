@@ -647,6 +647,7 @@ public sealed class Monomorphiser
             // queued by Canonicalise, or by a use written over __canon.
             _canonParams = job.Template.Kind == TypeKind.Class && job.Canon is null
                 && job.Name == CanonNameOf(TemplatePath(job.Template), job.Template.TypeParams.Count) ? CanonParams(job.Template) : null;
+            _canonMade = _canonParams is null ? null : new List<TypeRef>();
             TypeDecl made;
             try
             {
@@ -678,6 +679,24 @@ public sealed class Monomorphiser
             // declared over `List<T>` works out that T is Node by asking.
             made.Template = TemplatePath(job.Template);
             made.TemplateArgs.AddRange(job.Args);
+
+            // WHAT ITS SHARED CODE MAKES, for this copy's arguments (TypeDecl.CanonMade):
+            // the canonical copy's list, made before any copy sharing it.
+            if (_canonMade is not null)
+            {
+                made.CanonMadeWritten = _canonMade;
+                _canonMadeOf[job.Name] = _canonMade;
+            }
+            List<TypeRef>? written = _canonMade
+                ?? (job.Canon is not null && job.Template.Kind == TypeKind.Class
+                    ? _canonMadeOf.GetValueOrDefault(job.Canon) ?? _made.GetValueOrDefault(job.Canon)?.CanonMadeWritten
+                    : null);
+            if (written is { Count: > 0 })
+            {
+                made.CanonMade = new List<TypeRef>(written.Count);
+                foreach (TypeRef w in written) made.CanonMade.Add(Sub(w, map));
+            }
+            _canonMade = null;
 
             if (job.External)
             {
@@ -796,6 +815,53 @@ public sealed class Monomorphiser
 
     /// <summary>Whether the member being copied has been marked to (MemberDecl.ReadsTypeArguments).</summary>
     private bool _canonMarked;
+
+    /// <summary>The canonical copy being made: the generic classes its instance code makes over its parameters (TypeDecl.CanonMadeWritten).</summary>
+    private List<TypeRef>? _canonMade;
+
+    /// <summary>Each canonical copy's list, by its name, for the copies that share it.</summary>
+    private readonly Dictionary<string, List<TypeRef>> _canonMadeOf = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// `new X&lt;T&gt;(...)` in the canonical copy's instance code, X a class
+    /// that shares a canonical copy of its own and every argument one of this
+    /// copy's parameters: marked to take its descriptor from the object's
+    /// type context, after the parameters' own entries (ICanonSlot).
+    /// </summary>
+    private NewExpr CanonMadeObject(NewExpr made, NewExpr source)
+    {
+        if (source.CanonSlot >= 0)
+        {
+            made.CanonSlot = source.CanonSlot;
+            made.CanonSelf = new ThisExpr { Line = made.Line, Col = made.Col };
+            _canonMarked = true;
+            return made;
+        }
+        TypeRef written = source.Type;
+        if (!_canonSelf || _canonParams is null || _canonMade is null || written.Args.Count == 0
+            || written.ArrayRank != 0 || written.PointerDepth != 0
+            || !written.Args.All(a => a.Args.Count == 0 && a.ArrayRank == 0 && a.PointerDepth == 0 && _canonParams.ContainsKey(a.Name)))
+        {
+            return made;
+        }
+        string name = GenericPath(written.Name, written.Args.Count, source) ?? Path(written.Name);
+        if (!_generic.TryGetValue(Arity(name, written.Args.Count), out TypeDecl? template)
+            || template.Kind != TypeKind.Class || !Shareable(template) || template.TypeParams.Any(p => p.Struct))
+        {
+            return made;
+        }
+        string key = written.ToString();
+        int at = _canonMade.FindIndex(t => t.ToString() == key);
+        if (at < 0)
+        {
+            at = _canonMade.Count;
+            _canonMade.Add(written);
+        }
+        made.CanonSlot = 2 * _canonParams.Count + at;
+        made.CanonSelf = new ThisExpr { Line = made.Line, Col = made.Col };
+        _canonMarked = true;
+        return made;
+    }
 
     private static Dictionary<string, int> CanonParams(TypeDecl template)
     {
@@ -1548,6 +1614,8 @@ public sealed class Monomorphiser
             // curious name and no history -- so `IReadOnlyList$Node` stopped
             // being an IReadOnlyList of Node, and an array could not be one.
             Canon = d.Canon,
+            CanonMadeWritten = d.CanonMadeWritten,
+            CanonMade = d.CanonMade,
             Specialised = d.Specialised,
             Template = d.Template,
 
@@ -2359,7 +2427,8 @@ public sealed class Monomorphiser
                 // an empty list that compiled.
                 CopyInitBody(nw.Body, made.Body, map);
                 // An array of a type parameter: its element, as written.
-                return nw.ArraySize is not null || nw.Elements is not null ? Canon(made, nw, nw.Type, arrayToo: false, array: true) : made;
+                return nw.ArraySize is not null || nw.Elements is not null ? Canon(made, nw, nw.Type, arrayToo: false, array: true)
+                     : nw.Utf8Bytes is null && !nw.Collection ? CanonMadeObject(made, nw) : made;
             }
 
             // The expressions added with tuples, ranges, throw expressions and

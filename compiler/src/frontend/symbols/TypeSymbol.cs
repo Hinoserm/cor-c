@@ -52,6 +52,8 @@ public sealed class TypeSymbol
     public bool TupleFacesGiven { get; set; }
     /// <summary>A specialisation's type arguments, resolved where it was written: what .NET's name of it spells out.</summary>
     public List<Type> TemplateArgTypes { get; } = new();
+    /// <summary>The classes a shared copy's code makes for this copy's arguments (TypeDecl.CanonMade); null where one did not resolve.</summary>
+    public List<TypeSymbol?> CanonMadeTypes { get; } = new();
     /// <summary>Compiler-created closed tuple/array adapter shape, shared only after semantic certification.</summary>
     public bool Structural { get; init; }
 

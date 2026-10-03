@@ -1,0 +1,45 @@
+// test: shared_generic_copies_make_their_own_instantiations
+// expect-exit: 0
+// expect-output:
+// True False True List`1
+// True True True False
+// True True
+// True True String[]
+//
+// `new List<K>()` in a shared generic copy made the shared List, whatever
+// K was: a Holder<string, Exception>'s list was no List<string>, a
+// List<string>'s GetRange no List<string>, and a Dictionary's Keys no
+// ICollection<string>. The classes a shared copy makes over its own type
+// parameters are in each object's type context with its arguments, and
+// the copy stamps what it makes from there -- in a lambda as well. The
+// output is real .NET's.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+class Node<T> { public T? Value; public Node<T>? Next; }
+
+class Holder<K, V> where K : class where V : class
+{
+    public List<K> Keys() => new List<K>();
+    public Dictionary<K, V> Map() => new Dictionary<K, V>();
+    public Node<V> Node() => new Node<V>();
+    public Func<List<V>> Later() => () => new List<V>();
+}
+
+static class P
+{
+    static void Main()
+    {
+        Holder<string, Exception> h = new();
+        object keys = h.Keys(), map = h.Map(), node = h.Node(), later = h.Later()();
+        Console.WriteLine((keys is List<string>) + " " + (keys is List<Exception>) + " " + (keys is IEnumerable<string>) + " " + keys.GetType().Name);
+        Console.WriteLine((map is Dictionary<string, Exception>) + " " + (map is IDictionary<string, Exception>) + " " + (node is Node<Exception>) + " " + (node is Node<string>));
+        Console.WriteLine((later is List<Exception>) + " " + (later is ICollection<Exception>));
+        List<string> source = new() { "b", "a" };
+        object range = source.GetRange(0, 1);
+        object dk = new Dictionary<string, int> { ["x"] = 1 }.Keys;
+        Console.WriteLine((range is List<string>) + " " + (dk is ICollection<string>) + " " + new Dictionary<string, int> { ["x"] = 1 }.Keys.ToArray().GetType().Name);
+    }
+}

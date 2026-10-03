@@ -198,6 +198,20 @@ public sealed class TypeDecl : Node
     public string? Canon { get; set; }
 
     /// <summary>
+    /// The generic classes a canonical class copy's instance code makes over
+    /// its own type parameters -- `new List&lt;T&gt;()` -- as written there, in
+    /// the order its rewrite met them (ICanonSlot): the copy's own list.
+    /// </summary>
+    public List<TypeRef>? CanonMadeWritten { get; set; }
+
+    /// <summary>
+    /// Those classes for this copy's own arguments: what its objects' type
+    /// context holds after the arguments' own entries (Lowering.TypeContext),
+    /// so that the shared code makes a List&lt;string&gt; for a Box&lt;string&gt;.
+    /// </summary>
+    public List<TypeRef>? CanonMade { get; set; }
+
+    /// <summary>
     /// Made by monomorphisation rather than written down: this is
     /// <c>List$long</c>, not <c>List</c>.
     ///

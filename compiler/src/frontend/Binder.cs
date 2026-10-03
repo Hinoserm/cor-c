@@ -2137,6 +2137,15 @@ public sealed partial class Binder
                 // specialisation's own rather than spell an error.
                 if (args.All(a => !Unresolved(a))) made.TemplateArgTypes.AddRange(args);
             }
+            // And what a shared copy's code makes for it (TypeDecl.CanonMade).
+            foreach (TypeSymbol made in _r.Types.Values.Where(t => t.Decl?.CanonMade is { Count: > 0 } && t.CanonMadeTypes.Count == 0).ToList())
+            {
+                foreach (TypeRef each in made.Decl!.CanonMade!)
+                {
+                    Type resolved = Resolve(each, made);
+                    made.CanonMadeTypes.Add(Unresolved(resolved) ? null : resolved.Symbol);
+                }
+            }
         }
         finally { _quiet--; _namingOnly = false; }
 

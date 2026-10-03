@@ -1336,7 +1336,12 @@ public sealed partial class Lowering
         int size = Math.Max(sym.Kind == TypeKind.Class ? _t.ObjectHeaderBytes : 1, sym.InstanceSize);
         VReg obj = Allocate(nw, size, described: sym.Kind == TypeKind.Class);
 
-        if (sym.Kind == TypeKind.Class)
+        if (sym.Kind == TypeKind.Class && nw.CanonSlot >= 0)
+        {
+            // Judged as the shared class it is in every way but its type (Instr.StoredValue).
+            _e.StoreDescribed(obj, VtableOf(sym), CanonMadeVtable(nw, sym), _t.WordSize);
+        }
+        else if (sym.Kind == TypeKind.Class)
         {
             _e.Store(R(obj), VtableOf(sym), 0, _t.WordSize);
         }
@@ -2009,7 +2014,40 @@ public sealed partial class Lowering
         VReg vt = _e.Load(IrTypes.Word, self, 0);
         VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes);
         VReg table = _e.Load(IrTypes.Word, context, (long)shared.Depth * w);
-        return _e.Load(IrTypes.Word, table, (long)at.CanonSlot * w);
+        return _e.Load(IrTypes.Word, table, (long)(at.CanonSlot + 1) * w);
+    }
+
+    /// <summary>
+    /// The vtable `new X&lt;T&gt;()` in a shared copy stamps its object with
+    /// (TypeDecl.CanonMade): the context's entry where it has one, and the
+    /// shared class's own -- what it always was -- where it has none.
+    /// </summary>
+    private VReg CanonMadeVtable(NewExpr at, TypeSymbol shared)
+    {
+        int w = _t.WordSize;
+        TypeSymbol self = _b.TypeOf(at.CanonSelf!).Symbol ?? throw new InvalidOperationException("a shared copy's `this` has no class");
+        VReg obj = Eval(at.CanonSelf!);
+        VReg vt = _e.Load(IrTypes.Word, obj, 0);
+        VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes);
+        VReg table = _e.Load(IrTypes.Word, context, (long)self.Depth * w);
+        VReg count = _e.Load(IrTypes.Word, table, 0);
+        VReg result = _f.NewReg(IrTypes.Word, "madevt");
+        Block read = _f.NewBlock("maderead");
+        Block own = _f.NewBlock("madeown");
+        Block done = _f.NewBlock("madedone");
+        _e.Branch(_e.Binary(Opcode.LtU, Imm(at.CanonSlot, IrTypes.Word), R(count), IrType.I32), read, own);
+        _e.SetBlock(read);
+        VReg entry = _e.Load(IrTypes.Word, table, (long)(at.CanonSlot + 1) * w);
+        Block present = _f.NewBlock("madehave");
+        _e.Branch(entry, present, own);
+        _e.SetBlock(present);
+        _e.CopyTo(result, R(_e.Binary(Opcode.Add, entry, _t.DescriptorBytes)));
+        _e.Jump(done);
+        _e.SetBlock(own);
+        _e.CopyTo(result, VtableOf(shared));
+        _e.Jump(done);
+        _e.SetBlock(done);
+        return result;
     }
 
     /// <summary>Whether a value is an object's address: a reference type, or object -- which a shared copy's T is.</summary>

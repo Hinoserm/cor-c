@@ -1892,8 +1892,10 @@ public sealed partial class Lowering
     /// class (ICanonSlot): word DescTypeContext of its descriptor, a table by
     /// depth in its class chain -- an ancestor's shared code reads the entry
     /// at its own depth, which is the same for every instantiation of it --
-    /// and at each depth that is a shared copy, two words for each of its
-    /// type parameters: the argument's descriptor and its array's. The
+    /// and at each depth that is a shared copy, a count of the entries, then
+    /// two for each of its type parameters -- the argument's descriptor and
+    /// its array's -- and one for each class its shared code makes over them
+    /// (TypeDecl.CanonMade), 0 where that one did not resolve. The
     /// canonical copy's own objects answer object. Null for a class with no
     /// shared copy in its chain, whose word stays zero and is never read.
     /// </summary>
@@ -1912,12 +1914,23 @@ public sealed partial class Lowering
                 continue;
             }
             List<Type> args = SharedArguments(chain[d]);
-            DataItem table = new("ta_" + TypeKey(t) + "$" + d, new byte[Math.Max(1, 2 * args.Count) * w]) { ReadOnly = true, Exported = false };
+            List<TypeSymbol?> made = chain[d].CanonMadeTypes;
+            int entries = 2 * args.Count + made.Count;
+            byte[] words = new byte[(1 + entries) * w];
+            WriteWord(words, 0, entries);
+            DataItem table = new("ta_" + TypeKey(t) + "$" + d, words) { ReadOnly = true, Exported = false };
             for (int i = 0; i < args.Count; i++)
             {
-                table.Relocs.Add(new DataReloc(2 * i * w, ArgumentDescriptor(args[i]), 0));
-                table.Relocs.Add(new DataReloc((2 * i + 1) * w,
+                table.Relocs.Add(new DataReloc((1 + 2 * i) * w, ArgumentDescriptor(args[i]), 0));
+                table.Relocs.Add(new DataReloc((2 + 2 * i) * w,
                     SequenceDescriptor(ElementKey(args[i]), ElementStride(args[i]), isString: false, elementType: args[i]), 0));
+            }
+            for (int k = 0; k < made.Count; k++)
+            {
+                if (made[k] is { Kind: TypeKind.Class } cls)
+                {
+                    table.Relocs.Add(new DataReloc((1 + 2 * args.Count + k) * w, ClassDescriptor(cls), 0));
+                }
             }
             _m.Data.Add(table);
             context.Relocs.Add(new DataReloc(d * w, table.Name, 0));
