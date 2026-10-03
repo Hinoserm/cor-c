@@ -633,8 +633,8 @@ static class Gc
     // reads a card for nearly every old object, and costs nearly what a
     // major does. So the last minor and major cycles are timed (PauseClock),
     // and a minor that costs as much as a major stops them until the next
-    // major, which tries one again; the pace meanwhile is the whole-heap
-    // one. When collections come changes; what a program computes never does.
+    // major, which tries one again; the pace meanwhile stays the nursery's.
+    // When collections come changes; what a program computes never does.
     static long _minorMicros;
     static long _majorMicros;
     // Zero-initialised, as every static of the collector must be: it runs
@@ -661,8 +661,14 @@ static class Gc
             return Nursery(live);
         }
         // The major cycle that follows a stop to minors tries one again.
+        // AT THE SAME PACE: a major that costs no more than a minor costs no
+        // more at a minor's pace, and the heap stays one live size over.
+        // Paced as a whole heap -- NextThreshold -- the native compiler's
+        // heap doubled (950 MB to 1.9 GB at its peak) the moment marking got
+        // cheap enough for its minors, mostly reading cards, to be judged
+        // costly.
         _minorsCostly = minor && _minorMicros >= _majorMicros;
-        return _minorsCostly ? NextThreshold(live) : Nursery(live);
+        return Nursery(live);
     }
 
     /// How much a program allocates between minor collections: the live
@@ -1442,7 +1448,11 @@ static class Gc
         ScanCardsSome();
         if (shared)
         {
-            while (Sys.Peek(Sys.AddressOf(ref _cardBusy)) != 0) Sys.Pause();
+            // Marking what the workers' cards shared out while they finish.
+            while (Sys.Peek(Sys.AddressOf(ref _cardBusy)) != 0)
+            {
+                if (DrainSome(-1) == 0) Sys.Pause();
+            }
             Sys.AtomicSwap(Sys.AddressOf(ref _job), 0);
         }
     }
@@ -1453,8 +1463,14 @@ static class Gc
     static long _cardBusy;
 
     /// Snapshot chunks taken and their cards read until there are none.
+    // WHAT THE CARDS FIND IS MARKED ONTO THE READER'S OWN STACK (ClaimLocal)
+    // and scanned by it after each chunk, busy (Active) all the while: each
+    // find was a push through the shared queue's locked instructions.
     static void ScanCardsSome()
     {
+        long ctl = GcLock.Words();
+        Sys.AtomicAdd(ctl + GcLock.Active, 1);
+        nuint local = ClaimLocal();
         while (true)
         {
             Sys.AtomicAdd(Sys.AddressOf(ref _cardBusy), 1);
@@ -1463,15 +1479,31 @@ static class Gc
             if (chunk == 0)
             {
                 Sys.AtomicAdd(Sys.AddressOf(ref _cardBusy), -1);
-                return;
+                break;
             }
-            ScanChunkCards(chunk);
+            ScanChunkCards(chunk, local);
+            if (local != 0) DrainLocal(local);
             Sys.AtomicAdd(Sys.AddressOf(ref _cardBusy), -1);
+        }
+        if (local != 0) ReleaseLocal(local);
+        Sys.AtomicAdd(ctl + GcLock.Active, -1);
+    }
+
+    /// Scans this thread's own stack until it is empty; given up, what is
+    /// left goes with the queue (GiveUp).
+    static void DrainLocal(nuint local)
+    {
+        long ctl = GcLock.Words();
+        while (Sys.Peek(ctl + GcLock.Abort) == 0)
+        {
+            nuint block = PopLocal(local);
+            if (block == 0) return;
+            if (SetFlagW(block, (nuint)FlagScan)) ScanBlockW(block, PeekW(block) & ~(nuint)7, local);
         }
     }
 
     /// One chunk's taken cards, read and cleared.
-    static void ScanChunkCards(long chunk)
+    static void ScanChunkCards(long chunk, nuint local)
     {
         long first = HeapChunks.First(chunk);
         long end = HeapChunks.End(chunk);
@@ -1492,12 +1524,12 @@ static class Gc
                 taken = taken + 1;
                 if (indexed)
                 {
-                    ScanCardBlocks(chunk, from, to);
+                    ScanCardBlocks(chunk, from, to, local);
                 }
                 else
                 {
                     words = words + (to - from) / WordSize.Bytes;
-                    ScanRange(from, to);
+                    ScanRangeW((nuint)from, (nuint)to, local);
                 }
             }
             card = card + 1;
@@ -1508,7 +1540,7 @@ static class Gc
 
     /// The old blocks of [from, to) in a chunk whose starts this cycle wrote,
     /// each read for its references in the range only.
-    static void ScanCardBlocks(long chunk, long from, long to)
+    static void ScanCardBlocks(long chunk, long from, long to, nuint local)
     {
         // A SIZE-CLASS PAGE's blocks are where its class puts them: stepped
         // through by size, not found by searching the start bits. A free
@@ -1530,7 +1562,7 @@ static class Gc
                 }
                 if ((header & (FlagFree | FlagMark | FlagScan)) == (FlagMark | FlagScan))
                 {
-                    ScanBlockWithin(at, size, from, to);
+                    ScanBlockWithin(at, size, from, to, local);
                 }
                 at = at + size;
             }
@@ -1554,7 +1586,7 @@ static class Gc
             // queued, and will be read whole.
             if (block + size > from && (word & (FlagFree | FlagMark | FlagScan)) == (FlagMark | FlagScan))
             {
-                ScanBlockWithin(block, size, from, to);
+                ScanBlockWithin(block, size, from, to, local);
             }
             block = HeapChunks.NextStart(chunk, block + 8);
         }
@@ -1564,7 +1596,7 @@ static class Gc
     /// leaf not at all, an object by its reference map or its reference
     /// elements, an array of integers not at all (its stores take no card),
     /// and anything no descriptor describes word by word.
-    static void ScanBlockWithin(long block, long size, long from, long to)
+    static void ScanBlockWithin(long block, long size, long from, long to, nuint local)
     {
         long kind = Sys.Peek(block + KindAt);
         if (kind == KindLeaf)
@@ -1584,13 +1616,13 @@ static class Gc
         YoungCardWords = YoungCardWords + (high - low) / w;
         if (kind != KindObject || vt == 0)
         {
-            ScanRange(low, high);
+            ScanRangeW((nuint)low, (nuint)high, local);
             return;
         }
         long desc = vt - DescWords * w;
         if ((Sys.Peek(desc + DescSelfWord * w) & WordSize.AddressMask) != desc)
         {
-            ScanRange(low, high);
+            ScanRangeW((nuint)low, (nuint)high, local);
             return;
         }
         long flags = Sys.Peek(desc + DescFlagsWord * w);
@@ -1602,7 +1634,7 @@ static class Gc
             }
             if (Sys.Peek(desc + DescSizeWord * w) != w)
             {
-                ScanRange(low, high);
+                ScanRangeW((nuint)low, (nuint)high, local);
                 return;
             }
             long count = Sys.Peek(payload + ArrayCountAt) & 0x7FFFFFFF;
@@ -1610,10 +1642,10 @@ static class Gc
             long last = first + count * w;
             if (last > end || last < first)
             {
-                ScanRange(low, high);
+                ScanRangeW((nuint)low, (nuint)high, local);
                 return;
             }
-            ScanRange(low > first ? low : first, high < last ? high : last);
+            ScanRangeW((nuint)(low > first ? low : first), (nuint)(high < last ? high : last), local);
             return;
         }
         long map = Sys.Peek(desc + DescRefMapWord * w) & WordSize.AddressMask;
@@ -1630,7 +1662,7 @@ static class Gc
             long bits = Sys.Peek(map + (1 + index / 32) * w) & 0xFFFFFFFF;
             if (((bits >> (int)(index & 31)) & 1) != 0)
             {
-                MarkAt(Sys.Peek(payload + index * w));
+                MarkWord((nuint)Sys.Peek(payload + index * w), local);
             }
             index = index + 1;
         }
