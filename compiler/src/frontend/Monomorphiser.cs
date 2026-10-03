@@ -794,6 +794,9 @@ public sealed class Monomorphiser
     /// <summary>Whether the member being copied has a `this` to read them through.</summary>
     private bool _canonSelf;
 
+    /// <summary>Whether the member being copied has been marked to (MemberDecl.ReadsTypeArguments).</summary>
+    private bool _canonMarked;
+
     private static Dictionary<string, int> CanonParams(TypeDecl template)
     {
         Dictionary<string, int> places = new(StringComparer.Ordinal);
@@ -817,6 +820,7 @@ public sealed class Monomorphiser
         {
             made.CanonSlot = source.CanonSlot;
             made.CanonSelf = new ThisExpr { Line = made.Line, Col = made.Col };
+            _canonMarked = true;
             return made;
         }
         if (!_canonSelf || _canonParams is null || written.Args.Count != 0 || written.PointerDepth != 0
@@ -837,6 +841,7 @@ public sealed class Monomorphiser
             return made;
         }
         made.CanonSelf = new ThisExpr { Line = made.Line, Col = made.Col };
+        _canonMarked = true;
         return made;
     }
 
@@ -1593,9 +1598,11 @@ public sealed class Monomorphiser
             }
 
             _canonSelf = _canonParams is not null && !d.Members[i].Mods.HasFlag(Mods.Static);
+            _canonMarked = false;
             MemberDecl copy;
             try { copy = RewriteMember(d.Members[i], map, name); }
             finally { _canonSelf = false; }
+            copy.ReadsTypeArguments = _canonMarked || d.Members[i].ReadsTypeArguments;
 
             copy.Scope = d.Members[i].Scope;
             copy.OwnedImplementation = d.TypeParams.Count != 0 ? true : d.Members[i].OwnedImplementation;

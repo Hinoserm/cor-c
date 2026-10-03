@@ -9,6 +9,16 @@ public sealed class Instr
     public VReg? Dest { get; set; }
     public List<Operand> Operands { get; } = new();
 
+    /// <summary>
+    /// What a Store writes. Operands[1], but for an object's header written by
+    /// a shared generic copy (Builder.StoreDescribed): Operands[1] is then the
+    /// descriptor every analysis judges the object by -- the copy's own, which
+    /// has the same shape -- and Operands[2] the one read at run time for the
+    /// instantiation at hand, which is what is written and what a later read
+    /// of the word sees.
+    /// </summary>
+    public Operand StoredValue => Operands.Count > 2 ? Operands[2] : Operands[1];
+
     /// <summary>Load and Store: how many bytes, and whether a narrow load sign-extends.</summary>
     public int Size { get; init; }
     public bool Signed { get; init; }

@@ -216,12 +216,12 @@ public sealed class ScalarObjects : IParallelModulePass
                     };
                     result.Add(new Instr { Op = extend,
                         Dest = i.Op == Opcode.Load ? i.Dest : locals[offset],
-                        Operands = { i.Op == Opcode.Load ? new RegOperand(locals[offset]) : i.Operands[1] },
+                        Operands = { i.Op == Opcode.Load ? new RegOperand(locals[offset]) : i.StoredValue },
                         Line = i.Line });
                 }
                 else
                 result.Add(i.Op == Opcode.Load ? IrInfo.CopyOf(i, new RegOperand(locals[offset]))
-                    : new Instr { Op = Opcode.Copy, Dest = locals[offset], Operands = { i.Operands[1] }, Line = i.Line });
+                    : new Instr { Op = Opcode.Copy, Dest = locals[offset], Operands = { i.StoredValue }, Line = i.Line });
             }
             else result.Add(i);
         }

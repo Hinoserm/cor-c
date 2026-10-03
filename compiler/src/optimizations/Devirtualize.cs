@@ -194,7 +194,7 @@ public sealed class Devirtualize : IModulePass
         }
         foreach (Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
-                if (i.Op == Opcode.Store && i.Offset == 0 && i.Operands.Count >= 2 && i.Operands[0] is RegOperand at
+                if (i.Op == Opcode.Store && i.Offset == 0 && i.Operands.Count == 2 && i.Operands[0] is RegOperand at
                     && i.Operands[1] is SymOperand { Name: var t } vt && t.StartsWith("t_", StringComparison.Ordinal)
                     && MadeBy(at.Reg) is { } alloc)
                     stamped.TryAdd(alloc, vt);
@@ -345,7 +345,8 @@ public sealed class Devirtualize : IModulePass
                     // the word is not known.
                     // A vtable is a descriptor at its methods (DescriptorBytes on), never a
                     // type's identity (typeof, the descriptor itself) kept as data.
-                    SymOperand? vt = i.Operands[1] is SymOperand { Name: var t, Offset: var o } s && o == Target.Current.DescriptorBytes
+                    // Not one a shared generic copy wrote: what it holds is read at run time (Instr.StoredValue).
+                    SymOperand? vt = i.Operands.Count == 2 && i.Operands[1] is SymOperand { Name: var t, Offset: var o } s && o == Target.Current.DescriptorBytes
                         && t.Length > 2 && t[1] == '_' && t[0] is 't' or 'q' or 'b' or 'v' ? s : null;
                     stamped[alloc] = stamped.ContainsKey(alloc) ? null : vt;
                 }
@@ -574,7 +575,7 @@ public sealed class Devirtualize : IModulePass
                         case Opcode.Store:
                             if (i.Operands.Count >= 2 && i.Operands[1] is RegOperand v && derived.ContainsKey(v.Reg)) { writers.Add((b, k)); break; }
                             if (i.Operands[0] is RegOperand bas && derived.TryGetValue(bas.Reg, out long at) && at >= 0)
-                                stores.Add((b, k, at + i.Offset, i.Size, i.Operands[1]));
+                                stores.Add((b, k, at + i.Offset, i.Size, i.StoredValue));
                             else writers.Add((b, k));
                             break;
                         case Opcode.Load:

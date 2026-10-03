@@ -14,9 +14,12 @@ internal static class InitializerMethods
         // (DefinitionSemantics certifies the pre-optimisation form).
         if (member.OwnedImplementation is null || IsConstant(expression)) return expression;
         string name = "FieldInit$" + member.Name;
+        // An instance one where a shared generic copy reads its type
+        // arguments through `this` in it; the constructor has one to give.
         helpers.Add(new MethodDecl
         {
-            Name = name, Mods = Mods.Static | Mods.Private, Returns = returns,
+            Name = name, Mods = member.ReadsTypeArguments && !member.Mods.HasFlag(Mods.Static) ? Mods.Private : Mods.Static | Mods.Private,
+            Returns = returns,
             Body = new Block { Statements = { new ReturnStmt { Value = expression, Line = member.Line, Col = member.Col } } },
             OwnedImplementation = member.OwnedImplementation,
             File = member.File, Scope = member.Scope, Namespace = member.Namespace,

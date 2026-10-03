@@ -320,7 +320,8 @@ public sealed class Verifier : IPass
                 break;
 
             case Opcode.Store:
-                Operands(i, 2);
+                // A third: the header a shared generic copy writes (Instr.StoredValue).
+                if (i.Operands.Count != 3) Operands(i, 2);
                 Address(i, 0);
                 NoDest(i);
                 if (i.Size is not (1 or 2 or 4 or 8))

@@ -1415,13 +1415,15 @@ public sealed partial class Lowering
         bool inline = InlineElement(element);
         bool references = inline && InlineHasReferences(StructOf(element));
         VReg array = AllocateDynamic(at, total, inline ? !references : LeafElement(element), described: true);
+        string desc = SequenceDescriptor(ElementKey(element), stride, isString: false, inline ? references : null, elementType: element);
         if (described is not null)
         {
-            _e.Store(R(array), R(_e.Binary(Opcode.Add, described, _t.DescriptorBytes)), 0, _t.WordSize);
+            // Judged as the machine word's array, which it is in every way
+            // but the element type it reports (Instr.StoredValue).
+            _e.StoreDescribed(array, new SymOperand(desc, _t.DescriptorBytes), _e.Binary(Opcode.Add, described, _t.DescriptorBytes), _t.WordSize);
         }
         else
         {
-            string desc = SequenceDescriptor(ElementKey(element), stride, isString: false, inline ? references : null, elementType: element);
             _e.Store(R(array), new SymOperand(desc, _t.DescriptorBytes), 0, _t.WordSize);
         }
         _e.Emit(Opcode.InitArrayLength, null, R(array), R(count));

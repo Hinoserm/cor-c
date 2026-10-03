@@ -176,7 +176,7 @@ public sealed class Gvn : IPass
                     {
                         Operand addr = i.Operands[0];
                         Forget(mem, addr, i.Offset, i.Size);
-                        mem[AddressKey(addr, i.Offset)] = new MemEntry(i.Operands[1], i.Size, false, true);
+                        mem[AddressKey(addr, i.Offset)] = new MemEntry(i.StoredValue, i.Size, false, true);
                         continue;
                     }
 

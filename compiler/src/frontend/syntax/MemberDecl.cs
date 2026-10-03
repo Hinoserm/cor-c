@@ -6,6 +6,13 @@ public abstract class MemberDecl : Node
     public Mods Mods { get; init; }
 
     /// <summary>
+    /// Whether a shared generic copy's code in this member reads its type
+    /// arguments through `this` (ICanonSlot): its initialiser's helper is then
+    /// an instance method (InitializerMethods), which the constructor calls.
+    /// </summary>
+    public bool ReadsTypeArguments { get; set; }
+
+    /// <summary>
     /// The attributes written in front of this member, with their arguments.
     /// Empty for the overwhelming majority of members, which is why it is a
     /// plain list rather than anything cleverer.

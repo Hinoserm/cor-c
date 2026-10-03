@@ -1703,7 +1703,7 @@ internal sealed partial class Selector
     private void SelectStore(Instr i)
     {
         MMem m = Address(i.Operands[0], i.Offset);
-        Operand v = i.Operands[1];
+        Operand v = i.StoredValue;
         if (v.Type.IsFloat())
         {
             if (i.Size == FWidth(v.Type)) { CopyFloatBits(m, FHome(v), i.Size); return; }

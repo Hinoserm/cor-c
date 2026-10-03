@@ -137,6 +137,14 @@ public sealed class Builder
     public void Store(VReg address, VReg value, long offset = 0, int size = 0)
         => Store(R(address), R(value), offset, size);
 
+    /// <summary>An object's header, stamped `stamp` for every analysis and written `actual` (Instr.StoredValue).</summary>
+    public void StoreDescribed(VReg address, Operand stamp, VReg actual, int size)
+        => Append(new Instr
+        {
+            Op = Opcode.Store, Operands = { R(address), stamp, R(actual) },
+            Offset = 0, Size = size,
+        });
+
     public VReg? Call(string callee, IrType returns, params Operand[] args)
     {
         VReg? d = returns == IrType.Void ? null : Function.NewReg(returns);
