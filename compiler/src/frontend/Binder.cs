@@ -331,7 +331,13 @@ public sealed partial class Binder
             }
         }
 
-        if (TypeCandidate(name, out sym))
+        // A LIBRARY'S DECLARATION NEVER SEES THE PROGRAM'S TYPES: compiled on
+        // its own it had none of them, and its global and imported names
+        // meant its own. A program's global `Rectangle` read back into
+        // Control.Bounds -- System.Drawing's, by the library's using -- gave
+        // the program's unit another layout of the method than the library's.
+        if (TypeCandidate(name, out sym)
+            && !(written is { FromLibrary: true, Specialised: false } && sym?.Decl is { FromLibrary: false }))
         {
             return true;
         }

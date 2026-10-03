@@ -80,6 +80,13 @@ public static class Driver
             ChildFlags.Add("--trace-escape"); ChildFlags.Add(taken[traceAt + 1]);
             taken.RemoveRange(traceAt, 2);
         }
+        int dumpAt = taken.IndexOf("--dump-layout");
+        if (dumpAt >= 0 && dumpAt + 1 < taken.Count)
+        {
+            Corsac.Lang.ManagedLayouts.DumpLayout = taken[dumpAt + 1];
+            ChildFlags.Add("--dump-layout"); ChildFlags.Add(taken[dumpAt + 1]);
+            taken.RemoveRange(dumpAt, 2);
+        }
         if (taken.Remove("--gc-stats"))
         {
             ChildFlags.Add("--gc-stats");

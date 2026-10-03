@@ -7,6 +7,9 @@ namespace Corsac.Lang;
 
 public static class ManagedLayouts
 {
+    /// <summary>--dump-layout KEY: that type's layout, as hashed, on standard error (Driver.Run).</summary>
+    public static string? DumpLayout;
+
     public static void Attach(ObjectFile obj, BindResult bound, bool library = true)
         => ManagedLayoutContract.Attach(obj, Capture(bound, library));
 
@@ -91,7 +94,7 @@ public static class ManagedLayouts
                     foreach (ParamSymbol parameter in method.Params)
                     { TypeName(parameter.Type); writer.Write(parameter.ByRef); writer.Write(parameter.ReadOnly); }
                 }
-                if (Environment.GetEnvironmentVariable("CORC_DUMP_LAYOUT") is string want && want == type.Key)
+                if (DumpLayout is string want && want == type.Key)
                 {
                     Console.Error.WriteLine("layout " + type.Key + " kind=" + (int)type.Kind + " size=" + type.InstanceSize
                         + " depth=" + type.Depth + " base=" + (type.Base?.Key ?? "")
