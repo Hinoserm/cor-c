@@ -24,7 +24,6 @@ public static class Frontend
         IReadOnlyCollection<string>? symbols = null,
         IReadOnlyCollection<string>? elsewherePaths = null, int workers = 1, IndexedDeclarations? declarations = null)
     {
-        declarations?.PrefetchLearned();
         while (true)
         {
             if (declarations is not null) declarations.Passes++;
@@ -46,7 +45,6 @@ public static class Frontend
                 foreach (string key in demand.Keys)
                 {
                     declarations.Include(key);
-                    declarations.Demanded(key);
                 }
             }
         }

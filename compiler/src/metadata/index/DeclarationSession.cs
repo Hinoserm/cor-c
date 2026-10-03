@@ -55,26 +55,6 @@ public sealed class DeclarationSession : IDisposable
         LibraryInterfaces = Catalog.LibraryInterfaces(assembly);
     }
 
-    /// <summary>
-    /// WHAT THE SESSION'S UNITS HAVE HAD TO ASK FOR, and how often: a key a
-    /// pass demanded (DeclarationDemand), which threw that whole pass away.
-    /// One the compiler's own sources nearly all name in a body --
-    /// Corsac.Lang.Type -- cost nearly every unit a second front-end pass.
-    /// </summary>
-    private readonly Dictionary<string, int> demanded = new(StringComparer.Ordinal);
-
-    /// <summary>A key a unit's pass demanded, counted.</summary>
-    public void Demanded(string key)
-    {
-        lock (gate) demanded[key] = demanded.GetValueOrDefault(key) + 1;
-    }
-
-    /// <summary>The keys at least two units have demanded: loaded before a unit's first pass.</summary>
-    public List<string> Learned()
-    {
-        lock (gate) return demanded.Where(pair => pair.Value >= 2).Select(pair => pair.Key).OrderBy(k => k, StringComparer.Ordinal).ToList();
-    }
-
     public bool Speculated((string Name, int Arity) key, out string? value)
     {
         lock (gate) return speculated.TryGetValue(key, out value);

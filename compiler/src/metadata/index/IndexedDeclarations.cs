@@ -94,27 +94,6 @@ public sealed class IndexedDeclarations : IDisposable
         return catalog.SoleKeyOf(query);
     }
 
-    /// <summary>
-    /// What the session learned its units ask for (DeclarationSession.
-    /// Learned), loaded before the first pass, so a unit that will name it
-    /// does not bind once only to throw that away. Recorded as any loaded
-    /// declaration is: the receipt says the unit read it.
-    /// </summary>
-    public void PrefetchLearned()
-    {
-        if (session is null) return;
-        foreach (string key in session.Learned())
-        {
-            if (loaded.Contains(key)) continue;
-            using DeclarationLease? lease = catalog.AcquireKey(key);
-            if (lease is null) continue;
-            loaded.Add(key);
-        }
-    }
-
-    /// <summary>A key a pass demanded, told to the session (PrefetchLearned).</summary>
-    public void Demanded(string key) => session?.Demanded(key);
-
     public void Include(string key)
     {
         if (loaded.Contains(key)) throw new InvalidDataException("Declaration discovery made no progress: " + key);
