@@ -255,6 +255,7 @@ public static class ProjectCommand
             && Path.GetFileNameWithoutExtension(path).Equals("dotnet", StringComparison.OrdinalIgnoreCase);
         if (hosted || Environment.ProcessPath is null) return Driver.Run(link.ToArray());
         System.Diagnostics.ProcessStartInfo start = new() { FileName = Environment.ProcessPath, UseShellExecute = false };
+        foreach (string flag in Driver.ChildFlags) start.ArgumentList.Add(flag);
         foreach (string argument in link) start.ArgumentList.Add(argument);
         using System.Diagnostics.Process child = System.Diagnostics.Process.Start(start)!;
         child.WaitForExit();
@@ -333,6 +334,7 @@ public static class ProjectCommand
                 int cores = Math.Max(1, Environment.ProcessorCount / Math.Max(1, processes));
                 start.Environment["CORSAC_GC_WORKERS"] = Math.Min(7, Math.Max(0, cores - 1)).ToString(System.Globalization.CultureInfo.InvariantCulture);
             }
+            foreach (string flag in Driver.ChildFlags) start.ArgumentList.Add(flag);
             start.ArgumentList.Add("compile-project");
             start.ArgumentList.Add("--units"); start.ArgumentList.Add(share);
             start.ArgumentList.Add("--jobs"); start.ArgumentList.Add(each.ToString());

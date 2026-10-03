@@ -53,6 +53,9 @@ public static class Driver
         return Environment.GetCommandLineArgs().FirstOrDefault() ?? "";
     }
 
+    /// <summary>The process-wide flags this corc was given, for every corc it starts (Run).</summary>
+    public static readonly List<string> ChildFlags = new();
+
     public static int Run(string[] args)
     {
         Binder.LibrarySource = IsLibrarySource;
@@ -63,6 +66,32 @@ public static class Driver
             return Usage();
         }
 
+        // FLAGS FOR THE WHOLE PROCESS, whatever the command, taken off before
+        // the command reads its own: --gc-stats has the collector say its
+        // counts at exit (the native build; .NET's is not this collector), and
+        // --trace-escape NAME has the escape analysis say how it judged the
+        // functions whose names contain NAME. Every child corc a command
+        // starts is handed them again (ChildFlags).
+        List<string> taken = new(args);
+        int traceAt = taken.IndexOf("--trace-escape");
+        if (traceAt >= 0 && traceAt + 1 < taken.Count)
+        {
+            Corsac.Lang.Opt.Escape.PromoteTrace = taken[traceAt + 1];
+            ChildFlags.Add("--trace-escape"); ChildFlags.Add(taken[traceAt + 1]);
+            taken.RemoveRange(traceAt, 2);
+        }
+        if (taken.Remove("--gc-stats"))
+        {
+            ChildFlags.Add("--gc-stats");
+#if !NET
+            Gc.StatsAsked = true;
+#endif
+        }
+        args = taken.ToArray();
+        if (args.Length == 0)
+        {
+            return Usage();
+        }
         string command = args[0];
         string[] rest = args[1..];
 

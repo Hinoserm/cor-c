@@ -334,6 +334,8 @@ static class Gc
     static bool _forceMajor;        // the next cycle must be major
     static long _majorLive;         // what the last major collection found live
     public static long MinorCollections;
+    /// Set by a program that was asked for the collector's counts (SayStats).
+    public static bool StatsAsked;
     public static long MajorCollections;
     /// Why each whole cycle was one: asked for (GC.Collect, memory, a cycle
     /// given up, a full record of held blocks), the first, minors costing as
@@ -4811,10 +4813,11 @@ static class Gc
     }
 
     /// The collector's counts, pauses and sizes on standard error, when the
-    /// platform asks for them (CORSAC_GC_STATS=1 on Linux). Called at exit.
+    /// platform asks for them (CORSAC_GC_STATS=1 on Linux) or the program
+    /// does (StatsAsked: corc's --gc-stats). Called at exit.
     public static void SayStats()
     {
-        if (!_ready || !Platform.GcStats()) return;
+        if (!_ready || !(StatsAsked || Platform.GcStats())) return;
         SayNumber("gc: collections ", Collections);
         SayNumber("gc: minor ", MinorCollections);
         SayNumber("gc: major ", MajorCollections);

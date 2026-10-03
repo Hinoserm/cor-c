@@ -4171,7 +4171,8 @@ continue;
     }
 
     /// <summary>CORSAC_PROMOTE_TRACE=&lt;function&gt;: each allocation PromoteIn looks at there, and what it decided.</summary>
-    private static readonly string? PromoteTrace = Environment.GetEnvironmentVariable("CORSAC_PROMOTE_TRACE") is { Length: > 0 } t ? t : null;
+    /// <summary>--trace-escape NAME: the functions whose decisions are said (Driver.Run).</summary>
+    internal static string? PromoteTrace;
 
     private void PromoteIn(Function f, Dictionary<string, bool[]> summaries, bool canFree, OwnedFieldEscape fields)
     {
