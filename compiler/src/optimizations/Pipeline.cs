@@ -29,6 +29,22 @@ public sealed class Pipeline
     /// </summary>
     public Action<IPass, Function, string>? Trace { get; set; }
 
+    /// <summary>--trace-opt's function, said after every module and late pass as well (TraceModulePass).</summary>
+    public string? TraceFunction { get; set; }
+
+    private void TraceModulePass(string pass, Module m)
+    {
+        if (TraceFunction is null) return;
+        foreach (Function f in m.Functions)
+        {
+            if (f.Name != TraceFunction) continue;
+            System.Text.StringBuilder text = new();
+            f.Dump(text);
+            Console.Error.WriteLine("---- after module " + pass);
+            Console.Error.Write(text);
+        }
+    }
+
     /// <summary>
     /// Whether to run the verifier after every pass. On in debug builds,
     /// where a broken pass should fail on the pass that broke it rather
@@ -195,6 +211,7 @@ public sealed class Pipeline
                 Account("module:" + p.Name, System.Diagnostics.Stopwatch.GetTimestamp() - t0, GC.GetTotalAllocatedBytes() - b0);
             }
             else p.Run(m);
+            TraceModulePass(p.Name, m);
 #if COR_SELFHOST_BENCHMARK
             Corsac.Program.BenchmarkStage("opt-module-end " + p.Name);
 #endif
@@ -236,6 +253,7 @@ public sealed class Pipeline
                 Corsac.Program.BenchmarkStage("opt-late-begin " + p.Name);
 #endif
                 p.Run(m);
+                TraceModulePass(p.Name, m);
 #if COR_SELFHOST_BENCHMARK
                 Corsac.Program.BenchmarkStage("opt-late-end " + p.Name);
 #endif

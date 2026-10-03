@@ -1272,6 +1272,7 @@ public static class Driver
                     if (caller.Name == traced || callee.Name == traced)
                         Console.Error.WriteLine($"---- inline {caller.Name} -> {callee.Name}: {decision}");
                 };
+            pipeline.TraceFunction = traced;
             pipeline.Trace = (pass, f, text) =>
             {
                 if (f.Name == traced)
