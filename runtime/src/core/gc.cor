@@ -7129,7 +7129,7 @@ static class Gc
     /// Marks the block a word might refer to and queues it for scanning.
     static void MarkAt(long at)
     {
-        MarkWord((nuint)at);
+        MarkWord((nuint)at, 0);
     }
 
     /// EVERY BLOCK EVER MARKED, as a count that only grows: the queue's tail,
@@ -7164,14 +7164,23 @@ static class Gc
         // gigabyte cost.
         Sys.AtomicAdd(ctl + GcLock.Active, 1);
 
+        // ITS OWN STACK FOR WHAT IT MARKS (ClaimLocal), taken from before its
+        // own pops: the shared queue's compare-and-swap and locked exchange
+        // a block, on one line every marker went through, were most of what
+        // marking cost (MarkWord's stalls were the two locked instructions).
+        nuint local = ClaimLocal();
+        bool aborted = false;
+
         while (budget < 0 || done < budget)
         {
             if (Sys.Peek(ctl + GcLock.Abort) != 0)
             {
+                aborted = true;
                 break;
             }
 
-            nuint block = PopGreyW();
+            nuint block = local != 0 ? PopLocal(local) : 0;
+            if (block == 0) block = PopGreyW();
 
             if (block == 0)
             {
@@ -7180,14 +7189,138 @@ static class Gc
 
             if (SetFlagW(block, (nuint)FlagScan))
             {
-                ScanBlockW(block, PeekW(block) & ~(nuint)7);
+                ScanBlockW(block, PeekW(block) & ~(nuint)7, local);
             }
 
             done = done + 1;
         }
 
+        if (local != 0)
+        {
+            // What it still holds goes back on the shared queue, a budget
+            // spent; given up, the queue is emptied anyway (GiveUp). Its
+            // marks counted before it says it is idle: Marked must have
+            // grown by then, or a round could see nothing marked.
+            if (!aborted) ShareLocal(local, 0);
+            ReleaseLocal(local);
+        }
+
         Sys.AtomicAdd(ctl + GcLock.Active, -1);
         return done;
+    }
+
+    // ---- each marker's own stack --------------------------------------------
+    //
+    // A POOL OF STACKS, one claimed by each thread for the length of a drain
+    // (DrainSome): a collector worker has no thread block to keep one in, and
+    // the drain passes it down its own scan (MarkWord's `local`). Pushes and
+    // pops are plain loads and stores; the shared queue sees only what is
+    // shared out (ShareLocal) and what the roots, the barrier and the cards
+    // push, which do not drain. A stack is three words -- its depth, the
+    // blocks marked into it, pushes since it last looked at the queue --
+    // and LocalEntries places.
+    const long LocalStacks = 32;
+    const long LocalEntries = 2048;
+    const long LocalHead = 3;
+    /// The pool: LocalStacks claim words, then the stacks. 0 until a drain
+    /// first asks; mapped once, never given back.
+    static long _localPool;
+
+    static nuint LocalStackBytes()
+    {
+        return (nuint)((LocalHead + LocalEntries) * WordSize.Bytes);
+    }
+
+    /// A free stack, emptied, or 0 when every one is in use (the drain then
+    /// pushes to the shared queue, as all of them once did).
+    static nuint ClaimLocal()
+    {
+        long pool = _localPool;
+        if (pool == 0)
+        {
+            long bytes = (LocalStacks + LocalStacks * (LocalHead + LocalEntries)) * WordSize.Bytes;
+            long fresh = Platform.Map(bytes);
+            if (fresh == 0) return 0;
+            if (Sys.Cas(Sys.AddressOf(ref _localPool), 0, fresh) != 0) Platform.Unmap(fresh, bytes);
+            pool = _localPool;
+        }
+        nuint w = (nuint)WordSize.Bytes;
+        for (long k = 0; k < LocalStacks; k++)
+        {
+            long claim = pool + k * WordSize.Bytes;
+            if (Sys.Peek(claim) == 0 && Sys.Cas(claim, 0, 1) == 0)
+            {
+                nuint stack = (nuint)pool + (nuint)LocalStacks * w + (nuint)k * LocalStackBytes();
+                Sys.Poke((long)stack, 0);
+                Sys.Poke((long)(stack + w), 0);
+                Sys.Poke((long)(stack + 2 * w), 0);
+                return stack;
+            }
+        }
+        return 0;
+    }
+
+    /// The stack given back, its marks added to every block ever marked (Marked).
+    static void ReleaseLocal(nuint stack)
+    {
+        long ctl = GcLock.Words();
+        long marked = (long)PeekW(stack + (nuint)WordSize.Bytes);
+        if (marked != 0) Sys.AtomicAdd(ctl + GcLock.Pushes, marked);
+        long pool = _localPool;
+        long k = (long)(stack - (nuint)pool - (nuint)(LocalStacks * WordSize.Bytes)) / (long)LocalStackBytes();
+        Sys.AtomicSwap(pool + k * WordSize.Bytes, 0);
+    }
+
+    /// A block this drain has just marked, on its own stack: half of it
+    /// shared out when full, and some when the shared queue runs low while
+    /// other markers could take it.
+    static void PushLocal(nuint stack, nuint block)
+    {
+        nuint w = (nuint)WordSize.Bytes;
+        nuint depth = PeekW(stack);
+        if (depth >= (nuint)LocalEntries)
+        {
+            ShareLocal(stack, LocalEntries / 2);
+            depth = PeekW(stack);
+        }
+        Sys.Poke((long)(stack + ((nuint)LocalHead + depth) * w), (long)(nint)block);
+        Sys.Poke((long)stack, (long)(nint)(depth + 1));
+        Sys.Poke((long)(stack + w), (long)(nint)(PeekW(stack + w) + 1));
+        nuint since = PeekW(stack + 2 * w) + 1;
+        if (since < 64)
+        {
+            Sys.Poke((long)(stack + 2 * w), (long)(nint)since);
+            return;
+        }
+        Sys.Poke((long)(stack + 2 * w), 0);
+        // SHARED WHILE OTHERS COULD TAKE IT: workers that look at a queue
+        // below the depth that wakes them (WorkerWakeDepth) find nothing.
+        if (Workers == 0 || depth + 1 < 2 * (nuint)WorkerWakeDepth) return;
+        long ctl = GcLock.Words();
+        nuint queued = PeekW((nuint)ctl + (nuint)GcLock.GreyTail) - PeekW((nuint)ctl + (nuint)GcLock.GreyHead);
+        if (queued < (nuint)WorkerWakeDepth) ShareLocal(stack, (long)((depth + 1) / 2));
+    }
+
+    /// The top block of this drain's own stack, or 0 when it is empty.
+    static nuint PopLocal(nuint stack)
+    {
+        nuint depth = PeekW(stack);
+        if (depth == 0) return 0;
+        depth = depth - 1;
+        Sys.Poke((long)stack, (long)(nint)depth);
+        return PeekW(stack + ((nuint)LocalHead + depth) * (nuint)WordSize.Bytes);
+    }
+
+    /// Moves blocks from the top of this drain's stack to the shared queue
+    /// until `keep` are left: those pushes are counted there (Marked) and
+    /// wake parked workers as any push does.
+    static void ShareLocal(nuint stack, long keep)
+    {
+        while ((long)PeekW(stack) > keep)
+        {
+            nuint block = PopLocal(stack);
+            PushGreyW(block);
+        }
     }
 
     /// Whether a push found the queue full since this was last asked.
@@ -7315,7 +7448,7 @@ static class Gc
     /// ones its descriptor names for an object, every word for the rest.
     static void ScanBlock(long block, long size)
     {
-        ScanBlockW((nuint)block, (nuint)size);
+        ScanBlockW((nuint)block, (nuint)size, 0);
     }
 
     /// AN OBJECT BY ITS DESCRIPTOR: the words its reference map names, or,
@@ -7414,7 +7547,9 @@ static class Gc
         return (nuint)Sys.Peek((long)at);
     }
 
-    static void MarkWord(nuint at)
+    /// `local`: the draining thread's own stack (ClaimLocal), where what it
+    /// marks goes with no atomic operation, or 0 for the shared queue.
+    static void MarkWord(nuint at, nuint local)
     {
         if (CountMarks) MarkCalls = MarkCalls + 1;
         nuint block = _snapshots ? SnapshotBlockW(at) : (nuint)BlockForPointer((long)at);
@@ -7438,7 +7573,8 @@ static class Gc
             return;
         }
 
-        PushGreyW(block);
+        if (local != 0) PushLocal(local, block);
+        else PushGreyW(block);
     }
 
     static bool SetFlagW(nuint block, nuint flag)
@@ -7543,7 +7679,7 @@ static class Gc
         }
     }
 
-    static void ScanBlockW(nuint block, nuint size)
+    static void ScanBlockW(nuint block, nuint size, nuint local)
     {
         nint kind = (nint)PeekW(block + (nuint)KindAt);
         if (kind == (nint)KindLeaf)
@@ -7552,20 +7688,20 @@ static class Gc
         }
         nuint payload = block + (nuint)HeaderBytes;
         nuint end = block + size - (nuint)FooterBytes;
-        if (kind != (nint)KindObject || !ScanObjectW(payload, end))
+        if (kind != (nint)KindObject || !ScanObjectW(payload, end, local))
         {
-            ScanRangeW(payload, end);
+            ScanRangeW(payload, end, local);
         }
     }
 
-    static void ScanRangeW(nuint from, nuint to)
+    static void ScanRangeW(nuint from, nuint to, nuint local)
     {
         nuint w = (nuint)WordSize.Bytes;
         nuint p = (from + w - 1) & ~(w - 1);
 
         while (p < to)
         {
-            MarkWord(PeekW(p));
+            MarkWord(PeekW(p), local);
             p = p + w;
         }
     }
@@ -7573,7 +7709,7 @@ static class Gc
     /// ScanObject in words. The array's count is checked against the room
     /// before it is multiplied: in 32 bits count * w can wrap, which in 64
     /// it could not, and `last > end` alone would then pass.
-    static bool ScanObjectW(nuint payload, nuint end)
+    static bool ScanObjectW(nuint payload, nuint end, nuint local)
     {
         nuint w = (nuint)WordSize.Bytes;
         nuint vt = PeekW(payload);
@@ -7608,7 +7744,7 @@ static class Gc
             {
                 return false;
             }
-            ScanRangeW(first, first + count * w);
+            ScanRangeW(first, first + count * w, local);
             return true;
         }
         nuint map = PeekW(desc + (nuint)DescRefMapWord * w);
@@ -7627,7 +7763,7 @@ static class Gc
             {
                 if ((bits & 1) != 0 && at + w <= end)
                 {
-                    MarkWord(PeekW(at));
+                    MarkWord(PeekW(at), local);
                 }
                 bits = bits >> 1;
                 at = at + w;
@@ -7758,7 +7894,7 @@ static class Gc
 
     public static void ScanRange(long from, long to)
     {
-        ScanRangeW((nuint)from, (nuint)to);
+        ScanRangeW((nuint)from, (nuint)to, 0);
     }
 
     /// Runs a collection. Everything reachable from the stack, the registers
