@@ -1956,10 +1956,22 @@ public sealed partial class Lowering
         for (int i = 0; i < count; i++)
         {
             Type? a = !CanonicalCopy(s) && s.TemplateArgTypes.Count == count ? s.TemplateArgTypes[i] : null;
-            args.Add(a is not null && !a.IsError && a.ParamName is null && !IsStructValue(a) ? a : Type.Any);
+            args.Add(a is not null && !a.IsError && a.ParamName is null && !IsStructValue(a) && !MentionsCanon(a) ? a : Type.Any);
         }
         return args;
     }
+
+    /// <summary>
+    /// Whether a type is, or is made of, a shared copy's own word: an
+    /// instantiation a canonical body names over __canon -- Lookup's
+    /// `Dictionary&lt;K, Grouping&lt;K, T&gt;&gt;` -- whose argument is no type an
+    /// object has. Its entry is object's, as every one was before: arrays of
+    /// Grouping$__canon$__canon refused the Grouping&lt;string, Guard&gt; stored in them.
+    /// </summary>
+    private static bool MentionsCanon(Type a)
+        => a.IsArray && a.Element is Type element ? MentionsCanon(element)
+         : a.Symbol is TypeSymbol s && (s.Name.Contains(Monomorphiser.CanonName, StringComparison.Ordinal)
+            || s.TemplateArgTypes.Any(MentionsCanon));
 
     /// <summary>The descriptor `typeof` and GetType() give for a reference type argument.</summary>
     private string ArgumentDescriptor(Type a)

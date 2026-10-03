@@ -1,0 +1,48 @@
+// test: shared_generic_made_over_placeholder_stays_object
+// expect-exit: 0
+// expect-output:
+// a 2 True
+// b 1 True
+// a2,b1
+// 1:xz,2:yy
+//
+// A shared copy's own instantiation over its placeholder -- Lookup's
+// Dictionary<K, Grouping<K, T>>, made in the canonical body as
+// Dictionary over Grouping$__canon$__canon -- named that placeholder type
+// as its V, so its values array refused the exact Grouping<string, Guard>
+// the copy now makes, and the compiler built natively died in ToLookup.
+// An argument made of the placeholder is object in the type context. The
+// output is real .NET's.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+class Group<K, T> { public K Key; public List<T> Items = new(); public Group(K key) { Key = key; } }
+
+class Index<K, T> where K : class where T : class
+{
+    private readonly Dictionary<K, Group<K, T>> byKey = new();
+    private readonly List<Group<K, T>> order = new List<Group<K, T>>();
+    public void Add(K key, T item)
+    {
+        if (!byKey.TryGetValue(key, out Group<K, T>? g)) { g = new Group<K, T>(key); byKey[key] = g; order.Add(g); }
+        g.Items.Add(item);
+    }
+    public IEnumerable<Group<K, T>> Groups => order;
+}
+
+static class P
+{
+    static void Main()
+    {
+        Index<string, Exception> index = new();
+        index.Add("a", new ArgumentException("x"));
+        index.Add("b", new InvalidOperationException("y"));
+        index.Add("a", new Exception("z"));
+        foreach (var g in index.Groups) Console.WriteLine(g.Key + " " + g.Items.Count + " " + (g is Group<string, Exception>));
+        var look = new[] { "ab", "ac", "b" }.ToLookup(s => s[0].ToString());
+        Console.WriteLine(string.Join(",", look.Select(l => l.Key + l.Count())));
+        Console.WriteLine(string.Join(",", new[] { "x", "yy", "z" }.GroupBy(s => s.Length).Select(g => g.Key + ":" + string.Join("", g))));
+    }
+}
