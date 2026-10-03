@@ -479,6 +479,9 @@ static class AppContext
             _switches ??= new Dictionary<string, bool>();
             _switches[switchName] = isEnabled;
         }
+        // The collector's own: read as the process ends, from a flag of its
+        // own, so a program that sets no switch carries none of this.
+        if (switchName == "Corsac.GC.Stats") Gc.StatsAsked = isEnabled;
     }
 
     public static bool TryGetSwitch(string switchName, out bool isEnabled)
