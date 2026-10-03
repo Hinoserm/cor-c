@@ -341,8 +341,12 @@ public sealed partial class Binder
         // `Color` is no System.Drawing.Color to it. Not a copy of one of its
         // generic methods for the program's types (LocalCopy) --
         // OfType<Field>, Where<Op> -- which names them.
-        bool libraryOwn = written is { FromLibrary: true, Specialised: false } && _member is not { LocalCopy: true };
-        if (TypeCandidate(name, out sym) && !(libraryOwn && sym?.Decl is { FromLibrary: false }))
+        // The CLASS library, by its sources: a unit compiled with --lib marks
+        // all its files library, and a project's units -- the compiler's own
+        // -- name one another.
+        bool libraryOwn = written is { FromLibrary: true, Specialised: false } && _member is not { LocalCopy: true }
+                          && IsClassLibrary(written);
+        if (TypeCandidate(name, out sym) && !(libraryOwn && sym?.Decl is { } candidate && IsProgramSource(candidate)))
         {
             return true;
         }
@@ -2548,6 +2552,12 @@ public sealed partial class Binder
     /// are declared one type at a time and in no particular order: the base's
     /// symbol may hold nothing yet, while the text of it is all there.
     /// </summary>
+    /// <summary>Whether a type was written in the class library's own sources (stdlib, runtime).</summary>
+    private static bool IsClassLibrary(TypeDecl d) => d.SourcePath is string path && LibrarySource is { } isLibrary && isLibrary(path);
+
+    /// <summary>Whether a type was written in the program's own sources: a file, and not the class library's (the prelude's are neither).</summary>
+    private static bool IsProgramSource(TypeDecl d) => d.SourcePath is string path && LibrarySource is { } isLibrary && !isLibrary(path);
+
     /// <summary>Whether a field declaration carries [ThreadStatic], however it is spelt.</summary>
     internal static bool IsThreadStatic(FieldDecl f)
         => f.Attributes.Any(a => a.Name is "ThreadStatic" or "System.ThreadStatic" or "ThreadStaticAttribute" or "System.ThreadStaticAttribute");
