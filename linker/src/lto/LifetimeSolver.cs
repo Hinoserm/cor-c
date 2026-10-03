@@ -58,6 +58,8 @@ public sealed class LifetimeSolver
     private readonly Dictionary<string, long[]?[]> _held = new(StringComparer.Ordinal);
     private readonly HashSet<string> _fresh = new(StringComparer.Ordinal);
     private readonly Dictionary<(string, int), Accumulated> _fields = new();
+    /// <summary>The virtual calls' symbols the solver stated itself, with the overrides each reaches.</summary>
+    private readonly Dictionary<string, string[]> _virtualMerges = new(StringComparer.Ordinal);
 
     /// <summary>A field summary being solved: only ever grows.</summary>
     private sealed class Accumulated
@@ -131,7 +133,8 @@ public sealed class LifetimeSolver
                     returned = new LifetimeFields();
                     foreach (string target in virtuals[name]) { fresh.Fresh.Add(target); returned.Merges.Add((target, Returned)); }
                 }
-                _globals.TryAdd(name, new LifetimeFunction(name, true, parameters, fresh, parameterFields, returned));
+                if (_globals.TryAdd(name, new LifetimeFunction(name, true, parameters, fresh, parameterFields, returned)))
+                    _virtualMerges[name] = virtuals[name];
             }
         }
         SolveEscapes();
@@ -253,12 +256,49 @@ public sealed class LifetimeSolver
             _fields[key] = local;
         }
         foreach ((string, int) key in _fields.Keys.OrderBy(k => k.Item1, StringComparer.Ordinal).ThenBy(k => k.Item2)) grew.Enqueue(key);
-        while (grew.TryDequeue(out (string, int) done))
+        void Spread()
         {
-            if (!dependents.TryGetValue(done, out var list)) continue;
-            foreach ((string, int) waiter in list)
-                if (_fields[waiter].Absorb(_fields[done])) grew.Enqueue(waiter);
+            while (grew.TryDequeue(out (string, int) done))
+            {
+                if (!dependents.TryGetValue(done, out var list)) continue;
+                foreach ((string, int) waiter in list)
+                    if (_fields[waiter].Absorb(_fields[done])) grew.Enqueue(waiter);
+            }
         }
+        Spread();
+
+        // A VIRTUAL CALL'S RECEIVER, AND WHAT IT RETURNS, IS AN OBJECT OF THE
+        // OVERRIDE'S OWN CLASS: an offset one override fills with a fresh
+        // object is a field of that class, and in another class the same
+        // offset is some other field, or a number, or past the object's end.
+        // Fresh for every override, it is a reference field of every class
+        // the object can be; fresh for some, it is dirty. Unioned like any
+        // other merge, Encoding.GetBytes made +16 -- CodePageEncoding's
+        // table -- fresh in the UTF8Encoding Encoding.UTF8 hands back, and
+        // the field free read the next block's first word and freed it.
+        // The fresh offsets are final once the merges are spread -- dirt
+        // changes none of them -- so the dirt this adds is spread once more.
+        foreach (string name in _virtualMerges.Keys.Order(StringComparer.Ordinal))
+        {
+            string[] targets = _virtualMerges[name];
+            if (targets.Length < 2) continue;
+            foreach (int argument in new[] { 0, Returned })
+            {
+                if (!_fields.TryGetValue((name, argument), out Accumulated? merged)) continue;
+                SortedSet<long>? every = null;
+                foreach (string target in targets)
+                {
+                    SortedSet<long> fresh = _fields.TryGetValue((target, argument), out Accumulated? one) ? one.Fresh : new();
+                    if (every is null) every = new(fresh);
+                    else every.IntersectWith(fresh);
+                }
+                Accumulated partial = new();
+                foreach (long offset in merged.Fresh)
+                    if (every is null || !every.Contains(offset)) partial.Dirty.Add(offset);
+                if (merged.Absorb(partial)) grew.Enqueue((name, argument));
+            }
+        }
+        Spread();
     }
 
     /// <summary>A field hint answered by the whole program: its own part and what it merges.</summary>

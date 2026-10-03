@@ -140,7 +140,39 @@ public sealed partial class Escape
         }
 
         public IEnumerable<long> Clean() => Opaque ? Enumerable.Empty<long>() : FreshStored.Where(o => !Dirty.Contains(o));
+
+        /// <summary>
+        /// THE OVERRIDES A VIRTUAL CALL CAN REACH ARE ALTERNATIVES, each of its
+        /// own class: what the receiver, or the object the call hands back, is
+        /// one of them. An offset one fills with a fresh object is a field of
+        /// that class; in another the same offset is another field, a number,
+        /// or past the object's end. Merged, every offset some alternative
+        /// filled is fresh -- freed then on an object of a class without that
+        /// field. Fresh in all of them, it is a reference field of every class
+        /// the object can be; fresh in some, it is made dirty here.
+        /// </summary>
+        public void DirtyPartial(List<HashSet<long>> alternatives, string where)
+        {
+            if (alternatives.Count < 2) return;
+            HashSet<long> every = new(alternatives[0]);
+            foreach (HashSet<long> one in alternatives) every.IntersectWith(one);
+            foreach (HashSet<long> one in alternatives)
+                foreach (long at in one)
+                    if (!every.Contains(at) && Dirty.Add(at)) Note(at, $"fresh in only some overrides of {where}");
+        }
     }
+
+    /// <summary>The offsets a field hint fills with a fresh object, unconditionally or if its condition holds.</summary>
+    private static IEnumerable<long> PartialOffsets(List<HashSet<long>> alternatives)
+    {
+        if (alternatives.Count < 2) return Enumerable.Empty<long>();
+        HashSet<long> every = new(alternatives[0]);
+        foreach (HashSet<long> one in alternatives) every.IntersectWith(one);
+        return alternatives.SelectMany(one => one).Where(at => !every.Contains(at)).Distinct().ToList();
+    }
+
+    private static HashSet<long> HintFresh(LifetimeFields hint)
+        => hint.Fresh.Concat(hint.Conditional.Where(c => c.Stores).Select(c => c.Offset)).ToHashSet();
 
     /// <summary>Per function, per parameter: its field summary; null for a parameter that escapes or is not a reference.</summary>
     private Dictionary<string, FieldSummary?[]> _paramFields = new(StringComparer.Ordinal);
@@ -264,13 +296,26 @@ public sealed partial class Escape
             {
                 string[] targets = _indirect is not null && _indirect.TryGetValue(origin, out string[]? t) ? t : Array.Empty<string>();
                 if (targets.Length == 0) { one.Opaque = true; if (oneHint is not null) oneHint.Opaque = true; }
+                List<HashSet<long>> alternatives = new(), hinted = new();
+                bool linked = false;
                 foreach (string target in targets)
                 {
-                    one.Merge(_freshFields.GetValueOrDefault(target));
+                    FieldSummary? made = _freshFields.GetValueOrDefault(target);
+                    one.Merge(made);
+                    if (made is not null) alternatives.Add(made.FreshStored);
                     if (oneHint is null) continue;
-                    if (!_defined.Contains(target)) oneHint.Merges.Add((target, -1));
-                    else if (_freshFieldHints.GetValueOrDefault(target) is LifetimeFields made) oneHint.Absorb(made);
+                    if (!_defined.Contains(target)) { oneHint.Merges.Add((target, -1)); linked = true; }
+                    else if (_freshFieldHints.GetValueOrDefault(target) is LifetimeFields madeHint) { oneHint.Absorb(madeHint); hinted.Add(HintFresh(madeHint)); }
                     else oneHint.Opaque = true;
+                }
+                if (targets.Length > 1)
+                {
+                    one.DirtyPartial(alternatives, origin.ToString());
+                    if (oneHint is not null)
+                    {
+                        if (linked) oneHint.Opaque = true;
+                        else foreach (long at in PartialOffsets(hinted)) oneHint.Dirty.Add(at);
+                    }
                 }
             }
             merged.Merge(one);
@@ -379,7 +424,7 @@ public sealed partial class Escape
         // What `callee` does to the fields of its parameter `p`: its summary,
         // or, with the object's types known, its summary for those types
         // (TypedFields) -- the virtual calls on it each type's own method.
-        void MergeCallee(string callee, int p, Stamp[]? typed)
+        (FieldSummary? Known, LifetimeFields? Hinted) MergeCallee(string callee, int p, Stamp[]? typed)
         {
             FieldSummary? known = null;
             bool found = false;
@@ -393,14 +438,18 @@ public sealed partial class Escape
                 if (known is null) fs.Why = fs.Why == "a callee with no field summary" ? $"{callee} param {p} has no field summary (it escapes)" : fs.Why;
             }
             else { fs.Opaque = true; fs.Why ??= $"{callee} unknown here (param {p})"; }
-            if (hint is null) return;
+            if (hint is null) return (known, null);
             // For the link: another unit's function is merged in
             // there; one of this unit's brings its own hint.
-            if (!_defined.Contains(callee)) hint.Merges.Add((callee, p));
-            else if (_fieldHints.TryGetValue(callee, out LifetimeFields?[]? calleeHints) && p < calleeHints.Length
-                     && calleeHints[p] is LifetimeFields hinted)
+            if (!_defined.Contains(callee)) { hint.Merges.Add((callee, p)); return (known, null); }
+            if (_fieldHints.TryGetValue(callee, out LifetimeFields?[]? calleeHints) && p < calleeHints.Length
+                && calleeHints[p] is LifetimeFields hinted)
+            {
                 hint.Absorb(hinted);
-            else hint.Opaque = true;
+                return (known, hinted);
+            }
+            hint.Opaque = true;
+            return (known, null);
         }
 
         foreach (Block b in f.Blocks)
@@ -500,7 +549,23 @@ public sealed partial class Escape
                             if (i.Operands[a] is not RegOperand arg || !addresses.TryGetValue(arg.Reg, out long off)) continue;
                             if (off != 0) { Opaque(); break; }
                             if (a == 1 && targets.Any(t => Copies(t) is not null) && i.Dest is { } handedBack && !addresses.ContainsKey(handedBack)) { Opaque(); break; }
-                            foreach (string t in targets) MergeCallee(t, a - 1, a == 1 ? kinds : null);
+                            List<HashSet<long>> alternatives = new(), hinted = new();
+                            bool linked = false;
+                            foreach (string t in targets)
+                            {
+                                (FieldSummary? known, LifetimeFields? one) = MergeCallee(t, a - 1, a == 1 ? kinds : null);
+                                if (known is not null) alternatives.Add(known.FreshStored);
+                                if (one is not null) hinted.Add(HintFresh(one));
+                                else linked |= !_defined.Contains(t);
+                            }
+                            if (a != 1 || targets.Length < 2) continue;
+                            fs.DirtyPartial(alternatives, i.ToString());
+                            // Another unit's override is merged at the link, by
+                            // its own name, among the rest: no one there sees them
+                            // as alternatives.
+                            if (hint is null) continue;
+                            if (linked) hint.Opaque = true;
+                            else foreach (long at in PartialOffsets(hinted)) hint.Dirty.Add(at);
                         }
                         break;
                     }
