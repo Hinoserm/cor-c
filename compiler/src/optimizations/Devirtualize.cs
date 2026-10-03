@@ -477,6 +477,12 @@ public sealed class Devirtualize : IModulePass
                 if (i.Op == Opcode.Call && Escape.IsAllocator(i.Callee) && i.Dest is not null)
                     objects[i] = new() { [i.Dest] = 0 };
         if (objects.Count == 0) return;
+        // WHICH OBJECT EACH REGISTER IS DERIVED FROM, in one table: a
+        // register defined once is derived from its one source, so from one
+        // object at most. Asked of every object for every instruction, this
+        // was instructions times allocations on each round.
+        Dictionary<VReg, (Instr Object, long At)> sourceOf = new();
+        foreach ((Instr alloc, Dictionary<VReg, long> first) in objects) sourceOf[alloc.Dest!] = (alloc, 0);
         bool grew = true;
         while (grew)
         {
@@ -489,18 +495,18 @@ public sealed class Devirtualize : IModulePass
                     // write where it happens (below), since what is stored
                     // through it later is not known to be another object.
                     if (i.Dest is null || i.Operands.Count == 0 || i.Operands[0] is not RegOperand r || !defs.IsSingle(i.Dest)) continue;
-                    foreach (Dictionary<VReg, long> d in objects.Values)
+                    if (!sourceOf.TryGetValue(r.Reg, out (Instr Object, long At) source)) continue;
+                    Dictionary<VReg, long> d = objects[source.Object];
+                    if (d.ContainsKey(i.Dest)) continue;
+                    long at = source.At;
+                    long? to = i.Op switch
                     {
-                        if (!d.TryGetValue(r.Reg, out long at) || d.ContainsKey(i.Dest)) continue;
-                        long? to = i.Op switch
-                        {
-                            Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 => at,
-                            Opcode.Add when i.Operands[1] is ImmOperand k && at >= 0 => at + k.Value,
-                            Opcode.Add => -1,
-                            _ => null,
-                        };
-                        if (to is long t) { d[i.Dest] = t; grew = true; }
-                    }
+                        Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 => at,
+                        Opcode.Add when i.Operands[1] is ImmOperand k && at >= 0 => at + k.Value,
+                        Opcode.Add => -1,
+                        _ => null,
+                    };
+                    if (to is long t) { d[i.Dest] = t; sourceOf.TryAdd(i.Dest, (source.Object, t)); grew = true; }
                 }
         }
 

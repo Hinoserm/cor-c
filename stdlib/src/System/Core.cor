@@ -10208,10 +10208,17 @@ class StringComparer : IEqualityComparer<string>, IComparer<string> {
     // IGNORING CASE IS COMPARING UPPER CASE, which is .NET's OrdinalIgnoreCase:
     // Equals, Compare and GetHashCode all fold the same way, or a table keyed
     // by this comparer finds a key its Equals says is there under another hash.
+    // EQUALITY IS NOT ORDER: String.Equals stops at the same object, at two
+    // lengths, at two known hashes that differ, where Compare read the units
+    // first -- and every Dictionary<string, T>(StringComparer.Ordinal) probe
+    // came here (2.3% of a native self-compile). Folding keeps the length,
+    // unit for unit, so two lengths settle it before anything is made.
     public bool Equals(string? a, string? b) {
         if (a == null || b == null) { return (object?)a == (object?)b; }
-        if (fold) { return String.Compare(String.ToUpperInvariant(a), String.ToUpperInvariant(b)) == 0; }
-        return String.Compare(a, b) == 0;
+        if (!fold) { return String.Equals(a, b); }
+        if (a.Length != b.Length) { return false; }
+        if ((object)a == (object)b) { return true; }
+        return String.Compare(String.ToUpperInvariant(a), String.ToUpperInvariant(b)) == 0;
     }
 
     /// .NET's StringComparer is an IComparer<string> as well as an equality

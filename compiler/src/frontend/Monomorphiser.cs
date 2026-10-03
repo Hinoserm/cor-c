@@ -1511,6 +1511,22 @@ public sealed class Monomorphiser
             return;
         }
 
+        // ONCE FOR EACH ARRAY WHERE IT IS READ. byte[] and string[] are
+        // mentioned in nearly every member, and each mention qualified its
+        // element and resolved the three names again, to find three
+        // specialisations already made: 2.7% of a native self-compile. What
+        // the names mean depends only on where they are read -- the scope,
+        // the namespace, the file's usings, library code or not.
+        string where = string.Concat(_scope, "\n", _inNamespace, _libraryCode ? "\nL\n" : "\nP\n", element.ToString());
+        FileScope? usings = _usings;
+        HashSet<string> seen;
+        if (usings is null) seen = _sequencesSeenUnscoped;
+        else if (!_sequencesSeen.TryGetValue(usings, out seen!)) _sequencesSeen[usings] = seen = new HashSet<string>(StringComparer.Ordinal);
+        if (!seen.Add(where))
+        {
+            return;
+        }
+
         foreach (string sequence in new[] { "IEnumerable", "IReadOnlyCollection", "IReadOnlyList" })
         {
             if (_generic.ContainsKey(Arity(sequence, 1)))
@@ -1519,6 +1535,10 @@ public sealed class Monomorphiser
             }
         }
     }
+
+    /// <summary>The arrays whose sequences have been asked for, by where they were read (ArrayIsASequence).</summary>
+    private readonly Dictionary<FileScope, HashSet<string>> _sequencesSeen = new(ReferenceEqualityComparer.Instance);
+    private readonly HashSet<string> _sequencesSeenUnscoped = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Remembers what a tuple argument called its elements, before the name it
