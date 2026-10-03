@@ -141,6 +141,23 @@ public sealed class LifetimeSolver
         SolveHeld(virtuals);
         SolveFresh();
         SolveFields();
+        if (Trace is string traced) Say(traced);
+    }
+
+    /// <summary>--trace-lifetimes NAME: what the solve answered for every function whose name contains NAME.</summary>
+    public static string? Trace;
+
+    private void Say(string traced)
+    {
+        foreach (string name in _globals.Keys.Order(StringComparer.Ordinal))
+        {
+            if (!name.Contains(traced, StringComparison.Ordinal)) continue;
+            bool[] escapes = _escapes.TryGetValue(name, out bool[]? e) ? e : Array.Empty<bool>();
+            Console.Error.WriteLine($"lifetimes {name}: escapes [{string.Join(",", escapes.Select(x => x ? 1 : 0))}] fresh={_fresh.Contains(name)}"
+                + (_virtualMerges.TryGetValue(name, out string[]? targets) ? " virtual over " + string.Join(",", targets.Order(StringComparer.Ordinal)) : ""));
+            foreach (((string Callee, int Argument) key, Accumulated fields) in _fields.Where(pair => pair.Key.Item1 == name).OrderBy(pair => pair.Key.Item2))
+                Console.Error.WriteLine($"lifetimes {name}:   fields {key.Argument} opaque={fields.Opaque} dirty=[{string.Join(",", fields.Dirty)}] fresh=[{string.Join(",", fields.Fresh)}]");
+        }
     }
 
     /// <summary>

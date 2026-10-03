@@ -87,6 +87,13 @@ public static class Driver
             ChildFlags.Add("--dump-layout"); ChildFlags.Add(taken[dumpAt + 1]);
             taken.RemoveRange(dumpAt, 2);
         }
+        int lifetimesAt = taken.IndexOf("--trace-lifetimes");
+        if (lifetimesAt >= 0 && lifetimesAt + 1 < taken.Count)
+        {
+            Corsac.Lang.Lto.LifetimeSolver.Trace = taken[lifetimesAt + 1];
+            ChildFlags.Add("--trace-lifetimes"); ChildFlags.Add(taken[lifetimesAt + 1]);
+            taken.RemoveRange(lifetimesAt, 2);
+        }
         if (taken.Remove("--gc-stats"))
         {
             ChildFlags.Add("--gc-stats");
