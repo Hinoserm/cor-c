@@ -3286,8 +3286,11 @@ continue;
             writes ??= new(f);
             if (!writes.TryGetValue(d, out WriteList ws)) return false;
             List<object> slots = new();
+            bool tracing = PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal);
+            if (tracing) Console.Error.WriteLine($"merge {f.Name}: {d} to {root}, {ws.Count} writes");
             foreach (Instr w in ws)
             {
+                if (tracing) Console.Error.WriteLine($"merge {f.Name}:   write {w}");
                 if (w is not { Op: Opcode.Copy, Operands: [var from] }) return false;
                 if (FrameSlotOf(from, 0) is object slot) slots.Add(slot);
                 else if (from is RegOperand { Reg: var source } && source != d && HolderAt(from, 1) is (object block, 0)) slots.Add(block);
@@ -3300,6 +3303,7 @@ continue;
                 else return false;
             }
             object one = Canon(root);
+            if (tracing) Console.Error.WriteLine($"merge {f.Name}:   into {one}: {string.Join(", ", slots)}");
             foreach (object slot in slots)
             {
                 object was = Canon(slot);
@@ -3410,6 +3414,8 @@ continue;
 
         void HolderAlias(VReg d, object root, long delta)
         {
+            if (PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal))
+                Console.Error.WriteLine($"alias {f.Name}: {d} to {root} +{delta} defs {(d.Id < defs.Length ? defs[d.Id] : -1)}");
             if (d.Id < defs.Length && defs[d.Id] > 1)
             {
                 // A VARIABLE THAT HOLDS THE HOLDER OR NULL -- an enumerator
