@@ -24,7 +24,7 @@ public static class RegionSummary
 {
     public static RegionHints Of(Module m)
     {
-        RegionHints hints = new();
+        RegionHints hints = new() { WordSize = Target.Current.WordSize };
         HashSet<string> data = new(StringComparer.Ordinal);
         foreach (DataItem d in m.Data)
         {
@@ -489,8 +489,234 @@ public static class RegionSummary
             result.MustCalls = CallsAmong(must);
             result.MustSites = SitesAmong(must);
             result.Loops.AddRange(shapes);
+            Repeat(result);
             return result;
         }
+
+        // ---- how often each site and call runs ------------------------------
+        //
+        // WHAT ONE CALL OF THE FUNCTION CAN MAKE, for the link to size the
+        // regions it opens (RegionSolver.Sizes): each site's block in the
+        // arena, where the allocator is asked for a constant number of bytes
+        // -- an object of a described type, an array of a constant length --
+        // and how often each site and call runs, by the natural loops they
+        // are in and the most laps each makes. A loop's laps are bounded where
+        // a test run on every lap compares a counter with a constant: the
+        // counter set only to constants before the loop and stepped by a
+        // constant once a lap, in a block every lap runs. Nothing is bounded
+        // in a function whose cycles are not all natural loops, nor in what a
+        // handler or an address taken of a block reaches -- an unwind's way
+        // back is an edge the graph does not hold -- nor in an async or
+        // iterator body. What runs only on the way to a throw (Throwing) is
+        // left out of every size: a region past its size grows as one nobody
+        // sized does, and the throw ends it.
+
+        // Past these, a counter or a step is no bound: no wrap on the way.
+        private const long MostCounted = 1L << 30, MostStep = 1L << 20;
+        // The most laps a loop is said to make; more is not known.
+        private const long MostLaps = 1L << 24;
+
+        private void Repeat(RegionFunction result)
+        {
+            int sites = _sites.Count;
+            long[] bytes = new long[sites];
+            int[] siteLoops = new int[sites], callLoops = new int[_calls.Count];
+            Array.Fill(siteLoops, RegionFunction.Unbounded);
+            Array.Fill(callLoops, RegionFunction.Unbounded);
+            foreach ((Instr i, int site) in _siteOf)
+                if (i.Operands.Count > 0 && i.Operands[0] is ImmOperand { Value: >= 0 and < MostCounted and var n })
+                    bytes[site] = RegionLayout.Block(n, Target.Current.WordSize);
+            result.SiteBytes = bytes; result.SiteLoops = siteLoops; result.CallLoops = callLoops;
+            if (_f.Async is not null || _f.Blocks.Count > RegionPointsTo.LoopBlocks) return;
+            Cfg cfg = new(_f);
+            bool[] live = cfg.Live;
+            // Every cycle a natural loop: none left once the back edges -- to
+            // a block that dominates the one they leave -- are taken away.
+            int[] state = new int[_f.Blocks.Count];
+            bool Cyclic(Block b)
+            {
+                state[b.Order] = 1;
+                foreach (Block s in cfg.Succs(b))
+                {
+                    if (cfg.Dominates(s, b)) continue;
+                    if (state[s.Order] == 1 || state[s.Order] == 0 && Cyclic(s)) return true;
+                }
+                state[b.Order] = 2;
+                return false;
+            }
+            foreach (Block b in _f.Blocks)
+                if (live[b.Order] && state[b.Order] == 0 && Cyclic(b)) return;
+
+            var natural = RegionPointsTo.NaturalLoops(_f, cfg);
+            // Outer loops first: a loop's body holds every loop's in it, or none of it.
+            natural.Sort((a, b) => b.Body.Count.CompareTo(a.Body.Count));
+            int[] parent = new int[natural.Count];
+            for (int k = 0; k < natural.Count; k++)
+            {
+                parent[k] = -1;
+                for (int j = 0; j < k; j++)
+                {
+                    if (!natural[j].Body.Overlaps(natural[k].Body)) continue;
+                    if (!natural[j].Body.IsSupersetOf(natural[k].Body)) return;
+                    parent[k] = j;
+                }
+            }
+            int[] inner = new int[_f.Blocks.Count];
+            Array.Fill(inner, -1);
+            for (int k = 0; k < natural.Count; k++)
+                foreach (Block b in natural[k].Body) inner[b.Order] = k;
+            // What a handler, or a block whose address is taken, reaches.
+            bool[] unbounded = new bool[_f.Blocks.Count];
+            Stack<Block> next = new();
+            foreach (Block root in cfg.Roots)
+                if (root != _f.Entry && !unbounded[root.Order]) { unbounded[root.Order] = true; next.Push(root); }
+            while (next.TryPop(out Block? b))
+                foreach (Block s in cfg.Succs(b))
+                    if (!unbounded[s.Order]) { unbounded[s.Order] = true; next.Push(s); }
+
+            Dictionary<VReg, List<(Instr Def, Block At)>> defs = new();
+            foreach (Block b in _f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Dest is { } d) (defs.TryGetValue(d, out var list) ? list : defs[d] = new()).Add((i, b));
+            RegionRepeat[] repeats = new RegionRepeat[natural.Count];
+            for (int k = 0; k < natural.Count; k++)
+                repeats[k] = new RegionRepeat(natural[k].Header.Order, parent[k], Laps(cfg, natural[k].Body, natural[k].Latches, defs));
+            result.Repeats = repeats;
+            // The blocks a return is reached from; the rest only throw.
+            bool[] returns = new bool[_f.Blocks.Count];
+            foreach (Block b in _f.Blocks)
+                if (b.Terminator is { Op: Opcode.Ret } && !returns[b.Order]) { returns[b.Order] = true; next.Push(b); }
+            while (next.TryPop(out Block? b))
+                foreach (Block p in cfg.Preds(b))
+                    if (!returns[p.Order]) { returns[p.Order] = true; next.Push(p); }
+            foreach (Block b in _f.Blocks)
+            {
+                int at = unbounded[b.Order] ? RegionFunction.Unbounded : !returns[b.Order] ? RegionFunction.Throwing : inner[b.Order];
+                foreach (Instr i in b.Instrs)
+                {
+                    if (_siteOf.TryGetValue(i, out int site)) siteLoops[site] = at;
+                    if (_callOf.TryGetValue(i, out int call)) callLoops[call] = at;
+                }
+            }
+        }
+
+        /// <summary>The most laps a loop makes each time it is entered, by the fewest any test run every lap allows; 0 when none bounds them.</summary>
+        private long Laps(Cfg cfg, HashSet<Block> body, List<Block> latches, Dictionary<VReg, List<(Instr Def, Block At)>> defs)
+        {
+            long fewest = 0;
+            foreach (Block e in body)
+            {
+                if (e.Terminator is not { Op: Opcode.Branch } branch || branch.Targets.Count != 2
+                    || branch.Operands[0] is not RegOperand { Reg: var c }) continue;
+                bool stays = body.Contains(branch.Targets[0]);
+                if (stays == body.Contains(branch.Targets[1])) continue;
+                if (!latches.All(l => cfg.Dominates(e, l))) continue;
+                // The test made afresh every lap, before the branch reads it.
+                if (!defs.TryGetValue(c, out var tests) || tests.Count != 1 || tests[0].Def.Operands.Count != 2
+                    || !body.Contains(tests[0].At) || !cfg.Dominates(tests[0].At, e)) continue;
+                if (Laps(cfg, body, latches, defs, tests[0].Def, stays, tests[0].At) is long laps and > 0 && (fewest == 0 || laps < fewest)) fewest = laps;
+            }
+            return fewest;
+        }
+
+        // A test `v op n` that keeps the loop going while it is `stays`: v a
+        // counter, or a counter plus a constant written in the lap before the
+        // test is (`at`, the test's block).
+        private long Laps(Cfg cfg, HashSet<Block> body, List<Block> latches, Dictionary<VReg, List<(Instr Def, Block At)>> defs, Instr test, bool stays, Block at)
+        {
+            Opcode op = test.Op;
+            Operand a = test.Operands[0], b = test.Operands[1];
+            if (a is ImmOperand && b is RegOperand) { (a, b) = (b, a); op = Mirror(op); }
+            if (!stays) op = Negate(op);
+            if (op == Opcode.Copy || a is not RegOperand { Reg: var v } || b is not ImmOperand { Value: var n } || Math.Abs(n) > MostCounted) return 0;
+            bool unsigned = op is Opcode.LtU or Opcode.LeU or Opcode.GtU or Opcode.GeU;
+            if (unsigned && n < 0) return 0;
+            long offset = 0;
+            (long Start, long Step)? counter = Counter(cfg, body, latches, defs, v);
+            if (counter is null && defs.TryGetValue(v, out var vd) && vd.Count == 1 && body.Contains(vd[0].At) && cfg.Dominates(vd[0].At, at)
+                && (vd[0].At != at || at.Instrs.IndexOf(vd[0].Def) < at.Instrs.IndexOf(test))
+                && Stepped(vd[0].Def) is (VReg from, long by))
+            {
+                counter = Counter(cfg, body, latches, defs, from);
+                offset = by;
+            }
+            if (counter is not (long start, long step)) return 0;
+            start += offset;
+            if (unsigned && start < 0) return 0;
+            long passing = op switch
+            {
+                Opcode.LtS or Opcode.LtU when step > 0 => Ceiling(n - start, step),
+                Opcode.LeS or Opcode.LeU when step > 0 => Floor(n - start, step) + 1,
+                Opcode.GtS when step < 0 => Ceiling(start - n, -step),
+                Opcode.GeS when step < 0 => Floor(start - n, -step) + 1,
+                Opcode.Ne when step == 1 && n >= start => n - start,
+                Opcode.Ne when step == -1 && n <= start => start - n,
+                _ => -1,
+            };
+            if (passing < 0) return 0;
+            long laps = Math.Max(0, passing) + 1;   // and the lap whose test fails
+            return laps > MostLaps ? 0 : laps;
+        }
+
+        private static long Ceiling(long a, long b) => a <= 0 ? 0 : (a + b - 1) / b;
+        private static long Floor(long a, long b) => a < 0 ? -1 : a / b;
+
+        // A counter: set before the loop only to constants (the least of
+        // them going up, the most going down, as Start), and stepped by a
+        // constant once a lap, in a block every lap runs.
+        private (long Start, long Step)? Counter(Cfg cfg, HashSet<Block> body, List<Block> latches, Dictionary<VReg, List<(Instr Def, Block At)>> defs, VReg i)
+        {
+            if (_f.Params.Contains(i) || !defs.TryGetValue(i, out var all)) return null;
+            List<long> starts = new();
+            long? step = null;
+            foreach ((Instr def, Block at) in all)
+            {
+                if (!body.Contains(at))
+                {
+                    if (def.Op != Opcode.Copy || def.Operands[0] is not ImmOperand { Value: var s } || Math.Abs(s) > MostCounted) return null;
+                    starts.Add(s);
+                    continue;
+                }
+                if (step is not null || !latches.All(l => cfg.Dominates(at, l))) return null;
+                (VReg From, long By)? stepped = Stepped(def);
+                if (stepped is null && def.Op == Opcode.Copy && def.Operands[0] is RegOperand { Reg: var t }
+                    && defs.TryGetValue(t, out var td) && td.Count == 1 && body.Contains(td[0].At) && cfg.Dominates(td[0].At, at)
+                    && (td[0].At != at || at.Instrs.IndexOf(td[0].Def) < at.Instrs.IndexOf(def)))
+                    stepped = Stepped(td[0].Def);
+                if (stepped is not (VReg from, long by) || from != i || by == 0 || Math.Abs(by) > MostStep) return null;
+                step = by;
+            }
+            if (starts.Count == 0 || step is not long d) return null;
+            return (d > 0 ? starts.Min() : starts.Max(), d);
+        }
+
+        // `r + k` or `r - k` for a constant k: r and the signed step.
+        private static (VReg From, long By)? Stepped(Instr i)
+        {
+            if (i.Operands.Count != 2) return null;
+            if (i.Op == Opcode.Add && i.Operands[0] is RegOperand { Reg: var r } && i.Operands[1] is ImmOperand { Value: var k }) return (r, k);
+            if (i.Op == Opcode.Add && i.Operands[1] is RegOperand { Reg: var r2 } && i.Operands[0] is ImmOperand { Value: var k2 }) return (r2, k2);
+            if (i.Op == Opcode.Sub && i.Operands[0] is RegOperand { Reg: var r3 } && i.Operands[1] is ImmOperand { Value: var k3 }) return (r3, -k3);
+            return null;
+        }
+
+        // `a op b` as `b op' a`; Copy for what is no comparison.
+        private static Opcode Mirror(Opcode op) => op switch
+        {
+            Opcode.LtS => Opcode.GtS, Opcode.LeS => Opcode.GeS, Opcode.GtS => Opcode.LtS, Opcode.GeS => Opcode.LeS,
+            Opcode.LtU => Opcode.GtU, Opcode.LeU => Opcode.GeU, Opcode.GtU => Opcode.LtU, Opcode.GeU => Opcode.LeU,
+            Opcode.Eq or Opcode.Ne => op,
+            _ => Opcode.Copy,
+        };
+
+        // `!(a op b)` as `a op' b`.
+        private static Opcode Negate(Opcode op) => op switch
+        {
+            Opcode.LtS => Opcode.GeS, Opcode.LeS => Opcode.GtS, Opcode.GtS => Opcode.LeS, Opcode.GeS => Opcode.LtS,
+            Opcode.LtU => Opcode.GeU, Opcode.LeU => Opcode.GtU, Opcode.GtU => Opcode.LeU, Opcode.GeU => Opcode.LtU,
+            Opcode.Eq => Opcode.Ne, Opcode.Ne => Opcode.Eq,
+            _ => Opcode.Copy,
+        };
 
         // Every node reached from the marked ones along the edges given.
         private static bool[] Spread(bool[] marked, List<int>?[] edges)

@@ -25,10 +25,12 @@ public sealed class RegionHints
     public const string SectionName = ".corsac.regions";
     public const int MaximumBytes = 64 * 1024 * 1024;
     private const uint Magic = 0x47455243; // "CREG"
-    private const int Version = 4;
+    private const int Version = 5;
     private static readonly UTF8Encoding Utf8 = new(false, true);
 
     public List<RegionFunction> Functions { get; } = new();
+    /// <summary>The bytes of the unit's target's word, which the arena's blocks are laid out by (RegionLayout).</summary>
+    public int WordSize { get; set; } = 4;
     /// <summary>Every symbol the unit names as a value, in code or in data: the functions among them may be called by anything.</summary>
     public SortedSet<string> AddressTaken { get; } = new(StringComparer.Ordinal);
 
@@ -71,6 +73,7 @@ public sealed class RegionHints
             writer.Write((byte)bits);
         }
         writer.Write(Magic); writer.Write(Version); writer.Write(0); // length, filled below
+        Var(WordSize);
         Var(names.Count);
         foreach (string name in names)
         {
@@ -115,6 +118,11 @@ public sealed class RegionHints
                 Ints(loop.Sites); Ints(loop.Calls); Ints(loop.AlwaysSites); Ints(loop.AlwaysCalls);
                 Ints(loop.Live); Ints(loop.Invariant); Ints(loop.KeptSlots);
             }
+            // How often each site and call runs in one call of the function.
+            Var(function.Repeats.Length);
+            foreach (RegionRepeat repeat in function.Repeats) { Var(repeat.Header); Var(repeat.Parent); Var(repeat.Trip); }
+            for (int s = 0; s < function.Sites.Length; s++) { Var(function.BytesOf(s)); Var(function.LoopOfSite(s)); }
+            for (int k = 0; k < function.Calls.Count; k++) Var(function.LoopOfCall(k));
         }
         writer.Flush();
         byte[] result = stream.ToArray();
@@ -156,6 +164,8 @@ public sealed class RegionHints
                 if (count < 0 || count > bytes.Length - stream.Position) throw new ElfFormatException("Invalid region hint count");
                 return count;
             }
+            int wordSize = Int();
+            if (wordSize is not (4 or 8)) throw new ElfFormatException("Invalid region hint word size");
             string[] names = new string[Count()];
             for (int i = 0; i < names.Length; i++)
             {
@@ -172,7 +182,7 @@ public sealed class RegionHints
                 if (at < 0 || at >= names.Length) throw new ElfFormatException("Invalid region hint name index");
                 return names[at];
             }
-            RegionHints hints = new();
+            RegionHints hints = new() { WordSize = wordSize };
             for (int i = Count(); i > 0; i--) hints.AddressTaken.Add(Name());
             for (int i = Count(); i > 0; i--)
             {
@@ -233,6 +243,23 @@ public sealed class RegionHints
                     function.Loops.Add(new RegionLoopShape(header, Ints(sites.Length), Ints(function.Calls.Count), Ints(sites.Length), Ints(function.Calls.Count),
                         Ints(nodes), Ints(nodes), Ints(slots)));
                 }
+                // Each loop's parent before it; each site and call in one of them, or none, or past knowing.
+                RegionRepeat[] repeats = new RegionRepeat[Count()];
+                for (int k = 0; k < repeats.Length; k++)
+                {
+                    RegionRepeat r = new(Int(), Int(), Var());
+                    if (r.Header < 0 || r.Parent < -1 || r.Parent >= k || r.Trip < 0) throw new ElfFormatException("Invalid region hint repeat");
+                    repeats[k] = r;
+                }
+                bool InLoop(int at) => at >= RegionFunction.Throwing && at < repeats.Length;
+                long[] siteBytes = new long[sites.Length];
+                int[] siteLoops = new int[sites.Length];
+                for (int s = 0; s < sites.Length; s++)
+                    if ((siteBytes[s] = Var()) < 0 || !InLoop(siteLoops[s] = Int())) throw new ElfFormatException("Invalid region hint repeat");
+                int[] callLoops = new int[function.Calls.Count];
+                for (int k = 0; k < callLoops.Length; k++)
+                    if (!InLoop(callLoops[k] = Int())) throw new ElfFormatException("Invalid region hint repeat");
+                function.Repeats = repeats; function.SiteBytes = siteBytes; function.SiteLoops = siteLoops; function.CallLoops = callLoops;
                 hints.Functions.Add(function);
             }
             if (stream.Position != bytes.Length) throw new ElfFormatException("Trailing region hint data");
@@ -279,6 +306,47 @@ public sealed class RegionFunction
     public int[] MustSites { get; set; } = Array.Empty<int>();
     /// <summary>Its loops that may be given a region: none in an async or iterator body, a type's initialiser, or a function with a landing pad or a label's address.</summary>
     public List<RegionLoopShape> Loops { get; } = new();
+
+    /// <summary>
+    /// HOW OFTEN EACH SITE AND CALL RUNS in one call of the function
+    /// (RegionSummary.Repeats): its natural loops, each with the loop it is
+    /// in (an earlier one, -1 for none) and the most laps it makes each time
+    /// it is entered (0: not known); and per site and per call, the innermost
+    /// loop it is in, -1 for none, Unbounded where nothing bounds how often
+    /// it runs (a cycle that is no natural loop, a handler's way back), and
+    /// Throwing where it runs only on the way to a throw.
+    /// </summary>
+    public RegionRepeat[] Repeats { get; set; } = Array.Empty<RegionRepeat>();
+    /// <summary>Per site: the bytes its block takes in the arena (RegionLayout.Block), 0 when its size is not a constant.</summary>
+    public long[] SiteBytes { get; set; } = Array.Empty<long>();
+    public int[] SiteLoops { get; set; } = Array.Empty<int>();
+    public int[] CallLoops { get; set; } = Array.Empty<int>();
+    public const int Unbounded = -2, Throwing = -3;
+    public long BytesOf(int site) => site < SiteBytes.Length ? SiteBytes[site] : 0;
+    public int LoopOfSite(int site) => site < SiteLoops.Length ? SiteLoops[site] : Unbounded;
+    public int LoopOfCall(int call) => call < CallLoops.Length ? CallLoops[call] : Unbounded;
+}
+
+/// <summary>A natural loop of a function, for how often what is in it runs: its header's place, the loop it is in (-1: none), the most laps it makes a time it is entered (0: not known).</summary>
+public readonly record struct RegionRepeat(int Header, int Parent, long Trip);
+
+/// <summary>
+/// THE ARENA'S BLOCKS, as Gc lays them out ("regions"): a header of two
+/// words and a footer of one round every block, its size rounded to eight
+/// and never below four words; a region's record is a block of two words.
+/// What the link sizes a region by (RegionSolver.Sizes) and the runtime
+/// lays it down by must agree, or a region sized too small grows as an
+/// unsized one does.
+/// </summary>
+public static class RegionLayout
+{
+    public static long Block(long payload, int wordSize)
+    {
+        long need = (payload + 3L * wordSize + 7) & -8L;
+        return Math.Max(need, 4L * wordSize);
+    }
+
+    public static long Record(int wordSize) => Block(2L * wordSize, wordSize);
 }
 
 /// <summary>
@@ -370,13 +438,17 @@ public sealed record RegionCall(string? Callee, int Dest, int[] Arguments);
 /// open a region on entry, the allocation sites -- by function and ordinal
 /// -- to make in the innermost open region (Runtime.AllocRegion), and the
 /// loops -- by function and their header's place in its blocks -- whose laps
-/// each get a region (Runtime.RegionLoop).
+/// each get a region (Runtime.RegionLoop). With a boundary or a loop, where
+/// the link proved it, the most bytes its region holds in one call or one
+/// lap (RegionSolver.Sizes); one not named is not known.
 /// </summary>
 public sealed class RegionFacts
 {
     public SortedSet<string> Boundaries { get; } = new(StringComparer.Ordinal);
     public SortedSet<(string Function, int Ordinal)> Sites { get; } = new(SiteOrder.Instance);
     public SortedSet<(string Function, int Header)> Loops { get; } = new(SiteOrder.Instance);
+    public SortedDictionary<string, long> BoundaryBytes { get; } = new(StringComparer.Ordinal);
+    public SortedDictionary<(string Function, int Header), long> LoopBytes { get; } = new(SiteOrder.Instance);
     public bool IsEmpty => Boundaries.Count == 0 && Sites.Count == 0 && Loops.Count == 0;
 
     public sealed class SiteOrder : IComparer<(string Function, int Ordinal)>
