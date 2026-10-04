@@ -41,10 +41,34 @@ public static class VirtualTargets
     /// a call declared on one counts every box and the string among the
     /// objects it can run on, and what each holds at the slot among its
     /// targets. More than the box answers is only ever more targets.
+    /// ONLY THOSE FOUR: any interface at all made every one of a program's
+    /// interface calls one a box might answer, and a box fills no slot of
+    /// the runtime's own IOwnsElements -- "no descriptor fills the slot", the
+    /// call left unresolved, and with it every method of every live type
+    /// reached, every getter's address taken: a program of arrays and
+    /// statics needed a collector again (762, 764, 767, 768).
     /// </summary>
     public static bool MayAnswer(string descriptor, string declaring)
-        => declaring.StartsWith("i_", StringComparison.Ordinal)
-           && (descriptor.StartsWith("b_", StringComparison.Ordinal) || descriptor == "q_string");
+        => (descriptor.StartsWith("b_", StringComparison.Ordinal) || descriptor == "q_string") && IsBoxedFace(declaring);
+
+    /// <summary>
+    /// Whether an interface's descriptor is one of the system interfaces a box
+    /// or a string answers (BoxedFaces.Of): IComparable or IFormattable, or
+    /// IComparable&lt;X&gt; or IEquatable&lt;X&gt; of any X -- by its name, in
+    /// the global namespace or System's, as Lowering keys it ("i_IComparable",
+    /// "i_IEquatable$0024int", "i_System$002eIFormattable"). An X no box
+    /// answers for is only more targets.
+    /// </summary>
+    public static bool IsBoxedFace(string declaring)
+    {
+        if (!declaring.StartsWith("i_", StringComparison.Ordinal)) return false;
+        string name = declaring[2..];
+        const string system = "System$002e";
+        if (name.StartsWith(system, StringComparison.Ordinal)) name = name[system.Length..];
+        int cut = name.IndexOf('$');
+        string bare = cut < 0 ? name : name[..cut];
+        return cut < 0 ? bare is "IComparable" or "IFormattable" : bare is "IComparable" or "IEquatable";
+    }
 
     /// <summary>
     /// Each of <paramref name="wanted"/> (virtual symbols) that can be
@@ -289,7 +313,7 @@ public static class VirtualTargets
             IEnumerable<int> reaching = everyType ? Enumerable.Range(0, _descriptors.Count)
                 : _derived.TryGetValue(declaring, out List<int>? derived) ? derived : Enumerable.Empty<int>();
             // And every box and the string, for an interface (MayAnswer).
-            if (!everyType && declaring.StartsWith("i_", StringComparison.Ordinal))
+            if (!everyType && IsBoxedFace(declaring))
                 reaching = reaching.Union(Enumerable.Range(0, _descriptors.Count).Where(d => MayAnswer(_descriptors[d].Name, declaring)));
             HashSet<string> targets = new(StringComparer.Ordinal);
             bool any = everyType, resolved = true;
