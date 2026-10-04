@@ -12250,6 +12250,7 @@ public sealed partial class Binder
             case CastExpr cast:
             {
                 Type operand = CheckExpr(cast.Operand);
+                if (cast.CanonSelf is { } castSelf) CheckExpr(castSelf);
                 Type wanted = Resolve(cast.Type, _thisType);
 
                 // AN ARRAY OR A STRING CAST TO A SPAN IS MADE ONE, as its

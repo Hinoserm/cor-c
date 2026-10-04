@@ -1,0 +1,118 @@
+// test: canon_generic_interface_tests
+// expect-exit: 0
+// expect-output:
+// copied list 3 I3
+// copied set 2
+// copied sequence 4
+// added 9
+// probe list: collection 3, list 3
+// probe set: collection 2, no list
+// probe sequence: not a collection, no list
+// holder list: collection 3, list 3
+// holder set: collection 2, no list
+// holder sequence: not a collection, no list
+// holder other: not a collection, no list
+// cast count 3
+// bad cast: InvalidCastException
+// other cast: InvalidCastException
+//
+// The one copy of a generic class every reference instantiation shares
+// names an interface over its T as the __canon instantiation, and no
+// object lists that: a List of Item implements ICollection of Item. So a
+// test, an `as` or a cast there -- List's copy constructor and AddRange
+// asking `source is ICollection<T>`, Holder below -- reads the
+// instantiation's own descriptor from the object's type context. The tests
+// must come out as .NET's do: true for a collection of the same T, false
+// for one of another T (Holder of Other handed a List of Item), and a cast
+// that must fail throws.
+
+using System;
+using System.Collections.Generic;
+
+class Item
+{
+    public readonly int N;
+    public Item(int n) { N = n; }
+    public override string ToString() => "I" + N;
+}
+
+class Other { }
+
+class Holder<T>
+{
+    public object? Held;
+
+    public string Ask()
+    {
+        string a = Held is ICollection<T> c ? "collection " + c.Count : "not a collection";
+        IReadOnlyList<T>? list = Held as IReadOnlyList<T>;
+        string b = list is null ? "no list" : "list " + list.Count;
+        return a + ", " + b;
+    }
+
+    public int CastCount() => ((ICollection<T>)Held!).Count;
+
+    public int ListCount() => ((IList<T>)Held!).Count;
+}
+
+static class P
+{
+    static IEnumerable<Item> Gen()
+    {
+        for (int i = 1; i <= 4; i++) yield return new Item(10 + i);
+    }
+
+    static string Probe<T>(IEnumerable<T> source)
+    {
+        string a = source is ICollection<T> c ? "collection " + c.Count : "not a collection";
+        IReadOnlyList<T>? list = source as IReadOnlyList<T>;
+        string b = list is null ? "no list" : "list " + list.Count;
+        return a + ", " + b;
+    }
+
+    static int Main()
+    {
+        List<Item> list = new() { new Item(1), new Item(2), new Item(3) };
+        HashSet<Item> set = new() { new Item(4), new Item(5) };
+
+        List<Item> fromList = new(list);
+        Console.WriteLine("copied list " + fromList.Count + " " + fromList[2]);
+        List<Item> fromSet = new(set);
+        Console.WriteLine("copied set " + fromSet.Count);
+        List<Item> fromSequence = new(Gen());
+        Console.WriteLine("copied sequence " + fromSequence.Count);
+        List<Item> added = new();
+        added.AddRange(list);
+        added.AddRange(set);
+        added.AddRange(Gen());
+        Console.WriteLine("added " + added.Count);
+
+        Console.WriteLine("probe list: " + Probe<Item>(list));
+        Console.WriteLine("probe set: " + Probe<Item>(set));
+        Console.WriteLine("probe sequence: " + Probe<Item>(Gen()));
+
+        Console.WriteLine("holder list: " + new Holder<Item> { Held = list }.Ask());
+        Console.WriteLine("holder set: " + new Holder<Item> { Held = set }.Ask());
+        Console.WriteLine("holder sequence: " + new Holder<Item> { Held = Gen() }.Ask());
+        Console.WriteLine("holder other: " + new Holder<Other> { Held = list }.Ask());
+
+        Console.WriteLine("cast count " + new Holder<Item> { Held = list }.CastCount());
+        try
+        {
+            Console.WriteLine("bad cast " + new Holder<Item> { Held = set }.ListCount());
+        }
+        catch (InvalidCastException)
+        {
+            Console.WriteLine("bad cast: InvalidCastException");
+        }
+        try
+        {
+            Console.WriteLine("other cast " + new Holder<Other> { Held = list }.CastCount());
+        }
+        catch (InvalidCastException)
+        {
+            Console.WriteLine("other cast: InvalidCastException");
+        }
+        return 0;
+    }
+}

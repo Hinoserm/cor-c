@@ -772,7 +772,8 @@ public sealed partial class Lowering
                 if ((from.IsReference || from.Prim == Prim.Any) && to.IsReference && to.Symbol is TypeSymbol wanted
                     && !(from.Symbol is not null && from.Symbol.DerivesFrom(wanted)))
                 {
-                    return CheckedCast(cast, v, wanted);
+                    // In a shared copy, to what the type is for the object at hand.
+                    return cast.CanonSlot >= 0 ? CanonCheckedCast(cast, v, wanted) : CheckedCast(cast, v, wanted);
                 }
 
                 // `(byte[])o` ASKS, as any downcast does: C# throws
@@ -889,7 +890,9 @@ public sealed partial class Lowering
             case AsExpr { CanonSlot: >= 0 } canonAs when HeldByReference(_b.TypeOf(canonAs.Operand)):
             {
                 VReg v = Eval(canonAs.Operand);
-                VReg test = DescribedTest(v, CanonEntry(canonAs));
+                VReg test = canonAs.Type.Args.Count > 0
+                    ? CanonTest(canonAs, v, _b.TypeOf(canonAs).Symbol)
+                    : DescribedTest(v, CanonEntry(canonAs));
                 VReg result = _f.NewReg(IrTypes.Word, "ascanon");
                 Block yes = _f.NewBlock("ascyes");
                 Block end = _f.NewBlock("ascend");
@@ -2101,6 +2104,71 @@ public sealed partial class Lowering
         return result;
     }
 
+    /// <summary>
+    /// A CONSTRUCTED TYPE OVER A SHARED COPY'S PARAMETERS, asked of an object
+    /// (Monomorphiser.CanonTested): the descriptor its type context holds for
+    /// that type -- ICollection of KernelModule, for a List of KernelModule --
+    /// or, where it holds none, the type as the shared copy names it, over
+    /// __canon. Either answers: an object the shared copy's own code made,
+    /// of no known argument, lists the __canon form, as it always did.
+    /// </summary>
+    private VReg CanonTest<T>(T at, VReg obj, TypeSymbol? written) where T : Expr, ICanonSlot
+    {
+        VReg entry = CanonTypeEntry(at);
+        VReg result = _f.NewReg(IrType.I32, "iscanon");
+        Block described = _f.NewBlock("iscdesc");
+        Block named = _f.NewBlock("iscnamed");
+        Block end = _f.NewBlock("iscend");
+        _e.CopyTo(result, Imm(0, IrType.I32));
+        _e.Branch(entry, described, named);
+        _e.SetBlock(described);
+        VReg found = DescribedTest(obj, entry);
+        _e.CopyTo(result, R(found));
+        _e.Branch(found, end, named);
+        _e.SetBlock(named);
+        if (written is not null) _e.CopyTo(result, R(TypeTest(obj, written)));
+        _e.Jump(end);
+        _e.SetBlock(end);
+        return result;
+    }
+
+    /// <summary>The entry the type context holds for a constructed type (CanonTest), 0 where its table has none.</summary>
+    private VReg CanonTypeEntry<T>(T at) where T : Expr, ICanonSlot
+    {
+        int w = _t.WordSize;
+        TypeSymbol self = _b.TypeOf(at.CanonSelf!).Symbol ?? throw new InvalidOperationException("a shared copy's `this` has no class");
+        VReg obj = Eval(at.CanonSelf!);
+        VReg vt = _e.Load(IrTypes.Word, obj, 0);
+        VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes);
+        VReg table = _e.Load(IrTypes.Word, context, (long)self.Depth * w);
+        VReg count = _e.Load(IrTypes.Word, table, 0);
+        VReg result = _f.NewReg(IrTypes.Word, "canonty");
+        Block read = _f.NewBlock("canontyread");
+        Block end = _f.NewBlock("canontyend");
+        _e.CopyTo(result, Imm(0, IrTypes.Word));
+        _e.Branch(_e.Binary(Opcode.LtU, Imm(at.CanonSlot, IrTypes.Word), R(count), IrType.I32), read, end);
+        _e.SetBlock(read);
+        _e.CopyTo(result, R(_e.Load(IrTypes.Word, table, (long)(at.CanonSlot + 1) * w)));
+        _e.Jump(end);
+        _e.SetBlock(end);
+        return result;
+    }
+
+    /// <summary>A shared copy's cast to a constructed type over its parameters: null passes, anything else must be that type (CanonTest).</summary>
+    private VReg CanonCheckedCast(CastExpr at, VReg obj, TypeSymbol want)
+    {
+        Block check = _f.NewBlock("ccastck");
+        Block ok = _f.NewBlock("ccastok");
+        Block bad = _f.NewBlock("ccastbad");
+        _e.Branch(obj, check, ok);
+        _e.SetBlock(check);
+        _e.Branch(CanonTest(at, obj, want), ok, bad);
+        _e.SetBlock(bad);
+        CastFailed(obj, new Type { Prim = Prim.Void, Symbol = want });
+        _e.SetBlock(ok);
+        return obj;
+    }
+
     /// <summary>Whether a value is an object's address: a reference type, or object -- which a shared copy's T is.</summary>
     private static bool HeldByReference(Type t) => t.IsReference || t.Prim == Prim.Any && t.Symbol is null && !t.IsNullableValue;
 
@@ -2126,6 +2194,20 @@ public sealed partial class Lowering
 
     private VReg EmitIs(IsExpr isx)
     {
+        // `x is ICollection<T>` IN A SHARED COPY: of what that type is for
+        // the object at hand (CanonTest), bound as the type it is written.
+        if (isx.CanonSlot >= 0 && isx.Type.Args.Count > 0 && HeldByReference(_b.TypeOf(isx.Operand)))
+        {
+            TypeSymbol? written = _b.TestedTypes.TryGetValue(isx, out TypeSymbol? tested0) ? tested0
+                                : _b.Types.TryGetValue(isx.Type.Name, out TypeSymbol? named0) ? named0 : null;
+            VReg subject = Eval(isx.Operand);
+            VReg found = CanonTest(isx, subject, written);
+            if (_b.PatternSlot.TryGetValue(isx, out int boundTo))
+            {
+                BindPattern(isx, boundTo, written is null ? Type.Any : new Type { Prim = Prim.Void, Symbol = written }, subject);
+            }
+            return found;
+        }
         // `x is T` IN A SHARED COPY: of what T is for the object at hand.
         if (isx.CanonSlot >= 0 && HeldByReference(_b.TypeOf(isx.Operand)))
         {
