@@ -53,6 +53,13 @@ public static class RegionSummary
         private readonly Dictionary<FrameSlot, int> _slots = new();
         private readonly Dictionary<FrameSlot, int> _slotNodes = new();
         private int _unknownNode = -1;
+        // Each symbol whose address the code takes: its node, and its place
+        // among the function's Symbols. A string literal, a descriptor, a
+        // function is a constant no region need follow; a static's storage is
+        // the unknown object. Which is which the link says (RegionConstants),
+        // holding every unit's data: the unit does not know another's.
+        private readonly Dictionary<string, int> _symbolNodes = new(StringComparer.Ordinal);
+        private readonly List<string> _symbols = new();
         private readonly List<RegionSite> _sites = new();
         private readonly List<RegionConstraint> _constraints = new();
         private readonly List<RegionCall> _calls = new();
@@ -95,13 +102,22 @@ public static class RegionSummary
         private int Value(Operand o)
         {
             if (o is RegOperand { Reg: var r }) return Reg(r);
-            if (o is SymOperand) return Unknown();
+            if (o is SymOperand { Name: var symbol }) return Symbol(symbol);
             if (o is not SlotOperand { Slot: var slot }) return -1;
             if (_slotNodes.TryGetValue(slot, out int known)) return known;
             if (!_slots.TryGetValue(slot, out int index)) _slots[slot] = index = _slots.Count;
             int node = _next++;
             _constraints.Add(new(RegionConstraintKind.Slot, node, index, 0));
             return _slotNodes[slot] = node;
+        }
+
+        private int Symbol(string name)
+        {
+            if (_symbolNodes.TryGetValue(name, out int known)) return known;
+            int node = _next++;
+            _constraints.Add(new(RegionConstraintKind.Symbol, node, _symbols.Count, 0));
+            _symbols.Add(name);
+            return _symbolNodes[name] = node;
         }
 
         /// <summary>An address operand's node: a constant address is somewhere unknown.</summary>
@@ -408,6 +424,7 @@ public static class RegionSummary
                     case RegionConstraintKind.Site:
                     case RegionConstraintKind.Slot:
                     case RegionConstraintKind.Unknown:
+                    case RegionConstraintKind.Symbol:
                         source[c.A] = true; incoming[c.A] += 2;
                         break;
                     case RegionConstraintKind.Copy:
@@ -487,7 +504,7 @@ public static class RegionSummary
             List<Instr> must = RegionPointsTo.MustRunCalls(_f);
             RegionFunction result = new(_f.Name, _f.Exported, _f.Async is null && !_f.Name.Contains("StaticInit", StringComparison.Ordinal) && !_main,
                 _params > 0 && _f.Params[0].Name == "this", _params, next, _slots.Count, _sites.ToArray())
-            { Main = _main, NumberParams = Sorted(Enumerable.Range(0, _params).Where(k => _f.Params[k].Number)) };
+            { Main = _main, NumberParams = Sorted(Enumerable.Range(0, _params).Where(k => _f.Params[k].Number)), Symbols = KeptSymbols(kept) };
             result.Constraints.AddRange(kept);
             result.Calls.AddRange(calls);
             result.MustCalls = CallsAmong(must);
@@ -721,6 +738,21 @@ public static class RegionSummary
             Opcode.Eq => Opcode.Ne, Opcode.Ne => Opcode.Eq,
             _ => Opcode.Copy,
         };
+
+        // The symbols the kept constraints name, renumbered in their order.
+        private string[] KeptSymbols(List<RegionConstraint> kept)
+        {
+            List<string> names = new();
+            Dictionary<int, int> renumber = new();
+            for (int k = 0; k < kept.Count; k++)
+            {
+                RegionConstraint c = kept[k];
+                if (c.Kind != RegionConstraintKind.Symbol) continue;
+                if (!renumber.TryGetValue(c.B, out int at)) { at = names.Count; names.Add(_symbols[c.B]); renumber[c.B] = at; }
+                kept[k] = new RegionConstraint(c.Kind, c.A, at, c.C);
+            }
+            return names.ToArray();
+        }
 
         // Every node reached from the marked ones along the edges given.
         private static bool[] Spread(bool[] marked, List<int>?[] edges)

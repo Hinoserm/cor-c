@@ -1,0 +1,2517 @@
+// The other unit of 1299_region_literal_stored_is_no_escape_across_units:
+// a record and a ring of 310 functions that call each other round, each
+// storing a string literal, the answer of a type test and a type into the
+// record it is handed. A cycle this large is solved by unification
+// (RegionEscape.Unified), where a symbol's address taken for the unknown
+// object joined every field it was stored into to the global class.
+using System;
+using System.Runtime.CompilerServices;
+
+public sealed class Leaf
+{
+    public readonly int Value;
+    public Leaf(int value) { Value = value; }
+}
+
+public sealed class Record
+{
+    public string Name = "";
+    public string Kind = "";
+    public Type? Tag;
+    public object? Child;
+}
+
+public static class Ring
+{
+    // A boundary: the record and its child are made here and dead at the
+    // return, whatever the ring stored into the record.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int Build(int seed)
+    {
+        Record r = new();
+        r.Child = new Leaf(seed);
+        F0(r, 320);
+        return r.Name.Length + r.Kind.Length + ((Leaf)r.Child).Value + (r.Tag == typeof(Record) ? 0 : 100);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F0(Record r, int depth)
+    {
+        r.Name = "n0";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F1(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F1(Record r, int depth)
+    {
+        r.Name = "n1";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F2(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F2(Record r, int depth)
+    {
+        r.Name = "n2";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F3(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F3(Record r, int depth)
+    {
+        r.Name = "n3";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F4(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F4(Record r, int depth)
+    {
+        r.Name = "n4";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F5(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F5(Record r, int depth)
+    {
+        r.Name = "n5";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F6(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F6(Record r, int depth)
+    {
+        r.Name = "n6";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F7(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F7(Record r, int depth)
+    {
+        r.Name = "n7";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F8(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F8(Record r, int depth)
+    {
+        r.Name = "n8";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F9(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F9(Record r, int depth)
+    {
+        r.Name = "n9";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F10(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F10(Record r, int depth)
+    {
+        r.Name = "n10";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F11(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F11(Record r, int depth)
+    {
+        r.Name = "n11";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F12(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F12(Record r, int depth)
+    {
+        r.Name = "n12";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F13(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F13(Record r, int depth)
+    {
+        r.Name = "n13";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F14(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F14(Record r, int depth)
+    {
+        r.Name = "n14";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F15(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F15(Record r, int depth)
+    {
+        r.Name = "n15";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F16(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F16(Record r, int depth)
+    {
+        r.Name = "n16";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F17(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F17(Record r, int depth)
+    {
+        r.Name = "n17";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F18(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F18(Record r, int depth)
+    {
+        r.Name = "n18";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F19(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F19(Record r, int depth)
+    {
+        r.Name = "n19";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F20(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F20(Record r, int depth)
+    {
+        r.Name = "n20";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F21(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F21(Record r, int depth)
+    {
+        r.Name = "n21";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F22(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F22(Record r, int depth)
+    {
+        r.Name = "n22";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F23(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F23(Record r, int depth)
+    {
+        r.Name = "n23";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F24(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F24(Record r, int depth)
+    {
+        r.Name = "n24";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F25(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F25(Record r, int depth)
+    {
+        r.Name = "n25";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F26(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F26(Record r, int depth)
+    {
+        r.Name = "n26";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F27(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F27(Record r, int depth)
+    {
+        r.Name = "n27";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F28(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F28(Record r, int depth)
+    {
+        r.Name = "n28";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F29(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F29(Record r, int depth)
+    {
+        r.Name = "n29";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F30(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F30(Record r, int depth)
+    {
+        r.Name = "n30";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F31(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F31(Record r, int depth)
+    {
+        r.Name = "n31";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F32(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F32(Record r, int depth)
+    {
+        r.Name = "n32";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F33(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F33(Record r, int depth)
+    {
+        r.Name = "n33";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F34(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F34(Record r, int depth)
+    {
+        r.Name = "n34";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F35(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F35(Record r, int depth)
+    {
+        r.Name = "n35";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F36(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F36(Record r, int depth)
+    {
+        r.Name = "n36";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F37(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F37(Record r, int depth)
+    {
+        r.Name = "n37";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F38(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F38(Record r, int depth)
+    {
+        r.Name = "n38";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F39(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F39(Record r, int depth)
+    {
+        r.Name = "n39";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F40(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F40(Record r, int depth)
+    {
+        r.Name = "n40";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F41(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F41(Record r, int depth)
+    {
+        r.Name = "n41";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F42(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F42(Record r, int depth)
+    {
+        r.Name = "n42";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F43(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F43(Record r, int depth)
+    {
+        r.Name = "n43";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F44(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F44(Record r, int depth)
+    {
+        r.Name = "n44";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F45(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F45(Record r, int depth)
+    {
+        r.Name = "n45";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F46(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F46(Record r, int depth)
+    {
+        r.Name = "n46";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F47(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F47(Record r, int depth)
+    {
+        r.Name = "n47";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F48(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F48(Record r, int depth)
+    {
+        r.Name = "n48";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F49(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F49(Record r, int depth)
+    {
+        r.Name = "n49";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F50(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F50(Record r, int depth)
+    {
+        r.Name = "n50";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F51(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F51(Record r, int depth)
+    {
+        r.Name = "n51";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F52(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F52(Record r, int depth)
+    {
+        r.Name = "n52";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F53(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F53(Record r, int depth)
+    {
+        r.Name = "n53";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F54(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F54(Record r, int depth)
+    {
+        r.Name = "n54";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F55(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F55(Record r, int depth)
+    {
+        r.Name = "n55";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F56(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F56(Record r, int depth)
+    {
+        r.Name = "n56";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F57(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F57(Record r, int depth)
+    {
+        r.Name = "n57";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F58(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F58(Record r, int depth)
+    {
+        r.Name = "n58";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F59(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F59(Record r, int depth)
+    {
+        r.Name = "n59";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F60(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F60(Record r, int depth)
+    {
+        r.Name = "n60";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F61(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F61(Record r, int depth)
+    {
+        r.Name = "n61";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F62(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F62(Record r, int depth)
+    {
+        r.Name = "n62";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F63(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F63(Record r, int depth)
+    {
+        r.Name = "n63";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F64(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F64(Record r, int depth)
+    {
+        r.Name = "n64";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F65(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F65(Record r, int depth)
+    {
+        r.Name = "n65";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F66(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F66(Record r, int depth)
+    {
+        r.Name = "n66";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F67(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F67(Record r, int depth)
+    {
+        r.Name = "n67";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F68(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F68(Record r, int depth)
+    {
+        r.Name = "n68";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F69(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F69(Record r, int depth)
+    {
+        r.Name = "n69";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F70(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F70(Record r, int depth)
+    {
+        r.Name = "n70";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F71(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F71(Record r, int depth)
+    {
+        r.Name = "n71";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F72(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F72(Record r, int depth)
+    {
+        r.Name = "n72";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F73(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F73(Record r, int depth)
+    {
+        r.Name = "n73";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F74(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F74(Record r, int depth)
+    {
+        r.Name = "n74";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F75(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F75(Record r, int depth)
+    {
+        r.Name = "n75";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F76(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F76(Record r, int depth)
+    {
+        r.Name = "n76";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F77(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F77(Record r, int depth)
+    {
+        r.Name = "n77";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F78(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F78(Record r, int depth)
+    {
+        r.Name = "n78";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F79(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F79(Record r, int depth)
+    {
+        r.Name = "n79";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F80(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F80(Record r, int depth)
+    {
+        r.Name = "n80";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F81(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F81(Record r, int depth)
+    {
+        r.Name = "n81";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F82(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F82(Record r, int depth)
+    {
+        r.Name = "n82";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F83(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F83(Record r, int depth)
+    {
+        r.Name = "n83";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F84(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F84(Record r, int depth)
+    {
+        r.Name = "n84";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F85(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F85(Record r, int depth)
+    {
+        r.Name = "n85";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F86(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F86(Record r, int depth)
+    {
+        r.Name = "n86";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F87(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F87(Record r, int depth)
+    {
+        r.Name = "n87";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F88(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F88(Record r, int depth)
+    {
+        r.Name = "n88";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F89(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F89(Record r, int depth)
+    {
+        r.Name = "n89";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F90(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F90(Record r, int depth)
+    {
+        r.Name = "n90";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F91(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F91(Record r, int depth)
+    {
+        r.Name = "n91";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F92(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F92(Record r, int depth)
+    {
+        r.Name = "n92";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F93(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F93(Record r, int depth)
+    {
+        r.Name = "n93";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F94(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F94(Record r, int depth)
+    {
+        r.Name = "n94";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F95(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F95(Record r, int depth)
+    {
+        r.Name = "n95";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F96(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F96(Record r, int depth)
+    {
+        r.Name = "n96";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F97(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F97(Record r, int depth)
+    {
+        r.Name = "n97";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F98(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F98(Record r, int depth)
+    {
+        r.Name = "n98";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F99(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F99(Record r, int depth)
+    {
+        r.Name = "n99";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F100(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F100(Record r, int depth)
+    {
+        r.Name = "n100";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F101(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F101(Record r, int depth)
+    {
+        r.Name = "n101";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F102(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F102(Record r, int depth)
+    {
+        r.Name = "n102";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F103(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F103(Record r, int depth)
+    {
+        r.Name = "n103";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F104(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F104(Record r, int depth)
+    {
+        r.Name = "n104";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F105(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F105(Record r, int depth)
+    {
+        r.Name = "n105";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F106(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F106(Record r, int depth)
+    {
+        r.Name = "n106";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F107(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F107(Record r, int depth)
+    {
+        r.Name = "n107";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F108(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F108(Record r, int depth)
+    {
+        r.Name = "n108";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F109(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F109(Record r, int depth)
+    {
+        r.Name = "n109";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F110(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F110(Record r, int depth)
+    {
+        r.Name = "n110";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F111(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F111(Record r, int depth)
+    {
+        r.Name = "n111";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F112(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F112(Record r, int depth)
+    {
+        r.Name = "n112";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F113(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F113(Record r, int depth)
+    {
+        r.Name = "n113";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F114(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F114(Record r, int depth)
+    {
+        r.Name = "n114";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F115(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F115(Record r, int depth)
+    {
+        r.Name = "n115";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F116(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F116(Record r, int depth)
+    {
+        r.Name = "n116";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F117(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F117(Record r, int depth)
+    {
+        r.Name = "n117";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F118(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F118(Record r, int depth)
+    {
+        r.Name = "n118";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F119(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F119(Record r, int depth)
+    {
+        r.Name = "n119";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F120(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F120(Record r, int depth)
+    {
+        r.Name = "n120";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F121(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F121(Record r, int depth)
+    {
+        r.Name = "n121";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F122(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F122(Record r, int depth)
+    {
+        r.Name = "n122";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F123(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F123(Record r, int depth)
+    {
+        r.Name = "n123";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F124(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F124(Record r, int depth)
+    {
+        r.Name = "n124";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F125(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F125(Record r, int depth)
+    {
+        r.Name = "n125";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F126(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F126(Record r, int depth)
+    {
+        r.Name = "n126";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F127(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F127(Record r, int depth)
+    {
+        r.Name = "n127";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F128(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F128(Record r, int depth)
+    {
+        r.Name = "n128";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F129(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F129(Record r, int depth)
+    {
+        r.Name = "n129";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F130(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F130(Record r, int depth)
+    {
+        r.Name = "n130";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F131(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F131(Record r, int depth)
+    {
+        r.Name = "n131";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F132(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F132(Record r, int depth)
+    {
+        r.Name = "n132";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F133(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F133(Record r, int depth)
+    {
+        r.Name = "n133";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F134(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F134(Record r, int depth)
+    {
+        r.Name = "n134";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F135(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F135(Record r, int depth)
+    {
+        r.Name = "n135";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F136(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F136(Record r, int depth)
+    {
+        r.Name = "n136";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F137(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F137(Record r, int depth)
+    {
+        r.Name = "n137";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F138(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F138(Record r, int depth)
+    {
+        r.Name = "n138";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F139(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F139(Record r, int depth)
+    {
+        r.Name = "n139";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F140(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F140(Record r, int depth)
+    {
+        r.Name = "n140";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F141(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F141(Record r, int depth)
+    {
+        r.Name = "n141";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F142(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F142(Record r, int depth)
+    {
+        r.Name = "n142";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F143(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F143(Record r, int depth)
+    {
+        r.Name = "n143";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F144(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F144(Record r, int depth)
+    {
+        r.Name = "n144";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F145(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F145(Record r, int depth)
+    {
+        r.Name = "n145";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F146(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F146(Record r, int depth)
+    {
+        r.Name = "n146";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F147(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F147(Record r, int depth)
+    {
+        r.Name = "n147";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F148(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F148(Record r, int depth)
+    {
+        r.Name = "n148";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F149(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F149(Record r, int depth)
+    {
+        r.Name = "n149";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F150(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F150(Record r, int depth)
+    {
+        r.Name = "n150";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F151(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F151(Record r, int depth)
+    {
+        r.Name = "n151";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F152(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F152(Record r, int depth)
+    {
+        r.Name = "n152";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F153(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F153(Record r, int depth)
+    {
+        r.Name = "n153";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F154(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F154(Record r, int depth)
+    {
+        r.Name = "n154";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F155(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F155(Record r, int depth)
+    {
+        r.Name = "n155";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F156(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F156(Record r, int depth)
+    {
+        r.Name = "n156";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F157(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F157(Record r, int depth)
+    {
+        r.Name = "n157";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F158(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F158(Record r, int depth)
+    {
+        r.Name = "n158";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F159(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F159(Record r, int depth)
+    {
+        r.Name = "n159";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F160(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F160(Record r, int depth)
+    {
+        r.Name = "n160";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F161(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F161(Record r, int depth)
+    {
+        r.Name = "n161";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F162(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F162(Record r, int depth)
+    {
+        r.Name = "n162";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F163(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F163(Record r, int depth)
+    {
+        r.Name = "n163";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F164(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F164(Record r, int depth)
+    {
+        r.Name = "n164";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F165(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F165(Record r, int depth)
+    {
+        r.Name = "n165";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F166(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F166(Record r, int depth)
+    {
+        r.Name = "n166";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F167(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F167(Record r, int depth)
+    {
+        r.Name = "n167";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F168(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F168(Record r, int depth)
+    {
+        r.Name = "n168";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F169(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F169(Record r, int depth)
+    {
+        r.Name = "n169";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F170(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F170(Record r, int depth)
+    {
+        r.Name = "n170";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F171(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F171(Record r, int depth)
+    {
+        r.Name = "n171";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F172(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F172(Record r, int depth)
+    {
+        r.Name = "n172";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F173(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F173(Record r, int depth)
+    {
+        r.Name = "n173";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F174(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F174(Record r, int depth)
+    {
+        r.Name = "n174";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F175(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F175(Record r, int depth)
+    {
+        r.Name = "n175";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F176(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F176(Record r, int depth)
+    {
+        r.Name = "n176";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F177(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F177(Record r, int depth)
+    {
+        r.Name = "n177";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F178(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F178(Record r, int depth)
+    {
+        r.Name = "n178";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F179(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F179(Record r, int depth)
+    {
+        r.Name = "n179";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F180(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F180(Record r, int depth)
+    {
+        r.Name = "n180";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F181(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F181(Record r, int depth)
+    {
+        r.Name = "n181";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F182(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F182(Record r, int depth)
+    {
+        r.Name = "n182";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F183(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F183(Record r, int depth)
+    {
+        r.Name = "n183";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F184(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F184(Record r, int depth)
+    {
+        r.Name = "n184";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F185(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F185(Record r, int depth)
+    {
+        r.Name = "n185";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F186(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F186(Record r, int depth)
+    {
+        r.Name = "n186";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F187(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F187(Record r, int depth)
+    {
+        r.Name = "n187";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F188(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F188(Record r, int depth)
+    {
+        r.Name = "n188";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F189(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F189(Record r, int depth)
+    {
+        r.Name = "n189";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F190(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F190(Record r, int depth)
+    {
+        r.Name = "n190";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F191(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F191(Record r, int depth)
+    {
+        r.Name = "n191";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F192(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F192(Record r, int depth)
+    {
+        r.Name = "n192";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F193(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F193(Record r, int depth)
+    {
+        r.Name = "n193";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F194(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F194(Record r, int depth)
+    {
+        r.Name = "n194";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F195(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F195(Record r, int depth)
+    {
+        r.Name = "n195";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F196(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F196(Record r, int depth)
+    {
+        r.Name = "n196";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F197(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F197(Record r, int depth)
+    {
+        r.Name = "n197";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F198(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F198(Record r, int depth)
+    {
+        r.Name = "n198";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F199(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F199(Record r, int depth)
+    {
+        r.Name = "n199";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F200(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F200(Record r, int depth)
+    {
+        r.Name = "n200";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F201(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F201(Record r, int depth)
+    {
+        r.Name = "n201";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F202(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F202(Record r, int depth)
+    {
+        r.Name = "n202";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F203(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F203(Record r, int depth)
+    {
+        r.Name = "n203";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F204(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F204(Record r, int depth)
+    {
+        r.Name = "n204";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F205(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F205(Record r, int depth)
+    {
+        r.Name = "n205";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F206(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F206(Record r, int depth)
+    {
+        r.Name = "n206";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F207(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F207(Record r, int depth)
+    {
+        r.Name = "n207";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F208(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F208(Record r, int depth)
+    {
+        r.Name = "n208";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F209(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F209(Record r, int depth)
+    {
+        r.Name = "n209";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F210(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F210(Record r, int depth)
+    {
+        r.Name = "n210";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F211(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F211(Record r, int depth)
+    {
+        r.Name = "n211";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F212(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F212(Record r, int depth)
+    {
+        r.Name = "n212";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F213(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F213(Record r, int depth)
+    {
+        r.Name = "n213";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F214(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F214(Record r, int depth)
+    {
+        r.Name = "n214";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F215(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F215(Record r, int depth)
+    {
+        r.Name = "n215";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F216(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F216(Record r, int depth)
+    {
+        r.Name = "n216";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F217(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F217(Record r, int depth)
+    {
+        r.Name = "n217";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F218(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F218(Record r, int depth)
+    {
+        r.Name = "n218";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F219(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F219(Record r, int depth)
+    {
+        r.Name = "n219";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F220(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F220(Record r, int depth)
+    {
+        r.Name = "n220";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F221(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F221(Record r, int depth)
+    {
+        r.Name = "n221";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F222(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F222(Record r, int depth)
+    {
+        r.Name = "n222";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F223(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F223(Record r, int depth)
+    {
+        r.Name = "n223";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F224(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F224(Record r, int depth)
+    {
+        r.Name = "n224";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F225(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F225(Record r, int depth)
+    {
+        r.Name = "n225";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F226(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F226(Record r, int depth)
+    {
+        r.Name = "n226";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F227(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F227(Record r, int depth)
+    {
+        r.Name = "n227";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F228(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F228(Record r, int depth)
+    {
+        r.Name = "n228";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F229(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F229(Record r, int depth)
+    {
+        r.Name = "n229";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F230(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F230(Record r, int depth)
+    {
+        r.Name = "n230";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F231(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F231(Record r, int depth)
+    {
+        r.Name = "n231";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F232(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F232(Record r, int depth)
+    {
+        r.Name = "n232";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F233(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F233(Record r, int depth)
+    {
+        r.Name = "n233";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F234(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F234(Record r, int depth)
+    {
+        r.Name = "n234";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F235(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F235(Record r, int depth)
+    {
+        r.Name = "n235";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F236(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F236(Record r, int depth)
+    {
+        r.Name = "n236";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F237(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F237(Record r, int depth)
+    {
+        r.Name = "n237";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F238(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F238(Record r, int depth)
+    {
+        r.Name = "n238";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F239(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F239(Record r, int depth)
+    {
+        r.Name = "n239";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F240(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F240(Record r, int depth)
+    {
+        r.Name = "n240";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F241(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F241(Record r, int depth)
+    {
+        r.Name = "n241";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F242(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F242(Record r, int depth)
+    {
+        r.Name = "n242";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F243(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F243(Record r, int depth)
+    {
+        r.Name = "n243";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F244(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F244(Record r, int depth)
+    {
+        r.Name = "n244";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F245(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F245(Record r, int depth)
+    {
+        r.Name = "n245";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F246(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F246(Record r, int depth)
+    {
+        r.Name = "n246";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F247(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F247(Record r, int depth)
+    {
+        r.Name = "n247";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F248(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F248(Record r, int depth)
+    {
+        r.Name = "n248";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F249(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F249(Record r, int depth)
+    {
+        r.Name = "n249";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F250(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F250(Record r, int depth)
+    {
+        r.Name = "n250";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F251(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F251(Record r, int depth)
+    {
+        r.Name = "n251";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F252(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F252(Record r, int depth)
+    {
+        r.Name = "n252";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F253(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F253(Record r, int depth)
+    {
+        r.Name = "n253";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F254(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F254(Record r, int depth)
+    {
+        r.Name = "n254";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F255(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F255(Record r, int depth)
+    {
+        r.Name = "n255";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F256(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F256(Record r, int depth)
+    {
+        r.Name = "n256";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F257(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F257(Record r, int depth)
+    {
+        r.Name = "n257";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F258(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F258(Record r, int depth)
+    {
+        r.Name = "n258";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F259(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F259(Record r, int depth)
+    {
+        r.Name = "n259";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F260(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F260(Record r, int depth)
+    {
+        r.Name = "n260";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F261(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F261(Record r, int depth)
+    {
+        r.Name = "n261";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F262(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F262(Record r, int depth)
+    {
+        r.Name = "n262";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F263(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F263(Record r, int depth)
+    {
+        r.Name = "n263";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F264(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F264(Record r, int depth)
+    {
+        r.Name = "n264";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F265(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F265(Record r, int depth)
+    {
+        r.Name = "n265";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F266(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F266(Record r, int depth)
+    {
+        r.Name = "n266";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F267(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F267(Record r, int depth)
+    {
+        r.Name = "n267";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F268(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F268(Record r, int depth)
+    {
+        r.Name = "n268";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F269(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F269(Record r, int depth)
+    {
+        r.Name = "n269";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F270(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F270(Record r, int depth)
+    {
+        r.Name = "n270";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F271(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F271(Record r, int depth)
+    {
+        r.Name = "n271";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F272(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F272(Record r, int depth)
+    {
+        r.Name = "n272";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F273(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F273(Record r, int depth)
+    {
+        r.Name = "n273";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F274(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F274(Record r, int depth)
+    {
+        r.Name = "n274";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F275(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F275(Record r, int depth)
+    {
+        r.Name = "n275";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F276(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F276(Record r, int depth)
+    {
+        r.Name = "n276";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F277(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F277(Record r, int depth)
+    {
+        r.Name = "n277";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F278(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F278(Record r, int depth)
+    {
+        r.Name = "n278";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F279(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F279(Record r, int depth)
+    {
+        r.Name = "n279";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F280(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F280(Record r, int depth)
+    {
+        r.Name = "n280";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F281(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F281(Record r, int depth)
+    {
+        r.Name = "n281";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F282(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F282(Record r, int depth)
+    {
+        r.Name = "n282";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F283(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F283(Record r, int depth)
+    {
+        r.Name = "n283";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F284(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F284(Record r, int depth)
+    {
+        r.Name = "n284";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F285(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F285(Record r, int depth)
+    {
+        r.Name = "n285";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F286(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F286(Record r, int depth)
+    {
+        r.Name = "n286";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F287(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F287(Record r, int depth)
+    {
+        r.Name = "n287";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F288(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F288(Record r, int depth)
+    {
+        r.Name = "n288";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F289(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F289(Record r, int depth)
+    {
+        r.Name = "n289";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F290(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F290(Record r, int depth)
+    {
+        r.Name = "n290";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F291(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F291(Record r, int depth)
+    {
+        r.Name = "n291";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F292(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F292(Record r, int depth)
+    {
+        r.Name = "n292";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F293(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F293(Record r, int depth)
+    {
+        r.Name = "n293";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F294(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F294(Record r, int depth)
+    {
+        r.Name = "n294";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F295(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F295(Record r, int depth)
+    {
+        r.Name = "n295";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F296(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F296(Record r, int depth)
+    {
+        r.Name = "n296";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F297(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F297(Record r, int depth)
+    {
+        r.Name = "n297";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F298(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F298(Record r, int depth)
+    {
+        r.Name = "n298";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F299(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F299(Record r, int depth)
+    {
+        r.Name = "n299";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F300(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F300(Record r, int depth)
+    {
+        r.Name = "n300";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F301(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F301(Record r, int depth)
+    {
+        r.Name = "n301";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F302(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F302(Record r, int depth)
+    {
+        r.Name = "n302";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F303(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F303(Record r, int depth)
+    {
+        r.Name = "n303";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F304(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F304(Record r, int depth)
+    {
+        r.Name = "n304";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F305(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F305(Record r, int depth)
+    {
+        r.Name = "n305";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F306(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F306(Record r, int depth)
+    {
+        r.Name = "n306";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F307(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F307(Record r, int depth)
+    {
+        r.Name = "n307";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F308(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F308(Record r, int depth)
+    {
+        r.Name = "n308";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F309(r, depth - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void F309(Record r, int depth)
+    {
+        r.Name = "n309";
+        r.Kind = r.Child is Leaf ? "leaf" : "node";
+        r.Tag = typeof(Record);
+        if (depth > 0) F0(r, depth - 1);
+    }
+}

@@ -1531,6 +1531,19 @@ internal sealed class RegionEscape
             return made;
         }
 
+        // A CONSTANT'S ADDRESS (RegionConstants), one object for every
+        // constant: made of no site, never written, and what is read from it
+        // is a constant again. It holds nothing, as the region engines need
+        // it to; but it is SOMETHING, so a virtual call whose receiver may be
+        // a literal or a descriptor still runs, any of its targets on it
+        // (Received: an object of no known site) -- an empty receiver is a
+        // call that never runs, and the call's other arguments were never
+        // handed over. A summary keeps it as a made object of no origins.
+        private int _constantLoc = -1;
+        private int Constant => _constantLoc >= 0 ? _constantLoc
+            : _constantLoc = Location(NewObject(Kind.Made, -1, Array.Empty<int>(), Array.Empty<int>()), 0);
+        private bool IsConstant(int o) => _constantLoc >= 0 && _locObject[_constantLoc] == o;
+
         // The unknown object's location, named once and then remembered.
         private int _unknownLoc = -1;
         private int Unknown => _unknownLoc >= 0 ? _unknownLoc : _unknownLoc = Location(0, Any);
@@ -1785,6 +1798,7 @@ internal sealed class RegionEscape
         private void Loaded(int loc, int dest, int offset)
         {
             int o = _locObject[loc];
+            if (IsConstant(o)) { Add(dest, Constant); return; }
             int at = Offset(_locOffset[loc], offset);
             if (at == Any) { LoadedAll(loc, dest); return; }
             // A word never read as a reference holds a number: the unknown object at most.
@@ -1803,6 +1817,7 @@ internal sealed class RegionEscape
         {
             int o = _locObject[loc];
             if (o == 0) { Add(dest, Unknown); return; }
+            if (IsConstant(o)) { Add(dest, Constant); return; }
             if (NoReference(o, Any)) { Add(dest, Unknown); return; }
             HashSet<int> readers = _allReaders[o] ??= new();
             if (!readers.Add(dest)) return;
@@ -1850,8 +1865,9 @@ internal sealed class RegionEscape
         {
             int o = _locObject[loc];
             int at = Offset(_locOffset[loc], offset);
-            // A number kept where no reference is: nothing anyone reaches.
-            if (NoReference(o, at)) return;
+            // A number kept where no reference is, or a constant, which is
+            // never written: nothing anyone reaches.
+            if (NoReference(o, at) || IsConstant(o)) return;
             int cell = Cell(o, at);
             if (_storedInto.Add(Pair(value, cell))) CopyEdge(value, cell, 0);
         }
@@ -1890,6 +1906,9 @@ internal sealed class RegionEscape
                         case RegionConstraintKind.Site: Add(a, Location(SiteObject(m, c.B), 0)); break;
                         case RegionConstraintKind.Slot: Add(a, Location(SlotObject(m, c.B), 0)); break;
                         case RegionConstraintKind.Unknown: Add(a, Unknown); break;
+                        // A constant's address holds nothing to follow (RegionConstants);
+                        // a symbol the link did not judge is the unknown object.
+                        case RegionConstraintKind.Symbol: Add(a, f.ConstantsKnown ? Constant : Unknown); break;
                         case RegionConstraintKind.Copy: CopyEdge(Node(m, c.B), a, CopyShift(c.C)); break;
                         case RegionConstraintKind.Load: LoadEdge(a, Node(m, c.B), Plain(c.C)); break;
                         case RegionConstraintKind.Store: StoreEdge(a, Plain(c.C), Node(m, c.B)); break;
@@ -2840,6 +2859,8 @@ internal sealed class RegionEscape
                         case RegionConstraintKind.Site: Unify(Pointee(a), Fresh(Leaf(_owner._siteBase[_members[m]] + c.B))); break;
                         case RegionConstraintKind.Slot: Unify(Pointee(a), SlotClass(m, c.B)); break;
                         case RegionConstraintKind.Unknown: Unify(Pointee(a), _global); break;
+                        // A constant joins nothing: storing it makes nothing escape.
+                        case RegionConstraintKind.Symbol: if (!Function(m).ConstantsKnown) Unify(Pointee(a), _global); break;
                         case RegionConstraintKind.Copy:
                         {
                             int b = Node(m, c.B);

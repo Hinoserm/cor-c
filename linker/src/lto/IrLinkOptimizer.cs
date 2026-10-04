@@ -130,6 +130,9 @@ public static class IrLinkOptimizer
                 return RegionHints.Read(sections[0].Content());
             }
             List<RegionHints> regionUnits = regionOrder.Select(ReadRegions).ToList();
+            // Each symbol's address a constant or the unknown object, from every object's data.
+            int constants = RegionConstants.Resolve(regionUnits, regionOrder, inputs.Select(input => input.Object));
+            if (regionReport is not null) Console.Error.WriteLine("regions: " + constants + " symbol addresses constants");
             Dictionary<string, string[]> regionVirtuals = VirtualTargets.Resolve(inputs, RegionSolver.VirtualNames(regionUnits));
             // What code outside the IR names: it may call any of it, with anything.
             SortedSet<string> foreign = new(StringComparer.Ordinal);
