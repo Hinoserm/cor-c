@@ -61,6 +61,13 @@ internal sealed class RegionEscape
     // A member of a cycle's parameters are numbered past every member before
     // it: its place in the cycle times this, plus the parameter.
     private const int ParamStride = 1 << 12;
+    // A CONSTANT IN A SUMMARY: a made object of no origins whose parameter
+    // is this. Applied, it is the caller's own constant -- one object for
+    // every constant, never written, what is read from it a constant again --
+    // not a fresh object of its own: as one, a List's empty array became a
+    // place every Add stored into, and a virtual call that ran any target on
+    // it, as it must on a constant, leaked what those stores put there.
+    private const int ConstantParam = -2;
 
     private readonly IReadOnlyList<RegionFunction> _functions;
     private readonly int[]?[][] _targets;
@@ -223,6 +230,23 @@ internal sealed class RegionEscape
         static string Step(int step) => step == DeepStep ? "deep" : IsGuard(step) ? "g" : step.ToString();
         return (s.Objects.Select(o => o.Kind + " " + o.Param + " [" + string.Join(",", o.Path.Select(Step)) + "]").ToArray(),
             s.Cells.ToArray(), s.Result.ToArray(), s.MadeCoarse);
+    }
+
+    /// <summary>
+    /// For a report: where an origin comes from -- a site, or an object of
+    /// whose summary (a function's, or a merged or stand-in one), what kind
+    /// of object it is there, and so on down, `depth` steps.
+    /// </summary>
+    private string Lineage(int r, int depth)
+    {
+        if (r < 0) return "site " + (-r - 1);
+        int h = r >> IndexBits, k = r & ((1 << IndexBits) - 1);
+        string holder = h < _functions.Count ? _functions[h].Name : "merged or stand-in summary " + h;
+        string kind = h < _functions.Count && _summaries[h] is { IsUnknown: false } s && k < s.Objects.Count ? s.Objects[k].Kind.ToString() : "object";
+        int[]? below = OriginsOf(r);
+        if (below is null) return $"{kind} {k} of {holder} (unregistered)";
+        if (below.Length == 0) return $"{kind} {k} of {holder}, of no origin (a constant or a frame slot)";
+        return $"{kind} {k} of {holder}" + (depth <= 0 ? "" : " < " + string.Join(" | ", below.Take(3).Select(x => Lineage(x, depth - 1))));
     }
 
     /// <summary>The sites the given origins may be.</summary>
@@ -878,6 +902,16 @@ internal sealed class RegionEscape
     /// </summary>
     private void Publish(int f, Summary s)
     {
+        // For a report (+why=Name): the summary each function asked about
+        // gives its callers, and what of it the unknown object holds.
+        if (Why is not null && WhyFunction?.Invoke(f) == true && Progress is { } say)
+        {
+            static string Step(int step) => step == DeepStep ? "deep" : IsGuard(step) ? "g" + GuardOf(step) : step.ToString();
+            string Of(int k) => s.Objects[k].Kind + " " + s.Objects[k].Param + " [" + string.Join(",", s.Objects[k].Path.Select(Step)) + "]";
+            say(s.IsUnknown ? $"escape graphs why: summary of {_functions[f].Name}: the unknown call's"
+                : $"escape graphs why: summary of {_functions[f].Name}: {s.Objects.Count} objects, {s.Cells.Count} cells, {s.Result.Count} results{(s.MadeCoarse ? ", made coarse" : "")}; "
+                  + "the unknown object holds " + string.Join("; ", s.Cells.Where(c => c.From == 0 && c.To != 0).Select(c => Of(c.To)).Distinct()));
+        }
         Summary? before = _summaries[f];
         if (before is not null && before.SameAs(s)) return;
         int holder = before is null && (_holders.Count <= f || _holders[f] is null) ? f : NewHolder();
@@ -1118,7 +1152,7 @@ internal sealed class RegionEscape
                 return Keep(KindOf(coarse), param, coarse, Array.Empty<int>());
             }
             List<int> all = new();
-            foreach (var o in Objects) if (o.Kind == Kind.Made) all.AddRange(o.Origins);
+            foreach (var o in Objects) if (o.Kind == Kind.Made && o.Param != ConstantParam) all.AddRange(o.Origins);
             all.Sort();
             int[] origins = all.Distinct().ToArray();
             for (int k = 0; k < Objects.Count; k++)
@@ -1131,6 +1165,7 @@ internal sealed class RegionEscape
                 {
                     Kind.Unknown => 0,
                     Kind.Place or Kind.Deep => KeepPlace(o.Param, o.Path),
+                    Kind.Made when o.Param == ConstantParam => Keep(Kind.Made, ConstantParam, Array.Empty<int>(), Array.Empty<int>()),
                     _ => Keep(Kind.Made, -1, Array.Empty<int>(), origins),
                 };
             }
@@ -1322,6 +1357,7 @@ internal sealed class RegionEscape
             {
                 var o = Objects[k];
                 if (o.Kind == Kind.Unknown) { map[k] = 0; continue; }
+                if (o.Kind == Kind.Made && o.Param == ConstantParam) { map[k] = b.Objects.Count; b.Objects.Add(o); continue; }
                 if (o.Kind == Kind.Made && ++keptMade > keep - 1)
                 {
                     if (blob < 0) { blob = b.Objects.Count; b.Objects.Add((Kind.Made, -1, Array.Empty<int>(), Array.Empty<int>())); }
@@ -2020,7 +2056,9 @@ internal sealed class RegionEscape
                     if (_pts[at] is { } held) for (int i = 0, n = held.Count; i < n; i++) Received(wide, held.Items[i]);
                     return;
                 }
-                Apply(args, dest, _owner.StandIn(targets));
+                Summary standIn = _owner.StandIn(targets);
+                Explain(f, "(wide, a stand-in) " + call.Callee, targets, standIn);
+                Apply(args, dest, standIn);
                 return;
             }
             int[] inside = targets.Where(_memberSet.Contains).ToArray();
@@ -2119,6 +2157,8 @@ internal sealed class RegionEscape
                 // else: the whole call's stand-in.
                 int[]? narrow = (whole || _locOffset[loc] == Any) && _kind[o] == Kind.Made ? ClassTargets(v, o) : null;
                 if (narrow is { Length: 0 }) return;
+                if (narrow is null && _owner.Why is not null && _owner.Progress is { } tell && _owner.WhyFunction?.Invoke(v.F) == true)
+                    tell($"escape graphs why: in {_owner._functions[v.F].Name}: wide call {v.Callee} runs any of its {v.Outside.Length} targets on {Describe(o)} +{_locOffset[loc]}");
                 Add(WideGroup(v, narrow ?? v.Outside), loc);
                 return;
             }
@@ -2145,6 +2185,9 @@ internal sealed class RegionEscape
                 else if (v.Outside.Length > 0) Add(Group(v, v.Outside), loc);
                 return;
             }
+            if (_owner.Why is not null && _owner.Progress is { } say && _owner.WhyFunction?.Invoke(v.F) == true)
+                say($"escape graphs why: in {_owner._functions[v.F].Name}: call {v.Callee} runs any of its {v.Inside.Length + v.Outside.Length} targets on {Describe(o)} +{_locOffset[loc]}"
+                    + (_kind[o] == Kind.Made ? " (sites " + string.Join(",", SitesOfObject(o).Take(8)) + "; made from " + string.Join(", ", _origins[o].Take(3).Select(r => _owner.Lineage(r, 4))) + ")" : ""));
             foreach (int g in v.Inside) Receives(g, loc);
             if (v.Outside.Length > 0) Add(Group(v, v.Outside), loc);
         }
@@ -2200,8 +2243,9 @@ internal sealed class RegionEscape
             v.Groups[targets] = recv;
             int[] args = (int[])v.Args.Clone();
             args[0] = recv;
-            Summary applied = TargetsComparer.Instance.Equals(targets, v.Outside) ? _owner.StandIn(targets) : _owner.NarrowedStandIn(v.F, targets);
-            Explain(v.F, v.Callee, targets, applied);
+            bool whole = TargetsComparer.Instance.Equals(targets, v.Outside);
+            Summary applied = whole ? _owner.StandIn(targets) : _owner.NarrowedStandIn(v.F, targets);
+            Explain(v.F, (whole ? "(wide, a stand-in) " : "(wide, its class's stand-in) ") + v.Callee, targets, applied);
             Apply(args, v.Dest, applied);
             return recv;
         }
@@ -2210,7 +2254,8 @@ internal sealed class RegionEscape
         private void Explain(int f, string? callee, int[] targets, Summary applied)
         {
             if (_owner.Why is null || _owner.Progress is null || _owner.WhyFunction?.Invoke(f) != true) return;
-            var leaks = applied.Cells.Where(c => c.From == 0).Select(c => applied.Objects[c.To]).Select(o => o.Kind + " " + o.Param + " [" + string.Join(",", o.Path.Select(Step)) + "]");
+            var leaks = applied.Cells.Where(c => c.From == 0).Select(c => applied.Objects[c.To]).Select(o => o.Kind + " " + o.Param + " [" + string.Join(",", o.Path.Select(Step)) + "]"
+                + (o.Kind == Kind.Made && o.Origins.Length > 0 ? " (sites " + string.Join(",", _owner.SitesOf(o.Origins).Take(8)) + ")" : ""));
             if (applied.IsUnknown || leaks.Any())
                 _owner.Progress($"escape graphs why: in {_owner._functions[f].Name}: call {callee} ({targets.Length} targets{(targets.Length == 1 ? " " + _owner._functions[targets[0]].Name : "")}) {(applied.IsUnknown ? "is the unknown call" : "leaks " + string.Join("; ", leaks))}");
         }
@@ -2283,6 +2328,8 @@ internal sealed class RegionEscape
                         LoadAllEdge(node[k], node[k]);
                         break;
                     }
+                    case Kind.Made when o.Param == ConstantParam:
+                        node[k] = NewNode(); Add(node[k], Constant); break;
                     case Kind.Made:
                     {
                         int made = NewObject(Kind.Made, -1, Array.Empty<int>(), s.Holder >= 0 ? new[] { Ref(s.Holder, k) } : o.Origins);
@@ -2642,7 +2689,7 @@ internal sealed class RegionEscape
             List<int> blobOrigins = new();
             foreach (int o in order)
             {
-                if (_kind[o] == Kind.Made && leaked.Contains(o))
+                if (_kind[o] == Kind.Made && leaked.Contains(o) && !IsConstant(o))
                 {
                     if (blob < 0) { blob = s.Objects.Count; s.Objects.Add((Kind.Made, -1, Array.Empty<int>(), Array.Empty<int>())); }
                     index[o] = blob;
@@ -2650,7 +2697,8 @@ internal sealed class RegionEscape
                     continue;
                 }
                 index[o] = s.Objects.Count;
-                int param = _kind[o] is Kind.Place or Kind.Deep && _param[o] >= 0 ? _param[o] - m * ParamStride : _param[o];
+                int param = _kind[o] is Kind.Place or Kind.Deep && _param[o] >= 0 ? _param[o] - m * ParamStride
+                    : IsConstant(o) ? ConstantParam : _param[o];
                 s.Objects.Add((_kind[o], param, _path[o], _origins[o]));
             }
             if (blob >= 0) { blobOrigins.Sort(); s.Objects[blob] = (Kind.Made, -1, Array.Empty<int>(), blobOrigins.Distinct().ToArray()); }
@@ -2738,6 +2786,7 @@ internal sealed class RegionEscape
                 // hands back and writes into what it was handed is everyone's.
                 if (rooted) _owner._rootedRefs.UnionWith(escaping);
                 if (_owner._wanted[f]) _owner.Escaping[f] = escaping.ToArray();
+                if (_owner.Why is { } asked && _owner.WhyFunction?.Invoke(f) == true) WhyOutlives(m, asked);
             }
             if (function.Loops.Count > 0)
             {
@@ -2748,6 +2797,57 @@ internal sealed class RegionEscape
                     held[l] = (OriginsHeld(m, loop.Live, Enumerable.Range(0, function.Slots)), OriginsHeld(m, loop.Invariant, loop.KeptSlots));
                 }
                 _owner.LoopHeld[f] = held;
+            }
+        }
+
+        /// <summary>
+        /// For a report (+why=Name): how each site asked about outlives member
+        /// m -- from which of what outlives it (a parameter, its result, the
+        /// unknown object, a place written), by which cells, to the object it
+        /// is among. The first path found, breadth first: the shortest.
+        /// </summary>
+        private void WhyOutlives(int m, Func<int, bool> asked)
+        {
+            if (_owner.Progress is not { } say) return;
+            int f = _members[m];
+            Dictionary<int, (int From, int Offset)> parent = new();
+            Dictionary<int, string> root = new();
+            Queue<int> next = new();
+            void Root(int o, string why)
+            {
+                if (root.ContainsKey(o) || parent.ContainsKey(o)) return;
+                root[o] = why;
+                next.Enqueue(o);
+            }
+            Root(0, "the unknown object");
+            RegionFunction function = Function(m);
+            for (int k = 0; k <= function.Parameters; k++)
+                if (Pts(Node(m, k)) is { } held)
+                    foreach (int loc in held) Root(_locObject[loc], k < function.Parameters ? "parameter " + k : "its result");
+            for (int o = 1; o < _kind.Count; o++) if (_kind[o] is Kind.Place or Kind.Deep && Written(o)) Root(o, "a place written, " + Describe(o));
+            int told = 0;
+            while (next.TryDequeue(out int o) && told < 40)
+            {
+                foreach (int site in _owner.SitesOf(_origins[o]))
+                {
+                    if (!asked(site) || told >= 40) continue;
+                    told++;
+                    List<string> path = new();
+                    for (int at = o; parent.TryGetValue(at, out var up); at = up.From) path.Add("+" + up.Offset + " " + Describe(at));
+                    int start = o;
+                    while (parent.TryGetValue(start, out var up)) start = up.From;
+                    path.Reverse();
+                    say($"escape graphs why: site {site} outlives {_owner._functions[f].Name}: from {root[start]}" + (path.Count == 0 ? "" : " by " + string.Join(" > ", path)));
+                }
+                foreach (var (offset, node) in _cells[o])
+                    if (Pts(node) is { } pts)
+                        foreach (int loc in pts)
+                        {
+                            int to = _locObject[loc];
+                            if (root.ContainsKey(to) || parent.ContainsKey(to)) continue;
+                            parent[to] = (o, offset);
+                            next.Enqueue(to);
+                        }
             }
         }
 
@@ -3076,6 +3176,10 @@ internal sealed class RegionEscape
                         cls[k] = Find(d);
                         break;
                     }
+                    // A constant: a class of no origin, as a constant's address binds to nothing.
+                    case Kind.Made when o.Param == ConstantParam:
+                        cls[k] = NewClass();
+                        break;
                     case Kind.Made:
                         cls[k] = s.Holder >= 0 ? Fresh(Ref(s.Holder, k)) : FreshAll(o.Origins);
                         break;

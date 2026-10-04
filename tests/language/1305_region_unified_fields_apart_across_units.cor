@@ -13,7 +13,9 @@
 // leaks, and the local and the holder do not. Read field by field
 // (Unified.ByField), the local is still made in Work's region, a block of
 // it every call (Gc.RegionBlocks), and everything is read back after
-// collections.
+// collections. (The holder, which nothing the link's lifetime rules cannot
+// follow keeps, goes to Work's frame instead: only the local, kept in it by
+// the ring, is the region's to take.)
 
 using System;
 using System.Runtime.CompilerServices;
@@ -43,7 +45,7 @@ static class P
         }
         long blocks = Gc.RegionBlocks - before;
         GC.Collect();
-        Console.WriteLine("total " + total + " last " + (string)Ring.Sink! + " in regions " + (blocks >= 2000));
+        Console.WriteLine("total " + total + " last " + (string)Ring.Sink! + " in regions " + (blocks >= 1000));
         return 0;
     }
 
