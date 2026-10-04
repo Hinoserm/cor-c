@@ -4,8 +4,8 @@ A region is a call whose objects die by the time it returns, and which gives
 them back all at once when it does. The compiler and the link prove which
 allocations are dead at which returns; the runtime makes those allocations in
 a per-thread arena and sets the arena back when the call returns. Nothing in
-a region is swept or freed one by one, and nothing on the heap ever points
-into one.
+a region is swept. A block is given back before its region ends only from
+the region's top, and nothing on the heap ever points into one.
 
 This document describes the system as it stands: the runtime arena, the hints
 a unit compile writes, the two link engines that answer what outlives a call,
@@ -69,8 +69,10 @@ it (`OpenRecord`). `RegionLeave` sets the arena back to the record (`Cut`):
   is kept as **the spare** so that a loop whose laps cross a chunk's end
   maps nothing per lap.
 
-`Gc.RegionFreedBytes` and `Gc.RegionBlocks` count what regions gave back and
-made.
+`Gc.RegionFreedBytes` and `Gc.RegionBlocks` count what regions gave back at
+their ends and made. What was given back before the end, from the top (below),
+is counted in `Gc.RegionTopFreedBytes` and `Gc.RegionTopFrees` instead, and
+not again at the end. A test asking what regions gave back reads both.
 
 **Sized regions.** Where the link proved the most bytes a boundary's region
 holds in one call, or a loop's region in one lap, `RegionEnter` and
@@ -97,15 +99,46 @@ puts the block in the innermost region only if the owner lies in it
 goes on the heap: an owner on the heap, in an outer region or in a frame
 always gets heap storage.
 
-**Frees.** A free of a region block does nothing: `Runtime.Free`,
-`Gc.Free`, `FreeOwnedReplaced` and `FreeReplaced` all check `InOwnRegion`
-first, and `FreeManual` cannot find a region address among its own blocks.
-`Runtime.FreeHeld`, given a region object, frees what it owns on the heap
-(`FreeOwnedFields`, `FreeStorageOf`) and leaves the object itself to its
-region. A region block of no type, such as a captured variable's cell, is
-left alone entirely (`Gc.RegionObject`). The checked field free
-(`VerifyingFieldFrees`) hands a region block to `FreeHeld` as the unchecked
-path does.
+**Frees.** A free through a register does nothing to a region block:
+`Runtime.Free`, `Gc.Free` and `FreeReplaced` check `InOwnRegion` first, and
+`FreeManual` cannot find a region address among its own blocks. Such a
+pointer may name memory a loop's earlier lap gave back and a later lap made
+again.
+
+A free of what a field of a live object held is different: the pointer is
+the block itself. `Runtime.FreeHeld` (reached from `FreeField`,
+`FreeOwnedFields` and `FreeOwnedReplaced`), given a region block:
+- frees what it owns, if it is an object (`Gc.RegionObject`): its owned
+  fields and its storage (`FreeOwnedFields`, `FreeStorageOf`). A block of no
+  type, such as a captured variable's cell, owns nothing;
+- then gives the block itself back (`Gc.RegionFree`).
+
+The order matters: what the object owns was made after it, above it, and is
+given back first.
+
+**Given back from the top** (`Gc.RegionFree`). A block that ends exactly at
+the innermost region's bump pointer, in the chunk being filled and past the
+region's record, is given back at once. The pointer comes down over it and
+its bytes are zeroed. Then the pointer continues down over every block below
+it that was given back already. A block given back anywhere else in that
+stretch is marked `KindFreed`, for the pointer to come down over later.
+`ScanRegion` and `CopyRegion` skip such a block. Anywhere else, a block waits
+for its region's end. The pointer moves before the bytes are cleared, so a
+stopped thread's arena always reads whole. A List grown in a region and freed
+with its arrays leaves nothing behind. Test 1303.
+
+**Grown in place** (`Gc.RegionGrow`, through `Runtime.GrowInPlace`). An array,
+or a string's characters, that is the innermost region's top block grows
+where it is when the chunk has the room. The pointer moves past its new end,
+then the block's footer, size and count follow it, and the new elements are
+the zeroed bytes the arena keeps past its pointer. Otherwise nothing changes
+and the caller makes a new array as before; on the heap it always does. Only
+storage its collection's own field alone holds is grown so: List's array
+(never once lent out), a StringBuilder's buffer, and the tables' lists of
+vacant places. `Gc.RegionGrownInPlace` counts growths. Test 1304.
+
+The checked field free (`VerifyingFieldFrees`) hands a region block to
+`FreeHeld` as the unchecked path does.
 
 **Concurrent marking.** The STAMP snapshot copies the arena as it copies the
 stack (`CopyRegion`). It writes only words that could mark something: not
@@ -113,12 +146,13 @@ null, and not pointing into the arena itself. `RegionWords` bounds the copy.
 
 Tests: 938, 940, 943, 973, 998 (throws, growth across chunks, stale regions,
 regions opened where first needed); 1070, 1170 (loop laps); 1292 (sized
-regions); 1291 (a region cell freed through its frame object).
+regions); 1291 (a region cell freed through its frame object); 1303 (given
+back from the top); 1304 (grown in place).
 
 ## The unit's hints
 
 `compiler/src/optimizations/RegionSummary.cs`, format in
-`linker/src/lto/RegionHints.cs` (section `.corsac.regions`, version 7).
+`linker/src/lto/RegionHints.cs` (section `.corsac.regions`, version 8).
 
 A unit compile states, function by function, the pointer constraints of the
 IR the link will regenerate the unit from:
@@ -140,7 +174,17 @@ IR the link will regenerate the unit from:
   A symbol's address is named instead (`Symbol`), for the link to judge.
 - **Calls**: the callee, a virtual call's symbol (resolved by the link from
   the descriptors, `VirtualTargets`), or none. Each call lists its argument
-  and result nodes.
+  and result nodes. A call that keeps nothing it is handed is left out
+  (`RegionPointsTo.Harmless`):
+  - the runtime's frees and the collector's notes;
+  - `Runtime.GrowInPlace`;
+  - `Runtime.InvalidCastTo`, a failed cast's throw, which names the object's
+    type and keeps nothing of it. Followed, it was a member of the runtime's
+    cycle of exceptions, traces and symbol lookups. Unified there, every
+    object any cast handed it went to the unknown object. Test 1299.
+- **Async and iterator bodies**: what the body holds across a suspension is
+  stated as stores into its state machine (`this`, at any offset), not as a
+  leak of everything it touched. Since version 8. Test 1298.
 - **Sites**: whether a region may take it, its line, the descriptor it
   stamps and where the method table begins (what a virtual call on its
   object runs), and how the collector reads its words (`RegionWords`).
@@ -224,8 +268,19 @@ entry, code outside the IR, a taken address).
 **Unification (`Unified`).** Steensgaard's analysis by field: every node
 points to one class, and a class holds one class at each offset. It is
 linear in what the cycle states, and coarser. Calls out of the cycle apply
-summaries as the inclusion solve does; the members' own summaries are
-coarse.
+summaries as the inclusion solve does.
+
+A member's own summary, for calls from outside, is stated field by field
+(`ByField`):
+- each argument's class is its place;
+- what each field holds is a place one field further down;
+- a class holding objects made in the cycle is a made object;
+- the unknown object's class is the unknown object.
+
+So what one field of an argument holds leaks or not apart from what another
+field holds. Past a walk of 4096 classes or 512 objects, the summary is the
+coarse one (`Coarsest`): every argument and all it reaches one object, which
+the unknown object holds as soon as any argument reaches it. Test 1305.
 
 **Wide calls and stand-ins.** A virtual call with more than 16 targets
 (`WideTargets`; `+wide=N` changes it, `+wide=0` follows every call) is not
@@ -236,6 +291,15 @@ set of targets is assumed a stand-in:
   of the first six arguments and all below it);
 - one bit for each class that may hold another or be returned;
 - one bit for the unknown call.
+
+**Narrowed by the receiver.** A wide call is watched at its receiver, as a
+narrower virtual call is (below). An object made at sites of known classes
+gets the stand-in of only the overrides its classes run (`WideGroup`,
+`NarrowedStandIn`); anything else gets the whole call's stand-in. Without
+this, an iterator walked through `IEnumerator<T>.MoveNext` took on what any
+of some two thousand MoveNexts does with `this`. A narrowed stand-in is
+assumed and grown like any other, never the targets' summaries, which may
+not be solved yet. A cycle solved by unification keeps the whole stand-in.
 
 After a round, each stand-in is checked against its targets' summaries
 (`Check`) and grows where it does not cover them. After round 3 a stand-in
@@ -250,7 +314,8 @@ different (`Again`). Holder numbers are never reused:
 - a changed one gets a new holder, so every reference still held elsewhere
   means what it meant;
 - each component's global and rooted origins are its own, replaced when it
-  is re-solved.
+  is re-solved;
+- a component that applied a narrowed stand-in is re-solved when it grows.
 
 `+widefirst` starts every stand-in with all its targets' sites. That means
 fewer rounds, but coarser answers above wide calls.
@@ -262,6 +327,13 @@ knows, each override's summary is applied to the place *guarded* by it: the
 objects there that run that override. A caller reaching the place by the
 same path keeps, at the guard, only the objects of sites whose descriptor
 runs it, and any of no known descriptor. `+classoff` turns this off.
+
+**Boxes and strings.** A box's table and a string's name none of their system
+interfaces (IComparable, IComparable<T>, IEquatable<T>, IFormattable), so
+that every unit's copy of a box is one table. A call through an interface
+therefore counts every box and the string among the objects it can run on
+(`VirtualTargets.MayAnswer`), both in the link's targets and in its
+`IsA`, which answers "not known" rather than "no". Test 1302.
 
 **Number parameters.** A call hands nothing to a parameter of a number type
 (`IsNumber`), in both engines. Test 1290.
@@ -337,7 +409,11 @@ and loops.
    - **Fix A**: a site the boundaries take that is live at a lap's end, but
      made with no boundary between the loop and its maker, no longer refuses
      the loop. It is sent to the heap instead, provided fewer sites go to the
-     heap than every lap makes for the loop's region.
+     heap than every lap makes for the loop's region *that no boundary
+     takes*. A site a boundary takes already is only given back sooner by the
+     loop, while one sent to the heap costs an allocation every lap. A loop
+     that gains nothing else gets no region whenever it sends anything to
+     the heap. Test 1290.
    - A site made beneath a boundary inside the lap still refuses the loop.
    - A loop with nothing taken beneath it is dropped.
 5. **Opening.** A boundary with nothing taken innermost beneath it is not
@@ -345,7 +421,9 @@ and loops.
 6. **Sizes.** Where it can be proved, the most bytes a boundary's region
    holds in one call, or a loop's region in one lap, is computed from site
    bytes, loop trip counts and callees' own bytes (`Sizes`). Nothing is
-   proved through unbounded loops, calls nobody can name, or recursion.
+   proved through unbounded loops, calls nobody can name, or recursion. On a
+   32-bit target a proof past a gigabyte leaves the region unsized: the size
+   is handed over as an immediate of the target's word.
 
 Code nobody follows may make and keep an object the unknown object reaches;
 such a site is never taken (`_unseenKept`).
@@ -389,14 +467,59 @@ allocation beside its owner (`MakeStorageBeside`) when all of these hold:
   written;
 - the register is defined before the allocation on every path to it.
 
-The old storage is freed by `Runtime.Free`, which leaves a region block to
-its region. Elements a collection owns are made beside it the same way
-(`OwnedElements.ElementSites`). Tests 1270, 1271, 942.
+The library frees the storage it outgrows or drops as an owned field's old
+value, `Runtime.FreeOwnedReplaced(v, 0)`. It does so in
+`OutgrownStorage.Release`, `StringBuilder.FreeStorage` and MemoryStream's
+buffer frees. On the heap that is `Runtime.Free`; in a region it gives the
+array back at once from the top (`FreeHeld`, `Gc.RegionFree`).
+
+The compiler knows two spellings of the self-replacing free
+(`EscapeSelfFrees.StorageFreed`):
+- `Runtime.Free(v)`;
+- `FreeOwnedReplaced(v, 0)`, the second operand the constant zero.
+
+The compiler's own `FreeOwnedReplaced(old, new)` never matches: the old
+value it frees is a load it inserted, which names no field.
+
+Before the library makes a new array, it tries `Runtime.GrowInPlace` (above).
+The lifetime and region passes know that call by name as one that keeps
+nothing (`Escape.IsCollectorNote`, `RegionPointsTo.Harmless`), so the inliner
+keeps it a call until they have run (`Inline`'s pinned helpers). Inlined,
+its body handed the storage to `Gc.RegionGrow`, whose stores into the
+thread's block leaked it. Elements a collection owns are made beside it the
+same way (`OwnedElements.ElementSites`). Tests 1270, 1271, 942, 1303, 1304.
 
 **Frame closures.** A captured variable's cell is owned through a field of
 its call's frame object and freed with it. A region takes the cell's site
 like any other. The cell is a block of no type, which `FreeHeld` leaves to
 its region. Test 1291.
+
+## Types asked at run time
+
+Two answers the link's targets and the regions rely on are also given at run
+time, by `Runtime.DescribedAs` (`runtime/src/core/runtime.cor`), when only run
+time knows the type asked about.
+
+**A box's or a string's interfaces.** An interface's own descriptor says
+which boxed face it is (`Lowering.BoxedFaceFlags`), in its flag word:
+- `IComparable` (64);
+- `IFormattable` (128);
+- `IComparable<X>` or `IEquatable<X>` of a number, a bool, a char or a
+  string X (256).
+
+Word 10, unused by an interface, names X's own descriptor. For IFormattable
+it names bool's box instead, the one primitive that is not formattable.
+`DescribedAs` answers by these after the interface list, as
+`BoxedFaces.Implements` does: in a shared copy's test, in
+`ArrayStoreCheck` and in `ArrayOf`. Both are read from the interface alone,
+so every unit's copy of its descriptor is the same bytes. Test 1300.
+
+**A shared generic copy's own types.** In the one copy every reference
+instantiation shares, a test, `as`, cast, switch arm, typeof or array of a
+type constructed over its T reads that type for the object at hand
+(`Monomorphiser.CanonTested`, `Lowering.CanonTest`). It takes the
+descriptor the instantiation's type context holds. Where the context holds
+none, the `__canon` form answers as before. Tests 1300, 1301.
 
 ## Diagnostics
 
@@ -418,3 +541,18 @@ loops and refusals are reported. Switches:
 
 The runtime's counts appear with `--gc-stats`: bytes given back by regions,
 and region allocations the system had no memory for.
+
+**Engine tests.** `linker/tests` with `--escape` runs only the region hint
+tests and the escape engine's own tests (`RegionEscapeTests.cs`), which need
+none of the tools. Each states a small program as its region constraints,
+solves it with `RegionEscape` directly, and checks the answers (`Escaping`,
+`Global`, `LoopHeld`, a summary through `SummaryOf`) against what the
+program means, argued beside each test. They cover:
+- stores, loads and returns;
+- loops, cycles, unification and summaries by field;
+- wide calls, constants and number parameters;
+- receivers and guards, saturation and coarse summaries;
+- unpassed parameters;
+- the hints and a backend request, round trip.
+
+Run without `--escape`, the whole suite includes them.
