@@ -863,6 +863,44 @@ public sealed class Monomorphiser
         return made;
     }
 
+    /// <summary>
+    /// A CONSTRUCTED TYPE OVER THE PARAMETERS, TESTED OR CAST TO in the
+    /// canonical class copy's instance code -- `source is ICollection<T>` in
+    /// List's copy constructor, `as IReadOnlyList<T>`, `(IList<T>)x`. Over the
+    /// machine word it is the __canon instantiation, which no object of a
+    /// sharing instantiation lists: a List of KernelModule implements
+    /// ICollection of KernelModule. So it is marked, as `new X<T>()` is
+    /// (CanonMadeObject), to read the instantiation's own descriptor from
+    /// the object's type context, after the parameters' entries: the same
+    /// list, an interface's entry its interface descriptor. Every argument
+    /// one of this copy's parameters; a class or an interface.
+    /// </summary>
+    private T CanonTested<T>(T made, T source, TypeRef written) where T : Expr, ICanonSlot
+    {
+        if (!_canonSelf || _canonParams is null || _canonMade is null || written.ArrayRank != 0 || written.PointerDepth != 0
+            || !written.Args.All(a => a.Args.Count == 0 && a.ArrayRank == 0 && a.PointerDepth == 0 && _canonParams.ContainsKey(a.Name)))
+        {
+            return made;
+        }
+        string name = GenericPath(written.Name, written.Args.Count, source) ?? Path(written.Name);
+        if (!_generic.TryGetValue(Arity(name, written.Args.Count), out TypeDecl? template)
+            || template.Kind is not (TypeKind.Class or TypeKind.Interface))
+        {
+            return made;
+        }
+        string key = written.ToString();
+        int at = _canonMade.FindIndex(t => t.ToString() == key);
+        if (at < 0)
+        {
+            at = _canonMade.Count;
+            _canonMade.Add(written);
+        }
+        made.CanonSlot = 2 * _canonParams.Count + at;
+        made.CanonSelf = new ThisExpr { Line = made.Line, Col = made.Col };
+        _canonMarked = true;
+        return made;
+    }
+
     private static Dictionary<string, int> CanonParams(TypeDecl template)
     {
         Dictionary<string, int> places = new(StringComparer.Ordinal);
@@ -889,7 +927,11 @@ public sealed class Monomorphiser
             _canonMarked = true;
             return made;
         }
-        if (!_canonSelf || _canonParams is null || written.Args.Count != 0 || written.PointerDepth != 0
+        // A test or a cast to a constructed type over the parameters reads
+        // that type's own descriptor; a typeof or an array of one stays the
+        // machine word's, as it was.
+        if (written.Args.Count != 0) return made is IsExpr or AsExpr or CastExpr && !array ? CanonTested(made, source, written) : made;
+        if (!_canonSelf || _canonParams is null || written.PointerDepth != 0
             || !_canonParams.TryGetValue(written.Name, out int place))
         {
             return made;
@@ -2527,7 +2569,12 @@ public sealed class Monomorphiser
                 };
 
             case CastExpr cast:
-                return new CastExpr { Type = Sub(cast.Type, map), Operand = Rewrite(cast.Operand, map), Line = cast.Line, Col = cast.Col };
+            {
+                CastExpr made = new() { Type = Sub(cast.Type, map), Operand = Rewrite(cast.Operand, map), Line = cast.Line, Col = cast.Col };
+                // Only a cast to a constructed type over the parameters: a
+                // cast to T itself is the word it always was.
+                return cast.CanonSlot >= 0 || cast.Type.Args.Count > 0 ? Canon(made, cast, cast.Type, arrayToo: false) : made;
+            }
 
             case IsExpr isx:
                 return Canon(new IsExpr { Operand = Rewrite(isx.Operand, map), Type = Sub(isx.Type, map), Binding = isx.Binding, Line = isx.Line, Col = isx.Col }, isx, isx.Type, arrayToo: false);

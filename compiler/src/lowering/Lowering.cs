@@ -1949,6 +1949,12 @@ public sealed partial class Lowering
                 {
                     table.Relocs.Add(new DataReloc((1 + 2 * args.Count + k) * w, ClassDescriptor(cls), 0));
                 }
+                // An interface the shared code tests or casts to over its
+                // parameters (Monomorphiser.CanonTested): this instantiation's.
+                else if (made[k] is { Kind: TypeKind.Interface } face)
+                {
+                    table.Relocs.Add(new DataReloc((1 + 2 * args.Count + k) * w, InterfaceDescriptor(face), 0));
+                }
             }
             _m.Data.Add(table);
             context.Relocs.Add(new DataReloc(d * w, table.Name, 0));
