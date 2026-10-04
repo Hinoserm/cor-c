@@ -3611,9 +3611,26 @@ public sealed class Parser
     {
         Token at = Expect(Tok.LBrace, "'{'");
         Block block = new() { Line = at.Line, Col = at.Col };
+        int hoistedFrom = _hoisted.Count;
         _blocks.Push(block);
         try { return ParseBlockBody(block); }
-        finally { _blocks.Pop(); }
+        finally
+        {
+            _blocks.Pop();
+
+            // THE GENERIC LOCAL FUNCTIONS OF THIS BLOCK ARE SEEN FROM EVERY
+            // ONE HOISTED OUT OF IT: itself, to call itself, its siblings
+            // before and after it, and those nested deeper. Each is a member
+            // of the type and is checked as one, where no block is open to
+            // name them, so it carries the names (MethodDecl.LocalGenerics).
+            if (block.GenericLocals.Count > 0)
+            {
+                for (int k = hoistedFrom; k < _hoisted.Count; k++)
+                {
+                    _hoisted[k].LocalGenerics.AddRange(block.GenericLocals);
+                }
+            }
+        }
     }
 
     /// <summary>The blocks being read, innermost on top: where a generic local function is declared.</summary>
@@ -3696,6 +3713,9 @@ public sealed class Parser
 
         UsingDeclStmt marker = (UsingDeclStmt)block.Statements[at];
         Block result = new() { Line = block.Line, Col = block.Col };
+        // The block's generic local functions are the new block's: dropped,
+        // a block with a `using` declaration in it could not call one.
+        result.GenericLocals.AddRange(block.GenericLocals);
 
         for (int i = 0; i < at; i++)
         {
@@ -4241,6 +4261,13 @@ public sealed class Parser
         {
             Token armAt = Cur;
             int armStart = _i;
+
+            // THE ARM'S OWN ARROW IS NEVER A LAMBDA'S, whatever comes before
+            // it: `Point(0, 0) =>` and `nameof(X) =>` are a pattern and a
+            // constant, not a lambda with its result written (C# 10). Roslyn
+            // reads an arm's head as a pattern, which has no lambda in it.
+            int armWas = _armArrow;
+            _armArrow = ArmArrow();
             Expr? value = null;
             TypeRef? type = null;
             string? binding = null;
@@ -4480,6 +4507,7 @@ public sealed class Parser
                         };
             }
 
+            _armArrow = armWas;
             Expect(Tok.FatArrow, "'=>' after the pattern");
 
             SwitchArm arm = new()
@@ -4646,6 +4674,31 @@ public sealed class Parser
     }
 
     /// <summary>
+    /// A lambda with its result written in front, `[ref [readonly]] T
+    /// (params) => body`, the cursor on the first word of the result.
+    /// </summary>
+    private LambdaExpr TypedLambda(Token at)
+    {
+        Mods returnMods = Mods.None;
+        if (Take(Tok.KwRef))
+        {
+            returnMods = Mods.RefReturn;
+            if (Take(Tok.KwReadonly)) returnMods |= Mods.RefReadonlyReturn;
+        }
+        TypeRef returns = ParseTypeRef();
+        LambdaExpr inner = (LambdaExpr)ParseUnary();
+        LambdaExpr made = new()
+        {
+            Body = inner.Body, BlockBody = inner.BlockBody, Async = inner.Async, TypesWritten = inner.TypesWritten,
+            Returns = returns, ReturnMods = returnMods,
+            Line = at.Line, Col = at.Col,
+        };
+        made.Params.AddRange(inner.Params);
+        made.Attributes.AddRange(inner.Attributes);
+        return made;
+    }
+
+    /// <summary>
     /// Whether `ref` here begins a LAMBDA WITH ITS RESULT WRITTEN, `ref int
     /// (int[] a) => ref a[0]` or `ref readonly T (...) => ...` (C# 10): a
     /// type, then a bracket that the arrow follows. Anywhere else `ref` is a
@@ -4655,23 +4708,139 @@ public sealed class Parser
     private bool StartsRefLambda()
     {
         if (!At(Tok.KwRef)) return false;
-        int was = _i;
-        try
+        int j = _i + 1;
+        if (j < _t.Count && _t[j].Kind == Tok.KwReadonly) j++;
+        return TypedLambdaAt(j);
+    }
+
+    /// <summary>
+    /// Whether a LAMBDA WITH ITS RESULT WRITTEN starts here: `int (int x) =>
+    /// x`, `List<int> (string s) => ...`, `(int, int) (int x) => (x, x)` (C#
+    /// 10). A type, then a bracketed parameter list the arrow follows.
+    ///
+    /// AS ROSLYN HAS IT, in an expression and nowhere else. `Point(1, 2) =>`
+    /// in a switch arm is a positional pattern and the arm's arrow, never a
+    /// lambda: Roslyn reads an arm's pattern with its pattern parser, which
+    /// has no lambdas in it, and here the pattern forms are taken before an
+    /// arm falls back to an expression (TypeThenParen), and the arm's own
+    /// arrow is never a lambda's (_armArrow, IsLambdaHeadAt).
+    /// </summary>
+    private bool StartsTypedLambda() => TypedLambdaAt(_i);
+
+    private bool TypedLambdaAt(int j)
+    {
+        int end = TypeEndAt(j);
+        return end > j && end < _t.Count && _t[end].Kind == Tok.LParen && IsLambdaHeadAt(end);
+    }
+
+    /// <summary>
+    /// Where a type written from token <paramref name="j"/> ends, by its
+    /// shape alone and consuming nothing: a dotted name with its type
+    /// arguments, or a tuple of two or more, then `?`, `[]` and `*`. -1 when
+    /// no type starts there.
+    /// </summary>
+    private int TypeEndAt(int j)
+    {
+        if (j >= _t.Count) return -1;
+        if (_t[j].Kind == Tok.LParen)
         {
-            _i++;
-            Take(Tok.KwReadonly);
-            if (!At(Tok.Ident) && !At(Tok.LParen)) return false;
-            ParseTypeRef();
-            return At(Tok.LParen) && IsLambdaHead();
+            int depth = 0, commas = 0;
+            for (; j < _t.Count; j++)
+            {
+                Tok k = _t[j].Kind;
+                if (k == Tok.LParen) depth++;
+                else if (k == Tok.RParen) { if (--depth == 0) { j++; break; } }
+                else if (k == Tok.Comma && depth == 1) commas++;
+                else if (k is Tok.End or Tok.Semi or Tok.LBrace or Tok.FatArrow) return -1;
+            }
+            if (depth != 0 || commas == 0) return -1;
         }
-        catch (CompileError)
+        else
         {
-            return false;
+            if (_t[j].Kind != Tok.Ident) return -1;
+            j++;
+            while (j + 1 < _t.Count && _t[j].Kind == Tok.Dot && _t[j + 1].Kind == Tok.Ident) j += 2;
+            if (j < _t.Count && _t[j].Kind == Tok.Lt)
+            {
+                int depth = 0;
+                for (; j < _t.Count; j++)
+                {
+                    Tok k = _t[j].Kind;
+                    if (k == Tok.Lt) depth++;
+                    else if (k == Tok.Gt) depth--;
+                    else if (k == Tok.Shr) depth -= 2;
+                    else if (k == Tok.UShr) depth -= 3;
+                    else if (k is not (Tok.Ident or Tok.Comma or Tok.Dot or Tok.Question or Tok.LBracket or Tok.RBracket
+                             or Tok.LParen or Tok.RParen))
+                    {
+                        return -1;
+                    }
+                    if (depth <= 0) { j++; break; }
+                }
+                if (depth != 0) return -1;
+            }
         }
-        finally
+        while (j < _t.Count)
         {
-            _i = was;
+            if (_t[j].Kind is Tok.Question or Tok.Star) { j++; continue; }
+            if (_t[j].Kind == Tok.LBracket)
+            {
+                int k = j + 1;
+                while (k < _t.Count && _t[k].Kind == Tok.Comma) k++;
+                if (k < _t.Count && _t[k].Kind == Tok.RBracket) { j = k + 1; continue; }
+            }
+            break;
         }
+        return j;
+    }
+
+    /// <summary>
+    /// Whether attributes here belong to a LAMBDA, `[Pure] (int x) => x` or
+    /// `[A] x => x` (C# 10): bracketed groups, then a lambda's head. A
+    /// collection expression is brackets with no arrow after the head that
+    /// would follow.
+    /// </summary>
+    private bool StartsAttributedLambda()
+    {
+        int j = _i;
+        while (j < _t.Count && _t[j].Kind == Tok.LBracket)
+        {
+            int depth = 0;
+            for (; j < _t.Count; j++)
+            {
+                if (_t[j].Kind == Tok.LBracket) depth++;
+                else if (_t[j].Kind == Tok.RBracket) { if (--depth == 0) { j++; break; } }
+                else if (_t[j].Kind is Tok.End or Tok.Semi) return false;
+            }
+            if (depth != 0) return false;
+        }
+        if (j >= _t.Count) return false;
+        if (_t[j].Kind == Tok.Ident && _t[j].Text == "async") j++;
+        if (j + 1 < _t.Count && _t[j].Kind == Tok.Ident && _t[j + 1].Kind == Tok.FatArrow && j + 1 != _armArrow) return true;
+        if (_t[j].Kind == Tok.LParen && IsLambdaHeadAt(j)) return true;
+        if (_t[j].Kind == Tok.KwRef)
+        {
+            j++;
+            if (j < _t.Count && _t[j].Kind == Tok.KwReadonly) j++;
+        }
+        return TypedLambdaAt(j);
+    }
+
+    /// <summary>
+    /// Reads attribute groups written on a lambda or one of its parameters,
+    /// into <paramref name="into"/> when given, without disturbing the ones
+    /// the member being read collected (SkipAttributes keeps only the last).
+    /// </summary>
+    private void SkipLambdaAttributes(List<AttributeRef>? into)
+    {
+        List<string> names = new(_attributes);
+        List<AttributeRef> parts = new(_attributeParts);
+        SkipAttributes();
+        into?.AddRange(CapturedAttributes());
+        _attributes.Clear();
+        _attributes.AddRange(names);
+        _attributeParts.Clear();
+        _attributeParts.AddRange(parts);
     }
 
     private bool IsLambdaHeadAt(int from)
@@ -4710,7 +4879,7 @@ public sealed class Parser
     /// so the binder fills these in from the wanted type and nothing before
     /// the binder could.
     /// </summary>
-    private LambdaExpr Finish(LambdaExpr made, List<string> names, List<Tok>? modifiers = null)
+    private LambdaExpr Finish(LambdaExpr made, List<string> names, List<Tok>? modifiers = null, List<TypeRef?>? types = null)
     {
         // A block lambda's `return default;` waits for the binder, which knows
         // what the lambda is converted to; the method's return type is not it.
@@ -4718,9 +4887,12 @@ public sealed class Parser
         _returns = null;
         // `=> ref a[0]`: the body of a lambda that returns by reference is
         // the variable it answers (ParseRefValue).
+        // EVERY TYPE WRITTEN, or none: C# allows no mixture, and only the
+        // first gives the lambda a natural type.
+        bool typed = types is { Count: > 0 } && types.All(t => t is not null);
         LambdaExpr done = At(Tok.LBrace)
-            ? new LambdaExpr { BlockBody = ParseBlock(), Line = made.Line, Col = made.Col, Async = made.Async }
-            : new LambdaExpr { Body = At(Tok.KwRef) ? ParseRefValue() : ParseExpr(), Line = made.Line, Col = made.Col, Async = made.Async };
+            ? new LambdaExpr { BlockBody = ParseBlock(), Line = made.Line, Col = made.Col, Async = made.Async, TypesWritten = typed }
+            : new LambdaExpr { Body = At(Tok.KwRef) ? ParseRefValue() : ParseExpr(), Line = made.Line, Col = made.Col, Async = made.Async, TypesWritten = typed };
         _returns = savedReturns;
 
         for (int k = 0; k < names.Count; k++)
@@ -4729,7 +4901,7 @@ public sealed class Parser
             done.Params.Add(new Param
             {
                 Name = names[k],
-                Type = new TypeRef { Name = "", Line = made.Line, Col = made.Col },
+                Type = typed ? types![k]! : new TypeRef { Name = "", Line = made.Line, Col = made.Col },
                 IsRef = modifier == Tok.KwRef, IsOut = modifier == Tok.KwOut, IsReadOnlyRef = modifier == Tok.KwIn,
                 Line = made.Line, Col = made.Col,
             });
@@ -5328,6 +5500,7 @@ public sealed class Parser
         ParseParams(m.Params);
         ParseConstraints(m.TypeParams);
         MethodDecl finished = FinishMethod(m);
+        finished.HoistedName = name;
         _blocks.Peek().GenericLocals.Add((name, finished.Name));
         _hoisted.Add(finished);
         return new Block { Line = at.Line, Col = at.Col };
@@ -7216,9 +7389,11 @@ public sealed class Parser
                 LambdaExpr inner = (LambdaExpr)ParseUnary();
                 LambdaExpr made = new()
                 {
-                    Body = inner.Body, BlockBody = inner.BlockBody, Async = true,
+                    Body = inner.Body, BlockBody = inner.BlockBody, Async = true, TypesWritten = inner.TypesWritten,
+                    Returns = inner.Returns, ReturnMods = inner.ReturnMods,
                     Line = at.Line, Col = at.Col,
                 };
+                made.Attributes.AddRange(inner.Attributes);
                 made.Params.AddRange(inner.Params);
                 return made;
             }
@@ -7227,21 +7402,7 @@ public sealed class Parser
             // a[0]` (C# 10). The lambda is read as any other, and keeps what
             // it said it returns for the binder to hold the delegate to.
             case Tok.KwRef when StartsRefLambda():
-            {
-                _i++;
-                Mods returnMods = Mods.RefReturn;
-                if (Take(Tok.KwReadonly)) returnMods |= Mods.RefReadonlyReturn;
-                TypeRef returns = ParseTypeRef();
-                LambdaExpr inner = (LambdaExpr)ParseUnary();
-                LambdaExpr made = new()
-                {
-                    Body = inner.Body, BlockBody = inner.BlockBody, Async = inner.Async,
-                    Returns = returns, ReturnMods = returnMods,
-                    Line = at.Line, Col = at.Col,
-                };
-                made.Params.AddRange(inner.Params);
-                return made;
-            }
+                return TypedLambda(at);
 
             case Tok.Ident when Ahead().Kind == Tok.FatArrow && _i + 1 != _armArrow:
             {
@@ -7251,32 +7412,56 @@ public sealed class Parser
                 return Finish(new LambdaExpr { Line = at.Line, Col = at.Col }, one);
             }
 
+            // A LAMBDA WITH ITS RESULT WRITTEN, `int (int x) => x` (C# 10;
+            // StartsTypedLambda says how it is told from a call). Read as any
+            // lambda, keeping the result for the binder to hold the delegate
+            // to and to give the lambda its natural type by.
+            case Tok.Ident when StartsTypedLambda():
+                return TypedLambda(at);
+
+            // `[A] (int x) => x`: a lambda's attributes, kept on it.
+            case Tok.LBracket when StartsAttributedLambda():
+            {
+                List<AttributeRef> attributes = new();
+                SkipLambdaAttributes(attributes);
+                LambdaExpr inner = (LambdaExpr)ParseUnary();
+                inner.Attributes.InsertRange(0, attributes);
+                return inner;
+            }
+
             case Tok.LParen when IsLambdaHead():
             {
                 _i++;
 
                 List<string> names = new();
                 List<Tok> modifiers = new();
+                List<TypeRef?> types = new();
 
                 while (!At(Tok.RParen))
                 {
+                    // `([NotNull] string s) => ...`: a parameter's attributes
+                    // (C# 10), read past -- nothing here reads them.
+                    if (At(Tok.LBracket)) SkipLambdaAttributes(null);
+
                     // `(string s, out int v) => ...`: the word says how the
                     // argument is passed, and the delegate's Invoke must say
                     // the same (C# 12.19.2). Kept for the binder.
                     Tok modifier = At(Tok.KwRef) || At(Tok.KwOut) || At(Tok.KwIn) ? _t[_i++].Kind : Tok.End;
 
-                    // `(int a, List<string> b) => ...` is legal C# and says
-                    // nothing this does not already know -- the types come
-                    // from what the lambda is being passed to -- so a type
-                    // before the name is read and dropped: anything that is
-                    // not a lone name ending the parameter.
+                    // `(int a, List<string> b) => ...`: a type before the name
+                    // is kept. Where the lambda converts to a delegate the
+                    // delegate says the types anyway; where nothing does --
+                    // `var f = (int a) => a + 1;` -- they are what its natural
+                    // type is made of (C# 10).
+                    TypeRef? written = null;
                     if (!(At(Tok.Ident) && Ahead().Kind is Tok.Comma or Tok.RParen))
                     {
-                        ParseTypeRef();
+                        written = ParseTypeRef();
                     }
 
                     names.Add(Expect(Tok.Ident, "a lambda parameter name").Text);
                     modifiers.Add(modifier);
+                    types.Add(written);
 
                     if (!Take(Tok.Comma))
                     {
@@ -7286,8 +7471,12 @@ public sealed class Parser
 
                 Expect(Tok.RParen, "')' after the lambda parameters");
                 Expect(Tok.FatArrow, "'=>' after the lambda parameters");
-                return Finish(new LambdaExpr { Line = at.Line, Col = at.Col }, names, modifiers);
+                return Finish(new LambdaExpr { Line = at.Line, Col = at.Col }, names, modifiers, types);
             }
+
+            // `(int, int) (int x) => (x, x)`: the written result a tuple.
+            case Tok.LParen when StartsTypedLambda():
+                return TypedLambda(at);
 
             case Tok.LParen:
             {

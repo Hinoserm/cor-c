@@ -2274,6 +2274,8 @@ public sealed partial class Binder
             }
         }
         _bodyWork.Clear();
+        // Any generic local function a body outside a method declared.
+        SettleGenericCaptures();
         _declarationBatch.ThrowIfAny();
     }
 
@@ -3087,15 +3089,23 @@ public sealed partial class Binder
                     };
                     if (md.TypeParams.Count > 0) AddNames(ms.WritableTypeParamNames, md.TypeParams);
 
-                    foreach (Param p in md.Params)
+                    for (int pi = 0; pi < md.Params.Count; pi++)
                     {
+                        Param p = md.Params[pi];
+                        Type resolved = Resolve(p.Type, sym);
                         ms.Params.Add(new ParamSymbol
                         {
                             Name = p.Name,
-                            Type = Resolve(p.Type, sym),
+                            Type = resolved,
                             ByRef = p.IsRef || p.IsOut,
                             ReadOnly = p.IsReadOnlyRef,
                             IsParams = p.IsParams,
+                            // A generic local function's captured variable,
+                            // by the address of its cell (ParamSym.Cell) --
+                            // not a struct's, which a reference reaches by
+                            // the address of its bytes.
+                            Cell = pi < md.Captures && !IsStructType(resolved),
+                            CapturedVariable = pi < md.Captures,
                         });
                     }
 
@@ -4070,7 +4080,18 @@ public sealed partial class Binder
             {
                 Declare(md.Params[i], _method.Params[i].Name,
                         new ParamSym(i, _method.Params[i].Type, _method.Params[i].Name,
-                                     _method.Params[i].ByRef, _method.Params[i].ReadOnly));
+                                     _method.Params[i].ByRef, _method.Params[i].ReadOnly)
+                        {
+                            Cell = _method.Params[i].Cell, CapturedVariable = _method.Params[i].CapturedVariable,
+                        });
+            }
+
+            // A HOISTED GENERIC LOCAL FUNCTION calls itself and the others it
+            // could see where it was written by the names written there.
+            HashSet<string> visible = new(StringComparer.Ordinal);
+            foreach ((string name, string method) in md.LocalGenerics)
+            {
+                if (visible.Add(name)) DeclareGenericLocal(md, name, method);
             }
 
             // A constructor's chained call runs before its body, so its
@@ -4120,6 +4141,7 @@ public sealed partial class Binder
 
             CheckBlock(md.Body);
             PopScope();
+            SettleGenericCaptures();
             SettleCapturedCells();
             _r.FrameSize[md] = _maxSlot;
             _method = null;
@@ -4168,6 +4190,11 @@ public sealed partial class Binder
 
     private void Declare(Node at, string name, Sym sym)
     {
+        // A generic local function being probed is told what it declares
+        // itself: never a variable it captures through a call
+        // (SettleGenericCaptures).
+        foreach (GenericCaptures owner in _probeOwners) owner.OwnNames.Add(name);
+
         // `(_, _) => ...`: a lambda naming more than one parameter `_` has
         // discards for all of them, as C# 9 has it. The first holds the name;
         // the rest bind nothing.
@@ -4270,8 +4297,7 @@ public sealed partial class Binder
         // method's group, as a method of the type is reached by its own.
         foreach ((string name, string method) in b.GenericLocals)
         {
-            List<MethodSymbol>? methods = _thisType?.FindMethods(method);
-            if (methods is { Count: > 0 }) Declare(b, name, new MethodGroupSym(methods));
+            DeclareGenericLocal(b, name, method);
         }
 
         DeclareLocalFunctions(b);
@@ -4282,6 +4308,10 @@ public sealed partial class Binder
             CheckStmt(s);
         }
         if (labels) _labels.RemoveAt(_labels.Count - 1);
+
+        // WHAT THIS BLOCK'S GENERIC LOCAL FUNCTIONS CAPTURE, found while every
+        // variable they may name is still in scope (Binder.GenericCaptures).
+        if (b.GenericLocals.Count > 0) DiscoverGenericCaptures(b);
         PopScope();
     }
 
@@ -4463,11 +4493,24 @@ public sealed partial class Binder
                         Error(d, "'var' needs an initialiser to infer from");
                         type = Type.Error;
                     }
+                    // A LAMBDA'S NATURAL TYPE (C# 10), and once worked out,
+                    // whatever the initialiser: it is spelt on the declaration
+                    // (Binder.NaturalTypes).
+                    else if (d.Init is LambdaExpr || d.NaturalType is not null)
+                    {
+                        type = NaturalDelegate(d, null);
+                    }
                     else
                     {
                         type = CheckExpr(d.Init);
 
-                        if (type.Prim == Prim.NullLiteral)
+                        // A METHOD GROUP'S, when it is one method.
+                        if (type.IsVoid && _r.Resolved.TryGetValue(d.Init, out Sym? group)
+                            && group is MethodGroupSym or CapturedMethodGroupSym)
+                        {
+                            type = NaturalDelegate(d, group);
+                        }
+                        else if (type.Prim == Prim.NullLiteral)
                         {
                             Error(d, "'var' cannot infer a type from null; write the type explicitly");
                             type = Type.Error;
@@ -6350,13 +6393,30 @@ public sealed partial class Binder
                 // lambdas deep in an instance method, the middle one never
                 // took what only the innermost read, and the innermost found
                 // nothing to read it from.
-                if (Lookup(name) is LocalSym or ParamSym
-                    || _thisType is { } enclosing && enclosing.Name.StartsWith("Lambda$", StringComparison.Ordinal)
-                       && (enclosing.FindField(name) ?? enclosing.FindField("<" + name + ">")) is not null)
+                // A local or parameter is written down by Lookup itself, and
+                // only when it is the enclosing code's: one of the outer
+                // lambda's own is no capture of it, and a generic local
+                // function probed around this one (ProbeGenericLocal) would
+                // take it for a parameter it does not have.
+                if (Lookup(name) is LocalSym or ParamSym)
+                {
+                    continue;
+                }
+                if (_thisType is { } enclosing && enclosing.Name.StartsWith("Lambda$", StringComparison.Ordinal)
+                    && (enclosing.FindField(name) ?? enclosing.FindField("<" + name + ">")) is not null)
                 {
                     outerCaptured[name] = held;
                 }
             }
+        }
+
+        // WHILE A GENERIC LOCAL FUNCTION IS PROBED for what it captures
+        // (ProbeGenericLocal), a lambda inside it is wanted for the same and
+        // nothing more: what it read is passed up above, and no class is
+        // made of a body that is never compiled.
+        if (_probing > 0)
+        {
+            return wanted;
         }
 
         // ---- the class ------------------------------------------------------
@@ -6649,6 +6709,27 @@ public sealed partial class Binder
         foreach ((string name, ConstSym constant) in constants)
         {
             Declare(lam, name, constant);
+        }
+        // AND THE GENERIC LOCAL FUNCTIONS IN SCOPE WHERE IT WAS WRITTEN: they
+        // are methods of the type, called from in here through the `this`
+        // the closure holds when they are instance methods.
+        Dictionary<string, Sym> generics = new(StringComparer.Ordinal);
+        foreach (LocalScope scope in wasScopes)
+        {
+            foreach ((string name, Sym named) in scope)
+            {
+                if (_genericLocalSyms.Contains(named)) generics[name] = named;
+            }
+        }
+        foreach ((string name, Sym named) in generics)
+        {
+            if (constants.ContainsKey(name)) continue;
+            List<MethodSymbol> methods = named is CapturedMethodGroupSym held ? held.Methods : ((MethodGroupSym)named).Methods;
+            Sym again = thisField is not null && methods.Any(m => !m.Static)
+                ? new CapturedMethodGroupSym(thisField, methods)
+                : new MethodGroupSym(methods);
+            _genericLocalSyms.Add(again);
+            Declare(lam, name, again);
         }
         PushScope(functionBoundary: true);
 
@@ -7243,7 +7324,10 @@ public sealed partial class Binder
         // same class and the two compare equal, as C# requires of delegates.
         IReadOnlyList<MethodSymbol> candidates = sym is MethodGroupSym mg ? mg.Methods : ((CapturedMethodGroupSym)sym).Methods;
         MethodSymbol? chosen = candidates.FirstOrDefault(m => m.Params.Count == invoke.Params.Count);
-        if (chosen is not null) made.GroupIdentity = ClosureIdentity.Of(chosen) + (receiver is null ? "" : "$bound");
+        // Not a generic local function's: its closure holds the variables
+        // that one captured where it was converted, which are no other's.
+        if (chosen is not null && candidates.All(m => m.Decl is not MethodDecl { HoistedName: not null }))
+            made.GroupIdentity = ClosureIdentity.Of(chosen) + (receiver is null ? "" : "$bound");
         if (receiver is not null) _boundTargets[made] = receiver;
 
         for (int i = 0; i < invoke.Params.Count; i++)
@@ -13404,7 +13488,9 @@ public sealed partial class Binder
 
     /// <summary>A closure field over this holds its cell, not its value.</summary>
     private static bool CellSource(Sym? from)
-        => from is LocalSym { Boxed: true } || from is FieldSym { Field.Boxed: true } || from is ParamSym { Boxed: true };
+        => from is LocalSym { Boxed: true } || from is FieldSym { Field.Boxed: true } || from is ParamSym { Boxed: true }
+        // A generic local function's captured variable is the cell itself.
+        || from is ParamSym { Cell: true };
 
     // The closure fields made holding a copy, and what they copied: a
     // parameter written AFTER the lambda that captured it, or by a lambda
@@ -14150,8 +14236,9 @@ public sealed partial class Binder
                 // a constant pattern.
                 ConstSym k => k.Type,
                 // A generic local function's name: its method group, called
-                // as any method of the type is.
-                MethodGroupSym => Type.Void,
+                // as any method of the type is -- through the `this` a
+                // closure holds, from inside one (DeclareGenericLocal).
+                MethodGroupSym or CapturedMethodGroupSym => Type.Void,
                 _ => Type.Error,
             };
 
@@ -15953,6 +16040,8 @@ public sealed partial class Binder
                 localTarget = new FieldSym(capturedLocal);
             if (localTarget is not null && LocalFunctionDeclaration(localTarget) is { } localFunction)
                 CompleteLocalArguments(c, localFunction);
+            if (localTarget is not null && _genericLocalSyms.Contains(localTarget) && GenericLocalTemplate(localTarget) is MethodDecl hoisted)
+                PassCaptures(c, hoisted);
         }
 
         // NAMED ARGUMENTS ARE PUT IN ORDER BEFORE ANYTHING ELSE HAPPENS.

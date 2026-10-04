@@ -1846,6 +1846,13 @@ public sealed class Monomorphiser
                 made.File = md.File;
                 made.TemplateIndex = md.TemplateIndex;
 
+                // A HOISTED GENERIC LOCAL FUNCTION stays one: its written
+                // name, the names it calls by, and how many of its parameters
+                // are the variables it captured.
+                made.HoistedName = md.HoistedName;
+                made.LocalGenerics.AddRange(md.LocalGenerics);
+                made.Captures = md.Captures;
+
                 return made;
             }
 
@@ -1917,6 +1924,9 @@ public sealed class Monomorphiser
                     // declared.
                     IsConst = d.IsConst,
                     IsRef = d.IsRef, IsReadOnlyRef = d.IsReadOnlyRef,
+                    // The natural type the checker spelt, substituted -- and
+                    // so made, which is what it was spelt for.
+                    NaturalType = d.NaturalType is null ? null : Sub(d.NaturalType, map),
                     Line = d.Line, Col = d.Col,
                 };
 
@@ -2290,6 +2300,7 @@ public sealed class Monomorphiser
                 // arguments. The checker runs more than once now, and a copy
                 // that forgot would have the receiver put in twice.
                 made.ReceiverAdded = c.ReceiverAdded;
+                made.CapturesPassed = c.CapturesPassed;
                 return made;
             }
 
@@ -2363,7 +2374,9 @@ public sealed class Monomorphiser
                     BlockBody = lambda.BlockBody is null ? null : (Block)Rewrite(lambda.BlockBody, map),
                     Async = lambda.Async, Line = lambda.Line, Col = lambda.Col,
                     Returns = lambda.Returns is null ? null : Sub(lambda.Returns, map), ReturnMods = lambda.ReturnMods,
+                    TypesWritten = lambda.TypesWritten,
                 };
+                made.Attributes.AddRange(lambda.Attributes);
                 foreach (Param p in lambda.Params)
                 {
                     made.Params.Add(new Param

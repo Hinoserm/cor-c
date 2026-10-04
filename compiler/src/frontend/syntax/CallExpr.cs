@@ -38,6 +38,14 @@ public sealed class CallExpr : Expr
     public bool ReceiverAdded { get; set; }
 
     /// <summary>
+    /// Whether the variables a generic local function captured have been put
+    /// in front of the arguments (MethodDecl.Captures), which, like the
+    /// receiver above, must happen once however many times the call is
+    /// checked.
+    /// </summary>
+    public bool CapturesPassed { get; set; }
+
+    /// <summary>
     /// `{value:format}` in an interpolated string, written as
     /// value.ToString(format): the binder keeps the call where the value's type
     /// takes a format and otherwise uses the value as it is, as C# does.

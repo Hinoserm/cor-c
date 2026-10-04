@@ -19,4 +19,18 @@ public sealed class LambdaExpr : Expr
     /// </summary>
     public TypeRef? Returns { get; init; }
     public Mods ReturnMods { get; init; }
+
+    /// <summary>
+    /// Every parameter's type was written, `(int x, string s) => ...`: the
+    /// Params carry them, and with them C# 10 gives the lambda a natural
+    /// type. Otherwise the parameters' types are left empty for the delegate
+    /// it converts to to fill in.
+    /// </summary>
+    public bool TypesWritten { get; init; }
+
+    /// <summary>
+    /// `[A] (int x) => x`: the lambda's own attributes (C# 10), kept as
+    /// written. Nothing here reads them; .NET shows them only to reflection.
+    /// </summary>
+    public List<AttributeRef> Attributes { get; } = new();
 }

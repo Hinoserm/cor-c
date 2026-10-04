@@ -192,6 +192,7 @@ public sealed partial class Binder
         => target switch
         {
             NameExpr n when _r.Resolved.TryGetValue(n, out Sym? s) && s is FieldSym { Field: var f } && IsCapture(f) => n.Name,
+            NameExpr n when _r.Resolved.TryGetValue(n, out Sym? s) && s is ParamSym { CapturedVariable: true } => n.Name,
             MemberExpr { Target: { } inner } m when m.Target is not ThisExpr
                 && _r.TypeOf(inner) is { Symbol.Kind: TypeKind.Struct, Nullable: false, IsArray: false, IsPointer: false }
                 => CapturedVariable(inner),
@@ -269,6 +270,10 @@ public sealed partial class Binder
                 {
                     LocalSym { IsRef: true } l => l.RefEscapes,
                     LocalSym => false,
+                    // A generic local function's captured variable is the
+                    // enclosing method's local, passed by reference only to
+                    // reach it (CapturedVariable).
+                    ParamSym { CapturedVariable: true } => false,
                     ParamSym p => p.ByRef,
                     // A VARIABLE A CLOSURE CAPTURED is a local of the method
                     // it was written in, and reaches no further than one

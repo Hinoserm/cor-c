@@ -19,7 +19,25 @@ public sealed record ParamSym(int Index, Type Type, string Name, bool ByRef = fa
     /// write the lambda made. One never written is the same as its copy, and
     /// pays nothing.
     /// </summary>
-    public bool Boxed => Captured && Written && !ByRef;
+    public bool Boxed => (Captured && Written || ForcedCell) && !ByRef;
+
+    /// <summary>
+    /// A generic local function captured it (Binder.PassCaptures): its
+    /// address goes to the hoisted method, which may hand it on to a lambda
+    /// of its own, so it lives in a cell whatever writes it.
+    /// </summary>
+    public bool ForcedCell { get; set; }
+
+    /// <summary>
+    /// A hoisted generic local function's captured variable (MethodDecl.
+    /// Captures): by reference, and what it refers to is the enclosing
+    /// method's CELL, so a lambda inside may hold that cell and share the
+    /// one variable, as a lambda over the enclosing local itself does.
+    /// </summary>
+    public bool Cell { get; init; }
+
+    /// <summary>Any captured variable of a generic local function, a struct's too (MethodDecl.Captures).</summary>
+    public bool CapturedVariable { get; init; }
 
     /// <summary>Which parameter this is; the flags are set later, as LocalSym's Boxed is.</summary>
     public bool Equals(ParamSym? other)

@@ -365,6 +365,15 @@ public sealed partial class BindResult
     /// </summary>
     public List<(TypeDecl Owner, MethodDecl Template, List<TypeRef> Args, string Name)> WantedOverrides { get; } = new();
 
+    /// <summary>
+    /// A type the checker spelt into the source that no expansion has made
+    /// yet -- a lambda's natural type, `Func<int, int>` for `var f = (int x)
+    /// => x + 1;` where nothing else names it (LocalDecl.NaturalType). The
+    /// unit goes round once more so the monomorphiser makes it, as it would
+    /// for a copy that named it.
+    /// </summary>
+    public bool Reexpand { get; set; }
+
     /// <summary>`&Method`: the static method whose address this is, as a function pointer.</summary>
     public Dictionary<UnaryExpr, MethodSymbol> MethodAddresses { get; } = new(ReferenceEqualityComparer.Instance);
 

@@ -27,4 +27,27 @@ public sealed class MethodDecl : MemberDecl
     /// passed a string gets one. Null where the attribute was not written.
     /// </summary>
     public string? NotNullIfNotNull { get; init; }
+
+    /// <summary>
+    /// A GENERIC LOCAL FUNCTION hoisted into its type (Parser.
+    /// ParseGenericLocalFunction): the name it was written under, which is
+    /// how its block, and its own body, call it. Null for every other method.
+    /// </summary>
+    public string? HoistedName { get; set; }
+
+    /// <summary>
+    /// The generic local functions a hoisted one can call by their written
+    /// names -- its own, its siblings', those of every block around it -- as
+    /// (written name, member name) pairs, so its body, checked as a member of
+    /// the type, sees them as C# lets it.
+    /// </summary>
+    public List<(string Name, string Method)> LocalGenerics { get; } = new();
+
+    /// <summary>
+    /// How many of a hoisted generic local function's parameters, at the
+    /// front, are the variables it CAPTURED (Binder.SettleGenericCaptures):
+    /// each by reference, named as the variable is, so its body reads and
+    /// writes the enclosing method's own variable. -1 until they are known.
+    /// </summary>
+    public int Captures { get; set; } = -1;
 }

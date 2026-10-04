@@ -1,0 +1,21 @@
+// test: method group natural type overloads refused
+// expect-compile-error: the delegate type could not be inferred for 'p'
+// A method group has a natural type only when it is one method: with two
+// overloads there is no saying which Func `var` would be (CS8917). C#
+// refuses `var g = Math.Max;` for the same reason.
+
+using System;
+
+public static class Program
+{
+    static int Pick(int a) => a;
+
+    static string Pick(string a) => a;
+
+    public static int Main()
+    {
+        var p = Pick;
+        Console.WriteLine(p(1));
+        return 0;
+    }
+}

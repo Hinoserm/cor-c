@@ -219,16 +219,20 @@ public static class Frontend
         // follows. A full binding each round checked every body in the unit
         // again to find a handful of new wants. Should the full binding still
         // want something, the rounds begin again from it.
-        for (int round = 0; round < 8 && bound.Errors.Count == 0 && (bound.Wanted.Count > 0 || bound.WantedOverrides.Count > 0); round++)
+        // AND A TYPE THE CHECKER SPELT (BindResult.Reexpand) goes round as a
+        // copy would: the expansion makes it, and the next binding has it.
+        static bool More(Lang.BindResult b) => b.Wanted.Count > 0 || b.WantedOverrides.Count > 0 || b.Reexpand;
+        for (int round = 0; round < 8 && bound.Errors.Count == 0 && More(bound); round++)
         {
             bool made = false;
-            for (int step = 0; step < 8 && bound.Errors.Count == 0 && (bound.Wanted.Count > 0 || bound.WantedOverrides.Count > 0); step++)
+            for (int step = 0; step < 8 && bound.Errors.Count == 0 && More(bound); step++)
             {
 #if COR_SELFHOST_BENCHMARK
                 Program.BenchmarkStage("specialise-" + round + "-" + step);
 #endif
                 HashSet<string> known = new(unit.Types.Select(t => t.Name), StringComparer.Ordinal);
-                if (!Specialise(unit, bound))
+                bool reexpand = bound.Reexpand;
+                if (!Specialise(unit, bound) && !reexpand)
                 {
                     break;
                 }

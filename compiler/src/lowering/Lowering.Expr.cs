@@ -1630,6 +1630,13 @@ public sealed partial class Lowering
             {
                 value = parameterCell;
             }
+            // A GENERIC LOCAL FUNCTION'S CAPTURED VARIABLE arrives as the
+            // address of the enclosing method's cell (ParamSym.Cell), which
+            // is the cell: handed on as it is, the lambda shares it.
+            else if (from is ParamSym { Cell: true } cellParameter)
+            {
+                value = _params[cellParameter.Index];
+            }
             else
             {
                 Place? p = PlaceOfSym(from, lam);
