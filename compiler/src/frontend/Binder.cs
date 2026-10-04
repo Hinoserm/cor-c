@@ -4326,6 +4326,31 @@ public sealed partial class Binder
         return null;
     }
 
+    /// <summary>
+    /// AN EMBEDDED STATEMENT IS A SCOPE OF ITS OWN, braces or not: the then
+    /// and else of an if, the body of a while, do, for or foreach. What an
+    /// expression in it declares -- a pattern's name, an `out var` -- is
+    /// that statement's alone, as if it were written in braces (C# 7.3's
+    /// rules for expression variables): `if (a) return f(x) is { } runs ?
+    /// runs : null;` and a later `if (g() is not { } runs) return;` in a
+    /// block beside it are two names, not one declared twice. What an if's
+    /// or a while's CONDITION declares is not inside the embedded statement:
+    /// an if's belongs to the scope the if is in, and is seen after it
+    /// (`if (!int.TryParse(s, out int n)) return; Use(n);`), and a loop's to
+    /// the loop. A block is a scope already.
+    /// </summary>
+    private void CheckEmbedded(Stmt s)
+    {
+        if (s is Block)
+        {
+            CheckStmt(s);
+            return;
+        }
+        PushScope();
+        CheckStmt(s);
+        PopScope();
+    }
+
     private void CheckStmt(Stmt s)
     {
         switch (s)
@@ -4527,7 +4552,7 @@ public sealed partial class Binder
                 // what a branch proved is only true inside it.
                 List<Sym> inThen = Assume(i.Cond, true);
 
-                CheckStmt(i.Then);
+                CheckEmbedded(i.Then);
                 HashSet<LocalSym> afterThen = new(_assigned, ReferenceEqualityComparer.Instance);
                 Forget(inThen);
 
@@ -4538,7 +4563,7 @@ public sealed partial class Binder
 
                 if (i.Else != null)
                 {
-                    CheckStmt(i.Else);
+                    CheckEmbedded(i.Else);
                 }
                 HashSet<LocalSym> afterElse = new(_assigned, ReferenceEqualityComparer.Instance);
 
@@ -4597,7 +4622,7 @@ public sealed partial class Binder
                 List<Sym> inLoop = Assume(w.Cond, true);
 
                 _loopDepth++;
-                CheckStmt(w.Body);
+                CheckEmbedded(w.Body);
                 _loopDepth--;
                 Forget(inLoop);
                 PopScope();
@@ -4606,9 +4631,13 @@ public sealed partial class Binder
 
             case DoStmt dd:
                 _loopDepth++;
-                CheckStmt(dd.Body);
+                CheckEmbedded(dd.Body);
                 _loopDepth--;
+                // What the condition declares is the do statement's alone:
+                // nothing after the loop sees it.
+                PushScope();
                 CheckCondition(dd.Cond);
+                PopScope();
                 break;
 
             case ForStmt f:
@@ -4639,7 +4668,7 @@ public sealed partial class Binder
                 // body, and `t.Interfaces` two lines in was reported as a read
                 // through something that may be null.
                 _loopDepth++;
-                CheckStmt(f.Body);
+                CheckEmbedded(f.Body);
                 _loopDepth--;
 
                 foreach (Expr step in f.Step)
@@ -4748,7 +4777,7 @@ public sealed partial class Binder
                 // it makes it a cell, and the lowering stores into the cell.
                 _r.PatternSym[fe] = iteration;
                 _loopDepth++;
-                CheckStmt(fe.Body);
+                CheckEmbedded(fe.Body);
                 _loopDepth--;
                 PopScope();
                 break;
