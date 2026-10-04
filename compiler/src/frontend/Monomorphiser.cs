@@ -2335,6 +2335,7 @@ public sealed class Monomorphiser
                 // arguments. The checker runs more than once now, and a copy
                 // that forgot would have the receiver put in twice.
                 made.ReceiverAdded = c.ReceiverAdded;
+                made.ParamsPacked = c.ParamsPacked;
                 made.CapturesPassed = c.CapturesPassed;
                 return made;
             }

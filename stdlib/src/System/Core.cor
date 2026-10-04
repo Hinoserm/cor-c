@@ -7179,6 +7179,9 @@ struct Span<T> {
     private int from;
     private int count;
 
+    /// An empty span, as .NET's Span<T>.Empty.
+    public static Span<T> Empty => new Span<T>(EmptyArray<T>.Value);
+
     /// No array is an empty span, as .NET's constructor makes it.
     public Span(T[]? source) {
         items = source!;

@@ -1,0 +1,35 @@
+// test: null_forgiving_nullable_value_array
+// expect-exit: 0
+// expect-output:
+// 3 True 1
+// 2 False
+//
+// `a!` OF AN `int?[]?` IS AN `int?[]`. The `!` takes off the array's own
+// `?`, and a reference element's annotation, but a nullable VALUE element
+// is a Nullable<int> cell, a type of its own: stripping it made the array
+// an int[] and refused the assignment -- Span<int?> refused its own array.
+
+using System;
+
+struct Holder<T>
+{
+    private T[] items;
+    public Holder(T[]? source) { items = source!; }
+    public int Count => items.Length;
+    public T At(int i) => items[i];
+}
+
+static class P
+{
+    static int Main()
+    {
+        int?[] a = new int?[] { 1, null, 3 };
+        int?[]? maybe = a;
+        int?[] sure = maybe!;
+        Span<int?> s = new Span<int?>(a);
+        Console.WriteLine(sure.Length + " " + (s[1] == null) + " " + s[0]);
+        Holder<int?> h = new Holder<int?>(new int?[] { 5, 6 });
+        Console.WriteLine(h.Count + " " + (h.At(0) == null));
+        return 0;
+    }
+}

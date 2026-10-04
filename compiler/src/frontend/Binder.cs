@@ -6082,11 +6082,60 @@ public sealed partial class Binder
             return true;
         }
 
+        // AND ONE TYPE SPELT TWO WAYS THERE: a template with its arguments --
+        // `IEnumerator<(object, object)>`, what a member answers with the copy's
+        // type parameters bound as the words they are -- and the copy made of
+        // it, `IEnumerator$ValueTuple___canon___canon`, which a local declared
+        // with those parameters is. The same routine and layout, named as the
+        // monomorphiser names it with every word `__canon`, at any depth: a
+        // PriorityQueue built from (element, priority) pairs met it in a foreach.
+        if (InCanonicalCopy && (SameCanonical(from, to) || SameCanonical(to, from)))
+        {
+            return true;
+        }
+
         if (from.Symbol != null && to.Symbol != null)
         {
             return from.Symbol.DerivesFrom(to.Symbol);
         }
         return false;
+    }
+
+    /// <summary>
+    /// Whether `spelt`, a template with its arguments, names the copy `made`
+    /// is, inside a canonical copy: its name as Monomorphiser.MangledName
+    /// gives it with every reference argument -- object, or __canon -- the
+    /// canonical word, in tuples and nested arguments too.
+    /// </summary>
+    private static bool SameCanonical(Type spelt, Type made)
+    {
+        if (spelt.Args.Count == 0 || made.Args.Count > 0 || spelt.Symbol is not TypeSymbol template || made.Symbol is not TypeSymbol copy
+            || spelt.IsArray || made.IsArray || spelt.PointerDepth != 0 || made.PointerDepth != 0)
+        {
+            return false;
+        }
+        List<TypeRef> args = new(spelt.Args.Count);
+        foreach (Type a in spelt.Args)
+        {
+            if (RefOf(a) is not TypeRef r) return false;
+            args.Add(AsCanonical(r));
+        }
+        string name = template.Decl?.Outer is string outer ? outer + "." + template.Name : template.Name;
+        return Monomorphiser.MangledName(name, args) == copy.Name;
+
+        static TypeRef AsCanonical(TypeRef r)
+        {
+            if (r.ArrayRank == 0 && r.PointerDepth == 0 && r.Args.Count == 0 && r.Name is "object" or "Object" or "System.Object" or Monomorphiser.CanonName)
+            {
+                return new TypeRef { Name = Monomorphiser.CanonName, Line = r.Line, Col = r.Col };
+            }
+            if (r.Args.Count == 0) return r;
+            return new TypeRef
+            {
+                Name = r.Name, ArrayRank = r.ArrayRank, PointerDepth = r.PointerDepth,
+                Arguments = r.Args.Select(AsCanonical).ToList(), Line = r.Line, Col = r.Col,
+            };
+        }
     }
 
     /// <summary>
@@ -11355,9 +11404,12 @@ public sealed partial class Binder
                 // array therefore suppresses its annotated element as well as
                 // the array reference, allowing the common `filled!` idiom
                 // after every slot has been proven populated.
+                // NOT a nullable VALUE element: `int?[]` holds Nullable<int>
+                // cells, a type of their own, and `a!` of an `int?[]?` is an
+                // `int?[]` (Span<int?> refused its own array without this).
                 if (suppressed.IsArray && suppressed.Element is Type element)
                 {
-                    return Type.ArrayOf(element.AsNonNullable(), suppressed.ArrayRank);
+                    return Type.ArrayOf(element.IsNullableValue ? element : element.AsNonNullable(), suppressed.ArrayRank);
                 }
                 // `x!` OF A NULLABLE VALUE TYPE IS STILL A `T?`, as in C#: the
                 // operator changes the null state of a reference and nothing
@@ -16703,7 +16755,7 @@ public sealed partial class Binder
             // better served by a string than by an object.
             foreach (MethodSymbol m in group.Methods)
             {
-                if (m.TypeParams.Count == 0
+                if (!c.ParamsPacked && m.TypeParams.Count == 0
                     && m.Params.Count > 0
                     && m.Params[^1].IsParams
                     && m.Params[^1].Type.IsArray
@@ -16729,7 +16781,7 @@ public sealed partial class Binder
             Type? expandedElement = expandedParams?.Params[^1].Type.Element;
             foreach (MethodSymbol m in group.Methods)
             {
-                if (m.TypeParams.Count == 0 || m.Params.Count == 0 || !m.Params[^1].IsParams
+                if (c.ParamsPacked || m.TypeParams.Count == 0 || m.Params.Count == 0 || !m.Params[^1].IsParams
                     || m.Params[^1].Type is not { IsArray: true, Element: Type open }
                     || args.Count < m.Params.Count - 1
                     || !InferExpanded(m, open, out Dictionary<string, Type> got))
@@ -16800,6 +16852,7 @@ public sealed partial class Binder
 
                 c.Args.RemoveRange(fixedCount, c.Args.Count - fixedCount);
                 c.Args.Add(packed);
+                c.ParamsPacked = true;
                 args.RemoveRange(fixedCount, args.Count - fixedCount);
                 args.Add(CheckExpr(packed));
             }

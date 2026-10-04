@@ -38,6 +38,16 @@ public sealed class CallExpr : Expr
     public bool ReceiverAdded { get; set; }
 
     /// <summary>
+    /// The trailing arguments were packed into the params array (Binder,
+    /// the expanded form): the last argument IS the array, and a second
+    /// check of the call -- an argument packed in turn by an outer call's
+    /// params -- takes it as the ordinary form. Asked to expand again,
+    /// `Largest(3, 9, 4)` inside `Say("m", ...)` read its own int[] as the
+    /// one element and made Largest<int[]>.
+    /// </summary>
+    public bool ParamsPacked { get; set; }
+
+    /// <summary>
     /// Whether the variables a generic local function captured have been put
     /// in front of the arguments (MethodDecl.Captures), which, like the
     /// receiver above, must happen once however many times the call is
