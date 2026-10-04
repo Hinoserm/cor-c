@@ -1,6 +1,7 @@
 // test: gc_revoke
 // expect-exit: 134
 // expect-output:
+// census 2
 // revoked 2
 // bystander 7
 // still a Victim: False
@@ -42,6 +43,7 @@ static class Program
         Victim second = _second;
         Bystander other = _other;
         long vtable = Sys.PeekWord(Sys.Word(first));
+        Console.WriteLine("census " + Gc.CountIn(vtable, vtable + 1));
         long count = Gc.Revoke(vtable, vtable + 1);
         Console.WriteLine("revoked " + count);
         Console.WriteLine("bystander " + other.Say());

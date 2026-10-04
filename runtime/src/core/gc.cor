@@ -5983,6 +5983,7 @@ static class Gc
     // reads valid memory, and the collector frees it once nothing does.
 
     static long _revokeLow, _revokeHigh, _revokedTable, _revokedCount;
+    static bool _revokeCountOnly;
     const long RevokedSlots = 1024;
 
     /// Every live object whose vtable is in [low, high) tombstoned; how many.
@@ -5997,6 +5998,16 @@ static class Gc
         _revokeLow = 0;
         _revokeHigh = 0;
         return _revokedCount;
+    }
+
+    /// How many live objects have their vtable in [low, high), touching
+    /// none: whether a module is provably free of objects of its types
+    /// before it is taken out. Runs a full collection to know.
+    public static long CountIn(long low, long high)
+    {
+        _revokeCountOnly = true;
+        try { return Revoke(low, high); }
+        finally { _revokeCountOnly = false; }
     }
 
     /// Where every slot of the Revoked table leads.
@@ -6037,9 +6048,10 @@ static class Gc
         if ((Sys.Peek(block) & FlagFree) != 0 || Sys.Peek(block + KindAt) != KindObject) return;
         long vt = Sys.Peek(block + HeaderBytes) & WordSize.AddressMask;
         if (vt < _revokeLow || vt >= _revokeHigh) return;
+        _revokedCount = _revokedCount + 1;
+        if (_revokeCountOnly) return;
         Sys.Poke(block + KindAt, KindLeaf);
         Sys.Poke(block + HeaderBytes, vtable);
-        _revokedCount = _revokedCount + 1;
     }
 
     /// The walk CheckHeap makes -- every chunk's chain, every thread's
