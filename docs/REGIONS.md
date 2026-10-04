@@ -759,6 +759,7 @@ loops and refusals are reported. Switches:
 | `+widefirst` | Stand-ins start with every site their targets reach. |
 | `+pool=M` | The link's pool of inclusion work past each component's own bound, in millions of locations offered, filled again at each wide-call round's start (default 400; 0: none). |
 | `+cap=M` | The most of the pool one component may have, in millions (default 40). |
+| `+reachouter` | Offer outer boundaries: every function up to 16 calls above a making copy that does not outlive its objects, credited 1 KB a call or more in their bytes, is a candidate beside the nearest. Judged as `+judgebytes` (implied). The offering has its own walking budget, and the judge falls back to the nearest candidates if they cost it past its own. |
 | `+judgebytes` | Drop a boundary by bytes, not sites: Gain and Loss as each site's block bytes times its loops' trip counts. Gain goes to the innermost boundary even beneath another, and Loss counts only sites a boundary above would take (an A/B of the drop rule). |
 | `+loopold` | Weigh a loop's region as before the loop rule's change: what it sends to the heap against every site its laps make that it takes, a boundary's included (an A/B of the rule). |
 | `+classoff` | No receiver classes or guards: a virtual call runs every override. |

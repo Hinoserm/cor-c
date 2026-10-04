@@ -1641,7 +1641,11 @@ public static class RegionSolver
 
         private RegionFacts?[]? Judge()
         {
-            _judgeBytes = _report?.Contains("+judgebytes") == true;
+            // +reachouter offers outer boundaries, and is judged as +judgebytes
+            // judges: an outer boundary credited by the sites' bytes, and
+            // charged only for what a boundary above would take.
+            _reachOuter = _report?.Contains("+reachouter") == true;
+            _judgeBytes = _reachOuter || _report?.Contains("+judgebytes") == true;
             _globalReach = new();
             if (_escape is not null)
             {
@@ -1732,6 +1736,12 @@ public static class RegionSolver
                 if (_walked > Budget) return GiveUp("too much to judge");
             }
             if (_report is not null) Log($"judge: nearest walk {_walked} walked, {chosen.Count} chosen, {_clock.ElapsedMilliseconds} ms");
+            // What the nearest walk chose, kept: +reachouter's more candidates
+            // cost Evaluate more, and past its budget the judge goes back to
+            // these rather than give every region up.
+            SortedSet<int>? nearestOnly = _reachOuter ? new(chosen) : null;
+            if (_reachOuter) OfferOuter(chosen, madeBy, MayBeBoundary);
+            long walkedBefore = _walked;
             if (_report is not null && _escape is null) foreach (int f in chosen) Log("boundary chosen " + _functions[f].Name);
             // With no boundary at all a loop may still be given a region: Main's.
             if (chosen.Count == 0 && !LoopRegions)
@@ -1748,7 +1758,17 @@ public static class RegionSolver
             Verdict final = null!;
             for (int round = 0; ; round++)
             {
-                if (Evaluate(chosen, bySite, madeBy) is not { } verdict) return GiveUp("too much to judge");
+                Verdict? evaluated = Evaluate(chosen, bySite, madeBy);
+                if (evaluated is null && nearestOnly is not null && chosen.Count > nearestOnly.Count)
+                {
+                    Log($"judge: reachouter's candidates past the judge's budget; the nearest walk's {nearestOnly.Count} judged instead");
+                    chosen = nearestOnly;
+                    nearestOnly = null;
+                    _walked = walkedBefore;
+                    round = -1;
+                    continue;
+                }
+                if (evaluated is not { } verdict) return GiveUp("too much to judge");
                 if (_report is not null) Log($"judge: round {round}, {_walked} walked, {chosen.Count} chosen, {verdict.Taken.Count} taken, {_clock.ElapsedMilliseconds} ms");
                 taken = verdict.Taken;
                 final = verdict;
@@ -1810,6 +1830,81 @@ public static class RegionSolver
 
         // --region-report +judgebytes: the drop rule's A/B (SiteWeight, TakenAbove).
         private bool _judgeBytes;
+        // --region-report +reachouter: candidacy's A/B (OfferOuter).
+        private bool _reachOuter;
+
+        // How far up OfferOuter looks: a compiler's pass is some six to
+        // twelve calls above what its helpers allocate (driver, the pass's
+        // Run, a visitor, a rule, a builder, the collection), and the
+        // nearest walk's eight stopped short of it. Sixteen covers that with
+        // room, and every level is walked once a making copy, under its own
+        // budget.
+        private const int OuterReach = 16;
+        // What a function must take to be offered: 1 KB a call, estimated
+        // (SiteWeight). A region's opening and closing are two calls and a
+        // 32-byte record; a kilobyte is some thirty small objects the
+        // collector no longer sweeps one by one, well past what the calls
+        // cost, while an outer function holding only a stray object or two
+        // is left alone. The judge weighs every one offered again
+        // (+judgebytes), so the threshold only bounds how many it weighs.
+        private const long OuterShare = 1024;
+        // The walking OfferOuter may do: one judge's budget, counted apart
+        // from the judge's own (whose Budget gives every region up). Past
+        // it, what is offered so far stands and the judge goes on.
+        private const long OuterBudget = JudgeBudget;
+
+        /// <summary>
+        /// OUTER BOUNDARIES OFFERED (+reachouter): from each copy that makes
+        /// objects, every function up to OuterReach calls above it that may be
+        /// a boundary and whose return an object does not outlive is credited
+        /// with the object's bytes (SiteWeight); one credited with OuterShare
+        /// or more is a candidate too, beside the nearest the walk found.
+        /// Evaluate decides between them, in bytes. The nearest walk settles an
+        /// object at the first function that does not outlive it, so an outer
+        /// function -- a pass's Run, over leaves that kill their own
+        /// temporaries -- was a candidate only for objects nothing below it
+        /// settled.
+        /// </summary>
+        private void OfferOuter(SortedSet<int> chosen, Dictionary<int, List<int>> madeBy, Func<int, bool> mayBeBoundary)
+        {
+            long walked = 0;
+            Dictionary<int, long> credit = new();
+            bool stopped = false;
+            foreach ((int made, List<int> objects) in madeBy.OrderBy(pair => pair.Key))
+            {
+                List<int> open = objects.Where(o => !_globalReach.Contains(o)).ToList();
+                if (open.Count == 0) continue;
+                long[] weight = open.Select(o => SiteWeight(_objectFunction[o], _objectSite[o])).ToArray();
+                Dictionary<int, int> depth = new() { [made] = 0 };
+                Queue<int> next = new();
+                next.Enqueue(made);
+                HashSet<int> creditedHere = new();
+                while (next.TryDequeue(out int c))
+                {
+                    walked++;
+                    int f = _copyFunction[c];
+                    if (mayBeBoundary(f) && creditedHere.Add(f))
+                    {
+                        long sum = 0;
+                        for (int k = 0; k < open.Count; k++)
+                        {
+                            walked++;
+                            if (!Outlives(open[k], c)) sum += weight[k];
+                        }
+                        if (sum > 0) credit[f] = Math.Min(long.MaxValue / 2, credit.GetValueOrDefault(f) + sum);
+                    }
+                    if (depth[c] >= OuterReach) continue;
+                    foreach (int caller in _callers[c].Order())
+                        if (depth.TryAdd(caller, depth[c] + 1)) next.Enqueue(caller);
+                }
+                if (walked > OuterBudget) { stopped = true; break; }
+            }
+            int offered = 0;
+            foreach ((int f, long bytes) in credit)
+                if (bytes >= OuterShare && chosen.Add(f)) offered++;
+            if (_report is not null)
+                Log($"judge: reachouter offered {offered} more, {credit.Count} credited, {walked} walked{(stopped ? ", past its budget" : "")}, {_clock.ElapsedMilliseconds} ms");
+        }
 
         // What a site costs a call, estimated: its block's bytes (the sizes
         // hints; 32 where not a constant) times how often it runs in its
