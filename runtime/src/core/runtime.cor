@@ -240,7 +240,15 @@ static class Tls
     /// before its first touch of one. Where the thread finds them, not what
     /// keeps them: that is ThreadStatics' list, a static the collector reads.
     public const long ThreadStatics = 42 * WordSize.Bytes;
-    public const long Bytes = 43 * WordSize.Bytes;
+    /// The AsyncContext a continuation running on this block runs in (its
+    /// object's word, 0 outside every continuation): what a continuation
+    /// registered here captures. A word of the block's, so each processor
+    /// of a kernel -- each block -- has its own (AsyncContext).
+    public const long AsyncContext = 43 * WordSize.Bytes;
+    /// The region arena continuations run with on this block, mapped at
+    /// the first of them, or 0 (AsyncContext, Platform.TaskArenaBytes).
+    public const long TaskArena = 44 * WordSize.Bytes;
+    public const long Bytes = 45 * WordSize.Bytes;
 }
 
 /// WHERE THE ALLOCATIONS COME FROM (CORSAC_ALLOC_SAMPLE=1): every sixteenth

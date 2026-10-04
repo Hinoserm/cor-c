@@ -640,6 +640,8 @@ static class Platform
     /// (AsyncContext) -- a Linux thread is the context.
     public const long PostHook = 0;
     public const long ContextHook = 0;
+    public const long CompletedHook = 0;
+    public const long TaskArenaBytes = 0;
 
     /// Free memory as the collector may ask it: with the heap held, so without
     /// allocating (SysinfoBytes answers into a page of the system's own).

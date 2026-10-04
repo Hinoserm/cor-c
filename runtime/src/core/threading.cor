@@ -1036,7 +1036,12 @@ static class TaskErrors
 
 // ---- awaiters -----------------------------------------------------------------
 
-class TaskAwaiter
+// THE AWAITERS ARE STRUCTS, as .NET's are: `await t` on a task already
+// complete -- the common case in a kernel's hottest paths -- makes nothing at
+// all. GetAwaiter answers a value, IsCompleted says yes, GetResult reads the
+// outcome; only a real suspension keeps the awaiter, in the state machine
+// (a field of it, not an object of its own).
+struct TaskAwaiter
 {
     Task _task;
 
@@ -1070,7 +1075,7 @@ class TaskAwaiter
     }
 }
 
-class TaskAwaiter<T>
+struct TaskAwaiter<T>
 {
     Task<T> _task;
 
@@ -1104,7 +1109,7 @@ class TaskAwaiter<T>
 
 /// `task.ConfigureAwait(false)`. There is no synchronisation context to
 /// leave, so this awaits exactly as the task itself does.
-class ConfiguredTaskAwaitable
+struct ConfiguredTaskAwaitable
 {
     Task _task;
 
@@ -1119,7 +1124,7 @@ class ConfiguredTaskAwaitable
     }
 }
 
-class ConfiguredTaskAwaitable<T>
+struct ConfiguredTaskAwaitable<T>
 {
     Task<T> _task;
 
@@ -1137,7 +1142,7 @@ class ConfiguredTaskAwaitable<T>
 /// What Task.Yield() returns. .NET nests the awaiter as
 /// YieldAwaitable.YieldAwaiter; nested types are hoisted here, so it is
 /// YieldAwaiter.
-class YieldAwaitable
+struct YieldAwaitable
 {
     public YieldAwaiter GetAwaiter()
     {
@@ -1145,7 +1150,7 @@ class YieldAwaitable
     }
 }
 
-class YieldAwaiter
+struct YieldAwaiter
 {
     /// Never complete, so an await always suspends and requeues.
     public bool IsCompleted => false;
@@ -3370,33 +3375,44 @@ static class ThreadPool
 // else it runs. Captured where a continuation is registered (Task.
 // AddContinuation, a Post) and entered around the run (Scheduler.RunPosted).
 //
-// What a context holds:
+// What travels:
 //   - the PLATFORM'S word, opaque here: a kernel's is the process the work
 //     is done for (UserMode.Current() and its address space), asked and set
 //     through Platform.ContextHook;
 //   - the flow's [ThreadStatic] table, so that a thread static belongs to the
-//     flow and not to whichever thread block the continuation lands on;
-//   - the flow's region arena (Gc, regions), its four thread-block words, so
-//     the arena travels with the flow. A continuation runs from the
-//     scheduler's frame, so whatever regions an earlier run left open are
-//     below it and closed by the next region it opens (Gc.PopStale).
+//     flow and not to whichever thread block -- processor -- it runs on.
+//
+// A REGION ARENA FOR EVERY RUN, not for every flow: a continuation runs from
+// the scheduler's frame and returns to it, so every region it opened is
+// closed or left behind by the time it returns -- nothing of a run lives in
+// its arena after it (the compiler proves a region's objects dead by its
+// call's return, and a suspended method's frame is gone). So the block's
+// own arena for continuations (Tls.TaskArena, Platform.TaskArenaBytes) is
+// put in for the run and given back cleared after it: what a flow made in
+// regions is released when its run ends, and the next run of any flow on
+// that block -- that processor -- starts with it empty. The block's own
+// region words (a kernel processor's: none) are put back.
 //
 // NOTHING IS CAPTURED where the platform flows nothing (Platform.ContextHook
 // 0: Linux, a loader, a boot test): no allocation, no word moved. Where it
 // does, a continuation registered inside a run shares that run's context,
 // as an ExecutionContext is shared until something changes it; only a root
-// -- an await outside any continuation, a system call starting work --
-// makes one.
+// -- an await outside any continuation, a system call starting work -- makes
+// one. The context in force is a word of the thread block (Tls.AsyncContext),
+// so every processor has its own.
 //
-// ONE PROCESSOR: the context running is a static. Several processors (the
-// TODO's step 6) make it the processor's.
+// TWO RUNS OF ONE FLOW AT ONCE -- two branches of a WhenAll on two
+// processors -- share its owner but not its statics table: the first to
+// enter holds it, and the other runs with none of its own and keeps none.
+
 /// What a run in a context displaced, put back as it ends (AsyncContext).
 struct AsyncContextSaved
 {
-    public AsyncContext? Running;
-    public long RunningBlock;
+    public long Running;
     public long OwnerWord;
     public long Statics;
+    public bool HeldStatics;
+    public bool Arena;
     public long RegionBase, RegionAt, RegionEnd, RegionOpen;
 }
 
@@ -3406,13 +3422,8 @@ sealed class AsyncContext
     public object? Owner;
     /// The flow's [ThreadStatic] cells (ThreadStatics), or null for none yet.
     public object?[]? Statics;
-    /// The flow's region arena, as the thread block's four words keep it.
-    public long RegionBase, RegionAt, RegionEnd, RegionOpen;
-
-    static AsyncContext? _running;
-    // The thread block it runs on: another processor's capture -- a system
-    // call there while this one runs a continuation -- is not inside it.
-    static long _runningBlock;
+    // Whether a run has the statics table in (1) or not (0).
+    nint _staticsHeld;
 
     // Platform.ContextHook's operations: the word now; a word made current,
     // answering the one it displaced; that one put back.
@@ -3428,7 +3439,7 @@ sealed class AsyncContext
             return null;
         }
         object? owner = Sys.FromWord(Sys.Call(Platform.ContextHook, CaptureOp, 0, 0));
-        AsyncContext? running = _runningBlock == Sys.ThreadBlock() ? _running : null;
+        AsyncContext? running = Running;
         if (running != null)
         {
             running.Owner = owner;
@@ -3441,66 +3452,100 @@ sealed class AsyncContext
 
     /// The context in force on this thread block, or null outside every
     /// continuation.
-    public static AsyncContext? Running => _runningBlock == Sys.ThreadBlock() ? _running : null;
+    public static AsyncContext? Running
+    {
+        get
+        {
+            long block = Sys.ThreadBlock();
+            return block == 0 ? null : Sys.FromWord(Sys.Peek(block + Tls.AsyncContext)) as AsyncContext;
+        }
+    }
 
     /// `context` made current on this thread block: the platform's word, the
-    /// statics table and the region arena's words swapped in.
+    /// statics table (if no other run of the flow holds it) and, for an
+    /// outermost run, the block's task arena swapped in.
     public static AsyncContextSaved Enter(AsyncContext context)
     {
         AsyncContextSaved saved = default(AsyncContextSaved);
-        saved.Running = _running;
-        saved.RunningBlock = _runningBlock;
+        long block = Sys.ThreadBlock();
         if (Platform.ContextHook != 0)
         {
             saved.OwnerWord = Sys.Call(Platform.ContextHook, EnterOp, Sys.Word(context.Owner), 0);
         }
-        long block = Sys.ThreadBlock();
-        if (block != 0)
+        if (block == 0)
         {
-            saved.Statics = Sys.Peek(block + Tls.ThreadStatics);
-            saved.RegionBase = Sys.Peek(block + Tls.RegionBase);
-            saved.RegionAt = Sys.Peek(block + Tls.RegionAt);
-            saved.RegionEnd = Sys.Peek(block + Tls.RegionEnd);
-            saved.RegionOpen = Sys.Peek(block + Tls.RegionOpen);
-            Sys.Poke(block + Tls.ThreadStatics, Sys.Word(context.Statics));
-            Sys.Poke(block + Tls.RegionBase, context.RegionBase);
-            Sys.Poke(block + Tls.RegionAt, context.RegionAt);
-            Sys.Poke(block + Tls.RegionEnd, context.RegionEnd);
-            Sys.Poke(block + Tls.RegionOpen, context.RegionOpen);
+            return saved;
         }
-        _running = context;
-        _runningBlock = block;
+        saved.Running = Sys.Peek(block + Tls.AsyncContext);
+        saved.Statics = Sys.Peek(block + Tls.ThreadStatics);
+        saved.HeldStatics = Sys.Cas(Sys.AddressOf(ref context._staticsHeld), 0, 1) == 0;
+        Sys.Poke(block + Tls.ThreadStatics, saved.HeldStatics ? Sys.Word(context.Statics) : 0);
+        if (saved.Running == 0 && Platform.TaskArenaBytes > 0)
+        {
+            long arena = Sys.Peek(block + Tls.TaskArena);
+            if (arena == 0)
+            {
+                arena = Platform.Map(Platform.TaskArenaBytes);
+                Sys.Poke(block + Tls.TaskArena, arena);
+            }
+            if (arena != 0)
+            {
+                saved.Arena = true;
+                saved.RegionBase = Sys.Peek(block + Tls.RegionBase);
+                saved.RegionAt = Sys.Peek(block + Tls.RegionAt);
+                saved.RegionEnd = Sys.Peek(block + Tls.RegionEnd);
+                saved.RegionOpen = Sys.Peek(block + Tls.RegionOpen);
+                Sys.Poke(block + Tls.RegionBase, arena);
+                Sys.Poke(block + Tls.RegionAt, arena);
+                Sys.Poke(block + Tls.RegionEnd, arena + Platform.TaskArenaBytes);
+                Sys.Poke(block + Tls.RegionOpen, 0);
+            }
+        }
+        Sys.Poke(block + Tls.AsyncContext, Sys.Word(context));
         return saved;
     }
 
-    /// The run in `context` over: what it made of the statics and the arena
-    /// kept in the context, and the block's own put back.
+    /// The run in `context` over: the statics table it made or grew kept in
+    /// the context (when it held it), the task arena cleared and taken out,
+    /// and the block's own words put back.
     public static void Leave(AsyncContext context, AsyncContextSaved saved)
     {
         long block = Sys.ThreadBlock();
         if (block != 0)
         {
             long statics = Sys.Peek(block + Tls.ThreadStatics);
-            if (statics != Sys.Word(context.Statics))
+            if (saved.HeldStatics)
             {
-                context.Statics = ThreadStatics.Flowing(statics);
+                if (statics != Sys.Word(context.Statics)) context.Statics = ThreadStatics.Flowing(statics);
+                Sys.AtomicSwap(Sys.AddressOf(ref context._staticsHeld), 0);
             }
-            context.RegionBase = Sys.Peek(block + Tls.RegionBase);
-            context.RegionAt = Sys.Peek(block + Tls.RegionAt);
-            context.RegionEnd = Sys.Peek(block + Tls.RegionEnd);
-            context.RegionOpen = Sys.Peek(block + Tls.RegionOpen);
+            else if (statics != 0)
+            {
+                // A table this run made with the flow's in other hands: off
+                // the list, and nobody's.
+                ThreadStatics.Flowing(statics);
+            }
+            if (saved.Arena)
+            {
+                // The pointer first, as RegionLeave sets it: a scan of the
+                // block reads no further than the arena's start.
+                long arena = Sys.Peek(block + Tls.RegionBase);
+                long used = Sys.Peek(block + Tls.RegionAt) - arena;
+                Sys.Poke(block + Tls.RegionAt, arena);
+                Sys.Poke(block + Tls.RegionOpen, 0);
+                if (used > 0) Sys.MemorySet(arena, 0, used);
+                Sys.Poke(block + Tls.RegionBase, saved.RegionBase);
+                Sys.Poke(block + Tls.RegionAt, saved.RegionAt);
+                Sys.Poke(block + Tls.RegionEnd, saved.RegionEnd);
+                Sys.Poke(block + Tls.RegionOpen, saved.RegionOpen);
+            }
             Sys.Poke(block + Tls.ThreadStatics, saved.Statics);
-            Sys.Poke(block + Tls.RegionBase, saved.RegionBase);
-            Sys.Poke(block + Tls.RegionAt, saved.RegionAt);
-            Sys.Poke(block + Tls.RegionEnd, saved.RegionEnd);
-            Sys.Poke(block + Tls.RegionOpen, saved.RegionOpen);
+            Sys.Poke(block + Tls.AsyncContext, saved.Running);
         }
         if (Platform.ContextHook != 0)
         {
             Sys.Call(Platform.ContextHook, LeaveOp, saved.OwnerWord, 0);
         }
-        _running = saved.Running;
-        _runningBlock = saved.RunningBlock;
     }
 }
 
@@ -3591,12 +3636,16 @@ static class InterruptCompletions
         }
         _free = _links[slot];
         _links[slot] = 0;
-        _held[slot] = task;
-        _typed[slot] = typed;
-        _results[slot] = 0;
+        // THE GENERATION BEFORE THE TASK: a handler on another processor
+        // that reads this slot's task with a stale handle reads the new
+        // generation after it (Complete), and completes nothing.
         int generation = (_generations[slot] + 1) & 0x7FFF;
         if (generation == 0) generation = 1;
         _generations[slot] = generation;
+        Sys.Fence();
+        _typed[slot] = typed;
+        _results[slot] = 0;
+        _held[slot] = task;
         gate.Exit();
         Sys.AtomicAdd(Sys.AddressOf(ref _armed), 1);
         return ((long)generation << 16) | (long)(slot + 1);
@@ -3626,8 +3675,11 @@ static class InterruptCompletions
         {
             return false;
         }
+        // The task, then the generation again: Arm writes them the other way
+        // round, so a slot re-armed in between is seen as such.
         Task? task = _held[slot];
-        if (task == null || !task.TryClaim())
+        Sys.Fence();
+        if (task == null || _generations[slot] != generation || !task.TryClaim())
         {
             return false;
         }
@@ -3639,9 +3691,15 @@ static class InterruptCompletions
             _links[slot] = (int)head;
             if (Sys.Cas(at, head, slot + 1) == head)
             {
-                return true;
+                break;
             }
         }
+        // Somebody to finish it: a kernel's idle processor woken.
+        if (Platform.CompletedHook != 0)
+        {
+            Sys.Call(Platform.CompletedHook, 0, 0, 0);
+        }
+        return true;
     }
 
     /// THREAD CONTEXT'S HALF: every task handlers completed since the last

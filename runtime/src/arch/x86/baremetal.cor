@@ -408,6 +408,18 @@ static class Platform
     /// displaced word (puts it back). 0: no context flows.
     public static long ContextHook;
 
+    /// Called with no arguments by InterruptCompletions.Complete -- from an
+    /// interrupt handler, so it may not allocate or wait -- once a task is
+    /// queued for finishing: a kernel wakes an idle processor to run its
+    /// loop. 0: nobody to tell.
+    public static long CompletedHook;
+
+    /// The region arena each thread block runs continuations with
+    /// (AsyncContext; Tls.TaskArena), in bytes: mapped at the first run on
+    /// the block, cleared after every run. 0: continuations run with the
+    /// block's own arena words, whatever they are.
+    public static long TaskArenaBytes;
+
     public static bool VerifyGenerations()
     {
         return false;
