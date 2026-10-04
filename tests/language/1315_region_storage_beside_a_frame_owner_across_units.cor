@@ -1,0 +1,42 @@
+// test: region_storage_beside_a_frame_owner_across_units
+// units: tests/language/support/1315_frame_owner_units.cor
+// regions: taken
+// expect-exit: 0
+// expect-output:
+// total 160905650 storage in the region True
+//
+// A COLLECTION IN ITS BOUNDARY'S FRAME GROWS IN THE BOUNDARY'S REGION. The
+// link's lifetime pass puts a List and a Dictionary that never leave their
+// call in the call's frame, and their storage, made beside them (AllocNear),
+// went to the heap: an owner not in the innermost region. Now an owner on
+// the thread's stack in a frame that returns no later than the innermost
+// region ends takes storage in that region (Gc.OnStackWithin). Frames.Fill
+// is a boundary -- its scratch array, of a length known only as it runs, is
+// its region's -- and its List grows from nothing to a thousand items, its
+// Dictionary to three hundred entries: a dozen arrays or more a call, made
+// in the region or grown there in place (Gc.RegionBlocks,
+// Gc.RegionGrownInPlace), where without them a call makes one. Everything
+// is read back after a collection inside the boundary.
+//
+// Per round r: the list's 3k + r for k below 1000 (1498500 + 1000r), the
+// map's k + r for k below 300 (44850 + 300r), the scratch's 0..L-1 for
+// L = r % 7 + 8, and the two counts (1300); over rounds 0..99.
+
+using System;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    // Not Main itself: what the entry calls is never a boundary.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Run()
+    {
+        long total = 0, before = Gc.RegionBlocks + Gc.RegionGrownInPlace;
+        for (int round = 0; round < 100; round++) total += Frames.Fill(round);
+        long perCall = (Gc.RegionBlocks + Gc.RegionGrownInPlace - before) / 100;
+        Console.WriteLine("total " + total + " storage in the region " + (perCall >= 10));
+        return 0;
+    }
+
+    static int Main() => Run();
+}

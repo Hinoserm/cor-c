@@ -2234,16 +2234,31 @@ static class Gc
 
     // EACH REGION BEGINS WITH ITS RECORD, a leaf block of two words: the
     // region it is inside (0 for none) and the frame of the call that opened
-    // it. A throw that leaves that call runs no RegionLeave; the next region
+    // it, its low bit set for a loop's region (LoopMark: a frame pointer is
+    // a word apart from the next, so the bit is never the frame's own). A
+    // throw that leaves that call runs no RegionLeave; the next region
     // opened or allocation made from a frame above it finds the frame gone
     // and closes it then (PopStale), and an outer region's own leave sets the
     // arena back below anything opened inside it.
+
+    // The frame word's mark of a loop's region (RegionLoop).
+    const long LoopMark = 1;
+
+    // The frame a record names, without its mark.
+    static long OpenerFrame(long record) => Sys.Peek(record + HeaderBytes + WordSize.Bytes) & ~LoopMark;
 
     /// Opens a region for the call whose frame is `frame`: what RegionLeave
     /// is handed back, -1 when there is none (no regions on this platform, or
     /// no memory to grow the arena by). `bytes` is the most the region holds
     /// besides its record, as the link proved it; 0 when it is not known.
     public static long RegionEnter(long frame, long bytes)
+    {
+        return Enter(frame, bytes, 0);
+    }
+
+    // RegionEnter, the record's frame word marked with `mark`: LoopMark for
+    // the first region a thread opens being a loop's.
+    static long Enter(long frame, long bytes, long mark)
     {
         long tb = Sys.ThreadBlock();
         if (tb == 0) return -1;
@@ -2266,7 +2281,7 @@ static class Gc
             Room(tb, RecordBytes + bytes);
             RegionsSized = RegionsSized + 1;
         }
-        return OpenRecord(tb, frame);
+        return OpenRecord(tb, frame | mark);
     }
 
     // Room for `need` bytes at the arena's pointer: the chunk being filled,
@@ -2296,7 +2311,7 @@ static class Gc
         if (record >= 0)
         {
             long chunk = ChunkOf(tb, record);
-            if (Filled(tb, chunk, record) && Sys.Peek(record + HeaderBytes + WordSize.Bytes) == frame)
+            if (Filled(tb, chunk, record) && OpenerFrame(record) == frame)
             {
                 long freed = Cut(tb, chunk, record + RecordBytes);
                 Sys.Poke(tb + Tls.RegionOpen, record);
@@ -2308,7 +2323,7 @@ static class Gc
                 return record;
             }
         }
-        long opened = Sys.Peek(tb + Tls.RegionBase) == 0 ? RegionEnter(frame, 0) : OpenLooped(tb, frame);
+        long opened = Sys.Peek(tb + Tls.RegionBase) == 0 ? Enter(frame, 0, LoopMark) : OpenLooped(tb, frame);
         if (opened >= 0 && bytes > 0) Room(tb, bytes);
         return opened;
     }
@@ -2316,7 +2331,7 @@ static class Gc
     static long OpenLooped(long tb, long frame)
     {
         PopStale(tb, frame, false);
-        return OpenRecord(tb, frame);
+        return OpenRecord(tb, frame | LoopMark);
     }
 
     // A region's record laid down at the arena's pointer, the arena grown
@@ -2532,7 +2547,7 @@ static class Gc
     static void PopStale(long tb, long frame, bool at)
     {
         long open = Sys.Peek(tb + Tls.RegionOpen);
-        while (open != 0 && Below(Sys.Peek(open + HeaderBytes + WordSize.Bytes), frame, at))
+        while (open != 0 && Below(OpenerFrame(open), frame, at))
         {
             RegionLeave(open);
             open = Sys.Peek(tb + Tls.RegionOpen);
@@ -2545,20 +2560,77 @@ static class Gc
         return a < b || at && a == b;
     }
 
+    // How many frames OnStackWithin walks up to the innermost region's
+    // opener before it gives up (and the block goes on the heap).
+    const long FrameWalk = 64;
+
+    // WHETHER `owner` IS ON THIS THREAD'S STACK IN A FRAME THAT RETURNS NO
+    // LATER THAN THE INNERMOST REGION ENDS, the one `open` begins: storage
+    // made for it in that region is then dead when it is, as storage beside
+    // an owner in the region is. The link's lifetime pass puts a collection
+    // that never leaves its call in the call's frame, and its storage, made
+    // beside it, went to the heap.
+    //
+    // Every prologue is `push ebp; mov ebp, esp`, so the frame pointers are a
+    // chain of callers, each higher on the stack than the one it called (the
+    // stack grows down). The walk up it from this frame must meet the
+    // opener's frame exactly: that proves the opener is a live call on this
+    // stack, above everything between, and the stack between this frame's
+    // pointer and the opener's frame is that call's and its callees' --
+    // nothing of the heap's or the arena's lies inside it.
+    //
+    // A FUNCTION'S REGION (RegionEnter) ends as its opener returns, so an
+    // owner below the opener's frame pointer -- in the opener's own locals
+    // or a frame it called, deeper -- and at or above the stack pointer, so
+    // in a call still running, returns no later. (A boundary is never
+    // inlined, so the frame is its call's alone: RegionPointsTo.Open.)
+    //
+    // A LOOP'S REGION (RegionLoop) ends at the end of a lap, while its frame
+    // lives on: an owner in that frame may outlive the lap, and does not
+    // qualify. One in a frame the loop's function called does: that call
+    // returns before the lap it runs in ends. So the owner must be below the
+    // frame pointer of the opener's callee on this chain -- the callee's
+    // locals and deeper -- and with no callee (the allocation made in the
+    // opener's own frame, inlined there) nothing qualifies.
+    static bool OnStackWithin(long open, long owner)
+    {
+        long mask = WordSize.AddressMask;
+        long word = Sys.Peek(open + HeaderBytes + WordSize.Bytes);
+        long opener = word & ~LoopMark & mask;
+        long at = owner & mask;
+        if (at < (Sys.Stack() & mask) || at >= opener) return false;
+        long callee = 0;
+        long fp = Sys.FramePointer() & mask;
+        for (long k = 0; k < FrameWalk && fp != 0 && fp < opener; k++)
+        {
+            long next = Sys.Peek(fp) & mask;
+            if (next <= fp) return false;
+            callee = fp;
+            fp = next;
+        }
+        if (fp != opener) return false;
+        if ((word & LoopMark) == 0) return true;
+        return callee != 0 && at < callee;
+    }
+
     /// A block in the innermost open region -- when `owner` is 0, or is
-    /// itself in that region -- or on the heap. `frame` is the allocating
-    /// function's: a region opened below it is one a throw has left.
+    /// itself in that region, or is on this thread's stack in a frame that
+    /// returns no later than that region ends (OnStackWithin) -- or on the
+    /// heap. `frame` is the allocating function's: a region opened below it
+    /// is one a throw has left.
     public static nint AllocRegion(nint bytes, nint kind, long owner, long frame)
     {
         nint tb = (nint)Sys.ThreadBlock();
         long open = tb == 0 ? 0 : Sys.Peek(tb + Tls.RegionOpen);
-        if (open != 0 && Below(Sys.Peek(open + HeaderBytes + WordSize.Bytes), frame, false))
+        if (open != 0 && Below(OpenerFrame(open), frame, false))
         {
             PopStale(tb, frame, false);
             open = Sys.Peek(tb + Tls.RegionOpen);
         }
-        // Beside an object on the heap, or in an outer region: on the heap.
-        if (open == 0 || bytes < 0 || bytes > (nint)MaxRequest || owner != 0 && !InInnermost(tb, open, owner))
+        // Beside an object on the heap, in an outer region, or in a frame
+        // that outlives the region: on the heap.
+        if (open == 0 || bytes < 0 || bytes > (nint)MaxRequest
+            || owner != 0 && !InInnermost(tb, open, owner) && !OnStackWithin(open, owner))
         {
             return AllocWord(bytes, kind);
         }
