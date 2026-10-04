@@ -242,7 +242,7 @@ static class Tls
     /// keeps them: that is ThreadStatics' list, a static the collector reads.
     public const long ThreadStatics = 42 * WordSize.Bytes;
     /// Blocks this thread made in regions since it last told Gc.RegionBlocks
-    /// (Gc.AllocRegionFast): counted here, without a word every thread
+    /// (Runtime.AllocRegion): counted here, without a word every thread
     /// writes, and added in where a region ends (Gc.CountRegionBlocks).
     public const long RegionCount = 43 * WordSize.Bytes;
     public const long Bytes = 44 * WordSize.Bytes;
@@ -796,8 +796,35 @@ static class Runtime
     /// it back on every way out. What it hands RegionLeave is what this
     /// returned. `bytes` is the most the region holds in one call, as the
     /// link proved it, 0 when it could not. See Gc, "regions".
+    ///
+    /// THE FAST PATH, which the link inlines into every boundary (Lto's
+    /// UnitBackend, after the region passes): an arena already, no size
+    /// proved, no region at or below this frame left by a throw to close,
+    /// and room for the record where the arena is -- the record laid down
+    /// as Gc.OpenRecord lays it, then the pointer and the open region. Any
+    /// other case is Gc.RegionEnter's.
     public static nint RegionEnter(nint frame, nint bytes)
     {
+        nint tb = (nint)Sys.ThreadBlock();
+        if (bytes == 0 && tb != 0 && Sys.Peek(tb + (nint)Tls.RegionBase) != 0)
+        {
+            nint open = (nint)Sys.Peek(tb + (nint)Tls.RegionOpen);
+            nint record = (nint)Sys.Peek(tb + (nint)Tls.RegionAt);
+            nuint mask = (nuint)WordSize.AddressMask;
+            nint end = record + (nint)Gc.RegionRecordBytes;
+            if ((open == 0 || ((nuint)Sys.Peek(open + (nint)Gc.RecordFrameAt) & ~(nuint)Gc.RecordLoopMark & mask) > ((nuint)frame & mask))
+                && (nuint)end <= (nuint)Sys.Peek(tb + (nint)Tls.RegionEnd))
+            {
+                Sys.Poke(record, (nint)Gc.RegionRecordBytes);
+                Sys.Poke(end - (nint)Gc.BlockFooterBytes, (nint)Gc.RegionRecordBytes);
+                Sys.Poke(record + (nint)Gc.BlockKindAt, (nint)Gc.LeafKind);
+                Sys.Poke(record + (nint)Gc.BlockHeaderBytes, open);
+                Sys.Poke(record + (nint)Gc.RecordFrameAt, frame);
+                Sys.Poke(tb + (nint)Tls.RegionAt, end);
+                Sys.Poke(tb + (nint)Tls.RegionOpen, record);
+                return record;
+            }
+        }
         return (nint)Gc.RegionEnter((long)(nuint)frame, (long)bytes);
     }
 
@@ -817,8 +844,37 @@ static class Runtime
         return (nint)Gc.RegionLoop(record == -1 ? -1 : (long)(nuint)record, (long)(nuint)frame, (long)bytes);
     }
 
+    /// THE FAST PATH, inlined at every leave as RegionEnter is: a region
+    /// that began in the chunk being filled, below the pointer -- nothing
+    /// past that chunk to hand back -- with the stats not asked for (the
+    /// long way measures the arena as it is cut). The thread's blocks
+    /// counted, the pointer set back first, the bytes cleared, the record
+    /// popped: what Gc.RegionLeave does there. Any other case is its.
     public static void RegionLeave(nint outer)
     {
+        nint tb = (nint)Sys.ThreadBlock();
+        if (outer != -1 && tb != 0 && !Gc.StatsAsked && !Gc.CountingCollected)
+        {
+            nint last = (nint)Sys.Peek(tb + (nint)Tls.RegionEnd);
+            nint at = (nint)Sys.Peek(tb + (nint)Tls.RegionAt);
+            if ((nuint)outer >= (nuint)Sys.Peek(last) && (nuint)outer < (nuint)at)
+            {
+                nint counted = (nint)Sys.Peek(tb + (nint)Tls.RegionCount);
+                if (counted != 0)
+                {
+                    Sys.Poke(tb + (nint)Tls.RegionCount, 0);
+                    Gc.RegionBlocks = Gc.RegionBlocks + counted;
+                }
+                nint parent = (nint)Sys.Peek(outer + (nint)Gc.BlockHeaderBytes);
+                Sys.Poke(tb + (nint)Tls.RegionAt, outer);
+                nint freed = at - outer;
+                Sys.MemorySet(outer, 0, freed);
+                Sys.Poke(tb + (nint)Tls.RegionOpen, parent);
+                Gc.RegionFreedBytes = Gc.RegionFreedBytes + (freed - (nint)Gc.RegionRecordBytes);
+                Gc.FreedBytes = Gc.FreedBytes + (freed - (nint)Gc.RegionRecordBytes);
+                return;
+            }
+        }
         Gc.RegionLeave(outer == -1 ? -1 : (long)(nuint)outer);
     }
 
@@ -827,11 +883,51 @@ static class Runtime
     /// it is full. `kind` is Gc's: 0, LeafKind or ObjectKind.
     /// `frame` is the allocating function's own: a region opened beneath it
     /// that a throw has left is closed first (Gc.PopStale).
+    ///
+    /// THE FAST PATH, kept to a few instructions so the link inlines it at
+    /// every site (Lto's UnitBackend, after the region passes), as AllocWord
+    /// is at each `new`; a constant size folds its rounding there. A region
+    /// open, opened by a frame no deeper than ours -- one a throw has not
+    /// left -- and room for the block in the chunk being filled: header,
+    /// footer and kind written, then the pointer, as Gc.AllocRegion lays a
+    /// block (a scan of a stopped thread sees it whole or not at all), and
+    /// counted in the thread's block (Tls.RegionCount, added to
+    /// Gc.RegionBlocks where a region ends). Anything else -- no thread
+    /// block yet, no region, a stale one to close, a chunk to grow into, a
+    /// sampled allocation -- the long way (AllocRegionSlow).
     public static long AllocRegion(nint bytes, nint kind, nint frame)
     {
-        // THE FAST PATH, small enough for the inliner to put at every site
-        // (Gc.AllocRegionFast); sampled allocations the long way.
-        if (AllocHook == 0) return (long)(nuint)Gc.AllocRegionFast(bytes, kind, frame);
+        nint tb = (nint)Sys.ThreadBlock();
+        nint open = tb == 0 || AllocHook != 0 ? 0 : (nint)Sys.Peek(tb + (nint)Tls.RegionOpen);
+        if (open != 0 && (nuint)bytes <= (nuint)Gc.MostRequest)
+        {
+            nuint mask = (nuint)WordSize.AddressMask;
+            nuint opener = (nuint)Sys.Peek(open + (nint)Gc.RecordFrameAt) & ~(nuint)Gc.RecordLoopMark & mask;
+            if (opener >= ((nuint)frame & mask))
+            {
+                nint at = (nint)Sys.Peek(tb + (nint)Tls.RegionAt);
+                nint need = (bytes + (nint)Gc.BlockRounding) & (nint)Gc.BlockSizeMask;
+                if (need < (nint)Gc.SmallestBlock) need = (nint)Gc.SmallestBlock;
+                nint next = at + need;
+                if ((nuint)next <= (nuint)Sys.Peek(tb + (nint)Tls.RegionEnd))
+                {
+                    Sys.Poke(at, need);
+                    Sys.Poke(next - (nint)Gc.BlockFooterBytes, need);
+                    Sys.Poke(at + (nint)Gc.BlockKindAt, kind);
+                    Sys.Poke(tb + (nint)Tls.RegionAt, next);
+                    nint counted = tb + (nint)Tls.RegionCount;
+                    Sys.Poke(counted, (nint)Sys.Peek(counted) + 1);
+                    return (long)(nuint)(at + (nint)Gc.BlockHeaderBytes);
+                }
+            }
+        }
+        return AllocRegionSlow(bytes, kind, frame);
+    }
+
+    /// The long way of AllocRegion: Gc.AllocRegion, and the sampler.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long AllocRegionSlow(nint bytes, nint kind, nint frame)
+    {
         long at = (long)(nuint)Gc.AllocRegion(bytes, kind, 0, (long)(nuint)frame);
         if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes | (SampleKind(kind) << 40), at);
         return at;

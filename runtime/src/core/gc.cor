@@ -2208,6 +2208,21 @@ static class Gc
     /// Arrays grown where they were, at their region's top (RegionGrow),
     /// where a new one would have been made and the old left behind.
     public static long RegionGrownInPlace;
+    // THE ARENA'S LAYOUT AS RUNTIME'S FAST PATHS LAY BLOCKS AND RECORDS
+    // DOWN (Runtime.AllocRegion, RegionEnter, RegionLeave), which the link
+    // inlines at every site, boundary and leave: the same constants as the
+    // long ways here, named for them.
+    public const long BlockHeaderBytes = HeaderBytes;
+    public const long BlockFooterBytes = FooterBytes;
+    public const long BlockKindAt = KindAt;
+    public const long BlockRounding = Overhead + 7;
+    public const long BlockSizeMask = SizeMask;
+    public const long SmallestBlock = Smallest;
+    public const long MostRequest = MaxRequest;
+    public const long RegionRecordBytes = RecordBytes;
+    public const long RecordFrameAt = HeaderBytes + WordSize.Bytes;
+    public const long RecordLoopMark = LoopMark;
+
     /// Blocks made in regions: each given back when its region ends, as a
     /// free would have given it back (what Frees counts for the heap).
     /// Counted in each thread's block as they are made, and added here
@@ -2292,25 +2307,6 @@ static class Gc
     /// besides its record, as the link proved it; 0 when it is not known.
     public static long RegionEnter(long frame, long bytes)
     {
-        // THE FAST PATH: an arena already, no size proved, no region left
-        // by a throw at or below this frame to close, and room for the
-        // record where the arena is. Everything else is Enter's.
-        long tb = Sys.ThreadBlock();
-        if (bytes == 0 && tb != 0 && Sys.Peek(tb + Tls.RegionBase) != 0)
-        {
-            long open = Sys.Peek(tb + Tls.RegionOpen);
-            long record = Sys.Peek(tb + Tls.RegionAt);
-            if ((open == 0 || !Below(OpenerFrame(open), frame, true)) && record + RecordBytes <= Sys.Peek(tb + Tls.RegionEnd))
-            {
-                Stamp(record, RecordBytes, 0);
-                Sys.Poke(record + KindAt, KindLeaf);
-                Sys.Poke(record + HeaderBytes, open);
-                Sys.Poke(record + HeaderBytes + WordSize.Bytes, frame);
-                Sys.Poke(tb + Tls.RegionAt, record + RecordBytes);
-                Sys.Poke(tb + Tls.RegionOpen, record);
-                return record;
-            }
-        }
         return Enter(frame, bytes, 0);
     }
 
@@ -2424,26 +2420,6 @@ static class Gc
         long tb = Sys.ThreadBlock();
         if (record < 0 || tb == 0) return;
         CountRegionBlocks(tb);
-        // THE FAST PATH: the region began in the chunk being filled, below
-        // the pointer -- nothing past that chunk to hand back -- and the
-        // stats not asked for (they measure the arena as it is cut). The
-        // pointer back first, then the bytes cleared, as Cut has it.
-        if (!StatsAsked && !CountingCollected)
-        {
-            long last = Sys.Peek(tb + Tls.RegionEnd);
-            long at = Sys.Peek(tb + Tls.RegionAt);
-            if (record >= ChunkStart(last) && record < at)
-            {
-                long outer = Sys.Peek(record + HeaderBytes);
-                Sys.Poke(tb + Tls.RegionAt, record);
-                long freed = at - record;
-                Sys.MemorySet(record, 0, freed);
-                Sys.Poke(tb + Tls.RegionOpen, outer);
-                RegionFreedBytes = RegionFreedBytes + (freed - RecordBytes);
-                FreedBytes = FreedBytes + (freed - RecordBytes);
-                return;
-            }
-        }
         long chunk = ChunkOf(tb, record);
         if (!Filled(tb, chunk, record)) return;
         long outer = Sys.Peek(record + HeaderBytes);
@@ -2712,50 +2688,8 @@ static class Gc
         return callee != 0 && at < callee;
     }
 
-    /// <summary>
-    /// THE WAY IN FOR A REGION SITE, kept to a few instructions so the
-    /// inliner can put it at each (Runtime.AllocRegion), as AllocWord is at
-    /// each `new`: a region open, opened by a frame no deeper than ours -- a
-    /// record of a call that has not been left by a throw -- and room for
-    /// the block in the chunk being filled. The block is laid down before
-    /// the pointer passes it, as AllocRegion lays it: a scan of a stopped
-    /// thread sees it whole or not at all. Counted in the thread's block
-    /// (Tls.RegionCount), added to RegionBlocks where a region ends.
-    /// Everything else -- no region, a stale one to close first, a chunk to
-    /// grow into, a block too big -- is AllocRegion's, unchanged.
-    /// </summary>
-    public static nint AllocRegionFast(nint bytes, nint kind, nint frame)
-    {
-        nint tb = (nint)Sys.ThreadBlock();
-        // (No thread block yet, early in a process's start: the long way.)
-        nint open = tb == 0 ? 0 : (nint)Sys.Peek(tb + (nint)Tls.RegionOpen);
-        if (open != 0 && (nuint)bytes <= (nuint)MaxRequest)
-        {
-            nuint mask = (nuint)WordSize.AddressMask;
-            nuint opener = (nuint)Sys.Peek(open + (nint)(HeaderBytes + WordSize.Bytes)) & ~(nuint)LoopMark & mask;
-            if (opener >= ((nuint)frame & mask))
-            {
-                nint at = (nint)Sys.Peek(tb + (nint)Tls.RegionAt);
-                nint need = (bytes + (nint)(Overhead + 7)) & (nint)SizeMask;
-                if (need < (nint)Smallest) need = (nint)Smallest;
-                nint next = at + need;
-                if ((nuint)next <= (nuint)Sys.Peek(tb + (nint)Tls.RegionEnd))
-                {
-                    Sys.Poke(at, need);
-                    Sys.Poke(next - (nint)FooterBytes, need);
-                    Sys.Poke(at + (nint)KindAt, kind);
-                    Sys.Poke(tb + (nint)Tls.RegionAt, next);
-                    nint counted = tb + (nint)Tls.RegionCount;
-                    Sys.Poke(counted, (nint)Sys.Peek(counted) + 1);
-                    return at + (nint)HeaderBytes;
-                }
-            }
-        }
-        return AllocRegion(bytes, kind, 0, (long)(nuint)frame);
-    }
-
     /// What this thread counted in its block (Tls.RegionCount), added to RegionBlocks.
-    static void CountRegionBlocks(long tb)
+    public static void CountRegionBlocks(long tb)
     {
         long counted = Sys.Peek(tb + Tls.RegionCount);
         if (counted == 0) return;

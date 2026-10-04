@@ -265,6 +265,19 @@ public sealed class UnitBackend : IUnitBackend
             // And what is grown into a field the object frees itself, made
             // beside that object (RegionPointsTo.MakeStorageBeside).
             if (facts?.OwnedFields is { Beside: true } beside) RegionPointsTo.MakeStorageBeside(function, beside);
+            // AND THE REGION HELPERS' FAST PATHS PUT IN PLACE (Runtime.AllocRegion,
+            // RegionEnter, RegionLeave), as AllocWord's is at every `new`: the
+            // passes above made the calls, after every inliner here, so they
+            // stayed calls. One more inliner, over this function and those
+            // three bodies alone -- every other decision as it was, and
+            // GrowInPlace and the passes' other helpers calls still, being no
+            // body it is given. A site's frame is the FramePointer the site
+            // computed before the call, its caller's own, and a leave stays
+            // where LeaveLast put it, after the frees: inlining puts the body
+            // where the call was. The body allocates nothing (its long way is
+            // a call, AllocRegionSlow), so nothing in it is a site. A constant
+            // size folds the rounding (cleanup's ConstantFold).
+            if (module.RegionFacts is not null || importedSites) InlineRegionHelpers(function, local, Callee, cleanup);
             // Written out last here too: the link's lifetime pass saw them as
             // notes to the collector (CardMarks).
             new CardMarks().Run(local);
@@ -327,6 +340,31 @@ public sealed class UnitBackend : IUnitBackend
             sites.Attach(result);
         }
         return result;
+    }
+
+    /// <summary>
+    /// THE REGION HELPERS' FAST PATHS IN PLACE (Runtime.AllocRegion,
+    /// RegionEnter, RegionLeave): their bodies, as the unit that defines
+    /// them archived them or the link handed them over (callee), inlined
+    /// into `function` by an inliner given nothing else -- so nothing else
+    /// it calls changes -- and the cleanup run over what came in. A helper
+    /// whose body is not to be had stays a call.
+    /// </summary>
+    private static void InlineRegionHelpers(Function function, Module local, Func<string, Function?> callee, Pipeline cleanup)
+    {
+        string[] helpers = { RuntimeAbi.AllocRegion, RuntimeAbi.RegionEnter, RuntimeAbi.RegionLeave };
+        SortedSet<string> called = new(StringComparer.Ordinal);
+        foreach (Corsac.Lang.Ir.Block b in function.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Op == Opcode.Call && i.Callee is string name && Array.IndexOf(helpers, name) >= 0) called.Add(name);
+        if (called.Count == 0) return;
+        Module tail = new(local.Name) { Entry = function.Name, PreserveExports = true, NeedsHeap = local.NeedsHeap };
+        tail.Functions.Add(function);
+        foreach (string name in called)
+            if (callee(name) is Function body && body.Name == name && !ReferenceEquals(body, function)) tail.Functions.Add(body);
+        if (tail.Functions.Count == 1) return;
+        new Inline { SmallBody = 200, GrowthLimit = 1 << 20, ConstantBranchBody = 200, FreshOwnerBody = 0 }.Run(tail);
+        cleanup.Run(tail);
     }
 
     /// <summary>Whether a body touches, other than by storing into it, a field the link proved elements are owned through.</summary>

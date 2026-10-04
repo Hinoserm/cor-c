@@ -95,16 +95,18 @@ closes it first (`PopStale`). A catch in its own frame closes the regions
 its throw left (`RegionCatch`, inserted into every landing pad by
 `RegionPointsTo.CatchUp`).
 
-**Fast paths.** A region site's call (`Runtime.AllocRegion`) is a few
-instructions, as the heap's `AllocWord` is, small enough for the inliner to
-put at the site: a region open whose record names a frame no deeper than the
-allocating one, and room in the chunk being filled -- header, footer and kind
-written, then the pointer (`Gc.AllocRegionFast`). Anything else (no region,
-a stale one to close, a chunk to grow into, a sampled allocation) takes the
-long way, `Gc.AllocRegion`, unchanged. `RegionEnter` with no proved size lays
-its record down at once where the arena already is and no region at or below
-the frame is stale; `RegionLeave` of a region that began in the chunk being
-filled sets the pointer back and clears the bytes, with the stats off.
+**Fast paths.** A region site's call (`Runtime.AllocRegion`), a boundary's
+`RegionEnter` with no proved size and its `RegionLeave` are each a few
+instructions, as the heap's `AllocWord` is: a region open whose record names
+a frame no deeper than the allocating one and room in the chunk being filled
+(header, footer and kind written, then the pointer); a record laid down where
+the arena is when nothing at or below the frame is stale; a region that began
+in the chunk being filled set back and cleared, with the stats off. Anything
+else -- no region, a stale one to close, a chunk to grow into, a sampled
+allocation -- takes the long way in `Gc` (`AllocRegionSlow`, `Gc.RegionEnter`,
+`Gc.RegionLeave`), unchanged. The link inlines the three after its region
+passes (`UnitBackend.InlineRegionHelpers`), with an inliner given those
+bodies alone, so a constant size folds its rounding and nothing else changes.
 Blocks are counted in the thread's block (`Tls.RegionCount`) and added to
 `Gc.RegionBlocks` where a region or lap ends, not in one word every thread
 writes. Benchmark: `tests/benchmarks/region-allocation.cor`.
