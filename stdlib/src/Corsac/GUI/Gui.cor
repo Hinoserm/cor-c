@@ -194,6 +194,13 @@ enum SeatIoctl : long
     ClickActivation = 0x47550505,
     DoubleClicks = 0x47550506,
     HitCursor = 0x47550507,
+    ShellWatch = 0x47550600,
+    ShellWindowIcon = 0x47550601,
+    DesktopPaint = 0x47550602,
+    FlashWindow = 0x47550603,
+    AnimateCaption = 0x47550604,
+    WindowPixels = 0x47550605,
+    ShellWindowTitle = 0x47550606,
 }
 
 public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
@@ -353,6 +360,7 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
     Dictionary<int, byte[]> _animations = new Dictionary<int, byte[]>();   // the whole AnimateCursor record
     List<long> _watchesWindows = new List<long>();     // threads that asked, by id
     List<long> _watchesPointer = new List<long>();
+    List<long> _watchesShell = new List<long>();       // threads subscribed to the shell feed
     int _reservedBottom = -1;
 
     /// Under _keep.
@@ -378,7 +386,7 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
         int[] bindShapes, bindIds;
         byte[][] animations;
         int reserved;
-        bool watchWindows, watchPointer;
+        bool watchWindows, watchPointer, watchShell;
         List<Kept> mine = new List<Kept>();
         List<TrayKept> trays = new List<TrayKept>();
         lock (_keep)
@@ -405,6 +413,7 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
             }
             reserved = _reservedBottom;
             watchWindows = _watchesWindows.Contains(me);
+            watchShell = _watchesShell.Contains(me);
             watchPointer = _watchesPointer.Contains(me);
             foreach (TrayKept t in _trayKept) if (t.Owner == me) trays.Add(t);
             for (int i = 0; i < _kept.Count; i++)
@@ -435,6 +444,7 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
         lock (_keep) keys = new List<byte[]>(_menuKeys.Values);
         foreach (byte[] table in keys) Ioctl(SeatIoctl.MenuKeys, Sys.ArrayData(table));
         if (watchWindows) Ioctl(SeatIoctl.WatchWindows, 0);
+        if (watchShell) Ioctl(SeatIoctl.ShellWatch, 1);
         if (watchPointer) Ioctl(SeatIoctl.WatchPointer, 0);
         foreach (TrayKept t in trays) { Ioctl(SeatIoctl.TraySet16, Sys.ArrayData(t.Record)); GC.KeepAlive(t.Tip); }
 
@@ -1937,6 +1947,119 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
         Ioctl(SeatIoctl.WatchWindows, 0);
     }
 
+    // ---- the shell's feed and the window effects --------------------------------
+    //
+    // THE SEAT'S (os/gui/seatshell.cor, seatdesktop.cor). A taskbar
+    // subscribes to the feed (WatchShell) and is sent an event as each
+    // window it lists comes, goes, is activated, renamed, given an icon,
+    // flashes, is minimized or restored, or covers the screen, and as the
+    // notification area changes: Shell.WindowChanged. What is there when it
+    // subscribes it reads with Windows().
+
+    /// The shell feed's event kinds.
+    public const int ShellCreated = 200, ShellDestroyed = 201, ShellActivated = 202, ShellRetitled = 203, ShellIcon = 204,
+                     ShellFlash = 205, ShellState = 206, ShellFullScreen = 207, ShellTray = 208;
+
+    /// This thread sent the shell feed's events from now on (and Ctrl+Esc,
+    /// as WatchWindows has it), or no more.
+    public void WatchShell(bool on)
+    {
+        long me = Ioctl(SeatIoctl.Whoami, 0);
+        lock (_keep) { _watchesShell.Remove(me); if (on) _watchesShell.Add(me); }
+        Ioctl(SeatIoctl.ShellWatch, on ? 1 : 0);
+    }
+
+    /// A window's 16 by 16 icon, as its frame or its program gave it:
+    /// 0x00RRGGBB a pixel, -1 where it is clear; null for none.
+    public int[]? WindowIcon(int handle)
+    {
+        byte[] words = new byte[1024];
+        byte[] args = new byte[8];
+        PutWord(args, 0, handle); PutWord(args, 4, Sys.ArrayData(words));
+        long answer = Ioctl(SeatIoctl.ShellWindowIcon, Sys.ArrayData(args));
+        GC.KeepAlive(words);
+        if (answer != 1) return null;
+        int[] made = new int[256];
+        for (int i = 0; i < 256; i++)
+        {
+            int colorref = BitConverter.ToInt32(words, i * 4);
+            // COLORREFs, as the seat keeps a frame's icon: 0x00BBGGRR.
+            made[i] = colorref == -1 ? -1 : ((colorref & 0xFF) << 16) | (colorref & 0xFF00) | ((colorref >> 16) & 0xFF);
+        }
+        return made;
+    }
+
+    /// A window's name on a taskbar: its title, or its program's; "" for
+    /// a window not there.
+    public string WindowTitle(int handle)
+    {
+        byte[] args = new byte[12];
+        PutWord(args, 0, handle);
+        long length = Ioctl(SeatIoctl.ShellWindowTitle, Sys.ArrayData(args));
+        if (length <= 0) return "";
+        byte[] text = new byte[(int)length * 2];
+        PutWord(args, 4, Sys.ArrayData(text)); PutWord(args, 8, length);
+        long again = Ioctl(SeatIoctl.ShellWindowTitle, Sys.ArrayData(args));
+        GC.KeepAlive(text);
+        return again == length ? System.Text.Encoding.Unicode.GetString(text, 0, text.Length) : "";
+    }
+
+    /// The desktop's background -- the wallpaper the theme names, on the
+    /// desktop colour -- painted into a rectangle of one of this program's
+    /// windows (window coordinates), as the screen has it there: what a
+    /// desktop paints itself with (Windows' PaintDesktop).
+    public void PaintDesktop(int window, int x, int y, int width, int height)
+    {
+        Flush();
+        byte[] args = new byte[20];
+        PutWord(args, 0, window); PutWord(args, 4, x); PutWord(args, 8, y); PutWord(args, 12, width); PutWord(args, 16, height);
+        Ioctl(SeatIoctl.DesktopPaint, Sys.ArrayData(args));
+    }
+
+    /// FlashWindowEx: a window's caption and taskbar button flashed --
+    /// flags FLASHW_ (0 stop, 1 caption, 2 tray, 4 timer, 0xC until it is
+    /// in front), `count` times, every `period` ms (0: the caret's blink).
+    /// Whether its caption was active before.
+    public bool FlashWindow(int handle, int flags, int count, int period)
+    {
+        byte[] args = new byte[16];
+        PutWord(args, 0, handle); PutWord(args, 4, flags); PutWord(args, 8, count); PutWord(args, 12, period);
+        return Ioctl(SeatIoctl.FlashWindow, Sys.ArrayData(args)) > 0;
+    }
+
+    /// One of this program's windows' caption flown from one rectangle on
+    /// the screen to another over a quarter second (DrawAnimatedRects
+    /// IDANI_CAPTION): the minimize and restore animation.
+    public void AnimateCaption(int handle, Rectangle from, Rectangle to)
+    {
+        Flush();
+        byte[] args = new byte[36];
+        PutWord(args, 0, handle);
+        PutWord(args, 4, from.X); PutWord(args, 8, from.Y); PutWord(args, 12, from.X + from.Width); PutWord(args, 16, from.Y + from.Height);
+        PutWord(args, 20, to.X); PutWord(args, 24, to.Y); PutWord(args, 28, to.X + to.Width); PutWord(args, 32, to.Y + to.Height);
+        Ioctl(SeatIoctl.AnimateCaption, Sys.ArrayData(args));
+    }
+
+    /// What one of this program's windows shows in a rectangle of it (window
+    /// coordinates, its frame included): 0x00RRGGBB a pixel, row by row, 0
+    /// where it does not show; null when it cannot be read.
+    public int[]? WindowPixels(int handle, Rectangle area)
+    {
+        if (area.Width <= 0 || area.Height <= 0) return null;
+        Flush();
+        Present();
+        byte[] pixels = new byte[area.Width * area.Height * 4];
+        byte[] args = new byte[24];
+        PutWord(args, 0, handle); PutWord(args, 4, area.X); PutWord(args, 8, area.Y);
+        PutWord(args, 12, area.Width); PutWord(args, 16, area.Height); PutWord(args, 20, Sys.ArrayData(pixels));
+        long answer = Ioctl(SeatIoctl.WindowPixels, Sys.ArrayData(args));
+        GC.KeepAlive(pixels);
+        if (answer != (long)area.Width * area.Height) return null;
+        int[] made = new int[area.Width * area.Height];
+        for (int i = 0; i < made.Length; i++) made[i] = BitConverter.ToInt32(pixels, i * 4);
+        return made;
+    }
+
     /// Every shown window on the seat, bottom to top, whoever owns it.
     public SeatWindowInfo[] Windows()
     {
@@ -2280,7 +2403,31 @@ public class SeatWindowInfo
     public bool IsMinimized { get { return (Flags & 16) != 0; } }
     /// Its program asked for attention (FlashWindowEx): the taskbar lights its button.
     public bool IsFlashing { get { return (Flags & 32) != 0; } }
+    /// It covers the screen (the shell feed's flags only).
+    public bool IsFullScreen { get { return (Flags & 64) != 0; } }
 }
+
+/// What the shell feed said changed (Shell.WindowChanged).
+public enum ShellChange
+{
+    Created = 200, Destroyed = 201, Activated = 202, Retitled = 203, IconChanged = 204,
+    Flashed = 205, StateChanged = 206, FullScreen = 207, TrayChanged = 208,
+}
+
+/// One of the shell feed's events: what changed, the window (0 for the
+/// notification area, or for none activated), and its value -- the
+/// window's flags (SeatWindowInfo.Flags, 64 full screen) for Created and
+/// StateChanged; 1 or 0 for Flashed and FullScreen; 1 for an Activated
+/// while a full-screen window is up.
+public class ShellEventArgs : EventArgs
+{
+    public readonly ShellChange Change;
+    public readonly int Handle;
+    public readonly int Value;
+    public ShellEventArgs(ShellChange change, int handle, int value) { Change = change; Handle = handle; Value = value; }
+}
+
+public delegate void ShellEventHandler(object sender, ShellEventArgs e);
 
 
 /// The shapes a pointer can take. The seat draws them; these are its names.
@@ -2336,6 +2483,19 @@ public static class Shell
     public static event EventHandler? StartRequested;
 
     public static void WatchWindows() { Seat.Current.WatchWindows(); }
+
+    /// The shell feed changed (after WatchShell()): a window a taskbar
+    /// lists came, went or changed, or the notification area did.
+    public static event ShellEventHandler? WindowChanged;
+
+    /// This thread subscribed to the shell feed, which also brings
+    /// StartRequested.
+    public static void WatchShell() { Seat.Current.WatchShell(true); }
+
+    internal static void RaiseShell(int kind, int window, int value)
+    {
+        if (WindowChanged != null) WindowChanged(null!, new ShellEventArgs((ShellChange)kind, window, value));
+    }
     public static void WatchPointer() { Seat.Current.WatchPointer(); }
 
     /// This form is the desktop: the surface under everything, never

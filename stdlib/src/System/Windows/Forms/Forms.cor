@@ -985,6 +985,37 @@ public class Control
         return null;
     }
 
+    /// .NET's DrawToBitmap: what the control shows -- a form with its frame
+    /// -- copied into the bitmap at targetBounds' corner, as much as fits
+    /// there. Read from the seat (Seat.WindowPixels), after anything owed
+    /// is painted; a part covered on a desktop drawn on the screen itself
+    /// comes back black.
+    public void DrawToBitmap(Bitmap bitmap, Rectangle targetBounds)
+    {
+        if (bitmap == null) throw new ArgumentNullException("bitmap");
+        Form? form = FindForm();
+        if (form == null || form.Handle == 0) return;
+        if (form.HasInvalid()) form.PaintWindow(new Rectangle(0, 0, form.Width, form.Height), false);
+        Rectangle area;
+        if (this == form) area = new Rectangle(0, 0, form.Width, form.Height);
+        else
+        {
+            Point o = ClientOrigin(), co = form.ClientOffset();
+            area = new Rectangle(o.X + co.X, o.Y + co.Y, Width, Height);
+        }
+        int width = Math.Min(area.Width, Math.Min(targetBounds.Width, bitmap.Width - targetBounds.X));
+        int height = Math.Min(area.Height, Math.Min(targetBounds.Height, bitmap.Height - targetBounds.Y));
+        if (width <= 0 || height <= 0) return;
+        int[]? pixels = Seat.Current.WindowPixels(form.Handle, new Rectangle(area.X, area.Y, width, height));
+        if (pixels == null) return;
+        for (int y = 0; y < height; y++)
+            for (int x = 0; x < width; x++)
+            {
+                int c = pixels[y * width + x];
+                bitmap.SetPixel(targetBounds.X + x, targetBounds.Y + y, 255, (c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF);
+            }
+    }
+
     /// Where this control's origin is, in the form's client coordinates.
     public Point ClientOrigin()
     {
@@ -1414,6 +1445,23 @@ public class Form : Control
     /// window and a click on it never raises it. Corsac.GUI.Shell.MakeDesktop
     /// sets it, before Show.
     internal bool DesktopSurface;
+
+    /// A DESKTOP IS PAINTED WITH THE DESKTOP'S BACKGROUND, the seat's: the
+    /// wallpaper the theme names, laid as its settings say, on the desktop
+    /// colour (Seat.PaintDesktop) -- the picture win32k's PaintDesktop gives
+    /// a Windows program too. Any other form, its BackColor.
+    protected override void OnPaintBackground(PaintEventArgs e)
+    {
+        if (DesktopSurface && _handle != 0)
+        {
+            Point co = ClientOffset();
+            Rectangle r = e.ClipRectangle;
+            Seat.Current.PaintDesktop(_handle, r.X + co.X, r.Y + co.Y, r.Width, r.Height);
+            return;
+        }
+        base.OnPaintBackground(e);
+    }
+
     /// Above every ordinary window, like a taskbar. Set before Show.
     bool _topMost;
     public bool TopMost
@@ -6621,7 +6669,8 @@ public static class Application
             && m.Kind != Seat.ClipboardChanged && m.Kind != Seat.ClipboardRender && m.Kind != Seat.ClipboardLost
             && m.Kind != Seat.FontsChanged
             && m.Kind != Seat.TimerElapsed && m.Kind != Seat.HotKeyPressed
-            && m.Kind != Seat.KeyChar && m.Kind != Seat.InputLanguageRequest && m.Kind != Seat.InputLanguageChanged) return;
+            && m.Kind != Seat.KeyChar && m.Kind != Seat.InputLanguageRequest && m.Kind != Seat.InputLanguageChanged
+            && (m.Kind < Seat.ShellCreated || m.Kind > Seat.ShellTray)) return;
         switch (m.Kind)
         {
             case 1:
@@ -6755,6 +6804,11 @@ public static class Application
                 break;
             case 16:
                 if (m.A == 1) Shell.RaiseStartRequested();
+                break;
+            case Seat.ShellCreated: case Seat.ShellDestroyed: case Seat.ShellActivated: case Seat.ShellRetitled: case Seat.ShellIcon:
+            case Seat.ShellFlash: case Seat.ShellState: case Seat.ShellFullScreen: case Seat.ShellTray:
+                // The shell feed: what a taskbar lists, as it changes.
+                Shell.RaiseShell(m.Kind, m.Window, m.A);
                 break;
             case 17:
                 // WM_SETTINGCHANGE: every setting SystemInformation answers
