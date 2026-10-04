@@ -833,7 +833,7 @@ public sealed partial class Lowering
 
         Require(all);
         VReg whole = _e.Call(CallLabel(all), IrTypes.Word)!;
-        VReg count = _e.Load(IrType.I32, whole, _t.ArrayCountOffset);
+        VReg count = CountOf(_e, whole);
         VReg rest = _f.NewReg(IrType.I32, "argn");
         _e.CopyTo(rest, R(_e.Binary(Opcode.Sub, count, 1)));
 
@@ -2634,7 +2634,7 @@ public sealed partial class Lowering
 
                 e.Store(new RegOperand(self), new RegOperand(next), cursor.Offset, 4);
                 e.Ret(new RegOperand(e.Binary(Opcode.LtS, next,
-                                              e.Load(IrType.I32, items, _t.ArrayCountOffset))));
+                                              CountOf(e, items))));
             }
             else
             {
@@ -2679,7 +2679,7 @@ public sealed partial class Lowering
 
         if (m.Name == "get_Count" || m.Params.Count == 0)
         {
-            e.Ret(new RegOperand(e.Load(IrType.I32, items, _t.ArrayCountOffset)));
+            e.Ret(new RegOperand(CountOf(e, items)));
         }
         else
         {
