@@ -1,0 +1,32 @@
+// test: outer_const_in_nested_switch_arm
+// expect-exit: 0
+// expect-output:
+// one held other True held text
+//
+// A BARE NAME IN A SWITCH ARM IS A CONSTANT WHEREVER AN UNQUALIFIED NAME
+// WOULD FIND ONE: inside a nested class, the outer class's const -- a
+// number or a text -- is a constant pattern, as it is after `is` and
+// `case`. The arm asked only the nested class, read the name as a type, and
+// refused it.
+
+using System;
+
+class Outer
+{
+    private const int Held = 3 + 2 * 6;
+    private const string Word = "w";
+
+    public sealed class Inner
+    {
+        public static string Name(int c) => c switch { 1 => "one", Held => "held", _ => "other" };
+        public static bool IsHeld(int c) => c is Held;
+        public static string Stmt(int c) { switch (c) { case Held: return "held"; default: return "other"; } }
+        public static string Text(string s) => s switch { Word => "text", _ => "none" };
+    }
+
+    static int Main()
+    {
+        Console.WriteLine(Inner.Name(1) + " " + Inner.Name(15) + " " + Inner.Name(2) + " " + Inner.IsHeld(15) + " " + Inner.Stmt(15) + " " + Inner.Text("w"));
+        return 0;
+    }
+}

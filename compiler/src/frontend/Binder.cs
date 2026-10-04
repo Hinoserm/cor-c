@@ -10545,6 +10545,28 @@ public sealed partial class Binder
         return n;
     }
 
+    /// <summary>
+    /// Whether a bare name is a const where it is written: on this type or a
+    /// base, or OUTWARDS through the types it is nested in, as an unqualified
+    /// name resolves. A switch arm asked only this type, so in a nested class
+    /// `HeldClass => ...` naming the outer class's const read as a type
+    /// pattern -- 'HeldClass' is not a known type -- and corc stopped
+    /// compiling its own escape engine (test 1317).
+    /// </summary>
+    private bool NamesConstant(string name)
+    {
+        if (FindConstant(_thisType, name) is not null || FindText(_thisType, name) is not null) return true;
+        for (string? outerKey = Enclosing((_thisType ?? _lexicalType ?? _scope)?.Key ?? ""); outerKey is not null; outerKey = Enclosing(outerKey))
+        {
+            if (_r.Types.TryGetValue(outerKey, out TypeSymbol? outer)
+                && (FindConstant(outer, name) is not null || FindText(outer, name) is not null))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /// <summary>The type this one is written inside, if any.</summary>
     private TypeSymbol? Outer(TypeSymbol t)
         => Enclosing(t.Key) is { } key && _r.Types.TryGetValue(key, out TypeSymbol? outer) ? outer : null;
@@ -12424,8 +12446,7 @@ public sealed partial class Binder
                     if (arm.Type is { Args.Count: 0, ArrayRank: 0, Nullable: false } bare
                         && arm.Binding is null
                         && !IsTypeName(bare.Name)
-                        && (FindConstant(_thisType, bare.Name) is not null || FindText(_thisType, bare.Name) is not null
-                            || Lookup(bare.Name) is ConstSym))
+                        && (NamesConstant(bare.Name) || Lookup(bare.Name) is ConstSym))
                     {
                         arm.Value = new NameExpr { Name = bare.Name, Line = bare.Line, Col = bare.Col };
                         arm.Type = null;
