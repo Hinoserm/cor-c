@@ -215,6 +215,14 @@ enum SeatIoctl : long
     MonitorInfo = 0x47550A03,
     Layer = 0x47550A04,
     LayerPixels = 0x47550A05,
+    TapOpen = 0x47550800,
+    TapClose = 0x47550801,
+    TapItem = 0x47550802,
+    TapAnswer = 0x47550803,
+    TapRecorded = 0x47550804,
+    TapPlayNext = 0x47550805,
+    TapPlay = 0x47550806,
+    InjectInput = 0x47550807,
 }
 
 public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
@@ -839,6 +847,13 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
 
     /// The event the theme sends.
     public const int ThemeChanged = 36;
+
+    /// The input taps' events (seattaps.cor): an input held for the tap to
+    /// observe (TapInput, A its sequence, B the kind -- 1 keys, 2 pointer),
+    /// an input routed and ready to read (TapRecord), the seat wanting the
+    /// next input to play (TapPlayback), and the record or playback tap told
+    /// to end (TapCancelled, A the kind).
+    public const int TapInput = 240, TapRecord = 241, TapPlayback = 242, TapCancelled = 243;
 
     /// The colours, 0x00RRGGBB, by COLOR_ number; null on failure.
     public int[]? ThemeColours() { return Words(SeatIoctl.ThemeColours); }
@@ -2475,6 +2490,45 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
     /// Notches of the horizontal wheel, positive to the right.
     public void InjectPointerHWheel(int notches) { Ioctl(SeatIoctl.InjectPointerHWheel, notches); }
 
+    // --- the input taps (seattaps.cor), the seat's form of Windows' low-
+    // level and journal hooks. These are a connection's own: a tap watches,
+    // injects or plays back on the thread that opened it. Corsac.GUI's
+    // InputTap wraps them. ---------------------------------------------------
+
+    /// This connection opens a tap on the kinds given (TapKind bits: 1 keys,
+    /// 2 pointer, 4 record, 8 playback). 0, or a negative errno -- -EPERM
+    /// without the seat's user, -EEXIST when this thread has one already.
+    public long TapOpen(long kinds) { return Ioctl(SeatIoctl.TapOpen, kinds); }
+    public void TapClose() { Ioctl(SeatIoctl.TapClose, 0); }
+
+    /// The input being offered to this tap (28 bytes, TapItemBytes), read
+    /// after a TapInput event; false when none waits.
+    public bool TapItem(byte[] item) { return item.Length >= 28 && Ioctl(SeatIoctl.TapItem, Sys.ArrayData(item)) >= 0; }
+
+    /// Whether the offered input is eaten (kept from going anywhere).
+    public void TapAnswer(bool eat) { Ioctl(SeatIoctl.TapAnswer, eat ? 1 : 0); }
+
+    /// The next input routed, read after a TapRecord event; false when none.
+    public bool TapRecorded(byte[] item) { return item.Length >= 28 && Ioctl(SeatIoctl.TapRecorded, Sys.ArrayData(item)) >= 0; }
+
+    /// Whether the seat wants the next input to play (after TapPlayback).
+    public bool TapPlayWanted() { return Ioctl(SeatIoctl.TapPlayNext, 0) == 1; }
+
+    /// The next input to play and how many milliseconds hence (a 28-byte
+    /// item then the delay as a 32-bit word: a 32-byte block).
+    public void TapPlay(byte[] block) { if (block.Length >= 32) Ioctl(SeatIoctl.TapPlay, Sys.ArrayData(block)); }
+
+    /// An INPUT record injected now, SendInput's (28 bytes): a key (kind 1:
+    /// +4 the virtual key, +8 its lParam, +20 bit 2 a release) or the
+    /// pointer (kind 2: +4 the WM_ message, +8 x, +12 y, +16 the wheel delta
+    /// or X button in the high word). 0, or a negative errno.
+    public long InjectInput(byte[] item) { return item.Length >= 28 ? Ioctl(SeatIoctl.InjectInput, Sys.ArrayData(item)) : -22; }
+
+    /// VkKeyScan on the caller's layout: the virtual key a character types
+    /// in the low byte, the shift state above it (0x100 Shift, 0x200 Ctrl,
+    /// 0x400 Alt); 0xFFFF for a character no key types.
+    public int VkKeyScan(char c) { return (int)Ioctl(SeatIoctl.KeyboardMapKey, (c & 0xFFFF) | (4L << 32)) & 0xFFFF; }
+
     /// Rows at the bottom of the screen a bar owns: windows keep out of them.
     public void ReserveBottom(int rows) { lock (_keep) { _reservedBottom = rows; } Ioctl(SeatIoctl.ReserveBottom, rows); }
     /// The screen height minus what a bar has reserved: where windows go.
@@ -2709,5 +2763,160 @@ static class SeatText
             length = length + 1;
         }
         return Utf8Transcoder.Decode(block, from, length);
+    }
+}
+
+/// What an InputTap watches: the keys, the pointer, or both. A tap is the
+/// seat's form of Windows' WH_KEYBOARD_LL and WH_MOUSE_LL -- it sees the
+/// machine's whole input before any window does, and may keep an input
+/// from going anywhere. Opening one needs the seat's own account (its user
+/// or root), as watching all input is the seat's to grant.
+[System.Flags]
+public enum InputTapKinds
+{
+    Keys = 1,
+    Pointer = 2,
+}
+
+/// A key seen by an InputTap, before it is routed. Set Eat to keep it from
+/// going anywhere, as a WH_KEYBOARD_LL hook's nonzero return does.
+public sealed class KeyObservedEventArgs : EventArgs
+{
+    public int VirtualKey { get; }
+    public int ScanCode { get; }
+    public bool Up { get; }
+    public bool Injected { get; }
+    public System.Windows.Forms.Keys Modifiers { get; }
+    public bool Eat { get; set; }
+
+    internal KeyObservedEventArgs(int vk, int scan, bool up, bool injected, System.Windows.Forms.Keys mods)
+    { VirtualKey = vk; ScanCode = scan; Up = up; Injected = injected; Modifiers = mods; }
+}
+
+/// A pointer input seen by an InputTap, before it is routed. Message is the
+/// WM_ it stands for (WM_MOUSEMOVE 0x200, WM_LBUTTONDOWN 0x201, ...,
+/// WM_MOUSEWHEEL 0x20A); X and Y are on the screen. Set Eat to keep it.
+public sealed class PointerObservedEventArgs : EventArgs
+{
+    public int Message { get; }
+    public int X { get; }
+    public int Y { get; }
+    public int WheelDelta { get; }
+    public bool Injected { get; }
+    public bool Eat { get; set; }
+
+    internal PointerObservedEventArgs(int message, int x, int y, int wheel, bool injected)
+    { Message = message; X = x; Y = y; WheelDelta = wheel; Injected = injected; }
+}
+
+/// A SYSTEM-WIDE INPUT TAP (TODO-GUI-AND-NT-KERNELS.md item 9), the native
+/// form of Windows' low-level hooks, which .NET Forms has no equivalent of.
+/// It opens its own seat connection on a background thread and watches the
+/// input there: KeyObserved and PointerObserved are raised on that thread
+/// for each input before it is routed, and an input left unanswered for the
+/// seat's LowLevelHooksTimeout is let by. Inject* put input in as Windows'
+/// SendInput does. Dispose closes the tap.
+public sealed class InputTap : IDisposable
+{
+    readonly Seat _seat;
+    readonly Thread _thread;
+    volatile bool _closed;
+
+    public event EventHandler<KeyObservedEventArgs>? KeyObserved;
+    public event EventHandler<PointerObservedEventArgs>? PointerObserved;
+
+    public InputTap(InputTapKinds kinds)
+    {
+        _seat = new Seat(Environment.GetEnvironmentVariable("SEAT") ?? "/dev/seat0");
+        long opened = _seat.TapOpen((long)kinds);
+        if (opened < 0) throw new UnauthorizedAccessException("an input tap needs the seat's own account (" + (-opened) + ")");
+        _thread = new Thread(Loop);
+        _thread.IsBackground = true;
+        _thread.Start();
+    }
+
+    void Loop()
+    {
+        byte[] item = new byte[28];
+        while (!_closed)
+        {
+            Message m;
+            if (!_seat.Next(out m)) break;
+            if (m.Kind != Seat.TapInput) continue;
+            if (!_seat.TapItem(item)) continue;
+            bool eat = false;
+            int kind = Int(item, 0), flags = Int(item, 20);
+            bool injected = (flags & 1) != 0, up = (flags & 2) != 0;
+            if (kind == 1 && KeyObserved != null)
+            {
+                int vk = Int(item, 4), lParam = Int(item, 8), mods = Int(item, 12);
+                System.Windows.Forms.Keys k = (System.Windows.Forms.Keys)vk
+                    | ((mods & 1) != 0 ? System.Windows.Forms.Keys.Shift : System.Windows.Forms.Keys.None)
+                    | ((mods & 2) != 0 ? System.Windows.Forms.Keys.Control : System.Windows.Forms.Keys.None)
+                    | ((mods & 4) != 0 ? System.Windows.Forms.Keys.Alt : System.Windows.Forms.Keys.None);
+                KeyObservedEventArgs e = new KeyObservedEventArgs(vk, (lParam >> 16) & 0xFF, up, injected, k);
+                KeyObserved(this, e);
+                eat = e.Eat;
+            }
+            else if (kind == 2 && PointerObserved != null)
+            {
+                int message = Int(item, 4), x = Int(item, 8), y = Int(item, 12), extra = Int(item, 16);
+                int wheel = (short)((extra >> 16) & 0xFFFF);
+                PointerObservedEventArgs e = new PointerObservedEventArgs(message, x, y, wheel, injected);
+                PointerObserved(this, e);
+                eat = e.Eat;
+            }
+            _seat.TapAnswer(eat);
+        }
+    }
+
+    static int Int(byte[] b, int at) { return b[at] | (b[at + 1] << 8) | (b[at + 2] << 16) | (b[at + 3] << 24); }
+    static void PutInt(byte[] b, int at, int v) { b[at] = (byte)v; b[at + 1] = (byte)(v >> 8); b[at + 2] = (byte)(v >> 16); b[at + 3] = (byte)(v >> 24); }
+
+    /// A key injected, SendInput's: its virtual key, down or up. Its scan
+    /// code is the active layout's (the seat finds it); a virtual key no key
+    /// on the layout makes is refused.
+    public void InjectKey(int virtualKey, bool down)
+    {
+        byte[] item = new byte[28];
+        PutInt(item, 0, 1);
+        PutInt(item, 4, virtualKey);
+        PutInt(item, 20, down ? 0 : 2);
+        _seat.InjectInput(item);
+    }
+
+    /// The pointer moved, injected: to (x, y) on the screen.
+    public void InjectMouseMove(int x, int y)
+    {
+        byte[] item = new byte[28];
+        PutInt(item, 0, 2); PutInt(item, 4, 0x200); PutInt(item, 8, x); PutInt(item, 12, y);
+        _seat.InjectInput(item);
+    }
+
+    /// A pointer button injected: 1 left, 2 right, 3 middle, 4 X1, 5 X2,
+    /// down or up, at (x, y) on the screen.
+    public void InjectMouseButton(int button, bool down, int x, int y)
+    {
+        int message = button == 2 ? (down ? 0x204 : 0x205) : button == 3 ? (down ? 0x207 : 0x208)
+                    : button >= 4 ? (down ? 0x20B : 0x20C) : (down ? 0x201 : 0x202);
+        int extra = button == 5 ? (2 << 16) : button == 4 ? (1 << 16) : 0;
+        byte[] item = new byte[28];
+        PutInt(item, 0, 2); PutInt(item, 4, message); PutInt(item, 8, x); PutInt(item, 12, y); PutInt(item, 16, extra);
+        _seat.InjectInput(item);
+    }
+
+    /// The wheel injected, Windows' 120ths, at (x, y) on the screen.
+    public void InjectMouseWheel(int delta, int x, int y)
+    {
+        byte[] item = new byte[28];
+        PutInt(item, 0, 2); PutInt(item, 4, 0x20A); PutInt(item, 8, x); PutInt(item, 12, y); PutInt(item, 16, (delta & 0xFFFF) << 16);
+        _seat.InjectInput(item);
+    }
+
+    public void Dispose()
+    {
+        if (_closed) return;
+        _closed = true;
+        _seat.TapClose();
     }
 }

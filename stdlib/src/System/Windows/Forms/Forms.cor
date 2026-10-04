@@ -2478,6 +2478,150 @@ public static class SystemInformation
     internal static void Rescreen() { }
 }
 
+/// SendKeys: keystrokes made as if typed, over the seat's injection
+/// (TODO-GUI-AND-NT-KERNELS.md item 9), Windows' API and syntax -- + ^ %
+/// for Shift, Ctrl and Alt on the next key or group, {ENTER} {TAB} {F1}
+/// and the rest for named keys, {{}/{}}/{(}/{)} and {+}{^}{%}{~} for the
+/// literals, (...) to group a modifier over several keys, and {KEY n} to
+/// repeat. Send and SendWait are the same here: the seat injects at once.
+public static class SendKeys
+{
+    public static void Send(string keys) { Play(keys); }
+    public static void SendWait(string keys) { Play(keys); }
+    public static void Flush() { }
+
+    static void Play(string keys)
+    {
+        Corsac.GUI.Seat seat = Corsac.GUI.Seat.Current;
+        int i = 0;
+        // Modifiers held over the next key, or over the next (group).
+        bool shift = false, control = false, alt = false;
+        bool groupShift = false, groupControl = false, groupAlt = false;
+        bool inGroup = false;
+        while (i < keys.Length)
+        {
+            char c = keys[i];
+            if (c == '+') { shift = true; i++; continue; }
+            if (c == '^') { control = true; i++; continue; }
+            if (c == '%') { alt = true; i++; continue; }
+            if (c == '~') { Key(seat, 0x0D, shift || groupShift, control || groupControl, alt || groupAlt, 1); shift = control = alt = false; i++; continue; }
+            if (c == '(')
+            {
+                inGroup = true; groupShift = shift; groupControl = control; groupAlt = alt;
+                shift = control = alt = false; i++; continue;
+            }
+            if (c == ')') { inGroup = false; groupShift = groupControl = groupAlt = false; i++; continue; }
+            bool s = shift || (inGroup && groupShift), ct = control || (inGroup && groupControl), al = alt || (inGroup && groupAlt);
+            if (c == '{')
+            {
+                int close = keys.IndexOf('}', i + 1);
+                if (close < 0) return;
+                string body = keys.Substring(i + 1, close - i - 1);
+                i = close + 1;
+                int vk; int count; char literal;
+                if (NamedKey(body, out vk, out count, out literal))
+                {
+                    for (int r = 0; r < count; r++)
+                        if (vk != 0) Key(seat, vk, s, ct, al, 1);
+                        else Char(seat, literal, ct, al);
+                }
+                shift = control = alt = false;
+                continue;
+            }
+            Char(seat, c, ct, al, s);
+            shift = control = alt = false;
+            i++;
+        }
+    }
+
+    /// A named key's virtual key (0 for a literal character body), how many
+    /// times, and the literal when there is one. "{ENTER}", "{LEFT 5}",
+    /// "{F10}", "{{}".
+    static bool NamedKey(string body, out int vk, out int count, out char literal)
+    {
+        vk = 0; count = 1; literal = '\0';
+        if (body.Length == 0) return false;
+        string name = body;
+        int space = body.LastIndexOf(' ');
+        if (space > 0)
+        {
+            string tail = body.Substring(space + 1);
+            int n = 0; bool digits = tail.Length > 0;
+            for (int k = 0; k < tail.Length; k++) { if (tail[k] < '0' || tail[k] > '9') { digits = false; break; } n = n * 10 + (tail[k] - '0'); }
+            if (digits) { count = n; name = body.Substring(0, space); }
+        }
+        if (name.Length == 1) { literal = name[0]; return true; }               // {+}, {{}, {~}, a single char repeated
+        switch (name.ToUpperInvariant())
+        {
+            case "ENTER": vk = 0x0D; return true;
+            case "TAB": vk = 0x09; return true;
+            case "ESC": case "ESCAPE": vk = 0x1B; return true;
+            case "BACKSPACE": case "BS": case "BKSP": vk = 0x08; return true;
+            case "DEL": case "DELETE": vk = 0x2E; return true;
+            case "INSERT": case "INS": vk = 0x2D; return true;
+            case "HOME": vk = 0x24; return true;
+            case "END": vk = 0x23; return true;
+            case "PGUP": vk = 0x21; return true;
+            case "PGDN": vk = 0x22; return true;
+            case "LEFT": vk = 0x25; return true;
+            case "UP": vk = 0x26; return true;
+            case "RIGHT": vk = 0x27; return true;
+            case "DOWN": vk = 0x28; return true;
+            case "CAPSLOCK": vk = 0x14; return true;
+            case "NUMLOCK": vk = 0x90; return true;
+            case "SCROLLLOCK": vk = 0x91; return true;
+            case "PRTSC": vk = 0x2C; return true;
+            case "BREAK": vk = 0x03; return true;
+            case "HELP": vk = 0x2F; return true;
+            case "SPACE": vk = 0x20; return true;
+        }
+        if (name.Length >= 2 && (name[0] == 'F' || name[0] == 'f'))
+        {
+            int n = 0; bool ok = true;
+            for (int k = 1; k < name.Length; k++) { if (name[k] < '0' || name[k] > '9') { ok = false; break; } n = n * 10 + (name[k] - '0'); }
+            if (ok && n >= 1 && n <= 24) { vk = 0x70 + n - 1; return true; }
+        }
+        return false;
+    }
+
+    /// A character typed: its virtual key and shift from the layout
+    /// (VkKeyScan), with any Ctrl or Alt the syntax asked.
+    static void Char(Corsac.GUI.Seat seat, char c, bool control, bool alt, bool shiftToo = false)
+    {
+        int scan = seat.VkKeyScan(c);
+        if (scan == 0xFFFF) return;
+        int vk = scan & 0xFF;
+        bool shift = shiftToo || (scan & 0x100) != 0;
+        bool ctrl = control || (scan & 0x200) != 0;
+        bool menu = alt || (scan & 0x400) != 0;
+        Key(seat, vk, shift, ctrl, menu, 1);
+    }
+
+    static void Key(Corsac.GUI.Seat seat, int vk, bool shift, bool control, bool alt, int count)
+    {
+        for (int r = 0; r < count; r++)
+        {
+            if (shift) Inject(seat, 0x10, true);
+            if (control) Inject(seat, 0x11, true);
+            if (alt) Inject(seat, 0x12, true);
+            Inject(seat, vk, true);
+            Inject(seat, vk, false);
+            if (alt) Inject(seat, 0x12, false);
+            if (control) Inject(seat, 0x11, false);
+            if (shift) Inject(seat, 0x10, false);
+        }
+    }
+
+    static void Inject(Corsac.GUI.Seat seat, int vk, bool down)
+    {
+        byte[] item = new byte[28];
+        item[0] = 1;
+        item[4] = (byte)vk; item[5] = (byte)(vk >> 8);
+        if (!down) item[20] = 2;
+        seat.InjectInput(item);
+    }
+}
+
 public static class MessageBox
 {
     public static DialogResult Show(string text) { return Show(text, "", MessageBoxButtons.OK, MessageBoxIcon.None); }
