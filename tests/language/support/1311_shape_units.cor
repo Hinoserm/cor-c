@@ -1,4 +1,4 @@
-// The other unit of 1307_canon_generic_method_interface_tests_across_units:
+// The other unit of 1311_canon_generic_method_interface_tests_across_units:
 // generic methods that test interfaces over their own type parameter, and a
 // generic class whose shared code calls them with its T.
 using System;

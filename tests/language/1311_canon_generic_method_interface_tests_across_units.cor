@@ -1,5 +1,5 @@
 // test: canon_generic_method_interface_tests_across_units
-// units: tests/language/support/1307_shape_units.cor
+// units: tests/language/support/1311_shape_units.cor
 // expect-exit: 0
 // expect-output:
 // rack list: collection 3, list 3
@@ -10,7 +10,7 @@
 // bin other: not a collection, no list
 // bin handed: handed collection 2, no list
 //
-// 1306 across two units. The other unit's generic class (Rack) calls its
+// 1310 across two units. The other unit's generic class (Rack) calls its
 // generic methods with its T, which this unit instantiates with its own
 // Item: the shared method copy is handed Item's descriptor, which only this
 // unit makes, and the interfaces a List of Item lists carry their identity
