@@ -6849,7 +6849,10 @@ static class OwnedElements {
 
 static class OutgrownStorage {
     internal static void Release<E>(E[]? old) {
-        if (old != null) { Runtime.Free((nint)Sys.Word(old)); }
+        // As an owned field's old value (Runtime.FreeOwnedReplaced): read from
+        // the collection's own field, so in a region it is given back at
+        // once where it is the top (Gc.RegionFree).
+        if (old != null) { Runtime.FreeOwnedReplaced((nint)Sys.Word(old), 0); }
     }
 }
 
@@ -11907,7 +11910,7 @@ class StringBuilder : IOwnsStorage {
     // THE BUFFER GIVEN BACK with a builder proved dead (Runtime.Free): it is
     // never handed out -- ToString copies out of it.
     public void FreeStorage() {
-        if (buffer != null) { Runtime.Free((nint)Sys.Word(buffer)); }
+        if (buffer != null) { Runtime.FreeOwnedReplaced((nint)Sys.Word(buffer), 0); }
         buffer = null!;
         used = 0;
     }

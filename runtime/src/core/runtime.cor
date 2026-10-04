@@ -1237,9 +1237,14 @@ static class Runtime
     {
         if (Gc.IgnoredFrees != 'p' && Gc.InOwnRegion(held))
         {
-            if (!Gc.RegionObject(held)) return;
-            FreeOwnedFields(held);
-            FreeStorageOf(held);
+            if (Gc.RegionObject(held))
+            {
+                FreeOwnedFields(held);
+                FreeStorageOf(held);
+            }
+            // AND THE BLOCK ITSELF, where it is the region's top (Gc.RegionFree):
+            // read from a field, it is the block, not memory a lap gave back.
+            Gc.RegionFree(held);
             return;
         }
         Free((nint)held);

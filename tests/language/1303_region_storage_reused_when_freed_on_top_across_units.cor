@@ -1,0 +1,54 @@
+// test: region_storage_reused_when_freed_on_top_across_units
+// units: tests/language/support/1303_region_storage_reused_units.cor
+// regions: taken
+// expect-exit: 0
+// expect-output:
+// 27370368
+// given back True
+// early counted True
+//
+// A REGION'S BLOCK FREED WHERE IT IS THE TOP IS GIVEN BACK AT ONCE
+// (Gc.RegionFree): the bump pointer comes back down over it, and over every
+// block under it freed already, and the next allocation takes the bytes. A
+// list and a table grown beneath one boundary leave their outgrown arrays
+// behind them as they grow -- each freed below the one that replaced it --
+// and when the bag's field lets them go, the last array is the top: the
+// pointer comes down over it, the arrays under it and the list. Every value
+// is read back after collections, and what the regions gave back -- at their
+// ends and early -- covers at least what the work made. Whether any came
+// back early depends on what the compiler proved; the two counts of it agree.
+//
+// Per call: 4 * ((999 ^ seed) + 199 + seed + 1200), over seeds 0..1999.
+
+using System;
+
+static class P
+{
+    // Not Main itself: what the entry calls is never a boundary.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static long Run()
+    {
+        long total = 0;
+        long before = Gc.RegionFreedBytes + Gc.RegionTopFreedBytes;
+        long topFrees = Gc.RegionTopFrees, topBytes = Gc.RegionTopFreedBytes;
+        for (int seed = 0; seed < 2000; seed++)
+        {
+            total += Work.Round(seed);
+            if (seed % 250 == 249) GC.Collect();
+        }
+        GC.Collect();
+        long given = Gc.RegionFreedBytes + Gc.RegionTopFreedBytes - before;
+        long frees = Gc.RegionTopFrees - topFrees, bytes = Gc.RegionTopFreedBytes - topBytes;
+        Console.WriteLine(total);
+        // A thousand ints and their outgrown arrays, four times a call, at the least.
+        Console.WriteLine("given back " + (given >= 2000L * 4 * 4000));
+        Console.WriteLine("early counted " + (frees >= 0 && bytes >= 0 && (frees == 0) == (bytes == 0)));
+        return total;
+    }
+
+    static int Main()
+    {
+        Run();
+        return 0;
+    }
+}
