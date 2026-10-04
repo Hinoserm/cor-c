@@ -1,0 +1,67 @@
+// test: an awaited ValueTask already complete allocates nothing
+// expect-exit: 0
+// expect-output:
+// sum 999000
+// allocated 0
+// calls 1001
+// nothing 0
+//
+// .NET's ValueTask promise, and the kernel's hottest paths' need
+// (docs/X86-BACKEND.md, "Async safety"): an `async ValueTask<T>` method that completes
+// without suspending makes no state machine and no task -- its machine
+// stays in its caller's frame -- and awaiting the completed ValueTask it
+// answers makes no Task either. A thousand of them, awaited in a loop by
+// another such method, move the thread's allocation counter not at all.
+
+using System;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static int _calls;
+
+    static async ValueTask<int> Ready(int x)
+    {
+        _calls++;
+        return x * 2;
+    }
+
+    static async ValueTask<int> Sum(int n)
+    {
+        int total = 0;
+        for (int i = 0; i < n; i++)
+        {
+            total += await Ready(i);
+        }
+        return total;
+    }
+
+    static async ValueTask Nothing()
+    {
+        _calls++;
+    }
+
+    static int Main()
+    {
+        // Once first, so whatever a first call sets up is not counted.
+        int warm = Sum(1).Result;
+        Nothing().GetAwaiter().GetResult();
+        _calls = 0;
+
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        int got = Sum(1000).Result;
+        ValueTask done = Nothing();
+        done.GetAwaiter().GetResult();
+        long after = GC.GetAllocatedBytesForCurrentThread();
+
+        long before2 = GC.GetAllocatedBytesForCurrentThread();
+        bool finished = done.IsCompletedSuccessfully;
+        long after2 = GC.GetAllocatedBytesForCurrentThread();
+
+        Console.WriteLine("sum " + got);
+        Console.WriteLine("allocated " + (after - before));
+        Console.WriteLine("calls " + _calls);
+        Console.WriteLine("nothing " + (finished ? after2 - before2 : -1));
+        return warm == 0 ? 0 : 1;
+    }
+}

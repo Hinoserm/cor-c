@@ -25,6 +25,22 @@ public sealed class AsyncFrame
     public Operand? SuspendResult { get; init; }
 
     /// <summary>
+    /// The machine may move between suspensions: an `async ValueTask` method's
+    /// starts in its kickoff's frame and is copied to the heap at its first
+    /// suspension. Every register kept across a suspension that points into
+    /// the machine is then kept as an offset from it (AsyncTransform).
+    /// </summary>
+    public bool MayMove { get; init; }
+
+    /// <summary>
+    /// With MayMove, the data word the kickoff reads to decide whether the
+    /// machine may start in its frame: cleared by the transform when a
+    /// register kept across a suspension may point into the machine or
+    /// elsewhere, which no offset can say.
+    /// </summary>
+    public string? StackSymbol { get; init; }
+
+    /// <summary>
     /// Set once AsyncTransform has made the body a state machine: no marker is
     /// left in it and it may be written to an object's IR archive. What stays
     /// is the record that it was async, which later passes read (a frame
