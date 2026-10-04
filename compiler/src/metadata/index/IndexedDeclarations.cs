@@ -399,7 +399,15 @@ public sealed class IndexedDeclarations : IDisposable
                             source.ConditionalSymbols, declarationsOnly: true, includeTemplateBodies: true);
                         templateFiles[templateKey] = templates;
                     }
-                    root = templates.Types.Single(type => type.SourceFrom == source.From && type.SourceTo == source.To);
+                    // BY ITS SPAN, AND ITS NAME WHERE TWO SHARE ONE: declarations
+                    // a pass made beside a type (COM's wrappers for a
+                    // [ComImport] interface) carry the span of what they were
+                    // made from, and Single found two.
+                    string simple = typeName[(Math.Max(typeName.LastIndexOf('+'), typeName.LastIndexOf('.')) + 1)..];
+                    int tick = simple.IndexOf('`');
+                    if (tick >= 0) simple = simple[..tick];
+                    List<TypeDecl> spanned = templates.Types.Where(type => type.SourceFrom == source.From && type.SourceTo == source.To).ToList();
+                    root = spanned.Count == 1 ? spanned[0] : spanned.FirstOrDefault(type => type.Name == simple) ?? spanned.First();
                 }
                 // Nested declarations have separate index records. Import the
                 // requested declaration only, retaining its own lexical scope.
