@@ -15,6 +15,8 @@
 // cast count 3
 // bad cast: InvalidCastException
 // other cast: InvalidCastException
+// string faces: equatable True, comparable True
+// item faces: equatable False, comparable False
 //
 // The one copy of a generic class every reference instantiation shares
 // names an interface over its T as the __canon instantiation, and no
@@ -24,7 +26,10 @@
 // instantiation's own descriptor from the object's type context. The tests
 // must come out as .NET's do: true for a collection of the same T, false
 // for one of another T (Holder of Other handed a List of Item), and a cast
-// that must fail throws.
+// that must fail throws. A string is IEquatable<string> and
+// IComparable<string> (BoxedFaces), though its table names neither: asked
+// in the copy a Holder of string shares, both are true, and in a Holder of
+// Item both false.
 
 using System;
 using System.Collections.Generic;
@@ -53,6 +58,8 @@ class Holder<T>
     public int CastCount() => ((ICollection<T>)Held!).Count;
 
     public int ListCount() => ((IList<T>)Held!).Count;
+
+    public string Faces() => "equatable " + (Held is IEquatable<T>) + ", comparable " + (Held is IComparable<T>);
 }
 
 static class P
@@ -113,6 +120,9 @@ static class P
         {
             Console.WriteLine("other cast: InvalidCastException");
         }
+
+        Console.WriteLine("string faces: " + new Holder<string> { Held = "abc" }.Faces());
+        Console.WriteLine("item faces: " + new Holder<Item> { Held = "abc" }.Faces());
         return 0;
     }
 }
