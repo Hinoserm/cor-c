@@ -26,6 +26,9 @@
 #                                name; Main's or the entry stub's, when F
 #                                was inlined into it)
 #                                contains each of a, b, c
+#   // expect-asm-count-<target>: F: word N
+#                                the same function's disassembly has at
+#                                least N lines containing word
 #
 # Environment: CORC (the compiler), TARGETS (default "x86 x86-64").
 
@@ -95,6 +98,19 @@ for source in "$here"/[0-9]*.cor; do
                 done
                 [ -n "$wrong" ] && wrong="$function lacks:$wrong"
             fi
+        fi
+
+        counted="$(header "$source" "expect-asm-count-$target")"
+        if [ -z "$wrong" ] && [ -n "$counted" ]; then
+            function="${counted%%:*}"
+            set -- ${counted#*:}
+            word="$1"; least="$2"
+            body="$(objdump -d --no-show-raw-insn "$exe" | awk -v f="_${function}_" '
+                /^[0-9a-f]+ <.*>:$/ { on = index($0, f) > 0 }
+                on { print }')"
+            [ -z "$body" ] && body="$(objdump -d --no-show-raw-insn "$exe" | awk '/^[0-9a-f]+ <.*>:$/ { on = index($0, "_Main_") > 0 } on { print }')"
+            got="$(grep -cF -- "$word" <<< "$body")"
+            [ "$got" -ge "$least" ] || wrong="$function has $got of $word, not $least"
         fi
 
         readelf_want="$(header "$source" "expect-readelf-$target")"

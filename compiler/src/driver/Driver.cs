@@ -599,6 +599,8 @@ public static class Driver
         Corsac.Lang.Lower.Lowering.Freestanding = freestanding;
         Corsac.Lang.Lower.Lowering.TlsGs = freestanding && args.Contains("--tls-gs");
         Corsac.Lang.Lower.Lowering.Ring1Syscalls = freestanding && args.Contains("--ring1-syscalls");
+        // Its threads are stopped at any instruction (Lowering.CardMarkBefore).
+        Corsac.Lang.Lower.Lowering.CardMarkBefore = Corsac.Lang.Lower.Lowering.Ring1Syscalls;
 
         // --asm-entry: an assembled object supplies `_start`, and this is the
         // name it calls once it has a stack and a cleared .bss.

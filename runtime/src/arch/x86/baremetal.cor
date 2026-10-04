@@ -339,21 +339,52 @@ static class Platform
 
     // ---- the machine's memory, for GC.GetGCMemoryInfo ------------------------
 
-    /// Unknown to the runtime: the kernel's own allocator owns the machine's
-    /// memory, and the collector's heap is what it was given (Gc's cap).
+    // ---- WHAT AN IMAGE ON TOP OF A KERNEL SAYS OF ITS MEMORY -------------------
+    //
+    // A freestanding image alone on the machine -- the kernel, a loader, a
+    // boot test -- answers as it always has: its mappings are its own frames
+    // taken whole, no card table, no region arena, every collection whole,
+    // nothing known of the machine's memory. An image with a kernel BELOW
+    // it -- CORSAC's ring-1 kernels -- has mappings that kernel commits page
+    // by page when they are first touched (ring 0's MapChunk and ZeroIn),
+    // threads of its own each with a thread block of its own, and a kernel
+    // to ask what is free. It says so, once, as it starts and before it
+    // allocates anything, by setting the four below (Service.UsePlatform in
+    // CORSAC's ring 1); the collector reads them as it starts (Gc.Start,
+    // StartGenerations) and at its first region (RegionEnter).
+
+    /// The machine's memory, in bytes, as the kernel below says it; 0 for
+    /// unknown (alone on the machine: its own allocator owns it, and the
+    /// collector's heap is what it was given).
+    public static long TotalMemoryBytes;
+
+    /// Who says what is free, a kernel's routine (by Sys.AddressOf) called
+    /// with no arguments and answering bytes; 0 for nobody. Called by the
+    /// collector with its heap held, so it allocates nothing.
+    public static long FreeMemoryHook;
+
     public static long TotalMemory()
     {
-        return 0;
+        return TotalMemoryBytes;
     }
 
     public static long AvailableMemory()
     {
-        return 0;
+        return FreeMemoryQuietly();
     }
 
-    /// A freestanding image's mappings are its own frames, taken whole: the
-    /// collector keeps no card table here, and collects the whole heap.
-    public const bool MapsCommitLazily = false;
+    /// Whether a mapping costs only the pages that are touched: false alone
+    /// on the machine -- the collector keeps no card table and collects the
+    /// whole heap -- and true for an image whose kernel commits its memory
+    /// on first touch, which turns generations on: two card tables of four
+    /// megabytes each and the held-block tables reserved, a few pages of
+    /// them committed (Gc.StartGenerations). Set before the first
+    /// allocation, which is when the collector starts and reads it.
+    public static bool MapsCommitLazily;
+
+    /// The region arena each thread maps at its first region, in bytes, or
+    /// 0 for none (RegionBytes). Set before any thread opens a region.
+    public static long RegionArenaBytes;
 
     public static bool VerifyGenerations()
     {
@@ -386,13 +417,14 @@ static class Platform
         return 0;
     }
 
-    /// No region arena on a machine with no operating system: a thread block
-    /// here is a processor's, and the tasks that park and resume on any
-    /// processor would share it. Regions wait for the task switch to carry
-    /// the arena's words with the task.
+    /// No region arena alone on the machine: a thread block there is a
+    /// processor's, and the tasks that park and resume on any processor
+    /// would share it. Regions wait for the task switch to carry the arena's
+    /// words with the task. An image whose every thread has a block of its
+    /// own -- a ring-1 kernel's -- names an arena (RegionArenaBytes).
     public static long RegionBytes()
     {
-        return 0;
+        return RegionArenaBytes;
     }
 
     public static long HeapLimit()
@@ -436,10 +468,13 @@ static class Platform
         return 0;
     }
 
-    /// Unknown here too: a kernel's collector is paced by its cap (Gc).
+    /// What the kernel below says is free (FreeMemoryHook), which the
+    /// collector paces its threshold by (Gc.NextThreshold: half of it, at
+    /// most three live sizes); 0, the old pace, with nobody to ask.
     public static long FreeMemoryQuietly()
     {
-        return 0;
+        if (FreeMemoryHook == 0) return 0;
+        return Sys.Call(FreeMemoryHook, 0, 0, 0);
     }
 
     // ---- what Monitor asks (core threading.cor) ----------------------------
