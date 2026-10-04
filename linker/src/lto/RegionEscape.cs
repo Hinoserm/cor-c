@@ -465,11 +465,17 @@ internal sealed class RegionEscape
 
     /// <summary>
     /// Virtual calls of more targets than this are assumed, not followed in
-    /// order (WIDE CALLS, below); 0, as yet the default, follows every call:
-    /// on the compiler's own link a round takes minutes and the stand-ins
-    /// take several to settle.
+    /// order (WIDE CALLS, below); 0 follows every call (--region-report
+    /// +wide=N). SIXTEEN BY DEFAULT: past that, a call's overrides are
+    /// Equals, GetHashCode, ToString, an iterator's MoveNext, a visitor's
+    /// Accept -- each joining all of them and all that calls them into one
+    /// cycle, thirteen thousand of the compiler's functions, which only
+    /// unification (Unified) can take and coarsely. A program's own calls
+    /// of a handful of overrides stay edges of the order, solved exactly;
+    /// rounds after the first solve again only what a grown stand-in
+    /// changed (Again), so the rounds cost a fraction of the first.
     /// </summary>
-    public int WideTargets;
+    public int WideTargets = 16;
 
     /// <summary>
     /// A diagnostic and a trade: every stand-in made from the first round

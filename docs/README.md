@@ -18,6 +18,7 @@ and this index rather than creating a directory per topic.
 | [LANGUAGE-TESTS.md](LANGUAGE-TESTS.md) | Test format, running tests and coverage guide |
 | [BENCHMARKS.md](BENCHMARKS.md) | Workloads, profiling and historical measurements |
 | [OPTIMIZATIONS.md](OPTIMIZATIONS.md) | Numbered optimization implementation/evidence ledger |
+| [REGIONS.md](REGIONS.md) | Region inference: the runtime arena, the link's engines and judge, and how units apply it |
 | [PASS-INVENTORY.md](PASS-INVENTORY.md) | Existing passes and their integration status |
 | [LARGE-BATCH.md](LARGE-BATCH.md) | Planned optimization batch and validation obligations |
 

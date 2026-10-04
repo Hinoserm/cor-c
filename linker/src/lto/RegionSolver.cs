@@ -4,7 +4,14 @@ namespace Corsac.Lang.Lto;
 
 /// <summary>
 /// REGIONS OVER EVERY UNIT: RegionPointsTo for a separately compiled closed
-/// image, answered from the units' RegionHints alone -- never their IR.
+/// image, answered from the units' RegionHints alone -- never their IR
+/// (docs/REGIONS.md).
+///
+/// TWO ENGINES ANSWER WHAT OUTLIVES A CALL (--region-engine). The default,
+/// escape, solves each function, and each cycle of calls together, from the
+/// bottom of the calls up (RegionEscape), and the judge below asks its
+/// answers. The other, andersen, is what follows: one inclusion solve over
+/// the whole image.
 ///
 /// Andersen's inclusion analysis, field-sensitive -- a location is an object
 /// and a byte offset into it, or any offset -- with RegionPointsTo's one
@@ -81,7 +88,7 @@ public static class RegionSolver
         // a minute each for nothing, and the third, in a heap the first two
         // had broken up, ran a 32-bit process out of room. The answer kept is
         // still the deepest that fits; the coarse one is kept, not made again.
-        if (Switches.RegionEngine == "escape")
+        if (!Switches.AndersenRegions)
         {
             Solver graphs = new(units, virtuals, methodAt, entry, foreign, report, live, 0, noReference) { LoopRegions = loops, Graphs = true, IsA = isA };
             if (graphs.Run() is { } found) return found;
@@ -578,7 +585,8 @@ public static class RegionSolver
                 _escape.Why = explain.Contains;
                 _escape.WhyFunction = f => _functions[f].Name.Contains(fn, StringComparison.Ordinal);
             }
-            // A diagnostic: wide calls past another count of targets (+wide=0: every call followed in order).
+            // A diagnostic: wide calls past another count of targets than the
+            // default sixteen (+wide=0: every call followed in order).
             if (_report?.FirstOrDefault(w => w.StartsWith("+wide=", StringComparison.Ordinal)) is { } wideOf && int.TryParse(wideOf[6..], out int wide))
                 _escape.WideTargets = wide;
             _escape.ReportStandIns = _report?.Contains("+standins") == true;

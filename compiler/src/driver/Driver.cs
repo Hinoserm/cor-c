@@ -165,7 +165,7 @@ public static class Driver
     private static int LinkUsage()
     {
         Console.WriteLine("corc link <file.o> ... -o <output> [--entry symbol] [--flat] "
-            + "[--base address] [--paddr address] [--shared] [--cpu name] [--no-lto] [--region-report names] [--timings]");
+            + "[--base address] [--paddr address] [--shared] [--cpu name] [--no-lto] [--region-engine escape|andersen] [--region-report names] [--timings]");
         return 0;
     }
 
@@ -180,7 +180,7 @@ public static class Driver
               corc link <file.o> ... -o <output> [--entry <symbol>]
               corc link @objects.list -o <output> [--entry <symbol>]
               corc index --assembly <identity> <sources...> -o <declarations.idx>
-              corc project <file.csproj> [--configuration Release] [--framework net10.0] [--jobs N] [--link-only | --runtime-only] [--region-report NAMES] [--timings] [-o output]
+              corc project <file.csproj> [--configuration Release] [--framework net10.0] [--jobs N] [--link-only | --runtime-only] [--region-engine escape|andersen] [--region-report NAMES] [--timings] [-o output]
               corc compile-project --units <units.tsv> --decl-index <idx> --assembly <identity> [--unit-census]
               corc build [target/path] [Name=Value ...] [--file corsac.build] [--jobs N]
               corc asm --target x86-16 <file.asm> -o <output.bin>
@@ -222,6 +222,10 @@ public static class Driver
                                  these (comma-separated), which allocations their return
                                  is proved to leave dead; corc link takes it too, for
                                  the regions it finds over every unit of a closed image
+              --region-engine <escape|andersen> how the link finds those regions:
+                                 escape (the default) solves each function and cycle
+                                 from the bottom of the calls up; andersen solves the
+                                 whole image at once, with object contexts
               --experimental-batch enable the staged large-batch optimizer checkpoint
               --batch-without <pass> omit one experimental pass for regression isolation
               --experimental-ssa run verified SSA optimisations after the default pipeline

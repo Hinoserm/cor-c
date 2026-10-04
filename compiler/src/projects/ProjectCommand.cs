@@ -253,7 +253,15 @@ public static class ProjectCommand
     {
         bool hosted = Environment.ProcessPath is string path
             && Path.GetFileNameWithoutExtension(path).Equals("dotnet", StringComparison.OrdinalIgnoreCase);
-        if (hosted || Environment.ProcessPath is null) return Driver.Run(link.ToArray());
+        // Hosted, the link reads this process's switches again from its own
+        // command line: handed them first, as a child would be -- the region
+        // engine among them -- and this process's list kept as it was.
+        if (hosted || Environment.ProcessPath is null)
+        {
+            List<string> flags = new(Driver.ChildFlags);
+            try { return Driver.Run([.. flags, .. link]); }
+            finally { Driver.ChildFlags.Clear(); Driver.ChildFlags.AddRange(flags); }
+        }
         System.Diagnostics.ProcessStartInfo start = new() { FileName = Environment.ProcessPath, UseShellExecute = false };
         foreach (string flag in Driver.ChildFlags) start.ArgumentList.Add(flag);
         foreach (string argument in link) start.ArgumentList.Add(argument);
