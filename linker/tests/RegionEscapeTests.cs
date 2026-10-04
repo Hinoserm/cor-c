@@ -30,6 +30,7 @@ public static class RegionEscapeTests
         ("a summary past MostCells is everything", MostCells),
         ("a parameter passed nothing is the unknown object", Unpassed),
         ("a function called from where nobody follows", Rooted),
+        ("copies of one body in several units are solved once, answered alike", Copies),
         ("region hints round trip at the current version", HintsRoundTrip),
         ("backend facts round trip: region sizes and owned-field flags", BackendRoundTrip),
     };
@@ -347,6 +348,60 @@ public static class RegionEscapeTests
             Check(!byRounds.Global[rounds.Site("T" + t, 0)], $"T{t}'s object, handed back and dropped, is not global for T0's leak");
         Check(!byRounds.Global[rounds.Site("E", 0)], "E's object, handed to targets that keep nothing of it, is not");
         Check(byRounds.Global.SequenceEqual(inOrder.Global), "what is global is the same by rounds as following every call");
+    }
+
+    /// <summary>
+    /// Make is the same body in two units (0 and 1): it makes an object and
+    /// hands it back. A third Make (2) hands back nothing: another body of
+    /// the same name. Use calls copy 1 and throws what it hands back; Keep
+    /// calls copy 0 and keeps what it hands back to itself. Copy 1 is
+    /// solved as copy 0 (one body), so its site is global as copy 0's is:
+    /// what any copy's caller does, every copy's sites answer. Make 2's
+    /// site is no copy's and nobody throws it: not global. Both copies
+    /// answer alike what outlives them (their object, handed back), and the
+    /// report says one function was solved as another copy.
+    /// </summary>
+    private static void Copies()
+    {
+        RegionSite[] One() => new[] { new RegionSite(true, 1, null, 0) };
+        RegionFunction Make()
+        {
+            // Nodes: 0 the return, 1 the object.
+            RegionFunction f = new("Make", false, true, false, 0, 2, 0, One());
+            f.Constraints.Add(Site(1, 0));
+            f.Constraints.Add(Copy(0, 1));
+            return f;
+        }
+        RegionFunction other = new("Make", false, true, false, 0, 2, 0, One());
+        other.Constraints.Add(Site(1, 0));
+        RegionFunction thrower = new("Throw", true, true, false, 1, 2, 0, Array.Empty<RegionSite>());
+        thrower.Constraints.Add(Leak(0));
+        // Nodes: 0 the return, 1 what Make handed back.
+        RegionFunction use = new("Use", true, true, false, 0, 2, 0, Array.Empty<RegionSite>());
+        use.Calls.Add(new("Make", 1, Array.Empty<int>()));
+        use.Calls.Add(new("Throw", -1, new[] { 1 }));
+        RegionFunction keep = new("Keep", true, true, false, 0, 2, 0, Array.Empty<RegionSite>());
+        keep.Calls.Add(new("Make", 1, Array.Empty<int>()));
+        RegionFunction[] functions = { Make(), Make(), other, thrower, use, keep };
+        int[]?[][] targets =
+        {
+            Array.Empty<int[]?>(), Array.Empty<int[]?>(), Array.Empty<int[]?>(), Array.Empty<int[]?>(),
+            new int[]?[] { new[] { 1 }, new[] { 3 } },
+            new int[]?[] { new[] { 0 } },
+        };
+        string?[][] keys = functions.Select(f => new string?[f.Calls.Count]).ToArray();
+        int[] siteBase = { 0, 1, 2, 3, 3, 3 };
+        List<string> said = new();
+        RegionEscape escape = new(functions, targets, keys, siteBase, 3, Enumerable.Repeat(true, 6).ToArray(), new[] { false, false, false, false, true, true })
+        {
+            WideTargets = 16, Progress = said.Add,
+        };
+        escape.Run();
+        Check(escape.Global[1], "copy 1's object, thrown by Use, is global");
+        Check(escape.Global[0], "copy 0's object is global as copy 1's is: one body");
+        Check(!escape.Global[2], "the other Make's object is nobody's to throw");
+        Check(escape.Escapes(0, 0) && escape.Escapes(1, 1), "each copy's object outlives it, handed back");
+        Check(said.Any(line => line.Contains("1 solved as another copy", StringComparison.Ordinal)), "one function was solved as another copy of its body");
     }
 
     /// <summary>

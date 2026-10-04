@@ -70,6 +70,8 @@ internal sealed class RegionEscape
     private const int ConstantParam = -2;
 
     private readonly IReadOnlyList<RegionFunction> _functions;
+    // Per function, per call: the functions it may run, each body once -- a
+    // copy as the body it copies (Bodies).
     private readonly int[]?[][] _targets;
     private readonly string?[][] _keys;
     private readonly int[] _siteBase;
@@ -88,12 +90,208 @@ internal sealed class RegionEscape
     /// <param name="rooted">Per function: called from where nobody follows, with anything (the entry, code outside the IR, an address taken).</param>
     public RegionEscape(IReadOnlyList<RegionFunction> functions, int[]?[][] targets, string?[][] keys, int[] siteBase, int sites, bool[] wanted, bool[] rooted)
     {
-        _functions = functions; _targets = targets; _keys = keys; _siteBase = siteBase; _wanted = wanted; _rooted = rooted;
+        _functions = functions; _keys = keys; _siteBase = siteBase;
+        _wanted = (bool[])wanted.Clone(); _rooted = (bool[])rooted.Clone();
         Escaping = new int[]?[functions.Count];
         Global = new bool[sites];
         LoopHeld = new (int[], int[])[]?[functions.Count];
         _summaries = new Summary?[functions.Count];
         _changedAt = new long[functions.Count];
+        _body = Bodies(functions, targets);
+        // Each call's targets as bodies, one array for every call of the same targets.
+        _targets = new int[]?[functions.Count][];
+        Dictionary<int[], int[]> canonical = new(TargetsComparer.Instance);
+        for (int f = 0; f < functions.Count; f++)
+        {
+            _targets[f] = new int[]?[targets[f].Length];
+            for (int k = 0; k < targets[f].Length; k++)
+            {
+                if (targets[f][k] is not { } those) continue;
+                if (!canonical.TryGetValue(those, out int[]? once)) canonical[those] = once = AsBodies(those);
+                _targets[f][k] = once;
+            }
+        }
+        _siteCopies = new int[]?[sites];
+        for (int f = 0; f < functions.Count; f++)
+        {
+            int b = _body[f];
+            if (b == f) continue;
+            Copies++;
+            // A body is called from where nobody follows, and asked about,
+            // wherever any of its copies is.
+            _rooted[b] |= _rooted[f];
+            _wanted[b] |= _wanted[f];
+            if (!_copiesOf.TryGetValue(b, out List<int>? copies)) _copiesOf[b] = copies = new() { b };
+            copies.Add(f);
+            for (int k = 0; k < functions[f].Sites.Length; k++)
+            {
+                int site = siteBase[b] + k;
+                int[]? had = _siteCopies[site];
+                int[] more = new int[(had?.Length ?? 0) + 1];
+                had?.CopyTo(more, 0);
+                more[^1] = siteBase[f] + k;
+                _siteCopies[site] = more;
+            }
+        }
+    }
+
+    // ---- one body, solved once ----------------------------------------------
+    //
+    // THE SAME BODY IN SEVERAL UNITS -- an iterator's MoveNext, its type named
+    // by a hash of its body, made in every unit that runs it; a lambda over
+    // shared code; a generic method specialised in each unit that uses it; a
+    // box's stub; a key helper -- is a function of each unit, and every copy
+    // a target of every call that may run any (RegionSolver.ResolveOverride
+    // for a local one; for a global, every unit's definition, which only the
+    // final link coalesces). Solved copy by copy, each cost what the first
+    // did: the same iterator's MoveNext, past its bound, half a second in
+    // each of five units, every round. So each body is solved once, as its
+    // first copy in link order, and every call of a copy is a call of that
+    // one (_targets).
+    //
+    // TWO FUNCTIONS ARE ONE BODY when they are the same function of
+    // different units -- the same name -- and say the same to the engine:
+    // parameters, nodes, slots, number parameters, every constraint, every
+    // call's callee, result and arguments, every site's descriptor and words,
+    // every loop's live, invariant and kept, whether their symbols are
+    // constants (SameBody); AND each of their calls runs the same bodies: a
+    // callee resolved in its own unit may be another unit's other function
+    // of the same name. That is found as a partition refined until it holds,
+    // first by what they say, then again and again by the bodies each call
+    // runs (Bodies). Two functions of one body then answer alike for any
+    // caller -- by induction on the solve, each applies the same summaries
+    // to the same constraints -- so the body's summary is each copy's.
+    //
+    // A COPY'S ANSWERS ARE ITS BODY'S, read at the same ordinals: a copy's
+    // site k is global when its body's is (Mark), outlives the copy when its
+    // body's outlives the body (BitsOf: a body's site's bit is its copies'
+    // too), and what a copy's loop holds is its body's (Close). The body is
+    // called wherever any copy is: from where nobody follows when any copy
+    // is, and asked about when any copy is. So what any copy's caller does
+    // with what a copy makes, every copy's sites answer -- the union of
+    // their callers', as one function called from all of them would: the
+    // final link keeps one copy of a global, and a local copy is a target of
+    // every call that may run any. What a virtual call in the body runs on
+    // an object is what it runs in any copy, each resolved in its own unit
+    // (RunsOn).
+    //
+    // Symbols' names, sites' lines and what only the judge reads (how often
+    // each runs, region sizes, what must run) are not compared: the engine
+    // reads none of them.
+
+    // Per function: the first function of its body.
+    private readonly int[] _body;
+    // Per body of more than one copy: every copy, itself first.
+    private readonly Dictionary<int, List<int>> _copiesOf = new();
+    // Per site of a body: the same site of each of its other copies.
+    private readonly int[]?[] _siteCopies;
+    /// <summary>For a report: functions solved as another copy of their body.</summary>
+    public int Copies;
+
+    private static int[] Bodies(IReadOnlyList<RegionFunction> functions, int[]?[][] targets)
+    {
+        int n = functions.Count;
+        int[] cls = new int[n];
+        // By what they say: grouped by name, then compared.
+        Dictionary<string, List<int>> byName = new(StringComparer.Ordinal);
+        List<int> firstOf = new();
+        for (int f = 0; f < n; f++)
+        {
+            if (!byName.TryGetValue(functions[f].Name, out List<int>? classes)) byName[functions[f].Name] = classes = new();
+            int found = -1;
+            foreach (int c in classes) if (SameBody(functions[firstOf[c]], functions[f])) { found = c; break; }
+            if (found < 0) { found = firstOf.Count; firstOf.Add(f); classes.Add(found); }
+            cls[f] = found;
+        }
+        int count = firstOf.Count;
+        // By the bodies each call runs, until no class splits: each round's
+        // classes split the last's (its class is the first word of each
+        // signature), so the count only grows, and the same count is the end.
+        while (true)
+        {
+            Dictionary<int[], int> sets = new(TargetsComparer.Instance), ofTargets = new(TargetsComparer.Instance);
+            int[] last = cls;
+            int SetOf(int[] those)
+            {
+                if (ofTargets.TryGetValue(those, out int id)) return id;
+                int[] mapped = those.Select(t => last[t]).Distinct().Order().ToArray();
+                if (!sets.TryGetValue(mapped, out id)) sets[mapped] = id = sets.Count;
+                return ofTargets[those] = id;
+            }
+            Dictionary<int[], int> signatures = new(TargetsComparer.Instance);
+            int[] refined = new int[n];
+            for (int f = 0; f < n; f++)
+            {
+                int[]?[] calls = targets[f];
+                int[] signature = new int[1 + calls.Length];
+                signature[0] = last[f];
+                for (int k = 0; k < calls.Length; k++) signature[1 + k] = calls[k] is { } those ? SetOf(those) : -1;
+                if (!signatures.TryGetValue(signature, out int c)) signatures[signature] = c = signatures.Count;
+                refined[f] = c;
+            }
+            cls = refined;
+            if (signatures.Count == count) break;
+            count = signatures.Count;
+        }
+        int[] body = new int[n];
+        Dictionary<int, int> first = new();
+        for (int f = 0; f < n; f++)
+        {
+            if (!first.TryGetValue(cls[f], out int b)) first[cls[f]] = b = f;
+            body[f] = b;
+        }
+        return body;
+    }
+
+    // Whether two functions say the same to the engine (Bodies), but for the calls' targets.
+    private static bool SameBody(RegionFunction a, RegionFunction b)
+    {
+        if (a.Name != b.Name || a.Parameters != b.Parameters || a.Nodes != b.Nodes || a.Slots != b.Slots || a.Instance != b.Instance
+            || a.ConstantsKnown != b.ConstantsKnown || !a.NumberParams.AsSpan().SequenceEqual(b.NumberParams)
+            || a.Constraints.Count != b.Constraints.Count || a.Calls.Count != b.Calls.Count || a.Sites.Length != b.Sites.Length || a.Loops.Count != b.Loops.Count)
+            return false;
+        for (int i = 0; i < a.Constraints.Count; i++) if (a.Constraints[i] != b.Constraints[i]) return false;
+        for (int i = 0; i < a.Calls.Count; i++)
+        {
+            RegionCall x = a.Calls[i], y = b.Calls[i];
+            if (x.Callee != y.Callee || x.Dest != y.Dest || !x.Arguments.AsSpan().SequenceEqual(y.Arguments)) return false;
+        }
+        for (int i = 0; i < a.Sites.Length; i++)
+        {
+            RegionSite x = a.Sites[i], y = b.Sites[i];
+            if (x.Rewritable != y.Rewritable || x.Table != y.Table || x.At != y.At || x.Words != y.Words) return false;
+        }
+        for (int i = 0; i < a.Loops.Count; i++)
+        {
+            RegionLoopShape x = a.Loops[i], y = b.Loops[i];
+            if (!x.Live.AsSpan().SequenceEqual(y.Live) || !x.Invariant.AsSpan().SequenceEqual(y.Invariant) || !x.KeptSlots.AsSpan().SequenceEqual(y.KeptSlots)) return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// What a virtual call of body f runs on an object of a site, as bodies:
+    /// what it runs in any copy, each resolved in its own unit (TargetsOn);
+    /// null when in some copy any target may run.
+    /// </summary>
+    private int[]? RunsOn(int f, int k, int site)
+    {
+        if (!_copiesOf.TryGetValue(f, out List<int>? copies)) return TargetsOn!(f, k, site) is { } runs ? AsBodies(runs) : null;
+        SortedSet<int> all = new();
+        foreach (int copy in copies)
+        {
+            if (TargetsOn!(copy, k, site) is not { } runs) return null;
+            foreach (int t in runs) all.Add(_body[t]);
+        }
+        return all.ToArray();
+    }
+
+    // Functions as their bodies, sorted, each once.
+    private int[] AsBodies(int[] functions)
+    {
+        bool same = true;
+        foreach (int t in functions) if (_body[t] != t) { same = false; break; }
+        return same ? functions : functions.Select(t => _body[t]).Distinct().Order().ToArray();
     }
 
     // A NUMBER HANDED TO A CALL holds no address: an argument every target
@@ -204,7 +402,14 @@ internal sealed class RegionEscape
         _next.Clear();
         void Visit(int r)
         {
-            if (r < 0) { int site = -r - 1; bits[site >> 6] |= 1UL << (site & 63); return; }
+            if (r < 0)
+            {
+                int site = -r - 1;
+                bits[site >> 6] |= 1UL << (site & 63);
+                // A body's site is each of its copies' (Bodies).
+                if (_siteCopies[site] is { } copies) foreach (int copy in copies) bits[copy >> 6] |= 1UL << (copy & 63);
+                return;
+            }
             int h = r >> IndexBits, k = r & ((1 << IndexBits) - 1);
             if (h >= _holders.Count || _holders[h] is not { } objects || k >= objects.Length || objects[k] is null) return;
             int at = _holderFirst[h] + k;
@@ -290,6 +495,16 @@ internal sealed class RegionEscape
         GlobalByUnknown = Global.Count(g => g);
         if (!NoRoots) Mark(_rootedRefs);
         GlobalByRoots = Global.Count(g => g) - GlobalByUnknown;
+        // Each copy answered as its body (Bodies).
+        for (int f = 0; f < _functions.Count; f++)
+        {
+            int b = _body[f];
+            if (b == f) continue;
+            Escaping[f] = Escaping[b];
+            LoopHeld[f] = LoopHeld[b];
+            _summaries[f] = _summaries[b];
+        }
+        if (Copies > 0) Progress?.Invoke($"escape graphs: {_functions.Count} functions, {_functions.Count - Copies} bodies: {Copies} solved as another copy of their body, {_copiesOf.Count} bodies of more than one");
     }
 
     private void Mark(IEnumerable<int> refs)
@@ -299,7 +514,12 @@ internal sealed class RegionEscape
         foreach (int r in refs) if (seen.Add(r)) next.Push(r);
         while (next.TryPop(out int r))
         {
-            if (r < 0) { Global[-r - 1] = true; continue; }
+            if (r < 0)
+            {
+                Global[-r - 1] = true;
+                if (_siteCopies[-r - 1] is { } copies) foreach (int copy in copies) Global[copy] = true;
+                continue;
+            }
             if (OriginsOf(r) is { } below) foreach (int c in below) if (seen.Add(c)) next.Push(c);
         }
     }
@@ -449,7 +669,7 @@ internal sealed class RegionEscape
         if (_sitePasses.TryGetValue((site, guard), out bool known)) return known;
         bool passes = true;
         foreach (var (f, k, target) in _guards[guard])
-            if (TargetsOn!(f, k, site) is { } runs && Array.BinarySearch(runs, target) < 0) { passes = false; break; }
+            if (RunsOn(f, k, site) is { } runs && Array.BinarySearch(runs, target) < 0) { passes = false; break; }
         return _sitePasses[(site, guard)] = passes;
     }
 
@@ -1174,7 +1394,8 @@ internal sealed class RegionEscape
         Stack<(int Node, int Call, int Target)> walk = new();
         for (int start = 0; start < count; start++)
         {
-            if (index[start] >= 0) continue;
+            // A copy is solved as its body (Bodies): nothing calls it.
+            if (index[start] >= 0 || _body[start] != start) continue;
             index[start] = low[start] = next++;
             stack.Push(start); onStack[start] = true;
             walk.Push((start, 0, 0));
@@ -2565,7 +2786,7 @@ internal sealed class RegionEscape
             SortedSet<int>? runs = sites.Length == 0 ? null : new();
             foreach (int site in sites)
             {
-                if (_owner.TargetsOn!(v.F, v.K, site) is not { } those) { runs = null; break; }
+                if (_owner.RunsOn(v.F, v.K, site) is not { } those) { runs = null; break; }
                 runs!.UnionWith(those);
             }
             return v.Classes[o] = runs?.ToArray();
