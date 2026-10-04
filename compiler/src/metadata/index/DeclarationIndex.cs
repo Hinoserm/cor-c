@@ -60,11 +60,11 @@ public sealed class DeclarationIndex : IDisposable
             {
                 if (record.Payload.Length <= 32) throw new InvalidDataException("Invalid base index record");
                 byte[] stamp = record.Payload.AsSpan(0, 32).ToArray();
-                string path = Utf8.GetString(record.Payload, 32, record.Payload.Length - 32);
-                if (!File.Exists(path)) throw new InvalidDataException("declaration index " + path + ", which this one was made on, is not there");
-                if (!DeclarationStamp.Of(path).AsSpan().SequenceEqual(stamp))
-                    throw new InvalidDataException("declaration index is out of date: " + path + ", which it was made on, has changed since; rebuild the index before compiling against it");
-                Under = new DeclarationIndex(path);
+                string underPath = Utf8.GetString(record.Payload, 32, record.Payload.Length - 32);
+                if (!File.Exists(underPath)) throw new InvalidDataException("declaration index " + underPath + ", which this one was made on, is not there");
+                if (!DeclarationStamp.Of(underPath).AsSpan().SequenceEqual(stamp))
+                    throw new InvalidDataException("declaration index is out of date: " + underPath + ", which it was made on, has changed since; rebuild the index before compiling against it");
+                Under = new DeclarationIndex(underPath);
                 UnderStamp = stamp;
                 break;
             }
