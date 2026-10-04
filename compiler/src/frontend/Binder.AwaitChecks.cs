@@ -1074,7 +1074,11 @@ public sealed partial class Binder
     /// <summary>Every node of a body, not descending into the bodies of the lambdas it makes.</summary>
     private IEnumerable<Node> SafetyNodes(Node root, bool intoLambdas = false)
     {
+        // A rewrite may hold the expression it replaces (a conversion around
+        // it): each node's rewrite is followed once, and the node met again
+        // inside it is walked by its own children, or the walk never ends.
         List<Node> stack = new() { root };
+        HashSet<Node> rewritten = new(ReferenceEqualityComparer.Instance);
         while (stack.Count > 0)
         {
             Node n = stack[^1];
@@ -1084,7 +1088,7 @@ public sealed partial class Binder
             {
                 continue;
             }
-            List<Node> children = new(SafetyChildren(n));
+            List<Node> children = new(SafetyChildren(n, rewritten));
             for (int i = children.Count - 1; i >= 0; i--)
             {
                 stack.Add(children[i]);
@@ -1093,12 +1097,29 @@ public sealed partial class Binder
     }
 
     /// <summary>A node's children as the code runs them: a rewritten expression's rewrite, a lowered statement's lowering.</summary>
-    private IEnumerable<Node> SafetyChildren(Node n)
+    /// <summary>The expressions whose rewrite a recursive walk is inside now: met again there, they are walked by their own children.</summary>
+    private readonly HashSet<Node> _inOwnRewrite = new(ReferenceEqualityComparer.Instance);
+
+    private IEnumerable<Node> SafetyChildren(Node n, HashSet<Node>? rewritten = null)
     {
         if (n is Expr e && _r.Rewrites.TryGetValue(e, out Expr? instead) && !ReferenceEquals(instead, e))
         {
-            yield return instead;
-            yield break;
+            if (rewritten is not null)
+            {
+                if (rewritten.Add(e))
+                {
+                    yield return instead;
+                    yield break;
+                }
+            }
+            else if (_inOwnRewrite.Add(e))
+            {
+                // A recursive walker descends into the rewrite before this
+                // enumerator resumes, so the mark lasts exactly as long.
+                try { yield return instead; }
+                finally { _inOwnRewrite.Remove(e); }
+                yield break;
+            }
         }
         switch (n)
         {
