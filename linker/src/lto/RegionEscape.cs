@@ -43,7 +43,12 @@ internal sealed class RegionEscape
     private const int FarthestField = 4096;
     public const int Any = -1;
     // How many fields a place follows from its parameter before every deeper
-    // object is one (Deep): a list, its array, and the elements in it.
+    // object is one (Deep): a list, its array, and the elements in it. An
+    // element read after them (any offset) is one field more: a list a
+    // parameter holds -- an enumerator's, a struct's `this` -- is a field
+    // further from it, and its array's elements are still kept apart from
+    // all they reach. (Below the deep place instead, a foreach over a list
+    // of nodes was handed every object of the tree for its loop variable.)
     private const int PlaceDepth = 2;
     // The most objects a summary keeps that the function made: past it the
     // rest are one object with all their origins.
@@ -278,7 +283,26 @@ internal sealed class RegionEscape
             if (path[i] == DeepStep) return path;
             fields++;
         }
-        return fields >= PlaceDepth ? [.. path, DeepStep] : [.. path, offset];
+        return fields > PlaceDepth || fields == PlaceDepth && offset != Any ? [.. path, DeepStep] : [.. path, offset];
+    }
+
+    /// <summary>
+    /// A place made coarse, KEEPING ITS GUARD: the guard's objects anywhere
+    /// below the parameter where the path took fields to them, and all below
+    /// them where it went on. Each covers what it was; a guard left out made
+    /// a name's string, leaked deep in a tree, the whole tree below the
+    /// parameter, once a summary went past its bounds.
+    /// </summary>
+    private static int[] Coarsened(int[] path)
+    {
+        bool below = Fields(path) > 0 || Array.IndexOf(path, DeepStep) >= 0;
+        int g = Array.FindIndex(path, IsGuard);
+        if (g < 0) return below ? DeepBelow : Array.Empty<int>();
+        List<int> kept = new();
+        if (g > 0) kept.Add(DeepStep);
+        kept.Add(path[g]);
+        for (int i = g + 1; i < path.Length; i++) if (!IsGuard(path[i])) { kept.Add(DeepStep); break; }
+        return kept.ToArray();
     }
 
     /// <summary>
@@ -826,14 +850,20 @@ internal sealed class RegionEscape
         {
             Summary b = new();
             int[] map = new int[Objects.Count];
-            Dictionary<(Kind, int, int), int> kept = new();
+            Dictionary<(Kind, int, string), int> kept = new();
             int Keep(Kind kind, int param, int[] path, int[] origins)
             {
-                int first = path.Length > 0 ? path[0] : int.MinValue;
-                if (kept.TryGetValue((kind, param, first), out int at)) return at;
+                var key = (kind, param, string.Join(",", path));
+                if (kept.TryGetValue(key, out int at)) return at;
                 at = b.Objects.Count;
-                b.Objects.Add((kind, param, path.Length > 0 ? new[] { path[0] } : Array.Empty<int>(), origins));
-                return kept[(kind, param, first)] = at;
+                b.Objects.Add((kind, param, path, origins));
+                return kept[key] = at;
+            }
+            int KeepPlace(int param, int[] path)
+            {
+                if (param < 0) return Keep(Kind.Deep, param, DeepBelow, Array.Empty<int>());
+                int[] coarse = Coarsened(path);
+                return Keep(KindOf(coarse), param, coarse, Array.Empty<int>());
             }
             List<int> all = new();
             foreach (var o in Objects) if (o.Kind == Kind.Made) all.AddRange(o.Origins);
@@ -842,15 +872,13 @@ internal sealed class RegionEscape
             for (int k = 0; k < Objects.Count; k++)
             {
                 var o = Objects[k];
-                // A parameter's own object and the object a field of it holds
-                // stay places; what is further down is the deep place below
-                // its first field.
+                // A parameter's own object stays a place; what is below it is
+                // its deep place, or the objects of a guard's class below it
+                // (Coarsened).
                 map[k] = o.Kind switch
                 {
                     Kind.Unknown => 0,
-                    // (Guards are left out: every object there, of any class.)
-                    Kind.Place when Fields(o.Path) == 0 && Array.IndexOf(o.Path, DeepStep) < 0 => Keep(Kind.Place, o.Param, Array.Empty<int>(), Array.Empty<int>()),
-                    Kind.Place or Kind.Deep => Keep(Kind.Deep, o.Param, DeepBelow, Array.Empty<int>()),
+                    Kind.Place or Kind.Deep => KeepPlace(o.Param, o.Path),
                     _ => Keep(Kind.Made, -1, Array.Empty<int>(), origins),
                 };
             }
@@ -989,14 +1017,17 @@ internal sealed class RegionEscape
             Summary b = new();
             int[] map = new int[Objects.Count];
             int blob = -1;
-            // A deep place by its parameter and first field: below that field.
-            Dictionary<(int, int), int> deep = new();
+            // A place below its parameter made coarse (Coarsened): the deep
+            // place, or the objects of its guard's class below.
+            Dictionary<(int, string), int> deep = new();
             int Deep(int param, int[] path)
             {
-                if (deep.TryGetValue((param, 0), out int d)) return d;
+                int[] coarse = Coarsened(path);
+                var key = (param, string.Join(",", coarse));
+                if (deep.TryGetValue(key, out int d)) return d;
                 d = b.Objects.Count;
-                b.Objects.Add((Kind.Deep, param, DeepBelow, Array.Empty<int>()));
-                return deep[(param, 0)] = d;
+                b.Objects.Add((KindOf(coarse), param, coarse, Array.Empty<int>()));
+                return deep[key] = d;
             }
             // PAST MostPlaces, A PARAMETER AT A TIME: its places below a
             // field of a field are its deep place, until the rest are few
