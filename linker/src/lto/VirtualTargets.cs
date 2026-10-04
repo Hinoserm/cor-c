@@ -32,6 +32,21 @@ public static class VirtualTargets
     private static bool IsDescriptor(string name) => name.Length > 2 && name[1] == '_' && name[0] is 't' or 'q' or 'v' or 'b';
 
     /// <summary>
+    /// WHETHER AN OBJECT STAMPED WITH A DESCRIPTOR MAY ANSWER AN INTERFACE ITS
+    /// TABLES DO NOT NAME: a box (b_) or a string (q_string) answers its
+    /// system interfaces -- IComparable, IComparable&lt;T&gt;, IEquatable&lt;T&gt;,
+    /// IFormattable (BoxedFaces) -- in its interfaces' slots, and lists none of
+    /// them, so that every unit's copy of a box is one table though only some
+    /// units make IEquatable&lt;int&gt;. Any interface may then be one of them:
+    /// a call declared on one counts every box and the string among the
+    /// objects it can run on, and what each holds at the slot among its
+    /// targets. More than the box answers is only ever more targets.
+    /// </summary>
+    public static bool MayAnswer(string descriptor, string declaring)
+        => declaring.StartsWith("i_", StringComparison.Ordinal)
+           && (descriptor.StartsWith("b_", StringComparison.Ordinal) || descriptor == "q_string");
+
+    /// <summary>
     /// Each of <paramref name="wanted"/> (virtual symbols) that can be
     /// resolved, to the functions it reaches.
     /// </summary>
@@ -202,7 +217,9 @@ public static class VirtualTargets
         {
             if (type == "t_object") return true;
             if (_named.GetValueOrDefault(descriptor) != 1 || !ByName.TryGetValue(descriptor, out int d)) return null;
-            return Ancestors(d).Contains(type);
+            if (Ancestors(d).Contains(type)) return true;
+            // A box's or a string's system interfaces are in no table of it.
+            return MayAnswer(descriptor, type) ? null : false;
         }
 
         public string? MethodAt(string descriptor, long offset)
@@ -271,6 +288,9 @@ public static class VirtualTargets
             bool everyType = declaring == "t_object";
             IEnumerable<int> reaching = everyType ? Enumerable.Range(0, _descriptors.Count)
                 : _derived.TryGetValue(declaring, out List<int>? derived) ? derived : Enumerable.Empty<int>();
+            // And every box and the string, for an interface (MayAnswer).
+            if (!everyType && declaring.StartsWith("i_", StringComparison.Ordinal))
+                reaching = reaching.Union(Enumerable.Range(0, _descriptors.Count).Where(d => MayAnswer(_descriptors[d].Name, declaring)));
             HashSet<string> targets = new(StringComparer.Ordinal);
             bool any = everyType, resolved = true;
             foreach (int descriptor in reaching)

@@ -1,0 +1,21 @@
+// The other unit of 1302_region_interface_call_on_boxed_value_across_units:
+// calls through the system interfaces a boxed number and a string answer.
+using System;
+using System.Runtime.CompilerServices;
+
+namespace BoxedUnits;
+
+public static class Faces
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static string Show(IFormattable f) => f.ToString("D6", null);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int Order(IComparable a, object b) => Math.Sign(a.CompareTo(b));
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static bool SameInt(IEquatable<int> a, int b) => a.Equals(b);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int OrderOf(IComparable<int> a, int b) => Math.Sign(a.CompareTo(b));
+}

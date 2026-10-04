@@ -1,0 +1,64 @@
+// test: region_interface_call_on_boxed_value_across_units
+// units: tests/language/support/1302_boxed_units.cor
+// expect-exit: 0
+// expect-output:
+// total 16000 kept 500 sum 1249000 first 000003 last 004993
+//
+// A box of a number, and a string, answer IComparable, IComparable<T>,
+// IEquatable<T> and IFormattable in those interfaces' slots, with no
+// interface named in their tables (BoxedFaces): every unit's copy of a box
+// is one table. A call through one of them, in the other unit, still
+// reaches the box's routines for the link's analyses (VirtualTargets.
+// MayAnswer): Work, a boundary, boxes a number every lap and hands it to
+// Faces.Show, whose IFormattable call runs the box's formatting, which
+// makes the string Work keeps past its own return. Missed, the call ran
+// nothing as far as the regions could tell, and that string could be
+// made in Work's region and read back freed. Everything kept is read back
+// after collections.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+using BoxedUnits;
+
+static class P
+{
+    static readonly List<string> Kept = new();
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Work(int round)
+    {
+        long score = 0;
+        for (int k = 0; k < 4; k++)
+        {
+            int v = round * 10 + k;
+            string shown = Faces.Show(v);
+            if (k == 3) Kept.Add(shown);
+            score += shown.Length;
+            score += Faces.Order(v, v - 1);
+            score += Faces.Order("b" + k, "a");
+            score += Faces.SameInt(v, v) ? 1 : 0;
+            score += Faces.OrderOf(v, v + 1);
+        }
+        return score;
+    }
+
+    // Not Main itself: what the entry calls is never a boundary.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Run()
+    {
+        long total = 0;
+        for (int round = 0; round < 500; round++)
+        {
+            total += Work(round);
+            if (round % 100 == 0) GC.Collect();
+        }
+        GC.Collect();
+        long sum = 0;
+        foreach (string s in Kept) sum += long.Parse(s);
+        Console.WriteLine("total " + total + " kept " + Kept.Count + " sum " + sum + " first " + Kept[0] + " last " + Kept[Kept.Count - 1]);
+        return 0;
+    }
+
+    static int Main() => Run();
+}

@@ -4036,7 +4036,9 @@ continue;
             bool everyType = declaring == "t_object";
             foreach (DataItem d in descriptors)
             {
-                if (!everyType && !Ancestors(d.Name).Contains(declaring)) continue;
+                // A box or a string answers its system interfaces in no
+                // table of it (VirtualTargets.MayAnswer).
+                if (!everyType && !Ancestors(d.Name).Contains(declaring) && !Corsac.Lang.Lto.VirtualTargets.MayAnswer(d.Name, declaring)) continue;
                 foreach (DataReloc r in d.Relocs)
                     if (r.Addend == 0 && bases.Contains(r.Offset - slot)) found.Add(r.Symbol);
             }
@@ -4077,7 +4079,8 @@ continue;
                     // the library tests for and nothing implements -- so the
                     // call is never made, and calls nothing.
                     if (!instantiated.TryGetValue(declaring, out bool made))
-                        instantiated[declaring] = made = declaring == "t_object" || descriptors.Any(d => Ancestors(d.Name).Contains(declaring));
+                        instantiated[declaring] = made = declaring == "t_object"
+                            || descriptors.Any(d => Ancestors(d.Name).Contains(declaring) || Corsac.Lang.Lto.VirtualTargets.MayAnswer(d.Name, declaring));
                     if (!made)
                     {
                         if (traced) Console.Error.WriteLine($"targets {f.Name}: {i} {declaring}: no object of the type");
