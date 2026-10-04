@@ -1,0 +1,60 @@
+// test: a fresh object's field read after Interlocked exchanged it as a sequence
+// flags: --store-sequences
+// expect-exit: 0
+// expect-output:
+// empty first
+// first
+// first first
+// second
+// 3 3
+// Interlocked's reference exchanges are the image's stubs where stores are
+// sequences (__x86.i.refxchg, __x86.i.refcas). The stub's exchange is the
+// field's store: a fresh object's field read after it must be what the
+// exchange put there, not the constructor's, and the old value it answers
+// must be what was there.
+
+using System;
+using System.Threading;
+
+sealed class Slot
+{
+    public string Name = "empty";
+    public int[] Items = new int[0];
+}
+
+static class Program
+{
+    static Slot Swap(string name)
+    {
+        Slot s = new Slot();
+        string was = Interlocked.Exchange(ref s.Name, name);
+        Console.WriteLine(was + " " + s.Name);
+        return s;
+    }
+
+    static Slot Exchanged(string a, string b)
+    {
+        Slot s = new Slot { Name = a };
+        string kept = Interlocked.CompareExchange(ref s.Name, b, "nobody");
+        string swapped = Interlocked.CompareExchange(ref s.Name, b, kept);
+        Console.WriteLine(kept + " " + swapped);
+        return s;
+    }
+
+    static int Grown(int size)
+    {
+        Slot s = new Slot();
+        Interlocked.Exchange(ref s.Items, new int[size]);
+        s.Items[size - 1] = size;
+        return s.Items.Length;
+    }
+
+    static void Main()
+    {
+        Slot a = Swap("first");
+        Console.WriteLine(a.Name);
+        Slot b = Exchanged("first", "second");
+        Console.WriteLine(b.Name);
+        Console.WriteLine(Grown(3) + " " + Grown(3));
+    }
+}
