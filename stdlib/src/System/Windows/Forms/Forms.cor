@@ -1970,6 +1970,51 @@ public static class SystemInformation
     /// Grab-and-drag on linear views instead of speed by distance (off).
     internal static bool AutoScrollGrab { get { return Parameter(0x10004, 0) != 0; } }
 
+    // THE THEME'S METRICS (os/gui/theme.cor), as GetSystemMetrics answers
+    // them, each asked when read: they follow every change of the theme.
+    static Size Pair(int x, int y, int fx, int fy) { return new Size(Metric(x, fx), Metric(y, fy)); }
+
+    public static Size BorderSize { get { return Pair(5, 6, 1, 1); } }
+    public static Size Border3DSize { get { return Pair(45, 46, 2, 2); } }
+    public static Size FrameBorderSize { get { return Pair(32, 33, 4, 4); } }
+    public static Size FixedFrameBorderSize { get { return Pair(7, 8, 3, 3); } }
+    public static int CaptionHeight { get { return Metric(4, 19); } }
+    public static Size CaptionButtonSize { get { return Pair(30, 31, 18, 18); } }
+    public static int ToolWindowCaptionHeight { get { return Metric(51, 15); } }
+    public static Size ToolWindowCaptionButtonSize { get { return Pair(52, 53, 12, 14); } }
+    public static int MenuHeight { get { return Metric(15, 19); } }
+    public static Size MenuButtonSize { get { return Pair(54, 55, 18, 18); } }
+    public static Size MenuCheckSize { get { return Pair(71, 72, 13, 13); } }
+    public static int VerticalScrollBarWidth { get { return Metric(2, 16); } }
+    public static int HorizontalScrollBarHeight { get { return Metric(3, 16); } }
+    public static int VerticalScrollBarArrowHeight { get { return Metric(20, 16); } }
+    public static int HorizontalScrollBarArrowWidth { get { return Metric(21, 16); } }
+    public static int VerticalScrollBarThumbHeight { get { return Metric(9, 16); } }
+    public static int HorizontalScrollBarThumbWidth { get { return Metric(10, 16); } }
+    public static Size IconSize { get { return Pair(11, 12, 32, 32); } }
+    public static Size SmallIconSize { get { return Pair(49, 50, 16, 16); } }
+    public static Size CursorSize { get { return Pair(13, 14, 32, 32); } }
+    public static Size IconSpacingSize { get { return Pair(38, 39, 75, 75); } }
+    public static Size MinimumWindowSize { get { return Pair(28, 29, 112, 27); } }
+    public static Size MinWindowTrackSize { get { return Pair(34, 35, 112, 27); } }
+    public static Size MaxWindowTrackSize { get { return Pair(59, 60, 652, 492); } }
+    public static Size MinimizedWindowSize { get { return Pair(57, 58, 160, 24); } }
+    public static Size MinimizedWindowSpacingSize { get { return Pair(47, 48, 160, 24); } }
+    public static Size PrimaryMonitorMaximizedWindowSize { get { return Pair(61, 62, 648, 460); } }
+
+    // THE THEME'S DESKTOP SETTINGS.
+    static long Setting(int which, long fallback)
+    {
+        try { return Seat.Current.ThemeSetting(which); }
+        catch (IOException) { return fallback; }
+    }
+
+    public static bool DragFullWindows { get { return Setting(4, 1) != 0; } }
+    public static bool IsFlatMenuEnabled { get { return Setting(5, 0) != 0; } }
+    public static bool IsFontSmoothingEnabled { get { return Setting(6, 0) != 0; } }
+    public static bool IsTitleBarGradientEnabled { get { return Setting(7, 1) != 0; } }
+    public static Font MenuFont { get { return SystemFonts.MenuFont; } }
+
     public static Size PrimaryMonitorSize { get { return new Size(Seat.Current.Width, Seat.Current.Height); } }
 
     public static Rectangle WorkingArea { get { return Screen.PrimaryScreen.WorkingArea; } }
@@ -6346,6 +6391,12 @@ public static class Application
                 // WM_SETTINGCHANGE: every setting SystemInformation answers
                 // is asked of the seat again, and whoever cares is told.
                 SystemEvents.RaiseUserPreferenceChanged((UserPreferenceCategory)m.A);
+                break;
+            case Seat.ThemeChanged:
+                // The theme changed (os/gui/theme.cor): SystemColors and
+                // SystemFonts ask the seat again at their next read. The
+                // SettingChange that follows tells whoever cares.
+                SystemTheme.Changed();
                 break;
             case 18:
                 // Its taskbar button: back from the taskbar, as it was.

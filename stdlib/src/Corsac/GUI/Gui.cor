@@ -148,9 +148,17 @@ enum SeatIoctl : long
     PropList = 0x4755009D,
     ForegroundAllow = 0x4755009E,
     ForegroundLock = 0x4755009F,
+    ThemeColours = 0x47550080,
+    ThemeMetrics = 0x47550081,
+    ThemeFont = 0x47550082,
+    ThemeSetting = 0x47550083,
+    ThemeSetColours = 0x47550084,
+    ThemeSetFont = 0x47550085,
+    ThemeSetSetting = 0x47550086,
+    ThemeSetSizes = 0x47550087,
 }
 
-public class Seat : IDrawingTarget, IFontStore
+public class Seat : IDrawingTarget, IFontStore, ISystemTheme
 {
     // The font store's door for System.Drawing, which cannot name the seat
     // (it is the library below this one): set when this class is first
@@ -451,6 +459,9 @@ public class Seat : IDrawingTarget, IFontStore
         // is what lets a program say so and stop, rather than failing at its
         // first window and being started again for ever.
         if (Width <= 0 || Height <= 0) throw new IOException("seat " + path + " has no screen");
+        // The system's colours and fonts (System.Drawing's SystemColors and
+        // SystemFonts) are this seat's theme from here on.
+        SystemTheme.Source = this;
     }
 
     /// <summary>One mode this display can be put into.</summary>
@@ -662,6 +673,141 @@ public class Seat : IDrawingTarget, IFontStore
     /// A character was typed into a text box: the pointer is hidden until it
     /// next moves, if the user has "Hide pointer while typing" on.
     public void VanishPointer() { Ioctl(SeatIoctl.VanishPointer, 0); }
+
+    // ---- the theme --------------------------------------------------------------
+    //
+    // THE GUI KERNEL'S ONE (os/gui/theme.cor), which Windows programs read as
+    // GetSysColor, GetSystemMetrics and SystemParametersInfo: colours by
+    // Windows' COLOR_ number as 0x00RRGGBB, metrics by SM_ number, the
+    // non-client fonts (0 caption, 1 small caption, 2 menu, 3 status, 4
+    // message, 5 icon title), and the desktop's settings (0 wallpaper, 1 its
+    // style, 2 tiled, 3 the pattern, 4 windows dragged whole, 5 flat menus,
+    // 6 font smoothing, 7 gradient captions). Every change is sent to every
+    // program as ThemeChanged (event 36), its A what moved (1 colours, 2
+    // metrics, 4 fonts, 8 the desktop), then as SettingChange. A change made
+    // with `persist` is kept in the user's registry.
+
+    /// The event the theme sends.
+    public const int ThemeChanged = 36;
+
+    /// The colours, 0x00RRGGBB, by COLOR_ number; null on failure.
+    public int[]? ThemeColours() { return Words(SeatIoctl.ThemeColours); }
+
+    /// The metrics, by SM_ number; null on failure.
+    public int[]? ThemeMetrics() { return Words(SeatIoctl.ThemeMetrics); }
+
+    int[]? Words(SeatIoctl request)
+    {
+        byte[] args = new byte[8];
+        long count = Ioctl(request, Sys.ArrayData(args));
+        if (count <= 0) return null;
+        byte[] list = new byte[(int)count * 4];
+        PutWord(args, 0, Sys.ArrayData(list)); PutWord(args, 4, count);
+        long again = Ioctl(request, Sys.ArrayData(args));
+        GC.KeepAlive(list);
+        if (again != count) return null;
+        int[] made = new int[(int)count];
+        for (int i = 0; i < made.Length; i++) made[i] = BitConverter.ToInt32(list, i * 4);
+        return made;
+    }
+
+    /// A non-client font: its face, height in pixels (negative: the em),
+    /// weight, and style bits (1 italic, 2 underline, 4 strikeout).
+    public bool ThemeFont(int kind, out string face, out int height, out int weight, out int flags)
+    {
+        face = ""; height = 0; weight = 0; flags = 0;
+        byte[] record = new byte[96];
+        byte[] args = new byte[12];
+        PutWord(args, 0, kind); PutWord(args, 4, Sys.ArrayData(record)); PutWord(args, 8, record.Length);
+        long size = Ioctl(SeatIoctl.ThemeFont, Sys.ArrayData(args));
+        GC.KeepAlive(record);
+        if (size != record.Length) return false;
+        height = BitConverter.ToInt32(record, 0);
+        weight = BitConverter.ToInt32(record, 8);
+        flags = BitConverter.ToInt32(record, 12);
+        int n = BitConverter.ToInt32(record, 28);
+        if (n < 0 || n > 31) return false;
+        face = System.Text.Encoding.Unicode.GetString(record, 32, n * 2);
+        return true;
+    }
+
+    /// The colours and fonts, as System.Drawing asks (ISystemTheme).
+    public int[]? SystemColourTable() { return ThemeColours(); }
+    public bool SystemFont(int kind, out string face, out int height, out int weight, out int flags) { return ThemeFont(kind, out face, out height, out weight, out flags); }
+
+    /// A desktop setting's number: windows dragged whole and the rest 1 on.
+    public long ThemeSetting(int setting)
+    {
+        byte[] args = new byte[12];
+        PutWord(args, 0, setting);
+        return Ioctl(SeatIoctl.ThemeSetting, Sys.ArrayData(args));
+    }
+
+    /// A text setting's text: the wallpaper's path or the pattern, "(None)"
+    /// for none.
+    public string ThemeText(int setting)
+    {
+        byte[] args = new byte[12];
+        PutWord(args, 0, setting);
+        long length = Ioctl(SeatIoctl.ThemeSetting, Sys.ArrayData(args));
+        if (length <= 0) return "";
+        byte[] text = new byte[(int)length * 2];
+        PutWord(args, 4, Sys.ArrayData(text)); PutWord(args, 8, length);
+        long again = Ioctl(SeatIoctl.ThemeSetting, Sys.ArrayData(args));
+        GC.KeepAlive(text);
+        return again == length ? System.Text.Encoding.Unicode.GetString(text) : "";
+    }
+
+    /// Colours set: COLOR_ numbers and 0x00RRGGBB values.
+    public bool SetThemeColours(int[] indices, int[] colours, bool persist)
+    {
+        int n = Math.Min(indices.Length, colours.Length);
+        byte[] which = new byte[n * 4], values = new byte[n * 4];
+        for (int i = 0; i < n; i++) { PutWord(which, i * 4, indices[i]); PutWord(values, i * 4, colours[i]); }
+        byte[] args = new byte[16];
+        PutWord(args, 0, n); PutWord(args, 4, Sys.ArrayData(which)); PutWord(args, 8, Sys.ArrayData(values)); PutWord(args, 12, persist ? 1 : 0);
+        long answer = Ioctl(SeatIoctl.ThemeSetColours, Sys.ArrayData(args));
+        GC.KeepAlive(which); GC.KeepAlive(values);
+        return answer == 0;
+    }
+
+    /// A non-client font set.
+    public bool SetThemeFont(int kind, string face, int height, int weight, int flags, bool persist)
+    {
+        byte[] record = new byte[96];
+        PutWord(record, 0, height); PutWord(record, 8, weight); PutWord(record, 12, flags);
+        int n = Math.Min(face.Length, 31);
+        PutWord(record, 28, n);
+        for (int i = 0; i < n; i++) { record[32 + i * 2] = (byte)face[i]; record[33 + i * 2] = (byte)(face[i] >> 8); }
+        byte[] args = new byte[12];
+        PutWord(args, 0, kind); PutWord(args, 4, Sys.ArrayData(record)); PutWord(args, 8, persist ? 1 : 0);
+        long answer = Ioctl(SeatIoctl.ThemeSetFont, Sys.ArrayData(args));
+        GC.KeepAlive(record);
+        return answer == 0;
+    }
+
+    /// A desktop setting set: a number, or a text setting's text.
+    public bool SetThemeSetting(int setting, long value, string? text, bool persist)
+    {
+        byte[] units = text != null ? System.Text.Encoding.Unicode.GetBytes(text) : new byte[0];
+        byte[] args = new byte[20];
+        PutWord(args, 0, setting); PutWord(args, 4, value); PutWord(args, 8, Sys.ArrayData(units));
+        PutWord(args, 12, units.Length / 2); PutWord(args, 16, persist ? 1 : 0);
+        long answer = Ioctl(SeatIoctl.ThemeSetSetting, Sys.ArrayData(args));
+        GC.KeepAlive(units);
+        return answer == 0;
+    }
+
+    /// The non-client sizes set, in pixels: border, scroll bar width and
+    /// height, caption button width and height, small caption's, menu's.
+    public bool SetThemeSizes(int[] sizes, bool persist)
+    {
+        if (sizes.Length != 9) return false;
+        byte[] args = new byte[40];
+        for (int i = 0; i < 9; i++) PutWord(args, i * 4, sizes[i]);
+        PutWord(args, 36, persist ? 1 : 0);
+        return Ioctl(SeatIoctl.ThemeSetSizes, Sys.ArrayData(args)) == 0;
+    }
 
     // ---- the clipboard --------------------------------------------------------
     //
