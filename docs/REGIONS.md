@@ -251,7 +251,7 @@ IR the link will regenerate the unit from:
   `RegionSummary.MethodRead`). A virtual call the link follows reaches its
   overrides with its own arguments; the method-slot functions are rooted
   only when some unit calls one blind or a virtual call is left unresolved
-  (`RegionSolver.Addressed`; `+report` says which). Rooted otherwise, every
+  (`RegionSolver.Addressed`; a `--region-report` says which). Rooted otherwise, every
   virtual method was called with anything, and what each override made and
   wrote into its object was everyone's. A body is rooted when any copy of it
   is.
