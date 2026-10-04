@@ -112,6 +112,12 @@ static class Gc
     // scanned word by word. Not a multiple of eight, as KindLeaf is not.
     const long KindObject = 0x4F424A54;
 
+    // AND KindFreed FOR A REGION'S BLOCK GIVEN BACK BELOW THE TOP of its
+    // region (RegionFree): dead, its bytes kept until the pointer comes back
+    // down over it. Never scanned, never copied (ScanRegion, CopyRegion). Not
+    // a multiple of eight either.
+    const long KindFreed = 0x46524545;
+
     // THE DESCRIPTOR, as the compiler lays it (Lowering.cs, DescName...):
     // twelve words before the vtable an object's first word points at.
     const long DescWords = 12;
@@ -2194,6 +2200,11 @@ static class Gc
     /// the heap instead).
     public static long RegionFreedBytes;
     public static long RegionMisses;
+    /// Blocks given back before their region's end, from its top
+    /// (RegionFree): the bump pointer taken back over them, and their bytes
+    /// -- not counted again in RegionFreedBytes when the region ends.
+    public static long RegionTopFrees;
+    public static long RegionTopFreedBytes;
     /// Blocks made in regions: each given back when its region ends, as a
     /// free would have given it back (what Frees counts for the heap).
     public static long RegionBlocks;
@@ -2569,6 +2580,71 @@ static class Gc
         return (nint)(at + HeaderBytes);
     }
 
+    /// <summary>
+    /// A REGION'S BLOCK GIVEN BACK BEFORE ITS REGION ENDS, by a free that
+    /// proved it dead: where it ends exactly at the innermost region's bump
+    /// pointer, in the chunk being filled and past the region's record, the
+    /// pointer comes back down over it and its bytes are zeroed, so the next
+    /// allocation takes them -- and on down over every block under it given
+    /// back already. Anywhere else in that stretch it is marked given back
+    /// (KindFreed), for the pointer to come down over later; elsewhere it
+    /// waits for its region's end, as every region block did. A List grown
+    /// in a region, freed with its arrays, leaves nothing behind.
+    ///
+    /// ONLY FOR A BLOCK READ FROM A FIELD OF AN OBJECT STILL ALIVE (FreeHeld):
+    /// such a pointer is the block itself. One kept in a register may name
+    /// memory a loop's lap has given back and the next lap has made again --
+    /// Runtime.Free and FreeReplaced do nothing for a region's block.
+    ///
+    /// The thread's own, never stopped part-way in a way the collector can
+    /// see: the pointer moves down before the bytes are cleared, so a scan
+    /// of the stopped thread reads no further than the blocks still live,
+    /// and a block's mark is one word, which ScanRegion reads before or
+    /// after but never half.
+    /// </summary>
+    public static void RegionFree(long at)
+    {
+        long tb = Sys.ThreadBlock();
+        if (tb == 0 || at == 0) return;
+        long open = Sys.Peek(tb + Tls.RegionOpen);
+        if (open == 0) return;
+        long last = Sys.Peek(tb + Tls.RegionEnd);
+        long top = Sys.Peek(tb + Tls.RegionAt);
+        long start = ChunkStart(last);
+        // The innermost region's part of the chunk being filled: past its
+        // record, or the whole chunk when it began in one before.
+        long floor = open >= start && open < last ? open + RecordBytes : start;
+        long block = at - HeaderBytes;
+        if (block < floor || block >= top) return;
+        long word = Sys.Peek(block);
+        long size = word & SizeMask;
+        if (size < Smallest || block + size > top || Sys.Peek(block + size - FooterBytes) != word) return;
+        if (Sys.Peek(block + KindAt) == KindFreed) return;
+        if (block + size != top)
+        {
+            Sys.Poke(block + KindAt, KindFreed);
+            return;
+        }
+        long freed = 0;
+        while (true)
+        {
+            Sys.Poke(tb + Tls.RegionAt, block);
+            Sys.MemorySet(block, 0, size);
+            freed = freed + size;
+            RegionTopFrees = RegionTopFrees + 1;
+            if (block - floor < Smallest) break;
+            // The block below, by its footer: on down while it is one given back.
+            long below = Sys.Peek(block - FooterBytes);
+            long under = below & SizeMask;
+            long prev = block - under;
+            if (under < Smallest || prev < floor || Sys.Peek(prev) != below || Sys.Peek(prev + KindAt) != KindFreed) break;
+            block = prev;
+            size = under;
+        }
+        RegionTopFreedBytes = RegionTopFreedBytes + freed;
+        FreedBytes = FreedBytes + freed;
+    }
+
     /// Whether the block of a region's `at` is an object -- the only kind
     /// with a type to read and fields it may own. A captured variable's cell
     /// or a frame's spilled words are scanned blocks of no type, an array
@@ -2622,7 +2698,8 @@ static class Gc
             {
                 long size = Sys.Peek(p) & SizeMask;
                 if (size < Smallest || p + size > end) break;
-                ScanBlock(p, size);
+                // A block given back below the top holds nothing live (RegionFree).
+                if (Sys.Peek(p + KindAt) != KindFreed) ScanBlock(p, size);
                 p = p + size;
             }
             if (c == last) break;
@@ -2686,7 +2763,7 @@ static class Gc
                     to = end;
                     size = end - p;
                 }
-                else if (Sys.Peek(p + KindAt) == KindLeaf)
+                else if (Sys.Peek(p + KindAt) == KindLeaf || Sys.Peek(p + KindAt) == KindFreed)
                 {
                     from = to;
                 }

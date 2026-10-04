@@ -1,0 +1,35 @@
+// The other unit of 1303_region_storage_reused_when_freed_on_top_across_units:
+// a bag whose list and table are made, grown and dropped again and again
+// beneath one boundary, each dropped by its field being emptied.
+
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public sealed class Bag
+{
+    public List<int>? Items;
+    public Dictionary<int, int>? Index;
+}
+
+public static class Work
+{
+    /// Four rounds of a list grown to a thousand and a table to two hundred,
+    /// each dropped before the next is made: 4 * ((999 ^ seed) + 199 + seed + 1200).
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long Round(int seed)
+    {
+        Bag b = new();
+        long sum = 0;
+        for (int r = 0; r < 4; r++)
+        {
+            b.Items = new List<int>();
+            for (int i = 0; i < 1000; i++) b.Items.Add(i ^ seed);
+            b.Index = new Dictionary<int, int>();
+            for (int i = 0; i < 200; i++) b.Index[i] = i + seed;
+            sum += b.Items[999] + b.Index[199] + b.Items.Count + b.Index.Count;
+            b.Items = null;
+            b.Index = null;
+        }
+        return sum;
+    }
+}
