@@ -83,7 +83,10 @@ public sealed partial class Lowering
     /// the store, the value is still in the stopped thread's registers, which
     /// its handshake saved on its stack; taken after it, the old object holds
     /// it and its card was read. The mark after stays, for a cycle that takes
-    /// the cards while the thread runs. Set with --ring1-syscalls.
+    /// the cards while the thread runs. Ring 0's processors are stopped the
+    /// same way: one running kernel code is Kicked, and the Kick's handler
+    /// answers the collector where it stands (Smp.PromptStop). Set with
+    /// --ring1-syscalls or --tls-gs: every kernel image and module.
     /// </summary>
     public static bool CardMarkBefore { get; set; }
 

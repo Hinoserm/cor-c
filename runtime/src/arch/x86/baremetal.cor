@@ -373,6 +373,20 @@ static class Platform
         return FreeMemoryQuietly();
     }
 
+    /// MEMORY COMMITTED AS IT IS FIRST TOUCHED, for the collector's tables that
+    /// cover the whole address space and are read only where the heap is
+    /// (Gc.StartGenerations): a kernel's routine that hands out addresses and
+    /// makes each page when it is first touched (ring 0's KernelMapLazy), or,
+    /// with none, an ordinary Map -- a ring-1 kernel's, which its kernel
+    /// commits on touch already.
+    public static long MapLazyHook;
+
+    public static long MapLazy(long bytes)
+    {
+        if (MapLazyHook != 0) return Sys.Call(MapLazyHook, bytes, 0, 0);
+        return Map(bytes);
+    }
+
     /// Whether a mapping costs only the pages that are touched: false alone
     /// on the machine -- the collector keeps no card table and collects the
     /// whole heap -- and true for an image whose kernel commits its memory

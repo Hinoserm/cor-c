@@ -573,10 +573,12 @@ static class Gc
         {
             return;
         }
-        long cards = Platform.Map(CardTableBytes);
-        long taken = Platform.Map(CardTableBytes);
-        long held = Platform.Map(HeldBytes);
-        long holding = Platform.Map(HeldBytes);
+        // COMMITTED ON FIRST TOUCH (Platform.MapLazy): a card is a byte for
+        // every kilobyte of the address space, and only the heap's are read.
+        long cards = Platform.MapLazy(CardTableBytes);
+        long taken = Platform.MapLazy(CardTableBytes);
+        long held = Platform.MapLazy(HeldBytes);
+        long holding = Platform.MapLazy(HeldBytes);
         if (cards == 0 || taken == 0 || held == 0 || holding == 0)
         {
             if (cards != 0) Platform.Unmap(cards, CardTableBytes);
