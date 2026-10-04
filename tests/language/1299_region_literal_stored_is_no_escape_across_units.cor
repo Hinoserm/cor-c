@@ -4,7 +4,7 @@
 // expect-exit: 0
 // expect-output:
 // 210000
-// record and child in regions True
+// child in regions True
 //
 // The other unit's Ring.Build is a boundary: it makes a record and the
 // leaf the record holds, hands the record round a ring of functions that
@@ -16,6 +16,13 @@
 // every symbol's address was, the ring (unified, being so large a cycle)
 // joined the record's fields to the global class, and the leaf left the
 // boundary's region for the heap.
+//
+// The leaf is what is counted, one region block a call. The record never
+// leaves Build's frame -- the compiler places it there, dead at the return
+// and handed only to functions that keep nothing of it -- so it is no
+// region's block, and it would be one only where that placement is lost.
+// `(Leaf)r.Child` hands the leaf to a failed cast's throw, which keeps
+// nothing of it (RegionPointsTo.Harmless).
 
 using System;
 
@@ -28,6 +35,6 @@ static class P
         for (int k = 0; k < 20000; k++) total += Ring.Build(k & 7);
         long blocks = Gc.RegionBlocks - before;
         Console.WriteLine(total);
-        Console.WriteLine("record and child in regions " + (blocks >= 40000));
+        Console.WriteLine("child in regions " + (blocks >= 20000));
     }
 }

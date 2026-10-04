@@ -35,7 +35,8 @@ static class P
     [MethodImpl(MethodImplOptions.NoInlining)]
     static int Run()
     {
-        long total = 0, caught = 0, before = Gc.RegionFreedBytes;
+        // Given back at a region's end, or before it from its top (Gc.RegionFree).
+        long total = 0, caught = 0, before = Gc.RegionFreedBytes + Gc.RegionTopFreedBytes;
         int failed = 0;
         for (int round = 1; round <= 1000; round++)
         {
@@ -44,7 +45,7 @@ static class P
             if (round % 250 == 0) GC.Collect();
         }
         Console.WriteLine("total " + total + " failed " + failed + " caught " + caught);
-        Console.WriteLine("given back " + (Gc.RegionFreedBytes - before >= 500000L));
+        Console.WriteLine("given back " + (Gc.RegionFreedBytes + Gc.RegionTopFreedBytes - before >= 500000L));
         return 0;
     }
 

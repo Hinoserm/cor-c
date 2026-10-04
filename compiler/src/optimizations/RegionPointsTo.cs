@@ -2495,10 +2495,21 @@ public sealed class RegionPointsTo : IModulePass
         Unknown(copy, i, 0);
     }
 
+    /// <summary>Runtime.InvalidCastTo(object, string): a failed cast's throw.</summary>
+    internal const string FailedCast = "m_Runtime_InvalidCastTo_2_V$Any_V$String";
+
     // The collector's notes and the runtime's frees keep no pointer.
     internal static bool Harmless(string callee) =>
         Opt.Escape.IsCollectorNote(callee) || callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive
         || callee.StartsWith("m_Runtime_Free", StringComparison.Ordinal)
+        // NOR DOES A FAILED CAST'S THROW (Escape.KeepsNothing): its exception
+        // names the object's type, reads nothing else of it, and keeps none
+        // of it; what it makes it throws. Followed as a call, it is a member
+        // of the runtime's cycle of exceptions, traces and symbol lookups, and
+        // unified there its parameter is one class with everything every
+        // cast in that cycle hands it, the unknown object among them: every
+        // object any boundary cast -- `(Leaf)r.Child` -- went to the heap.
+        || callee == FailedCast
         || callee.StartsWith("m_Runtime_Card", StringComparison.Ordinal)
         || callee.StartsWith("m_Runtime_WriteBarrier", StringComparison.Ordinal);
 
