@@ -1,5 +1,5 @@
 // test: region_fields_of_unrelated_classes_apart_across_units
-// units: tests/language/support/1320_typed_fields_units.cor
+// units: tests/language/support/1323_typed_fields_units.cor
 // regions: taken
 // expect-exit: 0
 // expect-output:

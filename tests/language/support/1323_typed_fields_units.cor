@@ -1,4 +1,4 @@
-// The other unit of 1320_region_fields_of_unrelated_classes_apart_across_units:
+// The other unit of 1323_region_fields_of_unrelated_classes_apart_across_units:
 // two unrelated classes whose first fields share an offset, and a helper
 // that writes one's and reads the other's.
 using System.Runtime.CompilerServices;

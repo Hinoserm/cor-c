@@ -513,6 +513,35 @@ class Thread
         _withArgument = start;
     }
 
+    /// A THREAD OF A STACK SIZE ITS OWN, as .NET's maxStackSize: 0 the
+    /// default; anything below the least a thread can run on, that least
+    /// (MinimumStack); the size rounded up to a page. Taken where this
+    /// runtime maps the stack itself (Launch); a thread the C library makes
+    /// (LaunchNative) has the C library's.
+    public Thread(ThreadStart start, int maxStackSize) : this(start)
+    {
+        if (maxStackSize < 0) throw new ArgumentOutOfRangeException("maxStackSize");
+        _requestedStack = maxStackSize;
+    }
+
+    public Thread(ParameterizedThreadStart start, int maxStackSize) : this(start)
+    {
+        if (maxStackSize < 0) throw new ArgumentOutOfRangeException("maxStackSize");
+        _requestedStack = maxStackSize;
+    }
+
+    // The stack a thread asked for (0: StackBytes), and the least one runs
+    // on: the thread block's page, the guard page, and room above them.
+    long _requestedStack;
+    const long MinimumStack = 65536;
+
+    long StackSize()
+    {
+        if (_requestedStack <= 0) return StackBytes;
+        long bytes = _requestedStack < MinimumStack ? MinimumStack : _requestedStack;
+        return (bytes + 4095) & (0 - 4096);
+    }
+
     /// Starts a thread made with a ParameterizedThreadStart, handing it
     /// `parameter`; one made with a ThreadStart refuses, as in .NET.
     public void Start(object? parameter)
@@ -716,7 +745,8 @@ class Thread
             return;
         }
 
-        long stack = Native.MapStack(StackBytes);
+        long stackBytes = StackSize();
+        long stack = Native.MapStack(stackBytes);
 
         if (stack == 0)
         {
@@ -730,11 +760,11 @@ class Thread
         Platform.Guard(stack + 4096, 4096);
 
         _stack = stack;
-        _stackBytes = StackBytes;
+        _stackBytes = stackBytes;
 
         // The top, sixteen-byte aligned, because the first thing the child does
         // is push and call.
-        long top = (stack + StackBytes) & (0 - 16);
+        long top = (stack + stackBytes) & (0 - 16);
 
         // THE BLOCK GOES AT THE BOTTOM OF THE SAME MAPPING. The child needs it
         // before it may allocate, so it cannot be allocated by the child; it is

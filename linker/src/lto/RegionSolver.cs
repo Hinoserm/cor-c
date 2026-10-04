@@ -438,18 +438,51 @@ public static class RegionSolver
         /// <summary>The solve has outgrown its budget, inside a step: it stops, and nothing is made in a region.</summary>
         private sealed class OverBudget : Exception { }
 
-        public RegionFacts?[]? Run()
+        public RegionFacts?[]? Run() => Graphs ? Budgeted(GraphSteps) : OnDeepStack(() => Budgeted(Steps));
+
+        // Met anywhere -- a step's watchers adding without end, a copy made
+        // while binding or rooting -- the budget is giving up, never an
+        // unhandled exception.
+        private RegionFacts?[]? Budgeted(Func<RegionFacts?[]?> steps)
         {
-            // Met anywhere -- a step's watchers adding without end, a copy made
-            // while binding or rooting -- the budget is giving up, never an
-            // unhandled exception.
-            try { return Graphs ? GraphSteps() : Steps(); }
+            try { return steps(); }
             catch (OverBudget)
             {
                 _over = true;
                 return GiveUp("too much to hold");
             }
         }
+
+        /// <summary>
+        /// THE INCLUSION SOLVE (Steps) ON A STACK OF ITS OWN. A copy made
+        /// (CopyOf) is built at once -- its constraints, then its calls -- and
+        /// a call it makes of a function with no copy yet makes that one, and
+        /// so on down: a receiver already bound (Watch, Received) the same.
+        /// The depth is the depth of the call graph's first walk, thousands
+        /// of frames on the compiler's own link, and the self-hosted
+        /// compiler's threads have a few megabytes. A worklist would build
+        /// the copies in another order, and the order is the answer here: a
+        /// node saturates (MostHeld) with what came to it first. So the same
+        /// recursion runs where it has room, and answers alike.
+        /// </summary>
+        private static RegionFacts?[]? OnDeepStack(Func<RegionFacts?[]?> solve)
+        {
+            RegionFacts?[]? result = null;
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo? failed = null;
+            Thread worker = new(() =>
+            {
+                try { result = solve(); }
+                catch (Exception error) { failed = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error); }
+            }, DeepStack) { IsBackground = true, Name = "regions-inclusion" };
+            worker.Start();
+            worker.Join();
+            failed?.Throw();
+            return result;
+        }
+
+        // Room for tens of thousands of frames, and no more address space than a
+        // 32-bit process can spare.
+        private const int DeepStack = 64 * 1024 * 1024;
 
         private RegionFacts?[]? Steps()
         {
