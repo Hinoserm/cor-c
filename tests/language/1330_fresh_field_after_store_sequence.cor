@@ -5,6 +5,7 @@
 // 256
 // 1024
 // 255 1023
+//
 // Store sequences turn a reference store into a call of the image's stub.
 // The forwarding of a fresh object's fields took every backend call for one
 // that writes no field, so the initialiser's array stored through the stub

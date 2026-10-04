@@ -1,0 +1,65 @@
+// test: a list linked through store sequences survives collections
+// flags: --store-sequences
+// expect-exit: 0
+// expect-output:
+// 2000
+// 1999000
+// 1999 0
+//
+// Each link stored through the image's stub (__x86.i.refstore): the nodes are
+// reachable only through those stores. Region, lifetime and owned-field
+// reasoning must count the stub's call as the reference stored, or the
+// nodes are freed while the list still holds them.
+
+using System;
+
+sealed class Node
+{
+    public int Value;
+    public Node? Next;
+}
+
+sealed class Chain
+{
+    public Node? Head;
+    public int Count;
+
+    public void Push(int v)
+    {
+        Node n = new Node { Value = v, Next = Head };
+        Head = n;
+        Count++;
+    }
+}
+
+static class Program
+{
+    static Chain Build(int n)
+    {
+        Chain c = new Chain();
+        for (int i = 0; i < n; i++)
+        {
+            c.Push(i);
+            if (i % 500 == 0) GC.Collect();
+        }
+        return c;
+    }
+
+    static void Main()
+    {
+        Chain c = Build(2000);
+        GC.Collect();
+        long sum = 0;
+        int last = -1;
+        int count = 0;
+        for (Node? n = c.Head; n != null; n = n.Next)
+        {
+            sum += n.Value;
+            last = n.Value;
+            count++;
+        }
+        Console.WriteLine(count);
+        Console.WriteLine(sum);
+        Console.WriteLine(c.Head!.Value + " " + last);
+    }
+}
