@@ -329,7 +329,12 @@ entry, code outside the IR, a taken address).
   what this call writes into places. A place's word that every write named
   one field (from the object's start) feeds a node of its own for that field
   and offset; any other -- untyped, written two ways, at an address into an
-  object, written by a callee's summary -- feeds the untyped node. A load
+  object -- feeds the untyped node. A summary carries the field each word of
+  its places was written as (`Summary.Fields`), so a callee's write into a
+  parameter is written at the caller as that field. Merging summaries keeps
+  a word's field where they all agree; a word made any offset (`Coarse`,
+  `Everything`, a merged object in `Fewer`) has none, and the unified
+  solver's summaries and the stand-ins carry none. A load
   naming a field reads its field's node and the untyped one; a load naming
   none, at any offset, or through an address into an object, reads them
   all. Sound for a type-safe program: two words at one offset of one object
@@ -337,7 +342,7 @@ entry, code outside the IR, a taken address).
   of their own, so a load naming another field is never of the object the
   write was. What is not type-safe -- raw memory, pointers, copies -- names
   no field, and is read and written as before. Engine test
-  `TypedAliasing`; test 1320.
+  `TypedAliasing`, `TypedAliasingThroughSummary`; test 1320.
 - Copy cycles are collapsed online. Tarjan's components over the copy edges
   are found at each solve's start and whenever a quarter more copy edges
   have appeared. A worklist in wave order (sources first) carries each
