@@ -1,0 +1,319 @@
+// THE GUI SERVICE MANAGER'S WIRE, as System.ServiceProcess and
+// ProtectedData speak it: the manager is CORSAC/GUI's own, in the GUI
+// kernel (os/gui/servicemanager.cor in the system's repository), on the
+// abstract AF_UNIX SOCK_SEQPACKET name "gui-services". One message each way:
+// a request's number, the user it is for (0xFFFFFFFF: the asker's own),
+// its fields; the answer a Win32 error and its fields. A field is a 32-bit
+// number, or a count and that many UTF-16 units or bytes, or a count and
+// that many strings, little-endian.
+//
+// KEEP IN STEP with os/ring1/servicewire.cor: the system's image build
+// compares ServiceRequest (CheckEnumCopy). The other enums carry Wire in
+// their names here, .NET's own ServiceType and the rest being this
+// namespace's.
+
+namespace System.ServiceProcess
+{
+    public enum ServiceRequest
+    {
+        // The service manager.
+        List = 1,
+        Query = 2,
+        Start = 3,
+        Control = 4,
+        Change = 5,
+        Create = 6,
+        Delete = 7,
+        Register = 8,
+        SetStatus = 9,
+        ControlDone = 10,
+
+        // The secret store.
+        Protect = 20,
+        Unprotect = 21,
+        ItemWrite = 22,
+        ItemRead = 23,
+        ItemDelete = 24,
+        ItemList = 25,
+        TypeCreate = 26,
+        TypeDelete = 27,
+        TypeList = 28,
+        TypeInfo = 29,
+        SubtypeCreate = 30,
+        SubtypeDelete = 31,
+        SubtypeList = 32,
+        SubtypeInfo = 33,
+
+        // From the manager to a registered service.
+        ControlMessage = 100,
+    }
+
+    /// When a service starts (winsvc.h's SERVICE_*_START, the same numbers).
+    public enum WireStartType
+    {
+        Boot = 0,
+        System = 1,
+        Automatic = 2,
+        Manual = 3,
+        Disabled = 4,
+    }
+
+    /// A service's state (SERVICE_STOPPED .. SERVICE_PAUSED).
+    public enum WireState
+    {
+        Stopped = 1,
+        StartPending = 2,
+        StopPending = 3,
+        Running = 4,
+        ContinuePending = 5,
+        PausePending = 6,
+        Paused = 7,
+    }
+
+    /// What a service is (winsvc.h's SERVICE_* type bits, which Windows' own
+    /// services carry in their keys); Native marks one of CORSAC's own programs.
+    public enum WireType
+    {
+        KernelDriver = 0x1,
+        FileSystemDriver = 0x2,
+        OwnProcess = 0x10,
+        ShareProcess = 0x20,
+        Interactive = 0x100,
+        Native = 0x10000,
+    }
+
+    /// The controls (SERVICE_CONTROL_*); 128 to 255 are the service's own.
+    public enum WireControl
+    {
+        Stop = 1,
+        Pause = 2,
+        Continue = 3,
+        Interrogate = 4,
+        Shutdown = 5,
+        ParamChange = 6,
+    }
+
+    /// What a protected blob may be read by (DataProtectionScope's numbers).
+    public enum WireScope
+    {
+        CurrentUser = 0,
+        LocalMachine = 1,
+    }
+
+    /// Win32 errors the wire carries (winerror.h).
+    public static class WireError
+    {
+        public const long Success = 0, AccessDenied = 5, InvalidHandle = 6, InvalidData = 13, InvalidParameter = 87;
+        public const long InsufficientBuffer = 122, NotSupported = 50, AlreadyExists = 183, NoMoreItems = 259;
+        public const long DependentServicesRunning = 1051, InvalidServiceControl = 1052, RequestTimeout = 1053;
+        public const long NoServiceThread = 1054, ServiceAlreadyRunning = 1056, InvalidServiceAccount = 1057;
+        public const long ServiceDisabled = 1058, ServiceDoesNotExist = 1060, CannotAcceptControl = 1061;
+        public const long ServiceNotActive = 1062, ServiceSpecificError = 1066, ProcessAborted = 1067;
+        public const long DependencyFailed = 1068, ServiceMarkedForDelete = 1072, ServiceExists = 1073;
+        public const long NeverStarted = 1077, NotFound = 1168, PathNotFound = 3, FileNotFound = 2;
+        public const long DecryptionFailed = 6000, Unavailable = 1722;
+    }
+
+    /// One service, as the manager tells it.
+    public class WireService
+    {
+        public string Name = "", Display = "", Description = "", Image = "", Account = "", Group = "";
+        public long Type, Start = (long)WireStartType.Manual, ErrorControl = 1, Tag;
+        public List<string> DependsOn = new List<string>(), DependsOnGroup = new List<string>();
+        public long State = (long)WireState.Stopped, Controls, ExitCode, SpecificExitCode, CheckPoint, WaitHint, ProcessId;
+
+        public bool Native { get { return (Type & (long)WireType.Native) != 0; } }
+
+        public void Write(WireWriter w)
+        {
+            w.Text(Name); w.Text(Display); w.Text(Description); w.Text(Image); w.Text(Account); w.Text(Group);
+            w.Int(Type); w.Int(Start); w.Int(ErrorControl); w.Int(Tag);
+            w.Texts(DependsOn); w.Texts(DependsOnGroup);
+            w.Int(State); w.Int(Controls); w.Int(ExitCode); w.Int(SpecificExitCode); w.Int(CheckPoint); w.Int(WaitHint); w.Int(ProcessId);
+        }
+
+        public static WireService Read(WireReader r)
+        {
+            WireService s = new WireService();
+            s.Name = r.Text(); s.Display = r.Text(); s.Description = r.Text(); s.Image = r.Text(); s.Account = r.Text(); s.Group = r.Text();
+            s.Type = r.Int(); s.Start = r.Int(); s.ErrorControl = r.Int(); s.Tag = r.Int();
+            s.DependsOn = r.Texts(); s.DependsOnGroup = r.Texts();
+            s.State = r.Int(); s.Controls = r.Int(); s.ExitCode = r.Int(); s.SpecificExitCode = r.Int(); s.CheckPoint = r.Int(); s.WaitHint = r.Int(); s.ProcessId = r.Int();
+            return s;
+        }
+    }
+
+    /// A message being made.
+    public class WireWriter
+    {
+        byte[] _b = new byte[256];
+        int _n;
+
+        public int Length { get { return _n; } }
+
+        void Room(int more)
+        {
+            if (_n + more <= _b.Length) return;
+            int size = _b.Length * 2;
+            while (size < _n + more) size *= 2;
+            byte[] bigger = new byte[size];
+            Array.Copy(_b, 0, bigger, 0, _n);
+            _b = bigger;
+        }
+
+        public void Int(long v)
+        {
+            Room(4);
+            _b[_n] = (byte)v; _b[_n + 1] = (byte)(v >> 8); _b[_n + 2] = (byte)(v >> 16); _b[_n + 3] = (byte)(v >> 24);
+            _n += 4;
+        }
+
+        public void Text(string? s)
+        {
+            string t = s ?? "";
+            Int(t.Length);
+            Room(t.Length * 2);
+            for (int i = 0; i < t.Length; i++) { _b[_n] = (byte)t[i]; _b[_n + 1] = (byte)(t[i] >> 8); _n += 2; }
+        }
+
+        public void Bytes(byte[]? b)
+        {
+            int count = b == null ? 0 : b.Length;
+            Int(count);
+            Room(count);
+            if (count > 0) Array.Copy(b!, 0, _b, _n, count);
+            _n += count;
+        }
+
+        public void Texts(List<string>? list)
+        {
+            Int(list == null ? 0 : list.Count);
+            if (list != null) foreach (string s in list) Text(s);
+        }
+
+        public byte[] ToArray()
+        {
+            byte[] made = new byte[_n];
+            Array.Copy(_b, 0, made, 0, _n);
+            return made;
+        }
+    }
+
+    /// A message being read. A field past the end reads as 0 or empty, and
+    /// says so (Short): a short message is the asker's mistake, answered as an
+    /// invalid parameter, never a fault of the reader.
+    public class WireReader
+    {
+        readonly byte[] _b;
+        readonly int _end;
+        int _at;
+        public bool Short;
+
+        public WireReader(byte[] b, int count) { _b = b; _end = Math.Min(count, b.Length); }
+
+        public long Int()
+        {
+            if (_at + 4 > _end) { Short = true; _at = _end; return 0; }
+            long v = (_b[_at] & 0xFF) | ((_b[_at + 1] & 0xFF) << 8) | ((_b[_at + 2] & 0xFF) << 16) | ((long)(_b[_at + 3] & 0xFF) << 24);
+            _at += 4;
+            return v;
+        }
+
+        public string Text()
+        {
+            long n = Int();
+            if (n < 0 || _at + n * 2 > _end) { Short = true; _at = _end; return ""; }
+            char[] c = new char[(int)n];
+            for (int i = 0; i < n; i++) c[i] = (char)((_b[_at + i * 2] & 0xFF) | ((_b[_at + i * 2 + 1] & 0xFF) << 8));
+            _at += (int)n * 2;
+            return new string(c);
+        }
+
+        public byte[] Bytes()
+        {
+            long n = Int();
+            if (n < 0 || _at + n > _end) { Short = true; _at = _end; return new byte[0]; }
+            byte[] made = new byte[(int)n];
+            Array.Copy(_b, _at, made, 0, (int)n);
+            _at += (int)n;
+            return made;
+        }
+
+        public List<string> Texts()
+        {
+            long n = Int();
+            List<string> list = new List<string>();
+            for (long i = 0; i < n && !Short; i++) list.Add(Text());
+            return list;
+        }
+    }
+
+    /// One request on its own connection, and its answer: the reader past
+    /// the answer's error, which is in `error`; null when there is no
+    /// manager to ask (ERROR_SERVICE_NOT_ACTIVE's sibling,
+    /// RPC_S_SERVER_UNAVAILABLE, 1722).
+    public static class WireClient
+    {
+        const int AfUnix = 1, SeqPacket = 5, CloseOnExec = 0x80000, NoSignal = 0x4000;
+        const string Name = "gui-services";
+
+        static byte[] Address()
+        {
+            byte[] a = new byte[3 + Name.Length];
+            a[0] = AfUnix;
+            for (int i = 0; i < Name.Length; i++) a[3 + i] = (byte)Name[i];
+            return a;
+        }
+
+        /// A connection to the manager, or -1.
+        public static int Connect()
+        {
+            int fd = Os.Socket(AfUnix, SeqPacket | CloseOnExec, 0);
+            if (fd < 0) return -1;
+            if (Os.Connect(fd, Address()) < 0) { Os.Close(fd); return -1; }
+            return fd;
+        }
+
+        public static byte[] Message(ServiceRequest op, WireWriter fields)
+        {
+            WireWriter w = new WireWriter();
+            w.Int((long)op);
+            w.Int(0xFFFFFFFF);
+            byte[] head = w.ToArray(), body = fields.ToArray();
+            byte[] all = new byte[head.Length + body.Length];
+            Array.Copy(head, 0, all, 0, head.Length);
+            Array.Copy(body, 0, all, head.Length, body.Length);
+            return all;
+        }
+
+        public static bool Send(int fd, byte[] message) { return Os.Send(fd, message, 0, message.Length, NoSignal) == message.Length; }
+
+        /// One message in, or null when the connection has ended.
+        public static byte[]? Receive(int fd)
+        {
+            byte[] b = new byte[65536 + 4096];
+            int got = Os.Recv(fd, b, 0, b.Length, 0);
+            if (got <= 0) return null;
+            byte[] made = new byte[got];
+            Array.Copy(b, 0, made, 0, got);
+            return made;
+        }
+
+        public static WireReader? Ask(ServiceRequest op, WireWriter fields, out long error)
+        {
+            error = WireError.Unavailable;
+            int fd = Connect();
+            if (fd < 0) return null;
+            try
+            {
+                if (!Send(fd, Message(op, fields))) return null;
+                byte[]? answer = Receive(fd);
+                if (answer == null || answer.Length < 4) return null;
+                WireReader r = new WireReader(answer, answer.Length);
+                error = r.Int();
+                return r;
+            }
+            finally { Os.Close(fd); }
+        }
+    }
+}

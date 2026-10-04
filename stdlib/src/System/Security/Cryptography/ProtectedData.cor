@@ -1,0 +1,44 @@
+// System.Security.Cryptography.ProtectedData, as .NET has it, over the GUI
+// kernel's secret store (its Protect and Unprotect, on the service
+// manager's socket: System/ServiceProcess/ServiceWire.cor): data made into a
+// blob only the same user -- or, for LocalMachine, any user of this machine
+// -- turns back into it, with the same optional entropy. The keys are the
+// store's and never leave it. Windows programs' CryptProtectData is the same
+// store, through the NT kernel's Protected Storage, so either side reads
+// what the other protected.
+
+/// Who may unprotect what was protected.
+public enum DataProtectionScope
+{
+    CurrentUser = 0,
+    LocalMachine = 1,
+}
+
+public static class ProtectedData
+{
+    public static byte[] Protect(byte[] userData, byte[]? optionalEntropy, DataProtectionScope scope)
+    {
+        if (userData == null) throw new ArgumentNullException("userData");
+        System.ServiceProcess.WireWriter w = new System.ServiceProcess.WireWriter();
+        w.Int((long)scope);
+        w.Bytes(optionalEntropy ?? new byte[0]);
+        w.Bytes(userData);
+        w.Text("");
+        long error;
+        System.ServiceProcess.WireReader? r = System.ServiceProcess.WireClient.Ask(System.ServiceProcess.ServiceRequest.Protect, w, out error);
+        if (r == null || error != 0) throw new CryptographicException("The data could not be protected (" + error + ").");
+        return r.Bytes();
+    }
+
+    public static byte[] Unprotect(byte[] encryptedData, byte[]? optionalEntropy, DataProtectionScope scope)
+    {
+        if (encryptedData == null) throw new ArgumentNullException("encryptedData");
+        System.ServiceProcess.WireWriter w = new System.ServiceProcess.WireWriter();
+        w.Bytes(optionalEntropy ?? new byte[0]);
+        w.Bytes(encryptedData);
+        long error;
+        System.ServiceProcess.WireReader? r = System.ServiceProcess.WireClient.Ask(System.ServiceProcess.ServiceRequest.Unprotect, w, out error);
+        if (r == null || error != 0) throw new CryptographicException("The data is invalid.");
+        return r.Bytes();
+    }
+}
