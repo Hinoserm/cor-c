@@ -8400,6 +8400,33 @@ static class Gc
         return eighth > MinThreshold ? eighth : MinThreshold;
     }
 
+    /// Every element of the array at `payload` freed and its slot cleared
+    /// (Runtime.FreeArrayElements): only for an array whose elements are
+    /// references a word each, read off its descriptor as the mark reads
+    /// it; anything else is left alone.
+    public static void FreeReferenceElements(long payload)
+    {
+        long w = WordSize.Bytes;
+        long vt = Sys.Peek(payload) & WordSize.AddressMask;
+        if (vt == 0) return;
+        long desc = vt - DescWords * w;
+        if ((Sys.Peek(desc + DescSelfWord * w) & WordSize.AddressMask) != desc) return;
+        long flags = Sys.Peek(desc + DescFlagsWord * w);
+        if ((flags & SequenceFlag) == 0 || (flags & StringFlag) != 0) return;
+        if ((Sys.Peek(desc + DescGcFlagsWord * w) & ElementsAreReferences) == 0) return;
+        if (Sys.Peek(desc + DescSizeWord * w) != w) return;
+        long count = Sys.Peek(payload + ArrayCountAt) & 0x7FFFFFFF;
+        long first = payload + Sys.Peek(desc + DescPayloadWord * w);
+        for (long i = 0; i < count; i++)
+        {
+            long cell = first + i * w;
+            long element = Sys.Peek(cell) & WordSize.AddressMask;
+            if (element == 0) continue;
+            Sys.Poke(cell, 0);
+            Runtime.Free(element);
+        }
+    }
+
     /// Collections given up half way -- a barrier report lost to a full
     /// ring -- and begun again later. Nothing is freed by one.
     public static long Aborted;

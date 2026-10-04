@@ -235,7 +235,7 @@ public sealed partial class Escape
         hints.FieldSites.AddRange(_fieldSiteRecords);
         ThrowHints(m, hints);
         m.KeepCalls.UnionWith(_keep);
-        foreach (string helper in new[] { Freer, FieldFreer, ReplacedFreer, FieldKeeper, OwnedReplacedFreer, OwnedElements.Freer, OwnedElements.Marker, StorageFreer })
+        foreach (string helper in new[] { Freer, FieldFreer, ReplacedFreer, FieldKeeper, OwnedReplacedFreer, OwnedElements.Freer, OwnedElements.ArrayFreer, OwnedElements.Marker, StorageFreer })
             if (provided(helper)) hints.Helpers.Add(helper);
         return hints;
     }

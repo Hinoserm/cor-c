@@ -466,6 +466,20 @@ static class Runtime
         if (collection is IOwnsElements owner) owner.FreeOwnedElements();
     }
 
+    /// THE ELEMENTS OF A DYING ARRAY OF COLLECTIONS, given back (Opt.
+    /// OwnedElements, Escape.ConfirmArrayElements): the compiler proved each
+    /// element is a collection made for its slot, held by nothing else, and
+    /// dead when the array is. Each freed with its storage, its slot
+    /// cleared. Null, a frame slot not yet filled (no vtable yet), or
+    /// anything that is not an array of references is nothing to do.
+    public static void FreeArrayElements(object? array)
+    {
+        if (array == null) return;
+        long at = Sys.Word(array);
+        if ((Sys.Peek(at) & WordSize.AddressMask) == 0) return;
+        Gc.FreeReferenceElements(at);
+    }
+
     /// A collection whose elements the compiler proved are the collection's
     /// own wherever it is read -- through the one field it is handed to, by
     /// code that keeps the field's value alive past every use of what it read
