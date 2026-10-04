@@ -92,6 +92,9 @@ static class Call
     public const long SchedGetaffinity = 204;
     public const long Utimensat = 280;
     public const long Sync = 162;
+    public const long InitModule = 175;     // (image, length, params)
+    public const long DeleteModule = 176;   // (name, flags): O_TRUNC forces
+    public const long FinitModule = 313;    // (fd, params, flags)
     public const long Fsync = 74;
     public const long Flock = 73;
     public const long Fdatasync = 75;
@@ -214,6 +217,9 @@ static class Call
     public const long SchedGetaffinity = 242;   // (pid, bytes, mask)
     public const long Utimensat = 320;
     public const long Sync = 36;
+    public const long InitModule = 128;     // (image, length, params)
+    public const long DeleteModule = 129;   // (name, flags): O_TRUNC forces
+    public const long FinitModule = 350;    // (fd, params, flags)
     public const long Fsync = 118;
     public const long Flock = 143;     // (fd, operation): LOCK_SH 1, LOCK_EX 2, LOCK_NB 4
     public const long Fdatasync = 148;
