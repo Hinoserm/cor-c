@@ -369,9 +369,9 @@ static class Platform
     /// here is a processor's, and the tasks that park and resume on any
     /// processor would share it. Regions wait for the task switch to carry
     /// the arena's words with the task.
-    public static long RegionBytes()
+    public static bool Regions()
     {
-        return 0;
+        return false;
     }
 
     public static long HeapLimit()
