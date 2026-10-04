@@ -662,6 +662,20 @@ internal sealed class RegionEscape
 
     private bool IsWide(int[] targets) => _assumed is not null && targets.Length > WideTargets;
 
+    // THE NARROWED STAND-INS each function applied (NarrowedStandIn): a wide
+    // call's targets that run on one receiver's class, assumed as any wide
+    // call's are and grown by Check, so a component that applied one is
+    // solved again when it grows (Again), as for its wide calls' own.
+    private readonly Dictionary<int, HashSet<int[]>> _narrowedBy = new();
+
+    /// <summary>The stand-in of some of a wide call's targets, those that run on a receiver of a known class, noted as f's.</summary>
+    private Summary NarrowedStandIn(int f, int[] targets)
+    {
+        if (!_narrowedBy.TryGetValue(f, out HashSet<int[]>? sets)) _narrowedBy[f] = sets = new(TargetsComparer.Instance);
+        sets.Add(targets);
+        return StandIn(targets);
+    }
+
     /// <summary>The summary a wide call is assumed to have this round.</summary>
     private Summary StandIn(int[] targets)
     {
@@ -767,6 +781,7 @@ internal sealed class RegionEscape
         _bitsByOrigins.Clear();
         _components.Clear(); _globalOf.Clear(); _rootedOf.Clear(); _shapes.Clear();
         _grown.Clear();
+        _narrowedBy.Clear();
         Work = Applied = Unfollowed = LargestCycle = Fallbacks = 0;
     }
 
@@ -831,6 +846,9 @@ internal sealed class RegionEscape
             (int[] callees, int[][] wide) = _inputs[c];
             bool again = false;
             foreach (int[] targets in wide) if (_grown.Contains(targets)) { again = true; break; }
+            if (!again)
+                foreach (int f in _components[c])
+                    if (_narrowedBy.TryGetValue(f, out HashSet<int[]>? narrowed) && narrowed.Overlaps(_grown)) { again = true; break; }
             if (!again) foreach (int t in callees) if (_changed[t]) { again = true; break; }
             if (!again) continue;
             solved++;
@@ -1985,7 +2003,26 @@ internal sealed class RegionEscape
             int dest = call.Dest < 0 ? -1 : Node(m, call.Dest);
             if (targets is null) { UnknownCall(args, dest); return; }
             if (targets.Length == 0) return;                       // no object of the type exists
-            if (_owner.IsWide(targets)) { Apply(args, dest, _owner.StandIn(targets)); return; }
+            if (_owner.IsWide(targets))
+            {
+                // A WIDE CALL WATCHED AT ITS RECEIVER, too: an object of a
+                // known class runs only its class's overrides, and is handed
+                // the stand-in of those alone (Received). The whole call's
+                // stand-in is every target's at once -- an iterator walked
+                // through IEnumerator<T>.MoveNext took on what any of some
+                // two thousand MoveNexts does with `this`, and one that lets
+                // its machine go let every machine go, with all it held.
+                if (_owner._keys[f][k] is not null && _owner.TargetsOn is not null && args.Length > 0 && args[0] >= 0)
+                {
+                    VCall wide = new() { F = f, K = k, Args = args, Dest = dest, Inside = Array.Empty<int>(), Outside = targets, Callee = call.Callee, Wide = true };
+                    int at = Find(args[0]);
+                    (_vcalls[at] ??= new()).Add(wide);
+                    if (_pts[at] is { } held) for (int i = 0, n = held.Count; i < n; i++) Received(wide, held.Items[i]);
+                    return;
+                }
+                Apply(args, dest, _owner.StandIn(targets));
+                return;
+            }
             int[] inside = targets.Where(_memberSet.Contains).ToArray();
             int[] outside = inside.Length == 0 ? targets : targets.Where(t => !_memberSet.Contains(t)).ToArray();
             // A VIRTUAL CALL OF MORE THAN ONE TARGET ON A RECEIVER: each
@@ -2044,6 +2081,8 @@ internal sealed class RegionEscape
             public int F, K, Dest;
             public int[] Args = null!, Inside = null!, Outside = null!;
             public string? Callee;
+            /// <summary>A wide call's: its targets assumed, by stand-ins (WideGroup), never followed in order.</summary>
+            public bool Wide;
             public readonly Dictionary<int[], int> Groups = new(TargetsComparer.Instance);
             public readonly Dictionary<int, int[]?> Classes = new();
             public bool? SplitOutside;
@@ -2073,6 +2112,16 @@ internal sealed class RegionEscape
             // (A receiver is an object's start: anywhere in a made object,
             // it is that object.)
             bool whole = _locOffset[loc] == 0;
+            if (v.Wide)
+            {
+                // An object of known sites: the stand-in of the overrides its
+                // classes run (none: the call never runs on it). Anything
+                // else: the whole call's stand-in.
+                int[]? narrow = (whole || _locOffset[loc] == Any) && _kind[o] == Kind.Made ? ClassTargets(v, o) : null;
+                if (narrow is { Length: 0 }) return;
+                Add(WideGroup(v, narrow ?? v.Outside), loc);
+                return;
+            }
             if ((whole || _locOffset[loc] == Any) && _kind[o] == Kind.Made && ClassTargets(v, o) is { } runs)
             {
                 List<int> outside = new();
@@ -2132,6 +2181,26 @@ internal sealed class RegionEscape
             int[] args = (int[])v.Args.Clone();
             args[0] = recv;
             Summary applied = _owner.MergedFor(targets);
+            Explain(v.F, v.Callee, targets, applied);
+            Apply(args, v.Dest, applied);
+            return recv;
+        }
+
+        /// <summary>
+        /// The receiver node of some of a wide call's targets, their stand-in
+        /// applied to it on first use: never their summaries, which a wide
+        /// call is solved without (Order), but what they are assumed to do,
+        /// checked and grown each round as the whole call's is (Check).
+        /// </summary>
+        private int WideGroup(VCall v, int[] targets)
+        {
+            if (v.Groups.TryGetValue(targets, out int recv)) return recv;
+            if (v.Groups.Count >= MostGroups && !TargetsComparer.Instance.Equals(targets, v.Outside)) return WideGroup(v, v.Outside);
+            recv = NewNode();
+            v.Groups[targets] = recv;
+            int[] args = (int[])v.Args.Clone();
+            args[0] = recv;
+            Summary applied = TargetsComparer.Instance.Equals(targets, v.Outside) ? _owner.StandIn(targets) : _owner.NarrowedStandIn(v.F, targets);
             Explain(v.F, v.Callee, targets, applied);
             Apply(args, v.Dest, applied);
             return recv;
