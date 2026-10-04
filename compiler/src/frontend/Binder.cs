@@ -7266,17 +7266,20 @@ public sealed partial class Binder
     /// Delegate.Combine refuses it. Delegate.Combine asks the delegate itself,
     /// whose type knows its multicast (Parser.ParseDelegateDeclaration).
     /// </summary>
-    private static CallExpr DelegateCombination(bool add, Expr left, Expr right, Node at)
+    private static CallExpr DelegateCombination(bool add, Expr left, Expr right, Node at, Type delegateType)
     {
-        CallExpr made = new()
+        MemberExpr helper = new()
         {
-            Target = new MemberExpr
-            {
-                Target = new NameExpr { Name = DelegatesHelper, Line = at.Line, Col = at.Col },
-                Name = add ? "Combine" : "Remove", Line = at.Line, Col = at.Col,
-            },
-            Line = at.Line, Col = at.Col,
+            Target = new NameExpr { Name = DelegatesHelper, Line = at.Line, Col = at.Col },
+            Name = add ? "Combine" : "Remove", Line = at.Line, Col = at.Col,
         };
+        // THE DELEGATE NAMED, not inferred: a lambda or a method group on the
+        // right has no type for inference to read until it is converted, and
+        // the left side's is the one C# converts it to.
+        // Named as maybe null: either side of `+=` may be, and Combine's T?
+        // parameters with T named bare were taken as not.
+        if (RefOf(delegateType.AsNullable()) is TypeRef spelt) helper.TypeArgs.Add(spelt);
+        CallExpr made = new() { Target = helper, Line = at.Line, Col = at.Col };
         made.Args.Add(left);
         made.Args.Add(right);
         made.ArgNames.Add(null);
@@ -12500,7 +12503,7 @@ public sealed partial class Binder
                     if (a.Op is BinOp.Add or BinOp.Sub && target.Symbol?.Decl is { IsDelegate: true } delegateDecl)
                     {
                         ok = true;
-                        CallExpr synthesised = DelegateCombination(a.Op is BinOp.Add, a.Target, a.Value, a);
+                        CallExpr synthesised = DelegateCombination(a.Op is BinOp.Add, a.Target, a.Value, a, target);
                         CheckExpr(synthesised);
                         _r.DelegateCompounds[a] = synthesised;
                     }
@@ -16939,7 +16942,10 @@ public sealed partial class Binder
                 // AND BY THE TYPES IT WROTE, when it wrote them: `(string s)
                 // => ...` is no Func<int, ...> (C# 7.5.3.1 -- an explicitly
                 // typed lambda is applicable only where they are the same).
-                if (c.Args[i] is LambdaExpr lam
+                // (Not where the parameter is a type parameter: what it is,
+                // inference says, and `__Delegates.Combine<T>(T? a, T? b)`
+                // with a lambda on the right refused every lambda of all.)
+                if (c.Args[i] is LambdaExpr lam && m.Params[i].Type.ParamName is null
                     && !invokes.Any(v => v.Params.Count == lam.Params.Count
                                       && (!lam.TypesWritten
                                           || Enumerable.Range(0, lam.Params.Count)
@@ -16967,7 +16973,7 @@ public sealed partial class Binder
                 // Sort(IComparer<T>) -- an interface, whose Compare matched
                 // nothing because nothing was asked of it -- left the group
                 // unconverted, and it reached the code generator as a name.
-                if (c.Args[i] is not LambdaExpr && invokes.Count == 0 && m.Params[i].Type.Prim != Prim.Any
+                if (c.Args[i] is not LambdaExpr && invokes.Count == 0 && m.Params[i].Type.Prim != Prim.Any && m.Params[i].Type.ParamName is null
                     && _r.Resolved.TryGetValue(c.Args[i], out Sym? groupOnly)
                     && Grouped(groupOnly) is { Count: > 0 })
                 {
@@ -18152,7 +18158,7 @@ public sealed partial class Binder
         if (b.Op is BinOp.Add or BinOp.Sub && !l.IsError && !l.IsArray && !l.IsNullableValue
             && l.Symbol is { Decl.IsDelegate: true } && (b.Right is LambdaExpr || HoldsLambda(b.Right)))
         {
-            CallExpr withLambda = DelegateCombination(b.Op == BinOp.Add, b.Left, b.Right, b);
+            CallExpr withLambda = DelegateCombination(b.Op == BinOp.Add, b.Left, b.Right, b, l);
             _r.Rewrites[b] = withLambda;
             Type lambdaMade = CheckExpr(withLambda);
             return b.Op == BinOp.Add && !lambdaMade.IsError ? lambdaMade.AsNonNullable() : lambdaMade;
@@ -18192,7 +18198,7 @@ public sealed partial class Binder
                 || !r.IsArray && !r.IsNullableValue && ReferenceEquals(r.Symbol, combined)
                 || IsDelegateValue(r) && Variant(r, l.AsNonNullable())))
         {
-            CallExpr call = DelegateCombination(b.Op == BinOp.Add, b.Left, b.Right, b);
+            CallExpr call = DelegateCombination(b.Op == BinOp.Add, b.Left, b.Right, b, l);
             _r.Rewrites[b] = call;
             Type made = CheckExpr(call);
             return b.Op == BinOp.Add && !made.IsError && (!l.Nullable || !r.Nullable && r.Prim != Prim.NullLiteral)
