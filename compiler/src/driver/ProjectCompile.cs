@@ -120,10 +120,10 @@ public static class ProjectCompile
             if (args[i] == "--ref") references.Append('\t').Append(Corsac.Projects.ProjectState.FileIdentity(args[i + 1]));
         }
         string optionsText = "3\t" + CompilerIdentity() + "\t" + string.Join('\t', common) + references;
-        string Stamp(Unit unit)
+        string Stamp(Unit unit) => StampOf(unit, File.ReadAllBytes(unit.Source));
+        string StampOf(Unit unit, byte[] source)
         {
             using SHA256 sha = SHA256.Create();
-            byte[] source = File.ReadAllBytes(unit.Source);
             byte[] options = Encoding.UTF8.GetBytes(optionsText + (unit.Entry ? "\tentry" : "\tlib"));
             sha.TransformBlock(source, 0, source.Length, null, 0);
             sha.TransformFinalBlock(options, 0, options.Length);
@@ -149,6 +149,39 @@ public static class ProjectCompile
             {
                 lock (gate) { done++; skipped++; }
                 return 0;
+            }
+            // THE TEXT COMPILED IS THE TEXT THE INDEX WAS MADE FROM. The build
+            // writes the declaration index once, from every source as it was
+            // then, and each unit reads its neighbours' declarations out of
+            // it while reading itself afresh from the disc. A unit edited
+            // after the index was written -- a merge landing mid-build --
+            // read its new self against its neighbours' old declarations:
+            // "'RegionFunction' has no member 'Families'", from a build whose
+            // next run, with an index made again, compiled. So a unit whose
+            // bytes are not the ones the index saw is refused, the index named
+            // as what is out of date; and one that changes while it compiles
+            // gets no stamp (its object was made from the text before), so
+            // the next build compiles it again rather than keeping it.
+            byte[] compiled;
+            try
+            {
+                compiled = File.ReadAllBytes(unit.Source);
+                if (session.Catalog.SourceHash(unit.Source) is { } indexed)
+                {
+                    string text;
+                    using (StreamReader read = new(new MemoryStream(compiled), Encoding.UTF8, detectEncodingFromByteOrderMarks: true)) text = read.ReadToEnd();
+                    if (!SourceIndexBuilder.TextHash(text).AsSpan().SequenceEqual(indexed))
+                        throw new InvalidDataException(DeclarationCatalog.Stale(unit.Source));
+                }
+            }
+            catch (Exception failure) when (failure is InvalidDataException or IOException)
+            {
+                lock (gate)
+                {
+                    done++;
+                    Console.Error.WriteLine("corc: compiling " + unit.Source + ": " + failure.Message);
+                }
+                return 1;
             }
             List<string> one = new() { unit.Source };
             one.AddRange(common);
@@ -189,8 +222,23 @@ public static class ProjectCompile
             string live = census ? " live-after=" + GC.GetTotalMemory(true) : "";
             if (code == 0)
             {
-                try { File.WriteAllText(unit.Receipt + ".stamp", Stamp(unit)); }
-                catch (IOException) { }
+                bool same;
+                try { same = File.ReadAllBytes(unit.Source).AsSpan().SequenceEqual(compiled); }
+                catch (IOException) { same = false; }
+                if (!same)
+                {
+                    // Changed while it compiled: its object is of the text
+                    // before, so no stamp says it is current, and the build
+                    // stops here rather than link it.
+                    try { File.Delete(unit.Receipt + ".stamp"); } catch (IOException) { }
+                    lock (gate) Console.Error.WriteLine("corc: compiling " + unit.Source + ": the source changed while it was compiled; build again");
+                    code = 1;
+                }
+                else
+                {
+                    try { File.WriteAllText(unit.Receipt + ".stamp", StampOf(unit, compiled)); }
+                    catch (IOException) { }
+                }
             }
             lock (gate)
             {
