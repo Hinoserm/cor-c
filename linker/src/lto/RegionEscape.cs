@@ -1280,7 +1280,7 @@ internal sealed class RegionEscape
     // while nothing beneath them moved.
     private (ulong[] Bits, int[] Sites, int[] HeldSites) ShapeOf(Summary s)
     {
-        Shaped known = _shapes.GetOrCreateValue(s);
+        Shaped known = ShapedOf(s);
         if (known.Bits is not null && known.Sites is not null && known.At > _lastOriginsChange) return (known.Bits, known.Sites, known.HeldSites!);
         var shape = Shape(s);
         known.Bits = shape.Bits; known.Sites = shape.Sites; known.HeldSites = shape.HeldSites; known.At = _tick;
@@ -1298,15 +1298,26 @@ internal sealed class RegionEscape
     /// </summary>
     private ulong[] ShapeBits(Summary s)
     {
-        Shaped known = _shapes.GetOrCreateValue(s);
+        Shaped known = ShapedOf(s);
         return known.Bits ??= Shape(s, withSites: false).Bits;
     }
 
-    // A summary's shape, kept with it: its classes for good, its sites while
-    // no holder's origins changed since (At). Held weakly, by the summary:
-    // one replaced, and every array worked out of it, goes with it.
-    private sealed class Shaped
+    // A summary's shape, kept on the summary (Summary.Shape), made for this
+    // run of the engine: one kept from before a Reset is made again.
+    private Shaped ShapedOf(Summary s)
     {
+        if (s.Shape is { } known && known.Generation == _shapeGeneration) return known;
+        return s.Shape = new Shaped { Generation = _shapeGeneration };
+    }
+
+    // A summary's shape, kept with it: its classes for good, its sites while
+    // no holder's origins changed since (At). Held by the summary itself
+    // (Summary.Shape), so one replaced, and every array worked out of it,
+    // goes with it -- what a weak table keyed by the summary did, with no
+    // table: corc's collector has no weak references.
+    internal sealed class Shaped
+    {
+        public long Generation;
         public ulong[]? Bits;
         public int[]? Sites, HeldSites;
         public long At;
@@ -1338,7 +1349,8 @@ internal sealed class RegionEscape
         return grown.Count;
     }
 
-    private System.Runtime.CompilerServices.ConditionalWeakTable<Summary, Shaped> _shapes = new();
+    // Bumped by Reset: every summary's Shape made before is made again.
+    private long _shapeGeneration;
     private static readonly Summary _noSummary = Summary.Unknown;
     // A summary of no effect: what widens a stand-in without growing it otherwise.
     private static readonly Summary _noShape = new();
@@ -1373,7 +1385,7 @@ internal sealed class RegionEscape
         _escapingBits = null;
         _holderFirst = null;
         _bitsByOrigins.Clear();
-        _components.Clear(); _globalOf.Clear(); _rootedOf.Clear(); _shapes = new();
+        _components.Clear(); _globalOf.Clear(); _rootedOf.Clear(); _shapeGeneration++;
         _solvedAt.Clear(); _appliedOf.Clear(); _sitesReadOf.Clear();
         _originsAt.Clear();
         _componentOf = null; _callees = null;
@@ -1724,6 +1736,8 @@ internal sealed class RegionEscape
         public readonly List<(int To, int ToOffset)> Result = new();
         /// <summary>The unknown call's summary: every argument escapes, the result is the unknown object.</summary>
         public bool IsUnknown;
+        /// <summary>Its shape as a stand-in reads it (ShapedOf), kept with it and gone with it.</summary>
+        internal Shaped? Shape;
         /// <summary>Whose objects these are, for an object made from one (Ref): a function, or a merged summary registered as one; -1 for none.</summary>
         public int Holder = -1;
         /// <summary>For a report: past its bounds, made coarse (Coarse, Everything).</summary>
