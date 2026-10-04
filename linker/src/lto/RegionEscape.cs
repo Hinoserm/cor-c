@@ -143,10 +143,16 @@ internal sealed class RegionEscape
     /// <summary>Whether an object of `site` made beneath function `f` may outlive its return.</summary>
     public bool Escapes(int f, int site)
     {
-        int[]? escaping = Escaping[f];
-        if (escaping is null) return true;
-        ulong[] bits = (_escapingBits ??= new ulong[]?[Escaping.Length])[f] ??= BitsOf(escaping);
+        if (EscapingBits(f) is not { } bits) return true;
         return (bits[site >> 6] >> (site & 63) & 1) != 0;
+    }
+
+    /// <summary>The sites whose objects made beneath function `f` may outlive its return, one bit a site; null when every one may.</summary>
+    public ulong[]? EscapingBits(int f)
+    {
+        int[]? escaping = Escaping[f];
+        if (escaping is null) return null;
+        return (_escapingBits ??= new ulong[]?[Escaping.Length])[f] ??= BitsOf(escaping);
     }
 
     /// <summary>The sites some origins may be, one bit a site.</summary>
@@ -154,18 +160,35 @@ internal sealed class RegionEscape
     {
         if (_bitsByOrigins.TryGetValue(origins, out ulong[]? known)) return known;
         ulong[] bits = new ulong[(Global.Length + 63) >> 6];
-        _seen.Clear();
-        _next.Clear();
-        foreach (int r in origins) if (_seen.Add(r)) _next.Push(r);
-        while (_next.TryPop(out int r))
+        // Asked only once every function is solved, when the holders are
+        // all there: each holder's objects numbered from its first
+        // (_holderFirst), an object seen when its mark is the walk's.
+        if (_holderFirst is null || _holderFirst.Length != _holders.Count + 1)
         {
-            if (r < 0) { int site = -r - 1; bits[site >> 6] |= 1UL << (site & 63); continue; }
-            if (OriginsOf(r) is { } below) foreach (int c in below) if (_seen.Add(c)) _next.Push(c);
+            _holderFirst = new int[_holders.Count + 1];
+            for (int h = 0; h < _holders.Count; h++) _holderFirst[h + 1] = _holderFirst[h] + (_holders[h]?.Length ?? 0);
+            _seenMark = new int[_holderFirst[^1]];
         }
+        int stamp = ++_seenStamp;
+        _next.Clear();
+        void Visit(int r)
+        {
+            if (r < 0) { int site = -r - 1; bits[site >> 6] |= 1UL << (site & 63); return; }
+            int h = r >> IndexBits, k = r & ((1 << IndexBits) - 1);
+            if (h >= _holders.Count || _holders[h] is not { } objects || k >= objects.Length || objects[k] is null) return;
+            int at = _holderFirst[h] + k;
+            if (_seenMark![at] == stamp) return;
+            _seenMark[at] = stamp;
+            _next.Push(r);
+        }
+        foreach (int r in origins) Visit(r);
+        while (_next.TryPop(out int r))
+            foreach (int c in OriginsOf(r)!) Visit(c);
         return _bitsByOrigins[origins] = bits;
     }
 
-    private readonly HashSet<int> _seen = new();
+    private int[]? _holderFirst, _seenMark;
+    private int _seenStamp;
     private readonly Stack<int> _next = new();
 
     /// <summary>The sites the given origins may be.</summary>
