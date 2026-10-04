@@ -1290,7 +1290,7 @@ public sealed partial class Binder
             }
             case NameExpr local when Lookup(local.Name) is ConstSym { Text: null } named:
                 return IsReal(named.Type) ? BitConverter.Int64BitsToDouble(named.Value) : named.Value;
-            case NameExpr n when owner != null && FindConstant(owner, n.Name) is { } here:
+            case NameExpr n when owner != null && FindConstantOutward(owner, n.Name) is { } here:
                 return IsReal(here.Type) ? BitConverter.Int64BitsToDouble(here.Value) : here.Value;
             case MemberExpr m when ConstantOwner(m.Target) is { } named && FindConstant(named, m.Name) is { } there:
                 return IsReal(there.Type) ? BitConverter.Int64BitsToDouble(there.Value) : there.Value;
@@ -1328,7 +1328,7 @@ public sealed partial class Binder
         // "2";` is as ordinary inside a method as it is on a class.
         NameExpr local when Lookup(local.Name) is ConstSym { Text: not null } named => named.Text,
 
-        NameExpr name => FindText(owner, name.Name),
+        NameExpr name => owner is null ? null : FindTextOutward(owner, name.Name),
         MemberExpr member when ConstantOwner(member.Target) is { } named => FindText(named, member.Name),
         BinaryExpr { Op: BinOp.Add } add => JoinedText(add, owner),
         _ => null,
@@ -1375,7 +1375,7 @@ public sealed partial class Binder
             case NameExpr local when Lookup(local.Name) is ConstSym { Text: null } named:
                 return IsReal(named.Type) ? null : named.Value;
 
-            case NameExpr n when owner != null && FindConstant(owner, n.Name) is { } here:
+            case NameExpr n when owner != null && FindConstantOutward(owner, n.Name) is { } here:
                 return IsReal(here.Type) ? null : here.Value;
 
             case MemberExpr { Target: NameExpr keyword } m
@@ -1615,6 +1615,32 @@ public sealed partial class Binder
                 return text;
             }
             if (_constantDeclarations.ContainsKey((t, name))) return null;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// A const by the name an initialiser writes: on the type or its bases,
+    /// then outwards through the types it is nested in, as any unqualified
+    /// name resolves. A nested class's `const long OuterBudget = JudgeBudget;`
+    /// naming its outer class's const was refused as no constant expression,
+    /// and corc stopped compiling its own region solver (test 1321).
+    /// </summary>
+    private (long Value, Type Type)? FindConstantOutward(TypeSymbol owner, string name)
+    {
+        for (TypeSymbol? t = owner; t != null; t = Outer(t))
+        {
+            if (FindConstant(t, name) is { } found) return found;
+        }
+        return null;
+    }
+
+    /// <summary>A TEXT const by the name an initialiser writes, outwards as FindConstantOutward.</summary>
+    private string? FindTextOutward(TypeSymbol owner, string name)
+    {
+        for (TypeSymbol? t = owner; t != null; t = Outer(t))
+        {
+            if (FindText(t, name) is { } found) return found;
         }
         return null;
     }
