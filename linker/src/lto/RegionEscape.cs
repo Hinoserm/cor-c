@@ -80,7 +80,15 @@ internal sealed class RegionEscape
     private readonly Summary?[] _summaries;
 
     /// <summary>Counts for a report: locations carried, summaries applied, functions not followed, the largest cycle.</summary>
-    public long Work, Applied, Unfollowed, LargestCycle, Fallbacks;
+    public long Work, Applied, Unfollowed, LargestCycle;
+
+    /// <summary>
+    /// The components whose answer is unification past the inclusion bound,
+    /// as the rounds left them. Counted from each component's state, not as
+    /// solves happen: a later round solves only what changed (Again), and a
+    /// count reset for it lost every fallback it did not solve again.
+    /// </summary>
+    public long Fallbacks => _components.Count(c => c.Length > 0 && c[0] < _how.Length && _how[c[0]] == How.PastBound);
 
     /// <summary>
     /// THE LINK'S POOL OF INCLUSION WORK, in locations offered to nodes: a
@@ -1389,7 +1397,7 @@ internal sealed class RegionEscape
         _solvedAt.Clear(); _appliedOf.Clear(); _sitesReadOf.Clear();
         _originsAt.Clear();
         _componentOf = null; _callees = null;
-        Work = Applied = Unfollowed = LargestCycle = Fallbacks = 0;
+        Work = Applied = Unfollowed = LargestCycle = 0;
     }
 
     // ---- solving again: only what changed what a component read -----------
@@ -1458,7 +1466,7 @@ internal sealed class RegionEscape
 
     private int Again()
     {
-        Work = Applied = Unfollowed = Fallbacks = 0;
+        Work = Applied = Unfollowed = 0;
         _escapingBits = null;
         int count = _functions.Count;
         if (_componentOf is null || _callees is null)
@@ -1669,7 +1677,6 @@ internal sealed class RegionEscape
             // PAST ITS BOUND BY INCLUSION, solved by unification: coarser,
             // and still each object's own, where giving up made every site
             // in it global and its summary the unknown call's.
-            Fallbacks++;
             Unified u = new Unified(this, component.ToArray()).Solved();
             for (int m = 0; m < component.Count; m++) Publish(component[m], u.Summarise(m));
             for (int m = 0; m < component.Count; m++) { u.Answer(m); _how[component[m]] = How.PastBound; }
@@ -2769,11 +2776,24 @@ internal sealed class RegionEscape
         {
             while (!Overflowed)
             {
+                // Linking is work as carrying is, and counted against the
+                // same budget: joins that chained without end held the
+                // compiler's own link in one component, never back in
+                // Propagate where the budget was asked.
+                if (_mostAdds != long.MaxValue && _adds > _mostAdds && !MoreWork()) { Overflowed = true; return; }
                 if (_joins.TryDequeue(out var join))
                 {
                     int into = Cell(join.Blob, Any);
+                    // THE MEMBER'S CELL AT ANY OFFSET IS THE BLOB'S CELL: each
+                    // holds the other (the blob every member's cells, the
+                    // member at any offset everything in the blob), so the
+                    // two are one set, and are made one node. Copied both
+                    // ways instead, an object in many blobs was carried into
+                    // and out of each, and blobs sharing a member grew alike
+                    // one location at a time; one node, they are the same
+                    // set once. Nothing is less precise: the sets were equal.
+                    Unite(into, Cell(join.O, Any));
                     foreach (int cell in _cells[join.O].Values.ToArray()) CopyEdge(cell, into, 0);
-                    CopyEdge(into, Cell(join.O, Any), 0);
                     if (_placedMade.Contains(join.O)) Placed(join.Blob);
                     else if (_placedMade.Contains(join.Blob)) Placed(join.O);
                     if (_unknownMade.Contains(join.O)) ReachedByUnknown(join.Blob);
@@ -3947,6 +3967,31 @@ internal sealed class RegionEscape
                 if (Overflowed) return;
             }
         }
+
+        /// <summary>
+        /// Two nodes that hold the same set made one (Merge), the larger kept;
+        /// a node Merge may not take -- the unknown object's cell, a node
+        /// never cut short -- is joined both ways by copies instead.
+        /// </summary>
+        private void Unite(int a, int b)
+        {
+            a = Find(a); b = Find(b);
+            if (a == b) return;
+            bool Mergeable(int n) => n != _unknownCell && (_nodeFlags[n] & NeverSaturated) == 0;
+            if (!Mergeable(a) || !Mergeable(b)) { CopyEdge(a, b, 0); CopyEdge(b, a, 0); return; }
+            // UNION BY SIZE, counting what Merge moves: the node with less is
+            // taken into the one with more. A blob's cell is the hub every
+            // member's loads and stores go through; kept by what it held
+            // alone, it was moved into each new member in turn, all its edges
+            // each time, and one component held the self-link for minutes.
+            int keep = Size(b) > Size(a) ? b : a;
+            Merge(keep, new[] { a, b });
+        }
+
+        // What Merge carries when a node is taken into another.
+        private long Size(int n)
+            => (long)(_pts[n]?.Count ?? 0) + (_copies[n]?.Count ?? 0) + (_loads[n]?.Count ?? 0) + (_stores[n]?.Count ?? 0)
+               + (_readsAll[n]?.Count ?? 0) + (_filters[n]?.Count ?? 0) + (_vcalls[n]?.Count ?? 0);
 
         /// <summary>
         /// The members of a cycle made `keep`: each one's edges become keep's,

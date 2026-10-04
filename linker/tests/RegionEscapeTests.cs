@@ -231,7 +231,7 @@ public static class RegionEscapeTests
             string how = pooled ? "with the pool" : "with no pool";
             RegionEscape e = p.Solve(pool: pooled ? null : 0);
             if (pooled) Check(e.Fallbacks == 0 && e.PoolComponents == 1 && e.PoolDrawn > 0, how + ": Big went past its own bound and finished by inclusion on the pool's work");
-            else Check(e.Fallbacks == 1, how + ": Big went past its bound by inclusion and was unified");
+            else Check(e.Fallbacks == 1, how + $": Big went past its bound by inclusion and was unified (fallbacks {e.Fallbacks}, pool components {e.PoolComponents}, drawn {e.PoolDrawn}, largest cycle {e.LargestCycle})");
             Check(e.Escapes(p.Index("Big"), p.Site("Big", 0)) && e.Escapes(p.Index("Big"), p.Site("Big", 199)), how + ": Big: the copied sites are handed back");
             Check(!e.Escapes(p.Index("Big"), p.Site("Big", 200)), how + ": Big: site 200, alone in its node, is dead by its return");
             Check(!e.Global.Any(g => g), how + ": nothing reaches the unknown object");
@@ -877,9 +877,10 @@ public static class RegionEscapeTests
     /// Many writes each of its 20 parameters into each other one, parameter
     /// i at offset 8i: 380 cells, past MostCells (128). Made coarse, each
     /// parameter is still its own place and the cells still 380 pairs: past
-    /// the bound again, so the summary is everything -- the unknown object,
-    /// one deep place past every parameter, holding itself anywhere, and
-    /// nothing made or handed back.
+    /// the bound again, so the summary is everything (Everything) -- which
+    /// keeps each parameter its own object, so one that leaks does not leak
+    /// the others: the unknown object, the 20 places, each holding every
+    /// other anywhere, and nothing made or handed back.
     /// </summary>
     private static void MostCells()
     {
@@ -890,8 +891,10 @@ public static class RegionEscapeTests
                 if (i != j) many.Constraints.Add(Store(j, i, 8 * i));
         RegionEscape e = p.Solve();
         var (objects, cells, result, coarse) = e.SummaryOf(p.Index("Many")) ?? throw new Exception("Many has no summary");
-        Check(objects.SequenceEqual(new[] { "Unknown -1 []", "Deep -1 []" }), "Many: the unknown object and one deep place past every parameter, as " + string.Join("; ", objects));
-        Check(cells.SequenceEqual(new[] { (1, RegionEscape.Any, 1, RegionEscape.Any) }), "Many: the deep place holds itself, anywhere");
+        string[] places = new[] { "Unknown -1 []" }.Concat(Enumerable.Range(0, 20).Select(i => $"Place {i} []")).ToArray();
+        Check(objects.SequenceEqual(places), "Many: the unknown object and each parameter its own place, as " + string.Join("; ", objects));
+        var pairs = (from i in Enumerable.Range(1, 20) from j in Enumerable.Range(1, 20) where i != j select (i, RegionEscape.Any, j, RegionEscape.Any)).ToArray();
+        Check(cells.OrderBy(c => c).SequenceEqual(pairs.OrderBy(c => c)), $"Many: each place holds every other, anywhere ({cells.Length} cells)");
         Check(result.Length == 0 && coarse, "Many: hands nothing back, and was made coarse");
     }
 
