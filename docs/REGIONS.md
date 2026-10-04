@@ -174,7 +174,7 @@ back from the top); 1304 (grown in place).
 ## The unit's hints
 
 `compiler/src/optimizations/RegionSummary.cs`, format in
-`linker/src/lto/RegionHints.cs` (section `.corsac.regions`, version 8).
+`linker/src/lto/RegionHints.cs` (section `.corsac.regions`, version 9).
 
 A unit compile states, function by function, the pointer constraints of the
 IR the link will regenerate the unit from:
@@ -188,7 +188,15 @@ IR the link will regenerate the unit from:
     a constant or the unknown object as the link judges it (below);
   - `Copy` (with a byte shift, any offset, or an index scaled by 2^k and the
     address it moves);
-  - `Load`, `Store`, `MemCopy`;
+  - `Load`, `Store`, `MemCopy`; a `Load` or `Store` may name the field it
+    reads or writes (`Family`, an index into the function's `Families`,
+    since version 9): an instance field of a class, accessed at its own
+    offset from the start of an object of that class, as C# compiles `o.f`
+    (`Lowering.FieldFamily`, `Instr.Family`). Named by its declaring class
+    and name, a generic class's specialisations by its template and arity.
+    Never a static, a struct's field (reached through an address into
+    something), an element, a copy, or a raw read or write (`Sys.Peek`,
+    `Poke`, a pointer, an atomic): those name none;
   - `Leak` (a throw).
 
   What the compile cannot follow is the unknown object: a call nobody can
@@ -310,6 +318,20 @@ entry, code outside the IR, a taken address).
 - A node past `MostPlacesHeld` (512) places sends its places to the unknown
   object's cell and holds the unknown object. That cell and the node fed by
   `Aliased` are never saturated.
+- **What places are written, by field** (`Aliased`). An object made here that
+  a place reaches may be reached by the caller another way, so its loads read
+  what this call writes into places. A place's word that every write named
+  one field (from the object's start) feeds a node of its own for that field
+  and offset; any other -- untyped, written two ways, at an address into an
+  object, written by a callee's summary -- feeds the untyped node. A load
+  naming a field reads its field's node and the untyped one; a load naming
+  none, at any offset, or through an address into an object, reads them
+  all. Sound for a type-safe program: two words at one offset of one object
+  are one field, since a class's fields lie after all its bases' at offsets
+  of their own, so a load naming another field is never of the object the
+  write was. What is not type-safe -- raw memory, pointers, copies -- names
+  no field, and is read and written as before. Engine test
+  `TypedAliasing`; test 1320.
 - Copy cycles are collapsed online. Tarjan's components over the copy edges
   are found at each solve's start and whenever a quarter more copy edges
   have appeared. A worklist in wave order (sources first) carries each

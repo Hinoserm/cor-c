@@ -26,6 +26,7 @@ public static class RegionEscapeTests
         ("a constant's address holds nothing", Constants),
         ("a number parameter is handed no address", NumberParameters),
         ("a virtual call runs on each object only what it may", Guards),
+        ("what one field of a place is written is read by no other field's load", TypedAliasing),
         ("a wide call on a parameter is deferred for the targets that leak", WideDeferred),
         ("a wide call deferred through two levels of parameters", WideDeferredTwoLevels),
         ("a node past MostHeld objects holds a blob of the rest", Saturation),
@@ -461,6 +462,42 @@ public static class RegionEscapeTests
     }
 
     /// <summary>
+    /// F(p, t) makes O (site 0) and S (site 1). It writes S into p's field
+    /// Instr::Value at 16, and O into t's field TypeSymbol::Cache at 24, so
+    /// O is reached from a place, and a caller may reach it by another way:
+    /// what F writes into places may be in it (Aliased). It then reads O's
+    /// field TypeSymbol::Name, also at 16, and throws what it read. Typed,
+    /// that load is no field S was written into -- one offset of one object
+    /// is one field -- so S is not global. Untyped, the same load reads
+    /// everything written into places, S among it: global. And a load of
+    /// Instr::Value from O reads it.
+    /// </summary>
+    private static void TypedAliasing()
+    {
+        RegionEscape Solve(int loadFamily)
+        {
+            Prog p = new();
+            RegionFunction f = p.Add("F", 2, 6, sites: 2);
+            f.Families = new[] { "Instr::Value", "TypeSymbol::Cache", "TypeSymbol::Name" };
+            f.Constraints.AddRange(new[]
+            {
+                Site(3, 0), Site(5, 1),
+                new RegionConstraint(RegionConstraintKind.Store, 0, 5, 16, 0),
+                new RegionConstraint(RegionConstraintKind.Store, 1, 3, 24, 1),
+                new RegionConstraint(RegionConstraintKind.Load, 4, 3, 16, loadFamily),
+                Leak(4),
+            });
+            return p.Solve();
+        }
+        Prog shape = new();
+        shape.Add("F", 2, 6, sites: 2);
+        int s = shape.Site("F", 1);
+        Check(!Solve(2).Global[s], "a load of TypeSymbol::Name reads nothing written into Instr::Value: S is not global");
+        Check(Solve(-1).Global[s], "an untyped load reads what is written into places: S is global");
+        Check(Solve(0).Global[s], "a load of Instr::Value reads what was written into it: S is global");
+    }
+
+    /// <summary>
     /// A virtual call of LeakThis (throws `this`) or KeepThis (does
     /// nothing). Caller's sites 0 and 2 are of a class that runs KeepThis,
     /// site 1 of one that runs LeakThis (TargetsOn). Pass(p) makes the call
@@ -668,12 +705,13 @@ public static class RegionEscapeTests
         RegionFunction f = new("Work", true, true, true, 2, 6, 1,
             new[] { new RegionSite(true, 7, "t_T", 48, RegionWords.Described), new RegionSite(false, 9, null, 0, RegionWords.Leaf) })
         {
-            Main = false, NumberParams = new[] { 1 }, Symbols = new[] { "s_Table" },
+            Main = false, NumberParams = new[] { 1 }, Symbols = new[] { "s_Table" }, Families = new[] { "Node::Next", "Sym::Name" },
         };
         f.Constraints.AddRange(new[]
         {
             Site(3, 0), Site(4, 1), new RegionConstraint(RegionConstraintKind.Slot, 5, 0, 0), new RegionConstraint(RegionConstraintKind.Unknown, 5, 0, 0),
             Copy(2, 3), Load(4, 0, 16), Store(0, 3, 8), new RegionConstraint(RegionConstraintKind.MemCopy, 3, 4, 24), Leak(4),
+            new RegionConstraint(RegionConstraintKind.Load, 4, 0, 24, 1), new RegionConstraint(RegionConstraintKind.Store, 0, 3, 32, 0),
             new RegionConstraint(RegionConstraintKind.Symbol, 5, 0, 0), new RegionConstraint(RegionConstraintKind.Copy, 2, 4, RegionConstraint.IndexScaled(3)),
         });
         f.Calls.Add(new("Hook", 4, new[] { 3, -1 }));
@@ -691,13 +729,14 @@ public static class RegionEscapeTests
         hints.Functions.Add(main);
 
         byte[] bytes = hints.Write();
-        Check(BitConverter.ToInt32(bytes, 4) == 8, "the hints are written at version 8");
+        Check(BitConverter.ToInt32(bytes, 4) == 9, "the hints are written at version 9");
         RegionHints again = RegionHints.Read(bytes);
         Check(again.Write().AsSpan().SequenceEqual(bytes), "read back, the hints write the same bytes");
         RegionFunction w = again.Functions.Single(x => x.Name == "Work");
         Check(again.WordSize == 8 && again.AddressTaken.SetEquals(new[] { "Hook" }), "the word size and the addresses taken");
         Check(w.Instance && !w.Main && w.Parameters == 2 && w.Nodes == 6 && w.Slots == 1, "the function's shape");
         Check(w.NumberParams.SequenceEqual(new[] { 1 }) && w.Symbols.SequenceEqual(new[] { "s_Table" }), "its number parameters and symbols");
+        Check(w.Families.SequenceEqual(new[] { "Node::Next", "Sym::Name" }), "the fields its loads and stores name");
         Check(w.Sites[0] == new RegionSite(true, 7, "t_T", 48, RegionWords.Described) && w.Sites[1] == new RegionSite(false, 9, null, 0, RegionWords.Leaf), "its sites");
         Check(w.Constraints.SequenceEqual(f.Constraints), "its constraints, every kind");
         Check(w.Calls.Count == 2 && w.Calls[0].Callee == "Hook" && w.Calls[0].Arguments.SequenceEqual(new[] { 3, -1 }) && w.Calls[1].Callee is null, "its calls");

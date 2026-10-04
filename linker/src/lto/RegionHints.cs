@@ -32,7 +32,9 @@ public sealed class RegionHints
     // 8: an async or iterator body states its state machine's stores
     // (what its registers and slots hold across a suspension), rather
     // than leaking every one: the same bytes, another meaning.
-    private const int Version = 8;
+    // 9: the field a load or a store names (RegionConstraint.Family), by the
+    // function's Families, after its symbols; each Load and Store states it.
+    private const int Version = 9;
     private static readonly UTF8Encoding Utf8 = new(false, true);
 
     public List<RegionFunction> Functions { get; } = new();
@@ -68,6 +70,7 @@ public sealed class RegionHints
             foreach (RegionCall call in function.Calls) if (call.Callee is not null) names.Add(call.Callee);
             foreach (RegionSite site in function.Sites) if (site.Table is not null) names.Add(site.Table);
             names.UnionWith(function.Symbols);
+            names.UnionWith(function.Families);
         }
         Dictionary<string, int> index = new(StringComparer.Ordinal);
         foreach (string name in names) index.Add(name, index.Count);
@@ -107,8 +110,14 @@ public sealed class RegionHints
             }
             Var(function.Symbols.Length);
             foreach (string symbol in function.Symbols) Var(index[symbol]);
+            Var(function.Families.Length);
+            foreach (string family in function.Families) Var(index[family]);
             Var(function.Constraints.Count);
-            foreach (RegionConstraint c in function.Constraints) { writer.Write((byte)c.Kind); Var(c.A); Var(c.B); Var(c.C); }
+            foreach (RegionConstraint c in function.Constraints)
+            {
+                writer.Write((byte)c.Kind); Var(c.A); Var(c.B); Var(c.C);
+                if (c.Kind is RegionConstraintKind.Load or RegionConstraintKind.Store) Var(c.Family);
+            }
             Var(function.Calls.Count);
             foreach (RegionCall call in function.Calls)
             {
@@ -219,12 +228,20 @@ public sealed class RegionHints
                 }
                 string[] symbols = new string[Count()];
                 for (int s = 0; s < symbols.Length; s++) symbols[s] = Name();
+                string[] families = new string[Count()];
+                for (int s = 0; s < families.Length; s++) families[s] = Name();
                 RegionFunction function = new(name, (flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0, parameters, nodes, slots, sites)
-                    { Main = (flags & 8) != 0, NumberParams = numbers, Symbols = symbols };
+                    { Main = (flags & 8) != 0, NumberParams = numbers, Symbols = symbols, Families = families };
                 bool Node(int n) => n >= 0 && n < nodes;
                 for (int k = Count(); k > 0; k--)
                 {
                     RegionConstraint c = new((RegionConstraintKind)reader.ReadByte(), Int(), Int(), Var());
+                    if (c.Kind is RegionConstraintKind.Load or RegionConstraintKind.Store)
+                    {
+                        int family = Int();
+                        if (family < -1 || family >= families.Length) throw new ElfFormatException("Invalid region hint constraint");
+                        c = c with { Family = family };
+                    }
                     bool valid = c.Kind switch
                     {
                         RegionConstraintKind.Site => Node(c.A) && c.B >= 0 && c.B < sites.Length,
@@ -357,6 +374,8 @@ public sealed class RegionFunction
     public int LoopOfCall(int call) => call < CallLoops.Length ? CallLoops[call] : Unbounded;
     /// <summary>The symbols whose addresses its code takes, named by its Symbol constraints.</summary>
     public string[] Symbols { get; init; } = Array.Empty<string>();
+    /// <summary>The fields its typed loads and stores name (RegionConstraint.Family).</summary>
+    public string[] Families { get; set; } = Array.Empty<string>();
     /// <summary>Whether the link has made every Symbol constraint left one of a constant (RegionConstants): never written into the hints.</summary>
     public bool ConstantsKnown { get; set; }
 }
@@ -441,8 +460,19 @@ public enum RegionConstraintKind : byte
     Symbol,
 }
 
-/// <summary>One constraint over a function's nodes.</summary>
-public readonly record struct RegionConstraint(RegionConstraintKind Kind, int A, int B, long C)
+/// <summary>
+/// One constraint over a function's nodes. A Load or a Store may name the
+/// field it reads or writes (Family, an index into RegionFunction.Families;
+/// -1 for none): a field of a class, read or written at its offset from the
+/// start of an object of that class, as C# compiles a field access -- never
+/// a struct's field, an element, a raw read or write of memory (Sys.Peek
+/// and Poke, a pointer), or a copy. Two accesses naming different fields at
+/// one offset are never of one object in a type-safe program (a class's
+/// fields lie after all its bases' at offsets of their own), which the
+/// escape engine's aliasing of what places are written relies on
+/// (RegionEscape.Aliased).
+/// </summary>
+public readonly record struct RegionConstraint(RegionConstraintKind Kind, int A, int B, long C, int Family = -1)
 {
     /// <summary>A copy's shift, or a copy's count, when it is no constant.</summary>
     public const long Any = long.MinValue;

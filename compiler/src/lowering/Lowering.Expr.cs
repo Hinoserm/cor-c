@@ -1741,6 +1741,7 @@ public sealed partial class Lowering
                     // Tagged as every other store to the field is: the field
                     // proof must see what a `with` puts there.
                     if (TagsField(field)) _e.Block.Instrs[^1].Field = FieldKey(field);
+                    _e.Block.Instrs[^1].Family = FieldFamily(field, field.Offset);
                 }
             }
         }

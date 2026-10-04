@@ -54,6 +54,16 @@ public sealed class Instr
     public bool Number { get; set; }
 
     /// <summary>
+    /// Load or Store of a class's field at its offset from the start of an
+    /// object of that class: which field, as one name for every
+    /// specialisation of a generic class (Lowering.FieldFamily) -- what
+    /// region inference keeps apart from every other field written at the
+    /// same offset (RegionConstraint.Family). Left unset it says nothing:
+    /// a raw read or write, a struct's field, an element, a copy.
+    /// </summary>
+    public string? Family { get; set; }
+
+    /// <summary>
     /// An allocator call the link chose to make in the innermost open region
     /// (Lto.RegionSolver; RegionPointsTo.MarkSites): the late passes' copies
     /// of it are chosen too.

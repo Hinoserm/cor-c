@@ -61,7 +61,7 @@ public sealed class FrameAddressFold : IPass
             catch (OverflowException) { continue; }
             if (i.Size <= 0 || offset < 0 || offset > address.Slot.Bytes - i.Size) continue;
             Instr replacement = new() { Op = i.Op, Dest = i.Dest, Size = i.Size,
-                Signed = i.Signed, Offset = offset, Line = i.Line, Number = i.Number };
+                Signed = i.Signed, Offset = offset, Line = i.Line, Number = i.Number, Family = i.Family };
             replacement.Operands.Add(new SlotOperand(address.Slot));
             replacement.Operands.AddRange(i.Operands.Skip(1));
             block.Instrs[index] = replacement;

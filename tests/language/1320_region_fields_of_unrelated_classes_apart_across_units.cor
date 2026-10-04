@@ -1,0 +1,59 @@
+// test: region_fields_of_unrelated_classes_apart_across_units
+// units: tests/language/support/1320_typed_fields_units.cor
+// regions: taken
+// expect-exit: 0
+// expect-output:
+// total 15600000 last empty True
+// given back True
+//
+// WHAT A FIELD OF ONE CLASS IS WRITTEN IS NEVER READ BY A FIELD OF
+// ANOTHER (RegionConstraint.Family, RegionEscape.Aliased). Fill.Note
+// writes a new array into an Instr's Value and a new Sym into a Sym's
+// Cache, then reads that Sym's Name -- at the same offset as Value -- and
+// keeps it in a static. The Sym it made is reached from a parameter, so a
+// caller may reach it by another way, and what Note writes into its
+// parameters may be in it; untyped, the Name it read was the array, and
+// the static kept it: every array Note made was global. Typed, Sym::Name
+// is no field the array was written into -- one offset of one object is
+// one field -- and Work, which makes the Instr and the Sym and drops
+// them, takes the arrays: what Work makes is given back at its return.
+//
+// Per round, for each i below 50 with k = i % 9 + 1: k, and the array's
+// length 64k; over 1000 rounds.
+
+using System;
+using System.Runtime.CompilerServices;
+using TypedUnits;
+
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Work(int round)
+    {
+        long total = 0;
+        for (int i = 0; i < 50; i++)
+        {
+            Instr x = new();
+            Sym t = new();
+            total += Fill.Note(x, t, i % 9 + 1) + ((int[])x.Value!).Length;
+        }
+        return total;
+    }
+
+    // Not Main itself: what the entry calls is never a boundary.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Run()
+    {
+        long total = 0, before = Gc.RegionFreedBytes + Gc.RegionTopFreedBytes;
+        for (int round = 1; round <= 1000; round++)
+        {
+            total += Work(round);
+            if (round % 250 == 0) GC.Collect();
+        }
+        Console.WriteLine("total " + total + " last empty " + (Fill.Last == ""));
+        Console.WriteLine("given back " + (Gc.RegionFreedBytes + Gc.RegionTopFreedBytes - before >= 40000000L));
+        return 0;
+    }
+
+    static int Main() => Run();
+}

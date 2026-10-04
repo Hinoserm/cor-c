@@ -762,6 +762,7 @@ public sealed class Inline : IParallelModulePass
                     DispatchType = i.DispatchType,
                     Field = i.Field,
                     Number = i.Number,
+                    Family = i.Family,
                     RegionSite = i.RegionSite,
                     Line = call.Line,
                     Default = i.Default is null ? null : blocks[i.Default],
