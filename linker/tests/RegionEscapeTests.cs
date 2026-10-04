@@ -26,6 +26,8 @@ public static class RegionEscapeTests
         ("a constant's address holds nothing", Constants),
         ("a number parameter is handed no address", NumberParameters),
         ("a virtual call runs on each object only what it may", Guards),
+        ("a wide call on a parameter is deferred for the targets that leak", WideDeferred),
+        ("a wide call deferred through two levels of parameters", WideDeferredTwoLevels),
         ("a node past MostHeld objects sends them to the unknown object", Saturation),
         ("a summary past MostCells is everything", MostCells),
         ("a parameter passed nothing is the unknown object", Unpassed),
@@ -487,6 +489,75 @@ public static class RegionEscapeTests
         Prog blind = Build();
         RegionEscape any = blind.Solve(targetsOn: null);
         Check(any.Global[keeper0] && any.Global[leaker] && any.Global[keeper2], "with no knowledge of what runs where, every receiver may run LeakThis");
+    }
+
+    /// <summary>
+    /// Guards' program with a wide call: LeakThis (throws `this`) and
+    /// sixteen KeepThis that do nothing, seventeen targets, past WideTargets
+    /// (16), so a stand-in. Pass(p) makes the call on its parameter. A
+    /// stand-in of all seventeen has the unknown object hold the receiver,
+    /// and every object handed to Pass was global. Deferred, LeakThis alone
+    /// is applied to p guarded by it, and the rest to p as it is: the
+    /// caller's site of a class that runs LeakThis is global, the one of a
+    /// class that runs KeepThis1 is not, and nor is one called on directly.
+    /// With no knowledge of what runs where, every receiver may run
+    /// LeakThis, and all are global.
+    /// </summary>
+    private static void WideDeferred()
+    {
+        Prog Build()
+        {
+            Prog p = new();
+            p.Add("LeakThis", 1, 2).Constraints.Add(Leak(0));
+            for (int t = 1; t <= 16; t++) p.Add("KeepThis" + t, 1, 2);
+            p.Virtuals["__virtual:t_X+48"] = new[] { "LeakThis" }.Concat(Enumerable.Range(1, 16).Select(t => "KeepThis" + t)).ToArray();
+            p.Add("Pass", 1, 2).Calls.Add(new("__virtual:t_X+48", -1, new[] { 0 }));
+            RegionFunction caller = p.Add("Caller", 0, 4, sites: 3);
+            caller.Constraints.AddRange(new[] { Site(1, 0), Site(2, 1), Site(3, 2) });
+            caller.Calls.Add(new("Pass", -1, new[] { 1 }));
+            caller.Calls.Add(new("Pass", -1, new[] { 2 }));
+            caller.Calls.Add(new("__virtual:t_X+48", -1, new[] { 3 }));
+            return p;
+        }
+        Prog known = Build();
+        int leakThis = known.Index("LeakThis"), keepThis = known.Index("KeepThis1");
+        int keeper0 = known.Site("Caller", 0), leaker = known.Site("Caller", 1), keeper2 = known.Site("Caller", 2);
+        int[]? Runs(int f, int k, int site) => site == leaker ? new[] { leakThis } : site == keeper0 || site == keeper2 ? new[] { keepThis } : null;
+        RegionEscape e = known.Solve(targetsOn: Runs);
+        Check(!e.Global[keeper0], "site 0, handed to Pass, runs KeepThis1: not global");
+        Check(e.Global[leaker], "site 1, handed to Pass, runs LeakThis: global");
+        Check(!e.Global[keeper2], "site 2, called on directly, runs KeepThis1: not global");
+        Prog blind = Build();
+        RegionEscape any = blind.Solve(targetsOn: null);
+        Check(any.Global[keeper0] && any.Global[leaker] && any.Global[keeper2], "with no knowledge of what runs where, every receiver may run LeakThis");
+    }
+
+    /// <summary>
+    /// WideDeferred's call one level further down: Outer(p) hands its
+    /// parameter to Pass(q), which makes the wide call on q. Pass's summary
+    /// throws q guarded by LeakThis; Outer's throws p guarded so in turn,
+    /// the guard carried up (Filtered); Caller hands Outer an object of a
+    /// class that runs KeepThis1 and one of a class that runs LeakThis, and
+    /// only the second is global.
+    /// </summary>
+    private static void WideDeferredTwoLevels()
+    {
+        Prog p = new();
+        p.Add("LeakThis", 1, 2).Constraints.Add(Leak(0));
+        for (int t = 1; t <= 16; t++) p.Add("KeepThis" + t, 1, 2);
+        p.Virtuals["__virtual:t_X+48"] = new[] { "LeakThis" }.Concat(Enumerable.Range(1, 16).Select(t => "KeepThis" + t)).ToArray();
+        p.Add("Pass", 1, 2).Calls.Add(new("__virtual:t_X+48", -1, new[] { 0 }));
+        p.Add("Outer", 1, 2).Calls.Add(new("Pass", -1, new[] { 0 }));
+        RegionFunction caller = p.Add("Caller", 0, 3, sites: 2);
+        caller.Constraints.AddRange(new[] { Site(1, 0), Site(2, 1) });
+        caller.Calls.Add(new("Outer", -1, new[] { 1 }));
+        caller.Calls.Add(new("Outer", -1, new[] { 2 }));
+        int leakThis = p.Index("LeakThis"), keepThis = p.Index("KeepThis1");
+        int keeper = p.Site("Caller", 0), leaker = p.Site("Caller", 1);
+        int[]? Runs(int f, int k, int site) => site == leaker ? new[] { leakThis } : site == keeper ? new[] { keepThis } : null;
+        RegionEscape e = p.Solve(targetsOn: Runs);
+        Check(!e.Global[keeper], "an object that runs KeepThis1, handed down two calls: not global");
+        Check(e.Global[leaker], "an object that runs LeakThis, handed down two calls: global");
     }
 
     /// <summary>
