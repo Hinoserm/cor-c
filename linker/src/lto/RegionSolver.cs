@@ -578,10 +578,14 @@ public static class RegionSolver
                 _escape.Why = explain.Contains;
                 _escape.WhyFunction = f => _functions[f].Name.Contains(fn, StringComparison.Ordinal);
             }
+            // A diagnostic: wide calls past another count of targets (+wide=0: every call followed in order).
+            if (_report?.FirstOrDefault(w => w.StartsWith("+wide=", StringComparison.Ordinal)) is { } wideOf && int.TryParse(wideOf[6..], out int wide))
+                _escape.WideTargets = wide;
+            _escape.ReportStandIns = _report?.Contains("+standins") == true;
             if (_report is not null && _report.Contains("+cycles")) foreach (int most in new[] { 256, 64, 16, 4 }) _escape.ReportCycles(most);
             _escape.Run();
             Log($"escape graphs: {count} functions, {sites} sites, {_escape.Applied} summaries applied, largest cycle {_escape.LargestCycle}, "
-                + $"{_escape.Unfollowed} not followed, {_escape.Work} carried, global {_escape.GlobalByUnknown} by the unknown object + {_escape.GlobalByRoots} by roots, {_clock.ElapsedMilliseconds} ms");
+                + $"{_escape.Unfollowed} not followed, {_escape.Fallbacks} unified past their bound, {_escape.Work} carried, global {_escape.GlobalByUnknown} by the unknown object + {_escape.GlobalByRoots} by roots, {_clock.ElapsedMilliseconds} ms");
             return Judge();
         }
 
@@ -1751,7 +1755,7 @@ public static class RegionSolver
                         : objects.Any(_globalReach.Contains) ? "global"
                         : objects.FirstOrDefault(o => _refusedBy.ContainsKey(o)) is int r && _refusedBy.ContainsKey(r) ? "refused-by " + _functions[_copyFunction[_refusedBy[r]]].Name
                         : objects.Any(final.Above.ContainsKey) ? "loop-refused" : "no-boundary";
-                    Console.Error.WriteLine("regions-site " + _functions[f].Name + " " + site + " " + verdict);
+                    Console.Error.WriteLine("regions-site " + _functions[f].Name + " " + site + " " + verdict + " line " + _functions[f].Sites[site].Line + " " + (_functions[f].Sites[site].Table ?? "-"));
                 }
             Log($"{opened.Count} boundaries, {loops.Count} loops, {taken.Count} sites in the innermost region, of {bySite.Count}; judged by {_clock.ElapsedMilliseconds} ms, {_walked} walked");
             return facts;

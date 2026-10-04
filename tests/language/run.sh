@@ -138,9 +138,19 @@ for lib in $libs; do
     fi
 done
 
+# A TEST OUTLIVES ITS RUNNER when the runner is killed: timeout cannot pass
+# on a SIGKILL, and with --foreground the test is not in a group of its own.
+# Two such tests spun for hours on output files deleted under them, holding
+# the space of a full /tmp. So each test also gets a limit of processor time
+# -- what it could use on every processor for twice its timeout -- and of
+# output, that ends it with nobody left to.
 if command -v timeout >/dev/null 2>&1; then
     run_with_timeout() {
-        timeout --foreground -k 2 "$timeout_s" "$@"
+        (
+            ulimit -t $(( (timeout_s * 2 + 10) * $(nproc 2>/dev/null || echo 4) )) 2>/dev/null
+            ulimit -f 1048576 2>/dev/null
+            exec timeout --foreground -k 2 "$timeout_s" "$@"
+        )
     }
 else
     run_with_timeout() {
