@@ -15,8 +15,14 @@ public sealed class ProcessUnitBackend : IUnitBackend, IDisposable
 
     public ProcessUnitBackend(string? executable = null)
     {
+        // THE RUNNING COMPILER ITSELF, unless it runs under dotnet: a native
+        // compiler need not be called corc, and the one beside it may be
+        // another build.
+        string? running = Environment.ProcessPath;
+        bool hosted = running is null
+            || Path.GetFileNameWithoutExtension(running).Equals("dotnet", StringComparison.OrdinalIgnoreCase);
         string path = executable
-            ?? Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows() ? "corc.exe" : "corc");
+            ?? (hosted ? Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows() ? "corc.exe" : "corc") : running!);
         if (!File.Exists(path)) throw new FileNotFoundException("IR LTO needs the compiler backend; pass --lto-backend, or use --no-lto", path);
         ProcessStartInfo start = new(Path.GetFullPath(path)) { UseShellExecute = false, RedirectStandardInput = true, RedirectStandardOutput = true };
         foreach (string flag in Switches.ChildFlags) start.ArgumentList.Add(flag);
