@@ -1593,9 +1593,20 @@ public sealed partial class Lowering
         }
     }
 
-    /// <summary>A lambda is an object made where it was written, holding what it captured.</summary>
+    /// <summary>
+    /// A lambda is an object made where it was written, holding what it
+    /// captured -- or, capturing nothing, one object in the data section made
+    /// once for the program, as .NET caches such a delegate: every
+    /// evaluation the same delegate, nothing allocated per call (a LINQ
+    /// operator's predicate was 24 bytes left to the collector at every call
+    /// whose iterator another unit kept).
+    /// </summary>
     private VReg EmitLambda(LambdaExpr lam, ClosureInfo made)
     {
+        if (made.Captures.Count == 0)
+        {
+            return _e.Address(StaticClosure(made.Type));
+        }
         VReg obj = Allocate(lam, Math.Max(_t.ObjectHeaderBytes, made.Type.InstanceSize), described: true);
         _e.Store(R(obj), VtableOf(made.Type), 0, _t.WordSize);
 
@@ -1656,6 +1667,35 @@ public sealed partial class Lowering
         }
 
         return obj;
+    }
+
+    private readonly Dictionary<TypeSymbol, string> _staticClosures = new();
+
+    /// <summary>
+    /// THE ONE OBJECT OF A CLOSURE CLASS THAT CAPTURES NOTHING, laid down in
+    /// the writable data section as an allocation would leave it: its vtable,
+    /// the rest of its header zero (a lock or a hash may be written there).
+    /// No collector frees it -- a pointer outside the heap is no block -- and
+    /// no analysis takes it for something made here, so nothing frees it at
+    /// all. One per closure class in each module.
+    /// </summary>
+    private string StaticClosure(TypeSymbol type)
+    {
+        if (_staticClosures.TryGetValue(type, out string? known)) return known;
+        int w = _t.WordSize;
+        long size = Math.Max(_t.ObjectHeaderBytes, type.InstanceSize);
+        byte[] block = new byte[(size + w - 1) / w * w];
+        string descriptor = ClassDescriptor(type);
+        string sym = "sc_" + descriptor;
+        DataItem item = new(sym, block)
+        {
+            Align = _t.Align64, FromLibrary = IsLibrary(type), SystemCode = SystemCode(type), SourcePath = SourcePathOf(type),
+            Exported = false, NoReferences = true,
+        };
+        item.Relocs.Add(new DataReloc(0, descriptor, _t.DescriptorBytes));
+        _m.Data.Add(item);
+        _staticClosures[type] = sym;
+        return sym;
     }
 
     /// <summary>`x with { A = 1 }`: allocate, copy every field, then override.</summary>

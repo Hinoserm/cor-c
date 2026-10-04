@@ -45,6 +45,19 @@ internal static class MachineIntrinsics
     public const string CardMark = Prefix + "cardmark";
     /// <summary>The snapshot barrier's slow path, slot and value, through the object's stub.</summary>
     public const string Barrier = Prefix + "barrier";
+    /// <summary>
+    /// A reference stored with its whole barrier, slot and value: the
+    /// Marking test, the snapshot barrier, the store and the card, in one
+    /// sequence of the image's own (X86Backend.RefStoreStub) that a thread is
+    /// never stopped inside (CardMarks.FuseStores).
+    /// </summary>
+    public const string RefStore = Prefix + "refstore";
+    /// <summary>The same for a store that takes no snapshot barrier, only the card: a new block's.</summary>
+    public const string CardStore = Prefix + "cardstore";
+    /// <summary>A reference exchanged as a sequence, slot and value, answering the old one (Sys.ExchangeReference).</summary>
+    public const string RefExchange = Prefix + "refxchg";
+    /// <summary>The same where the slot holds the expected one: slot, expected, value; answers what it held (Sys.CompareExchangeReference).</summary>
+    public const string RefCompareExchange = Prefix + "refcas";
     public const string SetGs = Prefix + "setgs";
     public const string GetGs = Prefix + "getgs";
     /// <summary>

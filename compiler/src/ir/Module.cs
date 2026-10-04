@@ -118,6 +118,9 @@ public sealed class Module
     /// <summary>The unit's pointer constraints, for the link to solve (RegionSummary); written beside its IR.</summary>
     public Corsac.Lang.Lto.RegionHints? RegionHints { get; set; }
 
+    /// <summary>The unit's interrupt facts, for the link's check of handlers across units (Lto.InterruptNotes). Null: none kept.</summary>
+    public List<Corsac.Lang.Lto.InterruptNotes.Fact>? InterruptFacts { get; set; }
+
     /// <summary>
     /// The link's answer, for a unit it regenerates: which parameters of the
     /// functions the unit calls, and of its own, escape, solved over every

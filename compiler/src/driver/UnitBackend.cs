@@ -174,6 +174,8 @@ public sealed class UnitBackend : IUnitBackend
             LandingPadHomes.Strip(function);
             Module local = new(module.Name) { Entry = function.Name, PreserveExports = true, NeedsHeap = module.NeedsHeap };
             local.Functions.Add(function);
+            // Its stores made as sequences as the unit's are (CardMarks.FuseStores).
+            if (module.RuntimeHelpers.Contains(RuntimeAbi.RefStore)) local.RuntimeHelpers.Add(RuntimeAbi.RefStore);
             // Another unit's sites the link chose come marked on its body, and
             // the inliner carries the mark to every copy; a boundary of its
             // own unit stays a call, and opens its region there.

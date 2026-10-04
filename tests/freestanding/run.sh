@@ -26,6 +26,10 @@
 #                                name; Main's or the entry stub's, when F
 #                                was inlined into it)
 #                                contains each of a, b, c
+#   // expect-no-asm-<target>: F: a b c
+#                                the same function's disassembly contains
+#                                none of a, b, c (expect-asm and this may each
+#                                be given more than once)
 #   // expect-asm-count-<target>: F: word N
 #                                the same function's disassembly has at
 #                                least N lines containing word
@@ -76,20 +80,27 @@ for source in "$here"/[0-9]*.cor; do
         fi
 
         wrong=""
-        asm="$(header "$source" "expect-asm-$target")"
-        if [ -n "$asm" ]; then
+        disassemble() {
+            objdump -d --no-show-raw-insn "$exe" | awk -v f="$1" '
+                /^[0-9a-f]+ <.*>:$/ { on = index($0, f) > 0 }
+                on { print }'
+        }
+        # A function's body: inlined into its caller, it has no symbol of its
+        # own, and is then in Main, or in the entry stub Main was inlined into.
+        body_of() {
+            local found
+            found="$(disassemble "_${1}_")"
+            [ -z "$found" ] && found="$(disassemble _Main_)"
+            [ -z "$found" ] && found="$(disassemble '<_start>:')"
+            printf '%s' "$found"
+        }
+        # Every expect-asm line, and every expect-no-asm line: words the
+        # function's disassembly must, and must not, contain.
+        while IFS= read -r asm; do
+            [ -n "$asm" ] && [ -z "$wrong" ] || continue
             function="${asm%%:*}"
             words="${asm#*:}"
-            disassemble() {
-                objdump -d --no-show-raw-insn "$exe" | awk -v f="$1" '
-                    /^[0-9a-f]+ <.*>:$/ { on = index($0, f) > 0 }
-                    on { print }'
-            }
-            body="$(disassemble "_${function}_")"
-            # Inlined into its caller, it has no symbol of its own: then it
-            # is in Main, or in the entry stub Main was inlined into.
-            [ -z "$body" ] && body="$(disassemble _Main_)"
-            [ -z "$body" ] && body="$(disassemble '<_start>:')"
+            body="$(body_of "$function")"
             if [ -z "$body" ]; then
                 wrong="no function $function in the disassembly"
             else
@@ -98,7 +109,17 @@ for source in "$here"/[0-9]*.cor; do
                 done
                 [ -n "$wrong" ] && wrong="$function lacks:$wrong"
             fi
-        fi
+        done < <(sed -n "s|^// expect-asm-$target: *||p" "$source")
+        while IFS= read -r asm; do
+            [ -n "$asm" ] && [ -z "$wrong" ] || continue
+            function="${asm%%:*}"
+            words="${asm#*:}"
+            body="$(body_of "$function")"
+            for word in $words; do
+                if grep -qF -- "$word" <<< "$body"; then wrong="$wrong $word"; fi
+            done
+            [ -n "$wrong" ] && wrong="$function has:$wrong"
+        done < <(sed -n "s|^// expect-no-asm-$target: *||p" "$source")
 
         counted="$(header "$source" "expect-asm-count-$target")"
         if [ -z "$wrong" ] && [ -n "$counted" ]; then

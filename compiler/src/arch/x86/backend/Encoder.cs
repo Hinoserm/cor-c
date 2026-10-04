@@ -546,7 +546,13 @@ internal sealed class Encoder
                 B(0xFF);
                 ModRM(2, i.Operands[0]);
                 break;
+            case MOp.CallKeepInd:
+            case MOp.CallKeepEaxInd:
+                B(0xFF);
+                ModRM(2, i.Operands[0]);
+                break;
             case MOp.CallKeep:
+            case MOp.CallKeepEax:
             {
                 MImm stub = (MImm)i.Operands[0];
                 B(0xE8);
