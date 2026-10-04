@@ -3951,6 +3951,26 @@ public sealed partial class Binder
             };
         }
 
+        // `System.X` FOR ONE OF THE LIBRARY'S GLOBAL TYPES, which are System's:
+        // the library's, whatever the program's own namespace calls X. A
+        // program may declare a `Delegate` of its own beside its delegates,
+        // and `System.Delegate` -- which the multicast class the parser writes
+        // for each of them names (Parser.Multicast) -- is still the runtime's.
+        // Read by its last part from where it was written, it was the
+        // program's.
+        if (r.Name == LibraryHome + "." + bare
+            && _r.Types.TryGetValue(r.Args.Count > 0 ? Arity(bare, r.Args.Count) : bare, out TypeSymbol? systemGlobal)
+            && systemGlobal.Decl is { } systemDecl && systemDecl.Outer is null
+            && (systemDecl.Namespace.Length == 0 || systemDecl.Namespace == LibraryHome))
+        {
+            return new Type
+            {
+                Prim = systemGlobal.Kind == TypeKind.Enum ? systemGlobal.EnumUnderlying : Prim.Void,
+                Symbol = systemGlobal,
+                Args = ResolveAll(r.Args, context),
+            };
+        }
+
         // AN OPEN TEMPLATE APPLICATION -- `List<T>` where T is a method's own
         // type parameter, which the monomorphiser could not specialise because
         // only the checker learns what T is. Keyed by name and arity, because
@@ -6566,6 +6586,7 @@ public sealed partial class Binder
         // the same method (TypeSymbol.DelegateGroup).
         if (face is not null) DelegateMembers(closure, face);
         if (lam.GroupIdentity is string group) closure.DelegateGroup = group.Split('$')[0];
+        else if (lam.LocalGroup is string local) closure.DelegateGroup = local;
         RegisterType(name2, closure);
         _r.Methods[body] = run;
         _r.Closures[lam] = new ClosureInfo(closure, fields, run);
@@ -7047,33 +7068,31 @@ public sealed partial class Binder
     /// so it waits for the overload as a lambda does and is checked after.
     /// </summary>
     /// <summary>
-    /// `a + b` OR `a - b` OVER A DELEGATE, as a call: Combine or Remove on the
-    /// multicast class the parser synthesised beside the delegate. Built as
-    /// ordinary syntax, to be bound like anything the program could have
-    /// written; `+=` and `-=` remember it for lowering, which stores its
-    /// result back into the same place, and the binary operators become it.
+    /// `a + b` OR `a - b` OVER A DELEGATE, as a call: __Delegates.Combine or
+    /// __Delegates.Remove, which are .NET's Delegate.Combine and Remove typed
+    /// as the delegate (the runtime's, generic over it). Built as ordinary
+    /// syntax, to be bound like anything the program could have written;
+    /// `+=` and `-=` remember it for lowering, which stores its result back
+    /// into the same place, and the binary operators become it. The right
+    /// side is an argument, so a lambda or a method group there becomes the
+    /// delegate the left side is, as C# target-types it.
+    ///
+    /// NOT the multicast class the parser writes beside the delegate, by its
+    /// name: the name of a generic delegate's, or one nested in a generic
+    /// type, is not something a call written here can spell, and a delegate
+    /// held as one of another type by variance must be refused as .NET's
+    /// Delegate.Combine refuses it. Delegate.Combine asks the delegate itself,
+    /// whose type knows its multicast (Parser.ParseDelegateDeclaration).
     /// </summary>
-    private static CallExpr DelegateCombination(TypeDecl delegateDecl, TypeSymbol delegateType, bool add, Expr left, Expr right, Node at)
+    private static CallExpr DelegateCombination(bool add, Expr left, Expr right, Node at)
     {
-        // A GENERIC DELEGATE'S COPY COMBINES THROUGH ITS OWN STATICS
-        // (Parser.ParseDelegateDeclaration): the copy `EventHandler$int`
-        // exists, and its Combine names the multicast copy made with it. Any
-        // other delegate through the multicast written beside it.
-        bool generic = delegateDecl.Template is not null
-            && delegateType.FindMethods("Combine").Any(m => m.Static);
-        string holder = generic ? delegateDecl.Name : delegateDecl.Name + "__Multicast";
-        Expr qualified = new NameExpr { Name = holder, Line = at.Line, Col = at.Col };
-        if (!string.IsNullOrEmpty(delegateDecl.Namespace))
-        {
-            string[] parts = delegateDecl.Namespace.Split('.');
-            Expr chain = new NameExpr { Name = parts[0], Line = at.Line, Col = at.Col };
-            for (int i = 1; i < parts.Length; i++)
-                chain = new MemberExpr { Target = chain, Name = parts[i], Line = at.Line, Col = at.Col };
-            qualified = new MemberExpr { Target = chain, Name = holder, Line = at.Line, Col = at.Col };
-        }
         CallExpr made = new()
         {
-            Target = new MemberExpr { Target = qualified, Name = add ? "Combine" : "Remove", Line = at.Line, Col = at.Col },
+            Target = new MemberExpr
+            {
+                Target = new NameExpr { Name = DelegatesHelper, Line = at.Line, Col = at.Col },
+                Name = add ? "Combine" : "Remove", Line = at.Line, Col = at.Col,
+            },
             Line = at.Line, Col = at.Col,
         };
         made.Args.Add(left);
@@ -7082,6 +7101,9 @@ public sealed partial class Binder
         made.ArgNames.Add(null);
         return made;
     }
+
+    /// <summary>The runtime's class of what delegate operators become, under a name no program writes.</summary>
+    private const string DelegatesHelper = "__Delegates";
 
     /// <summary>
     /// The runtime's Delegate, which every delegate type has for its base
@@ -7223,7 +7245,7 @@ public sealed partial class Binder
         }
 
         if (owner is null || owner.FindField(name) is not null || owner.FindMethods("get_" + name).Count > 0
-            || owner.FindMethods(prefix + name).Count == 0)
+            || MethodsOn(owner, prefix + name).Count == 0)
         {
             return null;
         }
@@ -7419,6 +7441,14 @@ public sealed partial class Binder
         CallExpr call = new() { Target = new NameExpr { Name = source.Name, Line = source.Line, Col = source.Col },
                                 Line = source.Line, Col = source.Col };
         LambdaExpr made = new() { Body = call, Line = source.Line, Col = source.Col };
+        // WHICH LOCAL FUNCTION, wherever it is converted: the closure of every
+        // conversion holds the local function's own cell, so two made over
+        // one run of its scope are the same method on the same target.
+        if (_r.Resolved.TryGetValue(source, out Sym? named) && LocalFunctionDeclaration(named) is { } declared)
+        {
+            made.LocalGroup = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes("local$" + declared.File + ":" + declared.Line + ":" + declared.Col + ":" + source.Name)));
+        }
         for (int i = 0; i < invoke.Params.Count; i++)
         {
             string name = "$arg" + i;
@@ -9547,9 +9577,12 @@ public sealed partial class Binder
             // came first: `Many(dog, animal)` is Many<Animal>, and
             // `Pick("s", o)` over an object is Pick<object> -- `object` reaching
             // a string only as a machine word, which is no conversion to C#.
+            // Through VARIANCE too, as C#'s inference has it: a Func<string>
+            // and a Func<object> make T the Func<object> the other converts
+            // to.
             if (got.IsError || already.IsError) return true;
-            if ((got.Prim != Prim.Any || already.Prim == Prim.Any) && Convertible(got, already)) return true;
-            if ((already.Prim != Prim.Any || got.Prim == Prim.Any) && Convertible(already, got))
+            if ((got.Prim != Prim.Any || already.Prim == Prim.Any) && (Convertible(got, already) || Variant(got, already))) return true;
+            if ((already.Prim != Prim.Any || got.Prim == Prim.Any) && (Convertible(already, got) || Variant(already, got)))
             {
                 bound[name] = got;
                 return true;
@@ -12268,7 +12301,7 @@ public sealed partial class Binder
                     if (a.Op is BinOp.Add or BinOp.Sub && target.Symbol?.Decl is { IsDelegate: true } delegateDecl)
                     {
                         ok = true;
-                        CallExpr synthesised = DelegateCombination(delegateDecl, target.Symbol!, a.Op is BinOp.Add, a.Target, a.Value, a);
+                        CallExpr synthesised = DelegateCombination(a.Op is BinOp.Add, a.Target, a.Value, a);
                         CheckExpr(synthesised);
                         _r.DelegateCompounds[a] = synthesised;
                     }
@@ -15333,6 +15366,16 @@ public sealed partial class Binder
             return Type.Void;
         }
 
+        // AN EVENT WITH NO FIELD -- an interface's, an abstract one, or one
+        // written with its own add and remove -- is its two accessors and
+        // nothing that can be read or raised (C#'s CS0079); += and -= reach
+        // the accessors before any of this (EventAccessorCall).
+        if (MethodsOn(owner, "add_" + m.Name).Count > 0 && MethodsOn(owner, "remove_" + m.Name).Count > 0)
+        {
+            Error(m, $"the event '{owner.Name}.{m.Name}' can only appear on the left hand side of += or -=");
+            return Type.Error;
+        }
+
         Error(m, $"'{owner.Name}' has no member '{m.Name}'");
         return Type.Error;
     }
@@ -17881,6 +17924,20 @@ public sealed partial class Binder
 
         Type l = CheckExpr(b.Left);
 
+        // A LAMBDA ADDED TO OR TAKEN FROM A DELEGATE is that delegate's type,
+        // as C# target-types it by the left operand: `d + (x => x * 2)`. It
+        // has no type of its own to be checked with first, so the operation
+        // is the call it becomes (DelegateCombination), whose argument is
+        // wanted as the delegate.
+        if (b.Op is BinOp.Add or BinOp.Sub && !l.IsError && !l.IsArray && !l.IsNullableValue
+            && l.Symbol is { Decl.IsDelegate: true } && (b.Right is LambdaExpr || HoldsLambda(b.Right)))
+        {
+            CallExpr withLambda = DelegateCombination(b.Op == BinOp.Add, b.Left, b.Right, b);
+            _r.Rewrites[b] = withLambda;
+            Type lambdaMade = CheckExpr(withLambda);
+            return b.Op == BinOp.Add && !lambdaMade.IsError ? lambdaMade.AsNonNullable() : lambdaMade;
+        }
+
         // WHAT THE LEFT SIDE IS, IS WHAT THE RIGHT SIDE HAS TO BE. `isDefined
         // ?? (_ => false)` is a lambda with nothing else to tell it its type,
         // and C# target-types the right operand of `??` from the left -- which
@@ -17907,11 +17964,15 @@ public sealed partial class Binder
         // only their compound forms: Delegate.Combine and Delegate.Remove,
         // typed as the delegate (DelegateCombination). The sum of anything
         // with a delegate that is there is there; a difference may be nothing.
+        // A method group on the right becomes the left's delegate, as C#
+        // target-types it.
         if (b.Op is BinOp.Add or BinOp.Sub && !l.IsArray && !l.IsNullableValue
             && l.Symbol is { Decl.IsDelegate: true } combined
-            && (r.Prim == Prim.NullLiteral || !r.IsArray && !r.IsNullableValue && ReferenceEquals(r.Symbol, combined)))
+            && (r.Prim == Prim.NullLiteral || IsFunctionSource(b.Right)
+                || !r.IsArray && !r.IsNullableValue && ReferenceEquals(r.Symbol, combined)
+                || IsDelegateValue(r) && Variant(r, l.AsNonNullable())))
         {
-            CallExpr call = DelegateCombination(combined.Decl!, combined, b.Op == BinOp.Add, b.Left, b.Right, b);
+            CallExpr call = DelegateCombination(b.Op == BinOp.Add, b.Left, b.Right, b);
             _r.Rewrites[b] = call;
             Type made = CheckExpr(call);
             return b.Op == BinOp.Add && !made.IsError && (!l.Nullable || !r.Nullable && r.Prim != Prim.NullLiteral)
@@ -18138,8 +18199,8 @@ public sealed partial class Binder
                     {
                         Target = new MemberExpr
                         {
-                            Target = new NameExpr { Name = "Runtime", Line = b.Line, Col = b.Col, File = b.File },
-                            Name = "SameDelegate", Line = b.Line, Col = b.Col, File = b.File,
+                            Target = new NameExpr { Name = DelegatesHelper, Line = b.Line, Col = b.Col, File = b.File },
+                            Name = "Same", Line = b.Line, Col = b.Col, File = b.File,
                         },
                         Line = b.Line, Col = b.Col, File = b.File,
                     };

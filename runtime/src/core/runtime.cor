@@ -462,7 +462,8 @@ interface Delegate
     public Delegate[] GetInvocationList() { return new Delegate[] { this }; }
 
     /// This delegate followed by `follow`, which is a delegate of the same
-    /// type -- Delegate.Combine's work once neither side is null. Each
+    /// type -- Delegate.Combine's work once neither side is null and the two
+    /// are seen to be of one type (Runtime.SameDelegateType). Each
     /// delegate type answers it for its own closures, the one place that can
     /// name the multicast class to make.
     public Delegate? CombineImpl(Delegate follow) { throw new NotSupportedException("Delegates of this type cannot be combined."); }
@@ -480,6 +481,7 @@ interface Delegate
     {
         if (a == null) return b;
         if (b == null) return a;
+        if (!Runtime.SameDelegateType(a, b)) throw new ArgumentException("Delegates must be of the same type.");
         return a.CombineImpl(b);
     }
 
@@ -499,6 +501,7 @@ interface Delegate
     {
         if (source == null) return null;
         if (value == null) return source;
+        if (!Runtime.SameDelegateType(source, value)) throw new ArgumentException("Delegates must be of the same type.");
         return source.RemoveImpl(value);
     }
 
@@ -515,6 +518,43 @@ interface Delegate
         while (Sys.Word(before) != Sys.Word(source));
         return before;
     }
+}
+
+/// WHAT THE COMPILER WRITES WHERE A PROGRAM USES DELEGATES, under a name no
+/// program declares: `a += b` and `a + b` are Combine, `a -= b` and `a - b`
+/// Remove, `a == b` Same (Binder.DelegateCombination, Binder.CheckBinary),
+/// and the multicast class the parser writes beside each delegate type
+/// (Parser.Multicast) compares and hashes through Equal and Hash. Reached
+/// by a name of its own, because these are written into the program's own
+/// namespaces, where a type of the program's may be called Runtime or
+/// Delegate.
+///
+/// Combine and Remove are generic over the delegate's type, so the call is
+/// typed as the delegate it combines -- an Action stays an Action -- without
+/// naming the multicast class a generic or nested delegate type has: the
+/// work goes through Delegate, whose CombineImpl and RemoveImpl each type
+/// answers for itself, and which refuses two delegates of different types.
+static class __Delegates
+{
+    public static T? Combine<T>(T? a, T? b) where T : class
+    {
+        if (a == null) return b;
+        if (b == null) return a;
+        return (T?)(object?)Delegate.Combine((Delegate)(object)a, (Delegate)(object)b);
+    }
+
+    public static T? Remove<T>(T? a, T? b) where T : class
+    {
+        if (a == null) return null;
+        if (b == null) return a;
+        return (T?)(object?)Delegate.Remove((Delegate)(object)a, (Delegate)(object)b);
+    }
+
+    public static bool Same(object? a, object? b) { return Runtime.SameDelegate(a, b); }
+
+    public static bool Equal(object? a, object? b) { return Runtime.DelegateEquals(a, b); }
+
+    public static int Hash(object self) { return Runtime.DelegateHash(self, 0); }
 }
 
 /// A delegate made of several, as the runtime sees one: the multicast class
@@ -632,6 +672,39 @@ static class Runtime
         if (a == null || b == null) return false;
         return b.Equals(a);
     }
+
+    /// WHETHER TWO DELEGATES ARE OF ONE TYPE, which .NET's Delegate.Combine
+    /// and Delegate.Remove require of their arguments (ArgumentException
+    /// otherwise). Not whether the one converts to the other: a Func<string>
+    /// held as a Func<object> is still a Func<string> -- variance converts no
+    /// object -- and combined with a Func<object> it is refused, as in .NET. A
+    /// delegate's type is the one delegate interface its class implements, a
+    /// closure's or a multicast's, marked as one in its descriptor's flags
+    /// (Lowering.TypeFlagDelegate).
+    public static bool SameDelegateType(object a, object b)
+    {
+        return DelegateTypeOf(Sys.Word(a)) == DelegateTypeOf(Sys.Word(b));
+    }
+
+    static long DelegateTypeOf(long obj)
+    {
+        long w = WordSize.Bytes;
+        long desc = (Sys.Peek(obj) & WordSize.AddressMask) - 12 * w;
+        long faces = Sys.Peek(desc + 4 * w) & WordSize.AddressMask;
+        if (faces != 0)
+        {
+            for (long at = faces; ; at = at + w)
+            {
+                long face = Sys.Peek(at) & WordSize.AddressMask;
+                if (face == 0) break;
+                if ((Sys.Peek(face + 6 * w) & DelegateFlag) != 0) return face;
+            }
+        }
+        return desc;
+    }
+
+    /// The flag a delegate type's descriptor carries (Lowering.TypeFlagDelegate).
+    const long DelegateFlag = 64;
 
     /// A METHOD GROUP'S DELEGATE, compared: equal to any other delegate made
     /// from the same method on the same target, whichever class made it. The
@@ -3169,6 +3242,22 @@ static class Runtime
                 if (face == want) return true;
             }
         }
+        // A VARIANT INTERFACE OR DELEGATE: one of the same template whose
+        // arguments vary as the template declares (VariantFits) -- the
+        // type itself, when it is an interface, or any it implements.
+        if (VarianceOf(want) != 0)
+        {
+            if (VariantFits(desc, want)) return true;
+            if (faces != 0)
+            {
+                for (long at = faces; ; at = at + w)
+                {
+                    long face = Sys.Peek(at) & WordSize.AddressMask;
+                    if (face == 0) break;
+                    if (VariantFits(face, want)) return true;
+                }
+            }
+        }
         // Two arrays of references: covariance, element by element.
         if ((Sys.Peek(desc + DescFlagsWordHere * w) & 3) == 1 && (Sys.Peek(want + DescFlagsWordHere * w) & 3) == 1)
         {
@@ -3177,6 +3266,64 @@ static class Runtime
             return had != 0 && wanted != 0 && DescribedAs(had, wanted);
         }
         return false;
+    }
+
+    /// THE DECLARED VARIANCE OF A CONSTRUCTED INTERFACE OR DELEGATE TYPE,
+    /// which its descriptor carries (Lowering.VarianceRecord) when its
+    /// template declares any `in` or `out`: word 11 of an interface's
+    /// descriptor, nothing for any other kind. The record is the template's
+    /// identity, the count of arguments, and for each argument its variance
+    /// (1 out, 2 in) with 4 added for a reference type, and the argument's
+    /// descriptor -- 1 standing for object.
+    const long DescRecordWord = 11;
+    const long InterfaceFlag = 16;
+
+    static long VarianceOf(long desc)
+    {
+        long w = WordSize.Bytes;
+        if ((Sys.Peek(desc + DescFlagsWordHere * w) & InterfaceFlag) == 0) return 0;
+        return Sys.Peek(desc + DescRecordWord * w) & WordSize.AddressMask;
+    }
+
+    /// Whether the interface `face` converts to `want` by variance, as C#
+    /// says (18.2.3.3): the same template, each argument the same type or,
+    /// where the template declares it `out`, a reference type converting to
+    /// the wanted one, and where `in`, one the wanted converts to. An
+    /// IEnumerable<string> is an IEnumerable<object>, a Func<string> a
+    /// Func<object>, an Action<object> an Action<string>; a Func<int> is no
+    /// Func<object>, a value type being no reference.
+    static bool VariantFits(long face, long want)
+    {
+        long had = VarianceOf(face);
+        long wanted = VarianceOf(want);
+        if (had == 0 || wanted == 0) return false;
+        long w = WordSize.Bytes;
+        if ((Sys.Peek(had) & WordSize.AddressMask) != (Sys.Peek(wanted) & WordSize.AddressMask)) return false;
+        long count = Sys.Peek(had + w);
+        if (count != Sys.Peek(wanted + w)) return false;
+        for (long i = 0; i < count; i++)
+        {
+            long at = (2 + 2 * i) * w;
+            long kind = Sys.Peek(wanted + at);
+            long mine = Sys.Peek(had + at + w) & WordSize.AddressMask;
+            long theirs = Sys.Peek(wanted + at + w) & WordSize.AddressMask;
+            if (mine == theirs) continue;
+            if ((kind & 4) == 0 || (Sys.Peek(had + at) & 4) == 0) return false;
+            long how = kind & 3;
+            if (how == 1)
+            {
+                if (theirs != 1 && (mine == 1 || !DescribedAs(mine, theirs))) return false;
+            }
+            else if (how == 2)
+            {
+                if (mine != 1 && (theirs == 1 || !DescribedAs(theirs, mine))) return false;
+            }
+            else
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     // ---- iterators (Lowering.Iterator) -----------------------------------

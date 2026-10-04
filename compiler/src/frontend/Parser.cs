@@ -1630,34 +1630,19 @@ public sealed class Parser
             string helper = name + "__Multicast" + args;
             System.Text.StringBuilder forward = new();
 
-            // A GENERIC DELEGATE COMBINES THROUGH ITSELF. The binder cannot
-            // name `D__Multicast<int>` for `+=` on a `D<int>`: specialisations
-            // are made from what the source names, before binding. The
-            // delegate's own copy is made because the program names it, and
-            // these two statics carry the multicast's name into that copy.
-            if (declaration.TypeParams.Count > 0)
-            {
-                forward.Append("public static ").Append(self).Append("? Combine(").Append(self).Append("? a, ").Append(self)
-                       .Append("? b) { return ").Append(helper).Append(".Combine(a, b); }\n");
-                forward.Append("public static ").Append(self).Append("? Remove(").Append(self).Append("? a, ").Append(self)
-                       .Append("? b) { return ").Append(helper).Append(".Remove(a, b); }\n");
-            }
-
-            // AND A SINGLE DELEGATE COMBINES THROUGH ITS TYPE, when all that
-            // is known of it is that it is a Delegate: Delegate.Combine(a, b)
-            // asks a.CombineImpl(b), and a closure is a class the compiler
-            // made for one lambda, which knows nothing of multicasts. These
-            // two are the delegate type's own answers -- explicit
-            // implementations of Delegate's, written into the interface --
-            // and the binder gives every closure of the type them
-            // (Binder.DelegateMembers). The multicast class answers both
-            // itself. Two delegates of different types do not combine, as in
-            // .NET: ArgumentException.
-            const string mismatch = "throw new System.ArgumentException(\"Delegates must be of the same type.\");";
-            forward.Append("System.Delegate? System.Delegate.CombineImpl(System.Delegate follow) { ").Append(self).Append("? same = follow as ")
-                   .Append(self).Append("; if (same == null) ").Append(mismatch).Append(" return ").Append(helper).Append(".Combine(this, same); }\n");
-            forward.Append("System.Delegate? System.Delegate.RemoveImpl(System.Delegate value) { ").Append(self).Append("? same = value as ")
-                   .Append(self).Append("; if (same == null) ").Append(mismatch).Append(" return ").Append(helper).Append(".Remove(this, same); }\n");
+            // A SINGLE DELEGATE COMBINES THROUGH ITS TYPE: `a += b` and
+            // Delegate.Combine(a, b) ask a.CombineImpl(b) (__Delegates,
+            // Delegate.Combine), and a closure is a class the compiler made for
+            // one lambda, which knows nothing of multicasts. These two are the
+            // delegate type's own answers -- explicit implementations of
+            // Delegate's, written into the interface -- and the binder gives
+            // every closure of the type them (Binder.DelegateMembers). The
+            // multicast class answers both itself. That the two delegates are
+            // of one type Delegate.Combine has already seen.
+            forward.Append("System.Delegate? System.Delegate.CombineImpl(System.Delegate follow) { return ")
+                   .Append(helper).Append(".Combine(this, (").Append(self).Append(")follow); }\n");
+            forward.Append("System.Delegate? System.Delegate.RemoveImpl(System.Delegate value) { return ")
+                   .Append(helper).Append(".Remove(this, (").Append(self).Append(")value); }\n");
 
             Parser sub = new(Lexer.Tokenize("interface __Forward { " + forward.ToString() + " }", _file), _file, _declarationsOnly);
             CompilationUnit wrapped = sub.ParseUnit();
@@ -1763,7 +1748,7 @@ public sealed class Parser
         string d = name + typeParams;
         System.Text.StringBuilder src = new();
         if (!string.IsNullOrEmpty(_namespace)) src.Append("namespace ").Append(_namespace).Append(";\n");
-        src.Append("public sealed class ").Append(m).Append(" : ").Append(d).Append(", IMulticastDelegate\n{\n");
+        src.Append("public sealed class ").Append(m).Append(" : ").Append(d).Append(", System.IMulticastDelegate\n{\n");
         src.Append("    public ").Append(d).Append("[] Items;\n");
         src.Append("    public ").Append(ctor).Append("(").Append(d).Append("[] items) { Items = items; }\n");
 
@@ -1819,19 +1804,12 @@ public sealed class Parser
         src.Append("        System.Delegate[] list = new System.Delegate[Items.Length];\n");
         src.Append("        for (int i = 0; i < Items.Length; i++) list[i] = Items[i];\n");
         src.Append("        return list;\n    }\n");
-        const string mismatch = "throw new System.ArgumentException(\"Delegates must be of the same type.\");";
-        src.Append("    public System.Delegate? CombineImpl(System.Delegate follow)\n    {\n");
-        src.Append("        ").Append(d).Append("? same = follow as ").Append(d).Append(";\n");
-        src.Append("        if (same == null) ").Append(mismatch).Append("\n");
-        src.Append("        return Combine(this, same);\n    }\n");
-        src.Append("    public System.Delegate? RemoveImpl(System.Delegate value)\n    {\n");
-        src.Append("        ").Append(d).Append("? same = value as ").Append(d).Append(";\n");
-        src.Append("        if (same == null) ").Append(mismatch).Append("\n");
-        src.Append("        return Remove(this, same);\n    }\n");
+        src.Append("    public System.Delegate? CombineImpl(System.Delegate follow) { return Combine(this, (").Append(d).Append(")follow); }\n");
+        src.Append("    public System.Delegate? RemoveImpl(System.Delegate value) { return Remove(this, (").Append(d).Append(")value); }\n");
         src.Append("    public int InvocationCount() { return Items.Length; }\n");
         src.Append("    public object InvocationAt(int index) { return Items[index]; }\n");
-        src.Append("    public override bool Equals(object? obj) { return Runtime.DelegateEquals(this, obj); }\n");
-        src.Append("    public override int GetHashCode() { return Runtime.DelegateHash(this, 0); }\n");
+        src.Append("    public override bool Equals(object? obj) { return __Delegates.Equal(this, obj); }\n");
+        src.Append("    public override int GetHashCode() { return __Delegates.Hash(this); }\n");
         src.Append("}\n");
         string generated = src.ToString();
         Parser sub = new(Lexer.Tokenize(generated, _file), _file, _declarationsOnly) { Source = generated };
@@ -1845,6 +1823,22 @@ public sealed class Parser
         made.SourceTo = delegateDecl.SourceTo;
         made.File = _file;
         made.Scope = _fileScope;
+        // A DELEGATE WRITTEN INSIDE A GENERIC TYPE has that type's parameters
+        // (`class Box<T> { public delegate T Make(); }`), and so does its
+        // multicast: nested beside it, with the same outer parameters first,
+        // so that FinishFamily writes both names with them wherever the
+        // family names either -- `Box<T>.Make__Multicast` holding
+        // `Box<T>.Make`s and answering a T.
+        if (delegateDecl.OuterParams > 0)
+        {
+            made.Outer = delegateDecl.Outer;
+            for (int k = delegateDecl.OuterParams - 1; k >= 0; k--)
+            {
+                TypeParam outer = delegateDecl.TypeParams[k];
+                made.WritableTypeParams.Insert(0, new TypeParam { Name = outer.Name, Line = outer.Line, Col = outer.Col });
+            }
+            made.OuterParams = delegateDecl.OuterParams;
+        }
         Adopt(made.Members);
         return made;
     }
@@ -2552,7 +2546,67 @@ public sealed class Parser
 
         first.WritableAttributes.AddRange(attributes);
         first.More.AddRange(rest);
+
+        // AN EVENT IS ITS add AND remove ACCESSORS, as C# compiles one, and a
+        // field-like event has them too: they combine into its field. Through
+        // them an event an interface declares is implemented by a class's
+        // field-like event (or by accessors written out), and reached through
+        // the interface (Binder.EventAccessorCall). An interface's event, or
+        // an abstract one, is the two accessors and nothing else: there is no
+        // field to hold handlers.
+        if (isEvent)
+        {
+            bool accessorsOnly = (_inInterface && !mods.HasFlag(Mods.Static)) || mods.HasFlag(Mods.Abstract);
+            MethodDecl? firstAdd = null;
+            List<FieldDecl> named = new() { first };
+            named.AddRange(rest);
+            foreach (FieldDecl declared in named)
+            {
+                MethodDecl add = FieldEventAccessor(true, declared.Name, type, mods, declared, accessorsOnly);
+                MethodDecl remove = FieldEventAccessor(false, declared.Name, type, mods, declared, accessorsOnly);
+                if (accessorsOnly && firstAdd is null) firstAdd = add;
+                else _hoisted.Add(add);
+                _hoisted.Add(remove);
+            }
+            if (accessorsOnly)
+            {
+                return firstAdd!;
+            }
+        }
         return first;
+    }
+
+    /// <summary>
+    /// One accessor of an event declared without them: `add_Name(T value)`
+    /// combining `value` into the field (`Name += value`), or `remove_Name`
+    /// taking it out. Without a body where the event has no field.
+    /// </summary>
+    private MethodDecl FieldEventAccessor(bool add, string name, TypeRef type, Mods mods, Node at, bool abstractOnly)
+    {
+        Block? body = null;
+        if (!abstractOnly)
+        {
+            body = new Block { Line = at.Line, Col = at.Col };
+            body.Statements.Add(new ExprStmt
+            {
+                Expr = new AssignExpr
+                {
+                    Target = new NameExpr { Name = name, Line = at.Line, Col = at.Col },
+                    Op = add ? BinOp.Add : BinOp.Sub,
+                    Value = new NameExpr { Name = "value", Line = at.Line, Col = at.Col },
+                    Line = at.Line, Col = at.Col,
+                },
+                Line = at.Line, Col = at.Col,
+            });
+        }
+        MethodDecl accessor = new()
+        {
+            Name = (add ? "add_" : "remove_") + name, Mods = mods,
+            Returns = new TypeRef { Name = "void", Line = at.Line, Col = at.Col },
+            Body = body, Line = at.Line, Col = at.Col,
+        };
+        accessor.Params.Add(new Param { Name = "value", Type = type, Line = at.Line, Col = at.Col });
+        return accessor;
     }
 
     /// <summary>

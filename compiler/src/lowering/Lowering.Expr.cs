@@ -1793,10 +1793,27 @@ public sealed partial class Lowering
             _e.CopyTo(cursor, R(_e.Load(IrTypes.Word, desc, DescInterfaces * w)));
             Block loop = _f.NewBlock("tscan");
             Block more = _f.NewBlock("tmore");
+            // A VARIANT INTERFACE OR DELEGATE the object's class does not
+            // name may still be one it is, by variance: a Func<string> is a
+            // Func<object>. Asked of the runtime once the list is through
+            // (Runtime.DescribedAs, which reads the variance the descriptors
+            // carry); any other interface is its exact self or nothing.
+            Block exhausted = no;
+            if (VarianceRecord(want) is not null && RuntimeMethod("DescribedAs", 2) is MethodSymbol described)
+            {
+                exhausted = _f.NewBlock("tvariant");
+                Block savedBlock = _e.Block;
+                _e.SetBlock(exhausted);
+                Require(described);
+                VReg answer = _e.Call(CallLabel(described), IrTypes.Of(described.Returns),
+                    R(AsParam(desc, described.Params[0].Type)), R(AsParam(wanted, described.Params[1].Type)))!;
+                _e.Branch(answer.Type == IrType.I32 ? answer : _e.Unary(Opcode.Trunc64, R(answer), IrType.I32), yes, no);
+                _e.SetBlock(savedBlock);
+            }
             _e.Jump(loop);
             _e.SetBlock(loop);
             VReg entry = _e.Load(IrTypes.Word, cursor, 0);
-            _e.Branch(entry, more, no);
+            _e.Branch(entry, more, exhausted);
             _e.SetBlock(more);
             Block advance = _f.NewBlock("tnext");
             _e.Branch(_e.Binary(Opcode.Eq, entry, wanted), yes, advance);

@@ -519,6 +519,22 @@ public sealed partial class Lowering
         && t.Interfaces.Any(face => face.Decl?.IsDelegate == true);
 
     /// <summary>
+    /// A LAMBDA THAT HOLDS A COPY OF A PARAMETER is a delegate of one call's
+    /// worth of that parameter. .NET hoists a captured parameter into a
+    /// display object made when the method is entered, and the delegate's
+    /// target is that object: a lambda made in two calls of the method is
+    /// two targets, and the two are not equal whatever the values. A captured
+    /// local is a cell here, one per scope entered, and its address says the
+    /// same of it; a parameter nothing writes is copied into the closure
+    /// instead (Binder.SettleCapturedCells), and the copy says nothing of
+    /// which call made it -- so such a closure is equal only to itself, and
+    /// hashes as itself.
+    /// </summary>
+    private static bool CapturesByValue(TypeSymbol t)
+        => t.DelegateGroup is null
+        && t.Fields.Any(f => !f.Static && !f.Boxed && f.Name != "$this" && f.Name != "$target");
+
+    /// <summary>
     /// What a delegate closure's Equals slot holds. A lambda's: equal to a
     /// closure of the same class holding the same words (the same lambda over
     /// the same captures), Runtime.DelegateEquals. A method group's: one
@@ -530,6 +546,10 @@ public sealed partial class Lowering
     /// </summary>
     private string? DelegateEqualsStub(TypeSymbol t)
     {
+        if (CapturesByValue(t))
+        {
+            return null;
+        }
         bool group = t.DelegateGroup is not null;
         MethodSymbol? same = group ? RuntimeMethod("GroupEquals", 3) : RuntimeMethod("DelegateEquals", 2);
         if (same is null)
@@ -564,6 +584,10 @@ public sealed partial class Lowering
     /// </summary>
     private string? DelegateHashStub(TypeSymbol t)
     {
+        if (CapturesByValue(t))
+        {
+            return null;
+        }
         MethodSymbol? hash = RuntimeMethod("DelegateHash", 2);
         string? identity = t.DelegateGroup is null ? null : DelegateEqualsStub(t);
         if (hash is null || (t.DelegateGroup is not null && identity is null))

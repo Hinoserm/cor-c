@@ -1,0 +1,56 @@
+// test: delegate_nested_generic
+// expect-exit: 0
+// expect-output:
+// last b
+// count 2
+// removed a
+// equal True False
+// box 7 8
+//
+// A DELEGATE DECLARED INSIDE A GENERIC CLASS has the class's type
+// parameters: Box<string>.Make answers a string, Box<int>.Make an int. It
+// combines, removes, lists and compares as any delegate does -- its multicast
+// is nested beside it with the same parameters -- and the class's own field
+// of it combines inside the class.
+
+using System;
+
+class Box<T>
+{
+    public delegate T Make();
+
+    public Make? Makers;
+
+    public void Add(Make m) { Makers += m; }
+
+    public T Run() { return Makers!.Invoke(); }
+
+    public int Count() { return Makers == null ? 0 : Makers.GetInvocationList().Length; }
+}
+
+static class P
+{
+    static string A() => "a";
+
+    static int Main()
+    {
+        Box<string>.Make a = A;
+        Box<string>.Make b = () => "b";
+        Box<string>.Make both = a;
+        both += b;
+        Console.WriteLine("last " + both());
+        Console.WriteLine("count " + both.GetInvocationList().Length);
+        Box<string>.Make? left = both - b;
+        Console.WriteLine("removed " + left?.Invoke());
+
+        Box<string>.Make again = A;
+        Console.WriteLine("equal " + (a == again) + " " + (a == b));
+
+        Box<int> numbers = new Box<int>();
+        numbers.Add(() => 7);
+        int first = numbers.Run();
+        numbers.Add(() => 8);
+        Console.WriteLine("box " + first + " " + numbers.Run());
+        return 0;
+    }
+}
