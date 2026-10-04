@@ -1,0 +1,38 @@
+// test: a fresh object's field read after an initialiser stored it as a sequence
+// flags: --store-sequences
+// expect-exit: 0
+// expect-output:
+// 256
+// 1024
+// 255 1023
+// Store sequences turn a reference store into a call of the image's stub.
+// The forwarding of a fresh object's fields took every backend call for one
+// that writes no field, so the initialiser's array stored through the stub
+// was missed and the constructor's empty one read in its place: an index
+// past its end in the GUI kernel's icons and TrueType glyphs (round five).
+
+using System;
+
+sealed class Frame
+{
+    public int Width;
+    public int[] Pixels = new int[0];
+}
+
+static class Program
+{
+    static Frame Make(int size)
+    {
+        Frame f = new Frame { Width = size, Pixels = new int[size * size] };
+        for (int i = 0; i < size * size; i++) f.Pixels[i] = i;
+        return f;
+    }
+
+    static void Main()
+    {
+        Frame a = Make(16), b = Make(32);
+        Console.WriteLine(a.Pixels.Length);
+        Console.WriteLine(b.Pixels.Length);
+        Console.WriteLine(a.Pixels[255] + " " + b.Pixels[1023]);
+    }
+}
