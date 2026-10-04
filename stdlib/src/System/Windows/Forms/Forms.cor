@@ -4912,12 +4912,12 @@ internal class ComboPopup : Form
         ShowInTaskbar = false;
         BackColor = SystemColors.Window;
         Height = rows * owner.ItemHeight + 2;
-        Scroll();
+        ScrollToHot();
     }
 
     int Height_ { get { return _owner.ItemHeight; } }
 
-    void Scroll()
+    void ScrollToHot()
     {
         if (_hot < _top) _top = _hot;
         else if (_hot >= _top + _rows) _top = _hot - _rows + 1;
@@ -4967,10 +4967,10 @@ internal class ComboPopup : Form
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
-        if (e.KeyCode == Keys.Down && _hot + 1 < _owner.Items.Count) { _hot++; Scroll(); Invalidate(); e.Handled = true; }
-        else if (e.KeyCode == Keys.Up && _hot > 0) { _hot--; Scroll(); Invalidate(); e.Handled = true; }
-        else if (e.KeyCode == Keys.Home) { _hot = 0; Scroll(); Invalidate(); e.Handled = true; }
-        else if (e.KeyCode == Keys.End) { _hot = _owner.Items.Count - 1; Scroll(); Invalidate(); e.Handled = true; }
+        if (e.KeyCode == Keys.Down && _hot + 1 < _owner.Items.Count) { _hot++; ScrollToHot(); Invalidate(); e.Handled = true; }
+        else if (e.KeyCode == Keys.Up && _hot > 0) { _hot--; ScrollToHot(); Invalidate(); e.Handled = true; }
+        else if (e.KeyCode == Keys.Home) { _hot = 0; ScrollToHot(); Invalidate(); e.Handled = true; }
+        else if (e.KeyCode == Keys.End) { _hot = _owner.Items.Count - 1; ScrollToHot(); Invalidate(); e.Handled = true; }
         else if (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Space) { _owner.Chose(_hot); e.Handled = true; }
         else if (e.KeyCode == Keys.Escape || e.KeyCode == Keys.F4) { _owner.Shut(); _owner.Focus(); e.Handled = true; }
         base.OnKeyDown(e);
@@ -7326,7 +7326,7 @@ public static class Application
                 // others, or a dead key that did not combine and the key
                 // after it -- each a KeyPress, as each WM_CHAR is. A dead
                 // key waiting (B 1, WM_DEADCHAR) is no KeyPress in .NET.
-                if (m.B != 0 || AutoScroll.Active) break;
+                if (m.B != 0 || PanScroll.Active) break;
                 Control? target = _focus ?? _active;
                 if (target == null) break;
                 KeyPressEventArgs press = new KeyPressEventArgs((char)(m.A & 0xFFFF));

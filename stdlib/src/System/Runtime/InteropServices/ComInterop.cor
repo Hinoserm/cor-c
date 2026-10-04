@@ -382,7 +382,7 @@ namespace System.Runtime.InteropServices
 
         void Push64(long v)
         {
-            if (WordSize.Bytes == 8) { Push((nint)v); return; }
+            if ((int)WordSize.Bytes == 8) { Push((nint)v); return; }
             Push((nint)(int)v);
             Push((nint)(int)(v >> 32));
         }
@@ -453,7 +453,7 @@ namespace System.Runtime.InteropServices
             _memory.Add(at);
             ComMarshal.WriteVariant(at, v);
             _variants.Add(at);
-            if (WordSize.Bytes == 8) { Push(at); return; }
+            if ((int)WordSize.Bytes == 8) { Push(at); return; }
             for (int i = 0; i < 4; i++) Push((nint)(int)Sys.PeekWord(at + i * 4));
         }
 
@@ -475,7 +475,7 @@ namespace System.Runtime.InteropServices
             nint at = Marshal.AllocHGlobal(16);
             _memory.Add(at);
             ComMarshal.WriteGuid(at, v);
-            if (WordSize.Bytes == 8) { Push(at); return; }
+            if ((int)WordSize.Bytes == 8) { Push(at); return; }
             for (int i = 0; i < 4; i++) Push((nint)(int)Sys.PeekWord(at + i * 4));
         }
 
@@ -564,7 +564,7 @@ namespace System.Runtime.InteropServices
         nint Entry(int slot)
         {
             nint vtable = (nint)Sys.Peek(_self);
-            return (nint)Sys.Peek(vtable + slot * WordSize.Bytes);
+            return (nint)Sys.Peek(vtable + slot * (int)WordSize.Bytes);
         }
 
         /// The call through vtable entry `slot`: its HRESULT (a
@@ -620,7 +620,7 @@ namespace System.Runtime.InteropServices
         public const int ClassENoAggregation = unchecked((int)0x80040110), RegdbEClassNotReg = unchecked((int)0x80040154);
 
         /// VARIANT's size: 16 bytes on i386, 24 on x86-64.
-        public static int VariantBytes { get { return WordSize.Bytes == 8 ? 24 : 16; } }
+        public static int VariantBytes { get { return (int)WordSize.Bytes == 8 ? 24 : 16; } }
 
         /// A GUID's text as these keep it: upper case, no braces.
         public static string Normal(string guid) { return guid.Trim().Trim('{', '}').ToUpperInvariant(); }
@@ -630,7 +630,7 @@ namespace System.Runtime.InteropServices
         static nint Entry(nint self, int slot)
         {
             nint vtable = (nint)Sys.Peek(self);
-            return (nint)Sys.Peek(vtable + slot * WordSize.Bytes);
+            return (nint)Sys.Peek(vtable + slot * (int)WordSize.Bytes);
         }
 
         public static int AddRef(nint p)
@@ -649,7 +649,7 @@ namespace System.Runtime.InteropServices
         public static nint Query(nint p, string iid)
         {
             if (p == 0) return 0;
-            nint g = Marshal.AllocHGlobal(16 + WordSize.Bytes);
+            nint g = Marshal.AllocHGlobal(16 + (int)WordSize.Bytes);
             try
             {
                 WriteGuid(g, new Guid(GuidBytes(iid)));
@@ -1099,8 +1099,8 @@ namespace System.Runtime.InteropServices
 
         public const int FadfHaveVartype = 0x80, FadfBstr = 0x100, FadfUnknown = 0x200, FadfDispatch = 0x400, FadfVariant = 0x800;
 
-        static int SaData { get { return WordSize.Bytes == 8 ? 16 : 12; } }
-        static int SaBounds { get { return WordSize.Bytes == 8 ? 24 : 16; } }
+        static int SaData { get { return (int)WordSize.Bytes == 8 ? 16 : 12; } }
+        static int SaBounds { get { return (int)WordSize.Bytes == 8 ? 24 : 16; } }
 
         /// The VARTYPE a .NET array's elements become.
         public static int ArrayVt(object o)
@@ -1129,7 +1129,7 @@ namespace System.Runtime.InteropServices
                 case VtI2: case VtUi2: case VtBool: return 2;
                 case VtI4: case VtUi4: case VtR4: case VtError: case VtInt: case VtUint: return 4;
                 case VtI8: case VtUi8: case VtR8: case VtDate: case VtCy: return 8;
-                case VtBstr: case VtUnknown: case VtDispatch: return WordSize.Bytes;
+                case VtBstr: case VtUnknown: case VtDispatch: return (int)WordSize.Bytes;
                 case VtVariant: return VariantBytes;
             }
             throw new NotSupportedException("a SAFEARRAY of type " + vt);
@@ -1477,8 +1477,8 @@ namespace System.Runtime.InteropServices
         public static nint NewVtable(int count, bool dispatch)
         {
             Thunks();
-            nint v = Marshal.AllocHGlobal(Math.Max(count, 3) * WordSize.Bytes);
-            for (int i = 0; i < count; i++) Sys.Poke(v + i * WordSize.Bytes, 0);
+            nint v = Marshal.AllocHGlobal(Math.Max(count, 3) * (int)WordSize.Bytes);
+            for (int i = 0; i < count; i++) Sys.Poke(v + i * (int)WordSize.Bytes, 0);
             SetSlot(v, 0, _qi);
             SetSlot(v, 1, _addRef);
             SetSlot(v, 2, _release);
@@ -1492,7 +1492,7 @@ namespace System.Runtime.InteropServices
             return v;
         }
 
-        public static void SetSlot(nint vtable, int slot, nint fn) { Sys.Poke(vtable + slot * WordSize.Bytes, fn); }
+        public static void SetSlot(nint vtable, int slot, nint fn) { Sys.Poke(vtable + slot * (int)WordSize.Bytes, fn); }
 
         internal static nint UnknownVtable { get { if (_unknownVtable == 0) _unknownVtable = NewVtable(3, false); return _unknownVtable; } }
         internal static nint DispatchVtable { get { if (_dispatchVtable == 0) _dispatchVtable = NewVtable(7, true); return _dispatchVtable; } }
@@ -1539,7 +1539,7 @@ namespace System.Runtime.InteropServices
 
         internal static ComCallableWrapper? WrapperOf(nint self)
         {
-            int handle = (int)Sys.Peek(self + WordSize.Bytes);
+            int handle = (int)Sys.Peek(self + (int)WordSize.Bytes);
             lock (_lock)
             {
                 return handle >= 0 && handle < _handles.Count ? _handles[handle] : null;
@@ -1644,7 +1644,7 @@ namespace System.Runtime.InteropServices
                     int id = -1;
                     if (i == 0 && c != null)
                     {
-                        string? name = ComMarshal.FromWide((nint)Sys.Peek(names + i * WordSize.Bytes));
+                        string? name = ComMarshal.FromWide((nint)Sys.Peek(names + i * (int)WordSize.Bytes));
                         if (name != null) id = c.__ComDispId(name);
                     }
                     if (id == -1) hr = ComMarshal.DispEUnknownName;
@@ -1686,7 +1686,7 @@ namespace System.Runtime.InteropServices
 
         public void Build(nint unknown, nint dispatch)
         {
-            int w = WordSize.Bytes;
+            int w = (int)WordSize.Bytes;
             Block = Marshal.AllocHGlobal(Count * 2 * w);
             for (int k = 0; k < Count; k++)
             {
@@ -1696,7 +1696,7 @@ namespace System.Runtime.InteropServices
             }
         }
 
-        public nint Pointer(int k) { return Block + k * 2 * WordSize.Bytes; }
+        public nint Pointer(int k) { return Block + k * 2 * (int)WordSize.Bytes; }
 
         /// The interface for `iid`, AddRef'd; 0 when the object has none.
         public nint Query(string iid)
@@ -1721,7 +1721,7 @@ namespace System.Runtime.InteropServices
         /// The entry an interface pointer of this wrapper is, or null for IUnknown's and IDispatch's.
         public ComInterfaceEntry? EntryOf(nint p)
         {
-            int k = (int)((p - Block) / (2 * WordSize.Bytes));
+            int k = (int)((p - Block) / (2 * (int)WordSize.Bytes));
             return k >= 2 && k < Count ? Entries[k - 2] : null;
         }
     }
@@ -1774,18 +1774,18 @@ namespace System.Runtime.InteropServices
             return Invoke(target, int.MinValue, name, flags, args, 0);
         }
 
-        static nint Entry(nint self, int slot) { return (nint)Sys.Peek((nint)Sys.Peek(self) + slot * WordSize.Bytes); }
+        static nint Entry(nint self, int slot) { return (nint)Sys.Peek((nint)Sys.Peek(self) + slot * (int)WordSize.Bytes); }
 
         /// GetIDsOfNames for one name.
         public static int GetDispId(nint dispatch, string name)
         {
             nint text = ComMarshal.AllocWide(name);
-            nint block = Marshal.AllocHGlobal(16 + 2 * WordSize.Bytes);
+            nint block = Marshal.AllocHGlobal(16 + 2 * (int)WordSize.Bytes);
             try
             {
                 for (int i = 0; i < 16; i++) Sys.PokeByte(block + i, 0);              // IID_NULL
                 nint names = block + 16;
-                nint id = names + WordSize.Bytes;
+                nint id = names + (int)WordSize.Bytes;
                 Sys.Poke(names, text);
                 Sys.PokeWord(id, -1);
                 int hr = ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, int>)Entry(dispatch, 5))(dispatch, block, names, 1, UserLocale, id);
@@ -1802,7 +1802,7 @@ namespace System.Runtime.InteropServices
         /// IDispatch::Invoke on a native pointer.
         public static object? Native(nint dispatch, int dispid, int flags, object?[] args, int byRef)
         {
-            int w = WordSize.Bytes, vb = ComMarshal.VariantBytes, n = args.Length;
+            int w = (int)WordSize.Bytes, vb = ComMarshal.VariantBytes, n = args.Length;
             bool put = (flags & (PropertyPut | PropertyPutRef)) != 0;
             nint variants = Marshal.AllocHGlobal(Math.Max(1, n) * vb);
             nint held = Marshal.AllocHGlobal(Math.Max(1, n) * vb);
@@ -1867,7 +1867,7 @@ namespace System.Runtime.InteropServices
 
         static void FreeExcepInfo(nint at)
         {
-            int w = WordSize.Bytes;
+            int w = (int)WordSize.Bytes;
             for (int k = 0; k < 3; k++)
             {
                 nint field = at + (w == 8 ? 8 + k * 8 : 4 + k * 4);
@@ -1882,7 +1882,7 @@ namespace System.Runtime.InteropServices
         /// answer written back, an exception made an EXCEPINFO.
         public static int Serve(IComCallable target, int dispid, int flags, nint parameters, nint result, nint exception, nint argError)
         {
-            int w = WordSize.Bytes, vb = ComMarshal.VariantBytes;
+            int w = (int)WordSize.Bytes, vb = ComMarshal.VariantBytes;
             try
             {
                 nint variants = parameters == 0 ? 0 : (nint)Sys.Peek(parameters);

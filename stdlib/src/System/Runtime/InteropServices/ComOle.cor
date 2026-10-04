@@ -172,7 +172,7 @@ namespace System.Runtime.InteropServices
     /// </summary>
     public static class OleGlobal
     {
-        static int Head { get { return 2 * WordSize.Bytes; } }
+        static int Head { get { return 2 * (int)WordSize.Bytes; } }
 
         public static nint Alloc(byte[] bytes)
         {
@@ -204,7 +204,7 @@ namespace System.Runtime.InteropServices
     /// </summary>
     public static class OleMemory
     {
-        static int W { get { return WordSize.Bytes; } }
+        static int W { get { return (int)WordSize.Bytes; } }
 
         public static int FormatEtcBytes { get { return W == 8 ? 32 : 20; } }
         public static int StgMediumBytes { get { return 3 * W; } }

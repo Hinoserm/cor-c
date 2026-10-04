@@ -1740,7 +1740,9 @@ namespace System.Runtime.InteropServices
     public static class ComClassTypes
     {
         static readonly Dictionary<long, string> _clsidOf = new Dictionary<long, string>();
-        static readonly Dictionary<string, Type> _byClsid = new Dictionary<string, Type>();
+        // Kept as object: Type is the compiler's descriptor handle, no class a
+        // generic copy can dispatch on.
+        static readonly Dictionary<string, object> _byClsid = new Dictionary<string, object>();
 
         /// A Type for the class: a copy of System.__ComObject's descriptor
         /// (FullName "System.__ComObject", as .NET's are), told apart from
@@ -1750,10 +1752,10 @@ namespace System.Runtime.InteropServices
             string key = ComMarshal.Normal(clsid);
             lock (_clsidOf)
             {
-                Type? had;
-                if (_byClsid.TryGetValue(key, out had) && had != null) return had;
+                object? had;
+                if (_byClsid.TryGetValue(key, out had) && had != null) return (Type)had;
                 long original = Sys.Word((object)typeof(System.__ComObject));
-                int bytes = 12 * WordSize.Bytes;
+                int bytes = 12 * (int)WordSize.Bytes;
                 nint copy = Marshal.AllocHGlobal(bytes);
                 for (int i = 0; i < bytes; i++) Sys.PokeByte(copy + i, Sys.PeekByte(original + i));
                 Type made = (Type)Sys.FromWord(copy)!;

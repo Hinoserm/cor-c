@@ -2715,10 +2715,6 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
         return InjectInput(item);
     }
 
-    /// VkKeyScan on the caller's layout: the virtual key a character types
-    /// in the low byte, the shift state above it (0x100 Shift, 0x200 Ctrl,
-    /// 0x400 Alt); 0xFFFF for a character no key types.
-    public int VkKeyScan(char c) { return (int)Ioctl(SeatIoctl.KeyboardMapKey, (c & 0xFFFF) | (4L << 32)) & 0xFFFF; }
 
     /// Rows at the bottom of the screen a bar owns: windows keep out of them.
     public void ReserveBottom(int rows) { lock (_keep) { _reservedBottom = rows; } Ioctl(SeatIoctl.ReserveBottom, rows); }
