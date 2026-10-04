@@ -860,6 +860,16 @@ internal sealed class RegionEscape
     /// </summary>
     private void Publish(int f, Summary s)
     {
+        // For a report (+why=Name): the summary each function asked about
+        // gives its callers, and what of it the unknown object holds.
+        if (Why is not null && WhyFunction?.Invoke(f) == true && Progress is { } say)
+        {
+            static string Step(int step) => step == DeepStep ? "deep" : IsGuard(step) ? "g" + GuardOf(step) : step.ToString();
+            string Of(int k) => s.Objects[k].Kind + " " + s.Objects[k].Param + " [" + string.Join(",", s.Objects[k].Path.Select(Step)) + "]";
+            say(s.IsUnknown ? $"escape graphs why: summary of {_functions[f].Name}: the unknown call's"
+                : $"escape graphs why: summary of {_functions[f].Name}: {s.Objects.Count} objects, {s.Cells.Count} cells, {s.Result.Count} results{(s.MadeCoarse ? ", made coarse" : "")}; "
+                  + "the unknown object holds " + string.Join("; ", s.Cells.Where(c => c.From == 0 && c.To != 0).Select(c => Of(c.To)).Distinct()));
+        }
         Summary? before = _summaries[f];
         if (before is not null && before.SameAs(s)) return;
         int holder = before is null && (_holders.Count <= f || _holders[f] is null) ? f : NewHolder();
@@ -2669,6 +2679,7 @@ internal sealed class RegionEscape
                 // hands back and writes into what it was handed is everyone's.
                 if (rooted) _owner._rootedRefs.UnionWith(escaping);
                 if (_owner._wanted[f]) _owner.Escaping[f] = escaping.ToArray();
+                if (_owner.Why is { } asked && _owner.WhyFunction?.Invoke(f) == true) WhyOutlives(m, asked);
             }
             if (function.Loops.Count > 0)
             {
@@ -2679,6 +2690,57 @@ internal sealed class RegionEscape
                     held[l] = (OriginsHeld(m, loop.Live, Enumerable.Range(0, function.Slots)), OriginsHeld(m, loop.Invariant, loop.KeptSlots));
                 }
                 _owner.LoopHeld[f] = held;
+            }
+        }
+
+        /// <summary>
+        /// For a report (+why=Name): how each site asked about outlives member
+        /// m -- from which of what outlives it (a parameter, its result, the
+        /// unknown object, a place written), by which cells, to the object it
+        /// is among. The first path found, breadth first: the shortest.
+        /// </summary>
+        private void WhyOutlives(int m, Func<int, bool> asked)
+        {
+            if (_owner.Progress is not { } say) return;
+            int f = _members[m];
+            Dictionary<int, (int From, int Offset)> parent = new();
+            Dictionary<int, string> root = new();
+            Queue<int> next = new();
+            void Root(int o, string why)
+            {
+                if (root.ContainsKey(o) || parent.ContainsKey(o)) return;
+                root[o] = why;
+                next.Enqueue(o);
+            }
+            Root(0, "the unknown object");
+            RegionFunction function = Function(m);
+            for (int k = 0; k <= function.Parameters; k++)
+                if (Pts(Node(m, k)) is { } held)
+                    foreach (int loc in held) Root(_locObject[loc], k < function.Parameters ? "parameter " + k : "its result");
+            for (int o = 1; o < _kind.Count; o++) if (_kind[o] is Kind.Place or Kind.Deep && Written(o)) Root(o, "a place written, " + Describe(o));
+            int told = 0;
+            while (next.TryDequeue(out int o) && told < 40)
+            {
+                foreach (int site in _owner.SitesOf(_origins[o]))
+                {
+                    if (!asked(site) || told >= 40) continue;
+                    told++;
+                    List<string> path = new();
+                    for (int at = o; parent.TryGetValue(at, out var up); at = up.From) path.Add("+" + up.Offset + " " + Describe(at));
+                    int start = o;
+                    while (parent.TryGetValue(start, out var up)) start = up.From;
+                    path.Reverse();
+                    say($"escape graphs why: site {site} outlives {_owner._functions[f].Name}: from {root[start]}" + (path.Count == 0 ? "" : " by " + string.Join(" > ", path)));
+                }
+                foreach (var (offset, node) in _cells[o])
+                    if (Pts(node) is { } pts)
+                        foreach (int loc in pts)
+                        {
+                            int to = _locObject[loc];
+                            if (root.ContainsKey(to) || parent.ContainsKey(to)) continue;
+                            parent[to] = (o, offset);
+                            next.Enqueue(to);
+                        }
             }
         }
 
