@@ -527,6 +527,7 @@ internal sealed class RegionEscape
         _merged.Clear();
         _standIns.Clear();
         _escapingBits = null;
+        _holderFirst = null;
         _bitsByOrigins.Clear();
         Work = Applied = Unfollowed = LargestCycle = Fallbacks = 0;
     }
