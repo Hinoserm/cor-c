@@ -1799,15 +1799,20 @@ continue;
                 mine.RemoveAll(o =>
                 {
                     List<VReg> values = new();
+                    List<VReg?> stored = new();
                     foreach (Block b in f.Blocks)
                         foreach (Instr i in b.Instrs)
                         {
                             if (i.Op is not (Opcode.Load or Opcode.Store) || i.Offset != o || i.Operands.Count < 1) continue;
                             if (!(i.Operands[0] is SlotOperand { Slot: var s } && s == r.Slot || i.Operands[0] is RegOperand { Reg: var at } && names.Contains(at))) continue;
                             if (i.Op == Opcode.Load && i.Dest is not null) values.Add(i.Dest);
-                            else if (i.Op == Opcode.Store && i.Operands.Count >= 2 && i.Operands[1] is RegOperand { Reg: var v }) values.Add(v);
+                            else if (i.Op == Opcode.Store && i.Operands.Count >= 2 && i.Operands[1] is RegOperand { Reg: var v }) { values.Add(v); stored.Add(v); }
+                            else if (i.Op == Opcode.Store) stored.Add(null);
                         }
                     if (values.Count == 0) return false;
+                    // ONLY EVER A CHILD IN THE FRAME TOO -- a captured
+                    // variable's cell beside its closure: nothing to give back.
+                    if (stored.Count > 0 && stored.All(v => FrameMade(f, v))) return true;
                     HashSet<VReg> held = Derivations(f, values);
                     foreach (Block b in f.Blocks)
                         if (b.Terminator is { Op: Opcode.Ret } ret && ret.Operands.Any(x => x is RegOperand { Reg: var back } && held.Contains(back))) return true;
@@ -2010,6 +2015,15 @@ continue;
 
     /// <summary>The descriptors a stamp is looked up in (ExactOverrides): the module's, or the link's.</summary>
     [ThreadStatic] private static Dictionary<string, DataItem>? _stampItems;
+
+    /// <summary>The method a stamped descriptor's table holds at `at` bytes into it (OwnedFieldEscape's closure Invoke); null where none is known.</summary>
+    internal static string? StampMethod(string descriptor, long at)
+    {
+        if (_stampItems is null || !_stampItems.TryGetValue(descriptor, out DataItem? item)) return null;
+        foreach (DataReloc reloc in item.Relocs)
+            if (reloc.Offset == at && reloc.Addend == 0) return reloc.Symbol;
+        return null;
+    }
 
     /// <summary>
     /// The method a virtual call reaches on a receiver stamped
@@ -2412,10 +2426,18 @@ continue;
     }
 
     /// <summary>Whether `made` is a closure the compiler wrote: its vtable is a Lambda class's.</summary>
-    private static bool IsClosure(Function f, Instr made)
+    private static bool IsClosure(Function f, Instr made) => ClosureStamp(f, made) is not null;
+
+    /// <summary>
+    /// The table a closure the compiler wrote is stamped with -- its Lambda
+    /// class's descriptor and the offset its table begins at -- when every
+    /// stamp of it names the same one; null for anything else.
+    /// </summary>
+    private static (string Name, long Offset)? ClosureStamp(Function f, Instr made)
     {
-        if (made.Dest is null) return false;
+        if (made.Dest is null) return null;
         HashSet<VReg> same = new() { made.Dest };
+        (string Name, long Offset)? found = null;
         foreach (Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
             {
@@ -2423,9 +2445,12 @@ continue;
                     same.Add(i.Dest);
                 if (i.Op == Opcode.Store && i.Offset == 0 && i.Operands.Count >= 2 && i.Operands[0] is RegOperand bas && same.Contains(bas.Reg)
                     && i.Operands[1] is SymOperand vt && vt.Name.Contains("Lambda$", StringComparison.Ordinal))
-                    return true;
+                {
+                    if (found is { } known && (known.Name != vt.Name || known.Offset != vt.Offset)) return null;
+                    found = (vt.Name, vt.Offset);
+                }
             }
-        return false;
+        return found;
     }
 
     internal static bool NeverWritesFields(string callee) =>
@@ -4312,7 +4337,7 @@ continue;
                 }
 
                 Flow flow = Analyse(f, new[] { i.Dest }, summaries, i, closure: IsClosure(f, i));
-                OwnedFieldEscape.Owner promotedOwner = new() { Block = b, Root = i.Dest, Bytes = size };
+                OwnedFieldEscape.Owner promotedOwner = new() { Block = b, Root = i.Dest, Bytes = size, Stamp = ClosureStamp(f, i) };
                 promotedOwner.Aliases.Add(i.Dest);
                 bool canAnchor = true;
                 defs ??= flow.Escapes && sized && owners.Count != 0 ? new Defs(f) : null;
@@ -4433,6 +4458,17 @@ continue;
                 // are newer than the liveness: not this object's.
                 HashSet<VReg> selfDerived = promotedMembers.Count == 0 && !judgedWithGroup ? flow.Derived
                     : flow.Derived.Where(r => liveness.Tracks(r)).ToHashSet();
+                // A CHILD MADE BEFORE ITS OWNER -- a captured variable's cell,
+                // then the closure that holds it -- has, round a loop, the
+                // last lap's owner still about where it is made: that owner
+                // must be dead there, or what reads the child through it --
+                // the last lap's closure, invoked -- finds this lap's.
+                foreach ((OwnedFieldEscape.Owner parent, _) in promotedOwner.Parents)
+                {
+                    if (defs is null || MadeBefore(defs, parent, b, i)) continue;
+                    if (ReferenceEquals(selfDerived, flow.Derived)) selfDerived = new HashSet<VReg>(selfDerived);
+                    foreach (VReg alias in OwnedFieldEscape.Addresses(f, parent.Aliases).Keys) if (liveness.Tracks(alias)) selfDerived.Add(alias);
+                }
                 if (LiveAtSelf(liveness, pads, b, i, selfDerived))
                 {
                     if (tracing) Console.Error.WriteLine($"promote {f.Name}: {i} live at its own making");
@@ -4561,6 +4597,37 @@ continue;
             }
         }
         }
+    }
+
+    // Whether `v` holds nothing but an object promoted to the frame
+    // (PromoteIn): its one writer, through copies, the copy of its slot's
+    // address that promotion made.
+    private bool FrameMade(Function f, VReg? v)
+    {
+        for (int hop = 0; hop < 8 && v is not null; hop++)
+        {
+            Instr? only = null;
+            int writes = 0;
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (ReferenceEquals(i.Dest, v)) { only = i; writes++; }
+            if (writes != 1 || only is null) return false;
+            if (_promotedMade.Contains(only)) return true;
+            if (only.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || only.Operands is not [RegOperand { Reg: var from }]) return false;
+            v = from;
+        }
+        return false;
+    }
+
+    // Whether an owner's own object is made before `made`, in block `b`: its
+    // root's making dominates it.
+    private static bool MadeBefore(Defs defs, OwnedFieldEscape.Owner owner, Block b, Instr made)
+    {
+        if (!defs.Cfg.Dominates(owner.Block, b)) return false;
+        if (owner.Block != b) return true;
+        int at = -1;
+        for (int k = 0; k < b.Instrs.Count; k++) if (ReferenceEquals(b.Instrs[k].Dest, owner.Root)) { at = k; break; }
+        return at >= 0 && at < b.Instrs.IndexOf(made);
     }
 
     /// <summary>

@@ -1,0 +1,114 @@
+// test: closures_in_frame_across_units
+// units: tests/language/support/1295_closures_units.cor
+// expect-exit: 0
+// expect-output:
+// any 1800
+// after 82000
+// nested 110653
+// early 6045073
+// laps 44000
+// bump 95995
+// kept True False
+//
+// 1294 with the delegates handed to another unit's functions (Seq), so the
+// link decides: what Seq does with the closure, and what the lambda's body
+// does with each cell it reads out of it, are read from the bodies the link
+// has. A lambda Seq only calls keeps its closure and cells in the frame of
+// the function that made it; one inside another lambda copies the cell into
+// a closure of its own (Nested); and one Seq keeps in a static (Stored) is
+// on the heap, read after the call that made it is gone, its captured
+// variable as it was last written.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+using ClosureUnits;
+
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static bool HasAbove(List<int> xs, int limit) => Seq.CountWhere(xs, x => x > limit) > 0;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int CountAfter(List<int> xs)
+    {
+        int bound = 0;
+        Func<int, bool> over = x => x > bound;
+        bound = 5;
+        int n = Seq.CountWhere(xs, over);
+        bound = 8;
+        return n * 10 + Seq.CountWhere(xs, over);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Nested(List<int> xs, int k)
+    {
+        int scale = k, total = 0;
+        Seq.Each(xs, x => total += Seq.CountWhere(xs, y => y * scale > x));
+        return total;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Early(List<int> xs, int want)
+    {
+        if (xs.Count == 0) return -1;
+        int found = Seq.IndexWhere(xs, x => x == want);
+        if (found < 0) return -2;
+        int tail = 0;
+        Seq.Each(xs, x => { if (x > want) tail += x; });
+        return found * 1000 + tail;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Laps(List<int> xs)
+    {
+        int total = 0;
+        for (int i = 0; i < 4; i++)
+        {
+            int at = i;
+            total += (i + 1) * Seq.CountWhere(xs, x => x % 4 == at);
+        }
+        return total;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Bump(List<int> xs, int step)
+    {
+        Seq.Each(xs, x => step += x);
+        return step;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Stored(int limit)
+    {
+        int bound = limit;
+        Seq.Remember(x => x > bound);
+        bound += 1;
+    }
+
+    static int Main()
+    {
+        List<int> xs = new() { 3, 9, 1, 7, 4, 8, 2, 6, 5 };
+        long any = 0, after = 0, nested = 0, early = 0, laps = 0, bump = 0;
+        for (int round = 0; round < 2000; round++)
+        {
+            any += HasAbove(xs, round % 10) ? 1 : 0;
+            after += CountAfter(xs);
+            nested += Nested(xs, 1 + round % 3);
+            early += Early(xs, round % 12);
+            laps += Laps(xs);
+            bump += Bump(xs, round % 7);
+            if (round % 500 == 0) GC.Collect();
+        }
+        Stored(4);
+        GC.Collect();
+        Console.WriteLine("any " + any);
+        Console.WriteLine("after " + after);
+        Console.WriteLine("nested " + nested);
+        Console.WriteLine("early " + early);
+        Console.WriteLine("laps " + laps);
+        Console.WriteLine("bump " + bump);
+        Console.WriteLine("kept " + Seq.Recall(7) + " " + Seq.Recall(5));
+        return 0;
+    }
+}

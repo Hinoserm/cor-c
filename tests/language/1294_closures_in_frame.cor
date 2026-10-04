@@ -1,0 +1,117 @@
+// test: closures_in_frame
+// expect-exit: 0
+// expect-output:
+// any 1800
+// after 82000
+// nested 110653
+// early 6045073
+// laps 44000
+// bump 95995
+// kept 13
+//
+// A lambda handed only to a callee that calls it and keeps nothing --
+// Enumerable.Any and Count, List.FindIndex and ForEach -- needs neither its
+// closure nor the cells of what it captured on the heap: they live in the
+// frame of the function that made them, made with no allocation and gone
+// with no free (Escape.PromoteIn; OwnedFieldEscape follows the closure's
+// own Invoke into the lambda's body). Covered: a captured parameter, read
+// (HasAbove, Early) and written (Bump); a local written after the lambda
+// that captured it was made, read through the cell at each call
+// (CountAfter); a lambda inside a lambda, which copies the cell into a
+// closure of its own and keeps the heap (Nested); returns before and after
+// the lambda is made (Early); a fresh cell and closure every lap (Laps);
+// and a lambda handed back, which keeps its cell alive past the call
+// (Kept). Collections run between the rounds.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static bool HasAbove(List<int> xs, int limit) => xs.Any(x => x > limit);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int CountAfter(List<int> xs)
+    {
+        int bound = 0;
+        Func<int, bool> over = x => x > bound;
+        bound = 5;
+        int n = xs.Count(over);
+        bound = 8;
+        return n * 10 + xs.Count(over);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Nested(List<int> xs, int k)
+    {
+        int scale = k;
+        return xs.Select(x => xs.Where(y => y * scale > x).Count()).Sum();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Early(List<int> xs, int want)
+    {
+        if (xs.Count == 0) return -1;
+        int found = xs.FindIndex(x => x == want);
+        if (found < 0) return -2;
+        int tail = 0;
+        xs.ForEach(x => { if (x > want) tail += x; });
+        return found * 1000 + tail;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Laps(List<int> xs)
+    {
+        int total = 0;
+        for (int i = 0; i < 4; i++)
+        {
+            int at = i;
+            total += (i + 1) * xs.Count(x => x % 4 == at);
+        }
+        return total;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Bump(List<int> xs, int step)
+    {
+        xs.ForEach(x => step += x);
+        return step;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Func<int> Kept(int start)
+    {
+        int n = start;
+        return () => ++n;
+    }
+
+    static int Main()
+    {
+        List<int> xs = new() { 3, 9, 1, 7, 4, 8, 2, 6, 5 };
+        long any = 0, after = 0, nested = 0, early = 0, laps = 0, bump = 0;
+        for (int round = 0; round < 2000; round++)
+        {
+            any += HasAbove(xs, round % 10) ? 1 : 0;
+            after += CountAfter(xs);
+            nested += Nested(xs, 1 + round % 3);
+            early += Early(xs, round % 12);
+            laps += Laps(xs);
+            bump += Bump(xs, round % 7);
+            if (round % 500 == 0) GC.Collect();
+        }
+        Func<int> counter = Kept(10);
+        counter();
+        counter();
+        Console.WriteLine("any " + any);
+        Console.WriteLine("after " + after);
+        Console.WriteLine("nested " + nested);
+        Console.WriteLine("early " + early);
+        Console.WriteLine("laps " + laps);
+        Console.WriteLine("bump " + bump);
+        Console.WriteLine("kept " + counter());
+        return 0;
+    }
+}
