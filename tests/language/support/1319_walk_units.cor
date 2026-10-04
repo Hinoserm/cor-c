@@ -1,0 +1,46 @@
+// The other unit of 1319_region_iterator_yields_apart_from_its_source_across_units:
+// a tree, and an iterator that walks it and yields a new pair for each node.
+using System.Collections.Generic;
+
+namespace WalkUnits;
+
+public sealed class Node
+{
+    public readonly int Value;
+    public readonly Node? Left, Right;
+    public Node(int value, Node? left, Node? right) { Value = value; Left = left; Right = right; }
+
+    /// A balanced tree of lo..hi.
+    public static Node? Build(int lo, int hi)
+    {
+        if (lo > hi) return null;
+        int mid = (lo + hi) / 2;
+        return new Node(mid, Build(lo, mid - 1), Build(mid + 1, hi));
+    }
+}
+
+public sealed class Pair
+{
+    public readonly int A, B;
+    public Pair(int a, int b) { A = a; B = b; }
+}
+
+public static class Walk
+{
+    // Its locals -- the pending nodes, the node at hand -- live across each
+    // yield in the machine, beside the tree it was handed.
+    public static IEnumerable<Pair> Pairs(Node root)
+    {
+        List<Node> pending = new() { root };
+        while (pending.Count > 0)
+        {
+            Node n = pending[pending.Count - 1];
+            pending.RemoveAt(pending.Count - 1);
+            yield return new Pair(n.Value, n.Value * 2);
+            if (n.Left != null) pending.Add(n.Left);
+            if (n.Right != null) pending.Add(n.Right);
+        }
+    }
+
+    public static long Total(Node? n) => n == null ? 0 : n.Value + Total(n.Left) + Total(n.Right);
+}
