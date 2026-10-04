@@ -124,11 +124,16 @@ public static class UnusedReport
         return relative.StartsWith("..", StringComparison.Ordinal) ? file : relative;
     }
 
-    /// <summary>The member's own name in a display (`List$int.Add(Int32 item)` is `Add`).</summary>
+    /// <summary>
+    /// The member's own name in a display: `List$int.Add(Int32 item)` is
+    /// `Add`, and so is a generic method's copy `Add$Int32`.
+    /// </summary>
     static string Member(string display)
     {
         int open = display.IndexOf('(');
         string named = open < 0 ? display : display[..open];
-        return named[(named.LastIndexOf('.') + 1)..];
+        named = named[(named.LastIndexOf('.') + 1)..];
+        int copy = named.IndexOf('$');
+        return copy < 0 ? named : named[..copy];
     }
 }

@@ -69,7 +69,8 @@ public static class UsesCapture
     /// closure's descriptor, and through it the Invoke, whenever it runs. And
     /// members no identifier can name: `StaticInit$`, `FieldInit$x`,
     /// `StaticReady$` -- each the shadow of a declaration judged in its own
-    /// right.
+    /// right. And a delegate's `__Multicast` helper, made for every delegate
+    /// type whether or not one is ever combined.
     /// </summary>
     static readonly string[] MadeTypes = { "Lambda$", "Iter$", "Async$", "ArrayView$", "ArrayEnumerator$", "ValueTuple$" };
 
@@ -88,8 +89,11 @@ public static class UsesCapture
         string owner = open < 0 ? display : display[..open];
         int member = owner.LastIndexOf('.');
         string name = member < 0 ? owner : owner[(member + 1)..];
-        if (name.Contains('$')) return true;
-        if (member > 0) owner = owner[..member];
-        return MadeTypes.Any(prefix => owner.StartsWith(prefix, StringComparison.Ordinal));
+        // A generic method's copy is `Read$Int32`, written by somebody; the
+        // compiler's own members end in `$` or are a field's initialiser.
+        if (name.EndsWith('$') || name.StartsWith("FieldInit$", StringComparison.Ordinal)) return true;
+        if (member > 0) owner = owner[..member].TrimEnd('.');    // `Type..ctor`
+        return owner.EndsWith("__Multicast", StringComparison.Ordinal)
+            || MadeTypes.Any(prefix => owner.StartsWith(prefix, StringComparison.Ordinal));
     }
 }

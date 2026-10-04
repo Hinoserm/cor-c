@@ -20,7 +20,8 @@ expected() {
         "$f:11: function Program.Unused() is never called" \
         "$f:12: function Program.OnlyFromUnused() is never called" \
         "$f:13: function Program.Chain() is never called" \
-        "$f:18: function Never.Sides() is never called"
+        "$f:16: function Program.Nope(T x) is never called" \
+        "$f:21: function Never.Sides() is never called"
 }
 
 check() {
