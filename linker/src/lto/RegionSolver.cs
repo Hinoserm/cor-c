@@ -1910,6 +1910,7 @@ public static class RegionSolver
             if (_report is not null) Log($"judge: loops selected {loops.Count}, {_loopWalked} walked, {_clock.ElapsedMilliseconds} ms");
             if (loops.Count > 0) taken = TakenWithLoops(loops, final, bySite, madeBy);
             if (_report is not null) Log($"judge: taken with loops, {_walked} walked, {_clock.ElapsedMilliseconds} ms");
+            taken = WithoutPiledUp(taken, loops);
             if (chosen.Count == 0 && loops.Count == 0)
             {
                 Log("no boundary found");
@@ -3023,6 +3024,109 @@ public static class RegionSolver
                     }
                 if (loops.Count == before) return taken;
             }
+        }
+
+        // ---- what a region would pile up -----------------------------------------
+        //
+        // A REGION GIVES BACK WHAT IT HOLDS ONLY WHEN IT ENDS: an object dead
+        // long before is held to the end, where the collector would have taken
+        // it at the next collection. One object or a few is nothing; the
+        // objects of a loop's laps are as many as the laps. A site whose
+        // objects die in the lap that made them, beneath a loop that has no
+        // region of its own (or none beneath it that takes them), and whose
+        // laps are not bounded, piles one more into the region every lap: a
+        // pass over ten thousand instructions held ten thousand laps of
+        // garbage until the pass returned. Such a site goes to the heap. What a
+        // lap carries on, or what outlives the call, is held as long by the
+        // collector, and stays in the region.
+        //
+        // Measured on the compiler's own build (two units): peak live heap 434
+        // MB with regions empty, 2410 MB with 27099 sites taken, 762 MB of
+        // arena in use at the peak.
+
+        private HashSet<(int, int)> WithoutPiledUp(HashSet<(int, int)> taken, List<LoopRegion> loops)
+        {
+            // The loop regions, by function and header, and the objects beneath each instance.
+            Dictionary<int, List<LoopRegion>> regionsIn = new();
+            foreach (LoopRegion loop in loops) (regionsIn.TryGetValue(loop.Function, out var l) ? l : regionsIn[loop.Function] = new()).Add(loop);
+            HashSet<int> piled = new();
+            ulong[] near = new ulong[_nearClosures?.Words ?? 0];
+            if (_nearClosures is null) { _nearClosures = new CallClosures(_calleesOf, _isBoundary); near = new ulong[_nearClosures.Words]; }
+            long looked = 0;
+            for (int f = 0; f < _functions.Count; f++)
+            {
+                RegionFunction function = _functions[f];
+                if (function.Loops.Count == 0 || _copiesOf[f] is not { } copies) continue;
+                for (int loopIndex = 0; loopIndex < function.Loops.Count; loopIndex++)
+                {
+                    RegionLoopShape loop = function.Loops[loopIndex];
+                    // Its own region gives each lap's dead back.
+                    if (regionsIn.TryGetValue(f, out var own) && own.Any(r => r.Shape.Header == loop.Header)) continue;
+                    // Laps bounded: a lap's worth times a known count, no more.
+                    int repeat = Array.FindIndex(function.Repeats, r => r.Header == loop.Header);
+                    if (repeat >= 0 && function.Repeats[repeat].Trip > 0) continue;
+                    // The loop regions nested in this loop, in this function.
+                    List<LoopRegion> inner = own?.Where(r => Nested(function, r.Shape.Header, loop.Header)).ToList() ?? new();
+                    foreach (int c in copies)
+                    {
+                        ulong[] lapLive = _escape is not null
+                            ? GraphHeld(_escape.LoopHeld[f]?[loopIndex].LapLive)
+                            : HeldBy(c, loop.Live, Enumerable.Range(0, function.Slots));
+                        ulong[]? escaping = EscapingBits(c);
+                        // Dead in the lap that made it: not live where a lap
+                        // ends, and not outliving the call. An object the
+                        // escape graphs never followed is held as live.
+                        bool DiesInLap(int o) => !Has(lapLive, o) && !Outlives(o, c, escaping);
+                        bool InnerRegion(int o) => inner.Any(r => Array.BinarySearch(r.Shape.Sites, _objectSite[o]) >= 0);
+                        if (_madeAt[c] is { } made)
+                            foreach (int o in made)
+                            {
+                                looked++;
+                                if (Array.BinarySearch(loop.Sites, _objectSite[o]) < 0 || !taken.Contains(SiteOf(o))) continue;
+                                if (InnerRegion(o) || !DiesInLap(o)) continue;
+                                piled.Add(o);
+                            }
+                        // Made beneath the lap's calls through no boundary: in
+                        // the region the loop runs in -- unless a loop region of
+                        // a copy beneath takes it (TakenWithLoops), cut each of
+                        // that loop's laps.
+                        Reached(c, loop.Calls, true, near);
+                        for (int w = 0; w < near.Length; w++)
+                            for (ulong word = near[w]; word != 0; word &= word - 1)
+                            {
+                                int a = w << 6 | System.Numerics.BitOperations.TrailingZeroCount(word);
+                                if (a == c || _madeAt[a] is not { } beneath) continue;
+                                bool cutBeneath = regionsIn.ContainsKey(_copyFunction[a]);
+                                foreach (int o in beneath)
+                                {
+                                    looked++;
+                                    if (!taken.Contains(SiteOf(o)) || !DiesInLap(o)) continue;
+                                    if (cutBeneath && regionsIn[_copyFunction[a]].Any(r => Array.BinarySearch(r.Shape.Sites, _objectSite[o]) >= 0)) continue;
+                                    piled.Add(o);
+                                }
+                            }
+                    }
+                }
+            }
+            HashSet<(int, int)> kept = new(taken);
+            foreach (int o in piled) kept.Remove(SiteOf(o));
+            if (_report is not null)
+            {
+                Log($"judge: {taken.Count - kept.Count} sites would pile up in a region lap after lap, to the heap; {looked} looked at, {_clock.ElapsedMilliseconds} ms");
+                if (_report.Contains("+piled"))
+                    foreach ((int f, int site) in taken.Except(kept)) Log("piled " + DescribeSite((f, site)));
+            }
+            return kept;
+        }
+
+        // Whether loop `inner` (by header) is inside loop `outer` in `function`, by the loops' parents.
+        private static bool Nested(RegionFunction function, int inner, int outer)
+        {
+            int at = Array.FindIndex(function.Repeats, r => r.Header == inner);
+            if (at < 0) return false;
+            for (int l = function.Repeats[at].Parent; l >= 0; l = function.Repeats[l].Parent)
+                if (function.Repeats[l].Header == outer) return true;
+            return false;
         }
 
         // ---- what a region holds -----------------------------------------------
