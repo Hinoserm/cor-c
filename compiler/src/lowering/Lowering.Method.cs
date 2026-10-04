@@ -193,6 +193,7 @@ public sealed partial class Lowering
         {
             ParamSymbol p = m.Params[i];
             _params[i] = _f.NewReg(p.ByRef ? IrTypes.Word : IrTypes.Of(p.Type), p.Name);
+            _params[i].Number = !p.ByRef && NeverAddress(p.Type);
             _f.Params.Add(_params[i]);
         }
 
@@ -775,6 +776,7 @@ public sealed partial class Lowering
                 IrType it = IrTypes.Of(m.Type);
                 VReg v = _e.Load(it, m.Address, m.Offset, LoadSize(m.Type), !m.Type.IsUnsigned && m.Type.Prim != Prim.Bool);
                 if (m.Field is FieldSymbol read && TagsField(read)) _e.Block.Instrs[^1].Field = FieldKey(read);
+                if (NeverAddress(m.Type)) _e.Block.Instrs[^1].Number = true;
                 if (m.Volatile)
                 {
                     _e.Emit(Opcode.Fence, null);
@@ -1063,6 +1065,25 @@ public sealed partial class Lowering
     private bool MayHoldReference(Type t)
         => LoadSize(t) == _t.WordSize && !t.IsPointer
         && (HoldsReference(t) || t.ParamName is not null || t.Prim is Prim.Any);
+
+    /// <summary>
+    /// A NUMBER THAT IS NEVER AN ADDRESS, for region inference (VReg.Number,
+    /// Instr.Number): on a 32-bit target a pointer and an int are both I32,
+    /// and an int handed to a callee that throws, or widened to a long, read
+    /// as an address that escapes. Bool, char, the integers of thirty-two
+    /// bits or fewer, float, double, and an enum held in one of those. Not a
+    /// long or a nint -- the runtime keeps addresses in both -- nor a
+    /// pointer, a reference, an array, a nullable's cell, a struct or a type
+    /// parameter. An address is never cast to an int here; the runtime goes
+    /// through nint.
+    /// </summary>
+    private static bool NeverAddress(Type t)
+    {
+        if (t.IsPointer || t.IsArray || t.IsReference || t.IsNullableValue || t.ParamName is not null || t.Function is not null) return false;
+        if (t.IsEnumValue) return t.Symbol!.EnumUnderlying is not (Prim.I64 or Prim.U64 or Prim.NInt or Prim.NUInt);
+        return t.Symbol is null && t.Prim is Prim.Bool or Prim.Char or Prim.I8 or Prim.I16 or Prim.I32
+            or Prim.U8 or Prim.U16 or Prim.U32 or Prim.F32 or Prim.F64;
+    }
 
     /// <summary>How many bytes a value of a type occupies in memory.</summary>
     private int LoadSize(Type t) => Math.Max(1, t.Size);

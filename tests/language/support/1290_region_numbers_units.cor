@@ -1,0 +1,63 @@
+// The other unit of 1290_region_numbers_are_no_references_across_units: a
+// sheet of rows, summed through a check that widens each quantity to a long
+// and throws with the numbers in its message when one is negative.
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+namespace NumberUnits;
+
+public sealed class Row
+{
+    public readonly string Name;
+    public readonly int Qty;
+    public readonly int Code;
+
+    public Row(string name, int qty, int code) { Name = name; Qty = qty; Code = code; }
+}
+
+public sealed class Sheet
+{
+    public readonly List<Row> Rows = new List<Row>();
+
+    // A row of every 97th round is short: its quantity is -1.
+    public static Sheet Make(int n, int round)
+    {
+        Sheet s = new Sheet();
+        for (int k = 0; k < n; k++)
+            s.Rows.Add(new Row("r" + k.ToString(), round % 97 == 0 && k == 3 ? -1 : k, round * 10 + k));
+        return s;
+    }
+}
+
+public static class Check
+{
+    // Takes only numbers, and makes the message (and the exception) itself.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void Bad(int qty, int code)
+    {
+        throw new InvalidOperationException("bad " + qty + " at " + code);
+    }
+
+    // A quantity read out of a row, widened to a long, and handed on to
+    // what throws.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long Widen(int qty, int code)
+    {
+        long wide = qty;
+        if (wide < 0) Bad(qty, code);
+        return wide * 2 + code % 3;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long Sum(Sheet s)
+    {
+        long total = 0;
+        for (int k = 0; k < s.Rows.Count; k++)
+        {
+            Row r = s.Rows[k];
+            total += Widen(r.Qty, r.Code);
+        }
+        return total;
+    }
+}

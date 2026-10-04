@@ -25,7 +25,7 @@ public sealed class RegionHints
     public const string SectionName = ".corsac.regions";
     public const int MaximumBytes = 64 * 1024 * 1024;
     private const uint Magic = 0x47455243; // "CREG"
-    private const int Version = 4;
+    private const int Version = 5;
     private static readonly UTF8Encoding Utf8 = new(false, true);
 
     public List<RegionFunction> Functions { get; } = new();
@@ -86,6 +86,8 @@ public sealed class RegionHints
             Var(index[function.Name]);
             writer.Write((byte)((function.Global ? 1 : 0) | (function.MayBeBoundary ? 2 : 0) | (function.Instance ? 4 : 0) | (function.Main ? 8 : 0)));
             Var(function.Parameters); Var(function.Nodes); Var(function.Slots);
+            Var(function.NumberParams.Length);
+            foreach (int k in function.NumberParams) Var(k);
             Var(function.Sites.Length);
             foreach (RegionSite site in function.Sites)
             {
@@ -181,6 +183,11 @@ public sealed class RegionHints
                 int parameters = Int(), nodes = Int(), slots = Int();
                 if (parameters < 0 || nodes <= parameters || nodes > RegionFunction.NodeLimit || slots < 0 || slots > RegionFunction.NodeLimit)
                     throw new ElfFormatException("Invalid region hint function");
+                // Each a parameter, in order, once.
+                int[] numbers = new int[Count()];
+                for (int k = 0; k < numbers.Length; k++)
+                    if ((numbers[k] = Int()) < 0 || numbers[k] >= parameters || k > 0 && numbers[k] <= numbers[k - 1])
+                        throw new ElfFormatException("Invalid region hint function");
                 RegionSite[] sites = new RegionSite[Count()];
                 for (int s = 0; s < sites.Length; s++)
                 {
@@ -190,7 +197,7 @@ public sealed class RegionHints
                     if (bits > 5 || table < -1 || table >= names.Length) throw new ElfFormatException("Invalid region hint stamp");
                     sites[s] = new RegionSite((bits & 1) != 0, line, table < 0 ? null : names[table], at, (RegionWords)(bits >> 1));
                 }
-                RegionFunction function = new(name, (flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0, parameters, nodes, slots, sites) { Main = (flags & 8) != 0 };
+                RegionFunction function = new(name, (flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0, parameters, nodes, slots, sites) { Main = (flags & 8) != 0, NumberParams = numbers };
                 bool Node(int n) => n >= 0 && n < nodes;
                 for (int k = Count(); k > 0; k--)
                 {
@@ -270,6 +277,15 @@ public sealed class RegionFunction
     public int Parameters { get; }
     public int Nodes { get; }
     public int Slots { get; }
+    /// <summary>
+    /// Its parameters of a number type, in order: an int, a char, a double,
+    /// an enum held in thirty-two bits (RegionSummary). What a caller hands
+    /// one is never an address, so nothing it holds is handed on. A long, a
+    /// nint, a pointer, a struct or a type parameter may be one, and is not
+    /// named here.
+    /// </summary>
+    public int[] NumberParams { get; init; } = Array.Empty<int>();
+    public bool IsNumber(int k) => NumberParams.Length > 0 && Array.BinarySearch(NumberParams, k) >= 0;
     /// <summary>Its allocator calls, by ordinal (RegionPointsTo.MarkSites).</summary>
     public RegionSite[] Sites { get; }
     public List<RegionConstraint> Constraints { get; } = new();

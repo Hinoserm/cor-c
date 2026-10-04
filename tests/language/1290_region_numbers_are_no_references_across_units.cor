@@ -1,0 +1,51 @@
+// test: region_numbers_are_no_references_across_units
+// units: tests/language/support/1290_region_numbers_units.cor
+// expect-exit: 0
+// expect-output:
+// total 1586970 failed 10 caught 139
+// given back True
+//
+// Work makes a sheet in the other unit and sums it there: each row's
+// quantity, an int read out of the row, goes to Check.Widen, which widens it
+// to a long and hands it on to Check.Bad, which throws with it in the
+// message. On a 32-bit target an int and an address are both one word, and
+// read as one, the quantity was something below the sheet handed where a
+// throw takes it: every row, its name and the list escaped, and Work's
+// boundary took nothing. A parameter of a number type is handed no address
+// (RegionFunction.NumberParams), nor is a number read out of a field
+// (Instr.Number), so what Work makes is given back at its return. The
+// short rounds throw out of Work's region, and their messages, made
+// beneath it, are read after it is gone and after collections.
+
+using System;
+using System.Runtime.CompilerServices;
+using NumberUnits;
+
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Work(int n, int round)
+    {
+        Sheet s = Sheet.Make(n, round);
+        return Check.Sum(s) + s.Rows[n - 1].Name.Length;
+    }
+
+    // Not Main itself: what the entry calls is never a boundary.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Run()
+    {
+        long total = 0, caught = 0, before = Gc.RegionFreedBytes;
+        int failed = 0;
+        for (int round = 1; round <= 1000; round++)
+        {
+            try { total += Work(40, round); }
+            catch (InvalidOperationException e) { failed++; caught += e.Message.Length; }
+            if (round % 250 == 0) GC.Collect();
+        }
+        Console.WriteLine("total " + total + " failed " + failed + " caught " + caught);
+        Console.WriteLine("given back " + (Gc.RegionFreedBytes - before >= 500000L));
+        return 0;
+    }
+
+    static int Main() => Run();
+}

@@ -1315,13 +1315,14 @@ public static class RegionSolver
 
         // The call made: its arguments the callee copy's parameters -- its
         // receiver too, unless each location of it is handed over alone
-        // (Received) -- and its return the call's result.
+        // (Received) -- and its return the call's result. A parameter of a
+        // number type (RegionFunction.NumberParams) is handed no address.
         private void To(int caller, RegionCall call, int callee, bool receiver = true)
         {
             Beneath(caller, callee);
             RegionFunction g = _functions[_copyFunction[callee]];
             for (int k = receiver ? 0 : 1; k < call.Arguments.Length && k < g.Parameters; k++)
-                if (call.Arguments[k] >= 0) Edge(Node(caller, call.Arguments[k]), Node(callee, k), 0);
+                if (call.Arguments[k] >= 0 && !g.IsNumber(k)) Edge(Node(caller, call.Arguments[k]), Node(callee, k), 0);
             if (call.Dest >= 0) Edge(Node(callee, g.Parameters), Node(caller, call.Dest), 0);
         }
 

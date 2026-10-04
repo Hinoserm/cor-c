@@ -67,7 +67,11 @@ public sealed class ConstantSpecialize : IModulePass
                 version = new Function(name, target.Returns)
                 { Exported = false, SourceFile = target.SourceFile, Line = target.Line, Display = target.Display };
                 foreach (VReg parameter in target.Params)
-                    version.Params.Add(version.NewReg(parameter.Type, parameter.Name));
+                {
+                    VReg copy = version.NewReg(parameter.Type, parameter.Name);
+                    copy.Number = parameter.Number;
+                    version.Params.Add(copy);
+                }
                 Block entry = version.NewBlock("entry");
                 Builder builder = new(version, entry);
                 Operand[] arguments = call.Operands.Select((o, index) => o is ImmOperand ? o : new RegOperand(version.Params[index])).ToArray();

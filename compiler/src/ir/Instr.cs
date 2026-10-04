@@ -45,6 +45,13 @@ public sealed class Instr
     public string? Field { get; set; }
 
     /// <summary>
+    /// Load: the word read is a field's, an element's or a cell's of a
+    /// number type, never an address (Lowering.NeverAddress). Left unset it
+    /// says nothing, so a pass making a load of its own need not know.
+    /// </summary>
+    public bool Number { get; set; }
+
+    /// <summary>
     /// An allocator call the link chose to make in the innermost open region
     /// (Lto.RegionSolver; RegionPointsTo.MarkSites): the late passes' copies
     /// of it are chosen too.
