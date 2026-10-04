@@ -2115,7 +2115,8 @@ public static class RegionSolver
         // and what a lap makes, with no boundary between the loop and its
         // maker, that is live where a lap ends: the boundary taking it is the
         // copy's own or one above, so it too goes to the heap, where fewer
-        // sites go there than every lap makes for the loop's region. What a
+        // sites go there than every lap makes for the loop's region that no
+        // boundary takes. What a
         // boundary inside the lap takes is never sent there; a loop that
         // would refuse it gets no region. And where every lap that goes round
         // makes, in some copy, with no boundary between, something the region
@@ -2483,7 +2484,8 @@ public static class RegionSolver
         /// but what a lap carries only through what the loop writes, and what
         /// a lap makes through no boundary, which TakenWithLoops sends to the
         /// heap -- in some copy, worth a call at the top of every lap, and
-        /// sending fewer sites to the heap than every lap makes for it.
+        /// sending fewer sites to the heap than every lap makes for it that
+        /// no boundary takes.
         ///
         /// Thousands of loops reach the compiler's cycle of thirteen thousand
         /// functions, each walking all of it: every set here is a mark or a
@@ -2520,9 +2522,15 @@ public static class RegionSolver
                     // loop's region takes. A lap that only sometimes makes
                     // something for it -- a list grown now and then -- gives
                     // no reason to lose a site made on every one. And the
-                    // loop must take more than it sends away: a site it takes
-                    // that a boundary took already is only given back sooner,
-                    // where one sent to the heap is left to the collector.
+                    // loop must take more than it sends away, counting only
+                    // what no boundary takes: a site a boundary takes already
+                    // is only given back sooner by the loop, where one sent to
+                    // the heap costs an allocation every lap and is left to
+                    // the collector. A loop whose every lap makes only what a
+                    // boundary takes anyway sends nothing to the heap or gets
+                    // no region: Make's lap in 1290 sent the row a boundary
+                    // took to the heap for the number's text, which that
+                    // boundary took too.
                     HashSet<(int, int)> forced = new(), gained = new();
                     List<(int Copy, List<int>? Own, Func<int, bool> Takes)> weigh = new();
                     foreach (int c in copies)
@@ -2633,14 +2641,15 @@ public static class RegionSolver
                         worth = worth || AlwaysMakes(c, loop.AlwaysCalls, Takes, ++_alwaysStamp, 0);
                     }
                     // Only where something goes to the heap: what every lap
-                    // makes, gathered in full.
+                    // makes that no boundary takes, gathered in full.
                     if (sound && worth && forced.Count > 0)
                         foreach ((int c, List<int>? own, Func<int, bool> takes) in weigh)
                         {
+                            bool TakesAlone(int o) => takes(o) && !verdict.TakenObject[o];
                             if (own is not null)
                                 foreach (int o in own)
-                                    if (Array.BinarySearch(loop.AlwaysSites, _objectSite[o]) >= 0 && takes(o)) gained.Add(SiteOf(o));
-                            AlwaysMakes(c, loop.AlwaysCalls, takes, ++_alwaysStamp, 0, gained);
+                                    if (Array.BinarySearch(loop.AlwaysSites, _objectSite[o]) >= 0 && TakesAlone(o)) gained.Add(SiteOf(o));
+                            AlwaysMakes(c, loop.AlwaysCalls, TakesAlone, ++_alwaysStamp, 0, gained);
                         }
                     gained.ExceptWith(forced);
                     bool weighed = forced.Count == 0 || forced.Count < gained.Count;
@@ -2654,7 +2663,7 @@ public static class RegionSolver
                     else if (reported)
                         Log($"no loop region {function.Name} at block {loop.Header}: " + (!sound ? DescribeObject(unsoundBy) + " is live where a lap ends"
                             : !worth ? "no lap always makes what it would take"
-                            : $"sends {forced.Count} sites to the heap, every lap makes {gained.Count} it takes"));
+                            : $"sends {forced.Count} sites to the heap, every lap makes {gained.Count} it takes that no boundary does"));
                 }
             }
             if (_loopWalked >= LoopBudget) Log("loops: past the budget, the loops left get no region");

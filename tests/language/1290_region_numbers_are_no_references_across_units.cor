@@ -17,6 +17,12 @@
 // (Instr.Number), so what Work makes is given back at its return. The
 // short rounds throw out of Work's region, and their messages, made
 // beneath it, are read after it is gone and after collections.
+//
+// Make's loop makes each row and, every lap, the number's text its name is
+// made of. A region for those laps would send each row, live where its lap
+// ends, to the heap for a temporary Work's region takes anyway, and the
+// loop gets none (RegionSolver.SelectLoops counts only what no boundary
+// takes against what it sends to the heap).
 
 using System;
 using System.Runtime.CompilerServices;

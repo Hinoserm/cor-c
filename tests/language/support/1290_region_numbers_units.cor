@@ -20,26 +20,12 @@ public sealed class Sheet
 {
     public readonly List<Row> Rows = new List<Row>();
 
-    // Each row's number as text, made once: a lap of Make's loop makes
-    // only what its row keeps. A lap that also made a temporary -- the
-    // number's text, dead when the name is made of it -- is worth a region
-    // of the loop's own, and each row, live where its lap ends, would go to
-    // the heap rather than Work's region: the loop's choice, not the numbers'.
-    static readonly string[] Digits = MakeDigits();
-
-    static string[] MakeDigits()
-    {
-        string[] digits = new string[64];
-        for (int k = 0; k < digits.Length; k++) digits[k] = k.ToString();
-        return digits;
-    }
-
     // A row of every 97th round is short: its quantity is -1.
     public static Sheet Make(int n, int round)
     {
         Sheet s = new Sheet();
         for (int k = 0; k < n; k++)
-            s.Rows.Add(new Row("r" + Digits[k], round % 97 == 0 && k == 3 ? -1 : k, round * 10 + k));
+            s.Rows.Add(new Row("r" + k.ToString(), round % 97 == 0 && k == 3 ? -1 : k, round * 10 + k));
         return s;
     }
 }
