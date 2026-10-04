@@ -11874,7 +11874,12 @@ public sealed partial class Binder
                             _ => null,
                         }
                         : null;
-                    if (getter != null && propertyName != null)
+                    if (property is PropertySetSym setOnly)
+                    {
+                        _r.PropertySetters[a.Target] = setOnly.Setter;
+                        target = setOnly.Setter.Params[0].Type;
+                    }
+                    else if (getter != null && propertyName != null)
                     {
                         MethodSymbol? setter = getter.Owner
                             .FindMethods("set_" + propertyName)
@@ -13367,6 +13372,12 @@ public sealed partial class Binder
             }
             : null;
 
+        if (resolved is PropertySetSym setOnly && !_r.PropertySetters.ContainsKey(target))
+        {
+            _r.PropertySetters[target] = setOnly.Setter;
+            return;
+        }
+
         if (getter is null || propertyName is null
             || _r.PropertySetters.ContainsKey(target))
         {
@@ -14096,6 +14107,13 @@ public sealed partial class Binder
                 _r.Resolved[n] = new PropertyGetSym(getter);
                 return getter.Returns;
             }
+
+            if (Members(_thisType, "set_" + n.Name).FirstOrDefault(s => s.Params.Count == 1) is { } onlySetter
+                && !(onlySetter is { Static: false } && InStaticContext))
+            {
+                _r.Resolved[n] = new PropertySetSym(onlySetter);
+                return onlySetter.Params[0].Type;
+            }
         }
 
         // A closure object becomes `_thisType` while its Invoke body is
@@ -14172,6 +14190,14 @@ public sealed partial class Binder
                 _r.Resolved[n] = new PropertyGetSym(staticGetter);
                 return staticGetter.Returns;
             }
+
+            MethodSymbol? staticSetter = _lexicalType.FindMethods("set_" + n.Name)
+                                                     .FirstOrDefault(m => m.Static && m.Params.Count == 1);
+            if (staticSetter is not null)
+            {
+                _r.Resolved[n] = new PropertySetSym(staticSetter);
+                return staticSetter.Params[0].Type;
+            }
         }
 
         if (_capturedThisType is not null && n.Name == _capturedThisType.Name)
@@ -14205,6 +14231,13 @@ public sealed partial class Binder
             {
                 _r.Resolved[n] = new CapturedPropertyGetSym(_capturedThisField, outerGetter);
                 return outerGetter.Returns;
+            }
+
+            MethodSymbol? outerSetter = _capturedThisType.FindMethods("set_" + n.Name).FirstOrDefault(m => m.Params.Count == 1);
+            if (outerSetter is not null)
+            {
+                _r.Resolved[n] = new PropertySetSym(outerSetter, _capturedThisField);
+                return outerSetter.Params[0].Type;
             }
         }
 
@@ -14268,6 +14301,14 @@ public sealed partial class Binder
             {
                 _r.Resolved[n] = new PropertyGetSym(outerStaticGetter);
                 return outerStaticGetter.Returns;
+            }
+
+            MethodSymbol? outerStaticSetter = outer.FindMethods("set_" + n.Name)
+                                                   .FirstOrDefault(m => m.Static && m.Params.Count == 1);
+            if (outerStaticSetter is not null)
+            {
+                _r.Resolved[n] = new PropertySetSym(outerStaticSetter);
+                return outerStaticSetter.Params[0].Type;
             }
         }
 
@@ -15024,6 +15065,13 @@ public sealed partial class Binder
             _r.Resolved[m] = new PropertyGetSym(getter);
             Type read = Close(ContextualMemberResult(target, getter), received);
             return conditional ? read.AsNullable() : read;
+        }
+
+        // A SET-ONLY PROPERTY: assigned, never read (PropertySetSym).
+        if (MethodsOn(owner, "set_" + m.Name).FirstOrDefault(s => s.Params.Count == 1) is { } onlySetter)
+        {
+            _r.Resolved[m] = new PropertySetSym(onlySetter);
+            return Close(onlySetter.Params[0].Type, received);
         }
 
         // WHAT EVERY OBJECT ANSWERS. Every type derives from object, so

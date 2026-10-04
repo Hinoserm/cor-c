@@ -975,6 +975,9 @@ public sealed partial class Lowering
                 return CallAccessor(captured.Getter, self: false, target: null, receiver: env);
             }
 
+            case PropertySetSym:
+                return Fail(n, $"the property '{n.Name}' cannot be read: it has no get accessor");
+
             default:
             {
                 Place? p = PlaceOfSym(sym, n);
@@ -1022,6 +1025,8 @@ public sealed partial class Lowering
             {
                 case PropertyGetSym pg:
                     return CallAccessor(pg.Getter, self: false, target: m.Target);
+                case PropertySetSym:
+                    return Fail(m, $"the property '{m.Name}' cannot be read: it has no get accessor");
                 case ConstSym k:
                     return ConstValue(k);
                 case FieldSym f when f.Field.Static:
@@ -2654,6 +2659,10 @@ public sealed partial class Lowering
                 case NameExpr when _b.Resolved.TryGetValue(a.Target, out Sym? resolved)
                                    && resolved is CapturedPropertyGetSym captured:
                     receiver = _e.Load(IrTypes.Word, _this!, captured.Holder.Offset);
+                    break;
+                case NameExpr when _b.Resolved.TryGetValue(a.Target, out Sym? resolved)
+                                   && resolved is PropertySetSym { Holder: { } holder }:
+                    receiver = _e.Load(IrTypes.Word, _this!, holder.Offset);
                     break;
                 case NameExpr:
                     receiver = _this;

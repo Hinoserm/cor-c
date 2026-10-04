@@ -1,0 +1,44 @@
+// test: set_only_property
+// expect-exit: 0
+// expect-output:
+// 5 7 9 11
+//
+// A property with a setter and no getter is a property: `Holder.V = 5`
+// calls set_V, from outside the type, inside it unqualified, through an
+// instance, and from a lambda in an instance method. It was 'has no member
+// V', because finding a property went through its getter alone.
+
+using System;
+
+static class Holder
+{
+    static int _v;
+    public static int V { set { _v = value; } }
+    public static int Read() => _v;
+    public static void Inside(int x) { V = x; }
+}
+
+class Inst
+{
+    int _w;
+    public int W { set { _w = value; } }
+    public int Get() => _w;
+    public void Later(int x) { Action a = () => W = x; a(); }
+}
+
+class Program
+{
+    static int Main()
+    {
+        Holder.V = 5;
+        Console.Write(Holder.Read() + " ");
+        Inst i = new Inst();
+        i.W = 7;
+        Console.Write(i.Get() + " ");
+        Holder.Inside(9);
+        Console.Write(Holder.Read() + " ");
+        i.Later(11);
+        Console.WriteLine(i.Get());
+        return 0;
+    }
+}

@@ -1,0 +1,14 @@
+// test: set_only_property_read
+// expect-compile-error: the property 'V' cannot be read: it has no get accessor
+// A set-only property cannot be read (C#'s CS0154).
+
+static class Holder
+{
+    static int _v;
+    public static int V { set { _v = value; } }
+}
+
+class Program
+{
+    static int Main() { return Holder.V; }
+}
