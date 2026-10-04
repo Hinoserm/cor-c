@@ -195,6 +195,10 @@ public sealed class ProjectEvaluator
         // RuntimeHostConfigurationOption is accepted for the SDK's sake and
         // otherwise ignored: this build reads the collector settings from the
         // properties the items are written in terms of. See corc.csproj.
+        // INTERNALS VISIBLE TO ANOTHER ASSEMBLY say nothing to a build that
+        // makes one image of every project: a test project's access to the
+        // linker's internals (linker.csproj) is the dotnet build's business.
+        if (type == "InternalsVisibleTo") return;
         if (type is not ("Compile" or "ProjectReference" or "None" or "Content" or "Using" or "PackageReference" or "Reference" or "Analyzer" or "EmbeddedResource" or "RuntimeHostConfigurationOption"))
             throw new InvalidDataException("Unsupported active item type: " + type);
         string? include = (string?)node.Attribute("Include"), remove = (string?)node.Attribute("Remove"), update = (string?)node.Attribute("Update");
