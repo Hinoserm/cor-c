@@ -359,6 +359,13 @@ entry, code outside the IR, a taken address).
   write was. What is not type-safe -- raw memory, pointers, copies -- names
   no field, and is read and written as before. Engine test
   `TypedAliasing`, `TypedAliasingThroughSummary`; test 1320.
+- Every edge is added once: copies, loads, stores, whole-object reads and
+  guards' filters, each by its node when added. Only a new edge carries what
+  its source holds at once. An edge already there has carried it, or will
+  with the source's delta. (Merging a cycle moved each member's edges to the
+  kept node, most of them its own already. Each one carried everything the
+  kept node held again at every collapse: 23 million locations offered for
+  920 on `Gc.OpenRecord`.)
 - Copy cycles are collapsed online. Tarjan's components over the copy edges
   are found at each solve's start and whenever a quarter more copy edges
   have appeared. A worklist in wave order (sources first) carries each

@@ -2427,6 +2427,12 @@ internal sealed class RegionEscape
         // nothing the first has not, wherever it falls in the list.
         private readonly HashSet<long> _plainCopies = new();
         private readonly HashSet<(int, int, int)> _shiftedCopies = new();
+        // Each load, store, whole-object read and guard's filter edge once,
+        // by its node as it was when added (LoadEdge, StoreEdge, LoadAllEdge,
+        // FilterEdge), as copies are.
+        private readonly HashSet<(int, int, int, int)> _loadEdges = new(), _storeEdges = new();
+        private readonly HashSet<long> _readAllEdges = new();
+        private readonly HashSet<(int, int, int)> _filterEdges = new();
         // A guard's filter: what of a node's locations a guard lets through.
         private readonly List<List<(int To, int Guard)>?> _filters = new();
         // The virtual calls a node is the receiver of (Received).
@@ -2804,12 +2810,23 @@ internal sealed class RegionEscape
         // what the node holds is still carried now, as it was when every
         // edge was listed: what it has gained and not yet carried arrives
         // where it goes in the same order.
+        // AN EDGE ALREADY THERE CARRIES NOTHING NOW: all its source held was
+        // carried along it when it was made, or is in the source's delta,
+        // which goes along every edge it has when the source's turn comes. A
+        // merge of a cycle (Merge) moves each member's edges to the node
+        // kept, most of them its own already; carried again, every location
+        // the kept node held went along every one of them at every collapse
+        // -- on raw-memory code, a node of hundreds of offsets into a few
+        // objects and edges by the hundred, each location offered to a node
+        // twenty-five thousand times (Gc.OpenRecord: 23 million offered for
+        // 920 locations).
         private void CopyEdge(int from, int to, int shift)
         {
             from = Find(from); to = Find(to);
             if (from == to && shift == 0) return;
             bool fresh = shift == 0 ? _plainCopies.Add(((long)from << 32) | (uint)to) : _shiftedCopies.Add((from, to, shift));
-            if (fresh) { (_copies[from] ??= new()).Add((to, shift)); _copyEdges++; }
+            if (!fresh) return;
+            (_copies[from] ??= new()).Add((to, shift)); _copyEdges++;
             if (_pts[from] is not { } pts) return;
             if (shift == 0) for (int i = 0, n = pts.Count; i < n; i++) Add(to, pts.Items[i]);
             else for (int i = 0, n = pts.Count; i < n; i++) Add(to, Shift(pts.Items[i], shift));
@@ -2818,6 +2835,7 @@ internal sealed class RegionEscape
         private void LoadEdge(int dest, int address, int offset, int family = -1)
         {
             address = Find(address);
+            if (!_loadEdges.Add((address, Find(dest), offset, family))) return;
             (_loads[address] ??= new()).Add((dest, offset, family));
             _loadEdges++;
             if (_pts[address] is { } pts) for (int i = 0, n = pts.Count; i < n; i++) Loaded(pts.Items[i], dest, offset, family);
@@ -2826,6 +2844,7 @@ internal sealed class RegionEscape
         private void StoreEdge(int address, int offset, int value, int family = -1)
         {
             address = Find(address);
+            if (!_storeEdges.Add((address, Find(value), offset, family))) return;
             (_stores[address] ??= new()).Add((value, offset, family));
             _storeEdges++;
             if (_pts[address] is { } pts) for (int i = 0, n = pts.Count; i < n; i++) Stored(pts.Items[i], value, offset, family);
@@ -2835,6 +2854,7 @@ internal sealed class RegionEscape
         private void LoadAllEdge(int dest, int address)
         {
             address = Find(address);
+            if (!_readAllEdges.Add(Pair(address, Find(dest)))) return;
             (_readsAll[address] ??= new()).Add(dest);
             if (_pts[address] is { } pts) for (int i = 0, n = pts.Count; i < n; i++) LoadedAll(pts.Items[i], dest);
         }
@@ -2863,6 +2883,7 @@ internal sealed class RegionEscape
         private void FilterEdge(int from, int to, int guard)
         {
             from = Find(from);
+            if (!_filterEdges.Add((from, Find(to), guard))) return;
             (_filters[from] ??= new()).Add((to, guard));
             if (_pts[from] is { } pts) for (int i = 0, n = pts.Count; i < n; i++) Add(to, Filtered(pts.Items[i], guard));
         }
@@ -3940,6 +3961,8 @@ internal sealed class RegionEscape
                     List<VCall> into = _vcalls[keep] ??= new();
                     foreach (VCall v in vcalls)
                     {
+                        // A call keep is the receiver of already has had all keep holds.
+                        if (into.Contains(v)) continue;
                         into.Add(v);
                         if (_pts[keep] is { } had) for (int i = 0, c = had.Count; i < c; i++) Received(v, had.Items[i]);
                     }
