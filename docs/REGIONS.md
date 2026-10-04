@@ -134,7 +134,8 @@ then the block's footer, size and count follow it, and the new elements are
 the zeroed bytes the arena keeps past its pointer. Otherwise nothing changes
 and the caller makes a new array as before; on the heap it always does. Only
 storage its collection's own field alone holds is grown so: List's array
-(never once lent out), a StringBuilder's buffer, and the tables' lists of
+(never once lent out), a StringBuilder's buffer, a Stack's array, a
+MemoryStream's own array (never lent by GetBuffer), and the tables' lists of
 vacant places. `Gc.RegionGrownInPlace` counts growths. Test 1304.
 
 The checked field free (`VerifyingFieldFrees`) hands a region block to
@@ -469,8 +470,9 @@ allocation beside its owner (`MakeStorageBeside`) when all of these hold:
 
 The library frees the storage it outgrows or drops as an owned field's old
 value, `Runtime.FreeOwnedReplaced(v, 0)`. It does so in
-`OutgrownStorage.Release`, `StringBuilder.FreeStorage` and MemoryStream's
-buffer frees. On the heap that is `Runtime.Free`; in a region it gives the
+`OutgrownStorage.Release` (List, Queue, Stack, the tables, FloatBig's
+limbs), `StringBuilder.Reserve` and `FreeStorage`, and MemoryStream's
+buffer frees. Test 1312. On the heap that is `Runtime.Free`; in a region it gives the
 array back at once from the top (`FreeHeld`, `Gc.RegionFree`).
 
 The compiler knows two spellings of the self-replacing free
