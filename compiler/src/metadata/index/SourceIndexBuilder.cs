@@ -39,6 +39,12 @@ public static class SourceIndexBuilder
         return canonical.FullName;
     }
 
+    /// <summary>The key of a source file's record: the hash of the text the index was made from.</summary>
+    public static string SourceKey(string path) => "F:" + System.IO.Path.GetFullPath(path);
+
+    /// <summary>A text's hash as the index records it: of its UTF-8 bytes, as read (File.ReadAllText).</summary>
+    public static byte[] TextHash(string text) => SHA256.HashData(Encoding.UTF8.GetBytes(text));
+
     public static void Write(string output, IEnumerable<string> paths, string assembly,
         IReadOnlyCollection<string>? symbols = null, int memoryBytes = 1024 * 1024,
         IReadOnlyDictionary<string, IReadOnlyCollection<string>>? fileSymbols = null,
@@ -57,6 +63,12 @@ public static class SourceIndexBuilder
                 string text = File.ReadAllText(path);
                 byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(text));
                 snapshots.Add((path, hash));
+                // WHICH TEXT OF THE FILE THIS INDEX WAS MADE FROM, by its full
+                // path (DeclarationCatalog.SourceHash): a unit compiled against
+                // the index is compiled from this text of itself, or refused --
+                // a source edited after the index was written read its new
+                // self against its neighbours' old declarations.
+                yield return new DeclarationRecord(SourceKey(path), hash);
                 Lexer lexer = new(text, path, 1, 1, activeSymbols);
                 List<Token> tokens = new();
                 List<int> ends = new();

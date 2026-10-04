@@ -128,6 +128,20 @@ public sealed class DeclarationCatalog : IDisposable
         sourceBudget = sourceBudgetBytes;
     }
 
+    /// <summary>
+    /// The hash of the text of a source file this index was made from
+    /// (SourceIndexBuilder.SourceKey), or null when it holds no such file.
+    /// </summary>
+    public byte[]? SourceHash(string path)
+    {
+        lock (gate)
+        {
+            if (disposed) throw new ObjectDisposedException(nameof(DeclarationCatalog));
+            foreach (DeclarationRecord record in index.Find(SourceIndexBuilder.SourceKey(path))) return record.Payload;
+            return null;
+        }
+    }
+
     public DeclarationLease? Acquire(string assembly, string metadataName)
         => AcquireKey("T:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + metadataName);
 
