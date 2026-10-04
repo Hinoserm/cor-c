@@ -2528,6 +2528,15 @@ static class Gc
         return (nint)(at + HeaderBytes);
     }
 
+    /// Whether the block of a region's `at` is an object -- the only kind
+    /// with a type to read and fields it may own. A captured variable's cell
+    /// or a frame's spilled words are scanned blocks of no type, an array
+    /// of numbers a leaf.
+    public static bool RegionObject(long at)
+    {
+        return Sys.Peek(at - HeaderBytes + KindAt) == KindObject;
+    }
+
     /// Whether `at` is in the calling thread's arena.
     public static bool InOwnRegion(long at)
     {

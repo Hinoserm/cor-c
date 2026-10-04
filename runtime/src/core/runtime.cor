@@ -1223,10 +1223,16 @@ static class Runtime
     /// only it leads there: its owned fields and storage go now. Read from a
     /// field of an object still alive, it is no region memory a loop's lap
     /// has given back already, as a pointer kept in a register might be.
+    /// Only an object has fields it owns: a captured variable's cell, made in
+    /// the region and owned by its closure's frame, holds a word and no
+    /// type, and read as an object it took what that word points at for a
+    /// type -- the self-hosted compiler's crash once its regions stopped
+    /// filling up and sending such cells to the heap.
     static void FreeHeld(long held)
     {
         if (Gc.IgnoredFrees != 'p' && Gc.InOwnRegion(held))
         {
+            if (!Gc.RegionObject(held)) return;
             FreeOwnedFields(held);
             FreeStorageOf(held);
             return;
