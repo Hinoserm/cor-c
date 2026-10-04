@@ -5,6 +5,7 @@
 // 2000
 // 1999000
 // 1999 0
+//
 // Each link stored through the image's stub (__x86.i.refstore): the nodes are
 // reachable only through those stores. Region, lifetime and owned-field
 // reasoning must count the stub's call as the reference stored, or the

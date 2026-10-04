@@ -7,6 +7,7 @@
 // first first
 // second
 // 3 3
+//
 // Interlocked's reference exchanges are the image's stubs where stores are
 // sequences (__x86.i.refxchg, __x86.i.refcas). The stub's exchange is the
 // field's store: a fresh object's field read after it must be what the

@@ -6,6 +6,7 @@
 // 45
 // 5 6
 // 3 3
+//
 // A reference store made the image's stub (__x86.i.refstore) is still the
 // store: the object stored is the holder's, and changes made through the
 // local after it must be seen through the holder. A pass that took the
