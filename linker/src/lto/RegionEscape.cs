@@ -644,6 +644,9 @@ internal sealed class RegionEscape
     // make, and what of that the unknown object reaches (HeldClass).
     private const int StandInMade = 1;
     private const int StandInHeld = 2;
+    // The order Build lays a stand-in's classes out in: the two made ones
+    // first, at StandInMade and StandInHeld, then the rest.
+    private static readonly int[] BuildOrder = new[] { 1, HeldClass }.Concat(Enumerable.Range(2, HeldClass - 2)).ToArray();
 
     private static bool Has(ulong[] bits, int bit) => (bits[bit >> 6] >> (bit & 63) & 1) != 0;
     private static void Set(ulong[] bits, int bit) => bits[bit >> 6] |= 1UL << (bit & 63);
@@ -676,10 +679,11 @@ internal sealed class RegionEscape
                     if (Has(Bits, x * Classes + cls) || Has(Bits, cls * Classes + x)) return true;
                 return Has(Bits, ResultBits + cls);
             }
-            // The made objects always, at StandInMade and StandInHeld: what
-            // a Ref names. Then the classes used, in order.
-            IEnumerable<int> order = new[] { 1, HeldClass }.Concat(Enumerable.Range(2, HeldClass - 2));
-            foreach (int cls in order)
+            // THE TWO MADE CLASSES ALWAYS, FIRST: what its targets make at
+            // StandInMade, what the unknown object reaches of it at
+            // StandInHeld -- what a Ref names, whatever the shape grows to
+            // (rounds keep a stand-in's holder) -- then the rest it uses.
+            foreach (int cls in BuildOrder)
             {
                 if (cls != 1 && cls != HeldClass && !Uses(cls)) continue;
                 index[cls] = s.Objects.Count;
@@ -832,18 +836,19 @@ internal sealed class RegionEscape
         (ulong[] bits, int[] sites, int[] heldSites) = ShapeOf(summary);
         bool shape = false;
         for (int w = 0; w < ShapeWords; w++) if ((bits[w] & ~a.Bits[w]) != 0) shape = true;
-        // Both sorted: one walk.
-        static bool Beyond(int[] wanted, int[] had)
+        // Whether `of` has a site `had` lacks: both sorted, one walk.
+        static bool Beyond(int[] of, int[] had)
         {
             int i = 0;
-            foreach (int site in wanted)
+            foreach (int site in of)
             {
                 while (i < had.Length && had[i] < site) i++;
                 if (i >= had.Length || had[i] != site) return true;
             }
             return false;
         }
-        bool more = Beyond(sites, a.Sites), moreHeld = Beyond(heldSites, a.HeldSites);
+        bool more = Beyond(sites, a.Sites);
+        bool moreHeld = Beyond(heldSites, a.HeldSites);
         bool widening = widen && !a.Widened;
         if (!shape && !more && !moreHeld && !widening) return false;
         for (int w = 0; w < ShapeWords; w++) a.Bits[w] |= bits[w];
@@ -853,7 +858,7 @@ internal sealed class RegionEscape
             all.UnionWith(sites);
             // Widened, every site beneath its targets is taken at once as
             // what they make, not as what the unknown object holds: those it
-            // holds still grow, a site at a time, and are finitely many.
+            // holds still grow a site at a time, and are finitely many.
             if (widening)
             {
                 a.Widened = true;
@@ -882,8 +887,8 @@ internal sealed class RegionEscape
     }
 
     // A summary as a stand-in's shape: which classes hold which, and the
-    // sites its made objects may be -- the sites as the holders say now --
-    // those the unknown object reaches apart (HeldClass).
+    // sites its made objects may be, apart for what the unknown object
+    // reaches (HeldClass) -- the sites as the holders say now.
     private (ulong[] Bits, int[] Sites, int[] HeldSites) Shape(Summary s)
     {
         ulong[] bits = new ulong[ShapeWords];
@@ -909,9 +914,9 @@ internal sealed class RegionEscape
         HashSet<int>? reading = _reading;
         _reading = null;
         int[] sites = origins.Count == 0 ? Array.Empty<int>() : SitesOf(origins.ToArray());
-        int[] held = heldOrigins.Count == 0 ? Array.Empty<int>() : SitesOf(heldOrigins.ToArray());
+        int[] heldSites = heldOrigins.Count == 0 ? Array.Empty<int>() : SitesOf(heldOrigins.ToArray());
         _reading = reading;
-        return (bits, sites, held);
+        return (bits, sites, heldSites);
     }
 
     // BY THE SUMMARY ITSELF, while no holder's origins changed in place since
@@ -2613,7 +2618,7 @@ internal sealed class RegionEscape
             if (leaky is null) return false;
             int[] rest = v.Outside.Except(leaky).ToArray();
             if (_owner.Why is not null && _owner.Progress is { } tell && _owner.WhyFunction?.Invoke(v.F) == true)
-                tell($"escape graphs why: in {_owner._functions[v.F].Name}: wide call {v.Callee} on {Describe(o)} deferred for {string.Join(", ", leaky.Select(t => _owner._functions[t].Name))}");
+                tell($"escape graphs why: in {_owner._functions[v.F].Name}: call {v.Callee} on {Describe(o)} deferred for {string.Join(", ", leaky.Select(t => _owner._functions[t].Name))}");
             foreach (int t in leaky) Add(DeferredGroup(v, t), Guarded(o, v, t));
             if (rest.Length > 0) Add(v.Wide ? WideGroup(v, rest, apart: true) : Group(v, rest, apart: true), loc);
             return true;

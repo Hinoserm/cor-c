@@ -330,10 +330,26 @@ the unknown object holds as soon as any argument reaches it. Test 1305.
 an edge of the order. Equals, GetHashCode, ToString and an iterator's
 MoveNext would otherwise join thousands of functions into one cycle. Each
 set of targets is assumed a stand-in:
-- a shape of a few classes (the unknown object, what the targets make, each
-  of the first six arguments and all below it);
+- a shape of a few classes: the unknown object; what the targets make,
+  split in two; and each of the first six arguments and all below it;
 - one bit for each class that may hold another or be returned;
 - one bit for the unknown call.
+
+What the targets make is two classes (`HeldClass`, "Mu" in the report):
+what the unknown object reaches in a target's own summary, and everything
+else. Without the split, one target that throws what it made, or caches it
+in a static, made every object any target makes the unknown object's: every
+string a ToString hands back, every enumerator, every object stored into an
+argument, and, past `WidenAfter`, every site beneath the targets. Widening
+adds to the second class only. Each object is still in one class and each
+cell joins two classes, so the shape is as sound as before. Test
+`WideHeldApart` (engine tests).
+
+The coarse summaries past a summary's bounds (`Fewer`, `Coarse`,
+`Everything`) keep the same split between what the unknown object reaches
+and the rest. `Everything` also keeps each parameter's own object and one
+deep place below it, so one argument that leaks no longer leaks every
+argument of every call.
 
 **Narrowed by the receiver.** A wide call is watched at its receiver, as a
 narrower virtual call is (below). An object made at sites of known classes
@@ -355,9 +371,16 @@ not be solved yet. A cycle solved by unification keeps the whole stand-in.
 
 After round 3 a stand-in that still grows takes every site its targets reach
 at once (`WidenAfter`), and after round 8 every call is followed in order
-instead (`MostRounds`). A stand-in keeps one holder for good, with its made
-object always at index 1: what an applier made of it is `Ref(holder, 1)`
-whatever the stand-in grows to.
+instead (`MostRounds`). A stand-in keeps one holder for good. Its two made
+classes are always built first, whether or not used:
+- what its targets make, at index 1 (`StandInMade`);
+- what the unknown object reaches of it, at index 2 (`StandInHeld`).
+
+What an applier made of either is `Ref(holder, 1)` or `Ref(holder, 2)`,
+whatever the stand-in grows to. Growth in either class's sites is growth
+in sites alone. It is stamped as the holder's origins changing in place
+(`Cover`, `OriginsChanged`), and `Check`'s passes and in-place origin updates
+cover both.
 
 **Incremental rounds.** Each solve is a tick, and each change is stamped
 with the tick it was made at. A later round re-solves a component only if,
