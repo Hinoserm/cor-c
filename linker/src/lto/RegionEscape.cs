@@ -982,6 +982,22 @@ internal sealed class RegionEscape
 
     private bool IsWide(int[] targets) => _assumed is not null && targets.Length > WideTargets;
 
+    /// <summary>
+    /// Whether a target's summary, as it stands, has the unknown object hold
+    /// one of its arguments or what is below one, or is the unknown call's:
+    /// what a wide call on a place keeps apart (Graph.Deferred). Not solved
+    /// yet, it is not: the stand-in it is applied with grows to cover it,
+    /// and whatever applied that is solved again, and splits it then.
+    /// </summary>
+    private bool LeaksArgument(int t)
+    {
+        if (_summaries[t] is not { } s) return false;
+        if (s.IsUnknown) return true;
+        ulong[] bits = ShapeOf(s).Bits;
+        for (int y = 2; y < HeldClass; y++) if (Has(bits, y)) return true;
+        return false;
+    }
+
     /// <summary>The stand-in of some of a wide call's targets, those that run on a receiver of a known class.</summary>
     private Summary NarrowedStandIn(int f, int[] targets) => StandIn(targets);
 
@@ -2701,6 +2717,8 @@ internal sealed class RegionEscape
             public bool Wide;
             public readonly Dictionary<int[], int> Groups = new(TargetsComparer.Instance);
             public readonly Dictionary<int, int[]?> Classes = new();
+            /// <summary>A wide call's targets kept apart on places (Deferred): each one's receiver node.</summary>
+            public readonly Dictionary<int, int> Deferred = new();
             public bool? SplitOutside;
         }
 
@@ -2735,6 +2753,9 @@ internal sealed class RegionEscape
                 // else: the whole call's stand-in.
                 int[]? narrow = (whole || _locOffset[loc] == Any) && _kind[o] == Kind.Made ? ClassTargets(v, o) : null;
                 if (narrow is { Length: 0 }) return;
+                // A PLACE: the call deferred to whoever binds it, for the
+                // targets that would let it go (Deferred).
+                if (narrow is null && whole && _kind[o] is Kind.Place or Kind.Deep && Deferred(v, o, loc)) return;
                 if (narrow is null && _owner.Why is not null && _owner.Progress is { } tell && _owner.WhyFunction?.Invoke(v.F) == true)
                     tell($"escape graphs why: in {_owner._functions[v.F].Name}: wide call {v.Callee} runs any of its {v.Outside.Length} targets on {Describe(o)} +{_locOffset[loc]}");
                 Add(WideGroup(v, narrow ?? v.Outside), loc);
@@ -2749,6 +2770,9 @@ internal sealed class RegionEscape
                 if (outside.Count > 0) Add(Group(v, outside.ToArray()), loc);
                 return;
             }
+            // Of more targets than are guarded one by one, all outside the
+            // cycle: deferred for those that leak (Deferred), as a wide call's.
+            if (whole && _kind[o] is Kind.Place or Kind.Deep && v.Inside.Length == 0 && v.Outside.Length > MostGuarded && Deferred(v, o, loc)) return;
             if (whole && _kind[o] is Kind.Place or Kind.Deep && v.Inside.Length + v.Outside.Length <= MostGuarded)
             {
                 // Apart only where it may tell: the targets outside when
@@ -2768,6 +2792,79 @@ internal sealed class RegionEscape
                     + (_kind[o] == Kind.Made ? " (sites " + string.Join(",", SitesOfObject(o).Take(8)) + "; made from " + string.Join(", ", _origins[o].Take(3).Select(r => _owner.Lineage(r, 4))) + ")" : ""));
             foreach (int g in v.Inside) Receives(g, loc);
             if (v.Outside.Length > 0) Add(Group(v, v.Outside), loc);
+        }
+
+        /// <summary>
+        /// A CALL ON A PLACE, DEFERRED FOR THE TARGETS THAT LEAK -- a wide
+        /// call's, or one of more targets than are guarded one by one, all
+        /// outside the cycle: of
+        /// the call's targets, those whose own summary has the unknown object
+        /// hold an argument, or is the unknown call's (LeaksArgument), are
+        /// each applied to the place guarded by itself -- the caller's to
+        /// filter: an object of a known site there runs it only if its class
+        /// does, a place of the caller's is that place guarded in turn -- and
+        /// every other target's stand-in, at once, to the place as it is.
+        /// So an override that lets its receiver go makes global only the
+        /// receivers that may run it, where one among a thousand made every
+        /// receiver of the call everyone's (U>P0, U>D0 in its stand-in).
+        ///
+        /// SOUND: every target is applied, each to every receiver it may run
+        /// on -- the rest to every one, each leaky one to every object its
+        /// guard may let through, which is every object whose class runs it,
+        /// every object of no known site, and what a place of a caller's
+        /// binds to there, filtered again -- with a stand-in that the rounds
+        /// grow to cover it (StandIn) -- or, not wide, with its summary,
+        /// solved before (MergedFor) -- so a target whose summary was not
+        /// solved yet, or grew since, is covered where it is applied; and a
+        /// rest that grows to let its receiver go is solved again
+        /// (ChangedAt), when the target that made it grow is apart. Bounded:
+        /// no more than MostDeferred targets apart, and a place whose guard
+        /// has been deferred through MostDeferredLevels calls already takes
+        /// the whole call as before, as does a call with nothing to keep
+        /// apart. Only the receiver is kept apart: what a leaky target does
+        /// to the other arguments is done as its stand-in says, at every
+        /// call, as before.
+        /// </summary>
+        private bool Deferred(VCall v, int o, int loc)
+        {
+            int[] path = _path[o];
+            if (path.Length > 0 && IsGuard(path[^1]) && _owner._guards[GuardOf(path[^1])].Length >= MostDeferredLevels) return false;
+            List<int>? leaky = null;
+            foreach (int t in v.Outside)
+                if (_owner.LeaksArgument(t))
+                {
+                    if ((leaky ??= new()).Count >= MostDeferred) return false;
+                    leaky.Add(t);
+                }
+            if (leaky is null) return false;
+            int[] rest = v.Outside.Except(leaky).ToArray();
+            if (_owner.Why is not null && _owner.Progress is { } tell && _owner.WhyFunction?.Invoke(v.F) == true)
+                tell($"escape graphs why: in {_owner._functions[v.F].Name}: call {v.Callee} on {Describe(o)} deferred for {string.Join(", ", leaky.Select(t => _owner._functions[t].Name))}");
+            foreach (int t in leaky) Add(DeferredGroup(v, t), Guarded(o, v, t));
+            if (rest.Length > 0) Add(v.Wide ? WideGroup(v, rest, apart: true) : Group(v, rest, apart: true), loc);
+            return true;
+        }
+
+        // The most targets of a wide call kept apart on a place, and the
+        // most calls a place's guard is deferred through.
+        private const int MostDeferred = 8;
+        private const int MostDeferredLevels = 3;
+
+        /// <summary>The receiver node of one target of a wide call kept apart (Deferred): its own stand-in applied to it on first use.</summary>
+        private int DeferredGroup(VCall v, int target)
+        {
+            int[] one = { target };
+            if (v.Deferred.TryGetValue(target, out int recv)) return recv;
+            recv = NewNode();
+            v.Deferred[target] = recv;
+            int[] args = (int[])v.Args.Clone();
+            args[0] = recv;
+            // A wide call's target by its own stand-in, which the rounds grow;
+            // any other's by its summary, solved before.
+            Summary applied = v.Wide ? _owner.NarrowedStandIn(v.F, one) : _owner.MergedFor(one);
+            Explain(v.F, "(deferred for its own receivers) " + v.Callee, one, applied);
+            Apply(args, v.Dest, applied);
+            return recv;
         }
 
         private void Receives(int member, int loc)
@@ -2793,10 +2890,10 @@ internal sealed class RegionEscape
         }
 
         /// <summary>The receiver node of a set of targets outside the cycle, their summary applied to it on first use.</summary>
-        private int Group(VCall v, int[] targets)
+        private int Group(VCall v, int[] targets, bool apart = false)
         {
             if (v.Groups.TryGetValue(targets, out int recv)) return recv;
-            if (v.Groups.Count >= MostGroups && !TargetsComparer.Instance.Equals(targets, v.Outside)) return Group(v, v.Outside);
+            if (!apart && v.Groups.Count >= MostGroups && !TargetsComparer.Instance.Equals(targets, v.Outside)) return Group(v, v.Outside);
             recv = NewNode();
             v.Groups[targets] = recv;
             int[] args = (int[])v.Args.Clone();
@@ -2813,10 +2910,13 @@ internal sealed class RegionEscape
         /// call is solved without (Order), but what they are assumed to do,
         /// checked and grown each round as the whole call's is (Check).
         /// </summary>
-        private int WideGroup(VCall v, int[] targets)
+        private int WideGroup(VCall v, int[] targets, bool apart = false)
         {
             if (v.Groups.TryGetValue(targets, out int recv)) return recv;
-            if (v.Groups.Count >= MostGroups && !TargetsComparer.Instance.Equals(targets, v.Outside)) return WideGroup(v, v.Outside);
+            // (The rest of a deferred call is always its own: the leaky
+            // targets are applied apart, and merged into the whole call they
+            // would be applied to every receiver again.)
+            if (!apart && v.Groups.Count >= MostGroups && !TargetsComparer.Instance.Equals(targets, v.Outside)) return WideGroup(v, v.Outside);
             recv = NewNode();
             v.Groups[targets] = recv;
             int[] args = (int[])v.Args.Clone();
