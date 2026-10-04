@@ -821,6 +821,7 @@ public sealed partial class Lowering
                     VReg word = _e.Load(IrTypes.Word, value, offset);
                     references.Add((offset, word));
                     ReferenceBarrier(new MemPlace(R(into), offset, type), word);
+                    CardMarkAhead(new MemPlace(R(into), offset, Type.String), word);
                 }
                 _e.Emit(Opcode.MemCopy, null, R(into), R(value), Imm(bytes, IrTypes.Word));
                 foreach ((int offset, VReg word) in references)
@@ -842,6 +843,7 @@ public sealed partial class Lowering
                 // not a caller's result buffer (HeapStruct).
                 if (IsStructValue(m.Type)) value = HeapStruct(_decl ?? (Node)new MethodDecl { Name = "", Line = 0, Col = 0 }, value, m.Type);
                 ReferenceBarrier(m, value);
+                CardMarkAhead(m, value);
                 _e.Store(m.Address, new RegOperand(value), m.Offset, LoadSize(m.Type));
                 if (m.Field is FieldSymbol written && TagsField(written)) _e.Block.Instrs[^1].Field = FieldKey(written);
                 CardMark(m, value);
@@ -991,6 +993,15 @@ public sealed partial class Lowering
     }
 
     /// <summary>
+    /// The mark before the store as well, where a thread can be stopped
+    /// between the two (CardMarkBefore): nothing elsewhere.
+    /// </summary>
+    private void CardMarkAhead(MemPlace m, VReg value)
+    {
+        if (CardMarkBefore) CardMark(m, value);
+    }
+
+    /// <summary>
     /// THE CARD MARK, after the store, as a generational collector needs it:
     /// the byte for the kilobyte the reference went into is set, so the next
     /// minor collection reads that kilobyte for pointers old objects hold into
@@ -998,7 +1009,9 @@ public sealed partial class Lowering
     /// shift, an add and a byte store; nothing when the table is 0 -- a
     /// freestanding image, a 64-bit one, one whose collector has no
     /// generations. After, not before: a collection that clears the card
-    /// between a mark and the store it stands for would miss the store.
+    /// between a mark and the store it stands for would miss the store --
+    /// and in an image whose threads stop anywhere, before as well
+    /// (CardMarkBefore, CardMarkAhead).
     /// Where the Marking test is omitted -- the collector's own code, a
     /// runtime without Cards -- so is this.
     /// </summary>
@@ -1023,6 +1036,7 @@ public sealed partial class Lowering
     private void StoreNew(VReg block, VReg value, long offset, Type type, FieldSymbol? field = null)
     {
         if (IsStructValue(type)) value = HeapStruct(_decl ?? (Node)new MethodDecl { Name = "", Line = 0, Col = 0 }, value, type);
+        CardMarkAhead(new MemPlace(R(block), offset, type), value);
         _e.Store(R(block), R(value), offset, LoadSize(type));
         if (field is not null && TagsField(field)) _e.Block.Instrs[^1].Field = FieldKey(field);
         CardMark(new MemPlace(R(block), offset, type), value);
@@ -1031,6 +1045,7 @@ public sealed partial class Lowering
     /// <summary>StoreNew for a word the caller knows is a reference -- a struct's block, an object.</summary>
     private void StoreNewReference(VReg block, VReg value, long offset)
     {
+        if (CardMarkBefore) CardMarkAt(R(block), offset);
         _e.Store(R(block), R(value), offset, _t.WordSize);
         CardMarkAt(R(block), offset);
     }

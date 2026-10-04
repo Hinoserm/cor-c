@@ -99,6 +99,11 @@ public static class Interlocked
         long at = Sys.AddressOf(ref location);
         long word = Sys.Word(value);
         if (Runtime.Marking != 0) Runtime.WriteBarrier((nint)at, (nint)word);
+        // Before the store as well as after it, as the compiler places its
+        // own in an image whose threads can be stopped at any instruction
+        // (Lowering.CardMarkBefore): a stop between the swap and the mark
+        // after it leaves no card for a minor cycle to read.
+        Runtime.CardMark((nint)at);
         T old = (T)Sys.FromWord(Sys.AtomicSwap(at, word));
         // After the store, as the compiler places its own card mark: a
         // reference an old object is given is found by the next minor
@@ -112,6 +117,7 @@ public static class Interlocked
         long at = Sys.AddressOf(ref location);
         long word = Sys.Word(value);
         if (Runtime.Marking != 0) Runtime.WriteBarrier((nint)at, (nint)word);
+        Runtime.CardMark((nint)at);
         T seen = (T)Sys.FromWord(Sys.Cas(at, Sys.Word(comparand), word));
         Runtime.CardMark((nint)at);
         return seen;
