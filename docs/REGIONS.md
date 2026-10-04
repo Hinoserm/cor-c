@@ -398,6 +398,28 @@ objects there that run that override. A caller reaching the place by the
 same path keeps, at the guard, only the objects of sites whose descriptor
 runs it, and any of no known descriptor. `+classoff` turns this off.
 
+**Deferred calls.** That is for a call of at most 8 targets. A wide call on a
+place, or one of more than 8 targets all outside the cycle, is *deferred*
+for the targets that let an argument go (`Graph.Deferred`): each target whose
+own summary has the unknown object hold an argument, or what is below one,
+or is the unknown call's (`LeaksArgument`), is applied to the place guarded
+by itself -- by its own stand-in for a wide call, by its summary otherwise --
+and every other target, at once, to the place as it is. The guard rides on
+the place into the summary, so each caller resolves it against what it binds
+the place to: an object of a known site keeps the target only if its class
+runs it, a place of the caller's is that place guarded in turn, and anything
+else -- the unknown object, an object of no known site -- goes through. One
+override that lets its receiver go then makes global only the receivers that
+may run it, not every receiver of the call (U>P0 and U>D0 in the whole
+call's stand-in). Bounds: at most 8 targets kept apart a call, and a place
+whose guard was deferred through 3 calls already takes the whole call. Only
+the receiver is kept apart; what a leaky target does to the other arguments
+is done at every call. Sound: every target is applied to every receiver it
+may run on, with a summary the rounds grow to cover it, and a target that
+leaks only after it was solved grows the rest's stand-in, whose appliers are
+solved again and split it then. Tests: engine `WideDeferred`,
+`WideDeferredTwoLevels`; language 1317.
+
 **Boxes and strings.** A box's table and a string's name none of their system
 interfaces (IComparable, IComparable<T>, IEquatable<T>, IFormattable), so
 that every unit's copy of a box is one table. A call through an interface
