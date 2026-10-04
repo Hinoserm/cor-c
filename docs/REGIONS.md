@@ -304,6 +304,33 @@ field holds. Past a walk of 4096 classes or 512 objects, the summary is the
 coarse one (`Coarsest`): every argument and all it reaches one object, which
 the unknown object holds as soon as any argument reaches it. Test 1305.
 
+**One body, solved once.** The same body in several units (an iterator's
+MoveNext, a lambda over shared code, a generic method specialised per unit,
+a box stub, a key helper) is one function per unit. Every copy is a target
+of every call that may run any of them: `ResolveOverride` for a local copy,
+and every unit's definition for a global one, since only the final link
+coalesces those. The engine solves each body once, as its first copy in
+link order (`RegionEscape.Bodies`):
+- two functions are one body when they have the same name and say the same
+  to the engine (`SameBody`: parameters, nodes, slots, number parameters,
+  constraints, calls' callees, results and arguments, sites' descriptors and
+  words, loops, whether their symbols are constants), and each of their
+  calls runs the same bodies. The partition is refined until no class
+  splits;
+- every call of a copy is a call of the body, and a body is rooted or asked
+  about when any copy is;
+- a copy's answers are its body's at the same ordinals: its sites are global
+  when the body's are (`Mark`), outlive it when the body's outlive the body
+  (`BitsOf` sets a body site's copies too), and its loops hold what the
+  body's do;
+- a virtual call in a body runs on an object what it runs in any copy, each
+  resolved in its own unit (`RunsOn`).
+
+What one copy's callers do with its objects, every copy's sites answer, as
+one function called from all of them would. Symbols' names, sites' lines and
+what only the judge reads are not compared. The report line counts the
+functions solved as another copy.
+
 **Wide calls and stand-ins.** A virtual call with more than 16 targets
 (`WideTargets`; `+wide=N` changes it, `+wide=0` follows every call) is not
 an edge of the order. Equals, GetHashCode, ToString and an iterator's
