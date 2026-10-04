@@ -46,6 +46,40 @@ namespace System.ServiceProcess
 
         // From the manager to a registered service.
         ControlMessage = 100,
+
+        // COM's object broker: processes, IDs and object exporters.
+        ComConnect = 200,
+        ComProcessGone = 201,
+        ComReserveIds = 202,
+        ComThreadId = 203,
+        ComOxidRegister = 204,
+        ComOxidResolve = 205,
+        ComOxidFree = 206,
+
+        // Class objects, activation and the class registry.
+        ComClassRegister = 210,
+        ComClassRevoke = 211,
+        ComActivate = 212,
+        ComClassInfo = 213,
+
+        // The running object table.
+        RotRegister = 220,
+        RotRevoke = 221,
+        RotIsRunning = 222,
+        RotGetObject = 223,
+        RotNoteChangeTime = 224,
+        RotGetTimeOfLastChange = 225,
+        RotEnumRunning = 226,
+
+        // Interfaces kept for windows (OLE drag and drop's drop targets).
+        WindowPropRegister = 230,
+        WindowPropGet = 231,
+
+        // The endpoint mapper.
+        EpInsert = 240,
+        EpDelete = 241,
+        EpLookup = 242,
+        EpMap = 243,
     }
 
     /// When a service starts (winsvc.h's SERVICE_*_START, the same numbers).
@@ -191,6 +225,9 @@ namespace System.ServiceProcess
             if (list != null) foreach (string s in list) Text(s);
         }
 
+        /// A 64-bit number: its low word, then its high one.
+        public void Quad(long v) { Int(v & 0xFFFFFFFF); Int((v >> 32) & 0xFFFFFFFF); }
+
         public byte[] ToArray()
         {
             byte[] made = new byte[_n];
@@ -246,6 +283,8 @@ namespace System.ServiceProcess
             for (long i = 0; i < n && !Short; i++) list.Add(Text());
             return list;
         }
+
+        public long Quad() { long low = Int(); return low | (Int() << 32); }
     }
 
     /// One request on its own connection, and its answer: the reader past
