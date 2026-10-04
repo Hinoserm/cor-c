@@ -257,7 +257,9 @@ public static class RegionSummary
                     // A read of the word and a write to it.
                     int at = Base(i.Operands[0]);
                     if (at < 0) return;
-                    if (dest >= 0) _constraints.Add(new(RegionConstraintKind.Load, dest, at, i.Offset));
+                    // What it answers is the word that was there: a number
+                    // where the word is one (Instr.Number), as a load's.
+                    if (dest >= 0 && !i.Number) _constraints.Add(new(RegionConstraintKind.Load, dest, at, i.Offset));
                     for (int k = 1; k < i.Operands.Count; k++)
                         if (Value(i.Operands[k]) is int v and >= 0) _constraints.Add(new(RegionConstraintKind.Store, at, v, i.Offset));
                     return;

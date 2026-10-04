@@ -921,7 +921,7 @@ public sealed partial class Lowering
 
         Block report = _f.NewBlock("barrier");
         Block store = _f.NewBlock("stored");
-        VReg marking = _e.Load(IrType.I32, new SymOperand(StaticSymbol(flag)), 0, 4);
+        VReg marking = Numbered(_e, _e.Load(IrType.I32, new SymOperand(StaticSymbol(flag)), 0, 4));
         _e.Branch(marking, report, store);
 
         _e.SetBlock(report);
@@ -1125,10 +1125,25 @@ public sealed partial class Lowering
     /// summary, were the unknown object's in Run when the total was printed.
     /// </summary>
     private VReg CountOf(Builder e, VReg of)
+        => Numbered(e, e.Load(IrType.I32, of, _t.ArrayCountOffset));
+
+    /// <summary>
+    /// A LOAD JUST MADE, MARKED A NUMBER (Instr.Number) where `number` says
+    /// it is never an address: a type's flags, depth or entry count read
+    /// from its descriptor; a Nullable's has-value byte; a box's value of a
+    /// number type (NeverAddress); a float's bits; a string's characters; an
+    /// iterator's state or a view's cursor; a machine's size; errno. Region
+    /// inference takes an unmarked word read out of an object for whatever
+    /// that object's words hold -- on a 32-bit target an int and an address
+    /// are one word -- and a number made from one carried objects wherever
+    /// it went (1290's string Length). Only `read`, the load the builder
+    /// made last, is marked.
+    /// </summary>
+    private static VReg Numbered(Builder e, VReg read, bool number = true)
     {
-        VReg count = e.Load(IrType.I32, of, _t.ArrayCountOffset);
-        e.Block.Instrs[^1].Number = true;
-        return count;
+        Instr last = e.Block.Instrs[^1];
+        if (number && last.Op == Opcode.Load && ReferenceEquals(last.Dest, read)) last.Number = true;
+        return read;
     }
 
     /// <summary>How many bytes a value of a type occupies in memory.</summary>

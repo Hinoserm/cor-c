@@ -265,7 +265,7 @@ public sealed partial class Lowering
             Block flat = f.NewBlock("keflat");
             Block text = f.NewBlock("ketext");
             Block texts = f.NewBlock("ketexts");
-            VReg flags = e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize);
+            VReg flags = Numbered(e, e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize));
 
             e.Branch(e.Binary(Opcode.And, flags, 1), flat, ask);
             e.SetBlock(flat);
@@ -291,7 +291,7 @@ public sealed partial class Lowering
     private void TextsEqual(Builder e, VReg a, VReg b, Block texts, Block no)
     {
         VReg other = e.Load(IrTypes.Word, b, 0);
-        VReg otherFlags = e.Load(IrType.I32, other, -_t.DescriptorBytes + DescFlags * _t.WordSize);
+        VReg otherFlags = Numbered(e, e.Load(IrType.I32, other, -_t.DescriptorBytes + DescFlags * _t.WordSize));
 
         e.Branch(e.Binary(Opcode.And, otherFlags, 2), texts, no);
         e.SetBlock(texts);
@@ -429,7 +429,7 @@ public sealed partial class Lowering
             {
                 Block flat = f.NewBlock("khflat");
                 Block texts = f.NewBlock("khtext");
-                VReg flags = e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize);
+                VReg flags = Numbered(e, e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize));
 
                 e.Branch(e.Binary(Opcode.And, flags, 1), flat, ask);
                 e.SetBlock(flat);
@@ -637,7 +637,7 @@ public sealed partial class Lowering
                 else if (field.Type.Prim is Prim.F32 or Prim.F64)
                 {
                     bool wide = field.Type.Prim == Prim.F64;
-                    v = FloatHash(_f, _e, _e.Load(wide ? IrType.I64 : IrType.I32, a, field.Offset, wide ? 8 : 4, false), wide);
+                    v = FloatHash(_f, _e, Numbered(_e, _e.Load(wide ? IrType.I64 : IrType.I32, a, field.Offset, wide ? 8 : 4, false)), wide);
                 }
                 else
                 {
@@ -985,7 +985,7 @@ public sealed partial class Lowering
             {
                 Block flat = f.NewBlock("kcflat");
                 Block texts = f.NewBlock("kctext");
-                VReg flags = e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize);
+                VReg flags = Numbered(e, e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize));
 
                 e.Branch(e.Binary(Opcode.And, flags, 1), flat, ask);
                 e.SetBlock(flat);
@@ -1142,7 +1142,7 @@ public sealed partial class Lowering
             // details, but equal boxed values must always share one.
             bool wide = BoxSlot(of) == IrType.F64;
             IrType bitsType = wide ? IrType.I64 : IrType.I32;
-            VReg bits = e.Load(bitsType, self, _t.ObjectHeaderBytes, wide ? 8 : 4, false);
+            VReg bits = Numbered(e, e.Load(bitsType, self, _t.ObjectHeaderBytes, wide ? 8 : 4, false));
             VReg magnitude = e.Binary(Opcode.And, R(bits),
                 new ImmOperand(wide ? long.MaxValue : int.MaxValue, bitsType), bitsType);
             Block zero = f.NewBlock("hashzero"), nonzero = f.NewBlock("hashnonzero");
@@ -1173,7 +1173,7 @@ public sealed partial class Lowering
             _m.Functions.Add(f);
             return label;
         }
-        e.Ret(new RegOperand(e.Load(IrType.I32, self, _t.ObjectHeaderBytes, Math.Min(4, Math.Max(1, of.Size)), false)));
+        e.Ret(new RegOperand(Numbered(e, e.Load(IrType.I32, self, _t.ObjectHeaderBytes, Math.Min(4, Math.Max(1, of.Size)), false), NeverAddress(of))));
         _m.Functions.Add(f);
         return label;
     }
