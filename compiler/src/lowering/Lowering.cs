@@ -83,12 +83,36 @@ public sealed partial class Lowering
     /// the store, the value is still in the stopped thread's registers, which
     /// its handshake saved on its stack; taken after it, the old object holds
     /// it and its card was read. The mark after stays, for a cycle that takes
-    /// the cards while the thread runs. Ring 0's processors are stopped the
-    /// same way: one running kernel code is Kicked, and the Kick's handler
-    /// answers the collector where it stands (Smp.PromptStop). Set with
-    /// --ring1-syscalls or --tls-gs: every kernel image and module.
+    /// the cards while the thread runs. Set wherever StoreSequences is:
+    /// --ring1-syscalls, or --store-sequences (ring 0's kernel and modules,
+    /// whose processors answer their collector from a Kick's interrupt).
+    ///
+    /// NOW ONLY A FALLBACK. Such an image makes its stores as sequences
+    /// (StoreSequences), inside which nothing stops a thread between the
+    /// store and its card, and each store made one drops its mark before
+    /// (CardMarks.FuseStores). What keeps it is a store the compiler could not
+    /// make one, which it says.
     /// </summary>
     public static bool CardMarkBefore { get; set; }
+
+    /// <summary>
+    /// THE STORE SEQUENCES: every reference store of an i386 image whose
+    /// threads its collector stops at ANY instruction -- CORSAC's ring-1
+    /// kernels, whose ring 0 sends a thread to the collector's handshake from
+    /// wherever a trap finds it (Ring1Kernel.SendToAnswer) -- is made by one
+    /// of the image's stubs, which ring 0 sends no thread out of. Its Marking
+    /// test, its snapshot barrier, the store and its card mark are one
+    /// sequence there: a thread stopped between the test and the store would
+    /// answer the snapshot and then store over a reference nobody heard of,
+    /// and the concurrent cycle lose it. Lowering emits the stores as it
+    /// always has, for every pass to read, and says so in the module's
+    /// runtime helpers (RuntimeAbi.RefStore); the last pass makes each one
+    /// its sequence (CardMarks.FuseStores); Interlocked's reference
+    /// exchanges are sequences of their own from the start
+    /// (Sys.ExchangeReference). Set with --ring1-syscalls, or
+    /// --store-sequences.
+    /// </summary>
+    public static bool StoreSequences { get; set; }
 
     /// <summary>
     /// The runtime and the class library are shared objects this program
@@ -186,6 +210,7 @@ public sealed partial class Lowering
         foreach ((string helper, int arity) in new[] { ("Free", 1), ("FreeField", 2), ("FreeReplaced", 2), ("FreeOwnedReplaced", 2), ("KeepField", 2), ("CardMarkObject", 1), ("FreeOwnedElements", 1), ("OwnElements", 1), ("FreeStorageInFrame", 1),
                                                        ("RegionEnter", 1), ("RegionLeave", 1), ("RegionLoop", 2), ("AllocRegion", 3), ("AllocNear", 4), ("RegionCatch", 1) })
             if (l.RuntimeMethod(helper, arity) is MethodSymbol provided) l._m.RuntimeHelpers.Add(Label(provided));
+        if (l.MakesStoreSequences) l._m.RuntimeHelpers.Add(Corsac.Lang.Lto.RuntimeAbi.RefStore);
         errors.AddRange(l.Errors);
         if (entries is not null)
         {

@@ -275,7 +275,7 @@ internal static class Imports
     private static void Rewrite(MFunction m, MInstr i, Func<string, bool> isImported, List<MInstr> outList, List<string> errors)
     {
         // A call is the PLT's business and a jump table is this object's own.
-        if (i.Op is MOp.Call or MOp.Jmp or MOp.CallKeep)
+        if (i.Op is MOp.Call or MOp.Jmp or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd)
         {
             outList.Add(i);
             return;

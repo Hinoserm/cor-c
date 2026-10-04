@@ -125,6 +125,18 @@ public sealed class ScalarObjects : IParallelModulePass
         // Without this an out-of-line barrier kept every object whose field
         // it guarded in memory, and whether it was out of line was the
         // inliner's decision about the barrier's size that day.
+        // NO WINDOW BETWEEN ITS TEST AND THE OVERWRITE, in an image whose
+        // threads are stopped at any instruction (Lowering.StoreSequences),
+        // and so no sequence: a memory store's old reference is in the heap,
+        // where a thread stopped between the test and the store leaves it for
+        // nobody, but this one's is the field's value -- live in a register or
+        // a frame slot up to the overwrite, for it is the barrier's argument.
+        // A thread stopped there (Marking still 0 at its test) answers the
+        // snapshot with every register pushed on its stack by the handshake
+        // (CORSAC's entry.asm) and its stack copied from below them
+        // (GcThreads.Work, CopyStack): the old value is in the copy, and
+        // marked from it. Stopped after the overwrite, it had already passed
+        // the test with the snapshot not begun.
         Dictionary<Instr, long> barriers = new();
         // AND THE CARD MARK AFTER ONE: it names the kilobyte of the heap an
         // object's field is in, for the next minor collection to read. A

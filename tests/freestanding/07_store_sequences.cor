@@ -1,0 +1,149 @@
+// test: reference stores made as sequences (--store-sequences) store, report and keep every register
+// flags-x86: --store-sequences
+// expect-asm-x86: Store: __corsac_refstore
+// expect-no-asm-x86: Store: cmp __corsac_cardmark __corsac_barrier
+// expect-exit: 0
+// expect-output:
+// field b
+// static d
+// element f
+// struct g h
+// made i
+// exchange j k
+// compare l m n
+// marking o p q
+// scalar s
+// live 1234567
+// alive 2000
+//
+// The stubs of 06_store_sequences, run: a field, a static, an array element,
+// a struct with references, an object's own fields as it is made,
+// Interlocked's exchange and compare-exchange -- each through its sequence
+// on i386 (and as before on x86-64, where no image stops its threads
+// anywhere) -- with values held in registers across them, which the stubs
+// must keep. Then with Runtime.Marking set, so that each stub takes its
+// report too, and a collection with the stored references the only way to
+// what survives it. And an object kept in registers, its field overwritten
+// with Marking set (the WriteBarrierValues path, which needs no sequence).
+
+using System;
+using System.Threading;
+
+class Cell
+{
+    public object? Value;
+    public Cell(object? value) { Value = value; }
+}
+
+struct Pair
+{
+    public string First;
+    public string Second;
+}
+
+class Holder
+{
+    public Pair Both;
+}
+
+static class Program
+{
+    static object? _static;
+
+    static int Main()
+    {
+        Host.Start(16 * 1024 * 1024);
+
+        Cell cell = new Cell("a");
+        Store(cell, "b");
+        Host.Line("field " + cell.Value);
+
+        _static = "c";
+        StoreStatic("d");
+        Host.Line("static " + _static);
+
+        object[] array = new object[3];
+        array[1] = "e";
+        StoreElement(array, "f");
+        Host.Line("element " + array[1]);
+
+        Holder holder = new Holder();
+        Pair pair;
+        pair.First = "g";
+        pair.Second = "h";
+        StorePair(holder, pair);
+        Host.Line("struct " + holder.Both.First + " " + holder.Both.Second);
+
+        Cell made = new Cell("i");
+        Host.Line("made " + made.Value);
+
+        Cell swapped = new Cell("j");
+        object? old = Interlocked.Exchange(ref swapped.Value, "k");
+        Host.Line("exchange " + old + " " + swapped.Value);
+
+        Cell compared = new Cell("l");
+        object? seen = Interlocked.CompareExchange(ref compared.Value, "m", "l");
+        object? kept = Interlocked.CompareExchange(ref compared.Value, "never", "l");
+        Host.Line("compare " + seen + " " + compared.Value + (kept == (object)"m" ? " n" : " wrong"));
+
+        // Each stub's report taken: Marking set outside any cycle, which the
+        // collector's barrier answers by logging into a ring it does not have.
+        Runtime.Marking = 1;
+        Cell marked = new Cell("x");
+        Store(marked, "o");
+        object? before = Interlocked.Exchange(ref marked.Value, "p");
+        Interlocked.CompareExchange(ref marked.Value, "q", "p");
+        string scalar = Scalar("r", "s");
+        Runtime.Marking = 0;
+        Host.Line("marking " + before + " " + (before == (object)"o" ? "p" : "wrong") + " " + marked.Value);
+        Host.Line("scalar " + scalar);
+
+        Host.Line("live " + Live(1000000, 234567));
+
+        // The stored references the only way to what a collection keeps.
+        Cell[] chain = new Cell[2000];
+        for (int i = 0; i < chain.Length; i++)
+        {
+            chain[i] = new Cell(null);
+            Store(chain[i], new byte[64 + i % 7]);
+            for (int j = 0; j < 20; j++) { byte[] junk = new byte[200]; junk[0] = (byte)j; }
+        }
+        GC.Collect();
+        int alive = 0;
+        for (int i = 0; i < chain.Length; i++) if (chain[i].Value is byte[] bytes && bytes.Length == 64 + i % 7) alive++;
+        Host.Line("alive " + alive);
+
+        Host.Done(alive == chain.Length ? 0 : 1);
+        return 0;
+    }
+
+    static void Store(Cell into, object value) { into.Value = value; }
+
+    // An object the optimiser keeps in registers (ScalarObjects): its field's
+    // barrier is told the old value itself (Runtime.WriteBarrierValues),
+    // which no stop can lose -- it is in a register up to the overwrite.
+    static string Scalar(string first, string second)
+    {
+        Cell local = new Cell(first);
+        local.Value = second;
+        return (string)local.Value!;
+    }
+
+    static void StoreStatic(object value) { _static = value; }
+
+    static void StoreElement(object[] into, object value) { into[1] = value; }
+
+    static void StorePair(Holder into, Pair value) { into.Both = value; }
+
+    // Values in registers on both sides of stores: the stubs keep every
+    // register but the flags.
+    static int Live(int a, int b)
+    {
+        Cell c = new Cell(null);
+        int x = a + 1, y = b - 1, z = a ^ b;
+        c.Value = "v";
+        int w = x + y;
+        c.Value = c;
+        return w + (z ^ (a ^ b)) - 0 + (c.Value == c ? 0 : 1000);
+    }
+}

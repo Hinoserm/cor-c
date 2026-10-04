@@ -98,6 +98,9 @@ internal static class AsmText
             case MOp.Call:
             case MOp.CallInd:
             case MOp.CallKeep:
+            case MOp.CallKeepInd:
+            case MOp.CallKeepEax:
+            case MOp.CallKeepEaxInd:
                 yield return $"call {Op(i.Operands[0], 4, true)}";
                 yield break;
             case MOp.Cdq:

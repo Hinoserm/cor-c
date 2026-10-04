@@ -27,6 +27,23 @@ public static class RuntimeAbi
     public const string WriteBarrierValues = "m_Runtime_WriteBarrierValues_2_" + Word + "_" + Word;
     public const string CardMark = "m_Runtime_CardMark_1_" + Word;
     public const string CardMarkObject = "m_Runtime_CardMarkObject_1_" + Word;
+    /// <summary>
+    /// THE STORE SEQUENCES (i386 images whose threads stop anywhere: CORSAC's
+    /// ring-1 kernels): a reference store with its Marking test, snapshot
+    /// barrier and card mark (RefStore), and one with its card mark alone
+    /// (CardStore), each a stub of the image that defines the runtime, laid
+    /// out together between SequencesStart and SequencesEnd -- the range its
+    /// kernel never stops a thread inside (X86Backend, CardMarks.FuseStores).
+    /// RefStore in a unit's runtime helpers says the unit's stores are made
+    /// so.
+    /// </summary>
+    public const string RefStore = "__corsac_refstore";
+    public const string CardStore = "__corsac_cardstore";
+    /// <summary>Interlocked's reference exchanges as sequences (Sys.ExchangeReference, CompareExchangeReference).</summary>
+    public const string RefExchange = "__corsac_refxchg";
+    public const string RefCompareExchange = "__corsac_refcas";
+    public const string SequencesStart = "__corsac_store_sequences";
+    public const string SequencesEnd = "__corsac_store_sequences_end";
     /// <summary>Regions (RegionPointsTo, RegionSolver): opened on a boundary's entry, given back on its return, allocated in.</summary>
     public const string RegionEnter = "m_Runtime_RegionEnter_1_" + Word;
     public const string RegionLeave = "m_Runtime_RegionLeave_1_" + Word;

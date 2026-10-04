@@ -599,11 +599,17 @@ public static class Driver
         Corsac.Lang.Lower.Lowering.Freestanding = freestanding;
         Corsac.Lang.Lower.Lowering.TlsGs = freestanding && args.Contains("--tls-gs");
         Corsac.Lang.Lower.Lowering.Ring1Syscalls = freestanding && args.Contains("--ring1-syscalls");
-        // Its threads are stopped at any instruction (Lowering.CardMarkBefore):
-        // a ring-1 kernel's sent to its handshake, a kernel's processors
-        // answering their collector from a Kick's interrupt (--tls-gs: the
-        // kernels, ring 0's and ring 1's, and their modules).
-        Corsac.Lang.Lower.Lowering.CardMarkBefore = Corsac.Lang.Lower.Lowering.Ring1Syscalls || Corsac.Lang.Lower.Lowering.TlsGs;
+        // ITS THREADS ARE STOPPED AT ANY INSTRUCTION: every reference store is
+        // made one sequence no thread is stopped inside (Lowering.StoreSequences):
+        // a ring-1 kernel's, sent to its handshake from wherever a trap finds
+        // it (--ring1-syscalls), and ring 0's kernel and its modules, whose
+        // processors answer their collector from a Kick's interrupt -- the
+        // image build asks with --store-sequences, which a freestanding test
+        // run as a process may ask too. The card mark before a store stays
+        // only for a store that cannot be made one (Lowering.CardMarkBefore),
+        // in the same images: one scheme an image.
+        Corsac.Lang.Lower.Lowering.StoreSequences = freestanding && (Corsac.Lang.Lower.Lowering.Ring1Syscalls || args.Contains("--store-sequences"));
+        Corsac.Lang.Lower.Lowering.CardMarkBefore = Corsac.Lang.Lower.Lowering.StoreSequences;
 
         // --asm-entry: an assembled object supplies `_start`, and this is the
         // name it calls once it has a stack and a cleared .bss.
@@ -830,6 +836,15 @@ public static class Driver
             {
                 Console.Write(module.Dump());
             }
+        }
+        // UNOPTIMISED, ITS STORES ARE SEQUENCES ALL THE SAME: where the image
+        // stops its threads anywhere (Lowering.StoreSequences) the last pass's
+        // conversion runs without the passes before it (CardMarks.FuseStores),
+        // or --no-opt would leave every barrier's test and its store two
+        // places a thread can be stopped between.
+        else if (module.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.RefStore))
+        {
+            new Corsac.Lang.Opt.CardMarks().Run(module);
         }
 
         // Async bodies become state machines once their registers are final;

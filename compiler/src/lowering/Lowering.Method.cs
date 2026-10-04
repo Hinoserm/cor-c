@@ -815,6 +815,26 @@ public sealed partial class Lowering
                 VReg into = held.Offset == 0 ? basis : _e.Binary(Opcode.Add, basis, held.Offset);
                 int bytes = Math.Max(1, StructOf(held.Type).InstanceSize);
                 List<(int Offset, VReg Value)> references = new();
+                // A STRUCT'S REFERENCES STORED AS SEQUENCES, where stores are
+                // (StoreSequences): each written alone first, barrier and card
+                // with it, as a field is, and then the bytes copied over them
+                // with the same words. A stop between a barrier's test and a
+                // copy that takes the whole struct at once would let the copy
+                // land over a reference nobody reported.
+                if (MakesStoreSequences)
+                {
+                    foreach ((int offset, Type type) in TracedFields(StructOf(held.Type), 0))
+                    {
+                        if (!MayHoldReference(type)) continue;
+                        VReg word = _e.Load(IrTypes.Word, value, offset);
+                        MemPlace place = new(R(into), offset, type);
+                        ReferenceBarrier(place, word);
+                        _e.Store(R(into), R(word), offset, _t.WordSize);
+                        CardMark(place, word);
+                    }
+                    _e.Emit(Opcode.MemCopy, null, R(into), R(value), Imm(bytes, IrTypes.Word));
+                    break;
+                }
                 foreach ((int offset, Type type) in TracedFields(StructOf(held.Type), 0))
                 {
                     if (!MayHoldReference(type)) continue;
@@ -920,6 +940,16 @@ public sealed partial class Lowering
     }
 
     private bool _inBarrier;
+
+    /// <summary>
+    /// Whether this compile's reference stores are made as sequences
+    /// (StoreSequences): asked, on i386, of a runtime with a concurrent
+    /// collector's barrier and a card table, which the sequences read.
+    /// </summary>
+    private bool MakesStoreSequences
+        => StoreSequences && _t.Name == "x86" && _b.Types.TryGetValue(RuntimeType, out TypeSymbol? rt)
+            && rt.Fields.Any(f => f.Static && f.Name == "Marking") && rt.Fields.Any(f => f.Static && f.Name == "Cards")
+            && RuntimeMethod("WriteBarrier", 2) is not null;
 
     /// <summary>
     /// Whether an array whose elements are written as this type may be one

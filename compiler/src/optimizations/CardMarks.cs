@@ -38,11 +38,181 @@ public sealed class CardMarks : IModulePass
 
     public void Run(Module m)
     {
+        // THE STORE SEQUENCES, where the module's stores are made so
+        // (Lowering.StoreSequences, which says it in the runtime helpers).
+        bool sequences = Target.Current.Name == "x86" && m.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.RefStore);
         foreach (Function f in m.Functions)
         {
             DropFrameNotes(f);
+            if (sequences) FuseStores(f);
             Expand(f);
         }
+    }
+
+    /// <summary>The image's sequence of a reference store with its whole barrier (X86 MachineIntrinsics.RefStore).</summary>
+    public const string RefStore = "__x86.i.refstore";
+
+    /// <summary>The image's sequence of a store with its card alone (X86 MachineIntrinsics.CardStore).</summary>
+    public const string CardStore = "__x86.i.cardstore";
+
+    /// <summary>
+    /// EVERY REFERENCE STORE MADE ONE SEQUENCE (Lowering.StoreSequences): an
+    /// image whose threads its kernel stops at any instruction stores
+    /// through stubs that kernel sends no thread out of (X86Backend's store
+    /// sequences). Lowering wrote each store as every pass reads one --
+    ///
+    ///     t = load Runtime.Marking          the barrier's test
+    ///     branch t -> report, stored
+    ///   report:
+    ///     call Runtime.WriteBarrier(slot, value)
+    ///     jump stored
+    ///   stored:
+    ///     call Runtime.CardMark(slot)       before, where cards are so marked
+    ///     store [address + offset], value
+    ///     call Runtime.CardMark(slot)
+    ///
+    /// -- and here, after every pass, the store becomes the sequence where it
+    /// stands, `call refstore(slot, value)`, which tests Marking, reports,
+    /// stores and marks the card, and the test, the report block and the card
+    /// marks go. Nothing moves: what came before the store in `stored` still
+    /// runs before it. A store with a card mark and no barrier -- a new
+    /// block's (Lowering.StoreNew) -- becomes `call cardstore(slot, value)`,
+    /// the store and the card. A store the shapes above cannot be found in is
+    /// left as it was and said: its barrier's test and its store are two
+    /// places a thread can be stopped between.
+    /// </summary>
+    public static void FuseStores(Function f)
+    {
+        Dictionary<VReg, Instr?> defs = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Dest is { } d) defs[d] = defs.ContainsKey(d) ? null : i;
+        foreach (VReg p in f.Params) defs[p] = null;
+
+        // Where an operand points, as a base and a constant offset: through
+        // copies, widenings and additions of a constant to their source.
+        (Operand Base, long Offset) Canonical(Operand o)
+        {
+            long offset = 0;
+            for (int hops = 0; hops < 8; hops++)
+            {
+                if (o is not RegOperand { Reg: var r } || !defs.TryGetValue(r, out Instr? def) || def is null) break;
+                if (def.Op is Opcode.Copy or Opcode.ZExt32 or Opcode.Trunc64 && def.Operands.Count == 1) { o = def.Operands[0]; continue; }
+                if (def.Op == Opcode.Add && def.Operands.Count == 2 && def.Operands[1] is ImmOperand right) { offset += right.Value; o = def.Operands[0]; continue; }
+                if (def.Op == Opcode.Add && def.Operands.Count == 2 && def.Operands[0] is ImmOperand left) { offset += left.Value; o = def.Operands[1]; continue; }
+                break;
+            }
+            return (o, offset);
+        }
+        static bool Same(Operand a, Operand b) => (a, b) switch
+        {
+            (RegOperand x, RegOperand y) => ReferenceEquals(x.Reg, y.Reg),
+            (SymOperand x, SymOperand y) => x.Name == y.Name && x.Offset == y.Offset,
+            (SlotOperand x, SlotOperand y) => ReferenceEquals(x.Slot, y.Slot),
+            (ImmOperand x, ImmOperand y) => x.Value == y.Value,
+            _ => false,
+        };
+        bool SameSlot(Operand slot, (Operand Base, long Offset) at)
+        {
+            (Operand b, long o) = Canonical(slot);
+            return o == at.Offset && Same(b, at.Base);
+        }
+        (Operand Base, long Offset) SlotOf(Instr store)
+        {
+            (Operand b, long o) = Canonical(store.Operands[0]);
+            return (b, o + store.Offset);
+        }
+        bool IsWordStore(Instr i) => i.Op == Opcode.Store && i.Operands.Count == 2 && i.Size == IrTypes.Word.Bytes();
+        bool IsCardMark(Instr i) => i.Op == Opcode.Call && i.Dest is null && i.Callee == CardMark && i.Operands.Count == 1;
+
+        // The store as its sequence, in place, with the card marks for its
+        // slot on either side of it that nothing else falls between.
+        void Fuse(Block block, int at, string sequence)
+        {
+            Instr store = block.Instrs[at];
+            (Operand Base, long Offset) slot = SlotOf(store);
+            for (int k = at + 1; k < block.Instrs.Count; k++)
+            {
+                Instr next = block.Instrs[k];
+                if (IsCardMark(next) && SameSlot(next.Operands[0], slot)) { block.Instrs.RemoveAt(k); break; }
+                if (next.Op is Opcode.Store or Opcode.Call or Opcode.CallIndirect or Opcode.MemCopy) break;
+            }
+            for (int k = at - 1; k >= 0; k--)
+            {
+                Instr before = block.Instrs[k];
+                if (IsCardMark(before) && SameSlot(before.Operands[0], slot)) { block.Instrs.RemoveAt(k); at--; break; }
+                if (before.Op is Opcode.Store or Opcode.Call or Opcode.CallIndirect or Opcode.MemCopy) break;
+            }
+            Operand address = store.Operands[0];
+            if (store.Offset != 0)
+            {
+                VReg sum = f.NewReg(IrTypes.Word);
+                block.Instrs.Insert(at, new Instr { Op = Opcode.Add, Dest = sum, Operands = { address, new ImmOperand(store.Offset, IrTypes.Word) }, Line = store.Line });
+                at++;
+                address = new RegOperand(sum);
+            }
+            block.Instrs[at] = new Instr { Op = Opcode.Call, Callee = sequence, Operands = { address, store.Operands[1] }, Line = store.Line };
+        }
+
+        int unfused = 0;
+
+        // 1. The barriers' diamonds: the report block, its test's branch,
+        //    the store it guards.
+        Dictionary<Block, int> arrivals = new();
+        foreach (Block b in f.Blocks)
+        {
+            if (b.Instrs.Count == 0) continue;
+            Instr last = b.Instrs[^1];
+            foreach (Block t in last.Targets) arrivals[t] = arrivals.GetValueOrDefault(t) + 1;
+            if (last.Default is { } fallback) arrivals[fallback] = arrivals.GetValueOrDefault(fallback) + 1;
+        }
+        List<Block> gone = new();
+        foreach (Block test in f.Blocks)
+        {
+            if (test.Instrs.Count == 0 || test.Instrs[^1] is not { Op: Opcode.Branch } branch || branch.Targets.Count != 2) continue;
+            for (int side = 0; side < 2; side++)
+            {
+                Block report = branch.Targets[side], stored = branch.Targets[1 - side];
+                if (ReferenceEquals(report, stored) || gone.Contains(report) || arrivals.GetValueOrDefault(report) != 1 || report.IsLandingPad) continue;
+                if (report.Instrs.Count == 0 || report.Instrs[^1] is not { Op: Opcode.Jump } back || back.Targets.Count != 1 || !ReferenceEquals(back.Targets[0], stored)) continue;
+                Instr? call = report.Instrs.FirstOrDefault(i => i.Op == Opcode.Call && i.Callee == Barrier && i.Operands.Count == 2);
+                if (call is null || report.Instrs.Any(i => i.Op is Opcode.Store or Opcode.CallIndirect || i.Op == Opcode.Call && !ReferenceEquals(i, call))) continue;
+                (Operand Base, long Offset) slot = Canonical(call.Operands[0]);
+                int at = stored.Instrs.FindIndex(i => IsWordStore(i) && SameSlot(i.Operands[0], (slot.Base, slot.Offset - i.Offset)));
+                if (at < 0 || stored.Instrs.Take(at).Any(i => IsWordStore(i) || i.Op is Opcode.CallIndirect || i.Op == Opcode.Call && !IsCardMark(i)))
+                {
+                    unfused++;
+                    break;
+                }
+                Fuse(stored, at, RefStore);
+                // The test goes: the branch is a jump to the store, the
+                // report block nobody's.
+                test.Instrs[^1] = new Instr { Op = Opcode.Jump, Targets = { stored }, Line = branch.Line };
+                gone.Add(report);
+                break;
+            }
+        }
+        f.Blocks.RemoveAll(gone.Contains);
+
+        // 2. A store with its card and no barrier.
+        foreach (Block block in f.Blocks)
+            for (int k = 0; k < block.Instrs.Count; k++)
+            {
+                if (!IsWordStore(block.Instrs[k])) continue;
+                (Operand Base, long Offset) slot = SlotOf(block.Instrs[k]);
+                bool carded = false;
+                for (int n = k + 1; n < block.Instrs.Count; n++)
+                {
+                    Instr next = block.Instrs[n];
+                    if (IsCardMark(next) && SameSlot(next.Operands[0], slot)) { carded = true; break; }
+                    if (next.Op is Opcode.Store or Opcode.Call or Opcode.CallIndirect or Opcode.MemCopy) break;
+                }
+                if (carded) Fuse(block, k, CardStore);
+            }
+
+        // 3. Said, where a barrier's diamond kept its window.
+        if (unfused > 0)
+            Console.Error.WriteLine("corc: warning: " + f.Name + ": " + unfused + " reference store(s) not made one sequence; a thread stopped between the barrier's test and the store can lose a reference to a concurrent mark");
     }
 
     /// <summary>
