@@ -156,9 +156,15 @@ public static class VirtualTargets
     /// </summary>
     public sealed class Made
     {
-        public readonly HashSet<string> Descriptors = new(StringComparer.Ordinal);
+        public readonly HashSet<string> Descriptors;
         /// <summary>How many descriptors the image defines by name (an interface's is none: no object is stamped with one).</summary>
         public int Defined;
+
+        public Made() => Descriptors = new(StringComparer.Ordinal);
+        private Made(HashSet<string> descriptors, int defined) { Descriptors = descriptors; Defined = defined; }
+
+        /// <summary>The same types, counted afresh: one tally for each resolve that asks (the lifetimes', the regions').</summary>
+        public Made Again() => new(Descriptors, Defined);
         /// <summary>The virtual calls asked about, those that lost a target, the targets they had and those they lost, and those only this resolved.</summary>
         public int Calls, Narrowed, Targets, Removed, ResolvedOnly;
         /// <summary>The descriptors nothing makes that some call reached a slot of, each once.</summary>

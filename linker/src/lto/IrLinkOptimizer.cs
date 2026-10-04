@@ -39,11 +39,29 @@ public static class IrLinkOptimizer
         // Every unit's lifetime summaries, solved together (LifetimeSolver).
         // Virtual calls, each by the overrides the whole image holds for it
         // (VirtualTargets), from the descriptors in the objects themselves.
+        // What code outside the IR names: it may call any of it, with anything.
+        SortedSet<string> foreign = new(StringComparer.Ordinal);
+        foreach (var input in inputs)
+            if (!archives.ContainsKey(input.Object))
+                foreach (Section section in input.Object.Sections) foreach (Relocation reloc in section.Relocs) foreign.Add(reloc.Symbol);
+        // ONLY THE TYPES THE IMAGE MAKES (VirtualTargets.Made): a virtual
+        // call's targets on a type nothing stamps an object with run on no
+        // object, and drop out of every answer the link gives by dispatch --
+        // the lifetimes' merges, the owned fields' callers and borrowers,
+        // the regions' calls and the judge's callers. Only where nothing
+        // outside makes objects: a closed image (the caller says it is not
+        // a shared object, links no shared library and exports nothing),
+        // whose foreign code names what it calls ("*" for anything) -- and
+        // not under --no-rta.
+        VirtualTargets.Made? made = enabled && madeOnly && closedImageEntry is not null && !foreign.Contains("*")
+            ? VirtualTargets.MadeIn(inputs, archives.Values) : null;
+        VirtualTargets.Made? lifetimeMade = made?.Again();
         Dictionary<string, string[]> virtuals = enabled && hints.Count > 0
             ? VirtualTargets.Resolve(inputs, hintOrder.SelectMany(unit => unit.Named()).Select(named => named.Callee)
                 .Concat(hintOrder.SelectMany(unit => unit.Owned?.VirtualNames() ?? Enumerable.Empty<string>()))
-                .Where(name => name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal)))
+                .Where(name => name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal)), lifetimeMade)
             : new(StringComparer.Ordinal);
+        if (regionReport is not null) Console.Error.WriteLine("lifetimes: rta " + (lifetimeMade is null ? "off" : lifetimeMade.Summary()));
         LifetimeSolver? lifetimes = enabled && hints.Count > 0 ? new LifetimeSolver(hintOrder, virtuals) : null;
         if (virtuals.Count > 0) Console.Error.WriteLine("LTO virtual calls resolved: " + virtuals.Count);
         LinkTimings.Phase("virtual targets and lifetime solve");
@@ -133,26 +151,15 @@ public static class IrLinkOptimizer
             // Each symbol's address a constant or the unknown object, from every object's data.
             int constants = RegionConstants.Resolve(regionUnits, regionOrder, inputs.Select(input => input.Object));
             if (regionReport is not null) Console.Error.WriteLine("regions: " + constants + " symbol addresses constants");
-            // What code outside the IR names: it may call any of it, with anything.
-            SortedSet<string> foreign = new(StringComparer.Ordinal);
-            foreach (var input in inputs)
-                if (!archives.ContainsKey(input.Object))
-                    foreach (Section section in input.Object.Sections) foreach (Relocation reloc in section.Relocs) foreign.Add(reloc.Symbol);
-            // ONLY THE TYPES THE IMAGE MAKES (VirtualTargets.Made): a virtual
-            // call's targets on a type nothing stamps an object with drop out
-            // of the engine's calls and the judge's callers. Only where
-            // nothing outside makes objects: a closed image (the caller says
-            // it is not a shared object, links no shared library and exports
-            // nothing), whose foreign code names what it calls ("*" for
-            // anything) -- and not under --no-rta.
-            VirtualTargets.Made? made = madeOnly && !foreign.Contains("*") ? VirtualTargets.MadeIn(inputs, archives.Values) : null;
-            Dictionary<string, string[]> regionVirtuals = VirtualTargets.Resolve(inputs, RegionSolver.VirtualNames(regionUnits), made);
+            VirtualTargets.Made? regionMade = made?.Again();
+            Dictionary<string, string[]> regionVirtuals = VirtualTargets.Resolve(inputs, RegionSolver.VirtualNames(regionUnits), regionMade);
             if (regionReport is not null)
             {
-                Console.Error.WriteLine("regions: rta " + (made is null ? "off" : made.Summary()));
+                Console.Error.WriteLine("regions: rta " + (regionMade is null ? "off" : regionMade.Summary()));
                 // --region-report +rta: which types nothing makes a call reached.
-                if (made is not null && regionReport.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Contains("+rta"))
-                    foreach (string type in made.Dropped) Console.Error.WriteLine("regions: rta never made " + type);
+                if (regionMade is not null && regionReport.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Contains("+rta"))
+                    foreach (string type in regionMade.Dropped.Union(lifetimeMade?.Dropped ?? Enumerable.Empty<string>()).Order(StringComparer.Ordinal))
+                        Console.Error.WriteLine("regions: rta never made " + type);
             }
             RegionFacts?[]? solved = RegionSolver.Solve(regionUnits, regionVirtuals, (table, offset) => VirtualTargets.MethodAt(inputs, table, offset),
                 closedImageEntry!, foreign, regionReport,
