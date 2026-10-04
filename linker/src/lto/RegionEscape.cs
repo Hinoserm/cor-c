@@ -478,6 +478,16 @@ internal sealed class RegionEscape
             s.Cells.ToArray(), s.Result.ToArray(), s.MadeCoarse);
     }
 
+    /// <summary>For the tests: the field each of a function's summary cells names (SummaryOf's order), null for any.</summary>
+    internal string?[]? CellFamiliesOf(int f)
+    {
+        if (_summaries[f] is not { IsUnknown: false } s) return null;
+        Dictionary<int, string> named = _familyIds.ToDictionary(x => x.Value, x => x.Key);
+        string?[] names = new string?[s.Cells.Count];
+        for (int k = 0; k < names.Length; k++) names[k] = named.GetValueOrDefault(s.FamilyOf(s.Cells[k]));
+        return names;
+    }
+
     /// <summary>
     /// For a report: where an origin comes from -- a site, or an object of
     /// whose summary (a function's, or a merged or stand-in one), what kind
@@ -1592,6 +1602,32 @@ internal sealed class RegionEscape
         public int Holder = -1;
         /// <summary>For a report: past its bounds, made coarse (Coarse, Everything).</summary>
         public bool MadeCoarse;
+        /// <summary>
+        /// THE FIELD A CELL WAS WRITTEN AS (RegionConstraint.Family, the
+        /// engine's number for it), where every write of it named that one
+        /// field: a cell absent, or -1, may be any field at its offset. Only
+        /// a summary by field states them (Unified.ByField); whatever else
+        /// makes a summary leaves them out, which is only less precise.
+        /// </summary>
+        public Dictionary<(int, int, int, int), int>? CellFamilies;
+
+        /// <summary>Cell `cell` written as field `family` (-1: any): kept only while every write of it names that one.</summary>
+        public void NoteFamily((int, int, int, int) cell, int family)
+        {
+            CellFamilies ??= new();
+            if (!CellFamilies.TryGetValue(cell, out int had)) CellFamilies[cell] = family;
+            else if (had != family) CellFamilies[cell] = -1;
+        }
+
+        /// <summary>The field a cell names, -1 for any.</summary>
+        public int FamilyOf((int, int, int, int) cell) => CellFamilies is not null && CellFamilies.TryGetValue(cell, out int f) ? f : -1;
+
+        // Whether two summaries' cells name the same fields.
+        private bool SameFamilies(Summary other)
+        {
+            foreach (var cell in Cells) if (FamilyOf(cell) != other.FamilyOf(cell)) return false;
+            return true;
+        }
 
         /// <summary>
         /// THE FIELD EACH WORD WAS WRITTEN AS (RegionConstraint.Family, as the
@@ -1660,7 +1696,7 @@ internal sealed class RegionEscape
             }
             for (int k = 0; k < Cells.Count; k++) if (Cells[k] != other.Cells[k]) return false;
             for (int k = 0; k < Result.Count; k++) if (Result[k] != other.Result[k]) return false;
-            return SameFields(other);
+            return SameFields(other) && SameFamilies(other);
         }
 
         /// <summary>Whether two summaries say the same but for their made objects' origins (Publish: then updated in place).</summary>
@@ -1677,7 +1713,7 @@ internal sealed class RegionEscape
             }
             for (int k = 0; k < Cells.Count; k++) if (Cells[k] != other.Cells[k]) return false;
             for (int k = 0; k < Result.Count; k++) if (Result[k] != other.Result[k]) return false;
-            return MadeCoarse == other.MadeCoarse && SameFields(other);
+            return MadeCoarse == other.MadeCoarse && SameFields(other) && SameFamilies(other);
         }
 
         /// <summary>Every summary's effects at once: what any of a virtual call's overrides may do.</summary>
@@ -3490,15 +3526,22 @@ internal sealed class RegionEscape
                 CopyEdge(node[obj], made, offset == Any ? AnyShift : offset);
                 return moved[(obj, offset)] = made;
             }
-            Dictionary<(int, int), int> gathered = new();
+            // (A cell naming the field it was written as -- a summary by
+            // field, Unified.ByField -- is stored as that field: what is
+            // written into a place by it is read only by loads of it.)
+            Dictionary<(int, int, int), int> gathered = new();
             foreach (var c in s.Cells)
             {
-                if (!gathered.TryGetValue((c.From, c.Offset), out int into))
+                // The field a cell was written as (CellFamilies: unification
+                // by field), else the one its word was (Fields: a summary of
+                // the inclusion solve), else none.
+                int family = s.FamilyOf(c);
+                if (family < 0) family = s.FieldAt(c.From, c.Offset);
+                if (!gathered.TryGetValue((c.From, c.Offset, family), out int into))
                 {
                     into = NewNode();
-                    gathered[(c.From, c.Offset)] = into;
-                    // Written as the field the callee wrote it as (Summary.Fields).
-                    StoreEdge(node[c.From], c.Offset, into, s.FieldAt(c.From, c.Offset));
+                    gathered[(c.From, c.Offset, family)] = into;
+                    StoreEdge(node[c.From], c.Offset, into, family);
                 }
                 CopyEdge(At(c.To, c.ToOffset), into, 0);
             }
@@ -4109,10 +4152,10 @@ internal sealed class RegionEscape
         private readonly Dictionary<int, int> _memberOf = new();
         private readonly int[] _base;
 
-        // Classes: union-find, size, fields by offset (Any once collapsed),
-        // origins, and the one class of the unknown object.
+        // Classes: union-find, size, fields by offset and family (FieldKey;
+        // Any once collapsed), origins, and the one class of the unknown object.
         private readonly List<int> _parent = new(), _size = new();
-        private readonly List<Dictionary<int, int>?> _fields = new();
+        private readonly List<Dictionary<long, int>?> _fields = new();
         private readonly List<bool> _collapsed = new();
         private readonly List<List<int>?> _originsOf = new();
         private readonly int _global;
@@ -4127,7 +4170,7 @@ internal sealed class RegionEscape
             _base = new int[members.Length];
             _global = NewClass();
             _collapsed[_global] = true;
-            _fields[_global] = new() { [Any] = _global };
+            _fields[_global] = new() { [FieldKey(Any, -1)] = _global };
             for (int m = 0; m < members.Length; m++)
             {
                 _memberOf[members[m]] = m;
@@ -4161,16 +4204,60 @@ internal sealed class RegionEscape
             return Find(_pointee[n]);
         }
 
-        private int Field(int c, int offset)
+        // ONE FIELD CLASS FOR EACH FIELD AT AN OFFSET, where every access of
+        // the offset names its field (RegionConstraint.Family): a class is
+        // most often a merge of objects of unrelated types, after
+        // unification, and an instruction's field at 8 and a symbol's field
+        // at 8 are not one place. An access naming no field -- an address
+        // into an object, an element, a copy, a callee's place below a field
+        // -- may be any field at the offset: its field class is all of them,
+        // and from then on the offset is one field class again ("mixed",
+        // FieldKey(offset, -1)), whatever names the later ones give.
+        //
+        // SOUND FOR A TYPE-SAFE PROGRAM, as typed aliasing is (Graph.Stored):
+        // a word at an offset of an object is one field, the object's class
+        // laying its own fields after all its bases' at offsets of their own;
+        // so a store naming field F and a load naming field G at the same
+        // offset of one class never meet in one object, and what F's field
+        // class holds is all F's stores put there. A class's offsets are
+        // offsets from an object's start: anything that moves a pointer into
+        // an object -- a copy by an offset, an index, a summary's cell into
+        // a place below a field's start -- collapses the class (Copy,
+        // _indexed, Apply), and every family of it with it.
+        private static long FieldKey(int offset, int family) => ((long)offset << 32) | (uint)family;
+        private static int KeyOffset(long key) => (int)(key >> 32);
+        private static int KeyFamily(long key) => (int)key;
+
+        private int Field(int c, int offset, int family = -1)
         {
             c = Find(c);
             if (offset == Any && !_collapsed[c]) Collapse(c);
             c = Find(c);
-            int at = _collapsed[c] ? Any : offset;
-            Dictionary<int, int> fields = _fields[c] ??= new();
-            if (fields.TryGetValue(at, out int t)) return Find(t);
+            Dictionary<long, int> fields = _fields[c] ??= new();
+            if (_collapsed[c]) return Get(fields, FieldKey(Any, -1));
+            long mixed = FieldKey(offset, -1);
+            if (family >= 0)
+            {
+                // Mixed already: the one field class of the offset.
+                if (fields.TryGetValue(mixed, out int all)) return Find(all);
+                return Get(fields, FieldKey(offset, family));
+            }
+            // Naming none: every field at the offset joins one.
+            List<long>? named = null;
+            foreach (long key in fields.Keys) if (KeyOffset(key) == offset && KeyFamily(key) >= 0) (named ??= new()).Add(key);
+            int one = Get(fields, mixed);
+            if (named is null) return one;
+            foreach (long key in named) { _pending.Enqueue((one, fields[key])); fields.Remove(key); }
+            Drain();
+            return Find(one);
+        }
+
+        // The field class under a key, made on first use.
+        private int Get(Dictionary<long, int> fields, long key)
+        {
+            if (fields.TryGetValue(key, out int t)) return Find(t);
             t = NewClass();
-            fields[at] = t;
+            fields[key] = t;
             return t;
         }
 
@@ -4180,11 +4267,11 @@ internal sealed class RegionEscape
             c = Find(c);
             if (_collapsed[c]) return;
             _collapsed[c] = true;
-            Dictionary<int, int>? fields = _fields[c];
+            Dictionary<long, int>? fields = _fields[c];
             int any = -1;
             if (fields is not null)
                 foreach (int t in fields.Values) { if (any < 0) any = t; else _pending.Enqueue((any, t)); }
-            _fields[c] = new() { [Any] = any < 0 ? NewClass() : any };
+            _fields[c] = new() { [FieldKey(Any, -1)] = any < 0 ? NewClass() : any };
             Drain();
         }
 
@@ -4207,7 +4294,7 @@ internal sealed class RegionEscape
                 _size[a] += _size[b];
                 if (_originsOf[b] is { } moved) (_originsOf[a] ??= new()).AddRange(moved);
                 _originsOf[b] = null;
-                Dictionary<int, int>? fa = _fields[a], fb = _fields[b];
+                Dictionary<long, int>? fa = _fields[a], fb = _fields[b];
                 _fields[b] = null;
                 if (_collapsed[a] || _collapsed[b])
                 {
@@ -4216,17 +4303,24 @@ internal sealed class RegionEscape
                     List<int> all = new();
                     if (fa is not null) all.AddRange(fa.Values);
                     if (fb is not null) all.AddRange(fb.Values);
-                    if (a == _global) { foreach (int t in all) _pending.Enqueue((_global, t)); _fields[a] = new() { [Any] = _global }; continue; }
+                    if (a == _global) { foreach (int t in all) _pending.Enqueue((_global, t)); _fields[a] = new() { [FieldKey(Any, -1)] = _global }; continue; }
                     int any = all.Count > 0 ? all[0] : NewClass();
                     foreach (int t in all) if (t != any) _pending.Enqueue((any, t));
-                    _fields[a] = new() { [Any] = any };
+                    _fields[a] = new() { [FieldKey(Any, -1)] = any };
                     continue;
                 }
                 if (fb is null) continue;
                 if (fa is null) { _fields[a] = fb; continue; }
-                foreach (var (offset, t) in fb)
-                    if (fa.TryGetValue(offset, out int u)) _pending.Enqueue((u, t));
-                    else fa[offset] = t;
+                foreach (var (key, t) in fb)
+                    if (fa.TryGetValue(key, out int u)) _pending.Enqueue((u, t));
+                    else fa[key] = t;
+                // An offset mixed in either is mixed in both: its named
+                // fields join its one (Field).
+                List<long>? named = null;
+                foreach (long key in fa.Keys)
+                    if (KeyFamily(key) >= 0 && fa.ContainsKey(FieldKey(KeyOffset(key), -1))) (named ??= new()).Add(key);
+                if (named is not null)
+                    foreach (long key in named) { _pending.Enqueue((fa[FieldKey(KeyOffset(key), -1)], fa[key])); fa.Remove(key); }
             }
         }
 
@@ -4274,8 +4368,8 @@ internal sealed class RegionEscape
                             if (c.C != 0) Collapse(Pointee(a));
                             break;
                         }
-                        case RegionConstraintKind.Load: Unify(Pointee(a), Field(Pointee(Node(m, c.B)), Plain(c.C))); break;
-                        case RegionConstraintKind.Store: Unify(Field(Pointee(a), Plain(c.C)), Pointee(Node(m, c.B))); break;
+                        case RegionConstraintKind.Load: Unify(Pointee(a), Field(Pointee(Node(m, c.B)), Plain(c.C), _owner.FamilyOf(f, c.Family))); break;
+                        case RegionConstraintKind.Store: Unify(Field(Pointee(a), Plain(c.C), _owner.FamilyOf(f, c.Family)), Pointee(Node(m, c.B))); break;
                         case RegionConstraintKind.MemCopy:
                         {
                             int x = Pointee(a), y = Pointee(Node(m, c.B));
@@ -4402,7 +4496,8 @@ internal sealed class RegionEscape
             {
                 int to = cls[c.To];
                 if (c.ToOffset != 0) Collapse(to);
-                Unify(Field(cls[c.From], c.Offset), to);
+                // A cell every write of which named one field, that field's class.
+                Unify(Field(cls[c.From], c.Offset, s.FamilyOf(c)), to);
             }
             if (dest >= 0)
                 foreach (var r in s.Result)
@@ -4593,11 +4688,13 @@ internal sealed class RegionEscape
                 (int c, int o) = item;
                 if (c == global || _fields[c] is not { } fields) continue;
                 var obj = s.Objects[o];
-                foreach (var (offset, held) in fields)
+                foreach (var (key, held) in fields)
                 {
                     int t = Find(held);
                     Meet(t);
-                    if (obj.Kind is Kind.Place or Kind.Deep && obj.Param >= 0) Add(t, Place(obj.Param, WithField(obj.Path, offset)));
+                    // (A place below a field is by its offset: every field
+                    // named at it is one place to the caller.)
+                    if (obj.Kind is Kind.Place or Kind.Deep && obj.Param >= 0) Add(t, Place(obj.Param, WithField(obj.Path, KeyOffset(key))));
                 }
             }
             if (walked > MostWalked || s.Objects.Count > MostStated) return null;
@@ -4605,14 +4702,21 @@ internal sealed class RegionEscape
             foreach (var (c, list) in reps)
             {
                 if (list.Count == 0 || c == global || _fields[c] is not { } fields) continue;
-                foreach (var (offset, held) in fields)
+                foreach (var (key, held) in fields)
                 {
                     int t = Find(held);
                     if (!reps.TryGetValue(t, out List<int>? to) || to.Count == 0) continue;
                     int at = _collapsed[t] ? Any : 0;
+                    int offset = KeyOffset(key);
                     foreach (int r in list)
                         foreach (int u in to)
-                            if (!(r == 0 && u == 0)) s.Cells.Add((r, offset, u, at));
+                            if (!(r == 0 && u == 0))
+                            {
+                                // Each cell with the field it was written as: the
+                                // caller keeps it apart from others at the offset.
+                                s.Cells.Add((r, offset, u, at));
+                                s.NoteFamily((r, offset, u, at), KeyFamily(key));
+                            }
                 }
             }
             // What the unknown object's class holds, it holds: those escape.
