@@ -4094,6 +4094,7 @@ public sealed partial class Binder
 
             CheckBlock(md.Body);
             PopScope();
+            SettleCapturedCells();
             _r.FrameSize[md] = _maxSlot;
             _method = null;
         }
@@ -4219,6 +4220,12 @@ public sealed partial class Binder
                             {
                                 _r.BoxedLocals.Add(where);
                             }
+                        }
+                        // A parameter too, once something also writes it
+                        // (ParamSym.Boxed; SettleCapturedCells).
+                        else if (s is ParamSym parameter)
+                        {
+                            parameter.Captured = true;
                         }
                     }
                 }
@@ -6412,13 +6419,13 @@ public sealed partial class Binder
                 // which it always is if a lambda reached it, since reaching it
                 // is what boxes it. This is the whole of capture by reference:
                 // the closure and the enclosing method hold the same address.
-                Boxed = from is LocalSym { Boxed: true }
-                      || from is FieldSym { Field.Boxed: true },
+                Boxed = CellSource(from),
             };
 
             at += Math.Max(8, held.Size);
             closure.Fields.Add(f);
             fields.Add((f, from));
+            if (!f.Boxed) _closureCopies.Add((f, from));
             if (LocalFunctionDeclaration(from) is { } localFunction)
                 _capturedLocalFunctions[f] = localFunction;
         }
@@ -13220,8 +13227,41 @@ public sealed partial class Binder
          ? 8
          : t.Size;
 
+    /// <summary>A closure field over this holds its cell, not its value.</summary>
+    private static bool CellSource(Sym? from)
+        => from is LocalSym { Boxed: true } || from is FieldSym { Field.Boxed: true } || from is ParamSym { Boxed: true };
+
+    // The closure fields made holding a copy, and what they copied: a
+    // parameter written AFTER the lambda that captured it, or by a lambda
+    // checked later, is a cell only once the whole body has been checked.
+    private readonly List<(FieldSymbol Field, Sym From)> _closureCopies = new();
+
+    /// <summary>
+    /// THE METHOD IS CHECKED, so whether each captured parameter is written
+    /// is known: a closure field over one that is holds its cell, and so does
+    /// a nested closure's field over that field.
+    /// </summary>
+    private void SettleCapturedCells()
+    {
+        for (bool changed = true; changed;)
+        {
+            changed = false;
+            foreach ((FieldSymbol field, Sym from) in _closureCopies)
+                if (!field.Boxed && CellSource(from)) { field.Boxed = true; changed = true; }
+        }
+        _closureCopies.Clear();
+    }
+
+    /// <summary>A write of a parameter, which a closure that captured it must see.</summary>
+    private void NoteWritten(Expr target)
+    {
+        while (target is SuppressExpr suppressed) target = suppressed.Operand;
+        if (target is NameExpr n && _r.Resolved.TryGetValue(n, out Sym? s) && s is ParamSym parameter) parameter.Written = true;
+    }
+
     private void RequireAssignable(Expr target, string what)
     {
+        NoteWritten(target);
         if (_r.PropertySetters.ContainsKey(target)
             || target is IndexExpr index && _r.IndexSetters.ContainsKey(index))
         {
@@ -13261,6 +13301,7 @@ public sealed partial class Binder
     /// </summary>
     private void RequireReferenceVariable(Expr target)
     {
+        NoteWritten(target);
         bool ok = target switch
         {
             NameExpr name => _r.Resolved.TryGetValue(name, out Sym? named)

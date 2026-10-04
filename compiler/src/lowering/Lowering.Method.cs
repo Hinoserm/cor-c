@@ -61,6 +61,8 @@ public sealed partial class Lowering
     /// loop writes.
     /// </summary>
     private readonly Dictionary<LocalSym, VReg> _symCells = new(ReferenceEqualityComparer.Instance);
+    // A captured parameter something writes (ParamSym.Boxed): its cell, by index.
+    private readonly Dictionary<int, VReg> _paramCells = new();
 
     /// <summary>Each loop's exits, and how many handlers were open when it began: a break out of a try runs the finally first.</summary>
     // `Continues` is how many handlers are open where Continue leads, which is
@@ -113,6 +115,7 @@ public sealed partial class Lowering
         _refAliased.Clear();
         _symSlots.Clear();
         _symCells.Clear();
+        _paramCells.Clear();
         _loops.Clear();
         _switchBodies.Clear();
         _openHandlers.Clear();
@@ -201,6 +204,7 @@ public sealed partial class Lowering
 
         ScanAddressTaken(decl.Body!);
         MakeCapturedCells(decl.Body!);
+        MakeParamCells(decl.Body!);
 
         // A parameter whose address is taken gets a frame slot it is copied
         // into on entry; the register is never read again.
@@ -365,6 +369,37 @@ public sealed partial class Lowering
         {
             ScanAddressTaken(child);
         }
+    }
+
+    /// <summary>
+    /// A CELL FOR EVERY CAPTURED PARAMETER SOMETHING WRITES, holding what the
+    /// caller passed: from here on the cell is the parameter, for this method
+    /// and every closure over it. Found by its uses in this body and by the
+    /// closures made here -- not inside them, whose parameters are their own.
+    /// </summary>
+    private void MakeParamCells(Node n)
+    {
+        if (n is Expr e && _b.Resolved.TryGetValue(e, out Sym? sym) && sym is ParamSym { Boxed: true } named)
+            MakeParamCell(named, e);
+        if (n is LambdaExpr lambda)
+        {
+            if (_b.Closures.TryGetValue(lambda, out ClosureInfo? made))
+                foreach ((FieldSymbol _, Sym from) in made.Captures)
+                    if (from is ParamSym { Boxed: true } captured) MakeParamCell(captured, lambda);
+            return;
+        }
+        foreach (Node child in Children(n))
+        {
+            MakeParamCells(child);
+        }
+    }
+
+    private void MakeParamCell(ParamSym p, Node at)
+    {
+        if (p.Index >= _params.Length || _paramCells.ContainsKey(p.Index)) return;
+        VReg cell = Allocate(at, Math.Max(_t.WordSize, Math.Max(1, p.Type.Size)));
+        _e.Store(new RegOperand(cell), new RegOperand(_params[p.Index]), 0, LoadSize(p.Type));
+        _paramCells[p.Index] = cell;
     }
 
     /// <summary>
@@ -1140,6 +1175,10 @@ public sealed partial class Lowering
                     // (StructReference): read as that address, written by a
                     // copy into it, as a struct held in line is.
                     return new MemPlace(new RegOperand(_params[p.Index]), 0, p.Type, false, IsStructValue(p.Type));
+                }
+                if (_paramCells.TryGetValue(p.Index, out VReg? paramCell))
+                {
+                    return new MemPlace(new RegOperand(paramCell), 0, p.Type);
                 }
                 if (_paramSlots[p.Index] is FrameSlot ps)
                 {

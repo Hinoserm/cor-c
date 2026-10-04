@@ -1,0 +1,49 @@
+// test: captured_parameters_are_shared_variables
+// expect-exit: 0
+// expect-output:
+// 42
+// 9
+// 7
+// 4
+// 21
+// 5
+// 3
+// 4
+// 11
+//
+// A parameter a lambda or a local function captures is one variable, as a
+// captured local is: a write after the capture, or inside the closure, is
+// seen on the other side. The closure held a copy taken where it was made,
+// and a local function's closure is made at the top of its block -- so
+// `box ??= new Box(7)` before one that reads box left it holding null, and
+// the native compiler's link backends all failed so. A parameter nothing
+// writes stays a copy. The output is real .NET's.
+
+using System;
+using System.Collections.Generic;
+class Box { public int V; public Box(int v) { V = v; } }
+static class P
+{
+    static int After(int x) { Func<int> f = () => x; x = 42; return f(); }
+    static int Inside(int x) { Action a = () => { x = 9; }; a(); return x; }
+    static int Local(Box? box) { box ??= new Box(7); int Read() => box.V; return Read(); }
+    static int Incr(int n) { Func<int> f = () => n; n++; n += 2; return f(); }
+    static int Swap(int a, int b) { Func<int> f = () => a * 10 + b; (a, b) = (b, a); return f(); }
+    static void Set(out int v) { v = 5; }
+    static int ByOut(int x) { Func<int> f = () => x; Set(out x); return f(); }
+    static int Nested(int x) { Func<Func<int>> f = () => () => x; x = 3; return f()(); }
+    static int ReadOnly(string s) { Func<int> f = () => s.Length; return f(); }
+    static IEnumerable<int> Iter(int x) { Func<int> f = () => x; x = 11; yield return f(); }
+    static void Main()
+    {
+        Console.WriteLine(After(1));
+        Console.WriteLine(Inside(1));
+        Console.WriteLine(Local(null));
+        Console.WriteLine(Incr(1));
+        Console.WriteLine(Swap(1, 2));
+        Console.WriteLine(ByOut(1));
+        Console.WriteLine(Nested(1));
+        Console.WriteLine(ReadOnly("abcd"));
+        foreach (int v in Iter(1)) Console.WriteLine(v);
+    }
+}

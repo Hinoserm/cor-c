@@ -1626,6 +1626,10 @@ public sealed partial class Lowering
             {
                 value = _e.Load(IrTypes.Word, _this!, cellField.Field.Offset);
             }
+            else if (from is ParamSym { Boxed: true } parameter && _paramCells.TryGetValue(parameter.Index, out VReg? parameterCell))
+            {
+                value = parameterCell;
+            }
             else
             {
                 Place? p = PlaceOfSym(from, lam);

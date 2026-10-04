@@ -255,6 +255,7 @@ public sealed partial class Lowering
         }
 
         ScanAddressTaken(decl.Body!);
+        MakeParamCells(decl.Body!);
         for (int i = 0; i < m.Params.Count; i++)
         {
             if (_addressTakenParams.Contains(i))
