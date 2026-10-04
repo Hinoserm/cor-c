@@ -28,6 +28,17 @@ using Block = Corsac.Lang.Ir.Block;
 ///
 /// It runs always, optimised or not: the markers are not something any
 /// backend can emit.
+///
+/// A MACHINE THAT MAY MOVE (AsyncFrame.MayMove: an `async ValueTask` method's,
+/// which starts in its kickoff's frame and is copied to the heap at its first
+/// suspension) keeps every register that always points into it as an offset
+/// from it across a suspension, so a resumption in the copy finds its own
+/// fields. A register that may point into the machine on one path and
+/// elsewhere on another cannot be kept so; then the method's StackSymbol word
+/// is cleared, and its kickoff makes the machine on the heap, where it never
+/// moves. A call handed an address in the machine (a struct result, an out
+/// argument) marks the machine's cards after it, since what it stored there
+/// went in with no mark of its own.
 /// </summary>
 public static class AsyncTransform
 {
@@ -41,7 +52,12 @@ public static class AsyncTransform
                 // machine at each suspension; its cards are marked there, when
                 // the runtime has a card table to mark (Gc, generations).
                 string? cards = m.RuntimeHelpers.Contains(CardMarkObject) ? CardMarkObject : null;
-                int size = Transform(f, frame, wordSize, cards);
+                int size = Transform(f, frame, wordSize, cards, out bool stays);
+                if (!stays && frame.StackSymbol is string stack
+                    && m.Data.FirstOrDefault(d => d.Name == stack) is DataItem allowed)
+                {
+                    for (int i = 0; i < allowed.Bytes.Length; i++) allowed.Bytes[i] = 0;
+                }
                 DataItem? item = m.Data.FirstOrDefault(d => d.Name == frame.SizeSymbol);
                 if (item is not null)
                 {
@@ -74,8 +90,100 @@ public static class AsyncTransform
     /// <summary>Runtime.CardMarkObject: every card of an object, from its payload address.</summary>
     public const string CardMarkObject = Corsac.Lang.Lto.RuntimeAbi.CardMarkObject;
 
-    private static int Transform(Function f, AsyncFrame frame, int wordSize, string? cards)
+    /// <summary>
+    /// Whether each register points into the machine: 1 always (the machine,
+    /// or the machine plus or minus a number, however copied), 2 on some
+    /// path and not on another, absent never. A difference of two addresses
+    /// in it is a number.
+    /// </summary>
+    private static Dictionary<int, int> IntoMachine(Function f, VReg machine)
     {
+        Dictionary<int, int> kind = new() { [machine.Id] = 1 };
+        int Of(Operand o) => o is RegOperand { Reg: var r } && kind.TryGetValue(r.Id, out int k) ? k : 0;
+        int Classify(Instr i)
+        {
+            switch (i.Op)
+            {
+                case Opcode.Copy:
+                case Opcode.Trunc64:
+                case Opcode.ZExt32:
+                case Opcode.SExt32:
+                    return i.Operands.Count == 1 ? Of(i.Operands[0]) : 0;
+                case Opcode.Add:
+                {
+                    if (i.Operands.Count != 2) return 0;
+                    int a = Of(i.Operands[0]), b = Of(i.Operands[1]);
+                    if (a == 0 && b == 0) return 0;
+                    return (a == 1 && b == 0) || (a == 0 && b == 1) ? 1 : 2;
+                }
+                case Opcode.Sub:
+                {
+                    if (i.Operands.Count != 2) return 0;
+                    int a = Of(i.Operands[0]), b = Of(i.Operands[1]);
+                    if (a == 0 && b == 0) return 0;
+                    if (a == 1 && b == 0) return 1;
+                    if (a == 1 && b == 1) return 0;
+                    return 2;
+                }
+                case Opcode.Phi:
+                {
+                    bool any = false, all = true;
+                    foreach (Operand o in i.Operands)
+                    {
+                        int k = Of(o);
+                        if (k != 0) any = true;
+                        if (k != 1) all = false;
+                    }
+                    return !any ? 0 : all ? 1 : 2;
+                }
+                default:
+                    return 0;
+            }
+        }
+        for (int round = 0; round < 64; round++)
+        {
+            Dictionary<int, int> next = new() { [machine.Id] = 1 };
+            HashSet<int> defined = new();
+            foreach (Block b in f.Blocks)
+            {
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Dest is not VReg d || d.Id == machine.Id)
+                    {
+                        continue;
+                    }
+                    int k = Classify(i);
+                    if (defined.Add(d.Id))
+                    {
+                        if (k != 0) next[d.Id] = k;
+                        continue;
+                    }
+                    int had = next.TryGetValue(d.Id, out int known) ? known : 0;
+                    int both = had == k ? k : 2;
+                    if (both == 0) next.Remove(d.Id);
+                    else next[d.Id] = both;
+                }
+            }
+            bool same = next.Count == kind.Count;
+            if (same)
+            {
+                foreach (KeyValuePair<int, int> e in next)
+                {
+                    if (!kind.TryGetValue(e.Key, out int was) || was != e.Value) { same = false; break; }
+                }
+            }
+            kind = next;
+            if (same)
+            {
+                break;
+            }
+        }
+        return kind;
+    }
+
+    private static int Transform(Function f, AsyncFrame frame, int wordSize, string? cards, out bool stays)
+    {
+        stays = true;
         frame.Lowered = true;
         VReg machine = frame.StateMachine;
         IrType word = wordSize == 8 ? IrType.I64 : IrType.I32;
@@ -162,6 +270,16 @@ public static class AsyncTransform
                         k += mark.Count;
                         pending = false;
                     }
+                    // A CALL HANDED AN ADDRESS IN THE MACHINE -- a struct's
+                    // result buffer, an out argument -- may store a reference
+                    // there with no mark: the machine's cards are marked
+                    // after it, before the next thing that can collect.
+                    if (i is not null && i.Op is Opcode.Call or Opcode.CallIndirect && i.Callee != cards
+                        && i.Operands.Any(x => x is RegOperand { Reg: var handed } && fieldAddrs.Contains(handed)))
+                    {
+                        pending = true;
+                        continue;
+                    }
                     if (i is null
                         || i.Op is not (Opcode.Store or Opcode.MemCopy or Opcode.MemSet or Opcode.AtomicCas or Opcode.AtomicAdd or Opcode.AtomicAnd or Opcode.AtomicOr or Opcode.AtomicXor)
                         || i.Operands.Count == 0 || i.Operands[0] is not RegOperand { Reg: var into } || !fieldAddrs.Contains(into)
@@ -171,6 +289,28 @@ public static class AsyncTransform
             }
         }
         f.Slots.Clear();
+
+        // What points into a machine that may move: kept as offsets from it.
+        Dictionary<int, int> into = frame.MayMove ? IntoMachine(f, machine) : new Dictionary<int, int>();
+        if (frame.MayMove)
+        {
+            // AN ADDRESS IN THE MACHINE STORED INTO THE MACHINE -- a register a
+            // landing pad reads, homed in a field (LandingPadHomes), and the
+            // like -- would be copied as it is, pointing into the old one. Only
+            // a heap machine, which never moves, may hold one.
+            foreach (Block b in f.Blocks)
+            {
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Op == Opcode.Store && i.Operands.Count > 1
+                        && i.Operands[0] is RegOperand { Reg: var to } && into.ContainsKey(to.Id)
+                        && i.Operands[1] is RegOperand { Reg: var stored } && into.ContainsKey(stored.Id))
+                    {
+                        stays = false;
+                    }
+                }
+            }
+        }
 
         // ---- find every suspension, with what lives across it -----------------------
         Liveness liveness = new(f);
@@ -264,10 +404,23 @@ public static class AsyncTransform
             List<Instr> saves = new();
             foreach (VReg v in resume.Live)
             {
+                int pointsInto = into.TryGetValue(v.Id, out int k) ? k : 0;
+                if (pointsInto == 2)
+                {
+                    stays = false;
+                }
+                Operand kept = new RegOperand(v);
+                if (pointsInto == 1)
+                {
+                    // An address in the machine, kept as where in it.
+                    VReg offset = f.NewReg(v.Type, "offset");
+                    saves.Add(new Instr { Op = Opcode.Sub, Dest = offset, Operands = { new RegOperand(v), new RegOperand(machine) } });
+                    kept = new RegOperand(offset);
+                }
                 saves.Add(new Instr
                 {
                     Op = Opcode.Store, Size = v.Type.Bytes(), Offset = regField[v],
-                    Operands = { new RegOperand(machine), new RegOperand(v) },
+                    Operands = { new RegOperand(machine), kept },
                 });
             }
             if (cards is not null && resume.Live.Count > 0)
@@ -295,6 +448,18 @@ public static class AsyncTransform
             Block resumeBlock = f.NewBlock($"resume{state}_");
             foreach (VReg v in resume.Live)
             {
+                if (into.TryGetValue(v.Id, out int k) && k == 1)
+                {
+                    // Where in the machine, made an address in this one.
+                    VReg offset = f.NewReg(v.Type, "offset");
+                    resumeBlock.Instrs.Add(new Instr
+                    {
+                        Op = Opcode.Load, Dest = offset, Size = v.Type.Bytes(), Offset = regField[v], Signed = true,
+                        Operands = { new RegOperand(machine) },
+                    });
+                    resumeBlock.Instrs.Add(new Instr { Op = Opcode.Add, Dest = v, Operands = { new RegOperand(offset), new RegOperand(machine) } });
+                    continue;
+                }
                 resumeBlock.Instrs.Add(new Instr
                 {
                     Op = Opcode.Load, Dest = v, Size = v.Type.Bytes(), Offset = regField[v], Signed = true,

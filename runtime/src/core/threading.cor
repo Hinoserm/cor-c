@@ -3224,9 +3224,24 @@ static class AsyncRuntime
 // ---- ValueTask and asynchronous disposal ---------------------------------------
 //
 // .NET's shapes and namespaces. A ValueTask is a struct that is either
-// already complete (default, CompletedTask) or stands for a Task; awaiting
-// it awaits that task. What `await using` calls: IAsyncDisposable's
-// DisposeAsync, awaited in the finally the using is lowered to.
+// already complete (default, CompletedTask, or holding its result) or stands
+// for a Task; awaiting it awaits that task. What `await using` calls:
+// IAsyncDisposable's DisposeAsync, awaited in the finally the using is
+// lowered to.
+//
+// NOTHING IS MADE FOR ONE ALREADY COMPLETE. Its awaiter holds the task --
+// none -- and the result itself, so awaiting a completed ValueTask<T> asks
+// IsCompleted, finds true, and takes the result, with no Task made for it
+// (AsTask, which makes one, is for a caller that wants a Task).
+//
+// AN `async ValueTask` METHOD (X86-BACKEND.md, "Async") keeps its state
+// machine in its caller's frame while it runs synchronously, and moves it
+// to the heap only at its first real suspension, where the task is made:
+// one that completes without suspending allocates nothing, as .NET's
+// AsyncValueTaskMethodBuilder boxes only at the first await that does not
+// complete synchronously. The compiler makes the result with the
+// constructors below: ValueTask(Task) and ValueTask<T>(Task<T>) for one that
+// suspended or faulted, ValueTask<T>(T) and default for one that did not.
 
 namespace System.Threading.Tasks
 {
@@ -3263,7 +3278,7 @@ namespace System.Threading.Tasks
         public Task AsTask() => _task ?? Task.CompletedTask;
 
         public System.Runtime.CompilerServices.ValueTaskAwaiter GetAwaiter()
-            => new System.Runtime.CompilerServices.ValueTaskAwaiter(AsTask());
+            => new System.Runtime.CompilerServices.ValueTaskAwaiter(_task, true);
 
         public static ValueTask FromResult() => default;
     }
@@ -3296,7 +3311,7 @@ namespace System.Threading.Tasks
         public Task<TResult> AsTask() => _task ?? Task.FromResult(_result);
 
         public System.Runtime.CompilerServices.ValueTaskAwaiter<TResult> GetAwaiter()
-            => new System.Runtime.CompilerServices.ValueTaskAwaiter<TResult>(AsTask());
+            => new System.Runtime.CompilerServices.ValueTaskAwaiter<TResult>(_task, _result);
     }
 }
 
@@ -3304,56 +3319,86 @@ namespace System.Runtime.CompilerServices
 {
     readonly struct ValueTaskAwaiter
     {
-        readonly Task _task;
+        // Null for a ValueTask that completed without a task: done, and
+        // nothing to rethrow.
+        readonly Task? _task;
 
         public ValueTaskAwaiter(Task task)
         {
             _task = task;
         }
 
-        public bool IsCompleted => _task.IsCompleted;
+        internal ValueTaskAwaiter(Task? task, bool fromValueTask)
+        {
+            _task = task;
+        }
+
+        public bool IsCompleted => _task is null || _task.IsCompleted;
 
         public void GetResult()
         {
-            if (!_task.IsCompleted)
+            Task? task = _task;
+            if (task is null)
             {
-                Scheduler.RunUntil(_task);
+                return;
             }
-            _task.ThrowIfNotSuccessful();
+            if (!task.IsCompleted)
+            {
+                Scheduler.RunUntil(task);
+            }
+            task.ThrowIfNotSuccessful();
         }
 
         public void OnCompleted(Action continuation)
         {
-            _task.AddContinuation(continuation);
+            Task? task = _task;
+            if (task is null) Scheduler.Post(continuation);
+            else task.AddContinuation(continuation);
         }
 
         public void UnsafeOnCompleted(Action continuation)
         {
-            _task.AddContinuation(continuation);
+            OnCompleted(continuation);
         }
     }
 
     readonly struct ValueTaskAwaiter<TResult>
     {
-        readonly System.Threading.Tasks.Task<TResult> _task;
+        // The task, or null with the result here already: a completed
+        // ValueTask<T> is awaited with no Task made for it.
+        readonly System.Threading.Tasks.Task<TResult>? _task;
+        readonly TResult _result;
 
         public ValueTaskAwaiter(System.Threading.Tasks.Task<TResult> task)
         {
             _task = task;
+            _result = default!;
         }
 
-        public bool IsCompleted => _task.IsCompleted;
+        internal ValueTaskAwaiter(System.Threading.Tasks.Task<TResult>? task, TResult result)
+        {
+            _task = task;
+            _result = result;
+        }
 
-        public TResult GetResult() => _task.GetAwaiter().GetResult();
+        public bool IsCompleted => _task is null || _task.IsCompleted;
+
+        public TResult GetResult()
+        {
+            System.Threading.Tasks.Task<TResult>? task = _task;
+            return task is null ? _result : task.GetAwaiter().GetResult();
+        }
 
         public void OnCompleted(Action continuation)
         {
-            _task.AddContinuation(continuation);
+            System.Threading.Tasks.Task<TResult>? task = _task;
+            if (task is null) Scheduler.Post(continuation);
+            else task.AddContinuation(continuation);
         }
 
         public void UnsafeOnCompleted(Action continuation)
         {
-            _task.AddContinuation(continuation);
+            OnCompleted(continuation);
         }
     }
 }
@@ -3538,6 +3583,22 @@ namespace System.Threading
             return previous;
         }
 
+        /// A permit taken now if one is free, and nothing made either way:
+        /// AsyncLock's uncontended path (Wait(0) answers through a task).
+        public bool TryTakeNow()
+        {
+            CheckDisposed();
+            long gate = Atom.At(this, Atom.SecondWord);
+            Atom.Enter(gate);
+            bool took = _count > 0;
+            if (took)
+            {
+                _count = _count - 1;
+            }
+            Atom.Exit(gate);
+            return took;
+        }
+
         /// Takes a waiter that gave up out of the queue, saying whether it was
         /// still there (and so had not been granted a permit).
         public bool Withdraw(SemaphoreWaiter waiter)
@@ -3647,6 +3708,78 @@ namespace System.Threading
         public SemaphoreFullException() : base("Adding the specified count to the semaphore would cause it to exceed its maximum count.") { }
         public SemaphoreFullException(string message) : base(message) { }
         public SemaphoreFullException(string message, Exception? inner) : base(message, inner) { }
+    }
+
+    /// AN AWAITABLE LOCK, for a hold that awaits (docs/X86-BACKEND.md, "Async safety"):
+    ///
+    ///     using (await gate.LockAsync())
+    ///     {
+    ///         ... await disc.Read(...) ...
+    ///     }
+    ///
+    /// The locks that may not be held across an await -- IrqSpinLock,
+    /// KernelGate, Ring1Lock, IoOwnership, Monitor -- are for short holds that
+    /// never suspend; the compiler refuses an await under one. This one is
+    /// what a long hold takes instead: a waiter is a task that is completed
+    /// when the lock is given back, so it holds no processor and no thread
+    /// while it waits, and the continuation that holds it may run anywhere.
+    /// It is not reentrant, as a SemaphoreSlim(1, 1) is not.
+    ///
+    /// Taken uncontended it makes nothing: the ValueTask holds the releaser
+    /// itself (SemaphoreSlim.TryTakeNow). Contended, the wait is the
+    /// semaphore's. Core runtime only -- no class library -- so a freestanding
+    /// kernel has it.
+    class AsyncLock
+    {
+        readonly SemaphoreSlim _gate = new SemaphoreSlim(1, 1);
+
+        /// Taken: a releaser whose Dispose gives it back.
+        public System.Threading.Tasks.ValueTask<AsyncLockReleaser> LockAsync()
+        {
+            if (_gate.TryTakeNow())
+            {
+                return new System.Threading.Tasks.ValueTask<AsyncLockReleaser>(new AsyncLockReleaser(this));
+            }
+            return new System.Threading.Tasks.ValueTask<AsyncLockReleaser>(LockSlow());
+        }
+
+        async Task<AsyncLockReleaser> LockSlow()
+        {
+            await _gate.WaitAsync();
+            return new AsyncLockReleaser(this);
+        }
+
+        /// Whether it was free, and is taken now; the caller gives it back.
+        public bool TryLock() => _gate.TryTakeNow();
+
+        /// Given back: the longest waiter, if any, takes it next.
+        public void Release()
+        {
+            _gate.Release();
+        }
+
+        /// Whether somebody holds it now.
+        public bool IsHeld => _gate.CurrentCount == 0;
+    }
+
+    /// What AsyncLock.LockAsync hands back: disposing it gives the lock back.
+    readonly struct AsyncLockReleaser : IDisposable
+    {
+        readonly AsyncLock? _owner;
+
+        public AsyncLockReleaser(AsyncLock owner)
+        {
+            _owner = owner;
+        }
+
+        public void Dispose()
+        {
+            AsyncLock? owner = _owner;
+            if (owner is not null)
+            {
+                owner.Release();
+            }
+        }
     }
 }
 

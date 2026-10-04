@@ -1,0 +1,59 @@
+// test: an interrupt handler that allocates nothing accepted
+// expect-exit: 0
+// expect-output:
+// count 3
+// ring 14 15 16
+// sum 45
+//
+// A handler that counts, fills a ring allocated beforehand, and calls a
+// method that does arithmetic: nothing it or its callees do allocates, so
+// both the marked one and the IIrqHandler one compile.
+
+using System;
+
+interface IIrqHandler
+{
+    void OnIrq(long n);
+}
+
+class Disc : IIrqHandler
+{
+    readonly long[] _ring = new long[8];
+    int _head;
+    public long Count;
+
+    public void OnIrq(long n)
+    {
+        Count++;
+        _ring[_head] = n;
+        _head = Wrap(_head + 1);
+    }
+
+    static int Wrap(int at) => at & 7;
+
+    public long At(int i) => _ring[i];
+}
+
+static class Program
+{
+    static long _sum;
+
+    [InterruptHandler]
+    static void Timer(long n)
+    {
+        for (long i = 0; i < n; i++) _sum += i;
+    }
+
+    static int Main()
+    {
+        Disc d = new Disc();
+        d.OnIrq(14);
+        d.OnIrq(15);
+        d.OnIrq(16);
+        Timer(10);
+        Console.WriteLine("count " + d.Count);
+        Console.WriteLine("ring " + d.At(0) + " " + d.At(1) + " " + d.At(2));
+        Console.WriteLine("sum " + _sum);
+        return 0;
+    }
+}

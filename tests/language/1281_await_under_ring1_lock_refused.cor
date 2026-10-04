@@ -1,0 +1,43 @@
+// test: await under a Ring1Lock refused
+// expect-compile-error: cannot await while 'Ring1Lock' (its Enter) is held
+// The await in the switch's second case is reached with the lock taken in
+// the first statement of the method and not yet left.
+
+using System;
+using System.Threading.Tasks;
+
+class Ring1Lock
+{
+    long _word;
+    public Ring1Lock(string name) { }
+    public void Enter() { _word = 1; }
+    public void Leave() { _word = 0; }
+}
+
+static class Program
+{
+    static readonly Ring1Lock Seat = new Ring1Lock("seat");
+
+    static async Task<string> Pick(int which)
+    {
+        Seat.Enter();
+        string answer = "";
+        switch (which)
+        {
+            case 0:
+                answer = "zero";
+                break;
+            case 1:
+                await Task.Yield();
+                answer = "one";
+                break;
+        }
+        Seat.Leave();
+        return answer;
+    }
+
+    static async Task Main()
+    {
+        Console.WriteLine(await Pick(1));
+    }
+}

@@ -1,0 +1,43 @@
+// test: await under a kernel gate refused
+// expect-compile-error: cannot await while 'KernelGate' (its Enter) is held
+// KernelGate's Enter takes it whatever it answers; the await in the loop
+// body is under it on every path that reaches it, the early return
+// notwithstanding.
+
+using System;
+using System.Threading.Tasks;
+
+class KernelGate
+{
+    long _word;
+    public void Enter() { _word = 1; }
+    public void Leave() { _word = 0; }
+}
+
+static class Program
+{
+    static readonly KernelGate Gate = new KernelGate();
+
+    static async Task<int> Count(int n)
+    {
+        int total = 0;
+        Gate.Enter();
+        for (int i = 0; i < n; i++)
+        {
+            if (i == 7)
+            {
+                Gate.Leave();
+                return total;
+            }
+            total += i;
+            await Task.Yield();
+        }
+        Gate.Leave();
+        return total;
+    }
+
+    static async Task Main()
+    {
+        Console.WriteLine(await Count(3));
+    }
+}
