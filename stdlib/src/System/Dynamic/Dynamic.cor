@@ -1,27 +1,35 @@
 // C#'S DYNAMIC BINDER (Microsoft.CSharp's RuntimeBinder), over this machine's
 // objects: the compiler rewrites every operation on a `dynamic` value into a
 // call of DynamicRuntime (compiler/src/frontend/Binder.Dynamic.cs), and these
-// bind it when the program runs, with C#'s rules --
+// bind it when the program runs, with C#'s rules, asking in this order --
 //
-//   a DynamicObject asked first (TryGetMember and the rest), as .NET's
-//   binder asks an IDynamicMetaObjectProvider; an ExpandoObject is one;
-//   a COM object late-bound through IDispatch (ComDispatch: GetIDsOfNames,
+//   a DynamicObject (TryGetMember and the rest), as .NET's binder asks an
+//   IDynamicMetaObjectProvider; an ExpandoObject is one;
+//   a COM object, late-bound through IDispatch (ComDispatch: GetIDsOfNames,
 //   Invoke -- DISPATCH_PROPERTYGET for a read, DISPATCH_METHOD with
-//   PROPERTYGET for a call, DISPATCH_PROPERTYPUT for a write, DISPID_VALUE
-//   for an index);
-//   a program's own class, through the members the compiler wrote for it
-//   (System.Dynamic.IDynamicMembers; compiler/src/metadata/DynamicDeclarations.cs),
-//   as are the library's [LateBound] collections;
-//   a string, an array, a boxed number, a bool or a char, and the four
-//   members every object has (ToString, Equals, GetHashCode, GetType), here.
+//   PROPERTYGET for a call, DISPATCH_PROPERTYPUT(REF) for a write,
+//   DISPID_VALUE for an index, by-reference arguments written back);
+//   a struct's own members (System.Dynamic.IDynamicMembers), which the
+//   compiler writes into every struct (DynamicDeclarations);
+//   the program's providers (System.Dynamic.ILateMembers), one for each unit
+//   that writes `dynamic`, over every class and struct that unit can reach
+//   (compiler/src/metadata/DynamicProvider.cs), registered at load;
+//   an array's Length and elements, and the four members every object has.
+//
+// A call's arguments travel as a LateCall: their names, how each was passed
+// (ref, out, in) and the type arguments written, matched to each candidate's
+// parameters as C# matches them, the best candidate chosen as C# chooses it
+// (DynamicValues.Choose) and a ref or out argument's new value written back.
+// A delegate is called through its own ILateInvocable.
 //
 // The operators are C#'s on the run-time types: the binary numeric
 // promotions (int, uint, long, ulong, float, double), string concatenation,
 // bool logic, equality of references and of values, a user operator of
-// either operand's class. Conversions are the implicit ones C# has (a number
+// either operand's type. Conversions are the implicit ones C# has (a number
 // to a wider one, null to a reference or a Nullable, an object to what it
-// is) and, cast explicitly, the explicit numeric ones too. A failure is
-// Microsoft.CSharp.RuntimeBinder.RuntimeBinderException, with .NET's text.
+// is, a user conversion) and, cast explicitly, the explicit numeric ones
+// too. A failure is Microsoft.CSharp.RuntimeBinder.RuntimeBinderException,
+// with .NET's text.
 
 using System.Collections.Generic;
 using System.Dynamic;
@@ -159,10 +167,21 @@ namespace System.Dynamic
     // The binders DynamicRuntime hands a DynamicObject.
     sealed class LateGetMember : GetMemberBinder { public LateGetMember(string name) : base(name, false) { } }
     sealed class LateSetMember : SetMemberBinder { public LateSetMember(string name) : base(name, false) { } }
-    sealed class LateInvokeMember : InvokeMemberBinder { public LateInvokeMember(string name, int count) : base(name, false, new CallInfo(count)) { } }
-    sealed class LateInvoke : InvokeBinder { public LateInvoke(int count) : base(new CallInfo(count)) { } }
-    sealed class LateGetIndex : GetIndexBinder { public LateGetIndex(int count) : base(new CallInfo(count)) { } }
-    sealed class LateSetIndex : SetIndexBinder { public LateSetIndex(int count) : base(new CallInfo(count)) { } }
+    sealed class LateInvokeMember : InvokeMemberBinder { public LateInvokeMember(string name, LateCall call) : base(name, false, LateInfo.Of(call)) { } }
+    sealed class LateInvoke : InvokeBinder { public LateInvoke(LateCall call) : base(LateInfo.Of(call)) { } }
+    sealed class LateGetIndex : GetIndexBinder { public LateGetIndex(LateCall call) : base(LateInfo.Of(call)) { } }
+    sealed class LateSetIndex : SetIndexBinder { public LateSetIndex(LateCall call) : base(LateInfo.Of(call)) { } }
+
+    /// A call's CallInfo, as .NET's binder hands a DynamicObject one: the count, and the names of the named arguments, last.
+    static class LateInfo
+    {
+        public static CallInfo Of(LateCall call)
+        {
+            List<string> names = new List<string>();
+            if (call.Names != null) foreach (string? n in call.Names) if (n != null) names.Add(n);
+            return new CallInfo(call.Count, names);
+        }
+    }
     sealed class LateBinary : BinaryOperationBinder { public LateBinary(ExpressionType op) : base(op) { } }
     sealed class LateUnary : UnaryOperationBinder { public LateUnary(ExpressionType op) : base(op) { } }
     sealed class LateConvert : ConvertBinder { public LateConvert(Type type, bool @explicit) : base(type, @explicit) { } }
@@ -208,7 +227,7 @@ namespace System.Dynamic
         {
             object? held;
             if (!_values.TryGetValue(binder.Name, out held)) { result = null; return false; }
-            result = DynamicRuntime.Invoke(held, args ?? new object?[0]);
+            result = DynamicRuntime.Invoke(held, new LateCall(args ?? new object?[0]));
             return true;
         }
 
@@ -284,72 +303,6 @@ namespace System.Dynamic
 
         IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
     }
-
-    // A delegate converted to dynamic (DynamicRuntime.Callable): called with
-    // its arguments converted to its parameters, as C#'s binder calls one.
-    sealed class LateAction : ILateInvocable
-    {
-        readonly Action _f;
-        public LateAction(Action f) { _f = f; }
-        public object Inner { get { return _f; } }
-        public object? Invoke(object?[] a) { DynamicRuntime.Arity(a, 0); _f(); return null; }
-    }
-
-    sealed class LateAction<A> : ILateInvocable
-    {
-        readonly Action<A> _f;
-        public LateAction(Action<A> f) { _f = f; }
-        public object Inner { get { return _f; } }
-        public object? Invoke(object?[] a) { DynamicRuntime.Arity(a, 1); _f(DynamicRuntime.Argument<A>(a[0])); return null; }
-    }
-
-    sealed class LateAction<A, B> : ILateInvocable
-    {
-        readonly Action<A, B> _f;
-        public LateAction(Action<A, B> f) { _f = f; }
-        public object Inner { get { return _f; } }
-        public object? Invoke(object?[] a) { DynamicRuntime.Arity(a, 2); _f(DynamicRuntime.Argument<A>(a[0]), DynamicRuntime.Argument<B>(a[1])); return null; }
-    }
-
-    sealed class LateAction<A, B, C> : ILateInvocable
-    {
-        readonly Action<A, B, C> _f;
-        public LateAction(Action<A, B, C> f) { _f = f; }
-        public object Inner { get { return _f; } }
-        public object? Invoke(object?[] a) { DynamicRuntime.Arity(a, 3); _f(DynamicRuntime.Argument<A>(a[0]), DynamicRuntime.Argument<B>(a[1]), DynamicRuntime.Argument<C>(a[2])); return null; }
-    }
-
-    sealed class LateFunc<R> : ILateInvocable
-    {
-        readonly Func<R> _f;
-        public LateFunc(Func<R> f) { _f = f; }
-        public object Inner { get { return _f; } }
-        public object? Invoke(object?[] a) { DynamicRuntime.Arity(a, 0); return _f(); }
-    }
-
-    sealed class LateFunc<A, R> : ILateInvocable
-    {
-        readonly Func<A, R> _f;
-        public LateFunc(Func<A, R> f) { _f = f; }
-        public object Inner { get { return _f; } }
-        public object? Invoke(object?[] a) { DynamicRuntime.Arity(a, 1); return _f(DynamicRuntime.Argument<A>(a[0])); }
-    }
-
-    sealed class LateFunc<A, B, R> : ILateInvocable
-    {
-        readonly Func<A, B, R> _f;
-        public LateFunc(Func<A, B, R> f) { _f = f; }
-        public object Inner { get { return _f; } }
-        public object? Invoke(object?[] a) { DynamicRuntime.Arity(a, 2); return _f(DynamicRuntime.Argument<A>(a[0]), DynamicRuntime.Argument<B>(a[1])); }
-    }
-
-    sealed class LateFunc<A, B, C, R> : ILateInvocable
-    {
-        readonly Func<A, B, C, R> _f;
-        public LateFunc(Func<A, B, C, R> f) { _f = f; }
-        public object Inner { get { return _f; } }
-        public object? Invoke(object?[] a) { DynamicRuntime.Arity(a, 3); return _f(DynamicRuntime.Argument<A>(a[0]), DynamicRuntime.Argument<B>(a[1]), DynamicRuntime.Argument<C>(a[2])); }
-    }
 }
 
 namespace System
@@ -360,7 +313,23 @@ namespace System
     /// </summary>
     public static class DynamicRuntime
     {
-        const int Done = 0, NoMember = 1, NoFit = 2, MethodGroup = 3, ReadOnly = 4;
+        const int Done = 0, NoMember = 1, NoFit = 2, MethodGroup = 3, ReadOnly = 4, StaticMember = 5, Ambiguous = 6;
+
+        // ---- the program's providers ----------------------------------------------------
+
+        static readonly List<ILateMembers> _providers = new List<ILateMembers>();
+        static readonly object _gate = new object();
+
+        /// A unit's provider, from its [ModuleInitializer] (DynamicProvider).
+        public static void Register(ILateMembers provider)
+        {
+            lock (_gate) { _providers.Add(provider); }
+        }
+
+        static ILateMembers[] Providers()
+        {
+            lock (_gate) { return _providers.ToArray(); }
+        }
 
         // ---- names, for the messages ----------------------------------------------------
 
@@ -372,12 +341,6 @@ namespace System
             return new RuntimeBinderException("'" + TypeName(target) + "' does not contain a definition for '" + name + "'");
         }
 
-        static RuntimeBinderException BadArguments(object? target, string name, object?[] args)
-        {
-            return new RuntimeBinderException("The best overloaded method match for '" + TypeName(target) + "." + name + "' has some invalid arguments ("
-                + ArgumentTypes(args) + ")");
-        }
-
         static string ArgumentTypes(object?[] args)
         {
             string s = "";
@@ -385,9 +348,32 @@ namespace System
             return s;
         }
 
+        /// C#'s errors for a method group that took none of the arguments, or more than one equally.
+        static RuntimeBinderException BadCall(object? target, string name, LateCall call, int said)
+        {
+            LateGroup? g = call.Group;
+            if (said == Ambiguous && g != null && g.Display.Length >= 2)
+                return new RuntimeBinderException("The call is ambiguous between the following methods or properties: '" + g.Display[0] + "' and '" + g.Display[1] + "'");
+            if (g != null && g.Display.Length == 1)
+                return new RuntimeBinderException("The best overloaded method match for '" + g.Display[0] + "' has some invalid arguments");
+            return new RuntimeBinderException("No overload for method '" + name + "' takes " + call.Count + " arguments");
+        }
+
         static void NotNull(object? target)
         {
             if (target == null) throw new RuntimeBinderException("Cannot perform runtime binding on a null reference");
+        }
+
+        /// C#'s CS0176, for a static member reached through an instance.
+        static RuntimeBinderException StaticThroughInstance(object target, string name)
+        {
+            foreach (ILateMembers p in Providers())
+            {
+                string? display = p.Static(target, name);
+                if (display != null)
+                    return new RuntimeBinderException("Member '" + display + "' cannot be accessed with an instance reference; qualify it with a type name instead");
+            }
+            return NoDefinition(target, name);
         }
 
         // ---- members --------------------------------------------------------------------
@@ -400,12 +386,20 @@ namespace System
             if (target is DynamicObject dynamicObject && dynamicObject.TryGetMember(new LateGetMember(name), out result)) return result;
             if (target is __ComObject)
                 return System.Runtime.InteropServices.ComDispatch.Invoke(target!, int.MinValue, name, System.Runtime.InteropServices.ComDispatch.PropertyGet, new object?[0], 0);
-            if (target is IDynamicMembers members)
+            int said = NoMember;
+            if (target is IDynamicMembers members) said = members.__DynGet(name, out result);
+            else result = null;
+            if (said == NoMember)
             {
-                int said = members.__DynGet(name, out result);
-                if (said == Done) return result;
-                if (said == MethodGroup) throw new RuntimeBinderException("Cannot convert method group '" + name + "' to non-delegate type 'object'. Did you intend to invoke the method?");
+                foreach (ILateMembers p in Providers())
+                {
+                    said = p.Get(target!, name, out result);
+                    if (said != NoMember) break;
+                }
             }
+            if (said == Done) return result;
+            if (said == MethodGroup) throw new RuntimeBinderException("Cannot convert method group '" + name + "' to non-delegate type 'object'. Did you intend to invoke the method?");
+            if (said == StaticMember) throw StaticThroughInstance(target!, name);
             if (BuiltInGet(target!, name, out result)) return result;
             throw NoDefinition(target, name);
         }
@@ -417,22 +411,51 @@ namespace System
             if (target is DynamicObject dynamicObject && dynamicObject.TrySetMember(new LateSetMember(name), value)) return value;
             if (target is __ComObject)
             {
-                System.Runtime.InteropServices.ComDispatch.Invoke(target!, int.MinValue, name, System.Runtime.InteropServices.ComDispatch.PropertyPut, new object?[] { value }, 0);
+                System.Runtime.InteropServices.ComDispatch.Invoke(target!, int.MinValue, name,
+                    value is __ComObject ? System.Runtime.InteropServices.ComDispatch.PropertyPutRef : System.Runtime.InteropServices.ComDispatch.PropertyPut,
+                    new object?[] { value }, 0);
                 return value;
             }
-            if (target is IDynamicMembers members)
+            int said = NoMember;
+            if (target is IDynamicMembers members) said = members.__DynSet(name, value);
+            if (said == NoMember)
             {
-                int said = members.__DynSet(name, value);
-                if (said == Done) return value;
-                if (said == NoFit) throw new RuntimeBinderException("Cannot implicitly convert type '" + TypeName(value) + "' for '" + TypeName(target) + "." + name + "'");
-                if (said == ReadOnly) throw new RuntimeBinderException("Property or indexer '" + TypeName(target) + "." + name + "' cannot be assigned to -- it is read only");
+                foreach (ILateMembers p in Providers())
+                {
+                    said = p.Set(target!, name, value);
+                    if (said != NoMember) break;
+                }
             }
+            if (said == Done) return value;
+            if (said == NoFit) throw new RuntimeBinderException("Cannot implicitly convert type '" + TypeName(value) + "' for '" + TypeName(target) + "." + name + "'");
+            if (said == ReadOnly) throw new RuntimeBinderException("Property or indexer '" + TypeName(target) + "." + name + "' cannot be assigned to -- it is read only");
+            if (said == StaticMember) throw StaticThroughInstance(target!, name);
             throw NoDefinition(target, name);
         }
 
-        /// `d.Name op= value`: read once through the receiver, the operator, written.
+        /// <summary>
+        /// `d.Name op= value`: an event's += and -= add and remove a handler
+        /// (C# 12.21.5, as the binder binds them on an event); anything else
+        /// is read once through the receiver, the operator, written.
+        /// </summary>
         public static object? CompoundMember(object? target, string name, int op, object? value)
         {
+            NotNull(target);
+            if ((op == 0 || op == 42) && !(target is DynamicObject) && !(target is __ComObject))
+            {
+                int said = LateStatus.NotEvent;
+                if (target is IDynamicMembers members) said = members.__DynEvent(name, op == 0, value);
+                if (said == LateStatus.NotEvent || said == NoMember)
+                {
+                    foreach (ILateMembers p in Providers())
+                    {
+                        said = p.Event(target!, name, op == 0, value);
+                        if (said != LateStatus.NotEvent && said != NoMember) break;
+                    }
+                }
+                if (said == Done) return null;
+                if (said == NoFit) throw new RuntimeBinderException("Cannot implicitly convert type '" + TypeName(value) + "' to the type of event '" + TypeName(target) + "." + name + "'");
+            }
             object? made = Binary(op, GetMember(target, name), value);
             SetMember(target, name, made);
             return made;
@@ -448,96 +471,130 @@ namespace System
         }
 
         /// `d.Name(args)`.
-        public static object? InvokeMember(object? target, string name, object?[] args)
+        public static object? InvokeMember(object? target, string name, LateCall call)
         {
             NotNull(target);
+            call.Member = name;
             object? result;
-            if (target is DynamicObject dynamicObject && dynamicObject.TryInvokeMember(new LateInvokeMember(name, args.Length), args, out result)) return result;
+            if (target is DynamicObject dynamicObject && dynamicObject.TryInvokeMember(new LateInvokeMember(name, call), call.Args, out result)) return result;
             if (target is __ComObject)
-                return System.Runtime.InteropServices.ComDispatch.Invoke(target!, int.MinValue, name,
-                    System.Runtime.InteropServices.ComDispatch.Method | System.Runtime.InteropServices.ComDispatch.PropertyGet, args, 0);
-            if (target is IDynamicMembers members)
             {
-                int said = members.__DynCall(name, args, out result);
-                if (said == Done) return result;
-                if (said == NoFit) throw BadArguments(target, name, args);
-                // A FIELD OR PROPERTY HOLDING A DELEGATE is called, as C#'s
-                // binder calls one.
-                if (members.__DynGet(name, out result) == Done) return Invoke(result, args);
+                int byRef = 0;
+                if (call.Kinds != null) for (int i = 0; i < call.Kinds.Length && i < 31; i++) if (call.Kinds[i] == 1 || call.Kinds[i] == 2) byRef |= 1 << i;
+                return System.Runtime.InteropServices.ComDispatch.Invoke(target!, int.MinValue, name,
+                    System.Runtime.InteropServices.ComDispatch.Method | System.Runtime.InteropServices.ComDispatch.PropertyGet, call.Args, byRef);
             }
-            if (BuiltInCall(target!, name, args, out result)) return result;
+            int said = NoMember;
+            if (target is IDynamicMembers members) said = members.__DynCall(name, call, out result);
+            else result = null;
+            if (said == NoMember)
+            {
+                foreach (ILateMembers p in Providers())
+                {
+                    said = p.Call(target!, name, call, out result);
+                    if (said != NoMember) break;
+                }
+            }
+            if (said == Done) return result;
+            if (said == NoFit || said == Ambiguous) throw BadCall(target, name, call, said);
+            if (said == StaticMember) throw StaticThroughInstance(target!, name);
+            // A FIELD OR PROPERTY HOLDING A DELEGATE is called, as C#'s binder calls one.
+            if (said == ReadOnly || said == MethodGroup) { }
+            bool held = false;
+            object? value = null;
+            if (target is IDynamicMembers m && m.__DynGet(name, out value) == Done) held = true;
+            if (!held)
+            {
+                foreach (ILateMembers p in Providers())
+                {
+                    if (p.Get(target!, name, out value) == Done) { held = true; break; }
+                }
+            }
+            if (held) return Invoke(value, call);
+            if (BuiltInCall(target!, name, call, out result)) return result;
             throw NoDefinition(target, name);
         }
 
-        /// `d(args)`: a delegate's call.
-        public static object? Invoke(object? target, object?[] args)
+        /// `d(args)`: a delegate's call, through its ILateInvocable.
+        public static object? Invoke(object? target, LateCall call)
         {
             NotNull(target);
             object? result;
-            if (target is DynamicObject dynamicObject && dynamicObject.TryInvoke(new LateInvoke(args.Length), args, out result)) return result;
-            if (target is ILateInvocable callable) return callable.Invoke(args);
-            if (target is Action a0 && args.Length == 0) { a0(); return null; }
-            if (target is Func<object?> f0 && args.Length == 0) return f0();
-            if (target is Action<object?> a1 && args.Length == 1) { a1(args[0]); return null; }
-            if (target is Func<object?, object?> f1 && args.Length == 1) return f1(args[0]);
-            if (target is Func<object?, object?, object?> f2 && args.Length == 2) return f2(args[0], args[1]);
+            if (target is DynamicObject dynamicObject && dynamicObject.TryInvoke(new LateInvoke(call), call.Args, out result)) return result;
+            if (target is ILateInvocable callable) return callable.__LateInvoke(call);
             if (target is __ComObject)
-                return System.Runtime.InteropServices.ComDispatch.Invoke(target!, 0, "", System.Runtime.InteropServices.ComDispatch.Method, args, 0);
+                return System.Runtime.InteropServices.ComDispatch.Invoke(target!, 0, "", System.Runtime.InteropServices.ComDispatch.Method, call.Args, 0);
             throw new RuntimeBinderException("Cannot invoke a non-delegate type '" + TypeName(target) + "'");
         }
+
+        /// A ref or out argument's new value, after the call (the compiler's write-back).
+        public static object? Element(LateCall call, int argument) { return call.Value(argument); }
 
         // ---- the indexer ------------------------------------------------------------------
 
         /// `d[keys]`.
-        public static object? GetIndex(object? target, object?[] keys)
+        public static object? GetIndex(object? target, LateCall keys)
         {
             NotNull(target);
             object? result;
-            if (target is DynamicObject dynamicObject && dynamicObject.TryGetIndex(new LateGetIndex(keys.Length), NonNull(keys), out result)) return result;
+            if (target is DynamicObject dynamicObject && dynamicObject.TryGetIndex(new LateGetIndex(keys), NonNull(keys.Args), out result)) return result;
             if (target is __ComObject)
-                return System.Runtime.InteropServices.ComDispatch.Invoke(target!, 0, "", System.Runtime.InteropServices.ComDispatch.PropertyGet, keys, 0);
-            if (target is IDynamicMembers members)
+                return System.Runtime.InteropServices.ComDispatch.Invoke(target!, 0, "", System.Runtime.InteropServices.ComDispatch.PropertyGet, keys.Args, 0);
+            int said = NoMember;
+            if (target is IDynamicMembers members) said = members.__DynGetIndex(keys, out result);
+            else result = null;
+            if (said == NoMember)
             {
-                int said = members.__DynGetIndex(keys, out result);
-                if (said == Done) return result;
-                if (said == NoFit) throw new RuntimeBinderException("The best overloaded method match for '" + TypeName(target) + ".this[]' has some invalid arguments (" + ArgumentTypes(keys) + ")");
+                foreach (ILateMembers p in Providers())
+                {
+                    said = p.GetIndex(target!, keys, out result);
+                    if (said != NoMember) break;
+                }
             }
-            if (BuiltInGetIndex(target!, keys, out result)) return result;
+            if (said == Done) return result;
+            if (said == NoFit || said == Ambiguous) throw BadCall(target, "this[]", keys, said);
+            if (BuiltInGetIndex(target!, keys.Args, out result)) return result;
             throw new RuntimeBinderException("Cannot apply indexing with [] to an expression of type '" + TypeName(target) + "'");
         }
 
         /// `d[keys] = value`: the value.
-        public static object? SetIndex(object? target, object?[] keys, object? value)
+        public static object? SetIndex(object? target, LateCall keys, object? value)
         {
             NotNull(target);
-            if (target is DynamicObject dynamicObject && dynamicObject.TrySetIndex(new LateSetIndex(keys.Length), NonNull(keys), value)) return value;
+            if (target is DynamicObject dynamicObject && dynamicObject.TrySetIndex(new LateSetIndex(keys), NonNull(keys.Args), value)) return value;
             if (target is __ComObject)
             {
-                object?[] all = new object?[keys.Length + 1];
-                for (int i = 0; i < keys.Length; i++) all[i] = keys[i];
-                all[keys.Length] = value;
+                object?[] all = new object?[keys.Count + 1];
+                for (int i = 0; i < keys.Count; i++) all[i] = keys.Args[i];
+                all[keys.Count] = value;
                 System.Runtime.InteropServices.ComDispatch.Invoke(target!, 0, "", System.Runtime.InteropServices.ComDispatch.PropertyPut, all, 0);
                 return value;
             }
-            if (target is IDynamicMembers members)
+            int said = NoMember;
+            if (target is IDynamicMembers members) said = members.__DynSetIndex(keys, value);
+            if (said == NoMember)
             {
-                int said = members.__DynSetIndex(keys, value);
-                if (said == Done) return value;
-                if (said == ReadOnly) throw new RuntimeBinderException("Property or indexer '" + TypeName(target) + ".this[]' cannot be assigned to -- it is read only");
-                if (said == NoFit) throw new RuntimeBinderException("The best overloaded method match for '" + TypeName(target) + ".this[]' has some invalid arguments (" + ArgumentTypes(keys) + ")");
+                foreach (ILateMembers p in Providers())
+                {
+                    said = p.SetIndex(target!, keys, value);
+                    if (said != NoMember) break;
+                }
             }
-            if (BuiltInSetIndex(target!, keys, value)) return value;
+            if (said == Done) return value;
+            if (said == ReadOnly) throw new RuntimeBinderException("Property or indexer '" + TypeName(target) + ".this[]' cannot be assigned to -- it is read only");
+            if (said == NoFit || said == Ambiguous) throw BadCall(target, "this[]", keys, said);
+            if (BuiltInSetIndex(target!, keys.Args, value)) return value;
             throw new RuntimeBinderException("Cannot apply indexing with [] to an expression of type '" + TypeName(target) + "'");
         }
 
-        public static object? CompoundIndex(object? target, object?[] keys, int op, object? value)
+        public static object? CompoundIndex(object? target, LateCall keys, int op, object? value)
         {
             object? made = Binary(op, GetIndex(target, keys), value);
             SetIndex(target, keys, made);
             return made;
         }
 
-        public static object? IncrementIndex(object? target, object?[] keys, int op, bool postfix)
+        public static object? IncrementIndex(object? target, LateCall keys, int op, bool postfix)
         {
             object? old = GetIndex(target, keys);
             object? made = Unary(op, old);
@@ -605,6 +662,7 @@ namespace System
                 case 2: return "&"; case 36: return "|"; case 14: return "^"; case 19: return "<<"; case 41: return ">>";
                 case 13: return "=="; case 35: return "!="; case 20: return "<"; case 15: return ">"; case 21: return "<="; case 16: return ">=";
                 case 28: return "-"; case 29: return "+"; case 34: return "!"; case 82: return "~"; case 54: return "++"; case 49: return "--";
+                case 83: return "true"; case 84: return "false";
             }
             return "?";
         }
@@ -614,14 +672,27 @@ namespace System
             return new RuntimeBinderException("Operator '" + OperatorText(op) + "' cannot be applied to operands of type '" + TypeName(left) + "' and '" + TypeName(right) + "'");
         }
 
+        /// A user operator of either operand's type (C# 12.4.5), through a struct's own members or the providers.
+        static bool UserOperator(int op, object? left, object? right, out object? result)
+        {
+            result = null;
+            if (left is IDynamicMembers l && l.__DynOperator(op, left, right, out result) == Done) return true;
+            if (right is IDynamicMembers r && !ReferenceEquals(left, right) && r.__DynOperator(op, left, right, out result) == Done) return true;
+            if (left == null && right == null) return false;
+            foreach (ILateMembers p in Providers())
+            {
+                if (p.Operator(op, left, right, out result) == Done) return true;
+            }
+            return false;
+        }
+
         /// `left op right`, op .NET's ExpressionType.
         public static object? Binary(int op, object? left, object? right)
         {
             object? result;
             if (left is DynamicObject dynamicObject && right != null
                 && dynamicObject.TryBinaryOperation(new LateBinary((ExpressionType)op), right, out result)) return result;
-            if (left is IDynamicMembers l && l.__DynOperator(op, left, right, out result) == Done) return result;
-            if (right is IDynamicMembers r && !ReferenceEquals(left, right) && r.__DynOperator(op, left, right, out result) == Done) return result;
+            if (UserOperator(op, left, right, out result)) return result;
 
             // EQUALITY first: it is defined for everything.
             if (op == 13 || op == 35)
@@ -830,7 +901,7 @@ namespace System
         {
             object? result;
             if (operand is DynamicObject dynamicObject && dynamicObject.TryUnaryOperation(new LateUnary((ExpressionType)op), out result)) return result;
-            if (operand is IDynamicMembers m && m.__DynOperator(op, operand, null, out result) == Done) return result;
+            if (UserOperator(op, operand, null, out result)) return result;
             if (operand == null)
             {
                 if (op is 28 or 29 or 34 or 82 or 54 or 49) return null;
@@ -885,63 +956,83 @@ namespace System
             throw new InvalidCastException();
         }
 
-        /// A dynamic condition: true, false, or the class's operator true; else the binder's error.
-        public static bool IsTrue(object? value)
+        /// <summary>
+        /// A dynamic condition, and `&&`'s and `||`'s test of their left
+        /// operand (C# 12.14: operator true and false on the run-time value):
+        /// true, false, a class's operator true (or false), or its implicit
+        /// conversion to bool; else the binder's error.
+        /// </summary>
+        public static bool IsTrue(object? value) { return Truth(value, 83); }
+
+        public static bool IsFalse(object? value) { return Truth(value, 84); }
+
+        static bool Truth(object? value, int op)
         {
-            if (value is bool b) return b;
+            if (value is bool b) return op == 83 ? b : !b;
             object? result;
-            if (value is DynamicObject dynamicObject && dynamicObject.TryUnaryOperation(new LateUnary(ExpressionType.IsTrue), out result) && result is bool said) return said;
-            if (value is IDynamicMembers m && m.__DynOperator(83, value, null, out result) == Done && result is bool told) return told;
-            if (value is IDynamicMembers c && c.__DynConvert(typeof(bool), false, out result) == Done && result is bool converted) return converted;
+            if (value is DynamicObject dynamicObject && dynamicObject.TryUnaryOperation(new LateUnary((ExpressionType)op), out result) && result is bool said) return said;
+            if (UserOperator(op, value, null, out result) && result is bool told) return told;
+            object? converted = Convert(value, typeof(bool), false);
+            if (converted is bool truth) return op == 83 ? truth : !truth;
             throw new RuntimeBinderException("Cannot implicitly convert type '" + TypeName(value) + "' to 'bool'");
         }
 
         /// A postfix increment's value: the first argument, read before the second was evaluated.
         public static object? Post(object? old, object? assigned) { return old; }
 
-        // ---- conversions: DynamicValues's (Core.cor), a DynamicObject asked first ----------------
+        // ---- conversions --------------------------------------------------------------------
 
         public static bool Fits(object? value, Type type) { return DynamicValues.Fits(value, type); }
 
         public static bool Exact(object? value, Type type) { return DynamicValues.Exact(value, type); }
 
-        /// The binder's conversion: a DynamicObject's TryConvert, else DynamicValues.Convert.
+        /// <summary>
+        /// The binder's conversion (C# 10.2.10, 10.3.8): a DynamicObject's
+        /// TryConvert; a class's own conversion operators, through the
+        /// providers; else DynamicValues.Convert's.
+        /// </summary>
         public static object Convert(object? value, Type type, bool explicitly)
         {
             object? result;
             if (value is DynamicObject dynamicObject && type != typeof(object)
                 && dynamicObject.TryConvert(new LateConvert(type, explicitly), out result)) return result!;
+            if (value != null && type != typeof(object) && value.GetType() != type && !(value is IDynamicMembers))
+            {
+                foreach (ILateMembers p in Providers())
+                {
+                    int said = p.Convert(value, type, explicitly, out result);
+                    if (said == Done) return result!;
+                    if (said == NoFit)
+                        throw new RuntimeBinderException("Cannot implicitly convert type '" + TypeName(value) + "' to '" + DynamicValues.TypeText(type) + "'. An explicit conversion exists (are you missing a cast?)");
+                }
+            }
             return DynamicValues.Convert(value, type, explicitly);
         }
 
-        /// A delegate's parameter from an argument (the delegate adapters).
-        public static T Argument<T>(object? value)
+        /// <summary>
+        /// The conversion to a type written with `?`: a null is a null, to a
+        /// Nullable as to a reference; anything else Convert's, to the
+        /// underlying type (the compiler casts the boxed value to T?).
+        /// </summary>
+        public static object? ConvertNullable(object? value, Type type, bool explicitly)
         {
-            if (value is T same) return same;
-            return (T)Convert(value, typeof(T), false);
+            if (value == null) return null;
+            return Convert(value, type, explicitly);
         }
 
-        public static void Arity(object?[] args, int count)
+        /// The late overload choice that found nothing, or more than one.
+        public static object? NoOverload(int said, LateGroup group, LateCall call)
         {
-            if (args.Length != count) throw new RuntimeBinderException("Delegate 'System.Delegate' does not take " + args.Length + " arguments");
-        }
-
-        // A delegate converted to dynamic, held so the binder can call it with objects.
-        public static object Callable(Action f) { return new LateAction(f); }
-        public static object Callable<A>(Action<A> f) { return new LateAction<A>(f); }
-        public static object Callable<A, B>(Action<A, B> f) { return new LateAction<A, B>(f); }
-        public static object Callable<A, B, C>(Action<A, B, C> f) { return new LateAction<A, B, C>(f); }
-        public static object Callable<R>(Func<R> f) { return new LateFunc<R>(f); }
-        public static object Callable<A, R>(Func<A, R> f) { return new LateFunc<A, R>(f); }
-        public static object Callable<A, B, R>(Func<A, B, R> f) { return new LateFunc<A, B, R>(f); }
-        public static object Callable<A, B, C, R>(Func<A, B, C, R> f) { return new LateFunc<A, B, C, R>(f); }
-
-        public static bool All(object?[] args, int from, Func<object?, bool> test) { return DynamicValues.All(args, from, test); }
-
-        /// The late overload choice that found nothing.
-        public static object? NoOverload(string name, object?[] args)
-        {
-            throw new RuntimeBinderException("The best overloaded method match for '" + name + "' has some invalid arguments (" + ArgumentTypes(args) + ")");
+            call.Group = group;
+            if (call.Member.Length == 0 && group.Display.Length > 0)
+            {
+                // `Owner.Name(int, string)`: the name between the owner and the parameters.
+                string shown = group.Display[0];
+                int open = shown.IndexOf('(');
+                string head = open < 0 ? shown : shown.Substring(0, open);
+                call.Member = head.Substring(head.LastIndexOf('.') + 1);
+            }
+            throw BadCall(null, call.Member, call, said == -2 ? Ambiguous : NoFit);
         }
 
         /// `foreach` over a dynamic value: its elements, as objects.
@@ -966,18 +1057,17 @@ namespace System
                 object? count = GetMember(value, "Count");
                 List<object?> items = new List<object?>();
                 long n = AsLong(count);
-                for (long i = 1; i <= n; i++) items.Add(InvokeMember(value, "Item", new object?[] { (int)i }));
+                for (long i = 1; i <= n; i++) items.Add(InvokeMember(value, "Item", new LateCall(new object?[] { (int)i })));
                 return items;
             }
             throw new RuntimeBinderException("Cannot implicitly convert type '" + TypeName(value) + "' to 'System.Collections.IEnumerable'");
         }
 
-        // ---- what every object, a string, an array and a number answer --------------------------
+        // ---- what an array is, and what every object has ---------------------------------------
 
         static bool BuiltInGet(object target, string name, out object? result)
         {
             result = null;
-            if (target is string s && name == "Length") { result = s.Length; return true; }
             if (name == "Length" && ArrayLength(target) is int length) { result = length; return true; }
             return false;
         }
@@ -1005,7 +1095,6 @@ namespace System
             result = null;
             if (keys.Length != 1 || !Fits(keys[0], typeof(long))) return false;
             int k = (int)AsLong(keys[0]);
-            if (target is string s) { result = s[k]; return true; }
             if (target is object[] o) { result = o[k]; return true; }
             if (target is int[] i) { result = i[k]; return true; }
             if (target is long[] l) { result = l[k]; return true; }
@@ -1042,65 +1131,17 @@ namespace System
             return false;
         }
 
-        static string Text(object? v, string name, object?[] args)
-        {
-            if (v is string s) return s;
-            throw BadArguments(v, name, args);
-        }
-
-        static int Int(object? v, string name, object?[] args)
-        {
-            if (!Fits(v, typeof(int))) throw BadArguments(v, name, args);
-            return (int)AsLong(v);
-        }
-
-        /// <summary>
-        /// The members every object has, and a string's: the ones a dynamic
-        /// string is asked for, each by its argument count and types.
-        /// </summary>
-        static bool BuiltInCall(object target, string name, object?[] args, out object? result)
+        /// The members every object has (System.Object's), by value only.
+        static bool BuiltInCall(object target, string name, LateCall call, out object? result)
         {
             result = null;
-            if (target is string s)
-            {
-                switch (name)
-                {
-                    case "Substring":
-                        if (args.Length == 1) { result = s.Substring(Int(args[0], name, args)); return true; }
-                        if (args.Length == 2) { result = s.Substring(Int(args[0], name, args), Int(args[1], name, args)); return true; }
-                        break;
-                    case "ToUpper": if (args.Length == 0) { result = s.ToUpper(); return true; } break;
-                    case "ToLower": if (args.Length == 0) { result = s.ToLower(); return true; } break;
-                    case "ToUpperInvariant": if (args.Length == 0) { result = s.ToUpperInvariant(); return true; } break;
-                    case "ToLowerInvariant": if (args.Length == 0) { result = s.ToLowerInvariant(); return true; } break;
-                    case "Trim": if (args.Length == 0) { result = s.Trim(); return true; } break;
-                    case "TrimStart": if (args.Length == 0) { result = s.TrimStart(); return true; } break;
-                    case "TrimEnd": if (args.Length == 0) { result = s.TrimEnd(); return true; } break;
-                    case "Contains": if (args.Length == 1) { result = s.Contains(Text(args[0], name, args)); return true; } break;
-                    case "StartsWith": if (args.Length == 1) { result = s.StartsWith(Text(args[0], name, args)); return true; } break;
-                    case "EndsWith": if (args.Length == 1) { result = s.EndsWith(Text(args[0], name, args)); return true; } break;
-                    case "IndexOf":
-                        if (args.Length == 1 && args[0] is char ch) { result = s.IndexOf(ch); return true; }
-                        if (args.Length == 1) { result = s.IndexOf(Text(args[0], name, args)); return true; }
-                        break;
-                    case "Replace":
-                        if (args.Length == 2 && args[0] is char from && args[1] is char to) { result = s.Replace(from, to); return true; }
-                        if (args.Length == 2) { result = s.Replace(Text(args[0], name, args), Text(args[1], name, args)); return true; }
-                        break;
-                    case "PadLeft": if (args.Length == 1) { result = s.PadLeft(Int(args[0], name, args)); return true; } break;
-                    case "PadRight": if (args.Length == 1) { result = s.PadRight(Int(args[0], name, args)); return true; } break;
-                    case "Split":
-                        if (args.Length == 1 && args[0] is char by) { result = s.Split(by); return true; }
-                        break;
-                    case "CompareTo": if (args.Length == 1) { result = string.CompareOrdinal(s, Text(args[0], name, args)); return true; } break;
-                }
-            }
+            if (call.Names != null || call.Kinds != null || call.TypeArgs != null) return false;
             switch (name)
             {
-                case "ToString": if (args.Length == 0) { result = target.ToString(); return true; } break;
-                case "Equals": if (args.Length == 1) { result = target.Equals(args[0]); return true; } break;
-                case "GetHashCode": if (args.Length == 0) { result = target.GetHashCode(); return true; } break;
-                case "GetType": if (args.Length == 0) { result = target.GetType(); return true; } break;
+                case "ToString": if (call.Count == 0) { result = target.ToString(); return true; } break;
+                case "Equals": if (call.Count == 1) { result = target.Equals(call.Args[0]); return true; } break;
+                case "GetHashCode": if (call.Count == 0) { result = target.GetHashCode(); return true; } break;
+                case "GetType": if (call.Count == 0) { result = target.GetType(); return true; } break;
             }
             return false;
         }

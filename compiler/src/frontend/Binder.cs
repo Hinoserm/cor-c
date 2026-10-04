@@ -5261,12 +5261,6 @@ public sealed partial class Binder
         }
         if (to.Dynamic)
         {
-            // A DELEGATE MADE DYNAMIC is held so the binder can call it with
-            // objects (DynamicRuntime.Callable).
-            if (LateCallable(from, at))
-            {
-                return;
-            }
             to = Type.Any.AsNullable();
         }
 
@@ -6601,6 +6595,7 @@ public sealed partial class Binder
         static string Passing(string how) => how.Length == 0 ? "by value" : "with '" + how + "'";
 
         closure.Methods.Add(run);
+        ImplementDefaults(closure);
         RegisterType(name2, closure);
         _r.Methods[body] = run;
         _r.Closures[lam] = new ClosureInfo(closure, fields, run);
@@ -6789,6 +6784,14 @@ public sealed partial class Binder
             // The target has not been resolved yet on this path -- a call
             // through a value, say. Names cannot be matched to anything, and
             // the ordinary "not a method" diagnostic below is the right one.
+            return;
+        }
+
+        // A DYNAMIC ARGUMENT leaves the names to the binding made when the
+        // program runs, each candidate matching them for itself
+        // (Binder.Dynamic's LateOverloads).
+        if (_usesDynamic && c.Args.Any(a => !IsFunctionSource(a) && !HoldsLambda(a) && Peek(a is RefArgExpr { Declare: null, Name: null } ra ? ra.Target : a).Dynamic))
+        {
             return;
         }
 
@@ -16200,6 +16203,19 @@ public sealed partial class Binder
             return Type.Error;
         }
 
+        // A DYNAMIC ARGUMENT: the overload chosen when the program runs, by
+        // the arguments' own types, among those that could take them
+        // (Binder.Dynamic) -- before the arguments are put in parameter
+        // order, packed into a params array or joined by a receiver, which
+        // are each candidate's own.
+        if (_usesDynamic && args.Any(a => a.Dynamic)
+            && LateOverloads(c, group, args, Implicitly,
+                             (had, want, written) => WrittenFits(had, want, written)
+                                                     && !(ObjectNarrowed(had, want) && !IsFunctionSource(written) && !TargetTyped(written))) is Type lateChoice)
+        {
+            return lateChoice;
+        }
+
         // THE RECEIVER BECOMES THE FIRST ARGUMENT, for a member call on a type
         // whose methods are static -- a string, today.
         //
@@ -16816,16 +16832,6 @@ public sealed partial class Binder
         if (byWord.Count > 0)
         {
             byArity = byWord;
-        }
-
-        // A DYNAMIC ARGUMENT AND MORE THAN ONE OVERLOAD THAT COULD TAKE IT:
-        // chosen when the program runs, by the argument's own type
-        // (Binder.Dynamic).
-        if (_usesDynamic && args.Any(a => a.Dynamic)
-            && LateOverloads(c, byArity.Where(m => m.TypeParams.Count == 0 && Accepts(m, variant: true)).ToList(), args,
-                             (a, b) => Implicitly(a, b) && !Implicitly(b, a) || SignedIntegral(a) && UnsignedIntegral(b)) is Type lateChoice)
-        {
-            return lateChoice;
         }
 
         MethodSymbol? best = byArity.FirstOrDefault(
