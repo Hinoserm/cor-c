@@ -1,4 +1,5 @@
 // test: region_arena_overflow
+// regions: taken
 // timeout: 60
 // expect-exit: 0
 // expect-output:

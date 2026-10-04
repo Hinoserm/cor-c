@@ -1,4 +1,5 @@
 // test: region_instance_storage
+// regions: taken
 // expect-exit: 0
 // expect-output:
 // sum 14020847

@@ -1,4 +1,5 @@
 // test: region_sized_by_the_compiler_across_units
+// regions: taken
 // units: tests/language/support/1292_region_sized_units.cor
 // expect-exit: 0
 // expect-output:

@@ -11,6 +11,11 @@ fixture uses a committed snapshot from `CORSAC_ROOT` (defaulting to the sibling
 `corsac86-integration` checkout), requires zero compilation errors, and retains
 diagnostics under `build/kernel-binds.*` without modifying that checkout.
 
+`bash tests/language/run.sh --through-link [--region-engine escape|andersen]`
+builds every test through the link-time optimiser and its region solver
+instead of one compile; a `// regions: taken` header is then checked against
+what the link made in a region.
+
 The [language test guide](../../docs/LANGUAGE-TESTS.md) documents fixture headers,
 runner options and coverage. Expected behavior follows standard C# and .NET;
 missing compiler/library support is a defect, not a reason to weaken a test.

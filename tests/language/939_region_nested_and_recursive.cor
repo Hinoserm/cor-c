@@ -1,4 +1,5 @@
 // test: region_nested_and_recursive
+// regions: taken
 // expect-exit: 0
 // expect-output:
 // sum 2540682 passes 16 folds 64
