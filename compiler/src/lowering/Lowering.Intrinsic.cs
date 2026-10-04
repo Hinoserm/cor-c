@@ -175,6 +175,14 @@ public sealed partial class Lowering
                 VReg n = Scaled(WordOf(Arg(call, target, 4)));
                 _e.Emit(Opcode.MemCopy, null, R(_e.Binary(Opcode.Add, dst, _t.ArrayHeaderBytes)),
                         R(_e.Binary(Opcode.Add, src, _t.ArrayHeaderBytes)), R(n));
+                // CHARACTERS OR BYTES, NEVER AN ADDRESS (Instr.Number): read
+                // as a copy of words that might be, every string a join was
+                // handed held what its parts held, and a key a dictionary's
+                // missing-key message was made from went with the exception
+                // to where nobody follows -- the name a front end's node
+                // looked up, and with it, merged over the node's class, the
+                // tree (test 1200).
+                _e.Block.Instrs[^1].Number = true;
                 return Void();
             }
             // Two byte ranges equal or not, and in which order. Two ranges of a

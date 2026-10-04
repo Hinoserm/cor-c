@@ -2319,6 +2319,8 @@ public sealed class RegionPointsTo : IModulePass
             }
 
             case Opcode.MemCopy:
+                // Characters or bytes (Instr.Number) move no address.
+                if (i.Number) return;
                 MemCopy(Base(copy, i.Operands[0]), Base(copy, i.Operands[1]),
                     i.Operands.Count > 2 && i.Operands[2] is ImmOperand n ? n.Value : Any);
                 return;
