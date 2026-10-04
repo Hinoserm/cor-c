@@ -116,7 +116,8 @@ public sealed class RegionHints
         foreach (RegionFunction function in Functions)
         {
             Var(index[function.Name]);
-            writer.Write((byte)((function.Global ? 1 : 0) | (function.MayBeBoundary ? 2 : 0) | (function.Instance ? 4 : 0) | (function.Main ? 8 : 0)));
+            writer.Write((byte)((function.Global ? 1 : 0) | (function.MayBeBoundary ? 2 : 0) | (function.Instance ? 4 : 0) | (function.Main ? 8 : 0)
+                | (function.CallsThroughMethod ? 16 : 0)));
             Var(function.Parameters); Var(function.Nodes); Var(function.Slots);
             Var(function.NumberParams.Length);
             foreach (int k in function.NumberParams) Var(k);
@@ -253,7 +254,7 @@ public sealed class RegionHints
                 string[] families = new string[Count()];
                 for (int s = 0; s < families.Length; s++) families[s] = Name();
                 RegionFunction function = new(name, (flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0, parameters, nodes, slots, sites)
-                    { Main = (flags & 8) != 0, NumberParams = numbers, Symbols = symbols, Families = families };
+                    { Main = (flags & 8) != 0, CallsThroughMethod = (flags & 16) != 0, NumberParams = numbers, Symbols = symbols, Families = families };
                 bool Node(int n) => n >= 0 && n < nodes;
                 for (int k = Count(); k > 0; k--)
                 {
@@ -354,6 +355,8 @@ public sealed class RegionFunction
     public bool Instance { get; }
     /// <summary>The program's Main (Module.Main): never a boundary, and what the entry calls besides it is the entry's setup.</summary>
     public bool Main { get; init; }
+    /// <summary>Calls a method it read out of a descriptor by a call naming no virtual target (RegionHints.CallsThroughMethods), for a report.</summary>
+    public bool CallsThroughMethod { get; init; }
     public int Parameters { get; }
     public int Nodes { get; }
     public int Slots { get; }

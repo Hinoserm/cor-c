@@ -181,9 +181,12 @@ public static class VirtualTargets
                         _descriptorObjects.Add(input.Object);
                     }
                 }
-                // Where method tables begin: the addends objects are stamped with.
+                // Where method tables begin: the addends objects are stamped
+                // with, by code and by data alike -- a string literal, a static
+                // object laid down whole, is stamped in data. (Any other
+                // addend into a descriptor is only another base tried.)
                 foreach (Section section in input.Object.Sections)
-                    if (section.Kind == SectionKind.Code)
+                    if (section.Kind != SectionKind.Note)
                         foreach (Relocation r in section.Relocs)
                             if (r.Addend > 0 && IsDescriptor(r.Symbol)) _bases.Add(r.Addend);
             }
@@ -296,7 +299,18 @@ public static class VirtualTargets
             return value;
         }
 
-        /// <summary>The functions a virtual call reaches; empty when no object of the type exists; null when a slot is not code.</summary>
+        /// <summary>
+        /// The functions a virtual call reaches; empty when no object of the
+        /// type exists, or none of them fills the slot; null when a slot holds
+        /// what is not code here (a symbol defined elsewhere, data, an
+        /// addend). A DESCRIPTOR THAT LEAVES THE SLOT EMPTY runs nothing
+        /// there: an abstract class's (no object of it is made), a box asked
+        /// for a system interface it does not answer (MayAnswer: IEquatable of
+        /// an enum), an interface's descriptor-less implementors. A call on
+        /// one of its objects would jump to nothing; that none does is the
+        /// program's type safety. Left unresolved, one such call made every
+        /// method a descriptor names a root (RegionSolver.Addressed).
+        /// </summary>
         public string[]? Targets(string declaring, long slot)
         {
             if (_derived is null)
@@ -324,15 +338,16 @@ public static class VirtualTargets
                     Console.Error.WriteLine("virtual   " + declaring + "+" + slot + " reaches " + _descriptors[descriptor].Name + " relocs "
                         + string.Join(" ", Relocs(descriptor).Select(r => r.Offset + ":" + r.Symbol + (r.Addend == 0 ? "" : "+" + r.Addend))));
                 foreach (var (offset, symbol, addend) in Relocs(descriptor))
-                    if (addend == 0 && _bases.Contains(offset - slot))
+                    if (_bases.Contains(offset - slot))
                     {
-                        if (!_functions.Contains(symbol)) resolved = false;
+                        if (addend != 0 || !_functions.Contains(symbol)) resolved = false;
                         targets.Add(symbol);
                     }
             }
-            // No object of the type exists: the call is never made.
+            // No object of the type exists, or none fills the slot: the call
+            // runs nothing.
             if (!any) return Array.Empty<string>();
-            return resolved && targets.Count > 0 ? targets.Order(StringComparer.Ordinal).ToArray() : null;
+            return resolved ? targets.Order(StringComparer.Ordinal).ToArray() : null;
         }
     }
 }
