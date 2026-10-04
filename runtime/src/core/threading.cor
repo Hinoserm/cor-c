@@ -2558,7 +2558,7 @@ static partial class Scheduler
 
                     if (_timerCount > 0 && next != null && next.Deadline > now)
                     {
-                        Clock.SleepUntil(next.Deadline);
+                        Clock.SleepUntil(Waking(now, next.Deadline));
                     }
                 }
                 continue;
@@ -2566,9 +2566,32 @@ static partial class Scheduler
 
             if (_count == 0)
             {
+                // ANOTHER THREAD MAY STILL COMPLETE IT: one that took the item
+                // from this queue, or one that completes it directly.
+                if (GcThreads.Others())
+                {
+                    long at = Clock.Now();
+                    Clock.SleepUntil(Waking(at, at + OthersPollNanos));
+                    continue;
+                }
                 throw new InvalidOperationException("deadlock: nothing can complete this task");
             }
         }
+    }
+
+    // How long a wait sleeps before it looks again while other threads run.
+    const long OthersPollNanos = 200000;
+
+    /// WHEN A SLEEPING WAIT LOOKS AGAIN: at the deadline it sleeps for, or
+    /// sooner while other threads run. The queue is everybody's, so the item
+    /// that completes this thread's task may run on another, which wakes
+    /// nobody: the native link's backends shared it, one ran another's read,
+    /// and the waiter slept on to its five-minute timer while the response
+    /// had long since come.
+    static long Waking(long now, long deadline)
+    {
+        if (GcThreads.Others() && deadline > now + OthersPollNanos) return now + OthersPollNanos;
+        return deadline;
     }
 
     /// Waiting for a task while workers run the queue. The queue is theirs --
@@ -2582,7 +2605,7 @@ static partial class Scheduler
     /// spin a processor.
     static void RunUntilWithWorkers(Task task)
     {
-        const long PollNanos = 200000;
+        const long PollNanos = OthersPollNanos;
 
         while (!task.IsCompleted)
         {

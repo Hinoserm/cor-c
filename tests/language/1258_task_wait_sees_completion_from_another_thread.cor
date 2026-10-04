@@ -1,0 +1,43 @@
+// test: task_wait_sees_completion_from_another_thread
+// expect-exit: 0
+// expect-output:
+// finished 8 of 8
+// in time
+//
+// Every thread waits on its tasks in the one shared queue, so the item that
+// completes one thread's task may run on another, which wakes nobody. The
+// waiter slept on to its nearest timer -- here the thirty-second timeout,
+// in the native link the five-minute one, 272 s for a unit that took 60 ms.
+// A wait now looks again every 200 microseconds while other threads run.
+// The output is real .NET's.
+
+using System;
+using System.Diagnostics;
+using System.Threading;
+using System.Threading.Tasks;
+
+static class P
+{
+    static void Main()
+    {
+        Stopwatch clock = Stopwatch.StartNew();
+        Thread[] threads = new Thread[8];
+        int finished = 0;
+        for (int i = 0; i < threads.Length; i++)
+        {
+            threads[i] = new Thread(() =>
+            {
+                for (int round = 0; round < 5; round++)
+                {
+                    Task work = Task.Run(() => Thread.Sleep(20));
+                    work.WaitAsync(TimeSpan.FromSeconds(30)).GetAwaiter().GetResult();
+                }
+                Interlocked.Increment(ref finished);
+            });
+            threads[i].Start();
+        }
+        foreach (Thread thread in threads) thread.Join();
+        Console.WriteLine("finished " + finished + " of " + threads.Length);
+        Console.WriteLine(clock.ElapsedMilliseconds < 10000 ? "in time" : "late: " + clock.ElapsedMilliseconds + " ms");
+    }
+}

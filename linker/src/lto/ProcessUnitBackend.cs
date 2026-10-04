@@ -12,6 +12,12 @@ public sealed class ProcessUnitBackend : IUnitBackend, IDisposable
     private readonly BinaryReader reader;
     private readonly string work;
     private int sequence;
+    private const long UnitTimeoutMs = 5 * 60 * 1000;
+    // When the request in flight runs out of time (0: none in flight), and
+    // whether the watchdog killed the process for it.
+    private long deadline;
+    private bool timedOut, disposed;
+    private readonly Thread watchdog;
 
     public ProcessUnitBackend(string? executable = null)
     {
@@ -32,6 +38,25 @@ public sealed class ProcessUnitBackend : IUnitBackend, IDisposable
         catch { Directory.Delete(work); throw; }
         writer = new BinaryWriter(process.StandardInput.BaseStream, BackendProtocol.Utf8, leaveOpen: true);
         reader = new BinaryReader(process.StandardOutput.BaseStream, BackendProtocol.Utf8, leaveOpen: true);
+        watchdog = new Thread(Watch, 256 * 1024) { IsBackground = true, Name = "lto-watchdog" };
+        watchdog.Start();
+    }
+
+    /// Kills the process when a request outlives its time: the read waiting
+    /// on it then ends.
+    private void Watch()
+    {
+        while (!Volatile.Read(ref disposed))
+        {
+            Thread.Sleep(1000);
+            long due = Interlocked.Read(ref deadline);
+            if (due != 0 && Environment.TickCount64 > due)
+            {
+                Volatile.Write(ref timedOut, true);
+                try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+                return;
+            }
+        }
     }
 
     public ObjectFile Recompile(ObjectFile original, IReadOnlyList<IrImport> imports, IReadOnlySet<string>? retained = null,
@@ -45,10 +70,16 @@ public sealed class ProcessUnitBackend : IUnitBackend, IDisposable
         {
             if (!own) File.WriteAllBytes(input, ElfWriter.WriteObject(original));
             BackendProtocol.WriteRequest(writer, new(input, output, imports, retained, facts));
-            Task response = Task.Run(() => BackendProtocol.ReadResponse(reader));
-            try { response.WaitAsync(TimeSpan.FromMinutes(5)).GetAwaiter().GetResult(); }
-            catch (TimeoutException)
-            { process.Kill(entireProcessTree: true); throw new IOException("Compiler backend exceeded five-minute unit timeout"); }
+            // READ HERE, ON THIS THREAD, with a watchdog for the time limit:
+            // the read once ran as a task waited on with a timeout, and the
+            // link's workers shared one task queue -- a worker ran another's
+            // blocking read, and a response that had come was waited on to
+            // the timeout. The watchdog's kill ends the read.
+            Interlocked.Exchange(ref deadline, Environment.TickCount64 + UnitTimeoutMs);
+            try { BackendProtocol.ReadResponse(reader); }
+            catch (Exception) when (Volatile.Read(ref timedOut))
+            { throw new IOException("Compiler backend exceeded five-minute unit timeout"); }
+            finally { Interlocked.Exchange(ref deadline, 0); }
             if (!File.Exists(output)) throw new IOException("Compiler backend reported success without an object");
             return ElfReader.ReadObject(File.ReadAllBytes(output));
         }
@@ -57,6 +88,7 @@ public sealed class ProcessUnitBackend : IUnitBackend, IDisposable
 
     public void Dispose()
     {
+        Volatile.Write(ref disposed, true);
         try { writer.Dispose(); } catch (IOException) { }
         try { process.StandardInput.Close(); } catch (IOException) { }
         if (!process.WaitForExit(2000)) { process.Kill(entireProcessTree: true); process.WaitForExit(); }
