@@ -2994,7 +2994,7 @@ public sealed partial class Lowering
 
         if (target is MemberExpr me && _b.Resolved.TryGetValue(me, out Sym? ms) && ms is FieldSym fs)
         {
-            Place p = fs.Field.Static ? PlaceOfField(fs.Field, null, at) : PlaceOfField(fs.Field, Eval(me.Target), at);
+            Place p = fs.Field.Static ? PlaceOfField(fs.Field, null, at) : PlaceOfField(fs.Field, FieldBase(fs.Field, me.Target), at);
             return AddressOfPlace(p, at);
         }
 
@@ -3074,6 +3074,10 @@ public sealed partial class Lowering
         {
             return _params[passed.Index];
         }
+        if (InlineFieldAddress(target) is { } inLine)
+        {
+            return inLine;
+        }
         Place? place = PlaceOf(target);
         if (place is null)
         {
@@ -3113,6 +3117,42 @@ public sealed partial class Lowering
         _e.Jump(done);
         _e.SetBlock(done);
         return result;
+    }
+
+    /// <summary>
+    /// THE ADDRESS OF A FIELD OF NULL THROWS, as .NET's ldflda does: `ref
+    /// c.f`, and a call of a struct's method on one held in line in `c`
+    /// (`c.s.M()`), throw NullReferenceException where they are written
+    /// when `c` is null, whatever is done with the address after. Taking
+    /// the address reads nothing, so the object's first word is read for
+    /// the fault (Runtime.NullFault), as a call on null reads it -- not on
+    /// `this`, never null, nor on a struct's storage. A field read or
+    /// written faults by itself and is not asked.
+    /// </summary>
+    private VReg FieldBase(FieldSymbol f, Expr target)
+    {
+        VReg obj = f.Owner.Kind == TypeKind.Struct ? InlineFieldAddress(target) ?? Eval(target) : Eval(target);
+        if (f.Owner.Kind == TypeKind.Class && !ReferenceEquals(obj, _this))
+        {
+            _e.Load(IrTypes.Word, obj, 0);
+        }
+        return obj;
+    }
+
+    /// <summary>
+    /// The address of a struct held in line in an object (FieldSymbol.Inline),
+    /// with its object's null fault (FieldBase); null for any other
+    /// expression -- and for one in a `?.` chain, which never throws, or a
+    /// member of a Nullable, which EmitMember reads its own way.
+    /// </summary>
+    private VReg? InlineFieldAddress(Expr e)
+    {
+        if (e is not MemberExpr me || me.NullConditional || InConditionalChain(me.Target) || _b.TypeOf(me.Target).IsNullableValue
+            || !_b.Resolved.TryGetValue(me, out Sym? sym) || sym is not FieldSym { Field: { Inline: true, Static: false } field })
+        {
+            return null;
+        }
+        return LoadPlace(PlaceOfField(field, FieldBase(field, me.Target), me));
     }
 
     private VReg AddressOfPlace(Place p, Node at)
