@@ -153,6 +153,17 @@ public static class RegionSummary
             // an awaiter's OnCompleted handed it, a scheduler keeping it --
             // that is the call's, as any argument's. (Every register leaked,
             // every object any iterator touched was everyone's.)
+            //
+            // A slot is WHAT IT HOLDS copied into the machine, not its address
+            // stored there: the transform makes the slot a field of the
+            // machine, and nothing holds a pointer to it. As an address
+            // stored, the slot was an object a place reaches, so every load of
+            // it took all that was written into places (RegionEscape.Aliased)
+            // -- the machine's own saved registers among them -- and an
+            // iterator that yields inside a try, unlinking its handler record
+            // into the thread's block at the yield, put its arguments and
+            // every object its laps made into the unknown object: 1298's
+            // items, global in the caller that walked them.
             if (_f.Async is { Lowered: false } frame)
             {
                 int machine = Reg(frame.StateMachine);
@@ -160,7 +171,7 @@ public static class RegionSummary
                     _constraints.Add(new(RegionConstraintKind.Store, machine, Reg(r), RegionConstraint.Any));
                 foreach (FrameSlot slot in _f.Slots)
                     if (Value(new SlotOperand(slot)) is int held and >= 0)
-                        _constraints.Add(new(RegionConstraintKind.Store, machine, held, RegionConstraint.Any));
+                        _constraints.Add(new(RegionConstraintKind.MemCopy, machine, held, RegionConstraint.Any));
             }
             // ITS LOOPS, for the link to give a region of their own where
             // RegionPointsTo would (its "loops"): stated over this IR, by the
