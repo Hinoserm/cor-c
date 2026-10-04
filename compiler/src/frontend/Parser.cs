@@ -5091,7 +5091,9 @@ public sealed class Parser
             {
                 Name = names[k],
                 Type = typed ? types![k]! : new TypeRef { Name = "", Line = made.Line, Col = made.Col },
-                IsRef = modifier == Tok.KwRef, IsOut = modifier == Tok.KwOut, IsReadOnlyRef = modifier == Tok.KwIn,
+                // `in` is passed by address, read only, as a method's is
+                // (ParseParams): a ref the body may not assign to.
+                IsRef = modifier is Tok.KwRef or Tok.KwIn, IsOut = modifier == Tok.KwOut, IsReadOnlyRef = modifier == Tok.KwIn,
                 Line = made.Line, Col = made.Col,
             });
         }

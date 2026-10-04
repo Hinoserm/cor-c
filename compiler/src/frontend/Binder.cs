@@ -16361,8 +16361,21 @@ public sealed partial class Binder
                 localTarget = new FieldSym(capturedLocal);
             if (localTarget is not null && LocalFunctionDeclaration(localTarget) is { } localFunction)
                 CompleteLocalArguments(c, localFunction);
-            if (localTarget is not null && _genericLocalSyms.Contains(localTarget) && GenericLocalTemplate(localTarget) is MethodDecl hoisted)
-                PassCaptures(c, hoisted, localName.Name);
+            // A GENERIC LOCAL FUNCTION BY ITS TEMPLATE, however its name is
+            // reached: inside a lambda or another local function it is the
+            // closure's group (CapturedMethodGroupSym), not the symbol its
+            // block declared, and its calls there took no captures.
+            // A ROUND LATER THE CALL NAMES THE COPY made for it, which no
+            // scope declares: it is a method of the type the function was
+            // hoisted into, this one or, inside a closure, the one it captured.
+            if (localTarget is null && localName.Name.Contains('$'))
+            {
+                List<MethodSymbol> copies = _thisType?.FindMethods(localName.Name) ?? new();
+                if (copies.Count == 0 && _capturedThisType is not null) copies = _capturedThisType.FindMethods(localName.Name);
+                if (copies.Count > 0) localTarget = new MethodGroupSym(copies);
+            }
+            if (localTarget is not null && GenericLocalTemplate(localTarget) is MethodDecl hoisted)
+                PassCaptures(c, hoisted, hoisted.HoistedName ?? localName.Name);
         }
 
         // NAMED ARGUMENTS ARE PUT IN ORDER BEFORE ANYTHING ELSE HAPPENS.
