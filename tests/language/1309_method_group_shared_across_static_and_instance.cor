@@ -1,0 +1,35 @@
+// test: method_group_shared_across_static_and_instance
+// expect-exit: 0
+// expect-output:
+// 1 1 1 3
+//
+// ONE METHOD GROUP, PASSED FROM AN INSTANCE METHOD AND THEN A STATIC ONE OF
+// THE SAME TYPE: the closure made for it in the instance method may hold
+// `this`; the static method has none to give, so it gets a closure of its
+// own rather than that one again. The compiler crashed lowering the second,
+// compiling its own escape engine -- an outer type's static method passed
+// from a nested type -- and both orders are here.
+
+using System;
+
+class Outer
+{
+    private static bool IsGuard(int x) => x < 0;
+
+    public sealed class Inner
+    {
+        int[] _p = { 3, -1, 4, -5 };
+        public int Again() { int g = Array.FindIndex(_p, IsGuard); return g; }
+        public static int Find(int[] path) { int g = Array.FindIndex(path, IsGuard); return g; }
+        public static int Last(int[] path) { return Array.FindLastIndex(path, IsGuard); }
+        public int Later() { return Array.FindIndex(_p, IsGuard); }
+    }
+
+    static int Main()
+    {
+        int[] p = { 3, -1, 4, -5 };
+        Inner i = new Inner();
+        Console.WriteLine(i.Again() + " " + Inner.Find(p) + " " + i.Later() + " " + Inner.Last(p));
+        return 0;
+    }
+}

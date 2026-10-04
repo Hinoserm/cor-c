@@ -6315,8 +6315,20 @@ public sealed partial class Binder
         // A method group already turned into a closure in this type is that
         // closure again, when nothing but the plain `this` could be captured;
         // a nested capture would need a different source for the same field.
+        // NOR IN A STATIC METHOD WHEN IT CAPTURED `this`: made first in one of
+        // the type's instance methods, it holds a `$this` field a static one
+        // has nothing to fill from, and lowering it there read a `this` that
+        // was not -- the compiler failed compiling its own escape engine, an
+        // outer type's static method group passed from a nested type's
+        // instance method and then from its static one (test 1309).
+        // The static methods' own is named apart, and shared among them.
+        if (!bound && lam.GroupIdentity is not null && _method is { Static: true }
+            && _groupClosures.TryGetValue(name2, out ClosureInfo? holdsThis) && holdsThis.Captures.Count > 0)
+        {
+            name2 += "$Static";
+        }
         if (!bound && lam.GroupIdentity is not null && _groupClosures.TryGetValue(name2, out ClosureInfo? sharedClosure)
-            && (_method is { Static: true } || (_capturedThisType is null && _thisType is not null)))
+            && (_method is { Static: true } ? sharedClosure.Captures.Count == 0 : _capturedThisType is null && _thisType is not null))
         {
             _r.Closures[lam] = sharedClosure;
             return wanted;
