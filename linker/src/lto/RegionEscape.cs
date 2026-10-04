@@ -93,6 +93,13 @@ internal sealed class RegionEscape
     /// millions).
     /// </summary>
     public long InclusionPool = 400_000_000, InclusionCap = 40_000_000;
+    /// <summary>
+    /// THE POOL EACH ROUND STARTS WITH (+pool): filled again at every round's
+    /// start, so a re-solve in a late round has what the first round had,
+    /// and is not starved by what round 1 spent on other components. The
+    /// same rounds draw the same grants, so a link still answers alike.
+    /// </summary>
+    public long InclusionPerRound = 400_000_000;
     /// <summary>For a report: what the pool gave, and to how many components.</summary>
     public long PoolDrawn;
     public int PoolComponents;
@@ -772,6 +779,7 @@ internal sealed class RegionEscape
             {
                 long began = System.Diagnostics.Stopwatch.GetTimestamp();
                 GrewShape = GrewOrigins = MadeStandIns = AgainForCallee = AgainForStandIn = AgainForSites = StraightToUnified = 0;
+                InclusionPool = InclusionPerRound;
                 int solved = round == 1 ? Order() : Again();
                 // NOTHING TO SOLVE AGAIN: every component was solved last with
                 // the summaries, stand-ins and sites it reads as they stand,
@@ -794,12 +802,13 @@ internal sealed class RegionEscape
                     Progress?.Invoke($"escape graphs: wide calls still growing after {round} rounds: every call followed");
                     Reset();
                     _assumed = null;
+                    InclusionPool = InclusionPerRound;
                     Order();
                     break;
                 }
             }
         }
-        else Order();
+        else { InclusionPool = InclusionPerRound; Order(); }
         Close();
     }
 
@@ -2713,18 +2722,25 @@ internal sealed class RegionEscape
                     }
                 }
                 for (int k = 0; k < f.Calls.Count && !Overflowed; k++) Call(m, k, f.Calls[k]);
-                if (Overflowed) return this;
+                if (Overflowed) { GiveBack(); return this; }
             }
             Propagate();
             if (!Overflowed) Aliased();
-            // What it was granted and did not use goes back to the pool.
-            if (_drawn > 0 && !Overflowed && _mostAdds > _adds)
-            {
-                long back = Math.Min(_mostAdds - _adds, _drawn);
-                _owner.InclusionPool += back;
-                _owner.PoolDrawn -= back;
-            }
+            GiveBack();
             return this;
+        }
+
+        // WHAT IT WAS GRANTED AND DID NOT USE goes back to the pool, whether
+        // it finished or ran past its bound another way (too many nodes):
+        // a component is charged only the work it did.
+        private void GiveBack()
+        {
+            if (_drawn <= 0 || _mostAdds <= _adds) return;
+            long back = Math.Min(_mostAdds - _adds, _drawn);
+            _owner.InclusionPool += back;
+            _owner.PoolDrawn -= back;
+            _drawn -= back;
+            _mostAdds -= back;
         }
 
         private static int Plain(long offset) => offset < 0 || offset > FarthestField ? Any : (int)offset;

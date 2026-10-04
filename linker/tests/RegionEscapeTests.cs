@@ -100,7 +100,7 @@ public static class RegionEscapeTests
             {
                 WideTargets = wide, TargetsOn = targetsOn, Progress = progress,
             };
-            if (pool is { } work) escape.InclusionPool = work;
+            if (pool is { } work) escape.InclusionPerRound = work;
             escape.Run();
             return escape;
         }

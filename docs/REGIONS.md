@@ -319,8 +319,12 @@ entry, code outside the IR, a taken address).
   (`InclusionPool`, 400 million locations offered to nodes), up to
   `InclusionCap` (40 million) of its own, in grants that double. Work is
   counted as locations offered to nodes (`Add`), which is what costs time.
-  What a component that finishes did not use goes back to the pool. Past
-  its cap, or with the pool spent, it falls back to unification. The counts
+  The pool is filled again at the start of every wide-call round
+  (`InclusionPerRound`), so a component solved again late has what the
+  first round had. A component is charged only the work it did: what it
+  was granted and did not use goes back to the pool, whether it finished
+  or gave up another way (too many nodes). Past its cap, or with the
+  round's pool spent, it falls back to unification. The counts
   are of work done in solve order, so one link always answers alike; a time
   budget would not. So does a cycle of more than 300 functions
   (`LargeCycle`), or one with more than 100,000 nodes (`LargeNodes`). A
@@ -722,7 +726,7 @@ loops and refusals are reported. Switches:
 | `+cycles` | The largest cycle with wide calls of more than 256, 64, 16 and 4 targets left out, and the widest slots. |
 | `+wide=N` | Virtual calls of more than N targets are stand-ins (default 16; 0 follows every call). |
 | `+widefirst` | Stand-ins start with every site their targets reach. |
-| `+pool=M` | The link's pool of inclusion work past each component's own bound, in millions of locations offered (default 400; 0: none). |
+| `+pool=M` | The link's pool of inclusion work past each component's own bound, in millions of locations offered, filled again at each wide-call round's start (default 400; 0: none). |
 | `+cap=M` | The most of the pool one component may have, in millions (default 40). |
 | `+loopold` | Weigh a loop's region as before the loop rule's change: what it sends to the heap against every site its laps make that it takes, a boundary's included (an A/B of the rule). |
 | `+classoff` | No receiver classes or guards: a virtual call runs every override. |

@@ -591,7 +591,7 @@ public static class RegionSolver
                 _escape.WideTargets = wide;
             // The link's pool of inclusion work past each component's own bound, and each one's most of it (millions).
             if (_report?.FirstOrDefault(w => w.StartsWith("+pool=", StringComparison.Ordinal)) is { } poolOf && long.TryParse(poolOf[6..], out long pool))
-                _escape.InclusionPool = pool * 1_000_000;
+                _escape.InclusionPerRound = pool * 1_000_000;
             if (_report?.FirstOrDefault(w => w.StartsWith("+cap=", StringComparison.Ordinal)) is { } capOf && long.TryParse(capOf[5..], out long cap))
                 _escape.InclusionCap = cap * 1_000_000;
             _escape.ReportStandIns = _report?.Contains("+standins") == true;
@@ -600,7 +600,7 @@ public static class RegionSolver
             if (_report is not null && _report.Contains("+cycles")) foreach (int most in new[] { 256, 64, 16, 4 }) _escape.ReportCycles(most);
             _escape.Run();
             Log($"escape graphs: {count} functions, {sites} sites, {_escape.Applied} summaries applied, largest cycle {_escape.LargestCycle}, "
-                + $"{_escape.Unfollowed} not followed, {_escape.Fallbacks} unified past their bound, {_escape.PoolComponents} past it given {_escape.PoolDrawn} more from the pool ({_escape.InclusionPool} left), {_escape.Work} carried, global {_escape.GlobalByUnknown} by the unknown object + {_escape.GlobalByRoots} by roots, {_clock.ElapsedMilliseconds} ms");
+                + $"{_escape.Unfollowed} not followed, {_escape.Fallbacks} unified past their bound, {_escape.PoolComponents} past it given {_escape.PoolDrawn} more from the pool ({_escape.InclusionPool} left of the last round's), {_escape.Work} carried, global {_escape.GlobalByUnknown} by the unknown object + {_escape.GlobalByRoots} by roots, {_clock.ElapsedMilliseconds} ms");
             return Judge();
         }
 
