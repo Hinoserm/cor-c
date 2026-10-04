@@ -136,8 +136,12 @@ public sealed partial class Lowering
                 // ObjectString recognizes strings, whose descriptor has no
                 // callable vtable. Unlike concatenation, an explicit instance
                 // call on null must still fault: retain the original read.
+                // Narrowed to what the receiver is known to be: the type the
+                // call was made through, when it is one with this ToString,
+                // else the class that declared the one called.
                 _e.Load(IrTypes.Word, receiver, 0);
-                return ObjectString(receiver);
+                return ObjectString(receiver, through is not null && (through.Kind == TypeKind.Interface || Derives(through, m.Owner)) ? through
+                    : m.Owner.Name == "object" ? null : m.Owner);
             }
             VReg vt = _e.Load(IrTypes.Word, receiver, 0);
             VReg fn = _e.Load(IrTypes.Word, vt, (long)m.VtableSlot * _t.WordSize);
@@ -272,7 +276,11 @@ public sealed partial class Lowering
             // asked of a's OWN Equals, through its slot. `Equals(Element,
             // other.Element)` is how a type compares what it is made of, and
             // answered by reference two equal types were different types.
-            return _e.Call(KeyEqualsStub(), IrType.I32, R(a), R(b))!;
+            // Asked of a's own Equals, so a's static type bounds who answers --
+            // when a was not boxed to be handed here (KeyEqualsStub).
+            Type first = _b.TypeOf(call.Args[0]);
+            bool reference = first.Prim == Prim.String || first.IsArray || first.Symbol is { Kind: TypeKind.Class or TypeKind.Interface };
+            return _e.Call(KeyEqualsStub(reference && !first.IsNullableValue ? first : null), IrType.I32, R(a), R(b))!;
         }
 
         // Calling a value is calling its Invoke through the interface slot.

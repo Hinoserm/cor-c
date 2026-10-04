@@ -1,0 +1,45 @@
+// test: object_equals_on_subclasses
+// expect-exit: 0
+// expect-output:
+// True False False False True
+// True
+// True False
+// True False
+//
+// THE STATIC object.Equals(a, b) asks a's own Equals, narrowed to a's static
+// type when a is a reference: two Dogs of one name are equal, a Dog and a
+// Cat are not, null is equal only to null. A string asks as text, and is
+// not equal to a boxed number; an array is only itself.
+
+using System;
+
+class Animal
+{
+    public string Name;
+    public Animal(string n) { Name = n; }
+    public override bool Equals(object? o) => o is Animal a && a.Name == Name && a.GetType() == GetType();
+    public override int GetHashCode() => Name.Length;
+}
+
+class Dog : Animal { public Dog(string n) : base(n) { } }
+class Cat : Animal { public Cat(string n) : base(n) { } }
+
+class P
+{
+    static int Main()
+    {
+        string r = "r";
+        Dog d1 = new Dog("rex"), d2 = new Dog(r + "ex");
+        Cat c = new Cat("rex");
+        Dog? nobody = null;
+        Console.WriteLine(object.Equals(d1, d2) + " " + object.Equals(d1, c) + " " + object.Equals(c, d1) + " " + object.Equals(d1, null) + " " + object.Equals(nobody, null));
+        Animal a1 = d1;
+        Console.WriteLine(object.Equals(a1, d2));
+        string s1 = "ab", s2 = new string(new[] { 'a', 'b' });
+        Console.WriteLine(object.Equals(s1, s2) + " " + object.Equals(s1, (object)5));
+        int[] arr = { 1 };
+        int[] same = arr;
+        Console.WriteLine(object.Equals(arr, same) + " " + object.Equals(arr, new[] { 1 }));
+        return 0;
+    }
+}

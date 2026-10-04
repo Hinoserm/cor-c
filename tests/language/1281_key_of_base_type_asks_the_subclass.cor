@@ -1,0 +1,69 @@
+// test: key_of_base_type_asks_the_subclass
+// expect-exit: 0
+// expect-output:
+// 3 1 2 False
+// True False
+// (Circle 4, 1) Circle 5 Shape
+// null 1 2 3
+//
+// A KEY WHOSE STATIC TYPE IS A BASE CLASS is asked through that class's
+// descriptor (Lowering.KeyEqualsStub), and what answers is the object's own
+// override: a Square equal to a Square, a Circle to a Circle, a plain Shape
+// only to itself. Circle is sealed, so its questions are direct calls.
+// Ordering a tuple by a class that implements IComparable<T> asks its
+// CompareTo, with null first.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+class Shape
+{
+    public int Size;
+    public Shape(int s) { Size = s; }
+}
+
+class Square : Shape
+{
+    public Square(int s) : base(s) { }
+    public override bool Equals(object? o) => o is Square q && q.Size == Size;
+    public override int GetHashCode() => Size;
+}
+
+sealed class Circle : Shape
+{
+    public Circle(int s) : base(s) { }
+    public override bool Equals(object? o) => o is Circle c && c.Size == Size;
+    public override int GetHashCode() => Size * 31;
+    public override string ToString() => "Circle " + Size;
+}
+
+class Rank : IComparable<Rank>
+{
+    public int V;
+    public Rank(int v) { V = v; }
+    public int CompareTo(Rank? o) => o is null ? 1 : V.CompareTo(o.V);
+}
+
+class P
+{
+    static int Main()
+    {
+        var d = new Dictionary<(Shape, int), int>();
+        d[(new Square(2), 0)] = 1;
+        d[(new Circle(2), 0)] = 2;
+        d[(new Shape(2), 0)] = 3;
+        Console.WriteLine(d.Count + " " + d[(new Square(2), 0)] + " " + d[(new Circle(2), 0)] + " " + d.ContainsKey((new Shape(2), 0)));
+
+        var circles = new HashSet<(Circle, string)> { (new Circle(3), "a") };
+        Console.WriteLine(circles.Contains((new Circle(3), "a")) + " " + circles.Contains((new Circle(3), "b")));
+
+        Shape round = new Circle(5), plain = new Shape(1);
+        Console.WriteLine((new Circle(4), 1).ToString() + " " + $"{round}" + " " + $"{plain}");
+
+        var ranks = new List<(Rank?, int)> { (new Rank(3), 0), (new Rank(1), 0), (null, 0), (new Rank(2), 0) };
+        ranks.Sort();
+        Console.WriteLine(string.Join(" ", ranks.Select(r => r.Item1 is null ? "null" : r.Item1.V.ToString())));
+        return 0;
+    }
+}

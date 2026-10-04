@@ -1,0 +1,22 @@
+// The other unit of 1289_narrow_keys_across_units: a key class, and a table
+// keyed by it, asked here through this unit's own narrowed routines.
+using System.Collections.Generic;
+
+namespace KeyUnits;
+
+public class Key
+{
+    public int Id;
+    public Key(int id) { Id = id; }
+    public override bool Equals(object? o) => o is Key k && k.Id == Id;
+    public override int GetHashCode() => Id;
+    public override string ToString() => "K" + Id;
+}
+
+public static class Registry
+{
+    static Dictionary<(Key, int), string> _names = new();
+    public static void Put(Key k, int n, string name) { _names[(k, n)] = name; }
+    public static string Get(Key k, int n) => _names.TryGetValue((k, n), out string? s) ? s : "none";
+    public static string Show(Key k) => $"[{k}]";
+}
