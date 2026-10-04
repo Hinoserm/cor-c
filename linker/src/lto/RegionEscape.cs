@@ -2700,7 +2700,10 @@ internal sealed class RegionEscape
     /// thirteen thousand of the compiler's functions held a million nodes and
     /// gigabytes. Coarser: what the members hand one another is one class.
     /// Calls out of the cycle apply their summaries as the inclusion solve
-    /// does; each member's summary for calls into the cycle is coarse.
+    /// does; each member's summary for calls into the cycle is its classes
+    /// as they are, field by field (ByField) -- what one field of an
+    /// argument holds leaks or not apart from what another does -- and
+    /// coarse past its bounds.
     /// </summary>
     private sealed class Unified
     {
@@ -3089,11 +3092,13 @@ internal sealed class RegionEscape
         }
 
         /// <summary>
-        /// A MEMBER'S SUMMARY, AS COARSE AS UNIFICATION IS: every argument and
-        /// all it reaches one object, the objects made beneath it another --
-        /// each may hold the other and itself, and the unknown object when
-        /// any argument reaches it. Sound for what is below a parameter as
-        /// for the parameter, which unification cannot tell apart; and one
+        /// A MEMBER'S SUMMARY, field by field where unification kept them
+        /// apart (ByField), else as coarse as unification once was
+        /// (Coarsest).
+        ///
+        /// THE COARSE ONE: every argument and all it reaches one object, the
+        /// objects made beneath it another, each may hold the other and
+        /// itself, and the unknown object when any argument reaches it. One
         /// closure a call, where a cell from each parameter to each other's
         /// deep place made a call into the cycle cost the square of its
         /// arguments' reach.
@@ -3107,7 +3112,121 @@ internal sealed class RegionEscape
         /// that the result reaches and the unknown object holds is one the
         /// arguments reach too, or the caller never had it.
         /// </summary>
-        public Summary Summarise(int m)
+        public Summary Summarise(int m) => ByField(m) ?? Coarsest(m);
+
+        // How many classes one member's summary walks, and how many objects it
+        // states, before it is the coarse one: a member of a cycle of
+        // thousands each walking all it reaches was the square of the cycle.
+        private const int MostWalked = 4096, MostStated = 512;
+
+        /// <summary>
+        /// A MEMBER'S SUMMARY BY FIELD: each argument's class, and what its
+        /// fields hold, field by field, a place below that argument by the
+        /// fields taken to it (WithField: past PlaceDepth, the deep place);
+        /// a class holding objects made in the cycle a made object; and the
+        /// unknown object's class the unknown object. A cell for every field
+        /// of each such class to each class there -- at Any where the class
+        /// was collapsed, pointing anywhere into one that was -- and the
+        /// unknown object holding everything its class has: an argument
+        /// below one field that leaks leaks, and what another field holds
+        /// does not. What is below an object that leaks leaks with it, and
+        /// is not followed. A class that holds nothing -- no object made, no
+        /// place, read where nothing was written -- is nothing to the caller.
+        /// Null past MostWalked or MostStated: the coarse summary (Coarsest).
+        /// </summary>
+        private Summary? ByField(int m)
+        {
+            Prepare();
+            RegionFunction f = Function(m);
+            int n = f.Parameters;
+            int global = Find(_global);
+            Summary s = new();
+            Dictionary<int, List<int>> reps = new();
+            Dictionary<(Kind, int, string), int> placed = new();
+            Queue<(int Class, int Object)> next = new();
+            int walked = 0;
+
+            int Place(int k, int[] path)
+            {
+                Kind kind = KindOf(path);
+                var key = (kind, k, string.Join(",", path));
+                if (placed.TryGetValue(key, out int at)) return at;
+                at = s.Objects.Count;
+                s.Objects.Add((kind, k, path, Array.Empty<int>()));
+                return placed[key] = at;
+            }
+            void Add(int c, int o)
+            {
+                List<int> list = reps.TryGetValue(c, out List<int>? known) ? known : reps[c] = new();
+                if (list.Contains(o)) return;
+                list.Add(o);
+                next.Enqueue((c, o));
+            }
+            // A class first met: the unknown object, or the objects made in it.
+            void Meet(int c)
+            {
+                if (reps.ContainsKey(c)) return;
+                walked++;
+                if (c == global) { Add(c, 0); return; }
+                reps[c] = new();
+                if (_originsOf[c] is { Count: > 0 } origins)
+                {
+                    int made = s.Objects.Count;
+                    s.Objects.Add((Kind.Made, -1, Array.Empty<int>(), origins.Distinct().Order().ToArray()));
+                    Add(c, made);
+                }
+            }
+
+            for (int k = 0; k < n; k++)
+            {
+                // A parameter of a number type is handed no address.
+                if (_pointee[Node(m, k)] < 0 || f.IsNumber(k)) continue;
+                int c = Pointee(Node(m, k));
+                Meet(c);
+                Add(c, Place(k, Array.Empty<int>()));
+            }
+            int result = _pointee[Node(m, n)] >= 0 ? Pointee(Node(m, n)) : -1;
+            if (result >= 0) Meet(result);
+            while (next.TryDequeue(out var item))
+            {
+                if (walked > MostWalked || s.Objects.Count > MostStated) return null;
+                (int c, int o) = item;
+                if (c == global || _fields[c] is not { } fields) continue;
+                var obj = s.Objects[o];
+                foreach (var (offset, held) in fields)
+                {
+                    int t = Find(held);
+                    Meet(t);
+                    if (obj.Kind is Kind.Place or Kind.Deep && obj.Param >= 0) Add(t, Place(obj.Param, WithField(obj.Path, offset)));
+                }
+            }
+            if (walked > MostWalked || s.Objects.Count > MostStated) return null;
+
+            foreach (var (c, list) in reps)
+            {
+                if (list.Count == 0 || c == global || _fields[c] is not { } fields) continue;
+                foreach (var (offset, held) in fields)
+                {
+                    int t = Find(held);
+                    if (!reps.TryGetValue(t, out List<int>? to) || to.Count == 0) continue;
+                    int at = _collapsed[t] ? Any : 0;
+                    foreach (int r in list)
+                        foreach (int u in to)
+                            if (!(r == 0 && u == 0)) s.Cells.Add((r, offset, u, at));
+                }
+            }
+            // What the unknown object's class holds, it holds: those escape.
+            if (reps.TryGetValue(global, out List<int>? leaked))
+                foreach (int u in leaked) if (u != 0) s.Cells.Add((0, Any, u, Any));
+            if (result >= 0 && reps.TryGetValue(result, out List<int>? back))
+                foreach (int u in back) s.Result.Add((u, _collapsed[result] ? Any : 0));
+            s.Cells.Sort(); s.Result.Sort();
+            Summary.Dedupe(s.Cells); Summary.Dedupe(s.Result);
+            return s.Bounded();
+        }
+
+        /// <summary>The coarse summary (Summarise), past ByField's bounds.</summary>
+        private Summary Coarsest(int m)
         {
             Prepare();
             RegionFunction f = Function(m);
