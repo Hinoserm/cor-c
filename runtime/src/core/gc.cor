@@ -11607,6 +11607,15 @@ static class GcThreads
 
     public static long Answered, AnsweredFor;
 
+    /// Prompts sent while waiting for a round (Platform.PromptStop), over
+    /// all rounds.
+    public static long Prompts;
+
+    /// The turns of the round's wait between two prompts: the first gap,
+    /// and the most it doubles to while prompts move nobody.
+    const long PromptGapLeast = 16;
+    const long PromptGapMost = 1024;
+
     /// Asks every other thread for `request` and returns when all have
     /// answered. Called by the collector, without the heap lock. While it
     /// waits it answers for the blocked, marks what is queued, prompts the
@@ -11674,7 +11683,19 @@ static class GcThreads
         GcLock.Exit();
         Gc.HandshakeRounds = Gc.HandshakeRounds + 1;
 
+        // RE-PROMPT PACING. A prompt interrupts every processor that still
+        // owes the round; one found inside a store sequence puts its answer
+        // off to the next prompt (the kernel counts those). Prompting again
+        // every few turns would keep those processors in their interrupt
+        // handlers and the collector hot on interrupts, so while a prompt
+        // moves nobody the gap to the next doubles, up to PromptGapMost
+        // turns, and falls back to the first gap as soon as anyone answers.
+        // Nothing here gives up: a round waits until everybody has answered,
+        // and a put-off answer is only a later one.
         long turns = 0;
+        long gap = PromptGapLeast;
+        long nextPrompt = 0;
+        long owedAtPrompt = Pending();
 
         while (true)
         {
@@ -11699,8 +11720,20 @@ static class GcThreads
                 Gc.Assist(64);
             }
 
-            if ((turns & 0xF) == 0)
+            if (turns >= nextPrompt)
             {
+                long owed = Pending();
+                if (owed < owedAtPrompt)
+                {
+                    gap = PromptGapLeast;
+                }
+                else if (turns != 0 && gap < PromptGapMost)
+                {
+                    gap = gap * 2;
+                }
+                owedAtPrompt = owed;
+                nextPrompt = turns + gap;
+                Prompts = Prompts + 1;
                 Platform.PromptStop();
             }
 
