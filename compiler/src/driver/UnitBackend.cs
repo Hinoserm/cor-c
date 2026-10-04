@@ -13,6 +13,9 @@ public sealed class UnitBackend : IUnitBackend
 {
     /// <summary>Objects the last recompile placed in frames or freed with the link's lifetime answers.</summary>
     public int LifetimesTaken => _lifetimes;
+
+    /// <summary>How many workers the late passes and code generation share out among.</summary>
+    public static int Workers => Math.Max(1, Math.Min(64, Environment.ProcessorCount));
     private int _lifetimes;
 
     /// <summary>The most a unit whose late passes run at the link may take decoded.</summary>
@@ -100,7 +103,7 @@ public sealed class UnitBackend : IUnitBackend
                 if (visibility.TryGetValue(function.Name, out bool exported) && exported != function.Exported)
                     throw new InvalidDataException("Archived IR identity disagrees with native symbol " + function.Name);
             Pipeline late = Pipeline.Default(optimizeSize: read.Settings!.OptimizeSize, experimentalBatch: read.Settings.ExperimentalBatch);
-            late.Workers = Math.Max(1, Math.Min(64, Environment.ProcessorCount));
+            late.Workers = Workers;
             late.RunLate(module);
             AsyncTransform.Run(module, Target.Current.WordSize);
             LandingPadHomes.Run(module);
@@ -253,7 +256,7 @@ public sealed class UnitBackend : IUnitBackend
             if (dumping) { System.Text.StringBuilder regenerated = new(); function.Dump(regenerated); Console.Error.WriteLine("== regenerated\n" + regenerated); }
             return function;
         }
-        int workers = Math.Max(1, Math.Min(64, Environment.ProcessorCount));
+        int workers = Workers;
         // As much as the machine can spare (MachineMemory), less what the
         // unit's own headers took; a function bigger than that is compiled
         // alone. The same object either way.

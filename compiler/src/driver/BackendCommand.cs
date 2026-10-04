@@ -10,6 +10,13 @@ public static class BackendCommand
         using BinaryReader reader = new(Console.OpenStandardInput(), BackendProtocol.Utf8);
         using BinaryWriter writer = new(Console.OpenStandardOutput(), BackendProtocol.Utf8);
         UnitBackend backend = new();
+#if !NET
+        // THE WORKERS ITS PASSES AND CODE GENERATION HAND WORK TO, as a
+        // compile's (Driver.Compile): without them every Task.Run waited on
+        // ran on this thread, one after another, and the link's largest unit
+        // was regenerated on one processor.
+        Scheduler.UseThreads(UnitBackend.Workers);
+#endif
         while (true)
         {
             BackendRequest? request;
