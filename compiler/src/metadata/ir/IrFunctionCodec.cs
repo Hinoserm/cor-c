@@ -16,11 +16,14 @@ public static class IrFunctionCodec
     /// and the copy a refused run is taken back from (UnitBackend) -- read a
     /// number as an address again, and lost the regions it had just marked.
     /// Names (a register's, a slot's) are for the dump alone and stay out.
+    /// 7: and the field a load or a store names (Instr.Family), after the
+    /// marks when FamilyMark says there is one: so the link can summarise a
+    /// unit's archived IR again with the fields kept apart.
     /// </summary>
-    private const int Version = 6;
+    private const int Version = 7;
 
     // An instruction's marks (Instr): one byte.
-    private const byte NumberMark = 1, RegionSiteMark = 2;
+    private const byte NumberMark = 1, RegionSiteMark = 2, FamilyMark = 4;
 
     public static long DecodeCost(Function function, int payloadBytes)
     {
@@ -36,6 +39,7 @@ public static class IrFunctionCodec
             Text(instruction.Callee);
             Text(instruction.DispatchType);
             Text(instruction.Field);
+            Text(instruction.Family);
             foreach (SymOperand address in instruction.Operands.OfType<SymOperand>()) Text(address.Name);
         }
         return bytes;
@@ -108,7 +112,8 @@ public static class IrFunctionCodec
                 writer.Write((int)instruction.Op); writer.Write(instruction.Dest?.Id ?? -1);
                 writer.Write(instruction.Size); writer.Write(instruction.Signed); writer.Write(instruction.Offset);
                 IrBinary.Text(writer, instruction.Callee); IrBinary.Text(writer, instruction.DispatchType); IrBinary.Text(writer, instruction.Field); writer.Write(instruction.Line);
-                writer.Write((byte)((instruction.Number ? NumberMark : 0) | (instruction.RegionSite ? RegionSiteMark : 0)));
+                writer.Write((byte)((instruction.Number ? NumberMark : 0) | (instruction.RegionSite ? RegionSiteMark : 0) | (instruction.Family is not null ? FamilyMark : 0)));
+                if (instruction.Family is not null) IrBinary.Text(writer, instruction.Family);
                 writer.Write(instruction.Operands.Count);
                 foreach (Operand operand in instruction.Operands)
                     switch (operand)
@@ -222,9 +227,11 @@ public static class IrFunctionCodec
                         Callee = IrBinary.Text(reader, budget), DispatchType = IrBinary.Text(reader, budget), Field = IrBinary.Text(reader, budget), Line = reader.ReadInt32(),
                     };
                     byte marks = reader.ReadByte();
-                    if ((marks & ~(NumberMark | RegionSiteMark)) != 0) throw new InvalidDataException("Invalid IR instruction marks");
+                    if ((marks & ~(NumberMark | RegionSiteMark | FamilyMark)) != 0) throw new InvalidDataException("Invalid IR instruction marks");
                     instruction.Number = (marks & NumberMark) != 0;
                     instruction.RegionSite = (marks & RegionSiteMark) != 0;
+                    if ((marks & FamilyMark) != 0)
+                        instruction.Family = IrBinary.Text(reader, budget) ?? throw new InvalidDataException("Invalid IR instruction field");
                     int operands = IrBinary.Count(reader);
                     budget.Charge(operands, 64, "operands");
                     for (int operand = 0; operand < operands; operand++)

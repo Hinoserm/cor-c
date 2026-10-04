@@ -718,6 +718,12 @@ public sealed class Inline : IParallelModulePass
         {
             Block made = caller.NewBlock(b.Label + "$");
             made.IsLandingPad = b.IsLandingPad;
+            // A loop the link gave a region of its own keeps it wherever its
+            // body goes, as its sites keep theirs (RegionSite below): what a
+            // lap makes and is done with by the lap's end is so in the caller
+            // too.
+            made.RegionLoop = b.RegionLoop;
+            made.RegionLoopBytes = b.RegionLoopBytes;
             blocks[b] = made;
         }
 

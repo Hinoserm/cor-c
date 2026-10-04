@@ -292,7 +292,13 @@ public sealed partial class Escape : IModulePass
                             continue;
                         }
 
-                        Instr retargeted = new() { Op = Opcode.Call, Dest = i.Dest, Callee = to, Line = i.Line };
+                        // The manual heap's allocator in the collector's
+                        // place: the call's marks are the allocation's.
+                        Instr retargeted = new()
+                        {
+                            Op = Opcode.Call, Dest = i.Dest, Callee = to, Line = i.Line,
+                            Field = i.Field, RegionSite = i.RegionSite, DispatchType = i.DispatchType,
+                        };
                         retargeted.Operands.AddRange(i.Operands);
                         b.Instrs[k] = retargeted;
                     }

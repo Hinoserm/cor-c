@@ -41,6 +41,9 @@ public static class Switches
     /// <summary>--verify-passes: the IR verified after every pass.</summary>
     public static bool VerifyPasses;
 
+    /// <summary>--verify-marks: every pass checked for a mark it lost off an instruction it kept (MarkVerifier).</summary>
+    public static bool VerifyMarks;
+
     /// <summary>--skip-passes A,B: those optimisation passes left out.</summary>
     public static string? SkipPasses;
 
@@ -149,6 +152,7 @@ public static class Switches
         DumpFunction = Valued(taken, "--dump-function");
         if (Number(taken, "--work-budget") is long budget) WorkBudget = budget;
         VerifyPasses = Switch(taken, "--verify-passes");
+        VerifyMarks = Switch(taken, "--verify-marks");
         SkipPasses = Valued(taken, "--skip-passes");
         ReportPasses = Switch(taken, "--report-passes");
         TraceDemand = Switch(taken, "--trace-demand");

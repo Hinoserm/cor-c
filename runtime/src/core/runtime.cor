@@ -908,8 +908,14 @@ static class Runtime
                 nint at = (nint)Sys.Peek(tb + (nint)Tls.RegionAt);
                 nint need = (bytes + (nint)Gc.BlockRounding) & (nint)Gc.BlockSizeMask;
                 if (need < (nint)Gc.SmallestBlock) need = (nint)Gc.SmallestBlock;
+                // ROOM COUNTED, NOT AN END COMPARED: on i386 a request near
+                // MostRequest added to an arena high in the address space
+                // wraps, and a wrapped end below the chunk's passed the test
+                // and the block's footer was written far below it. The slow
+                // path's sums are longs.
+                nint end = (nint)Sys.Peek(tb + (nint)Tls.RegionEnd);
                 nint next = at + need;
-                if ((nuint)next <= (nuint)Sys.Peek(tb + (nint)Tls.RegionEnd))
+                if ((nuint)at <= (nuint)end && (nuint)need <= (nuint)(end - at))
                 {
                     Sys.Poke(at, need);
                     Sys.Poke(next - (nint)Gc.BlockFooterBytes, need);

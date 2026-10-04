@@ -10925,6 +10925,27 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     }
 
     private void Grow() {
+        int oldSize = mask + 1;
+        // Twice the size only when it is the held ones that fill it.
+        Rehash((count + 1) * 2 > oldSize ? oldSize * 2 : oldSize);
+    }
+
+    /// DOWN TO WHAT IT HOLDS, as .NET's: the table remade at the size a new
+    /// one made for that many would have (the capacity constructor's), where
+    /// that is smaller than it is. Its entries keep their order.
+    public void TrimExcess() { TrimExcess(count); }
+
+    public void TrimExcess(int capacity) {
+        if (capacity < count) { throw new ArgumentOutOfRangeException("capacity"); }
+        if (keys == null) { return; }
+        int want = capacity * 4 / 3 + 1;
+        int size = 16;
+        while (size < want) { size = size * 2; }
+        if (size < mask + 1) { Rehash(size); }
+    }
+
+    // The table remade at `size` slots, every entry in the place it had.
+    private void Rehash(int size) {
         K[] oldKeys = keys;
         V[] oldValues = values;
         int[] oldState = state;
@@ -10932,10 +10953,6 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         int[]? oldOrder = order;
         int[]? oldPlaces = placeOf;
         int oldOrdered = ordered;
-        int oldSize = mask + 1;
-
-        // Twice the size only when it is the held ones that fill it.
-        int size = (count + 1) * 2 > oldSize ? oldSize * 2 : oldSize;
 
         // THE NEW ARRAYS FILLED IN LOCALS, and stored only once the old ones
         // are done with: a store that replaces an owned field frees what it
@@ -12673,17 +12690,33 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
     }
 
     private void Grow() {
+        int oldSize = mask + 1;
+        // Twice the size only when it is the held ones that fill it; a table
+        // of tombstones is rehashed where it stands.
+        Rehash((count + 1) * 2 > oldSize ? oldSize * 2 : oldSize);
+    }
+
+    /// DOWN TO WHAT IT HOLDS, as .NET's: the table remade at the size a new
+    /// one made for that many would have, where that is smaller than it is.
+    public void TrimExcess() { TrimExcess(count); }
+
+    public void TrimExcess(int capacity) {
+        if (capacity < count) { throw new ArgumentOutOfRangeException("capacity"); }
+        if (items == null) { return; }
+        int want = capacity * 4 / 3 + 1;
+        int size = 16;
+        while (size < want) { size = size * 2; }
+        if (size < mask + 1) { Rehash(size); }
+    }
+
+    // The table remade at `size` slots, every member in the place it had.
+    private void Rehash(int size) {
         T[] old = items;
         int[] oldState = state;
         int[] oldHashes = hashes;
         int[]? oldOrder = order;
         int[]? oldPlaces = placeOf;
         int oldOrdered = ordered;
-        int oldSize = mask + 1;
-
-        // Twice the size only when it is the held ones that fill it; a table
-        // of tombstones is rehashed where it stands.
-        int size = (count + 1) * 2 > oldSize ? oldSize * 2 : oldSize;
 
         // Filled in locals and stored once the old arrays are done with, as
         // Dictionary's Grow: an owned field's store frees what it replaces.
@@ -15343,5 +15376,152 @@ namespace System.Runtime.CompilerServices
     {
         int Length { get; }
         object? this[int index] { get; }
+    }
+
+    /// A VALUE KEPT FOR AN OBJECT, by the object's identity, as .NET's
+    /// ConditionalWeakTable: Add, AddOrUpdate, TryAdd, TryGetValue, GetValue
+    /// with a maker, Remove, Clear, and a walk over what it holds.
+    ///
+    /// HELD STRONGLY. .NET's lets an entry go when nothing else holds its
+    /// key; this runtime's collector has no weak references, so an entry
+    /// here lives until it is removed or the table itself is dropped. A
+    /// table that only ever grows over keys that come and go keeps them
+    /// all: such a cache belongs on the key itself, or a table that is
+    /// replaced when its keys are.
+    ///
+    /// Two departures, both for what this compiler cannot yet express:
+    /// GetValue takes a Func<TKey, TValue> where .NET takes its nested
+    /// CreateValueCallback delegate -- a lambda or a method group binds to
+    /// either alike -- and there is no GetOrCreateValue, which builds a
+    /// TValue by its parameterless constructor with no constraint saying it
+    /// has one.
+    public sealed class ConditionalWeakTable<TKey, TValue> : IEnumerable<KeyValuePair<TKey, TValue>> where TKey : class where TValue : class?
+    {
+        private readonly Dictionary<object, TValue> _held = new Dictionary<object, TValue>(ReferenceEqualityComparer.Instance);
+
+        public ConditionalWeakTable() { }
+
+        /// A key held already is refused (ArgumentException), as .NET's.
+        public void Add(TKey key, TValue value)
+        {
+            if (key == null) { throw new ArgumentNullException("key"); }
+            if (_held.ContainsKey(key)) { throw new ArgumentException("An entry with the same key already exists."); }
+            _held[key] = value;
+        }
+
+        public bool TryAdd(TKey key, TValue value)
+        {
+            if (key == null) { throw new ArgumentNullException("key"); }
+            if (_held.ContainsKey(key)) { return false; }
+            _held[key] = value;
+            return true;
+        }
+
+        public void AddOrUpdate(TKey key, TValue value)
+        {
+            if (key == null) { throw new ArgumentNullException("key"); }
+            _held[key] = value;
+        }
+
+        public bool TryGetValue(TKey key, out TValue value)
+        {
+            if (key == null) { throw new ArgumentNullException("key"); }
+            if (_held.TryGetValue(key, out TValue? found)) { value = found!; return true; }
+            value = default!;
+            return false;
+        }
+
+        /// What the table holds for `key`, or what `createValueCallback`
+        /// makes for it, kept.
+        public TValue GetValue(TKey key, Func<TKey, TValue> createValueCallback)
+        {
+            if (key == null) { throw new ArgumentNullException("key"); }
+            if (createValueCallback == null) { throw new ArgumentNullException("createValueCallback"); }
+            if (_held.TryGetValue(key, out TValue? known)) { return known!; }
+            TValue made = createValueCallback(key);
+            _held[key] = made;
+            return made;
+        }
+
+        public bool Remove(TKey key)
+        {
+            if (key == null) { throw new ArgumentNullException("key"); }
+            return _held.Remove(key);
+        }
+
+        public void Clear() { _held.Clear(); }
+
+        public IEnumerator<KeyValuePair<TKey, TValue>> GetEnumerator()
+        {
+            foreach (KeyValuePair<object, TValue> entry in _held)
+            {
+                yield return new KeyValuePair<TKey, TValue>((TKey)entry.Key, entry.Value);
+            }
+        }
+
+        IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+    }
+}
+
+namespace System.Runtime
+{
+    /// How the collector is asked to treat the large object heap at its next
+    /// full collection, as .NET's.
+    public enum GCLargeObjectHeapCompactionMode
+    {
+        Default = 1,
+        CompactOnce = 2,
+    }
+
+    /// How intrusive collections may be, as .NET's.
+    public enum GCLatencyMode
+    {
+        Batch = 0,
+        Interactive = 1,
+        LowLatency = 2,
+        SustainedLowLatency = 3,
+        NoGCRegion = 4,
+    }
+
+    /// THE COLLECTOR'S SETTINGS, as .NET's GCSettings answers them. This
+    /// collector has no large object heap and no server mode, and does not
+    /// change how it collects for a latency mode: each setting is kept and
+    /// answered back, and changes nothing. The large object heap's mode goes
+    /// back to Default at the next full collection in .NET; here it stays
+    /// what it was set to, there being no compaction for it to have asked.
+    public static class GCSettings
+    {
+        private static GCLargeObjectHeapCompactionMode _largeObjects = GCLargeObjectHeapCompactionMode.Default;
+        private static GCLatencyMode _latency = GCLatencyMode.Interactive;
+
+        public static bool IsServerGC { get { return false; } }
+
+        public static GCLargeObjectHeapCompactionMode LargeObjectHeapCompactionMode
+        {
+            get { return _largeObjects; }
+            set
+            {
+                if (value != GCLargeObjectHeapCompactionMode.Default && value != GCLargeObjectHeapCompactionMode.CompactOnce)
+                {
+                    throw new ArgumentOutOfRangeException("value");
+                }
+                _largeObjects = value;
+            }
+        }
+
+        /// NoGCRegion is entered by GC.TryStartNoGCRegion, never set; .NET
+        /// refuses it here, and so does this.
+        public static GCLatencyMode LatencyMode
+        {
+            get { return _latency; }
+            set
+            {
+                if (value < GCLatencyMode.Batch || value > GCLatencyMode.SustainedLowLatency)
+                {
+                    throw new ArgumentOutOfRangeException("value");
+                }
+                _latency = value;
+            }
+        }
     }
 }
