@@ -7,8 +7,13 @@ namespace Corsac.Lang;
 /// falls out through break; an arm holds one expression and is the value of the
 /// whole switch. Sharing a node would mean every consumer asking which kind it
 /// was really looking at.
-public sealed class SwitchArm : Node
+public sealed class SwitchArm : Node, ICanonSlot
 {
+    /// <summary>The descriptor entry a shared copy reads for the constructed type the arm tests (ICanonSlot), or -1.</summary>
+    public int CanonSlot { get; set; } = -1;
+    /// <summary>The `this` that entry is read through (ICanonSlot).</summary>
+    public Expr? CanonSelf { get; set; }
+
     /// <summary>
     /// A constant to compare against, or null for a type pattern or for `_`.
     ///

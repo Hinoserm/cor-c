@@ -875,9 +875,18 @@ public sealed class Monomorphiser
     /// list, an interface's entry its interface descriptor. Every argument
     /// one of this copy's parameters; a class or an interface.
     /// </summary>
-    private T CanonTested<T>(T made, T source, TypeRef written) where T : Expr, ICanonSlot
+    private T CanonTested<T>(T made, T source, TypeRef written) where T : Node, ICanonSlot
     {
-        if (!_canonSelf || _canonParams is null || _canonMade is null || written.ArrayRank != 0 || written.PointerDepth != 0
+        if (source.CanonSlot >= 0)
+        {
+            made.CanonSlot = source.CanonSlot;
+            made.CanonSelf = new ThisExpr { Line = made.Line, Col = made.Col };
+            _canonMarked = true;
+            return made;
+        }
+        // An array of one too (`is List<T>[]`): its entry is the array's
+        // descriptor, which the Binder resolves by its element.
+        if (!_canonSelf || _canonParams is null || _canonMade is null || written.ArrayRank > 1 || written.PointerDepth != 0
             || !written.Args.All(a => a.Args.Count == 0 && a.ArrayRank == 0 && a.PointerDepth == 0 && _canonParams.ContainsKey(a.Name)))
         {
             return made;
@@ -930,7 +939,7 @@ public sealed class Monomorphiser
         // A test or a cast to a constructed type over the parameters reads
         // that type's own descriptor; a typeof or an array of one stays the
         // machine word's, as it was.
-        if (written.Args.Count != 0) return made is IsExpr or AsExpr or CastExpr && !array ? CanonTested(made, source, written) : made;
+        if (written.Args.Count != 0) return made is IsExpr or AsExpr or CastExpr or TypeOfExpr && !array ? CanonTested(made, source, written) : made;
         if (!_canonSelf || _canonParams is null || written.PointerDepth != 0
             || !_canonParams.TryGetValue(written.Name, out int place))
         {
@@ -2384,7 +2393,7 @@ public sealed class Monomorphiser
                 };
                 foreach (SwitchArm arm in choice.Arms)
                 {
-                    made.Arms.Add(new SwitchArm
+                    SwitchArm copied = new()
                     {
                         Value = arm.Value is null ? null : Rewrite(arm.Value, map),
                         Type = arm.Type is null ? null : Sub(arm.Type, map),
@@ -2392,7 +2401,9 @@ public sealed class Monomorphiser
                         When = arm.When is null ? null : Rewrite(arm.When, map),
                         Discard = arm.Discard, Result = Rewrite(arm.Result, map),
                         Fallback = arm.Fallback, Line = arm.Line, Col = arm.Col,
-                    });
+                    };
+                    // `ICollection<T> c => ...` in a shared copy, as `is` (CanonTested).
+                    made.Arms.Add(arm.CanonSlot >= 0 || arm.Type is { Args.Count: > 0 } ? CanonTested(copied, arm, arm.Type!) : copied);
                 }
                 return made;
             }
