@@ -463,7 +463,13 @@ internal static class OwnedElements
         if (callee.StartsWith(prefix, StringComparison.Ordinal)
             && callee.IndexOf("_" + kind + "$", prefix.Length, StringComparison.Ordinal) >= 0
             && !Method.IsMatch(callee))
-            return new(true);
+            // A CONSTRUCTOR THAT COPIES -- `new List<T>(source)`, a
+            // Dictionary made from another -- fills the collection with what
+            // the source holds, objects made elsewhere and still held there:
+            // freeing them with the copy freed a kernel's module records out
+            // from under the list they were copied from. Only a constructor
+            // given nothing but a capacity or a comparer makes it empty.
+            return new(!CopiesElements(callee));
         Match match = Method.Match(callee);
         if (!match.Success || match.Groups[1].Value != kind) return new(false);
         string name = match.Groups[2].Value;
@@ -483,6 +489,24 @@ internal static class OwnedElements
             _ => new(false),
         };
     }
+
+    /// <summary>
+    /// Whether a collection's constructor takes anything it could copy
+    /// elements from: a reference parameter that is not a comparer, or an
+    /// array ("T$" and "A$" in the mangled parameters).
+    /// </summary>
+    internal static bool CopiesElements(string constructor)
+    {
+        foreach (Match p in Parameter.Matches(constructor))
+        {
+            string type = p.Groups[1].Value;
+            if (type.StartsWith("A$", StringComparison.Ordinal)) return true;
+            if (type.StartsWith("T$", StringComparison.Ordinal) && !type.Contains("Comparer", StringComparison.Ordinal)) return true;
+        }
+        return false;
+    }
+
+    private static readonly Regex Parameter = new(@"_((?:T|A)\$[^_]*)", RegexOptions.CultureInvariant);
 
     /// <summary>The collection kind of an allocation, from the vtable stored into it, or null.</summary>
     internal static string? KindOf(Function f, Instr alloc, HashSet<VReg> container)
