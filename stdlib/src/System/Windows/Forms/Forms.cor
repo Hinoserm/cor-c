@@ -1291,8 +1291,18 @@ public class Form : Control
     bool _controlBox = true;
 
     /// The picture at the left of the caption, and the one the taskbar
-    /// shows for this window.
-    public Icon? Icon { get { return _icon; } set { _icon = value; _iconSent = false; FrameChanged(); } }
+    /// shows for this window: as .NET's, the default icon until one is set
+    /// (the system's IDI_APPLICATION, which the frame shows then anyway).
+    public Icon? Icon
+    {
+        get
+        {
+            if (_icon != null) return _icon;
+            try { return SystemIcons.Application; }
+            catch (InvalidOperationException) { return null; }
+        }
+        set { _icon = value; _iconSent = false; FrameChanged(); }
+    }
     Icon? _icon;
     bool _iconSent;
 
@@ -1410,6 +1420,9 @@ public class Form : Control
         if (!_iconSent)
         {
             seat.SetFrameIcon(_handle, _icon != null ? _icon.SmallPixels() : null);
+            // The GUI kernel's object too, which the taskbar asks for at its
+            // own size when the window has no small pixels.
+            seat.SetFrameIconImage(_handle, _icon != null ? (long)_icon.Handle : 0);
             _iconSent = true;
         }
     }
@@ -1680,52 +1693,133 @@ public class Form : Control
 /// </summary>
 public sealed class Cursor : IDisposable
 {
-    readonly int _shape;               // what the seat takes (CursorShapes)
+    readonly int _shape;               // what the seat takes (CursorShapes); -1 for one worn by its handle
     readonly string _name;             // a system cursor's .NET name; "" for one from a file
     readonly CursorArt? _art;
+    long _image;                       // the GUI kernel's cursor object, 0 none (yet)
+    readonly int _system;              // a system cursor's OCR_* id, 0 for none
+    bool _owns;                        // _image made for this cursor, destroyed with it
 
-    internal Cursor(int shape, string name) { _shape = shape; _name = name; }
+    internal Cursor(int shape, string name) : this(shape, name, 0) { }
+    internal Cursor(int shape, string name, int system) { _shape = shape; _name = name; _system = system; }
 
-    /// A cursor file, still or animated. Windows' own error when it is not one.
+    /// A cursor file, still or animated: the GUI kernel's cursor object
+    /// made of it, which the pointer wears by its handle; the seat's own
+    /// reading of it (CursorArt) when the kernel would not take it. Windows'
+    /// own error when it is neither.
     public Cursor(string fileName)
     {
-        CursorArt? art = CursorArt.FromFile(fileName);
+        byte[] bytes;
+        try { bytes = File.ReadAllBytes(fileName); }
+        catch (IOException) { throw new FileNotFoundException("Could not find file '" + fileName + "'.", fileName); }
+        _name = "";
+        _shape = -1;
+        if (Load(bytes)) return;
+        CursorArt? art = CursorArt.FromBytes(bytes);
         if (art == null || art.Shape < 0) throw new ArgumentException("Image format is not valid. The image file may be corrupted.", "fileName");
-        _art = art; _shape = art.Shape; _name = "";
+        _art = art; _shape = art.Shape;
     }
 
     public Cursor(Stream stream)
     {
         MemoryStream copy = new MemoryStream();
         stream.CopyTo(copy);
-        CursorArt? art = CursorArt.FromBytes(copy.ToArray());
+        byte[] bytes = copy.ToArray();
+        _name = "";
+        _shape = -1;
+        if (Load(bytes)) return;
+        CursorArt? art = CursorArt.FromBytes(bytes);
         if (art == null || art.Shape < 0) throw new ArgumentException("Image format is not valid. The image file may be corrupted.", "stream");
-        _art = art; _shape = art.Shape; _name = "";
+        _art = art; _shape = art.Shape;
+    }
+
+    /// .NET's Cursor(IntPtr): a cursor for a handle -- one of the GUI
+    /// kernel's, a Windows program's HCURSOR -- not owned.
+    public Cursor(nint handle)
+    {
+        int kind, w, h, hx, hy, images, steps;
+        bool known = false;
+        try { known = Seat.Current.ImageInfo(handle, out kind, out w, out h, out hx, out hy, out images, out steps); }
+        catch (IOException) { }
+        if (!known) throw new ArgumentException("Invalid handle.", "handle");
+        _name = ""; _shape = -1; _image = handle;
+    }
+
+    bool Load(byte[] bytes)
+    {
+        long made;
+        try { made = Seat.Current.LoadImage(bytes, Seat.ImageCursor, 0); }
+        catch (IOException) { made = -1; }
+        if (made <= 0) return false;
+        _image = made; _owns = true;
+        return true;
     }
 
     internal int Shape { get { return _shape; } }
 
+    /// The GUI kernel's object, as .NET's Handle is the HCURSOR: a system
+    /// cursor's is the system's (made known the first time it is asked).
+    public nint Handle
+    {
+        get
+        {
+            if (_image == 0 && _system != 0)
+            {
+                try { long h = Seat.Current.SystemImage(_system, Seat.ImageCursor); if (h > 0) _image = h; }
+                catch (IOException) { }
+            }
+            return (nint)_image;
+        }
+    }
+
     /// The point of the picture that is the pointer's position.
-    public Point HotSpot { get { return _art == null ? new Point(0, 0) : new Point(_art.HotX, _art.HotY); } }
+    public Point HotSpot
+    {
+        get
+        {
+            if (_art != null) return new Point(_art.HotX, _art.HotY);
+            int kind, w, h, hx, hy, images, steps;
+            if (Handle != 0 && Seat.Current.ImageInfo(_image, out kind, out w, out h, out hx, out hy, out images, out steps)) return new Point(hx, hy);
+            return new Point(0, 0);
+        }
+    }
 
     /// The picture's size: a file's own, or the system's 32 by 32.
-    public Size Size { get { return _art == null ? new Size(32, 32) : new Size(_art.Width, _art.Height); } }
+    public Size Size
+    {
+        get
+        {
+            if (_art != null) return new Size(_art.Width, _art.Height);
+            int kind, w, h, hx, hy, images, steps;
+            if (_shape < 0 && _image != 0 && Seat.Current.ImageInfo(_image, out kind, out w, out h, out hx, out hy, out images, out steps)) return new Size(w, h);
+            return new Size(32, 32);
+        }
+    }
 
     public object? Tag { get; set; }
 
-    public void Dispose() { }
+    /// The GUI kernel's object let go of, when it was made for this cursor.
+    public void Dispose()
+    {
+        if (_owns && _image != 0)
+        {
+            try { Seat.Current.DestroyImage(_image); }
+            catch (IOException) { }
+        }
+        _owns = false;
+    }
 
     public override string ToString() { return "[Cursor: " + (_name.Length > 0 ? _name : "System.Windows.Forms.Cursor") + "]"; }
 
-    public override bool Equals(object? obj) { return obj is Cursor other && other._shape == _shape; }
+    public override bool Equals(object? obj) { return obj is Cursor other && other._shape == _shape && other._image == _image; }
 
-    public override int GetHashCode() { return _shape; }
+    public override int GetHashCode() { return _shape >= 0 ? _shape : (int)_image; }
 
     public static bool operator ==(Cursor? left, Cursor? right)
     {
         if (ReferenceEquals(left, right)) return true;
         if (left is null || right is null) return false;
-        return left._shape == right._shape;
+        return left._shape == right._shape && (left._shape >= 0 || left._image == right._image);
     }
 
     public static bool operator !=(Cursor? left, Cursor? right) { return !(left == right); }
@@ -1805,6 +1899,8 @@ public sealed class Cursor : IDisposable
                 Seat.Current.SetCursor(CursorShapes.Base + _blank);
                 return;
             }
+            // One of the GUI kernel's own, worn by its handle.
+            if (c._shape < 0) { Seat.Current.WearCursor(c._image); return; }
             if (c._shape >= CursorShapes.NoMove2D) AutoScroll.DefineShapes();
             Seat.Current.SetCursor(c._shape);
         }
@@ -1824,15 +1920,15 @@ public sealed class Cursor : IDisposable
 /// <summary>The system's pointer shapes, by .NET's names.</summary>
 public static class Cursors
 {
-    static readonly Cursor _appStarting = new Cursor(CursorShapes.AppStarting, "AppStarting");
-    static readonly Cursor _arrow = new Cursor(CursorShapes.Arrow, "Arrow");
-    static readonly Cursor _cross = new Cursor(CursorShapes.Cross, "Cross");
-    static readonly Cursor _default = new Cursor(CursorShapes.Arrow, "Default");
-    static readonly Cursor _hand = new Cursor(CursorShapes.Hand, "Hand");
-    static readonly Cursor _help = new Cursor(CursorShapes.Help, "Help");
+    static readonly Cursor _appStarting = new Cursor(CursorShapes.AppStarting, "AppStarting", 32650);
+    static readonly Cursor _arrow = new Cursor(CursorShapes.Arrow, "Arrow", 32512);
+    static readonly Cursor _cross = new Cursor(CursorShapes.Cross, "Cross", 32515);
+    static readonly Cursor _default = new Cursor(CursorShapes.Arrow, "Default", 32512);
+    static readonly Cursor _hand = new Cursor(CursorShapes.Hand, "Hand", 32649);
+    static readonly Cursor _help = new Cursor(CursorShapes.Help, "Help", 32651);
     static readonly Cursor _hSplit = new Cursor(CursorShapes.SizeNS, "HSplit");
-    static readonly Cursor _iBeam = new Cursor(CursorShapes.IBeam, "IBeam");
-    static readonly Cursor _no = new Cursor(CursorShapes.No, "No");
+    static readonly Cursor _iBeam = new Cursor(CursorShapes.IBeam, "IBeam", 32513);
+    static readonly Cursor _no = new Cursor(CursorShapes.No, "No", 32648);
     static readonly Cursor _noMove2D = new Cursor(CursorShapes.NoMove2D, "NoMove2D");
     static readonly Cursor _noMoveHoriz = new Cursor(CursorShapes.NoMoveHoriz, "NoMoveHoriz");
     static readonly Cursor _noMoveVert = new Cursor(CursorShapes.NoMoveVert, "NoMoveVert");
@@ -1844,14 +1940,14 @@ public static class Cursors
     static readonly Cursor _panSouth = new Cursor(CursorShapes.PanSouth, "PanSouth");
     static readonly Cursor _panSW = new Cursor(CursorShapes.PanSW, "PanSW");
     static readonly Cursor _panWest = new Cursor(CursorShapes.PanWest, "PanWest");
-    static readonly Cursor _sizeAll = new Cursor(CursorShapes.Move, "SizeAll");
-    static readonly Cursor _sizeNESW = new Cursor(CursorShapes.SizeNESW, "SizeNESW");
-    static readonly Cursor _sizeNS = new Cursor(CursorShapes.SizeNS, "SizeNS");
-    static readonly Cursor _sizeNWSE = new Cursor(CursorShapes.SizeNWSE, "SizeNWSE");
-    static readonly Cursor _sizeWE = new Cursor(CursorShapes.SizeWE, "SizeWE");
-    static readonly Cursor _upArrow = new Cursor(CursorShapes.UpArrow, "UpArrow");
+    static readonly Cursor _sizeAll = new Cursor(CursorShapes.Move, "SizeAll", 32646);
+    static readonly Cursor _sizeNESW = new Cursor(CursorShapes.SizeNESW, "SizeNESW", 32643);
+    static readonly Cursor _sizeNS = new Cursor(CursorShapes.SizeNS, "SizeNS", 32645);
+    static readonly Cursor _sizeNWSE = new Cursor(CursorShapes.SizeNWSE, "SizeNWSE", 32642);
+    static readonly Cursor _sizeWE = new Cursor(CursorShapes.SizeWE, "SizeWE", 32644);
+    static readonly Cursor _upArrow = new Cursor(CursorShapes.UpArrow, "UpArrow", 32516);
     static readonly Cursor _vSplit = new Cursor(CursorShapes.SizeWE, "VSplit");
-    static readonly Cursor _waitCursor = new Cursor(CursorShapes.Wait, "WaitCursor");
+    static readonly Cursor _waitCursor = new Cursor(CursorShapes.Wait, "WaitCursor", 32514);
 
     public static Cursor AppStarting { get { return _appStarting; } }
     public static Cursor Arrow { get { return _arrow; } }

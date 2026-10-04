@@ -156,6 +156,16 @@ enum SeatIoctl : long
     ThemeSetFont = 0x47550085,
     ThemeSetSetting = 0x47550086,
     ThemeSetSizes = 0x47550087,
+    // Icons and cursors, the GUI kernel's objects (images.cor).
+    ImageLoad = 0x47550400,
+    ImageSystem = 0x47550401,
+    ImageCreate = 0x47550402,
+    ImageDestroy = 0x47550403,
+    ImageInfo = 0x47550404,
+    ImagePixels = 0x47550405,
+    CursorWear = 0x47550406,
+    FrameIconImage = 0x47550407,
+    WindowIcon = 0x47550408,
 }
 
 public class Seat : IDrawingTarget, IFontStore, ISystemTheme
@@ -513,7 +523,7 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme
         {
             char[] text = new char[room];
             int[] block = new int[13];
-            block[0] = (int)Sys.ArrayData(text);
+            block[0] = Sys.ArrayData(text);
             block[1] = room;
             long answer = Ioctl(SeatIoctl.AdapterInfo16, Sys.ArrayData(block));
             GC.KeepAlive(text);
@@ -1274,6 +1284,106 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme
     /// A pointer shape from a cursor file. The seat reduces it to what a
     /// card's hardware cursor can show -- two colours and a hole -- and it
     /// is then selected like any other shape, by SetCursor(CursorBase + id).
+    // ---- icons and cursors, the GUI kernel's ------------------------------------------
+    //
+    // An icon or cursor is the GUI kernel's object, named by a handle of
+    // Windows' shape that a Windows program's HICON shares: one picture at
+    // several sizes, an animated cursor's frames. The kernel reads .ico,
+    // .cur and .ani files and a program's icon groups, has the system's own
+    // set, and the seat draws them -- the pointer, a frame, the taskbar.
+
+    /// What ImageLoad and ImageCreate are asked for: an icon, a cursor, or
+    /// (to ImageLoad) whatever the file is.
+    public const int ImageAny = 0, ImageIcon = 1, ImageCursor = 2;
+
+    /// An icon or cursor from a file's bytes -- an .ico, .cur or .ani, or a
+    /// program's (.exe, .dll) icon group `resource` (0 its first; its
+    /// cursor group for ImageCursor) -- this program's until destroyed.
+    /// The handle, or a negative errno.
+    public long LoadImage(byte[] bytes, int kind, int resource)
+    {
+        byte[] args = new byte[16];
+        PutWord(args, 0, Sys.ArrayData(bytes)); PutWord(args, 4, bytes.Length); PutWord(args, 8, kind); PutWord(args, 12, resource);
+        long answer = Ioctl(SeatIoctl.ImageLoad, Sys.ArrayData(args));
+        GC.KeepAlive(bytes);
+        return answer;
+    }
+
+    /// One of the system's icons (OIC_*: 32512 the application's, 32513
+    /// error, 32514 question, 32515 warning, 32516 information, 32517 the
+    /// logo) or cursors (OCR_*, IDC_*): its handle, or a negative errno.
+    public long SystemImage(int id, int kind)
+    {
+        return Ioctl(SeatIoctl.ImageSystem, (id & 0xFFFF) | ((long)kind << 32));
+    }
+
+    /// An icon or cursor from pixels, 0xAARRGGBB top row first (alpha below
+    /// half clear), with its hot spot. The handle, or a negative errno.
+    public long CreateImage(int kind, int width, int height, int hotX, int hotY, int[] argb)
+    {
+        byte[] args = new byte[24];
+        PutWord(args, 0, kind); PutWord(args, 4, width); PutWord(args, 8, height); PutWord(args, 12, hotX); PutWord(args, 16, hotY);
+        PutWord(args, 20, Sys.ArrayData(argb));
+        long answer = Ioctl(SeatIoctl.ImageCreate, Sys.ArrayData(args));
+        GC.KeepAlive(argb);
+        return answer;
+    }
+
+    /// One of this program's icons or cursors let go of.
+    public void DestroyImage(long handle) { Ioctl(SeatIoctl.ImageDestroy, handle); }
+
+    /// What an icon or cursor is: its kind, its image for 32 pixels' size
+    /// and hot spot, how many images it has and how many animation steps.
+    public bool ImageInfo(long handle, out int kind, out int width, out int height, out int hotX, out int hotY, out int images, out int steps)
+    {
+        byte[] info = new byte[32];
+        PutWord(info, 0, (int)handle);
+        bool ok = Ioctl(SeatIoctl.ImageInfo, Sys.ArrayData(info)) == 0;
+        kind = Word(info, 4); width = Word(info, 8); height = Word(info, 12); hotX = Word(info, 16); hotY = Word(info, 20);
+        images = Word(info, 24); steps = Word(info, 28);
+        return ok;
+    }
+
+
+    /// An icon or cursor at `size` by `size` (0: its largest image's own
+    /// size), 0xAARRGGBB with clear 0; null when it has none.
+    public int[]? ImagePixels(long handle, int size, out int width, out int height)
+    {
+        width = 0; height = 0;
+        int room = size > 0 ? size * size : 256 * 256;
+        int[] pixels = new int[room];
+        byte[] args = new byte[16];
+        PutWord(args, 0, (int)handle); PutWord(args, 4, size); PutWord(args, 8, Sys.ArrayData(pixels)); PutWord(args, 12, room);
+        long answer = Ioctl(SeatIoctl.ImagePixels, Sys.ArrayData(args));
+        GC.KeepAlive(pixels);
+        if (answer <= 0) return null;
+        width = (int)(answer & 0xFFFF); height = (int)((answer >> 16) & 0xFFFF);
+        if (width * height == room) return pixels;
+        int[] exact = new int[width * height];
+        Array.Copy(pixels, exact, exact.Length);
+        return exact;
+    }
+
+    /// The pointer wears a cursor -- animated, if it is -- while it is over
+    /// this program's windows.
+    public void WearCursor(long handle) { Flush(); Ioctl(SeatIoctl.CursorWear, handle); }
+
+    /// A window's icon as one of the GUI kernel's (0 none): its frame's and
+    /// its taskbar button's when it has no FrameIcon pixels.
+    public void SetFrameIconImage(int window, long handle) { Flush(); Select(window); Ioctl(SeatIoctl.FrameIconImage, handle); }
+
+    /// The icon any window shows at `size` pixels, as the taskbar draws it:
+    /// 0xAARRGGBB with clear 0; null when there is no such window.
+    public int[]? WindowIcon(int window, int size)
+    {
+        int[] pixels = new int[size * size];
+        byte[] args = new byte[16];
+        PutWord(args, 0, window); PutWord(args, 4, size); PutWord(args, 8, Sys.ArrayData(pixels)); PutWord(args, 12, pixels.Length);
+        long answer = Ioctl(SeatIoctl.WindowIcon, Sys.ArrayData(args));
+        GC.KeepAlive(pixels);
+        return answer == size ? pixels : null;
+    }
+
     public void DefineCursor(int id, int width, int height, int hotX, int hotY, byte[] argb)
     {
         int bytes = width * height * 4;
@@ -1523,7 +1633,7 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme
         {
             int[] records = new int[7 * roomWindows];
             char[] text = new char[roomText];
-            int[] header = new int[] { (int)Sys.ArrayData(records), roomWindows, (int)Sys.ArrayData(text), roomText };
+            int[] header = new int[] { Sys.ArrayData(records), roomWindows, Sys.ArrayData(text), roomText };
             int n = (int)Ioctl(SeatIoctl.ListWindows16, Sys.ArrayData(header));
             GC.KeepAlive(records); GC.KeepAlive(text);
             if (n == Erange)
@@ -1625,7 +1735,7 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme
         {
             int[] records = new int[TrayListWords * roomIcons];
             char[] text = new char[roomText];
-            int[] header = new int[] { (int)Sys.ArrayData(records), roomIcons, (int)Sys.ArrayData(text), roomText };
+            int[] header = new int[] { Sys.ArrayData(records), roomIcons, Sys.ArrayData(text), roomText };
             int n = (int)Ioctl(SeatIoctl.TrayList16, Sys.ArrayData(header));
             GC.KeepAlive(records); GC.KeepAlive(text);
             if (n == Erange)
@@ -1713,7 +1823,7 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme
         while (true)
         {
             char[] text = new char[room];
-            int[] record = new int[] { (int)Sys.ArrayData(text), room };
+            int[] record = new int[] { Sys.ArrayData(text), room };
             int n = (int)Ioctl(SeatIoctl.InspectRead16, Sys.ArrayData(record));
             GC.KeepAlive(text);
             if (n < 0) return "";
