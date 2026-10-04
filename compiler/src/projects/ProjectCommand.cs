@@ -304,22 +304,21 @@ public static class ProjectCommand
     private static bool InProcesses(string list, List<(string Source, string Object)> units, bool entry, List<string> options,
         int processes, int workers)
     {
-        List<(string Source, string Object)>[] shares = new List<(string Source, string Object)>[processes];
-        for (int i = 0; i < processes; i++) shares[i] = new();
-        int turn = 0;
-        foreach (var unit in units.OrderByDescending(unit => new FileInfo(unit.Source).Length).ThenBy(unit => unit.Source, StringComparer.Ordinal))
-        {
-            shares[turn].Add(unit);
-            turn = (turn + 1) % processes;
-        }
+        // EVERY CHILD THE WHOLE LIST, each unit taken by whichever child is
+        // free first (ProjectCompile's --claim-dir), biggest first. Dealt out
+        // in turn beforehand, seven children of fifty-odd units each finished
+        // minutes apart, the rest of the machine idle meanwhile. A unit
+        // compiles to the same object in any process, with any neighbours.
+        string share = list[..^4] + "-all.tsv";
+        File.WriteAllLines(share, units.Select(unit => unit.Source + "\t" + unit.Object + "\t" + unit.Object + ".deps\t" + (entry ? "entry" : "lib")));
+        string claims = list[..^4] + "-claims";
+        if (Directory.Exists(claims)) Directory.Delete(claims, recursive: true);
+        Directory.CreateDirectory(claims);
         // One worker each (Processes): a 32-bit space holds one large unit.
         int each = 1;
         List<(System.Diagnostics.Process Child, string Share)> children = new();
         for (int i = 0; i < processes; i++)
         {
-            if (shares[i].Count == 0) continue;
-            string share = list[..^4] + "-" + i + ".tsv";
-            File.WriteAllLines(share, shares[i].Select(unit => unit.Source + "\t" + unit.Object + "\t" + unit.Object + ".deps\t" + (entry ? "entry" : "lib")));
             System.Diagnostics.ProcessStartInfo start = new() { FileName = Environment.ProcessPath!, UseShellExecute = false };
             // The same executable: its identity, hashed once here.
             start.ArgumentList.Add("--compiler-identity"); start.ArgumentList.Add(ProjectCompile.CompilerIdentity());
@@ -338,9 +337,10 @@ public static class ProjectCommand
             foreach (string flag in Driver.ChildFlags) start.ArgumentList.Add(flag);
             start.ArgumentList.Add("compile-project");
             start.ArgumentList.Add("--units"); start.ArgumentList.Add(share);
+            start.ArgumentList.Add("--claim-dir"); start.ArgumentList.Add(claims);
             start.ArgumentList.Add("--jobs"); start.ArgumentList.Add(each.ToString());
             foreach (string option in options) start.ArgumentList.Add(option);
-            children.Add((System.Diagnostics.Process.Start(start)!, share));
+            children.Add((System.Diagnostics.Process.Start(start)!, share + " #" + i));
         }
         // EACH ONE WATCHED ON ITS OWN, and a failure said the moment it
         // happens. Waited on in turn, a child killed by a signal -- which
@@ -350,7 +350,7 @@ public static class ProjectCommand
         bool ok = true;
         object gate = new();
         List<Thread> waits = new();
-        foreach ((System.Diagnostics.Process child, string share) in children)
+        foreach ((System.Diagnostics.Process child, string which) in children)
         {
             Thread wait = new(() =>
             {
@@ -360,7 +360,7 @@ public static class ProjectCommand
                 lock (gate)
                 {
                     ok = false;
-                    Console.Error.WriteLine("corc: the compile-project process for " + share + " (pid " + child.Id + ") "
+                    Console.Error.WriteLine("corc: the compile-project process for " + which + " (pid " + child.Id + ") "
                         + (code > 128 ? "was killed by signal " + (code - 128) : "exited with code " + code)
                         + "; units of it not yet compiled are not built");
                 }
@@ -369,6 +369,7 @@ public static class ProjectCommand
             waits.Add(wait);
         }
         foreach (Thread wait in waits) wait.Join();
+        try { Directory.Delete(claims, recursive: true); } catch (IOException) { }
         return ok;
     }
 

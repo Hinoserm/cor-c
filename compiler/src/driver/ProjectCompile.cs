@@ -71,7 +71,7 @@ public static class ProjectCompile
         List<string> common = new();
         for (int i = 0; i < args.Length; i++)
         {
-            if (args[i] is "--units" or "--jobs" or "--worker-pool") { i++; continue; }
+            if (args[i] is "--units" or "--jobs" or "--worker-pool" or "--claim-dir") { i++; continue; }
             if (args[i] is "--unit-census") continue;
             common.Add(args[i]);
         }
@@ -352,9 +352,25 @@ public static class ProjectCompile
         // beside it -- or all of them see it on and the link refuses eight
         // definitions of __corsac_init.
         bool dynamic = common.Contains("--dynamic") || common.Contains("--link-shared") || common.Contains("--shared");
+        // UNITS SHARED WITH SIBLING PROCESSES (ProjectCommand): each is the
+        // one whose claim file -- made only if it is not there -- it makes.
+        string? claims = Driver.Value(args, "--claim-dir");
+        bool Claim(string name)
+        {
+            if (claims is null) return true;
+            try
+            {
+                using FileStream made = new(Path.Combine(claims, name), FileMode.CreateNew, FileAccess.Write);
+                return true;
+            }
+            catch (IOException) { return false; }
+        }
         if (dynamic)
+        {
+            int e = 0;
             foreach (Unit unit in units.Where(unit => unit.Entry))
-                if (Gated(unit) != 0) failures++;
+                if (Claim("e" + e++) && Gated(unit) != 0) failures++;
+        }
 
         // BIGGEST SOURCE FIRST. The longest unit bounds the build however
         // many workers there are, and a long one started last runs alone at
@@ -371,6 +387,7 @@ public static class ProjectCompile
             {
                 int i = Interlocked.Increment(ref next);
                 if (i >= rest.Length) return;
+                if (!Claim(i.ToString(System.Globalization.CultureInfo.InvariantCulture))) continue;
                 if (Gated(rest[i]) != 0) Interlocked.Increment(ref failures);
             }
         }

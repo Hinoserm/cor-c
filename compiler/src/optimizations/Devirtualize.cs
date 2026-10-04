@@ -512,51 +512,100 @@ public sealed class Devirtualize : IModulePass
 
         Cfg? cfg = null;
         Cfg G() => cfg ??= new Cfg(f);
-        foreach ((Instr alloc, Dictionary<VReg, long> derived) in objects)
+        // WHAT EACH OBJECT'S REGISTERS TOUCH, indexed once: the registers that
+        // may hold it among other things (aliases), their writes, and the
+        // instructions that mention one of its registers, in order. Each
+        // object walked the whole function for each of these -- instructions
+        // times allocations, on every run -- and counted an alias's writes by
+        // walking it again. Made again after a load is forwarded: what the
+        // next object sees is the function as it now is.
+        Dictionary<VReg, List<Instr>> aliasOwners = new();
+        Dictionary<Instr, HashSet<VReg>> aliasesOf = new(ReferenceEqualityComparer.Instance);
+        Dictionary<VReg, List<Instr>> writesOf = new();
+        Dictionary<Instr, List<(Block B, int I)>> touchedBy = new(ReferenceEqualityComparer.Instance);
+        Dictionary<Instr, (Block B, int I)> madeAt = new(ReferenceEqualityComparer.Instance);
+        foreach (Block b in f.Blocks)
+            for (int k = 0; k < b.Instrs.Count; k++)
+                if (objects.ContainsKey(b.Instrs[k])) madeAt[b.Instrs[k]] = (b, k);
+        void Index()
         {
-            // Registers that may hold the object among other things (a copy
-            // into a register with two definitions), and their copies: a
-            // store or a call through one may write it.
-            HashSet<VReg> aliases = new();
+            aliasOwners.Clear(); aliasesOf.Clear(); writesOf.Clear(); touchedBy.Clear();
+            foreach (Instr o in objects.Keys) { aliasesOf[o] = new HashSet<VReg>(); touchedBy[o] = new List<(Block B, int I)>(); }
             bool more = true;
             while (more)
             {
                 more = false;
                 foreach (Block b in f.Blocks)
                     foreach (Instr i in b.Instrs)
-                        if (i.Dest is not null && i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.Add
-                            && i.Operands[0] is RegOperand from && (derived.ContainsKey(from.Reg) || aliases.Contains(from.Reg))
-                            && !derived.ContainsKey(i.Dest) && aliases.Add(i.Dest))
-                            more = true;
+                    {
+                        if (i.Dest is null || i.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.Add)
+                            || i.Operands[0] is not RegOperand from) continue;
+                        if (sourceOf.TryGetValue(from.Reg, out (Instr Object, long At) direct))
+                            more |= AliasTo(i.Dest, direct.Object);
+                        if (aliasOwners.TryGetValue(from.Reg, out List<Instr>? owners))
+                            for (int n = 0; n < owners.Count; n++) more |= AliasTo(i.Dest, owners[n]);
+                    }
             }
+            foreach (Block b in f.Blocks)
+                for (int k = 0; k < b.Instrs.Count; k++)
+                {
+                    Instr i = b.Instrs[k];
+                    if (i.Dest is not null && aliasOwners.ContainsKey(i.Dest))
+                    {
+                        if (!writesOf.TryGetValue(i.Dest, out List<Instr>? list)) writesOf[i.Dest] = list = new();
+                        list.Add(i);
+                    }
+                    Instr? last = null;
+                    foreach (Operand op in i.Operands)
+                    {
+                        if (op is not RegOperand r) continue;
+                        if (sourceOf.TryGetValue(r.Reg, out (Instr Object, long At) direct) && !ReferenceEquals(direct.Object, last))
+                            Touch(direct.Object, b, k, ref last);
+                        if (aliasOwners.TryGetValue(r.Reg, out List<Instr>? owners))
+                            foreach (Instr owner in owners) Touch(owner, b, k, ref last);
+                    }
+                }
+        }
+        bool AliasTo(VReg r, Instr owner)
+        {
+            if (objects[owner].ContainsKey(r) || !aliasesOf[owner].Add(r)) return false;
+            if (!aliasOwners.TryGetValue(r, out List<Instr>? list)) aliasOwners[r] = list = new List<Instr>(1);
+            list.Add(owner);
+            return true;
+        }
+        void Touch(Instr owner, Block b, int k, ref Instr? last)
+        {
+            List<(Block B, int I)> at = touchedBy[owner];
+            if (at.Count > 0 && ReferenceEquals(at[^1].B, b) && at[^1].I == k) return;
+            at.Add((b, k));
+            last = owner;
+        }
+        Index();
+        bool forwarded = false;
+        foreach ((Instr alloc, Dictionary<VReg, long> derived) in objects)
+        {
+            if (forwarded) { Index(); forwarded = false; }
+            // Registers that may hold the object among other things (a copy
+            // into a register with two definitions), and their copies: a
+            // store or a call through one may write it.
+            HashSet<VReg> aliases = aliasesOf[alloc];
             // A register given only null and this object (a foreach's enumerator,
             // zeroed first): a load through it reads this object -- through
             // null it would not return -- though a store through it is still
             // a write where it happens, as for any alias.
-            Dictionary<VReg, List<Instr>> writes = new();
-            foreach (Block b in f.Blocks)
-                foreach (Instr i in b.Instrs)
-                    if (i.Dest is not null && aliases.Contains(i.Dest))
-                    {
-                        if (!writes.TryGetValue(i.Dest, out List<Instr>? list)) writes[i.Dest] = list = new();
-                        list.Add(i);
-                    }
             HashSet<VReg> nullOrThis = new();
             foreach (VReg a in aliases)
             {
-                if (defs.IsSingle(a) || !writes.TryGetValue(a, out List<Instr>? ws)) continue;
-                int all = 0;
-                foreach (Block b in f.Blocks) foreach (Instr i in b.Instrs) if (i.Dest == a) all++;
-                if (all == ws.Count && ws.All(w => w.Op == Opcode.Copy && (w.Operands[0] is ImmOperand { Value: 0 }
+                if (defs.IsSingle(a) || !writesOf.TryGetValue(a, out List<Instr>? ws)) continue;
+                if (ws.All(w => w.Op == Opcode.Copy && (w.Operands[0] is ImmOperand { Value: 0 }
                         || w.Operands[0] is RegOperand { Reg: var from } && derived.TryGetValue(from, out long o) && o == 0)))
                     nullOrThis.Add(a);
                 else if (Trace is { } tt && f.Name.Contains(tt, StringComparison.Ordinal))
-                    Console.Error.WriteLine($"forward {f.Name} alias {a}: writes {all}/{ws.Count}: {string.Join("; ", ws.Select(w => w.ToString()))}");
+                    Console.Error.WriteLine($"forward {f.Name} alias {a}: writes {ws.Count}: {string.Join("; ", ws.Select(w => w.ToString()))}");
             }
             List<(Block B, int I, long At, int Size, Operand Value)> stores = new();
             List<(Block B, int I)> writers = new();
-            foreach (Block b in f.Blocks)
-                for (int k = 0; k < b.Instrs.Count; k++)
+            foreach ((Block b, int k) in touchedBy[alloc])
                 {
                     Instr i = b.Instrs[k];
                     if (ReferenceEquals(i, alloc)) continue;
@@ -605,8 +654,7 @@ public sealed class Devirtualize : IModulePass
             // a path from it to the load that does not go back through the
             // allocation. Round a loop that makes the object again, the
             // registers name the new one, and the write was to the old.
-            Block allocBlock = f.Blocks.First(b => b.Instrs.Contains(alloc));
-            int allocAt = allocBlock.Instrs.IndexOf(alloc);
+            (Block allocBlock, int allocAt) = madeAt[alloc];
             bool Reaches((Block B, int I) w, Block lb, int li)
             {
                 if (ReferenceEquals(w.B, lb) && w.I < li && !(ReferenceEquals(lb, allocBlock) && w.I < allocAt && allocAt < li)) return true;
@@ -630,8 +678,7 @@ public sealed class Devirtualize : IModulePass
                 return default;
             }
 
-            foreach (Block lb in f.Blocks)
-                for (int li = 0; li < lb.Instrs.Count; li++)
+            foreach ((Block lb, int li) in touchedBy[alloc])
                 {
                     Instr l = lb.Instrs[li];
                     if (l.Op != Opcode.Load || l.Dest is null || l.Dest.Type.IsFloat() || l.Operands[0] is not RegOperand lr) continue;
@@ -702,6 +749,7 @@ public sealed class Devirtualize : IModulePass
                     else if (l.Size < word) continue;
                     if (trace) Console.Error.WriteLine($"forward {f.Name} {l} in {lb.Label}: FORWARDED {value} from {s0.B.Instrs[s0.I]} in {s0.B.Label} alloc in {allocBlock.Label} writers [{string.Join("; ", writers.Select(w => w.B.Label + ":" + w.B.Instrs[w.I]))}]");
                     lb.Instrs[li] = new Instr { Op = Opcode.Copy, Dest = l.Dest, Line = l.Line, Operands = { value } };
+                    forwarded = true;
                 }
         }
     }
