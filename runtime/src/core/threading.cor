@@ -3487,6 +3487,8 @@ sealed class AsyncContext
             {
                 arena = Platform.Map(Platform.TaskArenaBytes);
                 Sys.Poke(block + Tls.TaskArena, arena);
+                // Stores into its blocks mark cards: theirs committed now.
+                if (arena != 0) Gc.CommitCards(arena, Platform.TaskArenaBytes);
             }
             if (arena != 0)
             {

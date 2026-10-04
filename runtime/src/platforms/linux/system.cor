@@ -645,6 +645,10 @@ static class Platform
     /// Memory committed as it is first touched: what every anonymous mapping
     /// here is already (MapsCommitLazily).
     public static long MapLazy(long bytes) => Map(bytes);
+
+    /// Nothing to commit ahead: the kernel commits on touch, and never fails
+    /// to (Gc.CommitCards).
+    public static void Commit(long at, long bytes) { }
     public const long TaskArenaBytes = 0;
 
     /// Free memory as the collector may ask it: with the heap held, so without

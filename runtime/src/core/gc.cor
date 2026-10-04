@@ -596,6 +596,31 @@ static class Gc
         _holding = holding;
         Runtime.Cards = cards;
         _generational = true;
+        // THE CARDS OF WHAT IS THERE ALREADY, committed now (CommitCards):
+        // the heap's chunks and the statics, which every store into either
+        // marks. From here each chunk's are committed as it is mapped.
+        for (long chunk = HeapChunks.Newest(); chunk != 0; chunk = HeapChunks.Next(chunk))
+        {
+            CommitCards(chunk, HeapChunks.End(chunk) - chunk);
+        }
+        CommitCards(Sys.DataStart(), Sys.DataEnd() - Sys.DataStart());
+    }
+
+    /// THE CARDS OF [at, at + bytes) COMMITTED, in both tables: what a store
+    /// there marks is a page that is there, so a card mark never takes a
+    /// lazily committed page's fault (Platform.MapLazy) for memory the
+    /// collector knows of. Called in thread context as the heap grows by a
+    /// chunk (HeapChunks.Take, TakePages), and by a platform for memory of
+    /// its own that holds references -- a kernel's stacks, an arena. Nothing
+    /// where the tables are committed by touch anyway (Platform.Commit).
+    public static void CommitCards(long at, long bytes)
+    {
+        long cards = Runtime.Cards;
+        if (cards == 0 || bytes <= 0) return;
+        long first = (at & WordSize.AddressMask) >> Runtime.CardShift;
+        long last = ((at + bytes - 1) & WordSize.AddressMask) >> Runtime.CardShift;
+        Platform.Commit(cards + first, last - first + 1);
+        if (_taken != 0) Platform.Commit(_taken + first, last - first + 1);
     }
 
     /// Whether the cycle about to run may be minor: there has been a major
@@ -2222,6 +2247,7 @@ static class Gc
             if (_regionSlice <= 0) return -1;
             long arena = Platform.Map(_regionSlice);
             if (arena == 0) { _regionSlice = 0; return -1; }
+            CommitCards(arena, _regionSlice);
             Sys.Poke(tb + Tls.RegionAt, arena);
             Sys.Poke(tb + Tls.RegionEnd, arena + _regionSlice);
             Sys.Poke(tb + Tls.RegionBase, arena);
@@ -10679,6 +10705,7 @@ static class HeapChunks
             _chunks = page;
         }
         _heapBytes = _heapBytes + n * PageBytes;
+        Gc.CommitCards(raw, n * PageBytes);
         CheckNew(raw, n * PageBytes);
         IndexAddRun(raw, n, PageBytes);
         if (_floor == 0 || raw + ChunkBytes < _floor)
@@ -10933,6 +10960,7 @@ static class HeapChunks
         if (_chunks != 0) Sys.Poke(_chunks + ChunkPrevious, raw);
         _chunks = raw;
         _heapBytes = _heapBytes + ask;
+        Gc.CommitCards(raw, ask);
         CheckNew(raw, ask);
         IndexAdd(raw);
 

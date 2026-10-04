@@ -387,6 +387,17 @@ static class Platform
         return Map(bytes);
     }
 
+    /// The pages of [at, at + bytes) of a MapLazy range committed now, in
+    /// thread context, by the kernel's routine (CommitHook) -- so nothing
+    /// the collector knows will be touched waits on a fault (Gc.CommitCards).
+    /// No hook: nothing to do.
+    public static long CommitHook;
+
+    public static void Commit(long at, long bytes)
+    {
+        if (CommitHook != 0) Sys.Call(CommitHook, at, bytes, 0);
+    }
+
     /// Whether a mapping costs only the pages that are touched: false alone
     /// on the machine -- the collector keeps no card table and collects the
     /// whole heap -- and true for an image whose kernel commits its memory
