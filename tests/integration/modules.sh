@@ -72,7 +72,15 @@ mkdir -p "$work/linked"
 "$corc" link "$work/sb16.o" --kernel "$a/kernel.exports" -o "$work/linked/sb16.ko" 2> "$work/sb16-link.log" \
     || { cat "$work/sb16-link.log"; fail "module link"; }
 
-for ko in "$work/sb16.ko" "$work/linked/sb16.ko"; do
+# And as the image builder builds one: its units in one compile-project.
+mkdir -p "$work/project"
+printf '%s\t%s\t%s\tentry\n' "$(realpath $here/Sb16.cor)" "$work/project/sb16.o" "$work/project/sb16.o.deps" > "$work/project/units.tsv"
+"$corc" compile-project --units "$work/project/units.tsv" --obj --kernel "$a/kernel.exports" --decl-index "$a/kernel.idx" --assembly Kernel --ring 0 \
+    2> "$work/project/units.log" || { cat "$work/project/units.log"; fail "module units"; }
+"$corc" link "$work/project/sb16.o" --kernel "$a/kernel.exports" -o "$work/project/sb16.ko" 2> "$work/project/link.log" \
+    || { cat "$work/project/link.log"; fail "module units' link"; }
+
+for ko in "$work/sb16.ko" "$work/linked/sb16.ko" "$work/project/sb16.ko"; do
     readelf -h "$ko" | grep -q 'DYN (Shared object file)' || fail "$ko is not a shared object"
     readelf -d "$ko" > "$ko.dynamic"
     if grep -q 'NEEDED\|TEXTREL' "$ko.dynamic"; then fail "$ko needs a library or relocates its text"; fi

@@ -1,0 +1,14 @@
+// test: module_initializer_shape
+// expect-compile-error: must be static, take no parameters, return void
+// C#'s rules for a module initializer: static, no parameters, void, and not
+// generic.
+
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    [ModuleInitializer]
+    internal static void Register(int how) { }
+
+    static int Main() { return 0; }
+}

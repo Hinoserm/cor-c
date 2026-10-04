@@ -1,0 +1,32 @@
+// test: ring_markers_unmarked_compile
+// expect-exit: 0
+// expect-output:
+// ring 0
+// ring 1
+
+// With no --ring the marks mean nothing: every class is compiled, as it is
+// in every compile that is not of a driver's ring.
+
+using System;
+
+[Ring0]
+static class Dma
+{
+    public static string Name() { return "ring 0"; }
+}
+
+[Ring1]
+static class Mixer
+{
+    public static string Name() { return "ring 1"; }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Console.WriteLine(Dma.Name());
+        Console.WriteLine(Mixer.Name());
+        return 0;
+    }
+}

@@ -1,0 +1,14 @@
+// test: module_initializer_needs_shared
+// expect-compile-error: [ModuleInitializer] runs when a shared object is loaded
+// A module initializer runs when its shared object is loaded -- a kernel
+// module registering its drivers -- and a program has no loader to run it.
+
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    [ModuleInitializer]
+    internal static void Register() { }
+
+    static int Main() { return 0; }
+}

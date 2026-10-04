@@ -1,0 +1,15 @@
+// test: module_alias_needs_a_bus
+// expect-compile-error: 'CTL0031' is not an alias
+// An alias names the bus that finds the device and what that bus calls it:
+// pnp:CTL0031, pci:v10ECd8139, isa:sb16@220. A bare device name matches
+// nothing any bus publishes.
+
+[ModuleAlias("CTL0031")]
+class Sb16
+{
+}
+
+static class Program
+{
+    static int Main() { return 0; }
+}
