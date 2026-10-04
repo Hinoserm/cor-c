@@ -511,7 +511,8 @@ static class AppContext
 
             string? directory = Path.GetDirectoryName(self);
 
-            return directory == null ? (cwd == null ? "/" : cwd)
+            // A bare name has an empty directory part: the current one.
+            return string.IsNullOrEmpty(directory) ? (cwd == null ? "/" : cwd)
                                      : (directory.EndsWith("/") ? directory : directory + "/");
         }
     }

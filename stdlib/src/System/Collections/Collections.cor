@@ -65,6 +65,7 @@ class Stack<T> : IReadOnlyCollection<T>, IEnumerable<T> {
     /// Room for this many before the first growth. Nothing about what it
     /// holds, which is why .NET's is a hint and not a count.
     public Stack(int capacity) {
+        ArgumentOutOfRangeException.ThrowIfNegative(capacity, "capacity");
         items = new T[capacity < 1 ? 1 : capacity];
         count = 0;
     }
@@ -617,7 +618,8 @@ class SortedDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEn
     private SortedPairs<K, V> pairs;
 
     public SortedDictionary() { pairs = new SortedPairs<K, V>(Comparer<K>.Default); }
-    public SortedDictionary(IComparer<K> comparer) { pairs = new SortedPairs<K, V>(comparer); }
+    /// Keys ordered by `comparer`, or by their own order given null, as .NET's.
+    public SortedDictionary(IComparer<K>? comparer) { pairs = new SortedPairs<K, V>(comparer ?? Comparer<K>.Default); }
 
     public int Count => pairs.keys.Count;
     public IComparer<K> Comparer => pairs.order;
@@ -678,16 +680,22 @@ class SortedDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEn
 
 // ---- PriorityQueue --------------------------------------------------------
 //
-// A BINARY HEAP: the smallest priority is always at the root, so Peek is free
-// and both Enqueue and Dequeue cost a walk of the tree's depth. .NET's shape,
-// with the ELEMENT AND ITS PRIORITY SEPARATE -- a work item and the time it is
-// due, a node and its distance -- rather than making the element comparable.
+// A HEAP WITH FOUR CHILDREN TO A NODE, which is .NET's: the smallest priority
+// is always at the root, so Peek is free and Enqueue and Dequeue cost a walk
+// of the tree's depth. The element and its priority are kept SEPARATE -- a
+// work item and the time it is due, a node and its distance -- rather than
+// making the element comparable.
 //
-// TIES ARE NOT ORDERED. Two items of equal priority come out in whichever
-// order the heap happens to hold them, which is .NET's documented behaviour
-// and not an accident of this implementation.
+// TIES COME OUT IN .NET'S ORDER. .NET documents no order for equal
+// priorities, but a program's output depends on the one it has, so the heap
+// is .NET's own -- four children, a node sifted up past only a strictly
+// greater parent and down past only a strictly smaller child, the last node
+// moved to the root on a Dequeue -- and two queues fed the same calls hand
+// back the same sequence here and there.
 
 class PriorityQueue<TElement, TPriority> {
+    private const int Arity = 4;
+
     private List<TElement> items;
     private List<TPriority> keys;
     private IComparer<TPriority> order;
@@ -698,10 +706,23 @@ class PriorityQueue<TElement, TPriority> {
         order = Comparer<TPriority>.Default;
     }
 
-    public PriorityQueue(IComparer<TPriority> comparer) {
+    /// Room for `initialCapacity` before the first growth.
+    public PriorityQueue(int initialCapacity) : this(initialCapacity, null) { }
+
+    /// Priorities ordered by `comparer`, or by their own order given null.
+    public PriorityQueue(IComparer<TPriority>? comparer) {
         items = new List<TElement>();
         keys = new List<TPriority>();
-        order = comparer;
+        order = comparer ?? Comparer<TPriority>.Default;
+    }
+
+    public PriorityQueue(int initialCapacity, IComparer<TPriority>? comparer) {
+        if (initialCapacity < 0) {
+            throw new ArgumentOutOfRangeException("initialCapacity", initialCapacity, "initialCapacity ('" + initialCapacity + "') must be a non-negative value.");
+        }
+        items = new List<TElement>(initialCapacity);
+        keys = new List<TPriority>(initialCapacity);
+        order = comparer ?? Comparer<TPriority>.Default;
     }
 
     public int Count => items.Count;
@@ -710,33 +731,26 @@ class PriorityQueue<TElement, TPriority> {
     public void Enqueue(TElement element, TPriority priority) {
         items.Add(element);
         keys.Add(priority);
-        Up(items.Count - 1);
+        Up(element, priority, items.Count - 1);
     }
 
     public TElement Peek() {
-        if (items.Count == 0) { throw new InvalidOperationException("The queue is empty."); }
+        if (items.Count == 0) { throw new InvalidOperationException("Queue empty."); }
         return items[0];
     }
 
     public TElement Dequeue() {
-        if (items.Count == 0) { throw new InvalidOperationException("The queue is empty."); }
+        if (items.Count == 0) { throw new InvalidOperationException("Queue empty."); }
 
         TElement top = items[0];
-        int last = items.Count - 1;
-
-        items[0] = items[last];
-        keys[0] = keys[last];
-        items.RemoveAt(last);
-        keys.RemoveAt(last);
-
-        if (items.Count > 0) { Down(0); }
+        RemoveRoot();
         return top;
     }
 
     public bool TryPeek(out TElement element, out TPriority priority) {
         if (items.Count == 0) {
-            element = default(TElement);
-            priority = default(TPriority);
+            element = default(TElement)!;
+            priority = default(TPriority)!;
             return false;
         }
         element = items[0];
@@ -746,25 +760,38 @@ class PriorityQueue<TElement, TPriority> {
 
     public bool TryDequeue(out TElement element, out TPriority priority) {
         if (items.Count == 0) {
-            element = default(TElement);
-            priority = default(TPriority);
+            element = default(TElement)!;
+            priority = default(TPriority)!;
             return false;
         }
+        element = items[0];
         priority = keys[0];
-        element = Dequeue();
+        RemoveRoot();
         return true;
     }
 
     /// ENQUEUE AND DEQUEUE IN ONE, and cheaper than the two: when the new item
-    /// is already the smallest it never enters the heap at all.
+    /// is no greater than the smallest it never enters the heap at all.
     public TElement EnqueueDequeue(TElement element, TPriority priority) {
-        if (items.Count == 0 || order.Compare(priority, keys[0]) <= 0) { return element; }
+        if (items.Count != 0 && order.Compare(priority, keys[0]) > 0) {
+            TElement top = items[0];
+            Down(element, priority, 0);
+            return top;
+        }
+        return element;
+    }
 
+    /// DEQUEUE AND ENQUEUE IN ONE: the smallest handed back and the new one
+    /// put in its place, which an empty queue cannot do.
+    public TElement DequeueEnqueue(TElement element, TPriority priority) {
+        if (items.Count == 0) { throw new InvalidOperationException("Queue empty."); }
         TElement top = items[0];
-
-        items[0] = element;
-        keys[0] = priority;
-        Down(0);
+        if (order.Compare(priority, keys[0]) > 0) {
+            Down(element, priority, 0);
+        } else {
+            items[0] = element;
+            keys[0] = priority;
+        }
         return top;
     }
 
@@ -773,39 +800,48 @@ class PriorityQueue<TElement, TPriority> {
         keys.Clear();
     }
 
-    private void Up(int at) {
-        while (at > 0) {
-            int parent = (at - 1) / 2;
+    // The last node taken off the end and sifted down from the root.
+    private void RemoveRoot() {
+        int last = items.Count - 1;
+        TElement element = items[last];
+        TPriority priority = keys[last];
+        items.RemoveAt(last);
+        keys.RemoveAt(last);
+        if (last > 0) { Down(element, priority, 0); }
+    }
 
-            if (order.Compare(keys[at], keys[parent]) >= 0) { return; }
-            Swap(at, parent);
+    // A node placed at `at` and moved up past every parent strictly greater.
+    private void Up(TElement element, TPriority priority, int at) {
+        while (at > 0) {
+            int parent = (at - 1) >> 2;
+            if (order.Compare(priority, keys[parent]) >= 0) { break; }
+            items[at] = items[parent];
+            keys[at] = keys[parent];
             at = parent;
         }
+        items[at] = element;
+        keys[at] = priority;
     }
 
-    private void Down(int at) {
+    // A node placed at `at` and moved down past the least of its children
+    // while that child is strictly smaller.
+    private void Down(TElement element, TPriority priority, int at) {
+        int size = items.Count;
         while (true) {
-            int left = at * 2 + 1;
-            int right = left + 1;
-            int least = at;
-
-            if (left < items.Count && order.Compare(keys[left], keys[least]) < 0) { least = left; }
-            if (right < items.Count && order.Compare(keys[right], keys[least]) < 0) { least = right; }
-            if (least == at) { return; }
-
-            Swap(at, least);
+            int first = (at << 2) + 1;
+            if (first >= size) { break; }
+            int least = first;
+            int bound = Math.Min(first + Arity, size);
+            for (int child = first + 1; child < bound; child++) {
+                if (order.Compare(keys[child], keys[least]) < 0) { least = child; }
+            }
+            if (order.Compare(priority, keys[least]) <= 0) { break; }
+            items[at] = items[least];
+            keys[at] = keys[least];
             at = least;
         }
-    }
-
-    private void Swap(int a, int b) {
-        TElement element = items[a];
-        TPriority key = keys[a];
-
-        items[a] = items[b];
-        keys[a] = keys[b];
-        items[b] = element;
-        keys[b] = key;
+        items[at] = element;
+        keys[at] = priority;
     }
 }
 
