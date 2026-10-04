@@ -8,7 +8,7 @@ public static class BackendProtocol
     public static readonly UTF8Encoding Utf8 = new(false, true);
     public static void WriteRequest(BinaryWriter writer, BackendRequest request)
     {
-        writer.Write((byte)0x52); writer.Write(11);
+        writer.Write((byte)0x52); writer.Write(12);
         WriteText(writer, request.Input); WriteText(writer, request.Output); writer.Write(request.Imports.Count);
         foreach (IrImport import in request.Imports)
         {
@@ -56,14 +56,15 @@ public static class BackendProtocol
             { WriteText(writer, name); WriteFields(writer, fields); }
             writer.Write(facts.ForeignCatchable?.Length ?? -1);
             foreach (string type in facts.ForeignCatchable ?? Array.Empty<string>()) WriteText(writer, type);
-            // The owned fields, by name: offset, and whether a store fills it;
+            // The owned fields, by name: offset, and whether a store fills it
+            // (1) and whether a collection frees what it replaces itself (2);
             // then the functions and virtual symbols that hand one back.
             OwnedFieldFacts? owned = facts.OwnedFields;
             writer.Write(owned?.Fields.Count ?? -1);
             if (owned is not null)
             {
                 foreach ((string field, long offset) in owned.Fields.OrderBy(pair => pair.Key, StringComparer.Ordinal))
-                { WriteText(writer, field); writer.Write(offset); writer.Write(owned.Mapped.Contains(field)); }
+                { WriteText(writer, field); writer.Write(offset); writer.Write((byte)((owned.Mapped.Contains(field) ? 1 : 0) | (owned.SelfFreed.Contains(field) ? 2 : 0))); }
                 writer.Write(owned.Borrowers.Count);
                 foreach (string name in owned.Borrowers.Order(StringComparer.Ordinal)) WriteText(writer, name);
                 // The fields elements are owned through, their callees, and the fields kept for it.
@@ -99,7 +100,7 @@ public static class BackendProtocol
     {
         int marker = reader.BaseStream.ReadByte();
         if (marker == -1) return null;
-        if (marker != 0x52 || reader.ReadInt32() != 11) throw new InvalidDataException("Unsupported backend protocol");
+        if (marker != 0x52 || reader.ReadInt32() != 12) throw new InvalidDataException("Unsupported backend protocol");
         string input = ReadText(reader), output = ReadText(reader);
         int count = reader.ReadInt32(), bytes = 0;
         if (count < 0 || count > 256) throw new InvalidDataException("Backend import count exceeds budget");
@@ -199,7 +200,10 @@ public static class BackendProtocol
                 {
                     string field = ReadText(reader); long offset = reader.ReadInt64();
                     if (!fields.Fields.TryAdd(field, offset)) throw new InvalidDataException("Duplicate backend owned-field fact");
-                    if (reader.ReadBoolean()) fields.Mapped.Add(field);
+                    byte flags = reader.ReadByte();
+                    if (flags > 3) throw new InvalidDataException("Invalid backend owned-field fact");
+                    if ((flags & 1) != 0) fields.Mapped.Add(field);
+                    if ((flags & 2) != 0) fields.SelfFreed.Add(field);
                 }
                 int borrowers = reader.ReadInt32();
                 if (borrowers < 0 || borrowers > 1000000) throw new InvalidDataException("Invalid backend owned-field fact");

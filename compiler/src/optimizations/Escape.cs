@@ -948,6 +948,9 @@ public sealed partial class Escape : IModulePass
     /// <summary>The owned-field decisions, for the allocation report.</summary>
     private readonly List<string> _fieldReport = new();
 
+    /// <summary>How many fields OwnedFields found own what they hold, of those it judged, for the allocation report.</summary>
+    private (int Owned, int Judged) _fieldsJudged;
+
     /// <summary>Allocations an owned field holds (OwnedFields): freed with the object that owns the field.</summary>
     private readonly HashSet<Instr> _fieldOwned = new(ReferenceEqualityComparer.Instance);
 
@@ -983,6 +986,22 @@ public sealed partial class Escape : IModulePass
                     else fieldAddresses.Add((f, b, i));
                 }
         HashSet<string> candidates = new(stores.Select(s => s.I.Field!).Concat(loads.Select(l => l.I.Field!)), StringComparer.Ordinal);
+
+        // A COLLECTION'S OWN FREES OF THE STORAGE IT REPLACES (EscapeSelfFrees),
+        // each function's found once; and the fields some store of which is
+        // one's pair, whose values those frees give back.
+        Dictionary<Function, SelfFrees> selfOf = new();
+        HashSet<string> selfFreed = new(StringComparer.Ordinal);
+        foreach (Function f in m.Functions)
+        {
+            SelfFrees mine = SelfFreesOf(f, _inserted);
+            if (ReferenceEquals(mine, SelfFrees.None)) continue;
+            selfOf[f] = mine;
+            foreach (Instr st in mine.Stores) selfFreed.Add(st.Field!);
+        }
+        SelfFrees SelfOf(Function f) => selfOf.GetValueOrDefault(f) ?? SelfFrees.None;
+        Dictionary<Function, HashSet<VReg>> writtenOf = new();
+        HashSet<VReg> WrittenIn(Function f) => writtenOf.TryGetValue(f, out HashSet<VReg>? known) ? known : writtenOf[f] = Written(f);
 
         // A `??=` OF A FIELD (FillStoreShape): `o.f ??= new
         // T()` stores back the value it read of o.f, or an object made where
@@ -1567,8 +1586,10 @@ continue;
             HashSet<Instr>? putBack = restored.Store is null && ld.Op != Opcode.Store ? null : new HashSet<Instr>(ReferenceEqualityComparer.Instance);
             if (restored.Store is not null) putBack!.Add(restored.Store);
             if (ld.Op == Opcode.Store) putBack!.Add(ld);
+            // A self-replacing free of what was read takes it over (EscapeSelfFrees).
+            SelfFrees mine = SelfOf(f);
             Flow flow = Analyse(f, new[] { value }, summaries, ld, returnable: back is { Count: > 0 } ? back : null,
-                ownedStores: putBack, joinable: restored.Fill?.Joins,
+                ownedStores: putBack, joinable: restored.Fill?.Joins, consumers: mine.Frees.Count > 0 ? mine.Frees : null,
                 exact: ld.Op == Opcode.Load ? fieldStamps.GetValueOrDefault(field) : null);
             if (flow.Escapes) { Refuse(field, $"read escapes via {flow.Why?.Op} {flow.Why?.Callee}", f, ld); continue; }
             if (back is not null && flow.Derived.Overlaps(back))
@@ -1604,6 +1625,12 @@ continue;
                 {
                     if ((k < from || k >= to) && !(intoPad && PadLiveAt(liveness, x, k).Overlaps(flow.Derived))) continue;
                     Instr i = x.Instrs[k];
+                    // Nor a self-replacing free of the same object's other
+                    // field, nor a free of an element of the value read
+                    // (EscapeSelfFrees): neither gives back, or writes into,
+                    // anything the value read is or is inside.
+                    if (i.Op == Opcode.Call && IsFreeCall(i.Callee)
+                        && (FreesOtherField(f, Defs(f), WrittenIn(f), mine, i, ld) || FreesElementOf(Defs(f), i, inside))) continue;
                     bool danger = i.Op == Opcode.CallIndirect && (_indirect is null || !_indirect.TryGetValue(i, out _))
                         || i.Op == Opcode.CallIndirect && _indirect!.TryGetValue(i, out string[]? t) && t.Any(writers.Contains)
                         || i.Op == Opcode.Call && (IsFreeCall(i.Callee) && !FreesOwnMaking(x, k)
@@ -1617,18 +1644,21 @@ continue;
                         // whose stores free nothing; not a `??=`, nor the first
                         // store into an object just made (FirstFill, FirstStores),
                         // which replace nothing; nor a store into the value read
-                        // itself (StoreIntoRead).
+                        // itself (StoreIntoRead); nor a self-replacing free's
+                        // store, which frees nothing of its own.
                         || i.Op == Opcode.Store && i.Field is not null && candidates.Contains(i.Field) && !refused.Contains(i.Field)
                            && !fills.ContainsKey(i) && !FirstFill(f, i) && !StoreIntoRead(i, inside) && !FirstOf(f).Fills(x, k)
+                           && !mine.Stores.Contains(i)
                         || i.Op == Opcode.Call && i.Callee == AsyncFrame.Suspend;
                     if (danger) unsafeAt = i;
                 }
                 if (unsafeAt is not null) break;
             }
-            if (unsafeAt is not null) Refuse(field, $"read live across {unsafeAt.Op} {unsafeAt.Callee}" + (unsafeAt.Operands.FirstOrDefault() is RegOperand { Reg: var what } && Origin(Defs(f), what) is Instr maker ? $" of {maker.Op} {maker.Callee} {(maker.Op == Opcode.Load ? RecordedOrigin(f, unsafeAt) : null)}" : ""), f, unsafeAt);
+            if (unsafeAt is not null) Refuse(field, $"read live across {unsafeAt.Op} {unsafeAt.Callee}" + (unsafeAt.Operands.FirstOrDefault() is RegOperand { Reg: var what } && Origin(Defs(f), what) is Instr maker ? $" of {maker.Op} {maker.Callee}{maker.Field} {(maker.Op == Opcode.Load ? RecordedOrigin(f, unsafeAt) : null)}" : "") + $" (the read {ld})", f, unsafeAt);
         }
 
         HashSet<string> owned = new(candidates.Where(c => !refused.Contains(c)), StringComparer.Ordinal);
+        _fieldsJudged = (owned.Count, candidates.Count);
         if (owned.Count == 0) return;
 
         // Replacing a value frees it -- ONLY IN AN OBJECT NO OTHER THREAD CAN
@@ -1643,6 +1673,9 @@ continue;
         foreach ((Function f, Block b, Instr st) in stores)
         {
             if (!owned.Contains(st.Field!)) continue;
+            // NOT WHERE THE FUNCTION FREES THE FIELD'S VALUE ITSELF
+            // (EscapeSelfFrees): its own free is the value's one.
+            if (SelfOf(f).FreedFields.Contains(st.Field!)) continue;
             if (st.Operands[0] is not RegOperand baseReg || Origin(Defs(f), baseReg.Reg) is not Instr madeOwner
                 || !PrivateOwner(f, madeOwner, summaries, privateOwner)) continue;
             int at = b.Instrs.IndexOf(st);
@@ -1661,10 +1694,12 @@ continue;
         }
 
         // What calls replace in each function's own objects (FreeReplacedAcrossCalls).
+        // Not a field some collection frees itself as it replaces it
+        // (EscapeSelfFrees): the call may have given the old value back.
         {
             Dictionary<string, List<long>> byOwner = new(StringComparer.Ordinal);
             foreach ((_, _, Instr st) in stores)
-                if (owned.Contains(st.Field!))
+                if (owned.Contains(st.Field!) && !selfFreed.Contains(st.Field!))
                 {
                     string owner = "t_" + st.Field![..st.Field!.IndexOf("::", StringComparison.Ordinal)];
                     if (!byOwner.TryGetValue(owner, out List<long>? list)) byOwner[owner] = list = new();
@@ -5749,6 +5784,7 @@ continue;
         List<string> sites = CollectorSites(m, byName, entry, paths: true);
         foreach (string line in _fieldReport.Where(l => Switches.AllocReportOnly is not { } which || l.Contains(which, StringComparison.Ordinal)))
             Console.Error.WriteLine("alloc report: field " + line);
+        Console.Error.WriteLine($"alloc report: owned fields {_fieldsJudged.Owned} of {_fieldsJudged.Judged}");
         Console.Error.WriteLine($"alloc report: thrown {_thrown.Count} ({_thrownType.Count} typed), catches keeping: {(_keptCatchAll ? "everything; " : "")}{string.Join(", ", _keptCatches.Take(12))}");
         if (Switches.AllocReportOnly is { } which)
             foreach (Function f in m.Functions.Where(f => f.Name.Contains(which, StringComparison.Ordinal)))
