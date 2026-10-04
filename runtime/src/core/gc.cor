@@ -2214,12 +2214,47 @@ static class Gc
     /// Regions opened with the size the link proved for them.
     public static long RegionsSized;
 
+    // ---- what the arenas take of the system (SayStats) ---------------------
+    //
+    // "IF IT'S 21 KB, THEN IT'S 21 KB": what the regions map against what
+    // they fill, process-wide, so that a program's regions can be held to
+    // taking what they need and no more. Counted only where the arena maps,
+    // moves on, cuts back or hands back -- never on a bump allocation: plain
+    // adds as the collector's other counters are, and an atomic add and a
+    // compare-and-swap for the two that are summed over threads and peaked.
+
+    /// Bytes mapped for arenas now, over every thread, and the most at once.
+    public static long ArenaMappedNow;
+    public static long ArenaMappedPeak;
+    /// Bytes the arenas held filled, over every thread, as each last measured
+    /// its own (ArenaMeasure), and the most at once. Measured where a region
+    /// ends or a lap is cut, where the arena moves on to another chunk, and
+    /// before a block is given back from the top -- the moments its fill
+    /// stops rising -- and only while the stats are asked for.
+    public static long ArenaUsedNow;
+    public static long ArenaUsedPeak;
+    /// Chunks mapped and handed back, and the bytes asked of the system in all.
+    public static long ArenaChunksMapped;
+    public static long ArenaChunksUnmapped;
+    public static long ArenaAskedBytes;
+    /// Times the arena moved on into the spare a region's end kept, mapping nothing.
+    public static long ArenaSparesReused;
+    /// Sized room asked (Room: a sized region's, a sized loop's lap): found in
+    /// the chunk being filled, or in another -- the spare, or one mapped for
+    /// exactly that many bytes.
+    public static long SizedRoomHere;
+    public static long SizedRoomElsewhere;
+
     // A record's block: header, the two words, footer, rounded as blocks are.
     const long RecordBytes = (Overhead + 2 * WordSize.Bytes + 7) & SizeMask;
 
     // A chunk's trailer: first byte, before, after, filled to, and in the
-    // first chunk's only, the lowest first byte and highest end.
-    const long TrailerBytes = 6 * WordSize.Bytes;
+    // first chunk's only, the lowest first byte and highest end, and how far
+    // the arena was filled when last measured (ArenaMeasure).
+    const long TrailerBytes = 7 * WordSize.Bytes;
+    // The first chunk's trailer word holding how many bytes this thread's
+    // arena was filled to when it was last measured (ArenaMeasure).
+    const long TrailerMeasured = 6;
     // What a chunk's size is rounded to: the page the system maps.
     const long ChunkPage = 4096;
 
@@ -2274,7 +2309,12 @@ static class Gc
     // has no memory to give.
     static bool Room(long tb, long need)
     {
-        if (Sys.Peek(tb + Tls.RegionAt) + need <= Sys.Peek(tb + Tls.RegionEnd)) return true;
+        if (Sys.Peek(tb + Tls.RegionAt) + need <= Sys.Peek(tb + Tls.RegionEnd))
+        {
+            SizedRoomHere = SizedRoomHere + 1;
+            return true;
+        }
+        SizedRoomElsewhere = SizedRoomElsewhere + 1;
         return NextChunk(tb, need, true);
     }
 
@@ -2360,6 +2400,15 @@ static class Gc
     // the spare. The bytes given back.
     static long Cut(long tb, long chunk, long to)
     {
+        // As full as it gets before this cut: measured first.
+        ArenaMeasure(tb);
+        long freed = CutBack(tb, chunk, to);
+        ArenaMeasure(tb);
+        return freed;
+    }
+
+    static long CutBack(long tb, long chunk, long to)
+    {
         long w = WordSize.Bytes;
         long last = Sys.Peek(tb + Tls.RegionEnd);
         long at = Sys.Peek(tb + Tls.RegionAt);
@@ -2402,10 +2451,13 @@ static class Gc
             next = 0;
         }
         if (next == 0) next = MapChunk(tb, need, exact);
+        else ArenaSparesReused = ArenaSparesReused + 1;
         if (next == 0) return false;
         // How far the chunk left behind is filled, before it stops being the
         // one the bump pointer is in.
         Sys.Poke(last + 3 * WordSize.Bytes, Sys.Peek(tb + Tls.RegionAt));
+        // As full as the chunk left behind will get: measured as it is left.
+        ArenaMeasure(tb);
         Sys.Poke(tb + Tls.RegionAt, ChunkStart(next));
         Sys.Poke(tb + Tls.RegionEnd, next);
         return true;
@@ -2432,6 +2484,7 @@ static class Gc
         bytes = (bytes + ChunkPage - 1) & -ChunkPage;
         long start = Platform.Map(bytes);
         if (start == 0) return 0;
+        ArenaMapped(bytes);
         long chunk = start + bytes - TrailerBytes;
         Sys.Poke(chunk, start);
         Sys.Poke(chunk + w, last);
@@ -2456,6 +2509,7 @@ static class Gc
         {
             long after = ChunkAfter(c);
             long start = ChunkStart(c);
+            ArenaUnmapped(c + TrailerBytes - start);
             Platform.Unmap(start, c + TrailerBytes - start);
             c = after;
         }
@@ -2630,6 +2684,8 @@ static class Gc
             Sys.Poke(block + KindAt, KindFreed);
             return;
         }
+        // As full as it gets before the pointer comes down: measured first.
+        ArenaMeasure(tb);
         long freed = 0;
         while (true)
         {
@@ -2733,6 +2789,9 @@ static class Gc
     {
         long c = tb == 0 ? 0 : Sys.Peek(tb + Tls.RegionBase);
         if (c == 0) return;
+        // What it last said it held filled, no longer held.
+        long measured = Sys.Peek(c + TrailerMeasured * WordSize.Bytes);
+        if (measured != 0) Sys.AtomicAdd(Sys.AddressOf(ref ArenaUsedNow), -measured);
         Sys.Poke(tb + Tls.RegionBase, 0);
         Sys.Poke(tb + Tls.RegionAt, 0);
         Sys.Poke(tb + Tls.RegionOpen, 0);
@@ -2741,8 +2800,63 @@ static class Gc
         {
             long after = ChunkAfter(c);
             long start = ChunkStart(c);
+            ArenaUnmapped(c + TrailerBytes - start);
             Platform.Unmap(start, c + TrailerBytes - start);
             c = after;
+        }
+    }
+
+    // A chunk of `bytes` mapped for an arena: counted, and the peak raised.
+    static void ArenaMapped(long bytes)
+    {
+        ArenaChunksMapped = ArenaChunksMapped + 1;
+        ArenaAskedBytes = ArenaAskedBytes + bytes;
+        Sys.AtomicAdd(Sys.AddressOf(ref ArenaMappedNow), bytes);
+        RaisePeak(Sys.AddressOf(ref ArenaMappedPeak), ArenaMappedNow);
+    }
+
+    // A chunk of `bytes` handed back to the system.
+    static void ArenaUnmapped(long bytes)
+    {
+        ArenaChunksUnmapped = ArenaChunksUnmapped + 1;
+        Sys.AtomicAdd(Sys.AddressOf(ref ArenaMappedNow), -bytes);
+    }
+
+    // HOW FULL THIS THREAD'S ARENA IS NOW, chunk by chunk to the one being
+    // filled, put in place of what it last said in the process-wide sum,
+    // and the peak raised. Only while the stats are asked for: a region's
+    // end walks its chunks, a handful, for nothing otherwise.
+    static void ArenaMeasure(long tb)
+    {
+        if (!(StatsAsked || CountingCollected)) return;
+        long first = Sys.Peek(tb + Tls.RegionBase);
+        if (first == 0) return;
+        long last = Sys.Peek(tb + Tls.RegionEnd);
+        long filled = 0;
+        long c = first;
+        while (c != 0)
+        {
+            filled = filled + (ChunkTop(tb, c) - ChunkStart(c));
+            if (c == last) break;
+            c = ChunkAfter(c);
+        }
+        long at = first + TrailerMeasured * WordSize.Bytes;
+        long had = Sys.Peek(at);
+        if (filled == had) return;
+        Sys.Poke(at, filled);
+        Sys.AtomicAdd(Sys.AddressOf(ref ArenaUsedNow), filled - had);
+        if (filled > had) RaisePeak(Sys.AddressOf(ref ArenaUsedPeak), ArenaUsedNow);
+    }
+
+    // The word at `at` made `value` if that is more: a compare-and-swap, so
+    // two threads raising it at once keep the larger.
+    static void RaisePeak(long at, long value)
+    {
+        while (true)
+        {
+            long had = Sys.Peek(at);
+            if (value <= had) return;
+            if (Sys.Cas(at, had, value) == had) return;
         }
     }
 
@@ -5297,6 +5411,23 @@ static class Gc
         SayNumber("gc: freed by the collector MB ", CollectedBytes / 1048576);
         SayNumber("gc: given back by regions MB ", RegionFreedBytes / 1048576);
         SayNumber("gc: region allocations the system had no memory for ", RegionMisses);
+        // WHAT THE ARENAS TOOK OF THE SYSTEM against what they held: the
+        // regions take what they need and no more.
+        SayNumber("gc: arena peak mapped bytes ", ArenaMappedPeak);
+        SayNumber("gc: arena peak used bytes ", ArenaUsedPeak);
+        SayNumber("gc: arena mapped per used at peak percent ", ArenaUsedPeak > 0 ? ArenaMappedPeak * 100 / ArenaUsedPeak : 0);
+        SayNumber("gc: arena mapped now bytes ", ArenaMappedNow);
+        SayNumber("gc: arena bytes asked of the system ", ArenaAskedBytes);
+        SayNumber("gc: arena chunks mapped ", ArenaChunksMapped);
+        SayNumber("gc: arena chunks unmapped ", ArenaChunksUnmapped);
+        SayNumber("gc: arena spares reused ", ArenaSparesReused);
+        SayNumber("gc: region blocks ", RegionBlocks);
+        SayNumber("gc: sized regions ", RegionsSized);
+        SayNumber("gc: sized room in the chunk ", SizedRoomHere);
+        SayNumber("gc: sized room in another chunk ", SizedRoomElsewhere);
+        SayNumber("gc: grown in place ", RegionGrownInPlace);
+        SayNumber("gc: region top frees ", RegionTopFrees);
+        SayNumber("gc: region top freed bytes ", RegionTopFreedBytes);
         // WHO GAVE BACK WHAT WAS GIVEN BACK: the program's frees against the
         // collector's sweeps -- by the bytes each actually reclaimed.
         long given = FreedBytes + CollectedBytes;

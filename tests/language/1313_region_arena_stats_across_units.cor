@@ -1,0 +1,60 @@
+// test: region_arena_stats_across_units
+// units: tests/language/support/1313_arena_stats_units.cor
+// regions: taken
+// expect-exit: 0
+// expect-output:
+// 12561537776
+// used above nothing True
+// mapped at least used True
+// chunks mapped True
+// chunks unmapped no more than mapped True
+// asked at least the peak True
+// mapped now no more than the peak True
+// blocks made in regions True
+//
+// WHAT THE ARENAS TAKE OF THE SYSTEM, against what they hold (--gc-stats,
+// Gc.SayStats): with the stats asked for through AppContext's
+// "Corsac.GC.Stats", as the program's own switch sets them, a program whose
+// every call fills a region and gives it back reports the bytes mapped and
+// filled at the peak, the chunks mapped and handed back, and the bytes asked
+// of the system. The lines go to standard error at exit, which the runner
+// does not read; the counters they print are read here, and must make
+// sense whatever the sizes: something filled, never more filled than
+// mapped, chunks mapped and no more handed back, at least the peak asked of
+// the system in all, and no more mapped at the end than at the peak.
+//
+// The work is 1304's, whose total is the sum of i ^ seed for i below 5000,
+// its count, the text's length and its last character, over seeds 0..999.
+
+using System;
+
+static class P
+{
+    // Not Main itself: what the entry calls is never a boundary.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static long Run()
+    {
+        long total = 0;
+        for (int seed = 0; seed < 1000; seed++)
+        {
+            total += ArenaWork.Build(seed);
+            if (seed % 100 == 99) GC.Collect();
+        }
+        GC.Collect();
+        return total;
+    }
+
+    static int Main()
+    {
+        AppContext.SetSwitch("Corsac.GC.Stats", true);
+        Console.WriteLine(Run());
+        Console.WriteLine("used above nothing " + (Gc.ArenaUsedPeak > 0));
+        Console.WriteLine("mapped at least used " + (Gc.ArenaMappedPeak >= Gc.ArenaUsedPeak));
+        Console.WriteLine("chunks mapped " + (Gc.ArenaChunksMapped > 0));
+        Console.WriteLine("chunks unmapped no more than mapped " + (Gc.ArenaChunksUnmapped <= Gc.ArenaChunksMapped));
+        Console.WriteLine("asked at least the peak " + (Gc.ArenaAskedBytes >= Gc.ArenaMappedPeak));
+        Console.WriteLine("mapped now no more than the peak " + (Gc.ArenaMappedNow <= Gc.ArenaMappedPeak));
+        Console.WriteLine("blocks made in regions " + (Gc.RegionBlocks > 0));
+        return 0;
+    }
+}

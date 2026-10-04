@@ -2897,11 +2897,16 @@ sealed class FloatBig {
 
     public bool IsZero => count == 0;
 
+    // THE LIMBS ARE THIS NUMBER'S ALONE -- Copy makes new ones, and nothing
+    // hands the array out -- so the array they outgrow is given back after
+    // the store that replaces it (OutgrownStorage, the self-replacing free).
     void Push(long limb) {
         if (count == limbs.Length) {
             long[] grown = new long[limbs.Length * 2];
             for (int i = 0; i < count; i++) { grown[i] = limbs[i]; }
+            long[] outgrown = limbs;
             limbs = grown;
+            OutgrownStorage.Release(outgrown);
         }
         limbs[count] = limb;
         count = count + 1;
@@ -2957,7 +2962,9 @@ sealed class FloatBig {
             made[i + whole] = made[i + whole] | (v & 0xFFFFFFFFL);
             made[i + whole + 1] = made[i + whole + 1] | ((v >> 32) & 0xFFFFFFFFL);
         }
+        long[] outgrown = limbs;
         limbs = made;
+        OutgrownStorage.Release(outgrown);
         count = count + whole + 2;
         Trim();
     }
@@ -10573,7 +10580,15 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
 
     // A key as an error says it, by ToString on its own type (ThrowHelper):
     // in a table of strings, the string, read and copied, never kept.
-    private static string KeyText(K key) => "" + key;
+    // A COPY, ALWAYS: `"" + s` is s itself (the empty literal is dropped
+    // from the join), and a string's ToString is the string, so the text
+    // alone would have been the key again for every table of strings.
+    private static string KeyText(K key) {
+        string text = "" + key;
+        string copy = Sys.NewChars(text.Length);
+        Sys.CopyNoOverlap(copy, 0, text, 0, text.Length);
+        return copy;
+    }
 
     // THE INDEXER, which is how a Dictionary is read and written in C#. This
     // was Put and Get(key, fallback) -- our own spelling, and two more places
@@ -12198,12 +12213,23 @@ class StringBuilder : IOwnsStorage {
 
         while (size < want) { size = size * 2; }
 
-        // The buffer is the builder's alone -- ToString copies out of it -- so
-        // at its region's top it grows where it is (Runtime.GrowInPlace).
+        // The buffer is the builder's alone -- ToString and ToString(start,
+        // count) copy out of it, Append(StringBuilder) asks the other one's
+        // ToString, and nothing hands it out -- so at its region's top it
+        // grows where it is (Runtime.GrowInPlace), and elsewhere the one it
+        // outgrew is given back as an owned field's old value, after the
+        // store that replaces it, as List's is (OutgrownStorage): the
+        // self-replacing free (EscapeSelfFrees) that makes the buffer a
+        // self-freed owned field, made beside its builder and in a region
+        // given back from the top. Left to the collector, every buffer a
+        // builder outgrew stayed until a collection, and a builder's growth
+        // was never made in its region.
         if (Runtime.GrowInPlace((nint)Sys.Word(buffer), size)) { return; }
         string bigger = Sys.NewChars(size);
         Sys.CopyNoOverlap(bigger, 0, buffer, 0, used);
+        string outgrown = buffer;
         buffer = bigger;
+        Runtime.FreeOwnedReplaced((nint)Sys.Word(outgrown), 0);
     }
 }
 

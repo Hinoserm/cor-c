@@ -134,7 +134,8 @@ then the block's footer, size and count follow it, and the new elements are
 the zeroed bytes the arena keeps past its pointer. Otherwise nothing changes
 and the caller makes a new array as before; on the heap it always does. Only
 storage its collection's own field alone holds is grown so: List's array
-(never once lent out), a StringBuilder's buffer, and the tables' lists of
+(never once lent out), a StringBuilder's buffer, a Stack's array, a
+MemoryStream's own array (never lent by GetBuffer), and the tables' lists of
 vacant places. `Gc.RegionGrownInPlace` counts growths. Test 1304.
 
 The checked field free (`VerifyingFieldFrees`) hands a region block to
@@ -469,8 +470,9 @@ allocation beside its owner (`MakeStorageBeside`) when all of these hold:
 
 The library frees the storage it outgrows or drops as an owned field's old
 value, `Runtime.FreeOwnedReplaced(v, 0)`. It does so in
-`OutgrownStorage.Release`, `StringBuilder.FreeStorage` and MemoryStream's
-buffer frees. On the heap that is `Runtime.Free`; in a region it gives the
+`OutgrownStorage.Release` (List, Queue, Stack, the tables, FloatBig's
+limbs), `StringBuilder.Reserve` and `FreeStorage`, and MemoryStream's
+buffer frees. Test 1312. On the heap that is `Runtime.Free`; in a region it gives the
 array back at once from the top (`FreeHeld`, `Gc.RegionFree`).
 
 The compiler knows two spellings of the self-replacing free
@@ -542,8 +544,27 @@ loops and refusals are reported. Switches:
 | `+noroots` | Leave out what functions called from where nobody follows hand back (a diagnostic only; unsound for an image). |
 | `+norefoff` | Ignore the collector's knowledge of words that hold no reference. |
 
-The runtime's counts appear with `--gc-stats`: bytes given back by regions,
-and region allocations the system had no memory for.
+The runtime's counts appear with `--gc-stats` (or the program's own
+`AppContext.SetSwitch("Corsac.GC.Stats", true)`): bytes given back by
+regions, and region allocations the system had no memory for; and what the
+arenas took of the system against what they held, so that a program's
+regions can be held to taking what they need and no more:
+- `gc: arena peak mapped bytes`, `gc: arena peak used bytes` and their ratio
+  (`gc: arena mapped per used at peak percent`): the most bytes mapped for
+  arenas at once, and filled at once, summed over threads. Mapping is
+  counted where a chunk is mapped or handed back; filling is measured where
+  a region ends or a lap is cut, where the arena moves on to another chunk,
+  and before a block is given back from the top -- the moments the fill
+  stops rising -- and only while the stats are asked for;
+- `gc: arena mapped now bytes`, `gc: arena bytes asked of the system`,
+  `gc: arena chunks mapped`, `gc: arena chunks unmapped`, `gc: arena spares
+  reused` (moved on into the spare a region's end kept);
+- `gc: region blocks`, `gc: sized regions`, `gc: sized room in the chunk` and
+  `gc: sized room in another chunk` (a sized region's or lap's bytes found
+  where the arena was, or in the spare or a chunk mapped for exactly them);
+- `gc: grown in place`, `gc: region top frees`, `gc: region top freed bytes`.
+
+Nothing is counted on a bump allocation. Test 1313.
 
 **Engine tests.** `linker/tests` with `--escape` runs only the region hint
 tests and the escape engine's own tests (`RegionEscapeTests.cs`), which need
