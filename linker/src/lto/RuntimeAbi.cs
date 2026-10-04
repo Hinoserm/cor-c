@@ -27,6 +27,8 @@ public static class RuntimeAbi
     public const string WriteBarrierValues = "m_Runtime_WriteBarrierValues_2_" + Word + "_" + Word;
     public const string CardMark = "m_Runtime_CardMark_1_" + Word;
     public const string CardMarkObject = "m_Runtime_CardMarkObject_1_" + Word;
+    /// <summary>An array grown where it is, at its region's top: keeps no pointer (Runtime.GrowInPlace).</summary>
+    public const string GrowInPlace = "m_Runtime_GrowInPlace_2_" + Word + "_" + Word;
     /// <summary>
     /// Regions (RegionPointsTo, RegionSolver): opened on a boundary's entry,
     /// given back on its return, allocated in. RegionEnter and RegionLoop

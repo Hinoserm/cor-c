@@ -7205,6 +7205,7 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
             if (value == Capacity) { return; }
             T[] old = items;
             if (value == 0) { items = null!; Outgrown(old); return; }
+            if (old != null && value > old.Length && !lent && Runtime.GrowInPlace((nint)Sys.Word(old), value)) { return; }
 
             T[] bigger = new T[value];
             for (int i = 0; i < count; i++) { bigger[i] = old[i]; }
@@ -7439,6 +7440,9 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
 
     private void Grow() {
         int size = items == null || items.Length == 0 ? 4 : items.Length * 2;
+        // GROWN WHERE IT IS, at its region's top: nothing copied, nothing left
+        // behind (Runtime.GrowInPlace). Only an array never lent out.
+        if (items != null && !lent && Runtime.GrowInPlace((nint)Sys.Word(items), size)) { return; }
         T[] bigger = new T[size];
         T[] old = items;
         for (int i = 0; i < count; i++) { bigger[i] = old[i]; }
@@ -10393,9 +10397,11 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         if (list != null && places != null && places.Length == mask + 1) {
             int place = places[slot];
             list[place] = -1;
-            if (vacant == null || vacancies == vacant.Length) {
-                int[]? was = vacant;
-                int[] more = new int[vacant == null ? 8 : vacant.Length * 2];
+            // A list only appended to: at its region's top it grows where it
+            // is (Runtime.GrowInPlace).
+            int[]? was = vacant;
+            if (was == null || vacancies == was.Length && !Runtime.GrowInPlace((nint)Sys.Word(was), was.Length * 2)) {
+                int[] more = new int[was == null ? 8 : was.Length * 2];
                 for (int n = 0; n < vacancies; n++) { more[n] = was![n]; }
                 vacant = more;
                 OutgrownStorage.Release(was);
@@ -12181,6 +12187,9 @@ class StringBuilder : IOwnsStorage {
 
         while (size < want) { size = size * 2; }
 
+        // The buffer is the builder's alone -- ToString copies out of it -- so
+        // at its region's top it grows where it is (Runtime.GrowInPlace).
+        if (Runtime.GrowInPlace((nint)Sys.Word(buffer), size)) { return; }
         string bigger = Sys.NewChars(size);
         Sys.CopyNoOverlap(bigger, 0, buffer, 0, used);
         buffer = bigger;
@@ -12292,9 +12301,11 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
         if (list != null && places != null && places.Length == mask + 1) {
             int place = places[slot];
             list[place] = -1;
-            if (vacant == null || vacancies == vacant.Length) {
-                int[]? was = vacant;
-                int[] more = new int[vacant == null ? 8 : vacant.Length * 2];
+            // A list only appended to: at its region's top it grows where it
+            // is (Runtime.GrowInPlace).
+            int[]? was = vacant;
+            if (was == null || vacancies == was.Length && !Runtime.GrowInPlace((nint)Sys.Word(was), was.Length * 2)) {
+                int[] more = new int[was == null ? 8 : was.Length * 2];
                 for (int n = 0; n < vacancies; n++) { more[n] = was![n]; }
                 vacant = more;
                 OutgrownStorage.Release(was);
