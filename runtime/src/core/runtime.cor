@@ -1354,11 +1354,18 @@ static class Runtime
     /// guards against it anyway.
     public static void BeginImage(long dataStart, long dataEnd, long frames)
     {
+        LastImageData = dataStart;
+        LastImageEnd = dataEnd;
+        LastImageFrames = frames;
         _imagesBegun = _imagesBegun + 1;
         RegisterRoots(dataStart, dataEnd);
         RegisterFrames(frames);
         Platform.ArmFaultReport();
     }
+
+    /// The last image begun: what a kernel's module loader keeps, after the
+    /// module's DT_INIT, to end it with (EndImage) when the module goes.
+    public static long LastImageData, LastImageEnd, LastImageFrames;
 
     /// An image gone (a kernel module unloaded): its statics no longer roots,
     /// its stack maps no longer read. Its objects must be gone first, or
