@@ -80,6 +80,25 @@ namespace System.ServiceProcess
         EpDelete = 241,
         EpLookup = 242,
         EpMap = 243,
+
+        // The print spooler (System.Drawing.Printing's SpoolWire.cor says
+        // each one's fields).
+        SpoolPrinters = 300,
+        SpoolPrinter = 301,
+        SpoolStartDoc = 302,
+        SpoolWrite = 303,
+        SpoolStartPage = 304,
+        SpoolEndPage = 305,
+        SpoolEndDoc = 306,
+        SpoolAbortDoc = 307,
+        SpoolJobs = 308,
+        SpoolJob = 309,
+        SpoolJobControl = 310,
+        SpoolPrinterControl = 311,
+        SpoolWatch = 312,
+        SpoolEvent = 313,
+        SpoolSetPrinter = 314,
+        SpoolDeletePrinter = 315,
     }
 
     /// When a service starts (winsvc.h's SERVICE_*_START, the same numbers).

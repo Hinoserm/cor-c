@@ -223,6 +223,11 @@ enum SeatIoctl : long
     TapPlayNext = 0x47550805,
     TapPlay = 0x47550806,
     InjectInput = 0x47550807,
+    // A printed page (the GUI kernel's seatprint.cor): an unshown window the
+    // size of a print job's paper, drawn on like any, handed to the spooler.
+    PageCreate = 0x47550900,
+    PageSubmit = 0x47550901,
+    PageDiscard = 0x47550902,
 }
 
 public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
@@ -1895,6 +1900,46 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
     // high half of the argument as a 64-bit ABI would allow.
 
     void Select(int handle) { Ioctl(SeatIoctl.Select, handle); }
+
+    // ---- printed pages ------------------------------------------------------------
+    //
+    // A page of a print job begun on the spooler as one of pages (System.
+    // Drawing.Printing's PrintDocument): a window never shown, the job's
+    // paper at its dots an inch -- or the other way round, landscape -- which
+    // Target names and a Graphics draws on as on any window; submitted, the
+    // seat reads it into the form the printer's driver wants and hands it to
+    // the job. Not kept for a crash: a page outlives no GUI kernel.
+
+    /// A page for `job`, `width` by `height` pixels at `dpi` (the paper's
+    /// size the job says, either way round): its window, or an
+    /// IOException.
+    public int CreatePage(long job, int width, int height, int dpi)
+    {
+        Flush();
+        byte[] args = new byte[16];
+        Put(args, 0, (int)job); Put(args, 4, width); Put(args, 8, height); Put(args, 12, dpi);
+        long handle = Ioctl(SeatIoctl.PageCreate, Sys.ArrayData(args));
+        if (handle <= 0) throw new IOException("the seat made no page (" + (-handle) + ")");
+        return (int)handle;
+    }
+
+    /// The page to its job, and its window gone: 0, or the seat's negative
+    /// error (-125 the job was cancelled, -5 a mode change took the page).
+    public long SubmitPage(int page)
+    {
+        Flush();
+        long answer = Ioctl(SeatIoctl.PageSubmit, page);
+        if (_window == page) { _window = 0; _named = false; }
+        return answer;
+    }
+
+    /// The page let go unprinted.
+    public void DiscardPage(int page)
+    {
+        Flush();
+        Ioctl(SeatIoctl.PageDiscard, page);
+        if (_window == page) { _window = 0; _named = false; }
+    }
 
     public int CreateWindow(int x, int y, int w, int h)
     {

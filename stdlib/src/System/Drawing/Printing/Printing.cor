@@ -1,0 +1,508 @@
+// SYSTEM.DRAWING.PRINTING, over CORSAC/GUI's spooler (Corsac.Printing's
+// PrintSpooler, SpoolWire.cor) and the seat's pages (Corsac.GUI's
+// Seat.CreatePage): a PrintDocument's Print begins a job of pages on its
+// printer, and every page is an unshown window the size of the paper at the
+// printer's dots an inch, which the PrintPage handler's Graphics draws on
+// through the one drawing engine, as on any window; submitted, the seat
+// reads it into what the printer's driver wants (PostScript, PCL or PDF)
+// and the spooler sends that to the printer's port.
+//
+// As .NET's, the Graphics a page is drawn with counts in hundredths of an
+// inch (GraphicsUnit.Display), its (0, 0) the paper's corner -- or the
+// margins' with OriginAtMargins -- and MarginBounds and PageBounds are in
+// the same units. Here that is a scale on the Graphics's transform (the
+// printer's dots an inch over 100), which ResetTransform takes away.
+
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.IO;
+using Corsac.GUI;
+using Corsac.Printing;
+
+namespace System.Drawing.Printing
+{
+    public enum PrintAction { PrintToFile = 0, PrintToPreview = 1, PrintToPrinter = 2 }
+    public enum PrintRange { AllPages = 0, Selection = 1, SomePages = 2, CurrentPage = 0x400000 }
+    public enum Duplex { Default = -1, Simplex = 1, Vertical = 2, Horizontal = 3 }
+    public enum PrinterResolutionKind { High = -4, Medium = -3, Low = -2, Draft = -1, Custom = 0 }
+    public enum PaperSourceKind { Upper = 1, Lower = 2, Middle = 3, Manual = 4, Envelope = 5, ManualFeed = 6, AutomaticFeed = 7, TractorFeed = 8, SmallFormat = 9, LargeFormat = 10, LargeCapacity = 11, Cassette = 14, FormSource = 15, Custom = 257 }
+    public enum PrinterUnit { Display = 0, ThousandthsOfAnInch = 1, HundredthsOfAMillimeter = 2, TenthsOfAMillimeter = 3 }
+
+    /// The papers wingdi.h's DMPAPER_ numbers name; those a printer here
+    /// is set up with are found by their size (PaperSize.KindOf).
+    public enum PaperKind { Custom = 0, Letter = 1, LetterSmall = 2, Tabloid = 3, Ledger = 4, Legal = 5, Statement = 6, Executive = 7, A3 = 8, A4 = 9, A4Small = 10, A5 = 11, B4 = 12, B5 = 13 }
+
+    /// A paper: its name and size in hundredths of an inch.
+    public class PaperSize
+    {
+        PaperKind _kind;
+        public string PaperName { get; set; } = "";
+        public int Width { get; set; }
+        public int Height { get; set; }
+        public int RawKind { get { return (int)_kind; } set { _kind = (PaperKind)value; } }
+        public PaperKind Kind { get { return _kind; } }
+
+        public PaperSize() { }
+        public PaperSize(string name, int width, int height) { PaperName = name; Width = width; Height = height; _kind = PaperKind.Custom; }
+
+        /// The paper of this size, named as Windows names it.
+        internal static PaperSize Of(int width, int height)
+        {
+            PaperKind kind = PaperKind.Custom;
+            string name = "Custom";
+            if (Near(width, 850) && Near(height, 1100)) { kind = PaperKind.Letter; name = "Letter"; }
+            else if (Near(width, 850) && Near(height, 1400)) { kind = PaperKind.Legal; name = "Legal"; }
+            else if (Near(width, 827) && Near(height, 1169)) { kind = PaperKind.A4; name = "A4"; }
+            else if (Near(width, 583) && Near(height, 827)) { kind = PaperKind.A5; name = "A5"; }
+            else if (Near(width, 1169) && Near(height, 1654)) { kind = PaperKind.A3; name = "A3"; }
+            else if (Near(width, 1100) && Near(height, 1700)) { kind = PaperKind.Tabloid; name = "Tabloid"; }
+            else if (Near(width, 725) && Near(height, 1050)) { kind = PaperKind.Executive; name = "Executive"; }
+            PaperSize p = new PaperSize(name, width, height);
+            p._kind = kind;
+            return p;
+        }
+
+        static bool Near(int a, int b) { return a - b <= 2 && b - a <= 2; }
+
+        public override string ToString() { return "[PaperSize " + PaperName + " Kind=" + _kind + " Height=" + Height + " Width=" + Width + "]"; }
+    }
+
+    /// Where the paper comes from: here, the printer's one tray.
+    public class PaperSource
+    {
+        public PaperSourceKind Kind { get; } = PaperSourceKind.AutomaticFeed;
+        public string SourceName { get; set; } = "Automatically Select";
+        public int RawKind { get { return (int)Kind; } set { } }
+    }
+
+    /// The printer's resolution, dots an inch.
+    public class PrinterResolution
+    {
+        public PrinterResolutionKind Kind { get; set; } = PrinterResolutionKind.Custom;
+        public int X { get; set; }
+        public int Y { get; set; }
+        public PrinterResolution() { }
+        internal PrinterResolution(int dpi) { X = dpi; Y = dpi; }
+        public override string ToString() { return "[PrinterResolution X=" + X + " Y=" + Y + "]"; }
+    }
+
+    /// The margins, hundredths of an inch; an inch each unless given.
+    public class Margins
+    {
+        public int Left { get; set; } = 100;
+        public int Right { get; set; } = 100;
+        public int Top { get; set; } = 100;
+        public int Bottom { get; set; } = 100;
+        public Margins() { }
+        public Margins(int left, int right, int top, int bottom) { Left = left; Right = right; Top = top; Bottom = bottom; }
+        public object Clone() { return new Margins(Left, Right, Top, Bottom); }
+        public override string ToString() { return "[Margins Left=" + Left + " Right=" + Right + " Top=" + Top + " Bottom=" + Bottom + "]"; }
+    }
+
+    /// A page's settings: its paper, its way round, its margins.
+    public class PageSettings
+    {
+        PrinterSettings _printer;
+        PaperSize? _paper;
+        bool? _landscape, _colour;
+
+        public PageSettings() : this(new PrinterSettings()) { }
+        public PageSettings(PrinterSettings printerSettings) { _printer = printerSettings; }
+
+        public PrinterSettings PrinterSettings { get { return _printer; } set { _printer = value ?? new PrinterSettings(); } }
+        public bool Landscape { get { return _landscape ?? false; } set { _landscape = value; } }
+        public bool Color { get { return _colour ?? _printer.SupportsColor; } set { _colour = value; } }
+        public Margins Margins { get; set; } = new Margins();
+
+        /// The printer's paper: the one paper each printer here has.
+        public PaperSize PaperSize { get { return _paper ?? _printer.Paper(); } set { _paper = value; } }
+        public PaperSource PaperSource { get; set; } = new PaperSource();
+        public PrinterResolution PrinterResolution { get { int d = _printer.Dpi; return new PrinterResolution(d); } set { } }
+
+        /// The page, hundredths of an inch, turned for landscape.
+        public Rectangle Bounds
+        {
+            get
+            {
+                PaperSize p = PaperSize;
+                return Landscape ? new Rectangle(0, 0, p.Height, p.Width) : new Rectangle(0, 0, p.Width, p.Height);
+            }
+        }
+
+        /// Where the printer cannot print: nowhere, the pages being drawn
+        /// whole (PCL's left quarter inch is the driver's to lose).
+        public float HardMarginX { get { return 0; } }
+        public float HardMarginY { get { return 0; } }
+        public RectangleF PrintableArea { get { Rectangle b = Bounds; return new RectangleF(0, 0, b.Width, b.Height); } }
+
+        public object Clone()
+        {
+            PageSettings made = new PageSettings(_printer);
+            made._paper = _paper; made._landscape = _landscape; made._colour = _colour;
+            made.Margins = (Margins)Margins.Clone();
+            made.PaperSource = PaperSource;
+            return made;
+        }
+
+        public override string ToString() { return "[PageSettings: Color=" + Color + ", Landscape=" + Landscape + ", Margins=" + Margins + ", PaperSize=" + PaperSize + "]"; }
+    }
+
+    /// A printer and how a document is printed on it.
+    public class PrinterSettings
+    {
+        string? _name;
+        PrinterRecord? _record;
+        bool _looked;
+        PageSettings? _defaults;
+
+        /// Every printer's name, the spooler's order.
+        public static StringCollection InstalledPrinters
+        {
+            get
+            {
+                List<string> names = new List<string>();
+                foreach (PrinterRecord p in PrintSpooler.Printers()) names.Add(p.Name);
+                return new StringCollection(names.ToArray());
+            }
+        }
+
+        /// The printer: the default one until named.
+        public string PrinterName
+        {
+            get { PrinterRecord? r = Record(); return r != null ? r.Name : _name ?? ""; }
+            set { _name = value; _looked = false; _record = null; }
+        }
+
+        internal PrinterRecord? Record()
+        {
+            if (!_looked)
+            {
+                _looked = true;
+                try { _record = PrintSpooler.Printer(_name ?? ""); }
+                catch (IOException) { _record = null; }
+            }
+            return _record;
+        }
+
+        public bool IsValid { get { return Record() != null; } }
+        public bool IsDefaultPrinter { get { PrinterRecord? r = Record(); return r != null && r.IsDefault; } }
+        public bool IsPlotter { get { return false; } }
+        public bool SupportsColor { get { PrinterRecord? r = Record(); return r != null && r.Colour; } }
+        public bool CanDuplex { get { return false; } }
+        public Duplex Duplex { get; set; } = Duplex.Default;
+        public int LandscapeAngle { get { return 90; } }
+        public int MaximumCopies { get { return 999; } }
+        public short Copies { get; set; } = 1;
+        public bool Collate { get; set; }
+        public int FromPage { get; set; }
+        public int ToPage { get; set; }
+        public int MinimumPage { get; set; }
+        public int MaximumPage { get; set; } = 9999;
+        public PrintRange PrintRange { get; set; } = PrintRange.AllPages;
+        public bool PrintToFile { get; set; }
+        public string PrintFileName { get; set; } = "";
+
+        internal int Dpi { get { PrinterRecord? r = Record(); return r != null ? (int)r.Dpi : 150; } }
+        internal PaperSize Paper() { PrinterRecord? r = Record(); return PaperSize.Of(r != null ? (int)r.PaperWidth : 850, r != null ? (int)r.PaperHeight : 1100); }
+
+        public PageSettings DefaultPageSettings { get { if (_defaults == null) _defaults = new PageSettings(this); return _defaults; } }
+
+        public PaperSizeCollection PaperSizes { get { return new PaperSizeCollection(new PaperSize[] { Paper() }); } }
+        public PaperSourceCollection PaperSources { get { return new PaperSourceCollection(new PaperSource[] { new PaperSource() }); } }
+        public PrinterResolutionCollection PrinterResolutions { get { int d = Dpi; return new PrinterResolutionCollection(new PrinterResolution[] { new PrinterResolution(d) }); } }
+
+        public object Clone()
+        {
+            PrinterSettings made = new PrinterSettings();
+            made._name = _name; made.Copies = Copies; made.Collate = Collate; made.FromPage = FromPage; made.ToPage = ToPage;
+            made.MinimumPage = MinimumPage; made.MaximumPage = MaximumPage; made.PrintRange = PrintRange;
+            made.PrintToFile = PrintToFile; made.PrintFileName = PrintFileName; made.Duplex = Duplex;
+            return made;
+        }
+
+        public override string ToString() { return "[PrinterSettings " + PrinterName + " Copies=" + Copies + " Collate=" + Collate + " Duplex=" + Duplex + " FromPage=" + FromPage + " LandscapeAngle=90 MaximumCopies=999 OutputPort=" + (Record()?.Port ?? "") + " ToPage=" + ToPage + "]"; }
+
+        /// .NET's PrinterSettings.StringCollection: the printers' names.
+        public class StringCollection : IEnumerable<string>
+        {
+            readonly List<string> _items;
+            public StringCollection(string[] array) { _items = new List<string>(array); }
+            public int Count { get { return _items.Count; } }
+            public virtual string this[int index] { get { return _items[index]; } }
+            public IEnumerator<string> GetEnumerator() { return _items.GetEnumerator(); }
+            IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+            public int Add(string value) { throw new NotSupportedException("the installed printers are the spooler's"); }
+        }
+
+        public class PaperSizeCollection : IEnumerable<PaperSize>
+        {
+            readonly List<PaperSize> _items;
+            public PaperSizeCollection(PaperSize[] array) { _items = new List<PaperSize>(array); }
+            public int Count { get { return _items.Count; } }
+            public virtual PaperSize this[int index] { get { return _items[index]; } }
+            public int Add(PaperSize paperSize) { _items.Add(paperSize); return _items.Count - 1; }
+            public IEnumerator<PaperSize> GetEnumerator() { return _items.GetEnumerator(); }
+            IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+        }
+
+        public class PaperSourceCollection : IEnumerable<PaperSource>
+        {
+            readonly List<PaperSource> _items;
+            public PaperSourceCollection(PaperSource[] array) { _items = new List<PaperSource>(array); }
+            public int Count { get { return _items.Count; } }
+            public virtual PaperSource this[int index] { get { return _items[index]; } }
+            public int Add(PaperSource paperSource) { _items.Add(paperSource); return _items.Count - 1; }
+            public IEnumerator<PaperSource> GetEnumerator() { return _items.GetEnumerator(); }
+            IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+        }
+
+        public class PrinterResolutionCollection : IEnumerable<PrinterResolution>
+        {
+            readonly List<PrinterResolution> _items;
+            public PrinterResolutionCollection(PrinterResolution[] array) { _items = new List<PrinterResolution>(array); }
+            public int Count { get { return _items.Count; } }
+            public virtual PrinterResolution this[int index] { get { return _items[index]; } }
+            public int Add(PrinterResolution printerResolution) { _items.Add(printerResolution); return _items.Count - 1; }
+            public IEnumerator<PrinterResolution> GetEnumerator() { return _items.GetEnumerator(); }
+            IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+        }
+    }
+
+    /// No such printer, or none at all.
+    public class InvalidPrinterException : SystemException
+    {
+        public InvalidPrinterException(PrinterSettings settings)
+            : base(settings.PrinterName.Length == 0 ? "No printers are installed." : "Settings to access printer '" + settings.PrinterName + "' are not valid.") { }
+    }
+
+    public class PrintEventArgs : CancelEventArgs
+    {
+        internal PrintAction Action = PrintAction.PrintToPrinter;
+        public PrintEventArgs() { }
+        public PrintAction PrintAction { get { return Action; } }
+    }
+
+    public class QueryPageSettingsEventArgs : PrintEventArgs
+    {
+        public QueryPageSettingsEventArgs(PageSettings pageSettings) { PageSettings = pageSettings; }
+        public PageSettings PageSettings { get; set; }
+    }
+
+    /// One page to draw: its Graphics, the page and the margins inside it
+    /// (hundredths of an inch), whether more follow, whether to stop.
+    public class PrintPageEventArgs : EventArgs
+    {
+        Graphics? _graphics;
+        readonly Rectangle _margins, _page;
+        readonly PageSettings _settings;
+
+        public PrintPageEventArgs(Graphics? graphics, Rectangle marginBounds, Rectangle pageBounds, PageSettings pageSettings)
+        {
+            _graphics = graphics; _margins = marginBounds; _page = pageBounds; _settings = pageSettings;
+        }
+
+        public Graphics? Graphics { get { return _graphics; } }
+        internal void SetGraphics(Graphics? g) { _graphics = g; }
+        public Rectangle MarginBounds { get { return _margins; } }
+        public Rectangle PageBounds { get { return _page; } }
+        public PageSettings PageSettings { get { return _settings; } }
+        public bool HasMorePages { get; set; }
+        public bool Cancel { get; set; }
+    }
+
+    public delegate void PrintEventHandler(object sender, PrintEventArgs e);
+    public delegate void PrintPageEventHandler(object sender, PrintPageEventArgs e);
+    public delegate void QueryPageSettingsEventHandler(object sender, QueryPageSettingsEventArgs e);
+
+    /// What a document is printed through: the spooler (StandardPrintController)
+    /// or somewhere else.
+    public abstract class PrintController
+    {
+        public virtual bool IsPreview { get { return false; } }
+        public virtual void OnStartPrint(PrintDocument document, PrintEventArgs e) { }
+        public virtual Graphics? OnStartPage(PrintDocument document, PrintPageEventArgs e) { return null; }
+        public virtual void OnEndPage(PrintDocument document, PrintPageEventArgs e) { }
+        public virtual void OnEndPrint(PrintDocument document, PrintEventArgs e) { }
+
+        /// .NET's PrintController.Print: begin, a page at a time while the
+        /// handler says there are more, end -- the end said even when a page
+        /// throws, the job then cancelled.
+        internal void Print(PrintDocument document)
+        {
+            PrintEventArgs start = new PrintEventArgs();
+            start.Action = document.PrinterSettings.PrintToFile ? PrintAction.PrintToFile : IsPreview ? PrintAction.PrintToPreview : PrintAction.PrintToPrinter;
+            document.RaiseBeginPrint(start);
+            if (start.Cancel) return;
+            OnStartPrint(document, start);
+            bool cancelled = start.Cancel;
+            try
+            {
+                bool more = !cancelled;
+                while (more)
+                {
+                    PageSettings settings = (PageSettings)document.DefaultPageSettings.Clone();
+                    QueryPageSettingsEventArgs query = new QueryPageSettingsEventArgs(settings);
+                    query.Action = start.Action;
+                    document.RaiseQueryPageSettings(query);
+                    if (query.Cancel) { cancelled = true; break; }
+                    settings = query.PageSettings;
+                    Rectangle page = settings.Bounds;
+                    Margins m = settings.Margins;
+                    Rectangle margins = new Rectangle(m.Left, m.Top, page.Width - m.Left - m.Right, page.Height - m.Top - m.Bottom);
+                    PrintPageEventArgs e = new PrintPageEventArgs(null, margins, page, settings);
+                    Graphics? g = OnStartPage(document, e);
+                    e.SetGraphics(g);
+                    try
+                    {
+                        if (g != null && document.OriginAtMargins) g.TranslateTransform(m.Left, m.Top);
+                        document.RaisePrintPage(e);
+                    }
+                    finally { OnEndPage(document, e); }
+                    if (e.Cancel) { cancelled = true; break; }
+                    more = e.HasMorePages;
+                }
+            }
+            catch
+            {
+                start.Cancel = true;
+                OnEndPrint(document, start);
+                throw;
+            }
+            start.Cancel = cancelled;
+            OnEndPrint(document, start);
+            document.RaiseEndPrint(start);
+        }
+    }
+
+    /// Printing to the printer: a job of pages on the spooler, a page of the
+    /// seat's for each page.
+    public class StandardPrintController : PrintController
+    {
+        long _job;
+        int _page;
+        Seat? _seat;
+
+        public override void OnStartPrint(PrintDocument document, PrintEventArgs e)
+        {
+            PrinterSettings ps = document.PrinterSettings;
+            PrinterRecord? printer = ps.Record();
+            if (printer == null) throw new InvalidPrinterException(ps);
+            string output = "";
+            if (ps.PrintToFile)
+            {
+                if (ps.PrintFileName.Length == 0) throw new ArgumentException("PrintFileName is empty.");
+                output = Path.GetFullPath(ps.PrintFileName);
+            }
+            _seat = Seat.Current;
+            _job = PrintSpooler.StartDoc(printer.Name, document.DocumentName, "PAGES", output, ps.Copies < 1 ? 1 : ps.Copies);
+        }
+
+        public override Graphics? OnStartPage(PrintDocument document, PrintPageEventArgs e)
+        {
+            if (_seat == null || _job == 0) return null;
+            PrinterRecord? printer = document.PrinterSettings.Record();
+            int dpi = printer != null ? (int)printer.Dpi : 150;
+            int w = printer != null ? printer.PixelWidth : 1275, h = printer != null ? printer.PixelHeight : 1650;
+            // A landscape page is the paper turned: the seat turns it back
+            // onto the paper as it hands it in.
+            if (e.PageSettings.Landscape) { int t = w; w = h; h = t; }
+            _page = _seat.CreatePage(_job, w, h, dpi);
+            _seat.Target(_page);
+            Graphics g = new Graphics(_seat, 0, 0, new Rectangle(0, 0, w, h));
+            // Hundredths of an inch, as .NET's printing Graphics counts.
+            g.ScaleTransform(dpi / 100f, dpi / 100f);
+            return g;
+        }
+
+        public override void OnEndPage(PrintDocument document, PrintPageEventArgs e)
+        {
+            if (_seat == null || _page == 0) return;
+            int page = _page;
+            _page = 0;
+            if (e.Cancel) { _seat.DiscardPage(page); return; }
+            long answer = _seat.SubmitPage(page);
+            if (answer != 0) throw new SpoolerException("the page was not printed", answer == -125 ? 63 : 1);
+        }
+
+        public override void OnEndPrint(PrintDocument document, PrintEventArgs e)
+        {
+            if (_job == 0) return;
+            long job = _job;
+            _job = 0;
+            if (_page != 0 && _seat != null) { _seat.DiscardPage(_page); _page = 0; }
+            if (e.Cancel) PrintSpooler.AbortDoc(job);
+            else PrintSpooler.EndDoc(job);
+        }
+    }
+
+    /// A document to print: Print raises BeginPrint, then PrintPage for each
+    /// page (QueryPageSettings before each), then EndPrint.
+    public class PrintDocument : Component
+    {
+        PrinterSettings _printer = new PrinterSettings();
+        PageSettings? _defaults;
+
+        public string DocumentName { get; set; } = "document";
+        public bool OriginAtMargins { get; set; }
+        public PrintController PrintController { get; set; } = new StandardPrintController();
+
+        public PrinterSettings PrinterSettings
+        {
+            get { return _printer; }
+            set { _printer = value ?? new PrinterSettings(); _defaults = null; }
+        }
+
+        public PageSettings DefaultPageSettings
+        {
+            get { if (_defaults == null) _defaults = new PageSettings(_printer); return _defaults; }
+            set { _defaults = value; }
+        }
+
+        public event PrintEventHandler? BeginPrint;
+        public event PrintEventHandler? EndPrint;
+        public event PrintPageEventHandler? PrintPage;
+        public event QueryPageSettingsEventHandler? QueryPageSettings;
+
+        public void Print() { PrintController.Print(this); }
+
+        protected virtual void OnBeginPrint(PrintEventArgs e) { PrintEventHandler? h = BeginPrint; if (h != null) h(this, e); }
+        protected virtual void OnEndPrint(PrintEventArgs e) { PrintEventHandler? h = EndPrint; if (h != null) h(this, e); }
+        protected virtual void OnPrintPage(PrintPageEventArgs e) { PrintPageEventHandler? h = PrintPage; if (h != null) h(this, e); }
+        protected virtual void OnQueryPageSettings(QueryPageSettingsEventArgs e) { QueryPageSettingsEventHandler? h = QueryPageSettings; if (h != null) h(this, e); }
+
+        internal void RaiseBeginPrint(PrintEventArgs e) { OnBeginPrint(e); }
+        internal void RaiseEndPrint(PrintEventArgs e) { OnEndPrint(e); }
+        internal void RaisePrintPage(PrintPageEventArgs e) { OnPrintPage(e); }
+        internal void RaiseQueryPageSettings(QueryPageSettingsEventArgs e) { OnQueryPageSettings(e); }
+
+        public override string ToString() { return "[PrintDocument " + DocumentName + "]"; }
+    }
+
+    /// .NET's PrinterUnitConvert: between hundredths of an inch and the
+    /// other printer units.
+    public static class PrinterUnitConvert
+    {
+        static double PerInch(PrinterUnit unit)
+        {
+            switch (unit)
+            {
+                case PrinterUnit.ThousandthsOfAnInch: return 1000;
+                case PrinterUnit.HundredthsOfAMillimeter: return 2540;
+                case PrinterUnit.TenthsOfAMillimeter: return 254;
+            }
+            return 100;
+        }
+
+        public static double Convert(double value, PrinterUnit fromUnit, PrinterUnit toUnit) { return value * PerInch(toUnit) / PerInch(fromUnit); }
+        public static int Convert(int value, PrinterUnit fromUnit, PrinterUnit toUnit) { return (int)Math.Round(Convert((double)value, fromUnit, toUnit)); }
+        public static Rectangle Convert(Rectangle value, PrinterUnit fromUnit, PrinterUnit toUnit)
+        {
+            return new Rectangle(Convert(value.X, fromUnit, toUnit), Convert(value.Y, fromUnit, toUnit), Convert(value.Width, fromUnit, toUnit), Convert(value.Height, fromUnit, toUnit));
+        }
+        public static Margins Convert(Margins value, PrinterUnit fromUnit, PrinterUnit toUnit)
+        {
+            return new Margins(Convert(value.Left, fromUnit, toUnit), Convert(value.Right, fromUnit, toUnit), Convert(value.Top, fromUnit, toUnit), Convert(value.Bottom, fromUnit, toUnit));
+        }
+    }
+}
