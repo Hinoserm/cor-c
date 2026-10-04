@@ -29,7 +29,10 @@ public sealed class RegionHints
     // of its sites and calls runs, with the unit's word size (Repeats).
     // 7: the symbols whose addresses its code takes (Symbols), after its
     // sites, and the Symbol constraint naming them.
-    private const int Version = 7;
+    // 8: an async or iterator body states its state machine's stores
+    // (what its registers and slots hold across a suspension), rather
+    // than leaking every one: the same bytes, another meaning.
+    private const int Version = 8;
     private static readonly UTF8Encoding Utf8 = new(false, true);
 
     public List<RegionFunction> Functions { get; } = new();

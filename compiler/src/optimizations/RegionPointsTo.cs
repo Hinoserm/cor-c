@@ -2017,8 +2017,11 @@ public sealed class RegionPointsTo : IModulePass
     /// those in the machine too, since no liveness reaches a pad).
     /// </summary>
     private List<VReg> SavedAcrossSuspensions(Function f, AsyncFrame frame)
+        => _saved.TryGetValue(f, out List<VReg>? known) ? known : _saved[f] = Saved(f, frame);
+
+    /// <summary>SavedAcrossSuspensions, found afresh: the unit's summary for the link asks it too (RegionSummary).</summary>
+    internal static List<VReg> Saved(Function f, AsyncFrame frame)
     {
-        if (_saved.TryGetValue(f, out List<VReg>? known)) return known;
         Dictionary<int, VReg> registers = new();
         foreach (VReg p in f.Params) registers[p.Id] = p;
         foreach (Block b in f.Blocks)
@@ -2041,7 +2044,7 @@ public sealed class RegionPointsTo : IModulePass
             }
         }
         saved.Remove(frame.StateMachine);
-        return _saved[f] = saved.ToList();
+        return saved.ToList();
     }
 
     private void Edge(int from, int to, long shift)
