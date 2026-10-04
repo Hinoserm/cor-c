@@ -64,6 +64,8 @@ public delegate void MouseEventHandler(object sender, MouseEventArgs e);
 public delegate void KeyPressEventHandler(object sender, KeyPressEventArgs e);
 public delegate void KeyEventHandler(object sender, KeyEventArgs e);
 public delegate void FormClosingEventHandler(object sender, FormClosingEventArgs e);
+public delegate void DragEventHandler(object sender, DragEventArgs e);
+public delegate void GiveFeedbackEventHandler(object sender, GiveFeedbackEventArgs e);
 public delegate void InputLanguageChangingEventHandler(object sender, InputLanguageChangingEventArgs e);
 public delegate void InputLanguageChangedEventHandler(object sender, InputLanguageChangedEventArgs e);
 
@@ -680,7 +682,12 @@ public class ControlCollection
     /// Added controls take their tab order from the order they were added
     /// in, which is what a form built in code expects and what .NET does
     /// when nothing sets TabIndex. Setting it afterwards still wins.
-    public void Add(Control c) { c.Parent = _owner; if (c.TabIndex < 0) c.TabIndex = _items.Count; _items.Add(c); c.Invalidate(); }
+    public void Add(Control c)
+    {
+        c.Parent = _owner; if (c.TabIndex < 0) c.TabIndex = _items.Count; _items.Add(c); c.Invalidate();
+        // A drop target joining a form: the form's window registered.
+        if (c.AllowDrop) { Form? f = _owner.FindForm(); if (f != null) f.WantDrops(); }
+    }
     public void Insert(int at, Control c) { c.Parent = _owner; if (c.TabIndex < 0) c.TabIndex = at; _items.Insert(at, c); c.Invalidate(); }
     public bool Contains(Control c) { return _items.Contains(c); }
     public int IndexOf(Control c) { return _items.IndexOf(c); }
@@ -904,6 +911,42 @@ public class Control
     public Font Font { get { return _font; } set { _font = value; Invalidate(); } }
     public bool Visible { get { return _visible; } set { if (_visible == value) return; _visible = value; if (_parent != null) _parent.Invalidate(Bounds); else Invalidate(); OnVisibleChanged(EventArgs.Empty); } }
     public event EventHandler? VisibleChanged;
+
+    // ---- drag and drop (the seat's; DragDrop below) ----
+
+    bool _allowDrop;
+    /// .NET's AllowDrop: the control a drop target. Its form's window is
+    /// registered with the seat as one, and the seat's drag over it reaches
+    /// the control under the pointer that allows drops.
+    public virtual bool AllowDrop
+    {
+        get { return _allowDrop; }
+        set { _allowDrop = value; if (value) { Form? f = FindForm(); if (f != null) f.WantDrops(); } }
+    }
+    public event DragEventHandler? DragEnter;
+    public event DragEventHandler? DragOver;
+    public event EventHandler? DragLeave;
+    public event DragEventHandler? DragDrop;
+    public event GiveFeedbackEventHandler? GiveFeedback;
+    protected virtual void OnDragEnter(DragEventArgs e) { if (DragEnter != null) DragEnter(this, e); }
+    protected virtual void OnDragOver(DragEventArgs e) { if (DragOver != null) DragOver(this, e); }
+    protected virtual void OnDragLeave(EventArgs e) { if (DragLeave != null) DragLeave(this, e); }
+    protected virtual void OnDragDrop(DragEventArgs e) { if (DragDrop != null) DragDrop(this, e); }
+    protected virtual void OnGiveFeedback(GiveFeedbackEventArgs e) { if (GiveFeedback != null) GiveFeedback(this, e); }
+    internal void RaiseDragEnter(DragEventArgs e) { OnDragEnter(e); }
+    internal void RaiseDragOver(DragEventArgs e) { OnDragOver(e); }
+    internal void RaiseDragLeave() { OnDragLeave(EventArgs.Empty); }
+    internal void RaiseDragDrop(DragEventArgs e) { OnDragDrop(e); }
+    internal void RaiseGiveFeedback(GiveFeedbackEventArgs e) { OnGiveFeedback(e); }
+
+    /// .NET's DoDragDrop: a drag of `data` from this control, the seat's
+    /// modal loop running until it is dropped or given up; the effect done.
+    public DragDropEffects DoDragDrop(object data, DragDropEffects allowedEffects)
+    {
+        Form? f = FindForm();
+        if (f == null || f.Handle == 0) return DragDropEffects.None;
+        return DragDrop_.Run(this, f, data is IDataObject d ? d : new DataObject(data), allowedEffects);
+    }
 
     // ---- another thread's work, done on the one that runs the loop ------
     //
@@ -1454,6 +1497,23 @@ public class Form : ScrollableControl
     /// a message box and will grow a proper modal state when a dialog
     /// needs to shut its owner out.
     public DialogResult ShowDialog() { return Application.RunModal(this); }
+
+    bool _wantsDrops, _dropRegistered;
+
+    /// A control of this form allows drops: the window registered with the
+    /// seat as a drop target, now or when it is made (SendFrame), and with
+    /// the COM broker through the COM runtime when there is one
+    /// (DragDrop_.ComRegister), so a Windows program's drag reaches it too.
+    internal void WantDrops()
+    {
+        _wantsDrops = true;
+        if (_handle == 0 || _dropRegistered) return;
+        _dropRegistered = true;
+        long cookie = 0;
+        Func<int, long>? com = DragDrop_.ComRegister;
+        if (com != null) { try { cookie = com(_handle); } catch (Exception) { cookie = 0; } }
+        try { Seat.Current.RegisterDropTarget(_handle, cookie); } catch (IOException) { }
+    }
     /// The desktop is a surface of its own kind: it sits under every other
     /// window and a click on it never raises it. Corsac.GUI.Shell.MakeDesktop
     /// sets it, before Show.
@@ -1635,6 +1695,7 @@ public class Form : ScrollableControl
     void SendFrame()
     {
         if (_handle == 0) return;
+        if (_wantsDrops && !_dropRegistered) WantDrops();
         Seat seat = Seat.Current;
         long style = FrameStyleBits(), ex = FrameExStyleBits();
         if (style != _sentStyle || ex != _sentExStyle)
@@ -6965,6 +7026,20 @@ public static class Application
     }
 
     /// Runs the loop until `dialog` closes, and answers what it said.
+    /// The loop run until `done` says so, or the program exits: a modal
+    /// wait that keeps the program's windows answering (DoDragDrop's).
+    internal static void RunUntil(Func<bool> done)
+    {
+        Seat seat = Seat.Current;
+        bool was = _running;
+        _running = true;
+        while (_running && !done())
+        {
+            if (!Iterate(seat)) break;
+        }
+        _running = was;
+    }
+
     internal static DialogResult RunModal(Form dialog)
     {
         dialog.Show();
@@ -7293,6 +7368,17 @@ public static class Application
             case Seat.HotKeyPressed:
                 // A hot key of this thread's pressed (HotKey).
                 HotKey.Raise(f, m.A, m.B);
+                break;
+            case Seat.DragEnterEvent:
+            case Seat.DragOverEvent:
+            case Seat.DragLeaveEvent:
+            case Seat.DragDropEvent:
+                if (f != null) DragDrop_.Target(f, m.Kind, m.A, m.B);
+                break;
+            case Seat.DragEndedEvent:
+            case Seat.DragRenderEvent:
+            case Seat.DragFeedbackEvent:
+                DragDrop_.Source(m.Kind, m.A);
                 break;
             case 28:
                 // A press on one of this thread's notification-area icons.
@@ -7802,7 +7888,7 @@ public static class Clipboard
     /// Text -- Windows' own registered text formats as Windows has them, with
     /// their NUL (UTF-8 for HTML Format, 1252 for the rest); a picture as a
     /// .bmp file; a file list as text/uri-list; a stream or array as it is.
-    static byte[] Encode(string format, object data)
+    internal static byte[] Encode(string format, object data)
     {
         if (data is byte[] raw) return raw;
         if (data is MemoryStream ms) return ms.ToArray();
@@ -7832,7 +7918,7 @@ public static class Clipboard
     /// A format's bytes as .NET answers them: text formats as strings up to
     /// their NUL if they have one, pictures as Bitmaps, FileDrop as a string
     /// array, the rest as a MemoryStream.
-    static object? Decode(string format, byte[] bytes)
+    internal static object? Decode(string format, byte[] bytes)
     {
         if (format == DataFormats.UnicodeText || format == DataFormats.StringFormat)
         {
@@ -8171,3 +8257,195 @@ public static class Clipboard
     public static void SetAudio(byte[] audioBytes) { if (audioBytes == null) throw new ArgumentNullException("audioBytes"); SetData(DataFormats.WaveAudio, audioBytes); }
     public static void SetAudio(Stream audioStream) { if (audioStream == null) throw new ArgumentNullException("audioStream"); SetData(DataFormats.WaveAudio, audioStream); }
 }
+
+// ---- drag and drop -----------------------------------------------------------
+//
+// .NET's DoDragDrop, AllowDrop and the Drag events on the seat's drag
+// (os/gui/seatdrag.cor), shaped as OLE's: the data goes as clipboard
+// formats -- .NET's names on the MIME names the clipboard keeps
+// (Clipboard.NativeName), which win32k maps to CF_* for Windows programs --
+// and what a target reads is an IDataObject over the drag.
+
+public enum DragDropEffects { None = 0, Copy = 1, Move = 2, Link = 4, Scroll = -2147483648, All = -2147483645 }
+
+public class DragEventArgs : EventArgs
+{
+    public IDataObject? Data { get; }
+    public int KeyState { get; }
+    public int X { get; }
+    public int Y { get; }
+    public DragDropEffects AllowedEffect { get; }
+    public DragDropEffects Effect { get; set; }
+    public DragEventArgs(IDataObject? data, int keyState, int x, int y, DragDropEffects allowedEffect, DragDropEffects effect)
+    {
+        Data = data; KeyState = keyState; X = x; Y = y; AllowedEffect = allowedEffect; Effect = effect;
+    }
+}
+
+public class GiveFeedbackEventArgs : EventArgs
+{
+    public DragDropEffects Effect { get; }
+    public bool UseDefaultCursors { get; set; }
+    public GiveFeedbackEventArgs(DragDropEffects effect, bool useDefaultCursors) { Effect = effect; UseDefaultCursors = useDefaultCursors; }
+}
+
+/// The drag a target is told of, as an IDataObject: its formats and their
+/// data asked of the seat (the source renders a promised one then).
+sealed class SeatDragData : DataObject
+{
+    public override object? GetData(string format, bool autoConvert)
+    {
+        if (format == DataFormats.StringFormat && autoConvert) format = DataFormats.UnicodeText;
+        int id = Seat.Current.RegisterClipboardFormat(Clipboard.NativeName(format));
+        if (id == 0) return null;
+        byte[]? bytes = Seat.Current.GetDragData(id);
+        return bytes == null ? null : Clipboard.Decode(format, bytes);
+    }
+
+    public override bool GetDataPresent(string format, bool autoConvert)
+    {
+        if (format == DataFormats.StringFormat && autoConvert) format = DataFormats.UnicodeText;
+        return Array.IndexOf(GetFormats(false), format) >= 0;
+    }
+
+    public override string[] GetFormats(bool autoConvert)
+    {
+        List<string> all = new List<string>();
+        foreach (int id in Seat.Current.DragFormatList())
+        {
+            string? native = Seat.Current.GetClipboardFormatName(id);
+            string name = native != null ? Clipboard.DotNetName(native) : "Format" + id;
+            if (!all.Contains(name)) all.Add(name);
+        }
+        if (autoConvert && all.Contains(DataFormats.UnicodeText) && !all.Contains(DataFormats.StringFormat)) all.Add(DataFormats.StringFormat);
+        return all.ToArray();
+    }
+}
+
+/// The two ends of the seat's drag in this program.
+static class DragDrop_
+{
+    /// THE COM SEAM. The COM runtime, when it is loaded, sets this: a
+    /// window's IDropTarget exported (an object of the runtime's that turns
+    /// IDropTarget's calls into this program's Drag events) and registered
+    /// with the broker (WindowPropRegister, ISCM's opnum 4); the broker's
+    /// cookie answered, which the seat puts in ole32's window props so a
+    /// Windows program's DoDragDrop finds it. Null while there is no runtime:
+    /// native drags still reach the window.
+    public static Func<int, long>? ComRegister;
+
+    // ---- the source -----------------------------------------------------------------
+
+    static bool _running, _ended;
+    static DragDropEffects _done;
+    static Control? _source;
+    static IDataObject? _data;
+
+    internal static DragDropEffects Run(Control source, Form form, IDataObject data, DragDropEffects allowed)
+    {
+        if (_running) return DragDropEffects.None;
+        Seat seat = Seat.Current;
+        string[] names = data.GetFormats(false);
+        List<int> ids = new List<int>();
+        List<byte[]> bytes = new List<byte[]>();
+        foreach (string name in names)
+        {
+            object? value = data.GetData(name, false);
+            if (value == null) continue;
+            byte[] encoded;
+            try { encoded = Clipboard.Encode(name, value); }
+            catch (ArgumentException) { continue; }
+            int id = seat.RegisterClipboardFormat(Clipboard.NativeName(name));
+            if (id == 0 || ids.Contains(id)) continue;
+            ids.Add(id); bytes.Add(encoded);
+        }
+        _running = true; _ended = false; _done = DragDropEffects.None; _source = source; _data = data;
+        try
+        {
+            if (!seat.BeginDrag(form.Handle, (int)allowed & 7, ids.ToArray())) return DragDropEffects.None;
+            for (int i = 0; i < ids.Count; i++) seat.PutDragData(ids[i], bytes[i]);
+            // THE SEAT'S LOOP HAS THE POINTER; this program goes on reading
+            // its events -- painting, being a target of its own drag -- until
+            // the seat says the drag is over.
+            Application.RunUntil(() => _ended);
+            return _done;
+        }
+        finally { _running = false; _source = null; _data = null; }
+    }
+
+    /// The source's events: the end, a render asked (every format was put
+    /// already: put again), the effect shown.
+    internal static void Source(int kind, int a)
+    {
+        if (!_running) return;
+        if (kind == Seat.DragEndedEvent) { _done = (DragDropEffects)a; _ended = true; return; }
+        if (kind == Seat.DragFeedbackEvent) { if (_source != null) _source.RaiseGiveFeedback(new GiveFeedbackEventArgs((DragDropEffects)a, true)); return; }
+        // DragRender: the format asked for, encoded again from the data.
+        IDataObject? data = _data;
+        string? native = Seat.Current.GetClipboardFormatName(a);
+        if (data == null || native == null) return;
+        string name = Clipboard.DotNetName(native);
+        object? value = data.GetData(name, true);
+        if (value == null) return;
+        try { Seat.Current.PutDragData(a, Clipboard.Encode(name, value)); } catch (ArgumentException) { }
+    }
+
+    // ---- the target -----------------------------------------------------------------
+
+    static Control? _over;
+    static IDataObject? _overData;
+
+    /// A seat drag event for `form`: the control under the pointer that
+    /// allows drops told -- entered, over, left, dropped on -- and the seat
+    /// answered with the effect it chose.
+    internal static void Target(Form form, int kind, int a, int b)
+    {
+        Seat seat = Seat.Current;
+        if (kind == Seat.DragLeaveEvent) { Leave(); return; }
+        int keys = a & 0xFFFF;
+        DragDropEffects allowed = (DragDropEffects)((a >> 16) & 7);
+        int sx = Seat.LowSigned(b), sy = Seat.HighSigned(b);
+        Point co = form.ClientOffset();
+        Control? hit = form.HitTest(sx - form.Left - co.X, sy - form.Top - co.Y);
+        while (hit != null && !hit.AllowDrop) hit = hit.Parent;
+        if (hit != _over)
+        {
+            Leave();
+            _over = hit;
+            _overData = hit != null ? new SeatDragData() : null;
+            if (hit != null && kind != Seat.DragDropEvent)
+            {
+                DragEventArgs enter = new DragEventArgs(_overData, keys, sx, sy, allowed, DragDropEffects.None);
+                hit.RaiseDragEnter(enter);
+                seat.AnswerDrag((int)enter.Effect & (int)allowed);
+                return;
+            }
+        }
+        if (hit == null)
+        {
+            if (kind == Seat.DragDropEvent) seat.DropDone(0); else seat.AnswerDrag(0);
+            return;
+        }
+        DragEventArgs e = new DragEventArgs(_overData, keys, sx, sy, allowed, DragDropEffects.None);
+        if (kind == Seat.DragDropEvent)
+        {
+            // The drop asks the effect again, as OLE's Drop does after DragOver.
+            hit.RaiseDragOver(e);
+            DragEventArgs drop = new DragEventArgs(_overData, keys, sx, sy, allowed, e.Effect);
+            hit.RaiseDragDrop(drop);
+            seat.DropDone((int)drop.Effect & (int)allowed);
+            _over = null; _overData = null;
+            return;
+        }
+        hit.RaiseDragOver(e);
+        seat.AnswerDrag((int)e.Effect & (int)allowed);
+    }
+
+    static void Leave()
+    {
+        Control? was = _over;
+        _over = null; _overData = null;
+        if (was != null) was.RaiseDragLeave();
+    }
+}
+
