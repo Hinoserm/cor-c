@@ -135,6 +135,18 @@ public static class RegionSummary
             if (to >= 0 && from >= 0) _constraints.Add(new(RegionConstraintKind.Copy, to, from, shift));
         }
 
+        // The fields its typed loads and stores name (Instr.Family), each once.
+        private readonly List<string> _families = new();
+        private readonly Dictionary<string, int> _familyIndex = new(StringComparer.Ordinal);
+
+        /// <summary>The field a load or store names, as an index into its Families; -1 for none.</summary>
+        private int Family(Instr i)
+        {
+            if (i.Family is not string name) return -1;
+            if (!_familyIndex.TryGetValue(name, out int at)) { at = _families.Count; _families.Add(name); _familyIndex[name] = at; }
+            return at;
+        }
+
         private void Leak(int value)
         {
             if (value >= 0) _constraints.Add(new(RegionConstraintKind.Leak, value, 0, 0));
@@ -275,14 +287,14 @@ public static class RegionSummary
                     // A number read (Instr.Number) is no address.
                     if (i.Number) return;
                     int at = Base(i.Operands[0]);
-                    if (dest >= 0 && at >= 0) _constraints.Add(new(RegionConstraintKind.Load, dest, at, i.Offset));
+                    if (dest >= 0 && at >= 0) _constraints.Add(new(RegionConstraintKind.Load, dest, at, i.Offset, Family(i)));
                     return;
                 }
 
                 case Opcode.Store:
                 case Opcode.InitArrayLength:
                     if (i.Operands.Count >= 2 && Base(i.Operands[0]) is int into and >= 0 && Value(i.Operands[1]) is int value and >= 0)
-                        _constraints.Add(new(RegionConstraintKind.Store, into, value, i.Offset));
+                        _constraints.Add(new(RegionConstraintKind.Store, into, value, i.Offset, i.Op == Opcode.Store ? Family(i) : -1));
                     return;
 
                 case Opcode.AtomicSwap:
@@ -548,7 +560,7 @@ public static class RegionSummary
                 int b = c.Kind is RegionConstraintKind.Copy or RegionConstraintKind.Load or RegionConstraintKind.Store or RegionConstraintKind.MemCopy ? Node(c.B) : c.B;
                 if (a < 0 || b < 0) continue;
                 if (c.Kind == RegionConstraintKind.Copy && c.C == 0 && a == b) continue;
-                RegionConstraint r = new(c.Kind, a, b, c.C);
+                RegionConstraint r = new(c.Kind, a, b, c.C, c.Family);
                 if (seen.Add(r)) kept.Add(r);
             }
             List<RegionCall> calls = new();
@@ -567,7 +579,7 @@ public static class RegionSummary
             List<Instr> must = RegionPointsTo.MustRunCalls(_f);
             RegionFunction result = new(_f.Name, _f.Exported, _f.Async is null && !_f.Name.Contains("StaticInit", StringComparison.Ordinal) && !_main,
                 _params > 0 && _f.Params[0].Name == "this", _params, next, _slots.Count, _sites.ToArray())
-            { Main = _main, NumberParams = Sorted(Enumerable.Range(0, _params).Where(k => _f.Params[k].Number)), Symbols = KeptSymbols(kept) };
+            { Main = _main, NumberParams = Sorted(Enumerable.Range(0, _params).Where(k => _f.Params[k].Number)), Symbols = KeptSymbols(kept), Families = _families.ToArray() };
             result.Constraints.AddRange(kept);
             result.Calls.AddRange(calls);
             result.MustCalls = CallsAmong(must);
@@ -812,7 +824,7 @@ public static class RegionSummary
                 RegionConstraint c = kept[k];
                 if (c.Kind != RegionConstraintKind.Symbol) continue;
                 if (!renumber.TryGetValue(c.B, out int at)) { at = names.Count; names.Add(_symbols[c.B]); renumber[c.B] = at; }
-                kept[k] = new RegionConstraint(c.Kind, c.A, at, c.C);
+                kept[k] = new RegionConstraint(c.Kind, c.A, at, c.C, c.Family);
             }
             return names.ToArray();
         }
