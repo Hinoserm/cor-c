@@ -56,18 +56,19 @@ public static class IrCodecTests
         Check(bytes.SequenceEqual(IrFunctionCodec.Write(kept, new HashSet<Instr>(keptBack, ReferenceEqualityComparer.Instance))), "Kept calls reserialization differs");
         damaged = (byte[])bytes.Clone(); damaged[^4] = 2;
         Reject(() => IrFunctionCodec.Read(damaged));
-        // EVERY MARK THE ANALYSES PUT ON THE IR goes with it (version 6): a
+        // EVERY MARK THE ANALYSES PUT ON THE IR goes with it (version 7): a
         // parameter's Number, a load's and a character copy's Number, a site
         // the link chose for a region, a loop header given one and its lap's
         // bytes, a virtual call's declaring type, a field and a fresh struct's
-        // Field mark. The link rebuilds from the archive, and one lost read a
+        // Field mark, and an access's Family, which typed aliasing needs when
+        // the link summarises a function again. The link rebuilds from the archive, and one lost read a
         // number as an address again.
         Function marked = new("marked", IrType.Void);
         VReg count = marked.NewReg(IrType.I32); count.Number = true; marked.Params.Add(count);
         VReg at = marked.NewReg(IrTypes.Word); marked.Params.Add(at);
         var head = marked.NewBlock(); var lap = marked.NewBlock();
         VReg read = marked.NewReg(IrType.I32);
-        head.Instrs.Add(new Instr { Op = Opcode.Load, Dest = read, Size = 4, Operands = { new RegOperand(at) }, Number = true, Field = "T::count" });
+        head.Instrs.Add(new Instr { Op = Opcode.Load, Dest = read, Size = 4, Operands = { new RegOperand(at) }, Number = true, Field = "T::count", Family = "T" });
         head.Instrs.Add(new Instr { Op = Opcode.MemCopy, Operands = { new RegOperand(at), new RegOperand(at), new RegOperand(count) }, Number = true });
         VReg made = marked.NewReg(IrTypes.Word);
         head.Instrs.Add(new Instr { Op = Opcode.Call, Callee = "alloc", Dest = made, Operands = { new RegOperand(count) }, RegionSite = true, Field = Instr.FreshStruct });
@@ -81,7 +82,7 @@ public static class IrCodecTests
         Function back = IrFunctionCodec.Read(bytes, budget);
         Instr[] all = back.Blocks.SelectMany(block => block.Instrs).ToArray();
         Check(back.Params[0].Number && !back.Params[1].Number, "A parameter's Number lost in the archive");
-        Check(all[0].Number && all[0].Field == "T::count" && all[1].Number && !all[4].Number, "A load's or a copy's Number lost in the archive");
+        Check(all[0].Number && all[0].Field == "T::count" && all[0].Family == "T" && all[1].Family is null && all[1].Number && !all[4].Number, "A load's or a copy's Number lost in the archive");
         Check(all[2].RegionSite && all[2].ReturnsFreshStruct && !all[3].RegionSite, "A region site or a fresh struct's mark lost in the archive");
         Check(all[3].DispatchType == "t_Node", "A virtual call's declaring type lost in the archive");
         Check(!back.Blocks[0].RegionLoop && back.Blocks[1] is { RegionLoop: true, RegionLoopBytes: 96 }, "A loop's region lost in the archive");

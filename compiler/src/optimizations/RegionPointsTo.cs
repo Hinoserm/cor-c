@@ -763,7 +763,7 @@ public sealed class RegionPointsTo : IModulePass
         List<Function> originals = _m.Functions.ToList();
         foreach (Version v in versions)
         {
-            var body = CloneBody(v.F, v.F.Name + "$region$" + made.Count);
+            var body = CloneBody(v.F, v.F.Name + "$region$" + made.Count, _m.KeepCalls);
             made[v] = body;
             _m.Functions.Add(body.Body);
         }
@@ -956,8 +956,13 @@ public sealed class RegionPointsTo : IModulePass
         return first.Values.ToList();
     }
 
-    /// <summary>A function's body copied whole under another name, and which copied instruction each of its own became.</summary>
-    private (Function Body, Dictionary<Instr, Instr> From) CloneBody(Function f, string name)
+    /// <summary>
+    /// A function's body copied whole under another name, and which copied
+    /// instruction each of its own became: every mark with it -- a site the
+    /// link chose, a loop's region -- and a call kept (`keep`) kept in the
+    /// copy too.
+    /// </summary>
+    public static (Function Body, Dictionary<Instr, Instr> From) CloneBody(Function f, string name, HashSet<Instr> keep)
     {
         Function made = new(name, f.Returns)
         {
@@ -976,6 +981,8 @@ public sealed class RegionPointsTo : IModulePass
         {
             Block copy = made.NewBlock(b.Label + "$");
             copy.IsLandingPad = b.IsLandingPad;
+            copy.RegionLoop = b.RegionLoop;
+            copy.RegionLoopBytes = b.RegionLoopBytes;
             blocks[b] = copy;
         }
         foreach (Block b in f.Blocks)
@@ -985,12 +992,13 @@ public sealed class RegionPointsTo : IModulePass
                 {
                     Op = i.Op, Dest = i.Dest is null ? null : Reg(i.Dest), Size = i.Size, Signed = i.Signed, Offset = i.Offset,
                     Callee = i.Callee, DispatchType = i.DispatchType, Field = i.Field, Number = i.Number, Family = i.Family, Line = i.Line,
+                    RegionSite = i.RegionSite,
                     Default = i.Default is null ? null : blocks[i.Default],
                 };
                 foreach (Operand o in i.Operands)
                     c.Operands.Add(o switch { RegOperand r => new RegOperand(Reg(r.Reg)), SlotOperand s => new SlotOperand(slots[s.Slot]), _ => o });
                 foreach (Block t in i.Targets) c.Targets.Add(blocks[t]);
-                if (_m.KeepCalls.Contains(i)) _m.KeepCalls.Add(c);
+                if (keep.Contains(i)) keep.Add(c);
                 blocks[b].Instrs.Add(c);
                 from[i] = c;
             }

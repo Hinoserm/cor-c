@@ -56,6 +56,14 @@ public sealed class Pipeline
 #endif
 
     /// <summary>
+    /// --verify-marks: each pass checked for a mark it lost off an
+    /// instruction it kept or replaced one for one (MarkVerifier), said on
+    /// standard error with the pass's name. Off but for that switch: it
+    /// notes every function's marks before every pass.
+    /// </summary>
+    public bool VerifyMarks { get; set; } = Switches.VerifyMarks;
+
+    /// <summary>
     /// How many times to repeat the whole list. Each pass exposes work for
     /// the others -- folding makes copies, propagation makes dead code,
     /// dead code makes empty blocks -- so one round is rarely enough and
@@ -204,6 +212,7 @@ public sealed class Pipeline
 #if COR_SELFHOST_BENCHMARK
             Corsac.Program.BenchmarkStage("opt-module-begin " + p.Name);
 #endif
+            Dictionary<Function, MarkVerifier>? marks = VerifyMarks ? MarkVerifier.Snapshot(m) : null;
             if (Accounting)
             {
                 long t0 = System.Diagnostics.Stopwatch.GetTimestamp(), b0 = GC.GetTotalAllocatedBytes();
@@ -211,6 +220,7 @@ public sealed class Pipeline
                 Account("module:" + p.Name, System.Diagnostics.Stopwatch.GetTimestamp() - t0, GC.GetTotalAllocatedBytes() - b0);
             }
             else p.Run(m);
+            if (marks is not null) MarkVerifier.Report(marks, m, p.Name);
             TraceModulePass(p.Name, m);
 #if COR_SELFHOST_BENCHMARK
             Corsac.Program.BenchmarkStage("opt-module-end " + p.Name);
@@ -252,7 +262,9 @@ public sealed class Pipeline
 #if COR_SELFHOST_BENCHMARK
                 Corsac.Program.BenchmarkStage("opt-late-begin " + p.Name);
 #endif
+                Dictionary<Function, MarkVerifier>? marks = VerifyMarks ? MarkVerifier.Snapshot(m) : null;
                 p.Run(m);
+                if (marks is not null) MarkVerifier.Report(marks, m, p.Name);
                 TraceModulePass(p.Name, m);
 #if COR_SELFHOST_BENCHMARK
                 Corsac.Program.BenchmarkStage("opt-late-end " + p.Name);
@@ -326,6 +338,7 @@ public sealed class Pipeline
         {
             foreach (IPass p in Passes)
             {
+                MarkVerifier? marks = VerifyMarks ? MarkVerifier.Snapshot(f) : null;
                 if (Accounting)
                 {
                     long t0 = System.Diagnostics.Stopwatch.GetTimestamp(), b0 = GC.GetAllocatedBytesForCurrentThread();
@@ -333,6 +346,7 @@ public sealed class Pipeline
                     Account(p.Name, System.Diagnostics.Stopwatch.GetTimestamp() - t0, GC.GetAllocatedBytesForCurrentThread() - b0);
                 }
                 else p.Run(f);
+                marks?.Report(f, p.Name);
                 if (Verify)
                 {
                     Verifier.Check(f, $"after {p.Name}");

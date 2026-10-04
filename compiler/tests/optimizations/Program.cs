@@ -139,6 +139,13 @@ public static partial class Program
         Try("dse: overwritten and unread-before-return stores go", DseBasic);
         Try("dse: reads, calls, register stores and partial overlap keep stores", DseKept);
         Try("regions: every leave a return passes comes after its frees", RegionLeavesAfterFrees);
+        Try("marks: the verifier says each mark a pass lost, and the pass", MarksVerifierSeesLosses);
+        Try("marks: frame address folding keeps a load's field", MarksFrameAddressFold);
+        Try("marks: a constant's copy keeps the call's marks", MarksConstantSpecialize);
+        Try("marks: a call made direct keeps a fresh struct, not a delegate's invoke", MarksDevirtualize);
+        Try("marks: a body copied for a region keeps its sites and loops", MarksRegionClone);
+        Try("marks: an inlined loop keeps its region", MarksInlineLoop);
+        Try("marks: tails marked apart are not shared", MarksCommonTailMerge);
 
         Console.WriteLine($"{_passes} passed, {_failures} failed");
         return _failures == 0 ? 0 : 1;
