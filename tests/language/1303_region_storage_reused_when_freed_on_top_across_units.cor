@@ -11,9 +11,10 @@
 // (Gc.RegionFree): the bump pointer comes back down over it, and over every
 // block under it freed already, and the next allocation takes the bytes. A
 // list and a table grown beneath one boundary leave their outgrown arrays
-// behind them as they grow -- each freed below the one that replaced it --
-// and when the bag's field lets them go, the last array is the top: the
-// pointer comes down over it, the arrays under it and the list. Every value
+// behind them as they grow (the library's own Runtime.Free, which leaves a
+// region's block to the region's end), and when the bag's field lets them
+// go, the last array is the top: the pointer comes down over it and over
+// the collection that held it. Every value
 // is read back after collections, and what the regions gave back -- at their
 // ends and early -- covers at least what the work made. Whether any came
 // back early depends on what the compiler proved; the two counts of it agree.

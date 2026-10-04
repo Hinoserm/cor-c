@@ -1,5 +1,6 @@
 // test: region_storage_grown_beside_its_owner_across_units
 // units: tests/language/support/1271_region_storage_beside_units.cor
+// regions: taken
 // expect-exit: 0
 // expect-output:
 // first 333669557

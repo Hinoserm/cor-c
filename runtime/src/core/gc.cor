@@ -2588,8 +2588,11 @@ static class Gc
     /// allocation takes them -- and on down over every block under it given
     /// back already. Anywhere else in that stretch it is marked given back
     /// (KindFreed), for the pointer to come down over later; elsewhere it
-    /// waits for its region's end, as every region block did. A List grown
-    /// in a region, freed with its arrays, leaves nothing behind.
+    /// waits for its region's end, as every region block did. A List freed
+    /// through an owned field gives back its array, then itself, from the
+    /// top. The arrays it outgrew stay until the region ends: the library
+    /// frees them with Runtime.Free, the one free the compiler knows as a
+    /// collection's own (EscapeSelfFrees), and that does nothing here.
     ///
     /// ONLY FOR A BLOCK READ FROM A FIELD OF AN OBJECT STILL ALIVE (FreeHeld):
     /// such a pointer is the block itself. One kept in a register may name

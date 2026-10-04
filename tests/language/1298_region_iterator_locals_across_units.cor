@@ -1,5 +1,6 @@
 // test: region_iterator_locals_across_units
 // units: tests/language/support/1298_region_iterator_units.cor
+// regions: taken
 // expect-exit: 0
 // expect-output:
 // 14400000

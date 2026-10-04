@@ -1,5 +1,6 @@
 // test: region_literal_stored_is_no_escape_across_units
 // units: tests/language/support/1299_region_literal_stored_units.cor
+// regions: taken
 // expect-exit: 0
 // expect-output:
 // 210000

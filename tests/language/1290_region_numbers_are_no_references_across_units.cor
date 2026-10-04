@@ -1,5 +1,6 @@
 // test: region_numbers_are_no_references_across_units
 // units: tests/language/support/1290_region_numbers_units.cor
+// regions: taken
 // expect-exit: 0
 // expect-output:
 // total 1586970 failed 10 caught 139
