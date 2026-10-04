@@ -656,7 +656,12 @@ static class Gc
     static long OldGrowth(long majorLive)
     {
         long bound = NextThreshold(majorLive);
-        return majorLive < bound ? majorLive : bound;
+        long growth = majorLive < bound ? majorLive : bound;
+        // A QUARTER WHEN MEMORY IS SHORT (ShortHook): a ring-1 kernel's heap
+        // let its old generation reach twice its live size before a major,
+        // and held 22 MB with 9 live while the machine ran out.
+        if (MemoryShort()) growth = growth / 4;
+        return growth > MinThreshold ? growth : MinThreshold;
     }
 
     // PACED BY WHAT THEY COST. A minor cycle is worth running only if it
@@ -717,6 +722,9 @@ static class Gc
             return _nurseryFixed;
         }
         long n = _majorLive != 0 && _majorLive < live ? _majorLive : live;
+        // A QUARTER OF IT WHEN MEMORY IS SHORT: the nursery is memory the
+        // heap holds between cycles, and the pool keeps as much again.
+        if (MemoryShort()) n = n / 4;
         if (n < NurseryLeast) n = NurseryLeast;
         // NEAR A HARD LIMIT a quarter of what it leaves, as before: a nursery
         // as large as the limit allows spreads each cycle's survivors over
@@ -8358,8 +8366,10 @@ static class Gc
 
     static long ShortThreshold()
     {
-        long quarter = _liveBytes / 4;
-        return quarter > MinThreshold ? quarter : MinThreshold;
+        // AN EIGHTH: on a machine short of memory every megabyte of garbage
+        // is a megabyte a program or the page cache does not have.
+        long eighth = _liveBytes / 8;
+        return eighth > MinThreshold ? eighth : MinThreshold;
     }
 
     /// Collections given up half way -- a barrier report lost to a full
