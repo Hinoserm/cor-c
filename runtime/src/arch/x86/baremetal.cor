@@ -316,6 +316,19 @@ static class Platform
         }
     }
 
+    /// THE TIME, from a kernel that keeps it: called with no arguments and
+    /// answering nanoseconds since it started. A kernel's own threads may
+    /// not latch the 8254 behind it -- a ring-1 kernel's view of time is
+    /// the cell its kernel writes -- so one that has a clock installs this,
+    /// and Nanos asks the PIT (Clock) only where nobody did.
+    public static long NanosHook;
+
+    public static long Nanos()
+    {
+        if (NanosHook != 0) return Sys.Call(NanosHook, 0, 0, 0);
+        return Clock.Now();
+    }
+
     // ---- the machine's memory, for GC.GetGCMemoryInfo ------------------------
 
     /// Unknown to the runtime: the kernel's own allocator owns the machine's
@@ -618,6 +631,47 @@ static partial class Os
     {
         Sys.Hlt();
     }
+
+    // ---- what Environment asks (stdlib/src/System/environment.cor) ---------
+    //
+    // NOBODY STARTED THIS PROGRAM: no operating system laid an argument
+    // vector or an environment block on its stack, and no process holds a
+    // working directory or a number for it. Environment is the library's
+    // here too, and these are the true answers to what it asks -- an entry
+    // block of argc 0 with no arguments and no variables, no directory to
+    // change to, the one program there is, and the machine's clock -- not a
+    // copy of Environment beside the library's.
+
+    /// argc 0, argv's terminating null, envp's terminating null: four words
+    /// in either word size, laid down in the image.
+    static readonly long[] NoEntryBlock = { 0, 0, 0, 0 };
+
+    /// Where argc, argv and envp would be: the empty block.
+    public static long MainEntryStack() { return Sys.ArrayData(NoEntryBlock); }
+
+    /// envp, as on Linux: past argc, argv's entries and argv's null.
+    public static long EnvironAddress()
+    {
+        long sp = MainEntryStack();
+        return sp + WordSize.Bytes + WordSize.Bytes * Sys.Peek(sp) + WordSize.Bytes;
+    }
+
+    /// A NUL-terminated UTF-8 string at an address.
+    public static string StringAt(long at) { return Utf8Transcoder.DecodeTerminated(at); }
+
+    /// No working directory to change: ENOSYS, which Environment reports as
+    /// the IOException .NET gives for a directory that cannot be entered.
+    public static int Chdir(string path) { return -38; }
+
+    /// The one program a machine with no operating system runs.
+    public static int Getpid() { return 1; }
+
+    /// No name on a network: nothing has given the machine one.
+    public static string? NodeName() { return null; }
+
+    /// Nanoseconds on the machine's one clock, whichever clock is asked for:
+    /// with no operating system there is no wall clock apart from it.
+    public static long Nanos(int clock) { return Platform.Nanos(); }
 }
 
 // ---- what the scheduler asks of the machine -------------------------------

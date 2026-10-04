@@ -377,17 +377,15 @@ static class Environment
         }
     }
 
-    /// The name this machine goes by on the network: uname(2)'s nodename,
-    /// which is where .NET reads it on Linux.
+    /// The name this machine goes by on the network, as its platform knows
+    /// it (Os.NodeName: uname(2)'s nodename on Linux, where .NET reads it);
+    /// "localhost" where it has none.
     public static string MachineName
     {
         get
         {
-            byte[] names = new byte[65 * 6];                  // struct utsname: six fields of 65
-            if (Platform.Result(Sys.Syscall(Call.Uname, Sys.ArrayData(names), 0, 0)) < 0) return "localhost";
-            int end = 65;
-            while (end < 130 && names[end] != 0) end++;
-            return end > 65 ? Utf8Transcoder.Decode(names, 65, end - 65) : "localhost";
+            string? name = Os.NodeName();
+            return name == null || name.Length == 0 ? "localhost" : name;
         }
     }
 

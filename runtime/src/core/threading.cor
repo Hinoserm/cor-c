@@ -3663,7 +3663,9 @@ namespace System.Threading
 /// thread ends.
 static class ThreadStatics
 {
-    /// The numbers given out so far.
+    /// The numbers given out so far. Every atomic here is the runtime's own
+    /// (Sys.AtomicAdd, Sys.Cas, Sys.AtomicSwap), never Interlocked: a
+    /// freestanding kernel is built without the class library.
     static int _fields;
     /// Every thread's table, through its node.
     static ThreadStaticTable? _tables;
@@ -3676,7 +3678,7 @@ static class ThreadStatics
         long index = Sys.Peek(indexAt);
         if (index == 0)
         {
-            Sys.Cas(indexAt, 0, Interlocked.Increment(ref _fields));
+            Sys.Cas(indexAt, 0, (int)Sys.AtomicAdd(Sys.AddressOf(ref _fields), 1) + 1);
             index = Sys.Peek(indexAt);
         }
         long block = Sys.ThreadBlock();
@@ -3749,7 +3751,7 @@ static class ThreadStatics
 
     static void Enter()
     {
-        while (Interlocked.CompareExchange(ref _lock, 1, 0) != 0)
+        while ((int)Sys.Cas(Sys.AddressOf(ref _lock), 0, 1) != 0)
         {
             Sys.Pause();
         }
@@ -3757,7 +3759,7 @@ static class ThreadStatics
 
     static void Leave()
     {
-        Interlocked.Exchange(ref _lock, 0);
+        Sys.AtomicSwap(Sys.AddressOf(ref _lock), 0);
     }
 }
 

@@ -1146,6 +1146,16 @@ static partial class Os
         return sp + WordSize.Bytes + WordSize.Bytes * Sys.Peek(sp) + WordSize.Bytes;
     }
 
+    /// uname(2)'s nodename, or null when the call fails.
+    public static string? NodeName()
+    {
+        byte[] names = new byte[65 * 6];                      // struct utsname: six fields of 65
+        if (Platform.Result(Sys.Syscall(Call.Uname, Sys.ArrayData(names), 0, 0)) < 0) return null;
+        int end = 65;
+        while (end < 130 && names[end] != 0) end++;
+        return Utf8Transcoder.Decode(names, 65, end - 65);
+    }
+
     public static int Chdir(string path)
     {
         byte[] c = CString(path);
