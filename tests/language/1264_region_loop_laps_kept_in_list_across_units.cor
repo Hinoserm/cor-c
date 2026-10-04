@@ -1,0 +1,71 @@
+// test: region_loop_laps_kept_in_list_across_units
+// units: tests/language/support/1264_region_laps_kept_units.cor
+// expect-exit: 0
+// expect-output:
+// filed 5000 cells 49990000 labels 33890 chain 5000
+// listed 5000 cells 187455000
+//
+// Every lap of these loops makes a row (in the other unit) and hands it to
+// something made before the loop: a Book that adds it to a list it holds and
+// links it to the row filed a lap earlier, or a plain list through a
+// static helper of the other unit. Nothing in the lap's own registers keeps
+// the row, so a loop whose laps each get a region -- given back at the top
+// of the next lap -- must see that the row outlives its lap through the
+// book's list, the book's last-row field, and the list parameter. A row
+// left in a lap region is overwritten by the next lap's, and the sums read
+// after the loop (and after collections) come out wrong or fault.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Book Filed(int n)
+    {
+        Book book = new();
+        for (int i = 0; i < n; i++)
+        {
+            Row scratch = new(-i);
+            if (scratch.Cells[3] <= 0) book.File(new Row(i));
+            if ((i & 1023) == 1023) GC.Collect();
+        }
+        return book;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Listed(int n, List<Row> rows)
+    {
+        long early = 0;
+        for (int i = 0; i < n; i++)
+        {
+            Book.FileInto(rows, new Row(i * 3));
+            early += rows[i / 2].Cells[1];
+            if ((i & 1023) == 1023) GC.Collect();
+        }
+        return early;
+    }
+
+    // Not Main itself: what the entry calls is never a boundary.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Run()
+    {
+        Book book = Filed(5000);
+        long cells = 0, labels = 0;
+        for (int i = 0; i < book.Count; i++) { cells += book[i].Cells[3]; labels += book[i].Label.Length; }
+        int chain = 0;
+        for (Row? r = book.Last; r != null; r = r.Before) chain += r.Key == book.Count - 1 - chain ? 1 : 0;
+        Console.WriteLine("filed " + book.Count + " cells " + cells + " labels " + labels + " chain " + chain);
+
+        List<Row> rows = new();
+        long early = Listed(5000, rows);
+        GC.Collect();
+        long listed = 0;
+        foreach (Row r in rows) listed += r.Cells[0] + r.Cells[2];
+        Console.WriteLine("listed " + rows.Count + " cells " + (listed + early));
+        return 0;
+    }
+
+    static int Main() => Run();
+}

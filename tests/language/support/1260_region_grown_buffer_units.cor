@@ -1,0 +1,46 @@
+// The other unit of 1260_region_grown_buffer_below_this_across_units: a
+// packet whose bytes a writer puts itself, growing the packet's buffer from
+// inside the writer's own method, as a BinaryWriter over a MemoryStream
+// would if the two were one class.
+using System.Runtime.CompilerServices;
+
+public sealed class Packet
+{
+    internal byte[] Data;
+    internal int Length;
+
+    public Packet(int capacity) { Data = new byte[capacity]; }
+
+    public int Count => Length;
+
+    public int Sum()
+    {
+        int sum = 0;
+        for (int i = 0; i < Length; i++) sum += Data[i];
+        return sum;
+    }
+}
+
+public sealed class PacketWriter
+{
+    private readonly Packet _packet;
+
+    public PacketWriter(Packet packet) { _packet = packet; }
+
+    // A boundary of its own: the grown buffer is made here and stored one
+    // field below `this`, into the packet the writer holds.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public void Write(int value)
+    {
+        for (int shift = 0; shift < 32; shift += 8)
+        {
+            if (_packet.Length == _packet.Data.Length)
+            {
+                byte[] grown = new byte[_packet.Data.Length * 2];
+                for (int i = 0; i < _packet.Length; i++) grown[i] = _packet.Data[i];
+                _packet.Data = grown;
+            }
+            _packet.Data[_packet.Length++] = (byte)(value >> shift);
+        }
+    }
+}

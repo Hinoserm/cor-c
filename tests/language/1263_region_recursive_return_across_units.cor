@@ -1,0 +1,63 @@
+// test: region_recursive_return_across_units
+// units: tests/language/support/1263_region_recursive_return_units.cor
+// expect-exit: 0
+// expect-output:
+// kept 3000 path 803110 text 263094 wraps 6997
+//
+// Search.Find in the other unit recurses to depth zero and returns the
+// answer made there up through every activation; every third activation
+// wraps it in an Answer of its own. Each activation is a boundary, and the
+// one that made an object is not the one whose caller keeps it: placing the
+// leaf in the region of the activation that made it -- or of any activation
+// between it and Collect -- frees it while the outer ones still hand it up.
+// Collect stores every answer in a list that lives to the end, so every
+// leaf, path and wrap made at every depth is read back after thousands of
+// later regions and collections.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    // A boundary over the search: the starting trail dies here (Find copies
+    // it), the answer does not.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Answer One(int k)
+    {
+        int[] start = new int[] { k % 7, k % 11 };
+        return Search.Find(4 + k % 9, k % 50, start);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static List<Answer> Collect(int count)
+    {
+        List<Answer> all = new();
+        for (int k = 0; k < count; k++)
+        {
+            all.Add(One(k));
+            if (k % 500 == 499) GC.Collect();
+        }
+        return all;
+    }
+
+    // Not Main itself: what the entry calls is never a boundary.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Run()
+    {
+        List<Answer> all = Collect(3000);
+        long path = 0, text = 0;
+        int wraps = 0;
+        foreach (Answer top in all)
+        {
+            Answer? a = top;
+            while (a.Inner != null) { wraps++; text += a.Text.Length + a.Path[0] + a.Path[1]; a = a.Inner; }
+            foreach (int v in a.Path) path += v;
+            text += a.Text.Length;
+        }
+        Console.WriteLine("kept " + all.Count + " path " + path + " text " + text + " wraps " + wraps);
+        return 0;
+    }
+
+    static int Main() => Run();
+}

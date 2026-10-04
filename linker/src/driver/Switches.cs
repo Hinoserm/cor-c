@@ -113,6 +113,12 @@ public static class Switches
     /// <summary>--trace-virtuals: the link's descriptor index, and what each virtual call reaches.</summary>
     public static bool TraceVirtuals;
 
+    /// <summary>
+    /// --region-engine andersen|escape: which analysis finds the link's
+    /// regions (RegionSolver.Solve). Null for the default.
+    /// </summary>
+    public static string? RegionEngine;
+
     /// <summary>Takes this process's switches off the command line, wherever they are written.</summary>
     public static List<string> Take(IEnumerable<string> args)
     {
@@ -155,6 +161,7 @@ public static class Switches
         TraceJoin = Switch(taken, "--trace-join");
         CompilerIdentity = Valued(taken, "--compiler-identity");
         TraceVirtuals = Switch(taken, "--trace-virtuals");
+        RegionEngine = Valued(taken, "--region-engine");
         if (Number(taken, "--gc-workers") is long workers) GcWorkers = (int)Math.Clamp(workers, 0, 15);
         return taken;
     }

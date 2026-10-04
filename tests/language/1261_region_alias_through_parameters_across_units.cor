@@ -1,0 +1,74 @@
+// test: region_alias_through_parameters_across_units
+// units: tests/language/support/1261_region_alias_units.cor
+// expect-exit: 0
+// expect-output:
+// pairs 1918800 names 4800
+// chains 400 ok
+//
+// Wire.Link stores a fresh node L into a.F, then a second fresh node N into
+// b.F.G, then a third K into L.G.H. Called as Link(a, a, ...), b is a, so N
+// lands under L and K under N: everything the call made is reachable from
+// a.F.G.H. LinkUp reaches a again through a child's parent pointer. An
+// analysis that keeps the two parameters (or the parent field) apart sees N
+// stored into a node nobody outside owns, and K into one reached only from a
+// fresh object, and makes them in the boundary's region: the caller then
+// reads a.F.G.H out of freed memory. Built's nodes are kept four hundred at
+// a time across many regions and collections, and read back at the end.
+
+using System;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Node Built(int seed)
+    {
+        Node a = new(0, "a");
+        if ((seed & 1) == 0)
+            Wire.Link(a, a, seed);
+        else
+        {
+            Node child = new(-1, "child");
+            child.Parent = a;
+            Wire.LinkUp(a, child, seed);
+        }
+        return a;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Scribble(int seed)
+    {
+        Node x = new(77, "xx" + seed);
+        x.F = new Node(78, "yy");
+        x.F.G = new Node(79, "zz");
+        return x.F.G.V - 79;
+    }
+
+    // Not Main itself: what the entry calls is never a boundary.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Run()
+    {
+        Node[] kept = new Node[400];
+        int junk = 0;
+        for (int k = 0; k < 20000; k++)
+        {
+            kept[k % 400] = Built(k % 1000);
+            junk += Scribble(k);
+            if (k % 2000 == 1999) GC.Collect();
+        }
+        long pairs = 0;
+        int names = 0, ok = 0;
+        foreach (Node a in kept)
+        {
+            Node l = a.F!, n = l.G!, k = n.H!;
+            pairs += l.V + n.V + k.V;
+            names += l.Name.Length + n.Name.Length + k.Name.Length;
+            if (n.V == 2 * l.V && k.V == 3 * l.V && n.Name == "N" + l.V && k.Name == "K" + l.V) ok++;
+        }
+        Console.WriteLine("pairs " + pairs + " names " + names);
+        Console.WriteLine("chains " + ok + (ok == kept.Length ? " ok" : " BAD"));
+        return junk;
+    }
+
+    static int Main() => Run();
+}

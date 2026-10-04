@@ -1,0 +1,40 @@
+// The other unit of 1264_region_loop_laps_kept_in_list_across_units: a row
+// made from a number, a book that files rows into a list it holds, and an
+// index whose last row points back at the one filed before it.
+using System.Collections.Generic;
+
+public sealed class Row
+{
+    public readonly int Key;
+    public readonly int[] Cells;
+    public readonly string Label;
+    public Row? Before;
+
+    public Row(int key)
+    {
+        Key = key;
+        Cells = new int[4];
+        for (int i = 0; i < Cells.Length; i++) Cells[i] = key * (i + 1);
+        Label = "row" + key;
+    }
+}
+
+public sealed class Book
+{
+    private readonly List<Row> _rows = new();
+    private Row? _last;
+
+    public int Count => _rows.Count;
+    public Row this[int i] => _rows[i];
+    public Row? Last => _last;
+
+    // Files a row: the list keeps it, and it keeps the row filed before it.
+    public void File(Row row)
+    {
+        row.Before = _last;
+        _last = row;
+        _rows.Add(row);
+    }
+
+    public static void FileInto(List<Row> rows, Row row) => rows.Add(row);
+}

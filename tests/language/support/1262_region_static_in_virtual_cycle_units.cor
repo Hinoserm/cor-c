@@ -1,0 +1,78 @@
+// The other unit of 1262_region_static_in_virtual_cycle_across_units: three
+// visitors that hand an item round one another through virtual calls, deep
+// enough to make a recursive cycle of many methods, one of which keeps a
+// part of the item in a static on the way.
+using System.Collections.Generic;
+
+public sealed class Payload
+{
+    public readonly int[] Values;
+    public readonly string Tag;
+
+    public Payload(int seed, string tag)
+    {
+        Values = new int[8];
+        for (int i = 0; i < Values.Length; i++) Values[i] = seed + i;
+        Tag = tag;
+    }
+}
+
+public sealed class Item
+{
+    public Payload Body;
+    public List<int> Trail = new();
+
+    public Item(Payload body) { Body = body; }
+}
+
+public static class Registry
+{
+    public static Payload? Last;
+}
+
+public abstract class Visitor
+{
+    public Visitor? Next;
+    public abstract int Visit(Item item, int depth, int keepAt);
+}
+
+public sealed class Counter : Visitor
+{
+    public override int Visit(Item item, int depth, int keepAt)
+    {
+        item.Trail.Add(depth);
+        if (depth == 0) return 1;
+        return 1 + Next!.Visit(item, depth - 1, keepAt);
+    }
+}
+
+public sealed class Keeper : Visitor
+{
+    public override int Visit(Item item, int depth, int keepAt)
+    {
+        if (depth <= keepAt) Registry.Last = item.Body;
+        if (depth == 0) return 2;
+        return 2 + Next!.Visit(item, depth - 1, keepAt);
+    }
+}
+
+public sealed class Copier : Visitor
+{
+    public override int Visit(Item item, int depth, int keepAt)
+    {
+        Item copy = new(item.Body);
+        copy.Trail.Add(depth);
+        if (depth == 0) return 3;
+        return 3 + Next!.Visit(depth % 2 == 0 ? copy : item, depth - 1, keepAt);
+    }
+}
+
+public static class Ring
+{
+    public static Visitor Make()
+    {
+        Visitor a = new Counter(), b = new Keeper(), c = new Copier();
+        a.Next = b; b.Next = c; c.Next = a;
+        return a;
+    }
+}

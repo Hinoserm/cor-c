@@ -30,7 +30,7 @@ namespace Corsac.Lang.Lto;
 /// the unknown object instead, and what it held escapes.
 ///
 /// Then the boundaries, chosen as RegionPointsTo.Nearest chooses them: for
-/// each allocation, the nearest caller -- not the entry, not recursive, not
+/// each allocation, the nearest caller -- not the entry, not
 /// a type's initialiser or an async body -- whose return it is proved not to
 /// outlive. A site is made in a region only if, in every copy that makes it,
 /// every boundary that can be the innermost open above it -- the first on
@@ -81,6 +81,13 @@ public static class RegionSolver
         // a minute each for nothing, and the third, in a heap the first two
         // had broken up, ran a 32-bit process out of room. The answer kept is
         // still the deepest that fits; the coarse one is kept, not made again.
+        if (Switches.RegionEngine == "escape")
+        {
+            Solver graphs = new(units, virtuals, methodAt, entry, foreign, report, live, 0, noReference) { LoopRegions = loops, Graphs = true };
+            if (graphs.Run() is { } found) return found;
+            Console.Error.WriteLine("regions: nothing made a region");
+            return null;
+        }
         Solver coarse = new(units, virtuals, methodAt, entry, foreign, report, live, 0, noReference) { LoopRegions = loops };
         RegionFacts?[]? coarseFacts = coarse.Run();
         if (coarseFacts is not null || !coarse.TooBig)
@@ -284,6 +291,11 @@ public static class RegionSolver
         public bool TooBig { get; private set; }
         /// <summary>Loops may be given regions of their own (Runtime.RegionLoop is in the image).</summary>
         public bool LoopRegions { get; init; }
+        /// <summary>Escape found function by function (RegionEscape), one copy a function, rather than by solving the whole program at once.</summary>
+        public bool Graphs { get; init; }
+        private RegionEscape? _escape;
+        // Per object of a site: the site's number among every function's (Graphs).
+        private readonly List<int> _siteNumber = new();
 
         private readonly IReadOnlyList<RegionHints> _units;
         private readonly Dictionary<string, string[]> _virtuals;
@@ -422,7 +434,7 @@ public static class RegionSolver
             // Met anywhere -- a step's watchers adding without end, a copy made
             // while binding or rooting -- the budget is giving up, never an
             // unhandled exception.
-            try { return Steps(); }
+            try { return Graphs ? GraphSteps() : Steps(); }
             catch (OverBudget)
             {
                 _over = true;
@@ -484,11 +496,123 @@ public static class RegionSolver
             return Judge();
         }
 
+        /// <summary>
+        /// THE SAME QUESTIONS ANSWERED FUNCTION BY FUNCTION (RegionEscape):
+        /// every function one copy, called by every call that may run it,
+        /// each site one object; what outlives a call is what the function's
+        /// summary reaches. The judge then asks as it asks of a solve.
+        /// </summary>
+        private RegionFacts?[]? GraphSteps()
+        {
+            NewObject(-1, -1, -1, 0);                               // Global
+            _siteNumber.Add(-1);
+            int count = _functions.Count;
+            for (int f = 0; f < count; f++)
+            {
+                int copy = _copyFunction.Count;
+                _copyIds[Key(f, -1)] = copy;
+                _copyFunction.Add(f); _copyContext.Add(-1); _copyBase.Add(0); _copyCollapsed.Add(false);
+                (_copiesOf[f] ??= new()).Add(copy);
+                _callees.Add(new()); _callers.Add(new());
+            }
+            int[] siteBase = new int[count];
+            int sites = 0;
+            for (int f = 0; f < count; f++)
+            {
+                siteBase[f] = sites;
+                for (int s = 0; s < _functions[f].Sites.Length; s++)
+                {
+                    SiteObject(f, s, -1, f);
+                    _siteNumber.Add(sites + s);
+                }
+                sites += _functions[f].Sites.Length;
+            }
+            int[]?[][] targets = new int[]?[count][];
+            string?[][] keys = new string?[count][];
+            for (int f = 0; f < count; f++)
+            {
+                RegionFunction function = _functions[f];
+                int u = _unitOf[f];
+                targets[f] = new int[]?[function.Calls.Count];
+                keys[f] = new string?[function.Calls.Count];
+                for (int k = 0; k < function.Calls.Count; k++)
+                {
+                    RegionCall call = function.Calls[k];
+                    int[]? those = GraphTargets(f, call, out bool isVirtual);
+                    targets[f][k] = those;
+                    if (isVirtual && those is { Length: > 0 }) keys[f][k] = call.Callee + "@" + u;
+                    if (those is null) continue;
+                    foreach (int g in those) { Beneath(f, g); _named[f].Add(g); }
+                }
+            }
+            // CALLED FROM WHERE NOBODY FOLLOWS, with anything: the entry,
+            // what code outside the IR names, every function whose address
+            // is taken.
+            bool[] rooted = new bool[count];
+            bool anyStart = false;
+            for (int f = 0; f < count; f++)
+                if (_functions[f].Name == _entry || _foreign.Contains(_functions[f].Name)) { rooted[f] = true; anyStart = true; }
+            if (!anyStart) return GiveUp("no entry " + _entry);
+            for (int u = 0; u < _units.Count; u++)
+                foreach (string name in _units[u].AddressTaken)
+                    if (Resolve(u, name) is { } those) foreach (int f in those) rooted[f] = true;
+            bool[] wanted = new bool[count];
+            for (int f = 0; f < count; f++) wanted[f] = _functions[f].MayBeBoundary || _functions[f].Loops.Count > 0;
+            int[] siteFunction = new int[sites];
+            for (int f = 0; f < count; f++) for (int k = 0; k < _functions[f].Sites.Length; k++) siteFunction[siteBase[f] + k] = f;
+            _escape = new RegionEscape(_functions, targets, keys, siteBase, sites, wanted, rooted)
+            {
+                Progress = _report is null ? null : Log, NoRoots = _report?.Contains("+noroots") == true,
+                NoReference = _report?.Contains("+norefoff") == true ? null : (site, at) => SiteHoldsNoReference(siteFunction[site], site - siteBase[siteFunction[site]], at),
+            };
+            if (_report?.FirstOrDefault(w => w.StartsWith("+why=", StringComparison.Ordinal)) is { } whyOf)
+            {
+                string fn = whyOf[5..];
+                HashSet<int> explain = new();
+                for (int f = 0; f < count; f++)
+                    if (_functions[f].Name.Contains(fn, StringComparison.Ordinal))
+                        for (int k = 0; k < _functions[f].Sites.Length; k++) explain.Add(siteBase[f] + k);
+                _escape.Why = explain.Contains;
+                _escape.WhyFunction = f => _functions[f].Name.Contains(fn, StringComparison.Ordinal);
+            }
+            if (_report is not null && _report.Contains("+cycles")) foreach (int most in new[] { 256, 64, 16, 4 }) _escape.ReportCycles(most);
+            _escape.Run();
+            Log($"escape graphs: {count} functions, {sites} sites, {_escape.Applied} summaries applied, largest cycle {_escape.LargestCycle}, "
+                + $"{_escape.Unfollowed} not followed, {_escape.Work} carried, global {_escape.GlobalByUnknown} by the unknown object + {_escape.GlobalByRoots} by roots, {_clock.ElapsedMilliseconds} ms");
+            return Judge();
+        }
+
+        /// <summary>The functions a call may run, as Call finds them; null when one is nothing summarised.</summary>
+        private int[]? GraphTargets(int f, RegionCall call, out bool isVirtual)
+        {
+            isVirtual = false;
+            int u = _unitOf[f];
+            if (call.Callee is not { } name) { ReportUnknown(f, call, null); return null; }
+            if (name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal))
+            {
+                isVirtual = true;
+                bool known = _virtuals.TryGetValue(name, out string[]? found);
+                HashSet<int> reached = new();
+                string? missing = null;
+                foreach (string target in found ?? Array.Empty<string>())
+                    if (ResolveOverride(u, target) is { } those) reached.UnionWith(those);
+                    else if (!_summarised.Contains(target)) { known = false; missing ??= target; }
+                if (!known) { ReportUnknown(f, call, found is null ? "no targets" : "no summary of " + missing); return null; }
+                return reached.Order().ToArray();
+            }
+            if (Resolve(u, name) is not { } direct) { ReportUnknown(f, call, "not summarised"); return null; }
+            return direct.ToArray();
+        }
+
+        // Escape graphs answer each question with a search of a sorted array:
+        // the judge may ask ten times as many.
+        private long Budget => _escape is null ? JudgeBudget : 10 * JudgeBudget;
+
         private RegionFacts?[]? GiveUp(string why)
         {
-            TooBig = _over || _walked > JudgeBudget;
+            TooBig = _over || _walked > Budget;
             Log($"gave up ({why}) with contexts {_maxDepth} deep at {_parent.Count} nodes, {_copyFunction.Count} copies, {_locationObject.Count} locations, {_held} held");
-            if (_report is not null) Largest();
+            if (_report is not null && _escape is null) Largest();
             return null;
         }
 
@@ -797,6 +921,17 @@ public static class RegionSolver
         }
 
         private readonly Dictionary<(string, long, long?), bool> _noReferenceWords = new();
+
+        // The same of a site, by function and ordinal (Any: some word) -- escape graphs' question.
+        private bool SiteHoldsNoReference(int f, int ordinal, int offset)
+        {
+            RegionSite site = _functions[f].Sites[ordinal];
+            if (site.Words == RegionWords.Leaf) return true;
+            if (site.Words != RegionWords.Described || site.Table is not { } table || _noReferenceAt is null) return false;
+            long? at = offset < 0 ? null : offset;
+            if (_noReferenceWords.TryGetValue((table, site.At, at), out bool known)) return known;
+            return _noReferenceWords[(table, site.At, at)] = _noReferenceAt(table, site.At, at);
+        }
 
         private void Watch(Watcher w, int loc, int cell)
         {
@@ -1192,13 +1327,18 @@ public static class RegionSolver
 
         private void Unknown(int copy, RegionCall call, string? why = null)
         {
-            if (_report is not null && _reportedUnknown.Add(call.Callee ?? "an address"))
-                Log("unknown call in " + _functions[_copyFunction[copy]].Name + " of " + (call.Callee ?? "an address") + (why is null ? "" : " (" + why + ")"));
+            ReportUnknown(_copyFunction[copy], call, why);
             foreach (int a in call.Arguments) if (a >= 0) Leak(Node(copy, a));
             if (call.Dest >= 0) Add(Node(copy, call.Dest), GlobalLocation);
         }
 
         private readonly HashSet<string> _reportedUnknown = new(StringComparer.Ordinal);
+
+        private void ReportUnknown(int f, RegionCall call, string? why)
+        {
+            if (_report is not null && _reportedUnknown.Add(call.Callee ?? "an address"))
+                Log("unknown call in " + _functions[f].Name + " of " + (call.Callee ?? "an address") + (why is null ? "" : " (" + why + ")"));
+        }
 
         // ---- solving ----------------------------------------------------------
 
@@ -1412,7 +1552,14 @@ public static class RegionSolver
         private const long OutlivingBudget = 8_000_000;
         private long _outlivingHeld;
 
-        private bool Outlives(int o, int c) => _globalReach.Contains(o) || Outliving(c).Contains(o);
+        private bool Outlives(int o, int c) => _globalReach.Contains(o) || (_escape is not null ? Escapes(o, c) : Outliving(c).Contains(o));
+
+        // Escape graphs' answer: the site among those the function's summary reaches.
+        private bool Escapes(int o, int c)
+        {
+            if (!IsSite(o)) return true;
+            return _escape!.Escapes(_copyFunction[c], _siteNumber[o]);
+        }
 
         private bool IsSite(int o) => o > Global && _objectSite[o] >= 0;
 
@@ -1422,7 +1569,13 @@ public static class RegionSolver
         private RegionFacts?[]? Judge()
         {
             _globalReach = new();
-            Reach(new[] { Global }, _globalReach, null);
+            if (_escape is not null)
+            {
+                _globalReach.Add(Global);
+                for (int o = 1; o < _objectFunction.Count; o++)
+                    if (IsSite(o) && _escape.Global[_siteNumber[o]]) _globalReach.Add(o);
+            }
+            else Reach(new[] { Global }, _globalReach, null);
             // WHAT CODE NOBODY FOLLOWS MAKES AND KEEPS is never taken. A copy
             // a root reaches may run beneath a call this cannot see, inside a
             // region opened above that call and above no copy of it here: an
@@ -1437,7 +1590,7 @@ public static class RegionSolver
             for (int o = 1; o < _objectFunction.Count; o++)
                 if (IsSite(o) && _globalReach.Contains(o) && _objectMakers[o].Any(unseen.Contains))
                     _unseenKept.Add((_objectFunction[o], _objectSite[o]));
-            bool[] recursive = Recursive(), beforeBlock = BeforeThreadBlock();
+            bool[] beforeBlock = BeforeThreadBlock();
             // Nor what the entry calls itself -- Main, the runtime's start --
             // as RegionPointsTo.EntryCalls: Main never (its summary says it
             // may not be one), the rest only while the entry calls Main, not
@@ -1445,7 +1598,14 @@ public static class RegionSolver
             HashSet<int> started = new();
             for (int f = 0; f < _functions.Count; f++)
                 if (_functions[f].Name == _entry && _named[f].Any(g => _functions[g].Main)) started.UnionWith(_named[f]);
-            bool MayBeBoundary(int f) => _functions[f].MayBeBoundary && !recursive[f] && !beforeBlock[f] && !started.Contains(f) && _functions[f].Name != _entry;
+            // A FUNCTION ON A CYCLE MAY BE ONE: each activation opens its own
+            // region, and what outlives a call of it is what outlives any one
+            // (the escape answers do not tell activations apart), so the
+            // innermost region where an object is made -- the first boundary
+            // on the way up, which NearestAbove finds stopping at boundaries
+            // -- is proved as any. Refused, the compiler's own code, nearly
+            // all of it on one cycle of virtual calls, had no boundary at all.
+            bool MayBeBoundary(int f) => _functions[f].MayBeBoundary && !beforeBlock[f] && !started.Contains(f) && _functions[f].Name != _entry;
 
             // Each site's objects, by function and ordinal.
             Dictionary<(int, int), List<int>> bySite = new();
@@ -1484,9 +1644,10 @@ public static class RegionSolver
                     foreach (int caller in _callers[c].Order())
                         if (depth.TryAdd(caller, depth[c] + 1)) next.Enqueue(caller);
                 }
-                if (_walked > JudgeBudget) return GiveUp("too much to judge");
+                if (_walked > Budget) return GiveUp("too much to judge");
             }
-            if (_report is not null) foreach (int f in chosen) Log("boundary chosen " + _functions[f].Name);
+            if (_report is not null) Log($"judge: nearest walk {_walked} walked, {chosen.Count} chosen, {_clock.ElapsedMilliseconds} ms");
+            if (_report is not null && _escape is null) foreach (int f in chosen) Log("boundary chosen " + _functions[f].Name);
             // With no boundary at all a loop may still be given a region: Main's.
             if (chosen.Count == 0 && !LoopRegions)
             {
@@ -1503,6 +1664,7 @@ public static class RegionSolver
             for (int round = 0; ; round++)
             {
                 if (Evaluate(chosen, bySite, madeBy) is not { } verdict) return GiveUp("too much to judge");
+                if (_report is not null) Log($"judge: round {round}, {_walked} walked, {chosen.Count} chosen, {verdict.Taken.Count} taken, {_clock.ElapsedMilliseconds} ms");
                 taken = verdict.Taken;
                 final = verdict;
                 if (round == 3) break;
@@ -1518,7 +1680,9 @@ public static class RegionSolver
             // THE LOOPS GIVEN A REGION OF THEIR OWN (RegionPointsTo's "loops"),
             // over the boundaries left, and the sites taken with them.
             List<LoopRegion> loops = LoopRegions ? SelectLoops(final, madeBy, beforeBlock) : new();
+            if (_report is not null) Log($"judge: loops selected {loops.Count}, {_loopWalked} walked, {_clock.ElapsedMilliseconds} ms");
             if (loops.Count > 0) taken = TakenWithLoops(loops, final, bySite, madeBy);
+            if (_report is not null) Log($"judge: taken with loops, {_walked} walked, {_clock.ElapsedMilliseconds} ms");
             if (chosen.Count == 0 && loops.Count == 0)
             {
                 Log("no boundary found");
@@ -1539,6 +1703,17 @@ public static class RegionSolver
             foreach ((int f, int site) in taken) For(f).Sites.Add((_functions[f].Name, site));
             foreach (LoopRegion loop in loops) For(loop.Function).Loops.Add((_functions[loop.Function].Name, loop.Shape.Header));
             if (_report is not null) Report(chosen, opened, taken, madeBy);
+            // --region-report +sites: every site's verdict, for weighing against where the bytes go.
+            if (_report is not null && _report.Contains("+sites"))
+                foreach (((int f, int site), List<int> objects) in bySite)
+                {
+                    string verdict = taken.Contains((f, site)) ? "taken"
+                        : _unseenKept.Contains((f, site)) ? "unseen"
+                        : objects.Any(_globalReach.Contains) ? "global"
+                        : objects.FirstOrDefault(o => _refusedBy.ContainsKey(o)) is int r && _refusedBy.ContainsKey(r) ? "refused-by " + _functions[_copyFunction[_refusedBy[r]]].Name
+                        : objects.Any(final.Above.ContainsKey) ? "loop-refused" : "no-boundary";
+                    Console.Error.WriteLine("regions-site " + _functions[f].Name + " " + site + " " + verdict);
+                }
             Log($"{opened.Count} boundaries, {loops.Count} loops, {taken.Count} sites in the innermost region, of {bySite.Count}; judged by {_clock.ElapsedMilliseconds} ms, {_walked} walked");
             return facts;
         }
@@ -1590,7 +1765,7 @@ public static class RegionSolver
                         // Another boundary above this one: open around it
                         // too, for what it leaves -- as every boundary above
                         // an object was noted when every one was judged.
-                        if (Above(b, beyond: true).Length > 0) outer.Add(o);
+                        if (Above(b, beyond: true).Any(x => _copyFunction[x] != f)) outer.Add(o);
                         if (Outlives(o, b))
                         {
                             Note(refuser, o, f);
@@ -1598,7 +1773,7 @@ public static class RegionSolver
                         }
                     }
                 }
-                if (_walked > JudgeBudget) return null;
+                if (_walked > Budget) return null;
             }
             // A site is taken when none of its objects is refused and one is
             // beneath some boundary.
@@ -1637,7 +1812,18 @@ public static class RegionSolver
         private int[][] _nearest = Array.Empty<int[]>();
 
         /// <summary>The boundary copies a region can be opened in innermost when copy `c` runs: itself, if it is one (unless `beyond`), else the first on each way up.</summary>
-        private int[] Above(int c, bool beyond = false) => _isBoundary[c] && !beyond ? new[] { c } : _nearest[_component[c]];
+        private int[] Above(int c, bool beyond = false) => _isBoundary[c] ? beyond ? Beyond(c) : new[] { c } : _nearest[_component[c]];
+
+        // The boundary copies innermost above a call of boundary copy `b`: on
+        // each of its callers, that caller if it is one, else the first above it.
+        private readonly Dictionary<int, int[]> _beyond = new();
+        private int[] Beyond(int b)
+        {
+            if (_beyond.TryGetValue(b, out int[]? known)) return known;
+            HashSet<int> above = new();
+            foreach (int p in _callers[b]) above.UnionWith(_isBoundary[p] ? new[] { p } : _nearest[_component[p]]);
+            return _beyond[b] = above.Order().ToArray();
+        }
 
         /// <summary>
         /// THE FIRST BOUNDARY ON EACH WAY UP, for every copy at once: over the
@@ -1651,6 +1837,7 @@ public static class RegionSolver
         {
             int count = _copyFunction.Count;
             _isBoundary = new bool[count];
+            _beyond.Clear();
             for (int c = 0; c < count; c++) _isBoundary[c] = chosen.Contains(_copyFunction[c]);
             _component = new int[count];
             List<List<int>> components = new();
@@ -1673,6 +1860,8 @@ public static class RegionSolver
                     while (at < callees.Length)
                     {
                         int w = callees[at++];
+                        // Up stops at a boundary: each is a component of its own.
+                        if (_isBoundary[w]) continue;
                         if (index[w] < 0)
                         {
                             calls.Push((v, callees, at));
@@ -1700,6 +1889,9 @@ public static class RegionSolver
             HashSet<int> union = new();
             for (int k = components.Count - 1; k >= 0; k--)
             {
+                // A boundary's own component: what is above it is Beyond's
+                // to say, over callers whose components may come after it.
+                if (components[k].Count == 1 && _isBoundary[components[k][0]]) { _nearest[k] = Array.Empty<int>(); continue; }
                 union.Clear();
                 int[]? only = null;
                 bool many = false;
@@ -1756,56 +1948,6 @@ public static class RegionSolver
                     foreach (int f in list)
                         if (!before[f]) { before[f] = true; next.Push(f); }
             return before;
-        }
-
-        // Each function on a cycle of named calls, itself included (Tarjan, iterative).
-        private bool[] Recursive()
-        {
-            int count = _functions.Count;
-            bool[] recursive = new bool[count];
-            int[] index = new int[count], low = new int[count];
-            bool[] onStack = new bool[count];
-            for (int n = 0; n < count; n++) index[n] = -1;
-            int next = 0;
-            Stack<int> stack = new();
-            Stack<(int Node, int[] Callees, int At)> calls = new();
-            for (int start = 0; start < count; start++)
-            {
-                if (index[start] >= 0) continue;
-                index[start] = low[start] = next++;
-                stack.Push(start); onStack[start] = true;
-                calls.Push((start, _named[start].ToArray(), 0));
-                while (calls.Count > 0)
-                {
-                    (int v, int[] callees, int at) = calls.Pop();
-                    bool descended = false;
-                    while (at < callees.Length)
-                    {
-                        int w = callees[at++];
-                        if (w == v) { recursive[v] = true; continue; }
-                        if (index[w] < 0)
-                        {
-                            calls.Push((v, callees, at));
-                            index[w] = low[w] = next++;
-                            stack.Push(w); onStack[w] = true;
-                            calls.Push((w, _named[w].ToArray(), 0));
-                            descended = true;
-                            break;
-                        }
-                        if (onStack[w]) low[v] = Math.Min(low[v], index[w]);
-                    }
-                    if (descended) continue;
-                    if (low[v] == index[v])
-                    {
-                        List<int> component = new();
-                        int w;
-                        do { w = stack.Pop(); onStack[w] = false; component.Add(w); } while (w != v);
-                        if (component.Count > 1) foreach (int c in component) recursive[c] = true;
-                    }
-                    if (calls.Count > 0) { int parent = calls.Peek().Node; low[parent] = Math.Min(low[parent], low[v]); }
-                }
-            }
-            return recursive;
         }
 
         // ---- loops ------------------------------------------------------------
@@ -1921,6 +2063,32 @@ public static class RegionSolver
 
         private (int, int) SiteOf(int o) => (_objectFunction[o], _objectSite[o]);
 
+        // The objects of the sites escape graphs found held, past the global ones.
+        private HashSet<int> GraphHeld(int f, int[]? sites)
+        {
+            HashSet<int> held = new();
+            if (sites is null) return held;
+            ulong[] bits = _escape!.BitsOf(sites);
+            for (int w = 0; w < bits.Length; w++)
+                for (ulong word = bits[w]; word != 0; word &= word - 1)
+                {
+                    int o = ObjectOfSite(w << 6 | System.Numerics.BitOperations.TrailingZeroCount(word));
+                    if (o > Global && !_globalReach.Contains(o)) held.Add(o);
+                }
+            return held;
+        }
+
+        private int[]? _siteObjectOf;
+        private int ObjectOfSite(int site)
+        {
+            if (_siteObjectOf is null)
+            {
+                _siteObjectOf = new int[_escape!.Global.Length];
+                for (int o = 1; o < _siteNumber.Count; o++) if (_siteNumber[o] >= 0) _siteObjectOf[_siteNumber[o]] = o;
+            }
+            return _siteObjectOf[site];
+        }
+
         /// <summary>
         /// Whether one of `calls` of copy `c` always makes something `takes`
         /// (RegionPointsTo.AlwaysMakes): a site its callee makes on every way
@@ -1956,8 +2124,11 @@ public static class RegionSolver
             {
                 RegionFunction function = _functions[f];
                 if (function.Loops.Count == 0 || _copiesOf[f] is not { } copies || function.Name == _entry || beforeBlock[f]) continue;
-                foreach (RegionLoopShape loop in function.Loops)
+                // A function escape graphs did not follow has nothing said of its loops.
+                if (_escape is not null && _escape.LoopHeld[f] is null) continue;
+                for (int loopIndex = 0; loopIndex < function.Loops.Count; loopIndex++)
                 {
+                    RegionLoopShape loop = function.Loops[loopIndex];
                     if (_loopWalked >= LoopBudget) break;
                     List<(int, HashSet<int>, HashSet<int>)> instances = new();
                     bool sound = true, worth = false;
@@ -1965,8 +2136,10 @@ public static class RegionSolver
                     foreach (int c in copies)
                     {
                         (HashSet<int> all, HashSet<int> near) = Reached(c, loop.Calls);
-                        HashSet<int> lapLive = HeldBy(c, loop.Live, Enumerable.Range(0, function.Slots));
-                        HashSet<int> kept = HeldBy(c, loop.Invariant, loop.KeptSlots);
+                        HashSet<int> lapLive = _escape is not null ? GraphHeld(f, _escape.LoopHeld[f]?[loopIndex].LapLive)
+                            : HeldBy(c, loop.Live, Enumerable.Range(0, function.Slots));
+                        HashSet<int> kept = _escape is not null ? GraphHeld(f, _escape.LoopHeld[f]?[loopIndex].Kept)
+                            : HeldBy(c, loop.Invariant, loop.KeptSlots);
                         bool Lap(int o) => lapLive.Contains(o) || Outlives(o, c);
                         bool InBody(int o) => Array.BinarySearch(loop.Sites, _objectSite[o]) >= 0;
                         madeBy.TryGetValue(c, out List<int>? own);
@@ -2118,6 +2291,7 @@ public static class RegionSolver
         private string WhyOutlives(int o)
         {
             if (!_globalReach.Contains(o)) return "kept by what the boundary is handed or hands back";
+            if (_escape is not null) return "reached from the unknown object, or kept by a call nobody follows";
             if (_escapeParent is null)
             {
                 _escapeParent = new() { [Global] = -1 };

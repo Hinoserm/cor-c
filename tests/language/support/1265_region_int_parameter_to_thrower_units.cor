@@ -1,0 +1,33 @@
+// The other unit of 1265_region_int_parameter_to_thrower_across_units: a
+// stock of items and a check that throws with the shortfall in its message.
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public sealed class Item
+{
+    public readonly string Name;
+    public int Count;
+
+    public Item(string name, int count) { Name = name; Count = count; }
+}
+
+public static class Check
+{
+    // Takes only a number, and makes the message (and the exception) itself.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void Short(int missing, int code)
+    {
+        throw new InvalidOperationException("short " + missing + " of #" + code);
+    }
+
+    // Objects and numbers side by side: the item, the count wanted, the list
+    // a picked item goes to.
+    public static int Take(Item item, int wanted, List<Item> picked)
+    {
+        if (item.Count < wanted) Short(wanted - item.Count, item.Name.Length * 100 + wanted);
+        item.Count -= wanted;
+        picked.Add(new Item(item.Name + "x" + wanted, wanted));
+        return item.Count;
+    }
+}
