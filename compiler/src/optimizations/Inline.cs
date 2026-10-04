@@ -175,6 +175,14 @@ public sealed class Inline : IParallelModulePass
             pinned.Add(RegionPointsTo.InRegion);
             pinned.Add(RegionPointsTo.Near);
             pinned.Add(RegionPointsTo.Catch);
+            // An array grown where it is (Runtime.GrowInPlace), a call the
+            // lifetime and region passes know by name to keep nothing
+            // (Escape.IsCollectorNote, RegionPointsTo.Harmless). Inlined,
+            // its body handed the collection's storage to Gc.RegionGrow,
+            // whose stores into the thread's block leaked it: never owned,
+            // never made beside its collection, never a region's top, so
+            // never grown where it was.
+            pinned.Add(Corsac.Lang.Lto.RuntimeAbi.GrowInPlace);
             // What a program that needs no collector allocates and frees with.
             pinned.Add(Escape.ManualAllocator);
             pinned.Add(Escape.ManualObjectAllocator);
