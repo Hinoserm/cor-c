@@ -879,6 +879,12 @@ public static class Prelude
             public static string AsString(object x) { return ""; }
             public static long DataStart() { return 0; }
             public static long DataEnd() { return 0; }
+            // THE KERNEL'S BUILD STAMP: the address of the thirty-two bytes
+            // `corc link --exports` writes into a kernel, the hash of the
+            // declarations it was compiled against. A module's .corsac.stamp
+            // must be the same bytes to be loaded. Only in an image linked so,
+            // and in a module, where the name is the kernel's.
+            public static long BuildStamp() { return 0; }
 
         }
 

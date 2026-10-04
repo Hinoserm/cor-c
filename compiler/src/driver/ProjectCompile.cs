@@ -117,7 +117,8 @@ public static class ProjectCompile
         StringBuilder references = new();
         for (int i = 0; i + 1 < args.Length; i++)
         {
-            if (args[i] == "--ref") references.Append('\t').Append(Corsac.Projects.ProjectState.FileIdentity(args[i + 1]));
+            // And a module's kernel: a unit is compiled against what it exports.
+            if (args[i] is "--ref" or "--kernel") references.Append('\t').Append(Corsac.Projects.ProjectState.FileIdentity(args[i + 1]));
         }
         string optionsText = "3\t" + CompilerIdentity() + "\t" + string.Join('\t', common) + references;
         string Stamp(Unit unit)

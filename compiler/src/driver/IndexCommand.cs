@@ -23,6 +23,12 @@ public static class IndexCommand
                     symbols.AddRange(Value().Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries));
                     break;
                 case "--using": usings.Add(Value()); break;
+                // The ring the compiles against this index are for: a class
+                // marked for another is not in it (Parser.Ring).
+                case "--ring":
+                    if (!int.TryParse(Value(), out int ring) || ring < 0 || ring > 3) throw new ArgumentException("--ring is 0, 1, 2 or 3");
+                    global::Corsac.Lang.Parser.Ring = ring;
+                    break;
                 default:
                     if (args[i].StartsWith('-')) throw new ArgumentException("Unknown index option: " + args[i]);
                     paths.Add(args[i]); break;

@@ -835,13 +835,65 @@ public sealed class Parser
     private void TakeTypeDecl(CompilationUnit unit)
     {
         TypeDecl top = ParseTypeDecl();
-        unit.Types.Add(top);
         FinishFamily(top, _nested);
+        if (Ring < 0 || LeaveOutOtherRings(top, _nested)) unit.Types.Add(top);
 
         // Anything written INSIDE what was just parsed comes out here, at
         // the top level, under its own simple name.
         unit.Types.AddRange(_nested);
         _nested.Clear();
+    }
+
+    // ---- rings ----------------------------------------------------------
+
+    /// <summary>
+    /// THE RING BEING COMPILED, 0 to 3, or -1 for none (--ring). A driver
+    /// that works in two rings is one source file: its ring-0 half -- DMA,
+    /// the interrupt -- and its ring-1 half -- what of the mixing is its own
+    /// -- are classes marked [Ring0] and [Ring1], and what both use is not
+    /// marked at all (docs/software/DRIVERS.md in the OS repository, "Drivers
+    /// in every ring"). The file is compiled once per ring, and each compile
+    /// sees only its own ring's classes and the unmarked ones.
+    ///
+    /// LEFT OUT HERE, AS THEY ARE READ, rather than anywhere later, because
+    /// a ring-0 class names what only ring 0 has -- Irq, Dma, the port
+    /// instructions' wrappers -- and in a ring-1 compile none of that exists
+    /// to bind to. Dropped before the binder sees it, it never has to; and
+    /// the declaration index, which is built by this parser too, holds the
+    /// same classes the compile does. With no ring given the marks mean
+    /// nothing and every class is compiled, which is every compile that is
+    /// not of a driver.
+    /// </summary>
+    public static int Ring { get; set; } = -1;
+
+    /// <summary>The rings a declaration is marked for, a bit each, or 0 when it is not marked and so is every ring's.</summary>
+    public static int RingsOf(TypeDecl decl)
+    {
+        int rings = 0;
+        foreach (AttributeRef attribute in decl.AttributeParts)
+            for (int ring = 0; ring < 4; ring++)
+                if (attribute.Target.Length == 0 && attribute.Is("Ring" + ring)) rings |= 1 << ring;
+        return rings;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="top"/> is kept in this ring's compile, taking
+    /// out of <paramref name="nested"/> every type written inside one that is
+    /// not -- a class marked for another ring goes with all it holds -- and a
+    /// delegate's multicast with its delegate.
+    /// </summary>
+    private static bool LeaveOutOtherRings(TypeDecl top, List<TypeDecl> nested)
+    {
+        static string PathOf(TypeDecl d) => d.Outer is null ? d.Name : d.Outer + "." + d.Name;
+        static bool Other(TypeDecl d) => RingsOf(d) is int rings && rings != 0 && (rings & (1 << Ring)) == 0;
+        List<TypeDecl> gone = new();
+        if (Other(top)) gone.Add(top);
+        gone.AddRange(nested.Where(Other));
+        if (gone.Count == 0) return true;
+        nested.RemoveAll(d => gone.Any(left => d == left
+            || (d.Outer is string outer && (outer == PathOf(left) || outer.StartsWith(PathOf(left) + ".", StringComparison.Ordinal)))
+            || (d.Outer == left.Outer && d.Namespace == left.Namespace && d.Name == left.Name + "__Multicast")));
+        return !gone.Contains(top);
     }
 
     /// <summary>

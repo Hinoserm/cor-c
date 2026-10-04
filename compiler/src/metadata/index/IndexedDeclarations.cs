@@ -357,6 +357,10 @@ public sealed class IndexedDeclarations : IDisposable
                 // would make identical generic instantiations disagree at link.
                 string displayFile = Path.GetFileName(source.Path);
                 CompilationUnit header = Tokens.Parse(source.Text, displayFile, declarationsOnly: true);
+                // A CLASS OF ANOTHER RING parses to nothing (Parser.Ring): an
+                // index built for every ring holds it, and this compile does
+                // not, any more than its own sources' copy of it.
+                if (header.Types.Count == 0) continue;
                 // A slice can parse to more than one declaration: a delegate's
                 // text also yields the multicast class synthesised beside it.
                 // The record names which one it is for.

@@ -9,7 +9,12 @@ namespace Corsac;
 /// <summary>Link previously compiled objects without invoking the frontend.</summary>
 public static class ObjectLinkCommand
 {
-    public static int Run(string[] args, IUnitBackend? backend = null)
+    /// <param name="declarationStamp">
+    /// The build stamp of a declaration index (DeclarationStamp), for
+    /// --exports: the index is the compiler's format, and this is how the
+    /// compiler's own `corc link` hands the linker the means to read one.
+    /// </param>
+    public static int Run(string[] args, IUnitBackend? backend = null, Func<string, byte[]>? declarationStamp = null)
     {
         string? output = null;
         string entry = "_start";
@@ -31,6 +36,11 @@ public static class ObjectLinkCommand
         string? runpath = null;
         string? regionReport = null;
         string? unusedReport = null;
+        // THE KERNEL AS A LIBRARY (KernelExports): --exports FILE writes the
+        // kernel's globals beside it, stamped with the hash of --decl-index,
+        // the index its units were compiled against. --kernel FILE links a
+        // module against such a file (Linker.LinkModule).
+        string? exportsPath = null, stampIndex = null, kernelPath = null;
         List<string> cpuArguments = new();
         for (int i = 0; i < args.Length; i++)
         {
@@ -52,6 +62,12 @@ public static class ObjectLinkCommand
             }
             // The program's dead code (UnusedReport), into a file ("-": the
             // error stream), from the notes units compiled with the same flag left.
+            if (arg is "--exports" or "--decl-index" or "--kernel")
+            {
+                if (++i == args.Length) return Fail("missing value for " + arg);
+                if (arg == "--exports") exportsPath = args[i]; else if (arg == "--kernel") kernelPath = args[i]; else stampIndex = args[i];
+                continue;
+            }
             if (arg == "--unused-report")
             {
                 if (++i == args.Length) return Fail("missing value for " + arg);
@@ -101,8 +117,28 @@ public static class ObjectLinkCommand
             else paths.Add(arg);
         }
         if (output is null || paths.Count == 0)
-            return Fail("usage: corlink <file.o> ... -o <output> [--entry symbol] [--flat] [--closed] [--base address] [--paddr address] [--no-lto] [--timings] [--unused-report file]");
+            return Fail("usage: corlink <file.o> ... -o <output> [--entry symbol] [--flat] [--closed] [--base address] [--paddr address] [--no-lto] [--timings] [--unused-report file]"
+                + " [--exports file --decl-index index] [--kernel exports]");
         if (unusedReport is not null && shared) return Fail("--unused-report is for an image with an entry, not a shared object");
+        if (exportsPath is not null)
+        {
+            if (shared || flat || kernelPath is not null || sharedLibraries.Count > 0)
+                return Fail("--exports is for a kernel: one image linked whole, with an entry and its symbols");
+            if (closed) return Fail("--exports makes the kernel a library, whose modules call into it: it is not --closed");
+            if (stampIndex is null) return Fail("--exports needs --decl-index: the declaration index the kernel was compiled against, whose hash is its build stamp");
+            if (declarationStamp is null) return Fail("--exports: this linker cannot read a declaration index; link with `corc link`");
+            if (!File.Exists(stampIndex)) return Fail("--decl-index '" + stampIndex + "' does not exist");
+        }
+        else if (stampIndex is not null) return Fail("--decl-index stamps a kernel linked with --exports");
+        KernelExports? kernel = null;
+        if (kernelPath is not null)
+        {
+            if (flat || physicalAddress is not null || closed || baseAddress is not null)
+                return Fail("--kernel links a module, which is a shared object loaded wherever the kernel puts it");
+            try { kernel = KernelExports.Read(kernelPath); }
+            catch (ElfFormatException error) { return Fail(error.Message); }
+            shared = true;
+        }
         if (flat && physicalAddress is not null) return Fail("--paddr is for ELF output; use --base for flat images");
         if (closed && (shared || sharedLibraries.Count > 0)) return Fail("--closed is for an image linked against no shared library");
         if ((shared || sharedLibraries.Count > 0) && (flat || physicalAddress is not null))
@@ -134,14 +170,44 @@ public static class ObjectLinkCommand
         // Before the link-time optimiser regenerates any unit: the notes are
         // the units' own, and the IR archive's digest covers them.
         if (unusedReport is not null) UnusedReport.Write(inputs, entry, unusedReport);
+        // A MODULE INITIALISER IS RUN BY A LOADER, which a static image has
+        // none of: the compiler refuses one in a program, and a unit
+        // compiled into a library and linked into a program is refused here.
+        if (!shared && inputs.Any(input => input.Item2.Sections.Any(section => section.Name == ModuleInfo.InitializerSection)))
+            return Fail("[ModuleInitializer] runs when a shared object is loaded, and this image is not one");
+        byte[]? stamp = exportsPath is null ? null : declarationStamp!(stampIndex!);
+        // A KERNEL WITH EXPORTS IS NOT CLOSED, whatever its address says:
+        // what a module calls, subclasses or stores into is outside it, so
+        // nothing the link proves about the whole program holds (closed
+        // facts, reachability), and neither does a virtual call reaching only
+        // the overrides the image itself holds -- a module's driver overrides
+        // the kernel's Driver.Bind.
         int regenerated = IrLinkOptimizer.Run(inputs, () => backend ?? new ProcessUnitBackend(backendPath), lto, importBytes,
-            closedImageEntry: flat || closed || physicalAddress is not null ? entry : null, parallelBackends: backend is null, regionReport: regionReport);
+            closedImageEntry: (flat || closed || physicalAddress is not null) && exportsPath is null ? entry : null, parallelBackends: backend is null, regionReport: regionReport,
+            openTypes: exportsPath is not null);
         int folded = LinkTimeOptimizer.Run(inputs, lto);
         LinkTimings.Phase("constant returns and coalescing");
         if (selected is not null) X86CodeGenerationContract.ValidateTarget(inputs, selected);
         // Long mode is read before the notes that say so go.
         bool longMode = inputs.Any(input => TargetContract.IsLongMode(input.Item2));
 
+        // What a module must agree with, read before the contracts go: the
+        // kernel's units' native contract (one that claims a thread-block
+        // model, not an assembled stub's) and their processor.
+        byte[]? kernelAbi = null, kernelCpu = null;
+        if (exportsPath is not null)
+        {
+            foreach (var input in inputs)
+                foreach (Section section in input.Item2.Sections)
+                {
+                    if (section.Name == TargetContract.SectionName && kernelAbi is null && section.Size == 28
+                        && System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(section.Content().AsSpan(20)) != TargetContract.NoTlsClaim)
+                        kernelAbi = section.Content();
+                    if (section.Name == X86CodeGenerationContract.SectionName && kernelCpu is null) kernelCpu = section.Content();
+                }
+            inputs.Add(("the build stamp", KernelExports.StampObject(stamp!, loaded: true)));
+        }
+        if (kernel is not null) Linker.AgreeWithKernel(inputs, kernel);
         // These contracts have been consumed by validation. Concatenating one
         // copy per input into an executable is neither a valid contract nor
         // runtime metadata, and can dwarf a small kernel's actual load image.
@@ -161,6 +227,10 @@ public static class ObjectLinkCommand
             image = linked.Bytes;
             Console.Error.WriteLine($"flat: entry=0x{linked.Entry:x} base=0x{linked.Base:x} bss={linked.BssSize} memory={linked.MemorySize}");
         }
+        else if (kernel is not null)
+        {
+            image = Linker.LinkModule(inputs, output, kernel, sharedLibraries.Distinct(StringComparer.Ordinal).ToList());
+        }
         else if (shared || sharedLibraries.Count > 0)
         {
             HashSet<string> defined = new(inputs.SelectMany(x => x.Item2.Symbols).Where(s => s.IsDefined).Select(s => s.Name), StringComparer.Ordinal);
@@ -178,7 +248,7 @@ public static class ObjectLinkCommand
             image = Array.Empty<byte>();
             streamed = true;
         }
-        if (noUndefined && (shared || sharedLibraries.Count > 0))
+        if (noUndefined && kernel is null && (shared || sharedLibraries.Count > 0))
         {
             HashSet<string> provided = new(sharedLibraries.SelectMany(path => ElfReader.ExportsOf(File.ReadAllBytes(path))), StringComparer.Ordinal);
             string[] missing = ElfReader.ImportsOf(image).Where(name => !provided.Contains(name)).Order(StringComparer.Ordinal).ToArray();
@@ -186,6 +256,12 @@ public static class ObjectLinkCommand
         }
         if (!streamed) File.WriteAllBytes(output, image);
         LinkTimings.Phase("layout and write");
+        if (exportsPath is not null)
+        {
+            List<KernelExports.Export> globals = KernelExports.GlobalsOf(output);
+            KernelExports.Write(exportsPath, Path.GetFileName(output), globals, stamp!, kernelAbi, kernelCpu, longMode);
+            Console.Error.WriteLine($"{exportsPath}: {globals.Count} kernel exports, build stamp {KernelExports.Text(stamp!)}");
+        }
         if (!OperatingSystem.IsWindows())
             File.SetUnixFileMode(output, File.GetUnixFileMode(output)
                 | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);

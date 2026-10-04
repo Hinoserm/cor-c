@@ -477,6 +477,7 @@ public sealed partial class Lowering
         {
             EmitSharedInit();
         }
+        ModuleInitializers();
 
         // Roots: a library publishes everything; a program starts at Main.
         if (_library || PartOfALibrary || entry is null)
@@ -1264,6 +1265,60 @@ public sealed partial class Lowering
         EmitBeginImage(e);
         e.Ret();
         _m.Functions.Add(f);
+    }
+
+    /// <summary>
+    /// [ModuleInitializer] METHODS, which C# runs when the assembly holding
+    /// them is loaded: here, a shared object -- a kernel module registering
+    /// its drivers, above all. Each is required, so it is compiled whether
+    /// or not anything calls it, and named in the module's Initializers; the
+    /// driver writes them into a note and the link makes DT_INIT call them
+    /// after __corsac_init (Linker.Initializers), whichever unit holds that.
+    /// C#'s rules for one: static, no parameters, returning nothing, not
+    /// generic and in no generic type.
+    /// </summary>
+    private void ModuleInitializers()
+    {
+        foreach (TypeSymbol t in _b.Types.Values)
+        {
+            if (t.Decl?.Elsewhere == true) continue;
+            foreach (MethodSymbol m in t.Methods)
+            {
+                if (m.Decl is not MethodDecl d || d.OwnedImplementation == false
+                    || !d.Attributes.Any(a => a.Target.Length == 0 && (a.Is("ModuleInitializer") || a.Is("System.Runtime.CompilerServices.ModuleInitializer"))))
+                    continue;
+                if (!m.Static || m.Params.Count != 0 || m.Returns != Type.Void || d.TypeParams.Count != 0 || t.TypeParams.Count != 0 || t.Decl?.Template is not null)
+                {
+                    Errors.Add(new CompileError(d.File, d.Line, d.Col,
+                        $"module initializer '{t.Name}.{m.Name}' must be static, take no parameters, return void, and be neither generic nor in a generic type"));
+                    continue;
+                }
+                Require(m);
+                _m.Initializers.Add(InitializerEntry(m));
+            }
+        }
+    }
+
+    /// <summary>
+    /// What the link's DT_INIT calls for one initialiser: its type TOUCHED
+    /// first (Lowering.StaticInit), as the entry stub touches Main's, since
+    /// nothing outside the type calls it and a call from inside never tests --
+    /// without this `static string Greeting = ""` ran its initialiser at the
+    /// first touch from elsewhere, after the module initializer had set it,
+    /// and put it back.
+    /// </summary>
+    private string InitializerEntry(MethodSymbol m)
+    {
+        Function f = new(CallLabel(m) + "$module", IrType.Void);
+        Builder e = new(f, f.NewBlock("entry"));
+        _f = f;
+        _e = e;
+        _method = null;
+        TouchType(m.Owner);
+        e.Call(CallLabel(m), IrType.Void);
+        e.Ret();
+        _m.Functions.Add(f);
+        return f.Name;
     }
 
     /// <summary>

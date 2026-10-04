@@ -171,6 +171,11 @@ public static partial class Linker
                 dyn.Needed.Add(soname);
             }
         }
+        if (dyn.Shared && Initializers(inputs, isLongMode) is ObjectFile initializers)
+        {
+            inputs.Add(new Input("the initialisers", initializers));
+            dyn.InitName = ModuleInitName;
+        }
         Layout layout = new(loadAddress) { Dyn = dyn, LongMode = isLongMode };
         TargetContract.Validate(inputs.Select(input => (input.Name, input.Object)));
         ManagedLayoutContract.Validate(inputs.Select(input => (input.Name, input.Object)));
@@ -231,6 +236,13 @@ public static partial class Linker
     {
         public bool Shared { get; init; }
         public string? Soname { get; init; }
+
+        /// <summary>
+        /// What DT_INIT names: the compiler's __corsac_init, or for a module
+        /// with initialisers of its own the function its link makes to call
+        /// that and then them (LinkModule).
+        /// </summary>
+        public string InitName { get; set; } = Elf.SharedInitName;
         public string? Interpreter { get; set; }
 
         /// <summary>
@@ -1023,7 +1035,7 @@ public static partial class Linker
         // Lowering.EmitSharedInit): it hands this image's statics to the
         // collector and its frame table to the stack walker, neither of
         // which the runtime could find from the other side of the boundary.
-        if (dyn.Shared && layout.Globals.TryGetValue(Elf.SharedInitName, out Definition init))
+        if (dyn.Shared && layout.Globals.TryGetValue(dyn.InitName, out Definition init))
         {
             d.Add((Elf.DtInit, init.Address));
         }

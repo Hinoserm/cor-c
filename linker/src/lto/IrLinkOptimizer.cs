@@ -8,7 +8,7 @@ public static class IrLinkOptimizer
 {
     public static int Run(List<(string Name, ObjectFile Object)> inputs, Func<IUnitBackend> backend,
         bool enabled = true, int importBytes = 1024 * 1024, int bodyLimit = 32, string? closedImageEntry = null, bool parallelBackends = false,
-        string? regionReport = null)
+        string? regionReport = null, bool openTypes = false)
     {
         if (importBytes < 0 || bodyLimit < 0) throw new ArgumentOutOfRangeException(nameof(importBytes));
         TargetContract.Validate(inputs); ManagedLayoutContract.Validate(inputs);
@@ -39,7 +39,11 @@ public static class IrLinkOptimizer
         // Every unit's lifetime summaries, solved together (LifetimeSolver).
         // Virtual calls, each by the overrides the whole image holds for it
         // (VirtualTargets), from the descriptors in the objects themselves.
-        Dictionary<string, string[]> virtuals = enabled && hints.Count > 0
+        // NOT WHERE THE TYPES ARE OPEN: a kernel linked with exports has
+        // modules that derive from its classes and override what it calls, so
+        // the image's own overrides are not every one a call can reach, and
+        // each virtual call stays the escape an unresolved one is.
+        Dictionary<string, string[]> virtuals = enabled && hints.Count > 0 && !openTypes
             ? VirtualTargets.Resolve(inputs, hintOrder.SelectMany(unit => unit.Named()).Select(named => named.Callee)
                 .Concat(hintOrder.SelectMany(unit => unit.Owned?.VirtualNames() ?? Enumerable.Empty<string>()))
                 .Where(name => name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal)))

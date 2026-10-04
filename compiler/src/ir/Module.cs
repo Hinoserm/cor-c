@@ -169,6 +169,14 @@ public sealed class Module
     /// </summary>
     public HashSet<string> NativeLibraries { get; } = new(StringComparer.Ordinal);
 
+    /// <summary>
+    /// What calls each of this unit's [ModuleInitializer] methods, its type
+    /// touched first, in the order they were declared: what a shared object's
+    /// DT_INIT calls after __corsac_init (Lowering.ModuleInitializers,
+    /// Linker.Initializers).
+    /// </summary>
+    public List<string> Initializers { get; } = new();
+
     public int Provided(IReadOnlySet<string> provided)
     {
         ArgumentNullException.ThrowIfNull(provided);

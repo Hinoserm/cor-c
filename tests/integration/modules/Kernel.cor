@@ -1,0 +1,76 @@
+// A kernel in miniature, for tests/integration/modules.sh: a driver base
+// class, the table drivers register in, and a log. It is linked with
+// --exports, so a module compiled against its declarations calls these.
+
+using System.Collections.Generic;
+
+namespace Kernel;
+
+public abstract class Driver
+{
+    public abstract string Name { get; }
+    public virtual int Bind(int port) { return -1; }
+}
+
+public static class Drivers
+{
+    static List<Driver> _all = new List<Driver>();
+
+    public static void Register(Driver driver)
+    {
+        _all.Add(driver);
+        Log.Write("registered " + driver.Name);
+    }
+
+    public static int Count => _all.Count;
+
+    /// The first driver, offered a device at `port`: a call into a module.
+    public static int Bind(int port)
+    {
+        return _all.Count == 0 ? -1 : _all[0].Bind(port);
+    }
+}
+
+public static class Log
+{
+    public static int Lines;
+
+    public static void Write(string text)
+    {
+        Lines++;
+        Host.Line(text);
+    }
+}
+
+// RING 1'S, and left out of this ring-0 kernel before anything is bound:
+// what it names exists only in a ring-1 image.
+[Ring1]
+public static class Seat
+{
+    public static int Paint() { return GuiKernel.Repaint(); }
+}
+
+static class Program
+{
+    static string _junk = "";
+
+    static int Main()
+    {
+        Host.Start(32 * 1024 * 1024);
+        Log.Write("kernel " + Drivers.Count);
+        if (!Modules.Insmod("module.ko", "kernel.exports"))
+        {
+            Log.Write("refused: " + Modules.Refusal);
+            Host.Done(3);
+        }
+        foreach (string entry in Modules.Info) Log.Write("modinfo " + entry);
+        Log.Write("drivers " + Drivers.Count);
+        // What a collection frees is made again at once: a module whose
+        // statics were not roots would find its string overwritten.
+        GC.Collect();
+        for (int i = 0; i < 20000; i++) _junk = "junk " + i;
+        Log.Write("bind " + Drivers.Bind(0x220));
+        Host.Done(0);
+        return 0;
+    }
+}

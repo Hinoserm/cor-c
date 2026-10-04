@@ -481,6 +481,8 @@ public sealed partial class Lowering
                 return Widen(_e.Address("__data_start"));
             case "DataEnd":
                 return Widen(_e.Address("_end"));
+            case "BuildStamp":
+                return Widen(_e.Address(Corsac.Lang.Elf.KernelExports.StampSymbol));
 
             // ---- the I/O space and the privileged instructions -----------------
             //
