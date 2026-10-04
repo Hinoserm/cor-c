@@ -2451,6 +2451,8 @@ internal sealed class RegionEscape
             CopyEdge(into, Cell(o, Any), 0);
             if (_placedMade.Contains(o)) Placed(blob);
             if (_unknownMade.Contains(o)) ReachedByUnknown(blob);
+            // What a call on it may run has grown: dispatched again (Redispatch).
+            _pendingBlobs.Add(blob);
         }
 
         private void Delta(int node, int loc)
@@ -2891,6 +2893,9 @@ internal sealed class RegionEscape
         private void Received(VCall v, int loc)
         {
             int o = _locObject[loc];
+            // A call on a blob, noted to be dispatched again as members join.
+            if (_membersOf.ContainsKey(o) && _blobCallsSeen.Add((v, loc)))
+                (_blobCalls.TryGetValue(o, out List<(VCall, int)>? calls) ? calls : _blobCalls[o] = new()).Add((v, loc));
             // (A receiver is an object's start: anywhere in a made object,
             // it is that object.)
             bool whole = _locOffset[loc] == 0;
@@ -2941,6 +2946,63 @@ internal sealed class RegionEscape
                     + (_kind[o] == Kind.Made ? " (sites " + string.Join(",", SitesOfObject(o).Take(8)) + "; made from " + string.Join(", ", _origins[o].Take(3).Select(r => _owner.Lineage(r, 4))) + ")" : ""));
             foreach (int g in v.Inside) Receives(g, loc);
             if (v.Outside.Length > 0) Add(Group(v, v.Outside), loc);
+        }
+
+        /// <summary>
+        /// WHAT A CALL RUNS ON A BLOB (BlobOf): what it runs on any of its
+        /// members, each by its own sites (ClassTargets), a member blob by
+        /// its members in turn; null -- every target -- when any member is
+        /// of no known class. A blob's members only grow, and each join
+        /// dispatches every call on it again (Redispatch), so what it runs
+        /// grows with them: a call is applied to it for every member it has
+        /// come to hold. With none yet, nothing runs on it.
+        /// </summary>
+        private int[]? BlobTargets(VCall v, int blob)
+        {
+            SortedSet<int> runs = new();
+            HashSet<int> seen = new() { blob };
+            Stack<int> next = new();
+            next.Push(blob);
+            while (next.TryPop(out int b))
+                foreach (int member in _membersOf[b])
+                {
+                    if (!seen.Add(member)) continue;
+                    if (_membersOf.ContainsKey(member)) { next.Push(member); continue; }
+                    if (_kind[member] != Kind.Made || ClassTargets(v, member) is not { } those) return null;
+                    runs.UnionWith(those);
+                }
+            return runs.ToArray();
+        }
+
+        // The calls received on each blob's location, and the blobs a member
+        // joined since they were last dispatched.
+        private readonly Dictionary<int, List<(VCall, int)>> _blobCalls = new();
+        private readonly HashSet<(VCall, int)> _blobCallsSeen = new();
+        private readonly HashSet<int> _pendingBlobs = new();
+
+        /// <summary>
+        /// Every call on a blob a member joined, and on each blob that holds
+        /// it as a member in turn, dispatched again for what it runs now:
+        /// what it was dispatched to stays (more applied, never less). Run
+        /// from Propagate's loop, not inside the Add a join comes from.
+        /// </summary>
+        private void Redispatch()
+        {
+            int[] joined = _pendingBlobs.ToArray();
+            _pendingBlobs.Clear();
+            HashSet<int> seen = new();
+            Stack<int> next = new(joined);
+            while (next.TryPop(out int b))
+            {
+                if (!seen.Add(b)) continue;
+                if (_blobCalls.TryGetValue(b, out List<(VCall, int)>? calls))
+                    foreach (var (v, loc) in calls.ToArray())
+                    {
+                        v.Classes.Remove(b);
+                        Received(v, loc);
+                    }
+                if (_blobsOf.TryGetValue(b, out List<int>? outer)) foreach (int c in outer) next.Push(c);
+            }
         }
 
         /// <summary>
@@ -3079,6 +3141,7 @@ internal sealed class RegionEscape
         private int[]? ClassTargets(VCall v, int o)
         {
             if (v.Classes.TryGetValue(o, out int[]? known)) return known;
+            if (_membersOf.ContainsKey(o)) return v.Classes[o] = BlobTargets(v, o);
             int[] sites = SitesOfObject(o);
             SortedSet<int>? runs = sites.Length == 0 ? null : new();
             foreach (int site in sites)
@@ -3249,8 +3312,11 @@ internal sealed class RegionEscape
         private void Propagate()
         {
             if (_copyEdges > _edgesAtCollapse) Collapse();
-            while (_work.TryDequeue(out int n, out _))
+            while (true)
             {
+                // Calls on a blob a member joined, dispatched again (Join).
+                if (_pendingBlobs.Count > 0 && !Overflowed) Redispatch();
+                if (!_work.TryDequeue(out int n, out _)) break;
                 // Cycles closed by the edges loads and stores have added, once
                 // there are enough new ones to be worth a walk of the graph.
                 if (_copyEdges - _edgesAtCollapse > Math.Max(4096, _edgesAtCollapse >> 2))
