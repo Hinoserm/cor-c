@@ -17,22 +17,27 @@ public sealed partial class Lowering
     /// parameters, the address it writes its result to, and answers that
     /// address. The caller hands it a slot of its own frame (ResultBuffer), so
     /// a struct a call makes is no allocation at all. Not a method C calls or
-    /// that calls C, nor an async one, whose result goes into a Task.
+    /// that calls C, nor an async one whose result goes into a Task -- but an
+    /// `async ValueTask` one is, as every other method returning the struct
+    /// is (an interface's or a delegate's Invoke it implements among them).
     /// </summary>
     private bool Buffered(MethodSymbol m)
-        => IsStructValue(m.Returns) && StructOf(m.Returns).HeldInline && !m.Async && !m.IsCtor && !m.RefReturn
+        => IsStructValue(m.Returns) && StructOf(m.Returns).HeldInline && (!m.Async || IsValueTaskType(m.Returns)) && !m.IsCtor && !m.RefReturn
         && NativeImportOf(m) is null && !CalledByC(m) && m.Decl is not { File: "<prelude>" };
 
     /// <summary>
     /// Where a call's struct result is written: a slot of this frame, one per
     /// call site -- or, in an iterator's or an async method's body, whose frame
-    /// does not outlast a suspension, a block of the heap.
+    /// does not outlast a suspension, a block of the heap. An `async
+    /// ValueTask` body's slot is a field of its machine (AsyncTransform), which
+    /// does: awaiting a ValueTask, or anything whose awaiter is a struct, makes
+    /// nothing there.
     /// </summary>
     private VReg ResultBuffer(Node at, Type type)
     {
         TypeSymbol shape = StructOf(type);
         int size = Math.Max(4, shape.InstanceSize);
-        if (_stateMachine is not null)
+        if (_stateMachine is not null && _valueShape is null)
         {
             VReg made = Allocate(at, size);
             _heapStructs.Add(made);
