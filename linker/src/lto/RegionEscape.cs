@@ -845,6 +845,81 @@ internal sealed class RegionEscape
     /// what a place holds of the place one field on, and the unknown object
     /// of itself, a load adds as it reads.
     /// </summary>
+    /// <summary>
+    /// A NODE'S LOCATIONS, in the order they came -- the order HashSet&lt;int&gt;
+    /// walked them in, nothing ever being removed, which every answer and
+    /// every edge made later follows -- without its entry per member, chain,
+    /// or copy to walk it. Up to Small members a scan of the list; past it,
+    /// an open-addressed table of each location plus one beside the list.
+    /// </summary>
+    private sealed class LocSet
+    {
+        private const int Small = 8;
+        public int[] Items = new int[4];
+        public int Count;
+        private int[]? _table;
+        private int _shift;
+
+        public bool Add(int loc)
+        {
+            if (_table is null)
+            {
+                int[] items = Items;
+                for (int i = 0; i < Count; i++) if (items[i] == loc) return false;
+                Append(loc);
+                if (Count > Small) Rehash(5);
+                return true;
+            }
+            int[] table = _table;
+            int mask = table.Length - 1;
+            int at = Slot(loc, _shift);
+            while (true)
+            {
+                int held = table[at];
+                if (held == 0) break;
+                if (held == loc + 1) return false;
+                at = (at + 1) & mask;
+            }
+            table[at] = loc + 1;
+            Append(loc);
+            if (Count * 2 > table.Length) Rehash(32 - _shift + 1);
+            return true;
+        }
+
+        private static int Slot(int loc, int shift) => (int)(((uint)loc * 0x9E3779B1u) >> shift);
+
+        private void Append(int loc)
+        {
+            if (Count == Items.Length) Array.Resize(ref Items, Count * 2);
+            Items[Count++] = loc;
+        }
+
+        private void Rehash(int bits)
+        {
+            int[] table = new int[1 << bits];
+            int mask = table.Length - 1;
+            _shift = 32 - bits;
+            for (int i = 0; i < Count; i++)
+            {
+                int at = Slot(Items[i], _shift);
+                while (table[at] != 0) at = (at + 1) & mask;
+                table[at] = Items[i] + 1;
+            }
+            _table = table;
+        }
+
+        public Enumerator GetEnumerator() => new(this);
+
+        public struct Enumerator
+        {
+            private readonly LocSet _set;
+            private int _at;
+            public Enumerator(LocSet set) { _set = set; _at = -1; }
+            public bool MoveNext() => ++_at < _set.Count;
+            public int Current => _set.Items[_at];
+        }
+    }
+
     private sealed class Graph
     {
         private readonly RegionEscape _owner;
@@ -871,15 +946,29 @@ internal sealed class RegionEscape
         // Locations: an object and an offset (Any).
         private readonly Dictionary<long, int> _locations = new();
         private readonly List<int> _locObject = new(), _locOffset = new();
+        // Per location, what its object is (LocClass), so adding one to a
+        // node reads one byte rather than the object and then its kind.
+        private readonly List<byte> _locClass = new();
+        private const byte MadeClass = 1, PlaceClass = 2, UnknownClass = 4;
 
         // Nodes: the members' own, then those calls and cells add.
-        private readonly List<HashSet<int>?> _pts = new();
+        private readonly List<LocSet?> _pts = new();
         private readonly List<List<(int To, int Shift)>?> _copies = new();
         private readonly List<List<(int Dest, int Offset)>?> _loads = new();
         private readonly List<List<(int Value, int Offset)>?> _stores = new();
         private readonly List<List<int>?> _readsAll = new();
-        private readonly List<List<int>?> _delta = new();
+        // What each node has gained since it was last carried on, in the
+        // order it came: a buffer taken from _spareDeltas and given back once
+        // carried, its length beside it. A new list a node a wave, grown as it
+        // filled, was a tenth of the solve in copying and the collector.
+        private readonly List<int[]?> _deltaBuf = new();
+        private readonly List<int> _deltaLen = new();
+        private readonly Stack<int[]> _spareDeltas = new();
         private readonly Queue<int> _work = new();
+        // Each copy edge once (CopyEdge): a second of the same carries
+        // nothing the first has not, wherever it falls in the list.
+        private readonly HashSet<long> _plainCopies = new();
+        private readonly HashSet<(int, int, int)> _shiftedCopies = new();
 
         // PAST THIS MUCH WORK A FUNCTION, OR A CYCLE, IS NOT FOLLOWED: its
         // summary is the unknown call's, and everything made beneath it is
@@ -921,7 +1010,7 @@ internal sealed class RegionEscape
 
         private int NewNode()
         {
-            _pts.Add(null); _copies.Add(null); _loads.Add(null); _stores.Add(null); _readsAll.Add(null); _delta.Add(null);
+            _pts.Add(null); _copies.Add(null); _loads.Add(null); _stores.Add(null); _readsAll.Add(null); _deltaBuf.Add(null); _deltaLen.Add(0);
             _madeHeld.Add(0); _nodeFlags.Add(0);
             if (_pts.Count > _mostNodes) Overflowed = true;
             return _pts.Count - 1;
@@ -935,10 +1024,13 @@ internal sealed class RegionEscape
             int made = _locObject.Count;
             _locations[key] = made;
             _locObject.Add(o); _locOffset.Add(offset);
+            _locClass.Add(o == 0 ? UnknownClass : _kind[o] switch { Kind.Made => MadeClass, Kind.Place or Kind.Deep => PlaceClass, _ => 0 });
             return made;
         }
 
-        private int Unknown => Location(0, Any);
+        // The unknown object's location, named once and then remembered.
+        private int _unknownLoc = -1;
+        private int Unknown => _unknownLoc >= 0 ? _unknownLoc : _unknownLoc = Location(0, Any);
 
         /// <summary>A location moved along a copy, or -1 when the copy drops it.</summary>
         private int Shift(int loc, int shift)
@@ -1029,24 +1121,25 @@ internal sealed class RegionEscape
         private void Add(int node, int loc)
         {
             if (loc < 0) return;
-            int o = _locObject[loc];
-            bool place = _kind[o] is Kind.Place or Kind.Deep;
+            byte kind = _locClass[loc];
             byte flags = _nodeFlags[node];
-            if ((flags & Saturated) != 0 && !(place && (flags & PlacesDumped) == 0))
+            if ((flags & Saturated) != 0 && !((kind & PlaceClass) != 0 && (flags & PlacesDumped) == 0))
             {
-                if (o != 0) Add(UnknownCell(), loc);
+                // Into the unknown object's cell, which is never cut short.
+                if ((kind & UnknownClass) == 0) Add(UnknownCell(), loc);
                 return;
             }
-            HashSet<int> pts = _pts[node] ??= new();
+            LocSet pts = _pts[node] ??= new();
             if (!pts.Add(loc)) return;
             Delta(node, loc);
             if (node == _unknownCell || (flags & NeverSaturated) != 0) return;
-            int made = _kind[o] == Kind.Made ? ++CollectionsMarshal.AsSpan(_madeHeld)[node] : _madeHeld[node];
+            int made = (kind & MadeClass) != 0 ? ++CollectionsMarshal.AsSpan(_madeHeld)[node] : _madeHeld[node];
             if ((flags & Saturated) == 0 && made > MostHeld)
             {
                 _nodeFlags[node] |= Saturated; _saturatedCount++;
                 int sink = UnknownCell();
-                foreach (int held in pts.ToArray()) if (_kind[_locObject[held]] == Kind.Made) Add(sink, held);
+                // What it held when it filled: nothing below adds to it.
+                for (int i = 0, n = pts.Count; i < n; i++) { int held = pts.Items[i]; if ((_locClass[held] & MadeClass) != 0) Add(sink, held); }
                 if (pts.Add(Unknown)) Delta(node, Unknown);
             }
             if (pts.Count - made > MostPlacesHeld && (_nodeFlags[node] & PlacesDumped) == 0)
@@ -1054,16 +1147,30 @@ internal sealed class RegionEscape
                 if ((_nodeFlags[node] & Saturated) == 0) _saturatedCount++;
                 _nodeFlags[node] |= Saturated | PlacesDumped;
                 int sink = UnknownCell();
-                foreach (int held in pts.ToArray()) if (_locObject[held] != 0) Add(sink, held);
+                for (int i = 0, n = pts.Count; i < n; i++) { int held = pts.Items[i]; if ((_locClass[held] & UnknownClass) == 0) Add(sink, held); }
                 if (pts.Add(Unknown)) Delta(node, Unknown);
             }
         }
 
         private void Delta(int node, int loc)
         {
-            List<int> delta = _delta[node] ??= new();
-            delta.Add(loc);
-            if (delta.Count == 1) _work.Enqueue(node);
+            int[]? buffer = _deltaBuf[node];
+            int length = _deltaLen[node];
+            if (buffer is null)
+            {
+                buffer = _spareDeltas.TryPop(out int[]? spare) ? spare : new int[16];
+                _deltaBuf[node] = buffer;
+            }
+            else if (length == buffer.Length)
+            {
+                int[] bigger = new int[length * 2];
+                Array.Copy(buffer, bigger, length);
+                _spareDeltas.Push(buffer);
+                _deltaBuf[node] = buffer = bigger;
+            }
+            buffer[length] = loc;
+            _deltaLen[node] = length + 1;
+            if (length == 0) _work.Enqueue(node);
         }
 
         private int UnknownCell()
@@ -1072,35 +1179,48 @@ internal sealed class RegionEscape
             return _unknownCell;
         }
 
+        // What a node holds now is carried along a new edge at once (each
+        // walk over what it held when the edge was made: a set only grows,
+        // at its end). An edge already there is not listed again -- carrying
+        // a node's gains along it twice adds nothing the first did not -- but
+        // what the node holds is still carried now, as it was when every
+        // edge was listed: what it has gained and not yet carried arrives
+        // where it goes in the same order.
         private void CopyEdge(int from, int to, int shift)
         {
             if (from == to && shift == 0) return;
-            (_copies[from] ??= new()).Add((to, shift));
-            if (_pts[from] is { } pts) foreach (int loc in pts.ToArray()) Add(to, Shift(loc, shift));
+            bool fresh = shift == 0 ? _plainCopies.Add(((long)from << 32) | (uint)to) : _shiftedCopies.Add((from, to, shift));
+            if (fresh) (_copies[from] ??= new()).Add((to, shift));
+            if (_pts[from] is not { } pts) return;
+            if (shift == 0) for (int i = 0, n = pts.Count; i < n; i++) Add(to, pts.Items[i]);
+            else for (int i = 0, n = pts.Count; i < n; i++) Add(to, Shift(pts.Items[i], shift));
         }
 
         private void LoadEdge(int dest, int address, int offset)
         {
             (_loads[address] ??= new()).Add((dest, offset));
-            if (_pts[address] is { } pts) foreach (int loc in pts.ToArray()) Loaded(loc, dest, offset);
+            if (_pts[address] is { } pts) for (int i = 0, n = pts.Count; i < n; i++) Loaded(pts.Items[i], dest, offset);
         }
 
         private void StoreEdge(int address, int offset, int value)
         {
             (_stores[address] ??= new()).Add((value, offset));
-            if (_pts[address] is { } pts) foreach (int loc in pts.ToArray()) Stored(loc, value, offset);
+            if (_pts[address] is { } pts) for (int i = 0, n = pts.Count; i < n; i++) Stored(pts.Items[i], value, offset);
         }
 
         // Every cell of what `address` points to, into `dest`.
         private void LoadAllEdge(int dest, int address)
         {
             (_readsAll[address] ??= new()).Add(dest);
-            if (_pts[address] is { } pts) foreach (int loc in pts.ToArray()) LoadedAll(loc, dest);
+            if (_pts[address] is { } pts) for (int i = 0, n = pts.Count; i < n; i++) LoadedAll(pts.Items[i], dest);
         }
+
+        // A pair of nodes (or an object and a word) as one key.
+        private static long Pair(int a, int b) => ((long)a << 32) | (uint)b;
 
         private static int Offset(int at, int offset) => at == Any || offset == Any ? Any : at + offset <= FarthestField ? at + offset : Any;
 
-        private readonly HashSet<(int, int)> _loadedFrom = new();
+        private readonly HashSet<long> _loadedFrom = new();
 
         private void Loaded(int loc, int dest, int offset)
         {
@@ -1110,11 +1230,11 @@ internal sealed class RegionEscape
             // A word never read as a reference holds a number: the unknown object at most.
             if (NoReference(o, at)) { Add(dest, Unknown); return; }
             int cell = Cell(o, at);
-            if (!_loadedFrom.Add((cell, dest))) return;
+            if (!_loadedFrom.Add(Pair(cell, dest))) return;
             CopyEdge(cell, dest, 0);
             // What was written at an offset nobody knew may be here too.
             int any = Cell(o, Any);
-            if (_loadedFrom.Add((any, dest))) CopyEdge(any, dest, 0);
+            if (_loadedFrom.Add(Pair(any, dest))) CopyEdge(any, dest, 0);
             Aliasing(o, dest);
             Add(dest, Implicit(o, at));
         }
@@ -1141,21 +1261,21 @@ internal sealed class RegionEscape
         // hundred million locations on the compiler's own link.)
         private readonly HashSet<int> _placedMade = new(), _unknownMade = new();
         private readonly Dictionary<int, List<int>> _loadsOf = new();
-        private readonly HashSet<(int, int)> _fedFrom = new();
+        private readonly HashSet<long> _fedFrom = new();
         private int _written = -1;
 
         private void Aliasing(int o, int dest)
         {
             if (_kind[o] != Kind.Made) return;
             (_loadsOf.TryGetValue(o, out List<int>? loads) ? loads : _loadsOf[o] = new()).Add(dest);
-            if (_placedMade.Contains(o) && _fedFrom.Add((_written, dest))) CopyEdge(_written, dest, 0);
+            if (_placedMade.Contains(o) && _fedFrom.Add(Pair(_written, dest))) CopyEdge(_written, dest, 0);
             if (_unknownMade.Contains(o)) Add(dest, Unknown);
         }
 
         private void Placed(int o)
         {
             if (!_placedMade.Add(o) || !_loadsOf.TryGetValue(o, out List<int>? loads)) return;
-            foreach (int dest in loads.ToArray()) if (_fedFrom.Add((_written, dest))) CopyEdge(_written, dest, 0);
+            foreach (int dest in loads.ToArray()) if (_fedFrom.Add(Pair(_written, dest))) CopyEdge(_written, dest, 0);
         }
 
         private void ReachedByUnknown(int o)
@@ -1164,7 +1284,7 @@ internal sealed class RegionEscape
             foreach (int dest in loads.ToArray()) Add(dest, Unknown);
         }
 
-        private readonly HashSet<(int, int)> _storedInto = new();
+        private readonly HashSet<long> _storedInto = new();
 
         private void Stored(int loc, int value, int offset)
         {
@@ -1173,23 +1293,23 @@ internal sealed class RegionEscape
             // A number kept where no reference is: nothing anyone reaches.
             if (NoReference(o, at)) return;
             int cell = Cell(o, at);
-            if (_storedInto.Add((value, cell))) CopyEdge(value, cell, 0);
+            if (_storedInto.Add(Pair(value, cell))) CopyEdge(value, cell, 0);
         }
 
         // Per object and word: never read as a reference (every site it may be says so).
-        private readonly Dictionary<(int, int), bool> _noReference = new();
+        private readonly Dictionary<long, bool> _noReference = new();
 
         private bool NoReference(int o, int at)
         {
             if (_kind[o] != Kind.Made || _origins[o].Length == 0 || _owner.NoReference is not { } rule) return false;
-            if (_noReference.TryGetValue((o, at), out bool known)) return known;
+            if (_noReference.TryGetValue(Pair(o, at), out bool known)) return known;
             bool none = true;
             foreach (int r in _origins[o])
             {
                 int[] sites = r < 0 ? new[] { -r - 1 } : _owner.SitesOf(new[] { r });
                 if (sites.Length == 0 || sites.Any(site => !rule(site, at))) { none = false; break; }
             }
-            return _noReference[(o, at)] = none;
+            return _noReference[Pair(o, at)] = none;
         }
 
         // ---- building --------------------------------------------------------
@@ -1403,25 +1523,44 @@ internal sealed class RegionEscape
         {
             while (_work.TryDequeue(out int n))
             {
-                List<int>? delta = _delta[n];
-                if (delta is null || delta.Count == 0) continue;
-                _delta[n] = null;
-                _owner.Work += delta.Count;
-                if ((_carried += delta.Count) > _mostCarried || Overflowed) { Overflowed = true; return; }
-                if (_big && _owner.Progress is not null && (_carried & ~0xFFFFFL) != ((_carried - delta.Count) & ~0xFFFFFL))
+                int[]? delta = _deltaBuf[n];
+                int count = _deltaLen[n];
+                if (delta is null || count == 0) continue;
+                // Taken from the node: what it gains while this is carried is
+                // a new delta, carried in its turn.
+                _deltaBuf[n] = null; _deltaLen[n] = 0;
+                _owner.Work += count;
+                if ((_carried += count) > _mostCarried || Overflowed) { Overflowed = true; return; }
+                if (_big && _owner.Progress is not null && (_carried & ~0xFFFFFL) != ((_carried - count) & ~0xFFFFFL))
                     _owner.Progress($"escape graphs:   cycle solve: {Describe()}, heap {GC.GetTotalMemory(false) >> 20} MB");
+                // Edges are read afresh each time: one made while these are
+                // carried is carried along too, as a list walked by index was.
                 if (_copies[n] is { } copies)
                     for (int e = 0; e < copies.Count; e++)
-                        foreach (int loc in delta) Add(copies[e].To, Shift(loc, copies[e].Shift));
+                    {
+                        (int to, int shift) = copies[e];
+                        if (shift == 0) for (int k = 0; k < count; k++) Add(to, delta[k]);
+                        else for (int k = 0; k < count; k++) Add(to, Shift(delta[k], shift));
+                    }
                 if (_loads[n] is { } loads)
                     for (int e = 0; e < loads.Count; e++)
-                        foreach (int loc in delta) Loaded(loc, loads[e].Dest, loads[e].Offset);
+                    {
+                        (int dest, int offset) = loads[e];
+                        for (int k = 0; k < count; k++) Loaded(delta[k], dest, offset);
+                    }
                 if (_stores[n] is { } stores)
                     for (int e = 0; e < stores.Count; e++)
-                        foreach (int loc in delta) Stored(loc, stores[e].Value, stores[e].Offset);
+                    {
+                        (int value, int offset) = stores[e];
+                        for (int k = 0; k < count; k++) Stored(delta[k], value, offset);
+                    }
                 if (_readsAll[n] is { } all)
                     for (int e = 0; e < all.Count; e++)
-                        foreach (int loc in delta) LoadedAll(loc, all[e]);
+                    {
+                        int dest = all[e];
+                        for (int k = 0; k < count; k++) LoadedAll(delta[k], dest);
+                    }
+                _spareDeltas.Push(delta);
             }
         }
 
