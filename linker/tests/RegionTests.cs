@@ -101,6 +101,45 @@ public static class RegionTests
         Check(facts[1] is { } inB && inB.Boundaries.Count == 0 && inB.Sites.SetEquals(new[] { ("Make", 0), ("MakeHeld", 0), ("MakeHeld2", 0) }),
             "unit B: Make's object and those kept only in words no reference is kept in are in a region; what is stored where nobody follows, or handed to a call nobody can name, is not");
 
+        // A METHOD CALLED ON MORE OBJECTS THAN IT HAS CONTEXTS: Add, an
+        // instance method storing its argument into its object, called by
+        // four hundred boundaries, each on a list of its own and with an
+        // element of its own. Past the sixteenth object the rest share
+        // copies; one shared copy held every list and every element past
+        // that, saturated, and put them all where nobody follows, so none of
+        // those boundaries' objects was in a region. Spread over a few
+        // shared copies, none saturates: every list and every element dies
+        // with its boundary.
+        {
+            const int Callers = 400;
+            RegionHints many = new();
+            RegionFunction begin = Function("_start", 0, 1, boundary: false);
+            begin.Calls.Add(new("Main", -1, Array.Empty<int>()));
+            many.Functions.Add(begin);
+            RegionFunction top = new("Main", true, false, false, 0, 1, 0, Array.Empty<RegionSite>()) { Main = true };
+            many.Functions.Add(top);
+            RegionFunction add = new("Add", true, true, true, 2, 2, 0, Array.Empty<RegionSite>());
+            add.Constraints.Add(new(RegionConstraintKind.Store, 0, 1, 8));
+            many.Functions.Add(add);
+            for (int k = 0; k < Callers; k++)
+            {
+                string name = "Fill" + k;
+                top.Calls.Add(new(name, -1, Array.Empty<int>()));
+                RegionFunction fill = Function(name, 0, 3, sites: new[] { Made(), Made() });
+                fill.Constraints.Add(new(RegionConstraintKind.Site, 1, 0, 0));
+                fill.Constraints.Add(new(RegionConstraintKind.Site, 2, 1, 0));
+                fill.Calls.Add(new("Add", -1, new[] { 1, 2 }));
+                many.Functions.Add(fill);
+            }
+            RegionFacts?[]? spread = RegionSolver.Solve(new[] { RegionHints.Read(many.Write()) }, new(StringComparer.Ordinal),
+                (_, _) => null, "_start", new HashSet<string>(StringComparer.Ordinal), null);
+            Check(spread is { Length: 1 } && spread[0] is { } inMany, "the solve of a method called on many objects gave up");
+            RegionFacts answered = spread![0]!;
+            for (int k = 0; k < Callers; k++)
+                Check(answered.Boundaries.Contains("Fill" + k) && answered.Sites.Contains(("Fill" + k, 0)) && answered.Sites.Contains(("Fill" + k, 1)),
+                    $"Fill{k}: its list and the element Add stored into it outlive it -- a shared copy of Add saturated");
+        }
+
         // The facts on the backend's wire.
         LifetimeFacts lifetime = new() { Regions = facts[1] };
         using MemoryStream stream = new();
