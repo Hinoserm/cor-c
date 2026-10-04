@@ -2495,6 +2495,10 @@ public static class RegionSolver
         private List<LoopRegion> SelectLoops(Verdict verdict, bool[] beforeBlock)
         {
             List<LoopRegion> chosen = new();
+            // A DIAGNOSTIC: --region-report +loopold weighs a loop as before
+            // 04cbd6b, what it sends to the heap against every site its laps
+            // make that it takes, whether a boundary takes it already or not.
+            bool loopOld = _report?.Contains("+loopold") == true;
             if (_alwaysSeen.Length != _copyFunction.Count) _alwaysSeen = new int[_copyFunction.Count];
             _allClosures = new CallClosures(_calleesOf, null);
             _nearClosures = new CallClosures(_calleesOf, _isBoundary);
@@ -2645,7 +2649,11 @@ public static class RegionSolver
                     if (sound && worth && forced.Count > 0)
                         foreach ((int c, List<int>? own, Func<int, bool> takes) in weigh)
                         {
-                            bool TakesAlone(int o) => takes(o) && !verdict.TakenObject[o];
+                            // (+loopold: as before 04cbd6b, every site a lap
+                            // makes that the loop takes, a boundary's too --
+                            // an A/B of what the rule costs in loops and in
+                            // what regions give back.)
+                            bool TakesAlone(int o) => takes(o) && (loopOld || !verdict.TakenObject[o]);
                             if (own is not null)
                                 foreach (int o in own)
                                     if (Array.BinarySearch(loop.AlwaysSites, _objectSite[o]) >= 0 && TakesAlone(o)) gained.Add(SiteOf(o));

@@ -561,6 +561,7 @@ loops and refusals are reported. Switches:
 | `+cycles` | The largest cycle with wide calls of more than 256, 64, 16 and 4 targets left out, and the widest slots. |
 | `+wide=N` | Virtual calls of more than N targets are stand-ins (default 16; 0 follows every call). |
 | `+widefirst` | Stand-ins start with every site their targets reach. |
+| `+loopold` | Weigh a loop's region as before the loop rule's change: what it sends to the heap against every site its laps make that it takes, a boundary's included (an A/B of the rule). |
 | `+classoff` | No receiver classes or guards: a virtual call runs every override. |
 | `+noroots` | Leave out what functions called from where nobody follows hand back (a diagnostic only; unsound for an image). |
 | `+norefoff` | Ignore the collector's knowledge of words that hold no reference. |
