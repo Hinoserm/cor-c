@@ -1,0 +1,111 @@
+// test: array_field_across_units
+// units: tests/language/support/1327_array_field_units.cor
+// expect-exit: 0
+// expect-output:
+// allocator 2960000 True
+// kept out 1 2 3
+// reassigned 7 8
+// shared 9 9
+// late 21
+//
+// 1313 OVER TWO UNITS: an array field whose arrays own their lists, decided
+// by the link from each unit's hints (OwnedFieldSolver; the record's
+// element judgement). The classes are the other unit's; this unit makes
+// them and reads their fields. A register allocator's per-register lists
+// go back with it when it dies here (`allocator` leaves at most a few bytes
+// a call to the collector). Every other line is a field whose lists must
+// NOT be freed with its object, each refused by a different unit's side: a
+// list read out here and kept (this unit's read lets it go), a list held
+// here across the other unit's method that gives the field a new array (a
+// call that may store into the field), an array stored here into a second
+// object (a store of something not made for the field), and a list read
+// out here and used after its object's last use (a free while it is live).
+// Each is checked after enough churn that a list freed by mistake would
+// have been made into another.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    static long _churned;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn()
+    {
+        for (int k = 0; k < 2000; k++)
+        {
+            List<int> noise = new List<int> { k, k + 1, k + 2 };
+            int[] more = new int[16];
+            more[3] = noise[1];
+            _churned += more[3];
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Allocate() { UnitAllocator a = new UnitAllocator(8); return a.Run(40); }
+
+    static List<int>? _kept;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void KeepOut() { UnitKept k = new UnitKept(); _kept = k.Lists[0]; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Reassign()
+    {
+        UnitSwapper s = new UnitSwapper();
+        List<int> old = s.Lists[0];
+        s.Renew();
+        Churn(); Gc.Collect(); Churn();
+        return old[0] * 10 + s.Lists[0][0];
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Share()
+    {
+        UnitHolder a = new UnitHolder();
+        a.Lists[0] = new List<int> { 9 };
+        UnitHolder b = new UnitHolder();
+        b.Lists = a.Lists;
+        a = null!;
+        Churn(); Gc.Collect(); Churn();
+        return b.Lists[0][0] * 11;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int LateUse()
+    {
+        UnitLate l = new UnitLate();
+        List<int> list = l.Lists[0];
+        Churn(); Gc.Collect(); Churn();
+        int sum = 0;
+        foreach (int x in list) sum += x;
+        return sum;
+    }
+
+    static void Main()
+    {
+        const int N = 20000;
+        Gc.Collect();
+        long taken = Gc.CollectedBytes, frees = Gc.Frees;
+        long total = 0;
+        for (int k = 0; k < N; k++) total += Allocate();
+        bool given = Gc.Frees - frees >= N * 16;
+        Gc.Collect();
+        long left = (Gc.CollectedBytes - taken) / N;
+        Console.WriteLine("allocator " + total + " " + (given && left <= 32 ? "True" : "False " + left));
+
+        KeepOut();
+        Churn(); Gc.Collect(); Churn();
+        Console.WriteLine("kept out " + string.Join(" ", _kept!));
+
+        int replaced = Reassign();
+        Console.WriteLine("reassigned " + replaced / 10 + " " + replaced % 10);
+
+        int shared = Share();
+        Console.WriteLine("shared " + shared / 10 + " " + shared % 10);
+
+        Console.WriteLine("late " + LateUse());
+    }
+}

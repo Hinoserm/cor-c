@@ -1161,7 +1161,11 @@ static class Runtime
         {
             return;
         }
-        long words = Sys.Peek(map);
+        long head = Sys.Peek(map);
+        // The element bits follow the field bits when the count says so
+        // (ElementMapFlag): a field whose array owns its collections.
+        long words = head & (ElementMapFlag - 1);
+        long elementsAt = (head & ElementMapFlag) != 0 ? map + (1 + (words + 31) / 32) * WordSize.Bytes : 0;
         for (long word = 0; word < words; word++)
         {
             long bits = Sys.PeekWord(map + WordSize.Bytes + (word / 32) * WordSize.Bytes) & 0xFFFFFFFF;
@@ -1174,6 +1178,8 @@ static class Runtime
             if (held != 0)
             {
                 Sys.Poke(field, 0);
+                if (elementsAt != 0 && ((Sys.PeekWord(elementsAt + (word / 32) * WordSize.Bytes) & 0xFFFFFFFF) & (1L << (int)(word % 32))) != 0)
+                    Gc.FreeReferenceElements(held);
                 FreeHeld(held);
             }
         }
@@ -1229,6 +1235,9 @@ static class Runtime
                 Gc.FreeFieldChecked(held);
                 return;
             }
+            // An array field whose arrays own their collections (the map's
+            // element bits): those first.
+            if (OwnsArrayElements(at, offset)) Gc.FreeReferenceElements(held);
             // As any object proved dead is given back (Free): with its own
             // owned fields, and a collection with its storage -- and its
             // elements, where the compiler marked them its own
@@ -1236,6 +1245,28 @@ static class Runtime
             // list left its array and every token to the collector.
             FreeHeld(held);
         }
+    }
+
+    /// In an owned-field map's count word: the element bits follow (Escape.ElementMapFlag).
+    const long ElementMapFlag = 0x40000000;
+
+    /// Whether the field at `offset` of the object at `at` owns its array's
+    /// elements: the element bit of its type's owned-field map
+    /// (Escape.ArrayFieldElements), which only a whole program's proof sets.
+    static bool OwnsArrayElements(long at, long offset)
+    {
+        long vtable = Sys.Peek(at) & WordSize.AddressMask;
+        if (vtable == 0 || offset < 0 || offset % WordSize.Bytes != 0) return false;
+        long map = Sys.Peek(vtable - WordSize.Bytes);
+        if (map == 0) return false;
+        long head = Sys.Peek(map);
+        if ((head & ElementMapFlag) == 0) return false;
+        long words = head & (ElementMapFlag - 1);
+        long word = offset / WordSize.Bytes;
+        if (word >= words) return false;
+        long chunks = (words + 31) / 32;
+        long bits = Sys.PeekWord(map + (1 + chunks + word / 32) * WordSize.Bytes) & 0xFFFFFFFF;
+        return (bits & (1L << (int)(word % 32))) != 0;
     }
 
     /// WHAT AN OWNED FIELD HELD, given back. One made in this thread's region
