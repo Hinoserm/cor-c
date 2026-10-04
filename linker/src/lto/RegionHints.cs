@@ -25,7 +25,7 @@ public sealed class RegionHints
     public const string SectionName = ".corsac.regions";
     public const int MaximumBytes = 64 * 1024 * 1024;
     private const uint Magic = 0x47455243; // "CREG"
-    private const int Version = 4;
+    private const int Version = 5;
     private static readonly UTF8Encoding Utf8 = new(false, true);
 
     public List<RegionFunction> Functions { get; } = new();
@@ -58,6 +58,7 @@ public sealed class RegionHints
             names.Add(function.Name);
             foreach (RegionCall call in function.Calls) if (call.Callee is not null) names.Add(call.Callee);
             foreach (RegionSite site in function.Sites) if (site.Table is not null) names.Add(site.Table);
+            names.UnionWith(function.Symbols);
         }
         Dictionary<string, int> index = new(StringComparer.Ordinal);
         foreach (string name in names) index.Add(name, index.Count);
@@ -92,6 +93,8 @@ public sealed class RegionHints
                 writer.Write((byte)((site.Rewritable ? 1 : 0) | (int)site.Words << 1)); Var(site.Line);
                 Var(site.Table is null ? -1 : index[site.Table]); Var(site.At);
             }
+            Var(function.Symbols.Length);
+            foreach (string symbol in function.Symbols) Var(index[symbol]);
             Var(function.Constraints.Count);
             foreach (RegionConstraint c in function.Constraints) { writer.Write((byte)c.Kind); Var(c.A); Var(c.B); Var(c.C); }
             Var(function.Calls.Count);
@@ -190,7 +193,9 @@ public sealed class RegionHints
                     if (bits > 5 || table < -1 || table >= names.Length) throw new ElfFormatException("Invalid region hint stamp");
                     sites[s] = new RegionSite((bits & 1) != 0, line, table < 0 ? null : names[table], at, (RegionWords)(bits >> 1));
                 }
-                RegionFunction function = new(name, (flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0, parameters, nodes, slots, sites) { Main = (flags & 8) != 0 };
+                string[] symbols = new string[Count()];
+                for (int s = 0; s < symbols.Length; s++) symbols[s] = Name();
+                RegionFunction function = new(name, (flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0, parameters, nodes, slots, sites) { Main = (flags & 8) != 0, Symbols = symbols };
                 bool Node(int n) => n >= 0 && n < nodes;
                 for (int k = Count(); k > 0; k--)
                 {
@@ -200,6 +205,7 @@ public sealed class RegionHints
                         RegionConstraintKind.Site => Node(c.A) && c.B >= 0 && c.B < sites.Length,
                         RegionConstraintKind.Slot => Node(c.A) && c.B >= 0 && c.B < slots,
                         RegionConstraintKind.Unknown or RegionConstraintKind.Leak => Node(c.A),
+                        RegionConstraintKind.Symbol => Node(c.A) && c.B >= 0 && c.B < symbols.Length,
                         RegionConstraintKind.Copy or RegionConstraintKind.Load or RegionConstraintKind.Store or RegionConstraintKind.MemCopy => Node(c.A) && Node(c.B),
                         _ => false,
                     };
@@ -279,6 +285,10 @@ public sealed class RegionFunction
     public int[] MustSites { get; set; } = Array.Empty<int>();
     /// <summary>Its loops that may be given a region: none in an async or iterator body, a type's initialiser, or a function with a landing pad or a label's address.</summary>
     public List<RegionLoopShape> Loops { get; } = new();
+    /// <summary>The symbols whose addresses its code takes, named by its Symbol constraints.</summary>
+    public string[] Symbols { get; init; } = Array.Empty<string>();
+    /// <summary>Whether the link has made every Symbol constraint left one of a constant (RegionConstants): never written into the hints.</summary>
+    public bool ConstantsKnown { get; set; }
 }
 
 /// <summary>
@@ -330,6 +340,13 @@ public enum RegionConstraintKind : byte
     MemCopy,
     /// <summary>What A holds goes where nobody follows it (a throw).</summary>
     Leak,
+    /// <summary>
+    /// A holds the address of the function's symbol B (RegionFunction.Symbols):
+    /// the unknown object, unless the link finds it a constant. The link
+    /// makes each one that is not Unknown (RegionConstants); one left names
+    /// a constant, where RegionFunction.ConstantsKnown says so.
+    /// </summary>
+    Symbol,
 }
 
 /// <summary>One constraint over a function's nodes.</summary>

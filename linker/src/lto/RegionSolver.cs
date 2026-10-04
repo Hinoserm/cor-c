@@ -729,7 +729,8 @@ public static class RegionSolver
                 {
                     case RegionConstraintKind.Site: Add(a, Location(SiteObject(f, c.B, context, copy), 0)); break;
                     case RegionConstraintKind.Slot: Add(a, Location(SlotObject(copy, c.B), 0)); break;
-                    case RegionConstraintKind.Unknown: Add(a, GlobalLocation); break;
+                    // A constant too: an instance call is bound by what its receiver holds.
+                    case RegionConstraintKind.Unknown or RegionConstraintKind.Symbol: Add(a, GlobalLocation); break;
                     case RegionConstraintKind.Copy: Edge(Node(copy, c.B), a, c.C); break;
                     case RegionConstraintKind.Load: Load(a, Node(copy, c.B), c.C); break;
                     case RegionConstraintKind.Store: Store(a, c.C, Node(copy, c.B)); break;

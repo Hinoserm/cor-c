@@ -1232,6 +1232,9 @@ internal sealed class RegionEscape
                         case RegionConstraintKind.Site: Add(a, Location(SiteObject(m, c.B), 0)); break;
                         case RegionConstraintKind.Slot: Add(a, Location(SlotObject(m, c.B), 0)); break;
                         case RegionConstraintKind.Unknown: Add(a, Unknown); break;
+                        // A constant's address holds nothing to follow (RegionConstants);
+                        // a symbol the link did not judge is the unknown object.
+                        case RegionConstraintKind.Symbol: if (!f.ConstantsKnown) Add(a, Unknown); break;
                         case RegionConstraintKind.Copy: CopyEdge(Node(m, c.B), a, CopyShift(c.C)); break;
                         case RegionConstraintKind.Load: LoadEdge(a, Node(m, c.B), Plain(c.C)); break;
                         case RegionConstraintKind.Store: StoreEdge(a, Plain(c.C), Node(m, c.B)); break;
@@ -1857,6 +1860,8 @@ internal sealed class RegionEscape
                         case RegionConstraintKind.Site: Unify(Pointee(a), Fresh(Leaf(_owner._siteBase[_members[m]] + c.B))); break;
                         case RegionConstraintKind.Slot: Unify(Pointee(a), SlotClass(m, c.B)); break;
                         case RegionConstraintKind.Unknown: Unify(Pointee(a), _global); break;
+                        // A constant joins nothing: storing it makes nothing escape.
+                        case RegionConstraintKind.Symbol: if (!Function(m).ConstantsKnown) Unify(Pointee(a), _global); break;
                         case RegionConstraintKind.Copy:
                         {
                             int b = Node(m, c.B);
