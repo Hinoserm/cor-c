@@ -515,7 +515,7 @@ internal sealed class RegionEscape
         {
             if (r < 0) { sites.Add(-r - 1); continue; }
             // Read by the component being solved: solved again if it changes (Again).
-            _reading?.Add(r >> IndexBits);
+            if (_reading is not null && !_readingAll && _reading.Add(r >> IndexBits) && _reading.Count > MostRead) _readingAll = true;
             if (OriginsOf(r) is { } below) foreach (int c in below) if (seen.Add(c)) next.Push(c);
         }
         return sites.Order().ToArray();
@@ -536,8 +536,8 @@ internal sealed class RegionEscape
     {
         _globalRefs = new();
         _rootedRefs = new();
-        foreach (HashSet<int>? each in _globalOf) if (each is not null) _globalRefs.UnionWith(each);
-        foreach (HashSet<int>? each in _rootedOf) if (each is not null) _rootedRefs.UnionWith(each);
+        foreach (int[]? each in _globalOf) if (each is not null) _globalRefs.UnionWith(each);
+        foreach (int[]? each in _rootedOf) if (each is not null) _rootedRefs.UnionWith(each);
         Mark(_globalRefs);
         GlobalByUnknown = Global.Count(g => g);
         if (!NoRoots) Mark(_rootedRefs);
@@ -827,6 +827,10 @@ internal sealed class RegionEscape
                 GrewShape = GrewOrigins = MadeStandIns = AgainForCallee = AgainForStandIn = AgainForSites = StraightToUnified = 0;
                 InclusionPool = InclusionPerRound;
                 int solved = round == 1 ? Order() : Again();
+                // What a round let go of in large arrays -- sites, origins, a
+                // graph's sets -- compacted at the next full collection, not
+                // left as holes the next round's arrays do not fit.
+                System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
                 // NOTHING TO SOLVE AGAIN: every component was solved last with
                 // the summaries, stand-ins and sites it reads as they stand,
                 // and the Check after those solves grew nothing.
@@ -1032,7 +1036,7 @@ internal sealed class RegionEscape
             }
             if (LeaksArgument(a.Bits))
             {
-                List<int> leaking = targets.Where(t => _summaries[t] is { IsUnknown: false } s && LeaksArgument(ShapeOf(s).Bits)).ToList();
+                List<int> leaking = targets.Where(t => _summaries[t] is { IsUnknown: false } s && LeaksArgument(ShapeBits(s))).ToList();
                 string Tag(int t) => (t < _how.Length ? _how[t] : How.None) switch { How.Unified => "unified", How.PastBound => "past bound", How.Inclusion => "inclusion", _ => "?" }
                     + (_summaries[t]!.MadeCoarse ? ", coarse" : "");
                 held.Add($"U>arg by {leaking.Count}: " + string.Join(", ", leaking.Take(4).Select(t => _functions[t].Name + " (" + Tag(t) + ")")));
@@ -1063,7 +1067,7 @@ internal sealed class RegionEscape
     {
         if (_summaries[t] is not { } s) return false;
         if (s.IsUnknown) return true;
-        ulong[] bits = ShapeOf(s).Bits;
+        ulong[] bits = ShapeBits(s);
         for (int y = 2; y < HeldClass; y++) if (Has(bits, y)) return true;
         return false;
     }
@@ -1179,7 +1183,7 @@ internal sealed class RegionEscape
     // A summary as a stand-in's shape: which classes hold which, and the
     // sites its made objects may be, apart for what the unknown object
     // reaches (HeldClass) -- the sites as the holders say now.
-    private (ulong[] Bits, int[] Sites, int[] HeldSites) Shape(Summary s)
+    private (ulong[] Bits, int[] Sites, int[] HeldSites) Shape(Summary s, bool withSites = true)
     {
         ulong[] bits = new ulong[ShapeWords];
         if (s.IsUnknown) { Set(bits, UnknownBit); return (bits, Array.Empty<int>(), Array.Empty<int>()); }
@@ -1195,6 +1199,7 @@ internal sealed class RegionEscape
         }
         foreach (var c in s.Cells) Set(bits, Class(c.From) * Classes + Class(c.To));
         foreach (var r in s.Result) Set(bits, ResultBits + Class(r.To));
+        if (!withSites) return (bits, Array.Empty<int>(), Array.Empty<int>());
         List<int> origins = new(), heldOrigins = new();
         for (int k = 0; k < s.Objects.Count; k++)
             if (s.Objects[k].Kind == Kind.Made) (Class(k) == HeldClass ? heldOrigins : origins).AddRange(s.Objects[k].Origins);
@@ -1214,10 +1219,36 @@ internal sealed class RegionEscape
     // while nothing beneath them moved.
     private (ulong[] Bits, int[] Sites, int[] HeldSites) ShapeOf(Summary s)
     {
-        if (_shapes.TryGetValue(s, out var known) && known.At > _lastOriginsChange) return (known.Bits, known.Sites, known.HeldSites);
+        Shaped known = _shapes.GetOrCreateValue(s);
+        if (known.Bits is not null && known.Sites is not null && known.At > _lastOriginsChange) return (known.Bits, known.Sites, known.HeldSites!);
         var shape = Shape(s);
-        _shapes[s] = (shape.Bits, shape.Sites, shape.HeldSites, _tick);
+        known.Bits = shape.Bits; known.Sites = shape.Sites; known.HeldSites = shape.HeldSites; known.At = _tick;
         return shape;
+    }
+
+    /// <summary>
+    /// A summary's classes alone (Shape without its sites), for whatever asks
+    /// only what it does with its arguments (LeaksArgument): no holder is
+    /// walked, and the answer never changes for the summary, so it is kept
+    /// for good. (Asked through ShapeOf of every target of every deferred
+    /// call, each target's sites were resolved -- tens of thousands of them,
+    /// each walk a set and an array, afresh whenever any holder's origins
+    /// changed in place -- and kept for every summary ever made.)
+    /// </summary>
+    private ulong[] ShapeBits(Summary s)
+    {
+        Shaped known = _shapes.GetOrCreateValue(s);
+        return known.Bits ??= Shape(s, withSites: false).Bits;
+    }
+
+    // A summary's shape, kept with it: its classes for good, its sites while
+    // no holder's origins changed since (At). Held weakly, by the summary:
+    // one replaced, and every array worked out of it, goes with it.
+    private sealed class Shaped
+    {
+        public ulong[]? Bits;
+        public int[]? Sites, HeldSites;
+        public long At;
     }
 
     /// <summary>
@@ -1246,7 +1277,7 @@ internal sealed class RegionEscape
         return grown.Count;
     }
 
-    private readonly Dictionary<Summary, (ulong[] Bits, int[] Sites, int[] HeldSites, long At)> _shapes = new(ReferenceEqualityComparer.Instance);
+    private System.Runtime.CompilerServices.ConditionalWeakTable<Summary, Shaped> _shapes = new();
     private static readonly Summary _noSummary = Summary.Unknown;
     // A summary of no effect: what widens a stand-in without growing it otherwise.
     private static readonly Summary _noShape = new();
@@ -1281,7 +1312,7 @@ internal sealed class RegionEscape
         _escapingBits = null;
         _holderFirst = null;
         _bitsByOrigins.Clear();
-        _components.Clear(); _globalOf.Clear(); _rootedOf.Clear(); _shapes.Clear();
+        _components.Clear(); _globalOf.Clear(); _rootedOf.Clear(); _shapes = new();
         _solvedAt.Clear(); _appliedOf.Clear(); _sitesReadOf.Clear();
         _originsAt.Clear();
         _componentOf = null; _callees = null;
@@ -1328,7 +1359,9 @@ internal sealed class RegionEscape
     // callees whose change solves the component again; and stand-ins of
     // some of a wide call's (NarrowedStandIn), noted as applied.
     private readonly List<int[]> _components = new();
-    private readonly List<HashSet<int>?> _globalOf = new(), _rootedOf = new();
+    // (Kept as arrays: a set a component, for all of them at once, was a
+    // set's buckets and entries for every origin each made global.)
+    private readonly List<int[]?> _globalOf = new(), _rootedOf = new();
     // Per component: the tick it was solved at, the stand-ins it applied, the
     // holders it read sites through (null: more than MostRead, so any).
     private readonly List<long> _solvedAt = new();
@@ -1343,7 +1376,10 @@ internal sealed class RegionEscape
     // While a component is solved: what it applies and reads.
     private HashSet<Assumed>? _applying;
     private HashSet<int>? _reading;
-    private const int MostRead = 4096;
+    // Past this many holders read, a component is solved again on any change
+    // of origins in place: its set stops growing (_readingAll).
+    private const int MostRead = 1024;
+    private bool _readingAll;
     private int[]? _componentOf;
     private int[][]? _callees;
 
@@ -1401,13 +1437,14 @@ internal sealed class RegionEscape
         // own member's summary -- is newer than its solve.
         long start = ++_tick;
         _tick++;
-        _applying = new(); _reading = new();
+        _applying = new(); _reading = new(); _readingAll = false;
         Solve(new List<int>(members));
         _solvedAt[c] = start;
         _appliedOf[c] = _applying.Count == 0 ? Array.Empty<Assumed>() : _applying.ToArray();
-        _sitesReadOf[c] = _reading.Count > MostRead ? null : _reading.ToArray();
+        _sitesReadOf[c] = _readingAll ? null : _reading.ToArray();
         _applying = null; _reading = null;
-        _globalOf[c] = _globalRefs; _rootedOf[c] = _rootedRefs;
+        _globalOf[c] = _globalRefs.Count == 0 ? Array.Empty<int>() : _globalRefs.ToArray();
+        _rootedOf[c] = _rootedRefs.Count == 0 ? Array.Empty<int>() : _rootedRefs.ToArray();
         _globalRefs = global; _rootedRefs = rooted;
     }
 
@@ -1450,6 +1487,7 @@ internal sealed class RegionEscape
             return;
         }
         int holder = before is null && (_holders.Count <= f || _holders[f] is null) ? f : NewHolder();
+        s.Compact();
         Register(_summaries[f] = s, holder);
         _changedAt[f] = _tick;
         if (_assumed is not null && _standInsOf.TryGetValue(f, out List<Assumed>? those))
@@ -1596,6 +1634,7 @@ internal sealed class RegionEscape
         for (int k = 0; k < targets.Length; k++) from[k] = _summaries[targets[k]] is { } s ? s.Holder : -2;
         if (_merged.TryGetValue(targets, out var done) && done.From.AsSpan().SequenceEqual(from)) return done.Merged;
         Summary merged = Summary.Merge(targets.Select(t => _summaries[t] ?? Summary.Unknown));
+        merged.Compact();
         if (!merged.IsUnknown) Register(merged, NewHolder());
         _merged[targets] = (merged, from);
         return merged;
@@ -1704,6 +1743,26 @@ internal sealed class RegionEscape
             {
                 int at = offsetOf(map[c.From], c.Offset);
                 if (at != Any) NoteField(map[c.From], at, source.FieldAt(c.From, c.Offset));
+            }
+        }
+
+        /// <summary>
+        /// Kept for good: the words and cells named no field left out (absent
+        /// is none, FieldAt and FamilyOf), and the maps let go where none is
+        /// left. While a summary is built, -1 and -2 hold a word or a cell
+        /// written two ways; once published nothing is added to it.
+        /// </summary>
+        public void Compact()
+        {
+            if (CellFamilies is not null)
+            {
+                foreach (var key in CellFamilies.Where(x => x.Value < 0).Select(x => x.Key).ToArray()) CellFamilies.Remove(key);
+                if (CellFamilies.Count == 0) CellFamilies = null; else CellFamilies.TrimExcess();
+            }
+            if (Fields is not null)
+            {
+                foreach (long key in Fields.Where(x => x.Value < 0).Select(x => x.Key).ToArray()) Fields.Remove(key);
+                if (Fields.Count == 0) Fields = null; else Fields.TrimExcess();
             }
         }
 
@@ -2798,7 +2857,7 @@ internal sealed class RegionEscape
             if (NoReference(o, at)) { Add(dest, Unknown); return; }
             // Typed only from the object's start: at an address into it, the
             // field named is not where the offset says.
-            int named = _locOffset[loc] == 0 ? family : -1;
+            int named = _locOffset[loc] == 0 ? Named(o, at, family) : -1;
             int own = Cell(o, TypedStep(at, named));
             if (!_loadedFrom.Add(Pair(own, dest))) return;
             CopyEdge(own, dest, 0);
@@ -2821,6 +2880,31 @@ internal sealed class RegionEscape
         private readonly Dictionary<long, List<int>> _offsetReaders = new();
 
         // A load naming no field at `at` of object o: every field's word there.
+        // THE MOST FIELDS ONE OBJECT KEEPS APART AT ONE OFFSET. A place of an
+        // interface's or a base's type, a blob, a merged made object is
+        // read and written as many fields at one offset; each a word of its
+        // own, each a place below it, and each read by every load naming
+        // none there, they multiplied the graph by the fields a type has.
+        // Past this, a field named at the offset is the offset's untyped
+        // word (Named): read by every load at it, as before typed words.
+        private const int MostFieldsAt = 4;
+        private readonly Dictionary<long, int> _fieldsAt = new();
+
+        // The field an access at `at` of object o is kept apart as: its own
+        // where it has a word already or there is room for one; else none.
+        private int Named(int o, int at, int family)
+        {
+            if (family < 0 || at == Any || o == 0) return -1;
+            int step = TypedStep(at, family);
+            if (StepFamily(step) < 0) return -1;
+            if (_cells[o].ContainsKey(step)) return family;
+            long key = Pair(o, at);
+            int had = _fieldsAt.GetValueOrDefault(key);
+            if (had >= MostFieldsAt) return -1;
+            _fieldsAt[key] = had + 1;
+            return family;
+        }
+
         private void FieldsAt(int o, int at, int dest)
         {
             long key = Pair(o, at);
@@ -2955,7 +3039,7 @@ internal sealed class RegionEscape
             if (NoReference(o, at) || IsConstant(o)) return;
             // Its field's word, named from the object's start; else the
             // offset's untyped word (Loaded).
-            int named = family >= 0 && at != Any && _locOffset[loc] == 0 ? family : -1;
+            int named = at != Any && _locOffset[loc] == 0 ? Named(o, at, family) : -1;
             int cell = Cell(o, TypedStep(at, named));
             if (StepFamily(TypedStep(at, named)) >= 0 && _kind[o] is Kind.Place or Kind.Deep) _anyTyped = true;
             if (_storedInto.Add(Pair(value, cell))) CopyEdge(value, cell, 0);
@@ -4292,6 +4376,8 @@ internal sealed class RegionEscape
         // an object -- a copy by an offset, an index, a summary's cell into
         // a place below a field's start -- collapses the class (Copy,
         // _indexed, Apply), and every family of it with it.
+        private const int MostFieldsAtUnified = 4;
+
         private static long FieldKey(int offset, int family) => ((long)offset << 32) | (uint)family;
         private static int KeyOffset(long key) => (int)(key >> 32);
         private static int KeyFamily(long key) => (int)key;
@@ -4308,7 +4394,14 @@ internal sealed class RegionEscape
             {
                 // Mixed already: the one field class of the offset.
                 if (fields.TryGetValue(mixed, out int all)) return Find(all);
-                return Get(fields, FieldKey(offset, family));
+                long typed = FieldKey(offset, family);
+                if (fields.TryGetValue(typed, out int own)) return Find(own);
+                // Past MostFieldsAt fields at the offset, the offset is one
+                // field again (Graph.Named, for the same reason).
+                int at = 0;
+                foreach (long key in fields.Keys) if (KeyOffset(key) == offset && KeyFamily(key) >= 0) at++;
+                if (at >= MostFieldsAtUnified) return Field(c, offset, -1);
+                return Get(fields, typed);
             }
             // Naming none: every field at the offset joins one.
             List<long>? named = null;
@@ -4383,7 +4476,14 @@ internal sealed class RegionEscape
                     if (fa.TryGetValue(key, out int u)) _pending.Enqueue((u, t));
                     else fa[key] = t;
                 // An offset mixed in either is mixed in both: its named
-                // fields join its one (Field).
+                // fields join its one (Field). So is one the merge gives more
+                // than MostFieldsAtUnified fields.
+                Dictionary<int, int>? counts = null;
+                foreach (long key in fa.Keys)
+                    if (KeyFamily(key) >= 0) { counts ??= new(); counts[KeyOffset(key)] = counts.GetValueOrDefault(KeyOffset(key)) + 1; }
+                if (counts is not null)
+                    foreach (var (offset, many) in counts)
+                        if (many > MostFieldsAtUnified && !fa.ContainsKey(FieldKey(offset, -1))) fa[FieldKey(offset, -1)] = NewClass();
                 List<long>? named = null;
                 foreach (long key in fa.Keys)
                     if (KeyFamily(key) >= 0 && fa.ContainsKey(FieldKey(KeyOffset(key), -1))) (named ??= new()).Add(key);
