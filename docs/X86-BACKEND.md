@@ -628,8 +628,8 @@ allocates nor blocks delays everyone's collection until it does.
 chosen so a thread pool can be added under it without changing a line of
 compiled code.
 
-**What the language sees.** An async method returns `Task`, `Task<T>` or
-`void`. It runs synchronously until it awaits something not yet complete,
+**What the language sees.** An async method returns `Task`, `Task<T>`,
+`ValueTask`, `ValueTask<T>` or `void`. It runs synchronously until it awaits something not yet complete,
 then returns its task to the caller. `return x;` in an `async Task<T>`
 method is checked against `T`. An exception that escapes the body is
 stored in the task and rethrown by whoever awaits it; one that escapes an
@@ -701,6 +701,67 @@ thread pool replaces it by providing the same `Post` over several
 threads; the task and awaiter types are written with atomic state
 transitions from the start so that nothing changes when it does. On
 CORSAC the scheduler is the kernel's, and the multiprocessor is the pool.
+
+**ValueTask.** An `async ValueTask` or `async ValueTask<T>` method
+allocates nothing until it really suspends, as .NET's
+AsyncValueTaskMethodBuilder boxes only at the first await that does not
+complete synchronously. Its kickoff keeps the state machine in its own
+frame (512 bytes at most, zeroed, a Home word set) and answers through
+the caller's result buffer, as any method returning the struct does.
+MoveNext runs on it; at the first await whose awaiter is not complete it
+calls the method's box, which copies the machine to the heap, makes the
+task, puts it in both copies, and hands the heap copy to OnCompleted. A
+body that completes without that leaves its result in the machine, and
+the kickoff answers `new ValueTask<T>(result)` (or `default`); one that
+suspended, or threw, is answered `new ValueTask<T>(task)`. A struct
+result buffer in such a body is a frame slot, which is a machine field,
+so awaiting a ValueTask -- or anything whose awaiter is a struct -- makes
+nothing either. The awaiters of a completed ValueTask hold its result
+and no task.
+
+Because the machine moves, the transform keeps every register that
+always points into it as an offset from it across a suspension. A
+register that may point into it on one path and elsewhere on another, or
+an address in it stored into it, cannot be moved; the transform then
+clears the method's `smstack_` word and the kickoff makes the machine on
+the heap from the start. A call handed an address in a machine (a result
+buffer) has the machine's cards marked after it.
+
+## Async safety
+
+The compiler refuses, after binding the whole unit (Binder.AwaitChecks):
+
+- **An `await` while a lock is held.** C#'s CS1996 for `lock`, and the
+  same for CORSAC's paired locks: IrqSpinLock, KernelGate, Ring1Lock,
+  IoOwnership (IFilesystemGuard), GcLock, Atom, Monitor and SpinLock, and
+  any type marked `[NoAwaitWhileHeld]` or deriving from or implementing
+  one. Enter, EnterInterruptible, EnterPair and TryEnter take one; Leave,
+  Exit and LeavePair give it back. From a taking to its giving back, on
+  every path -- branches, loops, switch, try/catch/finally, early
+  returns, break and continue through finally blocks -- an await is an
+  error. A TryEnter (and IoOwnership's Enter, and Enter on a type marked
+  `[NoAwaitWhileHeld(EnterMayFail = true)]`) holds the lock only where it
+  answered true, in an `if` on it or on the bool it was put in. A method
+  of the program's own that returns holding a lock (`EnterSeat()`) or
+  gives one back is summarised and counts as that at its calls. Not
+  seen: a lock taken through a delegate or an override the call does not
+  name, one handed between methods in a field, or a `goto` backwards over
+  an Enter.
+
+  For a hold that awaits, `AsyncLock` (`using (await gate.LockAsync())`)
+  and `SemaphoreSlim.WaitAsync`, both in the core runtime and so in a
+  freestanding kernel: a waiter is a task, holding no processor.
+
+- **An `await` or an allocation in an interrupt handler.** A method
+  marked `[InterruptHandler]`, or implementing an interface method so
+  marked or `IIrqHandler.OnIrq`, may not be async, await, or allocate:
+  `new` of a class, an array or a delegate, joining strings, boxing, a
+  lambda or method group made a delegate, or a call to an async method.
+  The same is refused in every method it calls directly -- a static or
+  non-virtual call -- whose body the unit compiles, transitively, and
+  reported at the handler's call. Not proved: what a library compiled
+  elsewhere does, what a virtual, interface or delegate call reaches, and
+  what the runtime allocates by itself.
 
 ## Optimisation
 

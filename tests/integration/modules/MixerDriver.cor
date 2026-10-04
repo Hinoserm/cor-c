@@ -1,0 +1,20 @@
+// The driver of the several-file module (modules.sh): a kernel class
+// derived, a kernel interface implemented, and the module's other units'
+// types used, each from its own unit.
+
+using Kernel;
+
+namespace Sound;
+
+public sealed class Mixer : Driver, IDevice
+{
+    public override string Name => "mixer";
+
+    public override int Bind(int port)
+    {
+        Log.Write("mixer at " + port + ", " + Channels.All[0].Describe() + " " + Channels.All[1].Describe());
+        return Channels.Total();
+    }
+
+    public int Probe(int port) { return port == 0x220 ? Channels.All.Count : 0; }
+}

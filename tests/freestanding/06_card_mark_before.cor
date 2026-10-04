@@ -1,0 +1,32 @@
+// test: --ring1-syscalls marks a reference store's card before the store as well as after it
+// flags: --ring1-syscalls
+// run: no
+// expect-asm-count-x86: Store: __corsac_cardmark 2
+//
+// A ring-1 kernel's thread can be sent to its collector's handshake at any
+// instruction, between a store and the card mark after it among them, where
+// a minor cycle would take the cards with this store's card unset and the
+// stored value in no register any more. So the mark comes before the store
+// too (Lowering.CardMarkBefore): two calls of the card stub for one store.
+// Compiled and read, not run: the gate is CORSAC's.
+
+class Node
+{
+    public object? Next;
+}
+
+static class Program
+{
+    static Node _held = new Node();
+
+    static int Main()
+    {
+        Store(_held, new Node());
+        return _held.Next == null ? 1 : 0;
+    }
+
+    static void Store(Node into, object value)
+    {
+        into.Next = value;
+    }
+}

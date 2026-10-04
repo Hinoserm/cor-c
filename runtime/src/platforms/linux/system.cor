@@ -635,6 +635,14 @@ static class Platform
     /// reserve a card table for the whole address space (Gc, generations).
     public const bool MapsCommitLazily = true;
 
+    /// The scheduler's continuations are its own here: no kernel's run queue
+    /// to post them to (Scheduler.Post), and no context to flow with them
+    /// (AsyncContext) -- a Linux thread is the context.
+    public const long PostHook = 0;
+    public const long ContextHook = 0;
+    public const long CompletedHook = 0;
+    public const long TaskArenaBytes = 0;
+
     /// Free memory as the collector may ask it: with the heap held, so without
     /// allocating (SysinfoBytes answers into a page of the system's own).
     public static long FreeMemoryQuietly()

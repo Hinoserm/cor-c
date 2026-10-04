@@ -188,10 +188,12 @@ public static class ObjectLinkCommand
         // nothing the link proves about the whole program holds (closed
         // facts, reachability), and neither does a virtual call reaching only
         // the overrides the image itself holds -- a module's driver overrides
-        // the kernel's Driver.Bind.
+        // the kernel's Driver.Bind. NOR A MODULE: its units' calls reach the
+        // kernel's overrides too, and other modules'.
         int regenerated = IrLinkOptimizer.Run(inputs, () => backend ?? new ProcessUnitBackend(backendPath), lto, importBytes,
             closedImageEntry: (flat || closed || physicalAddress is not null) && exportsPath is null ? entry : null, parallelBackends: backend is null, regionReport: regionReport,
-            openTypes: exportsPath is not null, reachableFrom: keep is not null ? entry : null, keep: keep);
+            openTypes: exportsPath is not null || kernel is not null, reachableFrom: keep is not null ? entry : null, keep: keep,
+            moduleOfKernel: kernel is not null);
         int folded = LinkTimeOptimizer.Run(inputs, lto);
         LinkTimings.Phase("constant returns and coalescing");
         if (selected is not null) X86CodeGenerationContract.ValidateTarget(inputs, selected);

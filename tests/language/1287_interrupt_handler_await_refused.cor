@@ -1,0 +1,32 @@
+// test: await in an interrupt handler refused
+// expect-compile-error: is an interrupt handler and cannot await
+// A handler runs with interrupts off on the interrupt stack: it completes
+// what waits for it, and never waits itself.
+
+using System;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static int _ticks;
+
+    [InterruptHandler]
+    static void Tick()
+    {
+        _ticks++;
+        Later().GetAwaiter().GetResult();
+    }
+
+    [InterruptHandler]
+    static async Task Later()
+    {
+        await Task.Yield();
+    }
+
+    static int Main()
+    {
+        Tick();
+        Console.WriteLine(_ticks);
+        return 0;
+    }
+}

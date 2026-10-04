@@ -31,6 +31,31 @@ public static class Drivers
     }
 }
 
+// A KERNEL INTERFACE a module's class implements and the kernel calls
+// through: its slots are the kernel's, whatever interfaces a module adds
+// (Binder, a module's own tier) -- the several-file module's IAudio sorts
+// before it, and numbered beside it moved Probe in the module's view.
+public interface IDevice
+{
+    int Probe(int port);
+}
+
+public static class Devices
+{
+    static List<IDevice> _all = new List<IDevice>();
+
+    public static void Add(IDevice device) { _all.Add(device); }
+
+    public static int Count => _all.Count;
+
+    public static int ProbeAll(int port)
+    {
+        int found = 0;
+        foreach (IDevice device in _all) found += device.Probe(port);
+        return found;
+    }
+}
+
 public static class Log
 {
     public static int Lines;
@@ -77,6 +102,7 @@ static class Program
         // statics were not roots would find its string overwritten.
         GC.Collect();
         for (int i = 0; i < 20000; i++) _junk = "junk " + i;
+        if (Devices.Count > 0) Log.Write("probe " + Devices.ProbeAll(0x220));
         Log.Write("bind " + Drivers.Bind(0x220));
         Host.Done(0);
         return 0;

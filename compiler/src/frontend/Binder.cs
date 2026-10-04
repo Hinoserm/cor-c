@@ -25,6 +25,14 @@ public sealed partial class Binder
     private readonly Metadata.DeclarationBatch _declarationBatch = new();
     private readonly IReadOnlyDictionary<(string Name, int Arity), int>? _indexedInterfaces;
     private readonly IReadOnlySet<(string Name, int Arity)>? _libraryInterfaces;
+    /// <summary>
+    /// A kernel module's compile: every interface family the KERNEL'S index
+    /// holds. A family outside it is the module's own, and is numbered in a
+    /// tier of its own above the kernel's classes (see the numbering), so
+    /// that declaring one never moves a slot the kernel was built with.
+    /// Null for anything that is not a module.
+    /// </summary>
+    private readonly IReadOnlySet<(string Name, int Arity)>? _kernelInterfaces;
 
     /// <summary>
     /// Whether a source file belongs to the compiler's own libraries. Set by
@@ -849,9 +857,11 @@ public sealed partial class Binder
         IReadOnlyDictionary<(string Name, int Arity), int>? indexedInterfaces = null,
         Action<string, string>? requireExtensions = null,
         IReadOnlySet<(string Name, int Arity)>? libraryInterfaces = null,
-        Action<string, int>? requireOverrides = null)
+        Action<string, int>? requireOverrides = null,
+        IReadOnlySet<(string Name, int Arity)>? kernelInterfaces = null)
     {
         _file = file;
+        _kernelInterfaces = kernelInterfaces;
         _requireDeclaration = requireDeclaration;
         _requireExtensions = requireExtensions;
         _requireOverrides = requireOverrides;
@@ -891,15 +901,20 @@ public sealed partial class Binder
         IReadOnlyDictionary<(string Name, int Arity), int>? indexedInterfaces = null,
         Action<string, string>? requireExtensions = null,
         IReadOnlySet<(string Name, int Arity)>? libraryInterfaces = null,
-        Action<string, int>? requireOverrides = null, bool freshOnly = false)
+        Action<string, int>? requireOverrides = null, bool freshOnly = false,
+        IReadOnlySet<(string Name, int Arity)>? kernelInterfaces = null)
     {
-        Binder b = new(file, requireDeclaration, indexedInterfaces, requireExtensions, libraryInterfaces, requireOverrides);
+        Binder b = new(file, requireDeclaration, indexedInterfaces, requireExtensions, libraryInterfaces, requireOverrides, kernelInterfaces);
         b._freshOnly = freshOnly;
         b.Run(unit);
         // The declarations' tables carry straight on into the bodies': a copy
         // of every one, the original then dropped, was a unit's whole binding
         // made twice for the collector.
         b.CheckBodyWork();
+        // No await under a lock, nothing awaited or allocated in an interrupt
+        // handler: across the unit, now that every body is bound
+        // (Binder.AwaitChecks).
+        b.CheckAsyncSafety();
         b._r.StaticBytes = b._staticNext;
         return b._r;
     }
@@ -2000,12 +2015,21 @@ public sealed partial class Binder
         // what the sources cannot say, a family listed as the library's.
         bool IsLibraryInterface(TypeSymbol t, (string, int) family)
             => IsLibraryType(t) || (_libraryInterfaces?.Contains(family) ?? false);
-        SortedDictionary<(string, int), int> families = new(), local = new(), unitLocal = new();
+        // AND A MODULE'S OWN, in a kernel module's compile: a family the
+        // kernel's index does not hold. Numbered among the kernel's project
+        // families, as they were while a module was one compile against the
+        // kernel's index alone, one that sorted before a kernel family moved
+        // that family's slots, and every class the kernel's interface region
+        // ends below, in the module's view and not in the kernel's. They are
+        // numbered above the kernel's classes instead, where the kernel has
+        // nothing (moduleTier).
+        SortedDictionary<(string, int), int> families = new(), local = new(), unitLocal = new(), moduleTier = new();
         bool IsLibraryFamily((string, int) family, bool declaredHere)
             => _libraryInterfaces is null ? true : _libraryInterfaces.Contains(family) && !declaredHere;
+        bool IsModuleFamily((string, int) family) => _kernelInterfaces is not null && !_kernelInterfaces.Contains(family);
         if (_indexedInterfaces is not null)
             foreach (var family in _indexedInterfaces)
-                (IsLibraryFamily(family.Key, false) ? families : local)[family.Key] = family.Value;
+                (IsLibraryFamily(family.Key, false) ? families : IsModuleFamily(family.Key) ? moduleTier : local)[family.Key] = family.Value;
         foreach (TypeSymbol t in _r.Types.Values.Where(t => t.Kind == TypeKind.Interface))
         {
             (string, int) family = Family(t);
@@ -2015,8 +2039,8 @@ public sealed partial class Binder
                 continue;
             }
             bool library = IsLibraryInterface(t, family);
-            SortedDictionary<(string, int), int> into = library ? families : local;
-            if (library) local.Remove(family);
+            SortedDictionary<(string, int), int> into = library ? families : IsModuleFamily(family) ? moduleTier : local;
+            if (library) { local.Remove(family); moduleTier.Remove(family); }
             // THE DECLARED MEMBERS, not the copies this unit made beside them:
             // a copy of the interface's generic method is local to the unit,
             // and counting it gave the family one more slot here than in every
@@ -2078,6 +2102,8 @@ public sealed partial class Binder
                 Console.Error.WriteLine("  lib " + template + "`" + arity + " methods=" + methods);
             foreach (((string template, int arity), int methods) in local)
                 Console.Error.WriteLine("  project " + template + "`" + arity + " methods=" + methods);
+            foreach (((string template, int arity), int methods) in moduleTier)
+                Console.Error.WriteLine("  module " + template + "`" + arity + " methods=" + methods);
             foreach (((string template, int arity), int methods) in unitLocal)
                 Console.Error.WriteLine("  unit " + template + "`" + arity + " methods=" + methods);
         }
@@ -2095,15 +2121,26 @@ public sealed partial class Binder
             // project's own classes, per type and not per object.
             _interfaceSlots = _librarySlots + LibraryClassReserve;
             Number(local);
-            Assign(false);
+            if (moduleTier.Count == 0) Assign(false);
         }
         _projectClassSlots = _interfaceSlots;
+
+        // THE MODULE'S TIER: a fixed distance above where the kernel's
+        // classes begin their virtuals, as the project's own interfaces sit
+        // above the library's classes. Every unit of the module numbers the
+        // same families here, the module's index listing them all.
+        if (moduleTier.Count > 0)
+        {
+            _interfaceSlots = _projectClassSlots + ProjectClassReserve;
+            Number(moduleTier);
+            Assign(false);
+        }
 
         // Only closures the compiler made implement these, and they declare
         // no virtuals of their own, so the reserve is room to spare.
         if (unitLocal.Count > 0)
         {
-            _interfaceSlots = _projectClassSlots + ProjectClassReserve;
+            _interfaceSlots = (moduleTier.Count > 0 ? _interfaceSlots : _projectClassSlots) + ProjectClassReserve;
             Number(unitLocal);
             Assign(false, unitOnly: true);
         }
@@ -4096,6 +4133,7 @@ public sealed partial class Binder
             PopScope();
             SettleCapturedCells();
             _r.FrameSize[md] = _maxSlot;
+            NoteBoundBody(_method, md);
             _method = null;
         }
         _thisType = null;

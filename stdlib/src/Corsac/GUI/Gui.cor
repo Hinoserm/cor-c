@@ -228,6 +228,19 @@ enum SeatIoctl : long
     PageCreate = 0x47550900,
     PageSubmit = 0x47550901,
     PageDiscard = 0x47550902,
+    // Drag and drop, the seat's (seatdrag.cor).
+    DropRegister = 0x47550B00,
+    DropRevoke = 0x47550B01,
+    DragBegin = 0x47550B02,
+    DragPut = 0x47550B03,
+    DragAnswer = 0x47550B04,
+    DragGet = 0x47550B05,
+    DragDone = 0x47550B06,
+    DragFormats = 0x47550B07,
+    DragCancel = 0x47550B08,
+    DragBridgeTarget = 0x47550B09,
+    DragBridgeAnswer = 0x47550B0A,
+    DragBridgeDone = 0x47550B0B,
 }
 
 public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
@@ -1187,6 +1200,127 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
         ScrollCall(SeatIoctl.ScrollBarPaint, window, id, 0, 0, 0, 0, 0, 0, null);
     }
 
+    // ---- drag and drop, the seat's ------------------------------------------------------
+    //
+    // Shaped as OLE's: a window a drop target, a drag started with the
+    // effects allowed (DROPEFFECT_COPY 1, MOVE 2, LINK 4) and data by
+    // clipboard format, the seat's modal loop telling the target under the
+    // pointer, the target answering with the effect it would take, the drop,
+    // and the source told what was done. A Windows program's ole32 reaches a
+    // native drop target through the COM broker when the window is
+    // registered with the broker's cookie for its endpoint (an
+    // IInterfaceFromWindowProp, ComOle.cor), and a native drag reaches a
+    // Windows program's window the same way the other round (the
+    // DragBridge events).
+
+    /// To a target: A the MK_ key state | the allowed effects << 16, B x | y
+    /// << 16 on the screen. To the source: DragEnded (A the effect done),
+    /// DragRender (A a format wanted now), DragFeedback (A the effect shown).
+    public const int DragEnterEvent = 300, DragOverEvent = 301, DragLeaveEvent = 302, DragDropEvent = 303;
+    public const int DragEndedEvent = 304, DragRenderEvent = 305, DragFeedbackEvent = 306;
+    /// To the source, when the window under the pointer is a Windows
+    /// program's drop target: the same words as DragEnter ... DragDrop, for
+    /// it to carry to that window's ole32 (IInterfaceFromWindowProp::
+    /// PrivDragDrop) and answer with DragBridgeAnswer and DragBridgeDone.
+    public const int DragBridgeEnterEvent = 307, DragBridgeOverEvent = 308, DragBridgeLeaveEvent = 309, DragBridgeDropEvent = 310;
+
+    /// The window a drop target; `cookie` the COM broker's for its endpoint
+    /// (the COM runtime's IInterfaceFromWindowProp), 0 none.
+    public void RegisterDropTarget(int window, long cookie)
+    {
+        byte[] args = new byte[8];
+        PutWord(args, 0, window); PutWord(args, 4, cookie);
+        Ioctl(SeatIoctl.DropRegister, Sys.ArrayData(args));
+    }
+
+    public void RevokeDropTarget(int window) { Ioctl(SeatIoctl.DropRevoke, window); }
+
+    /// A drag from `window`: the effects allowed and the formats offered.
+    /// The seat's loop has the pointer from now until DragEnded.
+    public bool BeginDrag(int window, int effects, int[] formats)
+    {
+        Flush();
+        byte[] args = new byte[16];
+        PutWord(args, 0, window); PutWord(args, 4, effects); PutWord(args, 8, formats.Length); PutWord(args, 12, Sys.ArrayData(formats));
+        bool ok = Ioctl(SeatIoctl.DragBegin, Sys.ArrayData(args)) == 0;
+        GC.KeepAlive(formats);
+        return ok;
+    }
+
+    /// The source's data for a format of its drag.
+    public void PutDragData(int format, byte[] data)
+    {
+        byte[] args = new byte[12];
+        PutWord(args, 0, format); PutWord(args, 4, Sys.ArrayData(data)); PutWord(args, 8, data.Length);
+        Ioctl(SeatIoctl.DragPut, Sys.ArrayData(args));
+        GC.KeepAlive(data);
+    }
+
+    /// The target's answer to DragEnter or DragOver: the effect it would take.
+    public void AnswerDrag(int effect) { Ioctl(SeatIoctl.DragAnswer, effect); }
+
+    /// The target's answer to DragDrop: the effect it took.
+    public void DropDone(int effect) { Ioctl(SeatIoctl.DragDone, effect); }
+
+    public void CancelDrag() { Ioctl(SeatIoctl.DragCancel, 0); }
+
+    /// The COM broker's cookie for the endpoint of the Windows program's
+    /// window this program's drag is over (its "OleEndPointID"), its ole32
+    /// asked to make one first if it has none yet; 0 when there is none.
+    public long DragBridgeTarget(int window)
+    {
+        long cookie = Ioctl(SeatIoctl.DragBridgeTarget, window);
+        return cookie < 0 ? 0 : cookie;
+    }
+
+    /// What the Windows program's window would do with the drag (its answer
+    /// to DRAGOP_ENTER or DRAGOP_OVER), and what it did with the drop.
+    public void DragBridgeAnswer(int window, int effect) { BridgeWord(SeatIoctl.DragBridgeAnswer, window, effect); }
+    public void DragBridgeDone(int window, int effect) { BridgeWord(SeatIoctl.DragBridgeDone, window, effect); }
+
+    void BridgeWord(SeatIoctl request, int window, int effect)
+    {
+        byte[] args = new byte[8];
+        PutWord(args, 0, window); PutWord(args, 4, effect);
+        Ioctl(request, Sys.ArrayData(args));
+    }
+
+    /// The drag's formats.
+    public int[] DragFormatList()
+    {
+        int[] room = new int[64];
+        byte[] args = new byte[8];
+        PutWord(args, 0, Sys.ArrayData(room)); PutWord(args, 4, room.Length);
+        long n = Ioctl(SeatIoctl.DragFormats, Sys.ArrayData(args));
+        if (n > room.Length)
+        {
+            room = new int[(int)n];
+            PutWord(args, 0, Sys.ArrayData(room)); PutWord(args, 4, room.Length);
+            n = Ioctl(SeatIoctl.DragFormats, Sys.ArrayData(args));
+        }
+        GC.KeepAlive(room);
+        if (n <= 0) return new int[0];
+        int[] made = new int[(int)Math.Min(n, room.Length)];
+        Array.Copy(room, made, made.Length);
+        return made;
+    }
+
+    /// A format of the drag's, for its target: null when there is none (a
+    /// promise its source would not keep).
+    public byte[]? GetDragData(int format)
+    {
+        byte[] args = new byte[12];
+        PutWord(args, 0, format); PutWord(args, 4, 0); PutWord(args, 8, 0);
+        long n = Ioctl(SeatIoctl.DragGet, Sys.ArrayData(args));
+        if (n < 0) return null;
+        byte[] data = new byte[n];
+        if (n == 0) return data;
+        PutWord(args, 4, Sys.ArrayData(data)); PutWord(args, 8, data.Length);
+        long got = Ioctl(SeatIoctl.DragGet, Sys.ArrayData(args));
+        GC.KeepAlive(data);
+        return got == n ? data : null;
+    }
+
     /// A timer on `window` (0: this thread's) every `milliseconds` (at least
     /// 10), allowed to fire up to `tolerance` milliseconds early to go with
     /// another; its id -- `id`, or a new one for a thread timer of id 0 -- or
@@ -1950,7 +2084,7 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
         Ioctl(SeatIoctl.Size, (w & 0xFFFF) | (h << 16));
         Kept kept = new Kept();
         kept.Handle = handle; kept.X = x; kept.Y = y; kept.W = w; kept.H = h;
-        kept.Owner = (long)handle >> 12;            // the thread that made it (its handle says so)
+        kept.Owner = Ioctl(SeatIoctl.Whoami, 0);    // the thread that made it, for a restart
         lock (_keep) { kept.Start = _start; _kept.Add(kept); }
         return handle;
     }
@@ -2569,10 +2703,18 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
     /// or X button in the high word). 0, or a negative errno.
     public long InjectInput(byte[] item) { return item.Length >= 28 ? Ioctl(SeatIoctl.InjectInput, Sys.ArrayData(item)) : -22; }
 
-    /// VkKeyScan on the caller's layout: the virtual key a character types
-    /// in the low byte, the shift state above it (0x100 Shift, 0x200 Ctrl,
-    /// 0x400 Alt); 0xFFFF for a character no key types.
-    public int VkKeyScan(char c) { return (int)Ioctl(SeatIoctl.KeyboardMapKey, (c & 0xFFFF) | (4L << 32)) & 0xFFFF; }
+    /// A character injected with no key: VK_PACKET (0xE7), the character at
+    /// +12 of the INPUT record (the seat's InjectInput), down or up.
+    public long InjectChar(char c, bool down)
+    {
+        byte[] item = new byte[28];
+        item[0] = 1;
+        item[4] = 0xE7;
+        item[12] = (byte)c; item[13] = (byte)(c >> 8);
+        if (!down) item[20] = 2;
+        return InjectInput(item);
+    }
+
 
     /// Rows at the bottom of the screen a bar owns: windows keep out of them.
     public void ReserveBottom(int rows) { lock (_keep) { _reservedBottom = rows; } Ioctl(SeatIoctl.ReserveBottom, rows); }
@@ -2832,10 +2974,14 @@ public sealed class KeyObservedEventArgs : EventArgs
     public bool Up { get; }
     public bool Injected { get; }
     public System.Windows.Forms.Keys Modifiers { get; }
+    /// VK_PACKET's character (a character injected with no key: SendInput's
+    /// KEYEVENTF_UNICODE, InputTap.InjectChar); '\0' for any other key.
+    /// ScanCode is the character too, as Windows' KBDLLHOOKSTRUCT has it.
+    public char Character { get; }
     public bool Eat { get; set; }
 
-    internal KeyObservedEventArgs(int vk, int scan, bool up, bool injected, System.Windows.Forms.Keys mods)
-    { VirtualKey = vk; ScanCode = scan; Up = up; Injected = injected; Modifiers = mods; }
+    internal KeyObservedEventArgs(int vk, int scan, bool up, bool injected, System.Windows.Forms.Keys mods, char character = '\0')
+    { VirtualKey = vk; ScanCode = scan; Up = up; Injected = injected; Modifiers = mods; Character = character; }
 }
 
 /// A pointer input seen by an InputTap, before it is routed. Message is the
@@ -2899,7 +3045,9 @@ public sealed class InputTap : IDisposable
                     | ((mods & 1) != 0 ? System.Windows.Forms.Keys.Shift : System.Windows.Forms.Keys.None)
                     | ((mods & 2) != 0 ? System.Windows.Forms.Keys.Control : System.Windows.Forms.Keys.None)
                     | ((mods & 4) != 0 ? System.Windows.Forms.Keys.Alt : System.Windows.Forms.Keys.None);
-                KeyObservedEventArgs e = new KeyObservedEventArgs(vk, (lParam >> 16) & 0xFF, up, injected, k);
+                // VK_PACKET carries its character at +16 (the seat's TapItem).
+                int packet = vk == 0xE7 ? Int(item, 16) & 0xFFFF : 0;
+                KeyObservedEventArgs e = new KeyObservedEventArgs(vk, packet != 0 ? packet : (lParam >> 16) & 0xFF, up, injected, k, (char)packet);
                 KeyObserved(this, e);
                 eat = e.Eat;
             }
@@ -2928,6 +3076,15 @@ public sealed class InputTap : IDisposable
         PutInt(item, 4, virtualKey);
         PutInt(item, 20, down ? 0 : 2);
         _seat.InjectInput(item);
+    }
+
+    /// A character injected with no key (SendInput's KEYEVENTF_UNICODE):
+    /// VK_PACKET down or up, which a Windows program reads as WM_KEYDOWN
+    /// VK_PACKET and TranslateMessage makes the WM_CHAR of, and a native
+    /// window as the character's key press.
+    public void InjectChar(char c, bool down)
+    {
+        _seat.InjectChar(c, down);
     }
 
     /// The pointer moved, injected: to (x, y) on the screen.

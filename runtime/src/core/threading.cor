@@ -188,6 +188,10 @@ class Task
     Exception? _exception;
     Action? _first;
     List<Action>? _more;
+    // THE CONTEXT EACH CONTINUATION WAS REGISTERED IN (AsyncContext): what
+    // it resumes in. Null where the platform flows none (Linux), always.
+    AsyncContext? _firstContext;
+    List<AsyncContext?>? _moreContexts;
     System.Threading.Tasks.TaskCreationOptions _options;
     object? _asyncState;
 
@@ -486,29 +490,47 @@ class Task
 
         Action? first = _first;
         List<Action>? more = _more;
+        AsyncContext? firstContext = _firstContext;
+        List<AsyncContext?>? moreContexts = _moreContexts;
 
         _first = null;
         _more = null;
+        _firstContext = null;
+        _moreContexts = null;
 
         Atom.Exit(lockAt);
 
         if (first != null)
         {
-            Scheduler.Post(first);
+            Scheduler.Post(first, firstContext);
         }
         if (more != null)
         {
             for (int i = 0; i < more.Count; i++)
             {
-                Scheduler.Post(more[i]);
+                Scheduler.Post(more[i], moreContexts != null && i < moreContexts.Count ? moreContexts[i] : null);
             }
         }
     }
 
+    /// Step two for a caller that claimed in an interrupt handler and left
+    /// the rest to thread context (InterruptCompletions.Drain).
+    public void FinishClaimedSuccess()
+    {
+        Finish(RanToCompletion);
+    }
+
     /// Registers a continuation. Posted at once when the task is already
-    /// complete; otherwise kept, in registration order, until it is.
+    /// complete; otherwise kept, in registration order, until it is. The
+    /// context it is registered in -- the suspending method's, as .NET
+    /// captures ExecutionContext at AwaitUnsafeOnCompleted -- is what it
+    /// resumes in (AsyncContext).
     public void AddContinuation(Action continuation)
     {
+        // Captured before the lock: capturing may allocate, and nothing is
+        // made under an Atom lock.
+        AsyncContext? context = AsyncContext.Capture();
+        List<AsyncContext?>? contexts = null;
         long lockAt = Atom.At(this, Atom.SecondWord);
 
         Atom.Enter(lockAt);
@@ -516,25 +538,46 @@ class Task
         if (_state >= RanToCompletion)
         {
             Atom.Exit(lockAt);
-            Scheduler.Post(continuation);
+            Scheduler.Post(continuation, context);
             return;
         }
 
         if (_first == null)
         {
             _first = continuation;
+            _firstContext = context;
+            Atom.Exit(lockAt);
+            return;
         }
-        else
-        {
-            List<Action>? more = _more;
 
-            if (more == null)
+        List<Action>? more = _more;
+
+        if (more == null || (context != null && _moreContexts == null))
+        {
+            // Made outside the lock and tried again: the lists are small and
+            // a second registration is rare.
+            Atom.Exit(lockAt);
+            List<Action> madeMore = more ?? new List<Action>();
+            if (context != null || _moreContexts != null) contexts = _moreContexts ?? new List<AsyncContext?>();
+            Atom.Enter(lockAt);
+            if (_state >= RanToCompletion)
             {
-                more = new List<Action>();
-                _more = more;
+                Atom.Exit(lockAt);
+                Scheduler.Post(continuation, context);
+                return;
             }
-            more.Add(continuation);
+            if (_more == null) _more = madeMore;
+            if (contexts != null && _moreContexts == null)
+            {
+                // Contexts kept in step with the continuations already there.
+                for (int i = contexts.Count; i < _more.Count; i++) contexts.Add(null);
+                _moreContexts = contexts;
+            }
+            more = _more;
         }
+
+        more.Add(continuation);
+        if (_moreContexts != null) _moreContexts.Add(context);
 
         Atom.Exit(lockAt);
     }
@@ -938,6 +981,14 @@ class Task<T> : Task
     {
         return _result;
     }
+
+    /// Step two for a task an interrupt handler claimed (InterruptCompletions):
+    /// its value stored and its continuations posted, in thread context.
+    public void FinishClaimed(T value)
+    {
+        _result = value;
+        FinishSuccess();
+    }
 }
 
 /// STAND-IN for Task.FromResult<T> and Task.Run<T> until the binder bug in
@@ -985,7 +1036,12 @@ static class TaskErrors
 
 // ---- awaiters -----------------------------------------------------------------
 
-class TaskAwaiter
+// THE AWAITERS ARE STRUCTS, as .NET's are: `await t` on a task already
+// complete -- the common case in a kernel's hottest paths -- makes nothing at
+// all. GetAwaiter answers a value, IsCompleted says yes, GetResult reads the
+// outcome; only a real suspension keeps the awaiter, in the state machine
+// (a field of it, not an object of its own).
+struct TaskAwaiter
 {
     Task _task;
 
@@ -1019,7 +1075,7 @@ class TaskAwaiter
     }
 }
 
-class TaskAwaiter<T>
+struct TaskAwaiter<T>
 {
     Task<T> _task;
 
@@ -1053,7 +1109,7 @@ class TaskAwaiter<T>
 
 /// `task.ConfigureAwait(false)`. There is no synchronisation context to
 /// leave, so this awaits exactly as the task itself does.
-class ConfiguredTaskAwaitable
+struct ConfiguredTaskAwaitable
 {
     Task _task;
 
@@ -1068,7 +1124,7 @@ class ConfiguredTaskAwaitable
     }
 }
 
-class ConfiguredTaskAwaitable<T>
+struct ConfiguredTaskAwaitable<T>
 {
     Task<T> _task;
 
@@ -1086,7 +1142,7 @@ class ConfiguredTaskAwaitable<T>
 /// What Task.Yield() returns. .NET nests the awaiter as
 /// YieldAwaitable.YieldAwaiter; nested types are hoisted here, so it is
 /// YieldAwaiter.
-class YieldAwaitable
+struct YieldAwaitable
 {
     public YieldAwaiter GetAwaiter()
     {
@@ -1094,7 +1150,7 @@ class YieldAwaitable
     }
 }
 
-class YieldAwaiter
+struct YieldAwaiter
 {
     /// Never complete, so an await always suspends and requeues.
     public bool IsCompleted => false;
@@ -2298,6 +2354,7 @@ static partial class Scheduler
     // Made on first use, not at start-up: a static initialiser runs before
     // Main, and on bare metal Main is what says where the heap is.
     static Action?[] _ring = null!;
+    static AsyncContext?[] _ringContexts = null!;
     static int _head;
     static int _count;
     static AtomicCell? _gate;
@@ -2314,6 +2371,7 @@ static partial class Scheduler
         {
             Atom.CheckLayout();
             _ring = new Action?[16];
+            _ringContexts = new AsyncContext?[16];
             _timers = new TimerEntry?[8];
             g = new AtomicCell();
             _gate = g;
@@ -2387,14 +2445,15 @@ static partial class Scheduler
 
         while (true)
         {
-            Action? work = Take();
+            AsyncContext? context;
+            Action? work = Take(out context);
 
             if (work != null)
             {
                 // RunOne, like the event loop: the handler chain is this
                 // thread's own, so a work item that throws is caught here and
                 // reported rather than taking the process with it.
-                RunOne(work);
+                RunOne(work, context);
                 continue;
             }
 
@@ -2410,12 +2469,28 @@ static partial class Scheduler
         }
     }
 
-    /// Queues `work` to run on the scheduler, after everything already queued.
+    /// Queues `work` to run on the scheduler, after everything already queued,
+    /// in the context of whoever posts it (AsyncContext).
     public static void Post(Action work)
+    {
+        Post(work, AsyncContext.Capture());
+    }
+
+    /// Queues `work` to run in `context` (null: none to enter). WHERE IT GOES
+    /// IS THE PLATFORM'S: a kernel that runs the continuations itself installs
+    /// Platform.PostHook, and the work goes onto its run queue, drained by its
+    /// own scheduler loop (RunPosted); otherwise this scheduler's ring.
+    public static void Post(Action work, AsyncContext? context)
     {
         if (work == null)
         {
             throw new ArgumentNullException("work");
+        }
+
+        if (Platform.PostHook != 0)
+        {
+            Sys.Call(Platform.PostHook, Sys.Word(work), Sys.Word(context), 0);
+            return;
         }
 
         AtomicCell gate = Gate();
@@ -2434,6 +2509,7 @@ static partial class Scheduler
             at = at - _ring.Length;
         }
         _ring[at] = work;
+        _ringContexts[at] = context;
         _count = _count + 1;
 
         gate.Exit();
@@ -2447,7 +2523,7 @@ static partial class Scheduler
     /// How many items are waiting to run.
     public static int Pending => _count;
 
-    static Action? Take()
+    static Action? Take(out AsyncContext? context)
     {
         AtomicCell gate = Gate();
 
@@ -2456,13 +2532,16 @@ static partial class Scheduler
         if (_count == 0)
         {
             gate.Exit();
+            context = null;
             return null;
         }
 
         Action? work = _ring[_head];
+        context = _ringContexts[_head];
 
         // Cleared, so the ring does not keep finished work alive.
         _ring[_head] = null;
+        _ringContexts[_head] = null;
         _head = _head + 1;
         if (_head == _ring.Length)
         {
@@ -2479,7 +2558,9 @@ static partial class Scheduler
     static void Grow()
     {
         Action?[] old = _ring;
+        AsyncContext?[] oldContexts = _ringContexts;
         Action?[] bigger = new Action?[old.Length * 2];
+        AsyncContext?[] biggerContexts = new AsyncContext?[old.Length * 2];
 
         for (int i = 0; i < _count; i++)
         {
@@ -2490,23 +2571,91 @@ static partial class Scheduler
                 at = at - old.Length;
             }
             bigger[i] = old[at];
+            biggerContexts[i] = oldContexts[at];
         }
 
         _ring = bigger;
+        _ringContexts = biggerContexts;
         _head = 0;
     }
 
-    static void RunOne(Action work)
+    static void RunOne(Action work, AsyncContext? context)
     {
+        Exception? failed = RunPosted(work, context);
+        if (failed != null)
+        {
+            AsyncRuntime.Unhandled(failed);
+        }
+    }
+
+    /// One posted item run in its context -- entered first, left after,
+    /// whatever it did (AsyncContext.Enter) -- answering what escaped it, or
+    /// null. What a kernel's scheduler loop calls for each item its PostHook
+    /// was given: an exception there is the kernel's to report, never a
+    /// reason to stop the machine as Unhandled stops a program.
+    public static Exception? RunPosted(Action work, AsyncContext? context)
+    {
+        AsyncContextSaved saved = default(AsyncContextSaved);
+        if (context != null) saved = AsyncContext.Enter(context);
         try
         {
             work.Invoke();
+            return null;
         }
         catch (Exception e)
         {
-            AsyncRuntime.Unhandled(e);
+            return e;
+        }
+        finally
+        {
+            if (context != null) AsyncContext.Leave(context, saved);
         }
     }
+
+    // ---- what a kernel driving this scheduler from its own loop asks ------------
+
+    /// Every timer that is due by now posted (through PostHook, to the
+    /// kernel's queue), and every task an interrupt handler completed since
+    /// the last look finished (InterruptCompletions.Drain). Called by the
+    /// kernel's scheduler loop; nothing here sleeps.
+    public static void RunDue()
+    {
+        Gate();
+        InterruptCompletions.Drain();
+        DropCanceledTimers();
+        if (_timerCount > 0)
+        {
+            PostDueTimers(Clock.Now());
+        }
+    }
+
+    /// When the soonest live timer is due, on Clock.Now's scale, or -1 for
+    /// none: what a tickless kernel arms its clock for. SoonestHint set to
+    /// it as well.
+    public static long NextDeadline()
+    {
+        Gate();
+        DropCanceledTimers();
+        AtomicCell gate = Gate();
+        gate.Enter();
+        TimerEntry? next = _timerCount > 0 ? _timers[0] : null;
+        long due = next != null ? next.Deadline : -1;
+        _soonest = due + 1;
+        gate.Exit();
+        return due;
+    }
+
+    /// THE SOONEST TIMER, AS A WORD TO READ WITH NO GATE: what a kernel's
+    /// clock interrupt asks when it sets the clock for the next thing due --
+    /// it may not take the scheduler's gate, which the code it interrupted
+    /// may hold. Lowered by every AddTimer, set exactly by NextDeadline; a
+    /// timer canceled since leaves it early, which costs one look. -1: none.
+    public static long SoonestHint => _soonest - 1;
+
+    // The deadline plus one, 0 for none: zero-initialised, so Scheduler keeps
+    // no static constructor (one would run before a bare-metal Main says
+    // where the heap is).
+    static long _soonest;
 
     /// Runs queued work and timers until `task` completes. Throws
     /// InvalidOperationException when nothing left could complete it.
@@ -2527,19 +2676,28 @@ static partial class Scheduler
 
             while (round > 0 && !task.IsCompleted)
             {
-                Action? work = Take();
+                AsyncContext? context;
+                Action? work = Take(out context);
 
                 if (work == null)
                 {
                     break;
                 }
-                RunOne(work);
+                RunOne(work, context);
                 round = round - 1;
             }
 
             if (task.IsCompleted)
             {
                 return;
+            }
+
+            // What interrupt handlers completed since the last round: their
+            // continuations posted for the next.
+            InterruptCompletions.Drain();
+            if (_count > 0)
+            {
+                continue;
             }
 
             DropCanceledTimers();
@@ -2558,7 +2716,11 @@ static partial class Scheduler
 
                     if (_timerCount > 0 && next != null && next.Deadline > now)
                     {
-                        Clock.SleepUntil(Waking(now, next.Deadline));
+                        long until = Waking(now, next.Deadline);
+                        // A completion an interrupt may bring is looked for
+                        // every InterruptPollNanos, not only at the timer.
+                        if (InterruptCompletions.Armed > 0 && until > now + InterruptPollNanos) until = now + InterruptPollNanos;
+                        Clock.SleepUntil(until);
                     }
                 }
                 continue;
@@ -2566,6 +2728,14 @@ static partial class Scheduler
 
             if (_count == 0)
             {
+                // AN INTERRUPT MAY STILL COMPLETE IT: a device with a task
+                // armed for its completion (InterruptCompletions.Arm).
+                if (InterruptCompletions.Armed > 0)
+                {
+                    long at = Clock.Now();
+                    Clock.SleepUntil(at + InterruptPollNanos);
+                    continue;
+                }
                 // ANOTHER THREAD MAY STILL COMPLETE IT: one that took the item
                 // from this queue, or one that completes it directly.
                 if (GcThreads.Others())
@@ -2581,6 +2751,11 @@ static partial class Scheduler
 
     // How long a wait sleeps before it looks again while other threads run.
     const long OthersPollNanos = 200000;
+
+    // And while a device may complete a task from its interrupt: on bare
+    // metal the sleep halts until the next interrupt anyway, so this bounds
+    // only a sleep the clock would otherwise make longer.
+    const long InterruptPollNanos = 1000000;
 
     /// WHEN A SLEEPING WAIT LOOKS AGAIN: at the deadline it sleeps for, or
     /// sooner while other threads run. The queue is everybody's, so the item
@@ -2642,11 +2817,12 @@ static partial class Scheduler
 
         while (true)
         {
-            Action? work = Take();
+            AsyncContext? context;
+            Action? work = Take(out context);
 
             if (work != null)
             {
-                RunOne(work);
+                RunOne(work, context);
                 continue;
             }
 
@@ -2707,6 +2883,7 @@ static partial class Scheduler
         _timerCount = _timerCount + 1;
         _timers[at] = entry;
         SiftUp(at);
+        if (_soonest == 0 || deadline + 1 < _soonest) _soonest = deadline + 1;
 
         gate.Exit();
         return entry;
@@ -2759,9 +2936,11 @@ static partial class Scheduler
             RemoveTop();
             gate.Exit();
 
+            // A timer's callback is the runtime's own (a delay completing, a
+            // cancellation): no context of anybody's to enter.
             if (!top.Canceled)
             {
-                Post(top.Callback);
+                Post(top.Callback, null);
             }
         }
     }
@@ -3189,6 +3368,385 @@ static class ThreadPool
 
 
 
+// ---- the context a continuation resumes in --------------------------------------
+//
+// AS .NET FLOWS ExecutionContext: what is "current" when an await suspends is
+// what is current when its continuation runs, wherever and after whatever
+// else it runs. Captured where a continuation is registered (Task.
+// AddContinuation, a Post) and entered around the run (Scheduler.RunPosted).
+//
+// What travels:
+//   - the PLATFORM'S word, opaque here: a kernel's is the process the work
+//     is done for (UserMode.Current() and its address space), asked and set
+//     through Platform.ContextHook;
+//   - the flow's [ThreadStatic] table, so that a thread static belongs to the
+//     flow and not to whichever thread block -- processor -- it runs on.
+//
+// A REGION ARENA FOR EVERY RUN, not for every flow: a continuation runs from
+// the scheduler's frame and returns to it, so every region it opened is
+// closed or left behind by the time it returns -- nothing of a run lives in
+// its arena after it (the compiler proves a region's objects dead by its
+// call's return, and a suspended method's frame is gone). So the block's
+// own arena for continuations (Tls.TaskArena, Platform.TaskArenaBytes) is
+// put in for the run and given back cleared after it: what a flow made in
+// regions is released when its run ends, and the next run of any flow on
+// that block -- that processor -- starts with it empty. The block's own
+// region words (a kernel processor's: none) are put back.
+//
+// NOTHING IS CAPTURED where the platform flows nothing (Platform.ContextHook
+// 0: Linux, a loader, a boot test): no allocation, no word moved. Where it
+// does, a continuation registered inside a run shares that run's context,
+// as an ExecutionContext is shared until something changes it; only a root
+// -- an await outside any continuation, a system call starting work -- makes
+// one. The context in force is a word of the thread block (Tls.AsyncContext),
+// so every processor has its own.
+//
+// TWO RUNS OF ONE FLOW AT ONCE -- two branches of a WhenAll on two
+// processors -- share its owner but not its statics table: the first to
+// enter holds it, and the other runs with none of its own and keeps none.
+
+/// What a run in a context displaced, put back as it ends (AsyncContext).
+struct AsyncContextSaved
+{
+    public long Running;
+    public long OwnerWord;
+    public long Statics;
+    public bool HeldStatics;
+    public bool Arena;
+    public long RegionBase, RegionAt, RegionEnd, RegionOpen;
+}
+
+sealed class AsyncContext
+{
+    /// The platform's: what Platform.ContextHook captured (a kernel's process).
+    public object? Owner;
+    /// The flow's [ThreadStatic] cells (ThreadStatics), or null for none yet.
+    public object?[]? Statics;
+    // Whether a run has the statics table in (1) or not (0).
+    nint _staticsHeld;
+
+    // Platform.ContextHook's operations: the word now; a word made current,
+    // answering the one it displaced; that one put back.
+    public const long CaptureOp = 0, EnterOp = 1, LeaveOp = 2;
+
+    /// The context now, for a continuation being registered or posted: the
+    /// running one, its platform word asked afresh, or a new one at a root.
+    /// Null where the platform flows no context.
+    public static AsyncContext? Capture()
+    {
+        if (Platform.ContextHook == 0)
+        {
+            return null;
+        }
+        object? owner = Sys.FromWord(Sys.Call(Platform.ContextHook, CaptureOp, 0, 0));
+        AsyncContext? running = Running;
+        if (running != null)
+        {
+            running.Owner = owner;
+            return running;
+        }
+        AsyncContext made = new AsyncContext();
+        made.Owner = owner;
+        return made;
+    }
+
+    /// The context in force on this thread block, or null outside every
+    /// continuation.
+    public static AsyncContext? Running
+    {
+        get
+        {
+            long block = Sys.ThreadBlock();
+            return block == 0 ? null : Sys.FromWord(Sys.Peek(block + Tls.AsyncContext)) as AsyncContext;
+        }
+    }
+
+    /// `context` made current on this thread block: the platform's word, the
+    /// statics table (if no other run of the flow holds it) and, for an
+    /// outermost run, the block's task arena swapped in.
+    public static AsyncContextSaved Enter(AsyncContext context)
+    {
+        AsyncContextSaved saved = default(AsyncContextSaved);
+        long block = Sys.ThreadBlock();
+        if (Platform.ContextHook != 0)
+        {
+            saved.OwnerWord = Sys.Call(Platform.ContextHook, EnterOp, Sys.Word(context.Owner), 0);
+        }
+        if (block == 0)
+        {
+            return saved;
+        }
+        saved.Running = Sys.Peek(block + Tls.AsyncContext);
+        saved.Statics = Sys.Peek(block + Tls.ThreadStatics);
+        saved.HeldStatics = Sys.Cas(Sys.AddressOf(ref context._staticsHeld), 0, 1) == 0;
+        Sys.Poke(block + Tls.ThreadStatics, saved.HeldStatics ? Sys.Word(context.Statics) : 0);
+        if (saved.Running == 0 && Platform.TaskArenaBytes > 0)
+        {
+            long arena = Sys.Peek(block + Tls.TaskArena);
+            if (arena == 0)
+            {
+                arena = Platform.Map(Platform.TaskArenaBytes);
+                Sys.Poke(block + Tls.TaskArena, arena);
+            }
+            if (arena != 0)
+            {
+                saved.Arena = true;
+                saved.RegionBase = Sys.Peek(block + Tls.RegionBase);
+                saved.RegionAt = Sys.Peek(block + Tls.RegionAt);
+                saved.RegionEnd = Sys.Peek(block + Tls.RegionEnd);
+                saved.RegionOpen = Sys.Peek(block + Tls.RegionOpen);
+                Sys.Poke(block + Tls.RegionBase, arena);
+                Sys.Poke(block + Tls.RegionAt, arena);
+                Sys.Poke(block + Tls.RegionEnd, arena + Platform.TaskArenaBytes);
+                Sys.Poke(block + Tls.RegionOpen, 0);
+            }
+        }
+        Sys.Poke(block + Tls.AsyncContext, Sys.Word(context));
+        return saved;
+    }
+
+    /// The run in `context` over: the statics table it made or grew kept in
+    /// the context (when it held it), the task arena cleared and taken out,
+    /// and the block's own words put back.
+    public static void Leave(AsyncContext context, AsyncContextSaved saved)
+    {
+        long block = Sys.ThreadBlock();
+        if (block != 0)
+        {
+            long statics = Sys.Peek(block + Tls.ThreadStatics);
+            if (saved.HeldStatics)
+            {
+                if (statics != Sys.Word(context.Statics)) context.Statics = ThreadStatics.Flowing(statics);
+                Sys.AtomicSwap(Sys.AddressOf(ref context._staticsHeld), 0);
+            }
+            else if (statics != 0)
+            {
+                // A table this run made with the flow's in other hands: off
+                // the list, and nobody's.
+                ThreadStatics.Flowing(statics);
+            }
+            if (saved.Arena)
+            {
+                // The pointer first, as RegionLeave sets it: a scan of the
+                // block reads no further than the arena's start.
+                long arena = Sys.Peek(block + Tls.RegionBase);
+                long used = Sys.Peek(block + Tls.RegionAt) - arena;
+                Sys.Poke(block + Tls.RegionAt, arena);
+                Sys.Poke(block + Tls.RegionOpen, 0);
+                if (used > 0) Sys.MemorySet(arena, 0, used);
+                Sys.Poke(block + Tls.RegionBase, saved.RegionBase);
+                Sys.Poke(block + Tls.RegionAt, saved.RegionAt);
+                Sys.Poke(block + Tls.RegionEnd, saved.RegionEnd);
+                Sys.Poke(block + Tls.RegionOpen, saved.RegionOpen);
+            }
+            Sys.Poke(block + Tls.ThreadStatics, saved.Statics);
+            Sys.Poke(block + Tls.AsyncContext, saved.Running);
+        }
+        if (Platform.ContextHook != 0)
+        {
+            Sys.Call(Platform.ContextHook, LeaveOp, saved.OwnerWord, 0);
+        }
+    }
+}
+
+// ---- tasks an interrupt handler completes --------------------------------------
+//
+// AN INTERRUPT HANDLER ONLY COMPLETES. It may not allocate, wait, take a lock
+// a thread holds, or run what was waiting -- so it cannot call TrySetResult,
+// whose Finish posts continuations onto a queue that grows and takes the
+// scheduler's gate. What it does instead is the first half: it CLAIMS the
+// task (one compare-and-swap on its state word, so a completion from a
+// timeout or a cancellation and one from the device cannot both win), puts
+// the result in a word of a table made beforehand, and pushes the slot onto
+// a list the handler links through that table -- the task's queue link,
+// which needs no node and no allocation. The second half -- the result
+// stored in the task, the final state, the continuations posted in the
+// contexts they were registered in -- is thread context's: whoever drains
+// the list (Drain: the scheduler's round, a kernel's scheduler loop).
+//
+// A HANDLE, not a slot, is what a device keeps: the slot and its generation,
+// so a device whose late interrupt names a slot since drained and armed for
+// something else completes nothing. One processor's rules today: the free
+// list is thread context's alone, the ready list is pushed by handlers with
+// a compare-and-swap and taken whole by Drain with a swap.
+static class InterruptCompletions
+{
+    const int Slots = 256;
+
+    static Task?[] _held = null!;
+    static long[] _results = null!;
+    static int[] _links = null!;
+    static int[] _generations = null!;
+    static bool[] _typed = null!;
+    static nint _free;          // first free slot + 1, under the gate
+    static nint _ready;         // first completed slot + 1, pushed by handlers
+    static AtomicCell? _gate;
+    static nint _armed;
+
+    /// Slots armed and not yet drained: a device may still complete them.
+    public static long Armed => _armed;
+
+    /// Whether a handler has completed something Drain has not finished:
+    /// a word read, no gate, from any context.
+    public static bool Pending => _ready != 0;
+
+    static AtomicCell Gate()
+    {
+        AtomicCell? g = _gate;
+        if (g == null)
+        {
+            Atom.CheckLayout();
+            _held = new Task?[Slots];
+            _results = new long[Slots];
+            _links = new int[Slots];
+            _generations = new int[Slots];
+            _typed = new bool[Slots];
+            for (int i = 0; i < Slots - 1; i++) _links[i] = i + 2;
+            _links[Slots - 1] = 0;
+            _free = 1;
+            g = new AtomicCell();
+            _gate = g;
+        }
+        return g;
+    }
+
+    /// `task` armed for an interrupt handler to complete with a number (its
+    /// result): a handle above zero, or 0 when every slot is armed already.
+    /// Thread context: allocates the table at its first use.
+    public static long Arm(Task<long> task)
+    {
+        return ArmCore(task, true);
+    }
+
+    /// The same for a task with no result.
+    public static long Arm(Task task)
+    {
+        return ArmCore(task, false);
+    }
+
+    static long ArmCore(Task task, bool typed)
+    {
+        AtomicCell gate = Gate();
+        gate.Enter();
+        int slot = (int)_free - 1;
+        if (slot < 0)
+        {
+            gate.Exit();
+            return 0;
+        }
+        _free = _links[slot];
+        _links[slot] = 0;
+        // THE GENERATION BEFORE THE TASK: a handler on another processor
+        // that reads this slot's task with a stale handle reads the new
+        // generation after it (Complete), and completes nothing.
+        int generation = (_generations[slot] + 1) & 0x7FFF;
+        if (generation == 0) generation = 1;
+        _generations[slot] = generation;
+        Sys.Fence();
+        _typed[slot] = typed;
+        _results[slot] = 0;
+        _held[slot] = task;
+        gate.Exit();
+        Sys.AtomicAdd(Sys.AddressOf(ref _armed), 1);
+        return ((long)generation << 16) | (long)(slot + 1);
+    }
+
+    /// A task made and armed together: what a device's awaitable read hands
+    /// back. Thread context. The handle is 0 when nothing could be armed --
+    /// the caller then does without an interrupt's completion.
+    public static Task<long> Make(out long handle)
+    {
+        Task<long> task = new Task<long>();
+        handle = Arm(task);
+        return task;
+    }
+
+    /// THE HANDLER'S HALF, and the only thing a handler may call here: the
+    /// task `handle` names claimed with `result`, and its slot put on the
+    /// ready list. Nothing allocated, nothing waited for, no lock taken.
+    /// False for a handle not armed any more or a task already completed.
+    /// Thread context may call it too: a timeout's or a cancellation's
+    /// completion of the same task, of which only one wins.
+    public static bool Complete(long handle, long result)
+    {
+        int slot = (int)(handle & 0xFFFF) - 1;
+        int generation = (int)((handle >> 16) & 0x7FFF);
+        if (slot < 0 || slot >= Slots || _held == null || _generations[slot] != generation)
+        {
+            return false;
+        }
+        // The task, then the generation again: Arm writes them the other way
+        // round, so a slot re-armed in between is seen as such.
+        Task? task = _held[slot];
+        Sys.Fence();
+        if (task == null || _generations[slot] != generation || !task.TryClaim())
+        {
+            return false;
+        }
+        _results[slot] = result;
+        long at = Sys.AddressOf(ref _ready);
+        while (true)
+        {
+            long head = Sys.Peek(at);
+            _links[slot] = (int)head;
+            if (Sys.Cas(at, head, slot + 1) == head)
+            {
+                break;
+            }
+        }
+        // Somebody to finish it: a kernel's idle processor woken.
+        if (Platform.CompletedHook != 0)
+        {
+            Sys.Call(Platform.CompletedHook, 0, 0, 0);
+        }
+        return true;
+    }
+
+    /// THREAD CONTEXT'S HALF: every task handlers completed since the last
+    /// look given its result and final state, its continuations posted, and
+    /// its slot back on the free list. In the order they completed.
+    public static void Drain()
+    {
+        if (_gate == null || _ready == 0)
+        {
+            return;
+        }
+        long taken = Sys.AtomicSwap(Sys.AddressOf(ref _ready), 0);
+        // Pushed newest first: turned round, so the first completed runs first.
+        int reversed = 0;
+        int at = (int)taken;
+        while (at != 0)
+        {
+            int next = _links[at - 1];
+            _links[at - 1] = reversed;
+            reversed = at;
+            at = next;
+        }
+        AtomicCell gate = Gate();
+        at = reversed;
+        while (at != 0)
+        {
+            int slot = at - 1;
+            int next = _links[slot];
+            Task? task = _held[slot];
+            long result = _results[slot];
+            bool typed = _typed[slot];
+            gate.Enter();
+            _held[slot] = null;
+            _links[slot] = (int)_free;
+            _free = slot + 1;
+            gate.Exit();
+            Sys.AtomicAdd(Sys.AddressOf(ref _armed), -1);
+            if (task != null)
+            {
+                if (typed && task is Task<long> number) number.FinishClaimed(result);
+                else task.FinishClaimedSuccess();
+            }
+            at = next;
+        }
+    }
+}
+
 // ---- what the compiler calls around async methods ----------------------------
 
 static class AsyncRuntime
@@ -3224,9 +3782,24 @@ static class AsyncRuntime
 // ---- ValueTask and asynchronous disposal ---------------------------------------
 //
 // .NET's shapes and namespaces. A ValueTask is a struct that is either
-// already complete (default, CompletedTask) or stands for a Task; awaiting
-// it awaits that task. What `await using` calls: IAsyncDisposable's
-// DisposeAsync, awaited in the finally the using is lowered to.
+// already complete (default, CompletedTask, or holding its result) or stands
+// for a Task; awaiting it awaits that task. What `await using` calls:
+// IAsyncDisposable's DisposeAsync, awaited in the finally the using is
+// lowered to.
+//
+// NOTHING IS MADE FOR ONE ALREADY COMPLETE. Its awaiter holds the task --
+// none -- and the result itself, so awaiting a completed ValueTask<T> asks
+// IsCompleted, finds true, and takes the result, with no Task made for it
+// (AsTask, which makes one, is for a caller that wants a Task).
+//
+// AN `async ValueTask` METHOD (X86-BACKEND.md, "Async") keeps its state
+// machine in its caller's frame while it runs synchronously, and moves it
+// to the heap only at its first real suspension, where the task is made:
+// one that completes without suspending allocates nothing, as .NET's
+// AsyncValueTaskMethodBuilder boxes only at the first await that does not
+// complete synchronously. The compiler makes the result with the
+// constructors below: ValueTask(Task) and ValueTask<T>(Task<T>) for one that
+// suspended or faulted, ValueTask<T>(T) and default for one that did not.
 
 namespace System.Threading.Tasks
 {
@@ -3263,7 +3836,7 @@ namespace System.Threading.Tasks
         public Task AsTask() => _task ?? Task.CompletedTask;
 
         public System.Runtime.CompilerServices.ValueTaskAwaiter GetAwaiter()
-            => new System.Runtime.CompilerServices.ValueTaskAwaiter(AsTask());
+            => new System.Runtime.CompilerServices.ValueTaskAwaiter(_task, true);
 
         public static ValueTask FromResult() => default;
     }
@@ -3296,7 +3869,7 @@ namespace System.Threading.Tasks
         public Task<TResult> AsTask() => _task ?? Task.FromResult(_result);
 
         public System.Runtime.CompilerServices.ValueTaskAwaiter<TResult> GetAwaiter()
-            => new System.Runtime.CompilerServices.ValueTaskAwaiter<TResult>(AsTask());
+            => new System.Runtime.CompilerServices.ValueTaskAwaiter<TResult>(_task, _result);
     }
 }
 
@@ -3304,56 +3877,86 @@ namespace System.Runtime.CompilerServices
 {
     readonly struct ValueTaskAwaiter
     {
-        readonly Task _task;
+        // Null for a ValueTask that completed without a task: done, and
+        // nothing to rethrow.
+        readonly Task? _task;
 
         public ValueTaskAwaiter(Task task)
         {
             _task = task;
         }
 
-        public bool IsCompleted => _task.IsCompleted;
+        internal ValueTaskAwaiter(Task? task, bool fromValueTask)
+        {
+            _task = task;
+        }
+
+        public bool IsCompleted => _task is null || _task.IsCompleted;
 
         public void GetResult()
         {
-            if (!_task.IsCompleted)
+            Task? task = _task;
+            if (task is null)
             {
-                Scheduler.RunUntil(_task);
+                return;
             }
-            _task.ThrowIfNotSuccessful();
+            if (!task.IsCompleted)
+            {
+                Scheduler.RunUntil(task);
+            }
+            task.ThrowIfNotSuccessful();
         }
 
         public void OnCompleted(Action continuation)
         {
-            _task.AddContinuation(continuation);
+            Task? task = _task;
+            if (task is null) Scheduler.Post(continuation);
+            else task.AddContinuation(continuation);
         }
 
         public void UnsafeOnCompleted(Action continuation)
         {
-            _task.AddContinuation(continuation);
+            OnCompleted(continuation);
         }
     }
 
     readonly struct ValueTaskAwaiter<TResult>
     {
-        readonly System.Threading.Tasks.Task<TResult> _task;
+        // The task, or null with the result here already: a completed
+        // ValueTask<T> is awaited with no Task made for it.
+        readonly System.Threading.Tasks.Task<TResult>? _task;
+        readonly TResult _result;
 
         public ValueTaskAwaiter(System.Threading.Tasks.Task<TResult> task)
         {
             _task = task;
+            _result = default!;
         }
 
-        public bool IsCompleted => _task.IsCompleted;
+        internal ValueTaskAwaiter(System.Threading.Tasks.Task<TResult>? task, TResult result)
+        {
+            _task = task;
+            _result = result;
+        }
 
-        public TResult GetResult() => _task.GetAwaiter().GetResult();
+        public bool IsCompleted => _task is null || _task.IsCompleted;
+
+        public TResult GetResult()
+        {
+            System.Threading.Tasks.Task<TResult>? task = _task;
+            return task is null ? _result : task.GetAwaiter().GetResult();
+        }
 
         public void OnCompleted(Action continuation)
         {
-            _task.AddContinuation(continuation);
+            System.Threading.Tasks.Task<TResult>? task = _task;
+            if (task is null) Scheduler.Post(continuation);
+            else task.AddContinuation(continuation);
         }
 
         public void UnsafeOnCompleted(Action continuation)
         {
-            _task.AddContinuation(continuation);
+            OnCompleted(continuation);
         }
     }
 }
@@ -3538,6 +4141,22 @@ namespace System.Threading
             return previous;
         }
 
+        /// A permit taken now if one is free, and nothing made either way:
+        /// AsyncLock's uncontended path (Wait(0) answers through a task).
+        public bool TryTakeNow()
+        {
+            CheckDisposed();
+            long gate = Atom.At(this, Atom.SecondWord);
+            Atom.Enter(gate);
+            bool took = _count > 0;
+            if (took)
+            {
+                _count = _count - 1;
+            }
+            Atom.Exit(gate);
+            return took;
+        }
+
         /// Takes a waiter that gave up out of the queue, saying whether it was
         /// still there (and so had not been granted a permit).
         public bool Withdraw(SemaphoreWaiter waiter)
@@ -3648,6 +4267,78 @@ namespace System.Threading
         public SemaphoreFullException(string message) : base(message) { }
         public SemaphoreFullException(string message, Exception? inner) : base(message, inner) { }
     }
+
+    /// AN AWAITABLE LOCK, for a hold that awaits (docs/X86-BACKEND.md, "Async safety"):
+    ///
+    ///     using (await gate.LockAsync())
+    ///     {
+    ///         ... await disc.Read(...) ...
+    ///     }
+    ///
+    /// The locks that may not be held across an await -- IrqSpinLock,
+    /// KernelGate, Ring1Lock, IoOwnership, Monitor -- are for short holds that
+    /// never suspend; the compiler refuses an await under one. This one is
+    /// what a long hold takes instead: a waiter is a task that is completed
+    /// when the lock is given back, so it holds no processor and no thread
+    /// while it waits, and the continuation that holds it may run anywhere.
+    /// It is not reentrant, as a SemaphoreSlim(1, 1) is not.
+    ///
+    /// Taken uncontended it makes nothing: the ValueTask holds the releaser
+    /// itself (SemaphoreSlim.TryTakeNow). Contended, the wait is the
+    /// semaphore's. Core runtime only -- no class library -- so a freestanding
+    /// kernel has it.
+    class AsyncLock
+    {
+        readonly SemaphoreSlim _gate = new SemaphoreSlim(1, 1);
+
+        /// Taken: a releaser whose Dispose gives it back.
+        public System.Threading.Tasks.ValueTask<AsyncLockReleaser> LockAsync()
+        {
+            if (_gate.TryTakeNow())
+            {
+                return new System.Threading.Tasks.ValueTask<AsyncLockReleaser>(new AsyncLockReleaser(this));
+            }
+            return new System.Threading.Tasks.ValueTask<AsyncLockReleaser>(LockSlow());
+        }
+
+        async Task<AsyncLockReleaser> LockSlow()
+        {
+            await _gate.WaitAsync();
+            return new AsyncLockReleaser(this);
+        }
+
+        /// Whether it was free, and is taken now; the caller gives it back.
+        public bool TryLock() => _gate.TryTakeNow();
+
+        /// Given back: the longest waiter, if any, takes it next.
+        public void Release()
+        {
+            _gate.Release();
+        }
+
+        /// Whether somebody holds it now.
+        public bool IsHeld => _gate.CurrentCount == 0;
+    }
+
+    /// What AsyncLock.LockAsync hands back: disposing it gives the lock back.
+    readonly struct AsyncLockReleaser : IDisposable
+    {
+        readonly AsyncLock? _owner;
+
+        public AsyncLockReleaser(AsyncLock owner)
+        {
+            _owner = owner;
+        }
+
+        public void Dispose()
+        {
+            AsyncLock? owner = _owner;
+            if (owner is not null)
+            {
+                owner.Release();
+            }
+        }
+    }
 }
 
 
@@ -3750,6 +4441,34 @@ static class ThreadStatics
         node.Previous = null;
     }
 
+    /// THE TABLE A FLOW MADE OR GREW while it ran on a thread block
+    /// (AsyncContext.Leave): taken off the list of threads' tables, which
+    /// would keep it for ever once the flow ended, and handed to the context
+    /// that carries the flow -- which is all that keeps it from then on. The
+    /// block's word is the caller's to put back. Null for no table.
+    public static object?[]? Flowing(long word)
+    {
+        object?[]? cells = Sys.FromWord(word) as object?[];
+        if (cells is null)
+        {
+            return null;
+        }
+        ThreadStaticTable node = (ThreadStaticTable)cells[0]!;
+        if (node.Flows)
+        {
+            return cells;
+        }
+        Enter();
+        if (node.Previous is not null) node.Previous.Next = node.Next;
+        else if (_tables == node) _tables = node.Next;
+        if (node.Next is not null) node.Next.Previous = node.Previous;
+        node.Next = null;
+        node.Previous = null;
+        node.Flows = true;
+        Leave();
+        return cells;
+    }
+
     static void Enter()
     {
         while ((int)Sys.Cas(Sys.AddressOf(ref _lock), 0, 1) != 0)
@@ -3770,4 +4489,7 @@ sealed class ThreadStaticTable
     public object?[]? Cells;
     public ThreadStaticTable? Next;
     public ThreadStaticTable? Previous;
+    /// A flow's table (AsyncContext), off the list: what keeps it is the
+    /// context that carries it, not the list of threads' tables.
+    public bool Flows;
 }

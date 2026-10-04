@@ -134,6 +134,19 @@ for source in "$here"/[0-9]*.cor; do
             [ "$got" -ge "$least" ] || wrong="$function has $got of $word, not $least"
         fi
 
+        counted="$(header "$source" "expect-asm-count-$target")"
+        if [ -z "$wrong" ] && [ -n "$counted" ]; then
+            function="${counted%%:*}"
+            set -- ${counted#*:}
+            word="$1"; least="$2"
+            body="$(objdump -d --no-show-raw-insn "$exe" | awk -v f="_${function}_" '
+                /^[0-9a-f]+ <.*>:$/ { on = index($0, f) > 0 }
+                on { print }')"
+            [ -z "$body" ] && body="$(objdump -d --no-show-raw-insn "$exe" | awk '/^[0-9a-f]+ <.*>:$/ { on = index($0, "_Main_") > 0 } on { print }')"
+            got="$(grep -cF -- "$word" <<< "$body")"
+            [ "$got" -ge "$least" ] || wrong="$function has $got of $word, not $least"
+        fi
+
         readelf_want="$(header "$source" "expect-readelf-$target")"
         if [ -z "$wrong" ] && [ -n "$readelf_want" ] && ! readelf -hlW "$exe" | grep -qF -- "$readelf_want"; then
             wrong="readelf does not show '$readelf_want'"

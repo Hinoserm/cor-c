@@ -155,3 +155,18 @@ The initial end-to-end fixtures compile three consumers against an index, link
 their objects with a separately compiled provider, and check namespace, alias
 and qualified references. An unrelated unresolved type in the same namespace
 proves that namespace import is not eager payload loading.
+
+## An index made on another
+
+`corc index --on BASE` makes a kernel module's index: the module's own
+declarations, and one record keyed `K:on` whose payload is the 32-byte build
+stamp of BASE (DeclarationStamp) followed by BASE's full path in UTF-8. A
+reader opening such an index opens BASE under it, refuses it when BASE's stamp
+is no longer the one recorded, and answers every exact and prefix lookup from
+BASE first and then from its own records -- the kernel's declarations through
+the kernel's index, the module's through the module's. Writing it refuses a
+type whose `T:` key BASE already holds: the two would read as fragments of one
+partial type. The build stamp a module carries is still BASE's hash
+(`--decl-index` names BASE, `--module-index` the index made on it), and the
+interface families BASE lists are the kernel's; the rest are the module's,
+numbered in a tier of their own above the kernel's classes (Binder).

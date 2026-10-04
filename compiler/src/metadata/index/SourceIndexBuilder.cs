@@ -42,14 +42,31 @@ public static class SourceIndexBuilder
     public static void Write(string output, IEnumerable<string> paths, string assembly,
         IReadOnlyCollection<string>? symbols = null, int memoryBytes = 1024 * 1024,
         IReadOnlyDictionary<string, IReadOnlyCollection<string>>? fileSymbols = null,
-        Func<string, bool>? librarySource = null)
+        Func<string, bool>? librarySource = null, string? on = null)
     {
         string identity = AssemblyIdentity(assembly);
+        // ON ANOTHER INDEX (a kernel module's on its kernel's): this one
+        // holds the module's own declarations and a record naming the index
+        // under it with that index's stamp, and a reader answers from both
+        // (DeclarationIndex.Under). A type the index under it declares is
+        // refused: two declarations of one name would be read as one partial
+        // type, and a module redefining the kernel's would not be the kernel's.
+        string? onPath = on is null ? null : System.IO.Path.GetFullPath(on);
+        using DeclarationIndex? under = onPath is null ? null : new DeclarationIndex(onPath);
+        byte[]? onStamp = onPath is null ? null : DeclarationStamp.Of(onPath);
         string[] files = paths.Select(System.IO.Path.GetFullPath).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
         if (files.Contains(System.IO.Path.GetFullPath(output), StringComparer.Ordinal))
             throw new ArgumentException("Declaration index output would overwrite a source file");
         IEnumerable<DeclarationRecord> Records()
         {
+            if (onPath is not null)
+            {
+                byte[] path = Encoding.UTF8.GetBytes(onPath);
+                byte[] payload = new byte[32 + path.Length];
+                Array.Copy(onStamp!, payload, 32);
+                Array.Copy(path, 0, payload, 32, path.Length);
+                yield return new DeclarationRecord(DeclarationIndex.OnKey, payload);
+            }
             List<(string Path, byte[] Hash)> snapshots = new();
             foreach (string path in files)
             {
@@ -114,6 +131,9 @@ public static class SourceIndexBuilder
                         foreach (var alias in scope.Aliases) { writer.Write(alias.In); writer.Write(alias.Alias); writer.Write(alias.Target); }
                     }
                     string key = "T:" + identity + "\n" + TypeName(type);
+                    if (under is not null && under.Find(key).Any())
+                        throw new InvalidDataException(path + ": " + TypeName(type) + " is declared by the index this one is made on ("
+                            + onPath + "); a module may not declare a type of its kernel's");
                     yield return new SourceDeclaration
                     {
                         Key = key, Path = path, Text = syntax,
