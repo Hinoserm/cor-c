@@ -270,6 +270,7 @@ internal sealed class RegionEscape
     {
         if (a.Name != b.Name || a.Parameters != b.Parameters || a.Nodes != b.Nodes || a.Slots != b.Slots || a.Instance != b.Instance
             || a.ConstantsKnown != b.ConstantsKnown || !a.NumberParams.AsSpan().SequenceEqual(b.NumberParams)
+            || !a.Families.AsSpan().SequenceEqual(b.Families)
             || a.Constraints.Count != b.Constraints.Count || a.Calls.Count != b.Calls.Count || a.Sites.Length != b.Sites.Length || a.Loops.Count != b.Loops.Count)
             return false;
         for (int i = 0; i < a.Constraints.Count; i++) if (a.Constraints[i] != b.Constraints[i]) return false;
@@ -322,6 +323,20 @@ internal sealed class RegionEscape
     // is still handed on.
     private bool NumberArgument(int[]? targets, int a)
         => targets is { Length: > 0 } && targets.All(t => _functions[t].IsNumber(a));
+
+    // THE FIELD A TYPED LOAD OR STORE NAMES (RegionConstraint.Family), one
+    // number for each name however many units name it: a function's own
+    // index into its Families, or -1 for none, as a number every function
+    // shares.
+    private readonly Dictionary<string, int> _familyIds = new(StringComparer.Ordinal);
+
+    private int FamilyOf(RegionFunction f, int local)
+    {
+        if (local < 0 || local >= f.Families.Length) return -1;
+        string name = f.Families[local];
+        if (!_familyIds.TryGetValue(name, out int id)) _familyIds[name] = id = _familyIds.Count;
+        return id;
+    }
 
     // ---- where an object came from ----------------------------------------
     //
@@ -2132,8 +2147,10 @@ internal sealed class RegionEscape
         // Nodes: the members' own, then those calls and cells add.
         private readonly List<LocSet?> _pts = new();
         private readonly List<List<(int To, int Shift)>?> _copies = new();
-        private readonly List<List<(int Dest, int Offset)>?> _loads = new();
-        private readonly List<List<(int Value, int Offset)>?> _stores = new();
+        // Each with the field's family a typed access names (RegionConstraint.Family,
+        // as the owner numbers it; -1 for none).
+        private readonly List<List<(int Dest, int Offset, int Family)>?> _loads = new();
+        private readonly List<List<(int Value, int Offset, int Family)>?> _stores = new();
         private readonly List<List<int>?> _readsAll = new();
         // What each node has gained since it was last carried on, in the
         // order it came: a buffer taken from _spareDeltas and given back once
@@ -2541,18 +2558,18 @@ internal sealed class RegionEscape
             else for (int i = 0, n = pts.Count; i < n; i++) Add(to, Shift(pts.Items[i], shift));
         }
 
-        private void LoadEdge(int dest, int address, int offset)
+        private void LoadEdge(int dest, int address, int offset, int family = -1)
         {
             address = Find(address);
-            (_loads[address] ??= new()).Add((dest, offset));
-            if (_pts[address] is { } pts) for (int i = 0, n = pts.Count; i < n; i++) Loaded(pts.Items[i], dest, offset);
+            (_loads[address] ??= new()).Add((dest, offset, family));
+            if (_pts[address] is { } pts) for (int i = 0, n = pts.Count; i < n; i++) Loaded(pts.Items[i], dest, offset, family);
         }
 
-        private void StoreEdge(int address, int offset, int value)
+        private void StoreEdge(int address, int offset, int value, int family = -1)
         {
             address = Find(address);
-            (_stores[address] ??= new()).Add((value, offset));
-            if (_pts[address] is { } pts) for (int i = 0, n = pts.Count; i < n; i++) Stored(pts.Items[i], value, offset);
+            (_stores[address] ??= new()).Add((value, offset, family));
+            if (_pts[address] is { } pts) for (int i = 0, n = pts.Count; i < n; i++) Stored(pts.Items[i], value, offset, family);
         }
 
         // Every cell of what `address` points to, into `dest`.
@@ -2631,7 +2648,7 @@ internal sealed class RegionEscape
 
         private readonly HashSet<long> _loadedFrom = new();
 
-        private void Loaded(int loc, int dest, int offset)
+        private void Loaded(int loc, int dest, int offset, int family = -1)
         {
             int o = _locObject[loc];
             if (IsConstant(o)) { Add(dest, Constant); return; }
@@ -2645,7 +2662,9 @@ internal sealed class RegionEscape
             // What was written at an offset nobody knew may be here too.
             int any = Cell(o, Any);
             if (_loadedFrom.Add(Pair(any, dest))) CopyEdge(any, dest, 0);
-            Aliasing(o, dest);
+            // Typed only from the object's start: at an address into it, the
+            // field named is not where the offset says.
+            Aliasing(o, dest, at, _locOffset[loc] == 0 ? family : -1);
             Add(dest, Implicit(o, at));
         }
 
@@ -2659,7 +2678,7 @@ internal sealed class RegionEscape
             if (!readers.Add(dest)) return;
             Cell(o, Any);
             foreach (int node in _cells[o].Values.ToArray()) CopyEdge(node, dest, 0);
-            Aliasing(o, dest);
+            Aliasing(o, dest, Any, -1);
             Add(dest, Implicit(o, Any));
         }
 
@@ -2671,15 +2690,65 @@ internal sealed class RegionEscape
         // each object, each fed all that is written into places, carried a
         // hundred million locations on the compiler's own link.)
         private readonly HashSet<int> _placedMade = new(), _unknownMade = new();
-        private readonly Dictionary<int, List<int>> _loadsOf = new();
+        private readonly Dictionary<int, List<(int Dest, int At, int Family)>> _loadsOf = new();
         private readonly HashSet<long> _fedFrom = new();
         private int _written = -1;
 
-        private void Aliasing(int o, int dest)
+        // WHAT IS WRITTEN INTO PLACES, BY FIELD (RegionConstraint.Family): a
+        // place's word that every write named one field of a class -- an
+        // object of that class, at its start, at that field's offset -- is
+        // written into its own node for that field, read only by loads that
+        // name the same field or name none (at any offset, through an
+        // address into an object, by the runtime's raw reads). Every other
+        // word, untyped or written two ways, is _written, read by every
+        // load. Two words at one offset of one object are one field, so a
+        // load naming another field never reads what this one was written:
+        // in a type-safe program they are never the same object. (One node
+        // for all of them, an instruction's field read back from a type
+        // symbol's: every graph a function was handed, one.)
+        private readonly Dictionary<long, int> _typedWritten = new();
+        private readonly List<int> _wideReaders = new();
+        // Per cell node of a place: the family every write into it named, -2 written two ways or untyped.
+        private readonly Dictionary<int, int> _cellFamily = new();
+
+        private int WrittenNode()
+        {
+            if (_written < 0) { _written = NewNode(); _nodeFlags[_written] |= NeverSaturated; }
+            return _written;
+        }
+
+        private int TypedWritten(int at, int family)
+        {
+            long key = Pair(at, family);
+            if (_typedWritten.TryGetValue(key, out int node)) return node;
+            node = NewNode();
+            _nodeFlags[node] |= NeverSaturated;
+            _typedWritten[key] = node;
+            foreach (int reader in _wideReaders) Feed(node, reader);
+            return node;
+        }
+
+        private void Feed(int from, int dest)
+        {
+            if (_fedFrom.Add(Pair(from, dest))) CopyEdge(from, dest, 0);
+        }
+
+        // A load of an object a place reaches: what is written into places
+        // that it may read (above).
+        private void FeedAliased(int dest, int at, int family)
+        {
+            Feed(WrittenNode(), dest);
+            if (family >= 0 && at != Any) { Feed(TypedWritten(at, family), dest); return; }
+            if (_wideReaders.Contains(dest)) return;
+            _wideReaders.Add(dest);
+            foreach (int node in _typedWritten.Values.ToArray()) Feed(node, dest);
+        }
+
+        private void Aliasing(int o, int dest, int at, int family)
         {
             if (_kind[o] != Kind.Made) return;
-            (_loadsOf.TryGetValue(o, out List<int>? loads) ? loads : _loadsOf[o] = new()).Add(dest);
-            if (_placedMade.Contains(o) && _fedFrom.Add(Pair(_written, dest))) CopyEdge(_written, dest, 0);
+            (_loadsOf.TryGetValue(o, out var loads) ? loads : _loadsOf[o] = new()).Add((dest, at, family));
+            if (_placedMade.Contains(o)) FeedAliased(dest, at, family);
             if (_unknownMade.Contains(o)) Add(dest, Unknown);
         }
 
@@ -2687,13 +2756,14 @@ internal sealed class RegionEscape
         {
             // A member's blob is read as the member is, and a blob's members
             // as it is: walked, not recursed, over however long a chain.
+            // Each load is fed what its field was written (FeedAliased).
             Stack<int> next = new();
             next.Push(start);
             while (next.TryPop(out int o))
             {
                 if (!_placedMade.Add(o)) continue;
-                if (_loadsOf.TryGetValue(o, out List<int>? loads))
-                    foreach (int dest in loads.ToArray()) if (_fedFrom.Add(Pair(_written, dest))) CopyEdge(_written, dest, 0);
+                if (_loadsOf.TryGetValue(o, out var loads))
+                    foreach (var (dest, at, family) in loads.ToArray()) FeedAliased(dest, at, family);
                 if (_blobsOf.TryGetValue(o, out List<int>? blobs)) foreach (int blob in blobs) next.Push(blob);
                 if (_membersOf.TryGetValue(o, out List<int>? members)) foreach (int member in members) next.Push(member);
             }
@@ -2706,7 +2776,7 @@ internal sealed class RegionEscape
             while (next.TryPop(out int o))
             {
                 if (!_unknownMade.Add(o)) continue;
-                if (_loadsOf.TryGetValue(o, out List<int>? loads)) foreach (int dest in loads.ToArray()) Add(dest, Unknown);
+                if (_loadsOf.TryGetValue(o, out var loads)) foreach (var load in loads.ToArray()) Add(load.Dest, Unknown);
                 if (_blobsOf.TryGetValue(o, out List<int>? blobs)) foreach (int blob in blobs) next.Push(blob);
                 if (_membersOf.TryGetValue(o, out List<int>? members)) foreach (int member in members) next.Push(member);
             }
@@ -2714,7 +2784,7 @@ internal sealed class RegionEscape
 
         private readonly HashSet<long> _storedInto = new();
 
-        private void Stored(int loc, int value, int offset)
+        private void Stored(int loc, int value, int offset, int family = -1)
         {
             int o = _locObject[loc];
             int at = Offset(_locOffset[loc], offset);
@@ -2722,6 +2792,13 @@ internal sealed class RegionEscape
             // never written: nothing anyone reaches.
             if (NoReference(o, at) || IsConstant(o)) return;
             int cell = Cell(o, at);
+            // A place's word: which field every write into it named (Aliased).
+            if (_kind[o] is Kind.Place or Kind.Deep)
+            {
+                int named = family >= 0 && at != Any && _locOffset[loc] == 0 ? family : -2;
+                if (!_cellFamily.TryGetValue(cell, out int had)) _cellFamily[cell] = named;
+                else if (had != named) _cellFamily[cell] = -2;
+            }
             if (_storedInto.Add(Pair(value, cell))) CopyEdge(value, cell, 0);
         }
 
@@ -2763,8 +2840,8 @@ internal sealed class RegionEscape
                         // a symbol the link did not judge is the unknown object.
                         case RegionConstraintKind.Symbol: Add(a, f.ConstantsKnown ? Constant : Unknown); break;
                         case RegionConstraintKind.Copy: CopyEdge(Node(m, c.B), a, CopyShift(c.C)); break;
-                        case RegionConstraintKind.Load: LoadEdge(a, Node(m, c.B), Plain(c.C)); break;
-                        case RegionConstraintKind.Store: StoreEdge(a, Plain(c.C), Node(m, c.B)); break;
+                        case RegionConstraintKind.Load: LoadEdge(a, Node(m, c.B), Plain(c.C), _owner.FamilyOf(f, c.Family)); break;
+                        case RegionConstraintKind.Store: StoreEdge(a, Plain(c.C), Node(m, c.B), _owner.FamilyOf(f, c.Family)); break;
                         case RegionConstraintKind.MemCopy:
                         {
                             int through = NewNode();
@@ -3406,14 +3483,14 @@ internal sealed class RegionEscape
                 if (_loads[n] is { } loads)
                     for (int e = 0; e < loads.Count; e++)
                     {
-                        (int dest, int offset) = loads[e];
-                        for (int k = 0; k < count; k++) Loaded(delta[k], dest, offset);
+                        (int dest, int offset, int family) = loads[e];
+                        for (int k = 0; k < count; k++) Loaded(delta[k], dest, offset, family);
                     }
                 if (_stores[n] is { } stores)
                     for (int e = 0; e < stores.Count; e++)
                     {
-                        (int value, int offset) = stores[e];
-                        for (int k = 0; k < count; k++) Stored(delta[k], value, offset);
+                        (int value, int offset, int family) = stores[e];
+                        for (int k = 0; k < count; k++) Stored(delta[k], value, offset, family);
                     }
                 if (_readsAll[n] is { } all)
                     for (int e = 0; e < all.Count; e++)
@@ -3528,8 +3605,8 @@ internal sealed class RegionEscape
                 if (n == keep) continue;
                 if (_deltaBuf[n] is { } pending) { _spareDeltas.Push(pending); _deltaBuf[n] = null; _deltaLen[n] = 0; }
                 if (_copies[n] is { } copies) { _copies[n] = null; foreach ((int to, int shift) in copies) CopyEdge(keep, to, shift); }
-                if (_loads[n] is { } loads) { _loads[n] = null; foreach ((int dest, int offset) in loads) LoadEdge(dest, keep, offset); }
-                if (_stores[n] is { } stores) { _stores[n] = null; foreach ((int value, int offset) in stores) StoreEdge(keep, offset, value); }
+                if (_loads[n] is { } loads) { _loads[n] = null; foreach ((int dest, int offset, int family) in loads) LoadEdge(dest, keep, offset, family); }
+                if (_stores[n] is { } stores) { _stores[n] = null; foreach ((int value, int offset, int family) in stores) StoreEdge(keep, offset, value, family); }
                 if (_readsAll[n] is { } all) { _readsAll[n] = null; foreach (int dest in all) LoadAllEdge(dest, keep); }
                 // A guard's filter and a call's receiver are edges as a copy
                 // is: what keep holds goes along them now, and what the
@@ -3569,7 +3646,7 @@ internal sealed class RegionEscape
         /// </summary>
         private void Aliased()
         {
-            HashSet<int> feeding = new();
+            HashSet<long> feeding = new();
             while (!Overflowed)
             {
                 bool more = false;
@@ -3578,14 +3655,23 @@ internal sealed class RegionEscape
                 foreach (int o in Reached(start))
                 {
                     if (_kind[o] != Kind.Made || _placedMade.Contains(o)) continue;
-                    if (_written < 0) { _written = NewNode(); _nodeFlags[_written] |= NeverSaturated; }
+                    WrittenNode();
                     more = true;
                     Placed(o);
                 }
+                // Each place's word into what is written into places: its
+                // field's node where every write into it named one, the
+                // untyped node otherwise -- again where a later write made it
+                // two ways (the node it fed already keeps what it fed).
                 if (_written >= 0)
                     for (int o = 1; o < _kind.Count; o++)
                         if (_kind[o] is Kind.Place or Kind.Deep)
-                            foreach (int node in _cells[o].Values.ToArray()) if (feeding.Add(node)) { CopyEdge(node, _written, 0); more = true; }
+                            foreach (var (offset, node) in _cells[o].ToArray())
+                            {
+                                int family = offset != Any && _cellFamily.TryGetValue(node, out int named) ? named : -2;
+                                int into = family >= 0 ? TypedWritten(offset, family) : _written;
+                                if (feeding.Add(Pair(node, into))) { CopyEdge(node, into, 0); more = true; }
+                            }
                 foreach (int o in Reached(new[] { 0 }))
                 {
                     if (o == 0 || _kind[o] != Kind.Made || _unknownMade.Contains(o)) continue;
