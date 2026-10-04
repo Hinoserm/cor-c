@@ -6176,6 +6176,32 @@ static class Gc
         _heapCheck = true;
         HeapChunks.CheckOverlaps = true;
     }
+
+    /// THE WHOLE HEAP VERIFIED (a kernel's gcverify=1): every collection,
+    /// minor and major, has its marks walked (VerifyMinor: an old block
+    /// pointing at a young one this cycle did not mark, a missed card;
+    /// VerifyMajor: a kept block pointing at one about to be freed;
+    /// VerifyNewcomers), and the chunks, buffers and free lists checked
+    /// before and after (CheckHeap). The first walk that reports anything
+    /// stops the program through VerifyStopHook (the kernel's own crash),
+    /// or exits 93: the reports said what, where and in which collection.
+    public static bool VerifyHeap;
+    public static long VerifyStopHook;
+
+    public static void VerifyHeapOn()
+    {
+        VerifyHeap = true;
+        CheckHeapOn();
+    }
+
+    static void VerifyStop(long reportsBefore)
+    {
+        if (!VerifyHeap || _verifyReports == reportsBefore) return;
+        SayNumber("gc verify: HEAP BROKEN in collection ", Collections);
+        SayNumber("gc verify:   minor ", _minor ? 1 : 0);
+        if (VerifyStopHook != 0) Sys.Call(VerifyStopHook, _verifyReports - reportsBefore, Collections, 0);
+        Platform.Exit(93);
+    }
     static long _heapCheckTable;
     static long _heapCheckFaults;
 
@@ -8517,8 +8543,10 @@ static class Gc
         // is empty. A worker between its check of the word and its next take
         // finds nothing to take.
         if (helped) WorkersMark(false);
-        if (_minor && _verifyGenerations) VerifyMinor();
-        if (!_minor && (_verifyGenerations || VerifyMarks)) VerifyMajor();
+        long reportsBefore = _verifyReports;
+        if (_minor && (_verifyGenerations || VerifyHeap)) VerifyMinor();
+        if (!_minor && (_verifyGenerations || VerifyMarks || VerifyHeap)) VerifyMajor();
+        VerifyStop(reportsBefore);
         HeapChunks.SetBlockAnchorsActive(false);
         if (_verify) CheckQuarantine();
         BeginSweep();
@@ -8660,9 +8688,11 @@ static class Gc
         Runtime.Marking = 0;
         GcThreads.Round(GcThreads.Ack);
         MarkToEmpty();
-        if (_minor && _verifyGenerations) VerifyMinor();
-        if (!_minor && (_verifyGenerations || VerifyMarks)) VerifyMajor();
-        if (_verifyGenerations || VerifyMarks) VerifyNewcomers();
+        long verifiedBefore = _verifyReports;
+        if (_minor && (_verifyGenerations || VerifyHeap)) VerifyMinor();
+        if (!_minor && (_verifyGenerations || VerifyMarks || VerifyHeap)) VerifyMajor();
+        if (_verifyGenerations || VerifyMarks || VerifyHeap) VerifyNewcomers();
+        VerifyStop(verifiedBefore);
 
         GcLock.Enter();
         HeapChunks.SetBlockAnchorsActive(false);
