@@ -1,0 +1,50 @@
+// test: collection_spread_in_conditional
+// expect-exit: 0
+// expect-output:
+// 1,2,3,9
+// 1,2,3
+// 1,2,7
+// 7,1,2,3
+// 1,2,3,9
+// 1,2,4
+// 1,2,3,4,5
+//
+// A collection expression with a spread, where the type it becomes comes
+// from around it: a conditional's arm (the other arm, or the method's
+// return type when both arms are collections), an expression-bodied
+// method's result, and a call's argument. The compiler's own region engine
+// builds its paths this way (RegionEscape.DeepPath, WithField, WithGuard).
+
+using System;
+
+static class P
+{
+    const int Deep = 9;
+
+    static int[] DeepPath(int[] path, bool deep) => deep ? path : [.. path, Deep];
+
+    static int[] WithField(int[] path, int offset) => path.Length > 2 ? [.. path, Deep] : [.. path, offset];
+
+    static int[] Replaced(int[] path, int last) => path.Length == 0 ? path : [.. path[..^1], last];
+
+    static int[] Front(int[] rest) => Array.IndexOf(rest, 7) >= 0 ? rest : [7, .. rest];
+
+    static string Show(int[] path) => string.Join(",", path);
+
+    static string Joined(int[] a, int[] b) => Show(Concat([.. a, .. b]));
+
+    static int[] Concat(int[] all) => all;
+
+    static int Main()
+    {
+        int[] path = [1, 2, 3];
+        Console.WriteLine(Show(DeepPath(path, false)));
+        Console.WriteLine(Show(DeepPath(path, true)));
+        Console.WriteLine(Show(Replaced(path, 7)));
+        Console.WriteLine(Show(Front(path)));
+        Console.WriteLine(Show(WithField(path, 4)));
+        Console.WriteLine(Show(WithField([1, 2], 4)));
+        Console.WriteLine(Joined(path, [4, 5]));
+        return 0;
+    }
+}
