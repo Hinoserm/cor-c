@@ -493,7 +493,10 @@ public sealed class RegionPointsTo : IModulePass
                 VReg frame = f.NewReg(IrTypes.Word, "allocframe");
                 b.Instrs.Insert(k, new Instr { Op = Opcode.FramePointer, Dest = frame, Line = i.Line });
                 k++;
-                b.Instrs[k] = Retarget(f, i, InRegion, frame);
+                List<Instr> retargeted = Retarget(f, i, InRegion, frame);
+                b.Instrs.RemoveAt(k);
+                b.Instrs.InsertRange(k, retargeted);
+                k += retargeted.Count - 1;
                 sites++;
             }
         // And the pads of what the link brought in and inlined since the
@@ -1009,7 +1012,10 @@ public sealed class RegionPointsTo : IModulePass
                     VReg frame = f.NewReg(IrTypes.Word, "allocframe");
                     b.Instrs.Insert(k, new Instr { Op = Opcode.FramePointer, Dest = frame, Line = i.Line });
                     k++;
-                    b.Instrs[k] = Retarget(f, i, h, frame);
+                    List<Instr> retargeted = Retarget(f, i, h, frame);
+                    b.Instrs.RemoveAt(k);
+                    b.Instrs.InsertRange(k, retargeted);
+                    k += retargeted.Count - 1;
                 }
                 else if (callee(i) is { } to)
                 {
@@ -1121,24 +1127,66 @@ public sealed class RegionPointsTo : IModulePass
     {
         VReg frame = f.NewReg(IrTypes.Word, "allocframe");
         long kind = alloc.Callee == Opt.Escape.LeafAllocator ? LeafKind : alloc.Callee == Opt.Escape.ObjectAllocator ? ObjectKind : 0;
-        Instr made = new() { Op = Opcode.Call, Callee = Near, Dest = alloc.Dest, Line = alloc.Line };
-        made.Operands.Add(alloc.Operands[0]);
-        made.Operands.Add(new ImmOperand(kind, IrTypes.Word));
-        made.Operands.Add(new RegOperand(owner));
-        made.Operands.Add(new RegOperand(frame));
-        return new[] { new Instr { Op = Opcode.FramePointer, Dest = frame, Line = alloc.Line }, made };
+        List<Instr> made = new() { new Instr { Op = Opcode.FramePointer, Dest = frame, Line = alloc.Line } };
+        Instr call = new() { Op = Opcode.Call, Callee = Near, Dest = alloc.Dest, Line = alloc.Line };
+        call.Operands.Add(AsWord(f, made, alloc.Operands[0], alloc.Line));
+        call.Operands.Add(new ImmOperand(kind, IrTypes.Word));
+        call.Operands.Add(AsWord(f, made, new RegOperand(owner), alloc.Line));
+        call.Operands.Add(new RegOperand(frame));
+        made.Add(Checked(call));
+        return made.ToArray();
     }
 
-    private static Instr Retarget(Function f, Instr alloc, string helper, VReg frame)
+    /// <summary>
+    /// An allocation made a region helper's call: the conversions its
+    /// operands need, then the call (Checked).
+    /// </summary>
+    private static List<Instr> Retarget(Function f, Instr alloc, string helper, VReg frame)
     {
-        Operand bytes = alloc.Operands[0];
         long kind = alloc.Callee == Opt.Escape.LeafAllocator ? LeafKind : alloc.Callee == Opt.Escape.ObjectAllocator ? ObjectKind : 0;
-        Instr made = new() { Op = Opcode.Call, Callee = helper, Dest = alloc.Dest, Line = alloc.Line };
-        made.Operands.Add(bytes);
-        made.Operands.Add(new ImmOperand(kind, IrTypes.Word));
-        if (helper == Near) made.Operands.Add(new RegOperand(f.Params[0]));
-        made.Operands.Add(new RegOperand(frame));
+        List<Instr> made = new();
+        Instr call = new() { Op = Opcode.Call, Callee = helper, Dest = alloc.Dest, Line = alloc.Line };
+        call.Operands.Add(AsWord(f, made, alloc.Operands[0], alloc.Line));
+        call.Operands.Add(new ImmOperand(kind, IrTypes.Word));
+        if (helper == Near) call.Operands.Add(AsWord(f, made, new RegOperand(f.Params[0]), alloc.Line));
+        call.Operands.Add(new RegOperand(frame));
+        made.Add(Checked(call));
         return made;
+    }
+
+    /// <summary>
+    /// AN OPERAND AS THE MACHINE WORD the region helpers take, every one of
+    /// them a word (nint): a register of another width converted first, the
+    /// conversion added to `before`. The owner MakeStorageBeside finds is
+    /// the register its value came from, through copies and narrowings -- on
+    /// a 32-bit target a long the word was cut from, which the backend pushed
+    /// as two words: AllocNear took five for its four, the frame where the
+    /// owner's high half was.
+    /// </summary>
+    private static Operand AsWord(Function f, List<Instr> before, Operand o, int line)
+    {
+        if (o is ImmOperand imm) return imm.Type == IrTypes.Word ? imm : new ImmOperand(imm.Value, IrTypes.Word);
+        if (o is not RegOperand { Reg: var r } || r.Type == IrTypes.Word) return o;
+        VReg word = f.NewReg(IrTypes.Word);
+        before.Add(new Instr { Op = r.Type == IrType.I64 ? Opcode.Trunc64 : Opcode.ZExt32, Dest = word, Operands = { new RegOperand(r) }, Line = line });
+        return new RegOperand(word);
+    }
+
+    /// <summary>
+    /// A region helper's call as the runtime declares it: exactly its
+    /// parameters (AllocRegion three, AllocNear four), each a word. Anything
+    /// else is this pass's mistake, and the call would read its arguments
+    /// out of the wrong stack slots.
+    /// </summary>
+    private static Instr Checked(Instr call)
+    {
+        int arity = call.Callee == Near ? 4 : call.Callee == InRegion ? 3 : -1;
+        if (arity >= 0 && call.Operands.Count != arity)
+            throw new InvalidOperationException($"region pass: {call.Callee} made with {call.Operands.Count} operands, not {arity}");
+        foreach (Operand o in call.Operands)
+            if (o is RegOperand { Reg: var r } && r.Type != IrTypes.Word || o is ImmOperand imm && imm.Type != IrTypes.Word)
+                throw new InvalidOperationException($"region pass: {call.Callee} handed an operand of {o.Type}, not a word");
+        return call;
     }
 
     // The region opened where the call first needs it, given back on every
