@@ -386,6 +386,28 @@ static class Platform
     /// 0 for none (RegionBytes). Set before any thread opens a region.
     public static long RegionArenaBytes;
 
+    // ---- THE ASYNC SCHEDULER'S CONTRACT, for a kernel that runs it --------------
+    //
+    // Alone on the machine the scheduler is its own event loop (Scheduler.
+    // RunUntil, over Clock and Native). A kernel provides the scheduler
+    // instead: its own loop runs the continuations, its clock answers the
+    // time (NanosHook), and what is current travels with each task.
+
+    /// Where a continuation goes: a kernel's routine (by Sys.AddressOf)
+    /// called with the work and the context it runs in (Scheduler.Post: an
+    /// Action's word and an AsyncContext's, or 0), which queues them for its
+    /// scheduler loop to run through Scheduler.RunPosted. 0: this
+    /// scheduler's own ring. Called in thread context only -- an interrupt
+    /// handler completes through InterruptCompletions, never here.
+    public static long PostHook;
+
+    /// What is current, as a kernel keeps it (AsyncContext): called with
+    /// AsyncContext.CaptureOp (answers a word for what is current now: an
+    /// object's, which the context then holds), EnterOp and a word (makes it
+    /// current, answering the word it displaced) and LeaveOp and that
+    /// displaced word (puts it back). 0: no context flows.
+    public static long ContextHook;
+
     public static bool VerifyGenerations()
     {
         return false;
