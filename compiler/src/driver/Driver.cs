@@ -729,6 +729,9 @@ public static class Driver
         List<string> libraryMark = library ? new List<string>(files) : classLibrary;
         Corsac.Lang.Lower.Lowering.SharedObject = shared && !args.Contains("--no-shared-init");
         Corsac.Lang.Lower.Lowering.PartOfALibrary = references.Count > 0 || args.Contains("--decl-index") || args.Contains("--obj");
+        // A unit linked with others keeps its interrupt facts for the link's
+        // check of handlers across units (InterruptNotes).
+        Binder.CollectInterruptFacts = args.Contains("--obj") || library;
         Corsac.Lang.Lower.Lowering.Dynamic = !library && sharedLibs.Count > 0;
 #if !NET
         // Native task workers serve parsing, optimization and code generation.
@@ -951,6 +954,8 @@ public static class Driver
         NativeLibraries.Attach(obj, module.NativeLibraries);
         ManagedLayoutContract.Attach(obj, layouts);
         if (usesNotes is not null) Corsac.Lang.Lto.UsesNotes.Attach(obj, usesNotes);
+        // What the link checks interrupt handlers' calls into other units by.
+        if (module.InterruptFacts is { Count: > 0 } interruptFacts) Corsac.Lang.Lto.InterruptNotes.Attach(obj, interruptFacts);
 
         // WHAT THIS PROGRAM'S SETTINGS ARE, for the kernel to read out of the
         // file rather than out of the running process -- which is why the
@@ -1084,6 +1089,10 @@ public static class Driver
         // The report before link-time optimisation; the notes out after it,
         // whose IR archives' integrity hash covers them.
         if (Value(args, "--unused-report") is string unusedReport) Corsac.Lang.Lto.UnusedReport.Write(link, entry, unusedReport);
+        // Every interrupt handler, through every object linked here
+        // (InterruptNotes): what each unit's compile could not follow.
+        List<string> interruptErrors = Corsac.Lang.Lto.InterruptNotes.Check(link.Select(input => input.Item2));
+        if (interruptErrors.Count > 0) throw new LinkException(interruptErrors);
 
         if (flat)
         {
@@ -1092,6 +1101,7 @@ public static class Driver
             TargetContract.Validate(link);
             Corsac.Lang.Lto.LinkTimeOptimizer.Run(link, !args.Contains("--no-lto") && !args.Contains("--no-opt"));
             Corsac.Lang.Lto.UsesNotes.Strip(link.Select(input => input.Item2));
+            Corsac.Lang.Lto.InterruptNotes.Strip(link.Select(input => input.Item2));
             // --map FILE: every symbol of the image, largest first, as `corc link` writes it.
             Linker.FlatImage image = Linker.LinkFlat(link, entry, checked((uint)(loadBase ?? 0x10000)), mapPath: Value(args, "--map"));
             File.WriteAllBytes(output, image.Bytes);
@@ -1109,6 +1119,7 @@ public static class Driver
             Corsac.Lang.Lto.LinkTimeOptimizer.Run(link, !args.Contains("--no-lto") && !args.Contains("--no-opt"));
         }
         Corsac.Lang.Lto.UsesNotes.Strip(link.Select(input => input.Item2));
+        Corsac.Lang.Lto.InterruptNotes.Strip(link.Select(input => input.Item2));
         // What a CORSAC program carries beyond its code: --subsystem
         // console|gui|service, --resources <segment file>, --icon-resource <id>.
         // See docs/software/GUI-EXECUTABLE.md in the OS repository.

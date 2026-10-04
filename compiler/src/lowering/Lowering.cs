@@ -177,6 +177,7 @@ public sealed partial class Lowering
     {
         Lowering l = new(bound, file, library);
         l.Run(unit);
+        l._m.InterruptFacts = bound.InterruptFacts;
         // The frees the lifetime passes may add (Escape), by the label they
         // call: declared is enough, the body may be another unit's.
         foreach ((string helper, int arity) in new[] { ("Free", 1), ("FreeField", 2), ("FreeReplaced", 2), ("FreeOwnedReplaced", 2), ("KeepField", 2), ("CardMarkObject", 1), ("FreeOwnedElements", 1), ("OwnElements", 1), ("FreeStorageInFrame", 1),

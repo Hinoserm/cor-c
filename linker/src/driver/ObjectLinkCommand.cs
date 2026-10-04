@@ -177,6 +177,10 @@ public static class ObjectLinkCommand
         // Before the link-time optimiser regenerates any unit: the notes are
         // the units' own, and the IR archive's digest covers them.
         if (unusedReport is not null) UnusedReport.Write(inputs, entry, unusedReport);
+        // EVERY INTERRUPT HANDLER, THROUGH EVERY UNIT: what no one unit's
+        // compile could follow (InterruptNotes).
+        List<string> interruptErrors = InterruptNotes.Check(inputs.Select(input => input.Item2));
+        if (interruptErrors.Count > 0) throw new LinkException(interruptErrors);
         // A MODULE INITIALISER IS RUN BY A LOADER, which a static image has
         // none of: the compiler refuses one in a program, and a unit
         // compiled into a library and linked into a program is refused here.
@@ -222,7 +226,8 @@ public static class ObjectLinkCommand
             input.Item2.Sections.RemoveAll(section => section.Name == TargetContract.SectionName
                 || section.Name == X86CodeGenerationContract.SectionName
                 || section.Name == ManagedLayoutContract.SectionName
-                || section.Name == UsesNotes.SectionName);
+                || section.Name == UsesNotes.SectionName
+                || section.Name == InterruptNotes.SectionName);
         // Every unit's frame table names from one pool (FramePool).
         if (lto) FramePool.Run(inputs);
         LinkTimings.Phase("frame names");

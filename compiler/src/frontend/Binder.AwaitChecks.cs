@@ -240,6 +240,11 @@ public sealed partial class Binder
                 _member = d;
                 CheckInterruptHandler(m, d, bodies, allocates);
             }
+
+            if (CollectInterruptFacts)
+            {
+                _r.InterruptFacts = InterruptFactsOf();
+            }
         }
         finally
         {
@@ -968,6 +973,54 @@ public sealed partial class Binder
                 Error(call, $"'{name}' is an interrupt handler and must not allocate: '{callee.Owner.Name}.{callee.Name}' {what} at line {site.Line}{inner}");
             }
         }
+    }
+
+    /// <summary>
+    /// Set by the driver for a unit compiled on its own (--obj, a library):
+    /// its methods' interrupt facts are kept for the link (InterruptFactsOf).
+    /// </summary>
+    public static bool CollectInterruptFacts { get; set; }
+
+    /// <summary>
+    /// ACROSS UNITS, THE LINK CHECKS WHAT THIS CANNOT (Lto.InterruptNotes):
+    /// for every method this unit binds, its symbol, whether it is a handler,
+    /// the first allocation its own body makes, and the symbols it calls
+    /// directly -- the calls CheckInterruptHandler follows within the unit.
+    /// </summary>
+    private List<Corsac.Lang.Lto.InterruptNotes.Fact> InterruptFactsOf()
+    {
+        List<Corsac.Lang.Lto.InterruptNotes.Fact> made = new();
+        foreach ((MethodSymbol m, MethodDecl d) in _boundBodies)
+        {
+            string file = d.File is { Length: > 0 } own ? own : m.Owner.Decl?.File ?? "";
+            string? allocates = null;
+            if (m.Async)
+            {
+                allocates = "is async, and makes a state machine and a task";
+            }
+            else
+            {
+                foreach ((Node site, string what) in AllocationsIn(d.Body!))
+                {
+                    if (site is AwaitExpr) continue;
+                    allocates = $"{what} at {file}:{site.Line}";
+                    break;
+                }
+            }
+            List<string> calls = new();
+            HashSet<string> seen = new(StringComparer.Ordinal);
+            foreach (CallExpr call in DirectCalls(d.Body!))
+            {
+                if (_r.Calls.TryGetValue(call, out MethodSymbol? callee) && !ReferenceEquals(callee, m))
+                {
+                    string label = Corsac.Lang.Lower.Lowering.Label(callee);
+                    if (seen.Add(label)) calls.Add(label);
+                }
+            }
+            made.Add(new Corsac.Lang.Lto.InterruptNotes.Fact(Corsac.Lang.Lower.Lowering.Label(m), $"{m.Owner.Name}.{m.Name}",
+                IsInterruptHandler(m), allocates, calls.ToArray()));
+        }
+        return made;
     }
 
     /// <summary>The first allocation a method makes, itself or in what it calls directly with a body in this unit.</summary>
