@@ -299,8 +299,10 @@ public static class RegionSolver
         private readonly List<int> _unitOf = new();
         private readonly Dictionary<string, List<int>> _globals = new(StringComparer.Ordinal);
         private readonly List<Dictionary<string, int>> _locals = new();
-        // Every global function any unit summarised, kept by the image or not.
+        // Every function any unit summarised, global or local, kept by the image or not.
         private readonly HashSet<string> _summarised = new(StringComparer.Ordinal);
+        // Every unit's local functions the image keeps, by name (ResolveOverride).
+        private readonly Dictionary<string, List<int>> _localsByName = new(StringComparer.Ordinal);
 
         // Copies: a function in a context (-1: none).
         private readonly List<int> _copyFunction = new();
@@ -388,7 +390,7 @@ public static class RegionSolver
                 _locals.Add(locals);
                 foreach (RegionFunction f in _units[u].Functions)
                 {
-                    if (f.Global) _summarised.Add(f.Name);
+                    _summarised.Add(f.Name);
                     // What the image does not keep is never called: a call
                     // of it from what it keeps is a call of something unknown.
                     if (_live is not null && !_live(u, f.Name)) continue;
@@ -397,7 +399,11 @@ public static class RegionSolver
                     _unitOf.Add(u);
                     _named.Add(new());
                     if (f.Global) (_globals.TryGetValue(f.Name, out List<int>? list) ? list : _globals[f.Name] = new()).Add(function);
-                    else locals[f.Name] = function;
+                    else
+                    {
+                        locals[f.Name] = function;
+                        (_localsByName.TryGetValue(f.Name, out List<int>? same) ? same : _localsByName[f.Name] = new()).Add(function);
+                    }
                 }
             }
             _copiesOf = new List<int>?[_functions.Count];
@@ -1039,6 +1045,21 @@ public static class RegionSolver
             return _globals.TryGetValue(name, out List<int>? defined) ? defined : null;
         }
 
+        /// <summary>
+        /// THE FUNCTIONS AN OVERRIDE NAMES, wherever they are: a descriptor
+        /// is any unit's, and the method it holds may be local to that unit
+        /// -- an iterator's MoveNext, its type named by a hash of its body, so
+        /// every unit that makes the same one has its own copy. Each such
+        /// copy is reached, which is everything one could be. Resolved only
+        /// in the calling unit, every interface call that might reach an
+        /// iterator made in another unit -- a foreach over an IEnumerable,
+        /// most of LINQ -- was a call of nothing summarised: the unknown
+        /// object was handed what it was given, and the compiler's own link
+        /// held too much to solve.
+        /// </summary>
+        private List<int>? ResolveOverride(int u, string name)
+            => Resolve(u, name) ?? _localsByName.GetValueOrDefault(name);
+
         private void Call(int copy, RegionCall call)
         {
             int u = _unitOf[_copyFunction[copy]];
@@ -1049,10 +1070,11 @@ public static class RegionSolver
                 bool known = _virtuals.TryGetValue(name, out string[]? found);
                 // An override the image does not keep is a type nothing makes:
                 // it is never run. One no unit summarised is code nobody follows.
+                string? missing = null;
                 foreach (string target in found ?? Array.Empty<string>())
-                    if (Resolve(u, target) is not null) overrides.Add(target);
-                    else if (!_summarised.Contains(target)) known = false;
-                if (!known) { Unknown(copy, call); return; }
+                    if (ResolveOverride(u, target) is not null) overrides.Add(target);
+                    else if (!_summarised.Contains(target)) { known = false; missing ??= target; }
+                if (!known) { Unknown(copy, call, found is null ? "no targets" : "no summary of " + missing); return; }
                 if (overrides.Count == 0) return;            // no object of the type exists
                 int self = call.Arguments.Length > 0 ? call.Arguments[0] : -1;
                 Binding binding = new() { Copy = copy, Call = call, Overrides = overrides.ToArray() };
@@ -1060,7 +1082,7 @@ public static class RegionSolver
                 Watch(binding, Node(copy, self));
                 return;
             }
-            if (Resolve(u, name) is not { } targets) { Unknown(copy, call); return; }
+            if (Resolve(u, name) is not { } targets) { Unknown(copy, call, "not summarised"); return; }
             List<int> instance = new();
             foreach (int g in targets)
             {
@@ -1110,7 +1132,7 @@ public static class RegionSolver
                 && SlotOf(binding.Call.Callee!) is long slot && _methodAt(table, site.At + slot) is { } method
                 && binding.Overrides!.Contains(method, StringComparer.Ordinal))
             {
-                foreach (int g in Resolve(_unitOf[caller], method)!)
+                foreach (int g in ResolveOverride(_unitOf[caller], method)!)
                 {
                     _named[caller].Add(g);
                     Handed(binding, CopyOf(g, o, binding.Copy), loc);
@@ -1118,7 +1140,7 @@ public static class RegionSolver
                 return;
             }
             foreach (string target in binding.Overrides!)
-                foreach (int g in Resolve(_unitOf[caller], target)!)
+                foreach (int g in ResolveOverride(_unitOf[caller], target)!)
                 {
                     _named[caller].Add(g);
                     Handed(binding, CopyOf(g, o == Global ? Unseen : -1, binding.Copy), loc);
@@ -1137,7 +1159,7 @@ public static class RegionSolver
         {
             int u = _unitOf[_copyFunction[binding.Copy]];
             foreach (string target in binding.Overrides!)
-                foreach (int g in Resolve(u, target)!)
+                foreach (int g in ResolveOverride(u, target)!)
                 {
                     _named[_copyFunction[binding.Copy]].Add(g);
                     To(binding.Copy, binding.Call, CopyOf(g, -1, binding.Copy));
@@ -1168,10 +1190,10 @@ public static class RegionSolver
             if (call.Dest >= 0) Edge(Node(callee, g.Parameters), Node(caller, call.Dest), 0);
         }
 
-        private void Unknown(int copy, RegionCall call)
+        private void Unknown(int copy, RegionCall call, string? why = null)
         {
             if (_report is not null && _reportedUnknown.Add(call.Callee ?? "an address"))
-                Log("unknown call in " + _functions[_copyFunction[copy]].Name + " of " + (call.Callee ?? "an address"));
+                Log("unknown call in " + _functions[_copyFunction[copy]].Name + " of " + (call.Callee ?? "an address") + (why is null ? "" : " (" + why + ")"));
             foreach (int a in call.Arguments) if (a >= 0) Leak(Node(copy, a));
             if (call.Dest >= 0) Add(Node(copy, call.Dest), GlobalLocation);
         }
@@ -1840,8 +1862,9 @@ public static class RegionSolver
             HashSet<int> functions = new();
             IEnumerable<string> names = name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal)
                 ? _virtuals.GetValueOrDefault(name) ?? Array.Empty<string>() : new[] { name };
+            bool virtualCall = names is string[] && name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal);
             foreach (string target in names)
-                if (Resolve(u, target) is { } targets) functions.UnionWith(targets);
+                if ((virtualCall ? ResolveOverride(u, target) : Resolve(u, target)) is { } targets) functions.UnionWith(targets);
             return _callFunctions[(u, name)] = functions;
         }
 
