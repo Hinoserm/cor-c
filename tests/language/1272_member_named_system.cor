@@ -1,0 +1,36 @@
+// test: member_named_system
+// expect-exit: 0
+// expect-output:
+// 3
+//
+// A MEMBER CALLED System DOES NOT HIDE THE NAMESPACE FROM THE COMPILER'S OWN
+// CODE. What the binder writes in place of something else -- a static
+// initialiser's guard, a lock, a conversion -- names System.Runtime and
+// System.Sys, and inside a class with a method called System the first part
+// found the method: "'void' has no member 'Sys'". The names it makes are
+// global::, as C# spells its way out of the same collision.
+
+using System.IO;
+sealed class Img { public int W; }
+static class Imgs
+{
+    static readonly Img?[] _made = new Img?[6];
+    static readonly object _gate = new object();
+    public static Img? System(int id)
+    {
+        lock (_gate)
+        {
+            if (_made[id] == null) _made[id] = new Img { W = id };
+            return _made[id];
+        }
+    }
+}
+static class Program
+{
+    static int Main()
+    {
+        Img? i = Imgs.System(3);
+        global::System.Console.WriteLine(i != null ? i.W : -1);
+        return 0;
+    }
+}

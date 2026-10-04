@@ -8319,7 +8319,7 @@ public sealed partial class Binder
             {
                 Target = new MemberExpr
                 {
-                    Target = new NameExpr { Name = "System", Line = at.Line, Col = at.Col },
+                    Target = new NameExpr { Name = "System", Global = true, Line = at.Line, Col = at.Col },
                     Name = owner, Line = at.Line, Col = at.Col,
                 },
                 Name = method, Line = at.Line, Col = at.Col,
@@ -9944,7 +9944,7 @@ public sealed partial class Binder
             {
                 Target = new MemberExpr
                 {
-                    Target = new NameExpr { Name = "System", Line = at.Line, Col = at.Col },
+                    Target = new NameExpr { Name = "System", Global = true, Line = at.Line, Col = at.Col },
                     Name = "CollectionExpressionBuilder", Line = at.Line, Col = at.Col,
                 },
                 Name = method, Line = at.Line, Col = at.Col,
@@ -14940,7 +14940,7 @@ public sealed partial class Binder
                         {
                             Target = new MemberExpr
                             {
-                                Target = new NameExpr { Name = "System", Line = m.Line, Col = m.Col },
+                                Target = new NameExpr { Name = "System", Global = true, Line = m.Line, Col = m.Col },
                                 Name = "Reflection", Line = m.Line, Col = m.Col,
                             },
                             Name = "Assembly", Line = m.Line, Col = m.Col,
