@@ -687,6 +687,7 @@ public class ControlCollection
     public void Clear() { while (_items.Count > 0) Remove(_items[0]); }
     public void Remove(Control c) { _items.Remove(c); c.Parent = null; _owner.Invalidate(); }
     public void AddRange(Control[] cs) { for (int i = 0; i < cs.Length; i++) Add(cs[i]); }
+    public List<Control>.Enumerator GetEnumerator() { return _items.GetEnumerator(); }
 }
 
 public class Control
@@ -1121,6 +1122,18 @@ public class Control
                 child.PaintTree(seat, new Point(origin.X + child._x, origin.Y + child._y), area, paintMe || force);
             }
         }
+        if (paintMe) PaintAfterChildren(seat, origin);
+    }
+
+    /// What a control draws over its children once they are drawn, at
+    /// `origin` on its form's surface: the scroll bars the seat draws for it.
+    internal virtual void PaintAfterChildren(Seat seat, Point origin) { }
+
+    /// Whether this control and every one it is in are visible.
+    internal bool ShownAll()
+    {
+        for (Control? c = this; c != null; c = c._parent) if (!c._visible) return false;
+        return true;
     }
 
     internal bool HasInvalid()
@@ -1244,7 +1257,7 @@ public class Control
     // as Internet Explorer and Office did it. A view that scrolls says which
     // ways and moves itself by pixels when asked; everything else -- the
     // marker, the cursors, the speed, when it starts and stops -- is
-    // AutoScroll's. Windows Forms had no such hook, so these are CORSAC's.
+    // PanScroll's. Windows Forms had no such hook, so these are CORSAC's.
 
     /// The ways middle-button autoscroll may move this control. None, the
     /// default, leaves a middle press to the control as an ordinary press.
@@ -1321,7 +1334,7 @@ public enum FormStartPosition { Manual = 0, CenterScreen = 1, WindowsDefaultLoca
 /// title bar and the border, is painted here for now; it is the seat's job
 /// once the window tree lives in the system, and the client area contract
 /// does not change when it moves.
-public class Form : Control
+public class Form : ScrollableControl
 {
     int _handle;
     bool _shown;
@@ -1825,7 +1838,7 @@ public class Form : Control
         Point co = ClientOffset();
         Rectangle client = new Rectangle(co.X, co.Y, ClientRectangle.Width, ClientRectangle.Height);
         PaintTree(seat, co, force ? client : Rectangle.Intersect(client, new Rectangle(0, 0, Width, Height)), force);
-        AutoScroll.Overlay(this, seat);
+        PanScroll.Overlay(this, seat);
     }
 
     /// A press, move or release in the window, which the seat sends only for
@@ -1838,8 +1851,8 @@ public class Form : Control
     {
         // While autoscroll runs it has the mouse: moves steer it, and the
         // presses and releases that end it end it, wherever they land.
-        if (AutoScroll.Active) { AutoScroll.Mouse(this, kind, button, x, y); return; }
-        if (AutoScroll.SwallowRelease && kind == 5) { AutoScroll.SwallowRelease = false; return; }
+        if (PanScroll.Active) { PanScroll.Mouse(this, kind, button, x, y); return; }
+        if (PanScroll.SwallowRelease && kind == 5) { PanScroll.SwallowRelease = false; return; }
         Point co = ClientOffset();
         // A control holding the button gets everything until it comes up,
         // even where the pointer has left the window altogether.
@@ -1873,7 +1886,7 @@ public class Form : Control
         MouseButtons b = Application.ButtonOf(button);
         int clicks = kind == 4 ? Application.CountClick(target, b, doubled) : kind == 5 ? Application.LastClicks : 0;
         MouseEventArgs e = new MouseEventArgs(b, clicks, cx - origin.X, cy - origin.Y, 0);
-        if (kind == 4 && b == MouseButtons.Middle && AutoScroll.TryBegin(this, target, x, y)) return;
+        if (kind == 4 && b == MouseButtons.Middle && PanScroll.TryBegin(this, target, x, y)) return;
         if (kind == 4)
         {
             if (target is TextBox box) box.FocusByClick();
@@ -2137,7 +2150,7 @@ public sealed class Cursor : IDisposable
             }
             // One of the GUI kernel's own, worn by its handle.
             if (c._shape < 0) { Seat.Current.WearCursor(c._image); return; }
-            if (c._shape >= CursorShapes.NoMove2D) AutoScroll.DefineShapes();
+            if (c._shape >= CursorShapes.NoMove2D) PanScroll.DefineShapes();
             Seat.Current.SetCursor(c._shape);
         }
         catch (IOException) { }
@@ -2631,7 +2644,7 @@ public enum ContentAlignment
     BottomLeft = 256, BottomCenter = 512, BottomRight = 1024,
 }
 
-public class Panel : Control
+public class Panel : ScrollableControl
 {
     internal override string ClassName { get { return "Panel"; } }
     public Panel() { TabStop = false; }
@@ -3398,16 +3411,67 @@ public class ScrollEventArgs : EventArgs
 
 public delegate void ScrollEventHandler(object? sender, ScrollEventArgs e);
 
-/// A scroll bar, as Windows draws it: an arrow button at each end, a track
-/// between, and a raised thumb whose length says how much of the whole is
-/// in view. The .NET contract: Value runs from Minimum to
-/// Maximum - LargeChange + 1, so a bar over N lines showing R of them has
-/// Maximum = N - 1 and LargeChange = R; Scroll fires for what the user
-/// does, with the kind of move, and ValueChanged for any change at all.
+/// The bars the seat draws for this program's controls, by their ids
+/// (Seat.NextScrollBarId): a ScrollBar's own, a ScrollableControl's two.
+static class ScrollWidgets
+{
+    static readonly Dictionary<int, Control> _byId = new Dictionary<int, Control>();
+    internal static void Add(int id, Control c) { _byId[id] = c; }
+
+    /// The seat's ScrollEvent: the bar's control told. A control that is not
+    /// shown now (its panel hidden) is not.
+    internal static void Raise(int id, int command, int pos)
+    {
+        Control? c;
+        if (!_byId.TryGetValue(id, out c) || !c.ShownAll()) return;
+        if (c is ScrollBar bar) bar.SeatScroll(command, pos);
+        else if (c is ScrollableControl view) view.SeatScroll(id, command, pos);
+    }
+
+    /// The .NET event an SB_ command is, with the value it moves to from
+    /// `value` by `small` and `large` steps; false for SB_ENDSCROLL.
+    internal static ScrollEventType Type(int command)
+    {
+        return command == 0 ? ScrollEventType.SmallDecrement : command == 1 ? ScrollEventType.SmallIncrement
+             : command == 2 ? ScrollEventType.LargeDecrement : command == 3 ? ScrollEventType.LargeIncrement
+             : command == 4 ? ScrollEventType.ThumbPosition : command == 5 ? ScrollEventType.ThumbTrack
+             : command == 6 ? ScrollEventType.First : command == 7 ? ScrollEventType.Last : ScrollEventType.EndScroll;
+    }
+
+    internal static int Target(int command, int value, int pos, int min, int last, int small, int large)
+    {
+        return command == 0 ? value - small : command == 1 ? value + small : command == 2 ? value - large : command == 3 ? value + large
+             : command == 4 || command == 5 ? pos : command == 6 ? min : command == 7 ? last : value;
+    }
+
+    /// A bar placed at `origin` (its form's surface), set to the values and
+    /// drawn, for `form`: what PaintAfterChildren does with each.
+    internal static void Show(Seat seat, Form form, int id, int x, int y, int width, int height, bool vertical, bool hidden,
+                              int min, int max, int page, int pos, bool enabled)
+    {
+        seat.PlaceScrollBar(form.Handle, id, x, y, width, height, vertical, hidden);
+        if (hidden) return;
+        seat.SetScrollBar(form.Handle, id, Seat.ScrollRange | Seat.ScrollPage | Seat.ScrollPos, min, max, page, pos, false);
+        seat.EnableScrollBar(form.Handle, id, enabled ? 0 : 3);
+        seat.PaintScrollBar(form.Handle, id);
+    }
+}
+
+/// A scroll bar (.NET's ScrollBar): the GUI KERNEL'S, as Windows' own bars
+/// are win32k's. The seat draws it in the theme as Windows 2000 draws one --
+/// an arrow button at each end, the track between, a raised thumb whose
+/// length says how much of the whole is in view -- and tracks a press on it:
+/// the arrows and page areas repeat while held, the thumb follows the
+/// pointer. Each step comes back as a ScrollEvent and becomes .NET's events.
+/// The .NET contract: Value runs from Minimum to Maximum - LargeChange + 1,
+/// so a bar over N lines showing R of them has Maximum = N - 1 and
+/// LargeChange = R; Scroll fires for what the user does, with the kind of
+/// move, and ValueChanged for any change at all.
 public abstract class ScrollBar : Control
 {
     int _min, _max = 100, _value, _small = 1, _large = 10;
-    int _grab = -1;                  // where along the thumb the drag took hold, or -1
+    int _id = -1;                    // the seat's bar, made at the first paint
+    int _window;                     // the form it was placed in
     public event ScrollEventHandler? Scroll;
     public event EventHandler? ValueChanged;
 
@@ -3462,103 +3526,59 @@ public abstract class ScrollBar : Control
         SetValue(e.NewValue);
     }
 
-    // The geometry along the bar's length: buttons as long as the bar is
-    // thick, the thumb sized to the part in view and never shorter than a
-    // button.
-    int Length { get { return Vertical ? Height : Width; } }
-    int Thickness { get { return Vertical ? Width : Height; } }
-    int ButtonL { get { return Thickness < Length / 2 ? Thickness : Length / 2; } }
-    int TrackL { get { return Length - 2 * ButtonL; } }
-    int Range { get { return _max - _min + 1; } }
-    bool Scrollable { get { return Enabled && Range > 0 && LargeChange < Range; } }
-    int ThumbL
+    bool Scrollable { get { return Enabled && _max - _min + 1 > 0 && LargeChange < _max - _min + 1; } }
+
+    /// The seat's bar placed where this control is, given its values and
+    /// drawn, once the control (its background) is drawn.
+    internal override void PaintAfterChildren(Seat seat, Point origin)
     {
-        get
-        {
-            if (!Scrollable) return TrackL;
-            int l = (int)((long)TrackL * LargeChange / Range);
-            return l < ButtonL ? (ButtonL < TrackL ? ButtonL : TrackL) : l;
-        }
-    }
-    int ThumbAt
-    {
-        get
-        {
-            int room = TrackL - ThumbL, span = Last_ - _min;
-            if (room <= 0 || span <= 0) return ButtonL;
-            return ButtonL + (int)((long)room * (_value - _min) / span);
-        }
-    }
-    int ValueAt(int along)
-    {
-        int room = TrackL - ThumbL, span = Last_ - _min;
-        if (room <= 0 || span <= 0) return _min;
-        return _min + (int)(((long)(along - ButtonL) * span + room / 2) / room);
-    }
-    void Box(int along, int length, out int x, out int y, out int w, out int h)
-    {
-        if (Vertical) { x = 0; y = along; w = Width; h = length; }
-        else { x = along; y = 0; w = length; h = Height; }
+        Form? f = FindForm();
+        if (f == null || f.Handle == 0) return;
+        if (_id < 0) { _id = Seat.NextScrollBarId(); ScrollWidgets.Add(_id, this); }
+        _window = f.Handle;
+        // The .NET range on Windows' bar: the page is LargeChange, so the
+        // thumb's last place is Maximum - LargeChange + 1, as .NET's bar sets
+        // it with SetScrollInfo.
+        ScrollWidgets.Show(seat, f, _id, origin.X, origin.Y, Width, Height, Vertical, !ShownAll(), _min, _max, LargeChange, _value, Scrollable);
     }
 
-    protected override void OnPaint(PaintEventArgs e)
+    /// Hidden: the seat's bar too, which is neither drawn nor pressed then.
+    protected override void OnVisibleChanged(EventArgs e)
     {
-        Graphics g = e.Graphics;
-        int x, y, w, h;
-        // THE TRACK IS THE PALE GREY the era's dither of face and white
-        // averages to. Windows drew the dither itself; a pixel at a time
-        // over the wire is thousands of operations for one scroll bar, and
-        // the flat colour is indistinguishable at this size.
-        g.FillRectangle(new SolidBrush(Color.FromArgb(223, 223, 223)), 0, 0, Width, Height);
-        Box(0, ButtonL, out x, out y, out w, out h); Arrow(g, x, y, w, h, true);
-        Box(Length - ButtonL, ButtonL, out x, out y, out w, out h); Arrow(g, x, y, w, h, false);
-        if (Scrollable)
+        if (_id >= 0 && _window != 0 && !Visible)
         {
-            Box(ThumbAt, ThumbL, out x, out y, out w, out h);
-            g.FillRectangle(new SolidBrush(SystemColors.Control), x, y, w, h);
-            ControlPaint.DrawBorder3D(g, x, y, w, h, Border3DStyle.Raised);
+            try { Seat.Current.PlaceScrollBar(_window, _id, 0, 0, 0, 0, Vertical, true); }
+            catch (IOException) { }
         }
-        base.OnPaint(e);
+        base.OnVisibleChanged(e);
     }
 
-    void Arrow(Graphics g, int x, int y, int w, int h, bool first)
+    /// A step of the seat's track (or a key): .NET's Scroll and the value,
+    /// as its WM_HSCROLL and WM_VSCROLL reflection does.
+    internal void SeatScroll(int command, int pos)
     {
-        ControlPaint.DrawButtonFace(g, x, y, w, h, false, false, SystemColors.Control);
-        Color ink = Scrollable ? SystemColors.ControlText : SystemColors.GrayText;
-        ArrowDirection way = Vertical ? (first ? ArrowDirection.Up : ArrowDirection.Down)
-                                      : (first ? ArrowDirection.Left : ArrowDirection.Right);
-        if (Vertical) ControlPaint.DrawArrow(g, way, x + w / 2 - 3, y + h / 2 - 2, 4, ink);
-        else ControlPaint.DrawArrow(g, way, x + w / 2 - 2, y + h / 2 - 3, 4, ink);
+        if (command == 8) { OnScroll(new ScrollEventArgs(ScrollEventType.EndScroll, _value, _value, Orientation)); return; }
+        UserScroll(ScrollWidgets.Type(command), ScrollWidgets.Target(command, _value, pos, _min, Last_, _small, LargeChange));
     }
 
-    protected override void OnMouseDown(MouseEventArgs e)
+    /// The keys a bar with the focus answers (xxxSBWndProc's): the arrows a
+    /// line, Page Up and Down a page, Home and End the ends, and the end of
+    /// the scroll when the key comes up.
+    protected override void OnKeyDown(KeyEventArgs e)
     {
-        if (e.Button == MouseButtons.Left && Scrollable)
-        {
-            int along = Vertical ? e.Y : e.X, bl = ButtonL;
-            if (along < bl) UserScroll(ScrollEventType.SmallDecrement, _value - _small);
-            else if (along >= Length - bl) UserScroll(ScrollEventType.SmallIncrement, _value + _small);
-            else if (along < ThumbAt) UserScroll(ScrollEventType.LargeDecrement, _value - LargeChange);
-            else if (along >= ThumbAt + ThumbL) UserScroll(ScrollEventType.LargeIncrement, _value + LargeChange);
-            else _grab = along - ThumbAt;
-        }
-        base.OnMouseDown(e);
+        int vk = (int)e.KeyCode;
+        int command = vk == 0x21 ? 2 : vk == 0x22 ? 3 : vk == 0x24 ? 6 : vk == 0x23 ? 7 : vk == 0x25 || vk == 0x26 ? 0 : vk == 0x27 || vk == 0x28 ? 1 : -1;
+        if (command >= 0 && Scrollable) { SeatScroll(command, _value); e.Handled = true; }
+        base.OnKeyDown(e);
     }
-    protected override void OnMouseMove(MouseEventArgs e)
+
+    protected override void OnKeyUp(KeyEventArgs e)
     {
-        if (_grab >= 0) UserScroll(ScrollEventType.ThumbTrack, ValueAt((Vertical ? e.Y : e.X) - _grab));
-        base.OnMouseMove(e);
+        int vk = (int)e.KeyCode;
+        if (vk >= 0x21 && vk <= 0x28 && Scrollable) SeatScroll(8, _value);
+        base.OnKeyUp(e);
     }
-    protected override void OnMouseUp(MouseEventArgs e)
-    {
-        if (_grab >= 0)
-        {
-            _grab = -1;
-            UserScroll(ScrollEventType.ThumbPosition, _value);
-            OnScroll(new ScrollEventArgs(ScrollEventType.EndScroll, _value, _value, Orientation));
-        }
-        base.OnMouseUp(e);
-    }
+
     protected override void OnMouseWheel(MouseEventArgs e)
     {
         int lines = WheelLines(e.Delta, _large > 0 ? _large / (_small > 1 ? _small : 1) : 1, false);
@@ -3573,6 +3593,134 @@ public abstract class ScrollBar : Control
         int columns = WheelLines(e.Delta, _large > 0 ? _large / (_small > 1 ? _small : 1) : 1, true);
         if (columns != 0) UserScroll(columns > 0 ? ScrollEventType.SmallIncrement : ScrollEventType.SmallDecrement, _value + columns * _small);
         base.OnMouseHWheel(e);
+    }
+}
+
+/// .NET's ScrollProperties (HScrollProperties, VScrollProperties): what a
+/// ScrollableControl's bar is set to.
+public class ScrollProperties
+{
+    internal int MinimumValue, MaximumValue = 100, ValueValue, SmallValue = 1, LargeValue = 10;
+    internal bool VisibleValue, EnabledValue = true;
+    readonly ScrollableControl _owner;
+    internal ScrollProperties(ScrollableControl owner) { _owner = owner; }
+    public int Minimum { get { return MinimumValue; } set { MinimumValue = value; _owner.Invalidate(); } }
+    public int Maximum { get { return MaximumValue; } set { MaximumValue = value; _owner.Invalidate(); } }
+    public int SmallChange { get { return SmallValue; } set { SmallValue = value; } }
+    public int LargeChange { get { return LargeValue; } set { LargeValue = value; _owner.Invalidate(); } }
+    public int Value { get { return ValueValue; } set { _owner.ScrollTo(this, value); } }
+    public bool Visible { get { return VisibleValue; } set { VisibleValue = value; _owner.Invalidate(); } }
+    public bool Enabled { get { return EnabledValue; } set { EnabledValue = value; _owner.Invalidate(); } }
+}
+
+public class HScrollProperties : ScrollProperties { internal HScrollProperties(ScrollableControl owner) : base(owner) { } }
+public class VScrollProperties : ScrollProperties { internal VScrollProperties(ScrollableControl owner) : base(owner) { } }
+
+/// A control that scrolls what it holds (.NET's ScrollableControl): with
+/// AutoScroll, scroll bars of the seat's -- SM_CYHSCROLL high along the
+/// bottom, SM_CXVSCROLL wide down the right, as a window's WS_HSCROLL and
+/// WS_VSCROLL bars lie -- whenever its children, or AutoScrollMinSize, reach
+/// past it; scrolling moves the children, as .NET's SetDisplayRectLocation
+/// does.
+public class ScrollableControl : Control
+{
+    bool _autoScroll;
+    Size _minSize;
+    int _hId = -1, _vId = -1;
+    readonly HScrollProperties _h;
+    readonly VScrollProperties _v;
+    public event ScrollEventHandler? Scroll;
+
+    public ScrollableControl() { _h = new HScrollProperties(this); _v = new VScrollProperties(this); }
+
+    public virtual bool AutoScroll { get { return _autoScroll; } set { _autoScroll = value; Invalidate(); } }
+    public Size AutoScrollMinSize { get { return _minSize; } set { _minSize = value; if (value.Width > 0 || value.Height > 0) _autoScroll = true; Invalidate(); } }
+    public HScrollProperties HorizontalScroll { get { return _h; } }
+    public VScrollProperties VerticalScroll { get { return _v; } }
+
+    /// Where the view is: the negated scroll positions, as .NET's is.
+    public Point AutoScrollPosition
+    {
+        get { return new Point(-_h.ValueValue, -_v.ValueValue); }
+        set { ScrollTo(_h, Math.Abs(value.X)); ScrollTo(_v, Math.Abs(value.Y)); }
+    }
+
+    protected virtual void OnScroll(ScrollEventArgs se) { if (Scroll != null) Scroll(this, se); }
+
+    /// The children moved so that `bar` is at `value`, kept to its range.
+    internal void ScrollTo(ScrollProperties bar, int value)
+    {
+        int last = Math.Max(bar.MinimumValue, bar.MaximumValue - bar.LargeValue + 1);
+        if (value > last) value = last;
+        if (value < bar.MinimumValue) value = bar.MinimumValue;
+        int delta = value - bar.ValueValue;
+        if (delta == 0) return;
+        bar.ValueValue = value;
+        bool horizontal = bar == _h;
+        foreach (Control child in Controls)
+            child.Location = horizontal ? new Point(child.Left - delta, child.Top) : new Point(child.Left, child.Top - delta);
+        Invalidate();
+    }
+
+    /// The bars worked out from what the children cover (AutoScroll), as
+    /// .NET's AdjustFormScrollbars does: the vertical bar's width taken from
+    /// the view when it shows, and the other way round.
+    void Measure(out int viewWidth, out int viewHeight)
+    {
+        int cxv = SystemInformation.VerticalScrollBarWidth, cyh = SystemInformation.HorizontalScrollBarHeight;
+        int right = _minSize.Width, bottom = _minSize.Height;
+        foreach (Control child in Controls)
+        {
+            if (!child.Visible) continue;
+            right = Math.Max(right, child.Left + child.Width + _h.ValueValue);
+            bottom = Math.Max(bottom, child.Top + child.Height + _v.ValueValue);
+        }
+        bool v = bottom > Height, h = right > Width;
+        if (v && right > Width - cxv) h = true;
+        if (h && bottom > Height - cyh) v = true;
+        viewWidth = Width - (v ? cxv : 0); viewHeight = Height - (h ? cyh : 0);
+        _h.VisibleValue = h; _v.VisibleValue = v;
+        _h.MinimumValue = 0; _h.MaximumValue = Math.Max(right - 1, 0); _h.LargeValue = Math.Max(viewWidth, 1);
+        _v.MinimumValue = 0; _v.MaximumValue = Math.Max(bottom - 1, 0); _v.LargeValue = Math.Max(viewHeight, 1);
+        if (!h) ScrollTo(_h, 0);
+        if (!v) ScrollTo(_v, 0);
+    }
+
+    internal override void PaintAfterChildren(Seat seat, Point origin)
+    {
+        // Nothing to do for a control that never scrolled.
+        if (!_autoScroll && !_h.VisibleValue && !_v.VisibleValue && _hId < 0) return;
+        Form? f = FindForm();
+        if (f == null || f.Handle == 0) return;
+        if (_hId < 0) { _hId = Seat.NextScrollBarId(); ScrollWidgets.Add(_hId, this); }
+        if (_vId < 0) { _vId = Seat.NextScrollBarId(); ScrollWidgets.Add(_vId, this); }
+        int viewWidth = Width, viewHeight = Height;
+        if (_autoScroll) Measure(out viewWidth, out viewHeight);
+        int cxv = SystemInformation.VerticalScrollBarWidth, cyh = SystemInformation.HorizontalScrollBarHeight;
+        bool shown = ShownAll();
+        ScrollWidgets.Show(seat, f, _hId, origin.X, origin.Y + viewHeight, viewWidth, cyh, false, !shown || !_h.VisibleValue,
+                           _h.MinimumValue, _h.MaximumValue, _h.LargeValue, _h.ValueValue, _h.EnabledValue && Enabled);
+        ScrollWidgets.Show(seat, f, _vId, origin.X + viewWidth, origin.Y, cxv, viewHeight, true, !shown || !_v.VisibleValue,
+                           _v.MinimumValue, _v.MaximumValue, _v.LargeValue, _v.ValueValue, _v.EnabledValue && Enabled);
+        // The corner where both meet, in the face colour.
+        if (shown && _h.VisibleValue && _v.VisibleValue)
+        {
+            Graphics g = CreateGraphics();
+            g.FillRectangle(new SolidBrush(SystemColors.Control), viewWidth, viewHeight, cxv, cyh);
+            seat.Flush();
+        }
+    }
+
+    /// A step of one of its bars: the view moved, .NET's Scroll raised.
+    internal void SeatScroll(int id, int command, int pos)
+    {
+        ScrollProperties bar = id == _hId ? (ScrollProperties)_h : _v;
+        ScrollOrientation way = id == _hId ? ScrollOrientation.HorizontalScroll : ScrollOrientation.VerticalScroll;
+        int was = bar.ValueValue;
+        if (command == 8) { OnScroll(new ScrollEventArgs(ScrollEventType.EndScroll, was, was, way)); return; }
+        int last = Math.Max(bar.MinimumValue, bar.MaximumValue - bar.LargeValue + 1);
+        ScrollTo(bar, ScrollWidgets.Target(command, was, pos, bar.MinimumValue, last, bar.SmallValue, bar.LargeValue));
+        OnScroll(new ScrollEventArgs(ScrollWidgets.Type(command), was, bar.ValueValue, way));
     }
 }
 
@@ -5965,7 +6113,7 @@ public delegate void WatchHandler(int fd);
 /// it; the pointer shows which way. A view that scrolls one way only is
 /// scrolled that way only, by the same rule -- IE did -- unless the user
 /// asked for grab-and-drag, where the content follows the pointer instead.
-static class AutoScroll
+static class PanScroll
 {
     internal static bool Active;
     internal static bool SwallowRelease;
@@ -6671,6 +6819,9 @@ public static class Application
             && m.Kind != Seat.TimerElapsed && m.Kind != Seat.HotKeyPressed
             && m.Kind != Seat.KeyChar && m.Kind != Seat.InputLanguageRequest && m.Kind != Seat.InputLanguageChanged
             && (m.Kind < Seat.ShellCreated || m.Kind > Seat.ShellTray)) return;
+        // A step of a scroll bar the seat tracks for one of this program's
+        // controls (ScrollWidgets).
+        if (m.Kind == Seat.ScrollEvent) { ScrollWidgets.Raise(m.A & 0xFFFF, (m.A >> 16) & 0xFFFF, m.B); return; }
         switch (m.Kind)
         {
             case 1:
@@ -6687,7 +6838,7 @@ public static class Application
                 int mods = (m.B >> 8) & 7;
                 char ch = (char)((m.B >> 16) & 0xFFFF);
                 // A key ends autoscroll and goes nowhere else, as in IE.
-                if (AutoScroll.Active) { if (!up) AutoScroll.End(); return; }
+                if (PanScroll.Active) { if (!up) PanScroll.End(); return; }
                 Control? target = _focus ?? _active;
                 if (target == null) return;
                 Keys data = (Keys)vk | ((mods & 1) != 0 ? Keys.Shift : Keys.None) | ((mods & 2) != 0 ? Keys.Control : Keys.None)
@@ -6795,7 +6946,7 @@ public static class Application
                 break;
             }
             case 9:
-                if (m.A == 0 && AutoScroll.Active) AutoScroll.End();
+                if (m.A == 0 && PanScroll.Active) PanScroll.End();
                 if (m.A != 0) { _active = f; f!.RaiseActivated(); }
                 else { if (_active == f) _active = null; f!.RaiseDeactivate(); }
                 break;

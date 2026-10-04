@@ -148,6 +148,13 @@ enum SeatIoctl : long
     PropList = 0x4755009D,
     ForegroundAllow = 0x4755009E,
     ForegroundLock = 0x4755009F,
+    // Scroll bars the seat draws and tracks (seatscroll.cor).
+    ScrollBarPlace = 0x47550700,
+    ScrollBarSet = 0x47550701,
+    ScrollBarGet = 0x47550702,
+    ScrollBarEnable = 0x47550703,
+    ScrollBarDestroy = 0x47550704,
+    ScrollBarPaint = 0x47550705,
     ThemeColours = 0x47550080,
     ThemeMetrics = 0x47550081,
     ThemeFont = 0x47550082,
@@ -997,6 +1004,77 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
     /// A timer come due (its window, A its id, B 1 for a system timer); a hot
     /// key pressed (its window, A its id, B the MOD_ bits | the key << 16).
     public const int TimerElapsed = 34, HotKeyPressed = 35;
+
+    // ---- scroll bars the seat draws and tracks ----------------------------------------
+    //
+    // A window's bars: its frame's (FrameHorizontal 0, FrameVertical 1, from
+    // WS_HSCROLL and WS_VSCROLL in its frame style) and widgets placed in it
+    // (2 and up, NextScrollBarId). The seat draws them in the theme as
+    // Windows 2000 does and tracks a press on one -- arrows and page areas
+    // repeating, the thumb following the pointer -- and says each step with a
+    // ScrollEvent: its window, A the bar | the SB_ command << 16 (SB_LINEUP 0
+    // ... SB_THUMBPOSITION 4, SB_THUMBTRACK 5, SB_TOP 6, SB_BOTTOM 7,
+    // SB_ENDSCROLL 8), B the position (the thumb's while it is held). The
+    // position is the program's to set (SetScrollBar).
+
+    public const int ScrollEvent = 220;
+    public const int FrameHorizontal = 0, FrameVertical = 1;
+    /// SCROLLINFO's mask bits, for SetScrollBar.
+    public const int ScrollRange = 1, ScrollPage = 2, ScrollPos = 4, ScrollReturnOldPos = 0x1000;
+
+    static int _nextScrollBar = 2;
+    static readonly object _scrollLock = new object();
+
+    /// A new widget bar's id, unique in this program.
+    public static int NextScrollBarId() { lock (_scrollLock) { int id = _nextScrollBar; _nextScrollBar = _nextScrollBar >= 0x7FFFFFF0 ? 2 : _nextScrollBar + 1; return id; } }
+
+    long ScrollCall(SeatIoctl request, int window, int id, long a, long b, long c, long d, long e, long f, byte[]? back)
+    {
+        byte[] args = back ?? new byte[32];
+        PutWord(args, 0, window); PutWord(args, 4, id); PutWord(args, 8, a); PutWord(args, 12, b);
+        PutWord(args, 16, c); PutWord(args, 20, d); PutWord(args, 24, e); PutWord(args, 28, f);
+        return Ioctl(request, Sys.ArrayData(args));
+    }
+
+    /// A widget bar in `window` at (x, y), width by height on its surface,
+    /// across or up and down; hidden, it is neither drawn nor pressed.
+    public void PlaceScrollBar(int window, int id, int x, int y, int width, int height, bool vertical, bool hidden)
+    {
+        ScrollCall(SeatIoctl.ScrollBarPlace, window, id, x, y, width, height, (vertical ? 1 : 0) | (hidden ? 2 : 0), 0, null);
+    }
+
+    /// SetScrollInfo's rules on a bar: what `mask` names of min, max, page
+    /// and pos stored; drawn again with `redraw`. The position it has now.
+    public int SetScrollBar(int window, int id, int mask, int min, int max, int page, int pos, bool redraw)
+    {
+        return (int)ScrollCall(SeatIoctl.ScrollBarSet, window, id, mask, min, max, page, pos, redraw ? 1 : 0, null);
+    }
+
+    /// A bar's range, page, position, the thumb's tracking position and the
+    /// ESB_ bits of its arrows; false when there is no such bar.
+    public bool GetScrollBar(int window, int id, out int min, out int max, out int page, out int pos, out int trackPos, out int disabled)
+    {
+        byte[] args = new byte[32];
+        bool ok = ScrollCall(SeatIoctl.ScrollBarGet, window, id, 0, 0, 0, 0, 0, 0, args) == 0;
+        min = Word(args, 8); max = Word(args, 12); page = Word(args, 16); pos = Word(args, 20); trackPos = Word(args, 24); disabled = Word(args, 28);
+        return ok;
+    }
+
+    /// A bar's arrows on or off (ESB_: 1 the first, 2 the second, 3 both).
+    public bool EnableScrollBar(int window, int id, int arrows)
+    {
+        return ScrollCall(SeatIoctl.ScrollBarEnable, window, id, arrows, 0, 0, 0, 0, 0, null) == 1;
+    }
+
+    public void DestroyScrollBar(int window, int id) { ScrollCall(SeatIoctl.ScrollBarDestroy, window, id, 0, 0, 0, 0, 0, 0, null); }
+
+    /// A bar drawn now, over what this program has drawn there: the drawing
+    /// so far goes first.
+    public void PaintScrollBar(int window, int id)
+    {
+        Flush();
+        ScrollCall(SeatIoctl.ScrollBarPaint, window, id, 0, 0, 0, 0, 0, 0, null);
+    }
 
     /// A timer on `window` (0: this thread's) every `milliseconds` (at least
     /// 10), allowed to fire up to `tolerance` milliseconds early to go with
