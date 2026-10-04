@@ -211,6 +211,20 @@ internal sealed class RegionEscape
     private int _seenStamp;
     private readonly Stack<int> _next = new();
 
+    /// <summary>
+    /// For the tests: a function's summary as it stands -- each object as
+    /// its kind, parameter and path ("Place 0 [8]", "Deep -1 []", a guard
+    /// "g", the deep step "deep"), its cells and its result, and whether it
+    /// was made coarse -- or null for none, or the unknown call's.
+    /// </summary>
+    internal (string[] Objects, (int From, int Offset, int To, int ToOffset)[] Cells, (int To, int ToOffset)[] Result, bool Coarse)? SummaryOf(int f)
+    {
+        if (_summaries[f] is not { IsUnknown: false } s) return null;
+        static string Step(int step) => step == DeepStep ? "deep" : IsGuard(step) ? "g" : step.ToString();
+        return (s.Objects.Select(o => o.Kind + " " + o.Param + " [" + string.Join(",", o.Path.Select(Step)) + "]").ToArray(),
+            s.Cells.ToArray(), s.Result.ToArray(), s.MadeCoarse);
+    }
+
     /// <summary>The sites the given origins may be.</summary>
     public int[] SitesOf(int[] origins)
     {
