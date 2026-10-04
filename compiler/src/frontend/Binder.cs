@@ -10478,6 +10478,18 @@ public sealed partial class Binder
     /// <summary>The member a call is checking as its callee, for CheckMember.</summary>
     private MemberExpr? _callee;
 
+    // THE NAME BEING CALLED, while CheckCall checks its target: C# looks a
+    // name up for an invocation among the members that can be invoked
+    // (§12.8.10.2, "if the member is invoked"), passing over a field or a
+    // property that is no delegate to the method further out. `Fields(path)`
+    // in a nested class with a field Fields calls the outer class's method.
+    private NameExpr? _invokedName;
+
+    /// <summary>Whether `n` is being called and a member of type `t` could not be: no delegate.</summary>
+    private bool NotInvocable(NameExpr n, Type t)
+        => ReferenceEquals(n, _invokedName) && !t.IsError
+           && !(t.AsNonNullable().Symbol is TypeSymbol held && held.FindMethods("Invoke").Any());
+
     /// <summary>Nullable&lt;T&gt; methods CheckMember found being called, with the cell's type.</summary>
     private readonly Dictionary<MemberExpr, Type> _cellMethods = new(ReferenceEqualityComparer.Instance);
 
@@ -14178,6 +14190,7 @@ public sealed partial class Binder
             }
 
             FieldSymbol? f = _thisType.FindField(n.Name) ?? _thisType.FindField("<" + n.Name + ">");
+            if (f is not null && NotInvocable(n, f.Type)) f = null;
 
             // NO INSTANCE IN A STATIC METHOD (C#'s CS0120). A static method
             // naming one of its class's instance fields has no object to read
@@ -14239,6 +14252,7 @@ public sealed partial class Binder
             }
 
             MethodSymbol? getter = Members(_thisType, "get_" + n.Name).FirstOrDefault();
+            if (getter is not null && NotInvocable(n, getter.Returns)) getter = null;
 
             if (getter is { Static: false } && InStaticContext)
             {
@@ -14283,7 +14297,7 @@ public sealed partial class Binder
 
             FieldSymbol? staticField = _lexicalType.FindField(n.Name)
                                       ?? _lexicalType.FindField("<" + n.Name + ">");
-            if (staticField is { Static: true })
+            if (staticField is { Static: true } && !NotInvocable(n, staticField.Type))
             {
                 _r.Resolved[n] = new FieldSym(staticField);
                 return staticField.Type;
@@ -14322,7 +14336,7 @@ public sealed partial class Binder
 
             MethodSymbol? staticGetter = _lexicalType.FindMethods("get_" + n.Name)
                                                      .FirstOrDefault(m => m.Static);
-            if (staticGetter is not null)
+            if (staticGetter is not null && !NotInvocable(n, staticGetter.Returns))
             {
                 _r.Resolved[n] = new PropertyGetSym(staticGetter);
                 return staticGetter.Returns;
@@ -14342,7 +14356,7 @@ public sealed partial class Binder
         {
             FieldSymbol? outerField = _capturedThisType.FindField(n.Name)
                                    ?? _capturedThisType.FindField("<" + n.Name + ">");
-            if (outerField is not null)
+            if (outerField is not null && !NotInvocable(n, outerField.Type))
             {
                 _r.Resolved[n] = new CapturedFieldSym(_capturedThisField, outerField);
                 return outerField.Type;
@@ -14356,7 +14370,7 @@ public sealed partial class Binder
             }
 
             MethodSymbol? outerGetter = _capturedThisType.FindMethods("get_" + n.Name).FirstOrDefault();
-            if (outerGetter is not null)
+            if (outerGetter is not null && !NotInvocable(n, outerGetter.Returns))
             {
                 _r.Resolved[n] = new CapturedPropertyGetSym(_capturedThisField, outerGetter);
                 return outerGetter.Returns;
@@ -14403,7 +14417,7 @@ public sealed partial class Binder
 
             FieldSymbol? outerStatic = outer.FindField(n.Name)
                                     ?? outer.FindField("<" + n.Name + ">");
-            if (outerStatic is { Static: true })
+            if (outerStatic is { Static: true } && !NotInvocable(n, outerStatic.Type))
             {
                 _r.Resolved[n] = new FieldSym(outerStatic);
                 return outerStatic.Type;
@@ -14419,7 +14433,7 @@ public sealed partial class Binder
 
             MethodSymbol? outerStaticGetter = outer.FindMethods("get_" + n.Name)
                                                    .FirstOrDefault(m => m.Static);
-            if (outerStaticGetter is not null)
+            if (outerStaticGetter is not null && !NotInvocable(n, outerStaticGetter.Returns))
             {
                 _r.Resolved[n] = new PropertyGetSym(outerStaticGetter);
                 return outerStaticGetter.Returns;
@@ -15956,9 +15970,12 @@ public sealed partial class Binder
         if (c.ArgNames.Any(n => n != null))
         {
             MemberExpr? outerNamedCallee = _callee;
+            NameExpr? outerNamedInvoked = _invokedName;
             _callee = c.Target as MemberExpr;
+            _invokedName = c.Target as NameExpr;
             CheckExpr(c.Target);
             _callee = outerNamedCallee;
+            _invokedName = outerNamedInvoked;
             Reorder(c);
         }
 
@@ -16013,9 +16030,12 @@ public sealed partial class Binder
         _wanted = outerTarget;
 
         MemberExpr? outerCallee = _callee;
+        NameExpr? outerInvoked = _invokedName;
         _callee = c.Target as MemberExpr;
+        _invokedName = c.Target as NameExpr;
         Type targetType = CheckExpr(c.Target);
         _callee = outerCallee;
+        _invokedName = outerInvoked;
         if (movedReceiver is not null)
         {
             args[0] = _r.TypeOf(movedReceiver);
