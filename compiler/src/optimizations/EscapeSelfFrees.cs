@@ -16,8 +16,9 @@ using Block = Corsac.Lang.Ir.Block;
 // replacement by the compiler, never freed with its owner by the owned-field
 // map, the arrays left behind by every growth the collector's.
 //
-// THE IDIOM, recognised here, a SELF-REPLACING FREE: `Runtime.Free(v)` that
-// this run did not insert, where v is a read of `o.F` and a store `o.F = w`
+// THE IDIOM, recognised here, a SELF-REPLACING FREE: `Runtime.Free(v)`, or
+// `Runtime.FreeOwnedReplaced(v, 0)` (StorageFreed), that this run did not
+// insert, where v is a read of `o.F` and a store `o.F = w`
 // into the same object either
 //   - comes before the free on every way from the read to it (the value
 //     freed is the one the store replaced: Grow), or
@@ -82,9 +83,9 @@ public sealed partial class Escape
         foreach (Block b in f.Blocks)
             foreach (Instr free in b.Instrs)
             {
-                if (free.Op != Opcode.Call || free.Callee != Freer || inserted?.Contains(free) == true
-                    || free.Operands.Count != 1 || free.Operands[0] is not RegOperand freed) continue;
-                defs ??= SingleDefs(f);
+                if (free.Op != Opcode.Call || free.Callee is not (Freer or OwnedReplacedFreer) || inserted?.Contains(free) == true) continue;
+                Dictionary<VReg, Instr> known = defs ??= SingleDefs(f);
+                if (StorageFreed(free, r => known.GetValueOrDefault(r)) is not RegOperand freed) continue;
                 if (OriginOf(defs, freed.Reg) is not { Op: Opcode.Load, Field: string field, Dest: { } value } load
                     || load.Operands.Count < 1 || load.Operands[0] is not RegOperand { Reg: var baseReg } || !defs.ContainsKey(value)) continue;
                 found ??= new SelfFrees();
@@ -141,7 +142,7 @@ public sealed partial class Escape
         // ANOTHER FIELD OF THE SAME OBJECT GIVEN BACK BESIDE THIS ONE, as a
         // table frees its arrays together: never the object itself, nor this
         // field's value.
-        bool Peer(Instr call) => call.Operands is [RegOperand { Reg: var other }]
+        bool Peer(Instr call) => StorageFreed(call, r => defs.GetValueOrDefault(r)) is RegOperand { Reg: var other }
             && OriginOf(defs, other) is { Op: Opcode.Load, Field: string of, Operands: [RegOperand { Reg: var from }, ..] }
             && of != field && StableRoot(f, defs, written, from) == owner;
         // No handler may reach the free without the read: an exception
@@ -225,7 +226,42 @@ public sealed partial class Escape
         if (i.Op is Opcode.CallIndirect or Opcode.Syscall or Opcode.AtomicSwap or Opcode.AtomicAdd or Opcode.AtomicAnd or Opcode.AtomicOr
             or Opcode.AtomicXor or Opcode.AtomicCas) return false;
         if (i.Op != Opcode.Call) return true;
-        return i.Callee is not null && (IsCollectorNote(i.Callee) || NeverWritesFields(i.Callee) || peer is not null && i.Callee == Freer && peer(i));
+        return i.Callee is not null && (IsCollectorNote(i.Callee) || NeverWritesFields(i.Callee)
+            || peer is not null && i.Callee is (Freer or OwnedReplacedFreer) && peer(i));
+    }
+
+    /// <summary>
+    /// WHAT A COLLECTION'S OWN FREE OF ITS STORAGE GIVES BACK, or null: the
+    /// one operand of `Runtime.Free(v)`, or the first of
+    /// `Runtime.FreeOwnedReplaced(v, 0)` -- the library's spelling of the
+    /// same free as an owned field's old value, which in a region gives the
+    /// block back at once where it is the top (Gc.RegionFree) and on the heap
+    /// is Runtime.Free. The zero says nothing replaces it here: the free and
+    /// the store are the idiom's pair, as for Runtime.Free.
+    ///
+    /// Never the compiler's own FreeOwnedReplaced(old, new), at a store or
+    /// around a call: the old value it frees is a load it inserted, which
+    /// names no field, and the idiom's value is a read of one (SelfFreesOf).
+    /// </summary>
+    internal static RegOperand? StorageFreed(Instr call, Func<VReg, Instr?> origin)
+    {
+        if (call.Op != Opcode.Call) return null;
+        if (call.Callee == Freer) return call.Operands is [RegOperand only] ? only : null;
+        if (call.Callee == OwnedReplacedFreer && call.Operands is [RegOperand old, var current] && IsZeroWord(current, origin)) return old;
+        return null;
+    }
+
+    /// <summary>Whether an operand is the constant zero: written so, or a register written once from one, through copies and widenings.</summary>
+    private static bool IsZeroWord(Operand o, Func<VReg, Instr?> origin)
+    {
+        for (int hop = 0; hop < 8; hop++)
+        {
+            if (o is ImmOperand { Value: 0 }) return true;
+            if (o is not RegOperand { Reg: var r }
+                || origin(r) is not { Op: Opcode.Copy or Opcode.ZExt32 or Opcode.SExt32 or Opcode.Trunc64, Operands: [var from] }) return false;
+            o = from;
+        }
+        return false;
     }
 
     /// <summary>What a walk does at an instruction: go on, stop this way here (fine), fail the whole walk, or go on in another state.</summary>

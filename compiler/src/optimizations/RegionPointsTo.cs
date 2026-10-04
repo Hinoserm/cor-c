@@ -519,8 +519,11 @@ public sealed class RegionPointsTo : IModulePass
     ///
     /// Only fields the collection frees itself as it replaces them (SelfFreed,
     /// Escape's self-replacing frees): their old values are given back by
-    /// Runtime.Free, which leaves a region's block to its region; no other
-    /// free is ever handed one. The owner is found here, on the IR as it is
+    /// the collection's own free, as an owned field's old value
+    /// (Runtime.FreeOwnedReplaced) -- in a region at once where it is the
+    /// top (Gc.RegionFree), else with its region, and dead either way, every
+    /// read of an owned field being dead before the store that replaces it;
+    /// no other free is ever handed one. The owner is found here, on the IR as it is
     /// now, not as the link saw it -- the body may have been inlined anywhere
     /// since: the allocation's value, through copies, is stored only into such
     /// fields, all of one object, held by a register written once (or a

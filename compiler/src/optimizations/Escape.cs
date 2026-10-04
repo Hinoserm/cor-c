@@ -3648,6 +3648,13 @@ continue;
             return bases.Contains(r);
         }
 
+        // A register's one write, where it has one (StorageFreed's zero).
+        Instr? ZeroOrigin(VReg zeroReg)
+        {
+            writes ??= new(f);
+            return writes.TryGetValue(zeroReg, out WriteList zeroWrites) && zeroWrites.Count == 1 ? zeroWrites[0] : null;
+        }
+
         // A HOLDER HANDED TO A CALL: a box -- a block made here and stamped
         // one, or a call's result that holds the object -- at its base, to
         // functions that each keep nothing of that argument and whose field
@@ -3670,6 +3677,10 @@ continue;
                     return false;
                 }
                 if (i.Op == Opcode.Call && i.Callee == Freer && i.Operands.Count == 1) continue;
+                // Or the library's spelling of that free, as an owned field's
+                // old value (StorageFreed): the box alone, given back as by
+                // Runtime.Free, and at once where it is its region's top.
+                if (o == 0 && StorageFreed(i, ZeroOrigin) is not null) continue;
                 string[]? targets = i.Op == Opcode.Call ? (i.Callee is null ? null : new[] { i.Callee })
                     // On the receiver of a type known here: that type's method.
                     : o == first && TypedTargets(i, box) is { } typed ? typed
