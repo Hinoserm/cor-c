@@ -2585,11 +2585,18 @@ public static class SendKeys
     }
 
     /// A character typed: its virtual key and shift from the layout
-    /// (VkKeyScan), with any Ctrl or Alt the syntax asked.
+    /// (VkKeyScan), with any Ctrl or Alt the syntax asked. One no key on the
+    /// layout types goes as itself (VK_PACKET, KEYEVENTF_UNICODE's).
     static void Char(Corsac.GUI.Seat seat, char c, bool control, bool alt, bool shiftToo = false)
     {
         int scan = seat.VkKeyScan(c);
-        if (scan == 0xFFFF) return;
+        if (scan == 0xFFFF || (scan & 0xFF) == 0xFF)
+        {
+            if (control || alt || shiftToo) return;
+            seat.InjectChar(c, true);
+            seat.InjectChar(c, false);
+            return;
+        }
         int vk = scan & 0xFF;
         bool shift = shiftToo || (scan & 0x100) != 0;
         bool ctrl = control || (scan & 0x200) != 0;

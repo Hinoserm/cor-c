@@ -2569,6 +2569,18 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
     /// or X button in the high word). 0, or a negative errno.
     public long InjectInput(byte[] item) { return item.Length >= 28 ? Ioctl(SeatIoctl.InjectInput, Sys.ArrayData(item)) : -22; }
 
+    /// A character injected with no key: VK_PACKET (0xE7), the character at
+    /// +12 of the INPUT record (the seat's InjectInput), down or up.
+    public long InjectChar(char c, bool down)
+    {
+        byte[] item = new byte[28];
+        item[0] = 1;
+        item[4] = 0xE7;
+        item[12] = (byte)c; item[13] = (byte)(c >> 8);
+        if (!down) item[20] = 2;
+        return InjectInput(item);
+    }
+
     /// VkKeyScan on the caller's layout: the virtual key a character types
     /// in the low byte, the shift state above it (0x100 Shift, 0x200 Ctrl,
     /// 0x400 Alt); 0xFFFF for a character no key types.
@@ -2832,10 +2844,14 @@ public sealed class KeyObservedEventArgs : EventArgs
     public bool Up { get; }
     public bool Injected { get; }
     public System.Windows.Forms.Keys Modifiers { get; }
+    /// VK_PACKET's character (a character injected with no key: SendInput's
+    /// KEYEVENTF_UNICODE, InputTap.InjectChar); '\0' for any other key.
+    /// ScanCode is the character too, as Windows' KBDLLHOOKSTRUCT has it.
+    public char Character { get; }
     public bool Eat { get; set; }
 
-    internal KeyObservedEventArgs(int vk, int scan, bool up, bool injected, System.Windows.Forms.Keys mods)
-    { VirtualKey = vk; ScanCode = scan; Up = up; Injected = injected; Modifiers = mods; }
+    internal KeyObservedEventArgs(int vk, int scan, bool up, bool injected, System.Windows.Forms.Keys mods, char character = '\0')
+    { VirtualKey = vk; ScanCode = scan; Up = up; Injected = injected; Modifiers = mods; Character = character; }
 }
 
 /// A pointer input seen by an InputTap, before it is routed. Message is the
@@ -2899,7 +2915,9 @@ public sealed class InputTap : IDisposable
                     | ((mods & 1) != 0 ? System.Windows.Forms.Keys.Shift : System.Windows.Forms.Keys.None)
                     | ((mods & 2) != 0 ? System.Windows.Forms.Keys.Control : System.Windows.Forms.Keys.None)
                     | ((mods & 4) != 0 ? System.Windows.Forms.Keys.Alt : System.Windows.Forms.Keys.None);
-                KeyObservedEventArgs e = new KeyObservedEventArgs(vk, (lParam >> 16) & 0xFF, up, injected, k);
+                // VK_PACKET carries its character at +16 (the seat's TapItem).
+                int packet = vk == 0xE7 ? Int(item, 16) & 0xFFFF : 0;
+                KeyObservedEventArgs e = new KeyObservedEventArgs(vk, packet != 0 ? packet : (lParam >> 16) & 0xFF, up, injected, k, (char)packet);
                 KeyObserved(this, e);
                 eat = e.Eat;
             }
@@ -2928,6 +2946,15 @@ public sealed class InputTap : IDisposable
         PutInt(item, 4, virtualKey);
         PutInt(item, 20, down ? 0 : 2);
         _seat.InjectInput(item);
+    }
+
+    /// A character injected with no key (SendInput's KEYEVENTF_UNICODE):
+    /// VK_PACKET down or up, which a Windows program reads as WM_KEYDOWN
+    /// VK_PACKET and TranslateMessage makes the WM_CHAR of, and a native
+    /// window as the character's key press.
+    public void InjectChar(char c, bool down)
+    {
+        _seat.InjectChar(c, down);
     }
 
     /// The pointer moved, injected: to (x, y) on the screen.
