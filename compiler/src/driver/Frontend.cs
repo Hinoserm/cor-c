@@ -135,6 +135,7 @@ public static class Frontend
                 }
 
                 unit.Types.AddRange(one.Types);
+                if (one.UsesDynamic && !isLibrary && !isElsewhere) unit.UsesDynamic = true;
 
                 // Retagged the same way decl.File is above: this loop's own
                 // `file` is the name a diagnostic will actually be stamped
@@ -196,6 +197,20 @@ public static class Frontend
         if (Report(com))
         {
             return null;
+        }
+
+        // AND `dynamic`'s view of a program's own classes: each member by
+        // name, for a dynamic receiver bound at run time to find
+        // (DynamicDeclarations). Only for a program that writes `dynamic`, and
+        // the library's own [LateBound] classes.
+        if (DynamicDeclarations.Wanted(unit))
+        {
+            List<CompileError> late = new();
+            DynamicDeclarations.Expand(unit, symbols, late);
+            if (Report(late))
+            {
+                return null;
+            }
         }
 
         IReadOnlyList<CompileError> generic;

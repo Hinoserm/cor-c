@@ -9,6 +9,13 @@ public sealed class CompilationUnit : Node
     public List<TypeDecl> Types { get; } = new();
 
     /// <summary>
+    /// Whether a program's source here writes `dynamic` anywhere: what has
+    /// its classes given their members by name (DynamicDeclarations), for
+    /// a dynamic receiver to find at run time.
+    /// </summary>
+    public bool UsesDynamic { get; set; }
+
+    /// <summary>
     /// Every TUPLE TYPE WITH NAMED ELEMENTS that was written anywhere, kept
     /// because a specialisation carries its arguments in its NAME and the
     /// argument list does not survive: `List&lt;(int A, int B)&gt;` becomes

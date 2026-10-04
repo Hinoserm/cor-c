@@ -1,0 +1,58 @@
+// test: dynamic_collections_delegates
+// expect-exit: 0
+// expect-output:
+// 2 10 True
+// sum 14
+// 2 2 False
+// 42
+// 3
+// 5 HELLO e
+// 3 7
+// hello
+// 10
+//
+// The library's shapes through `dynamic`: a List<int> and a
+// Dictionary<string, int> (Add, the indexer read and written, Count,
+// Contains, ContainsKey), foreach over a dynamic list and a dynamic
+// string, a Func made dynamic and called, then converted back to its own
+// type, a string's Length, a method and its indexer, an int[]'s Length and
+// element, and a static method chosen at run time by a dynamic argument
+// (Math.Max(long, long) for an int beside a long).
+
+using System;
+using System.Collections.Generic;
+
+static class Program
+{
+    static int Main()
+    {
+        dynamic list = new List<int>();
+        list.Add(3);
+        list.Add(4);
+        list[0] = 10;
+        Console.WriteLine(list.Count + " " + list[0] + " " + list.Contains(4));
+        int sum = 0;
+        foreach (var x in list) sum += x;
+        Console.WriteLine("sum " + sum);
+
+        dynamic map = new Dictionary<string, int>();
+        map["a"] = 1;
+        map.Add("b", 2);
+        Console.WriteLine(map.Count + " " + map["b"] + " " + map.ContainsKey("c"));
+
+        Func<int, int, int> add = (p, q) => p + q;
+        dynamic f = add;
+        Console.WriteLine(f(20, 22));
+        Func<int, int, int> back = f;
+        Console.WriteLine(back(1, 2));
+
+        dynamic text = "hello";
+        Console.WriteLine(text.Length + " " + text.ToUpper() + " " + text[1]);
+        dynamic arr = new int[] { 5, 6, 7 };
+        Console.WriteLine(arr.Length + " " + arr[2]);
+        foreach (var ch in text) Console.Write(ch);
+        Console.WriteLine();
+        Console.WriteLine(Math.Max(list[0], 4L));
+        return 0;
+    }
+}

@@ -1,0 +1,90 @@
+// test: dynamic_members
+// expect-exit: 0
+// expect-output:
+// count 6
+// name renamed
+// int 3
+// long 3
+// double 2.5
+// string x
+// int 4
+// object
+// sum 11 3
+// total 6 9 0
+// cell 42
+// count 17
+// plain 18 wide 34
+// read only: Property or indexer 'Counter.ReadOnly' cannot be assigned to -- it is read only
+// missing: 'Counter' does not contain a definition for 'Missing'
+// null: Cannot perform runtime binding on a null reference
+//
+// C#'s `dynamic` over a program's own class: fields and properties read
+// and written, a read-only one refused, methods chosen among their
+// overloads by the run-time types of the arguments (an int before a long
+// before a double; a short taken as an int; a bool only by object), an
+// optional parameter left out, a `params` array whole and expanded, the
+// indexer, compound assignments and increments through the receiver, the
+// result converted implicitly to int and to long, and the binder's errors.
+
+using System;
+using Microsoft.CSharp.RuntimeBinder;
+
+class Counter
+{
+    public int Count;
+    public string Name { get; set; } = "c";
+    public int ReadOnly => 7;
+    int[] _cells = new int[4];
+    public int this[int i] { get { return _cells[i]; } set { _cells[i] = value; } }
+    public string Kind(int x) { return "int " + x; }
+    public string Kind(long x) { return "long " + x; }
+    public string Kind(double x) { return "double " + x; }
+    public string Kind(string x) { return "string " + x; }
+    public string Kind(object x) { return "object"; }
+    public int Sum(int a, int b = 10) { return a + b; }
+    public int Total(params int[] items)
+    {
+        int t = 0;
+        foreach (int i in items) t += i;
+        return t;
+    }
+    public void Bump() { Count++; }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        dynamic c = new Counter();
+        c.Count = 5;
+        c.Bump();
+        Console.WriteLine("count " + c.Count);
+        c.Name = "renamed";
+        Console.WriteLine("name " + c.Name);
+        Console.WriteLine(c.Kind(3));
+        Console.WriteLine(c.Kind(3L));
+        Console.WriteLine(c.Kind(2.5));
+        Console.WriteLine(c.Kind("x"));
+        Console.WriteLine(c.Kind((short)4));
+        Console.WriteLine(c.Kind(true));
+        Console.WriteLine("sum " + c.Sum(1) + " " + c.Sum(1, 2));
+        Console.WriteLine("total " + c.Total(1, 2, 3) + " " + c.Total(new int[] { 4, 5 }) + " " + c.Total());
+        c[2] = 40;
+        c[2] += 2;
+        Console.WriteLine("cell " + c[2]);
+        c.Count += 10;
+        c.Count++;
+        Console.WriteLine("count " + c.Count);
+        int plain = c.Count;
+        long wide = c.Count;
+        Console.WriteLine("plain " + (plain + 1) + " wide " + (wide * 2));
+        try { c.ReadOnly = 1; }
+        catch (RuntimeBinderException e) { Console.WriteLine("read only: " + e.Message); }
+        try { c.Missing(); }
+        catch (RuntimeBinderException e) { Console.WriteLine("missing: " + e.Message); }
+        dynamic nothing = null;
+        try { Console.WriteLine(nothing.Count); }
+        catch (RuntimeBinderException e) { Console.WriteLine("null: " + e.Message); }
+        return 0;
+    }
+}

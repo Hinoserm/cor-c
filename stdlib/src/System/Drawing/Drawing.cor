@@ -593,6 +593,13 @@ public interface IPathTarget
     void Geometry(int[] words, int count, int kind);
 }
 
+/// A target that can show a print preview's page (the seat's PageBlit): a
+/// page window of the program's, the whole page scaled into a rectangle.
+public interface IPageTarget
+{
+    void ShowPage(int page, int x, int y, int width, int height);
+}
+
 /// The batch's words for the geometry ops.
 internal static class GeometryWords
 {
@@ -1147,6 +1154,18 @@ public class Graphics : IDisposable
         int tx, ty;
         At(x, y, out tx, out ty);
         _target.Blit(id, 0, 0, tx + _originX, ty + _originY, width, height);
+    }
+
+    /// A preview page (Corsac.GUI's Seat.CreatePreviewPage) shown whole,
+    /// scaled into the rectangle; nothing on a target without pages.
+    public void DrawPage(int page, int x, int y, int width, int height)
+    {
+        IPageTarget? pages = _target as IPageTarget;
+        if (pages == null) return;
+        Sync();
+        int tx, ty;
+        At(x, y, out tx, out ty);
+        pages.ShowPage(page, tx + _originX, ty + _originY, width, height);
     }
 
     public void DrawStringOpaque(string s, Font font, Color foreground, Color background, int x, int y)

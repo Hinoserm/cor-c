@@ -755,8 +755,12 @@ public sealed class Parser
         }
 
         ParseNamespaceMembers(unit, "");
+        unit.UsesDynamic = _sawDynamic;
         return unit;
     }
+
+    /// <summary>Whether a type named `dynamic` was read (CompilationUnit.UsesDynamic).</summary>
+    private bool _sawDynamic;
 
     /// The types and namespaces of one namespace (`within`, "" for the
     /// global one), up to the brace that closes it or the end of the file.
@@ -3284,6 +3288,8 @@ public sealed class Parser
             _i++;
             name += "." + _t[_i++].Text;
         }
+
+        if (name == "dynamic") _sawDynamic = true;
 
         List<TypeRef> args = new();
 

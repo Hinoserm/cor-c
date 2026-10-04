@@ -16,6 +16,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Drawing.Drawing2D;
 using System.IO;
 using Corsac.GUI;
 using Corsac.Printing;
@@ -433,6 +434,121 @@ namespace System.Drawing.Printing
             if (_page != 0 && _seat != null) { _seat.DiscardPage(_page); _page = 0; }
             if (e.Cancel) PrintSpooler.AbortDoc(job);
             else PrintSpooler.EndDoc(job);
+        }
+    }
+
+    /// A page a preview drew: a page window of the seat's (Seat.
+    /// CreatePreviewPage), white paper at PreviewPrintController.Dpi dots
+    /// an inch, the page's size in pixels. What .NET keeps as a Metafile;
+    /// here the page itself, drawn once, which Graphics.DrawPage shows at
+    /// any size and ToBitmap reads back. Dispose lets it go.
+    public sealed class PreviewPageImage : Image
+    {
+        int _page;
+        readonly int _width, _height;
+
+        internal PreviewPageImage(int page, int width, int height) { _page = page; _width = width; _height = height; }
+
+        public override int Width { get { return _width; } }
+        public override int Height { get { return _height; } }
+
+        /// The seat's page window: what Graphics.DrawPage takes. 0 once
+        /// disposed.
+        public int Page { get { return _page; } }
+
+        /// The page's pixels, opaque.
+        public Bitmap ToBitmap()
+        {
+            if (_page == 0) throw new ObjectDisposedException("PreviewPageImage");
+            Bitmap made = new Bitmap(_width, _height);
+            int[]? pixels = Seat.Current.WindowPixels(_page, new Rectangle(0, 0, _width, _height));
+            for (int i = 0; i < _width * _height; i++)
+            {
+                int v = pixels != null ? pixels[i] : 0xFFFFFF;
+                made.Pixels[i * 4] = (byte)v; made.Pixels[i * 4 + 1] = (byte)(v >> 8); made.Pixels[i * 4 + 2] = (byte)(v >> 16); made.Pixels[i * 4 + 3] = 255;
+            }
+            return made;
+        }
+
+        public override void Dispose()
+        {
+            int page = _page;
+            _page = 0;
+            if (page != 0) Seat.Current.DiscardPage(page);
+        }
+    }
+
+    /// .NET's PreviewPageInfo: a page's picture and the paper's size in
+    /// hundredths of an inch.
+    public sealed class PreviewPageInfo
+    {
+        readonly Image _image;
+        readonly Size _physical;
+        public PreviewPageInfo(Image image, Size physicalSize) { _image = image; _physical = physicalSize; }
+        public Image Image { get { return _image; } }
+        public Size PhysicalSize { get { return _physical; } }
+    }
+
+    /// Printing to a preview (.NET's PreviewPrintController): each page
+    /// drawn on a preview page of the seat's -- the same drawing engine a
+    /// printed page has -- at Dpi dots an inch, which counts a pixel a
+    /// hundredth of an inch: the Graphics the handler gets needs no scale.
+    /// GetPreviewPageInfo hands the pages over; the caller disposes them.
+    public class PreviewPrintController : PrintController
+    {
+        /// The preview's dots an inch: a hundredth of an inch a pixel, so a
+        /// letter page is 850 by 1100 and PrintPreviewControl's Zoom 1.0 is
+        /// the page at its size.
+        public const int Dpi = 100;
+
+        List<PreviewPageInfo> _pages = new List<PreviewPageInfo>();
+        Seat? _seat;
+        int _page, _width, _height;
+        Size _physical;
+
+        public override bool IsPreview { get { return true; } }
+        public virtual bool UseAntiAlias { get; set; }
+
+        public override void OnStartPrint(PrintDocument document, PrintEventArgs e)
+        {
+            if (!document.PrinterSettings.IsValid) throw new InvalidPrinterException(document.PrinterSettings);
+            _seat = Seat.Current;
+            _pages = new List<PreviewPageInfo>();
+        }
+
+        public override Graphics? OnStartPage(PrintDocument document, PrintPageEventArgs e)
+        {
+            if (_seat == null) return null;
+            Rectangle b = e.PageBounds;
+            _width = Math.Max(1, b.Width * Dpi / 100);
+            _height = Math.Max(1, b.Height * Dpi / 100);
+            _physical = new Size(b.Width, b.Height);
+            _page = _seat.CreatePreviewPage(_width, _height, Dpi);
+            _seat.Target(_page);
+            Graphics g = new Graphics(_seat, 0, 0, new Rectangle(0, 0, _width, _height));
+            if (UseAntiAlias) g.SmoothingMode = SmoothingMode.AntiAlias;
+            return g;
+        }
+
+        public override void OnEndPage(PrintDocument document, PrintPageEventArgs e)
+        {
+            if (_seat == null || _page == 0) return;
+            _seat.Flush();
+            _pages.Add(new PreviewPageInfo(new PreviewPageImage(_page, _width, _height), _physical));
+            _page = 0;
+        }
+
+        public override void OnEndPrint(PrintDocument document, PrintEventArgs e)
+        {
+            if (_page != 0 && _seat != null) { _seat.DiscardPage(_page); _page = 0; }
+        }
+
+        /// The pages drawn, in order; they are the caller's from here.
+        public PreviewPageInfo[] GetPreviewPageInfo()
+        {
+            PreviewPageInfo[] made = _pages.ToArray();
+            _pages = new List<PreviewPageInfo>();
+            return made;
         }
     }
 

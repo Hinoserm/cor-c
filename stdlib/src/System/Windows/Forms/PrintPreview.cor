@@ -1,0 +1,405 @@
+// WINDOWS FORMS' PRINT PREVIEW: PrintPreviewControl (a document's pages
+// shown on the application workspace's grey, Rows by Columns of them from
+// StartPage, at Zoom or fitted) and PrintPreviewDialog (that control under
+// a toolbar: print, zoom, one to six pages, close, the page number), as
+// .NET's are, over System.Drawing.Printing's PreviewPrintController.
+//
+// The pages are drawn once, by the document's own PrintPage handler, onto
+// preview pages of the seat's -- the same drawing engine a printed page
+// is drawn by, at a hundred dots an inch -- and shown by the seat scaled to
+// the zoom (Graphics.DrawPage, the seat's PageBlit): shrunk, each pixel the
+// average of those it covers.
+
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Drawing;
+using System.Drawing.Printing;
+
+namespace System.Windows.Forms
+{
+    public class PrintPreviewControl : Control
+    {
+        internal override string ClassName { get { return "PrintPreviewControl"; } }
+
+        /// .NET's: the grey between and around the pages, in pixels.
+        const int Border = 10;
+
+        /// The screen's dots an inch, which a page's hundredths of an inch
+        /// are shown at, times the zoom.
+        const int ScreenDpi = 96;
+
+        PrintDocument? _document;
+        PreviewPageInfo[]? _pages;
+        bool _computing;
+        double _zoom = 0.3;
+        bool _autoZoom = true;
+        int _columns = 1, _rows = 1, _start;
+        readonly HScrollBar _h;
+        readonly VScrollBar _v;
+
+        public event EventHandler? StartPageChanged;
+
+        public PrintPreviewControl()
+        {
+            BackColor = SystemColors.AppWorkspace;
+            Width = 100; Height = 100;
+            _h = new HScrollBar(); _h.Visible = false; _h.SmallChange = 20;
+            _v = new VScrollBar(); _v.Visible = false; _v.SmallChange = 20;
+            _h.ValueChanged += (object? s, EventArgs e) => Invalidate();
+            _v.ValueChanged += (object? s, EventArgs e) => Invalidate();
+            Controls.Add(_h);
+            Controls.Add(_v);
+        }
+
+        /// The document previewed; setting it draws the preview again.
+        public PrintDocument? Document
+        {
+            get { return _document; }
+            set { _document = value; InvalidatePreview(); }
+        }
+
+        /// Whether the zoom is worked out so that the pages fit.
+        public bool AutoZoom
+        {
+            get { return _autoZoom; }
+            set { if (_autoZoom == value) return; _autoZoom = value; Arrange(); Invalidate(); }
+        }
+
+        /// The pages' size: 1.0 a page at its own size on the screen.
+        /// Setting it turns AutoZoom off.
+        public double Zoom
+        {
+            get { return _zoom; }
+            set
+            {
+                if (value <= 0) throw new ArgumentException("Zoom must be greater than 0.");
+                _autoZoom = false;
+                _zoom = value;
+                Arrange();
+                Invalidate();
+            }
+        }
+
+        public int Columns
+        {
+            get { return _columns; }
+            set { if (value < 1) throw new ArgumentOutOfRangeException("Columns"); _columns = value; StartPage = _start; Arrange(); Invalidate(); }
+        }
+
+        public int Rows
+        {
+            get { return _rows; }
+            set { if (value < 1) throw new ArgumentOutOfRangeException("Rows"); _rows = value; StartPage = _start; Arrange(); Invalidate(); }
+        }
+
+        /// The first page shown, from 0: kept so that a full grid of pages
+        /// shows when there are that many, as .NET keeps it.
+        public int StartPage
+        {
+            get
+            {
+                int value = _start;
+                if (_pages != null) value = Math.Min(value, _pages.Length - _rows * _columns);
+                return Math.Max(value, 0);
+            }
+            set
+            {
+                if (value < 0) throw new ArgumentOutOfRangeException("StartPage");
+                int was = StartPage;
+                _start = value;
+                if (StartPage != was) { Invalidate(); OnStartPageChanged(EventArgs.Empty); }
+            }
+        }
+
+        public bool UseAntiAlias { get; set; }
+
+        /// How many pages the preview has, once drawn.
+        internal int PageCount { get { return _pages != null ? _pages.Length : 0; } }
+
+        protected virtual void OnStartPageChanged(EventArgs e) { EventHandler? h = StartPageChanged; if (h != null) h(this, e); }
+
+        /// The preview drawn again from the document, when it next shows.
+        public void InvalidatePreview()
+        {
+            ReleasePages();
+            Invalidate();
+        }
+
+        /// The pages given back to the seat.
+        internal void ReleasePages()
+        {
+            PreviewPageInfo[]? pages = _pages;
+            _pages = null;
+            if (pages == null) return;
+            foreach (PreviewPageInfo p in pages) p.Image.Dispose();
+        }
+
+        /// The document printed to a preview: its pages kept, its own
+        /// controller put back after.
+        void ComputePreview()
+        {
+            if (_document == null || _pages != null || _computing) return;
+            _computing = true;
+            int was = StartPage;
+            PrintController saved = _document.PrintController;
+            PreviewPrintController preview = new PreviewPrintController();
+            preview.UseAntiAlias = UseAntiAlias;
+            try
+            {
+                _document.PrintController = preview;
+                _document.Print();
+                _pages = preview.GetPreviewPageInfo();
+            }
+            finally
+            {
+                _document.PrintController = saved;
+                _computing = false;
+            }
+            Arrange();
+            if (StartPage != was) OnStartPageChanged(EventArgs.Empty);
+        }
+
+        /// A page's size on the screen at zoom 1, in pixels: the first
+        /// shown page's paper, as .NET sizes every cell by it.
+        Size PageAtOne()
+        {
+            if (_pages == null || _pages.Length == 0) return new Size(850 * ScreenDpi / 100, 1100 * ScreenDpi / 100);
+            Size physical = _pages[Math.Min(StartPage, _pages.Length - 1)].PhysicalSize;
+            return new Size(Math.Max(1, physical.Width * ScreenDpi / 100), Math.Max(1, physical.Height * ScreenDpi / 100));
+        }
+
+        Size PageShown()
+        {
+            Size one = PageAtOne();
+            return new Size(Math.Max(1, (int)(one.Width * _zoom)), Math.Max(1, (int)(one.Height * _zoom)));
+        }
+
+        /// The zoom worked out, if it is automatic, and the scroll bars
+        /// shown where the pages are wider or taller than the control.
+        void Arrange()
+        {
+            int cxv = SystemInformation.VerticalScrollBarWidth, cyh = SystemInformation.HorizontalScrollBarHeight;
+            Size one = PageAtOne();
+            if (_autoZoom)
+            {
+                double zx = (double)(Width - Border * (_columns + 1)) / (_columns * one.Width);
+                double zy = (double)(Height - Border * (_rows + 1)) / (_rows * one.Height);
+                _zoom = Math.Max(0.01, Math.Min(zx, zy));
+            }
+            Size page = PageShown();
+            int wide = _columns * (page.Width + Border) + Border, tall = _rows * (page.Height + Border) + Border;
+            bool h = !_autoZoom && wide > Width, v = !_autoZoom && tall > Height;
+            if (v && wide > Width - cxv) h = !_autoZoom;
+            if (h && tall > Height - cyh) v = !_autoZoom;
+            int viewW = Width - (v ? cxv : 0), viewH = Height - (h ? cyh : 0);
+            _h.Visible = h; _v.Visible = v;
+            if (h)
+            {
+                _h.SetBounds(0, viewH, viewW, cyh);
+                _h.Minimum = 0; _h.Maximum = wide - 1; _h.LargeChange = Math.Max(1, viewW);
+                if (_h.Value > wide - viewW) _h.Value = Math.Max(0, wide - viewW);
+            }
+            else _h.Value = 0;
+            if (v)
+            {
+                _v.SetBounds(viewW, 0, cxv, viewH);
+                _v.Minimum = 0; _v.Maximum = tall - 1; _v.LargeChange = Math.Max(1, viewH);
+                if (_v.Value > tall - viewH) _v.Value = Math.Max(0, tall - viewH);
+            }
+            else _v.Value = 0;
+        }
+
+        protected override void OnResize(EventArgs e)
+        {
+            Arrange();
+            Invalidate();
+            base.OnResize(e);
+        }
+
+        protected override void OnPaintBackground(PaintEventArgs e) { }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            ComputePreview();
+            int viewW = Width - (_v.Visible ? _v.Width : 0), viewH = Height - (_h.Visible ? _h.Height : 0);
+            g.FillRectangle(new SolidBrush(BackColor), 0, 0, Width, Height);
+            if (_document == null) { base.OnPaint(e); return; }
+            if (_pages == null || _pages.Length == 0)
+            {
+                string none = "Document does not contain any pages.";
+                SizeF size = g.MeasureString(none, Font);
+                g.DrawString(none, Font, new SolidBrush(SystemColors.ControlText), (viewW - (int)size.Width) / 2, (viewH - (int)size.Height) / 2);
+                base.OnPaint(e);
+                return;
+            }
+            Size page = PageShown();
+            int wide = _columns * (page.Width + Border) + Border, tall = _rows * (page.Height + Border) + Border;
+            // Centred when it all fits; scrolled when it does not.
+            int ox = wide < viewW ? (viewW - wide) / 2 : -_h.Value;
+            int oy = tall < viewH ? (viewH - tall) / 2 : -_v.Value;
+            int start = StartPage;
+            for (int row = 0; row < _rows; row++)
+                for (int column = 0; column < _columns; column++)
+                {
+                    int i = start + row * _columns + column;
+                    if (i >= _pages.Length) continue;
+                    int x = ox + Border + column * (page.Width + Border), y = oy + Border + row * (page.Height + Border);
+                    if (x >= viewW || y >= viewH || x + page.Width + 1 < 0 || y + page.Height + 1 < 0) continue;
+                    // The paper: a black edge, then the page scaled into it.
+                    g.DrawRectangle(new Pen(Color.Black), x - 1, y - 1, page.Width + 1, page.Height + 1);
+                    PreviewPageImage? image = _pages[i].Image as PreviewPageImage;
+                    if (image != null && image.Page != 0) g.DrawPage(image.Page, x, y, page.Width, page.Height);
+                    else g.FillRectangle(new SolidBrush(Color.White), x, y, page.Width, page.Height);
+                }
+            base.OnPaint(e);
+        }
+
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            if (_v.Visible)
+            {
+                int last = Math.Max(0, _v.Maximum - _v.LargeChange + 1);
+                _v.Value = Math.Max(0, Math.Min(last, _v.Value - e.Delta / 120 * _v.SmallChange * 3));
+            }
+            else if (e.Delta != 0) StartPage = Math.Max(0, StartPage + (e.Delta < 0 ? 1 : -1) * _rows * _columns);
+            base.OnMouseWheel(e);
+        }
+
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            int step = _rows * _columns;
+            if (e.KeyCode == Keys.PageDown) StartPage = StartPage + step;
+            else if (e.KeyCode == Keys.PageUp) StartPage = Math.Max(0, StartPage - step);
+            else if (e.KeyCode == Keys.Home) StartPage = 0;
+            else if (e.KeyCode == Keys.End) StartPage = Math.Max(0, PageCount - 1);
+            base.OnKeyDown(e);
+        }
+    }
+
+    /// .NET's PrintPreviewDialog: a form of a PrintPreviewControl under a
+    /// toolbar -- print, the zoom, one, two, three, four or six pages,
+    /// close, and the page shown first.
+    public class PrintPreviewDialog : Form
+    {
+        readonly PrintPreviewControl _preview;
+        readonly Panel _bar;
+        readonly ComboBox _zoom;
+        readonly NumericUpDown _page;
+        readonly Label _pageLabel;
+        bool _setting;
+
+        static readonly string[] ZoomNames = new string[] { "Auto", "500%", "200%", "150%", "100%", "75%", "50%", "25%", "10%" };
+        static readonly double[] ZoomValues = new double[] { 0, 5.0, 2.0, 1.5, 1.0, 0.75, 0.5, 0.25, 0.1 };
+
+        const int BarHeight = 28;
+
+        public PrintPreviewDialog()
+        {
+            Text = "Print preview";
+            StartPosition = FormStartPosition.CenterScreen;
+            MinimizeBox = false;
+            ShowInTaskbar = false;
+            ClientSize = new Size(600, 450);
+
+            _bar = new Panel();
+            _bar.BackColor = SystemColors.Control;
+            Controls.Add(_bar);
+
+            int x = 4;
+            ToolBarButton print = Tool("&Print", ref x);
+            print.Click += (object? s, EventArgs e) => { PrintDocument? d = _preview.Document; if (d != null) d.Print(); };
+            x += 6;
+            _zoom = new ComboBox();
+            _zoom.DropDownStyle = ComboBoxStyle.DropDownList;
+            foreach (string name in ZoomNames) _zoom.Items.Add(name);
+            _zoom.SelectedIndex = 0;
+            _zoom.SetBounds(x, 3, 70, 21);
+            _zoom.SelectedIndexChanged += (object? s, EventArgs e) => ZoomChosen();
+            _bar.Controls.Add(_zoom);
+            x += 70 + 6;
+            Layout1(Tool("1", ref x), 1, 1);
+            Layout1(Tool("2", ref x), 1, 2);
+            Layout1(Tool("3", ref x), 1, 3);
+            Layout1(Tool("4", ref x), 2, 2);
+            Layout1(Tool("6", ref x), 2, 3);
+            x += 6;
+            ToolBarButton close = Tool("&Close", ref x);
+            close.DialogResult = DialogResult.Cancel;
+            CancelButton = close;
+
+            _pageLabel = new Label();
+            _pageLabel.AutoSize = false;
+            _pageLabel.Text = "Page";
+            _bar.Controls.Add(_pageLabel);
+            _page = new NumericUpDown();
+            _page.Minimum = 1; _page.Maximum = 1000; _page.Value = 1;
+            _page.ValueChanged += (object? s, EventArgs e) => { if (!_setting) _preview.StartPage = _page.Value - 1; };
+            _bar.Controls.Add(_page);
+
+            _preview = new PrintPreviewControl();
+            _preview.StartPageChanged += (object? s, EventArgs e) =>
+            {
+                _setting = true;
+                try { _page.Value = _preview.StartPage + 1; }
+                finally { _setting = false; }
+            };
+            Controls.Add(_preview);
+
+            Resize += (object? s, EventArgs e) => Place();
+            FormClosed += (object? s, EventArgs e) => _preview.ReleasePages();
+            Place();
+        }
+
+        ToolBarButton Tool(string text, ref int x)
+        {
+            ToolBarButton b = new ToolBarButton();
+            b.Text = text;
+            int width = Math.Max(24, ControlPaint.StripMnemonic(text).Length * 7 + 12);
+            b.SetBounds(x, 2, width, 23);
+            _bar.Controls.Add(b);
+            x += width + 1;
+            return b;
+        }
+
+        void Layout1(ToolBarButton b, int rows, int columns)
+        {
+            b.Click += (object? s, EventArgs e) => { _preview.Rows = rows; _preview.Columns = columns; };
+        }
+
+        void ZoomChosen()
+        {
+            int i = _zoom.SelectedIndex;
+            if (i < 0 || i >= ZoomValues.Length) return;
+            if (i == 0) _preview.AutoZoom = true;
+            else _preview.Zoom = ZoomValues[i];
+        }
+
+        /// The toolbar along the top, the page number at its right, the
+        /// preview filling the rest.
+        void Place()
+        {
+            Size c = ClientSize;
+            _bar.SetBounds(0, 0, c.Width, BarHeight);
+            _page.SetBounds(Math.Max(0, c.Width - 4 - 50), 3, 50, 21);
+            _pageLabel.SetBounds(Math.Max(0, c.Width - 4 - 50 - 4 - 32), 6, 32, 16);
+            _preview.SetBounds(0, BarHeight, c.Width, Math.Max(0, c.Height - BarHeight));
+        }
+
+        /// The document previewed.
+        public PrintDocument? Document
+        {
+            get { return _preview.Document; }
+            set { _preview.Document = value; }
+        }
+
+        public PrintPreviewControl PrintPreviewControl { get { return _preview; } }
+
+        public bool UseAntiAlias
+        {
+            get { return _preview.UseAntiAlias; }
+            set { _preview.UseAntiAlias = value; }
+        }
+    }
+}

@@ -30,6 +30,7 @@
 //             10 ShowPointer flag
 //             11 DefinePointer w h hotx hoty bytes, AND mask then XOR mask
 //             12 Window handle           -- everything after is relative to it
+//             21 PageBlit page x y w h   -- a preview page scaled into the rectangle
 //            Colours are 0x00RRGGBB.
 //   reads    16-byte events: kind, window, a, b
 //              1 Key        a = key code, b = modifiers

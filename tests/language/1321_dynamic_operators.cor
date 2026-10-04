@@ -1,0 +1,86 @@
+// test: dynamic_operators
+// expect-exit: 0
+// expect-output:
+// 9
+// 3
+// 1
+// 3.5
+// 3000000007
+// x7
+// 7x
+// True
+// True
+// -7
+// -3
+// 28
+// 11
+// False
+// True
+// True
+// True
+// fallback
+// 16
+// greater
+// 7 7
+// Cannot implicitly convert type 'double' to 'int'. An explicit conversion exists (are you missing a cast?)
+// 0
+// 3
+//
+// C#'s operators on dynamic values, bound to the run-time types: the
+// binary numeric promotions (int with int, int with long, int with double),
+// string concatenation either way round, comparison and equality, the
+// unary operators, shifts and the bitwise ones, bool logic and `&&` over
+// dynamic operands, null and `??`, increments and compound assignment, a
+// dynamic condition, conversions -- explicit to byte, implicit to double,
+// an implicit one refused with the binder's text, an explicit one that
+// truncates -- and `x op= d` into an ordinary variable.
+
+using System;
+using Microsoft.CSharp.RuntimeBinder;
+
+static class Program
+{
+    static int Main()
+    {
+        dynamic a = 7, b = 2, big = 3000000000L, half = 0.5, s = "x";
+        Console.WriteLine(a + b);
+        Console.WriteLine(a / b);
+        Console.WriteLine(a % b);
+        Console.WriteLine(a * half);
+        Console.WriteLine(a + big);
+        Console.WriteLine(s + a);
+        Console.WriteLine(a + s);
+        Console.WriteLine(a > b);
+        Console.WriteLine(a == 7);
+        Console.WriteLine(-a);
+        Console.WriteLine(~b);
+        Console.WriteLine(a << 2);
+        Console.WriteLine((a & 3) | 8);
+        dynamic t = true, f = false;
+        Console.WriteLine(t & f);
+        Console.WriteLine(!f);
+        Console.WriteLine(t && !f);
+        dynamic n = null;
+        Console.WriteLine(n == null);
+        Console.WriteLine(n ?? "fallback");
+        dynamic i = 5;
+        i++;
+        i += 10;
+        Console.WriteLine(i);
+        if (a > 5) Console.WriteLine("greater");
+        byte small = (byte)a;
+        double d = a;
+        Console.WriteLine(small + " " + d);
+        try
+        {
+            int bad = half;
+            Console.WriteLine(bad);
+        }
+        catch (RuntimeBinderException e) { Console.WriteLine(e.Message); }
+        Console.WriteLine((int)half);
+        int plain = 1;
+        plain += b;
+        Console.WriteLine(plain);
+        return 0;
+    }
+}
