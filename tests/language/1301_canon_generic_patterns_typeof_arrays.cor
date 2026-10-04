@@ -1,0 +1,105 @@
+// test: canon_generic_patterns_typeof_arrays
+// expect-exit: 0
+// expect-output:
+// switched list: list 3
+// switched set: collection 2
+// switched other: other
+// armed list: read-only list 3
+// armed set: sequence
+// armed other: nothing
+// typeof item: True True
+// typeof other: False False
+// arrays item: lists 2, collections 2
+// arrays other: no lists, no collections
+// cast array 2
+// other cast array: InvalidCastException
+//
+// The rest of what a shared generic copy asks of a type constructed over its
+// T, after 1300's `is`, `as` and casts: a switch statement's case pattern, a
+// switch expression's arm, typeof, and arrays of such a type tested, taken
+// with `as` and cast to. Each must answer for the T of the object at hand,
+// as .NET's do -- a Shelf of Other handed Items finds none of them.
+
+using System;
+using System.Collections.Generic;
+
+class Item
+{
+    public readonly int N;
+    public Item(int n) { N = n; }
+}
+
+class Other { }
+
+class Shelf<T>
+{
+    public object? Held;
+
+    public string Switched()
+    {
+        switch (Held)
+        {
+            case IList<T> l:
+                return "list " + l.Count;
+            case ICollection<T> c:
+                return "collection " + c.Count;
+            default:
+                return "other";
+        }
+    }
+
+    public string Armed() => Held switch
+    {
+        IReadOnlyList<T> r => "read-only list " + r.Count,
+        IEnumerable<T> e => "sequence",
+        _ => "nothing",
+    };
+
+    public string SameTypes()
+        => (typeof(ICollection<T>) == typeof(ICollection<Item>)) + " " + (typeof(List<T>[]) == typeof(List<Item>[]));
+
+    public string Arrays()
+    {
+        string a = Held is List<T>[] lists ? "lists " + lists.Length : "no lists";
+        ICollection<T>[]? collections = Held as ICollection<T>[];
+        string b = collections is null ? "no collections" : "collections " + collections.Length;
+        return a + ", " + b;
+    }
+
+    public int CastArray() => ((List<T>[])Held!).Length;
+}
+
+static class P
+{
+    static int Main()
+    {
+        List<Item> list = new() { new Item(1), new Item(2), new Item(3) };
+        HashSet<Item> set = new() { new Item(4), new Item(5) };
+        List<Item>[] lists = { list, new List<Item>() };
+
+        Console.WriteLine("switched list: " + new Shelf<Item> { Held = list }.Switched());
+        Console.WriteLine("switched set: " + new Shelf<Item> { Held = set }.Switched());
+        Console.WriteLine("switched other: " + new Shelf<Other> { Held = list }.Switched());
+
+        Console.WriteLine("armed list: " + new Shelf<Item> { Held = list }.Armed());
+        Console.WriteLine("armed set: " + new Shelf<Item> { Held = set }.Armed());
+        Console.WriteLine("armed other: " + new Shelf<Other> { Held = list }.Armed());
+
+        Console.WriteLine("typeof item: " + new Shelf<Item>().SameTypes());
+        Console.WriteLine("typeof other: " + new Shelf<Other>().SameTypes());
+
+        Console.WriteLine("arrays item: " + new Shelf<Item> { Held = lists }.Arrays());
+        Console.WriteLine("arrays other: " + new Shelf<Other> { Held = lists }.Arrays());
+
+        Console.WriteLine("cast array " + new Shelf<Item> { Held = lists }.CastArray());
+        try
+        {
+            Console.WriteLine("other cast array " + new Shelf<Other> { Held = lists }.CastArray());
+        }
+        catch (InvalidCastException)
+        {
+            Console.WriteLine("other cast array: InvalidCastException");
+        }
+        return 0;
+    }
+}

@@ -1943,8 +1943,21 @@ public sealed partial class Lowering
                 table.Relocs.Add(new DataReloc((2 + 2 * i) * w,
                     SequenceDescriptor(ElementKey(args[i]), ElementStride(args[i]), isString: false, elementType: args[i]), 0));
             }
+            List<TypeRef>? written = chain[d].Decl?.CanonMade;
             for (int k = 0; k < made.Count; k++)
             {
+                // An array of a constructed type the shared code tests for
+                // (Monomorphiser.CanonTested): that array's descriptor.
+                if (written is not null && k < written.Count && written[k].ArrayRank == 1)
+                {
+                    if (made[k] is { Kind: TypeKind.Class or TypeKind.Interface } element)
+                    {
+                        Type of = new() { Prim = Prim.Void, Symbol = element };
+                        table.Relocs.Add(new DataReloc((1 + 2 * args.Count + k) * w,
+                            SequenceDescriptor(ElementKey(of), ElementStride(of), isString: false, elementType: of), 0));
+                    }
+                    continue;
+                }
                 if (made[k] is { Kind: TypeKind.Class } cls)
                 {
                     table.Relocs.Add(new DataReloc((1 + 2 * args.Count + k) * w, ClassDescriptor(cls), 0));
