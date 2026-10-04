@@ -1,0 +1,32 @@
+// test: --no-opt makes a ring-1 image's reference stores sequences too
+// flags: --ring1-syscalls --no-opt
+// run: no
+// expect-asm-x86: Store: __corsac_refstore
+// expect-no-asm-x86: Store: cmp __corsac_cardmark __corsac_barrier m_Runtime_CardMark m_Runtime_WriteBarrier
+//
+// Unoptimised, no pass runs before code generation -- the sequences' among
+// them (CardMarks.FuseStores) -- and the barrier's test and its store would
+// stay two places a ring-1 thread can be stopped between. So in an image
+// whose stores are sequences the conversion runs at every optimisation
+// level. Compiled and read, not run: the gate is CORSAC's.
+
+class Node
+{
+    public object? Next;
+}
+
+static class Program
+{
+    static Node _held = new Node();
+
+    static int Main()
+    {
+        Store(_held, new Node());
+        return _held.Next == null ? 1 : 0;
+    }
+
+    static void Store(Node into, object value)
+    {
+        into.Next = value;
+    }
+}

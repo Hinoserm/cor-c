@@ -830,6 +830,15 @@ public static class Driver
                 Console.Write(module.Dump());
             }
         }
+        // UNOPTIMISED, ITS STORES ARE SEQUENCES ALL THE SAME: where the image
+        // stops its threads anywhere (Lowering.StoreSequences) the last pass's
+        // conversion runs without the passes before it (CardMarks.FuseStores),
+        // or --no-opt would leave every barrier's test and its store two
+        // places a thread can be stopped between.
+        else if (module.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.RefStore))
+        {
+            new Corsac.Lang.Opt.CardMarks().Run(module);
+        }
 
         // Async bodies become state machines once their registers are final;
         // no backend knows what a suspension marker is.
