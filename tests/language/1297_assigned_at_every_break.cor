@@ -1,0 +1,54 @@
+// test: a local assigned at every break of an endless loop is assigned after it
+// expect-exit: 0
+// expect-output:
+// 1
+// 2
+// 3
+// C#'s rule: a loop whose condition is always true is left only by a break,
+// so what every break had assigned is assigned after it -- here through a
+// try/finally, and with a switch's own break in between that leaves the
+// switch, not the loop.
+
+using System;
+
+static class Program
+{
+    static int Pick(int n)
+    {
+        bool kick;
+        while (true)
+        {
+            int had;
+            try
+            {
+                if (n > 0) { kick = n > 1; break; }
+                had = n;
+            }
+            finally { n++; }
+            n = had + 1;
+        }
+        return kick ? 2 : 1;
+    }
+
+    static int Count(int start)
+    {
+        int found;
+        for (;;)
+        {
+            switch (start)
+            {
+                case 0: start = 3; break;
+                default: found = start; break;
+            }
+            if (start == 3 && start > 2) { found = start; break; }
+        }
+        return found;
+    }
+
+    static void Main()
+    {
+        Console.WriteLine(Pick(0));
+        Console.WriteLine(Pick(5));
+        Console.WriteLine(Count(0));
+    }
+}
