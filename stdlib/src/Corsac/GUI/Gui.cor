@@ -238,6 +238,9 @@ enum SeatIoctl : long
     DragDone = 0x47550B06,
     DragFormats = 0x47550B07,
     DragCancel = 0x47550B08,
+    DragBridgeTarget = 0x47550B09,
+    DragBridgeAnswer = 0x47550B0A,
+    DragBridgeDone = 0x47550B0B,
 }
 
 public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
@@ -1205,16 +1208,24 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
     // pointer, the target answering with the effect it would take, the drop,
     // and the source told what was done. A Windows program's ole32 reaches a
     // native drop target through the COM broker when the window is
-    // registered with the broker's cookie for its IDropTarget.
+    // registered with the broker's cookie for its endpoint (an
+    // IInterfaceFromWindowProp, ComOle.cor), and a native drag reaches a
+    // Windows program's window the same way the other round (the
+    // DragBridge events).
 
     /// To a target: A the MK_ key state | the allowed effects << 16, B x | y
     /// << 16 on the screen. To the source: DragEnded (A the effect done),
     /// DragRender (A a format wanted now), DragFeedback (A the effect shown).
     public const int DragEnterEvent = 300, DragOverEvent = 301, DragLeaveEvent = 302, DragDropEvent = 303;
     public const int DragEndedEvent = 304, DragRenderEvent = 305, DragFeedbackEvent = 306;
+    /// To the source, when the window under the pointer is a Windows
+    /// program's drop target: the same words as DragEnter ... DragDrop, for
+    /// it to carry to that window's ole32 (IInterfaceFromWindowProp::
+    /// PrivDragDrop) and answer with DragBridgeAnswer and DragBridgeDone.
+    public const int DragBridgeEnterEvent = 307, DragBridgeOverEvent = 308, DragBridgeLeaveEvent = 309, DragBridgeDropEvent = 310;
 
-    /// The window a drop target; `cookie` the COM broker's for its IDropTarget
-    /// (the COM runtime's), 0 none.
+    /// The window a drop target; `cookie` the COM broker's for its endpoint
+    /// (the COM runtime's IInterfaceFromWindowProp), 0 none.
     public void RegisterDropTarget(int window, long cookie)
     {
         byte[] args = new byte[8];
@@ -1252,6 +1263,27 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
     public void DropDone(int effect) { Ioctl(SeatIoctl.DragDone, effect); }
 
     public void CancelDrag() { Ioctl(SeatIoctl.DragCancel, 0); }
+
+    /// The COM broker's cookie for the endpoint of the Windows program's
+    /// window this program's drag is over (its "OleEndPointID"), its ole32
+    /// asked to make one first if it has none yet; 0 when there is none.
+    public long DragBridgeTarget(int window)
+    {
+        long cookie = Ioctl(SeatIoctl.DragBridgeTarget, window);
+        return cookie < 0 ? 0 : cookie;
+    }
+
+    /// What the Windows program's window would do with the drag (its answer
+    /// to DRAGOP_ENTER or DRAGOP_OVER), and what it did with the drop.
+    public void DragBridgeAnswer(int window, int effect) { BridgeWord(SeatIoctl.DragBridgeAnswer, window, effect); }
+    public void DragBridgeDone(int window, int effect) { BridgeWord(SeatIoctl.DragBridgeDone, window, effect); }
+
+    void BridgeWord(SeatIoctl request, int window, int effect)
+    {
+        byte[] args = new byte[8];
+        PutWord(args, 0, window); PutWord(args, 4, effect);
+        Ioctl(request, Sys.ArrayData(args));
+    }
 
     /// The drag's formats.
     public int[] DragFormatList()

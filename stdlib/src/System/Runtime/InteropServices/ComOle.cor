@@ -1,0 +1,1005 @@
+// OLE'S DATA TRANSFER BETWEEN PROCESSES, as Windows 2000 SP4's ole32 carries
+// it: the interfaces drag and drop is made of, declared for COM, and their
+// wires -- what MIDL's proxies and stubs in ole32 put on the wire for them
+// (the format strings at 0x77A9D072 and the types at 0x77AA04EA, read from
+// SP4's ole32.dll) -- so that a native program and a Windows one drag to
+// each other through the COM runtime (ComRemote.cor).
+//
+// THE INTERFACES. IDataObject, IEnumFORMATETC, IDropTarget and IDropSource,
+// and ole32's own IInterfaceFromWindowProp (00000135), which is how a drag
+// really crosses processes: ole32 never calls another process's IDropTarget.
+// RegisterDragDrop (0x77A54E43) puts the IDropTarget in the window's
+// "OleDropTargetInterface" property, and the window's process gets an
+// endpoint -- an IInterfaceFromWindowProp of its own, table-marshalled and
+// registered with rpcss (RegisterWindowPropInterface, ISCM's opnum 4), its
+// cookie in the window's "OleEndPointID" (AssignEndpointProperty,
+// 0x77A6328A) -- at once, or when another process first asks for it by
+// sending WM_USER to the window in "OleDropTargetMarshalHwnd", the
+// apartment's clipboard window (ClipboardWndProc, 0x77A53FDA). The source's
+// DoDragDrop finds the cookie (UnmarshalFromEndpointProperty, 0x77A62D53),
+// gets the endpoint from rpcss (GetWindowPropInterface, ISCM's opnum 5),
+// and calls PrivDragDrop on it (0x77B20DE4): the target window, its own
+// IDataObject marshalled into an InterfaceData, the step -- DRAGOP_ENTER 1,
+// OVER 2, LEAVE 3, DROP 4 -- the keys, the point and the effect. The
+// endpoint calls the window's IDropTarget in its own process (0x77B20BD6).
+//
+// THE STRUCTURES are pointers here: the compiler does not marshal a
+// structure as a COM parameter (ComDeclarations), so a FORMATETC* or
+// STGMEDIUM* is an nint in a member's signature, read and written with
+// OleMemory, and a POINTL by value is a long (x the low half, y the high),
+// which is how i386 passes it. On the wire they are as ole32's stubs have
+// them:
+//
+//   FORMATETC  a structure, aligned to four: CLIPFORMAT's 'User' marker,
+//              ptd's pointer, dwAspect, lindex, tymed; after it CLIPFORMAT's
+//              body at eight -- 'WdtH' and the number (CLIPFORMAT_UserMarshal
+//              0x77B2C3A5, between processes of a machine; 'WdtR', the
+//              number and the name for another machine) -- and ptd's
+//              DVTARGETDEVICE if there is one;
+//   STGMEDIUM  behind its 'User' marker, at eight (STGMEDIUM_UserMarshal
+//              0x77B2C5FB): tymed, the handle's marker when tymed is not
+//              TYMED_NULL, pUnkForRelease's marker; then the handle's body
+//              -- an HGLOBAL's 'WdtR', the handle, the size, the handle, the
+//              size, the bytes (HGLOBAL_UserMarshal 0x77B2C6D0); an
+//              IStream's or IStorage's MInterfacePointer -- and
+//              pUnkForRelease's MInterfacePointer;
+//   HWND       behind its 'User' marker: 'WdtH' and the handle
+//              (WdtpRemotableHandle_UserMarshal 0x77B2C20C);
+//   InterfaceData  a unique pointer to ulCntData and a varying array of at
+//              most 1024 bytes: the offset 0, the count, the OBJREF.
+//
+// AN HGLOBAL here is OleGlobal's: memory AllocHGlobal gave with its size
+// kept in front, so its bytes can be put on the wire as GlobalSize's.
+
+using System;
+using System.Collections.Generic;
+using System.Text;
+using System.ServiceProcess;
+
+namespace System.Runtime.InteropServices.ComTypes
+{
+    public enum TYMED
+    {
+        TYMED_NULL = 0, TYMED_HGLOBAL = 1, TYMED_FILE = 2, TYMED_ISTREAM = 4, TYMED_ISTORAGE = 8,
+        TYMED_GDI = 16, TYMED_MFPICT = 32, TYMED_ENHMF = 64,
+    }
+
+    public enum DVASPECT { DVASPECT_CONTENT = 1, DVASPECT_THUMBNAIL = 2, DVASPECT_ICON = 4, DVASPECT_DOCPRINT = 8 }
+
+    public enum DATADIR { DATADIR_GET = 1, DATADIR_SET = 2 }
+
+    /// FORMATETC, as managed code holds one (OleMemory reads and writes the native one).
+    public struct FORMATETC
+    {
+        public short cfFormat;
+        public IntPtr ptd;
+        public DVASPECT dwAspect;
+        public int lindex;
+        public TYMED tymed;
+    }
+
+    /// STGMEDIUM, as managed code holds one.
+    public struct STGMEDIUM
+    {
+        public TYMED tymed;
+        public IntPtr unionmember;
+        public object? pUnkForRelease;
+    }
+
+    /// IDataObject (objidl.idl). pformatetc and pmedium point to a native
+    /// FORMATETC and STGMEDIUM (OleMemory).
+    [ComImport, Guid("0000010E-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IDataObject
+    {
+        [PreserveSig] int GetData(nint pformatetcIn, nint pmedium);
+        [PreserveSig] int GetDataHere(nint pformatetc, nint pmedium);
+        [PreserveSig] int QueryGetData(nint pformatetc);
+        [PreserveSig] int GetCanonicalFormatEtc(nint pformatectIn, nint pformatetcOut);
+        [PreserveSig] int SetData(nint pformatetc, nint pmedium, [MarshalAs(UnmanagedType.Bool)] bool fRelease);
+        [PreserveSig] int EnumFormatEtc(int dwDirection, out IEnumFORMATETC ppenumFormatEtc);
+        [PreserveSig] int DAdvise(nint pformatetc, int advf, [MarshalAs(UnmanagedType.IUnknown)] object pAdvSink, out int pdwConnection);
+        [PreserveSig] int DUnadvise(int dwConnection);
+        [PreserveSig] int EnumDAdvise([MarshalAs(UnmanagedType.IUnknown)] out object ppenumAdvise);
+    }
+
+    /// IEnumFORMATETC: rgelt points to `celt` native FORMATETCs, pceltFetched to a ULONG or is 0.
+    [ComImport, Guid("00000103-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IEnumFORMATETC
+    {
+        [PreserveSig] int Next(int celt, nint rgelt, nint pceltFetched);
+        [PreserveSig] int Skip(int celt);
+        [PreserveSig] int Reset();
+        [PreserveSig] int Clone(out IEnumFORMATETC ppenum);
+    }
+
+    /// IDropTarget (oleidl.idl); pt a POINTL, x low and y high.
+    [ComImport, Guid("00000122-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IDropTarget
+    {
+        [PreserveSig] int DragEnter([MarshalAs(UnmanagedType.IUnknown)] object pDataObj, int grfKeyState, long pt, ref int pdwEffect);
+        [PreserveSig] int DragOver(int grfKeyState, long pt, ref int pdwEffect);
+        [PreserveSig] int DragLeave();
+        [PreserveSig] int Drop([MarshalAs(UnmanagedType.IUnknown)] object pDataObj, int grfKeyState, long pt, ref int pdwEffect);
+    }
+
+    /// IDropSource (oleidl.idl): the source's own, never called from another process.
+    [ComImport, Guid("00000121-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IDropSource
+    {
+        [PreserveSig] int QueryContinueDrag([MarshalAs(UnmanagedType.Bool)] bool fEscapePressed, int grfKeyState);
+        [PreserveSig] int GiveFeedback(int dwEffect);
+    }
+
+    /// ole32's IInterfaceFromWindowProp (SP4's proxy, 0x77B36000, two
+    /// members): a window's interface by its IID and property name, and
+    /// PrivDragDrop -- hWnd and hwndSource HWNDs, pInterfaceData a native
+    /// InterfaceData (OleMemory.InterfaceData) or 0, pt a POINTL, pDataObject
+    /// the source's IDataObject when the endpoint is in its own process (0
+    /// otherwise), riid a pointer to an IID, pwszPropName a wide string.
+    [ComImport, Guid("00000135-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IInterfaceFromWindowProp
+    {
+        [PreserveSig] int GetInterfaceFromWindowProp(nint hWnd, nint riid, [MarshalAs(UnmanagedType.IUnknown)] out object ppunk, nint pwszPropName);
+        [PreserveSig] int PrivDragDrop(nint hWnd, nint pInterfaceData, int dop, int grfKeyState, long pt, ref int pdwEffect,
+            int dwSourceThread, [MarshalAs(UnmanagedType.IUnknown)] object pDataObject, nint hwndSource);
+    }
+}
+
+namespace System.Runtime.InteropServices
+{
+    using System.Runtime.InteropServices.ComTypes;
+
+    /// <summary>The HRESULTs and constants OLE's data transfer answers with.</summary>
+    public static class OleCodes
+    {
+        public const int SOk = 0, SFalse = 1;
+        public const int DvEFormatEtc = unchecked((int)0x80040064), DvETymed = unchecked((int)0x80040069), DvEDvAspect = unchecked((int)0x8004006B);
+        public const int DataSSameFormatEtc = 0x00040130;
+        public const int OleEAdviseNotSupported = unchecked((int)0x80040003), OleENoConnection = unchecked((int)0x80040004);
+        public const int DragOpEnter = 1, DragOpOver = 2, DragOpLeave = 3, DragOpDrop = 4;
+        public const string IidIDataObject = "0000010E-0000-0000-C000-000000000046";
+        public const string IidIEnumFormatEtc = "00000103-0000-0000-C000-000000000046";
+        public const string IidIDropTarget = "00000122-0000-0000-C000-000000000046";
+        public const string IidIInterfaceFromWindowProp = "00000135-0000-0000-C000-000000000046";
+        /// What an InterfaceData's array holds at most.
+        public const int InterfaceDataRoom = 1024;
+    }
+
+    /// <summary>
+    /// An HGLOBAL in this process: memory AllocHGlobal gave, the size in the
+    /// two words before the handle (GlobalSize's answer, which the wire
+    /// needs), the bytes at the handle (GlobalLock's).
+    /// </summary>
+    public static class OleGlobal
+    {
+        static int Head { get { return 2 * WordSize.Bytes; } }
+
+        public static nint Alloc(byte[] bytes)
+        {
+            nint block = Marshal.AllocHGlobal(Head + Math.Max(bytes.Length, 1));
+            Sys.PokeWord(block, bytes.Length);
+            nint h = block + Head;
+            if (bytes.Length > 0) Marshal.Copy(bytes, 0, h, bytes.Length);
+            return h;
+        }
+
+        public static int Size(nint h) { return h == 0 ? 0 : (int)Sys.PeekWord(h - Head); }
+
+        public static byte[] Bytes(nint h)
+        {
+            byte[] made = new byte[Size(h)];
+            if (made.Length > 0) Marshal.Copy(h, made, 0, made.Length);
+            return made;
+        }
+
+        public static void Free(nint h) { if (h != 0) Marshal.FreeHGlobal(h - Head); }
+    }
+
+    /// <summary>
+    /// The native FORMATETC, STGMEDIUM and InterfaceData a member's pointers
+    /// point to, laid out as the C compiler lays them: FORMATETC's WORD
+    /// cfFormat, ptd at the next pointer, then dwAspect, lindex and tymed;
+    /// STGMEDIUM's tymed, the handle at the next pointer, pUnkForRelease;
+    /// InterfaceData's ulCntData and its bytes.
+    /// </summary>
+    public static class OleMemory
+    {
+        static int W { get { return WordSize.Bytes; } }
+
+        public static int FormatEtcBytes { get { return W == 8 ? 32 : 20; } }
+        public static int StgMediumBytes { get { return 3 * W; } }
+
+        static nint Zeroed(int bytes)
+        {
+            nint at = Marshal.AllocHGlobal(bytes);
+            for (int i = 0; i < bytes; i++) Sys.PokeByte(at + i, 0);
+            return at;
+        }
+
+        public static FORMATETC ReadFormatEtc(nint at)
+        {
+            FORMATETC f = new FORMATETC();
+            f.cfFormat = (short)ComMarshal.ReadU2(at);
+            f.ptd = ComMarshal.ReadPtr(at + W);
+            f.dwAspect = (DVASPECT)ComMarshal.ReadI4(at + 2 * W);
+            f.lindex = ComMarshal.ReadI4(at + 2 * W + 4);
+            f.tymed = (TYMED)ComMarshal.ReadI4(at + 2 * W + 8);
+            return f;
+        }
+
+        public static void WriteFormatEtc(nint at, FORMATETC f)
+        {
+            for (int i = 0; i < FormatEtcBytes; i++) Sys.PokeByte(at + i, 0);
+            ComMarshal.WriteU2(at, (ushort)f.cfFormat);
+            ComMarshal.WritePtr(at + W, f.ptd);
+            ComMarshal.WriteI4(at + 2 * W, (int)f.dwAspect);
+            ComMarshal.WriteI4(at + 2 * W + 4, f.lindex);
+            ComMarshal.WriteI4(at + 2 * W + 8, (int)f.tymed);
+        }
+
+        /// A native FORMATETC holding `f`, to give FreeFormatEtc.
+        public static nint NewFormatEtc(FORMATETC f)
+        {
+            nint at = Zeroed(FormatEtcBytes);
+            WriteFormatEtc(at, f);
+            return at;
+        }
+
+        public static nint NewFormatEtcs(int count) { return Zeroed(Math.Max(count, 1) * FormatEtcBytes); }
+
+        public static void FreeFormatEtc(nint at) { if (at != 0) Marshal.FreeHGlobal(at); }
+
+        /// FORMATETC for `cf` as a native program asks for one: the content, all of it, in an HGLOBAL.
+        public static FORMATETC Hglobal(int cf)
+        {
+            FORMATETC f = new FORMATETC();
+            f.cfFormat = (short)cf;
+            f.dwAspect = DVASPECT.DVASPECT_CONTENT;
+            f.lindex = -1;
+            f.tymed = TYMED.TYMED_HGLOBAL;
+            return f;
+        }
+
+        public static nint NewStgMedium() { return Zeroed(StgMediumBytes); }
+
+        public static int MediumTymed(nint at) { return ComMarshal.ReadI4(at); }
+        public static nint MediumHandle(nint at) { return ComMarshal.ReadPtr(at + W); }
+        public static nint MediumRelease(nint at) { return ComMarshal.ReadPtr(at + 2 * W); }
+
+        public static void WriteStgMedium(nint at, int tymed, nint handle, nint unkForRelease)
+        {
+            for (int i = 0; i < StgMediumBytes; i++) Sys.PokeByte(at + i, 0);
+            ComMarshal.WriteI4(at, tymed);
+            ComMarshal.WritePtr(at + W, handle);
+            ComMarshal.WritePtr(at + 2 * W, unkForRelease);
+        }
+
+        /// An HGLOBAL medium holding `bytes` (OleGlobal's), written at `at`.
+        public static void WriteHglobal(nint at, byte[] bytes) { WriteStgMedium(at, (int)TYMED.TYMED_HGLOBAL, OleGlobal.Alloc(bytes), 0); }
+
+        /// ReleaseStgMedium: pUnkForRelease released when there is one, else
+        /// the handle freed as its kind is (an HGLOBAL OleGlobal's, an IStream
+        /// or IStorage released); the medium left TYMED_NULL.
+        public static void ReleaseStgMedium(nint at)
+        {
+            if (at == 0) return;
+            int tymed = MediumTymed(at);
+            nint handle = MediumHandle(at), unk = MediumRelease(at);
+            if (unk != 0) ComMarshal.Release(unk);
+            else if (tymed == (int)TYMED.TYMED_HGLOBAL) OleGlobal.Free(handle);
+            else if ((tymed == (int)TYMED.TYMED_ISTREAM || tymed == (int)TYMED.TYMED_ISTORAGE) && handle != 0) ComMarshal.Release(handle);
+            WriteStgMedium(at, 0, 0, 0);
+        }
+
+        public static void FreeStgMedium(nint at) { if (at != 0) { ReleaseStgMedium(at); Marshal.FreeHGlobal(at); } }
+
+        /// A native InterfaceData: ulCntData, then the OBJREF's bytes.
+        public static nint InterfaceData(byte[] objref)
+        {
+            nint at = Marshal.AllocHGlobal(4 + Math.Max(objref.Length, 1));
+            Sys.PokeWord(at, objref.Length);
+            if (objref.Length > 0) Marshal.Copy(objref, 0, at + 4, objref.Length);
+            return at;
+        }
+
+        public static byte[] InterfaceDataBytes(nint at)
+        {
+            int count = Math.Min(Math.Max(ComMarshal.ReadI4(at), 0), OleCodes.InterfaceDataRoom);
+            byte[] made = new byte[count];
+            if (count > 0) Marshal.Copy(at + 4, made, 0, count);
+            return made;
+        }
+
+        /// The object an InterfaceData's OBJREF stands for (CoUnmarshalInterface).
+        public static object? Unmarshal(nint interfaceData)
+        {
+            if (interfaceData == 0) return null;
+            byte[] objref = InterfaceDataBytes(interfaceData);
+            return objref.Length == 0 ? null : ComObjRefs.Need().Unmarshal(objref);
+        }
+
+        public static long Point(int x, int y) { return (x & 0xFFFFFFFFL) | ((long)y << 32); }
+        public static int PointX(long pt) { return (int)pt; }
+        public static int PointY(long pt) { return (int)(pt >> 32); }
+    }
+
+    /// <summary>
+    /// OLE's structures on the wire, as ole32's user-marshal routines and
+    /// MIDL's stubs make them (the table at the top of this file).
+    /// </summary>
+    public static class OleNdr
+    {
+        const long WdtInproc = 0x48746457, WdtRemote = 0x52746457;
+        /// A handle's marker in a STGMEDIUM and an HGLOBAL's body: any word
+        /// but 0 (ole32 writes the handle's value).
+        const long HandleMarker = 0x00020000;
+
+        /// A registered format's number for its name, for a CLIPFORMAT that
+        /// comes from another machine with its name ('WdtR'); the GUI's
+        /// RegisterClipboardFormat, which Forms sets. Without it the number
+        /// that came is kept.
+        public static Func<string, int>? FormatOfName;
+
+        // ---- CLIPFORMAT and HWND ----------------------------------------------------------
+
+        public static void ClipFormatBody(NdrWriter w, int cf)
+        {
+            w.Align(4);
+            w.Long(WdtInproc);
+            w.Long(cf & 0xFFFF);
+        }
+
+        public static int ClipFormatBody(NdrReader r)
+        {
+            long kind = r.Long();
+            int cf = r.Int() & 0xFFFF;
+            if (kind == WdtRemote)
+            {
+                string name = r.WideString();
+                Func<string, int>? named = FormatOfName;
+                if (named != null) { int mine = named(name); if (mine != 0) cf = mine; }
+                return cf;
+            }
+            if (kind != WdtInproc) throw new COMException("a CLIPFORMAT of no known kind", unchecked((int)0x800706F7));
+            return cf;
+        }
+
+        /// An HWND by value: its 'User' marker, its body after.
+        public static void Hwnd(NdrWriter w, nint hwnd) { w.User(() => { w.Long(WdtInproc); w.Long(hwnd); }); }
+
+        public static nint Hwnd(NdrReader r)
+        {
+            nint got = 0;
+            r.User(() => { r.Long(); got = (nint)r.Int(); });
+            return got;
+        }
+
+        // ---- FORMATETC --------------------------------------------------------------------
+
+        /// A FORMATETC where a pointer to one points (a top-level pointee or
+        /// an [out]): the structure, then CLIPFORMAT's body after it. ptd is
+        /// never sent: a target device does not cross here.
+        public static void FormatEtc(NdrWriter w, FORMATETC f) { w.Embedding(() => FormatEtcFlat(w, f)); }
+
+        /// One FORMATETC's flat part, its CLIPFORMAT's body deferred to the
+        /// end of the structure or array it is in.
+        public static void FormatEtcFlat(NdrWriter w, FORMATETC f)
+        {
+            w.Align(4);
+            int cf = (ushort)f.cfFormat;
+            w.User(() => ClipFormatBody(w, cf));
+            w.Long(0);
+            w.Long((int)f.dwAspect);
+            w.Long(f.lindex);
+            w.Long((int)f.tymed);
+        }
+
+        /// A [unique] FORMATETC*: its referent, and the FORMATETC.
+        public static void UniqueFormatEtc(NdrWriter w, nint at)
+        {
+            if (at == 0) { w.Long(0); return; }
+            w.Long(w.Referent());
+            FormatEtc(w, OleMemory.ReadFormatEtc(at));
+        }
+
+        public static FORMATETC FormatEtc(NdrReader r)
+        {
+            WireFormat got = new WireFormat();
+            r.Embedding(() => FormatEtcFlat(r, got));
+            return got.Made();
+        }
+
+        public static void FormatEtcFlat(NdrReader r, WireFormat into)
+        {
+            r.Align(4);
+            r.User(() => { into.Cf = ClipFormatBody(r); });
+            bool device = r.Long() != 0;
+            into.Aspect = r.Int();
+            into.Lindex = r.Int();
+            into.Tymed = r.Int();
+            if (device) r.Defer(() => SkipTargetDevice(r));
+        }
+
+        /// A [unique] FORMATETC* read: false when it was null.
+        public static bool UniqueFormatEtc(NdrReader r, out FORMATETC f)
+        {
+            f = new FORMATETC();
+            if (r.Long() == 0) return false;
+            f = FormatEtc(r);
+            return true;
+        }
+
+        /// DVTARGETDEVICE, read past: its conformance, tdSize, the four
+        /// offsets, tdData.
+        static void SkipTargetDevice(NdrReader r)
+        {
+            int count = r.Int();
+            r.Long();
+            r.Short(); r.Short(); r.Short(); r.Short();
+            r.Bytes(Math.Max(count, 0));
+        }
+
+        /// A FORMATETC as it comes off the wire, filled as its parts are read.
+        public sealed class WireFormat
+        {
+            public int Cf, Aspect, Lindex, Tymed;
+            public FORMATETC Made()
+            {
+                FORMATETC f = new FORMATETC();
+                f.cfFormat = (short)Cf;
+                f.dwAspect = (DVASPECT)Aspect;
+                f.lindex = Lindex;
+                f.tymed = (TYMED)Tymed;
+                return f;
+            }
+        }
+
+        // ---- STGMEDIUM --------------------------------------------------------------------
+
+        /// A STGMEDIUM where one goes: its 'User' marker and its body. Only an
+        /// HGLOBAL's bytes are sent; any other medium goes as TYMED_NULL.
+        public static void StgMedium(NdrWriter w, int tymed, byte[]? hglobal)
+        {
+            w.User(() =>
+            {
+                bool bytes = tymed == (int)TYMED.TYMED_HGLOBAL;
+                int kind = bytes ? tymed : 0;
+                w.Align(4);
+                w.Long(kind);
+                if (kind != 0) w.Long(hglobal != null ? HandleMarker : 0);
+                w.Long(0);                                          // pUnkForRelease: none
+                if (kind != 0 && hglobal != null)
+                {
+                    w.Long(WdtRemote);
+                    w.Long(HandleMarker);
+                    w.Long(hglobal.Length);
+                    w.Long(HandleMarker);
+                    w.Long(hglobal.Length);
+                    w.Raw(hglobal);
+                }
+            });
+        }
+
+        /// A medium read off the wire: its kind and an HGLOBAL's bytes, or an
+        /// IStream's or IStorage's object; pUnkForRelease read and let go
+        /// (the bytes are copies).
+        public sealed class WireMedium
+        {
+            public int Tymed;
+            public byte[]? Bytes;
+            public object? Interface;
+        }
+
+        public static WireMedium StgMedium(NdrReader r)
+        {
+            WireMedium m = new WireMedium();
+            r.User(() =>
+            {
+                r.Align(4);
+                m.Tymed = r.Int();
+                bool handle = m.Tymed != 0 && r.Long() != 0;
+                bool release = r.Long() != 0;
+                if (handle)
+                {
+                    if (m.Tymed == (int)TYMED.TYMED_HGLOBAL) m.Bytes = HglobalBody(r);
+                    else if (m.Tymed == (int)TYMED.TYMED_ISTREAM || m.Tymed == (int)TYMED.TYMED_ISTORAGE) m.Interface = ComObjRefs.Need().Unmarshal(r.InterfaceBody());
+                    else if (m.Tymed == (int)TYMED.TYMED_FILE) r.WideString();
+                    else throw new COMException("a medium of kind " + m.Tymed + " does not cross here", OleCodes.DvETymed);
+                }
+                if (release)
+                {
+                    object? unk = ComObjRefs.Need().Unmarshal(r.InterfaceBody());
+                    if (unk is System.__ComObject c) Marshal.ReleaseComObject(c);
+                }
+            });
+            return m;
+        }
+
+        static byte[]? HglobalBody(NdrReader r)
+        {
+            r.Align(4);
+            long kind = r.Long();
+            long handle = r.Long();
+            if (kind != WdtRemote) throw new COMException("an HGLOBAL by handle cannot cross processes", unchecked((int)0x800706F7));
+            if (handle == 0) return null;
+            int size = r.Int();
+            r.Long();
+            r.Long();
+            return r.Bytes(Math.Max(size, 0));
+        }
+
+        // ---- InterfaceData ------------------------------------------------------------------
+
+        /// A [unique] InterfaceData*: ulCntData, the varying array's offset
+        /// and count, the bytes.
+        public static void InterfaceData(NdrWriter w, nint at)
+        {
+            if (at == 0) { w.Long(0); return; }
+            byte[] objref = OleMemory.InterfaceDataBytes(at);
+            w.Long(w.Referent());
+            w.Long(objref.Length);
+            w.Long(0);
+            w.Long(objref.Length);
+            w.Raw(objref);
+        }
+
+        public static byte[]? InterfaceData(NdrReader r)
+        {
+            if (r.Long() == 0) return null;
+            r.Long();
+            r.Long();
+            int count = r.Int();
+            if (count < 0 || count > OleCodes.InterfaceDataRoom) throw new COMException("an InterfaceData past its 1024 bytes", unchecked((int)0x800706F7));
+            return r.Bytes(count);
+        }
+    }
+
+    /// <summary>The OLE interfaces' wires, for ComWires.</summary>
+    public static class OleWires
+    {
+        public static Dictionary<string, IComWire> Make()
+        {
+            Dictionary<string, IComWire> all = new Dictionary<string, IComWire>();
+            all[ComMarshal.Normal(OleCodes.IidIDataObject)] = new DataObjectWire();
+            all[ComMarshal.Normal(OleCodes.IidIEnumFormatEtc)] = new EnumFormatEtcWire();
+            all[ComMarshal.Normal(OleCodes.IidIDropTarget)] = new DropTargetWire();
+            all[ComMarshal.Normal(OleCodes.IidIInterfaceFromWindowProp)] = new WindowPropWire();
+            return all;
+        }
+
+        public static object? Arg(ComFrame f, int i) { return i < f.Args.Count ? f.Args[i].Value : null; }
+        public static nint Ptr(ComFrame f, int i) { object? v = Arg(f, i); return v is nint p ? p : v is long l ? (nint)l : 0; }
+        public static int Int(ComFrame f, int i) { object? v = Arg(f, i); return v == null ? 0 : (int)ComMarshal.Long(v); }
+        public static long Long(ComFrame f, int i) { object? v = Arg(f, i); return v == null ? 0 : ComMarshal.Long(v); }
+        public static nint Slot(ComFrame f, int i) { return i < f.Args.Count ? f.Args[i].Slot : 0; }
+    }
+
+    /// <summary>
+    /// IDropTarget's wire (ole32's stubs, IDropTarget at 0x77A9C778):
+    /// DragEnter and Drop the IDataObject, the keys, the POINTL and the
+    /// effect in and out; DragOver the last three; DragLeave nothing.
+    /// </summary>
+    sealed class DropTargetWire : IComWire
+    {
+        public bool Request(int opnum, ComFrame f, NdrWriter w)
+        {
+            switch (opnum)
+            {
+                case 3: case 6:
+                    w.Interface(OleWires.Arg(f, 0), OleCodes.IidIDataObject);
+                    w.Long(OleWires.Int(f, 1));
+                    Point(w, OleWires.Long(f, 2));
+                    w.Long(ComMarshal.ReadI4(OleWires.Slot(f, 3)));
+                    return true;
+                case 4:
+                    w.Long(OleWires.Int(f, 0));
+                    Point(w, OleWires.Long(f, 1));
+                    w.Long(ComMarshal.ReadI4(OleWires.Slot(f, 2)));
+                    return true;
+                case 5:
+                    return true;
+            }
+            return false;
+        }
+
+        static void Point(NdrWriter w, long pt) { w.Long(OleMemory.PointX(pt)); w.Long(OleMemory.PointY(pt)); }
+
+        public int Response(int opnum, ComFrame f, NdrReader r)
+        {
+            if (opnum == 3 || opnum == 6) ComMarshal.WriteI4(OleWires.Slot(f, 3), r.Int());
+            else if (opnum == 4) ComMarshal.WriteI4(OleWires.Slot(f, 2), r.Int());
+            return r.Int();
+        }
+
+        public bool Serve(object target, int opnum, NdrReader r, NdrWriter w)
+        {
+            IDropTarget? t = target as IDropTarget;
+            if (t == null || opnum < 3 || opnum > 6) return false;
+            if (opnum == 5) { w.Long(t.DragLeave()); return true; }
+            object? data = opnum == 4 ? null : r.Interface();
+            int keys = r.Int();
+            int x = r.Int(), y = r.Int();
+            int effect = r.Int();
+            long pt = OleMemory.Point(x, y);
+            int hr = opnum == 3 ? t.DragEnter(data!, keys, pt, ref effect)
+                   : opnum == 4 ? t.DragOver(keys, pt, ref effect)
+                   : t.Drop(data!, keys, pt, ref effect);
+            w.Long(effect);
+            w.Long(hr);
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// IDataObject's wire (IDataObject at 0x77A9B398): RemoteGetData (3)
+    /// a [unique] FORMATETC in and the STGMEDIUM out, QueryGetData (5),
+    /// GetCanonicalFormatEtc (6) a FORMATETC out, EnumFormatEtc (8) the
+    /// enumerator out. GetDataHere, SetData and the advise members are not
+    /// carried from here; answered, they say they are not done.
+    /// </summary>
+    sealed class DataObjectWire : IComWire
+    {
+        public bool Request(int opnum, ComFrame f, NdrWriter w)
+        {
+            switch (opnum)
+            {
+                case 3: case 5: case 6:
+                    OleNdr.UniqueFormatEtc(w, OleWires.Ptr(f, 0));
+                    return true;
+                case 8:
+                    w.Long(OleWires.Int(f, 0));
+                    return true;
+            }
+            return false;
+        }
+
+        public int Response(int opnum, ComFrame f, NdrReader r)
+        {
+            if (opnum == 3)
+            {
+                OleNdr.WireMedium m = OleNdr.StgMedium(r);
+                int hr = r.Int();
+                nint medium = OleWires.Ptr(f, 1);
+                if (hr < 0) return hr;
+                if (m.Tymed == (int)TYMED.TYMED_HGLOBAL && m.Bytes != null) { if (medium != 0) OleMemory.WriteHglobal(medium, m.Bytes); return hr; }
+                // An IStream or IStorage is not handed to native code here.
+                if (m.Interface is System.__ComObject c) Marshal.ReleaseComObject(c);
+                if (medium != 0) OleMemory.WriteStgMedium(medium, 0, 0, 0);
+                return OleCodes.DvETymed;
+            }
+            if (opnum == 6)
+            {
+                FORMATETC got = OleNdr.FormatEtc(r);
+                nint into = OleWires.Ptr(f, 1);
+                if (into != 0) OleMemory.WriteFormatEtc(into, got);
+                return r.Int();
+            }
+            if (opnum == 8)
+            {
+                object? e = r.Interface();
+                ComSlots.WriteObject(OleWires.Slot(f, 1), e, OleCodes.IidIEnumFormatEtc);
+                return r.Int();
+            }
+            return r.Int();
+        }
+
+        public bool Serve(object target, int opnum, NdrReader r, NdrWriter w)
+        {
+            IDataObject? d = target as IDataObject;
+            if (d == null || opnum < 3 || opnum > 11) return false;
+            switch (opnum)
+            {
+                case 3: GetData(d, r, w); return true;
+                case 4:
+                {
+                    // RemoteGetDataHere: not done; an empty medium given back.
+                    FORMATETC ignored;
+                    OleNdr.UniqueFormatEtc(r, out ignored);
+                    OleNdr.StgMedium(r);
+                    OleNdr.StgMedium(w, 0, null);
+                    w.Long(ComMarshal.ENotImpl);
+                    return true;
+                }
+                case 5:
+                {
+                    FORMATETC f;
+                    if (!OleNdr.UniqueFormatEtc(r, out f)) { w.Long(ComMarshal.EInvalidArg); return true; }
+                    nint at = OleMemory.NewFormatEtc(f);
+                    try { w.Long(d.QueryGetData(at)); }
+                    finally { OleMemory.FreeFormatEtc(at); }
+                    return true;
+                }
+                case 6:
+                {
+                    FORMATETC f;
+                    nint input = OleNdr.UniqueFormatEtc(r, out f) ? OleMemory.NewFormatEtc(f) : 0;
+                    nint output = OleMemory.NewFormatEtcs(1);
+                    try
+                    {
+                        int hr = input == 0 ? ComMarshal.EInvalidArg : d.GetCanonicalFormatEtc(input, output);
+                        FORMATETC made = OleMemory.ReadFormatEtc(output);
+                        made.ptd = 0;
+                        OleNdr.FormatEtc(w, made);
+                        w.Long(hr);
+                    }
+                    finally { OleMemory.FreeFormatEtc(input); OleMemory.FreeFormatEtc(output); }
+                    return true;
+                }
+                case 7:
+                    w.Long(ComMarshal.ENotImpl);
+                    return true;
+                case 8:
+                {
+                    int direction = r.Int();
+                    IEnumFORMATETC e;
+                    int hr = d.EnumFormatEtc(direction, out e);
+                    w.Interface(hr < 0 ? null : e, OleCodes.IidIEnumFormatEtc);
+                    w.Long(hr);
+                    return true;
+                }
+                case 9:
+                    w.Long(0);
+                    w.Long(OleCodes.OleEAdviseNotSupported);
+                    return true;
+                case 10:
+                    w.Long(OleCodes.OleENoConnection);
+                    return true;
+                case 11:
+                    w.Long(0);
+                    w.Long(OleCodes.OleEAdviseNotSupported);
+                    return true;
+            }
+            return false;
+        }
+
+        /// RemoteGetData: the object's GetData into a medium of this
+        /// process's, the HGLOBAL's bytes sent and the medium released.
+        static void GetData(IDataObject d, NdrReader r, NdrWriter w)
+        {
+            FORMATETC f;
+            if (!OleNdr.UniqueFormatEtc(r, out f)) { OleNdr.StgMedium(w, 0, null); w.Long(ComMarshal.EInvalidArg); return; }
+            nint at = OleMemory.NewFormatEtc(f);
+            nint medium = OleMemory.NewStgMedium();
+            try
+            {
+                int hr = d.GetData(at, medium);
+                int tymed = OleMemory.MediumTymed(medium);
+                if (hr >= 0 && tymed != (int)TYMED.TYMED_HGLOBAL) hr = OleCodes.DvETymed;
+                byte[]? bytes = hr >= 0 ? OleGlobal.Bytes(OleMemory.MediumHandle(medium)) : null;
+                OleNdr.StgMedium(w, hr >= 0 ? tymed : 0, bytes);
+                w.Long(hr);
+            }
+            finally { OleMemory.FreeFormatEtc(at); OleMemory.FreeStgMedium(medium); }
+        }
+    }
+
+    /// <summary>
+    /// IEnumFORMATETC's wire (IEnumFORMATETC at 0x77A9AFC0): RemoteNext
+    /// celt in, a conformant and varying array of FORMATETC and the count
+    /// fetched out; Skip, Reset; Clone the copy out.
+    /// </summary>
+    sealed class EnumFormatEtcWire : IComWire
+    {
+        const int MostAtOnce = 1024;
+
+        public bool Request(int opnum, ComFrame f, NdrWriter w)
+        {
+            switch (opnum)
+            {
+                case 3: case 4: w.Long(OleWires.Int(f, 0)); return true;
+                case 5: case 6: return true;
+            }
+            return false;
+        }
+
+        public int Response(int opnum, ComFrame f, NdrReader r)
+        {
+            if (opnum == 3)
+            {
+                r.Long();                                           // the array's conformance: celt
+                r.Long();                                           // its offset
+                int count = r.Int();
+                List<OleNdr.WireFormat> got = new List<OleNdr.WireFormat>();
+                r.Embedding(() =>
+                {
+                    for (int i = 0; i < count; i++) { OleNdr.WireFormat one = new OleNdr.WireFormat(); OleNdr.FormatEtcFlat(r, one); got.Add(one); }
+                });
+                int fetched = r.Int();
+                int hr = r.Int();
+                nint rgelt = OleWires.Ptr(f, 1), into = OleWires.Ptr(f, 2);
+                int celt = OleWires.Int(f, 0);
+                int n = Math.Min(Math.Min(fetched, got.Count), celt);
+                if (rgelt != 0) for (int i = 0; i < n; i++) OleMemory.WriteFormatEtc(rgelt + i * OleMemory.FormatEtcBytes, got[i].Made());
+                if (into != 0) ComMarshal.WriteI4(into, n);
+                return hr;
+            }
+            if (opnum == 6)
+            {
+                object? e = r.Interface();
+                ComSlots.WriteObject(OleWires.Slot(f, 0), e, OleCodes.IidIEnumFormatEtc);
+            }
+            return r.Int();
+        }
+
+        public bool Serve(object target, int opnum, NdrReader r, NdrWriter w)
+        {
+            IEnumFORMATETC? e = target as IEnumFORMATETC;
+            if (e == null || opnum < 3 || opnum > 6) return false;
+            if (opnum == 3)
+            {
+                int celt = Math.Max(0, Math.Min(r.Int(), MostAtOnce));
+                nint rgelt = OleMemory.NewFormatEtcs(celt);
+                nint fetched = Marshal.AllocHGlobal(4);
+                Sys.PokeWord(fetched, 0);
+                try
+                {
+                    int hr = e.Next(celt, rgelt, fetched);
+                    int n = Math.Max(0, Math.Min(ComMarshal.ReadI4(fetched), celt));
+                    w.Long(celt);
+                    w.Long(0);
+                    w.Long(n);
+                    w.Embedding(() => { for (int i = 0; i < n; i++) OleNdr.FormatEtcFlat(w, OleMemory.ReadFormatEtc(rgelt + i * OleMemory.FormatEtcBytes)); });
+                    w.Long(n);
+                    w.Long(hr);
+                }
+                finally { Marshal.FreeHGlobal(rgelt); Marshal.FreeHGlobal(fetched); }
+                return true;
+            }
+            if (opnum == 4) { w.Long(e.Skip(r.Int())); return true; }
+            if (opnum == 5) { w.Long(e.Reset()); return true; }
+            IEnumFORMATETC copy;
+            int answer = e.Clone(out copy);
+            w.Interface(answer < 0 ? null : copy, OleCodes.IidIEnumFormatEtc);
+            w.Long(answer);
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// IInterfaceFromWindowProp's wire (SP4's ole32: the stub at
+    /// 0x77A9CCB8, PrivDragDrop's format at 0x77A9D072+0x3264): the HWND,
+    /// the [unique] InterfaceData, the step, the keys, the POINTL, the
+    /// effect as a [unique] DWORD in and out, the source's thread, the
+    /// [unique] IDataObject, the source's HWND. GetInterfaceFromWindowProp
+    /// is not carried from here, and answered not done.
+    /// </summary>
+    sealed class WindowPropWire : IComWire
+    {
+        public bool Request(int opnum, ComFrame f, NdrWriter w)
+        {
+            if (opnum != 4) return false;
+            OleNdr.Hwnd(w, OleWires.Ptr(f, 0));
+            OleNdr.InterfaceData(w, OleWires.Ptr(f, 1));
+            w.Long(OleWires.Int(f, 2));
+            w.Long(OleWires.Int(f, 3));
+            long pt = OleWires.Long(f, 4);
+            w.Long(OleMemory.PointX(pt));
+            w.Long(OleMemory.PointY(pt));
+            w.Long(w.Referent());
+            w.Long(ComMarshal.ReadI4(OleWires.Slot(f, 5)));
+            w.Long(OleWires.Int(f, 6));
+            w.Interface(OleWires.Arg(f, 7), OleCodes.IidIDataObject);
+            OleNdr.Hwnd(w, OleWires.Ptr(f, 8));
+            return true;
+        }
+
+        public int Response(int opnum, ComFrame f, NdrReader r)
+        {
+            if (opnum == 4 && r.Long() != 0) ComMarshal.WriteI4(OleWires.Slot(f, 5), r.Int());
+            return r.Int();
+        }
+
+        public bool Serve(object target, int opnum, NdrReader r, NdrWriter w)
+        {
+            IInterfaceFromWindowProp? p = target as IInterfaceFromWindowProp;
+            if (p == null || opnum < 3 || opnum > 4) return false;
+            if (opnum == 3)
+            {
+                w.Long(0);
+                w.Long(ComMarshal.ENotImpl);
+                return true;
+            }
+            nint hwnd = OleNdr.Hwnd(r);
+            byte[]? data = OleNdr.InterfaceData(r);
+            int dop = r.Int();
+            int keys = r.Int();
+            int x = r.Int(), y = r.Int();
+            bool hasEffect = r.Long() != 0;
+            int effect = hasEffect ? r.Int() : 0;
+            int thread = r.Int();
+            object? local = r.Interface();
+            nint source = OleNdr.Hwnd(r);
+            nint interfaceData = data == null ? 0 : OleMemory.InterfaceData(data);
+            try
+            {
+                int hr = p.PrivDragDrop(hwnd, interfaceData, dop, keys, OleMemory.Point(x, y), ref effect, thread, local!, source);
+                if (hasEffect) { w.Long(w.Referent()); w.Long(effect); }
+                else w.Long(0);
+                w.Long(hr);
+            }
+            finally { if (interfaceData != 0) Marshal.FreeHGlobal(interfaceData); }
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// A window's endpoint with the broker, as ole32 keeps one (rpcss's
+    /// CWIPTable, the broker's WindowPropRegister and WindowPropGet).
+    /// </summary>
+    public static class OleWindows
+    {
+        /// `endpoint` (an IInterfaceFromWindowProp) exported as a table keeps
+        /// it and registered for `window`, as AssignEndpointProperty does: the
+        /// broker's cookie, for the window's "OleEndPointID", and the IPID to
+        /// give Revoke.
+        public static long Register(int window, object endpoint, out byte[] ipid)
+        {
+            byte[] objref = ComExporter.ExportTable(endpoint, OleCodes.IidIInterfaceFromWindowProp);
+            byte[] std = new byte[40];
+            Array.Copy(objref, 24, std, 0, 40);
+            ipid = new byte[16];
+            Array.Copy(objref, 48, ipid, 0, 16);
+            WireWriter w = new WireWriter();
+            w.Int(window);
+            w.Bytes(std);
+            w.Bytes(ComExporter.OxidInfo);
+            w.Bytes(ComExporter.Bindings);
+            try
+            {
+                WireReader r = ComBroker.Ask(ServiceRequest.WindowPropRegister, w);
+                return r.Int();
+            }
+            catch (Exception) { ComExporter.Unexport(ipid); throw; }
+        }
+
+        /// The cookie taken back from the broker (asked with revoke, as
+        /// UnAssignEndpointProperty does, 0x77A62F79) and the export let go.
+        public static void Revoke(int window, long cookie, byte[] ipid)
+        {
+            try
+            {
+                WireWriter w = new WireWriter();
+                w.Int(window);
+                w.Int(cookie);
+                w.Int(1);
+                ComBroker.Ask(ServiceRequest.WindowPropGet, w);
+            }
+            catch (Exception) { }
+            ComExporter.Unexport(ipid);
+        }
+
+        /// A window's endpoint by the cookie in its "OleEndPointID"
+        /// (GetWindowPropInterface, as UnmarshalFromEndpointProperty asks):
+        /// the object of its process -- this one's own, or one elsewhere --
+        /// as an IInterfaceFromWindowProp.
+        public static IInterfaceFromWindowProp Endpoint(int window, long cookie)
+        {
+            WireWriter w = new WireWriter();
+            w.Int(window);
+            w.Int(cookie);
+            w.Int(0);
+            WireReader r = ComBroker.Ask(ServiceRequest.WindowPropGet, w);
+            byte[] std = r.Bytes();
+            byte[] info = r.Bytes();
+            byte[] bindings = r.Bytes();
+            if (std.Length < 40) throw new COMException("the broker's STDOBJREF is short", unchecked((int)0x800706F7));
+            int refs = ComTransport.Get(std, 4);
+            long oxid = (ComTransport.Get(std, 8) & 0xFFFFFFFFL) | ((long)ComTransport.Get(std, 12) << 32);
+            long oid = (ComTransport.Get(std, 16) & 0xFFFFFFFFL) | ((long)ComTransport.Get(std, 20) << 32);
+            byte[] ipid = new byte[16];
+            Array.Copy(std, 24, ipid, 0, 16);
+            if (ComExporter.IsOwn(oxid))
+            {
+                IInterfaceFromWindowProp? own = ComExporter.Local(ipid) as IInterfaceFromWindowProp;
+                if (own != null) return own;
+            }
+            ComOxid where;
+            try { where = ComOxid.Resolve(oxid); }
+            catch (COMException) { where = ComOxid.From(oxid, info, bindings, true); }
+            System.__ComObject o = new System.__ComObject(new RemoteObject(where, oid, OleCodes.IidIInterfaceFromWindowProp, ipid, refs));
+            IInterfaceFromWindowProp? made = o as IInterfaceFromWindowProp;
+            if (made == null) throw new InvalidCastException("The window's endpoint has no IInterfaceFromWindowProp (E_NOINTERFACE).");
+            return made;
+        }
+    }
+}

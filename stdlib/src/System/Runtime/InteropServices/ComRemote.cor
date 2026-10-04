@@ -507,6 +507,8 @@ namespace System.Runtime.InteropServices
             byte[]? ipid = IpidOf(iid);
             if (ipid == null && !Has(iid)) return ComMarshal.ENoInterface;
             ipid = IpidOf(iid)!;
+            IComWire? wire = ComWires.Find(iid);
+            if (wire != null) return Wired(wire, ipid, iid, slot, frame);
             NdrWriter w = new NdrWriter();
             w.OrpcThis(Cid());
             foreach (ComArg a in frame.Args)
@@ -525,6 +527,20 @@ namespace System.Runtime.InteropServices
                 else ComSlots.Write(a.Kind, a.Slot, v, a.Iid);
             }
             return r.Int();
+        }
+
+        /// A call on an interface with a wire of its own (ComWires): its
+        /// request and response written and read by it, from the frame's
+        /// arguments; E_NOTIMPL, with no call, for a member it does not carry.
+        int Wired(IComWire wire, byte[] ipid, string iid, int slot, ComFrame frame)
+        {
+            NdrWriter w = new NdrWriter();
+            w.OrpcThis(Cid());
+            if (!wire.Request(slot, frame, w)) return ComMarshal.ENotImpl;
+            byte[] reply = ComTransport.Call(_where, ipid, iid, slot, w.ToArray());
+            NdrReader r = new NdrReader(reply);
+            r.OrpcThat();
+            return wire.Response(slot, frame, r);
         }
 
         byte[] Dispatch()
@@ -679,15 +695,22 @@ namespace System.Runtime.InteropServices
         {
             string want = ComMarshal.Normal(iid);
             if (want != ComMarshal.IidIUnknown && want != ComMarshal.IidIDispatch) return 0;
-            return ComCallable.For(new RemoteStandIn(this)).Query(want);
+            return ComCallable.For(new RemoteStandIn(this, null)).Query(want);
         }
     }
 
-    /// <summary>A remote object's stand-in for native code in this process: its IDispatch forwarded.</summary>
+    /// <summary>
+    /// A remote object's stand-in for native code in this process: its
+    /// IDispatch forwarded. One made for an [out] interface a wire read
+    /// (ComSlots.WriteObject) carries the very object it was read as, which
+    /// the frame's Get gives back (ComMarshal.ObjectFor), whatever the
+    /// interface: the pointer only goes from the wire to the wrapper.
+    /// </summary>
     sealed class RemoteStandIn : IComCallable
     {
         readonly RemoteObject _remote;
-        public RemoteStandIn(RemoteObject remote) { _remote = remote; }
+        public readonly System.__ComObject? Holder;
+        public RemoteStandIn(RemoteObject remote, System.__ComObject? holder) { _remote = remote; Holder = holder; }
         public ComInterfaceEntry[] __ComInterfaces() { return new ComInterfaceEntry[0]; }
         public int __ComDispId(string name)
         {
@@ -806,6 +829,18 @@ namespace System.Runtime.InteropServices
             throw new NotSupportedException("a " + kind + " does not cross processes");
         }
 
+        /// An [out] interface a wire read, put in its slot for the frame's
+        /// GetInterface: an object of another process as its stand-in
+        /// (RemoteStandIn), whose own object comes back; any other as
+        /// WriteInterface puts it.
+        public static void WriteObject(nint at, object? v, string iid)
+        {
+            System.__ComObject? c = v as System.__ComObject;
+            RemoteObject? remote = c != null ? c._remote as RemoteObject : null;
+            if (remote == null) { ComMarshal.WriteInterface(at, v, iid); return; }
+            Sys.Poke(at, ComCallable.For(new RemoteStandIn(remote, c)).Query(ComMarshal.IidIUnknown));
+        }
+
         public static object? Take(string kind, nint at)
         {
             switch (kind)
@@ -818,6 +853,39 @@ namespace System.Runtime.InteropServices
                 case "SafeArray": return ComMarshal.TakeSafeArray(at);
             }
             return Read(kind, at);
+        }
+    }
+
+    /// <summary>
+    /// AN INTERFACE'S OWN WIRE, for one whose members carry what a ComFrame's
+    /// kinds cannot -- structures, user-marshalled types, pointers -- as
+    /// MIDL's proxy and stub for it would: the request written from a
+    /// wrapper's frame and its response read back into the frame's slots,
+    /// and, for an object this program exports, the request read, the
+    /// object's member called and the response written. OLE's data transfer
+    /// interfaces are the ones (ComOle.cor).
+    /// </summary>
+    public interface IComWire
+    {
+        /// The request after ORPCTHIS, from the frame of a call through vtable
+        /// slot `opnum`; false for a member not carried (E_NOTIMPL, no call).
+        bool Request(int opnum, ComFrame frame, NdrWriter w);
+        /// The response after ORPCTHAT: the frame's outs written, its HRESULT answered.
+        int Response(int opnum, ComFrame frame, NdrReader r);
+        /// A call on `target`, exported: the request read after ORPCTHIS, the
+        /// response written after ORPCTHAT; false for an operation it has not.
+        bool Serve(object target, int opnum, NdrReader r, NdrWriter w);
+    }
+
+    /// <summary>The interfaces with wires of their own, by IID.</summary>
+    public static class ComWires
+    {
+        static readonly Dictionary<string, IComWire> _wires = OleWires.Make();
+
+        public static IComWire? Find(string iid)
+        {
+            IComWire? found;
+            return _wires.TryGetValue(ComMarshal.Normal(iid), out found) ? found : null;
         }
     }
 
@@ -870,6 +938,8 @@ namespace System.Runtime.InteropServices
         static int _nextIpid;
         static string _endpoint = "";
         static byte[] _remUnknown = new byte[16];
+        static byte[] _info = new byte[36];
+        static byte[] _bindings = new byte[0];
         static readonly Dictionary<string, ExportEntry> _byIpid = new Dictionary<string, ExportEntry>();
         static readonly Dictionary<long, Exported> _byObject = new Dictionary<long, Exported>();
 
@@ -960,6 +1030,8 @@ namespace System.Runtime.InteropServices
                 WireReader r = ComBroker.Ask(ServiceRequest.ComOxidRegister, req);
                 _oxid = r.Quad();
                 _nextOid = r.Quad();
+                _info = info;
+                _bindings = dsa.ToArray();
                 _started = true;
                 int listening = fd;
                 Thread accept = new Thread(() => Accept(listening));
@@ -1040,6 +1112,38 @@ namespace System.Runtime.InteropServices
             return r.Write();
         }
 
+        /// This exporter's OXID_INFO and DUALSTRINGARRAY as the broker keeps
+        /// them: what a window's interface is registered with
+        /// (WindowPropRegister), beside its STDOBJREF.
+        public static byte[] OxidInfo { get { Start(); return _info; } }
+        public static byte[] Bindings { get { Start(); return _bindings; } }
+
+        /// The interface `iid` of `o` exported as a table keeps one
+        /// (MSHLFLAGS_TABLESTRONG, as ole32's AssignEndpointProperty
+        /// marshals a window's, 0x77A632C2): its OBJREF giving no
+        /// references -- each who unmarshals it asks its own (RemAddRef) --
+        /// and the IPID held until Unexport, however many are given back.
+        public static byte[] ExportTable(object o, string iid)
+        {
+            Start();
+            ExportEntry e = ExportOf(o, ComMarshal.Normal(iid), Pinned);
+            ComObjRef r = new ComObjRef { Iid = e.Iid, Flags = ComObjRef.NoPing, PublicRefs = 0, Oxid = _oxid, Oid = e.Owner.Oid, Ipid = e.Ipid };
+            return r.Write();
+        }
+
+        /// What ExportTable held let go: the IPID ends once the references
+        /// others hold are given back too.
+        public static void Unexport(byte[] ipid)
+        {
+            lock (_lock)
+            {
+                ExportEntry? e;
+                if (_byIpid.TryGetValue(Key(ipid), out e) && e != null) Drop(e, Pinned);
+            }
+        }
+
+        const int Pinned = 0x10000000;
+
         static ExportEntry ExportOf(object o, string iid, int refs)
         {
             lock (_lock)
@@ -1113,6 +1217,18 @@ namespace System.Runtime.InteropServices
                 gone.OrpcThat();
                 gone.Long(Disconnected);
                 return gone.ToArray();
+            }
+            IComWire? wire = ComWires.Find(e.Iid);
+            if (wire != null)
+            {
+                // An interface with a wire of its own: read, called and
+                // answered by it.
+                NdrReader wr = new NdrReader(ndr);
+                wr.OrpcThis();
+                NdrWriter ww = new NdrWriter();
+                ww.OrpcThat();
+                if (!wire.Serve(e.Owner.Target, opnum, wr, ww)) { status = OperationRange; return new byte[0]; }
+                return ww.ToArray();
             }
             if (e.Owner.Target is ComClassObject factory) return ClassFactory(factory, opnum, ndr, out status);
             bool dispatch = e.Iid == ComMarshal.IidIDispatch || (e.Entry != null && e.Entry.Dual && opnum >= 3 && opnum <= 6);

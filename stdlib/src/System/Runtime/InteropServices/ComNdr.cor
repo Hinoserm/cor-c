@@ -136,8 +136,9 @@ namespace System.Runtime.InteropServices
 
         /// A user-marshalled pointer type's marker, and its body at eight:
         /// inline at the top level, after the enclosing array or structure
-        /// when inside one.
-        void User(Action body)
+        /// when inside one. (Also an interface's own wire's, ComOle.cor's:
+        /// STGMEDIUM, CLIPFORMAT, HWND.)
+        public void User(Action body)
         {
             Long(UserMarker);
             Defer(() => { Align(8); body(); });
@@ -496,7 +497,7 @@ namespace System.Runtime.InteropServices
             }
         }
 
-        void User(Action body)
+        public void User(Action body)
         {
             long marker = Long();
             if (marker == 0) { body(); return; }

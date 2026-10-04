@@ -694,6 +694,7 @@ namespace System.Runtime.InteropServices
         {
             if (p == 0) return null;
             object? own = ComCallable.TargetOf(p);
+            if (own is RemoteStandIn stand && stand.Holder != null) return stand.Holder;
             if (own != null) return own;
             return new System.__ComObject(p);
         }
