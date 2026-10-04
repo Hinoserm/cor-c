@@ -1,0 +1,69 @@
+// test: awaiting a Task already complete allocates nothing
+// expect-exit: 0
+// expect-output:
+// sum 3000
+// allocated 0
+// suspended 7 after yield
+// configured 9
+//
+// .NET's promise, which its struct awaiters keep: `await t` on a task that
+// has finished takes the result and goes on, making nothing -- no awaiter
+// object, no state machine of the awaiting method when it is an `async
+// ValueTask` that never suspends (1291). A thousand awaits of a completed
+// Task<int> and of Task.CompletedTask, from such a method, move the thread's
+// allocation counter not at all. And the struct awaiters still carry a real
+// suspension: an await of Task.Yield and of a task finished later resume
+// with the right values, through ConfigureAwait as well.
+
+using System;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static Task<int> _three = TaskOf<int>.FromResult(3);
+
+    static async ValueTask<int> Sum(int n)
+    {
+        int total = 0;
+        for (int i = 0; i < n; i++)
+        {
+            total += await _three;
+            await Task.CompletedTask;
+        }
+        return total;
+    }
+
+    static async Task<int> Later(int x)
+    {
+        await Task.Yield();
+        return x;
+    }
+
+    static async Task<string> Suspends()
+    {
+        int a = await Later(7);
+        await Task.Yield();
+        return "suspended " + a + " after yield";
+    }
+
+    static async Task<int> Configured()
+    {
+        return await Later(9).ConfigureAwait(false);
+    }
+
+    static int Main()
+    {
+        // Once first, so whatever a first call sets up is not counted.
+        int warm = Sum(1).Result;
+
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        int got = Sum(1000).Result;
+        long after = GC.GetAllocatedBytesForCurrentThread();
+
+        Console.WriteLine("sum " + got);
+        Console.WriteLine("allocated " + (after - before));
+        Console.WriteLine(Suspends().Result);
+        Console.WriteLine("configured " + Configured().Result);
+        return warm == 3 ? 0 : 1;
+    }
+}
