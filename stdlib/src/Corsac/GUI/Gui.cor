@@ -127,6 +127,9 @@ enum SeatIoctl : long
     InspectReply16 = 0x4755005D,
     InspectRead16 = 0x4755005E,
     AdapterInfo16 = 0x4755005F,
+    ClipboardOpen = 0x47550060,
+    ClipboardClose = 0x47550061,
+    ClipboardWatch = 0x47550062,
 }
 
 public class Seat : IDrawingTarget
@@ -635,12 +638,22 @@ public class Seat : IDrawingTarget
 
     // ---- the clipboard --------------------------------------------------------
     //
-    // THE WINDOW STATION'S ONE, which Windows programs share: each call opens
-    // it, does one thing and closes it, as OpenClipboard(NULL) ...
-    // CloseClipboard would. Formats are Windows' numbers.
+    // THE GUI KERNEL'S ONE (os/gui/clipboard.cor), which Windows programs share
+    // through win32k. A format is named as a MIME type is -- text/plain;
+    // charset=utf-16, image/bmp, text/uri-list -- or by any name, and its
+    // number is the name's atom, the same in every program. A call made
+    // without OpenClipboard opens it, does one thing and closes it; a
+    // program that wants to promise formats and render them when asked opens
+    // it with one of its windows, empties it, promises, and closes it, and is
+    // then sent ClipboardRender (event 31) for each one somebody wants, which
+    // it answers with SetClipboardData of that format, and ClipboardLost (32)
+    // when somebody else empties it. WatchClipboard: ClipboardChanged (30) at
+    // every change, its A the sequence number.
 
-    /// RegisterClipboardFormat: the number a named format has, the same in
-    /// every program; 0 on failure.
+    /// The event kinds the clipboard sends.
+    public const int ClipboardChanged = 30, ClipboardRender = 31, ClipboardLost = 32;
+
+    /// The number a named format has, the same in every program; 0 on failure.
     public int RegisterClipboardFormat(string name)
     {
         byte[] text = System.Text.Encoding.Unicode.GetBytes(name);
@@ -651,9 +664,9 @@ public class Seat : IDrawingTarget
         return answer > 0 ? (int)answer : 0;
     }
 
-    /// SetClipboardData with the bytes of a memory format, the clipboard
-    /// emptied first when `empty` (EmptyClipboard). False when another
-    /// program has it open.
+    /// A format's bytes put, replacing it where it is, the clipboard emptied
+    /// first when `empty`. False when another program has it open -- unless
+    /// this one is answering a ClipboardRender for the format.
     public bool SetClipboardData(int format, byte[] data, bool empty)
     {
         byte[] args = new byte[16];
@@ -663,8 +676,28 @@ public class Seat : IDrawingTarget
         return answer == 0;
     }
 
-    /// GetClipboardData: a format's bytes -- a picture or text format the
-    /// clipboard makes from another as Windows makes it -- or null.
+    /// A format promised, with no bytes yet: rendered when somebody asks
+    /// (ClipboardRender to the window the clipboard was opened with). Only
+    /// in this program's own open clipboard, opened with a window.
+    public bool PromiseClipboardData(int format)
+    {
+        byte[] args = new byte[16];
+        PutWord(args, 0, format); PutWord(args, 12, 2);
+        return Ioctl(SeatIoctl.ClipboardSet, Sys.ArrayData(args)) == 0;
+    }
+
+    /// Opened for this thread, naming one of its windows (0 none): false
+    /// while another has it open. EmptyClipboard then makes the window the
+    /// owner; nobody is told of a change until CloseClipboard.
+    public bool OpenClipboard(int window) { return Ioctl(SeatIoctl.ClipboardOpen, window) == 0; }
+
+    public bool CloseClipboard() { return Ioctl(SeatIoctl.ClipboardClose, 0) == 0; }
+
+    /// ClipboardChanged sent to this thread at every change, or no more.
+    public void WatchClipboard(bool on) { Ioctl(SeatIoctl.ClipboardWatch, on ? 1 : 0); }
+
+    /// A format's bytes -- text in a character set nobody gave made from
+    /// the text that is there, a promise rendered first -- or null.
     public byte[]? GetClipboardData(int format)
     {
         byte[] args = new byte[12];
@@ -684,15 +717,15 @@ public class Seat : IDrawingTarget
 
     public bool IsClipboardFormatAvailable(int format) { return Ioctl(SeatIoctl.ClipboardHas, format) == 1; }
 
-    /// EmptyClipboard; false when another program has it open.
+    /// Everything off it, and in this program's own open clipboard its window
+    /// the owner now; false when another program has it open.
     public bool EmptyClipboard() { return Ioctl(SeatIoctl.ClipboardClear, 0) == 0; }
 
-    /// GetClipboardSequenceNumber: changes every time the clipboard does.
+    /// The sequence number: changes every time the clipboard does.
     public long ClipboardSequenceNumber { get { return Ioctl(SeatIoctl.ClipboardSequence, 0); } }
 
-    /// The formats on the clipboard, in the order they came, as
-    /// EnumClipboardFormats walks them: every one a Windows program put there,
-    /// and the ones the clipboard makes from them.
+    /// The formats on the clipboard, in the order they came: every one a
+    /// program put there, and the ones Windows makes from them.
     public int[] GetClipboardFormats()
     {
         byte[] args = new byte[8];
@@ -714,8 +747,7 @@ public class Seat : IDrawingTarget
         return new int[0];
     }
 
-    /// GetClipboardFormatName: a registered format's name; null for a
-    /// predefined format or a number no name has.
+    /// A format's name; null for a number no name has.
     public string? GetClipboardFormatName(int format)
     {
         byte[] args = new byte[12];

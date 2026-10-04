@@ -6096,7 +6096,8 @@ public static class Application
         // dropped when that window has gone.
         if (f == null && m.Kind != 1 && m.Kind != 11 && m.Kind != 12 && m.Kind != 13
             && m.Kind != 14 && m.Kind != 15 && m.Kind != 16 && m.Kind != 17
-            && m.Kind != 23 && m.Kind != 24 && m.Kind != 25 && m.Kind != 28) return;
+            && m.Kind != 23 && m.Kind != 24 && m.Kind != 25 && m.Kind != 28
+            && m.Kind != Seat.ClipboardChanged && m.Kind != Seat.ClipboardRender && m.Kind != Seat.ClipboardLost) return;
         switch (m.Kind)
         {
             case 1:
@@ -6226,6 +6227,13 @@ public static class Application
             case 19:
                 // Its taskbar button, pressed while it was the active window.
                 if (f != null && f.MinimizeBox) f.WindowState = FormWindowState.Minimized;
+                break;
+            case Seat.ClipboardRender:
+                // A format this program promised, wanted now.
+                Clipboard.Render(m.A);
+                break;
+            case Seat.ClipboardLost:
+                Clipboard.Lost();
                 break;
             case 28:
                 // A press on one of this thread's notification-area icons.
@@ -6447,11 +6455,13 @@ public static class Application
 
 // ---- the clipboard ----------------------------------------------------------
 //
-// .NET's Clipboard, DataFormats, IDataObject and DataObject, on the window
-// station's clipboard that Windows programs share (Seat's clipboard calls):
-// text copied here pastes into Notepad, and a bitmap WordPad copies comes
-// back as an Image. Each call replaces or reads the whole clipboard at once,
-// as .NET's static Clipboard does.
+// .NET's Clipboard, DataFormats, IDataObject and DataObject, on the GUI
+// kernel's clipboard that Windows programs share through win32k (Seat's
+// clipboard calls): text copied here pastes into Notepad, and a bitmap
+// WordPad copies comes back as an Image. Each call replaces or reads the
+// whole clipboard at once, as .NET's static Clipboard does. The clipboard
+// names its formats as MIME types are: .NET's names are mapped onto them
+// (Clipboard.NativeName), and a name with no mapping is itself.
 
 public enum TextDataFormat { Text = 0, UnicodeText = 1, Rtf = 2, Html = 3, CommaSeparatedValue = 4 }
 
@@ -6479,8 +6489,8 @@ public static class DataFormats
         "TaggedImageFileFormat", "OEMText", "DeviceIndependentBitmap", "Palette", "PenData", "RiffAudio", "WaveAudio",
         "UnicodeText", "EnhancedMetafile", "FileDrop", "Locale" };
 
-    /// A format by name: a predefined one's number, else the one
-    /// RegisterClipboardFormat gives the name (the same in every program).
+    /// A format by name: a predefined one's Windows number, else the number
+    /// the clipboard gives the name (the same in every program).
     public static Format GetFormat(string format)
     {
         if (format == null) throw new ArgumentNullException("format");
@@ -6491,14 +6501,15 @@ public static class DataFormats
         return new Format(format, id);
     }
 
-    /// A format by number: a predefined one's name, a registered one's
-    /// (GetClipboardFormatName), else "Format" and the number.
+    /// A format by number: a predefined one's name, else the name of the
+    /// clipboard's format of that number as .NET names it, else "Format" and
+    /// the number.
     public static Format GetFormat(int id)
     {
         int n = id & 0xFFFF;
         if (n > 0 && n < Standard.Length) return new Format(Standard[n], n);
         string? name = n >= 0xC000 ? Seat.Current.GetClipboardFormatName(n) : null;
-        return new Format(name ?? "Format" + n, n);
+        return new Format(name != null ? Clipboard.DotNetName(name) : "Format" + n, n);
     }
 }
 
@@ -6655,7 +6666,8 @@ sealed class ClipboardDataObject : DataObject
         List<string> all = new List<string>(base.GetFormats(false));
         foreach (int id in Seat.Current.GetClipboardFormats())
         {
-            string name = DataFormats.GetFormat(id).Name;
+            string? native = Seat.Current.GetClipboardFormatName(id);
+            string name = native != null ? Clipboard.DotNetName(native) : "Format" + id;
             if (!all.Contains(name)) all.Add(name);
         }
         if (autoConvert && all.Contains(DataFormats.UnicodeText) && !all.Contains(DataFormats.StringFormat)) all.Add(DataFormats.StringFormat);
@@ -6663,13 +6675,38 @@ sealed class ClipboardDataObject : DataObject
     }
 }
 
-/// .NET's Clipboard: the window station's clipboard, shared with every
-/// Windows program. Setting replaces everything on it; reading converts
-/// between text formats and between Bitmap and DeviceIndependentBitmap as
-/// Windows does. ExternalException when another program has it open.
+/// .NET's Clipboard: the GUI kernel's clipboard, shared with every native
+/// and Windows program. Setting replaces everything on it; reading converts
+/// between text formats and between Bitmap and DeviceIndependentBitmap.
+/// ExternalException when another program has it open.
 public static class Clipboard
 {
-    const int CfText = 1, CfBitmap = 2, CfOemText = 7, CfDib = 8, CfWave = 12, CfUnicodeText = 13, CfHdrop = 15;
+    // .NET'S NAMES AND THE CLIPBOARD'S: the formats .NET predefines, on the
+    // MIME names the GUI kernel keeps them by and win32k gives Windows
+    // programs as the CF_* formats (os/gui/win32kclipboard.cor's table).
+    static readonly string[] DotNetNames = { "UnicodeText", "System.String", "Text", "OEMText", "Bitmap", "DeviceIndependentBitmap",
+        "FileDrop", "EnhancedMetafile", "MetaFilePict", "Palette", "Locale", "WaveAudio", "TaggedImageFileFormat" };
+    static readonly string[] NativeNames = { "text/plain;charset=utf-16", "text/plain;charset=utf-16", "text/plain;charset=windows-1252",
+        "text/plain;charset=ibm437", "image/bmp", "image/bmp", "text/uri-list", "image/emf", "application/x-windows-metafilepict",
+        "application/x-windows-palette", "application/x-windows-locale", "audio/wav", "image/tiff" };
+
+    /// The clipboard's name for a .NET format: a predefined one's MIME name,
+    /// any other itself.
+    internal static string NativeName(string format)
+    {
+        for (int i = 0; i < DotNetNames.Length; i++) if (DotNetNames[i] == format) return NativeNames[i];
+        return format;
+    }
+
+    /// .NET's name for a clipboard format: the first .NET name of a MIME
+    /// name above, any other itself.
+    internal static string DotNetName(string native)
+    {
+        for (int i = 0; i < NativeNames.Length; i++)
+            if (string.Equals(NativeNames[i], native, StringComparison.OrdinalIgnoreCase))
+                return DotNetNames[i] == "System.String" || DotNetNames[i] == "DeviceIndependentBitmap" ? DotNetNames[i - 1] : DotNetNames[i];
+        return native;
+    }
 
     internal static string NameOf(TextDataFormat format)
     {
@@ -6683,14 +6720,21 @@ public static class Clipboard
         return DataFormats.UnicodeText;
     }
 
-    static int IdOf(string format) { return DataFormats.GetFormat(format).Id; }
+    static int IdOf(string format)
+    {
+        int id = Seat.Current.RegisterClipboardFormat(NativeName(format));
+        if (id == 0) throw new Win32Exception();
+        return id;
+    }
 
     // ---- to and from the clipboard's bytes ----
 
-    /// A value as the bytes its format keeps on the clipboard: text in its
-    /// code page with its NUL -- UTF-16 for UnicodeText and System.String,
-    /// 437 for OEMText, UTF-8 for HTML Format, 1252 for the rest -- a picture
-    /// as a packed DIB, a file list as DROPFILES, a stream or array as it is.
+    /// A value as the bytes its format keeps on the clipboard: the text
+    /// formats by their MIME names in their character sets with no NUL --
+    /// UTF-16 for UnicodeText and System.String, 437 for OEMText, 1252 for
+    /// Text -- Windows' own registered text formats as Windows has them, with
+    /// their NUL (UTF-8 for HTML Format, 1252 for the rest); a picture as a
+    /// .bmp file; a file list as text/uri-list; a stream or array as it is.
     static byte[] Encode(string format, object data)
     {
         if (data is byte[] raw) return raw;
@@ -6701,18 +6745,17 @@ public static class Clipboard
             stream.CopyTo(copy);
             return copy.ToArray();
         }
-        if (data is System.Drawing.Bitmap picture) return PackedDib(picture);
-        if (data is StringCollection files) { string[] all = new string[files.Count]; files.CopyTo(all, 0); return DropFiles(all); }
-        if (data is string[] list && format == DataFormats.FileDrop) return DropFiles(list);
+        if (data is System.Drawing.Bitmap picture) return BmpFile(PackedDib(picture));
+        if (data is StringCollection files) { string[] all = new string[files.Count]; files.CopyTo(all, 0); return UriList(all); }
+        if (data is string[] list && format == DataFormats.FileDrop) return UriList(list);
         if (data is string text)
         {
-            System.Text.Encoding e = format == DataFormats.UnicodeText || format == DataFormats.StringFormat ? System.Text.Encoding.Unicode
-                                   : format == DataFormats.OemText ? System.Text.Encoding.GetEncoding(437)
-                                   : format == DataFormats.Html ? System.Text.Encoding.UTF8
-                                   : System.Text.Encoding.GetEncoding(1252);
+            if (format == DataFormats.UnicodeText || format == DataFormats.StringFormat) return System.Text.Encoding.Unicode.GetBytes(text);
+            if (format == DataFormats.OemText) return System.Text.Encoding.GetEncoding(437).GetBytes(text);
+            if (format == DataFormats.Text) return System.Text.Encoding.GetEncoding(1252).GetBytes(text);
+            System.Text.Encoding e = format == DataFormats.Html ? System.Text.Encoding.UTF8 : System.Text.Encoding.GetEncoding(1252);
             byte[] body = e.GetBytes(text);
-            int nul = e == System.Text.Encoding.Unicode || format == DataFormats.UnicodeText || format == DataFormats.StringFormat ? 2 : 1;
-            byte[] ended = new byte[body.Length + nul];
+            byte[] ended = new byte[body.Length + 1];
             Array.Copy(body, ended, body.Length);
             return ended;
         }
@@ -6720,8 +6763,8 @@ public static class Clipboard
     }
 
     /// A format's bytes as .NET answers them: text formats as strings up to
-    /// their NUL, pictures as Bitmaps, FileDrop as a string array, the rest as
-    /// a MemoryStream.
+    /// their NUL if they have one, pictures as Bitmaps, FileDrop as a string
+    /// array, the rest as a MemoryStream.
     static object? Decode(string format, byte[] bytes)
     {
         if (format == DataFormats.UnicodeText || format == DataFormats.StringFormat)
@@ -6739,9 +6782,30 @@ public static class Clipboard
                                    : format == DataFormats.Html ? System.Text.Encoding.UTF8 : System.Text.Encoding.GetEncoding(1252);
             return e.GetString(bytes, 0, n);
         }
-        if (format == DataFormats.Bitmap || format == DataFormats.Dib) return BitmapOf(bytes);
+        if (format == DataFormats.Bitmap || format == DataFormats.Dib)
+        {
+            if (bytes.Length > 14 && bytes[0] == (byte)'B' && bytes[1] == (byte)'M')
+            {
+                byte[] dib = new byte[bytes.Length - 14];
+                Array.Copy(bytes, 14, dib, 0, dib.Length);
+                return BitmapOf(dib);
+            }
+            return BitmapOf(bytes);
+        }
         if (format == DataFormats.FileDrop) return FilesOf(bytes);
         return new MemoryStream(bytes);
+    }
+
+    /// A packed DIB as a .bmp file: BITMAPFILEHEADER's fourteen bytes, then
+    /// the DIB, whose bits follow its 40-byte header here.
+    static byte[] BmpFile(byte[] dib)
+    {
+        byte[] file = new byte[14 + dib.Length];
+        file[0] = (byte)'B'; file[1] = (byte)'M';
+        Put(file, 2, file.Length);
+        Put(file, 10, 14 + 40);
+        Array.Copy(dib, 0, file, 14, dib.Length);
+        return file;
     }
 
     /// A Bitmap as a packed 24-bit DIB, bottom-up. Not 32 bits: Windows 2000
@@ -6826,35 +6890,59 @@ public static class Clipboard
         return (int)((c * 255 + most / 2) / most);
     }
 
-    /// DROPFILES: the list after its twenty bytes, wide, each path ended and
-    /// the list ended again.
-    static byte[] DropFiles(string[] files)
+    /// text/uri-list: each path a file: URI, its bytes outside the
+    /// unreserved ones and "/" written %XX in UTF-8, CRLF after each.
+    static byte[] UriList(string[] files)
     {
-        MemoryStream s = new MemoryStream();
-        byte[] head = new byte[20];
-        Put(head, 0, 20); Put(head, 16, 1);
-        s.Write(head, 0, 20);
-        foreach (string f in files) { byte[] b = System.Text.Encoding.Unicode.GetBytes(f); s.Write(b, 0, b.Length); s.WriteByte(0); s.WriteByte(0); }
-        s.WriteByte(0); s.WriteByte(0);
-        return s.ToArray();
+        System.Text.StringBuilder made = new System.Text.StringBuilder();
+        foreach (string f in files)
+        {
+            made.Append("file://");
+            foreach (byte b in System.Text.Encoding.UTF8.GetBytes(f.Replace('\\', '/')))
+            {
+                char c = (char)b;
+                bool plain = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_' || c == '~' || c == '/' || c == ':';
+                if (plain) made.Append(c);
+                else { made.Append('%'); made.Append(((int)b).ToString("X2")); }
+            }
+            made.Append("\r\n");
+        }
+        return System.Text.Encoding.ASCII.GetBytes(made.ToString());
     }
 
-    static string[] FilesOf(byte[] drop)
+    /// text/uri-list's file: URIs as paths, %XX undone; comment lines and
+    /// other schemes passed over.
+    static string[] FilesOf(byte[] list)
     {
         List<string> files = new List<string>();
-        if (drop.Length < 20) return files.ToArray();
-        int at = BitConverter.ToInt32(drop, 0);
-        bool wide = BitConverter.ToInt32(drop, 16) != 0;
-        while (at < drop.Length)
+        foreach (string raw in System.Text.Encoding.UTF8.GetString(list).Split('\n'))
         {
-            int end = at;
-            if (wide) { while (end + 1 < drop.Length && (drop[end] | drop[end + 1]) != 0) end += 2; }
-            else { while (end < drop.Length && drop[end] != 0) end++; }
-            if (end == at) break;
-            files.Add(wide ? System.Text.Encoding.Unicode.GetString(drop, at, end - at) : System.Text.Encoding.GetEncoding(1252).GetString(drop, at, end - at));
-            at = end + (wide ? 2 : 1);
+            string line = raw.Trim();
+            if (line.Length == 0 || line[0] == '#' || !line.StartsWith("file://")) continue;
+            string rest = line.Substring(7);
+            int slash = rest.IndexOf('/');
+            if (slash > 0) rest = rest.Substring(slash);
+            List<byte> path = new List<byte>();
+            for (int i = 0; i < rest.Length; i++)
+            {
+                if (rest[i] == '%' && i + 2 < rest.Length && Hex(rest[i + 1]) >= 0 && Hex(rest[i + 2]) >= 0)
+                {
+                    path.Add((byte)(Hex(rest[i + 1]) * 16 + Hex(rest[i + 2])));
+                    i += 2;
+                }
+                else path.Add((byte)rest[i]);
+            }
+            files.Add(System.Text.Encoding.UTF8.GetString(path.ToArray()));
         }
         return files.ToArray();
+    }
+
+    static int Hex(char c)
+    {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
     }
 
     static void Put(byte[] b, int at, int v) { b[at] = (byte)v; b[at + 1] = (byte)(v >> 8); b[at + 2] = (byte)(v >> 16); b[at + 3] = (byte)(v >> 24); }
@@ -6878,15 +6966,65 @@ public static class Clipboard
     /// in the format its type says.
     public static void SetDataObject(object data) { SetDataObject(data, false); }
 
+    /// WITHOUT `copy`, AND A FORM TO OWN IT, THE DATA STAYS HERE: each
+    /// format is promised, and made into bytes only when some program asks
+    /// for it (Rendered, from the ClipboardRender event), until somebody
+    /// else empties the clipboard or the program ends -- as .NET's leaves
+    /// its data object on the OLE clipboard. With `copy`, or no form, every
+    /// format's bytes go on the clipboard now.
     public static void SetDataObject(object data, bool copy)
     {
         if (data == null) throw new ArgumentNullException("data");
         IDataObject d = data as IDataObject ?? new DataObject(data);
         string[] formats = d.GetFormats(false);
+        Form? owner = Application.ActiveForm;
+        if (!copy && owner != null && owner.Handle != 0)
+        {
+            Seat seat = Seat.Current;
+            if (!seat.OpenClipboard(owner.Handle)) Busy();
+            try
+            {
+                if (!seat.EmptyClipboard()) Busy();
+                _promised = d;
+                _promisedIds.Clear(); _promisedNames.Clear();
+                foreach (string f in formats)
+                {
+                    string format = f == DataFormats.Bitmap ? DataFormats.Dib : f;
+                    int id = IdOf(format);
+                    if (_promisedIds.Contains(id)) continue;
+                    _promisedIds.Add(id); _promisedNames.Add(f);
+                    if (!seat.PromiseClipboardData(id)) Busy();
+                }
+            }
+            finally { seat.CloseClipboard(); }
+            return;
+        }
         object[] values = new object[formats.Length];
         for (int i = 0; i < formats.Length; i++) values[i] = d.GetData(formats[i], false)!;
         Put(formats, values);
     }
+
+    // The data object whose formats are promised, and which format numbers
+    // stand for which of its names.
+    static IDataObject? _promised;
+    static readonly List<int> _promisedIds = new List<int>();
+    static readonly List<string> _promisedNames = new List<string>();
+
+    /// ClipboardRender: a promised format asked for, its bytes put now.
+    internal static void Render(int id)
+    {
+        IDataObject? d = _promised;
+        int at = _promisedIds.IndexOf(id);
+        if (d == null || at < 0) return;
+        string name = _promisedNames[at];
+        object? value = d.GetData(name, false);
+        if (value == null) return;
+        string format = name == DataFormats.Bitmap ? DataFormats.Dib : name;
+        Seat.Current.SetClipboardData(id, Encode(format, value), false);
+    }
+
+    /// ClipboardLost: somebody else emptied it; the promises are over.
+    internal static void Lost() { _promised = null; _promisedIds.Clear(); _promisedNames.Clear(); }
 
     static void Put(string[] formats, object[] values)
     {
