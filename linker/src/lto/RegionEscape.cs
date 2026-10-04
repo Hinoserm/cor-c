@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 namespace Corsac.Lang.Lto;
 
 /// <summary>
@@ -65,7 +66,7 @@ internal sealed class RegionEscape
     private readonly Summary?[] _summaries;
 
     /// <summary>Counts for a report: locations carried, summaries applied, functions not followed, the largest cycle.</summary>
-    public long Work, Applied, Unfollowed, LargestCycle;
+    public long Work, Applied, Unfollowed, LargestCycle, Fallbacks;
 
     /// <param name="functions">The functions the image keeps.</param>
     /// <param name="targets">Per function, per call: the functions it may run, or null for a call nobody follows.</param>
@@ -143,10 +144,16 @@ internal sealed class RegionEscape
     /// <summary>Whether an object of `site` made beneath function `f` may outlive its return.</summary>
     public bool Escapes(int f, int site)
     {
-        int[]? escaping = Escaping[f];
-        if (escaping is null) return true;
-        ulong[] bits = (_escapingBits ??= new ulong[]?[Escaping.Length])[f] ??= BitsOf(escaping);
+        if (EscapingBits(f) is not { } bits) return true;
         return (bits[site >> 6] >> (site & 63) & 1) != 0;
+    }
+
+    /// <summary>The sites whose objects made beneath function `f` may outlive its return, one bit a site; null when every one may.</summary>
+    public ulong[]? EscapingBits(int f)
+    {
+        int[]? escaping = Escaping[f];
+        if (escaping is null) return null;
+        return (_escapingBits ??= new ulong[]?[Escaping.Length])[f] ??= BitsOf(escaping);
     }
 
     /// <summary>The sites some origins may be, one bit a site.</summary>
@@ -154,18 +161,35 @@ internal sealed class RegionEscape
     {
         if (_bitsByOrigins.TryGetValue(origins, out ulong[]? known)) return known;
         ulong[] bits = new ulong[(Global.Length + 63) >> 6];
-        _seen.Clear();
-        _next.Clear();
-        foreach (int r in origins) if (_seen.Add(r)) _next.Push(r);
-        while (_next.TryPop(out int r))
+        // Asked only once every function is solved, when the holders are
+        // all there: each holder's objects numbered from its first
+        // (_holderFirst), an object seen when its mark is the walk's.
+        if (_holderFirst is null || _holderFirst.Length != _holders.Count + 1)
         {
-            if (r < 0) { int site = -r - 1; bits[site >> 6] |= 1UL << (site & 63); continue; }
-            if (OriginsOf(r) is { } below) foreach (int c in below) if (_seen.Add(c)) _next.Push(c);
+            _holderFirst = new int[_holders.Count + 1];
+            for (int h = 0; h < _holders.Count; h++) _holderFirst[h + 1] = _holderFirst[h] + (_holders[h]?.Length ?? 0);
+            _seenMark = new int[_holderFirst[^1]];
         }
+        int stamp = ++_seenStamp;
+        _next.Clear();
+        void Visit(int r)
+        {
+            if (r < 0) { int site = -r - 1; bits[site >> 6] |= 1UL << (site & 63); return; }
+            int h = r >> IndexBits, k = r & ((1 << IndexBits) - 1);
+            if (h >= _holders.Count || _holders[h] is not { } objects || k >= objects.Length || objects[k] is null) return;
+            int at = _holderFirst[h] + k;
+            if (_seenMark![at] == stamp) return;
+            _seenMark[at] = stamp;
+            _next.Push(r);
+        }
+        foreach (int r in origins) Visit(r);
+        while (_next.TryPop(out int r))
+            foreach (int c in OriginsOf(r)!) Visit(c);
         return _bitsByOrigins[origins] = bits;
     }
 
-    private readonly HashSet<int> _seen = new();
+    private int[]? _holderFirst, _seenMark;
+    private int _seenStamp;
     private readonly Stack<int> _next = new();
 
     /// <summary>The sites the given origins may be.</summary>
@@ -267,7 +291,249 @@ internal sealed class RegionEscape
         foreach (var (key, calls) in wide.OrderByDescending(x => x.Value).Take(15)) Progress?.Invoke($"escape graphs:   {calls} calls of {key}");
     }
 
+    /// <summary>
+    /// Virtual calls of more targets than this are assumed, not followed in
+    /// order (WIDE CALLS, below); 0, as yet the default, follows every call:
+    /// on the compiler's own link a round takes minutes and the stand-ins
+    /// take several to settle.
+    /// </summary>
+    public int WideTargets;
+
     public void Run()
+    {
+        if (WideTargets > 0)
+        {
+            _assumed = new(TargetsComparer.Instance);
+            for (int round = 1; ; round++)
+            {
+                long began = System.Diagnostics.Stopwatch.GetTimestamp();
+                Order();
+                int grew = Check(round >= WidenAfter);
+                Progress?.Invoke($"escape graphs: round {round}: {_assumed.Count} wide calls assumed, {grew} grew, largest cycle {LargestCycle}, "
+                    + $"{Work} carried, {System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds:F0} ms");
+                if (ReportStandIns) DescribeStandIns();
+                if (grew == 0) break;
+                Reset();
+                if (round == MostRounds)
+                {
+                    // Still growing: every call followed in order after all.
+                    Progress?.Invoke($"escape graphs: wide calls still growing after {round} rounds: every call followed");
+                    _assumed = null;
+                    Order();
+                    break;
+                }
+            }
+        }
+        else Order();
+        Close();
+    }
+
+    // ---- wide calls -------------------------------------------------------
+    //
+    // A VIRTUAL CALL OF MANY TARGETS -- Equals, GetHashCode, ToString, an
+    // iterator's MoveNext, each with hundreds of overrides -- joins every
+    // override and all that calls it into one cycle: on the compiler's own
+    // link, thirteen thousand functions, solved together and coarsely. So a
+    // wide call is not an edge of the order: each set of targets is assumed
+    // a summary (a stand-in), empty at first, and every function solved with
+    // it. Then the targets' own summaries are asked whether the stand-in
+    // covers them all; where it does not, it grows to cover them and every
+    // function is solved again. What every stand-in covers is a fixed point
+    // above the least one, so the answers are sound: by induction on how
+    // deep calls go, each call does no more than its stand-in says.
+    //
+    // A stand-in is a shape of a few objects -- the unknown object, each
+    // argument's own object and all below it, and every object its targets
+    // may make (the sites, as leaves) -- with which of them may hold which
+    // and be returned: a bit each, and the unknown call's bit. Shapes only
+    // grow and are finite, so the rounds end; past WidenAfter, a stand-in
+    // that grew takes every site its targets reach at once, and only its
+    // bits are left to grow.
+
+    private const int MostRounds = 8;
+    private const int WidenAfter = 3;
+
+    // A stand-in's objects, by class: the unknown object, what its targets
+    // make, every argument past the first ParamClasses and all they reach
+    // (Deep -1), and for each of the first ParamClasses parameters its own
+    // object (Place) and all below it (Deep). Which class may hold which is
+    // a bit a pair, which may be returned a bit a class, and the unknown
+    // call one more.
+    private const int ParamClasses = 6;
+    private const int Classes = 3 + 2 * ParamClasses;
+    private const int ResultBits = Classes * Classes;
+    private const int UnknownBit = ResultBits + Classes;
+    private const int ShapeWords = (UnknownBit + 64) / 64;
+
+    private static bool Has(ulong[] bits, int bit) => (bits[bit >> 6] >> (bit & 63) & 1) != 0;
+    private static void Set(ulong[] bits, int bit) => bits[bit >> 6] |= 1UL << (bit & 63);
+
+    private sealed class Assumed
+    {
+        public readonly ulong[] Bits = new ulong[ShapeWords];
+        public int[] Sites = Array.Empty<int>();
+        public bool Widened;
+
+        public Summary Build()
+        {
+            if (Has(Bits, UnknownBit)) return Summary.Unknown;
+            Summary s = new();
+            int[] index = new int[Classes];
+            Array.Fill(index, -1);
+            index[0] = 0;
+            bool Uses(int cls)
+            {
+                for (int x = 0; x < Classes; x++)
+                    if (Has(Bits, x * Classes + cls) || Has(Bits, cls * Classes + x)) return true;
+                return Has(Bits, ResultBits + cls);
+            }
+            for (int cls = 1; cls < Classes; cls++)
+            {
+                if (!Uses(cls) && !(cls == 1 && Sites.Length > 0)) continue;
+                index[cls] = s.Objects.Count;
+                s.Objects.Add(cls switch
+                {
+                    1 => (Kind.Made, -1, Array.Empty<int>(), Sites.Select(Leaf).Order().ToArray()),
+                    2 => (Kind.Deep, -1, Array.Empty<int>(), Array.Empty<int>()),
+                    _ => ((cls - 3) % 2 == 0 ? Kind.Place : Kind.Deep, (cls - 3) / 2, Array.Empty<int>(), Array.Empty<int>()),
+                });
+            }
+            for (int x = 0; x < Classes; x++)
+            {
+                if (index[x] < 0) continue;
+                for (int y = 0; y < Classes; y++)
+                    if (index[y] >= 0 && Has(Bits, x * Classes + y)) s.Cells.Add((index[x], Any, index[y], Any));
+                if (Has(Bits, ResultBits + x)) s.Result.Add((index[x], Any));
+            }
+            s.Cells.Sort(); s.Result.Sort();
+            return s;
+        }
+    }
+
+    /// <summary>A diagnostic: each round's stand-ins, by how much they hold.</summary>
+    public bool ReportStandIns;
+
+    private void DescribeStandIns()
+    {
+        string Name(int cls) => cls switch { 0 => "U", 1 => "M", 2 => "A*", _ => ((cls - 3) % 2 == 0 ? "P" : "D") + (cls - 3) / 2 };
+        int unknown = _assumed!.Values.Count(a => Has(a.Bits, UnknownBit));
+        Progress?.Invoke($"escape graphs: stand-ins: {unknown} of {_assumed.Count} the unknown call");
+        foreach (var (targets, a) in _assumed.OrderByDescending(x => x.Value.Bits.Sum(w => System.Numerics.BitOperations.PopCount(w))).Take(40))
+        {
+            List<string> held = new();
+            for (int x = 0; x < Classes; x++)
+                for (int y = 0; y < Classes; y++)
+                    if (Has(a.Bits, x * Classes + y)) held.Add(Name(x) + ">" + Name(y));
+            for (int x = 0; x < Classes; x++) if (Has(a.Bits, ResultBits + x)) held.Add("ret " + Name(x));
+            if (Has(a.Bits, UnknownBit))
+            {
+                string[] why = targets.Where(t => _summaries[t] is null or { IsUnknown: true }).Take(4).Select(t => _functions[t].Name).ToArray();
+                held.Add("UNKNOWN by " + string.Join(", ", why));
+            }
+            Progress?.Invoke($"escape graphs:   {targets.Length} targets ({_functions[targets[0]].Name}): {a.Sites.Length} sites; " + string.Join(" ", held));
+        }
+    }
+
+    private Dictionary<int[], Assumed>? _assumed;
+    private readonly Dictionary<int[], Summary> _standIns = new(TargetsComparer.Instance);
+
+    private bool IsWide(int[] targets) => _assumed is not null && targets.Length > WideTargets;
+
+    /// <summary>The summary a wide call is assumed to have this round.</summary>
+    private Summary StandIn(int[] targets)
+    {
+        if (_standIns.TryGetValue(targets, out Summary? known)) return known;
+        if (!_assumed!.TryGetValue(targets, out Assumed? a)) _assumed[targets] = a = new Assumed();
+        Summary s = a.Build();
+        if (!s.IsUnknown) Register(s, NewHolder());
+        return _standIns[targets] = s;
+    }
+
+    // A summary as a stand-in's shape: which classes hold which, and the
+    // sites its made objects may be.
+    private (ulong[] Bits, int[] Sites) Shape(Summary s)
+    {
+        ulong[] bits = new ulong[ShapeWords];
+        if (s.IsUnknown) { Set(bits, UnknownBit); return (bits, Array.Empty<int>()); }
+        int Class(int k)
+        {
+            var o = s.Objects[k];
+            if (o.Kind == Kind.Unknown) return 0;
+            if (o.Kind == Kind.Made) return 1;
+            if (o.Param < 0 || o.Param >= ParamClasses) return 2;
+            return 3 + 2 * o.Param + (o.Kind == Kind.Place && o.Path.Length == 0 ? 0 : 1);
+        }
+        foreach (var c in s.Cells) Set(bits, Class(c.From) * Classes + Class(c.To));
+        foreach (var r in s.Result) Set(bits, ResultBits + Class(r.To));
+        List<int> origins = new();
+        foreach (var o in s.Objects) if (o.Kind == Kind.Made) origins.AddRange(o.Origins);
+        return (bits, origins.Count == 0 ? Array.Empty<int>() : SitesOf(origins.ToArray()));
+    }
+
+    /// <summary>Grows every stand-in its targets' summaries are not covered by: how many grew.</summary>
+    private int Check(bool widen)
+    {
+        Dictionary<int, (ulong[] Bits, int[] Sites)> shapes = new();
+        int grew = 0;
+        foreach (var (targets, a) in _assumed!)
+        {
+            ulong[] bits = new ulong[ShapeWords];
+            HashSet<int> sites = new();
+            foreach (int t in targets)
+            {
+                if (!shapes.TryGetValue(t, out var shape)) shapes[t] = shape = Shape(_summaries[t] ?? Summary.Unknown);
+                for (int w = 0; w < ShapeWords; w++) bits[w] |= shape.Bits[w];
+                sites.UnionWith(shape.Sites);
+            }
+            HashSet<int> had = new(a.Sites);
+            bool covered = sites.IsSubsetOf(had);
+            for (int w = 0; w < ShapeWords; w++) if ((bits[w] & ~a.Bits[w]) != 0) covered = false;
+            if (covered) continue;
+            grew++;
+            for (int w = 0; w < ShapeWords; w++) a.Bits[w] |= bits[w];
+            if (widen && !a.Widened)
+            {
+                a.Widened = true;
+                sites.UnionWith(Beneath(targets));
+            }
+            sites.UnionWith(had);
+            a.Sites = sites.Order().ToArray();
+        }
+        return grew;
+    }
+
+    // Every site in the targets and every function they may call.
+    private IEnumerable<int> Beneath(int[] targets)
+    {
+        HashSet<int> seen = new(targets);
+        Stack<int> next = new(targets);
+        while (next.TryPop(out int f))
+        {
+            for (int site = 0; site < _functions[f].Sites.Length; site++) yield return _siteBase[f] + site;
+            foreach (int[]? those in _targets[f])
+                if (those is not null) foreach (int g in those) if (seen.Add(g)) next.Push(g);
+        }
+    }
+
+    /// <summary>Everything a round solved, forgotten for the next.</summary>
+    private void Reset()
+    {
+        Array.Clear(_summaries);
+        Array.Clear(Escaping);
+        Array.Clear(LoopHeld);
+        _holders.Clear();
+        _globalRefs.Clear();
+        _rootedRefs.Clear();
+        _merged.Clear();
+        _standIns.Clear();
+        _escapingBits = null;
+        _holderFirst = null;
+        _bitsByOrigins.Clear();
+        Work = Applied = Unfollowed = LargestCycle = Fallbacks = 0;
+    }
+
+    // Callees first, a cycle together; a wide call is no edge.
+    private void Order()
     {
         int count = _functions.Count;
         int[] index = new int[count], low = new int[count];
@@ -290,7 +556,7 @@ internal sealed class RegionEscape
                 while (call < calls.Length)
                 {
                     int[]? those = calls[call];
-                    if (those is null || target >= those.Length) { call++; target = 0; continue; }
+                    if (those is null || target >= those.Length || IsWide(those)) { call++; target = 0; continue; }
                     int w = those[target++];
                     if (index[w] < 0)
                     {
@@ -314,7 +580,6 @@ internal sealed class RegionEscape
                 if (walk.Count > 0) { int parent = walk.Peek().Node; low[parent] = Math.Min(low[parent], low[v]); }
             }
         }
-        Close();
     }
 
     // A cycle this large, or with this many nodes, is solved by unification (Unified).
@@ -337,9 +602,22 @@ internal sealed class RegionEscape
             return;
         }
         Graph g = new Graph(this, component.ToArray()).Solved();
+        if (g.Overflowed)
+        {
+            // PAST ITS BOUND BY INCLUSION, solved by unification: coarser,
+            // and still each object's own, where giving up made every site
+            // in it global and its summary the unknown call's.
+            Fallbacks++;
+            Unified u = new Unified(this, component.ToArray()).Solved();
+            for (int m = 0; m < component.Count; m++) Register(_summaries[component[m]] = u.Summarise(m), component[m]);
+            for (int m = 0; m < component.Count; m++) u.Answer(m);
+            if (Progress is not null && System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds > 300)
+                Progress($"escape graphs: {_functions[component[0]].Name} ({component.Count}) past its bound by inclusion, unified in {System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds:F0} ms: " + g.Describe());
+            return;
+        }
         for (int m = 0; m < component.Count; m++) Register(_summaries[component[m]] = g.Summarise(m), component[m]);
         for (int m = 0; m < component.Count; m++) g.Answer(m);
-        if (Progress is not null && component.Count > 50)
+        if (Progress is not null && (component.Count > 50 || System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds > 300))
             Progress($"escape graphs: cycle of {component.Count} ({_functions[component[0]].Name}) in {System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds:F0} ms: "
                 + g.Describe() + $", heap {GC.GetTotalMemory(false) >> 20} MB");
     }
@@ -642,8 +920,8 @@ internal sealed class RegionEscape
             _base = new int[members.Length];
             long nodes = 0;
             foreach (int f in members) nodes += owner._functions[f].Nodes;
-            _mostCarried = 400_000 + 60 * nodes;
-            _mostNodes = (int)Math.Min(int.MaxValue, 40_000 + 3 * nodes);
+            _mostCarried = 150_000 + 20 * nodes;
+            _mostNodes = (int)Math.Min(int.MaxValue, 400_000 + 30 * nodes);
             _big = members.Length > 1000;
             NewObject(Kind.Unknown, -1, Array.Empty<int>(), Array.Empty<int>());     // 0: the unknown object
             for (int m = 0; m < members.Length; m++)
@@ -668,6 +946,7 @@ internal sealed class RegionEscape
         private int NewNode()
         {
             _pts.Add(null); _copies.Add(null); _loads.Add(null); _stores.Add(null); _readsAll.Add(null); _delta.Add(null);
+            _madeHeld.Add(0); _nodeFlags.Add(0);
             if (_pts.Count > _mostNodes) Overflowed = true;
             return _pts.Count - 1;
         }
@@ -751,12 +1030,12 @@ internal sealed class RegionEscape
         // the unknown object's own writes gather in is never cut short:
         // nothing is read out of it.
         private const int MostHeld = 256;
-        private readonly HashSet<int> _saturated = new();
+        private int _saturatedCount;
         private int _unknownCell = -1;
         // What Aliased feeds loads (what is written into places): all of it is
         // outside already, and cut short it would put every one of those
         // writes where nobody follows.
-        private readonly HashSet<int> _neverSaturated = new();
+
 
         // PLACES ARE NOT WHAT FILLS A NODE: there are only so many, and
         // sent where nobody follows they are arguments escaping at every
@@ -764,15 +1043,20 @@ internal sealed class RegionEscape
         // past it, those go to the unknown object and the places stay, up to
         // a bound of their own.
         private const int MostPlacesHeld = 512;
-        private readonly Dictionary<int, int> _madeHeld = new();
-        private readonly HashSet<int> _placesDumped = new();
+        // Per node: the made objects it holds, and its flags (Saturated,
+        // PlacesDumped, NeverSaturated), where a hash lookup a location was
+        // most of what adding one cost.
+        private readonly List<int> _madeHeld = new();
+        private readonly List<byte> _nodeFlags = new();
+        private const byte Saturated = 1, PlacesDumped = 2, NeverSaturated = 4;
 
         private void Add(int node, int loc)
         {
             if (loc < 0) return;
             int o = _locObject[loc];
             bool place = _kind[o] is Kind.Place or Kind.Deep;
-            if (_saturated.Contains(node) && !(place && !_placesDumped.Contains(node)))
+            byte flags = _nodeFlags[node];
+            if ((flags & Saturated) != 0 && !(place && (flags & PlacesDumped) == 0))
             {
                 if (o != 0) Add(UnknownCell(), loc);
                 return;
@@ -780,18 +1064,19 @@ internal sealed class RegionEscape
             HashSet<int> pts = _pts[node] ??= new();
             if (!pts.Add(loc)) return;
             Delta(node, loc);
-            if (node == _unknownCell || _neverSaturated.Contains(node)) return;
-            int made = _kind[o] == Kind.Made ? (_madeHeld[node] = _madeHeld.GetValueOrDefault(node) + 1) : _madeHeld.GetValueOrDefault(node);
-            if (!_saturated.Contains(node) && made > MostHeld)
+            if (node == _unknownCell || (flags & NeverSaturated) != 0) return;
+            int made = _kind[o] == Kind.Made ? ++CollectionsMarshal.AsSpan(_madeHeld)[node] : _madeHeld[node];
+            if ((flags & Saturated) == 0 && made > MostHeld)
             {
-                _saturated.Add(node);
+                _nodeFlags[node] |= Saturated; _saturatedCount++;
                 int sink = UnknownCell();
                 foreach (int held in pts.ToArray()) if (_kind[_locObject[held]] == Kind.Made) Add(sink, held);
                 if (pts.Add(Unknown)) Delta(node, Unknown);
             }
-            if (pts.Count - made > MostPlacesHeld && _placesDumped.Add(node))
+            if (pts.Count - made > MostPlacesHeld && (_nodeFlags[node] & PlacesDumped) == 0)
             {
-                _saturated.Add(node);
+                if ((_nodeFlags[node] & Saturated) == 0) _saturatedCount++;
+                _nodeFlags[node] |= Saturated | PlacesDumped;
                 int sink = UnknownCell();
                 foreach (int held in pts.ToArray()) if (_locObject[held] != 0) Add(sink, held);
                 if (pts.Add(Unknown)) Delta(node, Unknown);
@@ -1003,6 +1288,7 @@ internal sealed class RegionEscape
             int dest = call.Dest < 0 ? -1 : Node(m, call.Dest);
             if (targets is null) { UnknownCall(args, dest); return; }
             if (targets.Length == 0) return;                       // no object of the type exists
+            if (_owner.IsWide(targets)) { Apply(args, dest, _owner.StandIn(targets)); return; }
             int[] inside = targets.Where(_memberSet.Contains).ToArray();
             int[] outside = inside.Length == 0 ? targets : targets.Where(t => !_memberSet.Contains(t)).ToArray();
             if (inside.Length > 0)
@@ -1188,7 +1474,7 @@ internal sealed class RegionEscape
                 foreach (int o in Reached(start))
                 {
                     if (_kind[o] != Kind.Made || _placedMade.Contains(o)) continue;
-                    if (_written < 0) { _written = NewNode(); _neverSaturated.Add(_written); }
+                    if (_written < 0) { _written = NewNode(); _nodeFlags[_written] |= NeverSaturated; }
                     more = true;
                     Placed(o);
                 }
@@ -1310,6 +1596,12 @@ internal sealed class RegionEscape
                 for (int k = 0; k < function.Calls.Count; k++)
                 {
                     if (_owner._targets[f][k] is not { } targets) continue;
+                    if (_owner.IsWide(targets))
+                    {
+                        if (_owner.StandIn(targets) is { Holder: >= 0 } standIn)
+                            for (int i = 0; i < standIn.Objects.Count; i++) if (standIn.Objects[i].Kind == Kind.Made) _owner._globalRefs.Add(Ref(standIn.Holder, i));
+                        continue;
+                    }
                     foreach (int g in targets)
                         if (!_memberSet.Contains(g) && _owner._summaries[g] is { Holder: >= 0 } s)
                             for (int i = 0; i < s.Objects.Count; i++) if (s.Objects[i].Kind == Kind.Made) _owner._globalRefs.Add(Ref(s.Holder, i));
@@ -1332,7 +1624,7 @@ internal sealed class RegionEscape
                                 if (!seen.Add(to)) continue;
                                 next.Enqueue((to, at.O));
                                 foreach (int site in _owner.SitesOf(_origins[to]))
-                                    if (why(site)) _owner.Progress?.Invoke($"escape graphs why: in {_owner._functions[f].Name}{(_members.Length > 1 ? " (cycle of " + _members.Length + ")" : "")}: site {site} reached from {(at.O == 0 ? "the unknown object" : Describe(at.O))} +{offset}, saturated {_saturated.Count}");
+                                    if (why(site)) _owner.Progress?.Invoke($"escape graphs why: in {_owner._functions[f].Name}{(_members.Length > 1 ? " (cycle of " + _members.Length + ")" : "")}: site {site} reached from {(at.O == 0 ? "the unknown object" : Describe(at.O))} +{offset}, saturated {_saturatedCount}");
                             }
             }
             bool rooted = _owner._rooted[f];
@@ -1379,7 +1671,7 @@ internal sealed class RegionEscape
             return origins.ToArray();
         }
 
-        public string Describe() => $"{_kind.Count} objects, {_locObject.Count} locations, {_pts.Count} nodes, {_carried} carried, {_saturated.Count} saturated{(Overflowed ? ", NOT FOLLOWED" : "")}";
+        public string Describe() => $"{_kind.Count} objects, {_locObject.Count} locations, {_pts.Count} nodes, {_carried} carried, {_saturatedCount} saturated{(Overflowed ? ", NOT FOLLOWED" : "")}";
 
         private string Describe(int o) => _kind[o] switch
         {
@@ -1606,6 +1898,7 @@ internal sealed class RegionEscape
             int dest = call.Dest < 0 ? -1 : Node(m, call.Dest);
             if (targets is null) { UnknownCall(args, dest); return; }
             if (targets.Length == 0) return;
+            if (_owner.IsWide(targets)) { Apply(args, dest, _owner.StandIn(targets)); return; }
             int[] inside = targets.Where(_memberSet.Contains).ToArray();
             int[] outside = inside.Length == 0 ? targets : targets.Where(t => !_memberSet.Contains(t)).ToArray();
             if (inside.Length > 0)
