@@ -1112,7 +1112,7 @@ public sealed partial class Lowering
             return m.Name == "IsClass" ? _e.Binary(Opcode.Eq, R(masked), Imm(0, IrType.I32), IrType.I32) : masked;
         }
         if (m.Name == "Length")
-            return target.IsArray ? _e.Unary(Opcode.ArrayLength, R(obj), IrType.I32) : _e.Load(IrType.I32, obj, _t.ArrayCountOffset);
+            return target.IsArray ? _e.Unary(Opcode.ArrayLength, R(obj), IrType.I32) : CountOf(_e, obj);
         if (m.Name == "LongLength")
             return _e.Unary(Opcode.SExt32, R(_e.Unary(Opcode.ArrayLength, R(obj), IrType.I32)), IrType.I64);
         VReg full = _e.Load(IrTypes.Word, obj, DescName * _t.WordSize);

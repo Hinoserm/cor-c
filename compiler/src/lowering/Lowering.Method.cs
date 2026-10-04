@@ -1114,6 +1114,23 @@ public sealed partial class Lowering
             or Prim.U8 or Prim.U16 or Prim.U32 or Prim.F32 or Prim.F64;
     }
 
+    /// <summary>
+    /// THE COUNT A STRING OR A SEQUENCE KEEPS in its header, read: a number,
+    /// never an address (Instr.Number), as a field of int is. Unmarked, a
+    /// string's Length on a 32-bit target was a word read out of the string
+    /// for region inference -- whatever its summary said the string's words
+    /// held -- and a sum of lengths handed back from a boundary carried
+    /// objects to its caller: 1290's Work answered Sum(s) plus a row's
+    /// name's Length, and its rows, merged with the strings in Sheet.Make's
+    /// summary, were the unknown object's in Run when the total was printed.
+    /// </summary>
+    private VReg CountOf(Builder e, VReg of)
+    {
+        VReg count = e.Load(IrType.I32, of, _t.ArrayCountOffset);
+        e.Block.Instrs[^1].Number = true;
+        return count;
+    }
+
     /// <summary>How many bytes a value of a type occupies in memory.</summary>
     private int LoadSize(Type t) => Math.Max(1, t.Size);
 
@@ -1410,7 +1427,7 @@ public sealed partial class Lowering
 
     private void BoundsCheck(VReg array, VReg index, Node at, bool managedArray)
     {
-        VReg count = managedArray ? _e.Unary(Opcode.ArrayLength, R(array), IrType.I32) : _e.Load(IrType.I32, array, _t.ArrayCountOffset);
+        VReg count = managedArray ? _e.Unary(Opcode.ArrayLength, R(array), IrType.I32) : CountOf(_e, array);
         VReg ok = _e.Binary(Opcode.LtU, index, count);
         Block good = _f.NewBlock("inbounds");
         _e.Branch(ok, good, BoundsFail());
