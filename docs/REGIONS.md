@@ -233,7 +233,9 @@ IR the link will regenerate the unit from:
   everything it touched. Since version 8. Test 1298. Each saved register,
   and each frame slot's contents, is stored at a field of its own, eight
   bytes apart from offset 2048 (`SavedFieldsStart`), past any declared field;
-  past 4088, at any offset. At any offset, every load of the machine (its
+  past 4088, from 2048 again (two values in one field; at any offset, every
+  load of the machine and of what a place reaches read every one past the
+  last). At any offset, every load of the machine (its
   receiver, its arguments, its current element) read all of them, and the
   unified solver collapsed the machine with all it reached: an iterator's
   source and what it yields were one. Test 1319. The saved fields name a

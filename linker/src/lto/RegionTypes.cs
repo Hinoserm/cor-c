@@ -16,10 +16,14 @@ namespace Corsac.Lang.Lto;
 /// frame slots -- is one more of its own; and two stand for everything else:
 /// the unknown object (Unknown, what nobody follows) and a constant (a
 /// Symbol the link found read-only, RegionConstants). Each abstract object
-/// has one cell, every field and element of it at once. Over them, every
-/// constraint of every function as RegionEscape reads it: Site, Slot,
-/// Unknown, Symbol, Copy (any shift: the same objects), Load, Store,
-/// MemCopy, Leak. A call binds its arguments to its targets' parameters and
+/// has A CELL A FIELD, by its offset from the object's start (one type's
+/// objects lay a field out at one offset), and one for any offset: what is
+/// written where nobody can say, read by every load of it. A pointer moved
+/// into an object (a copy by a shift, an index) is an address INTO it: a
+/// load through one reads every cell of the object, a store through one
+/// writes its any-offset cell, and a call made on one runs on the object.
+/// Over them, every constraint of every function as RegionEscape reads it:
+/// Site, Slot, Unknown, Symbol, Copy, Load, Store, MemCopy, Leak. A call binds its arguments to its targets' parameters and
 /// their return to its result; a call nobody can name hands its arguments
 /// to the unknown and gives back the unknown. A function called from where
 /// nobody follows (rooted) has the unknown for every parameter, and its
@@ -28,7 +32,7 @@ namespace Corsac.Lang.Lto;
 /// WHAT GOES WHERE NOBODY FOLLOWS MAY BE WRITTEN BY ANYTHING: an object that
 /// reaches the unknown -- leaked, stored into the unknown object, handed to
 /// a call nobody can name or returned by a root -- has the unknown object
-/// in its cell, and everything its cell holds reaches the unknown too. Code
+/// in its any-offset cell, and everything its cells hold reaches the unknown too. Code
 /// nobody follows can only reach what was handed to it, so an object that
 /// never reaches it holds only what the constraints put there.
 ///
@@ -43,12 +47,21 @@ namespace Corsac.Lang.Lto;
 ///
 /// Sound as the escape engine is: it trusts the same constraints to say
 /// everything a node can hold, and the same stamps to say what an object
-/// runs. Coarser than it everywhere -- one cell an object, one object a
-/// type -- and so never fewer types than a receiver holds.
+/// runs. Coarser than it everywhere -- one object a type, a field one cell
+/// for every object of it -- and so never fewer types than a receiver holds.
 /// </summary>
 public sealed class RegionTypes
 {
-    private const int Top = 0, Constant = 1;
+    // A value a node holds: an object, shifted left one, its low bit set for
+    // an address into it. The unknown object and a constant are objects 0
+    // and 1, never addresses into them.
+    private const int Top = 0, Constant = 2;
+    private static int ObjectOf(int value) => value >> 1;
+    private static bool Into(int value) => (value & 1) != 0;
+
+    // A field further than this is any offset, as the escape engine has it.
+    private const int FarthestField = 4096;
+    private const int AnyOffset = -1;
 
     private readonly IReadOnlyList<RegionFunction> _functions;
     private readonly int[]?[][] _targets;
@@ -56,25 +69,29 @@ public sealed class RegionTypes
     private readonly bool[] _rooted;
     private readonly Func<int, int, string, long, int[]?> _dispatch;
 
-    // Nodes: each function's own, from its base; then cells and the sink.
+    // Nodes: each function's own, from its base; then cells, the sink, and the rest.
     private readonly int[] _base;
     private readonly List<HashSet<int>?> _pts = new();
     private readonly List<List<int>?> _delta = new();
     // What else a node is, made only for the nodes that are anything more
-    // than held: copied into others, an address loaded or stored through,
-    // a receiver. (Each edge is made once: by its constraint, by an object
-    // arriving at an address once, by a target bound once.)
+    // than held: copied into others as it is, or as addresses into what it
+    // holds (moved), an address loaded or stored through, a receiver.
     private sealed class Uses
     {
-        public List<int>? Succ, Loads, Stores, Receives;
+        public List<int>? Succ, Moved, Receives;
+        public List<(int To, int Offset)>? Loads;
+        public List<(int Value, int Offset)>? Stores;
     }
     private readonly List<Uses?> _uses = new();
     private readonly Queue<int> _work = new();
     private readonly int _sink;
 
-    // Objects: Top, Constant, then typed and untyped ones.
+    // Objects: the unknown one, a constant, then typed and untyped ones; each
+    // one's cells by offset, and the nodes that read every cell of it.
     private readonly List<(string? Table, long At)> _objects = new();
-    private readonly List<int> _cell = new();
+    private readonly Dictionary<long, int> _cells = new();
+    private readonly List<List<int>?> _cellsOf = new();
+    private readonly List<HashSet<int>?> _allReaders = new();
     private readonly Dictionary<(string, long), int> _typed = new();
     private readonly int[] _untyped;
     private readonly HashSet<int> _escaped = new();
@@ -86,7 +103,7 @@ public sealed class RegionTypes
     private readonly Dictionary<(int, int, int), int[]?> _dispatched = new();
 
     private long _steps;
-    /// <summary>Past this many objects carried, the pass gives up and prunes nothing.</summary>
+    /// <summary>Past this many values carried, the pass gives up and prunes nothing.</summary>
     public long Budget { get; init; } = 2_000_000_000;
 
     /// <summary>For a report: the virtual calls, those narrowed, the targets before and after, those left every target for an unknown receiver, and the abstract objects.</summary>
@@ -111,8 +128,8 @@ public sealed class RegionTypes
         for (int f = 0; f < functions.Count; f++) { _base[f] = nodes; nodes += functions[f].Nodes; }
         for (int n = 0; n < nodes; n++) NewNode();
         _sink = NewNode();
-        _objects.Add((null, 0)); _cell.Add(-1);         // Top
-        _objects.Add((null, 0)); _cell.Add(-1);         // Constant
+        NewObject(null, 0);         // the unknown object
+        NewObject(null, 0);         // a constant
         _untyped = new int[functions.Count];
         Array.Fill(_untyped, -1);
     }
@@ -130,60 +147,93 @@ public sealed class RegionTypes
     private int NewObject(string? table, long at)
     {
         _objects.Add((table, at));
-        _cell.Add(NewNode());
+        _cellsOf.Add(null); _allReaders.Add(null);
         return _objects.Count - 1;
     }
 
     private int Typed(string table, long at) => _typed.TryGetValue((table, at), out int o) ? o : _typed[(table, at)] = NewObject(table, at);
     private int Untyped(int f) => _untyped[f] >= 0 ? _untyped[f] : _untyped[f] = NewObject(null, 0);
 
-    private void Add(int node, int o)
+    private static int Plain(long offset) => offset < 0 || offset > FarthestField ? AnyOffset : (int)offset;
+
+    /// <summary>The cell of an object's field at an offset (AnyOffset: written where nobody can say); every node reading all of the object reads it too.</summary>
+    private int Cell(int o, int offset)
     {
-        if (!(_pts[node] ??= new()).Add(o)) return;
+        long key = (long)o << 32 | (uint)offset;
+        if (_cells.TryGetValue(key, out int cell)) return cell;
+        _cells[key] = cell = NewNode();
+        (_cellsOf[o] ??= new()).Add(cell);
+        if (_allReaders[o] is { } readers) foreach (int reader in readers.ToArray()) Edge(cell, reader);
+        return cell;
+    }
+
+    /// <summary>Every cell of an object, those made later too, into a node.</summary>
+    private void AllCells(int o, int to)
+    {
+        if (!(_allReaders[o] ??= new()).Add(to)) return;
+        Cell(o, AnyOffset);
+        foreach (int cell in _cellsOf[o]!.ToArray()) Edge(cell, to);
+    }
+
+    private void Add(int node, int value)
+    {
+        if (!(_pts[node] ??= new()).Add(value)) return;
         if (++_steps > Budget) throw new OverBudget();
         List<int> delta = _delta[node] ??= new();
         if (delta.Count == 0) _work.Enqueue(node);
-        delta.Add(o);
+        delta.Add(value);
     }
+
+    // An address into an object, of what a node holds: the unknown object and a constant stay what they are.
+    private static int Moved(int value) => ObjectOf(value) <= 1 ? value : value | 1;
 
     private void Edge(int from, int to)
     {
         if (from == to) return;
         (UsesOf(from).Succ ??= new()).Add(to);
-        if (_pts[from] is { } held) foreach (int o in held.ToArray()) Add(to, o);
+        if (_pts[from] is { } held) foreach (int v in held.ToArray()) Add(to, v);
     }
 
-    private void Load(int to, int address)
+    private void MovedEdge(int from, int to)
     {
-        (UsesOf(address).Loads ??= new()).Add(to);
-        if (_pts[address] is { } held) foreach (int o in held.ToArray()) Loaded(to, o);
+        (UsesOf(from).Moved ??= new()).Add(to);
+        if (_pts[from] is { } held) foreach (int v in held.ToArray()) Add(to, Moved(v));
     }
 
-    private void Store(int address, int value)
+    private void Load(int to, int address, int offset)
     {
-        (UsesOf(address).Stores ??= new()).Add(value);
-        if (_pts[address] is { } held) foreach (int o in held.ToArray()) Stored(o, value);
+        (UsesOf(address).Loads ??= new()).Add((to, offset));
+        if (_pts[address] is { } held) foreach (int v in held.ToArray()) Loaded(to, v, offset);
     }
 
-    private void Loaded(int to, int o)
+    private void Store(int address, int value, int offset)
     {
-        if (o == Top) Add(to, Top);
-        else if (o == Constant) Add(to, Constant);
-        else Edge(_cell[o], to);
+        (UsesOf(address).Stores ??= new()).Add((value, offset));
+        if (_pts[address] is { } held) foreach (int v in held.ToArray()) Stored(v, value, offset);
     }
 
-    private void Stored(int o, int value)
+    private void Loaded(int to, int value, int offset)
+    {
+        int o = ObjectOf(value);
+        if (value == Top) Add(to, Top);
+        else if (value == Constant) Add(to, Constant);
+        else if (Into(value) || offset == AnyOffset) AllCells(o, to);
+        else { Edge(Cell(o, offset), to); Edge(Cell(o, AnyOffset), to); }
+    }
+
+    private void Stored(int value, int stored, int offset)
     {
         // A constant is read-only; what goes into the unknown object goes where nobody follows.
-        if (o == Top) Edge(value, _sink);
-        else if (o != Constant) Edge(value, _cell[o]);
+        if (value == Top) Edge(stored, _sink);
+        else if (value != Constant) Edge(stored, Cell(ObjectOf(value), Into(value) ? AnyOffset : offset));
     }
 
-    private void Escape(int o)
+    private void Escape(int value)
     {
-        if (o == Top || o == Constant || !_escaped.Add(o)) return;
-        Add(_cell[o], Top);
-        Edge(_cell[o], _sink);
+        int o = ObjectOf(value);
+        if (o <= 1 || !_escaped.Add(o)) return;
+        Add(Cell(o, AnyOffset), Top);
+        AllCells(o, _sink);
     }
 
     private void Nobody(int f, RegionCall call)
@@ -208,11 +258,13 @@ public sealed class RegionTypes
         foreach (int g in _targets[f][k]!) if (_bound[c].Add(g)) Bind(f, _functions[f].Calls[k], g);
     }
 
-    private void Received(int c, int o)
+    // A value the receiver may be: an address into an object is a call on it.
+    private void Received(int c, int value)
     {
         if (_full[c]) return;
         var (f, k) = _calls[c];
-        if (o == Top || o == Constant || _objects[o].Table is not { } table) { BindAll(c); return; }
+        int o = ObjectOf(value);
+        if (o <= 1 || _objects[o].Table is not { } table) { BindAll(c); return; }
         if (!_dispatched.TryGetValue((f, k, o), out int[]? runs)) _dispatched[(f, k, o)] = runs = _dispatch(f, k, table, _objects[o].At);
         if (runs is null) { BindAll(c); return; }
         foreach (int g in runs) if (_bound[c].Add(g)) Bind(f, _functions[f].Calls[k], g);
@@ -224,16 +276,17 @@ public sealed class RegionTypes
         {
             List<int> delta = _delta[n]!;
             _delta[n] = null;
-            foreach (int o in delta)
+            foreach (int v in delta)
             {
                 if (_uses[n] is { } uses)
                 {
-                    if (uses.Succ is { } succ) for (int s = 0; s < succ.Count; s++) Add(succ[s], o);
-                    if (uses.Loads is { } loads) for (int l = 0; l < loads.Count; l++) Loaded(loads[l], o);
-                    if (uses.Stores is { } stores) for (int s = 0; s < stores.Count; s++) Stored(o, stores[s]);
-                    if (uses.Receives is { } receives) for (int r = 0; r < receives.Count; r++) Received(receives[r], o);
+                    if (uses.Succ is { } succ) for (int s = 0; s < succ.Count; s++) Add(succ[s], v);
+                    if (uses.Moved is { } moved) for (int s = 0; s < moved.Count; s++) Add(moved[s], Moved(v));
+                    if (uses.Loads is { } loads) for (int l = 0; l < loads.Count; l++) Loaded(loads[l].To, v, loads[l].Offset);
+                    if (uses.Stores is { } stores) for (int s = 0; s < stores.Count; s++) Stored(v, stores[s].Value, stores[s].Offset);
+                    if (uses.Receives is { } receives) for (int r = 0; r < receives.Count; r++) Received(receives[r], v);
                 }
-                if (n == _sink) Escape(o);
+                if (n == _sink) Escape(v);
             }
         }
     }
@@ -277,21 +330,27 @@ public sealed class RegionTypes
                 {
                     case RegionConstraintKind.Site:
                         RegionSite site = c.B >= 0 && c.B < function.Sites.Length ? function.Sites[c.B] : default;
-                        Add(a, site.Table is { } table ? Typed(table, site.At) : Untyped(f));
+                        Add(a, (site.Table is { } table ? Typed(table, site.At) : Untyped(f)) << 1);
                         break;
-                    case RegionConstraintKind.Slot: Add(a, Untyped(f)); break;
+                    case RegionConstraintKind.Slot: Add(a, Untyped(f) << 1); break;
                     case RegionConstraintKind.Unknown: Add(a, Top); break;
                     // A symbol left after RegionConstants is a constant; one
                     // it never judged may be anything.
                     case RegionConstraintKind.Symbol: Add(a, function.ConstantsKnown ? Constant : Top); break;
-                    case RegionConstraintKind.Copy: if (Has(f, c.B)) Edge(Node(f, c.B), a); break;
-                    case RegionConstraintKind.Load: if (Has(f, c.B)) Load(a, Node(f, c.B)); break;
-                    case RegionConstraintKind.Store: if (Has(f, c.B)) Store(a, Node(f, c.B)); break;
+                    // Moved by anything -- a shift, an index, an offset nobody
+                    // knows -- an address into what it held.
+                    case RegionConstraintKind.Copy:
+                        if (!Has(f, c.B)) break;
+                        if (c.C == 0) Edge(Node(f, c.B), a); else MovedEdge(Node(f, c.B), a);
+                        break;
+                    case RegionConstraintKind.Load: if (Has(f, c.B)) Load(a, Node(f, c.B), Plain(c.C)); break;
+                    case RegionConstraintKind.Store: if (Has(f, c.B)) Store(a, Node(f, c.B), Plain(c.C)); break;
+                    // Every word of one, at any offset of the other.
                     case RegionConstraintKind.MemCopy:
                         if (!Has(f, c.B)) break;
                         int through = NewNode();
-                        Load(through, Node(f, c.B));
-                        Store(a, through);
+                        Load(through, Node(f, c.B), AnyOffset);
+                        Store(a, through, AnyOffset);
                         break;
                     case RegionConstraintKind.Leak: Edge(a, _sink); break;
                 }

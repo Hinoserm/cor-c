@@ -48,6 +48,8 @@ public static class RegionEscapeTests
         ("an iterator's yielded elements die in the loop that walks it", IteratorElements),
         ("a closure that leaks one capture keeps the other", ClosureCaptures),
         ("a method no blind call's slot holds is not called from where nobody follows", BlindSlots),
+        ("a visitor's call on this.Left runs only what Left ever holds", VisitorLeft),
+        ("a wide call on a place past eight leaky targets keeps them apart together", ManyLeaky),
     };
 
     private static void Check(bool value, string message) { if (!value) throw new Exception(message); }
@@ -1334,5 +1336,101 @@ public static class RegionEscapeTests
         Check(Solve(4, known: true) is [{ } apart] && apart.Sites.Contains(("MoveNext", 0)), "read at slot 4 alone, MoveNext is not called blind, and its element is made in Walk's region");
         Check(Solve(0, known: true) is not [{ } at0] || !at0.Sites.Contains(("MoveNext", 0)), "read at slot 0, MoveNext is called blind, and its element is everyone's");
         Check(Solve(4, known: false) is not [{ } blindAll] || !blindAll.Sites.Contains(("MoveNext", 0)), "not knowing where methods are held, every method is called blind");
+    }
+
+    /// <summary>
+    /// A VISITOR OVER A TREE, the call on a field of `this`. Every node's
+    /// Accept(v) has twenty overrides: a binary node's, which calls Accept on
+    /// its Left (8) and its Right (16); a number's and a string's, which do
+    /// nothing; Leak's, which lets the node go where nobody follows; sixteen
+    /// more doing nothing. Main makes two binary nodes, a number for the
+    /// first one's Left and a string for the second one's, and one Leak for
+    /// both their Rights, and visits both. Left only ever holds a number or
+    /// a string: by the receivers' types, field by field (RegionTypes), the
+    /// call on Left runs those two overrides and the call on Right Leak's
+    /// alone -- one cell for every field of a node, and the Left call would
+    /// have run Leak's too. Only the Leak node is global. In a program of its
+    /// own, VisitAny, called from where nobody follows, calls Accept on what
+    /// it was handed: that receiver may be anything, and the call keeps every
+    /// override (a stand-in, wide) -- as does every Accept it may run, handed
+    /// anything for `this`.
+    /// </summary>
+    private static void VisitorLeft()
+    {
+        foreach (bool any in new[] { false, true }) Visitor(any);
+    }
+
+    private static void Visitor(bool any)
+    {
+        Prog p = new();
+        const string accept = VirtualTargets.Prefix + "t_Node+0";
+        RegionFunction bin = p.Add("BinAccept", 2, 5);
+        bin.Constraints.AddRange(new[] { Load(3, 0, 8), Load(4, 0, 16) });
+        bin.Calls.Add(new(accept, -1, new[] { 3, 1 }));
+        bin.Calls.Add(new(accept, -1, new[] { 4, 1 }));
+        p.Add("NumAccept", 2, 3);
+        p.Add("StrAccept", 2, 3);
+        p.Add("LeakAccept", 2, 3).Constraints.Add(Leak(0));
+        for (int t = 1; t <= 16; t++) p.Add("Other" + t + "Accept", 2, 3);
+        if (any) p.Add("VisitAny", 2, 3).Calls.Add(new(accept, -1, new[] { 0, 1 }));
+        RegionFunction main = new("Main", true, true, false, 0, 7, 0, new[]
+        {
+            new RegionSite(true, 1, "t_Bin", 48), new RegionSite(true, 2, "t_Bin", 48), new RegionSite(true, 3, "t_Num", 48),
+            new RegionSite(true, 4, "t_Str", 48), new RegionSite(true, 5, "t_Leak", 48), new RegionSite(true, 6, "t_Visitor", 48),
+        });
+        main.Constraints.AddRange(new[] { Site(1, 0), Site(2, 1), Site(3, 2), Site(4, 3), Site(5, 4), Site(6, 5),
+            Store(1, 3, 8), Store(2, 4, 8), Store(1, 5, 16), Store(2, 5, 16) });
+        main.Calls.Add(new(accept, -1, new[] { 1, 6 }));
+        main.Calls.Add(new(accept, -1, new[] { 2, 6 }));
+        p.Functions.Add(main);
+        p.Virtuals[accept] = new[] { "BinAccept", "NumAccept", "StrAccept", "LeakAccept" }.Concat(Enumerable.Range(1, 16).Select(t => "Other" + t + "Accept")).ToArray();
+        string? Runs(string callee, string table) => table switch
+        {
+            "t_Bin" => "BinAccept", "t_Num" => "NumAccept", "t_Str" => "StrAccept", "t_Leak" => "LeakAccept", _ => null,
+        };
+        int[]?[][]? narrowed = null;
+        Action<int[]?[][], string?[][], bool[]> narrow = Narrowed(p, Runs);
+        RegionEscape e = p.Solve(rooted: new[] { "Main", "VisitAny" }, narrow: (targets, keys, roots) => { narrow(targets, keys, roots); narrowed = targets; });
+        if (any)
+        {
+            Check(narrowed![p.Index("VisitAny")][0]!.Length == 20, "a receiver handed from where nobody follows keeps every override: the stand-in");
+            Check(narrowed[p.Index("BinAccept")][0]!.Length == 20, "and so does the call on what a node it may run on holds");
+            return;
+        }
+        int[] Of(params string[] names) => names.Select(p.Index).Order().ToArray();
+        Check(narrowed![p.Index("BinAccept")][0]!.SequenceEqual(Of("NumAccept", "StrAccept")), "the call on Left runs the number's and the string's Accept");
+        Check(narrowed[p.Index("BinAccept")][1]!.SequenceEqual(Of("LeakAccept")), "the call on Right runs Leak's alone");
+        Check(narrowed[p.Index("Main")][0]!.SequenceEqual(Of("BinAccept")), "Main's calls run the binary node's");
+        Check(e.Global[p.Site("Main", 4)], "the Leak node goes where nobody follows");
+        Check(!e.Global[p.Site("Main", 2)] && !e.Global[p.Site("Main", 3)], "the number and the string, only ever on the Left, do not");
+        Check(!e.Global[p.Site("Main", 0)] && !e.Global[p.Site("Main", 1)] && !e.Global[p.Site("Main", 5)], "nor do the binary nodes or the visitor");
+    }
+
+    /// <summary>
+    /// WideDeferred's program with ten overrides that throw their receiver
+    /// and nine that do nothing: nineteen, a wide call, made by Pass on its
+    /// parameter. Past MostDeferred (8) leaky targets, the call was not
+    /// deferred at all: its whole stand-in let every receiver go, and the
+    /// caller's object of a class running Keep1 was global with the one
+    /// running Leak1. Now the ten are deferred together, guarded by "runs
+    /// any of them": only the object that runs one is global.
+    /// </summary>
+    private static void ManyLeaky()
+    {
+        Prog p = new();
+        const string slot = "__virtual:t_X+48";
+        for (int t = 1; t <= 10; t++) p.Add("Leak" + t, 1, 2).Constraints.Add(Leak(0));
+        for (int t = 1; t <= 9; t++) p.Add("Keep" + t, 1, 2);
+        p.Virtuals[slot] = Enumerable.Range(1, 10).Select(t => "Leak" + t).Concat(Enumerable.Range(1, 9).Select(t => "Keep" + t)).ToArray();
+        p.Add("Pass", 1, 2).Calls.Add(new(slot, -1, new[] { 0 }));
+        RegionFunction caller = p.Add("Caller", 0, 3, sites: 2);
+        caller.Constraints.AddRange(new[] { Site(1, 0), Site(2, 1) });
+        caller.Calls.Add(new("Pass", -1, new[] { 1 }));
+        caller.Calls.Add(new("Pass", -1, new[] { 2 }));
+        int keeper = p.Site("Caller", 0), leaker = p.Site("Caller", 1);
+        int keep = p.Index("Keep1"), leak = p.Index("Leak1");
+        RegionEscape e = p.Solve(targetsOn: (f, k, site) => site == keeper ? new[] { keep } : site == leaker ? new[] { leak } : null);
+        Check(!e.Global[keeper], "an object that runs Keep1 is not handed the leaky targets");
+        Check(e.Global[leaker], "an object that runs Leak1 is, and goes where nobody follows");
     }
 }

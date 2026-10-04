@@ -227,10 +227,17 @@ public static class RegionSummary
             if (_f.Async is { Lowered: false } frame)
             {
                 int machine = Reg(frame.StateMachine);
+                // PAST THE LAST FIELD, THE FIRST AGAIN: two saved values in one
+                // field of the machine, which holds both -- not at any offset,
+                // where every load of the machine, and of everything a place
+                // reaches (RegionEscape.Aliased), read every one of them. A
+                // large async body, its callees inlined, may save more values
+                // than there are fields, and every load in it then carried all
+                // of those past the last.
                 long next = SavedFieldsStart;
                 long Field()
                 {
-                    if (next > SavedFieldsEnd) return RegionConstraint.Any;
+                    if (next > SavedFieldsEnd) next = SavedFieldsStart;
                     long at = next;
                     next += 8;
                     return at;
@@ -238,7 +245,6 @@ public static class RegionSummary
                 int saved = -1;
                 int Saved(long at)
                 {
-                    if (at == RegionConstraint.Any) return -1;
                     if (saved < 0)
                     {
                         string name = SavedFamilyPrefix + _f.Name;
