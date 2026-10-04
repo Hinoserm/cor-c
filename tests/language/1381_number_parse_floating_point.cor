@@ -1,0 +1,53 @@
+// test: number_parse_floating_point
+// expect-exit: 0
+// expect-output:
+// doubles 1.5 1234.5 -1.5 True True True 0.1 True
+// specials True True True True True True True True
+// fails False False FormatException ArgumentException
+// The input string 'abc' was not in a correct format.
+// bools True True False False False
+//
+// THE FLOATING-POINT READERS AND bool's: digits correctly rounded, ties to
+// even, from text with a point, groups, parentheses and an exponent; a
+// negative zero; infinity past the largest and zero below the smallest;
+// Infinity, -Infinity and NaN in any case under the invariant culture; and
+// "True" and "False" with white space and NULs around them. Every line is
+// what .NET prints.
+
+using System;
+using System.Globalization;
+
+public static class Program
+{
+    private static string Try(Func<double> f)
+    {
+        try { return f().ToString(); }
+        catch (Exception e) { return e.GetType().Name; }
+    }
+
+    public static int Main()
+    {
+        CultureInfo inv = CultureInfo.InvariantCulture;
+        Console.WriteLine("doubles " + double.Parse("1.5") + " " + double.Parse("1,234.5") + " "
+            + double.Parse("(1.5)", NumberStyles.Float | NumberStyles.AllowParentheses) + " " + double.IsNegative(double.Parse(" -0 ")) + " "
+            + (double.Parse("9007199254740993") == 9007199254740992.0) + " "
+            + (double.Parse("9007199254740993.0000000000000000001") == 9007199254740994.0) + " "
+            + double.Parse("1e-1") + " " + (float.Parse("16777217") == 16777216f));
+
+        Console.WriteLine("specials " + double.IsPositiveInfinity(double.Parse("1e400")) + " " + (double.Parse("1e-400") == 0.0) + " "
+            + double.IsPositiveInfinity(double.Parse(" infinity ", inv)) + " " + double.IsNegativeInfinity(double.Parse("-Infinity", inv)) + " "
+            + double.IsNaN(double.Parse("NaN", inv)) + " " + double.IsNaN(double.Parse("-nan", inv)) + " "
+            + double.IsPositiveInfinity(double.Parse("+Infinity", inv)) + " " + float.IsPositiveInfinity(float.Parse("3.5e38")));
+
+        bool a = double.TryParse("1e", out _);
+        bool b = double.TryParse("0x10", out _);
+        Console.WriteLine("fails " + a + " " + b + " " + Try(() => double.Parse("abc")) + " " + Try(() => double.Parse("1", NumberStyles.HexNumber)));
+        try { double.Parse("abc"); }
+        catch (FormatException e) { Console.WriteLine(e.Message); }
+
+        bool c = bool.TryParse(" False\t", out bool no);
+        bool d = bool.TryParse("yes", out _);
+        Console.WriteLine("bools " + bool.Parse("\0 true \0") + " " + c + " " + no + " " + d + " " + bool.TryParse((string?)null, out _));
+        return 0;
+    }
+}

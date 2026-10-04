@@ -2070,7 +2070,8 @@ class UriFormatException : FormatException {
 // for a pair -- a char as a bool, a double as a char, anything as a date but
 // a date or text -- it throws InvalidCastException naming the pair, and so
 // does this. A null string is 0 (false, the minimum date) rather than an
-// error, which is .NET's rule for every target except Char.
+// error, which is .NET's rule for every target except Char; other text is
+// read by the target type's own Parse, as .NET's Convert reads it.
 //
 // No decimal: this machine has no such type, so the decimal rows are absent.
 static class Convert {
@@ -2088,64 +2089,6 @@ static class Convert {
     // through IConvertible, and an object that is not one is refused so.
     private static InvalidCastException NotConvertible(object value) {
         return new InvalidCastException("Unable to cast object of type '" + String.TypeText(value.GetType().FullName) + "' to type 'System.IConvertible'.");
-    }
-
-    // ---- integer text, as int.Parse reads it ------------------------------
-    //
-    // NumberStyles.Integer: white space either side, one leading sign, then
-    // decimal digits; trailing NUL characters are white space too, as .NET
-    // has them. Text that is not that shape is a FormatException quoting it
-    // whether or not its digits were too many, because .NET reads the whole
-    // string before it decides; digits that are the right shape and too
-    // large for the type are an OverflowException.
-
-    private static bool White(char c) { return c == ' ' || (c >= (char)9 && c <= (char)13); }
-
-    private static ulong Magnitude(string s, out bool negative, out bool over) {
-        negative = false;
-        over = false;
-        int at = 0;
-        int end = s.Length;
-        while (at < end && White(s[at])) { at++; }
-        while (end > at && (White(s[end - 1]) || s[end - 1] == (char)0)) { end--; }
-        if (at < end && (s[at] == '-' || s[at] == '+')) {
-            negative = s[at] == '-';
-            at++;
-        }
-        if (at >= end) { throw NumberParse.Bad(s); }
-        ulong made = 0;
-        for (int i = at; i < end; i++) {
-            char c = s[i];
-            if (c < '0' || c > '9') { throw NumberParse.Bad(s); }
-            ulong digit = (ulong)(c - '0');
-            if (made > (ulong)1844674407370955161 || (made == (ulong)1844674407370955161 && digit > (ulong)5)) { over = true; }
-            made = made * (ulong)10 + digit;
-        }
-        return made;
-    }
-
-    // A signed type of `bits` bits: its range is checked here, the cast is
-    // the caller's.
-    private static long Signed(string s, int bits, string what) {
-        ulong made = Magnitude(s, out bool negative, out bool over);
-        ulong most = bits == 64 ? (ulong)long.MaxValue : ((ulong)1 << (bits - 1)) - (ulong)1;
-        if (over) { throw Over(what); }
-        if (negative) {
-            if (made > most + (ulong)1) { throw Over(what); }
-            if (made == most + (ulong)1) { return bits == 64 ? long.MinValue : -(long)made; }
-            return -(long)made;
-        }
-        if (made > most) { throw Over(what); }
-        return (long)made;
-    }
-
-    // An unsigned type: "-0" is zero, as .NET reads it, and any other
-    // negative number is too small.
-    private static ulong Unsigned(string s, int bits, string what) {
-        ulong made = Magnitude(s, out bool negative, out bool over);
-        ulong most = bits == 64 ? ulong.MaxValue : ((ulong)1 << bits) - (ulong)1;
-        if (over || made > most || (negative && made != 0)) { throw Over(what); }
-        return negative ? (ulong)0 : made;
     }
 
     // ---- floating point to integers ---------------------------------------
@@ -2286,8 +2229,8 @@ static class Convert {
     public static sbyte ToSByte(float value) { return ToSByte((double)value); }
     public static sbyte ToSByte(double value) { return ToSByte(ToInt32(value)); }
     public static sbyte ToSByte(DateTime value) { throw Cast("DateTime", "SByte"); }
-    public static sbyte ToSByte(string? value) { return value == null ? (sbyte)0 : (sbyte)Signed(value, 8, "a signed byte"); }
-    public static sbyte ToSByte(string? value, IFormatProvider? provider) { return ToSByte(value); }
+    public static sbyte ToSByte(string? value) { return value == null ? (sbyte)0 : SByte.Parse(value); }
+    public static sbyte ToSByte(string? value, IFormatProvider? provider) { return value == null ? (sbyte)0 : SByte.Parse(value, provider); }
     public static sbyte ToSByte(object? value) {
         if (value == null) { return 0; }
         if (value is string text) { return ToSByte(text); }
@@ -2323,8 +2266,8 @@ static class Convert {
     public static byte ToByte(float value) { return ToByte((double)value); }
     public static byte ToByte(double value) { return ToByte(ToInt32(value)); }
     public static byte ToByte(DateTime value) { throw Cast("DateTime", "Byte"); }
-    public static byte ToByte(string? value) { return value == null ? (byte)0 : (byte)Unsigned(value, 8, "an unsigned byte"); }
-    public static byte ToByte(string? value, IFormatProvider? provider) { return ToByte(value); }
+    public static byte ToByte(string? value) { return value == null ? (byte)0 : Byte.Parse(value); }
+    public static byte ToByte(string? value, IFormatProvider? provider) { return value == null ? (byte)0 : Byte.Parse(value, provider); }
     public static byte ToByte(object? value) {
         if (value == null) { return 0; }
         if (value is string text) { return ToByte(text); }
@@ -2360,8 +2303,8 @@ static class Convert {
     public static short ToInt16(float value) { return ToInt16((double)value); }
     public static short ToInt16(double value) { return ToInt16(ToInt32(value)); }
     public static short ToInt16(DateTime value) { throw Cast("DateTime", "Int16"); }
-    public static short ToInt16(string? value) { return value == null ? (short)0 : (short)Signed(value, 16, "an Int16"); }
-    public static short ToInt16(string? value, IFormatProvider? provider) { return ToInt16(value); }
+    public static short ToInt16(string? value) { return value == null ? (short)0 : Int16.Parse(value); }
+    public static short ToInt16(string? value, IFormatProvider? provider) { return value == null ? (short)0 : Int16.Parse(value, provider); }
     public static short ToInt16(object? value) {
         if (value == null) { return 0; }
         if (value is string text) { return ToInt16(text); }
@@ -2397,8 +2340,8 @@ static class Convert {
     public static ushort ToUInt16(float value) { return ToUInt16((double)value); }
     public static ushort ToUInt16(double value) { return ToUInt16(ToInt32(value)); }
     public static ushort ToUInt16(DateTime value) { throw Cast("DateTime", "UInt16"); }
-    public static ushort ToUInt16(string? value) { return value == null ? (ushort)0 : (ushort)Unsigned(value, 16, "a UInt16"); }
-    public static ushort ToUInt16(string? value, IFormatProvider? provider) { return ToUInt16(value); }
+    public static ushort ToUInt16(string? value) { return value == null ? (ushort)0 : UInt16.Parse(value); }
+    public static ushort ToUInt16(string? value, IFormatProvider? provider) { return value == null ? (ushort)0 : UInt16.Parse(value, provider); }
     public static ushort ToUInt16(object? value) {
         if (value == null) { return 0; }
         if (value is string text) { return ToUInt16(text); }
@@ -2434,8 +2377,8 @@ static class Convert {
     public static int ToInt32(float value) { return ToInt32((double)value); }
     public static int ToInt32(double value) { return RoundedInt32(value); }
     public static int ToInt32(DateTime value) { throw Cast("DateTime", "Int32"); }
-    public static int ToInt32(string? value) { return value == null ? (int)0 : (int)Signed(value, 32, "an Int32"); }
-    public static int ToInt32(string? value, IFormatProvider? provider) { return ToInt32(value); }
+    public static int ToInt32(string? value) { return value == null ? (int)0 : Int32.Parse(value); }
+    public static int ToInt32(string? value, IFormatProvider? provider) { return value == null ? (int)0 : Int32.Parse(value, provider); }
     public static int ToInt32(object? value) {
         if (value == null) { return 0; }
         if (value is string text) { return ToInt32(text); }
@@ -2471,8 +2414,8 @@ static class Convert {
     public static uint ToUInt32(float value) { return ToUInt32((double)value); }
     public static uint ToUInt32(double value) { return RoundedUInt32(value); }
     public static uint ToUInt32(DateTime value) { throw Cast("DateTime", "UInt32"); }
-    public static uint ToUInt32(string? value) { return value == null ? (uint)0 : (uint)Unsigned(value, 32, "a UInt32"); }
-    public static uint ToUInt32(string? value, IFormatProvider? provider) { return ToUInt32(value); }
+    public static uint ToUInt32(string? value) { return value == null ? (uint)0 : UInt32.Parse(value); }
+    public static uint ToUInt32(string? value, IFormatProvider? provider) { return value == null ? (uint)0 : UInt32.Parse(value, provider); }
     public static uint ToUInt32(object? value) {
         if (value == null) { return 0; }
         if (value is string text) { return ToUInt32(text); }
@@ -2508,8 +2451,8 @@ static class Convert {
     public static long ToInt64(float value) { return ToInt64((double)value); }
     public static long ToInt64(double value) { return RoundedInt64(value); }
     public static long ToInt64(DateTime value) { throw Cast("DateTime", "Int64"); }
-    public static long ToInt64(string? value) { return value == null ? (long)0 : (long)Signed(value, 64, "an Int64"); }
-    public static long ToInt64(string? value, IFormatProvider? provider) { return ToInt64(value); }
+    public static long ToInt64(string? value) { return value == null ? (long)0 : Int64.Parse(value); }
+    public static long ToInt64(string? value, IFormatProvider? provider) { return value == null ? (long)0 : Int64.Parse(value, provider); }
     public static long ToInt64(object? value) {
         if (value == null) { return 0; }
         if (value is string text) { return ToInt64(text); }
@@ -2545,8 +2488,8 @@ static class Convert {
     public static ulong ToUInt64(float value) { return ToUInt64((double)value); }
     public static ulong ToUInt64(double value) { return RoundedUInt64(value); }
     public static ulong ToUInt64(DateTime value) { throw Cast("DateTime", "UInt64"); }
-    public static ulong ToUInt64(string? value) { return value == null ? (ulong)0 : (ulong)Unsigned(value, 64, "a UInt64"); }
-    public static ulong ToUInt64(string? value, IFormatProvider? provider) { return ToUInt64(value); }
+    public static ulong ToUInt64(string? value) { return value == null ? (ulong)0 : UInt64.Parse(value); }
+    public static ulong ToUInt64(string? value, IFormatProvider? provider) { return value == null ? (ulong)0 : UInt64.Parse(value, provider); }
     public static ulong ToUInt64(object? value) {
         if (value == null) { return 0; }
         if (value is string text) { return ToUInt64(text); }
@@ -2583,7 +2526,7 @@ static class Convert {
     public static float ToSingle(double value) { return (float)value; }
     public static float ToSingle(DateTime value) { throw Cast("DateTime", "Single"); }
     public static float ToSingle(string? value) { return value == null ? (float)0 : Single.Parse(value); }
-    public static float ToSingle(string? value, IFormatProvider? provider) { return ToSingle(value); }
+    public static float ToSingle(string? value, IFormatProvider? provider) { return value == null ? (float)0 : Single.Parse(value, provider); }
     public static float ToSingle(object? value) {
         if (value == null) { return 0; }
         if (value is string text) { return ToSingle(text); }
@@ -2620,7 +2563,7 @@ static class Convert {
     public static double ToDouble(double value) { return value; }
     public static double ToDouble(DateTime value) { throw Cast("DateTime", "Double"); }
     public static double ToDouble(string? value) { return value == null ? 0.0 : Double.Parse(value); }
-    public static double ToDouble(string? value, IFormatProvider? provider) { return ToDouble(value); }
+    public static double ToDouble(string? value, IFormatProvider? provider) { return value == null ? 0.0 : Double.Parse(value, provider); }
     public static double ToDouble(object? value) {
         if (value == null) { return 0; }
         if (value is string text) { return ToDouble(text); }
@@ -4116,72 +4059,6 @@ static class FloatDecimal {
         }
         return mantissa;
     }
-
-    /// Reads a real number as .NET's Float style does: white space around it,
-    /// a sign, digits with an optional point, an optional exponent, or
-    /// Infinity, -Infinity, the infinity sign and NaN. False if it is none.
-    public static bool TryRead(string s, out FloatBig digits, out int exponent, out bool negative, out int special) {
-        digits = new FloatBig(0);
-        exponent = 0;
-        negative = false;
-        special = 0;
-        int at = 0;
-        int end = s.Length;
-        while (at < end && Char.IsWhiteSpace(s[at])) { at = at + 1; }
-        while (end > at && Char.IsWhiteSpace(s[end - 1])) { end = end - 1; }
-        if (at < end && (s[at] == '-' || s[at] == '+')) {
-            negative = s[at] == '-';
-            at = at + 1;
-        }
-        string rest = s.Substring(at, end - at);
-        if (rest == "Infinity" || rest == "∞") {
-            special = 1;
-            return true;
-        }
-        if (rest == "NaN") {
-            special = 2;
-            return true;
-        }
-
-        bool any = false;
-        // The integer part may carry group separators, as .NET's default
-        // style for Parse (Float | AllowThousands) allows.
-        while (at < end && ((s[at] >= '0' && s[at] <= '9') || (any && s[at] == ','))) {
-            if (s[at] != ',') {
-                digits.MulSmall(10);
-                digits.AddSmall(s[at] - '0');
-                any = true;
-            }
-            at = at + 1;
-        }
-        if (at < end && s[at] == '.') {
-            at = at + 1;
-            while (at < end && s[at] >= '0' && s[at] <= '9') {
-                digits.MulSmall(10);
-                digits.AddSmall(s[at] - '0');
-                exponent = exponent - 1;
-                at = at + 1;
-                any = true;
-            }
-        }
-        if (!any) { return false; }
-        if (at < end && (s[at] == 'e' || s[at] == 'E')) {
-            at = at + 1;
-            bool down = false;
-            if (at < end && (s[at] == '-' || s[at] == '+')) {
-                down = s[at] == '-';
-                at = at + 1;
-            }
-            if (at >= end || s[at] < '0' || s[at] > '9') { return false; }
-            long power = 0;
-            while (at < end && s[at] >= '0' && s[at] <= '9') {
-                if (power < 100000000) { power = power * 10 + (s[at] - '0'); }
-                at = at + 1;
-            }
-            exponent = exponent + (int)(down ? -power : power);
-        }
-        return at == end;
-    }
 }
 
 // ---- a picture of a number ------------------------------------------------
@@ -4629,6 +4506,490 @@ static class NumberParse {
     }
 }
 
+// ---- reading a number, as .NET reads one ------------------------------------
+//
+// EVERY Parse AND TryParse OF A NUMBER COMES HERE: the eight integers, float
+// and double, and Convert's text overloads through them. What it accepts and
+// how it refuses are .NET's System.Number under the invariant culture, step
+// for step, because a program's input is whatever its users typed and the
+// answer has to be the one the same program gives on .NET.
+//
+// THE STYLE SAYS WHAT MAY SURROUND THE DIGITS. NumberStyles.Integer is white
+// space either side and a leading sign; Float adds a decimal point and an
+// exponent; AllowThousands lets ',' separate groups before the point;
+// AllowParentheses makes "(5)" negative; AllowTrailingSign takes "5-";
+// AllowCurrencySymbol takes the invariant culture's '¤'. White space is the
+// ASCII kind: space, tab, line feed, vertical tab, form feed and carriage
+// return. NUL characters after everything else are ignored, as .NET ignores
+// them. A sign may not be followed by white space.
+//
+// THREE ROADS, as .NET has them, and each is kept because each answers some
+// text differently:
+//
+//   - a style within Integer is read digit by digit, the overflow noted and
+//     reported only once the whole text has been found well formed -- a
+//     malformed number is a FormatException however many digits it has;
+//   - AllowHexSpecifier and AllowBinarySpecifier read a bit pattern with no
+//     sign and no "0x": "FF" is -1 as an sbyte, and more significant digits
+//     than the type has bits for is an overflow;
+//   - any other style collects the digits into a buffer the type's longest
+//     number wide, with where the point falls, and converts that. An integer
+//     read this way may carry a point or an exponent, and a fraction that is
+//     not zero is an OVERFLOW, not a format error -- int.Parse("1.5",
+//     NumberStyles.Float) throws OverflowException on .NET too.
+//
+// A FLOATING-POINT VALUE IS CORRECTLY ROUNDED, ties to even, from as many as
+// 768 significant digits (113 for a float); any digit past those only says
+// the value is above what was kept, which is all the rounding needs. Too
+// large is infinity and too small is zero -- .NET throws no OverflowException
+// for a double. "Infinity", "-Infinity" and "NaN" are read in any case, with
+// white space around them, and "+Infinity", "+NaN" and "-NaN" too. The
+// infinity sign is not: it is no symbol of the invariant culture.
+//
+// The culture asked for is not consulted: there is one on this machine, the
+// invariant one, whatever the provider passed.
+static class NumberRead {
+    public const int Ok = 0;
+    public const int Format = 1;
+    public const int Overflow = 2;
+
+    // The NumberStyles bits, as numbers: the styles are checked and read as
+    // an int, which the flags enum's own operators are not needed for.
+    const int LeadingWhite = 1, TrailingWhite = 2, LeadingSign = 4, TrailingSign = 8, Parentheses = 16;
+    const int DecimalPoint = 32, Thousands = 64, Exponent = 128, Currency = 256, Hex = 512, Binary = 1024;
+    const int Defined = 2047;
+
+    // ---- the styles, refused as .NET refuses them -----------------------------
+
+    /// An undefined bit, or a hex or binary specifier with anything but white
+    /// space beside it, is an ArgumentException naming `style`.
+    public static void CheckInteger(NumberStyles style) {
+        int s = (int)style;
+        if ((s & (~Defined | Hex | Binary)) != 0 && (s & ~(Hex | LeadingWhite | TrailingWhite)) != 0
+            && (s & ~(Binary | LeadingWhite | TrailingWhite)) != 0) {
+            if ((s & ~Defined) != 0) { throw new ArgumentException("An undefined NumberStyles value is being used.", "style"); }
+            throw new ArgumentException("With the AllowHexSpecifier or AllowBinarySpecifier bit set in the enum bit field, the only other valid bits that can be combined into the enum value must be AllowLeadingWhite and AllowTrailingWhite.", "style");
+        }
+    }
+
+    /// A floating-point type takes no hex or binary specifier at all.
+    public static void CheckFloat(NumberStyles style) {
+        int s = (int)style;
+        if ((s & (~Defined | Hex | Binary)) != 0) {
+            if ((s & ~Defined) != 0) { throw new ArgumentException("An undefined NumberStyles value is being used.", "style"); }
+            throw new ArgumentException("The number styles AllowHexSpecifier and AllowBinarySpecifier are not supported on floating point data types.", "style");
+        }
+    }
+
+    /// .NET's refusal of text that is no number, quoting it.
+    public static FormatException Bad(string s) {
+        return new FormatException("The input string '" + s + "' was not in a correct format.");
+    }
+
+    /// .NET's refusal of a number too large or too small, `what` in its
+    /// words: "an Int32", "a UInt64", "a signed byte".
+    public static OverflowException TooBig(string what) {
+        return new OverflowException("Value was either too large or too small for " + what + ".");
+    }
+
+    static bool White(char c) { return c == ' ' || (c >= (char)9 && c <= (char)13); }
+    static bool Digit(char c) { return c >= '0' && c <= '9'; }
+
+    // Whether everything from `at` on is NUL.
+    static bool TrailingZeros(string s, int at) {
+        for (int i = at; i < s.Length; i++) { if (s[i] != (char)0) { return false; } }
+        return true;
+    }
+
+    // ---- integers --------------------------------------------------------------
+
+    /// The integer `s` says, or the exception .NET throws: `bits` wide, signed
+    /// or not, the answer as its two's-complement bits (a caller casts them to
+    /// its type). The style has been checked already.
+    public static ulong Integer(string s, NumberStyles style, int bits, bool signed, string what) {
+        int status = ReadInteger(s, (int)style, bits, signed, out ulong value);
+        if (status == Format) { throw Bad(s); }
+        if (status == Overflow) { throw TooBig(what); }
+        return value;
+    }
+
+    /// The same, false where Integer would throw.
+    public static bool TryInteger(string s, NumberStyles style, int bits, bool signed, out ulong value) {
+        if (ReadInteger(s, (int)style, bits, signed, out value) == Ok) { return true; }
+        value = 0;
+        return false;
+    }
+
+    static int ReadInteger(string s, int style, int bits, bool signed, out ulong value) {
+        if ((style & ~(LeadingWhite | TrailingWhite | LeadingSign)) == 0) { return IntegerStyle(s, style, bits, signed, out value); }
+        if ((style & Hex) != 0) { return Pattern(s, style, bits, 4, out value); }
+        if ((style & Binary) != 0) { return Pattern(s, style, bits, 1, out value); }
+        return IntegerNumber(s, style, bits, signed, out value);
+    }
+
+    // The largest magnitude of the type: one more below zero when signed.
+    static ulong Most(int bits, bool signed, bool negative) {
+        if (!signed) { return bits == 64 ? ulong.MaxValue : ((ulong)1 << bits) - (ulong)1; }
+        ulong top = (ulong)1 << (bits - 1);
+        return negative ? top : top - (ulong)1;
+    }
+
+    // A magnitude within the type, as its bits.
+    static int Within(ulong magnitude, bool negative, int bits, bool signed, out ulong value) {
+        value = 0;
+        if (!signed && negative && magnitude != 0) { return Overflow; }
+        if (magnitude > Most(bits, signed, negative)) { return Overflow; }
+        value = negative ? (ulong)(-(long)magnitude) : magnitude;
+        return Ok;
+    }
+
+    // White space, a sign, digits, white space: the whole text read before
+    // an overflow is reported, so text that is malformed after its digits is
+    // a format error however many of them there were.
+    static int IntegerStyle(string s, int style, int bits, bool signed, out ulong value) {
+        value = 0;
+        int n = s.Length;
+        int i = 0;
+        if (n == 0) { return Format; }
+        if ((style & LeadingWhite) != 0) {
+            while (i < n && White(s[i])) { i++; }
+            if (i == n) { return Format; }
+        }
+        bool negative = false;
+        if ((style & LeadingSign) != 0 && (s[i] == '-' || s[i] == '+')) {
+            negative = s[i] == '-';
+            i++;
+            if (i == n) { return Format; }
+        }
+        if (!Digit(s[i])) { return Format; }
+        ulong magnitude = 0;
+        bool over = false;
+        while (i < n && Digit(s[i])) {
+            ulong d = (ulong)(s[i] - '0');
+            if (magnitude > (ulong.MaxValue - d) / (ulong)10) { over = true; } else { magnitude = magnitude * (ulong)10 + d; }
+            i++;
+        }
+        if (i < n) {
+            if (White(s[i])) {
+                if ((style & TrailingWhite) == 0) { return Format; }
+                while (i < n && White(s[i])) { i++; }
+            }
+            if (!TrailingZeros(s, i)) { return Format; }
+        }
+        if (over) { return Overflow; }
+        return Within(magnitude, negative, bits, signed, out value);
+    }
+
+    // Hex or binary digits as a bit pattern of `bits` bits, `per` bits a
+    // digit; leading zeros are free, and a significant digit past the width
+    // is an overflow once the rest has been found well formed.
+    static int Pattern(string s, int style, int bits, int per, out ulong value) {
+        value = 0;
+        int n = s.Length;
+        int i = 0;
+        if (n == 0) { return Format; }
+        if ((style & LeadingWhite) != 0) {
+            while (i < n && White(s[i])) { i++; }
+            if (i == n) { return Format; }
+        }
+        if (PatternDigit(s[i], per) < 0) { return Format; }
+        int most = bits / per;
+        int significant = 0;
+        ulong answer = 0;
+        while (i < n) {
+            int d = PatternDigit(s[i], per);
+            if (d < 0) { break; }
+            if (significant > 0 || d != 0) {
+                significant++;
+                if (significant <= most) { answer = (answer << per) | (ulong)d; }
+            }
+            i++;
+        }
+        if (i < n) {
+            if (White(s[i])) {
+                if ((style & TrailingWhite) == 0) { return Format; }
+                while (i < n && White(s[i])) { i++; }
+            }
+            if (!TrailingZeros(s, i)) { return Format; }
+        }
+        if (significant > most) { return Overflow; }
+        value = answer;
+        return Ok;
+    }
+
+    static int PatternDigit(char c, int per) {
+        if (per == 1) { return c == '0' ? 0 : c == '1' ? 1 : -1; }
+        if (c >= '0' && c <= '9') { return c - '0'; }
+        if (c >= 'a' && c <= 'f') { return c - 'a' + 10; }
+        if (c >= 'A' && c <= 'F') { return c - 'A' + 10; }
+        return -1;
+    }
+
+    // Through the digit buffer, as .NET reads every style beyond Integer: the
+    // buffer holds as many digits as the type's longest number, and the
+    // number is whole digits up to the point and nothing after it but zeros.
+    static int IntegerNumber(string s, int style, int bits, bool signed, out ulong value) {
+        value = 0;
+        int width = bits == 8 ? 3 : bits == 16 ? 5 : bits == 32 ? 10 : signed ? 19 : 20;
+        char[] digits = new char[width];
+        if (!Scan(s, style, true, digits, out int count, out int scale, out bool negative, out bool tail)) { return Format; }
+        if (scale > width || scale < count || (!signed && negative)) { return Overflow; }
+        ulong magnitude = 0;
+        for (int i = 0; i < scale; i++) {
+            ulong d = i < count ? (ulong)(digits[i] - '0') : (ulong)0;
+            if (magnitude > (ulong.MaxValue - d) / (ulong)10) { return Overflow; }
+            magnitude = magnitude * (ulong)10 + d;
+        }
+        return Within(magnitude, negative, bits, signed, out value);
+    }
+
+    // ---- the digit buffer ------------------------------------------------------
+    //
+    // .NET's TryParseNumber, under the invariant culture: '+' and '-' the
+    // signs, '.' the point, ',' the group separator, '¤' the currency symbol.
+    // `digits` takes the significant digits, as many as it holds; `count` is
+    // how many of them count (an integer's trailing zeros do not, a float's
+    // fraction's trailing zeros are trimmed), `scale` where the point falls
+    // -- the number is 0.DIGITS x 10^scale -- and `tail` whether a digit past
+    // the buffer was not zero.
+    const int StateSign = 1, StateParens = 2, StateDigits = 4, StateNonZero = 8, StateDecimal = 16, StateCurrency = 32;
+
+    static bool Scan(string s, int style, bool integer, char[] digits, out int count, out int scale, out bool negative, out bool tail) {
+        count = 0;
+        scale = 0;
+        negative = false;
+        tail = false;
+        int most = digits.Length;
+        bool currency = (style & Currency) != 0;
+        int state = 0;
+        int end = s.Length;
+        int p = 0;
+        char ch = p < end ? s[p] : (char)0;
+
+        // Before the digits: white space, a sign or an opening parenthesis,
+        // the currency symbol, in any order. White space after a sign is not
+        // taken, unless the currency symbol came first.
+        while (true) {
+            if (!White(ch) || (style & LeadingWhite) == 0 || ((state & StateSign) != 0 && (state & StateCurrency) == 0)) {
+                if ((style & LeadingSign) != 0 && (state & StateSign) == 0 && (ch == '+' || ch == '-')) {
+                    if (ch == '-') { negative = true; }
+                    state |= StateSign;
+                } else if (ch == '(' && (style & Parentheses) != 0 && (state & StateSign) == 0) {
+                    state |= StateSign | StateParens;
+                    negative = true;
+                } else if (currency && ch == '¤') {
+                    state |= StateCurrency;
+                    currency = false;
+                } else {
+                    break;
+                }
+            }
+            p++;
+            ch = p < end ? s[p] : (char)0;
+        }
+
+        // The digits, a point and the group separators among them.
+        int digCount = 0, digEnd = 0, trailingZeros = 0;
+        while (true) {
+            if (Digit(ch)) {
+                state |= StateDigits;
+                if (ch != '0' || (state & StateNonZero) != 0) {
+                    if (digCount < most) {
+                        digits[digCount] = ch;
+                        if (ch != '0' || !integer) { digEnd = digCount + 1; }
+                    } else if (ch != '0') {
+                        tail = true;
+                    }
+                    if ((state & StateDecimal) == 0) { scale++; }
+                    if (digCount < most) { trailingZeros = ch == '0' ? trailingZeros + 1 : 0; }
+                    digCount++;
+                    state |= StateNonZero;
+                } else if ((state & StateDecimal) != 0) {
+                    scale--;
+                }
+            } else if ((style & DecimalPoint) != 0 && (state & StateDecimal) == 0 && ch == '.') {
+                state |= StateDecimal;
+            } else if ((style & Thousands) != 0 && (state & StateDigits) != 0 && (state & StateDecimal) == 0 && ch == ',') {
+                // A group separator, between digits before the point.
+            } else {
+                break;
+            }
+            p++;
+            ch = p < end ? s[p] : (char)0;
+        }
+
+        count = digEnd;
+        if ((state & StateDigits) == 0) { return false; }
+
+        // An exponent, if one is allowed and is whole: "1e" leaves the 'e'
+        // for what follows to refuse.
+        if ((ch == 'E' || ch == 'e') && (style & Exponent) != 0) {
+            int back = p;
+            bool down = false;
+            p++;
+            ch = p < end ? s[p] : (char)0;
+            if (ch == '+') {
+                p++;
+                ch = p < end ? s[p] : (char)0;
+            } else if (ch == '-') {
+                p++;
+                ch = p < end ? s[p] : (char)0;
+                down = true;
+            }
+            if (Digit(ch)) {
+                int exp = 0;
+                do {
+                    // PAST NINE DIGITS the exponent is beyond every type: it
+                    // is held as int.MaxValue with the scale set aside, and
+                    // the rest of its digits are passed over -- with the
+                    // character in hand left as it was, as .NET leaves it, so
+                    // nothing after them is taken but NULs.
+                    if (exp >= 100000000) {
+                        exp = int.MaxValue;
+                        scale = 0;
+                        while (p < end && Digit(s[p])) { p++; }
+                        break;
+                    }
+                    exp = exp * 10 + (ch - '0');
+                    p++;
+                    ch = p < end ? s[p] : (char)0;
+                } while (Digit(ch));
+                scale += down ? -exp : exp;
+            } else {
+                p = back;
+                ch = p < end ? s[p] : (char)0;
+            }
+        }
+
+        // A float's fraction keeps no trailing zeros.
+        if (!integer && !tail) {
+            int fraction = digEnd - scale;
+            if (fraction > 0) {
+                if (trailingZeros > fraction) { trailingZeros = fraction; }
+                count = digEnd - trailingZeros;
+            }
+        }
+
+        // After the digits: white space, a trailing sign, the closing
+        // parenthesis, the currency symbol not yet seen.
+        while (true) {
+            if (!White(ch) || (style & TrailingWhite) == 0) {
+                if ((style & TrailingSign) != 0 && (state & StateSign) == 0 && (ch == '+' || ch == '-')) {
+                    if (ch == '-') { negative = true; }
+                    state |= StateSign;
+                } else if (ch == ')' && (state & StateParens) != 0) {
+                    state &= ~StateParens;
+                } else if (currency && ch == '¤') {
+                    currency = false;
+                } else {
+                    break;
+                }
+            }
+            p++;
+            ch = p < end ? s[p] : (char)0;
+        }
+
+        if ((state & StateParens) != 0) { return false; }
+
+        // Nothing but zeros is zero, at no scale; an integer's "-0" is not
+        // negative, but "-0.0" still is.
+        if ((state & StateNonZero) == 0) {
+            scale = 0;
+            if (integer && (state & StateDecimal) == 0) { negative = false; }
+        }
+        return TrailingZeros(s, p);
+    }
+
+    // ---- floating point --------------------------------------------------------
+
+    /// The double `s` says, correctly rounded, or false where it is no number.
+    public static bool TryDouble(string s, NumberStyles style, out double value) {
+        int width = s.Length < 768 ? s.Length : 768;
+        char[] digits = new char[width == 0 ? 1 : width];
+        if (Scan(s, (int)style, false, digits, out int count, out int scale, out bool negative, out bool tail)) {
+            double magnitude = 0.0;
+            if (count > 0) {
+                int exponent;
+                FloatBig whole = Whole(digits, count, scale, tail, out exponent);
+                magnitude = FloatDecimal.ToDouble(whole, exponent);
+            }
+            // THE SIGN AS A BIT, so that "-0" is -0.0: a negation written as
+            // a subtraction from zero would answer +0.0.
+            value = negative ? BitConverter.Int64BitsToDouble(BitConverter.DoubleToInt64Bits(magnitude) | long.MinValue) : magnitude;
+            return true;
+        }
+        int special = Special(s);
+        value = special == 1 ? Double.PositiveInfinity : special == 2 ? Double.NegativeInfinity : special == 3 ? Double.NaN : 0.0;
+        return special != 0;
+    }
+
+    /// The float `s` says, rounded once from the decimal and not through a
+    /// double, which would round twice.
+    public static bool TrySingle(string s, NumberStyles style, out float value) {
+        int width = s.Length < 113 ? s.Length : 113;
+        char[] digits = new char[width == 0 ? 1 : width];
+        if (Scan(s, (int)style, false, digits, out int count, out int scale, out bool negative, out bool tail)) {
+            float magnitude = 0.0F;
+            if (count > 0) {
+                int exponent;
+                FloatBig whole = Whole(digits, count, scale, tail, out exponent);
+                magnitude = FloatDecimal.ToSingle(whole, exponent);
+            }
+            value = negative ? BitConverter.Int32BitsToSingle(BitConverter.SingleToInt32Bits(magnitude) | int.MinValue) : magnitude;
+            return true;
+        }
+        int special = Special(s);
+        value = special == 1 ? Single.PositiveInfinity : special == 2 ? Single.NegativeInfinity : special == 3 ? Single.NaN : 0.0F;
+        return special != 0;
+    }
+
+    // The kept digits as a whole number and the power of ten it is to be
+    // scaled by. A non-zero digit past the kept ones becomes a final 1: the
+    // value is then above the kept digits and below the next, as the true
+    // one is, which is all a correct rounding asks of it. A scale far past
+    // either end of every format is held near it, where the conversion
+    // already answers infinity or zero.
+    static FloatBig Whole(char[] digits, int count, int scale, bool tail, out int exponent) {
+        FloatBig whole = new FloatBig(0);
+        for (int i = 0; i < count; i++) {
+            whole.MulSmall(10);
+            whole.AddSmall(digits[i] - '0');
+        }
+        if (scale > 100000) { scale = 100000; }
+        if (scale < -100000) { scale = -100000; }
+        exponent = scale - count;
+        if (tail) {
+            whole.MulSmall(10);
+            whole.AddSmall(1);
+            exponent = exponent - 1;
+        }
+        return whole;
+    }
+
+    // The words .NET reads where the digits failed: 1 infinity, 2 negative
+    // infinity, 3 NaN, 0 none. White space either side, any case.
+    static int Special(string s) {
+        int at = 0;
+        int end = s.Length;
+        while (at < end && Char.IsWhiteSpace(s[at])) { at++; }
+        while (end > at && Char.IsWhiteSpace(s[end - 1])) { end--; }
+        string t = s.Substring(at, end - at);
+        if (Same(t, "Infinity")) { return 1; }
+        if (Same(t, "-Infinity")) { return 2; }
+        if (Same(t, "NaN")) { return 3; }
+        if (t.Length > 0 && t[0] == '+') {
+            string rest = t.Substring(1);
+            if (Same(rest, "Infinity")) { return 1; }
+            if (Same(rest, "NaN")) { return 3; }
+            return 0;
+        }
+        if (t.Length > 0 && t[0] == '-' && Same(t.Substring(1), "NaN")) { return 3; }
+        return 0;
+    }
+
+    static bool Same(string a, string b) { return string.Equals(a, b, StringComparison.OrdinalIgnoreCase); }
+}
+
 // ---- the narrow integral types, by the names C# gives them -----------------
 //
 // Each is a thin naming of the two routines above. They exist because
@@ -4650,23 +5011,56 @@ static class SByte {
     public static sbyte MaxValue => sbyte.MaxValue;
     public static sbyte MinValue => sbyte.MinValue;
 
-    public static bool TryParse(string? s, out sbyte value) {
-        // .NET's answer for no string at all: false, and the default.
-        if (s is null) { value = default; return false; }
-        long wide = 0;
-        bool ok = NumberParse.TrySigned(s, 10, 8, out wide);
-        value = (sbyte)wide;
+    public static string ToString(this sbyte value, string format) {
+        return NumberFormat.Of(value, 8, format);
+    }
+
+    // ---- reading one, as .NET reads it (NumberRead) ----------------------
+    //
+    // NumberStyles.Integer unless a style is given; the provider is the
+    // invariant culture whatever it is. Parse throws ArgumentNullException,
+    // FormatException or OverflowException with .NET's messages; TryParse
+    // answers false where Parse would throw, but a style .NET refuses is
+    // refused by both.
+
+    public static sbyte Parse(string s) { return Parse(s, NumberStyles.Integer, null); }
+    public static sbyte Parse(string s, NumberStyles style) { return Parse(s, style, null); }
+    public static sbyte Parse(string s, IFormatProvider? provider) { return Parse(s, NumberStyles.Integer, provider); }
+
+    public static sbyte Parse(string s, NumberStyles style, IFormatProvider? provider) {
+        NumberRead.CheckInteger(style);
+        if (s == null) { throw new ArgumentNullException("s"); }
+        return (sbyte)NumberRead.Integer(s, style, 8, true, "a signed byte");
+    }
+
+    public static sbyte Parse(ReadOnlySpan<char> s) { return Parse(s, NumberStyles.Integer, null); }
+    public static sbyte Parse(ReadOnlySpan<char> s, NumberStyles style) { return Parse(s, style, null); }
+    public static sbyte Parse(ReadOnlySpan<char> s, IFormatProvider? provider) { return Parse(s, NumberStyles.Integer, provider); }
+
+    public static sbyte Parse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider) {
+        NumberRead.CheckInteger(style);
+        return (sbyte)NumberRead.Integer(s.ToString(), style, 8, true, "a signed byte");
+    }
+
+    public static bool TryParse([NotNullWhen(true)] string? s, out sbyte result) { return TryParse(s, NumberStyles.Integer, null, out result); }
+    public static bool TryParse([NotNullWhen(true)] string? s, IFormatProvider? provider, out sbyte result) { return TryParse(s, NumberStyles.Integer, provider, out result); }
+
+    public static bool TryParse([NotNullWhen(true)] string? s, NumberStyles style, IFormatProvider? provider, out sbyte result) {
+        NumberRead.CheckInteger(style);
+        if (s == null) { result = 0; return false; }
+        bool ok = NumberRead.TryInteger(s, style, 8, true, out ulong bits);
+        result = (sbyte)bits;
         return ok;
     }
 
-    public static sbyte Parse(string s) {
-        sbyte value = 0;
-        if (!TryParse(s, out value)) { throw NumberParse.Bad(s); }
-        return value;
-    }
+    public static bool TryParse(ReadOnlySpan<char> s, out sbyte result) { return TryParse(s, NumberStyles.Integer, null, out result); }
+    public static bool TryParse(ReadOnlySpan<char> s, IFormatProvider? provider, out sbyte result) { return TryParse(s, NumberStyles.Integer, provider, out result); }
 
-    public static string ToString(this sbyte value, string format) {
-        return NumberFormat.Of(value, 8, format);
+    public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider, out sbyte result) {
+        NumberRead.CheckInteger(style);
+        bool ok = NumberRead.TryInteger(s.ToString(), style, 8, true, out ulong bits);
+        result = (sbyte)bits;
+        return ok;
     }
 }
 
@@ -4699,23 +5093,56 @@ static class Int16 {
     public static short MaxValue => short.MaxValue;
     public static short MinValue => short.MinValue;
 
-    public static bool TryParse(string? s, out short value) {
-        // .NET's answer for no string at all: false, and the default.
-        if (s is null) { value = default; return false; }
-        long wide = 0;
-        bool ok = NumberParse.TrySigned(s, 10, 16, out wide);
-        value = (short)wide;
+    public static string ToString(this short value, string format) {
+        return NumberFormat.Of(value, 16, format);
+    }
+
+    // ---- reading one, as .NET reads it (NumberRead) ----------------------
+    //
+    // NumberStyles.Integer unless a style is given; the provider is the
+    // invariant culture whatever it is. Parse throws ArgumentNullException,
+    // FormatException or OverflowException with .NET's messages; TryParse
+    // answers false where Parse would throw, but a style .NET refuses is
+    // refused by both.
+
+    public static short Parse(string s) { return Parse(s, NumberStyles.Integer, null); }
+    public static short Parse(string s, NumberStyles style) { return Parse(s, style, null); }
+    public static short Parse(string s, IFormatProvider? provider) { return Parse(s, NumberStyles.Integer, provider); }
+
+    public static short Parse(string s, NumberStyles style, IFormatProvider? provider) {
+        NumberRead.CheckInteger(style);
+        if (s == null) { throw new ArgumentNullException("s"); }
+        return (short)NumberRead.Integer(s, style, 16, true, "an Int16");
+    }
+
+    public static short Parse(ReadOnlySpan<char> s) { return Parse(s, NumberStyles.Integer, null); }
+    public static short Parse(ReadOnlySpan<char> s, NumberStyles style) { return Parse(s, style, null); }
+    public static short Parse(ReadOnlySpan<char> s, IFormatProvider? provider) { return Parse(s, NumberStyles.Integer, provider); }
+
+    public static short Parse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider) {
+        NumberRead.CheckInteger(style);
+        return (short)NumberRead.Integer(s.ToString(), style, 16, true, "an Int16");
+    }
+
+    public static bool TryParse([NotNullWhen(true)] string? s, out short result) { return TryParse(s, NumberStyles.Integer, null, out result); }
+    public static bool TryParse([NotNullWhen(true)] string? s, IFormatProvider? provider, out short result) { return TryParse(s, NumberStyles.Integer, provider, out result); }
+
+    public static bool TryParse([NotNullWhen(true)] string? s, NumberStyles style, IFormatProvider? provider, out short result) {
+        NumberRead.CheckInteger(style);
+        if (s == null) { result = 0; return false; }
+        bool ok = NumberRead.TryInteger(s, style, 16, true, out ulong bits);
+        result = (short)bits;
         return ok;
     }
 
-    public static short Parse(string s) {
-        short value = 0;
-        if (!TryParse(s, out value)) { throw NumberParse.Bad(s); }
-        return value;
-    }
+    public static bool TryParse(ReadOnlySpan<char> s, out short result) { return TryParse(s, NumberStyles.Integer, null, out result); }
+    public static bool TryParse(ReadOnlySpan<char> s, IFormatProvider? provider, out short result) { return TryParse(s, NumberStyles.Integer, provider, out result); }
 
-    public static string ToString(this short value, string format) {
-        return NumberFormat.Of(value, 16, format);
+    public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider, out short result) {
+        NumberRead.CheckInteger(style);
+        bool ok = NumberRead.TryInteger(s.ToString(), style, 16, true, out ulong bits);
+        result = (short)bits;
+        return ok;
     }
 }
 
@@ -4748,23 +5175,56 @@ static class UInt16 {
     public static ushort MaxValue => ushort.MaxValue;
     public static ushort MinValue => 0;
 
-    public static bool TryParse(string? s, out ushort value) {
-        // .NET's answer for no string at all: false, and the default.
-        if (s is null) { value = default; return false; }
-        ulong wide = 0;
-        bool ok = NumberParse.TryUnsigned(s, 10, out wide) && wide <= 65535;
-        value = (ushort)wide;
+    public static string ToString(this ushort value, string format) {
+        return NumberFormat.OfUnsigned((ulong)value, format);
+    }
+
+    // ---- reading one, as .NET reads it (NumberRead) ----------------------
+    //
+    // NumberStyles.Integer unless a style is given; the provider is the
+    // invariant culture whatever it is. Parse throws ArgumentNullException,
+    // FormatException or OverflowException with .NET's messages; TryParse
+    // answers false where Parse would throw, but a style .NET refuses is
+    // refused by both.
+
+    public static ushort Parse(string s) { return Parse(s, NumberStyles.Integer, null); }
+    public static ushort Parse(string s, NumberStyles style) { return Parse(s, style, null); }
+    public static ushort Parse(string s, IFormatProvider? provider) { return Parse(s, NumberStyles.Integer, provider); }
+
+    public static ushort Parse(string s, NumberStyles style, IFormatProvider? provider) {
+        NumberRead.CheckInteger(style);
+        if (s == null) { throw new ArgumentNullException("s"); }
+        return (ushort)NumberRead.Integer(s, style, 16, false, "a UInt16");
+    }
+
+    public static ushort Parse(ReadOnlySpan<char> s) { return Parse(s, NumberStyles.Integer, null); }
+    public static ushort Parse(ReadOnlySpan<char> s, NumberStyles style) { return Parse(s, style, null); }
+    public static ushort Parse(ReadOnlySpan<char> s, IFormatProvider? provider) { return Parse(s, NumberStyles.Integer, provider); }
+
+    public static ushort Parse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider) {
+        NumberRead.CheckInteger(style);
+        return (ushort)NumberRead.Integer(s.ToString(), style, 16, false, "a UInt16");
+    }
+
+    public static bool TryParse([NotNullWhen(true)] string? s, out ushort result) { return TryParse(s, NumberStyles.Integer, null, out result); }
+    public static bool TryParse([NotNullWhen(true)] string? s, IFormatProvider? provider, out ushort result) { return TryParse(s, NumberStyles.Integer, provider, out result); }
+
+    public static bool TryParse([NotNullWhen(true)] string? s, NumberStyles style, IFormatProvider? provider, out ushort result) {
+        NumberRead.CheckInteger(style);
+        if (s == null) { result = 0; return false; }
+        bool ok = NumberRead.TryInteger(s, style, 16, false, out ulong bits);
+        result = (ushort)bits;
         return ok;
     }
 
-    public static ushort Parse(string s) {
-        ushort value = 0;
-        if (!TryParse(s, out value)) { throw NumberParse.Bad(s); }
-        return value;
-    }
+    public static bool TryParse(ReadOnlySpan<char> s, out ushort result) { return TryParse(s, NumberStyles.Integer, null, out result); }
+    public static bool TryParse(ReadOnlySpan<char> s, IFormatProvider? provider, out ushort result) { return TryParse(s, NumberStyles.Integer, provider, out result); }
 
-    public static string ToString(this ushort value, string format) {
-        return NumberFormat.OfUnsigned((ulong)value, format);
+    public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider, out ushort result) {
+        NumberRead.CheckInteger(style);
+        bool ok = NumberRead.TryInteger(s.ToString(), style, 16, false, out ulong bits);
+        result = (ushort)bits;
+        return ok;
     }
 }
 
@@ -4797,48 +5257,56 @@ static class UInt32 {
     public static uint MaxValue => uint.MaxValue;
     public static uint MinValue => 0;
 
-    public static bool TryParse(string? s, out uint value) {
-        // .NET's answer for no string at all: false, and the default.
-        if (s is null) { value = default; return false; }
-        ulong wide = 0;
-        bool ok = NumberParse.TryUnsigned(s, 10, out wide) && wide <= 4294967295;
-        value = (uint)wide;
-        return ok;
-    }
-
-    public static bool TryParse(string? s, NumberStyles style, IFormatProvider? provider, out uint value) {
-        // .NET's answer for no string at all: false, and the default.
-        if (s is null) { value = default; return false; }
-        ulong wide = 0;
-        bool ok = NumberParse.TryUnsigned(s, (style & NumberStyles.AllowHexSpecifier) != 0 ? 16 : 10, out wide)
-               && wide <= 4294967295;
-        value = (uint)wide;
-        return ok;
-    }
-
-    public static uint Parse(string s) {
-        uint value = 0;
-        if (!TryParse(s, out value)) { throw NumberParse.Bad(s); }
-        return value;
-    }
-
-    public static uint Parse(string s, IFormatProvider? provider) { return Parse(s); }
-
-    public static uint Parse(string s, NumberStyles style) {
-        return Parse(s, style, CultureInfo.InvariantCulture);
-    }
-
-    public static uint Parse(string s, NumberStyles style, IFormatProvider? provider) {
-        uint value = 0;
-
-        if (!TryParse(s, style, provider, out value)) { throw new FormatException(s); }
-        return value;
-    }
-
-    public static uint Parse(ReadOnlySpan<char> s) { return Parse(s.ToString()); }
-
     public static string ToString(this uint value, string format) {
         return NumberFormat.OfUnsigned((ulong)value, format);
+    }
+
+    // ---- reading one, as .NET reads it (NumberRead) ----------------------
+    //
+    // NumberStyles.Integer unless a style is given; the provider is the
+    // invariant culture whatever it is. Parse throws ArgumentNullException,
+    // FormatException or OverflowException with .NET's messages; TryParse
+    // answers false where Parse would throw, but a style .NET refuses is
+    // refused by both.
+
+    public static uint Parse(string s) { return Parse(s, NumberStyles.Integer, null); }
+    public static uint Parse(string s, NumberStyles style) { return Parse(s, style, null); }
+    public static uint Parse(string s, IFormatProvider? provider) { return Parse(s, NumberStyles.Integer, provider); }
+
+    public static uint Parse(string s, NumberStyles style, IFormatProvider? provider) {
+        NumberRead.CheckInteger(style);
+        if (s == null) { throw new ArgumentNullException("s"); }
+        return (uint)NumberRead.Integer(s, style, 32, false, "a UInt32");
+    }
+
+    public static uint Parse(ReadOnlySpan<char> s) { return Parse(s, NumberStyles.Integer, null); }
+    public static uint Parse(ReadOnlySpan<char> s, NumberStyles style) { return Parse(s, style, null); }
+    public static uint Parse(ReadOnlySpan<char> s, IFormatProvider? provider) { return Parse(s, NumberStyles.Integer, provider); }
+
+    public static uint Parse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider) {
+        NumberRead.CheckInteger(style);
+        return (uint)NumberRead.Integer(s.ToString(), style, 32, false, "a UInt32");
+    }
+
+    public static bool TryParse([NotNullWhen(true)] string? s, out uint result) { return TryParse(s, NumberStyles.Integer, null, out result); }
+    public static bool TryParse([NotNullWhen(true)] string? s, IFormatProvider? provider, out uint result) { return TryParse(s, NumberStyles.Integer, provider, out result); }
+
+    public static bool TryParse([NotNullWhen(true)] string? s, NumberStyles style, IFormatProvider? provider, out uint result) {
+        NumberRead.CheckInteger(style);
+        if (s == null) { result = 0; return false; }
+        bool ok = NumberRead.TryInteger(s, style, 32, false, out ulong bits);
+        result = (uint)bits;
+        return ok;
+    }
+
+    public static bool TryParse(ReadOnlySpan<char> s, out uint result) { return TryParse(s, NumberStyles.Integer, null, out result); }
+    public static bool TryParse(ReadOnlySpan<char> s, IFormatProvider? provider, out uint result) { return TryParse(s, NumberStyles.Integer, provider, out result); }
+
+    public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider, out uint result) {
+        NumberRead.CheckInteger(style);
+        bool ok = NumberRead.TryInteger(s.ToString(), style, 32, false, out ulong bits);
+        result = (uint)bits;
+        return ok;
     }
 }
 
@@ -4874,49 +5342,6 @@ static class Int64 {
     public static long MaxValue => long.MaxValue;
     public static long MinValue => long.MinValue;
 
-    // TRUE WHEN IT PARSED, and the value is only meaningful then -- .NET's
-    // contract, and the reason this exists beside Parse: a number that might
-    // not be one is ordinary input, not an exceptional case.
-    public static bool TryParse(string? s, out long value) {
-        // .NET's answer for no string at all: false, and the default.
-        if (s is null) { value = default; return false; }
-        value = 0;
-
-        if (s.Length == 0) { return false; }
-
-        bool negative = s[0] == '-';
-        int at = negative || s[0] == '+' ? 1 : 0;
-
-        if (at >= s.Length) { return false; }
-
-        long made = 0;
-
-        while (at < s.Length) {
-            int c = Sys.GetChar(s, at);
-
-            if (c < 48 || c > 57) {
-                value = 0;
-                return false;
-            }
-
-            made = made * 10 + (c - 48);
-            at = at + 1;
-        }
-
-        value = negative ? -made : made;
-        return true;
-    }
-
-    // .NET throws FormatException here. There is nothing to throw from a
-    // library this low yet, so a number that is not one answers zero -- and
-    // TryParse is what a caller that cares uses in .NET anyway.
-    public static long Parse(string s) {
-        long value = 0;
-
-        if (!TryParse(s, out value)) { throw NumberParse.Bad(s); }
-        return value;
-    }
-
     public static string ToString(this long value, IFormatProvider? provider) {
         return String.FromInt(value);
     }
@@ -4925,36 +5350,52 @@ static class Int64 {
         return NumberFormat.Of(value, 64, format);
     }
 
-    public static bool TryParse(string? s, NumberStyles style, IFormatProvider? provider, out long value) {
-        // .NET's answer for no string at all: false, and the default.
-        if (s is null) { value = default; return false; }
-        return NumberParse.TrySigned(s, (style & NumberStyles.AllowHexSpecifier) != 0 ? 16 : 10, 64, out value);
-    }
+    // ---- reading one, as .NET reads it (NumberRead) ----------------------
+    //
+    // NumberStyles.Integer unless a style is given; the provider is the
+    // invariant culture whatever it is. Parse throws ArgumentNullException,
+    // FormatException or OverflowException with .NET's messages; TryParse
+    // answers false where Parse would throw, but a style .NET refuses is
+    // refused by both.
 
-    public static long Parse(string s, NumberStyles style) {
-        long value = 0;
-        if (!TryParse(s, style, CultureInfo.InvariantCulture, out value)) {
-            throw new FormatException(s);
-        }
-        return value;
-    }
-
-    /// The rest of .NET's set: a culture, a style and a culture, and a span.
-    public static long Parse(string s, IFormatProvider? provider) { return Parse(s); }
+    public static long Parse(string s) { return Parse(s, NumberStyles.Integer, null); }
+    public static long Parse(string s, NumberStyles style) { return Parse(s, style, null); }
+    public static long Parse(string s, IFormatProvider? provider) { return Parse(s, NumberStyles.Integer, provider); }
 
     public static long Parse(string s, NumberStyles style, IFormatProvider? provider) {
-        long value = 0;
-
-        if (!TryParse(s, style, provider, out value)) { throw new FormatException(s); }
-        return value;
+        NumberRead.CheckInteger(style);
+        if (s == null) { throw new ArgumentNullException("s"); }
+        return (long)NumberRead.Integer(s, style, 64, true, "an Int64");
     }
 
-    public static long Parse(ReadOnlySpan<char> s) { return Parse(s.ToString()); }
+    public static long Parse(ReadOnlySpan<char> s) { return Parse(s, NumberStyles.Integer, null); }
+    public static long Parse(ReadOnlySpan<char> s, NumberStyles style) { return Parse(s, style, null); }
+    public static long Parse(ReadOnlySpan<char> s, IFormatProvider? provider) { return Parse(s, NumberStyles.Integer, provider); }
 
-    public static long Parse(ReadOnlySpan<char> s, IFormatProvider? provider) { return Parse(s.ToString()); }
+    public static long Parse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider) {
+        NumberRead.CheckInteger(style);
+        return (long)NumberRead.Integer(s.ToString(), style, 64, true, "an Int64");
+    }
 
-    public static bool TryParse(ReadOnlySpan<char> s, out long value) {
-        return TryParse(s.ToString(), out value);
+    public static bool TryParse([NotNullWhen(true)] string? s, out long result) { return TryParse(s, NumberStyles.Integer, null, out result); }
+    public static bool TryParse([NotNullWhen(true)] string? s, IFormatProvider? provider, out long result) { return TryParse(s, NumberStyles.Integer, provider, out result); }
+
+    public static bool TryParse([NotNullWhen(true)] string? s, NumberStyles style, IFormatProvider? provider, out long result) {
+        NumberRead.CheckInteger(style);
+        if (s == null) { result = 0; return false; }
+        bool ok = NumberRead.TryInteger(s, style, 64, true, out ulong bits);
+        result = (long)bits;
+        return ok;
+    }
+
+    public static bool TryParse(ReadOnlySpan<char> s, out long result) { return TryParse(s, NumberStyles.Integer, null, out result); }
+    public static bool TryParse(ReadOnlySpan<char> s, IFormatProvider? provider, out long result) { return TryParse(s, NumberStyles.Integer, provider, out result); }
+
+    public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider, out long result) {
+        NumberRead.CheckInteger(style);
+        bool ok = NumberRead.TryInteger(s.ToString(), style, 64, true, out ulong bits);
+        result = (long)bits;
+        return ok;
     }
 }
 
@@ -4987,46 +5428,6 @@ static class Int32 {
     public static int MaxValue => int.MaxValue;
     public static int MinValue => int.MinValue;
 
-    public static bool TryParse(string? s, out int value) {
-        // .NET's answer for no string at all: false, and the default.
-        if (s is null) { value = default; return false; }
-        long wide = 0;
-        bool ok = Int64.TryParse(s, out wide);
-
-        value = (int)wide;
-        return ok && wide >= -2147483648 && wide <= 2147483647;
-    }
-
-    /// A NUMBER OR AN EXCEPTION, which is .NET's contract and was not this
-    /// one's: text that is not a number answered zero, so a configuration
-    /// file's typo became a silent default. Out of range is an
-    /// OverflowException and unreadable text is a FormatException, because a
-    /// caller can do something about the first and not about the second.
-    public static int Parse(string s) {
-        long wide = 0;
-
-        if (!Int64.TryParse(s, out wide)) { throw NumberParse.Bad(s); }
-        if (wide < -2147483648 || wide > 2147483647) { throw NumberParse.TooBig("Int32"); }
-        return (int)wide;
-    }
-
-    public static bool TryParse(ReadOnlySpan<char> s, out int value) {
-        return TryParse(s.ToString(), out value);
-    }
-
-    public static int Parse(string s, IFormatProvider? provider) { return Parse(s); }
-
-    public static int Parse(string s, NumberStyles style, IFormatProvider? provider) {
-        int value = 0;
-
-        if (!TryParse(s, style, provider, out value)) { throw new FormatException(s); }
-        return value;
-    }
-
-    public static int Parse(ReadOnlySpan<char> s) { return Parse(s.ToString()); }
-
-    public static int Parse(ReadOnlySpan<char> s, IFormatProvider? provider) { return Parse(s.ToString()); }
-
     public static string ToString(this int value, IFormatProvider? provider) {
         return String.FromInt(value);
     }
@@ -5035,25 +5436,52 @@ static class Int32 {
         return NumberFormat.Of(value, 32, format);
     }
 
-    public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider, out int value) {
-        return TryParse(s.ToString(), style, provider, out value);
+    // ---- reading one, as .NET reads it (NumberRead) ----------------------
+    //
+    // NumberStyles.Integer unless a style is given; the provider is the
+    // invariant culture whatever it is. Parse throws ArgumentNullException,
+    // FormatException or OverflowException with .NET's messages; TryParse
+    // answers false where Parse would throw, but a style .NET refuses is
+    // refused by both.
+
+    public static int Parse(string s) { return Parse(s, NumberStyles.Integer, null); }
+    public static int Parse(string s, NumberStyles style) { return Parse(s, style, null); }
+    public static int Parse(string s, IFormatProvider? provider) { return Parse(s, NumberStyles.Integer, provider); }
+
+    public static int Parse(string s, NumberStyles style, IFormatProvider? provider) {
+        NumberRead.CheckInteger(style);
+        if (s == null) { throw new ArgumentNullException("s"); }
+        return (int)NumberRead.Integer(s, style, 32, true, "an Int32");
     }
 
-    public static bool TryParse(string? s, NumberStyles style, IFormatProvider? provider, out int value) {
-        // .NET's answer for no string at all: false, and the default.
-        if (s is null) { value = default; return false; }
-        long wide = 0;
-        bool ok = NumberParse.TrySigned(s, (style & NumberStyles.AllowHexSpecifier) != 0 ? 16 : 10, 32, out wide);
-        value = (int)wide;
+    public static int Parse(ReadOnlySpan<char> s) { return Parse(s, NumberStyles.Integer, null); }
+    public static int Parse(ReadOnlySpan<char> s, NumberStyles style) { return Parse(s, style, null); }
+    public static int Parse(ReadOnlySpan<char> s, IFormatProvider? provider) { return Parse(s, NumberStyles.Integer, provider); }
+
+    public static int Parse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider) {
+        NumberRead.CheckInteger(style);
+        return (int)NumberRead.Integer(s.ToString(), style, 32, true, "an Int32");
+    }
+
+    public static bool TryParse([NotNullWhen(true)] string? s, out int result) { return TryParse(s, NumberStyles.Integer, null, out result); }
+    public static bool TryParse([NotNullWhen(true)] string? s, IFormatProvider? provider, out int result) { return TryParse(s, NumberStyles.Integer, provider, out result); }
+
+    public static bool TryParse([NotNullWhen(true)] string? s, NumberStyles style, IFormatProvider? provider, out int result) {
+        NumberRead.CheckInteger(style);
+        if (s == null) { result = 0; return false; }
+        bool ok = NumberRead.TryInteger(s, style, 32, true, out ulong bits);
+        result = (int)bits;
         return ok;
     }
 
-    public static int Parse(string s, NumberStyles style) {
-        int value = 0;
-        if (!TryParse(s, style, CultureInfo.InvariantCulture, out value)) {
-            throw new FormatException(s);
-        }
-        return value;
+    public static bool TryParse(ReadOnlySpan<char> s, out int result) { return TryParse(s, NumberStyles.Integer, null, out result); }
+    public static bool TryParse(ReadOnlySpan<char> s, IFormatProvider? provider, out int result) { return TryParse(s, NumberStyles.Integer, provider, out result); }
+
+    public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider, out int result) {
+        NumberRead.CheckInteger(style);
+        bool ok = NumberRead.TryInteger(s.ToString(), style, 32, true, out ulong bits);
+        result = (int)bits;
+        return ok;
     }
 }
 
@@ -5071,8 +5499,10 @@ enum NumberStyles {
     AllowExponent = 128,
     AllowCurrencySymbol = 256,
     AllowHexSpecifier = 512,
+    AllowBinarySpecifier = 1024,
     Integer = 7,
     HexNumber = 515,
+    BinaryNumber = 1027,
     Number = 111,
     Float = 167,
     Currency = 383,
@@ -5142,59 +5572,56 @@ static class UInt64 {
     public static ulong MaxValue => ulong.MaxValue;
     public static ulong MinValue => 0;
 
-    public static bool TryParse(string? s, out ulong value) {
-        // .NET's answer for no string at all: false, and the default.
-        if (s is null) { value = default; return false; }
-        return TryParse(s.AsSpan(), NumberStyles.Integer, CultureInfo.InvariantCulture, out value);
-    }
-
-    public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style,
-                                IFormatProvider? provider, out ulong value) {
-        value = 0;
-        if (s.Length == 0) { return false; }
-
-        int radix = (style & NumberStyles.AllowHexSpecifier) != 0 ? 16 : 10;
-        for (int i = 0; i < s.Length; i++) {
-            int c = (int)s[i];
-            int digit = -1;
-            if (c >= 48 && c <= 57) { digit = c - 48; }
-            if (c >= 97 && c <= 102) { digit = c - 97 + 10; }
-            if (c >= 65 && c <= 70) { digit = c - 65 + 10; }
-            if (digit < 0 || digit >= radix) { value = 0; return false; }
-
-            ulong next = value * (ulong)radix + (ulong)digit;
-            if (next < value) { value = 0; return false; }
-            value = next;
-        }
-        return true;
-    }
-
-    public static ulong Parse(string s) {
-        ulong value = 0;
-        if (!TryParse(s, out value)) { throw NumberParse.Bad(s); }
-        return value;
-    }
-
-    /// The three .NET spells beside the plain one: a culture, a style, and
-    /// both. There is one culture on this machine, so the provider says
-    /// nothing; the style says which radix.
-    public static ulong Parse(string s, IFormatProvider? provider) { return Parse(s); }
-
-    public static ulong Parse(string s, NumberStyles style) {
-        return Parse(s, style, CultureInfo.InvariantCulture);
-    }
-
-    public static ulong Parse(string s, NumberStyles style, IFormatProvider? provider) {
-        ulong value = 0;
-
-        if (!TryParse(s.AsSpan(), style, provider, out value)) { throw NumberParse.Bad(s); }
-        return value;
-    }
-
-    public static ulong Parse(ReadOnlySpan<char> s) { return Parse(s.ToString()); }
-
     public static string ToString(this ulong value, string format) {
         return NumberFormat.OfUnsigned(value, format);
+    }
+
+    // ---- reading one, as .NET reads it (NumberRead) ----------------------
+    //
+    // NumberStyles.Integer unless a style is given; the provider is the
+    // invariant culture whatever it is. Parse throws ArgumentNullException,
+    // FormatException or OverflowException with .NET's messages; TryParse
+    // answers false where Parse would throw, but a style .NET refuses is
+    // refused by both.
+
+    public static ulong Parse(string s) { return Parse(s, NumberStyles.Integer, null); }
+    public static ulong Parse(string s, NumberStyles style) { return Parse(s, style, null); }
+    public static ulong Parse(string s, IFormatProvider? provider) { return Parse(s, NumberStyles.Integer, provider); }
+
+    public static ulong Parse(string s, NumberStyles style, IFormatProvider? provider) {
+        NumberRead.CheckInteger(style);
+        if (s == null) { throw new ArgumentNullException("s"); }
+        return (ulong)NumberRead.Integer(s, style, 64, false, "a UInt64");
+    }
+
+    public static ulong Parse(ReadOnlySpan<char> s) { return Parse(s, NumberStyles.Integer, null); }
+    public static ulong Parse(ReadOnlySpan<char> s, NumberStyles style) { return Parse(s, style, null); }
+    public static ulong Parse(ReadOnlySpan<char> s, IFormatProvider? provider) { return Parse(s, NumberStyles.Integer, provider); }
+
+    public static ulong Parse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider) {
+        NumberRead.CheckInteger(style);
+        return (ulong)NumberRead.Integer(s.ToString(), style, 64, false, "a UInt64");
+    }
+
+    public static bool TryParse([NotNullWhen(true)] string? s, out ulong result) { return TryParse(s, NumberStyles.Integer, null, out result); }
+    public static bool TryParse([NotNullWhen(true)] string? s, IFormatProvider? provider, out ulong result) { return TryParse(s, NumberStyles.Integer, provider, out result); }
+
+    public static bool TryParse([NotNullWhen(true)] string? s, NumberStyles style, IFormatProvider? provider, out ulong result) {
+        NumberRead.CheckInteger(style);
+        if (s == null) { result = 0; return false; }
+        bool ok = NumberRead.TryInteger(s, style, 64, false, out ulong bits);
+        result = (ulong)bits;
+        return ok;
+    }
+
+    public static bool TryParse(ReadOnlySpan<char> s, out ulong result) { return TryParse(s, NumberStyles.Integer, null, out result); }
+    public static bool TryParse(ReadOnlySpan<char> s, IFormatProvider? provider, out ulong result) { return TryParse(s, NumberStyles.Integer, provider, out result); }
+
+    public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider, out ulong result) {
+        NumberRead.CheckInteger(style);
+        bool ok = NumberRead.TryInteger(s.ToString(), style, 64, false, out ulong bits);
+        result = (ulong)bits;
+        return ok;
     }
 }
 
@@ -5235,29 +5662,52 @@ static class Byte {
         return NumberFormat.OfUnsigned((ulong)value, format);
     }
 
-    public static bool TryParse(string? s, out byte value) {
-        // .NET's answer for no string at all: false, and the default.
-        if (s is null) { value = default; return false; }
-        ulong wide = 0;
-        bool ok = NumberParse.TryUnsigned(s, 10, out wide) && wide <= 255;
-        value = (byte)wide;
+    // ---- reading one, as .NET reads it (NumberRead) ----------------------
+    //
+    // NumberStyles.Integer unless a style is given; the provider is the
+    // invariant culture whatever it is. Parse throws ArgumentNullException,
+    // FormatException or OverflowException with .NET's messages; TryParse
+    // answers false where Parse would throw, but a style .NET refuses is
+    // refused by both.
+
+    public static byte Parse(string s) { return Parse(s, NumberStyles.Integer, null); }
+    public static byte Parse(string s, NumberStyles style) { return Parse(s, style, null); }
+    public static byte Parse(string s, IFormatProvider? provider) { return Parse(s, NumberStyles.Integer, provider); }
+
+    public static byte Parse(string s, NumberStyles style, IFormatProvider? provider) {
+        NumberRead.CheckInteger(style);
+        if (s == null) { throw new ArgumentNullException("s"); }
+        return (byte)NumberRead.Integer(s, style, 8, false, "an unsigned byte");
+    }
+
+    public static byte Parse(ReadOnlySpan<char> s) { return Parse(s, NumberStyles.Integer, null); }
+    public static byte Parse(ReadOnlySpan<char> s, NumberStyles style) { return Parse(s, style, null); }
+    public static byte Parse(ReadOnlySpan<char> s, IFormatProvider? provider) { return Parse(s, NumberStyles.Integer, provider); }
+
+    public static byte Parse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider) {
+        NumberRead.CheckInteger(style);
+        return (byte)NumberRead.Integer(s.ToString(), style, 8, false, "an unsigned byte");
+    }
+
+    public static bool TryParse([NotNullWhen(true)] string? s, out byte result) { return TryParse(s, NumberStyles.Integer, null, out result); }
+    public static bool TryParse([NotNullWhen(true)] string? s, IFormatProvider? provider, out byte result) { return TryParse(s, NumberStyles.Integer, provider, out result); }
+
+    public static bool TryParse([NotNullWhen(true)] string? s, NumberStyles style, IFormatProvider? provider, out byte result) {
+        NumberRead.CheckInteger(style);
+        if (s == null) { result = 0; return false; }
+        bool ok = NumberRead.TryInteger(s, style, 8, false, out ulong bits);
+        result = (byte)bits;
         return ok;
     }
 
-    public static bool TryParse(string? s, NumberStyles style, IFormatProvider? provider, out byte value) {
-        // .NET's answer for no string at all: false, and the default.
-        if (s is null) { value = default; return false; }
-        ulong wide = 0;
-        bool ok = NumberParse.TryUnsigned(s, (style & NumberStyles.AllowHexSpecifier) != 0 ? 16 : 10, out wide)
-               && wide <= 255;
-        value = (byte)wide;
-        return ok;
-    }
+    public static bool TryParse(ReadOnlySpan<char> s, out byte result) { return TryParse(s, NumberStyles.Integer, null, out result); }
+    public static bool TryParse(ReadOnlySpan<char> s, IFormatProvider? provider, out byte result) { return TryParse(s, NumberStyles.Integer, provider, out result); }
 
-    public static byte Parse(string s) {
-        byte value = 0;
-        if (!TryParse(s, out value)) { throw NumberParse.Bad(s); }
-        return value;
+    public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider, out byte result) {
+        NumberRead.CheckInteger(style);
+        bool ok = NumberRead.TryInteger(s.ToString(), style, 8, false, out ulong bits);
+        result = (byte)bits;
+        return ok;
     }
 }
 
@@ -5289,47 +5739,6 @@ static class Double {
         if (other == null) return 1;
         if (other is double number) return CompareTo(value, number);
         throw new ArgumentException("object must be an Double");
-    }
-    /// The nearest double to what `s` says, ties to even, as .NET reads it
-    /// (FloatDecimal.TryRead): past the largest is infinity, below the
-    /// smallest is zero.
-    public static double Parse(string s, IFormatProvider? provider) {
-        if (s == null) { throw new ArgumentNullException(nameof(s)); }
-        double value;
-        if (!Read(s, out value)) { throw new FormatException("The input string '" + s + "' was not in a correct format."); }
-        return value;
-    }
-
-    static bool Read(string s, out double value) {
-        FloatBig digits;
-        int exponent, special;
-        bool negative;
-        value = 0.0;
-        if (!FloatDecimal.TryRead(s, out digits, out exponent, out negative, out special)) { return false; }
-        double magnitude = special == 1 ? 1.0 / 0.0 : special == 2 ? 0.0 / 0.0 : FloatDecimal.ToDouble(digits, exponent);
-        value = negative ? -magnitude : magnitude;
-        return true;
-    }
-
-    public static double Parse(string s) { return Parse(s, CultureInfo.InvariantCulture); }
-
-    // .NET's contract: false rather than a throw, and the value is only
-    // meaningful when it answered true. The parse above reports its refusals
-    // by throwing, so this is where that becomes an answer.
-    public static bool TryParse(string? s, out double value) {
-        // .NET's answer for no string at all: false, and the default.
-        if (s is null) { value = default; return false; }
-        if (s == null) {
-            value = 0.0;
-            return false;
-        }
-        return Read(s, out value);
-    }
-
-    public static bool TryParse(string? s, NumberStyles style, IFormatProvider? provider, out double value) {
-        // .NET's answer for no string at all: false, and the default.
-        if (s is null) { value = default; return false; }
-        return TryParse(s, out value);
     }
 
     /// What `d.ToString()` answers: the general format, as string
@@ -5375,6 +5784,56 @@ static class Double {
     }
 
     public static bool IsRealNumber(double value) { return value == value; }
+
+    // ---- reading one, as .NET reads it (NumberRead) ----------------------
+    //
+    // NumberStyles.Float | AllowThousands unless a style is given, correctly
+    // rounded; too large is infinity, never an OverflowException. "Infinity",
+    // "-Infinity" and "NaN" in any case. The provider is the invariant
+    // culture whatever it is.
+
+    public static double Parse(string s) { return Parse(s, NumberStyles.Float | NumberStyles.AllowThousands, null); }
+    public static double Parse(string s, NumberStyles style) { return Parse(s, style, null); }
+    public static double Parse(string s, IFormatProvider? provider) { return Parse(s, NumberStyles.Float | NumberStyles.AllowThousands, provider); }
+
+    public static double Parse(string s, NumberStyles style, IFormatProvider? provider) {
+        NumberRead.CheckFloat(style);
+        if (s == null) { throw new ArgumentNullException("s"); }
+        if (!NumberRead.TryDouble(s, style, out double value)) { throw NumberRead.Bad(s); }
+        return value;
+    }
+
+    public static double Parse(ReadOnlySpan<char> s) { return Parse(s, NumberStyles.Float | NumberStyles.AllowThousands, null); }
+    public static double Parse(ReadOnlySpan<char> s, NumberStyles style) { return Parse(s, style, null); }
+    public static double Parse(ReadOnlySpan<char> s, IFormatProvider? provider) { return Parse(s, NumberStyles.Float | NumberStyles.AllowThousands, provider); }
+
+    public static double Parse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider) {
+        NumberRead.CheckFloat(style);
+        string text = s.ToString();
+        if (!NumberRead.TryDouble(text, style, out double value)) { throw NumberRead.Bad(text); }
+        return value;
+    }
+
+    public static bool TryParse([NotNullWhen(true)] string? s, out double result) { return TryParse(s, NumberStyles.Float | NumberStyles.AllowThousands, null, out result); }
+    public static bool TryParse([NotNullWhen(true)] string? s, IFormatProvider? provider, out double result) { return TryParse(s, NumberStyles.Float | NumberStyles.AllowThousands, provider, out result); }
+
+    public static bool TryParse([NotNullWhen(true)] string? s, NumberStyles style, IFormatProvider? provider, out double result) {
+        NumberRead.CheckFloat(style);
+        if (s == null) { result = 0.0; return false; }
+        if (NumberRead.TryDouble(s, style, out result)) { return true; }
+        result = 0.0;
+        return false;
+    }
+
+    public static bool TryParse(ReadOnlySpan<char> s, out double result) { return TryParse(s, NumberStyles.Float | NumberStyles.AllowThousands, null, out result); }
+    public static bool TryParse(ReadOnlySpan<char> s, IFormatProvider? provider, out double result) { return TryParse(s, NumberStyles.Float | NumberStyles.AllowThousands, provider, out result); }
+
+    public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider, out double result) {
+        NumberRead.CheckFloat(style);
+        if (NumberRead.TryDouble(s.ToString(), style, out result)) { return true; }
+        result = 0.0;
+        return false;
+    }
 }
 
 /// System.Single: float's statics, through double, which holds every float
@@ -5410,37 +5869,6 @@ static class Single {
         if (other is float number) return CompareTo(value, number);
         throw new ArgumentException("object must be an Single");
     }
-    public static float Parse(string s) { return Parse(s, null); }
-
-    /// The nearest float to what `s` says, rounded once -- not through a
-    /// double, which would round twice.
-    public static float Parse(string s, IFormatProvider? provider) {
-        if (s == null) { throw new ArgumentNullException(nameof(s)); }
-        float value;
-        if (!Read(s, out value)) { throw new FormatException("The input string '" + s + "' was not in a correct format."); }
-        return value;
-    }
-
-    public static bool TryParse(string? s, out float value) {
-        // .NET's answer for no string at all: false, and the default.
-        if (s is null) { value = default; return false; }
-        if (s == null) {
-            value = 0.0F;
-            return false;
-        }
-        return Read(s, out value);
-    }
-
-    static bool Read(string s, out float value) {
-        FloatBig digits;
-        int exponent, special;
-        bool negative;
-        value = 0.0F;
-        if (!FloatDecimal.TryRead(s, out digits, out exponent, out negative, out special)) { return false; }
-        float magnitude = special == 1 ? PositiveInfinity : special == 2 ? NaN : FloatDecimal.ToSingle(digits, exponent);
-        value = negative ? -magnitude : magnitude;
-        return true;
-    }
 
     public static string ToString(this float value) { return DoubleFormat.ShortestSingle(value); }
     public static string ToString(this float value, IFormatProvider? provider) { return DoubleFormat.ShortestSingle(value); }
@@ -5468,6 +5896,56 @@ static class Single {
     }
 
     public static bool IsRealNumber(float value) { return value == value; }
+
+    // ---- reading one, as .NET reads it (NumberRead) ----------------------
+    //
+    // NumberStyles.Float | AllowThousands unless a style is given, correctly
+    // rounded; too large is infinity, never an OverflowException. "Infinity",
+    // "-Infinity" and "NaN" in any case. The provider is the invariant
+    // culture whatever it is.
+
+    public static float Parse(string s) { return Parse(s, NumberStyles.Float | NumberStyles.AllowThousands, null); }
+    public static float Parse(string s, NumberStyles style) { return Parse(s, style, null); }
+    public static float Parse(string s, IFormatProvider? provider) { return Parse(s, NumberStyles.Float | NumberStyles.AllowThousands, provider); }
+
+    public static float Parse(string s, NumberStyles style, IFormatProvider? provider) {
+        NumberRead.CheckFloat(style);
+        if (s == null) { throw new ArgumentNullException("s"); }
+        if (!NumberRead.TrySingle(s, style, out float value)) { throw NumberRead.Bad(s); }
+        return value;
+    }
+
+    public static float Parse(ReadOnlySpan<char> s) { return Parse(s, NumberStyles.Float | NumberStyles.AllowThousands, null); }
+    public static float Parse(ReadOnlySpan<char> s, NumberStyles style) { return Parse(s, style, null); }
+    public static float Parse(ReadOnlySpan<char> s, IFormatProvider? provider) { return Parse(s, NumberStyles.Float | NumberStyles.AllowThousands, provider); }
+
+    public static float Parse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider) {
+        NumberRead.CheckFloat(style);
+        string text = s.ToString();
+        if (!NumberRead.TrySingle(text, style, out float value)) { throw NumberRead.Bad(text); }
+        return value;
+    }
+
+    public static bool TryParse([NotNullWhen(true)] string? s, out float result) { return TryParse(s, NumberStyles.Float | NumberStyles.AllowThousands, null, out result); }
+    public static bool TryParse([NotNullWhen(true)] string? s, IFormatProvider? provider, out float result) { return TryParse(s, NumberStyles.Float | NumberStyles.AllowThousands, provider, out result); }
+
+    public static bool TryParse([NotNullWhen(true)] string? s, NumberStyles style, IFormatProvider? provider, out float result) {
+        NumberRead.CheckFloat(style);
+        if (s == null) { result = 0.0F; return false; }
+        if (NumberRead.TrySingle(s, style, out result)) { return true; }
+        result = 0.0F;
+        return false;
+    }
+
+    public static bool TryParse(ReadOnlySpan<char> s, out float result) { return TryParse(s, NumberStyles.Float | NumberStyles.AllowThousands, null, out result); }
+    public static bool TryParse(ReadOnlySpan<char> s, IFormatProvider? provider, out float result) { return TryParse(s, NumberStyles.Float | NumberStyles.AllowThousands, provider, out result); }
+
+    public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider, out float result) {
+        NumberRead.CheckFloat(style);
+        if (NumberRead.TrySingle(s.ToString(), style, out result)) { return true; }
+        result = 0.0F;
+        return false;
+    }
 }
 
 /// System.Boolean's statics: the text a bool is written as, and reading it
@@ -5498,7 +5976,13 @@ static class Boolean {
     public static bool TryParse(string? value, out bool result) {
         result = false;
         if (value == null) { return false; }
-        string text = value.Trim().TrimEnd('\0').Trim();
+        // White space and NULs at either end, in any mixture, as .NET trims
+        // them.
+        int at = 0;
+        int end = value.Length;
+        while (at < end && (Char.IsWhiteSpace(value[at]) || value[at] == (char)0)) { at++; }
+        while (end > at && (Char.IsWhiteSpace(value[end - 1]) || value[end - 1] == (char)0)) { end--; }
+        string text = value.Substring(at, end - at);
         if (string.Equals(text, TrueString, StringComparison.OrdinalIgnoreCase)) {
             result = true;
             return true;
@@ -6552,7 +7036,11 @@ struct ReadOnlySpan<T> {
         return made;
     }
 
+    /// A span of characters is the string they make; any other span is
+    /// .NET's description of it, its element type's name and its length:
+    /// "System.ReadOnlySpan<Int32>[3]".
     public string ToString() {
+        if (typeof(T) != typeof(char)) { return "System.ReadOnlySpan<" + typeof(T).Name + ">[" + count + "]"; }
         string made = Sys.NewChars(count);
         for (int i = 0; i < count; i++) {
             Sys.SetChar(made, i, (int)Sys.Word(items[from + i]));
@@ -6792,8 +7280,10 @@ struct Span<T> {
         for (int i = 0; i < n; i++) { into[to + i] = source[at + i]; }
     }
 
-    /// The characters of a Span<char> as a string, as ReadOnlySpan's.
+    /// The characters of a Span<char> as a string; any other span is .NET's
+    /// description of it: "System.Span<Int32>[3]".
     public string ToString() {
+        if (typeof(T) != typeof(char)) { return "System.Span<" + typeof(T).Name + ">[" + count + "]"; }
         string made = Sys.NewChars(count);
         for (int i = 0; i < count; i++) {
             Sys.SetChar(made, i, (int)Sys.Word(items[from + i]));
