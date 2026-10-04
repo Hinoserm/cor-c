@@ -1,0 +1,162 @@
+// test: collection_storage_owned_and_freed_on_growth
+// expect-exit: 0
+// expect-output:
+// local list 20000 199990000 strings 20000 88890
+// local table 5000 12497500 lists 5000 25000
+// kept list 30000 449985000
+// kept table 8000 31996000 strings 8000 38890
+// handed list 12000 71994000 table 3000 4498500
+// rebuilt 50 1225 laps 4000
+// queue 9000 40504500 builder 16000 18000
+//
+// A collection's storage -- a List's array, a Dictionary's keys, values and
+// tables -- is replaced by the collection itself as it grows: Grow makes the
+// bigger array, stores it, and frees the one it replaced (OutgrownStorage),
+// and FreeStorage frees it and clears the field where the collection dies.
+// Those fields own what they hold all the same: the explicit free is the one
+// free of the old array, so neither the free a store into an owned field gets
+// nor the one around a call that may replace it is added again. Each
+// collection here grows many times -- made and kept in this function, kept in
+// a field of an object that lives on, grown in a call it is handed to, made
+// again round a loop -- and every element is read back after collections
+// that would reuse any array freed twice or too early.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+using System.Text;
+
+class Keeper
+{
+    public List<long> Numbers = new();
+    public Dictionary<int, string> Names = new();
+}
+
+static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Fill(List<long> list, int n)
+    {
+        for (int i = 0; i < n; i++) list.Add(i);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void FillTable(Dictionary<int, long> table, int n)
+    {
+        for (int i = 0; i < n; i++) table[i] = i;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn()
+    {
+        // Garbage of the sizes the outgrown arrays had, to take their memory.
+        for (int lap = 0; lap < 200; lap++)
+        {
+            long[] a = new long[lap * 37 % 4096 + 1];
+            a[0] = lap;
+            string s = "churn " + lap;
+            if (s.Length == 0) Console.WriteLine(a[0]);
+        }
+        GC.Collect();
+    }
+
+    static long Local()
+    {
+        List<long> numbers = new();
+        for (int i = 0; i < 20000; i++) numbers.Add(i);
+        List<string> strings = new();
+        for (int i = 0; i < 20000; i++) strings.Add(i.ToString());
+        Churn();
+        long sum = 0;
+        foreach (long v in numbers) sum += v;
+        long chars = 0;
+        for (int i = 0; i < strings.Count; i++)
+        {
+            if (strings[i] != i.ToString()) return -1;
+            chars += strings[i].Length;
+        }
+        Console.WriteLine("local list " + numbers.Count + " " + sum + " strings " + strings.Count + " " + chars);
+
+        Dictionary<string, long> table = new();
+        Dictionary<int, List<int>> lists = new();
+        for (int i = 0; i < 5000; i++)
+        {
+            table["k" + i] = i;
+            List<int> l = new();
+            for (int j = 0; j < 5; j++) l.Add(j);
+            lists[i] = l;
+            if (i % 7 == 3) table.Remove("k" + (i - 3));
+            if (i % 7 == 3) table["k" + (i - 3)] = i - 3;
+        }
+        Churn();
+        long total = 0;
+        for (int i = 0; i < 5000; i++)
+        {
+            if (!table.TryGetValue("k" + i, out long v) || v != i) return -2;
+            total += v;
+        }
+        long held = 0;
+        foreach (KeyValuePair<int, List<int>> pair in lists) held += pair.Value.Count;
+        Console.WriteLine("local table " + table.Count + " " + total + " lists " + lists.Count + " " + held);
+        return sum;
+    }
+
+    static int Main()
+    {
+        if (Local() < 0) return 1;
+
+        Keeper keeper = new();
+        for (int i = 0; i < 30000; i++) keeper.Numbers.Add(i);
+        for (int i = 0; i < 8000; i++) keeper.Names[i] = "n" + i;
+        Churn();
+        long sum = 0;
+        foreach (long v in keeper.Numbers) sum += v;
+        Console.WriteLine("kept list " + keeper.Numbers.Count + " " + sum);
+        long keys = 0, chars = 0;
+        foreach (KeyValuePair<int, string> pair in keeper.Names)
+        {
+            if (pair.Value != "n" + pair.Key) return 2;
+            keys += pair.Key;
+            chars += pair.Value.Length;
+        }
+        Console.WriteLine("kept table " + keeper.Names.Count + " " + keys + " strings " + keeper.Names.Count + " " + chars);
+
+        List<long> handed = new();
+        Fill(handed, 12000);
+        Dictionary<int, long> handedTable = new();
+        FillTable(handedTable, 3000);
+        Churn();
+        long hs = 0;
+        for (int i = 0; i < handed.Count; i++) hs += handed[i];
+        long ts = 0;
+        for (int i = 0; i < 3000; i++) ts += handedTable[i];
+        Console.WriteLine("handed list " + handed.Count + " " + hs + " table " + handedTable.Count + " " + ts);
+
+        int laps = 0;
+        List<int> last = new();
+        for (int lap = 0; lap < 4000; lap++)
+        {
+            List<int> again = new();
+            for (int i = 0; i < 50; i++) again.Add(i);
+            last = again;
+            laps++;
+        }
+        Churn();
+        int ls = 0;
+        foreach (int v in last) ls += v;
+        Console.WriteLine("rebuilt " + last.Count + " " + ls + " laps " + laps);
+
+        Queue<int> queue = new();
+        for (int i = 0; i < 9000; i++) queue.Enqueue(i);
+        StringBuilder builder = new();
+        for (int i = 0; i < 4000; i++) builder.Append(i % 10).Append("abc");
+        Churn();
+        long qs = 0;
+        while (queue.Count > 0) qs += queue.Dequeue() + 1;
+        string built = builder.ToString();
+        int digits = 0;
+        for (int i = 0; i < built.Length; i += 4) digits += built[i] - '0';
+        Console.WriteLine("queue 9000 " + qs + " builder " + built.Length + " " + digits);
+        return 0;
+    }
+}
