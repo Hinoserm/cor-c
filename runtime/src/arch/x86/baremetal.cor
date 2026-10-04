@@ -428,9 +428,10 @@ static class Platform
 
     /// What is current, as a kernel keeps it (AsyncContext): called with
     /// AsyncContext.CaptureOp (answers a word for what is current now: an
-    /// object's, which the context then holds), EnterOp and a word (makes it
-    /// current, answering the word it displaced) and LeaveOp and that
-    /// displaced word (puts it back). 0: no context flows.
+    /// object's, which the context then holds as its Owner; asked only where
+    /// a flow begins), EnterOp and the Owner's word as a continuation starts
+    /// (the platform may make it current or only note it; it answers a word)
+    /// and LeaveOp and that answer as it ends. 0: no context flows.
     public static long ContextHook;
 
     /// Called with no arguments by InterruptCompletions.Complete -- from an

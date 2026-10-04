@@ -3425,26 +3425,28 @@ sealed class AsyncContext
     // Whether a run has the statics table in (1) or not (0).
     nint _staticsHeld;
 
-    // Platform.ContextHook's operations: the word now; a word made current,
-    // answering the one it displaced; that one put back.
+    // Platform.ContextHook's operations: the word now; a run entered with a
+    // word, answering what the leave is to find; the run left with that.
     public const long CaptureOp = 0, EnterOp = 1, LeaveOp = 2;
 
     /// The context now, for a continuation being registered or posted: the
-    /// running one, its platform word asked afresh, or a new one at a root.
-    /// Null where the platform flows no context.
+    /// running one as it is -- its owner is the flow's, named where the flow
+    /// began, and whatever the platform has current under a continuation is
+    /// not (a kernel's draining processor) -- or a new one at a root, owned
+    /// by what the platform answers now. Null where the platform flows no
+    /// context.
     public static AsyncContext? Capture()
     {
         if (Platform.ContextHook == 0)
         {
             return null;
         }
-        object? owner = Sys.FromWord(Sys.Call(Platform.ContextHook, CaptureOp, 0, 0));
         AsyncContext? running = Running;
         if (running != null)
         {
-            running.Owner = owner;
             return running;
         }
+        object? owner = Sys.FromWord(Sys.Call(Platform.ContextHook, CaptureOp, 0, 0));
         AsyncContext made = new AsyncContext();
         made.Owner = owner;
         return made;
