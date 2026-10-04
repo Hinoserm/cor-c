@@ -1,0 +1,45 @@
+// test: await under a method that takes a lock refused
+// expect-compile-error: cannot await while the lock 'Seat.EnterSeat' takes is held
+// EnterSeat returns holding the gate, LeaveSeat gives it back: the unit's
+// own bodies are summarised, so a call to either counts as the lock it
+// takes or leaves.
+
+using System;
+using System.Threading.Tasks;
+
+class Ring1Lock
+{
+    long _word;
+    public Ring1Lock(string name) { }
+    public void Enter() { _word = 1; }
+    public void Leave() { _word = 0; }
+}
+
+static class Seat
+{
+    static readonly Ring1Lock Gate = new Ring1Lock("seat");
+    public static void EnterSeat() { Gate.Enter(); }
+    public static void LeaveSeat() { Gate.Leave(); }
+}
+
+static class Program
+{
+    static async Task<int> Compose()
+    {
+        Seat.EnterSeat();
+        try
+        {
+            await Task.Yield();
+            return 2;
+        }
+        finally
+        {
+            Seat.LeaveSeat();
+        }
+    }
+
+    static async Task Main()
+    {
+        Console.WriteLine(await Compose());
+    }
+}

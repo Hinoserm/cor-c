@@ -1,0 +1,44 @@
+// test: await under IoOwnership refused
+// expect-compile-error: cannot await while 'IoOwnership' (its Enter) is held
+// IoOwnership's Enter answers whether it took the ownership, so the branch
+// where it did not is free to await -- the first await here is accepted --
+// but the one after it is under the ownership, which records a process
+// that would no longer be the holder once the continuation runs elsewhere.
+
+using System;
+using System.Threading.Tasks;
+
+class IoOwnership
+{
+    long _depth;
+    public bool Enter() { _depth++; return true; }
+    public void Leave() { _depth--; }
+}
+
+static class Program
+{
+    static readonly IoOwnership Position = new IoOwnership();
+
+    static async Task<int> Read()
+    {
+        if (!Position.Enter())
+        {
+            await Task.Yield();
+            return -1;
+        }
+        try
+        {
+            await Task.Yield();
+            return 1;
+        }
+        finally
+        {
+            Position.Leave();
+        }
+    }
+
+    static async Task Main()
+    {
+        Console.WriteLine(await Read());
+    }
+}

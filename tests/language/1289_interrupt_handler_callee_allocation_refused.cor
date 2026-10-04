@@ -1,0 +1,40 @@
+// test: allocation in what an interrupt handler calls refused
+// expect-compile-error: must not allocate: 'Disc.Note' joins strings
+// The handler allocates nothing itself; the method it calls directly does,
+// in a branch: the check follows direct calls into every body the unit
+// compiles, and reports the one at the handler's call.
+
+using System;
+
+interface IIrqHandler
+{
+    void OnIrq(long n);
+}
+
+class Disc : IIrqHandler
+{
+    public string Said = "";
+    public long Count;
+
+    public void OnIrq(long n)
+    {
+        Count++;
+        Note(n);
+    }
+
+    void Note(long n)
+    {
+        if (n > 1000) Said = "odd interrupt " + n;
+    }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Disc d = new Disc();
+        d.OnIrq(14);
+        Console.WriteLine(d.Count);
+        return 0;
+    }
+}
