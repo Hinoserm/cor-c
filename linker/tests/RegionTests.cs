@@ -30,11 +30,15 @@ public static class RegionTests
         a.Functions.Add(main);
         RegionFunction work = Function("Work", 0, 2);
         work.Calls.Add(new("Make", 1, Array.Empty<int>()));
+        // Work calls Make once, in no loop: its region holds Make's block.
+        work.CallLoops = new[] { -1 };
         a.Functions.Add(work);
         RegionFunction keep = Function("Keep", 0, 3);
         keep.Calls.Add(new("MakeKept", 1, Array.Empty<int>()));
         keep.Constraints.Add(new(RegionConstraintKind.Unknown, 2, 0, 0));
         keep.Constraints.Add(new(RegionConstraintKind.Store, 2, 1, 8));
+        keep.Repeats = new[] { new RegionRepeat(1, -1, 8) };
+        keep.CallLoops = new[] { 0 };
         a.Functions.Add(keep);
         RegionFunction pass = Function("Pass", 0, 2);
         pass.Calls.Add(new("MakeHanded", 1, Array.Empty<int>()));
@@ -73,6 +77,8 @@ public static class RegionTests
                 _ => Made(),
             };
             RegionFunction maker = Function(name, 0, 2, sites: site);
+            maker.SiteBytes = new[] { 32L };
+            maker.SiteLoops = new[] { -1 };
             maker.Constraints.Add(new(RegionConstraintKind.Site, 1, 0, 0));
             maker.Constraints.Add(new(RegionConstraintKind.Copy, 0, 1, 0));
             b.Functions.Add(maker);
@@ -85,6 +91,8 @@ public static class RegionTests
         RegionHints again = RegionHints.Read(bytes);
         Check(again.Functions.Single(f => f.Name == "Main").Main, "Main does not read back as Main");
         Check(again.Write().AsSpan().SequenceEqual(bytes), "region hints do not read back alike");
+        Check(again.Functions.Single(f => f.Name == "Keep").Repeats.SequenceEqual(new[] { new RegionRepeat(1, -1, 8) })
+            && again.Functions.Single(f => f.Name == "Keep").LoopOfCall(0) == 0, "a function's loops do not read back alike");
         bool refused = false;
         try { RegionHints.Read(bytes[..^3]); } catch (ElfFormatException) { refused = true; }
         Check(refused, "truncated region hints accepted");
@@ -112,6 +120,10 @@ public static class RegionTests
             "unit A: Work and Stash alone are boundaries, and Hook's object -- stored into what anything may hand it -- is never in a region");
         Check(facts[1] is { } inB && inB.Boundaries.Count == 0 && inB.Sites.SetEquals(new[] { ("Make", 0), ("MakeHeld", 0), ("MakeHeld2", 0) }),
             "unit B: Make's object and those kept only in words no reference is kept in are in a region; what is stored where nobody follows, or handed to a call nobody can name, is not");
+        // Work's region is sized by Make's one block; Stash's calls run
+        // where nothing bounds them, so its region is not.
+        Check(facts[0]!.BoundaryBytes.Count == 1 && facts[0]!.BoundaryBytes.GetValueOrDefault("Work") == 32,
+            "Work's region is not sized by Make's block, or Stash's is sized");
 
         // The facts on the backend's wire.
         LifetimeFacts lifetime = new() { Regions = facts[1] };
@@ -123,5 +135,12 @@ public static class RegionTests
         BackendRequest request = BackendProtocol.ReadRequest(reader)!;
         Check(request.Facts?.Regions is { } read && read.Sites.SetEquals(facts[1]!.Sites) && read.Boundaries.Count == 0,
             "region facts do not cross the backend protocol");
+        using MemoryStream sized = new();
+        using (BinaryWriter writer = new(sized, BackendProtocol.Utf8, leaveOpen: true))
+            BackendProtocol.WriteRequest(writer, new("in.o", "out.o", Array.Empty<IrImport>(), null, new LifetimeFacts { Regions = facts[0] }));
+        sized.Position = 0;
+        using BinaryReader sizedReader = new(sized, BackendProtocol.Utf8);
+        Check(BackendProtocol.ReadRequest(sizedReader)!.Facts?.Regions is { } withSizes && withSizes.BoundaryBytes.GetValueOrDefault("Work") == 32,
+            "a region's size does not cross the backend protocol");
     }
 }

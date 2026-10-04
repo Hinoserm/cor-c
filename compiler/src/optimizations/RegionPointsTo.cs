@@ -394,6 +394,7 @@ public sealed class RegionPointsTo : IModulePass
                 if (headers.Contains(header))
                 {
                     f.Blocks[header].RegionLoop = true;
+                    f.Blocks[header].RegionLoopBytes = facts.LoopBytes.GetValueOrDefault((f.Name, header));
                     f.NoInlining = true;
                     marked++;
                 }
@@ -441,9 +442,9 @@ public sealed class RegionPointsTo : IModulePass
                     if (i.RegionSite && i.Op == Opcode.Call && IsRewritable(i.Callee)) sites++;
         foreach (Function f in m.Functions)
         {
-            List<int> headers = MarkedLoops(f);
-            if (facts.Boundaries.Contains(f.Name)) { Open(f, headers.Count > 0); opened++; }
-            if (headers.Count > 0) { OpenLoops(f, headers); loops += headers.Count; }
+            List<int> headers = MarkedLoops(f, out Dictionary<int, long> lapBytes);
+            if (facts.Boundaries.Contains(f.Name)) { Open(f, headers.Count > 0, facts.BoundaryBytes.GetValueOrDefault(f.Name)); opened++; }
+            if (headers.Count > 0) { OpenLoops(f, headers, lapBytes); loops += headers.Count; }
         }
         if (sites > 0 || opened > 0 || loops > 0) CatchUp(m);
         if ((sites > 0 || opened > 0 || loops > 0) && report)
@@ -454,19 +455,25 @@ public sealed class RegionPointsTo : IModulePass
     /// The loops of a function the link marked (MarkLoops) that still head a
     /// loop, by their place in its blocks now -- none where the late passes
     /// brought a landing pad or a label's address in, as the link's own
-    /// judgement would have given none (RegionSummary).
+    /// judgement would have given none (RegionSummary). With each, the most
+    /// one lap makes in it (Block.RegionLoopBytes).
     /// </summary>
-    private static List<int> MarkedLoops(Function f)
+    private static List<int> MarkedLoops(Function f, out Dictionary<int, long> lapBytes)
     {
         List<int> headers = new();
+        lapBytes = new();
         if (!f.Blocks.Any(b => b.RegionLoop)) return headers;
         if (f.Async is null && f.Blocks.Count <= LoopBlocks && !f.Blocks.Any(b => b.IsLandingPad || b.Instrs.Any(i => i.Op == Opcode.LabelAddr)))
         {
             Cfg cfg = new(f);
             foreach ((Block header, _, _) in NaturalLoops(f, cfg))
-                if (header.RegionLoop && !cfg.IsRoot(header)) headers.Add(header.Order);
+                if (header.RegionLoop && !cfg.IsRoot(header))
+                {
+                    headers.Add(header.Order);
+                    lapBytes[header.Order] = header.RegionLoopBytes;
+                }
         }
-        foreach (Block b in f.Blocks) b.RegionLoop = false;
+        foreach (Block b in f.Blocks) { b.RegionLoop = false; b.RegionLoopBytes = 0; }
         return headers;
     }
 
@@ -987,8 +994,9 @@ public sealed class RegionPointsTo : IModulePass
     // The region opened where the call first needs it, given back on every
     // return; a throw is the runtime's to notice (Gc.PopStale). On entry
     // where the function has loop regions too (OpenLoops): opened later, at
-    // the same frame, it would close the loop's.
-    private static void Open(Function f, bool onEntry)
+    // the same frame, it would close the loop's. `bytes` is the most the
+    // region holds in one call, as the link proved it (0: not known).
+    private static void Open(Function f, bool onEntry, long bytes = 0)
     {
         // Never inlined: the record names the boundary's own frame, and a
         // caller's would outlive a throw the caller catches.
@@ -1000,7 +1008,7 @@ public sealed class RegionPointsTo : IModulePass
         Instr[] open =
         {
             new Instr { Op = Opcode.FramePointer, Dest = frame, Line = f.Line },
-            new Instr { Op = Opcode.Call, Callee = Enter, Dest = handle, Operands = { new RegOperand(frame) }, Line = f.Line },
+            new Instr { Op = Opcode.Call, Callee = Enter, Dest = handle, Operands = { new RegOperand(frame), new ImmOperand(bytes, IrTypes.Word) }, Line = f.Line },
         };
         at.Instrs.InsertRange(k0, open);
         // Opened further in: a return that never passed there hands RegionLeave
@@ -1531,9 +1539,10 @@ public sealed class RegionPointsTo : IModulePass
     /// back what the lap before made in it after -- and RegionLeave on every
     /// edge out of the loop and before every return, each handle -1 wherever
     /// its loop is not running, which RegionLeave does nothing with. The
-    /// function is never inlined: the record names its own frame.
+    /// function is never inlined: the record names its own frame. Each lap
+    /// is handed the most it makes, by header (`lapBytes`; 0: not known).
     /// </summary>
-    private static void OpenLoops(Function f, List<int> headers)
+    private static void OpenLoops(Function f, List<int> headers, IReadOnlyDictionary<int, long>? lapBytes = null)
     {
         Cfg cfg = new(f);
         var loops = NaturalLoops(f, cfg).Where(l => headers.Contains(l.Header.Order) && !cfg.IsRoot(l.Header)).ToList();
@@ -1547,10 +1556,11 @@ public sealed class RegionPointsTo : IModulePass
         {
             VReg handle = f.NewReg(IrTypes.Word, "loopregion");
             handles.Add(handle);
+            long bytes = lapBytes?.GetValueOrDefault(header.Order) ?? 0;
             int line = header.Instrs.Count > 0 ? header.Instrs[0].Line : f.Line;
             onEntry.Add(new Instr { Op = Opcode.Copy, Dest = handle, Operands = { new ImmOperand(-1, IrTypes.Word) }, Line = f.Line });
             (tops.TryGetValue(header, out List<Instr>? t) ? t : tops[header] = new()).Add(
-                new Instr { Op = Opcode.Call, Callee = LoopTop, Dest = handle, Operands = { new RegOperand(handle), new RegOperand(frame) }, Line = line });
+                new Instr { Op = Opcode.Call, Callee = LoopTop, Dest = handle, Operands = { new RegOperand(handle), new RegOperand(frame), new ImmOperand(bytes, IrTypes.Word) }, Line = line });
             HashSet<Block> outs = new(ReferenceEqualityComparer.Instance);
             foreach (Block b in body)
                 foreach (Block s in cfg.Succs(b))

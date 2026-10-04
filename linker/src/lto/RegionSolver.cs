@@ -1772,6 +1772,7 @@ public static class RegionSolver
             foreach (int f in opened) For(f).Boundaries.Add(_functions[f].Name);
             foreach ((int f, int site) in taken) For(f).Sites.Add((_functions[f].Name, site));
             foreach (LoopRegion loop in loops) For(loop.Function).Loops.Add((_functions[loop.Function].Name, loop.Shape.Header));
+            Sizes(opened, loops, taken, For);
             if (_report is not null) Report(chosen, opened, taken, madeBy);
             // --region-report +sites: every site's verdict, for weighing against where the bytes go.
             if (_report is not null && _report.Contains("+sites"))
@@ -2714,6 +2715,201 @@ public static class RegionSolver
                     }
                 if (loops.Count == before) return taken;
             }
+        }
+
+        // ---- what a region holds -----------------------------------------------
+        //
+        // THE BYTES A REGION NEEDS, where they can be proved: for a boundary
+        // opened, the most its region holds in one call; for a loop given a
+        // region, the most one lap makes in it -- handed to RegionEnter and
+        // RegionLoop, which lay the region down where all of it fits rather
+        // than growing the arena by guesses (Gc, "regions").
+        //
+        // What a scope holds -- a function's call, or a lap of one of its
+        // loop regions -- is what stays in the region until it ends, OWN,
+        // and above it at most one region opened inside at a time, PEAK: a
+        // boundary called, or an inner loop's region -- its record and a lap
+        // -- each given back before the next opens. Own is every site taken
+        // there -- its block's bytes times how often it runs in the scope
+        // (RegionFunction.Repeats) -- and the own of every function called
+        // there that is no boundary, times how often the call runs (the most
+        // of its targets'). A call is weighed only where what it reaches can
+        // make something in a region (Contributes), and nothing that runs
+        // only on the way to a throw (RegionFunction.Throwing): past its size
+        // a region grows as an unsized one does. Nothing is proved where a
+        // taken site's size is not a constant, where a site or a call that
+        // makes something runs in a loop of laps not bounded, in a call
+        // nobody can name, or in recursion.
+
+        // Past this, a region is not sized.
+        private const long MostRegionBytes = 1L << 40;
+
+        private void Sizes(List<int> opened, List<LoopRegion> loops, HashSet<(int, int)> taken, Func<int, RegionFacts> facts)
+        {
+            if (opened.Count == 0 && loops.Count == 0) return;
+            int count = _functions.Count;
+            int word = _units.Count > 0 ? _units[0].WordSize : 4;
+            long record = RegionLayout.Record(word);
+            bool[] boundary = new bool[count];
+            foreach (int f in opened) boundary[f] = true;
+            Dictionary<int, List<int>> loopHeaders = new();
+            foreach (LoopRegion loop in loops) (loopHeaders.TryGetValue(loop.Function, out var l) ? l : loopHeaders[loop.Function] = new()).Add(loop.Shape.Header);
+            HashSet<int>? Targets(int f, int k) => _functions[f].Calls[k].Callee is { } name ? CallFunctions(_unitOf[f], name) : null;
+
+            // WHAT CAN MAKE SOMETHING IN A REGION: a taken site, a loop region
+            // or a boundary of its own, a call nobody can name, or a call of
+            // what can.
+            bool[] contributes = new bool[count];
+            List<int>[] callers = new List<int>[count];
+            Stack<int> next = new();
+            for (int f = 0; f < count; f++)
+            {
+                RegionFunction function = _functions[f];
+                bool own = boundary[f] || loopHeaders.ContainsKey(f);
+                for (int site = 0; site < function.Sites.Length && !own; site++) own = taken.Contains((f, site));
+                for (int k = 0; k < function.Calls.Count; k++)
+                {
+                    if (Targets(f, k) is not { } called) { own = true; continue; }
+                    foreach (int t in called) (callers[t] ??= new()).Add(f);
+                }
+                if (own) { contributes[f] = true; next.Push(f); }
+            }
+            while (next.TryPop(out int t))
+                if (callers[t] is { } list)
+                    foreach (int f in list)
+                        if (!contributes[f]) { contributes[f] = true; next.Push(f); }
+
+            Dictionary<int, (long Own, long Peak)?> calls = new();
+            Dictionary<int, long?> bounds = new();
+            HashSet<int> running = new();
+
+            // How often what is in loop `at` runs each time scope `scope` (a
+            // loop, or -1 for the call) runs: null when not known.
+            static long? Times(RegionFunction function, int at, int scope)
+            {
+                long times = 1;
+                for (int l = at; l != scope; l = function.Repeats[l].Parent)
+                {
+                    if (l < 0) return null;
+                    long trip = function.Repeats[l].Trip;
+                    if (trip <= 0 || times > MostRegionBytes / trip) return null;
+                    times *= trip;
+                }
+                return times;
+            }
+
+            // The loop region an item in loop `at` is made in: the innermost
+            // loop holding it that has one, -1 for the call's own; Unbounded
+            // where that is not known.
+            int RegionOf(RegionFunction function, HashSet<int> regions, int at)
+            {
+                if (at == RegionFunction.Unbounded) return RegionFunction.Unbounded;
+                for (int l = at; l >= 0; l = function.Repeats[l].Parent)
+                    if (regions.Contains(l)) return l;
+                return -1;
+            }
+
+            static long? Sum(long? a, long? b) => a is long x && b is long y && x + y <= MostRegionBytes ? x + y : null;
+
+            (long Own, long Peak)? Scope(int f, int scope)
+            {
+                RegionFunction function = _functions[f];
+                // Its loop regions, as loops of Repeats: each must be found.
+                HashSet<int> regions = new();
+                if (loopHeaders.TryGetValue(f, out List<int>? headers))
+                    foreach (int header in headers)
+                    {
+                        int at = Array.FindIndex(function.Repeats, r => r.Header == header);
+                        if (at < 0) return null;
+                        regions.Add(at);
+                    }
+                long? own = 0;
+                long peak = 0;
+                for (int site = 0; site < function.Sites.Length; site++)
+                {
+                    if (!taken.Contains((f, site))) continue;
+                    int at = function.LoopOfSite(site);
+                    if (at == RegionFunction.Throwing) continue;
+                    int region = RegionOf(function, regions, at);
+                    if (region != scope && region != RegionFunction.Unbounded) continue;
+                    if (region == RegionFunction.Unbounded || function.BytesOf(site) <= 0 || Times(function, at, scope) is not long times
+                        || function.BytesOf(site) > MostRegionBytes / times) return null;
+                    own = Sum(own, function.BytesOf(site) * times);
+                }
+                foreach (int inner in regions)
+                {
+                    if (RegionOf(function, regions, function.Repeats[inner].Parent) != scope) continue;
+                    if (Scope(f, inner) is not (long lapOwn, long lapPeak)) return null;
+                    peak = Math.Max(peak, record + lapOwn + lapPeak);
+                }
+                for (int k = 0; k < function.Calls.Count; k++)
+                {
+                    int at = function.LoopOfCall(k);
+                    if (at == RegionFunction.Throwing) continue;
+                    int region = RegionOf(function, regions, at);
+                    if (region != scope && region != RegionFunction.Unbounded) continue;
+                    if (Targets(f, k) is not { } called) return null;
+                    long most = 0;
+                    foreach (int t in called)
+                    {
+                        if (!contributes[t]) continue;
+                        if (region == RegionFunction.Unbounded) return null;
+                        if (boundary[t])
+                        {
+                            if (Bound(t) is not long b) return null;
+                            peak = Math.Max(peak, record + b);
+                            continue;
+                        }
+                        if (Call(t) is not (long calledOwn, long calledPeak)) return null;
+                        most = Math.Max(most, calledOwn);
+                        peak = Math.Max(peak, calledPeak);
+                    }
+                    if (most == 0) continue;
+                    if (Times(function, at, scope) is not long times || most > MostRegionBytes / times) return null;
+                    own = Sum(own, most * times);
+                }
+                return own is long o && o + peak <= MostRegionBytes ? (o, peak) : null;
+            }
+
+            // A call of a function that is no boundary: what it leaves in the
+            // region it runs in. Recursion is not sized.
+            (long Own, long Peak)? Call(int f)
+            {
+                if (calls.TryGetValue(f, out var known)) return known;
+                if (!running.Add(f)) return null;
+                var held = Scope(f, -1);
+                running.Remove(f);
+                return calls[f] = held;
+            }
+
+            // A boundary's region: the most it holds in one call, its record apart.
+            long? Bound(int f)
+            {
+                if (bounds.TryGetValue(f, out long? known)) return known;
+                if (!running.Add(f)) return null;
+                long? bound = Scope(f, -1) is (long o, long p) ? o + p : null;
+                running.Remove(f);
+                return bounds[f] = bound;
+            }
+
+            bool Reported(int f) => _report is not null && _report.Any(w => _functions[f].Name.Contains(w, StringComparison.Ordinal));
+            int sized = 0;
+            foreach (int f in opened)
+            {
+                long? bound = Bound(f);
+                if (bound is long b && b > 0) { facts(f).BoundaryBytes[_functions[f].Name] = b; sized++; }
+                if (Reported(f)) Log($"region of {_functions[f].Name}: " + (bound is long n ? n + " bytes" : "not sized"));
+            }
+            foreach (LoopRegion loop in loops)
+            {
+                RegionFunction function = _functions[loop.Function];
+                int at = Array.FindIndex(function.Repeats, r => r.Header == loop.Shape.Header);
+                long? lap = null;
+                if (at >= 0 && !running.Contains(loop.Function)) { running.Add(loop.Function); lap = Scope(loop.Function, at) is (long o, long p) ? o + p : null; running.Remove(loop.Function); }
+                if (lap is long b && b > 0) { facts(loop.Function).LoopBytes[(function.Name, loop.Shape.Header)] = b; sized++; }
+                if (Reported(loop.Function)) Log($"loop region of {function.Name} at block {loop.Shape.Header}: " + (lap is long n ? n + " bytes a lap" : "not sized"));
+            }
+            if (_report is not null) Log($"sizes: {sized} of {opened.Count + loops.Count} regions sized");
         }
 
         // ---- reporting --------------------------------------------------------

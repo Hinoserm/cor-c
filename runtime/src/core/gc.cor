@@ -2171,6 +2171,15 @@ static class Gc
     // next, kept as the spare: a loop whose laps cross a chunk's end maps
     // nothing per lap.
     //
+    // A REGION THE COMPILER SIZED needs no more than it said. Where the link
+    // proved how many bytes a boundary's region holds at most in one call --
+    // or a loop's in one lap -- RegionEnter and RegionLoop are handed that
+    // count (0 where nothing was proved): the region is laid down where the
+    // whole of it fits, in the chunk being filled if it has the room, else
+    // in a chunk mapped for exactly that many bytes, rounded to the page,
+    // or in the spare if that is big enough. Only regions of a size nobody
+    // proved grow by the doubling rule above.
+    //
     // A CHUNK IS NAMED BY ITS END, where its trailer is: its first byte, the
     // chunks before and after it (0 for none), and how far it was filled
     // when the arena moved on past it (its first byte, for the spare). The
@@ -2188,6 +2197,8 @@ static class Gc
     /// Blocks made in regions: each given back when its region ends, as a
     /// free would have given it back (what Frees counts for the heap).
     public static long RegionBlocks;
+    /// Regions opened with the size the link proved for them.
+    public static long RegionsSized;
 
     // A record's block: header, the two words, footer, rounded as blocks are.
     const long RecordBytes = (Overhead + 2 * WordSize.Bytes + 7) & SizeMask;
@@ -2216,15 +2227,16 @@ static class Gc
 
     /// Opens a region for the call whose frame is `frame`: what RegionLeave
     /// is handed back, -1 when there is none (no regions on this platform, or
-    /// no memory to grow the arena by).
-    public static long RegionEnter(long frame)
+    /// no memory to grow the arena by). `bytes` is the most the region holds
+    /// besides its record, as the link proved it; 0 when it is not known.
+    public static long RegionEnter(long frame, long bytes)
     {
         long tb = Sys.ThreadBlock();
         if (tb == 0) return -1;
         if (Sys.Peek(tb + Tls.RegionBase) == 0)
         {
             if (!Platform.Regions()) return -1;
-            long chunk = MapChunk(tb, RecordBytes);
+            long chunk = MapChunk(tb, RecordBytes + (bytes > 0 ? bytes : 0), bytes > 0);
             if (chunk == 0) return -1;
             Sys.Poke(tb + Tls.RegionAt, ChunkStart(chunk));
             Sys.Poke(tb + Tls.RegionEnd, chunk);
@@ -2233,7 +2245,23 @@ static class Gc
         // Every region opened at or below this frame is one a throw has left:
         // two live calls never share a frame.
         PopStale(tb, frame, true);
+        // The record and all the region holds, together where they fit.
+        // Without the memory for that, it grows as an unsized one does.
+        if (bytes > 0)
+        {
+            Room(tb, RecordBytes + bytes);
+            RegionsSized = RegionsSized + 1;
+        }
         return OpenRecord(tb, frame);
+    }
+
+    // Room for `need` bytes at the arena's pointer: the chunk being filled,
+    // or the spare, or a chunk mapped for exactly them. False when the system
+    // has no memory to give.
+    static bool Room(long tb, long need)
+    {
+        if (Sys.Peek(tb + Tls.RegionAt) + need <= Sys.Peek(tb + Tls.RegionEnd)) return true;
+        return NextChunk(tb, need, true);
     }
 
     /// A LOOP'S REGION, at the top of every lap of a loop whose laps each
@@ -2244,7 +2272,10 @@ static class Gc
     /// bytes zeroed -- with any region still open inside it. Opened inside
     /// a region of the same frame, the function's own, and never closing
     /// it: two regions of one frame are one call's.
-    public static long RegionLoop(long record, long frame)
+    /// `bytes` is the most one lap makes in it, as the link proved it; 0
+    /// when it is not known. A lap whose bytes do not fit after the record
+    /// goes on in the spare, which the next lap's cut keeps.
+    public static long RegionLoop(long record, long frame, long bytes)
     {
         long tb = Sys.ThreadBlock();
         if (tb == 0) return -1;
@@ -2257,10 +2288,19 @@ static class Gc
                 Sys.Poke(tb + Tls.RegionOpen, record);
                 RegionFreedBytes = RegionFreedBytes + freed;
                 FreedBytes = FreedBytes + freed;
+                // Without the memory for the lap, it grows as an unsized
+                // region does (AllocRegion).
+                if (bytes > 0) Room(tb, bytes);
                 return record;
             }
         }
-        if (Sys.Peek(tb + Tls.RegionBase) == 0) return RegionEnter(frame);
+        long opened = Sys.Peek(tb + Tls.RegionBase) == 0 ? RegionEnter(frame, 0) : OpenLooped(tb, frame);
+        if (opened >= 0 && bytes > 0) Room(tb, bytes);
+        return opened;
+    }
+
+    static long OpenLooped(long tb, long frame)
+    {
         PopStale(tb, frame, false);
         return OpenRecord(tb, frame);
     }
@@ -2272,7 +2312,7 @@ static class Gc
         long record = Sys.Peek(tb + Tls.RegionAt);
         if (record + RecordBytes > Sys.Peek(tb + Tls.RegionEnd))
         {
-            if (!NextChunk(tb, RecordBytes)) return -1;
+            if (!NextChunk(tb, RecordBytes, false)) return -1;
             record = Sys.Peek(tb + Tls.RegionAt);
         }
         Stamp(record, RecordBytes, 0);
@@ -2336,8 +2376,9 @@ static class Gc
 
     // The innermost region's next `need` bytes do not fit in the chunk being
     // filled: on into the spare, if they fit there, or a chunk mapped for
-    // them. False when the system has no memory to give.
-    static bool NextChunk(long tb, long need)
+    // them -- for exactly them when `exact`, a region the compiler sized.
+    // False when the system has no memory to give.
+    static bool NextChunk(long tb, long need, bool exact)
     {
         long last = Sys.Peek(tb + Tls.RegionEnd);
         long next = ChunkAfter(last);
@@ -2346,7 +2387,7 @@ static class Gc
             DropChunks(tb, last);
             next = 0;
         }
-        if (next == 0) next = MapChunk(tb, need);
+        if (next == 0) next = MapChunk(tb, need, exact);
         if (next == 0) return false;
         // How far the chunk left behind is filled, before it stops being the
         // one the bump pointer is in.
@@ -2357,16 +2398,16 @@ static class Gc
     }
 
     // A chunk mapped after the one being filled, with room for `need` bytes
-    // and as big as the chunks up to it together: 0 when the system has no
-    // memory to give.
-    static long MapChunk(long tb, long need)
+    // and -- unless `exact` -- as big as the chunks up to it together: 0
+    // when the system has no memory to give.
+    static long MapChunk(long tb, long need, bool exact)
     {
         long w = WordSize.Bytes;
         long first = Sys.Peek(tb + Tls.RegionBase);
         long last = Sys.Peek(tb + Tls.RegionEnd);
         long bytes = need + TrailerBytes;
         long held = 0;
-        long c = first;
+        long c = exact ? 0 : first;
         while (c != 0)
         {
             held = held + (c + TrailerBytes - ChunkStart(c));
@@ -2512,7 +2553,7 @@ static class Gc
         if (need < Smallest) need = Smallest;
         if (at + need > Sys.Peek(tb + Tls.RegionEnd))
         {
-            if (!NextChunk(tb, need))
+            if (!NextChunk(tb, need, false))
             {
                 RegionMisses = RegionMisses + 1;
                 return AllocWord(bytes, kind);

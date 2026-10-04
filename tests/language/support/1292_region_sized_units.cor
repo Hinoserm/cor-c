@@ -1,0 +1,68 @@
+// The other unit of 1292_region_sized_by_the_compiler_across_units: work of
+// a fixed size -- a constant number of points, an array of them, a pair --
+// and work over its input, a word made for every field of a line.
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+namespace SizedUnits;
+
+public sealed class Point
+{
+    public readonly long X;
+    public readonly long Y;
+
+    public Point(long x, long y) { X = x; Y = y; }
+}
+
+public sealed class Pair
+{
+    public readonly Point A;
+    public readonly Point B;
+
+    public Pair(Point a, Point b) { A = a; B = b; }
+}
+
+public sealed class Word
+{
+    public readonly string Text;
+    public readonly int Round;
+
+    public Word(string text, int round) { Text = text; Round = round; }
+}
+
+public static class Work
+{
+    // Eight points, their array and a pair, whatever the seed: what its
+    // region holds is known before it runs.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long Fixed(int seed)
+    {
+        Point[] points = new Point[8];
+        for (int k = 0; k < 8; k++) points[k] = new Point(seed + k, k * 3);
+        Pair pair = new Pair(points[0], points[7]);
+        long sum = pair.A.X + pair.B.Y;
+        for (int k = 0; k < 8; k++) sum += points[k].X * points[k].Y;
+        return sum;
+    }
+
+    // A word for every field of the line, however many there are: what its
+    // region holds is known only as it runs. Read back after a collection.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long Fields(string line, int round)
+    {
+        List<Word> words = new List<Word>();
+        int at = 0;
+        while (at < line.Length)
+        {
+            int end = at;
+            while (end < line.Length && line[end] != ',') end++;
+            words.Add(new Word(line.Substring(at, end - at), round));
+            at = end + 1;
+        }
+        if ((round & 7) == 0) GC.Collect();
+        long sum = 0;
+        foreach (Word w in words) sum += w.Text.Length * 10 + (w.Text[0] - '0') + w.Round;
+        return sum;
+    }
+}

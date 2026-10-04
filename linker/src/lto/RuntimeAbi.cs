@@ -27,11 +27,15 @@ public static class RuntimeAbi
     public const string WriteBarrierValues = "m_Runtime_WriteBarrierValues_2_" + Word + "_" + Word;
     public const string CardMark = "m_Runtime_CardMark_1_" + Word;
     public const string CardMarkObject = "m_Runtime_CardMarkObject_1_" + Word;
-    /// <summary>Regions (RegionPointsTo, RegionSolver): opened on a boundary's entry, given back on its return, allocated in.</summary>
-    public const string RegionEnter = "m_Runtime_RegionEnter_1_" + Word;
+    /// <summary>
+    /// Regions (RegionPointsTo, RegionSolver): opened on a boundary's entry,
+    /// given back on its return, allocated in. RegionEnter and RegionLoop
+    /// take, last, the bytes the link proved the region holds (0: not known).
+    /// </summary>
+    public const string RegionEnter = "m_Runtime_RegionEnter_2_" + Word + "_" + Word;
     public const string RegionLeave = "m_Runtime_RegionLeave_1_" + Word;
     /// <summary>A loop's region at the top of every lap (RegionPointsTo, "loops").</summary>
-    public const string RegionLoop = "m_Runtime_RegionLoop_2_" + Word + "_" + Word;
+    public const string RegionLoop = "m_Runtime_RegionLoop_3_" + Word + "_" + Word + "_" + Word;
     /// <summary>A catch closes the regions it caught out of (every landing pad of a program with regions).</summary>
     public const string RegionCatch = "m_Runtime_RegionCatch_1_" + Word;
     public const string AllocRegion = "m_Runtime_AllocRegion_3_" + Word + "_" + Word + "_" + Word;

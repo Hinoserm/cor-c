@@ -790,10 +790,11 @@ static class Runtime
     /// REGIONS: a call the compiler proved leaves dead, at its return, every
     /// object certain allocations make for it opens one on entry and gives
     /// it back on every way out. What it hands RegionLeave is what this
-    /// returned. See Gc, "regions".
-    public static nint RegionEnter(nint frame)
+    /// returned. `bytes` is the most the region holds in one call, as the
+    /// link proved it, 0 when it could not. See Gc, "regions".
+    public static nint RegionEnter(nint frame, nint bytes)
     {
-        return (nint)Gc.RegionEnter((long)(nuint)frame);
+        return (nint)Gc.RegionEnter((long)(nuint)frame, (long)bytes);
     }
 
     /// A catch's own frame: every region opened by a frame below it -- a
@@ -806,9 +807,10 @@ static class Runtime
     /// A loop's region at the top of a lap: opened on the first (`record`
     /// -1), what the last lap made in it given back on every other. What it
     /// answers is the next lap's `record`, and RegionLeave's on the way out.
-    public static nint RegionLoop(nint record, nint frame)
+    /// `bytes` is the most one lap makes in it, 0 when nobody proved it.
+    public static nint RegionLoop(nint record, nint frame, nint bytes)
     {
-        return (nint)Gc.RegionLoop(record == -1 ? -1 : (long)(nuint)record, (long)(nuint)frame);
+        return (nint)Gc.RegionLoop(record == -1 ? -1 : (long)(nuint)record, (long)(nuint)frame, (long)bytes);
     }
 
     public static void RegionLeave(nint outer)
