@@ -900,6 +900,10 @@ public sealed partial class Binder
         // of every one, the original then dropped, was a unit's whole binding
         // made twice for the collector.
         b.CheckBodyWork();
+        // No await under a lock, nothing awaited or allocated in an interrupt
+        // handler: across the unit, now that every body is bound
+        // (Binder.AwaitChecks).
+        b.CheckAsyncSafety();
         b._r.StaticBytes = b._staticNext;
         return b._r;
     }
@@ -4096,6 +4100,7 @@ public sealed partial class Binder
             PopScope();
             SettleCapturedCells();
             _r.FrameSize[md] = _maxSlot;
+            NoteBoundBody(_method, md);
             _method = null;
         }
         _thisType = null;

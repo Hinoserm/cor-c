@@ -1,0 +1,47 @@
+// test: await under a lock marked [NoAwaitWhileHeld] refused
+// expect-compile-error: cannot await while 'TableGate' (its Enter) is held
+// A lock of the program's own is marked to be one; a type deriving from it
+// is one too, and a TryEnter that answered true holds it in its branch.
+
+using System;
+using System.Threading.Tasks;
+
+[NoAwaitWhileHeld]
+class TableGate
+{
+    protected long Word;
+    public void Enter() { Word = 1; }
+    public bool TryEnter() { if (Word != 0) return false; Word = 1; return true; }
+    public void Leave() { Word = 0; }
+}
+
+class RowGate : TableGate
+{
+}
+
+static class Program
+{
+    static readonly RowGate Rows = new RowGate();
+
+    static async Task<int> Update()
+    {
+        if (Rows.TryEnter())
+        {
+            try
+            {
+                await Task.Yield();
+                return 1;
+            }
+            finally
+            {
+                Rows.Leave();
+            }
+        }
+        return 0;
+    }
+
+    static async Task Main()
+    {
+        Console.WriteLine(await Update());
+    }
+}
