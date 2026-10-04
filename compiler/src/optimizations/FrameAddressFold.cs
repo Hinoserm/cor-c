@@ -60,8 +60,13 @@ public sealed class FrameAddressFold : IPass
             try { offset = checked(address.Offset + i.Offset); }
             catch (OverflowException) { continue; }
             if (i.Size <= 0 || offset < 0 || offset > address.Slot.Bytes - i.Size) continue;
+            // EVERY MARK THE ACCESS CARRIED: the field it is (Field), which the
+            // owned-field and owned-elements rules read -- a load of a
+            // reference field they find untagged they take for a number's
+            // (OwnedElements.Uses) -- the field region inference keeps it
+            // apart by (Family), and whether it is a number (Number).
             Instr replacement = new() { Op = i.Op, Dest = i.Dest, Size = i.Size,
-                Signed = i.Signed, Offset = offset, Line = i.Line, Number = i.Number, Family = i.Family };
+                Signed = i.Signed, Offset = offset, Line = i.Line, Number = i.Number, Family = i.Family, Field = i.Field };
             replacement.Operands.Add(new SlotOperand(address.Slot));
             replacement.Operands.AddRange(i.Operands.Skip(1));
             block.Instrs[index] = replacement;
