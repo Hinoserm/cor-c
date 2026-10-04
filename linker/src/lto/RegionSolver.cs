@@ -1970,16 +1970,21 @@ public static class RegionSolver
         // label's address (RegionSummary). A loop is given a region where, in
         // every copy of its function, no site taken by the boundaries is
         // refused for it -- but what a lap makes and carries into the next
-        // only through what the loop itself writes, which goes to the heap
-        // -- and where every lap that goes round makes, in some copy, with
-        // no boundary between, something the region takes; a loop that makes
-        // something only on a path seldom taken pays for no call at the top
-        // of every lap. Then a site is taken when, besides what the
-        // boundaries ask, no loop above any of its objects -- one in whose
-        // body it is, or whose calls reach the copy that makes it -- finds it
-        // live where a lap ends: whichever region is innermost when it is
-        // made, it is dead by that region's end. And a loop with nothing taken
-        // beneath it is given no region after all.
+        // only through what the loop itself writes, which goes to the heap,
+        // and what a lap makes, with no boundary between the loop and its
+        // maker, that is live where a lap ends: the boundary taking it is the
+        // copy's own or one above, so it too goes to the heap, where fewer
+        // sites go there than every lap makes for the loop's region. What a
+        // boundary inside the lap takes is never sent there; a loop that
+        // would refuse it gets no region. And where every lap that goes round
+        // makes, in some copy, with no boundary between, something the region
+        // takes; a loop that makes something only on a path seldom taken
+        // pays for no call at the top of every lap. Then a site is taken
+        // when, besides what the boundaries ask, no loop above any of its
+        // objects -- one in whose body it is, or whose calls reach the copy
+        // that makes it -- finds it live where a lap ends: whichever region
+        // is innermost when it is made, it is dead by that region's end. And
+        // a loop with nothing taken beneath it is given no region after all.
 
         /// <summary>The most copies and objects walked choosing loops: past it, the loops left get no region.</summary>
         private const long LoopBudget = 50_000_000;
@@ -2093,20 +2098,33 @@ public static class RegionSolver
         /// Whether one of `calls` of copy `c` always makes something `takes`
         /// (RegionPointsTo.AlwaysMakes): a site its callee makes on every way
         /// to a return, or a call it makes on every way there, through no
-        /// boundary copy.
+        /// boundary copy. Given `into`, every such site is gathered there
+        /// rather than the first found answering.
         /// </summary>
-        private bool AlwaysMakes(int c, int[] calls, Dictionary<int, List<int>> madeBy, Func<int, bool> takes, HashSet<int> seen, int depth)
+        private bool AlwaysMakes(int c, int[] calls, Dictionary<int, List<int>> madeBy, Func<int, bool> takes, HashSet<int> seen, int depth, HashSet<(int, int)>? into = null)
         {
             if (depth > AlwaysDepth) return false;
+            bool found = false;
             foreach (int k in calls)
                 foreach (int t in Targets(c, k))
                 {
                     if (_isBoundary[t] || !seen.Add(t)) continue;
                     RegionFunction g = _functions[_copyFunction[t]];
-                    if (madeBy.TryGetValue(t, out List<int>? made) && made.Any(o => Array.BinarySearch(g.MustSites, _objectSite[o]) >= 0 && takes(o))) return true;
-                    if (AlwaysMakes(t, g.MustCalls, madeBy, takes, seen, depth + 1)) return true;
+                    if (madeBy.TryGetValue(t, out List<int>? made))
+                        foreach (int o in made)
+                        {
+                            if (Array.BinarySearch(g.MustSites, _objectSite[o]) < 0 || !takes(o)) continue;
+                            if (into is null) return true;
+                            into.Add(SiteOf(o));
+                            found = true;
+                        }
+                    if (AlwaysMakes(t, g.MustCalls, madeBy, takes, seen, depth + 1, into))
+                    {
+                        if (into is null) return true;
+                        found = true;
+                    }
                 }
-            return false;
+            return found;
         }
 
         /// <summary>
@@ -2114,8 +2132,10 @@ public static class RegionSolver
         /// take (`verdict`, whose NearestAbove is the boundaries' state): in
         /// every copy, sound -- nothing taken that is made beneath the loop,
         /// in its body or in a copy its calls reach, live where a lap ends,
-        /// but what a lap carries only through what the loop writes -- and in
-        /// some copy, worth a call at the top of every lap.
+        /// but what a lap carries only through what the loop writes, and what
+        /// a lap makes through no boundary, which TakenWithLoops sends to the
+        /// heap -- in some copy, worth a call at the top of every lap, and
+        /// sending fewer sites to the heap than every lap makes for it.
         /// </summary>
         private List<LoopRegion> SelectLoops(Verdict verdict, Dictionary<int, List<int>> madeBy, bool[] beforeBlock)
         {
@@ -2133,6 +2153,20 @@ public static class RegionSolver
                     List<(int, HashSet<int>, HashSet<int>)> instances = new();
                     bool sound = true, worth = false;
                     string? why = null;
+                    // TO THE HEAP INSTEAD: a site the boundaries take that is
+                    // live where a lap ends, made with no boundary between the
+                    // loop and its maker -- the boundary taking it is this
+                    // copy's own or one above it. TakenWithLoops refuses it
+                    // wherever the loop keeps its region, so it is made on the
+                    // heap; weighed against what every lap makes that the
+                    // loop's region takes. A lap that only sometimes makes
+                    // something for it -- a list grown now and then -- gives
+                    // no reason to lose a site made on every one. And the
+                    // loop must take more than it sends away: a site it takes
+                    // that a boundary took already is only given back sooner,
+                    // where one sent to the heap is left to the collector.
+                    HashSet<(int, int)> forced = new(), gained = new();
+                    List<(int Copy, List<int>? Own, Func<int, bool> Takes)> weigh = new();
                     foreach (int c in copies)
                     {
                         (HashSet<int> all, HashSet<int> near) = Reached(c, loop.Calls);
@@ -2153,33 +2187,55 @@ public static class RegionSolver
                         // what the loop itself writes. Refused by the region, it
                         // goes to the heap, as RegionPointsTo sends it.
                         bool Carried(int o) => lapMade.Contains(o) && lapLive.Contains(o) && !kept.Contains(o) && !Outlives(o, c);
+                        bool Takes(int o) => !verdict.Refuser.ContainsKey(o) && !Lap(o);
                         // Beneath it: the body's own sites, and every copy its calls reach.
                         IEnumerable<int> under = (own ?? new List<int>()).Where(o => all.Contains(c) || InBody(o))
                             .Concat(all.Where(a => a != c).SelectMany(a => madeBy.GetValueOrDefault(a) ?? new List<int>()));
                         foreach (int o in under)
                         {
                             _loopWalked++;
-                            if (verdict.Taken.Contains(SiteOf(o)) && Lap(o) && !Carried(o))
+                            if (!verdict.Taken.Contains(SiteOf(o)) || !Lap(o) || Carried(o)) continue;
+                            if (lapMade.Contains(o))
                             {
-                                sound = false;
-                                why = DescribeObject(o) + " is live where a lap ends";
-                                break;
+                                forced.Add(SiteOf(o));
+                                continue;
                             }
+                            // Made beneath a boundary inside the lap: sending it
+                            // to the heap would take from that boundary.
+                            sound = false;
+                            why = DescribeObject(o) + " is live where a lap ends";
+                            break;
                         }
                         if (!sound) break;
                         instances.Add((c, all, lapLive));
+                        weigh.Add((c, own, Takes));
                         if (worth) continue;
-                        bool Takes(int o) => !verdict.Refuser.ContainsKey(o) && !Lap(o);
                         worth = own is not null && own.Any(o => Array.BinarySearch(loop.AlwaysSites, _objectSite[o]) >= 0 && Takes(o))
                             || AlwaysMakes(c, loop.AlwaysCalls, madeBy, Takes, new HashSet<int>(), 0);
                     }
+                    // Only where something goes to the heap: what every lap
+                    // makes, gathered in full.
+                    if (sound && worth && forced.Count > 0)
+                        foreach ((int c, List<int>? own, Func<int, bool> takes) in weigh)
+                        {
+                            if (own is not null)
+                                foreach (int o in own)
+                                    if (Array.BinarySearch(loop.AlwaysSites, _objectSite[o]) >= 0 && takes(o)) gained.Add(SiteOf(o));
+                            AlwaysMakes(c, loop.AlwaysCalls, madeBy, takes, new HashSet<int>(), 0, gained);
+                        }
+                    gained.ExceptWith(forced);
+                    bool weighed = forced.Count == 0 || forced.Count < gained.Count;
                     bool reported = _report is not null && _report.Any(w => function.Name.Contains(w, StringComparison.Ordinal));
-                    if (sound && worth)
+                    if (sound && worth && weighed)
                     {
                         chosen.Add(new LoopRegion(f, loop, instances));
-                        if (reported) Log($"loop region {function.Name} at block {loop.Header}");
+                        if (reported) Log($"loop region {function.Name} at block {loop.Header}" + (forced.Count > 0
+                            ? $", {forced.Count} sites to the heap ({string.Join(", ", forced.Select(DescribeSite))}) for {gained.Count} every lap makes ({string.Join(", ", gained.Select(DescribeSite))})" : ""));
                     }
-                    else if (reported) Log($"no loop region {function.Name} at block {loop.Header}: " + (sound ? "no lap always makes what it would take" : why));
+                    else if (reported)
+                        Log($"no loop region {function.Name} at block {loop.Header}: " + (!sound ? why
+                            : !worth ? "no lap always makes what it would take"
+                            : $"sends {forced.Count} sites to the heap, every lap makes {gained.Count} it takes"));
                 }
             }
             if (_loopWalked >= LoopBudget) Log("loops: past the budget, the loops left get no region");
@@ -2354,6 +2410,13 @@ public static class RegionSolver
                         + (node - _copyBase[c] == f.Parameters ? " (its return)" : node - _copyBase[c] < f.Parameters ? " (a parameter)" : "") : "a node";
                 }
             return "a node";
+        }
+
+        private string DescribeSite((int Function, int Site) key)
+        {
+            RegionFunction f = _functions[key.Function];
+            RegionSite s = f.Sites[key.Site];
+            return f.Name + " line " + s.Line + " " + (s.Table ?? "block");
         }
 
         private string DescribeObject(int o)
