@@ -1,6 +1,6 @@
 // Region allocation: a boundary that makes many small objects, all dead by
 // its return, so the link makes them in its region (Runtime.AllocRegion's
-// fast path, Gc.AllocRegionFast) and gives them back at once (RegionLeave's).
+// fast path, inlined there by the link) and gives them back at once (RegionLeave's).
 // Every timed result is checked outside timing; region-blocks says how many
 // were made in a region, which is 0 where the link took none.
 using System.Collections.Generic;
