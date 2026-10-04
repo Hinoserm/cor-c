@@ -37,6 +37,12 @@ public sealed class Function
     /// </summary>
     public bool SystemCode { get; init; }
 
+    /// <summary>What the unused-code report passes over: an auto-property's accessor, whose field is judged (MethodDecl.AutoAccessor).</summary>
+    public bool Unjudged { get; init; }
+
+    /// <summary>The full path of the source file, where SourceFile is its name; for the unused-code report, not kept in IR archives.</summary>
+    public string? SourcePath { get; init; }
+
     /// <summary>
     /// `[MethodImpl(MethodImplOptions.NoInlining)]`: every call stays a call,
     /// so the method keeps its own frame in a stack trace and its own entry

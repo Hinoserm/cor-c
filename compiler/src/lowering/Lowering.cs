@@ -254,7 +254,7 @@ public sealed partial class Lowering
     {
         foreach (TypeSymbol t in _b.Types.Values)
         {
-            if (t.Decl is not TypeDecl declared || SystemType(t) || declared.Elsewhere || declared.Specialised
+            if (t.Decl is not TypeDecl declared || SystemCode(t) || declared.Elsewhere || declared.Specialised
                 || declared.Canon is not null || declared.File == "<prelude>" || t.Decl.External
                 // A closure or state machine nobody wrote: the method it came
                 // from is the one judged (UsesCapture.CompilerMade).
@@ -263,21 +263,28 @@ public sealed partial class Lowering
             foreach (MethodSymbol m in t.Methods)
             {
                 if (m.Decl is not MethodDecl method || method.Body is null || method.LocalCopy || method.File == "<prelude>") continue;
-                if (method.OwnedImplementation == false) continue;
+                if (method.OwnedImplementation == false || method.AutoAccessor) continue;
                 if (_required.Contains(m)) continue;
-                _m.Unlowered.Add((true, Display(m), method.File, method.Line));
+                _m.Unlowered.Add((true, Display(m), Corsac.Lang.Metadata.UsesCapture.Where(declared.SourcePath, method.File), method.Line));
             }
             foreach (FieldSymbol f in t.Fields)
             {
-                if (!f.Static || _statics.Contains(f) || FieldDeclOf(f) is not FieldDecl field || field.Mods.HasFlag(Mods.Const)) continue;
-                _m.Unlowered.Add((false, t.Name + "." + f.Name, field.File, field.Line));
+                if (!f.Static || _statics.Contains(f) || FieldDeclOf(f) is not MemberDecl field || field.Mods.HasFlag(Mods.Const)) continue;
+                _m.Unlowered.Add((false, t.Name + "." + f.Name, Corsac.Lang.Metadata.UsesCapture.Where(declared.SourcePath, field.File), field.Line));
             }
         }
     }
 
-    /// <summary>The declaration a field came from, for its position (the unused-code report).</summary>
-    private static FieldDecl? FieldDeclOf(FieldSymbol f)
-        => f.Owner.Decl is TypeDecl declaring ? declaring.Members.OfType<FieldDecl>().FirstOrDefault(d => d.Name == f.Name) : null;
+    /// <summary>
+    /// The declaration a field came from, for its position (the unused-code
+    /// report): the field, or the auto-property whose `<Name>` it is.
+    /// </summary>
+    private static MemberDecl? FieldDeclOf(FieldSymbol f)
+    {
+        if (f.Owner.Decl is not TypeDecl declaring) return null;
+        string name = f.Name.StartsWith('<') && f.Name.EndsWith('>') ? f.Name[1..^1] : f.Name;
+        return declaring.Members.FirstOrDefault(d => d is FieldDecl or PropertyDecl && d.Name == name);
+    }
 
     /// <summary>The word holding a [ThreadStatic] field's number (Runtime.ThreadStaticCell).</summary>
     private static string ThreadStaticIndex(FieldSymbol f) => "ts_" + StaticSymbol(f);
@@ -311,8 +318,19 @@ public sealed partial class Lowering
     /// </summary>
     private static bool IsLibrary(TypeSymbol? t) => t?.Decl?.FromLibrary ?? false;
 
-    /// <summary>Whether a type is written in the system library's own sources (Function.SystemCode).</summary>
-    private static bool SystemCode(TypeSymbol? t) => t is not null && SystemType(t);
+    /// <summary>Whether a source file, by full path, is in the system library's trees (stdlib, runtime).</summary>
+    public static Func<string, bool> LibraryPath { get; set; } = _ => false;
+
+    /// <summary>
+    /// Whether a type is written in the system library's own sources
+    /// (Function.SystemCode): any file of its trees, not only those linked
+    /// by default -- a kernel compiles more of them by name.
+    /// </summary>
+    private static bool SystemCode(TypeSymbol? t)
+        => t?.Decl is TypeDecl d && (d.SourcePath is string path ? LibraryPath(path) : d.FromLibrary);
+
+    /// <summary>The full path of the file a type is declared in (Function.SourcePath).</summary>
+    private static string? SourcePathOf(TypeSymbol? t) => t?.Decl?.SourcePath;
 
     /// <summary>object's descriptor, the declaring type of a call to one of object's own virtuals.</summary>
     internal const string ObjectDispatch = "t_object";
@@ -573,7 +591,7 @@ public sealed partial class Lowering
             {
                 _m.Data.Add(new DataItem(ThreadStaticIndex(f), new byte[_t.WordSize])
                 {
-                    Zero = true, Align = _t.WordSize, FromLibrary = IsLibrary(f.Owner), SystemCode = SystemCode(f.Owner),
+                    Zero = true, Align = _t.WordSize, FromLibrary = IsLibrary(f.Owner), SystemCode = SystemCode(f.Owner), SourcePath = SourcePathOf(f.Owner),
                     Coalescible = f.Owner.Decl?.Specialised == true,
                     SourceFile = FieldDeclOf(f)?.File, Line = FieldDeclOf(f)?.Line ?? 0, Display = f.Owner.Name + "." + f.Name,
                 });
@@ -592,7 +610,7 @@ public sealed partial class Lowering
                                                                      || m.Name == "StaticConstructorBody$");
                 DataItem holder = new(StaticSymbol(f), new byte[size])
                 {
-                    Align = AlignFor(size, _t.Align64), FromLibrary = IsLibrary(f.Owner), SystemCode = SystemCode(f.Owner), ReadOnly = fixedField,
+                    Align = AlignFor(size, _t.Align64), FromLibrary = IsLibrary(f.Owner), SystemCode = SystemCode(f.Owner), SourcePath = SourcePathOf(f.Owner), ReadOnly = fixedField,
                     SourceFile = FieldDeclOf(f)?.File, Line = FieldDeclOf(f)?.Line ?? 0, Display = f.Owner.Name + "." + f.Name,
                 };
                 holder.Relocs.Add(new DataReloc(0, table, 0));
@@ -601,7 +619,7 @@ public sealed partial class Lowering
             }
             _m.Data.Add(new DataItem(StaticSymbol(f), new byte[size])
             {
-                Zero = true, Align = AlignFor(size, _t.Align64), FromLibrary = IsLibrary(f.Owner), SystemCode = SystemCode(f.Owner),
+                Zero = true, Align = AlignFor(size, _t.Align64), FromLibrary = IsLibrary(f.Owner), SystemCode = SystemCode(f.Owner), SourcePath = SourcePathOf(f.Owner),
                 Coalescible = f.Owner.Decl?.Specialised == true,
                 SourceFile = FieldDeclOf(f)?.File, Line = FieldDeclOf(f)?.Line ?? 0, Display = f.Owner.Name + "." + f.Name,
             });
@@ -636,7 +654,7 @@ public sealed partial class Lowering
         string sym = "sa_" + StaticSymbol(f);
         DataItem item = new(sym, block)
         {
-            Align = _t.Align64, FromLibrary = IsLibrary(f.Owner), SystemCode = SystemCode(f.Owner), Exported = false,
+            Align = _t.Align64, FromLibrary = IsLibrary(f.Owner), SystemCode = SystemCode(f.Owner), SourcePath = SourcePathOf(f.Owner), Exported = false,
             NoReferences = table.Element != "string" && !MayHoldReference(element),
         };
         item.Relocs.Add(new DataReloc(0, SequenceDescriptor(ElementKey(element), stride, isString: false, elementType: element), _t.DescriptorBytes));
@@ -2067,7 +2085,7 @@ public sealed partial class Lowering
         WriteWord(d, DescDepth * w, -1);
         WriteWord(d, DescFlags * w, TypeFlagInterface);
 
-        DataItem item = new(sym, d) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), SystemCode = SystemCode(t), Coalescible = t.Decl?.Specialised == true };
+        DataItem item = new(sym, d) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), SystemCode = SystemCode(t), SourcePath = SourcePathOf(t), Coalescible = t.Decl?.Specialised == true };
         _m.Data.Add(item);
         item.Relocs.Add(new DataReloc(DescName * w, InternString(FullTypeName(t)), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
@@ -2139,7 +2157,7 @@ public sealed partial class Lowering
         WriteWord(block, DescPayload * w, _t.ObjectHeaderBytes);
         if (t.Kind == TypeKind.Class && OwnsStorage(t)) WriteWord(block, DescGcFlags * w, GcOwnsStorage);
 
-        DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), SystemCode = SystemCode(t), Coalescible = t.Structural || t.Decl?.Specialised == true,
+        DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), SystemCode = SystemCode(t), SourcePath = SourcePathOf(t), Coalescible = t.Structural || t.Decl?.Specialised == true,
             Exported = t.Decl?.LocalOnly != true };
         _m.Data.Add(item);
         item.Relocs.Add(new DataReloc(DescName * w, InternString(FullTypeName(t)), 0));

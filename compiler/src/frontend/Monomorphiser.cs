@@ -160,6 +160,7 @@ public sealed class Monomorphiser
             ExplicitInterface = null, Line = made.Line, Col = made.Col,
             LocalCopy = made.LocalCopy, File = made.File, TemplateIndex = made.TemplateIndex,
             Scope = made.Scope, Namespace = made.Namespace, OwnedImplementation = made.OwnedImplementation,
+            AutoAccessor = made.AutoAccessor,
         };
         plain.WritableAttributes.AddRange(made.Attributes);
         plain.Params.AddRange(made.Params);
@@ -1843,6 +1844,7 @@ public sealed class Monomorphiser
                 // import of a symbol nothing provides.
                 made.LocalCopy = md.LocalCopy;
                 made.Fresh = md.Fresh;
+                made.AutoAccessor = md.AutoAccessor;
                 made.File = md.File;
                 made.TemplateIndex = md.TemplateIndex;
 

@@ -81,12 +81,14 @@ public static class UnusedReport
         List<(string File, int Line, string Text)> lines = new();
         int functions = 0, statics = 0;
         foreach (var group in all.Where(node => !node.Definition.FromLibrary && node.Definition.Display is not null)
-                     // By kind and place in the source: a generic method's
-                     // copies print their own types, and are still one method.
-                     .GroupBy(node => (node.Definition.Kind, node.Definition.File, node.Definition.Line)))
+                     // By kind, place in the source and member: a generic
+                     // method's copies print their own types and are still
+                     // one method, while a getter and setter on one line, or
+                     // `static int a, b;`, are two.
+                     .GroupBy(node => (node.Definition.Kind, node.Definition.File, node.Definition.Line, Member(node.Definition.Display!))))
         {
             if (group.Any(node => node.Reached)) continue;
-            string file = group.Key.File ?? "(no source)";
+            string file = Shown(group.Key.File);
             string display = group.First().Definition.Display!;
             if (group.Key.Kind == UsesNotes.Kind.Function)
             {
@@ -111,5 +113,22 @@ public static class UnusedReport
             text.Append(line.File).Append(':').Append(line.Line).Append(": ").Append(line.Text).Append('\n');
         if (path == "-") Console.Error.Write(text.ToString());
         else File.WriteAllText(path, text.ToString());
+    }
+
+    /// <summary>A source's path as the report prints it: from the current directory when it is beneath it.</summary>
+    static string Shown(string? file)
+    {
+        if (file is null) return "(no source)";
+        if (!Path.IsPathRooted(file)) return file;
+        string relative = Path.GetRelativePath(Directory.GetCurrentDirectory(), file);
+        return relative.StartsWith("..", StringComparison.Ordinal) ? file : relative;
+    }
+
+    /// <summary>The member's own name in a display (`List$int.Add(Int32 item)` is `Add`).</summary>
+    static string Member(string display)
+    {
+        int open = display.IndexOf('(');
+        string named = open < 0 ? display : display[..open];
+        return named[(named.LastIndexOf('.') + 1)..];
     }
 }

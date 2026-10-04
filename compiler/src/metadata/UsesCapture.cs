@@ -37,11 +37,11 @@ public static class UsesCapture
                 }
             }
             writes.ExceptWith(reads);
-            made.Add(new(UsesNotes.Kind.Function, function.Name, function.Exported, function.SystemCode, function.SourceFile, function.Line,
-                CompilerMade(function.Display) ? null : function.Display, reads.Order(StringComparer.Ordinal).ToArray(), writes.Order(StringComparer.Ordinal).ToArray()));
+            made.Add(new(UsesNotes.Kind.Function, function.Name, function.Exported, function.SystemCode, Where(function.SourcePath, function.SourceFile), function.Line,
+                function.Unjudged || CompilerMade(function.Display) ? null : function.Display, reads.Order(StringComparer.Ordinal).ToArray(), writes.Order(StringComparer.Ordinal).ToArray()));
         }
         foreach (DataItem item in module.Data)
-            made.Add(new(UsesNotes.Kind.Data, item.Name, item.Exported, item.SystemCode, item.SourceFile, item.Line, item.Display,
+            made.Add(new(UsesNotes.Kind.Data, item.Name, item.Exported, item.SystemCode, Where(item.SourcePath, item.SourceFile), item.Line, CompilerMade(item.Display) ? null : Property(item.Display),
                 item.Relocs.Select(relocation => relocation.Symbol).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray(),
                 Array.Empty<string>()));
         // What lowering never emitted (Module.Unlowered): nothing names it,
@@ -49,19 +49,37 @@ public static class UsesCapture
         // the source with the copies other units make of it.
         int unlowered = 0;
         foreach (var (method, display, file, line) in module.Unlowered)
-            made.Add(new(method ? UsesNotes.Kind.Function : UsesNotes.Kind.Data, "unlowered$" + unlowered++, false, false, file, line, display,
+            made.Add(new(method ? UsesNotes.Kind.Function : UsesNotes.Kind.Data, "unlowered$" + unlowered++, false, false, file, line,
+                CompilerMade(display) ? null : Property(display),
                 Array.Empty<string>(), Array.Empty<string>()));
         return made;
     }
 
     /// <summary>
-    /// The machinery's types the compiler made of what somebody wrote: a
-    /// lambda's closure, an iterator's or async method's state machine, an
-    /// array's interface view. Nobody wrote their methods, and what did write
-    /// them is judged instead: the method the lambda sits in reaches the
-    /// closure's descriptor, and through it the Invoke, whenever it runs.
+    /// The declaring type's full path when the definition is in that file;
+    /// a partial type's member written in another keeps its file's name.
+    /// </summary>
+    public static string? Where(string? path, string? file)
+        => path is not null && (file is null || Path.GetFileName(path) == file) ? path : file;
+
+    /// <summary>
+    /// What the compiler made of what somebody wrote. The machinery's types:
+    /// a lambda's closure, an iterator's or async method's state machine, an
+    /// array's interface view -- the method the lambda sits in reaches the
+    /// closure's descriptor, and through it the Invoke, whenever it runs. And
+    /// members no identifier can name: `StaticInit$`, `FieldInit$x`,
+    /// `StaticReady$` -- each the shadow of a declaration judged in its own
+    /// right.
     /// </summary>
     static readonly string[] MadeTypes = { "Lambda$", "Iter$", "Async$", "ArrayView$", "ArrayEnumerator$", "ValueTuple$" };
+
+    /// <summary>An auto-property's field (`Type.&lt;Name&gt;`) said as the property it is.</summary>
+    static string? Property(string? display)
+    {
+        if (display is null || !display.EndsWith('>')) return display;
+        int open = display.LastIndexOf(".<", StringComparison.Ordinal);
+        return open < 0 ? display : display[..(open + 1)] + display[(open + 2)..^1];
+    }
 
     static bool CompilerMade(string? display)
     {
@@ -69,6 +87,8 @@ public static class UsesCapture
         int open = display.IndexOf('(');
         string owner = open < 0 ? display : display[..open];
         int member = owner.LastIndexOf('.');
+        string name = member < 0 ? owner : owner[(member + 1)..];
+        if (name.Contains('$')) return true;
         if (member > 0) owner = owner[..member];
         return MadeTypes.Any(prefix => owner.StartsWith(prefix, StringComparison.Ordinal));
     }

@@ -3665,12 +3665,13 @@ static class ThreadStatics
 {
     /// The numbers given out so far. Every atomic here is the runtime's own
     /// (Sys.AtomicAdd, Sys.Cas, Sys.AtomicSwap), never Interlocked: a
-    /// freestanding kernel is built without the class library.
-    static int _fields;
+    /// freestanding kernel is built without the class library. They work on
+    /// a word, so the fields are words.
+    static nint _fields;
     /// Every thread's table, through its node.
     static ThreadStaticTable? _tables;
     /// Held while the list changes.
-    static int _lock;
+    static nint _lock;
 
     /// The cell of the field whose number is at `indexAt`, on this thread.
     public static long Cell(long indexAt, long bytes)

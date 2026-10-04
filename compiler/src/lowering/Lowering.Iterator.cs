@@ -156,7 +156,7 @@ public sealed partial class Lowering
             return;
         }
 
-        _f = new Function(Label(m), IrTypes.Of(m.Returns)) { SourceFile = _in, Line = decl.Line, Display = Display(m), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCode(m.Owner),
+        _f = new Function(Label(m), IrTypes.Of(m.Returns)) { SourceFile = _in, Line = decl.Line, Display = Display(m), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCode(m.Owner), SourcePath = SourcePathOf(m.Owner),
             Coalescible = decl.LocalCopy || m.Owner.Decl?.Specialised == true, Exported = m.Owner.Decl?.LocalOnly != true };
         _e = new Builder(_f, _f.NewBlock("entry"));
 
@@ -214,7 +214,7 @@ public sealed partial class Lowering
             string what = member.ExplicitMember ?? member.Name;
             Function f = new(Label(member), IrTypes.Of(member.Returns))
             {
-                SourceFile = _in, Line = it.Decl.Line, Display = Display(member), FromLibrary = IsLibrary(it.Method.Owner), SystemCode = SystemCode(it.Method.Owner),
+                SourceFile = _in, Line = it.Decl.Line, Display = Display(member), FromLibrary = IsLibrary(it.Method.Owner), SystemCode = SystemCode(it.Method.Owner), SourcePath = SourcePathOf(it.Method.Owner),
                 Coalescible = true, Exported = false,
             };
             VReg self = f.NewReg(IrTypes.Word, "this");
@@ -334,7 +334,7 @@ public sealed partial class Lowering
         int outsideYields = _yieldPoints;
         _yieldPoints = 0;
         _f = new Function(Label(it.MoveNext), IrType.I32) { SourceFile = _in, Line = decl.Line, Display = Display(it.MoveNext),
-            FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCode(m.Owner), Coalescible = true, Exported = false };
+            FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCode(m.Owner), SourcePath = SourcePathOf(m.Owner), Coalescible = true, Exported = false };
         Block entry = _f.NewBlock("entry");
         _e = new Builder(_f, entry);
 

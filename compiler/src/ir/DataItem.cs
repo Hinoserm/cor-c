@@ -35,6 +35,9 @@ public sealed class DataItem
     /// <summary>Written in the system library's own sources; see Function.SystemCode.</summary>
     public bool SystemCode { get; init; }
 
+    /// <summary>The full path of the source file; see Function.SourcePath.</summary>
+    public string? SourcePath { get; init; }
+
     /// <summary>
     /// Where a static field's word was declared, and its name as written
     /// (`Type.Field`), for the unused-code report (UsesNotes): null for data

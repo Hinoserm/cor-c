@@ -320,14 +320,11 @@ static class Platform
     /// answering nanoseconds since it started. A kernel's own threads may
     /// not latch the 8254 behind it -- a ring-1 kernel's view of time is
     /// the cell its kernel writes -- so one that has a clock installs this,
-    /// and Nanos asks the PIT (Clock) only where nobody did.
+    /// and Clock.Now, which the scheduler's timers read too, asks the PIT
+    /// only where nobody did.
     public static long NanosHook;
 
-    public static long Nanos()
-    {
-        if (NanosHook != 0) return Sys.Call(NanosHook, 0, 0, 0);
-        return Clock.Now();
-    }
+    public static long Nanos() => Clock.Now();
 
     // ---- the machine's memory, for GC.GetGCMemoryInfo ------------------------
 
@@ -715,6 +712,7 @@ static class Clock
 
     public static long Now()
     {
+        if (Platform.NanosHook != 0) return Sys.Call(Platform.NanosHook, 0, 0, 0);
         if (_interrupts)
         {
             // The interrupt counts whole periods; the counter says how far

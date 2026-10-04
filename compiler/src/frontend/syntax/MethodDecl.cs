@@ -5,6 +5,12 @@ public sealed class MethodDecl : MemberDecl
 {
     /// <summary>Null for a constructor.</summary>
     public TypeRef? Returns { get; init; }
+    /// <summary>
+    /// An auto-property's accessor, which the binder invents: uses through
+    /// the class read and write the field, and only an interface or a
+    /// virtual call comes in here (UsesCapture judges the field instead).
+    /// </summary>
+    public bool AutoAccessor { get; set; }
     // Made only when written: most have none, and a list each was the collector's.
     private static readonly List<TypeParam> NoTypeParams = new();
     private List<TypeParam>? _typeParams;

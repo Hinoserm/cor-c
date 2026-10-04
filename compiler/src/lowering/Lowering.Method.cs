@@ -164,10 +164,10 @@ public sealed partial class Lowering
 
         _f = new Function(Label(m), ReturnIr(m))
         {
-            SourceFile = _in, Line = decl.Line, Display = Display(m), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCode(m.Owner),
+            SourceFile = _in, Line = decl.Line, Display = Display(m), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCode(m.Owner), SourcePath = SourcePathOf(m.Owner),
             Coalescible = decl.LocalCopy || m.Owner.Decl?.Specialised == true,
             Exported = m.Owner.Decl?.LocalOnly != true,
-            NoInlining = NoInlining(decl),
+            NoInlining = NoInlining(decl), Unjudged = decl.AutoAccessor,
         };
         Block entry = _f.NewBlock("entry");
         _e = new Builder(_f, entry);

@@ -563,6 +563,7 @@ public static class Driver
         // System.Private.CoreLib: not every library a compile is given.
         Corsac.Lang.Lower.Lowering.SystemSources = new HashSet<string>(
             DefaultLibraries(Target.X86, false).Concat(DefaultLibraries(Target.X86, true)).Select(Path.GetFullPath), StringComparer.Ordinal);
+        Corsac.Lang.Lower.Lowering.LibraryPath = IsLibrarySource;
         // THE PROGRAM'S ASSEMBLY, as its types' full names qualify them: the
         // project's, which every unit of it is told, else the image's name.
         Corsac.Lang.Lower.Lowering.AssemblyName = Value(args, "--assembly")
@@ -604,6 +605,8 @@ public static class Driver
         // A shared object has no entry point and exports its declarations,
         // which is what --lib already means to the front end.
         bool library = args.Contains("--lib") || shared;
+        if (shared && Value(args, "--unused-report") is not null)
+            return Fail("--unused-report judges a program; a shared object is library code");
         List<string> sharedLibs = Values(args, "--link-shared");
         string name = Path.GetFileName(files[0]);
 
@@ -995,11 +998,9 @@ public static class Driver
                 return Fail($"--with '{with}': {e.Message}");
             }
         }
-        if (Value(args, "--unused-report") is string unusedReport)
-        {
-            Corsac.Lang.Lto.UnusedReport.Write(link, entry, unusedReport);
-            Corsac.Lang.Lto.UsesNotes.Strip(link.Select(input => input.Item2));
-        }
+        // The report before link-time optimisation; the notes out after it,
+        // whose IR archives' integrity hash covers them.
+        if (Value(args, "--unused-report") is string unusedReport) Corsac.Lang.Lto.UnusedReport.Write(link, entry, unusedReport);
 
         if (flat)
         {
@@ -1007,6 +1008,7 @@ public static class Driver
             // --flat --obj. Keep the original metadata and --with objects.
             TargetContract.Validate(link);
             Corsac.Lang.Lto.LinkTimeOptimizer.Run(link, !args.Contains("--no-lto") && !args.Contains("--no-opt"));
+            Corsac.Lang.Lto.UsesNotes.Strip(link.Select(input => input.Item2));
             // --map FILE: every symbol of the image, largest first, as `corc link` writes it.
             Linker.FlatImage image = Linker.LinkFlat(link, entry, checked((uint)(loadBase ?? 0x10000)), mapPath: Value(args, "--map"));
             File.WriteAllBytes(output, image.Bytes);
@@ -1023,6 +1025,7 @@ public static class Driver
             TargetContract.Validate(link);
             Corsac.Lang.Lto.LinkTimeOptimizer.Run(link, !args.Contains("--no-lto") && !args.Contains("--no-opt"));
         }
+        Corsac.Lang.Lto.UsesNotes.Strip(link.Select(input => input.Item2));
         // What a CORSAC program carries beyond its code: --subsystem
         // console|gui|service, --resources <segment file>, --icon-resource <id>.
         // See docs/software/GUI-EXECUTABLE.md in the OS repository.

@@ -11,13 +11,16 @@ work=$(mktemp -d "$root/build/unused-report.XXXXXX")
 source=tests/integration/unused/Program.cor
 
 expected() {
+    f=tests/integration/unused/Program.cor
     printf '%s\n' \
-        "Program.cor:5: static Program._counted is written but never read" \
-        "Program.cor:6: static Program._never is never used" \
-        "Program.cor:9: function Program.Unused() is never called" \
-        "Program.cor:10: function Program.OnlyFromUnused() is never called" \
-        "Program.cor:11: function Program.Chain() is never called" \
-        "Program.cor:16: function Never.Sides() is never called"
+        "$f:5: static Program._counted is written but never read" \
+        "$f:6: static Program._never is never used" \
+        "$f:8: static Program._right is never used" \
+        "$f:9: static Program.Half is written but never read" \
+        "$f:11: function Program.Unused() is never called" \
+        "$f:12: function Program.OnlyFromUnused() is never called" \
+        "$f:13: function Program.Chain() is never called" \
+        "$f:18: function Never.Sides() is never called"
 }
 
 check() {
