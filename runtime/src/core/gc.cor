@@ -4630,6 +4630,9 @@ static class Gc
 
         if (block == 0)
         {
+            // What the platform can say of where the heap went (a kernel's
+            // allocation sites), first: nothing it does may allocate.
+            if (OutOfMemoryHook != 0) Sys.Call(OutOfMemoryHook, need, 0, 0);
             SayNumber("out of memory: request ", need);
             SayNumber("out of memory: heap ", HeapChunks.HeapBytes);
             SayNumber("out of memory: since last collection ", _since);
@@ -4834,6 +4837,10 @@ static class Gc
     /// A label and a number on standard error without allocating: the
     /// digits are written into a fixed buffer on the stack of static data.
     static long _digits;            // a page for the digits, mapped in Start
+
+    /// Called as the allocator gives up, with the request: the platform's
+    /// own account of where the heap went. It must allocate nothing.
+    public static long OutOfMemoryHook;
 
     internal static void SayNumber(string label, long value)
     {
