@@ -27,6 +27,7 @@ public static class RegionEscapeTests
         ("a number parameter is handed no address", NumberParameters),
         ("a virtual call runs on each object only what it may", Guards),
         ("a wide call on a parameter is deferred for the targets that leak", WideDeferred),
+        ("past its groups, a call keeps apart the targets that leak", GroupsFull),
         ("a wide call deferred through two levels of parameters", WideDeferredTwoLevels),
         ("a node past MostHeld objects holds a blob of the rest", Saturation),
         ("a summary past MostCells is everything", MostCells),
@@ -538,6 +539,43 @@ public static class RegionEscapeTests
         Prog blind = Build();
         RegionEscape any = blind.Solve(targetsOn: null);
         Check(any.Global[keeper0] && any.Global[leaker] && any.Global[keeper2], "with no knowledge of what runs where, every receiver may run LeakThis");
+    }
+
+    /// <summary>
+    /// A call of twelve targets (past MostGuarded, under WideTargets: one of
+    /// its own) on what a list of many classes holds: LeakThis throws its
+    /// receiver, Keep1 to Keep11 keep nothing. Many makes eleven objects into
+    /// one node -- as elements loaded out of a list are -- and calls on it:
+    /// sites 0 to 9 each of a class that runs one KeepN of its own, site 10
+    /// of one that runs LeakThis. Ten sets of targets past the eighth group
+    /// (MostGroups) went to the whole call, LeakThis among it, and sites 8
+    /// and 9 were thrown with site 10. Now, with the groups full, the call
+    /// keeps LeakThis apart: only site 10 is global. A wide call (WideTargets
+    /// 4 here) answers the same.
+    /// </summary>
+    private static void GroupsFull()
+    {
+        foreach (int wide in new[] { 16, 4 })
+        {
+            Prog p = new();
+            p.Add("LeakThis", 1, 2).Constraints.Add(Leak(0));
+            for (int t = 1; t <= 11; t++) p.Add("Keep" + t, 1, 2);
+            p.Virtuals["__virtual:t_L+48"] = new[] { "LeakThis" }.Concat(Enumerable.Range(1, 11).Select(t => "Keep" + t)).ToArray();
+            RegionFunction many = p.Add("Many", 0, 2, sites: 11);
+            for (int s = 0; s < 11; s++) many.Constraints.Add(Site(1, s));
+            many.Calls.Add(new("__virtual:t_L+48", -1, new[] { 1 }));
+            int leakThis = p.Index("LeakThis");
+            int[] site = Enumerable.Range(0, 11).Select(s => p.Site("Many", s)).ToArray();
+            int[]? Runs(int f, int k, int at)
+            {
+                int s = Array.IndexOf(site, at);
+                return s < 0 ? null : s == 10 ? new[] { leakThis } : new[] { p.Index("Keep" + (s + 1)) };
+            }
+            RegionEscape e = p.Solve(wide: wide, targetsOn: Runs);
+            string how = wide == 16 ? "a call of its own" : "a wide call";
+            for (int s = 0; s < 10; s++) Check(!e.Global[site[s]], $"{how}: site {s} runs Keep{s + 1} only: not global");
+            Check(e.Global[site[10]], how + ": site 10 runs LeakThis: global");
+        }
     }
 
     /// <summary>

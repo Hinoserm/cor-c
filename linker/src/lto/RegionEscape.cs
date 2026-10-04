@@ -2865,6 +2865,9 @@ internal sealed class RegionEscape
             /// <summary>A wide call's targets kept apart on places (Deferred): each one's receiver node.</summary>
             public readonly Dictionary<int, int> Deferred = new();
             public bool? SplitOutside;
+            /// <summary>Its targets that leak an argument (LeaksArgument), once asked; null past MostDeferred of them (Dispatch).</summary>
+            public int[]? Leaky;
+            public bool LeakyAsked;
         }
 
         // The most sets of targets a call applies apart, past which a set is
@@ -2903,7 +2906,8 @@ internal sealed class RegionEscape
                 if (narrow is null && whole && _kind[o] is Kind.Place or Kind.Deep && Deferred(v, o, loc)) return;
                 if (narrow is null && _owner.Why is not null && _owner.Progress is { } tell && _owner.WhyFunction?.Invoke(v.F) == true)
                     tell($"escape graphs why: in {_owner._functions[v.F].Name}: wide call {v.Callee} runs any of its {v.Outside.Length} targets on {Describe(o)} +{_locOffset[loc]}");
-                Add(WideGroup(v, narrow ?? v.Outside), loc);
+                if (narrow is not null) Dispatch(v, narrow, loc);
+                else Add(WideGroup(v, v.Outside), loc);
                 return;
             }
             if ((whole || _locOffset[loc] == Any) && _kind[o] == Kind.Made && ClassTargets(v, o) is { } runs)
@@ -2912,7 +2916,7 @@ internal sealed class RegionEscape
                 foreach (int g in runs)
                     if (_memberSet.Contains(g)) Receives(g, loc);
                     else outside.Add(g);
-                if (outside.Count > 0) Add(Group(v, outside.ToArray()), loc);
+                if (outside.Count > 0) Dispatch(v, outside.ToArray(), loc);
                 return;
             }
             // Of more targets than are guarded one by one, all outside the
@@ -2937,6 +2941,57 @@ internal sealed class RegionEscape
                     + (_kind[o] == Kind.Made ? " (sites " + string.Join(",", SitesOfObject(o).Take(8)) + "; made from " + string.Join(", ", _origins[o].Take(3).Select(r => _owner.Lineage(r, 4))) + ")" : ""));
             foreach (int g in v.Inside) Receives(g, loc);
             if (v.Outside.Length > 0) Add(Group(v, v.Outside), loc);
+        }
+
+        /// <summary>
+        /// AN OBJECT OF KNOWN CLASSES, the targets outside the cycle its
+        /// sites' classes run (`targets`): their summaries applied to it, in
+        /// a group of their own (Group, WideGroup) -- while the call has room
+        /// for one. PAST MostGroups sets, the rest were all merged into the
+        /// whole call, and one override among them that leaks its receiver
+        /// (or an argument) took every object handed past the eighth set: the
+        /// elements of a list of many classes, each loaded and called on.
+        /// Now, full, the call keeps apart the targets that leak
+        /// (LeaksArgument), as on a place (Deferred): an object whose classes
+        /// run any of the others goes to one group of all of those that do
+        /// not leak, applied at once -- more targets than it runs, none that
+        /// leaks -- and to the group of each leaky target it runs, that
+        /// target alone. Every target it runs is applied to it, so this is
+        /// sound; only what it runs leaks it. With more leaky targets than
+        /// MostDeferred, the whole call, as before. (A target not solved yet
+        /// does not leak: what applied it, wide, is solved again when its
+        /// stand-in grows, and whatever is not wide was solved first.)
+        /// </summary>
+        private void Dispatch(VCall v, int[] targets, int loc)
+        {
+            bool full = v.Groups.Count >= MostGroups && !v.Groups.ContainsKey(targets) && !TargetsComparer.Instance.Equals(targets, v.Outside);
+            if (!full)
+            {
+                Add(v.Wide ? WideGroup(v, targets) : Group(v, targets), loc);
+                return;
+            }
+            if (!v.LeakyAsked)
+            {
+                v.LeakyAsked = true;
+                List<int> leaky = new();
+                foreach (int t in v.Outside)
+                    if (_owner.LeaksArgument(t)) { leaky.Add(t); if (leaky.Count > MostDeferred) break; }
+                v.Leaky = leaky.Count > MostDeferred ? null : leaky.ToArray();
+            }
+            if (v.Leaky is not { } apart)
+            {
+                Add(v.Wide ? WideGroup(v, v.Outside) : Group(v, v.Outside), loc);
+                return;
+            }
+            bool quiet = false;
+            foreach (int t in targets)
+            {
+                if (Array.IndexOf(apart, t) >= 0) Add(DeferredGroup(v, t), loc);
+                else quiet = true;
+            }
+            if (!quiet) return;
+            int[] rest = apart.Length == 0 ? v.Outside : v.Outside.Except(apart).ToArray();
+            Add(v.Wide ? WideGroup(v, rest, apart: true) : Group(v, rest, apart: true), loc);
         }
 
         /// <summary>
