@@ -1,0 +1,25 @@
+// test: is_qualified_generic
+// expect-exit: 0
+// expect-output:
+// True True True False
+//
+// A NAMESPACE-QUALIFIED GENERIC TYPE AFTER `is`, with or without a binding:
+// `o is System.Collections.Generic.ICollection<int>`. The dotted name was
+// taken for a constant pattern unless a binding or a brace followed it, and
+// its first segment was looked up as a variable ("'System' is not declared");
+// with a binding after the '>' the statement ended at the name. A '<' after
+// the name opens type arguments, which a constant never has.
+
+static class Program
+{
+    static int Main()
+    {
+        object o = new System.Collections.Generic.List<int>();
+        bool a = o is System.Collections.Generic.List<int>;
+        bool b = o is System.Collections.Generic.List<int> list && list.Count == 0;
+        bool c = o is System.Collections.Generic.ICollection<int>;
+        bool d = o is System.Collections.Generic.Dictionary<int, string>;
+        System.Console.WriteLine(a + " " + b + " " + c + " " + d);
+        return 0;
+    }
+}
