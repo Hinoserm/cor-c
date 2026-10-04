@@ -232,6 +232,8 @@ public sealed class UnitBackend : IUnitBackend
                     taken = 0;
                 }
                 Interlocked.Add(ref _lifetimes, taken);
+                // Its frees before the boundary's leave (RegionPointsTo.LeaveLast).
+                RegionPointsTo.LeaveLast(function);
                 new Inline { SmallBody = 40, GrowthLimit = 1024, ConstantBranchBody = 160, FreshOwnerBody = 0, Keep = growers }.Run(local);
                 cleanup.Run(local);
                 // AND AGAIN OVER WHAT THAT INLINED: an imported body is the IR
@@ -250,6 +252,7 @@ public sealed class UnitBackend : IUnitBackend
                 if (more > 0)
                 {
                     Interlocked.Add(ref _lifetimes, more);
+                    RegionPointsTo.LeaveLast(function);
                     new Inline { SmallBody = 40, GrowthLimit = 1024, ConstantBranchBody = 160, FreshOwnerBody = 0, Keep = growers }.Run(local);
                     cleanup.Run(local);
                 }

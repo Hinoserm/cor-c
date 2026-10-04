@@ -1174,6 +1174,43 @@ public sealed class RegionPointsTo : IModulePass
                 }
     }
 
+    /// <summary>
+    /// A BOUNDARY'S LEAVE AFTER WHAT ITS RETURN GIVES BACK. Open puts
+    /// RegionLeave just before each return; the link's lifetime pass runs
+    /// again after it (Escape.RunAtLink) and puts its own frees just before
+    /// each return too -- after the leave: a collection it placed in the
+    /// frame gives back its storage and elements, an owned variable or field
+    /// what it holds. Storage made beside a frame owner is the region's
+    /// (Gc.OnStackWithin), so those frees read, and gave back, memory the
+    /// leave had cut -- zeroed, or a chunk handed back to the system, where
+    /// a collection that owns its elements read them from an unmapped page.
+    /// So each leave goes back to just before its return, past what was put
+    /// after it, unless something there allocates: what that makes would
+    /// then be cut with the region, and the leave stays where it was.
+    /// </summary>
+    public static int LeaveLast(Function f)
+    {
+        int moved = 0;
+        foreach (Block b in f.Blocks)
+        {
+            if (b.Terminator is not { Op: Opcode.Ret }) continue;
+            int ret = b.Instrs.Count - 1;
+            for (int k = ret - 1; k >= 0; k--)
+            {
+                if (b.Instrs[k] is not { Op: Opcode.Call, Callee: Leave } leave) continue;
+                bool allocates = false;
+                for (int j = k + 1; j < ret && !allocates; j++)
+                    allocates = IsSiteCall(b.Instrs[j]) || b.Instrs[j].Op == Opcode.Call && b.Instrs[j].Callee is InRegion or Near or Enter;
+                if (allocates || k == ret - 1) break;
+                b.Instrs.RemoveAt(k);
+                b.Instrs.Insert(ret - 1, leave);
+                moved++;
+                break;
+            }
+        }
+        return moved;
+    }
+
     // Past this many blocks the region is opened on entry: the dominators
     // below are bit sets, a pair of blocks at a time.
     private const int OpenAtBlocks = 256;
