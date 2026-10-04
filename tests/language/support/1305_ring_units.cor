@@ -1,0 +1,937 @@
+// The other unit of 1305_region_unified_fields_apart_across_units: a ring
+// of 301 functions, each handing its arguments to the next, the last
+// storing the leaking object into one field of the holder and the local
+// into another, and going round again while depth remains: one cycle, past
+// the size the escape graphs solve by inclusion, so it is unified.
+using System;
+using System.Runtime.CompilerServices;
+
+namespace RingUnits;
+
+public sealed class Local
+{
+    public int V;
+
+    public Local(int v) { V = v; }
+}
+
+public sealed class Holder
+{
+    public object? Kept;
+    public Local? Mine;
+}
+
+public static class Ring
+{
+    // Where the leaking object goes: anything may read it.
+    public static object? Sink;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R0(Holder h, object leak, Local mine, int depth) => R1(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R1(Holder h, object leak, Local mine, int depth) => R2(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R2(Holder h, object leak, Local mine, int depth) => R3(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R3(Holder h, object leak, Local mine, int depth) => R4(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R4(Holder h, object leak, Local mine, int depth) => R5(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R5(Holder h, object leak, Local mine, int depth) => R6(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R6(Holder h, object leak, Local mine, int depth) => R7(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R7(Holder h, object leak, Local mine, int depth) => R8(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R8(Holder h, object leak, Local mine, int depth) => R9(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R9(Holder h, object leak, Local mine, int depth) => R10(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R10(Holder h, object leak, Local mine, int depth) => R11(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R11(Holder h, object leak, Local mine, int depth) => R12(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R12(Holder h, object leak, Local mine, int depth) => R13(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R13(Holder h, object leak, Local mine, int depth) => R14(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R14(Holder h, object leak, Local mine, int depth) => R15(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R15(Holder h, object leak, Local mine, int depth) => R16(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R16(Holder h, object leak, Local mine, int depth) => R17(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R17(Holder h, object leak, Local mine, int depth) => R18(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R18(Holder h, object leak, Local mine, int depth) => R19(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R19(Holder h, object leak, Local mine, int depth) => R20(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R20(Holder h, object leak, Local mine, int depth) => R21(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R21(Holder h, object leak, Local mine, int depth) => R22(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R22(Holder h, object leak, Local mine, int depth) => R23(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R23(Holder h, object leak, Local mine, int depth) => R24(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R24(Holder h, object leak, Local mine, int depth) => R25(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R25(Holder h, object leak, Local mine, int depth) => R26(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R26(Holder h, object leak, Local mine, int depth) => R27(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R27(Holder h, object leak, Local mine, int depth) => R28(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R28(Holder h, object leak, Local mine, int depth) => R29(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R29(Holder h, object leak, Local mine, int depth) => R30(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R30(Holder h, object leak, Local mine, int depth) => R31(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R31(Holder h, object leak, Local mine, int depth) => R32(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R32(Holder h, object leak, Local mine, int depth) => R33(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R33(Holder h, object leak, Local mine, int depth) => R34(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R34(Holder h, object leak, Local mine, int depth) => R35(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R35(Holder h, object leak, Local mine, int depth) => R36(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R36(Holder h, object leak, Local mine, int depth) => R37(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R37(Holder h, object leak, Local mine, int depth) => R38(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R38(Holder h, object leak, Local mine, int depth) => R39(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R39(Holder h, object leak, Local mine, int depth) => R40(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R40(Holder h, object leak, Local mine, int depth) => R41(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R41(Holder h, object leak, Local mine, int depth) => R42(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R42(Holder h, object leak, Local mine, int depth) => R43(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R43(Holder h, object leak, Local mine, int depth) => R44(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R44(Holder h, object leak, Local mine, int depth) => R45(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R45(Holder h, object leak, Local mine, int depth) => R46(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R46(Holder h, object leak, Local mine, int depth) => R47(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R47(Holder h, object leak, Local mine, int depth) => R48(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R48(Holder h, object leak, Local mine, int depth) => R49(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R49(Holder h, object leak, Local mine, int depth) => R50(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R50(Holder h, object leak, Local mine, int depth) => R51(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R51(Holder h, object leak, Local mine, int depth) => R52(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R52(Holder h, object leak, Local mine, int depth) => R53(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R53(Holder h, object leak, Local mine, int depth) => R54(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R54(Holder h, object leak, Local mine, int depth) => R55(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R55(Holder h, object leak, Local mine, int depth) => R56(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R56(Holder h, object leak, Local mine, int depth) => R57(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R57(Holder h, object leak, Local mine, int depth) => R58(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R58(Holder h, object leak, Local mine, int depth) => R59(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R59(Holder h, object leak, Local mine, int depth) => R60(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R60(Holder h, object leak, Local mine, int depth) => R61(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R61(Holder h, object leak, Local mine, int depth) => R62(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R62(Holder h, object leak, Local mine, int depth) => R63(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R63(Holder h, object leak, Local mine, int depth) => R64(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R64(Holder h, object leak, Local mine, int depth) => R65(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R65(Holder h, object leak, Local mine, int depth) => R66(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R66(Holder h, object leak, Local mine, int depth) => R67(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R67(Holder h, object leak, Local mine, int depth) => R68(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R68(Holder h, object leak, Local mine, int depth) => R69(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R69(Holder h, object leak, Local mine, int depth) => R70(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R70(Holder h, object leak, Local mine, int depth) => R71(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R71(Holder h, object leak, Local mine, int depth) => R72(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R72(Holder h, object leak, Local mine, int depth) => R73(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R73(Holder h, object leak, Local mine, int depth) => R74(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R74(Holder h, object leak, Local mine, int depth) => R75(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R75(Holder h, object leak, Local mine, int depth) => R76(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R76(Holder h, object leak, Local mine, int depth) => R77(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R77(Holder h, object leak, Local mine, int depth) => R78(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R78(Holder h, object leak, Local mine, int depth) => R79(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R79(Holder h, object leak, Local mine, int depth) => R80(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R80(Holder h, object leak, Local mine, int depth) => R81(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R81(Holder h, object leak, Local mine, int depth) => R82(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R82(Holder h, object leak, Local mine, int depth) => R83(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R83(Holder h, object leak, Local mine, int depth) => R84(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R84(Holder h, object leak, Local mine, int depth) => R85(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R85(Holder h, object leak, Local mine, int depth) => R86(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R86(Holder h, object leak, Local mine, int depth) => R87(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R87(Holder h, object leak, Local mine, int depth) => R88(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R88(Holder h, object leak, Local mine, int depth) => R89(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R89(Holder h, object leak, Local mine, int depth) => R90(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R90(Holder h, object leak, Local mine, int depth) => R91(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R91(Holder h, object leak, Local mine, int depth) => R92(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R92(Holder h, object leak, Local mine, int depth) => R93(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R93(Holder h, object leak, Local mine, int depth) => R94(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R94(Holder h, object leak, Local mine, int depth) => R95(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R95(Holder h, object leak, Local mine, int depth) => R96(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R96(Holder h, object leak, Local mine, int depth) => R97(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R97(Holder h, object leak, Local mine, int depth) => R98(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R98(Holder h, object leak, Local mine, int depth) => R99(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R99(Holder h, object leak, Local mine, int depth) => R100(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R100(Holder h, object leak, Local mine, int depth) => R101(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R101(Holder h, object leak, Local mine, int depth) => R102(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R102(Holder h, object leak, Local mine, int depth) => R103(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R103(Holder h, object leak, Local mine, int depth) => R104(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R104(Holder h, object leak, Local mine, int depth) => R105(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R105(Holder h, object leak, Local mine, int depth) => R106(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R106(Holder h, object leak, Local mine, int depth) => R107(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R107(Holder h, object leak, Local mine, int depth) => R108(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R108(Holder h, object leak, Local mine, int depth) => R109(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R109(Holder h, object leak, Local mine, int depth) => R110(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R110(Holder h, object leak, Local mine, int depth) => R111(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R111(Holder h, object leak, Local mine, int depth) => R112(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R112(Holder h, object leak, Local mine, int depth) => R113(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R113(Holder h, object leak, Local mine, int depth) => R114(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R114(Holder h, object leak, Local mine, int depth) => R115(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R115(Holder h, object leak, Local mine, int depth) => R116(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R116(Holder h, object leak, Local mine, int depth) => R117(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R117(Holder h, object leak, Local mine, int depth) => R118(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R118(Holder h, object leak, Local mine, int depth) => R119(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R119(Holder h, object leak, Local mine, int depth) => R120(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R120(Holder h, object leak, Local mine, int depth) => R121(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R121(Holder h, object leak, Local mine, int depth) => R122(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R122(Holder h, object leak, Local mine, int depth) => R123(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R123(Holder h, object leak, Local mine, int depth) => R124(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R124(Holder h, object leak, Local mine, int depth) => R125(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R125(Holder h, object leak, Local mine, int depth) => R126(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R126(Holder h, object leak, Local mine, int depth) => R127(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R127(Holder h, object leak, Local mine, int depth) => R128(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R128(Holder h, object leak, Local mine, int depth) => R129(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R129(Holder h, object leak, Local mine, int depth) => R130(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R130(Holder h, object leak, Local mine, int depth) => R131(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R131(Holder h, object leak, Local mine, int depth) => R132(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R132(Holder h, object leak, Local mine, int depth) => R133(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R133(Holder h, object leak, Local mine, int depth) => R134(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R134(Holder h, object leak, Local mine, int depth) => R135(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R135(Holder h, object leak, Local mine, int depth) => R136(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R136(Holder h, object leak, Local mine, int depth) => R137(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R137(Holder h, object leak, Local mine, int depth) => R138(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R138(Holder h, object leak, Local mine, int depth) => R139(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R139(Holder h, object leak, Local mine, int depth) => R140(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R140(Holder h, object leak, Local mine, int depth) => R141(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R141(Holder h, object leak, Local mine, int depth) => R142(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R142(Holder h, object leak, Local mine, int depth) => R143(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R143(Holder h, object leak, Local mine, int depth) => R144(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R144(Holder h, object leak, Local mine, int depth) => R145(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R145(Holder h, object leak, Local mine, int depth) => R146(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R146(Holder h, object leak, Local mine, int depth) => R147(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R147(Holder h, object leak, Local mine, int depth) => R148(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R148(Holder h, object leak, Local mine, int depth) => R149(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R149(Holder h, object leak, Local mine, int depth) => R150(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R150(Holder h, object leak, Local mine, int depth) => R151(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R151(Holder h, object leak, Local mine, int depth) => R152(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R152(Holder h, object leak, Local mine, int depth) => R153(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R153(Holder h, object leak, Local mine, int depth) => R154(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R154(Holder h, object leak, Local mine, int depth) => R155(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R155(Holder h, object leak, Local mine, int depth) => R156(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R156(Holder h, object leak, Local mine, int depth) => R157(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R157(Holder h, object leak, Local mine, int depth) => R158(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R158(Holder h, object leak, Local mine, int depth) => R159(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R159(Holder h, object leak, Local mine, int depth) => R160(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R160(Holder h, object leak, Local mine, int depth) => R161(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R161(Holder h, object leak, Local mine, int depth) => R162(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R162(Holder h, object leak, Local mine, int depth) => R163(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R163(Holder h, object leak, Local mine, int depth) => R164(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R164(Holder h, object leak, Local mine, int depth) => R165(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R165(Holder h, object leak, Local mine, int depth) => R166(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R166(Holder h, object leak, Local mine, int depth) => R167(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R167(Holder h, object leak, Local mine, int depth) => R168(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R168(Holder h, object leak, Local mine, int depth) => R169(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R169(Holder h, object leak, Local mine, int depth) => R170(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R170(Holder h, object leak, Local mine, int depth) => R171(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R171(Holder h, object leak, Local mine, int depth) => R172(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R172(Holder h, object leak, Local mine, int depth) => R173(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R173(Holder h, object leak, Local mine, int depth) => R174(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R174(Holder h, object leak, Local mine, int depth) => R175(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R175(Holder h, object leak, Local mine, int depth) => R176(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R176(Holder h, object leak, Local mine, int depth) => R177(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R177(Holder h, object leak, Local mine, int depth) => R178(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R178(Holder h, object leak, Local mine, int depth) => R179(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R179(Holder h, object leak, Local mine, int depth) => R180(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R180(Holder h, object leak, Local mine, int depth) => R181(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R181(Holder h, object leak, Local mine, int depth) => R182(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R182(Holder h, object leak, Local mine, int depth) => R183(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R183(Holder h, object leak, Local mine, int depth) => R184(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R184(Holder h, object leak, Local mine, int depth) => R185(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R185(Holder h, object leak, Local mine, int depth) => R186(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R186(Holder h, object leak, Local mine, int depth) => R187(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R187(Holder h, object leak, Local mine, int depth) => R188(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R188(Holder h, object leak, Local mine, int depth) => R189(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R189(Holder h, object leak, Local mine, int depth) => R190(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R190(Holder h, object leak, Local mine, int depth) => R191(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R191(Holder h, object leak, Local mine, int depth) => R192(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R192(Holder h, object leak, Local mine, int depth) => R193(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R193(Holder h, object leak, Local mine, int depth) => R194(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R194(Holder h, object leak, Local mine, int depth) => R195(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R195(Holder h, object leak, Local mine, int depth) => R196(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R196(Holder h, object leak, Local mine, int depth) => R197(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R197(Holder h, object leak, Local mine, int depth) => R198(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R198(Holder h, object leak, Local mine, int depth) => R199(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R199(Holder h, object leak, Local mine, int depth) => R200(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R200(Holder h, object leak, Local mine, int depth) => R201(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R201(Holder h, object leak, Local mine, int depth) => R202(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R202(Holder h, object leak, Local mine, int depth) => R203(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R203(Holder h, object leak, Local mine, int depth) => R204(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R204(Holder h, object leak, Local mine, int depth) => R205(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R205(Holder h, object leak, Local mine, int depth) => R206(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R206(Holder h, object leak, Local mine, int depth) => R207(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R207(Holder h, object leak, Local mine, int depth) => R208(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R208(Holder h, object leak, Local mine, int depth) => R209(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R209(Holder h, object leak, Local mine, int depth) => R210(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R210(Holder h, object leak, Local mine, int depth) => R211(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R211(Holder h, object leak, Local mine, int depth) => R212(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R212(Holder h, object leak, Local mine, int depth) => R213(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R213(Holder h, object leak, Local mine, int depth) => R214(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R214(Holder h, object leak, Local mine, int depth) => R215(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R215(Holder h, object leak, Local mine, int depth) => R216(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R216(Holder h, object leak, Local mine, int depth) => R217(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R217(Holder h, object leak, Local mine, int depth) => R218(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R218(Holder h, object leak, Local mine, int depth) => R219(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R219(Holder h, object leak, Local mine, int depth) => R220(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R220(Holder h, object leak, Local mine, int depth) => R221(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R221(Holder h, object leak, Local mine, int depth) => R222(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R222(Holder h, object leak, Local mine, int depth) => R223(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R223(Holder h, object leak, Local mine, int depth) => R224(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R224(Holder h, object leak, Local mine, int depth) => R225(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R225(Holder h, object leak, Local mine, int depth) => R226(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R226(Holder h, object leak, Local mine, int depth) => R227(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R227(Holder h, object leak, Local mine, int depth) => R228(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R228(Holder h, object leak, Local mine, int depth) => R229(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R229(Holder h, object leak, Local mine, int depth) => R230(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R230(Holder h, object leak, Local mine, int depth) => R231(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R231(Holder h, object leak, Local mine, int depth) => R232(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R232(Holder h, object leak, Local mine, int depth) => R233(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R233(Holder h, object leak, Local mine, int depth) => R234(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R234(Holder h, object leak, Local mine, int depth) => R235(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R235(Holder h, object leak, Local mine, int depth) => R236(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R236(Holder h, object leak, Local mine, int depth) => R237(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R237(Holder h, object leak, Local mine, int depth) => R238(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R238(Holder h, object leak, Local mine, int depth) => R239(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R239(Holder h, object leak, Local mine, int depth) => R240(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R240(Holder h, object leak, Local mine, int depth) => R241(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R241(Holder h, object leak, Local mine, int depth) => R242(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R242(Holder h, object leak, Local mine, int depth) => R243(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R243(Holder h, object leak, Local mine, int depth) => R244(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R244(Holder h, object leak, Local mine, int depth) => R245(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R245(Holder h, object leak, Local mine, int depth) => R246(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R246(Holder h, object leak, Local mine, int depth) => R247(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R247(Holder h, object leak, Local mine, int depth) => R248(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R248(Holder h, object leak, Local mine, int depth) => R249(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R249(Holder h, object leak, Local mine, int depth) => R250(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R250(Holder h, object leak, Local mine, int depth) => R251(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R251(Holder h, object leak, Local mine, int depth) => R252(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R252(Holder h, object leak, Local mine, int depth) => R253(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R253(Holder h, object leak, Local mine, int depth) => R254(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R254(Holder h, object leak, Local mine, int depth) => R255(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R255(Holder h, object leak, Local mine, int depth) => R256(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R256(Holder h, object leak, Local mine, int depth) => R257(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R257(Holder h, object leak, Local mine, int depth) => R258(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R258(Holder h, object leak, Local mine, int depth) => R259(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R259(Holder h, object leak, Local mine, int depth) => R260(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R260(Holder h, object leak, Local mine, int depth) => R261(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R261(Holder h, object leak, Local mine, int depth) => R262(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R262(Holder h, object leak, Local mine, int depth) => R263(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R263(Holder h, object leak, Local mine, int depth) => R264(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R264(Holder h, object leak, Local mine, int depth) => R265(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R265(Holder h, object leak, Local mine, int depth) => R266(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R266(Holder h, object leak, Local mine, int depth) => R267(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R267(Holder h, object leak, Local mine, int depth) => R268(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R268(Holder h, object leak, Local mine, int depth) => R269(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R269(Holder h, object leak, Local mine, int depth) => R270(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R270(Holder h, object leak, Local mine, int depth) => R271(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R271(Holder h, object leak, Local mine, int depth) => R272(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R272(Holder h, object leak, Local mine, int depth) => R273(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R273(Holder h, object leak, Local mine, int depth) => R274(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R274(Holder h, object leak, Local mine, int depth) => R275(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R275(Holder h, object leak, Local mine, int depth) => R276(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R276(Holder h, object leak, Local mine, int depth) => R277(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R277(Holder h, object leak, Local mine, int depth) => R278(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R278(Holder h, object leak, Local mine, int depth) => R279(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R279(Holder h, object leak, Local mine, int depth) => R280(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R280(Holder h, object leak, Local mine, int depth) => R281(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R281(Holder h, object leak, Local mine, int depth) => R282(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R282(Holder h, object leak, Local mine, int depth) => R283(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R283(Holder h, object leak, Local mine, int depth) => R284(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R284(Holder h, object leak, Local mine, int depth) => R285(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R285(Holder h, object leak, Local mine, int depth) => R286(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R286(Holder h, object leak, Local mine, int depth) => R287(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R287(Holder h, object leak, Local mine, int depth) => R288(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R288(Holder h, object leak, Local mine, int depth) => R289(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R289(Holder h, object leak, Local mine, int depth) => R290(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R290(Holder h, object leak, Local mine, int depth) => R291(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R291(Holder h, object leak, Local mine, int depth) => R292(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R292(Holder h, object leak, Local mine, int depth) => R293(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R293(Holder h, object leak, Local mine, int depth) => R294(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R294(Holder h, object leak, Local mine, int depth) => R295(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R295(Holder h, object leak, Local mine, int depth) => R296(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R296(Holder h, object leak, Local mine, int depth) => R297(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R297(Holder h, object leak, Local mine, int depth) => R298(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R298(Holder h, object leak, Local mine, int depth) => R299(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R299(Holder h, object leak, Local mine, int depth) => R300(h, leak, mine, depth);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int R300(Holder h, object leak, Local mine, int depth)
+    {
+        h.Kept = leak;
+        Sink = leak;
+        h.Mine = mine;
+        return depth > 0 ? R0(h, leak, mine, depth - 1) : mine.V;
+    }
+}
