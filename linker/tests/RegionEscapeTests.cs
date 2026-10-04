@@ -29,6 +29,7 @@ public static class RegionEscapeTests
         ("a wide call on a parameter is deferred for the targets that leak", WideDeferred),
         ("past its groups, a call keeps apart the targets that leak", GroupsFull),
         ("a call on a blob runs what its members' classes run", BlobDispatch),
+        ("saturated nodes in a chain, each blob a member of the next", BlobChain),
         ("a wide call deferred through two levels of parameters", WideDeferredTwoLevels),
         ("a node past MostHeld objects holds a blob of the rest", Saturation),
         ("a summary past MostCells is everything", MostCells),
@@ -622,6 +623,37 @@ public static class RegionEscapeTests
                 for (int s = 0; s <= 256; s++) Check(!e.Global[first + s], $"{how}: site {s} runs a keeper: not global");
                 Check(e.Global[first + 257] == (member != "Keep3"), how + (member == "Keep3" ? ": the blob runs Keep3 only: not global" : ": the blob may run LeakThis: global"));
             }
+    }
+
+    /// <summary>
+    /// Fifty nodes in a chain of copies, each past MostHeld: node 1 holds 258
+    /// sites, each next node one site of its own and all the last one holds,
+    /// so every node saturates and the blob of each joins the blob of the
+    /// next. Each join is linked from the solve's loop, not inside the Add
+    /// that made it (Link): linked in place, a chain of joins as deep as the
+    /// compiler's own link ran the stack out. Thrown at its end, every site
+    /// along it is global, through the blobs; kept, none is.
+    /// </summary>
+    private static void BlobChain()
+    {
+        const int Nodes = 50;
+        foreach (bool thrown in new[] { false, true })
+        {
+            Prog p = new();
+            // Nodes: 0 the return, 1 to Nodes the chain.
+            RegionFunction chain = p.Add("Chain", 0, Nodes + 1, sites: 258 + Nodes - 1);
+            for (int s = 0; s < 258; s++) chain.Constraints.Add(Site(1, s));
+            for (int n = 2; n <= Nodes; n++)
+            {
+                chain.Constraints.Add(Site(n, 258 + n - 2));
+                chain.Constraints.Add(Copy(n, n - 1));
+            }
+            if (thrown) chain.Constraints.Add(Leak(Nodes));
+            RegionEscape e = p.Solve();
+            int sites = 258 + Nodes - 1;
+            for (int s = 0; s < sites; s++)
+                Check(e.Global[p.Site("Chain", s)] == thrown, $"{(thrown ? "thrown" : "kept")}: site {s} {(thrown ? "is" : "is not")} global");
+        }
     }
 
     /// <summary>

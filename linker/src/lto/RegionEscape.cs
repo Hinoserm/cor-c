@@ -2313,8 +2313,9 @@ internal sealed class RegionEscape
             node = NewNode();
             _cells[o][offset] = node;
             if (o == 0) _unknownCell = node;
-            // A blob's member's: what is written here is in the blob (Join).
-            if (_blobsOf.TryGetValue(o, out List<int>? blobs)) foreach (int blob in blobs.ToArray()) CopyEdge(node, Cell(blob, Any), 0);
+            // A blob's member's: what is written here is in the blob (Join),
+            // linked from Propagate's loop (Link), never from inside this.
+            if (_blobsOf.ContainsKey(o)) _cellJoins.Enqueue((node, o));
             // Read by every load of the whole object. (A write at any offset
             // is read by a load at a fixed one as it loads: Loaded.)
             if (_allReaders[o] is { } readers) foreach (int r in readers) CopyEdge(node, r, 0);
@@ -2439,20 +2440,60 @@ internal sealed class RegionEscape
             return blob;
         }
 
-        // Object o one of blob's members: their cells joined both ways.
+        // OBJECT o ONE OF BLOB'S MEMBERS, once: noted now, its cells and the
+        // blob's linked from Propagate's loop (Link). Join is reached from
+        // inside Add, and linking there -- each copy edge carrying at once
+        // what its source holds, which may saturate a node and join again --
+        // went as deep as the joins chained, past the stack on the
+        // compiler's own link. A member that is itself a blob, and one that
+        // holds this blob, are joined as any other: the cycle is edges, and
+        // every walk over members keeps what it has seen.
         private void Join(int o, int blob)
         {
             if (o == blob || !_joined.Add(Pair(o, blob))) return;
             _membersOf[blob].Add(o);
-            int into = Cell(blob, Any);
-            foreach (int cell in _cells[o].Values.ToArray()) CopyEdge(cell, into, 0);
             // A cell of the member made later is joined as it is made (Cell).
             (_blobsOf.TryGetValue(o, out List<int>? blobs) ? blobs : _blobsOf[o] = new()).Add(blob);
-            CopyEdge(into, Cell(o, Any), 0);
-            if (_placedMade.Contains(o)) Placed(blob);
-            if (_unknownMade.Contains(o)) ReachedByUnknown(blob);
+            _joins.Enqueue((o, blob));
             // What a call on it may run has grown: dispatched again (Redispatch).
             _pendingBlobs.Add(blob);
+        }
+
+        // Joins and members' new cells, to be linked (Link).
+        private readonly Queue<(int O, int Blob)> _joins = new();
+        private readonly Queue<(int Cell, int O)> _cellJoins = new();
+
+        /// <summary>
+        /// THE JOINS NOTED SINCE, LINKED, from Propagate's loop: each member's
+        /// cells into the blob's, the blob's into the member's at any offset,
+        /// and what reaches either -- a place, the unknown object -- the
+        /// other's for loads. Each edge is added once (CopyEdge). What this
+        /// adds may join again; that is queued, and linked in this same loop
+        /// until nothing is left, so no join is ever linked inside another.
+        /// </summary>
+        private void Link()
+        {
+            while (!Overflowed)
+            {
+                if (_joins.TryDequeue(out var join))
+                {
+                    int into = Cell(join.Blob, Any);
+                    foreach (int cell in _cells[join.O].Values.ToArray()) CopyEdge(cell, into, 0);
+                    CopyEdge(into, Cell(join.O, Any), 0);
+                    if (_placedMade.Contains(join.O)) Placed(join.Blob);
+                    else if (_placedMade.Contains(join.Blob)) Placed(join.O);
+                    if (_unknownMade.Contains(join.O)) ReachedByUnknown(join.Blob);
+                    else if (_unknownMade.Contains(join.Blob)) ReachedByUnknown(join.O);
+                    continue;
+                }
+                if (_cellJoins.TryDequeue(out var made))
+                {
+                    if (_blobsOf.TryGetValue(made.O, out List<int>? blobs))
+                        foreach (int blob in blobs.ToArray()) CopyEdge(made.Cell, Cell(blob, Any), 0);
+                    continue;
+                }
+                break;
+            }
         }
 
         private void Delta(int node, int loc)
@@ -2642,22 +2683,33 @@ internal sealed class RegionEscape
             if (_unknownMade.Contains(o)) Add(dest, Unknown);
         }
 
-        private void Placed(int o)
+        private void Placed(int start)
         {
-            if (!_placedMade.Add(o)) return;
-            if (_loadsOf.TryGetValue(o, out List<int>? loads))
-                foreach (int dest in loads.ToArray()) if (_fedFrom.Add(Pair(_written, dest))) CopyEdge(_written, dest, 0);
-            // A member's blob is read as the member is, and a blob's members as it is.
-            if (_blobsOf.TryGetValue(o, out List<int>? blobs)) foreach (int blob in blobs.ToArray()) Placed(blob);
-            if (_membersOf.TryGetValue(o, out List<int>? members)) foreach (int member in members.ToArray()) Placed(member);
+            // A member's blob is read as the member is, and a blob's members
+            // as it is: walked, not recursed, over however long a chain.
+            Stack<int> next = new();
+            next.Push(start);
+            while (next.TryPop(out int o))
+            {
+                if (!_placedMade.Add(o)) continue;
+                if (_loadsOf.TryGetValue(o, out List<int>? loads))
+                    foreach (int dest in loads.ToArray()) if (_fedFrom.Add(Pair(_written, dest))) CopyEdge(_written, dest, 0);
+                if (_blobsOf.TryGetValue(o, out List<int>? blobs)) foreach (int blob in blobs) next.Push(blob);
+                if (_membersOf.TryGetValue(o, out List<int>? members)) foreach (int member in members) next.Push(member);
+            }
         }
 
-        private void ReachedByUnknown(int o)
+        private void ReachedByUnknown(int start)
         {
-            if (!_unknownMade.Add(o)) return;
-            if (_loadsOf.TryGetValue(o, out List<int>? loads)) foreach (int dest in loads.ToArray()) Add(dest, Unknown);
-            if (_blobsOf.TryGetValue(o, out List<int>? blobs)) foreach (int blob in blobs.ToArray()) ReachedByUnknown(blob);
-            if (_membersOf.TryGetValue(o, out List<int>? members)) foreach (int member in members.ToArray()) ReachedByUnknown(member);
+            Stack<int> next = new();
+            next.Push(start);
+            while (next.TryPop(out int o))
+            {
+                if (!_unknownMade.Add(o)) continue;
+                if (_loadsOf.TryGetValue(o, out List<int>? loads)) foreach (int dest in loads.ToArray()) Add(dest, Unknown);
+                if (_blobsOf.TryGetValue(o, out List<int>? blobs)) foreach (int blob in blobs) next.Push(blob);
+                if (_membersOf.TryGetValue(o, out List<int>? members)) foreach (int member in members) next.Push(member);
+            }
         }
 
         private readonly HashSet<long> _storedInto = new();
@@ -3314,9 +3366,16 @@ internal sealed class RegionEscape
             if (_copyEdges > _edgesAtCollapse) Collapse();
             while (true)
             {
-                // Calls on a blob a member joined, dispatched again (Join).
+                // Joins linked (Link), and calls on a blob a member joined
+                // dispatched again (Redispatch), before the next node.
+                if ((_joins.Count > 0 || _cellJoins.Count > 0) && !Overflowed) Link();
                 if (_pendingBlobs.Count > 0 && !Overflowed) Redispatch();
-                if (!_work.TryDequeue(out int n, out _)) break;
+                if (!_work.TryDequeue(out int n, out _))
+                {
+                    // A dispatch again may have joined more: linked before the end.
+                    if (!Overflowed && (_joins.Count > 0 || _cellJoins.Count > 0 || _pendingBlobs.Count > 0)) continue;
+                    break;
+                }
                 // Cycles closed by the edges loads and stores have added, once
                 // there are enough new ones to be worth a walk of the graph.
                 if (_copyEdges - _edgesAtCollapse > Math.Max(4096, _edgesAtCollapse >> 2))
