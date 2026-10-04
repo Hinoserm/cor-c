@@ -1136,10 +1136,11 @@ public static class Driver
         // Every interrupt handler, through every object linked here
         // (InterruptNotes): what each unit's compile could not follow.
         List<string> interruptErrors = Corsac.Lang.Lto.InterruptNotes.Check(link.Select(input => input.Item2));
-        // A WARNING FOR NOW, with every path listed: the kernel's handlers
-        // reach allocations through wake-ups and polls that are being taken
-        // apart (the list is worked through; then this refuses again).
-        foreach (string interruptError in interruptErrors) Console.Error.WriteLine("corc: warning: " + interruptError);
+        // REFUSED, every path listed (InterruptNotes.EveryAllocation): the
+        // kernel's handlers reach no allocation since the wake predicate
+        // left WaitQueue.WakeAll (Sched.WakeQueuedIfOver) and the AIC's
+        // drain stopped making its messages.
+        if (interruptErrors.Count > 0) throw new LinkException(interruptErrors);
 
         if (flat)
         {
