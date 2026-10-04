@@ -834,7 +834,10 @@ public static class ComDeclarations
     /// </summary>
     static void AddCallableMembers(Pass pass, TypeDecl c, bool inherits, IReadOnlyCollection<string>? symbols, List<CompileError> errors)
     {
-        string modifier = inherits ? "override" : "virtual";
+        // Virtual where a subclass may be COM-callable too and override
+        // them with its own interfaces and members; a sealed class's are
+        // plain.
+        string modifier = inherits ? "override" : c.Mods.HasFlag(Mods.Sealed) ? "" : "virtual";
         if (!inherits) c.Bases.Add(new TypeRef { Name = Ns + ".IComCallable", Line = c.Line, Col = c.Col });
 
         // The members, by name: the class's own and its bases' public ones,
