@@ -2210,6 +2210,10 @@ static class Gc
     public static long RegionGrownInPlace;
     /// Blocks made in regions: each given back when its region ends, as a
     /// free would have given it back (what Frees counts for the heap).
+    /// Counted in each thread's block as they are made, and added here
+    /// where a region or a lap ends and as the thread ends
+    /// (CountRegionBlocks): one word every thread wrote at every block was
+    /// a cache line passed between processors.
     public static long RegionBlocks;
     /// Regions opened with the size the link proved for them.
     public static long RegionsSized;
@@ -2288,6 +2292,25 @@ static class Gc
     /// besides its record, as the link proved it; 0 when it is not known.
     public static long RegionEnter(long frame, long bytes)
     {
+        // THE FAST PATH: an arena already, no size proved, no region left
+        // by a throw at or below this frame to close, and room for the
+        // record where the arena is. Everything else is Enter's.
+        long tb = Sys.ThreadBlock();
+        if (bytes == 0 && tb != 0 && Sys.Peek(tb + Tls.RegionBase) != 0)
+        {
+            long open = Sys.Peek(tb + Tls.RegionOpen);
+            long record = Sys.Peek(tb + Tls.RegionAt);
+            if ((open == 0 || !Below(OpenerFrame(open), frame, true)) && record + RecordBytes <= Sys.Peek(tb + Tls.RegionEnd))
+            {
+                Stamp(record, RecordBytes, 0);
+                Sys.Poke(record + KindAt, KindLeaf);
+                Sys.Poke(record + HeaderBytes, open);
+                Sys.Poke(record + HeaderBytes + WordSize.Bytes, frame);
+                Sys.Poke(tb + Tls.RegionAt, record + RecordBytes);
+                Sys.Poke(tb + Tls.RegionOpen, record);
+                return record;
+            }
+        }
         return Enter(frame, bytes, 0);
     }
 
@@ -2348,6 +2371,7 @@ static class Gc
     {
         long tb = Sys.ThreadBlock();
         if (tb == 0) return -1;
+        CountRegionBlocks(tb);
         if (record >= 0)
         {
             long chunk = ChunkOf(tb, record);
@@ -2399,6 +2423,27 @@ static class Gc
     {
         long tb = Sys.ThreadBlock();
         if (record < 0 || tb == 0) return;
+        CountRegionBlocks(tb);
+        // THE FAST PATH: the region began in the chunk being filled, below
+        // the pointer -- nothing past that chunk to hand back -- and the
+        // stats not asked for (they measure the arena as it is cut). The
+        // pointer back first, then the bytes cleared, as Cut has it.
+        if (!StatsAsked && !CountingCollected)
+        {
+            long last = Sys.Peek(tb + Tls.RegionEnd);
+            long at = Sys.Peek(tb + Tls.RegionAt);
+            if (record >= ChunkStart(last) && record < at)
+            {
+                long outer = Sys.Peek(record + HeaderBytes);
+                Sys.Poke(tb + Tls.RegionAt, record);
+                long freed = at - record;
+                Sys.MemorySet(record, 0, freed);
+                Sys.Poke(tb + Tls.RegionOpen, outer);
+                RegionFreedBytes = RegionFreedBytes + (freed - RecordBytes);
+                FreedBytes = FreedBytes + (freed - RecordBytes);
+                return;
+            }
+        }
         long chunk = ChunkOf(tb, record);
         if (!Filled(tb, chunk, record)) return;
         long outer = Sys.Peek(record + HeaderBytes);
@@ -2667,6 +2712,57 @@ static class Gc
         return callee != 0 && at < callee;
     }
 
+    /// <summary>
+    /// THE WAY IN FOR A REGION SITE, kept to a few instructions so the
+    /// inliner can put it at each (Runtime.AllocRegion), as AllocWord is at
+    /// each `new`: a region open, opened by a frame no deeper than ours -- a
+    /// record of a call that has not been left by a throw -- and room for
+    /// the block in the chunk being filled. The block is laid down before
+    /// the pointer passes it, as AllocRegion lays it: a scan of a stopped
+    /// thread sees it whole or not at all. Counted in the thread's block
+    /// (Tls.RegionCount), added to RegionBlocks where a region ends.
+    /// Everything else -- no region, a stale one to close first, a chunk to
+    /// grow into, a block too big -- is AllocRegion's, unchanged.
+    /// </summary>
+    public static nint AllocRegionFast(nint bytes, nint kind, nint frame)
+    {
+        nint tb = (nint)Sys.ThreadBlock();
+        // (No thread block yet, early in a process's start: the long way.)
+        nint open = tb == 0 ? 0 : (nint)Sys.Peek(tb + (nint)Tls.RegionOpen);
+        if (open != 0 && (nuint)bytes <= (nuint)MaxRequest)
+        {
+            nuint mask = (nuint)WordSize.AddressMask;
+            nuint opener = (nuint)Sys.Peek(open + (nint)(HeaderBytes + WordSize.Bytes)) & ~(nuint)LoopMark & mask;
+            if (opener >= ((nuint)frame & mask))
+            {
+                nint at = (nint)Sys.Peek(tb + (nint)Tls.RegionAt);
+                nint need = (bytes + (nint)(Overhead + 7)) & (nint)SizeMask;
+                if (need < (nint)Smallest) need = (nint)Smallest;
+                nint next = at + need;
+                if ((nuint)next <= (nuint)Sys.Peek(tb + (nint)Tls.RegionEnd))
+                {
+                    Sys.Poke(at, need);
+                    Sys.Poke(next - (nint)FooterBytes, need);
+                    Sys.Poke(at + (nint)KindAt, kind);
+                    Sys.Poke(tb + (nint)Tls.RegionAt, next);
+                    nint counted = tb + (nint)Tls.RegionCount;
+                    Sys.Poke(counted, (nint)Sys.Peek(counted) + 1);
+                    return at + (nint)HeaderBytes;
+                }
+            }
+        }
+        return AllocRegion(bytes, kind, 0, (long)(nuint)frame);
+    }
+
+    /// What this thread counted in its block (Tls.RegionCount), added to RegionBlocks.
+    static void CountRegionBlocks(long tb)
+    {
+        long counted = Sys.Peek(tb + Tls.RegionCount);
+        if (counted == 0) return;
+        Sys.Poke(tb + Tls.RegionCount, 0);
+        RegionBlocks = RegionBlocks + counted;
+    }
+
     /// A block in the innermost open region -- when `owner` is 0, or is
     /// itself in that region, or is on this thread's stack in a frame that
     /// returns no later than that region ends (OnStackWithin) -- or on the
@@ -2705,7 +2801,7 @@ static class Gc
         // The block laid down before the pointer passes it: a scan sees it
         // whole or not at all.
         Sys.Poke(tb + Tls.RegionAt, at + need);
-        RegionBlocks = RegionBlocks + 1;
+        Sys.Poke(tb + Tls.RegionCount, Sys.Peek(tb + Tls.RegionCount) + 1);
         return (nint)(at + HeaderBytes);
     }
 
@@ -2859,6 +2955,7 @@ static class Gc
     /// A thread's arena given back as the thread ends.
     public static void ReleaseRegion(long tb)
     {
+        if (tb != 0) CountRegionBlocks(tb);
         long c = tb == 0 ? 0 : Sys.Peek(tb + Tls.RegionBase);
         if (c == 0) return;
         // What it last said it held filled, no longer held.
@@ -5495,6 +5592,8 @@ static class Gc
         SayNumber("gc: arena chunks mapped ", ArenaChunksMapped);
         SayNumber("gc: arena chunks unmapped ", ArenaChunksUnmapped);
         SayNumber("gc: arena spares reused ", ArenaSparesReused);
+        long sayingThread = Sys.ThreadBlock();
+        if (sayingThread != 0) CountRegionBlocks(sayingThread);
         SayNumber("gc: region blocks ", RegionBlocks);
         SayNumber("gc: sized regions ", RegionsSized);
         SayNumber("gc: sized room in the chunk ", SizedRoomHere);

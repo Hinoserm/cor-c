@@ -241,7 +241,11 @@ static class Tls
     /// before its first touch of one. Where the thread finds them, not what
     /// keeps them: that is ThreadStatics' list, a static the collector reads.
     public const long ThreadStatics = 42 * WordSize.Bytes;
-    public const long Bytes = 43 * WordSize.Bytes;
+    /// Blocks this thread made in regions since it last told Gc.RegionBlocks
+    /// (Gc.AllocRegionFast): counted here, without a word every thread
+    /// writes, and added in where a region ends (Gc.CountRegionBlocks).
+    public const long RegionCount = 43 * WordSize.Bytes;
+    public const long Bytes = 44 * WordSize.Bytes;
 }
 
 /// WHERE THE ALLOCATIONS COME FROM (CORSAC_ALLOC_SAMPLE=1): every sixteenth
@@ -825,6 +829,9 @@ static class Runtime
     /// that a throw has left is closed first (Gc.PopStale).
     public static long AllocRegion(nint bytes, nint kind, nint frame)
     {
+        // THE FAST PATH, small enough for the inliner to put at every site
+        // (Gc.AllocRegionFast); sampled allocations the long way.
+        if (AllocHook == 0) return (long)(nuint)Gc.AllocRegionFast(bytes, kind, frame);
         long at = (long)(nuint)Gc.AllocRegion(bytes, kind, 0, (long)(nuint)frame);
         if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes | (SampleKind(kind) << 40), at);
         return at;
