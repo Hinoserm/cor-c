@@ -529,6 +529,16 @@ public sealed class RegionPointsTo : IModulePass
     /// fields, all of one object, held by a register written once (or a
     /// parameter never written) whose value is there before the allocation is
     /// made. Anything else stays where it was, on the heap.
+    ///
+    /// A CONSTRUCTOR'S FIRST ARRAYS are the same: a Dictionary's keys and
+    /// values, a List's items for a capacity, made as the collection is,
+    /// stored into the same fields its growth replaces them in. The owner is
+    /// `this`, a parameter never written, there before anything the
+    /// constructor makes; or, inlined, the object just made. One under
+    /// construction in a frame, or a struct's storage, is in no region, and
+    /// AllocNear makes its arrays the heap's. The allocation is followed
+    /// through a join with constants too (`capacity == 0 ? empty : new
+    /// T[capacity]`), whose every store is held to the same rule.
     /// </summary>
     public static int MakeStorageBeside(Function f, Corsac.Lang.Lto.OwnedFieldFacts owned)
     {
@@ -547,6 +557,11 @@ public sealed class RegionPointsTo : IModulePass
                     written.Add(d);
                     if (!defs.TryAdd(d, i)) many.Add(d);
                 }
+        // Every write of a register written more than once: a join.
+        Dictionary<VReg, List<Instr>> joins = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Dest is { } d && many.Contains(d)) (joins.TryGetValue(d, out List<Instr>? list) ? list : joins[d] = new()).Add(i);
         foreach (VReg r in many) defs.Remove(r);
         // What a register holds the object of, through copies: one written
         // once, or a parameter never written.
@@ -566,7 +581,12 @@ public sealed class RegionPointsTo : IModulePass
         foreach ((Block home, Instr alloc) in made)
         {
             if (!defs.ContainsKey(alloc.Dest!)) continue;
-            // The registers that hold what it made: its own, and copies of it.
+            // The registers that hold what it made: its own, and copies of it --
+            // and A JOIN OF IT WITH CONSTANTS, `capacity == 0 ? empty : new
+            // T[capacity]`, written more than once, each time a copy of one of
+            // these or a constant (an immediate, a symbol's address): what it
+            // holds besides the allocation is nothing anyone's storage, and
+            // where it is stored is held to the same rule below.
             HashSet<VReg> names = new() { alloc.Dest! };
             for (bool grew = true; grew;)
             {
@@ -576,6 +596,22 @@ public sealed class RegionPointsTo : IModulePass
                         if (i.Dest is { } d && !names.Contains(d) && defs.ContainsKey(d) && i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32
                             && i.Operands is [RegOperand { Reg: var from }] && names.Contains(from))
                         { names.Add(d); grew = true; }
+                foreach (var (joined, writes) in joins)
+                {
+                    if (names.Contains(joined)) continue;
+                    bool fromIt = false, only = true;
+                    foreach (Instr w in writes)
+                    {
+                        if (w.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.Phi)) { only = false; break; }
+                        foreach (Operand o in w.Operands)
+                        {
+                            if (o is RegOperand { Reg: var from } && names.Contains(from)) fromIt = true;
+                            else if (o is not (ImmOperand or SymOperand)) { only = false; break; }
+                        }
+                        if (!only) break;
+                    }
+                    if (only && fromIt) { names.Add(joined); grew = true; }
+                }
             }
             VReg? owner = null;
             bool ok = true;
