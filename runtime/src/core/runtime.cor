@@ -2947,6 +2947,15 @@ static class Runtime
     const long DescFlagsWordHere = 6;
     const long DescElementWord = 10;
 
+    // DescFlags of a type (Lowering): a string's, a box's, and an
+    // interface's boxed face (Lowering.BoxedFaceFlags).
+    const long TypeStringFlag = 2;
+    const long TypeEnumFlag = 8;
+    const long TypePrimitiveFlag = 32;
+    const long FaceComparableFlag = 64;
+    const long FaceFormattableFlag = 128;
+    const long FaceOfFlag = 256;
+
     /// The store of `value` into `array`: refused with ArrayTypeMismatchException
     /// unless the value is of the array's element type or derives from it.
     public static void ArrayStoreCheck(long array, long value)
@@ -3021,12 +3030,46 @@ static class Runtime
                 if (face == want) return true;
             }
         }
+        // A BOX OR A STRING IS ITS SYSTEM INTERFACES (BoxedFaces), which its
+        // table names none of, so that every unit's copy of it is one table:
+        // the interface's own descriptor says which face it is.
+        long wantFlags = Sys.Peek(want + DescFlagsWordHere * w);
+        if ((wantFlags & (FaceComparableFlag | FaceFormattableFlag | FaceOfFlag)) != 0 && BoxedFace(desc, want, wantFlags))
+        {
+            return true;
+        }
         // Two arrays of references: covariance, element by element.
         if ((Sys.Peek(desc + DescFlagsWordHere * w) & 3) == 1 && (Sys.Peek(want + DescFlagsWordHere * w) & 3) == 1)
         {
             long had = Sys.Peek(desc + DescElementWord * w) & WordSize.AddressMask;
             long wanted = Sys.Peek(want + DescElementWord * w) & WordSize.AddressMask;
             return had != 0 && wanted != 0 && DescribedAs(had, wanted);
+        }
+        return false;
+    }
+
+    /// Whether a box's or a string's descriptor answers an interface of a
+    /// boxed face (Lowering.BoxedFaceFlags), as BoxedFaces.Implements does:
+    /// IComparable a number, a bool, a char, an enum or a string;
+    /// IFormattable a number or an enum, not a bool (the box the
+    /// interface's word 10 names); IComparable<X> and IEquatable<X> only X's
+    /// own, the descriptor its word 10 names.
+    static bool BoxedFace(long desc, long want, long wantFlags)
+    {
+        long w = WordSize.Bytes;
+        long flags = Sys.Peek(desc + DescFlagsWordHere * w);
+        long named = Sys.Peek(want + DescElementWord * w) & WordSize.AddressMask;
+        if ((wantFlags & FaceOfFlag) != 0)
+        {
+            return named != 0 && named == desc;
+        }
+        if ((wantFlags & FaceComparableFlag) != 0)
+        {
+            return (flags & (TypePrimitiveFlag | TypeEnumFlag)) != 0 || (flags & 3) == (1 | TypeStringFlag);
+        }
+        if ((wantFlags & FaceFormattableFlag) != 0)
+        {
+            return (flags & TypeEnumFlag) != 0 || (flags & TypePrimitiveFlag) != 0 && desc != named;
         }
         return false;
     }

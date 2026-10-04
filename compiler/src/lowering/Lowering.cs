@@ -1346,6 +1346,12 @@ public sealed partial class Lowering
     // DescFlags beyond a sequence's 1 and a string's 2: what Type answers.
     private const int TypeFlagValue = 4, TypeFlagEnum = 8, TypeFlagInterface = 16, TypeFlagPrimitive = 32;
 
+    // AN INTERFACE'S BOXED FACE (BoxedFaces), in its own descriptor's flags:
+    // IComparable, IFormattable, or IComparable<X> / IEquatable<X> of a
+    // number, a bool, a char or a string X. Runtime.DescribedAs answers by
+    // them for a box or a string, whose tables name none of these.
+    private const int TypeFlagFaceComparable = 64, TypeFlagFaceFormattable = 128, TypeFlagFaceOf = 256;
+
     /// <summary>
     /// The descriptor an array of these names as its element's (DescElement):
     /// a class's, an interface's, a string's, an inner array's; null for
@@ -2055,13 +2061,55 @@ public sealed partial class Lowering
         byte[] d = new byte[_t.DescriptorBytes];
         int w = _t.WordSize;
         WriteWord(d, DescDepth * w, -1);
-        WriteWord(d, DescFlags * w, TypeFlagInterface);
+        int face = BoxedFaceFlags(t, out string? faceOf);
+        WriteWord(d, DescFlags * w, TypeFlagInterface | face);
 
         DataItem item = new(sym, d) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), Coalescible = t.Decl?.Specialised == true };
         _m.Data.Add(item);
         item.Relocs.Add(new DataReloc(DescName * w, InternString(FullTypeName(t)), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
+        if (faceOf is not null) item.Relocs.Add(new DataReloc(DescElement * w, faceOf, 0));
         return sym;
+    }
+
+    /// <summary>
+    /// WHICH BOXED FACE AN INTERFACE IS (BoxedFaces), for its descriptor's
+    /// flags, and the descriptor its word 10 names: for IComparable&lt;X&gt;
+    /// and IEquatable&lt;X&gt;, X's own -- a string's, or the box of a number,
+    /// a bool or a char -- the one type that implements it so; for
+    /// IFormattable, bool's box, the one primitive that does not. Nothing for
+    /// any other interface, nor for one over any other X (an enum, a class,
+    /// a struct), which no box or string implements without naming it.
+    /// Read from the interface alone, so every unit's copy of its descriptor
+    /// is the same bytes and the same relocations, as a box's is.
+    /// </summary>
+    private int BoxedFaceFlags(TypeSymbol t, out string? faceOf)
+    {
+        faceOf = null;
+        Type? argument = t.TemplateArgTypes.Count == 1 ? t.TemplateArgTypes[0] : null;
+        switch (BoxedFaces.Of(t, argument))
+        {
+            case BoxedFaces.Face.Comparable:
+                return TypeFlagFaceComparable;
+            case BoxedFaces.Face.Formattable:
+                faceOf = BoxDescriptor(Type.Bool);
+                return TypeFlagFaceFormattable;
+            case BoxedFaces.Face.ComparableOf or BoxedFaces.Face.EquatableOf when argument is not null:
+                if (argument.Prim == Prim.String && !argument.IsArray && !argument.IsNullableValue && !argument.IsPointer)
+                {
+                    faceOf = StringDescriptor();
+                    return TypeFlagFaceOf;
+                }
+                if (argument.Symbol is null && !argument.IsArray && !argument.IsNullableValue && !argument.IsPointer
+                    && BoxedFaces.IsPrimitive(argument.Prim))
+                {
+                    faceOf = BoxDescriptor(argument);
+                    return TypeFlagFaceOf;
+                }
+                return 0;
+            default:
+                return 0;
+        }
     }
 
     /// <summary>
