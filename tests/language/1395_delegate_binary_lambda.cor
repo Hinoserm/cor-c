@@ -1,0 +1,47 @@
+// test: delegate_binary_lambda
+// expect-exit: 0
+// expect-output:
+// plus lambda 1L
+// plus group 1G
+// minus group 1
+// func 20
+// typed True
+//
+// A LAMBDA OR A METHOD GROUP ON THE RIGHT OF `+` OR `-` becomes the delegate
+// on the left, as C# target-types it: `d + (n => ...)` is d combined with an
+// Action<int> made of the lambda, `d - Group` takes out the method group's
+// delegate (equal to the one added). A Func's sum answers its last target.
+
+using System;
+
+static class P
+{
+    static string log = "";
+    static void Group(int n) { log += n + "G"; }
+
+    static int Main()
+    {
+        Action<int> d = n => log += n;
+        Action<int> withLambda = d + (n => log += "L");
+        withLambda(1);
+        Console.WriteLine("plus lambda " + log);
+
+        log = "";
+        Action<int> withGroup = d + Group;
+        withGroup(1);
+        Console.WriteLine("plus group " + log);
+
+        log = "";
+        Action<int>? less = withGroup - Group;
+        less?.Invoke(1);
+        Console.WriteLine("minus group " + log);
+
+        Func<int, int> f = x => x + 1;
+        Func<int, int> g = f + (x => x * 10);
+        Console.WriteLine("func " + g(2));
+
+        Action<int> sum = d + Group;
+        Console.WriteLine("typed " + (sum is Action<int>));
+        return 0;
+    }
+}

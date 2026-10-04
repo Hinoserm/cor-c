@@ -1,0 +1,19 @@
+// test: action contravariance refused
+// expect-compile-error: cannot convert
+// An Action's argument varies IN only: an Action<string> takes strings, so it
+// is not an Action<object>, which may be handed anything. C# refuses the
+// conversion (CS0266), and so does this; Action<object> to Action<string> is
+// the direction that holds.
+
+using System;
+
+static class P
+{
+    static int Main()
+    {
+        Action<string> said = s => Console.WriteLine(s.Length);
+        Action<object> any = said;
+        any(5);
+        return 0;
+    }
+}

@@ -50,6 +50,15 @@ public sealed class TypeSymbol
     public bool HeldInline { get; set; }
     /// <summary>A tuple shape's: whether it has been given ValueTuple's interfaces (Binder.TupleFaces).</summary>
     public bool TupleFacesGiven { get; set; }
+
+    /// <summary>
+    /// A closure's, made of a method group: the identity of the method it
+    /// calls (ClosureIdentity), the same wherever the group was converted. A
+    /// delegate of it is equal to any other of the same method on the same
+    /// target (Runtime.GroupEquals), which lowering arranges through the
+    /// closure's Equals slot. Null for a lambda's closure and every other type.
+    /// </summary>
+    public string? DelegateGroup { get; set; }
     /// <summary>A specialisation's type arguments, resolved where it was written: what .NET's name of it spells out.</summary>
     public List<Type> TemplateArgTypes { get; } = new();
     /// <summary>The classes a shared copy's code makes for this copy's arguments (TypeDecl.CanonMade); null where one did not resolve.</summary>

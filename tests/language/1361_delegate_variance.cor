@@ -1,0 +1,73 @@
+// test: delegate_variance
+// expect-exit: 0
+// expect-output:
+// func hello
+// action got text
+// predicate True False
+// comparison 1
+// sorted a bb ccc
+// converter 5
+// argument hi
+// named answer
+//
+// DELEGATE VARIANCE AS .NET DECLARES IT: Func<in T..., out TResult>,
+// Action<in T...>, Predicate<in T>, Converter<in TInput, out TOutput> and
+// Comparison<in T>. A Func<string> is a Func<object> -- what it answers is a
+// string, so an object -- and an Action<object> is an Action<string> --
+// anything it takes, a string is. Nothing is converted: the delegate is the
+// same object either way. List<string>.Sort takes a Comparison<string> and
+// is handed a Comparison<object>, which variance makes one. A program's own
+// generic delegate varies as it declares (Maker).
+//
+// .NET prints the lines above: "hello"; Take saw "text"; po("x") is a string
+// and 3 is not; "abc" is longer than "de" (3.CompareTo(2) is 1); sorting by
+// length gives a, bb, ccc; "12345" has five characters; and the rest answer
+// what their lambdas return.
+
+using System;
+using System.Collections.Generic;
+
+delegate TResult Maker<in TArg, out TResult>(TArg arg);
+
+static class P
+{
+    static string seen = "";
+    static void Take(object o) { seen = "got " + o; }
+    static string Call(Func<object> f) => "" + f();
+
+    static int Main()
+    {
+        Func<string> fs = () => "hello";
+        Func<object> fo = fs;
+        Console.WriteLine("func " + fo());
+
+        Action<object> ao = Take;
+        Action<string> astr = ao;
+        astr("text");
+        Console.WriteLine("action " + seen);
+
+        Predicate<object> po = o => o is string;
+        Predicate<string> ps = po;
+        Console.WriteLine("predicate " + ps("x") + " " + po(3));
+
+        Comparison<object> byLength = (a, b) => a.ToString()!.Length.CompareTo(b.ToString()!.Length);
+        Comparison<string> cs = byLength;
+        Console.WriteLine("comparison " + cs("abc", "de"));
+
+        List<string> words = new List<string> { "ccc", "a", "bb" };
+        words.Sort(byLength);
+        Console.WriteLine("sorted " + string.Join(" ", words));
+
+        Converter<object, string> text = o => o.ToString()!;
+        Converter<string, object> loose = text;
+        Console.WriteLine("converter " + ((string)loose("12345")).Length);
+
+        Func<string> hi = () => "hi";
+        Console.WriteLine("argument " + Call(hi));
+
+        Maker<object, string> make = o => "answer";
+        Maker<string, object> wider = make;
+        Console.WriteLine("named " + wider("q"));
+        return 0;
+    }
+}

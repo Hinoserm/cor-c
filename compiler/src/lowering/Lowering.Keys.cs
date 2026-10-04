@@ -504,6 +504,112 @@ public sealed partial class Lowering
         return label;
     }
 
+    // ---- delegates ----------------------------------------------------------------
+    //
+    // A DELEGATE IS EQUAL TO ANOTHER OF THE SAME METHOD ON THE SAME TARGET,
+    // which is .NET's Delegate.Equals and what `-=` finds the delegate to take
+    // out by. A closure the checker writes for a lambda or a method group is a
+    // class with fields and an Invoke and nothing else, so what its Equals and
+    // GetHashCode slots hold is written here: the runtime's comparison
+    // (Runtime.DelegateEquals, Runtime.GroupEquals, Runtime.DelegateHash).
+
+    /// <summary>A closure the checker made of a lambda or a method group, as a delegate.</summary>
+    private static bool DelegateClosure(TypeSymbol t)
+        => t.Decl?.LocalOnly == true && t.Name.StartsWith("Lambda$", StringComparison.Ordinal)
+        && t.Interfaces.Any(face => face.Decl?.IsDelegate == true);
+
+    /// <summary>
+    /// A LAMBDA THAT HOLDS A COPY OF A PARAMETER is a delegate of one call's
+    /// worth of that parameter. .NET hoists a captured parameter into a
+    /// display object made when the method is entered, and the delegate's
+    /// target is that object: a lambda made in two calls of the method is
+    /// two targets, and the two are not equal whatever the values. A captured
+    /// local is a cell here, one per scope entered, and its address says the
+    /// same of it; a parameter nothing writes is copied into the closure
+    /// instead (Binder.SettleCapturedCells), and the copy says nothing of
+    /// which call made it -- so such a closure is equal only to itself, and
+    /// hashes as itself.
+    /// </summary>
+    private static bool CapturesByValue(TypeSymbol t)
+        => t.DelegateGroup is null
+        && t.Fields.Any(f => !f.Static && !f.Boxed && f.Name != "$this" && f.Name != "$target");
+
+    /// <summary>
+    /// What a delegate closure's Equals slot holds. A lambda's: equal to a
+    /// closure of the same class holding the same words (the same lambda over
+    /// the same captures), Runtime.DelegateEquals. A method group's: one
+    /// routine for each METHOD, `__group_equals$` and its identity, shared by
+    /// every closure of that method whichever class converted it -- one class
+    /// per converting type, and per unit -- so that the routine's address in
+    /// the slot is the method's identity, which Runtime.GroupEquals compares
+    /// along with the target. Null without the runtime's routines.
+    /// </summary>
+    private string? DelegateEqualsStub(TypeSymbol t)
+    {
+        if (CapturesByValue(t))
+        {
+            return null;
+        }
+        bool group = t.DelegateGroup is not null;
+        MethodSymbol? same = group ? RuntimeMethod("GroupEquals", 3) : RuntimeMethod("DelegateEquals", 2);
+        if (same is null)
+        {
+            return null;
+        }
+        string label = group ? "__group_equals$" + t.DelegateGroup : "__delegate_equals";
+        if (!_structHelpers.Add(label))
+        {
+            return label;
+        }
+        Require(same);
+        Function f = new(label, IrType.I32) { Coalescible = true };
+        VReg self = f.NewReg(IrTypes.Word, "this");
+        VReg other = f.NewReg(IrTypes.Word, "other");
+        f.Params.Add(self);
+        f.Params.Add(other);
+        Builder e = new(f, f.NewBlock("entry"));
+        VReg said = group
+            ? e.Call(CallLabel(same), IrType.I32, R(self), R(other), new ImmOperand((long)_b.EqualsSlot * _t.WordSize, IrType.I32))!
+            : e.Call(CallLabel(same), IrType.I32, R(self), R(other))!;
+        e.Ret(new RegOperand(said));
+        _m.Functions.Add(f);
+        return label;
+    }
+
+    /// <summary>
+    /// What a delegate closure's GetHashCode slot holds: Runtime.DelegateHash
+    /// of it, told -- for a method group's -- the address of its method's
+    /// Equals routine (DelegateEqualsStub), so that equal delegates of two
+    /// classes hash alike. Null without the runtime's routine.
+    /// </summary>
+    private string? DelegateHashStub(TypeSymbol t)
+    {
+        if (CapturesByValue(t))
+        {
+            return null;
+        }
+        MethodSymbol? hash = RuntimeMethod("DelegateHash", 2);
+        string? identity = t.DelegateGroup is null ? null : DelegateEqualsStub(t);
+        if (hash is null || (t.DelegateGroup is not null && identity is null))
+        {
+            return null;
+        }
+        string label = identity is null ? "__delegate_hash" : "__group_hash$" + t.DelegateGroup;
+        if (!_structHelpers.Add(label))
+        {
+            return label;
+        }
+        Require(hash);
+        Function f = new(label, IrType.I32) { Coalescible = true };
+        VReg self = f.NewReg(IrTypes.Word, "this");
+        f.Params.Add(self);
+        Builder e = new(f, f.NewBlock("entry"));
+        Operand which = identity is null ? (Operand)new ImmOperand(0, IrType.I64) : R(WordAddress(e, identity));
+        e.Ret(new RegOperand(e.Call(CallLabel(hash), IrType.I32, R(self), which)!));
+        _m.Functions.Add(f);
+        return label;
+    }
+
     // ---- tuples -----------------------------------------------------------------
     //
     // A TUPLE IS EQUAL TO A TUPLE OF EQUAL THINGS, which is the whole reason to

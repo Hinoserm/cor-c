@@ -10,6 +10,14 @@ public sealed class FieldSymbol
     public bool Volatile { get; init; }
 
     /// <summary>
+    /// A FIELD-LIKE EVENT: `event Action? Fired;`. Inside the type that
+    /// declares it, it is the field it looks like; anywhere else it may only
+    /// be added to and taken from with += and -= (C#'s CS0070), which the
+    /// binder enforces (Binder.EventFromOutside).
+    /// </summary>
+    public bool IsEvent { get; init; }
+
+    /// <summary>
     /// [ThreadStatic]: a static with a value of its own on every thread. Its
     /// storage is no symbol of the image but a cell each thread makes the first
     /// time it touches the field (Runtime.ThreadStaticCell); the image holds

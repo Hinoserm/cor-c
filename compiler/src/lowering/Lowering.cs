@@ -1346,6 +1346,14 @@ public sealed partial class Lowering
     // DescFlags beyond a sequence's 1 and a string's 2: what Type answers.
     private const int TypeFlagValue = 4, TypeFlagEnum = 8, TypeFlagInterface = 16, TypeFlagPrimitive = 32;
 
+    // A DELEGATE TYPE'S descriptor (an interface's, as a delegate is one
+    // here): what Runtime.SameDelegateType finds of an object's delegate type.
+    private const int TypeFlagDelegate = 64;
+
+    // AN INTERFACE'S WORD 11: its declared variance (VarianceRecord). Word 4,
+    // as a class's, the interfaces it extends.
+    private const int DescVariance = 11;
+
     /// <summary>
     /// The descriptor an array of these names as its element's (DescElement):
     /// a class's, an interface's, a string's, an inner array's; null for
@@ -2018,14 +2026,117 @@ public sealed partial class Lowering
         byte[] d = new byte[_t.DescriptorBytes];
         int w = _t.WordSize;
         WriteWord(d, DescDepth * w, -1);
-        WriteWord(d, DescFlags * w, TypeFlagInterface);
+        WriteWord(d, DescFlags * w, TypeFlagInterface | (t.Decl?.IsDelegate == true ? TypeFlagDelegate : 0));
 
         DataItem item = new(sym, d) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), Coalescible = t.Decl?.Specialised == true };
         _m.Data.Add(item);
         item.Relocs.Add(new DataReloc(DescName * w, InternString(FullTypeName(t)), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
+
+        // THE INTERFACES IT EXTENDS, as a class's descriptor lists the ones it
+        // implements: an IList<T> is an ICollection<T> and an IEnumerable<T>,
+        // which Runtime.DescribedAs asks of an interface met as a type
+        // argument (a Func<IList<int>> is a Func<IEnumerable<int>>) or as an
+        // array's element (an IList<int>[] is an IEnumerable<int>[]).
+        List<TypeSymbol> bases = new();
+        foreach (TypeSymbol parent in t.Interfaces) AddInterfaceClosure(parent, bases);
+        bases.Remove(t);
+        if (bases.Count > 0)
+        {
+            foreach (TypeSymbol face in bases) InterfaceDescriptor(face);
+            byte[] arr = new byte[(bases.Count + 1) * w];
+            DataItem list = new("f_" + TypeKey(t), arr) { ReadOnly = true, Exported = false };
+            for (int i = 0; i < bases.Count; i++) list.Relocs.Add(new DataReloc(i * w, InterfaceDescriptor(bases[i]), 0));
+            _m.Data.Add(list);
+            item.Relocs.Add(new DataReloc(DescInterfaces * w, list.Name, 0));
+        }
+
+        if (VarianceRecord(t) is string variance)
+        {
+            item.Relocs.Add(new DataReloc(DescVariance * w, variance, 0));
+        }
         return sym;
     }
+
+    /// <summary>
+    /// WHAT A VARIANT INTERFACE'S ARGUMENTS ARE AND HOW THEY MAY VARY, for the
+    /// run-time type test (Runtime.DescribedAs, VariantFits): a
+    /// `(object)funcOfString is Func&lt;object&gt;` is true in .NET, and so is
+    /// a List&lt;string&gt; tested for IEnumerable&lt;object&gt;, though neither
+    /// object's descriptor names that type. Null for a type whose template
+    /// declares no variance, and for one whose arguments are not all known
+    /// here -- tested for its exact type only, as before.
+    ///
+    /// The record: the template's identity (`vf_`, one per template and
+    /// arity, shared by every unit), the argument count, then for each
+    /// argument its declared variance (1 out, 2 in), 4 added for a reference
+    /// type, and its descriptor -- a class's, an interface's, an array's or
+    /// a string's; 1 for object, which every reference converts to; a value
+    /// type's box, compared for identity only.
+    /// </summary>
+    private string? VarianceRecord(TypeSymbol t)
+    {
+        if (t.Decl is not { Template: string template } made || made.TemplateArgs.Count == 0
+            || t.TemplateArgTypes.Count != made.TemplateArgs.Count)
+        {
+            return null;
+        }
+        int n = made.TemplateArgs.Count;
+        if (!(_b.Types.TryGetValue(template + "`" + n, out TypeSymbol? open) || _b.Types.TryGetValue(template, out open))
+            || open.Decl is not { } declared || declared.TypeParams.Count != n
+            || declared.TypeParams.All(p => p.Variance == Variance.None))
+        {
+            return null;
+        }
+        string sym = "vr_" + TypeKey(t);
+        if (_varianceRecords.Contains(sym))
+        {
+            return sym;
+        }
+        int w = _t.WordSize;
+        byte[] block = new byte[(2 + 2 * n) * w];
+        WriteWord(block, w, n);
+        List<DataReloc> relocs = new();
+        for (int i = 0; i < n; i++)
+        {
+            Type a = t.TemplateArgTypes[i];
+            // A shared copy's stand-in argument (__canon) is no type to
+            // compare: such a copy is tested for its exact type only.
+            if (a.IsError || a.ParamName is not null || a.IsPointer || a.IsNullableValue || a.Symbol?.Name.Contains(Monomorphiser.CanonName, StringComparison.Ordinal) == true)
+            {
+                return null;
+            }
+            bool reference = (a.IsReference || a.Prim == Prim.Any || a.IsArray) && !a.IsNullableValue;
+            long kind = (declared.TypeParams[i].Variance switch { Variance.Out => 1, Variance.In => 2, _ => 0 }) | (reference ? 4 : 0);
+            WriteWord(block, (2 + 2 * i) * w, kind);
+            if (reference && a.Prim == Prim.Any && a.Symbol is null && !a.IsArray)
+            {
+                WriteWord(block, (3 + 2 * i) * w, 1);
+                continue;
+            }
+            string? described = reference ? ElementDescriptor(a.AsNonNullable()) : BoxDescriptor(a);
+            if (described is null)
+            {
+                return null;
+            }
+            relocs.Add(new DataReloc((3 + 2 * i) * w, described, 0));
+        }
+        string family = "vf_" + Safe(open.Key) + "_" + n;
+        if (_varianceRecords.Add(family))
+        {
+            byte[] one = new byte[w];
+            WriteWord(one, 0, n);
+            _m.Data.Add(new DataItem(family, one) { ReadOnly = true, Align = w, Coalescible = true });
+        }
+        _varianceRecords.Add(sym);
+        DataItem record = new(sym, block) { ReadOnly = true, Align = w, Coalescible = true };
+        record.Relocs.Add(new DataReloc(0, family, 0));
+        record.Relocs.AddRange(relocs);
+        _m.Data.Add(record);
+        return sym;
+    }
+
+    private readonly HashSet<string> _varianceRecords = new(StringComparer.Ordinal);
 
     /// <summary>
     /// The descriptor and vtable of a class, built once and on demand.
@@ -2178,11 +2289,11 @@ public sealed partial class Lowering
             }
             else if (i == _b.EqualsSlot && t.Kind == TypeKind.Class)
             {
-                target = EqualsGuard(t) ?? ObjectEqualsStub();
+                target = (DelegateClosure(t) ? DelegateEqualsStub(t) : null) ?? EqualsGuard(t) ?? ObjectEqualsStub();
             }
             else if (i == _b.HashSlot && t.Kind == TypeKind.Class)
             {
-                target = ObjectHashStub();
+                target = (DelegateClosure(t) ? DelegateHashStub(t) : null) ?? ObjectHashStub();
             }
             else if (i == _b.CompareSlot && t.Kind == TypeKind.Class)
             {

@@ -1,0 +1,84 @@
+// test: delegate_equality
+// expect-exit: 0
+// expect-output:
+// same target True True True
+// other target False True
+// static True
+// two lambdas False False
+// one lambda True
+// multicast True False True
+// order False
+// null True False False
+// object True True
+// elsewhere True True
+// this group True
+//
+// DELEGATE EQUALITY AS .NET HAS IT: `==`, `!=` and Equals compare what a
+// delegate calls, not which object it is. The same method on the same target
+// is equal however many times it was converted, and wherever: in another
+// class (Maker), or as `Bump` inside Counter itself against `a.Bump` outside
+// it. Another target is not. Two lambdas are two methods and never equal,
+// though their bodies match; one lambda is equal to itself. Equal delegates
+// hash alike. A multicast is equal to one with equal targets in the same
+// order, and never to a single delegate; `d == null` is true only of null,
+// and Equals(null) is false.
+
+using System;
+
+class Counter
+{
+    public int N;
+    public void Bump() { N++; }
+    public Action Mine() => Bump;
+}
+
+static class Maker
+{
+    public static Action Of(Counter c) => c.Bump;
+    public static Action Static() => P.Hello;
+}
+
+static class P
+{
+    public static void Hello() { }
+
+    static int Main()
+    {
+        Counter a = new Counter();
+        Counter b = new Counter();
+        Action x = a.Bump;
+        Action y = a.Bump;
+        Action z = b.Bump;
+        Console.WriteLine("same target " + (x == y) + " " + x.Equals(y) + " " + (x.GetHashCode() == y.GetHashCode()));
+        Console.WriteLine("other target " + (x == z) + " " + (x != z));
+
+        Action s1 = Hello;
+        Action s2 = Hello;
+        Console.WriteLine("static " + (s1 == s2));
+
+        Action l1 = () => { };
+        Action l2 = () => { };
+        Console.WriteLine("two lambdas " + (l1 == l2) + " " + l1.Equals(l2));
+        Action l3 = l1;
+        Console.WriteLine("one lambda " + (l1 == l3));
+
+        Action? m1 = x;
+        m1 += s1;
+        Action? m2 = y;
+        m2 += s2;
+        Console.WriteLine("multicast " + (m1 == m2) + " " + (m1 == x) + " " + (m1!.GetHashCode() == m2!.GetHashCode()));
+        Action? m3 = s1;
+        m3 += x;
+        Console.WriteLine("order " + (m1 == m3));
+
+        Action? none = null;
+        Console.WriteLine("null " + (none == null) + " " + (x == none) + " " + x.Equals(null));
+
+        object boxed = y;
+        Console.WriteLine("object " + x.Equals(boxed) + " " + boxed.Equals(x));
+
+        Console.WriteLine("elsewhere " + (x == Maker.Of(a)) + " " + (s1 == Maker.Static()));
+        Console.WriteLine("this group " + (a.Mine() == x));
+        return 0;
+    }
+}

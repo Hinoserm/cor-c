@@ -1,0 +1,25 @@
+// test: static_lambdas
+// expect-exit: 0
+// expect-output:
+// 6 7 12 9 done
+//
+// A LAMBDA MARKED STATIC promises to capture nothing, and is otherwise a
+// lambda: one parameter bare, several in brackets, a block body, and
+// `static async`. The parser read `static` after `=` as the start of a
+// declaration and refused the line.
+
+using System;
+using System.Threading.Tasks;
+
+static class P
+{
+    static int Main()
+    {
+        Func<int, int> twice = static x => x * 2;
+        Func<int, int, int> add = static (a, b) => a + b;
+        Func<int, int> block = static x => { int y = x * 4; return y; };
+        Func<int, Task<int>> later = static async x => { await Task.Yield(); return x * x; };
+        Console.WriteLine(twice(3) + " " + add(3, 4) + " " + block(3) + " " + later(3).Result + " done");
+        return 0;
+    }
+}

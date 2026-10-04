@@ -1,0 +1,18 @@
+// test: func covariance refused
+// expect-compile-error: cannot convert
+// A Func's result varies OUT only: a Func<object> may answer any object, so
+// it is not a Func<string>. C# refuses the conversion (CS0266), and so does
+// this; Func<string> to Func<object> is the direction that holds.
+
+using System;
+
+static class P
+{
+    static int Main()
+    {
+        Func<object> fo = () => "text";
+        Func<string> fs = fo;
+        Console.WriteLine(fs());
+        return 0;
+    }
+}

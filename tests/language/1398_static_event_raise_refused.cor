@@ -1,0 +1,22 @@
+// test: static event raise refused
+// expect-compile-error: can only appear on the left hand side of += or -=
+// A static field-like event is raised by the class that declares it, as an
+// instance one is: anyone may subscribe with `Clock.Ticked += ...`, and
+// raising it from another class is refused (CS0070).
+
+using System;
+
+static class Clock
+{
+    public static event Action? Ticked;
+}
+
+static class P
+{
+    static int Main()
+    {
+        Clock.Ticked += () => Console.WriteLine("tick");
+        Clock.Ticked?.Invoke();
+        return 0;
+    }
+}

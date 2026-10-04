@@ -1,0 +1,68 @@
+// test: delegate_static_combine
+// expect-exit: 0
+// expect-output:
+// combine AB
+// params ABC
+// array AC
+// remove AC
+// remove all BBC
+// remove null True True
+// as delegate AB
+// mismatch ArgumentException
+//
+// .NET's Delegate statics: Combine of two (either alone when the other is
+// null), of a params array (nulls skipped), Remove (the last run, as -=
+// does), and RemoveAll (every run: ABABC less A is BBC). Remove of null is
+// null and of a null value is the source itself. Delegates held only as
+// Delegate combine as their type says. Two delegate types do not combine:
+// .NET throws ArgumentException ("Delegates must be of the same type.").
+
+using System;
+
+static class P
+{
+    static string log = "";
+    static void A() { log += "A"; }
+    static void B() { log += "B"; }
+    static void C() { log += "C"; }
+
+    static void Run(string label, Action? d)
+    {
+        log = "";
+        d?.Invoke();
+        Console.WriteLine(label + " " + log);
+    }
+
+    static int Main()
+    {
+        Action a = A;
+        Action b = B;
+        Action c = C;
+        Action ab = (Action)Delegate.Combine(a, b)!;
+        Run("combine", ab);
+        Delegate? three = Delegate.Combine(a, b, c);
+        Run("params", (Action?)three);
+        Delegate? fromArray = Delegate.Combine(new Delegate?[] { a, null, c });
+        Run("array", (Action?)fromArray);
+        Run("remove", (Action?)Delegate.Remove(three, b));
+        Action abab = ab + ab;
+        Run("remove all", (Action?)Delegate.RemoveAll(abab + c, a));
+        Console.WriteLine("remove null " + (Delegate.Remove(null, a) == null) + " " + (Delegate.Remove(a, null) == (Delegate)a));
+
+        Delegate first = a;
+        Delegate second = b;
+        Run("as delegate", (Action?)Delegate.Combine(first, second));
+
+        Func<int> number = () => 1;
+        try
+        {
+            Delegate.Combine(a, number);
+            Console.WriteLine("combined");
+        }
+        catch (ArgumentException)
+        {
+            Console.WriteLine("mismatch ArgumentException");
+        }
+        return 0;
+    }
+}

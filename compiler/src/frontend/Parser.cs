@@ -1604,7 +1604,6 @@ public sealed class Parser
             byReference = Mods.RefReturn;
             if (Take(Tok.KwReadonly)) byReference |= Mods.RefReadonlyReturn;
         }
-        int firstToken = _i;
         TypeRef returns = ParseTypeRef();
         string name = Expect(Tok.Ident, "a delegate name").Text;
         TypeDecl declaration = new()
@@ -1629,71 +1628,119 @@ public sealed class Parser
         ParseParams(invoke.Params); ParseConstraints(declaration.TypeParams);
         declaration.Members.Add(invoke);
         declaration.SourceTo = Expect(Tok.Semi, "';' after delegate declaration").Pos + 1;
-        TypeDecl? multicast = Multicast(declaration, firstToken, _i - 1, byReference);
+        TypeDecl? multicast = Multicast(declaration, invoke);
         if (multicast is not null)
         {
             _nested.Add(multicast);
 
-            // A GENERIC DELEGATE COMBINES THROUGH ITSELF. The binder cannot
-            // name `D__Multicast<int>` for `+=` on a `D<int>`: specialisations
-            // are made from what the source names, before binding. The
-            // delegate's own copy is made because the program names it, and
-            // these two statics carry the multicast's name into that copy.
-            if (declaration.TypeParams.Count > 0)
+            string own = string.Join(", ", declaration.TypeParams.Skip(declaration.OuterParams).Select(tp => tp.Name));
+            string args = own.Length == 0 ? "" : "<" + own + ">";
+            string self = name + args;
+            string helper = name + "__Multicast" + args;
+            System.Text.StringBuilder forward = new();
+
+            // A SINGLE DELEGATE COMBINES THROUGH ITS TYPE: `a += b` and
+            // Delegate.Combine(a, b) ask a.CombineImpl(b) (__Delegates,
+            // Delegate.Combine), and a closure is a class the compiler made for
+            // one lambda, which knows nothing of multicasts. These two are the
+            // delegate type's own answers -- explicit implementations of
+            // Delegate's, written into the interface -- and the binder gives
+            // every closure of the type them (Binder.DelegateMembers). The
+            // multicast class answers both itself. That the two delegates are
+            // of one type Delegate.Combine has already seen.
+            forward.Append("System.Delegate? System.Delegate.CombineImpl(System.Delegate follow) { return ")
+                   .Append(helper).Append(".Combine(this, (").Append(self).Append(")follow); }\n");
+            forward.Append("System.Delegate? System.Delegate.RemoveImpl(System.Delegate value) { return ")
+                   .Append(helper).Append(".Remove(this, (").Append(self).Append(")value); }\n");
+
+            Parser sub = new(Lexer.Tokenize("interface __Forward { " + forward.ToString() + " }", _file), _file, _declarationsOnly);
+            CompilationUnit wrapped = sub.ParseUnit();
+            List<MemberDecl> statics = wrapped.Types[0].Members;
+            foreach (MemberDecl member in statics)
             {
-                string own = string.Join(", ", declaration.TypeParams.Skip(declaration.OuterParams).Select(tp => tp.Name));
-                string args = own.Length == 0 ? "" : "<" + own + ">";
-                string self = name + args;
-                string helper = name + "__Multicast" + args;
-                string forward =
-                    "public static " + self + "? Combine(" + self + "? a, " + self + "? b) { return " + helper + ".Combine(a, b); }\n"
-                  + "public static " + self + "? Remove(" + self + "? a, " + self + "? b) { return " + helper + ".Remove(a, b); }\n";
-                Parser sub = new(Lexer.Tokenize("interface __Forward { " + forward + " }", _file), _file, _declarationsOnly);
-                CompilationUnit wrapped = sub.ParseUnit();
-                List<MemberDecl> statics = wrapped.Types[0].Members;
-                foreach (MemberDecl member in statics)
-                {
-                    member.File = _file;
-                }
-                Adopt(statics);
-                declaration.Members.AddRange(statics);
+                member.File = _file;
             }
+            Adopt(statics);
+            declaration.Members.AddRange(statics);
         }
         return declaration;
+    }
+
+    /// <summary>
+    /// A type as source text that names it again, for the classes written
+    /// here from text: TypeRef's own spelling, with the pointer stars it
+    /// leaves out. Null for what that text cannot say -- a function pointer,
+    /// or a nullable written inside an array's element -- and the delegate
+    /// is then left without its multicast, as it was before any of this.
+    /// </summary>
+    private static string? Spelt(TypeRef type)
+    {
+        if (type.IsFunctionPointer || type.InnerNullable > 0)
+        {
+            return null;
+        }
+        foreach (TypeRef argument in type.Args)
+        {
+            if (Spelt(argument) is null) return null;
+        }
+        if (type.PointerDepth > 0)
+        {
+            if (type.ArrayRank > 0 || type.Nullable) return null;
+            return type.ToString() + new string('*', type.PointerDepth);
+        }
+        return type.ToString();
     }
 
     /// <summary>
     /// The multicast form of a delegate, synthesised beside it: a class that
     /// implements the delegate's interface by invoking a list of them in
     /// order, with Combine and Remove for += and -=. Built from source text
-    /// and parsed, because the declaration's own tokens already spell the
-    /// return type and parameters and reassembling them is simpler and less
-    /// fragile than building the tree by hand.
+    /// and parsed, because the rules are easier to read as C# than as a tree
+    /// built by hand; the text is made from the declaration as parsed -- its
+    /// Invoke's return type and parameters -- so a parameter whose type has a
+    /// comma in it, a tuple returned, or a default value cannot unsettle it.
+    ///
+    /// AS .NET's MulticastDelegate DOES IT, all of it:
+    ///
+    /// - Invoke runs every target in order and answers what the LAST one
+    ///   answers. An exception from one stops the rest, as any call's does.
+    ///   An out or ref parameter is passed to each in turn -- the same
+    ///   variable, so the caller sees what the last target left in it.
+    /// - Combine flattens: a multicast of multicasts is one list.
+    /// - Remove takes out the LAST contiguous run of the removed delegate's
+    ///   targets -- one target, or a whole multicast out of the middle of
+    ///   another -- and hands back the delegate it was given when the run is
+    ///   not there; what is left of one target is that target, and of none,
+    ///   null. Targets compare by their own Equals: the same method on the
+    ///   same target (Runtime.DelegateEquals, Runtime.GroupEquals).
+    /// - Equals and GetHashCode: equal to a multicast of the same type with
+    ///   equal targets in the same order; GetInvocationList the targets.
     /// </summary>
-    private TypeDecl? Multicast(TypeDecl delegateDecl, int firstToken, int semicolon, Mods byReference = Mods.None)
+    private TypeDecl? Multicast(TypeDecl delegateDecl, MethodDecl invoke)
     {
-        System.Text.StringBuilder head = new();
-        for (int k = firstToken; k < semicolon; k++)
+        string? returns = invoke.Returns is null ? null : Spelt(invoke.Returns);
+        if (returns is null)
         {
-            string text = _t[k].Text;
-            if (head.Length > 0 && text != "(" && text != ")" && text != "," && text != "?" && text != "[" && text != "]"
-                && head[^1] != '(' && head[^1] != '[') head.Append(' ');
-            head.Append(text);
+            return null;
         }
-        string decl = head.ToString();
-        if (decl.Contains(" ref ") || decl.Contains(" out ") || decl.Contains("(ref ") || decl.Contains("(out ")) return null;
-        int open = decl.IndexOf('(');
-        if (open < 0) return null;
-        // THE BRACKET THAT CLOSES THE PARAMETERS, not the last one: a
-        // `where T : new()` constraint after them has one of its own.
-        int close = -1;
-        for (int k = open, depth = 0; k < decl.Length; k++)
+
+        List<string> parameters = new();
+        List<string> names = new();
+        foreach (Param p in invoke.Params)
         {
-            if (decl[k] == '(') depth++;
-            else if (decl[k] == ')' && --depth == 0) { close = k; break; }
+            if (Spelt(p.Type) is not string spelt)
+            {
+                return null;
+            }
+            // HOW IT IS DECLARED and how it is passed on: `in` is passed as a
+            // value is, the address taken for it (ParseParams); ref and out
+            // are passed as they came, so every target writes the caller's
+            // variable.
+            string how = p.IsOut ? "out " : p.IsReadOnlyRef ? "in " : p.IsRef ? "ref " : p.IsParams ? "params " : "";
+            parameters.Add(how + spelt + " " + p.Name);
+            names.Add((p.IsOut ? "out " : p.IsRef && !p.IsReadOnlyRef ? "ref " : "") + p.Name);
         }
-        if (close < open) return null;
-        string before = decl[..open].Trim();
+
         string name = delegateDecl.Name;
         // A GENERIC DELEGATE HAS A GENERIC MULTICAST: `EventHandler<TEventArgs>`
         // is combined by `EventHandler__Multicast<TEventArgs>`, specialised
@@ -1703,81 +1750,86 @@ public sealed class Parser
         List<TypeParam> own = delegateDecl.TypeParams.Skip(delegateDecl.OuterParams).ToList();
         string typeParams = own.Count == 0 ? ""
             : "<" + string.Join(", ", own.Select(tp => tp.Name)) + ">";
-        if (typeParams.Length > 0)
-        {
-            int angle = before.LastIndexOf('<');
-            if (angle < 0) return null;
-            before = before[..angle].TrimEnd();
-        }
-        if (!before.EndsWith(name)) return null;
-        string returns = before[..^name.Length].Trim();
-        string parameters = decl[(open + 1)..close].Trim();
-        List<string> names = new();
-        if (parameters.Length > 0)
-        {
-            foreach (string piece in parameters.Split(','))
-            {
-                string p = piece.Trim();
-                int space = p.LastIndexOf(' ');
-                if (space < 0) return null;
-                names.Add(p[(space + 1)..]);
-            }
-        }
-        bool isVoid = returns == "void";
+        string args = string.Join(", ", names);
+        string signature = string.Join(", ", parameters);
+        string ctor = name + "__Multicast";
+        string m = ctor + typeParams;
+        string d = name + typeParams;
+        System.Text.StringBuilder src = new();
+        if (!string.IsNullOrEmpty(_namespace)) src.Append("namespace ").Append(_namespace).Append(";\n");
+        src.Append("public sealed class ").Append(m).Append(" : ").Append(d).Append(", System.IMulticastDelegate\n{\n");
+        src.Append("    public ").Append(d).Append("[] Items;\n");
+        src.Append("    public ").Append(ctor).Append("(").Append(d).Append("[] items) { Items = items; }\n");
+
+        // THE FIRST TARGET OUTSIDE THE LOOP, for a result and for an out
+        // parameter alike: a multicast always has at least two (only
+        // Combine and Remove make one), the first answer starts what is
+        // returned -- `default` would be null for a non-nullable class, which
+        // the declared return type does not allow -- and an out parameter is
+        // then written before the method can return.
         // A delegate that returns by reference answers, combined, the
         // variable its last target does -- C#'s rule for any result -- and
         // its Invoke returns it as the delegate's does.
-        string refKind = (byReference & Mods.RefReadonlyReturn) != 0 ? "ref readonly "
-                       : (byReference & Mods.RefReturn) != 0 ? "ref " : "";
-        string args = string.Join(", ", names);
-        string ctor = name + "__Multicast";
-        string m = ctor + typeParams;
-        name = name + typeParams;
-        System.Text.StringBuilder src = new();
-        if (!string.IsNullOrEmpty(_namespace)) src.Append("namespace ").Append(_namespace).Append(";\n");
-        src.Append("public sealed class ").Append(m).Append(" : ").Append(name).Append("\n{\n");
-        src.Append("    public ").Append(name).Append("[] Items;\n");
-        src.Append("    public ").Append(ctor).Append("(").Append(name).Append("[] items) { Items = items; }\n");
-        src.Append("    public ").Append(refKind).Append(returns).Append(" Invoke(").Append(parameters).Append(")\n    {\n");
-        if (isVoid)
-            src.Append("        for (int i = 0; i < Items.Length; i++) Items[i].Invoke(").Append(args).Append(");\n");
+        string refKind = (invoke.Mods & Mods.RefReadonlyReturn) != 0 ? "ref readonly "
+                       : (invoke.Mods & Mods.RefReturn) != 0 ? "ref " : "";
+        src.Append("    public ").Append(refKind).Append(returns).Append(" Invoke(").Append(signature).Append(")\n    {\n");
+        // Its locals are named as no parameter is: a delegate's own `i` or
+        // `last` would otherwise be declared twice in the one method.
+        if (returns == "void")
+        {
+            src.Append("        Items[0].Invoke(").Append(args).Append(");\n");
+            src.Append("        for (int __i = 1; __i < Items.Length; __i++) Items[__i].Invoke(").Append(args).Append(");\n");
+        }
         else if (refKind.Length > 0)
         {
-            src.Append("        for (int i = 0; i < Items.Length - 1; i++) Items[i].Invoke(").Append(args).Append(");\n");
+            src.Append("        for (int __i = 0; __i < Items.Length - 1; __i++) Items[__i].Invoke(").Append(args).Append(");\n");
             src.Append("        return ref Items[Items.Length - 1].Invoke(").Append(args).Append(");\n");
         }
         else
         {
-            // The last target's answer. A multicast delegate always has at
-            // least two (only Combine makes one), so the first answer starts
-            // it: `default` would be null for a non-nullable class, which the
-            // declared return type does not allow.
-            src.Append("        ").Append(returns).Append(" last = Items[0].Invoke(").Append(args).Append(");\n");
-            src.Append("        for (int i = 1; i < Items.Length; i++) last = Items[i].Invoke(").Append(args).Append(");\n");
-            src.Append("        return last;\n");
+            src.Append("        ").Append(returns).Append(" __last = Items[0].Invoke(").Append(args).Append(");\n");
+            src.Append("        for (int __i = 1; __i < Items.Length; __i++) __last = Items[__i].Invoke(").Append(args).Append(");\n");
+            src.Append("        return __last;\n");
         }
         src.Append("    }\n");
-        src.Append("    public static ").Append(name).Append("? Combine(").Append(name).Append("? a, ").Append(name).Append("? b)\n    {\n");
+
+        src.Append("    public static ").Append(d).Append("? Combine(").Append(d).Append("? a, ").Append(d).Append("? b)\n    {\n");
         src.Append("        if (a == null) return b;\n        if (b == null) return a;\n");
-        src.Append("        ").Append(name).Append("[] x = a is ").Append(m).Append(" ma ? ma.Items : new ").Append(name).Append("[] { a };\n");
-        src.Append("        ").Append(name).Append("[] y = b is ").Append(m).Append(" mb ? mb.Items : new ").Append(name).Append("[] { b };\n");
-        src.Append("        ").Append(name).Append("[] all = new ").Append(name).Append("[x.Length + y.Length];\n");
+        src.Append("        ").Append(d).Append("[] x = a is ").Append(m).Append(" ma ? ma.Items : new ").Append(d).Append("[] { a };\n");
+        src.Append("        ").Append(d).Append("[] y = b is ").Append(m).Append(" mb ? mb.Items : new ").Append(d).Append("[] { b };\n");
+        src.Append("        ").Append(d).Append("[] all = new ").Append(d).Append("[x.Length + y.Length];\n");
         src.Append("        for (int i = 0; i < x.Length; i++) all[i] = x[i];\n");
         src.Append("        for (int i = 0; i < y.Length; i++) all[x.Length + i] = y[i];\n");
         src.Append("        return new ").Append(m).Append("(all);\n    }\n");
-        src.Append("    public static ").Append(name).Append("? Remove(").Append(name).Append("? a, ").Append(name).Append("? b)\n    {\n");
-        src.Append("        if (a == null || b == null) return a;\n");
-        src.Append("        if (a is ").Append(m).Append(" ma)\n        {\n");
-        src.Append("            int at = -1;\n");
-        src.Append("            for (int i = ma.Items.Length - 1; i >= 0; i--) { if (Runtime.SameClosure(ma.Items[i], b)) { at = i; break; } }\n");
-        src.Append("            if (at < 0) return a;\n");
-        src.Append("            if (ma.Items.Length == 1) return null;\n");
-        src.Append("            if (ma.Items.Length == 2) return ma.Items[1 - at];\n");
-        src.Append("            ").Append(name).Append("[] rest = new ").Append(name).Append("[ma.Items.Length - 1];\n");
-        src.Append("            int k = 0;\n");
-        src.Append("            for (int i = 0; i < ma.Items.Length; i++) { if (i != at) { rest[k] = ma.Items[i]; k++; } }\n");
+
+        src.Append("    public static ").Append(d).Append("? Remove(").Append(d).Append("? a, ").Append(d).Append("? b)\n    {\n");
+        src.Append("        if (a == null) return null;\n        if (b == null) return a;\n");
+        src.Append("        ").Append(d).Append("[] have = a is ").Append(m).Append(" ma ? ma.Items : new ").Append(d).Append("[] { a };\n");
+        src.Append("        ").Append(d).Append("[] take = b is ").Append(m).Append(" mb ? mb.Items : new ").Append(d).Append("[] { b };\n");
+        src.Append("        for (int at = have.Length - take.Length; at >= 0; at--)\n        {\n");
+        src.Append("            bool found = true;\n");
+        src.Append("            for (int k = 0; k < take.Length; k++) { if (!((object)have[at + k]).Equals(take[k])) { found = false; break; } }\n");
+        src.Append("            if (!found) continue;\n");
+        src.Append("            int left = have.Length - take.Length;\n");
+        src.Append("            if (left == 0) return null;\n");
+        src.Append("            if (left == 1) return have[at == 0 ? have.Length - 1 : 0];\n");
+        src.Append("            ").Append(d).Append("[] rest = new ").Append(d).Append("[left];\n");
+        src.Append("            for (int i = 0; i < at; i++) rest[i] = have[i];\n");
+        src.Append("            for (int i = at + take.Length; i < have.Length; i++) rest[i - take.Length] = have[i];\n");
         src.Append("            return new ").Append(m).Append("(rest);\n        }\n");
-        src.Append("        return Runtime.SameClosure(a, b) ? null : a;\n    }\n}\n");
+        src.Append("        return a;\n    }\n");
+
+        src.Append("    public System.Delegate[] GetInvocationList()\n    {\n");
+        src.Append("        System.Delegate[] list = new System.Delegate[Items.Length];\n");
+        src.Append("        for (int i = 0; i < Items.Length; i++) list[i] = Items[i];\n");
+        src.Append("        return list;\n    }\n");
+        src.Append("    public System.Delegate? CombineImpl(System.Delegate follow) { return Combine(this, (").Append(d).Append(")follow); }\n");
+        src.Append("    public System.Delegate? RemoveImpl(System.Delegate value) { return Remove(this, (").Append(d).Append(")value); }\n");
+        src.Append("    public int InvocationCount() { return Items.Length; }\n");
+        src.Append("    public object InvocationAt(int index) { return Items[index]; }\n");
+        src.Append("    public override bool Equals(object? obj) { return __Delegates.Equal(this, obj); }\n");
+        src.Append("    public override int GetHashCode() { return __Delegates.Hash(this); }\n");
+        src.Append("}\n");
         string generated = src.ToString();
         Parser sub = new(Lexer.Tokenize(generated, _file), _file, _declarationsOnly) { Source = generated };
         CompilationUnit unit = sub.ParseUnit();
@@ -1790,6 +1842,22 @@ public sealed class Parser
         made.SourceTo = delegateDecl.SourceTo;
         made.File = _file;
         made.Scope = _fileScope;
+        // A DELEGATE WRITTEN INSIDE A GENERIC TYPE has that type's parameters
+        // (`class Box<T> { public delegate T Make(); }`), and so does its
+        // multicast: nested beside it, with the same outer parameters first,
+        // so that FinishFamily writes both names with them wherever the
+        // family names either -- `Box<T>.Make__Multicast` holding
+        // `Box<T>.Make`s and answering a T.
+        if (delegateDecl.OuterParams > 0)
+        {
+            made.Outer = delegateDecl.Outer;
+            for (int k = delegateDecl.OuterParams - 1; k >= 0; k--)
+            {
+                TypeParam outer = delegateDecl.TypeParams[k];
+                made.WritableTypeParams.Insert(0, new TypeParam { Name = outer.Name, Line = outer.Line, Col = outer.Col });
+            }
+            made.OuterParams = delegateDecl.OuterParams;
+        }
         Adopt(made.Members);
         return made;
     }
@@ -2497,7 +2565,67 @@ public sealed class Parser
 
         first.WritableAttributes.AddRange(attributes);
         first.More.AddRange(rest);
+
+        // AN EVENT IS ITS add AND remove ACCESSORS, as C# compiles one, and a
+        // field-like event has them too: they combine into its field. Through
+        // them an event an interface declares is implemented by a class's
+        // field-like event (or by accessors written out), and reached through
+        // the interface (Binder.EventAccessorCall). An interface's event, or
+        // an abstract one, is the two accessors and nothing else: there is no
+        // field to hold handlers.
+        if (isEvent)
+        {
+            bool accessorsOnly = (_inInterface && !mods.HasFlag(Mods.Static)) || mods.HasFlag(Mods.Abstract);
+            MethodDecl? firstAdd = null;
+            List<FieldDecl> named = new() { first };
+            named.AddRange(rest);
+            foreach (FieldDecl declared in named)
+            {
+                MethodDecl add = FieldEventAccessor(true, declared.Name, type, mods, declared, accessorsOnly);
+                MethodDecl remove = FieldEventAccessor(false, declared.Name, type, mods, declared, accessorsOnly);
+                if (accessorsOnly && firstAdd is null) firstAdd = add;
+                else _hoisted.Add(add);
+                _hoisted.Add(remove);
+            }
+            if (accessorsOnly)
+            {
+                return firstAdd!;
+            }
+        }
         return first;
+    }
+
+    /// <summary>
+    /// One accessor of an event declared without them: `add_Name(T value)`
+    /// combining `value` into the field (`Name += value`), or `remove_Name`
+    /// taking it out. Without a body where the event has no field.
+    /// </summary>
+    private MethodDecl FieldEventAccessor(bool add, string name, TypeRef type, Mods mods, Node at, bool abstractOnly)
+    {
+        Block? body = null;
+        if (!abstractOnly)
+        {
+            body = new Block { Line = at.Line, Col = at.Col };
+            body.Statements.Add(new ExprStmt
+            {
+                Expr = new AssignExpr
+                {
+                    Target = new NameExpr { Name = name, Line = at.Line, Col = at.Col },
+                    Op = add ? BinOp.Add : BinOp.Sub,
+                    Value = new NameExpr { Name = "value", Line = at.Line, Col = at.Col },
+                    Line = at.Line, Col = at.Col,
+                },
+                Line = at.Line, Col = at.Col,
+            });
+        }
+        MethodDecl accessor = new()
+        {
+            Name = (add ? "add_" : "remove_") + name, Mods = mods,
+            Returns = new TypeRef { Name = "void", Line = at.Line, Col = at.Col },
+            Body = body, Line = at.Line, Col = at.Col,
+        };
+        accessor.Params.Add(new Param { Name = "value", Type = type, Line = at.Line, Col = at.Col });
+        return accessor;
     }
 
     /// <summary>
@@ -7452,6 +7580,19 @@ public sealed class Parser
             // parenthesised expression, and a cast. What settles it is the
             // arrow, which is why this scans ahead for one rather than
             // committing and backing out.
+            // `static x => ...`, `static (a, b) => ...`, `static async ...`: a
+            // lambda that captures nothing, by its own promise -- nothing to
+            // do but read past the word, as a capture would be refused by
+            // C# before it ever reached here.
+            case Tok.KwStatic
+                when Ahead().Kind == Tok.Ident && _t[_i + 2].Kind == Tok.FatArrow && _i + 2 != _armArrow
+                  || Ahead().Kind == Tok.LParen && IsLambdaHeadAt(_i + 1)
+                  || Ahead().Kind == Tok.Ident && Ahead().Text == "async":
+            {
+                _i++;
+                return ParseUnary();
+            }
+
             // `async x => ...` and `async (a, b) => ...`: the word is a
             // modifier here and nowhere else in an expression.
             case Tok.Ident when Cur.Text == "async"

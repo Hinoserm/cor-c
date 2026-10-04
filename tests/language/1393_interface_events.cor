@@ -1,0 +1,112 @@
+// test: interface_events
+// expect-exit: 0
+// expect-output:
+// field f1
+// explicit e2 adds 1
+// removed e2 adds 1 removes 1
+// through base f3
+// abstract a4
+// static s5
+//
+// EVENTS DECLARED IN AN INTERFACE, as C# has them: each is an add and a
+// remove accessor, implemented by a class's field-like event or by accessors
+// written out (here explicitly, `event ... INotify.Changed { add ... }`), and
+// `+=` and `-=` through the interface call them -- through an interface that
+// extends the one declaring the event too. An abstract event in a class is
+// the same two accessors, overridden by a field-like event. A static event is
+// subscribed to from anywhere.
+
+using System;
+
+interface INotify
+{
+    event Action<string>? Changed;
+}
+
+interface INamed : INotify
+{
+    string Name { get; }
+}
+
+class Field : INamed
+{
+    public event Action<string>? Changed;
+    public string Name => "field";
+    public void Fire(string s) { Changed?.Invoke(s); }
+}
+
+class Explicit : INotify
+{
+    Action<string>? _handlers;
+    public int Adds;
+    public int Removes;
+
+    event Action<string>? INotify.Changed
+    {
+        add { _handlers += value; Adds++; }
+        remove { _handlers -= value; Removes++; }
+    }
+
+    public void Fire(string s) { _handlers?.Invoke(s); }
+}
+
+abstract class Shape
+{
+    public abstract event Action<string>? Moved;
+}
+
+class Square : Shape
+{
+    public override event Action<string>? Moved;
+    public void Move(string to) { Moved?.Invoke(to); }
+}
+
+static class Clock
+{
+    public static event Action<string>? Ticked;
+    public static void Tick(string s) { Ticked?.Invoke(s); }
+}
+
+static class P
+{
+    static string log = "";
+    static void Log(string s) { log += s; }
+
+    static int Main()
+    {
+        Field field = new Field();
+        INotify viaField = field;
+        viaField.Changed += s => log += "f" + s;
+        field.Fire("1");
+        Console.WriteLine("field " + log);
+
+        log = "";
+        Explicit written = new Explicit();
+        INotify viaExplicit = written;
+        viaExplicit.Changed += Log;
+        written.Fire("e2");
+        Console.WriteLine("explicit " + log + " adds " + written.Adds);
+        viaExplicit.Changed -= Log;
+        written.Fire("gone");
+        Console.WriteLine("removed " + log + " adds " + written.Adds + " removes " + written.Removes);
+
+        log = "";
+        INamed named = new Field();
+        named.Changed += s => log += "f" + s;
+        ((Field)named).Fire("3");
+        Console.WriteLine("through base " + log);
+
+        log = "";
+        Square square = new Square();
+        Shape shape = square;
+        shape.Moved += s => log += "a" + s;
+        square.Move("4");
+        Console.WriteLine("abstract " + log);
+
+        log = "";
+        Clock.Ticked += s => log += "s" + s;
+        Clock.Tick("5");
+        Console.WriteLine("static " + log);
+        return 0;
+    }
+}
