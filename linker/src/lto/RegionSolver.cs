@@ -2759,6 +2759,12 @@ public static class RegionSolver
             int count = _functions.Count;
             int word = _units.Count > 0 ? _units[0].WordSize : 4;
             long record = RegionLayout.Record(word);
+            // WHAT ONE WORD CAN SAY: the size is handed to RegionEnter and
+            // RegionLoop as an immediate of the target's word, and on i386 a
+            // proof past 2^31 bytes came out a different number -- a region
+            // laid down for a few bytes, or one asking the system for gigabytes.
+            // Past a gigabyte of a 32-bit address space, a region is unsized.
+            long mostSized = word >= 8 ? MostRegionBytes : 1L << 30;
             bool[] boundary = new bool[count];
             foreach (int f in opened) boundary[f] = true;
             Dictionary<int, List<int>> loopHeaders = new();
@@ -2906,7 +2912,7 @@ public static class RegionSolver
             foreach (int f in opened)
             {
                 long? bound = Bound(f);
-                if (bound is long b && b > 0) { facts(f).BoundaryBytes[_functions[f].Name] = b; sized++; }
+                if (bound is long b && b > 0 && b <= mostSized) { facts(f).BoundaryBytes[_functions[f].Name] = b; sized++; }
                 if (Reported(f)) Log($"region of {_functions[f].Name}: " + (bound is long n ? n + " bytes" : "not sized"));
             }
             foreach (LoopRegion loop in loops)
@@ -2915,7 +2921,7 @@ public static class RegionSolver
                 int at = Array.FindIndex(function.Repeats, r => r.Header == loop.Shape.Header);
                 long? lap = null;
                 if (at >= 0 && !running.Contains(loop.Function)) { running.Add(loop.Function); lap = Scope(loop.Function, at) is (long o, long p) ? o + p : null; running.Remove(loop.Function); }
-                if (lap is long b && b > 0) { facts(loop.Function).LoopBytes[(function.Name, loop.Shape.Header)] = b; sized++; }
+                if (lap is long b && b > 0 && b <= mostSized) { facts(loop.Function).LoopBytes[(function.Name, loop.Shape.Header)] = b; sized++; }
                 if (Reported(loop.Function)) Log($"loop region of {function.Name} at block {loop.Shape.Header}: " + (lap is long n ? n + " bytes a lap" : "not sized"));
             }
             if (_report is not null) Log($"sizes: {sized} of {opened.Count + loops.Count} regions sized");
