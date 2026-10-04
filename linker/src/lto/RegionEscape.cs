@@ -82,6 +82,21 @@ internal sealed class RegionEscape
     /// <summary>Counts for a report: locations carried, summaries applied, functions not followed, the largest cycle.</summary>
     public long Work, Applied, Unfollowed, LargestCycle, Fallbacks;
 
+    /// <summary>
+    /// THE LINK'S POOL OF INCLUSION WORK, in locations offered to nodes: a
+    /// component past its own bound (Graph._mostCarried) goes on with grants
+    /// from it, up to InclusionCap each, while it lasts -- a function that
+    /// carries much cheaply, a few thousand objects saturating, finishes by
+    /// inclusion rather than unification. What a component that finishes
+    /// did not use goes back. Counted in work done, in the order solved, so
+    /// one link answers alike every time (--region-report +pool=M, +cap=M:
+    /// millions).
+    /// </summary>
+    public long InclusionPool = 400_000_000, InclusionCap = 40_000_000;
+    /// <summary>For a report: what the pool gave, and to how many components.</summary>
+    public long PoolDrawn;
+    public int PoolComponents;
+
     /// <param name="functions">The functions the image keeps.</param>
     /// <param name="targets">Per function, per call: the functions it may run, or null for a call nobody follows.</param>
     /// <param name="keys">Per function, per call: a virtual call's symbol (its targets are its overrides), or null.</param>
@@ -2145,6 +2160,33 @@ internal sealed class RegionEscape
         private readonly long _mostCarried;
         private readonly int _mostNodes;
         private long _carried;
+        // PAST ITS OWN BOUND, MORE FROM THE LINK'S: a component past
+        // _mostCarried goes on while the link-wide pool of work lasts
+        // (InclusionPool), in grants, up to InclusionCap of its own -- work
+        // counted as what costs time, each location offered to a node
+        // (_adds), not the locations a node carries on, which a node with a
+        // hundred edges and one with one count alike. Every count is of
+        // work done in the order the link solves, so the same link gives
+        // the same answers: a time budget would not.
+        private long _adds, _mostAdds = long.MaxValue, _drawn;
+
+        // More work granted from the link's pool: false when it is spent, or
+        // this component has had its InclusionCap.
+        private bool MoreWork()
+        {
+            if (_mostAdds == long.MaxValue) { _mostAdds = _adds; _owner.PoolComponents++; }
+            long cap = _owner.InclusionCap;
+            if (_drawn >= cap || _owner.InclusionPool <= 0) return false;
+            // Each grant as big as all before it: few draws for a big one.
+            long grant = Math.Min(Math.Min(_owner.InclusionPool, Math.Max(_drawn, InclusionGrant)), cap - _drawn);
+            _owner.InclusionPool -= grant;
+            _owner.PoolDrawn += grant;
+            _drawn += grant;
+            _mostAdds += grant;
+            return true;
+        }
+
+        private const long InclusionGrant = 1 << 20;
         private readonly bool _big;
         public bool Overflowed;
 
@@ -2262,6 +2304,8 @@ internal sealed class RegionEscape
             node = NewNode();
             _cells[o][offset] = node;
             if (o == 0) _unknownCell = node;
+            // A blob's member's: what is written here is in the blob (Join).
+            if (_blobsOf.TryGetValue(o, out List<int>? blobs)) foreach (int blob in blobs.ToArray()) CopyEdge(node, Cell(blob, Any), 0);
             // Read by every load of the whole object. (A write at any offset
             // is read by a load at a fixed one as it loads: Loaded.)
             if (_allReaders[o] is { } readers) foreach (int r in readers) CopyEdge(node, r, 0);
@@ -2296,14 +2340,32 @@ internal sealed class RegionEscape
         private void Add(int node, int loc)
         {
             if (loc < 0) return;
+            _adds++;
             node = Find(node);
             byte kind = _locClass[loc];
             byte flags = _nodeFlags[node];
-            if ((flags & Saturated) != 0 && !((kind & PlaceClass) != 0 && (flags & PlacesDumped) == 0))
+            if ((flags & Saturated) != 0)
             {
-                // Into the unknown object's cell, which is never cut short.
-                if ((kind & UnknownClass) == 0) Add(UnknownCell(), loc);
-                return;
+                if ((kind & MadeClass) != 0)
+                {
+                    // A MADE OBJECT PAST THE BOUND JOINS THE NODE'S BLOB
+                    // (BlobOf), which the node holds for all of them: not the
+                    // unknown object, which made every one of them global.
+                    // A constant is held as any location: what a load of it
+                    // finds is a constant again, nothing in its cells.
+                    int o = _locObject[loc];
+                    if (!IsConstant(o) && !(_blobOfNode.TryGetValue(node, out int own) && own == o))
+                    {
+                        Join(o, BlobOf(node));
+                        return;
+                    }
+                }
+                else if ((kind & PlaceClass) != 0 && (flags & PlacesDumped) != 0)
+                {
+                    // Into the unknown object's cell, which is never cut short.
+                    Add(UnknownCell(), loc);
+                    return;
+                }
             }
             LocSet pts = _pts[node] ??= new();
             if (!pts.Add(loc)) return;
@@ -2312,20 +2374,74 @@ internal sealed class RegionEscape
             int made = (kind & MadeClass) != 0 ? ++CollectionsMarshal.AsSpan(_madeHeld)[node] : _madeHeld[node];
             if ((flags & Saturated) == 0 && made > MostHeld)
             {
+                // What it held when it filled stays: each is its own, and
+                // was carried on as it came. What comes after joins its blob.
                 _nodeFlags[node] |= Saturated; _saturatedCount++;
-                int sink = UnknownCell();
-                // What it held when it filled: nothing below adds to it.
-                for (int i = 0, n = pts.Count; i < n; i++) { int held = pts.Items[i]; if ((_locClass[held] & MadeClass) != 0) Add(sink, held); }
-                if (pts.Add(Unknown)) Delta(node, Unknown);
+                BlobOf(node);
             }
             if (pts.Count - made > MostPlacesHeld && (_nodeFlags[node] & PlacesDumped) == 0)
             {
                 if ((_nodeFlags[node] & Saturated) == 0) _saturatedCount++;
                 _nodeFlags[node] |= Saturated | PlacesDumped;
                 int sink = UnknownCell();
-                for (int i = 0, n = pts.Count; i < n; i++) { int held = pts.Items[i]; if ((_locClass[held] & UnknownClass) == 0) Add(sink, held); }
+                // The places it held, and the unknown object for those to come.
+                for (int i = 0, n = pts.Count; i < n; i++) { int held = pts.Items[i]; if ((_locClass[held] & PlaceClass) != 0) Add(sink, held); }
                 if (pts.Add(Unknown)) Delta(node, Unknown);
             }
+        }
+
+        // ---- a saturated node's blob ------------------------------------------
+        //
+        // A NODE PAST MostHeld MADE OBJECTS holds one more, its BLOB, for every
+        // made object that comes to it after: each joins the blob (Join), and
+        // the node carries the blob's one location on, not theirs. The blob
+        // is everything its members are, both ways: whatever is written into
+        // a member, at any offset, is in the blob's cell, and whatever is
+        // written into the blob is in each member's cell at any offset, which
+        // every load of the member reads (Loaded). So a load through the node
+        // finds what any member holds, and a store through it reaches every
+        // member, as through each member's own location. What a member is
+        // reached by -- a place, the unknown object -- its blob is too, for
+        // the loads of it (Placed, ReachedByUnknown); and whatever reaches
+        // the blob reaches every member (Reached). A blob has no sites of
+        // its own: a virtual call on it may run any target, a guard lets it
+        // through, and no word of it is known to hold no reference. A
+        // summary makes a blob and its members one object (Summarise).
+        //
+        // (Saturated into the unknown object, every one of them was global
+        // -- on the compiler's own link, most of what a few hundred
+        // functions made, past MostHeld in a node that never left them.)
+        private readonly Dictionary<int, int> _blobOfNode = new();
+        private readonly Dictionary<int, List<int>> _membersOf = new(), _blobsOf = new();
+        private readonly HashSet<long> _joined = new();
+        private int _blobs;
+
+        // The blob a saturated node holds, made and held on first use.
+        private int BlobOf(int node)
+        {
+            if (_blobOfNode.TryGetValue(node, out int blob)) return blob;
+            blob = NewObject(Kind.Made, -1, Array.Empty<int>(), Array.Empty<int>());
+            _blobOfNode[node] = blob;
+            _membersOf[blob] = new();
+            _blobs++;
+            int loc = Location(blob, Any);
+            LocSet pts = _pts[node] ??= new();
+            if (pts.Add(loc)) { Delta(node, loc); CollectionsMarshal.AsSpan(_madeHeld)[node]++; }
+            return blob;
+        }
+
+        // Object o one of blob's members: their cells joined both ways.
+        private void Join(int o, int blob)
+        {
+            if (o == blob || !_joined.Add(Pair(o, blob))) return;
+            _membersOf[blob].Add(o);
+            int into = Cell(blob, Any);
+            foreach (int cell in _cells[o].Values.ToArray()) CopyEdge(cell, into, 0);
+            // A cell of the member made later is joined as it is made (Cell).
+            (_blobsOf.TryGetValue(o, out List<int>? blobs) ? blobs : _blobsOf[o] = new()).Add(blob);
+            CopyEdge(into, Cell(o, Any), 0);
+            if (_placedMade.Contains(o)) Placed(blob);
+            if (_unknownMade.Contains(o)) ReachedByUnknown(blob);
         }
 
         private void Delta(int node, int loc)
@@ -2517,14 +2633,20 @@ internal sealed class RegionEscape
 
         private void Placed(int o)
         {
-            if (!_placedMade.Add(o) || !_loadsOf.TryGetValue(o, out List<int>? loads)) return;
-            foreach (int dest in loads.ToArray()) if (_fedFrom.Add(Pair(_written, dest))) CopyEdge(_written, dest, 0);
+            if (!_placedMade.Add(o)) return;
+            if (_loadsOf.TryGetValue(o, out List<int>? loads))
+                foreach (int dest in loads.ToArray()) if (_fedFrom.Add(Pair(_written, dest))) CopyEdge(_written, dest, 0);
+            // A member's blob is read as the member is, and a blob's members as it is.
+            if (_blobsOf.TryGetValue(o, out List<int>? blobs)) foreach (int blob in blobs.ToArray()) Placed(blob);
+            if (_membersOf.TryGetValue(o, out List<int>? members)) foreach (int member in members.ToArray()) Placed(member);
         }
 
         private void ReachedByUnknown(int o)
         {
-            if (!_unknownMade.Add(o) || !_loadsOf.TryGetValue(o, out List<int>? loads)) return;
-            foreach (int dest in loads.ToArray()) Add(dest, Unknown);
+            if (!_unknownMade.Add(o)) return;
+            if (_loadsOf.TryGetValue(o, out List<int>? loads)) foreach (int dest in loads.ToArray()) Add(dest, Unknown);
+            if (_blobsOf.TryGetValue(o, out List<int>? blobs)) foreach (int blob in blobs.ToArray()) ReachedByUnknown(blob);
+            if (_membersOf.TryGetValue(o, out List<int>? members)) foreach (int member in members.ToArray()) ReachedByUnknown(member);
         }
 
         private readonly HashSet<long> _storedInto = new();
@@ -2595,6 +2717,13 @@ internal sealed class RegionEscape
             }
             Propagate();
             if (!Overflowed) Aliased();
+            // What it was granted and did not use goes back to the pool.
+            if (_drawn > 0 && !Overflowed && _mostAdds > _adds)
+            {
+                long back = Math.Min(_mostAdds - _adds, _drawn);
+                _owner.InclusionPool += back;
+                _owner.PoolDrawn -= back;
+            }
             return this;
         }
 
@@ -3121,7 +3250,7 @@ internal sealed class RegionEscape
                 // a new delta, carried in its turn.
                 _deltaBuf[n] = null; _deltaLen[n] = 0;
                 _owner.Work += count;
-                if ((_carried += count) > _mostCarried || Overflowed) { Overflowed = true; return; }
+                if ((_carried += count) > _mostCarried && (_mostAdds == long.MaxValue || _adds > _mostAdds) && !MoreWork() || Overflowed) { Overflowed = true; return; }
                 if (_big && _owner.Progress is not null && (_carried & ~0xFFFFFL) != ((_carried - count) & ~0xFFFFFL))
                     _owner.Progress($"escape graphs:   cycle solve: {Describe()}, heap {GC.GetTotalMemory(false) >> 20} MB");
                 // Edges are read afresh each time: one made while these are
@@ -3343,6 +3472,9 @@ internal sealed class RegionEscape
                     if (Pts(node) is { } pts)
                         foreach (int loc in pts)
                             if (seen.Add(_locObject[loc])) next.Push(_locObject[loc]);
+                // What reaches a blob reaches every one of its members.
+                if (_membersOf.TryGetValue(o, out List<int>? members))
+                    foreach (int member in members) if (seen.Add(member)) next.Push(member);
             }
             return seen;
         }
@@ -3420,13 +3552,50 @@ internal sealed class RegionEscape
             Dictionary<int, int> index = new() { [0] = 0 };
             int blob = -1;
             List<int> blobOrigins = new();
+            // A SATURATED NODE'S BLOB AND ITS MEMBERS ARE ONE OBJECT here
+            // (BlobOf): in this graph each is its own, joined to the blob by
+            // its cells, and a caller writing into one through what it was
+            // handed must find it in the others. Every one of them leaked
+            // if any is.
+            Dictionary<int, int> group = new();
+            int Root(int o) { while (group[o] != o) o = group[o]; return o; }
+            foreach (var (b, members) in _membersOf)
+            {
+                if (!outside.Contains(b)) continue;
+                group.TryAdd(b, b);
+                foreach (int member in members)
+                {
+                    if (IsConstant(member) || !outside.Contains(member)) continue;
+                    group.TryAdd(member, member);
+                    int x = Root(b), y = Root(member);
+                    if (x != y) group[y] = x;
+                }
+            }
+            HashSet<int> leakedGroups = new();
+            foreach (int o in group.Keys) if (leaked.Contains(o)) leakedGroups.Add(Root(o));
+            Dictionary<int, int> groupIndex = new();
+            Dictionary<int, List<int>> groupOrigins = new();
             foreach (int o in order)
             {
-                if (_kind[o] == Kind.Made && leaked.Contains(o) && !IsConstant(o))
+                bool grouped = group.ContainsKey(o);
+                if (_kind[o] == Kind.Made && !IsConstant(o) && (grouped ? leakedGroups.Contains(Root(o)) : leaked.Contains(o)))
                 {
                     if (blob < 0) { blob = s.Objects.Count; s.Objects.Add((Kind.Made, -1, Array.Empty<int>(), Array.Empty<int>())); }
                     index[o] = blob;
                     blobOrigins.AddRange(_origins[o]);
+                    continue;
+                }
+                if (grouped)
+                {
+                    int r = Root(o);
+                    if (!groupIndex.TryGetValue(r, out int at))
+                    {
+                        groupIndex[r] = at = s.Objects.Count;
+                        s.Objects.Add((Kind.Made, -1, Array.Empty<int>(), Array.Empty<int>()));
+                        groupOrigins[at] = new();
+                    }
+                    index[o] = at;
+                    groupOrigins[at].AddRange(_origins[o]);
                     continue;
                 }
                 index[o] = s.Objects.Count;
@@ -3435,6 +3604,9 @@ internal sealed class RegionEscape
                 s.Objects.Add((_kind[o], param, _path[o], _origins[o]));
             }
             if (blob >= 0) { blobOrigins.Sort(); s.Objects[blob] = (Kind.Made, -1, Array.Empty<int>(), blobOrigins.Distinct().ToArray()); }
+            foreach (var (at, origins) in groupOrigins) { origins.Sort(); s.Objects[at] = (Kind.Made, -1, Array.Empty<int>(), origins.Distinct().ToArray()); }
+            // Objects made one: every offset of them is any.
+            bool Merged(int k) => k == blob || groupOrigins.ContainsKey(k);
             foreach (int o in outside)
                 foreach (var (offset, node) in _cells[o])
                     if (Pts(node) is { } pts)
@@ -3444,11 +3616,11 @@ internal sealed class RegionEscape
                             if (!index.TryGetValue(to, out int t)) continue;   // another member's place
                             bool fromLeaked = leaked.Contains(o);
                             if (to == 0 && fromLeaked) continue;
-                            s.Cells.Add((fromLeaked ? 0 : index[o], fromLeaked ? Any : offset, t, t == blob ? Any : _locOffset[loc]));
+                            s.Cells.Add((fromLeaked ? 0 : index[o], fromLeaked || Merged(index[o]) ? Any : offset, t, Merged(t) ? Any : _locOffset[loc]));
                         }
             if (Pts(Ret(m)) is { } back)
                 foreach (int loc in back)
-                    if (index.TryGetValue(_locObject[loc], out int t)) s.Result.Add((t, t == blob ? Any : _locOffset[loc]));
+                    if (index.TryGetValue(_locObject[loc], out int t)) s.Result.Add((t, Merged(t) ? Any : _locOffset[loc]));
             s.Cells.Sort(); s.Result.Sort();
             Summary.Dedupe(s.Cells); Summary.Dedupe(s.Result);
             return s.Bounded();
@@ -3595,7 +3767,7 @@ internal sealed class RegionEscape
             return origins.ToArray();
         }
 
-        public string Describe() => $"{_kind.Count} objects, {_locObject.Count} locations, {_pts.Count} nodes, {_carried} carried, {_saturatedCount} saturated{(Overflowed ? ", NOT FOLLOWED" : "")}";
+        public string Describe() => $"{_kind.Count} objects, {_locObject.Count} locations, {_pts.Count} nodes, {_carried} carried, {_adds} offered, {_drawn} from the pool, {_saturatedCount} saturated, {_blobs} blobs{(Overflowed ? ", NOT FOLLOWED" : "")}";
 
         private string Describe(int o) => _kind[o] switch
         {

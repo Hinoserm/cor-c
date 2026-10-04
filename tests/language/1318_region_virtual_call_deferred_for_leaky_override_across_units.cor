@@ -1,5 +1,5 @@
 // test: region_virtual_call_deferred_for_leaky_override_across_units
-// units: tests/language/support/1317_deferred_units.cor
+// units: tests/language/support/1318_deferred_units.cor
 // regions: taken
 // expect-exit: 0
 // expect-output:

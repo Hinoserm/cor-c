@@ -1,4 +1,4 @@
-// The other unit of 1317_region_virtual_call_deferred_for_leaky_override_across_units:
+// The other unit of 1318_region_virtual_call_deferred_for_leaky_override_across_units:
 // a base class with seventeen overrides of one method, one of which lets its
 // receiver go (Keeper keeps the last one weighed in a static), and a helper
 // that makes the virtual call on its base-typed parameter.
