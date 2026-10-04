@@ -470,6 +470,21 @@ leaks only after it was solved grows the rest's stand-in, whose appliers are
 solved again and split it then. Tests: engine `WideDeferred`,
 `WideDeferredTwoLevels`; language 1317.
 
+**Groups full.** A call applies the targets each receiver's classes run as a
+group of their own, up to `MostGroups` (8) sets a call. Past that, a set
+used to go to the whole call, leaky targets and all: the elements of a list
+of many classes, each loaded and called on, were thrown by one override that
+lets its receiver go. Now a full call keeps the leaky targets apart
+(`Graph.Dispatch`): an object goes to one group of every target that does not
+leak, if it runs any of them, and to the group of each leaky target it runs.
+Every target it runs is applied to it; only what it runs leaks it. Past 8
+leaky targets, the whole call as before. A receiver of no known class (the
+unknown object, a constant, an object of no site) still takes every target,
+each location on its own, so it never pulls the others with it. The call's
+declaring type already bounds its targets: they are the overrides of its
+slot (`VirtualTargets`), and a site whose descriptor is not of the type runs
+none (`TargetsOnSite`). Test: engine `GroupsFull`.
+
 **Boxes and strings.** A box's table and a string's name none of their system
 interfaces (IComparable, IComparable<T>, IEquatable<T>, IFormattable), so
 that every unit's copy of a box is one table. A call through an interface
