@@ -10917,18 +10917,20 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
 // ---- Func and Action ------------------------------------------------------
 // A function held in a variable.
 //
-// THERE ARE NO DELEGATE TYPES on this machine, and none are needed. A delegate
-// is a thing with one method you can call, and that is an INTERFACE -- so Func
-// and Action are interfaces with an Invoke, and the compiler treats `f(x)` as
-// sugar for `f.Invoke(x)`. Virtual dispatch does the rest, which means a
-// function value costs no machinery that classes and interfaces did not already
-// need.
+// A DELEGATE IS AN INTERFACE with one method, Invoke, and the compiler treats
+// `f(x)` as sugar for `f.Invoke(x)`; a lambda is a class the compiler writes
+// implementing it, which is what C# does with a closure. Virtual dispatch does
+// the rest, so a function value costs no machinery that classes and interfaces
+// did not already need.
+//
+// DECLARED AS DELEGATES, not written out as interfaces, because a delegate is
+// MULTICAST: `handler += f` and `handler -= f` combine and remove, and an
+// `event Action<int>` is the commonest place a C# program does it. The parser
+// writes each delegate's multicast class beside it (Parser.Multicast), so a
+// Func or an Action combines exactly as a delegate the program declares does.
 //
 // The names and shapes are .NET's: Func answers something, Action answers
-// nothing, and the last type argument of a Func is its return type. A lambda
-// will be sugar for a class the compiler writes implementing one of these --
-// which is exactly what C# does with a closure -- so anything written against
-// them now keeps working when lambdas arrive.
+// nothing, and the last type argument of a Func is its return type.
 
 // THE ZERO-ARGUMENT SHAPES, which a local function needs more often than a
 // lambda does: `void Flush() { ... }` inside a method takes nothing and returns
@@ -10938,89 +10940,49 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
 // `Action` and `Func<R>`, and a language that spelled them anything else would
 // not be C#.
 
-interface Action {
-    void Invoke();
-}
+public delegate void Action();
 
-interface Func<R> {
-    R Invoke();
-}
+public delegate R Func<R>();
 
-interface Func<A, R> {
-    R Invoke(A a);
-}
+public delegate R Func<A, R>(A a);
 
-interface Func<A, B, R> {
-    R Invoke(A a, B b);
-}
+public delegate R Func<A, B, R>(A a, B b);
 
-interface Func<A, B, C, R> {
-    R Invoke(A a, B b, C c);
-}
+public delegate R Func<A, B, C, R>(A a, B b, C c);
 
-interface Func<A, B, C, D, R> {
-    R Invoke(A a, B b, C c, D d);
-}
+public delegate R Func<A, B, C, D, R>(A a, B b, C c, D d);
 
-interface Func<A, B, C, D, E, R> {
-    R Invoke(A a, B b, C c, D d, E e);
-}
+public delegate R Func<A, B, C, D, E, R>(A a, B b, C c, D d, E e);
 
-interface Func<A, B, C, D, E, F, R> {
-    R Invoke(A a, B b, C c, D d, E e, F f);
-}
+public delegate R Func<A, B, C, D, E, F, R>(A a, B b, C c, D d, E e, F f);
 
-interface Func<A, B, C, D, E, F, G, R> {
-    R Invoke(A a, B b, C c, D d, E e, F f, G g);
-}
+public delegate R Func<A, B, C, D, E, F, G, R>(A a, B b, C c, D d, E e, F f, G g);
 
-interface Func<A, B, C, D, E, F, G, H, R> {
-    R Invoke(A a, B b, C c, D d, E e, F f, G g, H h);
-}
+public delegate R Func<A, B, C, D, E, F, G, H, R>(A a, B b, C c, D d, E e, F f, G g, H h);
 
-interface Action<A> {
-    void Invoke(A a);
-}
+public delegate void Action<A>(A a);
 
-interface Action<A, B> {
-    void Invoke(A a, B b);
-}
+public delegate void Action<A, B>(A a, B b);
 
-interface Action<A, B, C> {
-    void Invoke(A a, B b, C c);
-}
+public delegate void Action<A, B, C>(A a, B b, C c);
 
-interface Action<A, B, C, D> {
-    void Invoke(A a, B b, C c, D d);
-}
+public delegate void Action<A, B, C, D>(A a, B b, C c, D d);
 
-interface Action<A, B, C, D, E> {
-    void Invoke(A a, B b, C c, D d, E e);
-}
+public delegate void Action<A, B, C, D, E>(A a, B b, C c, D d, E e);
 
-interface Action<A, B, C, D, E, F> {
-    void Invoke(A a, B b, C c, D d, E e, F f);
-}
+public delegate void Action<A, B, C, D, E, F>(A a, B b, C c, D d, E e, F f);
 
-interface Action<A, B, C, D, E, F, G> {
-    void Invoke(A a, B b, C c, D d, E e, F f, G g);
-}
+public delegate void Action<A, B, C, D, E, F, G>(A a, B b, C c, D d, E e, F f, G g);
 
-interface Action<A, B, C, D, E, F, G, H> {
-    void Invoke(A a, B b, C c, D d, E e, F f, G g, H h);
-}
+public delegate void Action<A, B, C, D, E, F, G, H>(A a, B b, C c, D d, E e, F f, G g, H h);
 
 // A Func<A, bool> by another name, and the one a filter takes. .NET has both
 // and so does this, because `Predicate<T>` says what it is for.
-interface Predicate<A> {
-    bool Invoke(A a);
-}
+public delegate bool Predicate<A>(A a);
 
 /// .NET's Converter<TInput, TOutput>: what List<T>.ConvertAll and
 /// Array.ConvertAll turn each element into.
-interface Converter<TInput, TOutput> {
-    TOutput Invoke(TInput input);
-}
+public delegate TOutput Converter<TInput, TOutput>(TInput input);
 
 // C# lock's monitor, stored in the synchronization word present in every
 // object header. Acquire/release CAS makes writes inside the critical section
@@ -12932,11 +12894,9 @@ interface IComparer<in T> {
     int Compare(T a, T b);
 }
 
-/// A bare comparing function, which is .NET's `delegate int Comparison<in T>`
-/// and is an interface here for the reason every delegate is -- see Func.
-interface Comparison<T> {
-    int Invoke(T a, T b);
-}
+/// A bare comparing function, .NET's `delegate int Comparison<in T>`: a
+/// delegate as Func is (see Func), so it combines as one does.
+public delegate int Comparison<T>(T a, T b);
 
 /// THE ORDER A TYPE HAS WHEN NOBODY SUPPLIES ONE.
 ///
