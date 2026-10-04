@@ -505,6 +505,16 @@ declaring type already bounds its targets: they are the overrides of its
 slot (`VirtualTargets`), and a site whose descriptor is not of the type runs
 none (`TargetsOnSite`). Test: engine `GroupsFull`.
 
+**Calls on a blob.** A saturated node's blob has no sites of its own, but its
+members do. A virtual call on a blob runs what it runs on any member
+(`BlobTargets`: each member by its own sites, a member blob by its members),
+dispatched as any object of known classes is (`Dispatch`, so leaky targets
+stay apart). A blob with a member of no known class takes every target, and
+one with no member yet runs nothing. Members only join, so each join queues
+the blob, and every call received on it, or on a blob holding it as a member,
+is dispatched again from `Propagate`'s loop (`Redispatch`). What it was
+dispatched to before stays. Test: engine `BlobDispatch`.
+
 **Boxes and strings.** A box's table and a string's name none of their system
 interfaces (IComparable, IComparable<T>, IEquatable<T>, IFormattable), so
 that every unit's copy of a box is one table. A call through an interface

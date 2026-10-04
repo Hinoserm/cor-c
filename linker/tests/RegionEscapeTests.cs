@@ -28,6 +28,7 @@ public static class RegionEscapeTests
         ("a virtual call runs on each object only what it may", Guards),
         ("a wide call on a parameter is deferred for the targets that leak", WideDeferred),
         ("past its groups, a call keeps apart the targets that leak", GroupsFull),
+        ("a call on a blob runs what its members' classes run", BlobDispatch),
         ("a wide call deferred through two levels of parameters", WideDeferredTwoLevels),
         ("a node past MostHeld objects holds a blob of the rest", Saturation),
         ("a summary past MostCells is everything", MostCells),
@@ -576,6 +577,51 @@ public static class RegionEscapeTests
             for (int s = 0; s < 10; s++) Check(!e.Global[site[s]], $"{how}: site {s} runs Keep{s + 1} only: not global");
             Check(e.Global[site[10]], how + ": site 10 runs LeakThis: global");
         }
+    }
+
+    /// <summary>
+    /// A call on a saturated node's blob runs what its members' classes run,
+    /// not every target. Full's node 1 holds 257 objects of classes that run
+    /// Keep1 (sites 0 to 255) and Keep2 (256), and then, loaded out of a box
+    /// (site 258), site 257: past MostHeld, so it joins the node's blob, and
+    /// possibly after the call on node 1 was dispatched on the blob (then it
+    /// is dispatched again, Redispatch). Site 257 runs Keep3: nothing is
+    /// global. Where it runs LeakThis instead, it is thrown -- the blob is --
+    /// and nothing else is. A blob with a member of no known class still
+    /// takes every target: with no knowledge of classes, site 257 is global.
+    /// The same for a wide call (WideTargets 4).
+    /// </summary>
+    private static void BlobDispatch()
+    {
+        foreach (int wide in new[] { 16, 4 })
+            foreach (string member in new[] { "Keep3", "LeakThis", "unknown" })
+            {
+                Prog p = new();
+                p.Add("LeakThis", 1, 2).Constraints.Add(Leak(0));
+                for (int t = 1; t <= 11; t++) p.Add("Keep" + t, 1, 2);
+                p.Virtuals["__virtual:t_B+48"] = new[] { "LeakThis" }.Concat(Enumerable.Range(1, 11).Select(t => "Keep" + t)).ToArray();
+                // Nodes: 0 the return, 1 the receiver, 2 the box, 3 site 257's object.
+                RegionFunction full = p.Add("Full", 0, 4, sites: 259);
+                for (int s = 0; s <= 256; s++) full.Constraints.Add(Site(1, s));
+                full.Constraints.Add(Site(2, 258));
+                full.Constraints.Add(Site(3, 257));
+                full.Constraints.Add(Store(2, 3, 8));
+                full.Constraints.Add(Load(1, 2, 8));
+                full.Calls.Add(new("__virtual:t_B+48", -1, new[] { 1 }));
+                int first = p.Site("Full", 0);
+                int[]? Runs(int f, int k, int at)
+                {
+                    int s = at - first;
+                    if (s < 256) return new[] { p.Index("Keep1") };
+                    if (s == 256) return new[] { p.Index("Keep2") };
+                    if (s == 257) return member == "unknown" ? null : new[] { p.Index(member) };
+                    return null;
+                }
+                RegionEscape e = p.Solve(wide: wide, targetsOn: Runs);
+                string how = (wide == 16 ? "a call of its own" : "a wide call") + ", site 257 running " + member;
+                for (int s = 0; s <= 256; s++) Check(!e.Global[first + s], $"{how}: site {s} runs a keeper: not global");
+                Check(e.Global[first + 257] == (member != "Keep3"), how + (member == "Keep3" ? ": the blob runs Keep3 only: not global" : ": the blob may run LeakThis: global"));
+            }
     }
 
     /// <summary>
