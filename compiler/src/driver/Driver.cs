@@ -1395,7 +1395,7 @@ public static class Driver
                 "System/Drawing/Drawing.cor", "System/Drawing/Drawing2D.cor", "System/Drawing/FontEngine.cor", "System/Drawing/TrueType.cor", "System/Drawing/BitmapFont.cor", "System/Drawing/Text.cor",
                 "Corsac/GUI/Gui.cor", "System/Drawing/Imaging.cor",
                 "System/Windows/Forms/Forms.cor", "Microsoft/Win32/SystemEvents.cor",
-                "System/Drawing/Printing/SpoolWire.cor", "System/Drawing/Printing/Printing.cor", "System/Windows/Forms/PrintDialogs.cor" })
+                "System/Drawing/Printing/SpoolWire.cor", "System/Drawing/Printing/Printing.cor", "System/Windows/Forms/PrintDialogs.cor", "System/Windows/Forms/PrintPreview.cor" })
             {
                 libs.Add(Path.Combine(root, "stdlib", "src", dotnet));
             }

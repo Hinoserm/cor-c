@@ -243,7 +243,7 @@ enum SeatIoctl : long
     DragBridgeDone = 0x47550B0B,
 }
 
-public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
+public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPageTarget
 {
     // The font store's door for System.Drawing, which cannot name the seat
     // (it is the library below this one): set when this class is first
@@ -2056,6 +2056,15 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
         if (handle <= 0) throw new IOException("the seat made no page (" + (-handle) + ")");
         return (int)handle;
     }
+
+    /// A PREVIEW page: as a printed page, but of no job, read back by
+    /// WindowPixels and shown by ShowPage (Forms' PrintPreviewControl);
+    /// let go by DiscardPage. Its window, or an IOException.
+    public int CreatePreviewPage(int width, int height, int dpi) { return CreatePage(0, width, height, dpi); }
+
+    /// The whole of a preview page scaled into a rectangle of the window
+    /// being drawn (the seat's PageBlit).
+    public void ShowPage(int page, int x, int y, int width, int height) { Room(6); Word(21); Word(page); Word(x); Word(y); Word(width); Word(height); }
 
     /// The page to its job, and its window gone: 0, or the seat's negative
     /// error (-125 the job was cancelled, -5 a mode change took the page).
