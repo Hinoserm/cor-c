@@ -1,0 +1,1112 @@
+// System.Drawing's geometry: PointF and RectangleF, Region, and
+// System.Drawing.Drawing2D's Matrix, GraphicsPath and the enumerations a
+// Graphics is set with -- .NET's surface, member for member where it has
+// one.
+//
+// NOTHING HERE DRAWS. A path is points and their types, a region a list of
+// paths and how each combines, a matrix six floats. A Graphics hands them
+// to its target (IPathTarget) as words of the seat's batch, and the GUI
+// kernel's drawing engine flattens, widens, fills and clips them -- the
+// same engine Windows programs' GDI is translated onto -- so that a path
+// drawn by a native program and one drawn by GDI are drawn by one piece of
+// code, not one per process. Points travel as 28.4 fixed point (sixteenths
+// of a pixel), a transform as 16.16: the kernel does no floating point.
+
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+
+namespace System.Drawing
+{
+
+public struct PointF
+{
+    public float X;
+    public float Y;
+
+    public PointF(float x, float y) { X = x; Y = y; }
+    public static PointF Empty { get { return new PointF(0, 0); } }
+    public bool IsEmpty { get { return X == 0 && Y == 0; } }
+    public static bool operator ==(PointF a, PointF b) { return a.X == b.X && a.Y == b.Y; }
+    public static bool operator !=(PointF a, PointF b) { return !(a == b); }
+    public override bool Equals(object? o) { return o is PointF p && p == this; }
+    public override int GetHashCode() { return BitConverter.SingleToInt32Bits(X) ^ (BitConverter.SingleToInt32Bits(Y) << 7); }
+    public override string ToString() { return "{X=" + X + ", Y=" + Y + "}"; }
+}
+
+public struct RectangleF
+{
+    public float X;
+    public float Y;
+    public float Width;
+    public float Height;
+
+    public RectangleF(float x, float y, float width, float height) { X = x; Y = y; Width = width; Height = height; }
+    public RectangleF(PointF location, SizeF size) { X = location.X; Y = location.Y; Width = size.Width; Height = size.Height; }
+    public static RectangleF Empty { get { return new RectangleF(0, 0, 0, 0); } }
+    public static RectangleF FromLTRB(float left, float top, float right, float bottom) { return new RectangleF(left, top, right - left, bottom - top); }
+
+    public float Left { get { return X; } }
+    public float Top { get { return Y; } }
+    public float Right { get { return X + Width; } }
+    public float Bottom { get { return Y + Height; } }
+    public bool IsEmpty { get { return Width <= 0 || Height <= 0; } }
+    public PointF Location { get { return new PointF(X, Y); } set { X = value.X; Y = value.Y; } }
+
+    public bool Contains(float x, float y) { return x >= X && y >= Y && x < X + Width && y < Y + Height; }
+    public bool Contains(PointF p) { return Contains(p.X, p.Y); }
+    public bool IntersectsWith(RectangleF r) { return r.X < Right && X < r.Right && r.Y < Bottom && Y < r.Bottom; }
+    public void Offset(float dx, float dy) { X += dx; Y += dy; }
+    public void Inflate(float dx, float dy) { X -= dx; Y -= dy; Width += 2 * dx; Height += 2 * dy; }
+
+    public static RectangleF Intersect(RectangleF a, RectangleF b)
+    {
+        float l = a.X > b.X ? a.X : b.X, t = a.Y > b.Y ? a.Y : b.Y, r = a.Right < b.Right ? a.Right : b.Right, bt = a.Bottom < b.Bottom ? a.Bottom : b.Bottom;
+        if (r < l || bt < t) return Empty;
+        return new RectangleF(l, t, r - l, bt - t);
+    }
+
+    public static RectangleF Union(RectangleF a, RectangleF b)
+    {
+        float l = a.X < b.X ? a.X : b.X, t = a.Y < b.Y ? a.Y : b.Y, r = a.Right > b.Right ? a.Right : b.Right, bt = a.Bottom > b.Bottom ? a.Bottom : b.Bottom;
+        return new RectangleF(l, t, r - l, bt - t);
+    }
+
+    public static RectangleF From(Rectangle r) { return new RectangleF(r.X, r.Y, r.Width, r.Height); }
+
+    public static bool operator ==(RectangleF a, RectangleF b) { return a.X == b.X && a.Y == b.Y && a.Width == b.Width && a.Height == b.Height; }
+    public static bool operator !=(RectangleF a, RectangleF b) { return !(a == b); }
+    public override bool Equals(object? o) { return o is RectangleF r && r == this; }
+    public override int GetHashCode() { return (int)X ^ ((int)Y << 8) ^ ((int)Width << 16) ^ ((int)Height << 24); }
+    public override string ToString() { return "{X=" + X + ",Y=" + Y + ",Width=" + Width + ",Height=" + Height + "}"; }
+}
+
+/// What a StringFormat says about where text goes. GraphicsPath.AddString
+/// takes one; the layout here is a line from the origin, so it is carried
+/// but not read.
+public sealed class StringFormat : IDisposable
+{
+    public static StringFormat GenericDefault { get { return new StringFormat(); } }
+    public static StringFormat GenericTypographic { get { return new StringFormat(); } }
+    public void Dispose() { }
+}
+
+/// <summary>
+/// An area: everything (infinite) or nothing (empty), combined in order
+/// with paths and with other regions -- .NET's Region, kept as the steps
+/// that made it rather than as pixels, since its pixels are the kernel's to
+/// work out (the seat's ClipPath and CombineRegion, one op a step; a region
+/// inside a region is built in a scratch slot of its own and combined in).
+/// The points are world points; a Graphics takes them through its
+/// transform when the region is set as its clip or filled.
+/// </summary>
+public sealed class Region : IDisposable
+{
+    internal bool BaseInfinite = true;
+    internal readonly List<CombineMode> Modes = new List<CombineMode>();
+    internal readonly List<GraphicsPath?> Paths = new List<GraphicsPath?>();
+    internal readonly List<Region?> Parts = new List<Region?>();
+
+    /// How deep regions may be built inside regions: the seat's scratch
+    /// slots (2 to 9) are one for each level.
+    internal const int MaxDepth = 8;
+
+    public Region() { }
+    public Region(Rectangle rect) { BaseInfinite = false; Union(rect); }
+    public Region(RectangleF rect) { BaseInfinite = false; Union(rect); }
+    public Region(GraphicsPath path) { BaseInfinite = false; Union(path); }
+
+    public void MakeInfinite() { BaseInfinite = true; Modes.Clear(); Paths.Clear(); Parts.Clear(); }
+    public void MakeEmpty() { BaseInfinite = false; Modes.Clear(); Paths.Clear(); Parts.Clear(); }
+
+    bool IsEverything { get { return BaseInfinite && Modes.Count == 0; } }
+    bool IsNothing { get { return !BaseInfinite && Modes.Count == 0; } }
+
+    void Step(CombineMode mode, GraphicsPath? path, Region? part)
+    {
+        if (mode == CombineMode.Replace) { MakeEmpty(); mode = CombineMode.Union; }
+        Modes.Add(mode); Paths.Add(path); Parts.Add(part);
+    }
+
+    static GraphicsPath Box(RectangleF r) { GraphicsPath p = new GraphicsPath(); p.AddRectangle(r); return p; }
+
+    public void Intersect(Rectangle rect) { Step(CombineMode.Intersect, Box(RectangleF.From(rect)), null); }
+    public void Intersect(RectangleF rect) { Step(CombineMode.Intersect, Box(rect), null); }
+    public void Intersect(GraphicsPath path) { Step(CombineMode.Intersect, path.Clone(), null); }
+    public void Intersect(Region region) { Combine(CombineMode.Intersect, region); }
+    public void Union(Rectangle rect) { Step(CombineMode.Union, Box(RectangleF.From(rect)), null); }
+    public void Union(RectangleF rect) { Step(CombineMode.Union, Box(rect), null); }
+    public void Union(GraphicsPath path) { Step(CombineMode.Union, path.Clone(), null); }
+    public void Union(Region region) { Combine(CombineMode.Union, region); }
+    public void Xor(Rectangle rect) { Step(CombineMode.Xor, Box(RectangleF.From(rect)), null); }
+    public void Xor(RectangleF rect) { Step(CombineMode.Xor, Box(rect), null); }
+    public void Xor(GraphicsPath path) { Step(CombineMode.Xor, path.Clone(), null); }
+    public void Xor(Region region) { Combine(CombineMode.Xor, region); }
+    public void Exclude(Rectangle rect) { Step(CombineMode.Exclude, Box(RectangleF.From(rect)), null); }
+    public void Exclude(RectangleF rect) { Step(CombineMode.Exclude, Box(rect), null); }
+    public void Exclude(GraphicsPath path) { Step(CombineMode.Exclude, path.Clone(), null); }
+    public void Exclude(Region region) { Combine(CombineMode.Exclude, region); }
+    public void Complement(Rectangle rect) { Step(CombineMode.Complement, Box(RectangleF.From(rect)), null); }
+    public void Complement(RectangleF rect) { Step(CombineMode.Complement, Box(rect), null); }
+    public void Complement(GraphicsPath path) { Step(CombineMode.Complement, path.Clone(), null); }
+    public void Complement(Region region) { Combine(CombineMode.Complement, region); }
+
+    /// Another region combined in: a single path's region as that path,
+    /// anything else kept whole as a part.
+    void Combine(CombineMode mode, Region other)
+    {
+        GraphicsPath? only = other.Modes.Count == 1 ? other.Paths[0] : null;
+        if (!other.BaseInfinite && only != null && other.Modes[0] == CombineMode.Union)
+        {
+            Step(mode, only.Clone(), null);
+            return;
+        }
+        Region part = other.Clone();
+        if (part.Depth() >= MaxDepth) throw new NotSupportedException("regions are nested more than " + MaxDepth + " deep");
+        Step(mode, null, part);
+    }
+
+    int Depth()
+    {
+        int most = 0;
+        for (int i = 0; i < Parts.Count; i++) { Region? p = Parts[i]; if (p != null) most = Math.Max(most, p.Depth() + 1); }
+        return most;
+    }
+
+    public void Translate(int dx, int dy) { Translate((float)dx, (float)dy); }
+    public void Translate(float dx, float dy)
+    {
+        Matrix m = new Matrix();
+        m.Translate(dx, dy);
+        Transform(m);
+    }
+
+    public void Transform(Matrix matrix)
+    {
+        for (int i = 0; i < Modes.Count; i++)
+        {
+            GraphicsPath? p = Paths[i];
+            if (p != null) p.Transform(matrix);
+            Region? r = Parts[i];
+            if (r != null) r.Transform(matrix);
+        }
+    }
+
+    public Region Clone()
+    {
+        Region r = new Region();
+        r.BaseInfinite = BaseInfinite;
+        for (int i = 0; i < Modes.Count; i++)
+        {
+            GraphicsPath? p = Paths[i];
+            Region? q = Parts[i];
+            r.Modes.Add(Modes[i]); r.Paths.Add(p != null ? p.Clone() : null); r.Parts.Add(q != null ? q.Clone() : null);
+        }
+        return r;
+    }
+
+    public bool IsInfinite(Graphics g) { return IsEverything; }
+    public bool IsEmpty(Graphics g) { return IsNothing || GetBounds(g).IsEmpty; }
+
+    /// Whether a point is in it, by each step in turn.
+    public bool IsVisible(float x, float y)
+    {
+        bool inside = BaseInfinite;
+        for (int i = 0; i < Modes.Count; i++)
+        {
+            GraphicsPath? path = Paths[i];
+            Region? part = Parts[i];
+            bool p = path != null ? path.IsVisible(x, y) : part != null && part.IsVisible(x, y);
+            CombineMode m = Modes[i];
+            if (m == CombineMode.Intersect) inside = inside && p;
+            else if (m == CombineMode.Union) inside = inside || p;
+            else if (m == CombineMode.Xor) inside = inside != p;
+            else if (m == CombineMode.Exclude) inside = inside && !p;
+            else if (m == CombineMode.Complement) inside = p && !inside;
+            else inside = p;
+        }
+        return inside;
+    }
+    public bool IsVisible(PointF p) { return IsVisible(p.X, p.Y); }
+    public bool IsVisible(Point p) { return IsVisible((float)p.X, (float)p.Y); }
+    public bool IsVisible(int x, int y) { return IsVisible((float)x, (float)y); }
+    public bool IsVisible(float x, float y, Graphics? g) { return IsVisible(x, y); }
+    public bool IsVisible(Rectangle r) { return IsVisible(RectangleF.From(r)); }
+
+    /// Whether any of a rectangle is in it: its pixel centres tried, up to
+    /// a grid of 64 by 64 of them -- what can be said without the kernel's
+    /// pixels.
+    public bool IsVisible(RectangleF r)
+    {
+        if (!GetBounds(null).IntersectsWith(r)) return false;
+        int across = Math.Max(1, Math.Min(64, (int)Math.Ceiling(r.Width))), down = Math.Max(1, Math.Min(64, (int)Math.Ceiling(r.Height)));
+        for (int j = 0; j < down; j++)
+            for (int i = 0; i < across; i++)
+                if (IsVisible(r.X + r.Width * (i + 0.5f) / across, r.Y + r.Height * (j + 0.5f) / down)) return true;
+        return false;
+    }
+
+    /// A rectangle that holds it, step by step: GDI+'s infinite region is
+    /// -4194304 square, 8388608 on a side.
+    public RectangleF GetBounds(Graphics? g)
+    {
+        RectangleF all = new RectangleF(-4194304, -4194304, 8388608, 8388608);
+        RectangleF b = BaseInfinite ? all : RectangleF.Empty;
+        bool any = BaseInfinite;
+        for (int i = 0; i < Modes.Count; i++)
+        {
+            GraphicsPath? path = Paths[i];
+            Region? part = Parts[i];
+            RectangleF p = path != null ? path.GetBounds() : part != null ? part.GetBounds(g) : RectangleF.Empty;
+            CombineMode m = Modes[i];
+            if (m == CombineMode.Intersect) { b = any ? RectangleF.Intersect(b, p) : RectangleF.Empty; any = !b.IsEmpty; }
+            else if (m == CombineMode.Union || m == CombineMode.Xor) { b = any ? RectangleF.Union(b, p) : p; any = true; }
+            else if (m == CombineMode.Complement) { b = p; any = !p.IsEmpty; }
+        }
+        return any ? b : RectangleF.Empty;
+    }
+
+    /// The steps as the seat's words, building region slot `slot` (0 the
+    /// clip, 1 the fill region, 2 on scratch): an infinite start is no clip
+    /// for the clip and the whole window for a slot; each path through
+    /// `world` first when there is one; a region inside built in the next
+    /// scratch slot and combined in.
+    internal void Encode(List<int> words, int slot, Matrix? world, int depth)
+    {
+        int start = BaseInfinite ? (slot == 0 ? GeometryWords.CombineNone : GeometryWords.CombineAll) : (int)CombineMode.Replace;
+        words.Add(GeometryWords.ClipPath); words.Add(slot); words.Add(start); words.Add(1); words.Add(0);
+        for (int i = 0; i < Modes.Count; i++)
+        {
+            GraphicsPath? path = Paths[i];
+            Region? part = Parts[i];
+            if (path != null)
+            {
+                int n;
+                int[] pts = path.Encode(world, out n);
+                words.Add(GeometryWords.ClipPath); words.Add(slot); words.Add((int)Modes[i]);
+                words.Add(path.FillMode == FillMode.Winding ? 2 : 1); words.Add(n);
+                GeometryWords.Points(words, pts, n);
+            }
+            else if (part != null)
+            {
+                int scratch = 2 + depth;
+                part.Encode(words, scratch, world, depth + 1);
+                words.Add(GeometryWords.CombineRegion); words.Add(slot); words.Add((int)Modes[i]); words.Add(scratch);
+            }
+        }
+    }
+
+    public void Dispose() { }
+}
+
+}
+
+namespace System.Drawing.Drawing2D
+{
+
+public enum FillMode { Alternate = 0, Winding = 1 }
+public enum SmoothingMode { Invalid = -1, Default = 0, HighSpeed = 1, HighQuality = 2, None = 3, AntiAlias = 4 }
+public enum PixelOffsetMode { Invalid = -1, Default = 0, HighSpeed = 1, HighQuality = 2, None = 3, Half = 4 }
+public enum DashStyle { Solid = 0, Dash = 1, Dot = 2, DashDot = 3, DashDotDot = 4, Custom = 5 }
+public enum DashCap { Flat = 0, Round = 2, Triangle = 3 }
+public enum LineCap { Flat = 0, Square = 1, Round = 2, Triangle = 3, NoAnchor = 0x10, SquareAnchor = 0x11, RoundAnchor = 0x12, DiamondAnchor = 0x13, ArrowAnchor = 0x14, AnchorMask = 0xF0, Custom = 0xFF }
+public enum LineJoin { Miter = 0, Bevel = 1, Round = 2, MiterClipped = 3 }
+public enum CombineMode { Replace = 0, Intersect = 1, Union = 2, Xor = 3, Exclude = 4, Complement = 5 }
+public enum MatrixOrder { Prepend = 0, Append = 1 }
+public enum PenAlignment { Center = 0, Inset = 1, Outset = 2, Left = 3, Right = 4 }
+public enum CompositingMode { SourceOver = 0, SourceCopy = 1 }
+public enum CompositingQuality { Invalid = -1, Default = 0, HighSpeed = 1, HighQuality = 2, GammaCorrected = 3, AssumeLinear = 4 }
+public enum InterpolationMode { Invalid = -1, Default = 0, Low = 1, High = 2, Bilinear = 3, Bicubic = 4, NearestNeighbor = 5, HighQualityBilinear = 6, HighQualityBicubic = 7 }
+
+public enum PathPointType
+{
+    Start = 0, Line = 1, Bezier = 3, Bezier3 = 3, PathTypeMask = 7, DashMode = 0x10, PathMarker = 0x20, CloseSubpath = 0x80,
+}
+
+/// <summary>
+/// A 3x2 affine matrix, .NET's: a point (x, y) goes to (M11 x + M21 y +
+/// OffsetX, M12 x + M22 y + OffsetY). Each operation prepends by default --
+/// it acts on points before what the matrix already does -- as .NET's do.
+/// </summary>
+public sealed class Matrix : IDisposable
+{
+    float _m11 = 1, _m12, _m21, _m22 = 1, _dx, _dy;
+
+    public Matrix() { }
+    public Matrix(float m11, float m12, float m21, float m22, float dx, float dy)
+    {
+        _m11 = m11; _m12 = m12; _m21 = m21; _m22 = m22; _dx = dx; _dy = dy;
+    }
+
+    /// The matrix that takes `rect` to the parallelogram whose top left,
+    /// top right and bottom left corners are `plgpts`.
+    public Matrix(RectangleF rect, PointF[] plgpts)
+    {
+        if (plgpts.Length != 3) throw new ArgumentException("plgpts must hold three points");
+        float sx = rect.Width == 0 ? 0 : 1 / rect.Width, sy = rect.Height == 0 ? 0 : 1 / rect.Height;
+        _m11 = (plgpts[1].X - plgpts[0].X) * sx; _m12 = (plgpts[1].Y - plgpts[0].Y) * sx;
+        _m21 = (plgpts[2].X - plgpts[0].X) * sy; _m22 = (plgpts[2].Y - plgpts[0].Y) * sy;
+        _dx = plgpts[0].X - _m11 * rect.X - _m21 * rect.Y;
+        _dy = plgpts[0].Y - _m12 * rect.X - _m22 * rect.Y;
+    }
+
+    public Matrix(Rectangle rect, Point[] plgpts)
+        : this(RectangleF.From(rect), new PointF[] { new PointF(plgpts[0].X, plgpts[0].Y), new PointF(plgpts[1].X, plgpts[1].Y), new PointF(plgpts[2].X, plgpts[2].Y) }) { }
+
+    public float[] Elements { get { return new float[] { _m11, _m12, _m21, _m22, _dx, _dy }; } }
+    public float OffsetX { get { return _dx; } }
+    public float OffsetY { get { return _dy; } }
+    public bool IsIdentity { get { return _m11 == 1 && _m12 == 0 && _m21 == 0 && _m22 == 1 && _dx == 0 && _dy == 0; } }
+    public bool IsInvertible { get { return Determinant() != 0; } }
+
+    internal float M11 { get { return _m11; } }
+    internal float M12 { get { return _m12; } }
+    internal float M21 { get { return _m21; } }
+    internal float M22 { get { return _m22; } }
+
+    float Determinant() { return _m11 * _m22 - _m12 * _m21; }
+
+    public void Reset() { _m11 = 1; _m12 = 0; _m21 = 0; _m22 = 1; _dx = 0; _dy = 0; }
+
+    public Matrix Clone() { return new Matrix(_m11, _m12, _m21, _m22, _dx, _dy); }
+
+    /// a then b, as one matrix: a point through `a` first.
+    static void Product(Matrix a, Matrix b, Matrix into)
+    {
+        float m11 = a._m11 * b._m11 + a._m12 * b._m21;
+        float m12 = a._m11 * b._m12 + a._m12 * b._m22;
+        float m21 = a._m21 * b._m11 + a._m22 * b._m21;
+        float m22 = a._m21 * b._m12 + a._m22 * b._m22;
+        float dx = a._dx * b._m11 + a._dy * b._m21 + b._dx;
+        float dy = a._dx * b._m12 + a._dy * b._m22 + b._dy;
+        into._m11 = m11; into._m12 = m12; into._m21 = m21; into._m22 = m22; into._dx = dx; into._dy = dy;
+    }
+
+    public void Multiply(Matrix matrix) { Multiply(matrix, MatrixOrder.Prepend); }
+    public void Multiply(Matrix matrix, MatrixOrder order)
+    {
+        if (order == MatrixOrder.Prepend) Product(matrix, this, this);
+        else Product(this, matrix, this);
+    }
+
+    public void Translate(float offsetX, float offsetY) { Translate(offsetX, offsetY, MatrixOrder.Prepend); }
+    public void Translate(float offsetX, float offsetY, MatrixOrder order) { Multiply(new Matrix(1, 0, 0, 1, offsetX, offsetY), order); }
+
+    public void Scale(float scaleX, float scaleY) { Scale(scaleX, scaleY, MatrixOrder.Prepend); }
+    public void Scale(float scaleX, float scaleY, MatrixOrder order) { Multiply(new Matrix(scaleX, 0, 0, scaleY, 0, 0), order); }
+
+    public void Shear(float shearX, float shearY) { Shear(shearX, shearY, MatrixOrder.Prepend); }
+    public void Shear(float shearX, float shearY, MatrixOrder order) { Multiply(new Matrix(1, shearY, shearX, 1, 0, 0), order); }
+
+    /// Clockwise on the screen by `angle` degrees, y being down.
+    public void Rotate(float angle) { Rotate(angle, MatrixOrder.Prepend); }
+    public void Rotate(float angle, MatrixOrder order) { Multiply(Rotation(angle), order); }
+
+    public void RotateAt(float angle, PointF point) { RotateAt(angle, point, MatrixOrder.Prepend); }
+    public void RotateAt(float angle, PointF point, MatrixOrder order)
+    {
+        Matrix m = new Matrix(1, 0, 0, 1, -point.X, -point.Y);
+        m.Multiply(Rotation(angle), MatrixOrder.Append);
+        m.Translate(point.X, point.Y, MatrixOrder.Append);
+        Multiply(m, order);
+    }
+
+    static Matrix Rotation(float angle)
+    {
+        double r = angle * Math.PI / 180.0;
+        float c = (float)Math.Cos(r), s = (float)Math.Sin(r);
+        // Exact at the quarter turns, as GDI+ is: no 6e-17 left over.
+        float a = angle % 360; if (a < 0) a += 360;
+        if (a == 0) { c = 1; s = 0; } else if (a == 90) { c = 0; s = 1; } else if (a == 180) { c = -1; s = 0; } else if (a == 270) { c = 0; s = -1; }
+        return new Matrix(c, s, -s, c, 0, 0);
+    }
+
+    public void Invert()
+    {
+        float det = Determinant();
+        if (det == 0) throw new ArgumentException("The matrix is not invertible.");
+        float m11 = _m22 / det, m12 = -_m12 / det, m21 = -_m21 / det, m22 = _m11 / det;
+        float dx = (_m21 * _dy - _m22 * _dx) / det, dy = (_m12 * _dx - _m11 * _dy) / det;
+        _m11 = m11; _m12 = m12; _m21 = m21; _m22 = m22; _dx = dx; _dy = dy;
+    }
+
+    public void TransformPoints(PointF[] pts)
+    {
+        for (int i = 0; i < pts.Length; i++)
+        {
+            float x = pts[i].X, y = pts[i].Y;
+            pts[i] = new PointF(_m11 * x + _m21 * y + _dx, _m12 * x + _m22 * y + _dy);
+        }
+    }
+
+    public void TransformPoints(Point[] pts)
+    {
+        for (int i = 0; i < pts.Length; i++)
+        {
+            float x = pts[i].X, y = pts[i].Y;
+            pts[i] = new Point((int)Math.Round(_m11 * x + _m21 * y + _dx), (int)Math.Round(_m12 * x + _m22 * y + _dy));
+        }
+    }
+
+    public void TransformVectors(PointF[] pts)
+    {
+        for (int i = 0; i < pts.Length; i++)
+        {
+            float x = pts[i].X, y = pts[i].Y;
+            pts[i] = new PointF(_m11 * x + _m21 * y, _m12 * x + _m22 * y);
+        }
+    }
+
+    public void VectorTransformPoints(Point[] pts)
+    {
+        for (int i = 0; i < pts.Length; i++)
+        {
+            float x = pts[i].X, y = pts[i].Y;
+            pts[i] = new Point((int)Math.Round(_m11 * x + _m21 * y), (int)Math.Round(_m12 * x + _m22 * y));
+        }
+    }
+
+    internal float TransformX(float x, float y) { return _m11 * x + _m21 * y + _dx; }
+    internal float TransformY(float x, float y) { return _m12 * x + _m22 * y + _dy; }
+
+    /// The seat's words for it: the four factors 16.16, the offsets 28.4.
+    internal void Words(out int m11, out int m12, out int m21, out int m22, out int dx, out int dy)
+    {
+        m11 = Fixed(_m11, 65536); m12 = Fixed(_m12, 65536); m21 = Fixed(_m21, 65536); m22 = Fixed(_m22, 65536);
+        dx = Fixed(_dx, 16); dy = Fixed(_dy, 16);
+    }
+
+    internal static int Fixed(float v, float one)
+    {
+        double f = Math.Round((double)v * one);
+        if (f > 2147483647.0) return int.MaxValue;
+        if (f < -2147483648.0) return int.MinValue;
+        return (int)f;
+    }
+
+    public override bool Equals(object? o)
+    {
+        Matrix? m = o as Matrix;
+        return m != null && m._m11 == _m11 && m._m12 == _m12 && m._m21 == _m21 && m._m22 == _m22 && m._dx == _dx && m._dy == _dy;
+    }
+    public override int GetHashCode() { return BitConverter.SingleToInt32Bits(_m11) ^ BitConverter.SingleToInt32Bits(_m22) ^ BitConverter.SingleToInt32Bits(_dx); }
+
+    public void Dispose() { }
+}
+
+/// <summary>
+/// Figures of lines and cubic Beziers, .NET's GraphicsPath: PathPoints and
+/// PathTypes (PathPointType), a fill mode, and the calls that add to them.
+/// A figure goes on until StartFigure or CloseFigure; a line, Bezier, arc
+/// or curve added to an open figure joins it with a line from its last
+/// point, and a rectangle, ellipse, polygon, pie or closed curve is a
+/// figure of its own, closed.
+/// </summary>
+public sealed class GraphicsPath : IDisposable
+{
+    readonly List<PointF> _points = new List<PointF>();
+    readonly List<byte> _types = new List<byte>();
+    bool _start = true;                          // the next point begins a figure
+    public FillMode FillMode;
+
+    public GraphicsPath() { FillMode = FillMode.Alternate; }
+    public GraphicsPath(FillMode fillMode) { FillMode = fillMode; }
+
+    public GraphicsPath(PointF[] pts, byte[] types) : this(pts, types, FillMode.Alternate) { }
+    public GraphicsPath(PointF[] pts, byte[] types, FillMode fillMode)
+    {
+        FillMode = fillMode;
+        for (int i = 0; i < pts.Length && i < types.Length; i++) { _points.Add(pts[i]); _types.Add(types[i]); }
+        _start = _types.Count == 0 || (_types[_types.Count - 1] & (byte)PathPointType.CloseSubpath) != 0;
+    }
+
+    public int PointCount { get { return _points.Count; } }
+    public PointF[] PathPoints { get { return _points.ToArray(); } }
+    public byte[] PathTypes { get { return _types.ToArray(); } }
+
+    public PointF GetLastPoint()
+    {
+        if (_points.Count == 0) throw new ArgumentException("The path has no points.");
+        return _points[_points.Count - 1];
+    }
+
+    public void Reset() { _points.Clear(); _types.Clear(); _start = true; FillMode = FillMode.Alternate; }
+    public void StartFigure() { _start = true; }
+
+    public void CloseFigure()
+    {
+        if (_types.Count > 0) _types[_types.Count - 1] = (byte)(_types[_types.Count - 1] | (byte)PathPointType.CloseSubpath);
+        _start = true;
+    }
+
+    public void CloseAllFigures()
+    {
+        for (int i = 0; i < _types.Count; i++)
+        {
+            bool last = i + 1 == _types.Count || (_types[i + 1] & (byte)PathPointType.PathTypeMask) == (byte)PathPointType.Start;
+            if (last) _types[i] = (byte)(_types[i] | (byte)PathPointType.CloseSubpath);
+        }
+        _start = true;
+    }
+
+    public GraphicsPath Clone()
+    {
+        GraphicsPath p = new GraphicsPath(FillMode);
+        p._points.AddRange(_points); p._types.AddRange(_types); p._start = _start;
+        return p;
+    }
+
+    void Point(float x, float y, PathPointType type) { _points.Add(new PointF(x, y)); _types.Add((byte)type); }
+
+    /// Where a joined piece starts: a new figure's start, or a line to it
+    /// from the open figure's last point unless it is already there.
+    void Begin(float x, float y)
+    {
+        if (_start) { Point(x, y, PathPointType.Start); _start = false; return; }
+        PointF last = _points[_points.Count - 1];
+        if (last.X != x || last.Y != y) Point(x, y, PathPointType.Line);
+    }
+
+    // ---- lines -----------------------------------------------------------------------------
+
+    public void AddLine(float x1, float y1, float x2, float y2) { Begin(x1, y1); Point(x2, y2, PathPointType.Line); }
+    public void AddLine(int x1, int y1, int x2, int y2) { AddLine((float)x1, (float)y1, (float)x2, (float)y2); }
+    public void AddLine(PointF a, PointF b) { AddLine(a.X, a.Y, b.X, b.Y); }
+    public void AddLine(Point a, Point b) { AddLine((float)a.X, (float)a.Y, (float)b.X, (float)b.Y); }
+
+    public void AddLines(PointF[] points)
+    {
+        if (points.Length == 0) return;
+        Begin(points[0].X, points[0].Y);
+        for (int i = 1; i < points.Length; i++) Point(points[i].X, points[i].Y, PathPointType.Line);
+    }
+    public void AddLines(Point[] points) { AddLines(Floats(points)); }
+
+    // ---- Beziers ---------------------------------------------------------------------------
+
+    public void AddBezier(float x1, float y1, float x2, float y2, float x3, float y3, float x4, float y4)
+    {
+        Begin(x1, y1);
+        Point(x2, y2, PathPointType.Bezier); Point(x3, y3, PathPointType.Bezier); Point(x4, y4, PathPointType.Bezier);
+    }
+    public void AddBezier(int x1, int y1, int x2, int y2, int x3, int y3, int x4, int y4) { AddBezier((float)x1, (float)y1, (float)x2, (float)y2, (float)x3, (float)y3, (float)x4, (float)y4); }
+    public void AddBezier(PointF a, PointF b, PointF c, PointF d) { AddBezier(a.X, a.Y, b.X, b.Y, c.X, c.Y, d.X, d.Y); }
+    public void AddBezier(Point a, Point b, Point c, Point d) { AddBezier((float)a.X, (float)a.Y, (float)b.X, (float)b.Y, (float)c.X, (float)c.Y, (float)d.X, (float)d.Y); }
+
+    public void AddBeziers(PointF[] points)
+    {
+        if (points.Length < 4) throw new ArgumentException("A Bezier needs four points, and three more each after.");
+        Begin(points[0].X, points[0].Y);
+        for (int i = 1; i + 2 < points.Length; i += 3)
+        {
+            Point(points[i].X, points[i].Y, PathPointType.Bezier);
+            Point(points[i + 1].X, points[i + 1].Y, PathPointType.Bezier);
+            Point(points[i + 2].X, points[i + 2].Y, PathPointType.Bezier);
+        }
+    }
+    public void AddBeziers(Point[] points) { AddBeziers(Floats(points)); }
+
+    // ---- figures of their own --------------------------------------------------------------
+
+    public void AddRectangle(RectangleF rect)
+    {
+        if (rect.Width == 0 || rect.Height == 0) return;
+        _start = true;
+        Point(rect.X, rect.Y, PathPointType.Start);
+        Point(rect.Right, rect.Y, PathPointType.Line);
+        Point(rect.Right, rect.Bottom, PathPointType.Line);
+        Point(rect.X, rect.Bottom, PathPointType.Line);
+        CloseFigure();
+    }
+    public void AddRectangle(Rectangle rect) { AddRectangle(RectangleF.From(rect)); }
+    public void AddRectangles(RectangleF[] rects) { for (int i = 0; i < rects.Length; i++) AddRectangle(rects[i]); }
+    public void AddRectangles(Rectangle[] rects) { for (int i = 0; i < rects.Length; i++) AddRectangle(rects[i]); }
+
+    public void AddPolygon(PointF[] points)
+    {
+        if (points.Length < 3) throw new ArgumentException("A polygon needs three points.");
+        _start = true;
+        Point(points[0].X, points[0].Y, PathPointType.Start);
+        for (int i = 1; i < points.Length; i++) Point(points[i].X, points[i].Y, PathPointType.Line);
+        CloseFigure();
+    }
+    public void AddPolygon(Point[] points) { AddPolygon(Floats(points)); }
+
+    /// An ellipse as four Beziers, from the right-hand end clockwise, as
+    /// GDI+ makes it: each quarter's handles 0.5523 of the radius long.
+    public void AddEllipse(RectangleF rect)
+    {
+        _start = true;
+        float rx = rect.Width / 2, ry = rect.Height / 2, cx = rect.X + rx, cy = rect.Y + ry;
+        const float K = 0.5522847498f;
+        float kx = rx * K, ky = ry * K;
+        Point(cx + rx, cy, PathPointType.Start);
+        Point(cx + rx, cy + ky, PathPointType.Bezier); Point(cx + kx, cy + ry, PathPointType.Bezier); Point(cx, cy + ry, PathPointType.Bezier);
+        Point(cx - kx, cy + ry, PathPointType.Bezier); Point(cx - rx, cy + ky, PathPointType.Bezier); Point(cx - rx, cy, PathPointType.Bezier);
+        Point(cx - rx, cy - ky, PathPointType.Bezier); Point(cx - kx, cy - ry, PathPointType.Bezier); Point(cx, cy - ry, PathPointType.Bezier);
+        Point(cx + kx, cy - ry, PathPointType.Bezier); Point(cx + rx, cy - ky, PathPointType.Bezier); Point(cx + rx, cy, PathPointType.Bezier);
+        CloseFigure();
+    }
+    public void AddEllipse(Rectangle rect) { AddEllipse(RectangleF.From(rect)); }
+    public void AddEllipse(float x, float y, float width, float height) { AddEllipse(new RectangleF(x, y, width, height)); }
+    public void AddEllipse(int x, int y, int width, int height) { AddEllipse(new RectangleF(x, y, width, height)); }
+
+    // ---- arcs and pies ---------------------------------------------------------------------
+
+    /// Part of the ellipse in `rect`, from `startAngle` through
+    /// `sweepAngle` degrees, clockwise on the screen; an angle is the
+    /// direction from the centre to the point on the ellipse, as GDI+'s
+    /// is. A sweep of a whole turn or more is the whole ellipse.
+    public void AddArc(RectangleF rect, float startAngle, float sweepAngle) { Arc(rect, startAngle, sweepAngle, false); }
+    public void AddArc(Rectangle rect, float startAngle, float sweepAngle) { Arc(RectangleF.From(rect), startAngle, sweepAngle, false); }
+    public void AddArc(float x, float y, float width, float height, float startAngle, float sweepAngle) { Arc(new RectangleF(x, y, width, height), startAngle, sweepAngle, false); }
+    public void AddArc(int x, int y, int width, int height, float startAngle, float sweepAngle) { Arc(new RectangleF(x, y, width, height), startAngle, sweepAngle, false); }
+
+    public void AddPie(RectangleF rect, float startAngle, float sweepAngle)
+    {
+        _start = true;
+        Point(rect.X + rect.Width / 2, rect.Y + rect.Height / 2, PathPointType.Start);
+        _start = false;
+        Arc(rect, startAngle, sweepAngle, true);
+        CloseFigure();
+    }
+    public void AddPie(Rectangle rect, float startAngle, float sweepAngle) { AddPie(RectangleF.From(rect), startAngle, sweepAngle); }
+    public void AddPie(float x, float y, float width, float height, float startAngle, float sweepAngle) { AddPie(new RectangleF(x, y, width, height), startAngle, sweepAngle); }
+    public void AddPie(int x, int y, int width, int height, float startAngle, float sweepAngle) { AddPie(new RectangleF(x, y, width, height), startAngle, sweepAngle); }
+
+    void Arc(RectangleF rect, float startAngle, float sweepAngle, bool joined)
+    {
+        double rx = rect.Width / 2.0, ry = rect.Height / 2.0, cx = rect.X + rx, cy = rect.Y + ry;
+        if (sweepAngle > 360) sweepAngle = 360;
+        if (sweepAngle < -360) sweepAngle = -360;
+        double start = Parametric(startAngle, rx, ry);
+        double end = Parametric(startAngle + sweepAngle, rx, ry);
+        // The parametric angles go the way the sweep goes, by as much.
+        if (sweepAngle >= 0) { while (end < start) end += 2 * Math.PI; if (sweepAngle >= 360) end = start + 2 * Math.PI; }
+        else { while (end > start) end -= 2 * Math.PI; if (sweepAngle <= -360) end = start - 2 * Math.PI; }
+        double total = end - start;
+        int pieces = (int)Math.Ceiling((total < 0 ? -total : total) / (Math.PI / 2) - 1e-9);
+        if (pieces < 1) pieces = 1;
+        double step = total / pieces;
+        float x0 = (float)(cx + rx * Math.Cos(start)), y0 = (float)(cy + ry * Math.Sin(start));
+        Begin(x0, y0);
+        for (int i = 0; i < pieces; i++)
+        {
+            double a = start + step * i, b = a + step;
+            double k = 4.0 / 3.0 * Math.Tan(step / 4);
+            double ca = Math.Cos(a), sa = Math.Sin(a), cb = Math.Cos(b), sb = Math.Sin(b);
+            Point((float)(cx + rx * (ca - k * sa)), (float)(cy + ry * (sa + k * ca)), PathPointType.Bezier);
+            Point((float)(cx + rx * (cb + k * sb)), (float)(cy + ry * (sb - k * cb)), PathPointType.Bezier);
+            Point((float)(cx + rx * cb), (float)(cy + ry * sb), PathPointType.Bezier);
+        }
+    }
+
+    /// The ellipse's parameter for the point in direction `degrees`.
+    static double Parametric(double degrees, double rx, double ry)
+    {
+        double r = degrees * Math.PI / 180.0;
+        if (rx == 0 || ry == 0) return r;
+        double t = Math.Atan2(rx * Math.Sin(r), ry * Math.Cos(r));
+        // Kept in the same turn as the angle, so sweeps measure right.
+        double turns = Math.Floor(r / (2 * Math.PI));
+        t += turns * 2 * Math.PI;
+        while (t < r - Math.PI) t += 2 * Math.PI;
+        while (t > r + Math.PI) t -= 2 * Math.PI;
+        return t;
+    }
+
+    // ---- cardinal splines ------------------------------------------------------------------
+
+    /// A cardinal spline through the points, as Beziers: each point's
+    /// handles along the line between its neighbours, `tension` / 3 of it
+    /// (GDI+'s default 0.5).
+    public void AddCurve(PointF[] points) { AddCurve(points, 0.5f); }
+    public void AddCurve(PointF[] points, float tension) { Curve(points, 0, points.Length - 1, tension, false); }
+    public void AddCurve(PointF[] points, int offset, int numberOfSegments, float tension) { Curve(points, offset, numberOfSegments, tension, false); }
+    public void AddCurve(Point[] points) { AddCurve(Floats(points), 0.5f); }
+    public void AddCurve(Point[] points, float tension) { AddCurve(Floats(points), tension); }
+
+    public void AddClosedCurve(PointF[] points) { AddClosedCurve(points, 0.5f); }
+    public void AddClosedCurve(PointF[] points, float tension)
+    {
+        _start = true;
+        Curve(points, 0, points.Length, tension, true);
+        CloseFigure();
+    }
+    public void AddClosedCurve(Point[] points) { AddClosedCurve(Floats(points), 0.5f); }
+    public void AddClosedCurve(Point[] points, float tension) { AddClosedCurve(Floats(points), tension); }
+
+    void Curve(PointF[] p, int offset, int segments, float tension, bool closed)
+    {
+        int n = p.Length;
+        if (n < 2 || segments < 1) return;
+        float k = tension / 3f;
+        Begin(p[offset].X, p[offset].Y);
+        for (int s = 0; s < segments; s++)
+        {
+            int i = offset + s;
+            int j = closed ? (i + 1) % n : i + 1;
+            if (j >= n) break;
+            PointF before = closed ? p[(i - 1 + n) % n] : p[Math.Max(i - 1, 0)];
+            PointF after = closed ? p[(j + 1) % n] : p[Math.Min(j + 1, n - 1)];
+            PointF a = p[i], b = p[j];
+            Point(a.X + (b.X - before.X) * k, a.Y + (b.Y - before.Y) * k, PathPointType.Bezier);
+            Point(b.X - (after.X - a.X) * k, b.Y - (after.Y - a.Y) * k, PathPointType.Bezier);
+            Point(b.X, b.Y, PathPointType.Bezier);
+        }
+    }
+
+    // ---- other paths -----------------------------------------------------------------------
+
+    /// Another path's figures appended; `connect` joins its first figure to
+    /// this one's open figure with a line.
+    public void AddPath(GraphicsPath addingPath, bool connect)
+    {
+        int n = addingPath._points.Count;
+        for (int i = 0; i < n; i++)
+        {
+            byte type = addingPath._types[i];
+            if (i == 0)
+            {
+                if (connect && !_start) type = (byte)((type & ~(byte)PathPointType.PathTypeMask) | (byte)PathPointType.Line);
+                else type = (byte)((type & ~(byte)PathPointType.PathTypeMask) | (byte)PathPointType.Start);
+            }
+            _points.Add(addingPath._points[i]); _types.Add(type);
+        }
+        if (n > 0) _start = addingPath._start;
+    }
+
+    /// TEXT AS OUTLINES: each character's glyph from the family's TrueType
+    /// face -- its quadratic contours as cubic Beziers, composites put
+    /// together from their parts -- at `emSize` pixels to the em, the top of
+    /// the first line at the origin, each line down by the family's line
+    /// spacing; italic slanted where the face is upright. A family with no
+    /// TrueType face (the bitmap system font) has no outlines, and adds
+    /// nothing.
+    public void AddString(string s, FontFamily family, int style, float emSize, PointF origin, StringFormat? format)
+    {
+        List<GraphicsPath> letters = Letters(s, family, style, emSize, origin);
+        for (int i = 0; i < letters.Count; i++) AddPath(letters[i], false);
+        _start = true;
+    }
+
+    /// Each letter of `s` as a path of its own, laid out as AddString lays
+    /// them: what a Graphics fills one at a time to draw text the transform
+    /// turns, so that no one path is longer than the seat takes.
+    internal static List<GraphicsPath> Letters(string s, FontFamily family, int style, float emSize, PointF origin)
+    {
+        List<GraphicsPath> made = new List<GraphicsPath>();
+        TrueTypeFace? face = (style & (int)FontStyle.Bold) != 0 && family.BoldFace != null ? family.BoldFace : family.Face;
+        if (face == null || face.UnitsPerEm <= 0) return made;
+        float scale = emSize / face.UnitsPerEm;
+        float slant = (style & (int)FontStyle.Italic) != 0 ? 0.2f : 0f;
+        float x = origin.X, baseline = origin.Y + face.Ascender * scale;
+        float line = (face.Ascender - face.Descender + face.LineGap) * scale;
+        int previous = -1;
+        for (int i = 0; i < s.Length; )
+        {
+            Rune rune;
+            int taken;
+            if (Rune.TryGetRuneAt(s, i, out rune)) taken = rune.Utf16SequenceLength; else { taken = 1; rune = new Rune('?'); }
+            i += taken;
+            if (rune.Value == '\n') { x = origin.X; baseline += line; previous = -1; continue; }
+            int glyph = face.GlyphIndex(rune.Value);
+            if (previous >= 0) x += face.Kerning(previous, glyph) * scale;
+            TrueTypeOutline outline = new TrueTypeOutline();
+            Glyph(face, glyph, outline, 0);
+            GraphicsPath letter = new GraphicsPath(FillMode.Winding);
+            letter.Outline(outline, x, baseline, scale, slant);
+            if (letter.PointCount > 0) made.Add(letter);
+            x += face.AdvanceWidth(glyph) * scale;
+            previous = glyph;
+        }
+        return made;
+    }
+    public void AddString(string s, FontFamily family, int style, float emSize, Point origin, StringFormat? format)
+    {
+        AddString(s, family, style, emSize, new PointF(origin.X, origin.Y), format);
+    }
+    public void AddString(string s, FontFamily family, int style, float emSize, RectangleF layoutRect, StringFormat? format)
+    {
+        AddString(s, family, style, emSize, new PointF(layoutRect.X, layoutRect.Y), format);
+    }
+    public void AddString(string s, FontFamily family, int style, float emSize, Rectangle layoutRect, StringFormat? format)
+    {
+        AddString(s, family, style, emSize, new PointF(layoutRect.X, layoutRect.Y), format);
+    }
+
+    /// A glyph's contours in font units, a composite's parts each through
+    /// its own 2.14 transform and offset.
+    static void Glyph(TrueTypeFace face, int glyph, TrueTypeOutline into, int depth)
+    {
+        if (depth > 8) return;
+        if (!face.IsComposite(glyph)) { face.LoadSimple(glyph, into); return; }
+        int io, il;
+        TrueTypeFace.Component[] parts = face.Components(glyph, out io, out il);
+        for (int c = 0; c < parts.Length; c++)
+        {
+            TrueTypeFace.Component part = parts[c];
+            TrueTypeOutline piece = new TrueTypeOutline();
+            Glyph(face, part.Glyph, piece, depth + 1);
+            int dx = 0, dy = 0;
+            if (part.ArgumentsAreOffsets) { dx = part.Argument1; dy = part.Argument2; }
+            else if (part.Argument1 < into.PointCount && part.Argument2 < piece.PointCount)
+            {
+                // Matched points: the part moved so its point lands on ours.
+                dx = into.X[part.Argument1] - piece.X[part.Argument2];
+                dy = into.Y[part.Argument1] - piece.Y[part.Argument2];
+            }
+            int basePoint = into.PointCount, baseContour = into.ContourCount;
+            into.Reserve(basePoint + piece.PointCount, baseContour + piece.ContourCount);
+            for (int k = 0; k < piece.PointCount; k++)
+            {
+                long px = piece.X[k], py = piece.Y[k];
+                if (part.HasTransform)
+                {
+                    long tx = (px * part.XX + py * part.YX) >> 14, ty = (px * part.XY + py * part.YY) >> 14;
+                    px = tx; py = ty;
+                }
+                into.X[basePoint + k] = (int)px + dx;
+                into.Y[basePoint + k] = (int)py + dy;
+                into.OnCurve[basePoint + k] = piece.OnCurve[k];
+            }
+            for (int k = 0; k < piece.ContourCount; k++) into.ContourEnd[baseContour + k] = basePoint + piece.ContourEnd[k];
+            into.PointCount = basePoint + piece.PointCount;
+            into.ContourCount = baseContour + piece.ContourCount;
+        }
+    }
+
+    /// The contours as closed figures: each quadratic piece (on, off, on;
+    /// two offs in a row have an on point implied between them) as the
+    /// cubic with the same curve.
+    void Outline(TrueTypeOutline o, float ox, float baseline, float scale, float slant)
+    {
+        int first = 0;
+        for (int c = 0; c < o.ContourCount; c++)
+        {
+            int last = o.ContourEnd[c];
+            int n = last - first + 1;
+            if (n < 2) { first = last + 1; continue; }
+            // Start at an on-curve point, or between two offs.
+            int at = -1;
+            for (int k = 0; k < n; k++) if (o.OnCurve[first + k]) { at = k; break; }
+            float sx, sy;
+            if (at >= 0) { sx = o.X[first + at]; sy = o.Y[first + at]; }
+            else
+            {
+                // All off the curve: the start is the implied point between
+                // the last and the first, and the first is the next.
+                at = n - 1;
+                sx = (o.X[first] + o.X[last]) / 2f; sy = (o.Y[first] + o.Y[last]) / 2f;
+            }
+            _start = true;
+            float px = sx, py = sy;
+            Point(Fx(px, py, ox, scale, slant), Fy(py, baseline, scale), PathPointType.Start);
+            bool haveControl = false;
+            float cx = 0, cy = 0;
+            for (int step = 1; step <= n; step++)
+            {
+                int k = first + (at + step) % n;
+                float x = o.X[k], y = o.Y[k];
+                bool on = o.OnCurve[k];
+                if (on)
+                {
+                    if (haveControl) { Quad(px, py, cx, cy, x, y, ox, baseline, scale, slant); haveControl = false; }
+                    else Point(Fx(x, y, ox, scale, slant), Fy(y, baseline, scale), PathPointType.Line);
+                    px = x; py = y;
+                }
+                else
+                {
+                    if (haveControl)
+                    {
+                        float mx = (cx + x) / 2, my = (cy + y) / 2;
+                        Quad(px, py, cx, cy, mx, my, ox, baseline, scale, slant);
+                        px = mx; py = my;
+                    }
+                    cx = x; cy = y; haveControl = true;
+                }
+            }
+            if (haveControl) Quad(px, py, cx, cy, sx, sy, ox, baseline, scale, slant);
+            CloseFigure();
+            first = last + 1;
+        }
+    }
+
+    void Quad(float x0, float y0, float cx, float cy, float x1, float y1, float ox, float baseline, float scale, float slant)
+    {
+        float ax = x0 + (cx - x0) * 2 / 3, ay = y0 + (cy - y0) * 2 / 3;
+        float bx = x1 + (cx - x1) * 2 / 3, by = y1 + (cy - y1) * 2 / 3;
+        Point(Fx(ax, ay, ox, scale, slant), Fy(ay, baseline, scale), PathPointType.Bezier);
+        Point(Fx(bx, by, ox, scale, slant), Fy(by, baseline, scale), PathPointType.Bezier);
+        Point(Fx(x1, y1, ox, scale, slant), Fy(y1, baseline, scale), PathPointType.Bezier);
+    }
+
+    static float Fx(float x, float y, float ox, float scale, float slant) { return ox + (x + y * slant) * scale; }
+    static float Fy(float y, float baseline, float scale) { return baseline - y * scale; }
+
+    // ---- the whole path --------------------------------------------------------------------
+
+    public void Transform(Matrix matrix)
+    {
+        for (int i = 0; i < _points.Count; i++)
+        {
+            PointF p = _points[i];
+            _points[i] = new PointF(matrix.TransformX(p.X, p.Y), matrix.TransformY(p.X, p.Y));
+        }
+    }
+
+    /// The figures run the other way: the points in reverse, each figure's
+    /// first point the old last.
+    public void Reverse()
+    {
+        List<PointF> points = new List<PointF>();
+        List<byte> types = new List<byte>();
+        int end = _points.Count;
+        while (end > 0)
+        {
+            int begin = end - 1;
+            while (begin > 0 && (_types[begin] & (byte)PathPointType.PathTypeMask) != (byte)PathPointType.Start) begin--;
+            bool closed = (_types[end - 1] & (byte)PathPointType.CloseSubpath) != 0;
+            for (int i = end - 1; i >= begin; i--)
+            {
+                byte kind;
+                if (i == end - 1) kind = (byte)PathPointType.Start;
+                else kind = (byte)(_types[i + 1] & (byte)PathPointType.PathTypeMask);
+                if (i == begin && closed) kind = (byte)(kind | (byte)PathPointType.CloseSubpath);
+                points.Add(_points[i]); types.Add(kind);
+            }
+            end = begin;
+        }
+        _points.Clear(); _types.Clear();
+        _points.AddRange(points); _types.AddRange(types);
+    }
+
+    public RectangleF GetBounds()
+    {
+        if (_points.Count == 0) return RectangleF.Empty;
+        float l = _points[0].X, t = _points[0].Y, r = l, b = t;
+        for (int i = 1; i < _points.Count; i++)
+        {
+            PointF p = _points[i];
+            if (p.X < l) l = p.X; if (p.X > r) r = p.X;
+            if (p.Y < t) t = p.Y; if (p.Y > b) b = p.Y;
+        }
+        return new RectangleF(l, t, r - l, b - t);
+    }
+
+    public RectangleF GetBounds(Matrix? matrix)
+    {
+        if (matrix == null) return GetBounds();
+        GraphicsPath p = Clone();
+        p.Transform(matrix);
+        return p.GetBounds();
+    }
+
+    /// Every Bezier replaced by lines: each split until its control
+    /// points lie within `flatness` of its chord (GDI+'s default a
+    /// quarter of a pixel).
+    public void Flatten() { Flatten(null, 0.25f); }
+    public void Flatten(Matrix? matrix) { Flatten(matrix, 0.25f); }
+    public void Flatten(Matrix? matrix, float flatness)
+    {
+        if (matrix != null) Transform(matrix);
+        if (flatness <= 0) flatness = 0.25f;
+        List<PointF> points = new List<PointF>();
+        List<byte> types = new List<byte>();
+        int i = 0;
+        while (i < _points.Count)
+        {
+            byte kind = (byte)(_types[i] & (byte)PathPointType.PathTypeMask);
+            if (kind == (byte)PathPointType.Bezier && i + 2 < _points.Count && points.Count > 0)
+            {
+                PointF a = points[points.Count - 1];
+                Subdivide(a, _points[i], _points[i + 1], _points[i + 2], flatness, points, types, 0);
+                types[types.Count - 1] = (byte)(types[types.Count - 1] | (_types[i + 2] & (byte)PathPointType.CloseSubpath));
+                i += 3;
+                continue;
+            }
+            points.Add(_points[i]); types.Add(_types[i]);
+            i++;
+        }
+        _points.Clear(); _types.Clear();
+        _points.AddRange(points); _types.AddRange(types);
+    }
+
+    static void Subdivide(PointF a, PointF b, PointF c, PointF d, float flatness, List<PointF> points, List<byte> types, int depth)
+    {
+        float dx = d.X - a.X, dy = d.Y - a.Y;
+        float length = (float)Math.Sqrt(dx * dx + dy * dy);
+        float e1, e2;
+        if (length < 1e-6f) { e1 = Distance(a, b); e2 = Distance(a, c); }
+        else { e1 = Magnitude((b.X - a.X) * dy - (b.Y - a.Y) * dx) / length; e2 = Magnitude((c.X - a.X) * dy - (c.Y - a.Y) * dx) / length; }
+        if (depth >= 16 || (e1 > e2 ? e1 : e2) <= flatness) { points.Add(d); types.Add((byte)PathPointType.Line); return; }
+        PointF ab = Mid(a, b), bc = Mid(b, c), cd = Mid(c, d), abc = Mid(ab, bc), bcd = Mid(bc, cd), m = Mid(abc, bcd);
+        Subdivide(a, ab, abc, m, flatness, points, types, depth + 1);
+        Subdivide(m, bcd, cd, d, flatness, points, types, depth + 1);
+    }
+
+    static float Magnitude(float v) { return v < 0 ? -v : v; }
+
+    static PointF Mid(PointF a, PointF b) { return new PointF((a.X + b.X) / 2, (a.Y + b.Y) / 2); }
+    static float Distance(PointF a, PointF b) { float x = a.X - b.X, y = a.Y - b.Y; return (float)Math.Sqrt(x * x + y * y); }
+
+    /// Whether a point is inside the path by its fill mode, every figure
+    /// closed and Beziers flattened as they are for filling.
+    public bool IsVisible(float x, float y)
+    {
+        GraphicsPath flat = Clone();
+        flat.Flatten();
+        int winding = 0, crossings = 0;
+        int begin = 0;
+        int n = flat._points.Count;
+        while (begin < n)
+        {
+            int end = begin + 1;
+            while (end < n && (flat._types[end] & (byte)PathPointType.PathTypeMask) != (byte)PathPointType.Start) end++;
+            for (int i = begin; i < end; i++)
+            {
+                PointF a = flat._points[i], b = flat._points[i + 1 < end ? i + 1 : begin];
+                if ((a.Y <= y) != (b.Y <= y))
+                {
+                    float at = a.X + (y - a.Y) * (b.X - a.X) / (b.Y - a.Y);
+                    if (at > x) { crossings++; winding += b.Y > a.Y ? 1 : -1; }
+                }
+            }
+            begin = end;
+        }
+        return FillMode == FillMode.Winding ? winding != 0 : (crossings & 1) != 0;
+    }
+    public bool IsVisible(PointF p) { return IsVisible(p.X, p.Y); }
+    public bool IsVisible(Point p) { return IsVisible((float)p.X, (float)p.Y); }
+    public bool IsVisible(int x, int y) { return IsVisible((float)x, (float)y); }
+    public bool IsVisible(float x, float y, Graphics? g) { return IsVisible(x, y); }
+
+    /// The seat's words for the points: x and y 28.4 through `world` when
+    /// there is one, and the type, three words a point.
+    internal int[] Encode(Matrix? world, out int count)
+    {
+        count = _points.Count;
+        int[] words = new int[count * 3];
+        for (int i = 0; i < count; i++)
+        {
+            float x = _points[i].X, y = _points[i].Y;
+            if (world != null) { float tx = world.TransformX(x, y); y = world.TransformY(x, y); x = tx; }
+            words[i * 3] = Matrix.Fixed(x, 16);
+            words[i * 3 + 1] = Matrix.Fixed(y, 16);
+            words[i * 3 + 2] = _types[i];
+        }
+        return words;
+    }
+
+    internal static PointF[] Floats(Point[] points)
+    {
+        PointF[] made = new PointF[points.Length];
+        for (int i = 0; i < points.Length; i++) made[i] = new PointF(points[i].X, points[i].Y);
+        return made;
+    }
+
+    public void Dispose() { }
+}
+
+}

@@ -1,0 +1,232 @@
+// test: drawing2d
+// sources: tests/language/support/truetype_fixture.cor
+// expect-exit: 0
+// expect-output:
+// matrix: 0 1 -1 0 10 20
+// rotate then move: 10 21
+// inverted back: 1 0
+// scale then move: 7 8
+// reset: True
+// rectangle types: 0 1 1 129
+// rectangle bounds: 0 0 10 5
+// inside True outside False
+// joined lines: 3 points, types 0 1 1
+// ellipse: 13 points
+// arc: 4 points from 10 5 to 5 10
+// flattened: no Beziers True, closed True
+// reversed: 10 10, 10 0, 0 0 types 0 1 1
+// region: 1,1 True 3,3 False 22,2 True
+// region bounds: 0 0 25 10
+// nested: 8,5 True 6,5 False
+// infinite: True
+// clip 3 4 100 100
+// clip 3 4 100 100
+// g3 14 65536 0 0 65536 0 0 18 0 6 1 0
+// g1 14 65536 0 0 65536 48 64
+// g2 15 0
+// fill 4 5 2 2
+// --
+// clip 3 4 100 100
+// g3 14 65536 0 0 65536 0 0 18 0 6 1 0
+// g1 14 0 65536 -65536 0 48 64
+// g2 15 0
+// g0 16 -16777216 1 4 0 0 0 160 0 1 160 160 1 0 160 129
+// --
+// clip 3 4 100 100
+// g3 14 65536 0 0 65536 0 0 18 0 6 1 0
+// g1 14 65536 0 0 65536 48 64
+// g2 15 0
+// g0 17 -16777216 32 8704 1092616192 2 2 0 96 32 0 0 0 160 0 1
+// --
+// clip 3 4 100 100
+// g3 14 65536 0 0 65536 0 0 18 0 0 1 0 18 0 2 1 4 48 64 0 128 64 1 128 144 1 48 144 129
+// g1 14 65536 0 0 65536 48 64
+// g2 15 1
+// g0 16 -16777216 1 4 0 0 0 16 0 1 16 16 1 0 16 129
+// --
+// fill region builds its nested part in slot 2: True
+// clip back in world: 0 0 5 5
+// restored: True
+// outline points: True letters 2 first Start True
+//
+// System.Drawing.Drawing2D on Linux, with no seat: Matrix's arithmetic and
+// its prepend and append orders; GraphicsPath's figures, types, arcs,
+// flattening and reversal; Region's steps, nested regions and bounds; and
+// Graphics's transform, smoothing, clip region and paths as the words of
+// the seat's batch (GUI-KERNEL.md's ops 14 to 20), written down by a target
+// that implements IPathTarget as Corsac.GUI.Seat does. The outlines are the
+// fixture face's (support/truetype_fixture.cor).
+
+using System;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Collections.Generic;
+
+class Recorder : IDrawingTarget, IPathTarget
+{
+    public List<string> Said = new List<string>();
+    object? _owner;
+
+    public int Colours { get { return 65536; } }
+    public void Fill(int x, int y, int w, int h, Color colour) { Said.Add("fill " + x + " " + y + " " + w + " " + h); }
+    public void Copy(int sx, int sy, int dx, int dy, int w, int h) { }
+    public void Line(int x0, int y0, int x1, int y1, Color colour) { Said.Add("line " + x0 + " " + y0 + " " + x1 + " " + y1); }
+    public void Glyph(int id, int x, int y, Color foreground, Color background, bool transparent) { }
+    public void Blit(int id, int sx, int sy, int x, int y, int w, int h) { }
+    public void Clip(int x, int y, int w, int h) { Said.Add("clip " + x + " " + y + " " + w + " " + h); }
+
+    public object? StateOwner { get { return _owner; } set { _owner = value; } }
+
+    public void Geometry(int[] words, int count, int kind)
+    {
+        string s = "g" + kind;
+        for (int i = 0; i < count; i++) s = s + " " + words[i];
+        Said.Add(s);
+    }
+
+    public void Dump()
+    {
+        for (int i = 0; i < Said.Count; i++) Console.WriteLine(Said[i]);
+        Said.Clear();
+    }
+}
+
+class Program
+{
+    static void Line(string s) { Console.WriteLine(s); }
+
+    static string Types(GraphicsPath p)
+    {
+        byte[] t = p.PathTypes;
+        string s = "";
+        for (int i = 0; i < t.Length; i++) s = s + (i > 0 ? " " : "") + t[i];
+        return s;
+    }
+
+    static string Bounds(RectangleF r) { return (int)r.X + " " + (int)r.Y + " " + (int)r.Width + " " + (int)r.Height; }
+
+    static int Main()
+    {
+        // --- Matrix ---------------------------------------------------------
+
+        Matrix m = new Matrix();
+        m.Translate(10, 20);
+        m.Rotate(90);
+        float[] e = m.Elements;
+        Line("matrix: " + (int)e[0] + " " + (int)e[1] + " " + (int)e[2] + " " + (int)e[3] + " " + (int)e[4] + " " + (int)e[5]);
+        PointF[] one = new PointF[] { new PointF(1, 0) };
+        m.TransformPoints(one);
+        Line("rotate then move: " + (int)Math.Round(one[0].X) + " " + (int)Math.Round(one[0].Y));
+        m.Invert();
+        m.TransformPoints(one);
+        Line("inverted back: " + (int)Math.Round(one[0].X) + " " + (int)Math.Round(one[0].Y));
+        Matrix m2 = new Matrix();
+        m2.Scale(2, 3);
+        m2.Translate(5, 5, MatrixOrder.Append);
+        PointF[] two = new PointF[] { new PointF(1, 1) };
+        m2.TransformPoints(two);
+        Line("scale then move: " + (int)two[0].X + " " + (int)two[0].Y);
+        m2.Reset();
+        Line("reset: " + m2.IsIdentity);
+
+        // --- GraphicsPath -----------------------------------------------------
+
+        GraphicsPath p = new GraphicsPath();
+        p.AddRectangle(new Rectangle(0, 0, 10, 5));
+        Line("rectangle types: " + Types(p));
+        Line("rectangle bounds: " + Bounds(p.GetBounds()));
+        Line("inside " + p.IsVisible(5, 2) + " outside " + p.IsVisible(11, 2));
+
+        GraphicsPath q = new GraphicsPath();
+        q.AddLine(0, 0, 10, 0);
+        q.AddLine(10, 0, 10, 10);
+        Line("joined lines: " + q.PointCount + " points, types " + Types(q));
+
+        GraphicsPath ellipse = new GraphicsPath();
+        ellipse.AddEllipse(0, 0, 10, 10);
+        Line("ellipse: " + ellipse.PointCount + " points");
+
+        GraphicsPath arc = new GraphicsPath();
+        arc.AddArc(0, 0, 10, 10, 0, 90);
+        PointF[] ap = arc.PathPoints;
+        Line("arc: " + ap.Length + " points from " + (int)Math.Round(ap[0].X) + " " + (int)Math.Round(ap[0].Y)
+             + " to " + (int)Math.Round(ap[ap.Length - 1].X) + " " + (int)Math.Round(ap[ap.Length - 1].Y));
+
+        ellipse.Flatten();
+        byte[] ft = ellipse.PathTypes;
+        bool noBeziers = true;
+        for (int i = 0; i < ft.Length; i++) if ((ft[i] & 7) == 3) noBeziers = false;
+        Line("flattened: no Beziers " + noBeziers + ", closed " + ((ft[ft.Length - 1] & 0x80) != 0));
+
+        q.Reverse();
+        PointF[] rp = q.PathPoints;
+        Line("reversed: " + (int)rp[0].X + " " + (int)rp[0].Y + ", " + (int)rp[1].X + " " + (int)rp[1].Y + ", " + (int)rp[2].X + " " + (int)rp[2].Y + " types " + Types(q));
+
+        // --- Region -----------------------------------------------------------
+
+        Region r = new Region(new Rectangle(0, 0, 10, 10));
+        r.Exclude(new Rectangle(2, 2, 4, 4));
+        bool a11 = r.IsVisible(1, 1), a33 = r.IsVisible(3, 3);
+        r.Union(new Rectangle(20, 0, 5, 5));
+        Line("region: 1,1 " + a11 + " 3,3 " + a33 + " 22,2 " + r.IsVisible(22, 2));
+        Line("region bounds: " + Bounds(r.GetBounds(null)));
+
+        Region a = new Region(new Rectangle(0, 0, 10, 10));
+        Region b = new Region(new Rectangle(5, 0, 10, 10));
+        b.Exclude(new Rectangle(5, 0, 2, 10));
+        a.Intersect(b);
+        Line("nested: 8,5 " + a.IsVisible(8, 5) + " 6,5 " + a.IsVisible(6, 5));
+
+        // --- Graphics as the seat's words -------------------------------------
+
+        Recorder t = new Recorder();
+        Graphics g = new Graphics(t, 3, 4, new Rectangle(3, 4, 100, 100));
+        Line("infinite: " + new Region().IsInfinite(g));
+
+        g.FillRectangle(Brushes.Black, 1, 1, 2, 2);
+        t.Dump();
+        Line("--");
+
+        g.RotateTransform(90);
+        g.FillRectangle(Brushes.Black, 0, 0, 10, 10);
+        t.Dump();
+        Line("--");
+
+        g.ResetTransform();
+        Pen dashed = new Pen(Color.Black, 2);
+        dashed.DashStyle = DashStyle.Dash;
+        g.DrawLine(dashed, 0, 0, 10, 0);
+        t.Dump();
+        Line("--");
+
+        g.SetClip(new Rectangle(0, 0, 5, 5));
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.FillRectangle(Brushes.Black, 0, 0, 1, 1);
+        t.Dump();
+        Line("--");
+
+        g.FillRegion(Brushes.Black, a);
+        string last = t.Said[t.Said.Count - 1];
+        Line("fill region builds its nested part in slot 2: " + last.EndsWith(" 20 1 1 2 19 -16777216"));
+        t.Said.Clear();
+
+        Line("clip back in world: " + Bounds(g.Clip.GetBounds(g)));
+
+        GraphicsState saved = g.Save();
+        g.RotateTransform(30);
+        g.Restore(saved);
+        Line("restored: " + g.Transform.IsIdentity);
+
+        // --- text as outlines -------------------------------------------------
+
+        PrivateFontCollection fonts = new PrivateFontCollection();
+        fonts.AddMemoryFont(CorsacTests.TrueTypeFixture.Bytes());
+        GraphicsPath text = new GraphicsPath();
+        text.AddString("HI", fonts.Families[0], 0, 20, new PointF(0, 0), null);
+        byte[] tt = text.PathTypes;
+        int letters = 0;
+        for (int i = 0; i < tt.Length; i++) if ((tt[i] & 7) == 0 && (i == 0 || (tt[i - 1] & 0x80) != 0)) letters++;
+        Line("outline points: " + (text.PointCount > 0) + " letters " + (letters >= 2 ? 2 : letters) + " first Start " + (tt.Length > 0 && tt[0] == 0));
+        return 0;
+    }
+}

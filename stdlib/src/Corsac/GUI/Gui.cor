@@ -188,7 +188,7 @@ enum SeatIoctl : long
     KeyboardHandle = 0x47550110,
 }
 
-public class Seat : IDrawingTarget, IFontStore, ISystemTheme
+public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
 {
     // The font store's door for System.Drawing, which cannot name the seat
     // (it is the library below this one): set when this class is first
@@ -526,6 +526,7 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme
         _used = 0;              // whatever was half-built described the old screen
         _named = false;
         _clipOn = false;
+        ForgetGeometry();
     }
 
     /// <summary>
@@ -1333,10 +1334,36 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme
     /// Room for one whole op. AN OP IS NEVER SPLIT ACROSS TWO WRITES: the
     /// seat reads each write on its own, and the tail of an op at the head
     /// of the next write is parsed as opcodes, which throws the rest away.
+    bool _renewing;                  // Renew is writing: a Room inside it grows the buffer, never flushes
+
     void Room(int words)
     {
-        if (_used + words * 4 > _batch.Length) { Flush(); Renew(); }
+        if (_used + words * 4 <= _batch.Length) return;
+        if (!_renewing)
+        {
+            Flush();
+            _renewing = true;
+            try { Renew(); }
+            finally { _renewing = false; }
+        }
+        // AN OP LARGER THAN THE BUFFER -- a long path -- goes in one write
+        // all the same, the seat reading its points out of the batch that
+        // carries it: the buffer grows to hold it, up to what the seat
+        // takes in one write.
+        if (_used + words * 4 > _batch.Length)
+        {
+            int size = _batch.Length;
+            while (size < _used + words * 4) size *= 2;
+            if (size > BatchMost) size = BatchMost;
+            if (_used + words * 4 > size) throw new InvalidOperationException("a drawing operation larger than the seat takes in one write");
+            byte[] bigger = new byte[size];
+            for (int i = 0; i < _used; i++) bigger[i] = _batch[i];
+            _batch = bigger;
+        }
     }
+
+    /// The most the seat takes in one write (seat.cor's BatchMax).
+    const int BatchMost = 0x100000;
 
     static void Put(byte[] into, int at, int v)
     {
@@ -1383,6 +1410,12 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme
     {
         if (_window != 0) { _named = true; Word(12); Word(_window); }
         if (_clipOn) { Word(6); Word(_clipX); Word(_clipY); Word(_clipW); Word(_clipH); }
+        // The engine's state as the Graphics drawing set it: the clip
+        // region's ops (under the identity), then the transform and the
+        // mode (IPathTarget).
+        if (_clipRegionOps != null) Words(_clipRegionOps);
+        if (_transformOp != null) Words(_transformOp);
+        if (_modeOp != null) Words(_modeOp);
     }
 
     public void Target(int window)
@@ -1391,7 +1424,47 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme
         _window = window;
         _named = true;
         _clipOn = false;
+        ForgetGeometry();
         Room(2); Word(12); Word(window);
+    }
+
+    // --- the engine's geometry (System.Drawing's IPathTarget) ----------------
+    //
+    // A Graphics's transform, modes and clip region, and its paths and
+    // regions, as the seat's ops 14 to 20 (GUI-KERNEL.md): words made by
+    // System.Drawing, appended here as one, and the state kept to say again
+    // when a batch is renewed in the middle of drawing, as the window and
+    // the clip are.
+
+    object? _stateOwner;
+    int[]? _transformOp, _modeOp, _clipRegionOps;
+
+    public object? StateOwner { get { return _stateOwner; } set { _stateOwner = value; } }
+
+    public void Geometry(int[] words, int count, int kind)
+    {
+        Room(count);
+        for (int i = 0; i < count; i++) Word(words[i]);
+        if (kind == 0) return;
+        int[] kept = new int[count];
+        for (int i = 0; i < count; i++) kept[i] = words[i];
+        if (kind == 1) _transformOp = kept;
+        else if (kind == 2) _modeOp = kept;
+        else if (kind == 3) _clipRegionOps = kept;
+    }
+
+    /// The seat forgets its state when a batch names a window: so does
+    /// this, and so the next Graphics to draw says all of its own.
+    void ForgetGeometry()
+    {
+        _transformOp = null; _modeOp = null; _clipRegionOps = null;
+        _stateOwner = null;
+    }
+
+    void Words(int[] words)
+    {
+        Room(words.Length);
+        for (int i = 0; i < words.Length; i++) Word(words[i]);
     }
 
     public void Fill(int x, int y, int w, int h, Color colour) { Room(6); Word(1); Word(x); Word(y); Word(w); Word(h); Word(Rgb(colour)); }
@@ -1619,7 +1692,7 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme
     }
     public void DestroyWindow(int handle)
     {
-        Flush(); Select(handle); Ioctl(SeatIoctl.Destroy, 0); _window = 0; _named = false;
+        Flush(); Select(handle); Ioctl(SeatIoctl.Destroy, 0); _window = 0; _named = false; ForgetGeometry();
         lock (_keep) { Kept? k = Find(handle); if (k != null) _kept.Remove(k); }
     }
     public void FocusWindow(int handle) { Flush(); Select(handle); Ioctl(SeatIoctl.Focus, 0); }

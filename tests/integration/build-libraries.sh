@@ -90,7 +90,7 @@ libMono.Posix.so|stdlib/src/System/unix.cor stdlib/src/System/power.cor
 libSystem.Diagnostics.Process.so|stdlib/src/System/process.cor
 libSystem.Xml.so|stdlib/src/System/Xml/Xml.cor
 libMicrosoft.Win32.Registry.so|stdlib/src/Microsoft/Win32/Registry.cor
-libSystem.Windows.Forms.so|stdlib/src/System/Drawing/Drawing.cor stdlib/src/System/Drawing/FontEngine.cor stdlib/src/System/Drawing/TrueType.cor stdlib/src/System/Drawing/BitmapFont.cor stdlib/src/System/Drawing/Text.cor stdlib/src/System/Drawing/Imaging.cor stdlib/src/Corsac/GUI/Gui.cor stdlib/src/System/Windows/Forms/Forms.cor stdlib/src/Microsoft/Win32/SystemEvents.cor
+libSystem.Windows.Forms.so|stdlib/src/System/Drawing/Drawing.cor stdlib/src/System/Drawing/Drawing2D.cor stdlib/src/System/Drawing/FontEngine.cor stdlib/src/System/Drawing/TrueType.cor stdlib/src/System/Drawing/BitmapFont.cor stdlib/src/System/Drawing/Text.cor stdlib/src/System/Drawing/Imaging.cor stdlib/src/Corsac/GUI/Gui.cor stdlib/src/System/Windows/Forms/Forms.cor stdlib/src/Microsoft/Win32/SystemEvents.cor
 "
 
 owned_all=" $(printf '%s\n' "$LIBRARIES" | cut -s -d'|' -f2 | tr '\n' ' ') "
