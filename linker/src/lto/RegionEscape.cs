@@ -58,6 +58,9 @@ internal sealed class RegionEscape
     // The most cells a summary keeps: past it, every place below a
     // parameter is its deep place and every object made is one.
     private const int MostCells = 128;
+    // The fields of each parameter the shape past even the coarse one keeps
+    // apart (Summary.Everything), each with all below it.
+    private const int MostFieldsKept = 4;
     // A member of a cycle's parameters are numbered past every member before
     // it: its place in the cycle times this, plus the parameter.
     private const int ParamStride = 1 << 12;
@@ -676,6 +679,22 @@ internal sealed class RegionEscape
         kept.Add(path[g]);
         for (int i = g + 1; i < path.Length; i++) if (!IsGuard(path[i])) { kept.Add(DeepStep); break; }
         return kept.ToArray();
+    }
+
+    /// <summary>
+    /// A PLACE MADE COARSE BY ITS FIRST FIELD (Summary.Coarse): a field of
+    /// its parameter the place that field is, and everything below that
+    /// field one deep place of the field's own -- so a leak through p.f no
+    /// longer covers p.g. A path through any offset first, or no field, is
+    /// everything below the parameter, and a guarded one Coarsened's.
+    /// Each covers what it was: a place below p.f is below p.f.
+    /// </summary>
+    private static int[] CoarsenedByField(int[] path)
+    {
+        if (path.Length == 0 || Array.FindIndex(path, IsGuard) >= 0) return Coarsened(path);
+        int first = path[0];
+        if (first < 0) return DeepBelow;                    // any offset, or the deep step itself
+        return path.Length == 1 ? path : [first, DeepStep];
     }
 
     /// <summary>
@@ -1962,8 +1981,11 @@ internal sealed class RegionEscape
 
         /// <summary>
         /// THE COARSEST SUMMARY BUT THE UNKNOWN CALL'S: each parameter's own
-        /// object, everything below it one deep place, everything made one
-        /// object, every cell at any offset.
+        /// object, each field of it its own object and all below that field
+        /// one deep place (CoarsenedByField), everything made one object --
+        /// two, what the unknown object reaches apart -- every cell at any
+        /// offset. (Everything below a parameter one deep place, a leak
+        /// through one field of it let every field go.)
         /// </summary>
         public Summary Coarse()
         {
@@ -1989,7 +2011,7 @@ internal sealed class RegionEscape
             int KeepPlace(int param, int[] path)
             {
                 if (param < 0) return Keep(Kind.Deep, param, DeepBelow, Array.Empty<int>());
-                int[] coarse = Coarsened(path);
+                int[] coarse = CoarsenedByField(path);
                 return Keep(KindOf(coarse), param, coarse, Array.Empty<int>());
             }
             // EVERYTHING MADE TWO OBJECTS, not one: what the unknown object
@@ -2028,7 +2050,8 @@ internal sealed class RegionEscape
         }
 
         /// <summary>
-        /// THE SHAPE PAST EVEN THE COARSE ONE: each parameter's own object and
+        /// THE SHAPE PAST EVEN THE COARSE ONE: each parameter's own object,
+        /// its first few fields each with a deep place below (MostFieldsKept),
         /// one deep place below it, the deep place past every parameter, what
         /// was made in two -- what the unknown object reaches, and the rest
         /// -- a constant, and the unknown object: what a coarse summary dense
@@ -2085,6 +2108,27 @@ internal sealed class RegionEscape
                 e.Objects.Add((Kind.Deep, key, DeepBelow, Array.Empty<int>()));
                 return deepOf[key] = at;
             }
+            // AND THE FIRST FEW FIELDS OF EACH PARAMETER APART, each its own
+            // object and one deep place below it (CoarsenedByField), as many
+            // as MostFieldsKept a parameter, the first the summary names: a
+            // leak through one of them is not every field's. The rest, and
+            // what a guard or any offset leads to, are the parameter's deep
+            // place, which covers them all.
+            Dictionary<int, List<int>> firsts = new();
+            foreach (var o in Objects)
+            {
+                if (o.Kind is not (Kind.Place or Kind.Deep) || o.Param < 0 || o.Path.Length == 0 || o.Path[0] < 0 || o.Path.Any(IsGuard)) continue;
+                if (!firsts.TryGetValue(o.Param, out List<int>? kept)) firsts[o.Param] = kept = new();
+                if (!kept.Contains(o.Path[0]) && kept.Count < MostFieldsKept) kept.Add(o.Path[0]);
+            }
+            Dictionary<(int, int, bool), int> fieldOf = new();
+            int FieldOf(int param, int field, bool below)
+            {
+                if (fieldOf.TryGetValue((param, field, below), out int at)) return at;
+                at = e.Objects.Count;
+                e.Objects.Add(below ? (Kind.Deep, param, new[] { field, DeepStep }, Array.Empty<int>()) : (Kind.Place, param, new[] { field }, Array.Empty<int>()));
+                return fieldOf[(param, field, below)] = at;
+            }
             int Merged(int k)
             {
                 var o = Objects[k];
@@ -2092,7 +2136,10 @@ internal sealed class RegionEscape
                 if (o.Kind == Kind.Made) return o.Param == ConstantParam ? constant : leaked.Contains(k) ? held : free;
                 if (o.Param < 0) return PlaceOf(-1);
                 // (A place guarded at its parameter is still that object.)
-                return o.Kind == Kind.Place && Fields(o.Path) == 0 && Array.IndexOf(o.Path, DeepStep) < 0 ? PlaceOf(o.Param) : DeepOf(o.Param);
+                if (o.Kind == Kind.Place && Fields(o.Path) == 0 && Array.IndexOf(o.Path, DeepStep) < 0) return PlaceOf(o.Param);
+                if (o.Path.Length > 0 && o.Path[0] >= 0 && !o.Path.Any(IsGuard) && firsts.TryGetValue(o.Param, out List<int>? fields) && fields.Contains(o.Path[0]))
+                    return FieldOf(o.Param, o.Path[0], o.Path.Length > 1);
+                return DeepOf(o.Param);
             }
             foreach (var c in Cells)
             {

@@ -78,7 +78,8 @@ public static class RegionSolver
     public static RegionFacts?[]? Solve(IReadOnlyList<RegionHints> units, Dictionary<string, string[]> virtuals,
         Func<string, long, string?> methodAt, string entry, IReadOnlySet<string> foreign, string? report, Func<int, string, bool>? live = null,
         Func<string, long, long?, bool>? noReference = null, bool loops = false, Func<string, string, bool?>? isA = null,
-        Func<string, IReadOnlyCollection<long>?>? slotsOf = null)
+        Func<string, IReadOnlyCollection<long>?>? slotsOf = null,
+        (Func<string, string, bool?> MayBeThis, Func<string, bool?> MadeOutside)? receivers = null)
     {
         // CONTEXTS AS FAR AS THE BUDGET GOES: two objects deep, then one, then none
         // at all -- every function one copy, coarser but far smaller.
@@ -91,7 +92,7 @@ public static class RegionSolver
         // still the deepest that fits; the coarse one is kept, not made again.
         if (!Switches.AndersenRegions)
         {
-            Solver graphs = new(units, virtuals, methodAt, entry, foreign, report, live, 0, noReference) { LoopRegions = loops, Graphs = true, IsA = isA, SlotsOf = slotsOf };
+            Solver graphs = new(units, virtuals, methodAt, entry, foreign, report, live, 0, noReference) { LoopRegions = loops, Graphs = true, IsA = isA, SlotsOf = slotsOf, Receivers = receivers };
             if (graphs.Run() is { } found) return found;
             Console.Error.WriteLine("regions: nothing made a region");
             return null;
@@ -597,6 +598,23 @@ public static class RegionSolver
             for (int u = 0; u < _units.Count; u++)
                 foreach (string name in Addressed(u))
                     if (Resolve(u, name) is { } those) foreach (int f in those) rooted[f] = true;
+            // A ROOT CALLED ONLY BLIND, AS A METHOD A DESCRIPTOR HOLDS: its
+            // `this` an object of a type that holds it, for RegionTypes. Not
+            // the entry, nor what code outside the IR names, nor a function
+            // whose address the program takes as a value: those may be
+            // handed anything.
+            bool[] typedThis = new bool[count];
+            if (Receivers is { } receivers)
+            {
+                for (int f = 0; f < count; f++)
+                    typedThis[f] = rooted[f] && _functions[f].Instance && _functions[f].Parameters > 0
+                        && receivers.MadeOutside(_functions[f].Name) is not null;
+                for (int f = 0; f < count; f++)
+                    if (_functions[f].Name == _entry || _foreign.Contains(_functions[f].Name)) typedThis[f] = false;
+                for (int u = 0; u < _units.Count; u++)
+                    foreach (string name in _units[u].AddressTaken)
+                        if (Resolve(u, name) is { } those) foreach (int f in those) typedThis[f] = false;
+            }
             // ONLY WHAT EACH RECEIVER'S TYPES RUN (RegionTypes): a virtual
             // call's targets narrowed before the graphs and the judge's
             // callers are built from them (+typesoff: every override).
@@ -604,7 +622,12 @@ public static class RegionSolver
             int[]?[][] unpruned = targets.Select(calls => (int[]?[])calls.Clone()).ToArray();
             if (_report?.Contains("+typesoff") != true)
             {
-                RegionTypes types = new(_functions, targets, keys, rooted, (f, k, table, at) => RunsOn(f, k, targets[f][k]!, table, at));
+                RegionTypes types = new(_functions, targets, keys, rooted, (f, k, table, at) => RunsOn(f, k, targets[f][k]!, table, at))
+                {
+                    TypedThis = typedThis,
+                    Receives = Receivers is { } held ? (f, table, at) => held.MayBeThis(_functions[f].Name, table) != false : null,
+                    ThisMadeOutside = Receivers is { } stamped ? f => stamped.MadeOutside(_functions[f].Name) != false : null,
+                };
                 bool pruned = types.Prune();
                 Log(pruned
                     ? $"receiver types: {types.Objects} objects; {types.Narrowed} of {types.Calls} virtual calls narrowed, {types.Unknown} left every target, targets {types.Before} -> {types.After}, {_clock.ElapsedMilliseconds} ms"
@@ -752,6 +775,9 @@ public static class RegionSolver
             }
             return _methodsBlind!.Value ? _units[u].AddressTaken.Concat(_units[u].MethodsTaken.Where(CalledBlind)) : _units[u].AddressTaken;
         }
+
+        /// <summary>What a method a descriptor holds may run on, and whether an object of its type is made outside the IR (VirtualTargets.Receivers); null: a root's `this` may be anything.</summary>
+        public (Func<string, string, bool?> MayBeThis, Func<string, bool?> MadeOutside)? Receivers { get; init; }
 
         /// <summary>Where each method is held in a method table (VirtualTargets.SlotsOf); null: every method may be called blind.</summary>
         public Func<string, IReadOnlyCollection<long>?>? SlotsOf { get; init; }

@@ -93,7 +93,7 @@ public sealed class RegionTypes
     private readonly List<List<int>?> _cellsOf = new();
     private readonly List<HashSet<int>?> _allReaders = new();
     private readonly Dictionary<(string, long), int> _typed = new();
-    private readonly int[] _untyped;
+    private readonly int[] _untyped, _untypedSites;
     private readonly HashSet<int> _escaped = new();
 
     // Virtual calls: function, call, whether every target is bound, and those bound.
@@ -110,6 +110,27 @@ public sealed class RegionTypes
     public int Calls, Narrowed, Before, After, Unknown, Objects;
     /// <summary>Whether it gave up for its budget.</summary>
     public bool GaveUp;
+
+    /// <summary>
+    /// ROOTS CALLED ONLY BLIND, AS A METHOD A DESCRIPTOR HOLDS (RegionSolver):
+    /// their `this` is not the unknown object but every object of a type
+    /// that may run them (Receives: the type holds the method at a slot, or
+    /// derives from one that does), every object of no known type an
+    /// allocation made (a site whose stamp the hints could not say), and
+    /// the unknown object only where an object of such a type
+    /// is made where no site is (ThisMadeOutside: stamped in data, or by
+    /// code with no IR). A method read out of a descriptor is called on an
+    /// object of that descriptor's type, as every virtual call is; a static
+    /// method is in no slot, and a call on a base's method by name is a
+    /// call the solve follows. Its other parameters are the unknown object
+    /// still.
+    /// </summary>
+    public bool[]? TypedThis { get; init; }
+    public Func<int, string, long, bool>? Receives { get; init; }
+    public Func<int, bool>? ThisMadeOutside { get; init; }
+
+    // The objects of no known type made by an allocation (not a frame slot, nor a leaf).
+    private readonly HashSet<int> _untypedMade = new();
 
     /// <summary>
     /// The pass over <paramref name="functions"/>, whose calls' targets are
@@ -132,6 +153,8 @@ public sealed class RegionTypes
         NewObject(null, 0);         // a constant
         _untyped = new int[functions.Count];
         Array.Fill(_untyped, -1);
+        _untypedSites = new int[functions.Count];
+        Array.Fill(_untypedSites, -1);
     }
 
     private int NewNode()
@@ -153,6 +176,14 @@ public sealed class RegionTypes
 
     private int Typed(string table, long at) => _typed.TryGetValue((table, at), out int o) ? o : _typed[(table, at)] = NewObject(table, at);
     private int Untyped(int f) => _untyped[f] >= 0 ? _untyped[f] : _untyped[f] = NewObject(null, 0);
+    // An allocation of no known stamp: of its function's own, apart from its frame slots.
+    private int UntypedMade(int f)
+    {
+        if (_untypedSites[f] >= 0) return _untypedSites[f];
+        int o = _untypedSites[f] = NewObject(null, 0);
+        _untypedMade.Add(o);
+        return o;
+    }
 
     private static int Plain(long offset) => offset < 0 || offset > FarthestField ? AnyOffset : (int)offset;
 
@@ -319,6 +350,7 @@ public sealed class RegionTypes
 
     private void Solve()
     {
+        List<int> typedRoots = new();
         for (int f = 0; f < _functions.Count; f++)
         {
             RegionFunction function = _functions[f];
@@ -330,7 +362,7 @@ public sealed class RegionTypes
                 {
                     case RegionConstraintKind.Site:
                         RegionSite site = c.B >= 0 && c.B < function.Sites.Length ? function.Sites[c.B] : default;
-                        Add(a, (site.Table is { } table ? Typed(table, site.At) : Untyped(f)) << 1);
+                        Add(a, (site.Table is { } table ? Typed(table, site.At) : site.Words == RegionWords.Leaf ? Untyped(f) : UntypedMade(f)) << 1);
                         break;
                     case RegionConstraintKind.Slot: Add(a, Untyped(f) << 1); break;
                     case RegionConstraintKind.Unknown: Add(a, Top); break;
@@ -357,7 +389,9 @@ public sealed class RegionTypes
             }
             if (_rooted[f])
             {
-                for (int p = 0; p < function.Parameters && p < function.Nodes; p++) Add(Node(f, p), Top);
+                bool typed = TypedThis?[f] == true && Receives is not null && function.Instance && function.Parameters > 0;
+                for (int p = typed ? 1 : 0; p < function.Parameters && p < function.Nodes; p++) Add(Node(f, p), Top);
+                if (typed) typedRoots.Add(f);
                 if (function.Parameters < function.Nodes) Edge(Node(f, function.Parameters), _sink);
             }
             for (int k = 0; k < function.Calls.Count; k++)
@@ -372,6 +406,17 @@ public sealed class RegionTypes
                 (UsesOf(receiver).Receives ??= new()).Add(c);
                 if (_pts[receiver] is { } held) foreach (int o in held.ToArray()) Received(c, o);
             }
+        }
+        // Every object exists now (a site's or a slot's constraint makes it):
+        // each root called blind is handed those it may run on.
+        foreach (int f in typedRoots)
+        {
+            int self = Node(f, 0);
+            for (int o = 2; o < _objects.Count; o++)
+                if (_objects[o].Table is { } table ? Receives!(f, table, _objects[o].At) : _untypedMade.Contains(o)) Add(self, o << 1);
+            // An object of such a type laid down in data -- a constant one
+            // among them -- or made by code with no IR: the unknown object.
+            if (ThisMadeOutside?.Invoke(f) != false) Add(self, Top);
         }
         Settle();
         // A receiver nothing reached runs every target: never fewer for want

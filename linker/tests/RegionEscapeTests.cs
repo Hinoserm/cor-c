@@ -50,6 +50,8 @@ public static class RegionEscapeTests
         ("a method no blind call's slot holds is not called from where nobody follows", BlindSlots),
         ("a visitor's call on this.Left runs only what Left ever holds", VisitorLeft),
         ("a wide call on a place past eight leaky targets keeps them apart together", ManyLeaky),
+        ("a coarse summary keeps each field of a parameter apart", CoarseByField),
+        ("a method called blind runs on objects of its own class", BlindThis),
     };
 
     private static void Check(bool value, string message) { if (!value) throw new Exception(message); }
@@ -1432,5 +1434,77 @@ public static class RegionEscapeTests
         RegionEscape e = p.Solve(targetsOn: (f, k, site) => site == keeper ? new[] { keep } : site == leaker ? new[] { leak } : null);
         Check(!e.Global[keeper], "an object that runs Keep1 is not handed the leaky targets");
         Check(e.Global[leaker], "an object that runs Leak1 is, and goes where nobody follows");
+    }
+
+    /// <summary>
+    /// A SUMMARY PAST EVERY BOUND (Summary.Coarse). Fill writes what it
+    /// makes into 131 fields of its parameter -- 131 cells, past MostCells
+    /// however its made objects and places are merged -- and lets what the
+    /// parameter holds at 8 go where nobody follows. Coarse, everything
+    /// below the parameter was one deep place, and the unknown object held
+    /// all of it: the caller's B, at 4000 of the holder, was global with A,
+    /// at 8. The deep place split by first field, the unknown object holds
+    /// the place at 8 alone: A is global, B is not.
+    /// </summary>
+    private static void CoarseByField()
+    {
+        Prog p = new();
+        RegionFunction fill = p.Add("Fill", 1, 4, sites: 1);
+        fill.Constraints.Add(Site(2, 0));
+        for (int k = 0; k <= 130; k++) fill.Constraints.Add(Store(0, 2, 16 + 8 * k));
+        fill.Constraints.AddRange(new[] { Load(3, 0, 8), Leak(3) });
+        RegionFunction caller = p.Add("Caller", 0, 4, sites: 3);
+        caller.Constraints.AddRange(new[] { Site(1, 0), Site(2, 1), Site(3, 2), Store(1, 2, 8), Store(1, 3, 4000) });
+        caller.Calls.Add(new("Fill", -1, new[] { 1 }));
+        RegionEscape e = p.Solve();
+        var summary = e.SummaryOf(p.Index("Fill"));
+        Check(summary is { Coarse: true } s && s.Objects.Contains("Place 0 [8]"), "Fill's summary is the coarse one, the place at 8 its own");
+        Check(e.Global[p.Site("Caller", 1)], "A, at the field Fill lets go, is global");
+        Check(!e.Global[p.Site("Caller", 2)], "B, at a field Fill only writes beside, is not");
+    }
+
+    /// <summary>
+    /// A METHOD CALLED BLIND (RegionTypes.TypedThis). ItMoveNext is rooted
+    /// -- some call reads it out of a descriptor -- and calls the slot on
+    /// what its `this` holds at 8, and on its other parameter. Main makes an
+    /// It holding an A at 8 and an Other holding a B at 8. Its `this` the
+    /// unknown object, both calls ran RunA and RunB; an object of its own
+    /// class, an It, the call on `this` at 8 runs RunA alone, and the call on
+    /// the other parameter, anything still, both.
+    /// </summary>
+    private static void BlindThis()
+    {
+        foreach (bool typed in new[] { true, false })
+        {
+            const string slot = VirtualTargets.Prefix + "t_Run+0";
+            List<RegionFunction> functions = new();
+            RegionFunction move = new("ItMoveNext", true, true, true, 2, 4, 0, Array.Empty<RegionSite>());
+            move.Constraints.Add(Load(3, 0, 8));
+            move.Calls.Add(new(slot, -1, new[] { 3 }));
+            move.Calls.Add(new(slot, -1, new[] { 1 }));
+            functions.Add(move);
+            functions.Add(new("RunA", true, true, true, 1, 2, 0, Array.Empty<RegionSite>()));
+            functions.Add(new("RunB", true, true, true, 1, 2, 0, Array.Empty<RegionSite>()));
+            RegionFunction main = new("Main", true, true, false, 0, 5, 0, new[]
+            {
+                new RegionSite(true, 1, "t_It", 48), new RegionSite(true, 2, "t_A", 48), new RegionSite(true, 3, "t_Other", 48), new RegionSite(true, 4, "t_B", 48),
+            });
+            main.Constraints.AddRange(new[] { Site(1, 0), Site(2, 1), Site(3, 2), Site(4, 3), Store(1, 2, 8), Store(3, 4, 8) });
+            functions.Add(main);
+            int[]?[][] targets = { new int[]?[] { new[] { 1, 2 }, new[] { 1, 2 } }, Array.Empty<int[]?>(), Array.Empty<int[]?>(), Array.Empty<int[]?>() };
+            string?[][] keys = { new string?[] { slot, slot }, Array.Empty<string?>(), Array.Empty<string?>(), Array.Empty<string?>() };
+            bool[] rooted = { true, false, false, true };
+            RegionTypes types = new(functions, targets, keys, rooted,
+                (f, k, table, at) => table == "t_A" ? new[] { 1 } : table == "t_B" ? new[] { 2 } : Array.Empty<int>())
+            {
+                TypedThis = typed ? new[] { true, false, false, false } : null,
+                Receives = (f, table, at) => table == "t_It",
+                ThisMadeOutside = f => false,
+            };
+            Check(types.Prune(), "the receiver types solve within their budget");
+            Check(targets[0][0]!.SequenceEqual(typed ? new[] { 1 } : new[] { 1, 2 }),
+                typed ? "on what an It holds at 8, RunA alone" : "its `this` the unknown object, both");
+            Check(targets[0][1]!.SequenceEqual(new[] { 1, 2 }), "on its other parameter, anything, both");
+        }
     }
 }

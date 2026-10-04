@@ -198,6 +198,24 @@ public static class VirtualTargets
         return method => slots.TryGetValue(method, out HashSet<long>? found) ? found : null;
     }
 
+    /// <summary>
+    /// WHAT A METHOD A DESCRIPTOR HOLDS MAY RUN ON (RegionTypes, a method
+    /// called blind): whether an object stamped with a descriptor may be its
+    /// `this` -- the descriptor holds it at a slot, or is or derives from one
+    /// that does (null: no descriptor holds it, any); and whether an object
+    /// of such a type may be one no allocation site in the IR made: one
+    /// stamped in data, or by an object with no IR (<paramref name="archived"/>
+    /// holds those with), which the region solvers know only as the unknown
+    /// object or a constant (null: no descriptor holds it).
+    /// </summary>
+    public static (Func<string, string, bool?> MayBeThis, Func<string, bool?> MadeOutside) Receivers(
+        List<(string Name, ObjectFile Object)> inputs, IReadOnlySet<ObjectFile> archived)
+    {
+        Index index = IndexOf(inputs);
+        HashSet<string> outside = index.StampedOutside(archived);
+        return ((method, table) => index.MayBeThis(method, table), method => index.MadeOutside(method, outside));
+    }
+
     // ONE INDEX A LINK: the descriptors, the functions and the method-table
     // offsets read from the objects once, for every question the link asks
     // of them (its virtual calls, then the catches' ancestry).
@@ -397,6 +415,54 @@ public static class VirtualTargets
                         if (IsDescriptor(named) && (function || named != own)) made.Descriptors.Add(named);
                 }
             return _made = made;
+        }
+
+        // Per function: the descriptors that hold it at a method slot.
+        private Dictionary<string, List<int>>? _holders;
+
+        private List<int>? HoldersOf(string method)
+        {
+            if (_holders is null)
+            {
+                _holders = new(StringComparer.Ordinal);
+                for (int d = 0; d < _descriptors.Count; d++)
+                    foreach (var (offset, symbol, addend) in Relocs(d))
+                        if (addend == 0 && offset >= DescriptorWords * _word && _functions.Contains(symbol))
+                        {
+                            if (!_holders.TryGetValue(symbol, out List<int>? list)) _holders[symbol] = list = new();
+                            if (list.Count == 0 || list[^1] != d) list.Add(d);
+                        }
+            }
+            return _holders.GetValueOrDefault(method);
+        }
+
+        public bool? MayBeThis(string method, string table)
+        {
+            if (HoldersOf(method) is not { } holders) return null;
+            foreach (int h in holders)
+                if (_descriptors[h].Name == table || IsA(table, _descriptors[h].Name) != false) return true;
+            return false;
+        }
+
+        /// <summary>The descriptors stamped where no site of the IR is: in a section of data, or in any section of an object with no IR.</summary>
+        public HashSet<string> StampedOutside(IReadOnlySet<ObjectFile> archived)
+        {
+            HashSet<string> outside = new(StringComparer.Ordinal);
+            foreach (var (_, obj) in _inputs)
+                foreach (Section section in obj.Sections)
+                    if (section.Kind != SectionKind.Note && (section.Kind != SectionKind.Code || !archived.Contains(obj)))
+                        foreach (Relocation r in section.Relocs)
+                            if (r.Addend > 0 && IsDescriptor(r.Symbol)) outside.Add(r.Symbol);
+            return outside;
+        }
+
+        public bool? MadeOutside(string method, HashSet<string> outside)
+        {
+            if (HoldersOf(method) is not { } holders) return null;
+            foreach (string stamped in outside)
+                foreach (int h in holders)
+                    if (stamped == _descriptors[h].Name || IsA(stamped, _descriptors[h].Name) != false) return true;
+            return false;
         }
 
         private Dictionary<string, HashSet<long>>? _slots;
