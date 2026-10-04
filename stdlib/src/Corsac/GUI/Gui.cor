@@ -186,6 +186,14 @@ enum SeatIoctl : long
     KeyboardHotKey = 0x4755010E,
     KeyboardSetHotKey = 0x4755010F,
     KeyboardHandle = 0x47550110,
+    KeyState = 0x47550500,
+    AsyncKeyState = 0x47550501,
+    KeyboardState = 0x47550502,
+    Capture = 0x47550503,
+    GetCapture = 0x47550504,
+    ClickActivation = 0x47550505,
+    DoubleClicks = 0x47550506,
+    HitCursor = 0x47550507,
 }
 
 public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
@@ -990,6 +998,71 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
         PutWord(args, 0, window); PutWord(args, 4, id); PutWord(args, 8, milliseconds); PutWord(args, 12, tolerance); PutWord(args, 16, system ? 1 : 0);
         long answer = Ioctl(SeatIoctl.TimerSet, Sys.ArrayData(args));
         return answer > 0 ? (int)answer : 0;
+    }
+
+    // ---- the input policy (the GUI kernel's seatinput.cor) ---------------------
+    //
+    // What a press, a move and a key mean is decided by the seat, once, for
+    // every program: a second press that makes a double click comes as
+    // DoubleClick (180) in place of its Down, in a window that takes them
+    // (SetDoubleClicks); the pointer coming over a window and leaving it as
+    // PointerEnter (181) and PointerLeave (182); a window losing its
+    // thread's capture as CaptureLost (183, A the window that has it now);
+    // a hit area of a window the pointer is over that has no shape given
+    // (SetHitCursor) as CursorSet (184, A the area -- 1 the client -- B the
+    // point in the window), answered with Cursor.
+
+    public const int DoubleClick = 180, PointerEnter = 181, PointerLeave = 182, CaptureLost = 183, CursorSet = 184;
+
+    /// GetKeyState: the key as the events this thread has read left it --
+    /// 0x80 down, 1 toggled.
+    public int KeyState(int vk) { long a = Ioctl(SeatIoctl.KeyState, vk & 0xFF); return a < 0 ? 0 : (int)a; }
+
+    /// GetAsyncKeyState: 0x8000 while the key is down now, 1 if it went down
+    /// since the last ask.
+    public int AsyncKeyState(int vk) { long a = Ioctl(SeatIoctl.AsyncKeyState, vk & 0xFF); return a < 0 ? 0 : (int)a; }
+
+    /// GetKeyboardState: every key, as KeyState answers it, into 256 bytes.
+    public bool KeyboardState(byte[] into)
+    {
+        if (into.Length < 256) throw new ArgumentException("256 bytes are needed", "into");
+        return Ioctl(SeatIoctl.KeyboardState, Sys.ArrayData(into)) >= 0;
+    }
+
+    /// SetCapture: the pointer is `window`'s -- with no button down, while
+    /// this thread has the foreground or the pointer is over one of its
+    /// windows -- or let go with 0. The window that had it, which is told
+    /// (CaptureLost).
+    public int SetCapture(int window) { long a = Ioctl(SeatIoctl.Capture, window); return a < 0 ? 0 : (int)a; }
+
+    /// GetCapture: this thread's capture window, 0 none.
+    public int GetCapture() { long a = Ioctl(SeatIoctl.GetCapture, 0); return a < 0 ? 0 : (int)a; }
+
+    /// A press's activation of `window`, as WM_MOUSEACTIVATE answers it: 1
+    /// activate (the default), 2 activate and keep the press from it, 3 do
+    /// not activate, 4 neither.
+    public bool SetClickActivation(int window, int answer)
+    {
+        byte[] args = new byte[8];
+        PutWord(args, 0, window); PutWord(args, 4, answer);
+        return Ioctl(SeatIoctl.ClickActivation, Sys.ArrayData(args)) == 0;
+    }
+
+    /// Whether a second press in `window` comes as DoubleClick (CS_DBLCLKS).
+    public bool SetDoubleClicks(int window, bool on)
+    {
+        byte[] args = new byte[8];
+        PutWord(args, 0, window); PutWord(args, 4, on ? 1 : 0);
+        return Ioctl(SeatIoctl.DoubleClicks, Sys.ArrayData(args)) == 0;
+    }
+
+    /// The shape `window` wears over hit area `area` (1 the client), -1 to
+    /// be asked (CursorSet).
+    public bool SetHitCursor(int window, int area, int shape)
+    {
+        byte[] args = new byte[12];
+        PutWord(args, 0, window); PutWord(args, 4, area); PutWord(args, 8, shape);
+        return Ioctl(SeatIoctl.HitCursor, Sys.ArrayData(args)) == 0;
     }
 
     public bool KillTimer(int window, int id, bool system)

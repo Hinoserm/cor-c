@@ -714,6 +714,7 @@ public class Control
     public event EventHandler? DoubleClick;
     public event MouseEventHandler? MouseClick;
     public event MouseEventHandler? MouseDoubleClick;
+    public event EventHandler? MouseCaptureChanged;
     public event KeyPressEventHandler? KeyPress;
     public event KeyEventHandler? KeyDown;
     public event KeyEventHandler? KeyUp;
@@ -1171,6 +1172,39 @@ public class Control
         OnMouseClick(e);
     }
     internal void RaiseMouseMove(MouseEventArgs e) { OnMouseMove(e); }
+    internal void RaiseMouseCaptureChanged() { OnMouseCaptureChanged(EventArgs.Empty); }
+    protected virtual void OnMouseCaptureChanged(EventArgs e) { if (MouseCaptureChanged != null) MouseCaptureChanged(this, e); }
+
+    /// Whether the control has the mouse: Windows' SetCapture for its form's
+    /// window, which the seat routes the pointer by (its seatinput.cor) --
+    /// the moves and the release come to it wherever the pointer goes, and
+    /// losing it raises MouseCaptureChanged.
+    public bool Capture
+    {
+        get { return Application.CaptureOwner == this; }
+        set { if (value) Application.TakeCapture(this); else Application.LetCaptureGo(this); }
+    }
+
+    /// The modifier keys down, as the events this thread has read left them
+    /// (GetKeyState, the seat's).
+    public static Keys ModifierKeys
+    {
+        get
+        {
+            Seat seat = Seat.Current;
+            return ((seat.KeyState(0x10) & 0x80) != 0 ? Keys.Shift : Keys.None) | ((seat.KeyState(0x11) & 0x80) != 0 ? Keys.Control : Keys.None)
+                 | ((seat.KeyState(0x12) & 0x80) != 0 ? Keys.Alt : Keys.None);
+        }
+    }
+
+    /// Whether Caps Lock, Num Lock, Scroll Lock or Insert is toggled on, as
+    /// the events this thread has read left it (GetKeyState's low bit).
+    public static bool IsKeyLocked(Keys keyVal)
+    {
+        int vk = (int)keyVal & 0xFF;
+        if (vk != 0x14 && vk != 0x90 && vk != 0x91 && vk != 0x2D) throw new NotSupportedException("Only CapsLock, NumLock, Scroll and Insert are supported.");
+        return (Seat.Current.KeyState(vk) & 1) != 0;
+    }
     internal void RaiseMouseEnter() { OnMouseEnter(EventArgs.Empty); }
     internal void RaiseMouseLeave() { OnMouseLeave(EventArgs.Empty); }
     internal void RaiseMouseWheel(MouseEventArgs e) { OnMouseWheel(e); }
@@ -1636,6 +1670,9 @@ public class Form : Control
         }
         _handle = seat.CreateWindow(Left, Top, Width, Height);
         seat.SetTitle(_handle, Text);
+        // Every control takes double clicks (Windows Forms' CS_DBLCLKS): the
+        // seat says which presses are (DoubleClick events).
+        seat.SetDoubleClicks(_handle, true);
         // The frame, before the window is ever on the screen: the seat
         // draws it on the window's first surface.
         _sentStyle = -1; _sentExStyle = -1; _iconSent = false;
@@ -1746,7 +1783,10 @@ public class Form : Control
     /// A press, move or release in the window, which the seat sends only for
     /// its client area and for a control holding the button: the frame is
     /// the seat's.
-    internal void WindowMouse(int kind, int button, int x, int y)
+    internal void WindowMouse(int kind, int button, int x, int y) { WindowMouse(kind, button, x, y, false); }
+
+    /// `doubled`: the seat made the press a double click (its DoubleClick).
+    internal void WindowMouse(int kind, int button, int x, int y, bool doubled)
     {
         // While autoscroll runs it has the mouse: moves steer it, and the
         // presses and releases that end it end it, wherever they land.
@@ -1755,18 +1795,26 @@ public class Form : Control
         Point co = ClientOffset();
         // A control holding the button gets everything until it comes up,
         // even where the pointer has left the window altogether.
-        if (kind != 4 && Application.Captured != null) { ClientMouse(kind, button, x, y, co); return; }
+        if (kind != 4 && Application.Captured != null) { ClientMouse(kind, button, x, y, co, doubled); return; }
         if (HasFrame && (y < co.Y || x < co.X || x >= co.X + ClientRectangle.Width || y >= co.Y + ClientRectangle.Height))
         {
             // Out over the frame: nothing in the client is under the pointer.
             if (kind == 3) Application.Hover(null);
             return;
         }
-        ClientMouse(kind, button, x, y, co);
+        ClientMouse(kind, button, x, y, co, doubled);
+    }
+
+    /// The seat's CursorSet over the client area at (x, y) in the window:
+    /// the control there wears its cursor, as WM_SETCURSOR asks.
+    internal void CursorAt(int x, int y)
+    {
+        Point co = ClientOffset();
+        Cursor.Over(HitTest(x - co.X, y - co.Y));
     }
 
     /// The press, move or release, in the client's own coordinates.
-    void ClientMouse(int kind, int button, int x, int y, Point co)
+    void ClientMouse(int kind, int button, int x, int y, Point co, bool doubled)
     {
         int cx = x - co.X, cy = y - co.Y;
         Control target = HitTest(cx, cy);
@@ -1775,7 +1823,7 @@ public class Form : Control
         Control to = kind == 4 ? target : (Application.Captured ?? target);
         Point origin = to.ClientOrigin();
         MouseButtons b = Application.ButtonOf(button);
-        int clicks = kind == 4 ? Application.CountClick(target, b, x, y) : kind == 5 ? Application.LastClicks : 0;
+        int clicks = kind == 4 ? Application.CountClick(target, b, doubled) : kind == 5 ? Application.LastClicks : 0;
         MouseEventArgs e = new MouseEventArgs(b, clicks, cx - origin.X, cy - origin.Y, 0);
         if (kind == 4 && b == MouseButtons.Middle && AutoScroll.TryBegin(this, target, x, y)) return;
         if (kind == 4)
@@ -1783,12 +1831,16 @@ public class Form : Control
             if (target is TextBox box) box.FocusByClick();
             if (target.CanSelect) Application.SetFocus(target);
             target.RaiseMouseDown(e);
+            // The mouse is the pressed control's until the button comes up,
+            // as .NET's WmMouseDown takes it: the seat's capture.
             Application.Captured = target;
+            Application.TakeCapture(target);
         }
         else if (kind == 5)
         {
             Application.Captured = null;
             to.RaiseMouseUp(e);
+            Application.LetCaptureGo(to);
             // WM_CONTEXTMENU: the right button's release opens the context
             // menu of the control under it, or of the nearest parent with one.
             if (b == MouseButtons.Right)
@@ -6166,25 +6218,58 @@ public static class Application
     static readonly bool _fontsLinked = LinkFonts();
     static bool LinkFonts() { Corsac.GUI.Seat.LinkFontStore(); return true; }
 
-    // THE DOUBLE-CLICK: a second press of the same button on the same
-    // control, within SystemInformation.DoubleClickTime and inside the
-    // DoubleClickSize box centred on the first. A third press starts again,
-    // as on Windows.
+    // THE DOUBLE-CLICK IS THE SEAT'S (the GUI kernel's seatinput.cor): a
+    // second press of the same button in the form's window, soon enough and
+    // near enough, comes as DoubleClick in place of its Down (`doubled`).
+    // What is left here is Windows' own rule for a child window, which
+    // every control is: the same control as the press before it. A third
+    // press starts again, as on Windows.
     static Control? _clickTarget;
     static MouseButtons _clickButton;
-    static int _clickAt, _clickX, _clickY;
     internal static int LastClicks;
 
-    internal static int CountClick(Control target, MouseButtons button, int x, int y)
+    internal static int CountClick(Control target, MouseButtons button, bool doubled)
     {
-        int now = Environment.TickCount;
-        Size box = SystemInformation.DoubleClickSize;
-        bool second = LastClicks == 1 && target == _clickTarget && button == _clickButton
-            && now - _clickAt <= SystemInformation.DoubleClickTime
-            && (x > _clickX ? x - _clickX : _clickX - x) <= box.Width / 2 && (y > _clickY ? y - _clickY : _clickY - y) <= box.Height / 2;
+        bool second = doubled && LastClicks == 1 && target == _clickTarget && button == _clickButton;
         LastClicks = second ? 2 : 1;
-        _clickTarget = target; _clickButton = button; _clickAt = now; _clickX = x; _clickY = y;
+        _clickTarget = target; _clickButton = button;
         return LastClicks;
+    }
+
+    // THE CAPTURE IS THE SEAT'S (SetCapture for the form's window): the
+    // control it is for, and those that had it and have not yet been told
+    // they lost it -- the seat tells each loss once, CaptureLost, in order.
+    internal static Control? CaptureOwner;
+    static readonly List<Control> _losing = new List<Control>();
+
+    internal static void TakeCapture(Control c)
+    {
+        Form? f = c.FindForm();
+        if (f == null || f.Handle == 0) return;
+        Control? had = CaptureOwner;
+        CaptureOwner = c;
+        // The seat tells a loss only when a window had the capture (its
+        // answer): a form gone took its capture with it, untold.
+        if (Seat.Current.SetCapture(f.Handle) != 0 && had != null) _losing.Add(had);
+    }
+
+    internal static void LetCaptureGo(Control c)
+    {
+        if (CaptureOwner != c) return;
+        CaptureOwner = null;
+        if (Seat.Current.SetCapture(0) != 0) _losing.Add(c);
+    }
+
+    /// The seat's CaptureLost: the control that lost it told
+    /// (MouseCaptureChanged, Windows' WM_CAPTURECHANGED); one the program did
+    /// not let go of itself has it no more.
+    internal static void CaptureLost()
+    {
+        Control? had;
+        if (_losing.Count > 0) { had = _losing[0]; _losing.RemoveAt(0); }
+        else { had = CaptureOwner; CaptureOwner = null; }
+        if (had != null && Captured == had && CaptureOwner != had) Captured = null;
+        if (had != null) had.RaiseMouseCaptureChanged();
     }
 
     /// The seat's action numbers as Windows Forms spells them.
@@ -6617,9 +6702,23 @@ public static class Application
                 f!.WindowMouse(3, 0, wx, wy); break;
             }
             case 4:
+            case Seat.DoubleClick:
+                // A press, or the seat's double click (in place of its Down).
                 ButtonHeld = true;
                 if (_active != f && !f!.StaysInactive) { _active = f; f!.RaiseActivated(); }
-                f!.WindowMouse(4, m.A & 0xFF, Seat.LowSigned(m.B), Seat.HighSigned(m.B)); break;
+                f!.WindowMouse(4, m.A & 0xFF, Seat.LowSigned(m.B), Seat.HighSigned(m.B), m.Kind == Seat.DoubleClick); break;
+            case Seat.PointerLeave:
+                // The pointer left the form's window: nothing of it is hot.
+                Hover(null);
+                break;
+            case Seat.CaptureLost:
+                CaptureLost();
+                break;
+            case Seat.CursorSet:
+                // WM_SETCURSOR for the client area: what is under the pointer
+                // says what it wears. The frame's shapes are the seat's.
+                if (m.A == 1 && f != null) f.CursorAt(Seat.LowSigned(m.B), Seat.HighSigned(m.B));
+                break;
             case 6:
             case 7:
             {
