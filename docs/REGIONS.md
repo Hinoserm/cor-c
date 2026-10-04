@@ -214,6 +214,27 @@ IR the link will regenerate the unit from:
   the order the `Symbol` constraints number them.
 - **Number parameters** (`NumberParams`): int, char, double and 32-bit enum
   parameters. Nothing a caller hands one is an address. Test 1290.
+- **Number loads.** A load, or a copy, marked `Instr.Number` is never an
+  address: on a 32-bit target an int and an address are one word, and an
+  unmarked word read out of an object carries whatever that object's words
+  are said to hold into every number made of it. The hints state no
+  constraint for a marked load or a marked atomic. Marked:
+  - fields, elements and cells of number types (`NeverAddress`: not a long
+    or a nint, which may hold one);
+  - a string's or a sequence's count (`CountOf`);
+  - the loads lowering makes of integers (`Lowering.Numbered`): a type's
+    flags, depth and entry count read from its descriptor; a Nullable's
+    has-value byte; a box's number; a float's bits; a string's characters;
+    an iterator's state and an array view's cursor; an async or iterator
+    machine's size and number parameters; a static initialiser's flag;
+    errno;
+  - the copies `Sys.Copy` and `Sys.CopyNoOverlap` make, which are declared
+    over strings and byte arrays only.
+
+  `FrameAddressFold` keeps the mark when it folds a load's address.
+  Deliberately left unmarked: `Sys.Peek` and its narrower forms (the runtime
+  builds addresses out of words and bytes), the atomic intrinsics (their
+  operands are longs), and the thread block's words. Tests 1290, 1316.
 - **Must-run calls and sites** on every way to a return (`MustCalls`,
   `MustSites`), for judging whether a loop's lap is worth a region.
 - **Loops**: natural loops that may get a region, by header position. Not in
@@ -470,10 +491,31 @@ laps kept in a list, number parameters, a size check's exception); 1264,
    (`OpenAt`), not always on entry, with its proved bytes, and closes it at
    every return. Loop regions are opened at their headers (`OpenLoops`).
 3. The link's lifetime passes run first, so an object they place in the
-   frame or free where it dies was never the region's.
+   frame or free where it dies was never the region's. They run again after
+   the regions are placed (`Escape.RunAtLink`), and put their own frees just
+   before each return, after the boundary's `RegionLeave`. `LeaveLast` then
+   moves each leave back to just before its return, past those frees. This
+   matters for storage made beside a frame owner: it is the region's, and
+   freed after the leave, its frees read memory the cut had zeroed or
+   unmapped. A leave stays where it was if anything after it allocates,
+   since what that made would be cut with the region.
 4. What is left of each marked site becomes `AllocRegion`
    (`MakeSitesInRegion`), and every landing pad gets `RegionCatch`
    (`CatchUp`).
+
+**The marks survive the archive.** The link rebuilds a unit's functions from
+its archived IR more than once: its late passes, each lifetime run, and the
+copy a refused run is taken back from (`UnitBackend`). Since IR function
+record version 6 (`IrFunctionCodec`), the record carries every mark these
+analyses rely on:
+- an instruction's `Number` and `RegionSite`;
+- a parameter's `Number`;
+- a block's `RegionLoop` and `RegionLoopBytes`.
+
+Before that, a function taken back after a refused run read its numbers as
+addresses again and lost the regions it had just been given. An archive
+written by an older corc is refused ("Unsupported IR function version"), so
+units are rebuilt.
 
 **Owned storage beside its owner.** A collection's storage (a List's array,
 a Dictionary's keys, values and tables) is an owned field that the
@@ -587,6 +629,26 @@ regions can be held to taking what they need and no more:
 - `gc: grown in place`, `gc: region top frees`, `gc: region top freed bytes`.
 
 Nothing is counted on a bump allocation. Test 1313.
+
+**Measuring.** Three small scripts kept outside the repository, in the
+integration's working area, compare runs:
+- **A site differ:** reads two links' `+sites` output and prints:
+  - the totals per verdict;
+  - how many sites changed verdict, by pair (taken to global and so on);
+  - the functions and the types with the most sites one link takes and the
+    other does not, both ways.
+- **A stand-in summariser:** reads a link's `+standins` output and prints,
+  round by round:
+  - the wide calls assumed, how many grew, the components solved, the
+    locations carried and the time;
+  - the stand-ins whose shape lets the unknown object hold something, by
+    their first target, with the targets that make them so.
+- **A `--gc-stats` lister:** puts several programs' `gc:` lines side by side.
+
+`gc: given back by regions MB` counts everything regions gave back, at their
+ends and from their tops; `gc: region top freed bytes` gives the second
+alone. `+loopold` is the A/B for the loop rule: link twice and compare the
+loops selected and the sites taken.
 
 **Engine tests.** `linker/tests` with `--escape` runs only the region hint
 tests and the escape engine's own tests (`RegionEscapeTests.cs`), which need

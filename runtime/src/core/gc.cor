@@ -5481,7 +5481,9 @@ static class Gc
         SayNumber("gc: frees dropped while marking ", FreesDroppedMarking);
         SayNumber("gc: frees dropped otherwise ", FreesDropped);
         SayNumber("gc: freed by the collector MB ", CollectedBytes / 1048576);
-        SayNumber("gc: given back by regions MB ", RegionFreedBytes / 1048576);
+        // Everything regions gave back: at their ends, and from their tops
+        // before (RegionTopFreedBytes, also given alone below).
+        SayNumber("gc: given back by regions MB ", (RegionFreedBytes + RegionTopFreedBytes) / 1048576);
         SayNumber("gc: region allocations the system had no memory for ", RegionMisses);
         // WHAT THE ARENAS TOOK OF THE SYSTEM against what they held: the
         // regions take what they need and no more.
