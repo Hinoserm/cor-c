@@ -44,6 +44,13 @@ public static class RegionSummary
         return hints;
     }
 
+    // Where an async or iterator body's saved registers and slots are laid out
+    // in its machine for region inference (Builder.Build): past any field a
+    // class declares, and short of the farthest field a solver keeps apart
+    // (RegionEscape.FarthestField, 4096).
+    private const long SavedFieldsStart = 2048;
+    private const long SavedFieldsEnd = 4088;
+
     private sealed class Builder
     {
         private readonly Function _f;
@@ -164,14 +171,43 @@ public static class RegionSummary
             // into the thread's block at the yield, put its arguments and
             // every object its laps made into the unknown object: 1298's
             // items, global in the caller that walked them.
+            //
+            // EACH AT A FIELD OF ITS OWN, not at any offset. The transform
+            // gives each saved register and each slot a field of the machine
+            // past its declared ones, read back by the resumption alone; at
+            // any offset, every load of the machine -- its receiver, its
+            // arguments, its current element -- read every one of them, so
+            // what an iterator walked, what it yielded and its source were
+            // one, and a store at any offset made the unified solver collapse
+            // the machine whole, with all it reached. Laid out here from
+            // SavedFieldsStart, eight bytes apart, past every field a class
+            // declares and below the farthest a solver keeps apart; a slot's
+            // contents, read at any offset of the slot, into one field --
+            // a slot is a frame object nothing else holds, and what it held
+            // the machine holds. Where the fields run out, at any offset, as
+            // before. The real offsets are the transform's, made after this
+            // IR; nothing reads these but the body's own resumption, which
+            // the flow of its registers already is.
             if (_f.Async is { Lowered: false } frame)
             {
                 int machine = Reg(frame.StateMachine);
+                long next = SavedFieldsStart;
+                long Field()
+                {
+                    if (next > SavedFieldsEnd) return RegionConstraint.Any;
+                    long at = next;
+                    next += 8;
+                    return at;
+                }
                 foreach (VReg r in RegionPointsTo.Saved(_f, frame))
-                    _constraints.Add(new(RegionConstraintKind.Store, machine, Reg(r), RegionConstraint.Any));
+                    _constraints.Add(new(RegionConstraintKind.Store, machine, Reg(r), Field()));
                 foreach (FrameSlot slot in _f.Slots)
                     if (Value(new SlotOperand(slot)) is int held and >= 0)
-                        _constraints.Add(new(RegionConstraintKind.MemCopy, machine, held, RegionConstraint.Any));
+                    {
+                        int contents = _next++;
+                        _constraints.Add(new(RegionConstraintKind.Load, contents, held, RegionConstraint.Any));
+                        _constraints.Add(new(RegionConstraintKind.Store, machine, contents, Field()));
+                    }
             }
             // ITS LOOPS, for the link to give a region of their own where
             // RegionPointsTo would (its "loops"): stated over this IR, by the

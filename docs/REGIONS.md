@@ -205,8 +205,14 @@ IR the link will regenerate the unit from:
     cycle of exceptions, traces and symbol lookups. Unified there, every
     object any cast handed it went to the unknown object. Test 1299.
 - **Async and iterator bodies**: what the body holds across a suspension is
-  stated as stores into its state machine (`this`, at any offset), not as a
-  leak of everything it touched. Since version 8. Test 1298.
+  stated as stores into its state machine (`this`), not as a leak of
+  everything it touched. Since version 8. Test 1298. Each saved register,
+  and each frame slot's contents, is stored at a field of its own, eight
+  bytes apart from offset 2048 (`SavedFieldsStart`), past any declared field;
+  past 4088, at any offset. At any offset, every load of the machine (its
+  receiver, its arguments, its current element) read all of them, and the
+  unified solver collapsed the machine with all it reached: an iterator's
+  source and what it yields were one. Test 1319.
 - **Sites**: whether a region may take it, its line, the descriptor it
   stamps and where the method table begins (what a virtual call on its
   object runs), and how the collector reads its words (`RegionWords`).
