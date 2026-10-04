@@ -1,0 +1,73 @@
+// test: com_dispatch
+// expect-exit: 0
+// expect-output:
+// Add 42
+// Name renamed
+// Half 2.5
+// Bumped 42
+// by name 7
+// unknown name 0x80020006
+// thrown: no thanks
+// dispids 65536 -1
+//
+// IDispatch both ways: a [ComVisible] class's late-bound members -- its
+// public methods and properties by name and number, as the compiler wrote
+// its __ComDispId and __ComInvoke -- called through IDispatch::Invoke on its
+// COM-callable wrapper, by Type.InvokeMember on the COM object and through
+// a dispinterface ([InterfaceType(InterfaceIsIDispatch)]) cast from it: an
+// argument by reference, a property set, an unknown name, and an exception
+// coming back as DISP_E_EXCEPTION with its EXCEPINFO's description.
+
+using System;
+using System.Reflection;
+using System.Runtime.InteropServices;
+
+[ComImport, Guid("B2C3D4E5-0001-0002-0003-000000000001"), InterfaceType(ComInterfaceType.InterfaceIsIDispatch)]
+interface ICalculatorDisp
+{
+    int Add(int a, int b);
+    string Name { get; set; }
+    double Half(double d);
+    void Bump(ref int n);
+    void Refuse();
+}
+
+[ComVisible(true)]
+class Calculator : ICalculatorDisp
+{
+    string _name = "calc";
+    public int Add(int a, int b) { return a + b; }
+    public string Name { get { return _name; } set { _name = value; } }
+    public double Half(double d) { return d / 2; }
+    public void Bump(ref int n) { n++; }
+    public void Refuse() { throw new InvalidOperationException("no thanks"); }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Calculator calc = new Calculator();
+        object com = Marshal.GetUniqueObjectForIUnknown(Marshal.GetIUnknownForObject(calc));
+        Type t = com.GetType();
+        Console.WriteLine("Add " + t.InvokeMember("Add", BindingFlags.InvokeMethod, null, com, new object?[] { 2, 40 }));
+        t.InvokeMember("Name", BindingFlags.SetProperty, null, com, new object?[] { "renamed" });
+        Console.WriteLine("Name " + t.InvokeMember("Name", BindingFlags.GetProperty, null, com, null));
+
+        ICalculatorDisp disp = (ICalculatorDisp)com;
+        Console.WriteLine("Half " + disp.Half(5.0));
+        int n = 41;
+        disp.Bump(ref n);
+        Console.WriteLine("Bumped " + n);
+        Console.WriteLine("by name " + ComDispatch.Invoke(com, "Add", ComDispatch.Method, new object?[] { 3, 4 }));
+
+        try { t.InvokeMember("Nope", BindingFlags.InvokeMethod, null, com, null); }
+        catch (COMException e) { Console.WriteLine("unknown name 0x" + ((uint)e.HResult).ToString("X8")); }
+        try { disp.Refuse(); }
+        catch (COMException e) { Console.WriteLine("thrown: " + e.Message); }
+
+        IComCallable callable = calc;
+        Console.WriteLine("dispids " + callable.__ComDispId("add") + " " + callable.__ComDispId("missing"));
+        return 0;
+    }
+}

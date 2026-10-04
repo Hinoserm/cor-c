@@ -245,6 +245,18 @@ public sealed partial class Lowering
         => m.Decl is MemberDecl d && d.Attributes.Any(a => a.Target.Length == 0 && a.Is("UnmanagedCallersOnly"));
 
     /// <summary>
+    /// Whether its caller follows stdcall: `[UnmanagedCallersOnly(CallConvs =
+    /// new[] { typeof(CallConvStdcall) })]`, as a COM vtable's entries are on
+    /// i386. The caller's side needs nothing: a call into C keeps ESP and
+    /// puts it back (the x86 backend's SelectCall), whoever took the
+    /// arguments off.
+    /// </summary>
+    internal static bool CalledStdcall(MethodSymbol m)
+        => m.Decl is MemberDecl d && d.Attributes.Any(a => a.Target.Length == 0 && a.Is("UnmanagedCallersOnly")
+            && a.Arguments.Any(x => x.Value.Contains("Stdcall", StringComparison.Ordinal)
+                || x.Words.Any(w => w.Contains("Stdcall", StringComparison.Ordinal))));
+
+    /// <summary>
     /// The way in to a method C calls: GS back to the runtime's on i386 and
     /// running again (Runtime.ReturnFromC), and the thread's handler chain
     /// emptied for the length of the call, so an exception that escapes it

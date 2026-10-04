@@ -1,0 +1,1702 @@
+// .NET'S COM INTEROP, the remote half: COM objects in other processes, native
+// ones and Windows ones, and this program's objects served to them.
+//
+// THE BROKER is the GUI kernel's (os/gui/combroker.cor in the system's
+// repository), on the service manager's socket, requests 200 to 243
+// (ServiceWire): this process's connection and IDs, its object exporter
+// (OXID) and where it is reached, its class objects, activation -- a class's
+// server started and waited for --, the class registry and the running
+// object table. Type.GetTypeFromProgID, Activator.CreateInstance and
+// Marshal.GetActiveObject ask it.
+//
+// THE CALLS are DCOM's: ORPC over DCE RPC's NDR (ComNdr.cor), the same
+// stub data Windows' ole32 and rpcrt4 send, so that a Windows program's
+// object and a native one are called alike. They travel in frames on an
+// abstract AF_UNIX stream socket --
+//
+//   request   length, kind, then for a call (kind 1) the object's IPID, the
+//             interface's IID, the operation number and the NDR;
+//   response  length, a status (0, or the RPC fault), the NDR;
+//
+// -- to a native exporter's "com.<endpoint>" directly, or to the NT kernel's
+// "nt-com", which carries the call to a Windows apartment over LRPC (kind
+// 3, the endpoint first) and does a Windows class's activation (kind 4).
+// A native exporter's endpoint is the name in its bindings
+// ("ncalrpc:[CORSAC.<pid>]"), which the NT kernel answers for a Windows
+// client the same way (os/nt/comnative.cor): one endpoint name, both worlds.
+//
+// THE EXPORTER (ComExporter) serves this program's objects: IRemUnknown on
+// its OXID, then each interface pointer it gave out by its IPID -- a
+// COM-callable object's IDispatch, and its compiler-made vtables, whose
+// arguments the exporter reads by the entry's signature (corc's
+// ComDeclarations) and passes through the vtable as a caller in this
+// process would; a class object's IClassFactory. Calls run on the
+// connection's thread: free-threaded, no apartment marshalling.
+//
+// Not done: pinging (exports say SORF_NOPING, and references are given back
+// by RemRelease), custom and handler OBJREFs, a SAFEARRAY of interfaces on
+// the wire, security.
+
+using System;
+using System.Collections.Generic;
+using System.Text;
+using System.Threading;
+using System.ServiceProcess;
+
+namespace System.Runtime.InteropServices
+{
+    /// <summary>The GUI kernel's COM broker, asked on the service manager's socket.</summary>
+    public static class ComBroker
+    {
+        static readonly object _lock = new object();
+        static long _key;
+        static long _thread;
+
+        public const int ClassContextLocalServer = 4;
+        const int RpcServerUnavailable = unchecked((int)0x800706BA);
+
+        /// This process's key with the broker (ComConnect), made on first use.
+        public static long Key
+        {
+            get
+            {
+                lock (_lock)
+                {
+                    if (_key != 0) return _key;
+                    WireWriter w = new WireWriter();
+                    w.Int(Os.Getpid());
+                    w.Int(0);                                         // native
+                    w.Text("");
+                    w.Int(0);
+                    WireReader r = Ask(ServiceRequest.ComConnect, w);
+                    _key = r.Int();
+                    _thread = r.Int();
+                    r.Quad();
+                    return _key;
+                }
+            }
+        }
+
+        public static long Thread { get { long k = Key; return _thread; } }
+
+        /// One request: the reader past its status; a failed status thrown
+        /// as its HRESULT (a Win32 error made one).
+        public static WireReader Ask(ServiceRequest op, WireWriter fields)
+        {
+            long error;
+            WireReader? r = WireClient.Ask(op, fields, out error);
+            if (r == null) throw new COMException("The COM broker is not running (RPC_S_SERVER_UNAVAILABLE).", RpcServerUnavailable);
+            if (error != 0) throw ComMarshal.ExceptionFor(Hr(error));
+            return r;
+        }
+
+        /// The same, its status answered rather than thrown.
+        public static WireReader? Try(ServiceRequest op, WireWriter fields, out int hr)
+        {
+            long error;
+            WireReader? r = WireClient.Ask(op, fields, out error);
+            hr = r == null ? RpcServerUnavailable : Hr(error);
+            return r;
+        }
+
+        static int Hr(long error)
+        {
+            if (error == 0) return 0;
+            if ((error & 0x80000000) != 0) return unchecked((int)error);
+            return unchecked((int)(0x80070000 | (error & 0xFFFF)));
+        }
+
+        /// A class's registration: its CLSID, ProgID, name and servers; null when neither registry has it.
+        public static string[]? ClassInfo(string clsidOrProgId)
+        {
+            WireWriter w = new WireWriter();
+            w.Text(clsidOrProgId);
+            int hr;
+            WireReader? r = Try(ServiceRequest.ComClassInfo, w, out hr);
+            if (r == null || hr != 0) return null;
+            string[] made = new string[8];
+            for (int i = 0; i < 8; i++) made[i] = r.Text();
+            return made[0].Length == 0 ? null : made;
+        }
+    }
+
+    /// <summary>An object exporter's whereabouts, from the broker: its endpoint, whether Windows serves it, its IRemUnknown.</summary>
+    public sealed class ComOxid
+    {
+        public long Oxid;
+        public string Endpoint = "";
+        public bool Windows;
+        public byte[] RemUnknown = new byte[16];
+        static readonly Dictionary<long, ComOxid> _known = new Dictionary<long, ComOxid>();
+
+        public static ComOxid Resolve(long oxid)
+        {
+            lock (_known)
+            {
+                ComOxid? had;
+                if (_known.TryGetValue(oxid, out had) && had != null) return had;
+            }
+            WireWriter w = new WireWriter();
+            w.Quad(oxid);
+            WireReader r = ComBroker.Ask(ServiceRequest.ComOxidResolve, w);
+            byte[] info = r.Bytes();
+            byte[] bindings = r.Bytes();
+            r.Bytes();                                              // security
+            r.Int();                                                // pid
+            bool windows = r.Int() != 0;
+            ComOxid made = From(oxid, info, bindings, windows);
+            lock (_known) { _known[oxid] = made; }
+            return made;
+        }
+
+        public static ComOxid From(long oxid, byte[] info, byte[] bindings, bool windows)
+        {
+            ComOxid made = new ComOxid { Oxid = oxid, Windows = windows };
+            if (info.Length >= 32) Array.Copy(info, 16, made.RemUnknown, 0, 16);
+            string? endpoint = EndpointOf(bindings);
+            if (endpoint == null) throw new COMException("The object exporter has no local endpoint (RPC_S_NO_ENDPOINT_FOUND).", unchecked((int)0x800706D9));
+            made.Endpoint = endpoint;
+            return made;
+        }
+
+        /// The LRPC endpoint a DUALSTRINGARRAY (the broker's bytes: the
+        /// security offset, then the 16-bit words) names: the name inside
+        /// "ncalrpc:[...]", or the address after the tower identifier.
+        public static string? EndpointOf(byte[] dsa)
+        {
+            if (dsa.Length < 2) return null;
+            int security = dsa[0] | (dsa[1] << 8);
+            int words = (dsa.Length - 2) / 2;
+            int start = 0;
+            while (start < security && start < words)
+            {
+                int end = start;
+                StringBuilder s = new StringBuilder();
+                while (end < words && end < security)
+                {
+                    int c = dsa[2 + end * 2] | (dsa[3 + end * 2] << 8);
+                    if (c == 0) break;
+                    if (c >= 0x20) s.Append((char)c);
+                    end++;
+                }
+                string text = s.ToString();
+                int open = text.IndexOf('['), close = text.IndexOf(']');
+                if (open >= 0 && close > open) return text.Substring(open + 1, close - open - 1);
+                if (text.Length > 0 && text.IndexOf(':') < 0) return text;
+                start = end + 1;
+            }
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// THE WIRE: frames on abstract AF_UNIX stream sockets -- to a native
+    /// exporter's "com.&lt;endpoint&gt;", or through the NT kernel's
+    /// "nt-com" to a Windows apartment -- one connection an endpoint, one
+    /// call at a time on it.
+    /// </summary>
+    public static class ComTransport
+    {
+        public const int KindCall = 1, KindRelay = 3, KindActivate = 4;
+        public const string NtSocket = "nt-com";
+        const int AfUnix = 1, Stream = 1, CloseOnExec = 0x80000, NoSignal = 0x4000;
+        static readonly Dictionary<string, ComConnection> _connections = new Dictionary<string, ComConnection>();
+
+        public static byte[] Address(string name)
+        {
+            byte[] a = new byte[3 + name.Length];
+            a[0] = AfUnix;
+            for (int i = 0; i < name.Length; i++) a[3 + i] = (byte)name[i];
+            return a;
+        }
+
+        public static int Connect(string name)
+        {
+            int fd = Os.Socket(AfUnix, Stream | CloseOnExec, 0);
+            if (fd < 0) return -1;
+            if (Os.Connect(fd, Address(name)) < 0) { Os.Close(fd); return -1; }
+            return fd;
+        }
+
+        public static bool SendAll(int fd, byte[] b)
+        {
+            int at = 0;
+            while (at < b.Length)
+            {
+                int n = Os.Send(fd, b, at, b.Length - at, NoSignal);
+                if (n <= 0) return false;
+                at += n;
+            }
+            return true;
+        }
+
+        public static bool ReceiveAll(int fd, byte[] b, int count)
+        {
+            int at = 0;
+            while (at < count)
+            {
+                int n = Os.Recv(fd, b, at, count - at, 0);
+                if (n <= 0) return false;
+                at += n;
+            }
+            return true;
+        }
+
+        /// One frame: its length word, then the rest; null when the connection ended.
+        public static byte[]? ReceiveFrame(int fd)
+        {
+            byte[] head = new byte[4];
+            if (!ReceiveAll(fd, head, 4)) return null;
+            int length = head[0] | (head[1] << 8) | (head[2] << 16) | (head[3] << 24);
+            if (length < 0 || length > 0x4000000) return null;
+            byte[] body = new byte[length];
+            if (!ReceiveAll(fd, body, length)) return null;
+            return body;
+        }
+
+        public static byte[] Frame(byte[] body)
+        {
+            byte[] made = new byte[4 + body.Length];
+            Put(made, 0, body.Length);
+            Array.Copy(body, 0, made, 4, body.Length);
+            return made;
+        }
+
+        public static void Put(byte[] b, int at, long v) { for (int i = 0; i < 4; i++) b[at + i] = (byte)(v >> (8 * i)); }
+        public static int Get(byte[] b, int at) { return b[at] | (b[at + 1] << 8) | (b[at + 2] << 16) | (b[at + 3] << 24); }
+
+        public static void PutText(List<byte> into, string s)
+        {
+            PutWord(into, s.Length);
+            foreach (char c in s) { into.Add((byte)c); into.Add((byte)(c >> 8)); }
+        }
+
+        public static void PutWord(List<byte> into, long v) { for (int i = 0; i < 4; i++) into.Add((byte)(v >> (8 * i))); }
+
+        /// A call on `endpoint`: the response's NDR, or a COMException
+        /// with the RPC status.
+        public static byte[] Call(ComOxid where, byte[] ipid, string iid, int opnum, byte[] ndr)
+        {
+            List<byte> body = new List<byte>();
+            if (where.Windows)
+            {
+                PutWord(body, KindRelay);
+                PutText(body, where.Endpoint);
+            }
+            else PutWord(body, KindCall);
+            body.AddRange(ipid);
+            body.AddRange(ComMarshal.GuidBytes(iid));
+            PutWord(body, opnum);
+            PutWord(body, ndr.Length);
+            body.AddRange(ndr);
+            return Exchange(where.Windows ? NtSocket : "com." + where.Endpoint, body.ToArray());
+        }
+
+        /// A frame sent, its answer read: the status checked, the NDR answered.
+        public static byte[] Exchange(string socket, byte[] body)
+        {
+            ComConnection c;
+            lock (_connections)
+            {
+                ComConnection? had;
+                if (!_connections.TryGetValue(socket, out had) || had == null) { had = new ComConnection(socket); _connections[socket] = had; }
+                c = had;
+            }
+            byte[] answer = c.Exchange(Frame(body));
+            if (answer.Length < 8) throw new COMException("The RPC protocol was not followed (RPC_S_PROTOCOL_ERROR).", unchecked((int)0x800706C0));
+            int status = Get(answer, 0);
+            int length = Get(answer, 4);
+            if (status != 0)
+            {
+                int hr = (status & 0x80000000) != 0 ? status : unchecked((int)(0x80070000 | (status & 0xFFFF)));
+                throw new COMException("The remote procedure call failed (0x" + ((uint)status).ToString("X8") + ").", hr);
+            }
+            byte[] ndr = new byte[Math.Max(0, Math.Min(length, answer.Length - 8))];
+            Array.Copy(answer, 8, ndr, 0, ndr.Length);
+            return ndr;
+        }
+    }
+
+    /// <summary>One connection to an endpoint, a call at a time; made again when it fails.</summary>
+    public sealed class ComConnection
+    {
+        readonly string _socket;
+        readonly object _lock = new object();
+        int _fd = -1;
+
+        public ComConnection(string socket) { _socket = socket; }
+
+        public byte[] Exchange(byte[] frame)
+        {
+            lock (_lock)
+            {
+                for (int attempt = 0; attempt < 2; attempt++)
+                {
+                    if (_fd < 0) _fd = ComTransport.Connect(_socket);
+                    if (_fd < 0) throw new COMException("The RPC server is unavailable: " + _socket + " (RPC_S_SERVER_UNAVAILABLE).", unchecked((int)0x800706BA));
+                    if (ComTransport.SendAll(_fd, frame))
+                    {
+                        byte[]? answer = ComTransport.ReceiveFrame(_fd);
+                        if (answer != null) return answer;
+                    }
+                    Os.Close(_fd);
+                    _fd = -1;
+                }
+                throw new COMException("The remote procedure call failed: " + _socket + " ended the connection (RPC_S_CALL_FAILED).", unchecked((int)0x800706BE));
+            }
+        }
+    }
+
+    /// <summary>
+    /// An OBJREF read and written: standard ones ([MS-DCOM] 2.2.18.2), the
+    /// 'MEOW' signature, flags 1, the IID, the STDOBJREF -- flags, public
+    /// references, OXID, OID, IPID -- and the resolver's bindings.
+    /// </summary>
+    public sealed class ComObjRef
+    {
+        public const int Signature = 0x574F454D, Standard = 1, NoPing = 0x1000;
+        public string Iid = "";
+        public int Flags;
+        public int PublicRefs;
+        public long Oxid, Oid;
+        public byte[] Ipid = new byte[16];
+
+        public static ComObjRef? Read(byte[] b)
+        {
+            if (b.Length < 64 || ComTransport.Get(b, 0) != Signature) return null;
+            if (ComTransport.Get(b, 4) != Standard) throw new NotSupportedException("only standard OBJREFs are understood here (not custom or handler ones)");
+            ComObjRef r = new ComObjRef();
+            byte[] iid = new byte[16];
+            Array.Copy(b, 8, iid, 0, 16);
+            r.Iid = ComMarshal.Normal(new Guid(iid).ToString());
+            r.Flags = ComTransport.Get(b, 24);
+            r.PublicRefs = ComTransport.Get(b, 28);
+            r.Oxid = (ComTransport.Get(b, 32) & 0xFFFFFFFFL) | ((long)ComTransport.Get(b, 36) << 32);
+            r.Oid = (ComTransport.Get(b, 40) & 0xFFFFFFFFL) | ((long)ComTransport.Get(b, 44) << 32);
+            Array.Copy(b, 48, r.Ipid, 0, 16);
+            return r;
+        }
+
+        /// The OBJREF's bytes, with this machine's resolver binding (empty:
+        /// the broker resolves OXIDs on every local machine's behalf).
+        public byte[] Write()
+        {
+            byte[] b = new byte[64 + 4 + 8];
+            ComTransport.Put(b, 0, Signature);
+            ComTransport.Put(b, 4, Standard);
+            Array.Copy(ComMarshal.GuidBytes(Iid), 0, b, 8, 16);
+            ComTransport.Put(b, 24, Flags);
+            ComTransport.Put(b, 28, PublicRefs);
+            ComTransport.Put(b, 32, Oxid); ComTransport.Put(b, 36, Oxid >> 32);
+            ComTransport.Put(b, 40, Oid); ComTransport.Put(b, 44, Oid >> 32);
+            Array.Copy(Ipid, 0, b, 48, 16);
+            // DUALSTRINGARRAY: four entries, the security part at 2 -- no
+            // string bindings, one empty security binding.
+            b[64] = 4; b[65] = 0; b[66] = 2; b[67] = 0;
+            return b;
+        }
+    }
+
+    /// <summary>
+    /// AN OBJECT IN ANOTHER PROCESS (the remote record a System.__ComObject
+    /// holds): its exporter, the IPIDs it has given for its interfaces and
+    /// the references held on each, and its calls made as ORPC requests.
+    /// </summary>
+    public sealed class RemoteObject : ComRemoteObject
+    {
+        public const string IidIRemUnknown = "00000131-0000-0000-C000-000000000046";
+        const int Refs = 5;
+        readonly ComOxid _where;
+        readonly long _oid;
+        readonly Dictionary<string, byte[]> _ipids = new Dictionary<string, byte[]>();
+        readonly Dictionary<string, int> _held = new Dictionary<string, int>();
+        readonly object _lock = new object();
+        bool _released;
+
+        public RemoteObject(ComOxid where, long oid, string iid, byte[] ipid, int publicRefs)
+        {
+            _where = where;
+            _oid = oid;
+            string i = ComMarshal.Normal(iid);
+            _ipids[i] = ipid;
+            _held[i] = publicRefs;
+        }
+
+        public ComOxid Where { get { return _where; } }
+        public long Oid { get { return _oid; } }
+
+        static byte[] Cid() { return Guid.NewGuid().ToByteArray(); }
+
+        byte[]? IpidOf(string iid)
+        {
+            lock (_lock)
+            {
+                byte[]? found;
+                return _ipids.TryGetValue(ComMarshal.Normal(iid), out found) ? found : null;
+            }
+        }
+
+        byte[] AnyIpid()
+        {
+            lock (_lock) { foreach (KeyValuePair<string, byte[]> e in _ipids) return e.Value; }
+            throw new InvalidComObjectException();
+        }
+
+        /// IRemUnknown::RemQueryInterface for one IID, `Refs` references asked.
+        public override bool Has(string iid)
+        {
+            string want = ComMarshal.Normal(iid);
+            if (IpidOf(want) != null) return true;
+            NdrWriter w = new NdrWriter();
+            w.OrpcThis(Cid());
+            w.Guid(AnyIpid());
+            w.Long(Refs);
+            w.Short(1);
+            w.Long(1);
+            w.Guid(want);
+            byte[] reply = ComTransport.Call(_where, _where.RemUnknown, IidIRemUnknown, 3, w.ToArray());
+            NdrReader r = new NdrReader(reply);
+            r.OrpcThat();
+            if (r.Long() == 0) return false;
+            r.Long();                                               // the array's conformance
+            r.Align(8);
+            int hr = r.Int();
+            r.Align(8);
+            r.Long();                                               // STDOBJREF.flags
+            int refs = r.Int();
+            r.Hyper(); r.Hyper();
+            byte[] ipid = r.Bytes(16);
+            int answered = r.Int();
+            if (hr < 0 || answered < 0) return false;
+            lock (_lock)
+            {
+                _ipids[want] = ipid;
+                _held[want] = refs;
+            }
+            return true;
+        }
+
+        /// A vtable call: the frame's arguments by their kinds, the outs
+        /// written to their slots, the HRESULT answered.
+        public override int Call(string iid, int slot, ComFrame frame)
+        {
+            byte[]? ipid = IpidOf(iid);
+            if (ipid == null && !Has(iid)) return ComMarshal.ENoInterface;
+            ipid = IpidOf(iid)!;
+            NdrWriter w = new NdrWriter();
+            w.OrpcThis(Cid());
+            foreach (ComArg a in frame.Args)
+            {
+                if (a.Direction == 0) w.Value(a.Kind, a.Value, a.Iid);
+                else if (a.Direction == 1) w.Value(a.Kind, ComSlots.Read(a.Kind, a.Slot), a.Iid);
+            }
+            byte[] reply = ComTransport.Call(_where, ipid, iid, slot, w.ToArray());
+            NdrReader r = new NdrReader(reply);
+            r.OrpcThat();
+            foreach (ComArg a in frame.Args)
+            {
+                if (a.Direction == 0) continue;
+                object? v = r.Value(a.Kind);
+                if (a.Direction == 1) ComSlots.Replace(a.Kind, a.Slot, v, a.Iid);
+                else ComSlots.Write(a.Kind, a.Slot, v, a.Iid);
+            }
+            return r.Int();
+        }
+
+        byte[] Dispatch()
+        {
+            if (!Has(ComMarshal.IidIDispatch)) throw new InvalidCastException("The remote object has no IDispatch (E_NOINTERFACE).");
+            return IpidOf(ComMarshal.IidIDispatch)!;
+        }
+
+        /// IDispatch::GetIDsOfNames, one name.
+        public override int GetDispId(string name, out int dispid)
+        {
+            dispid = -1;
+            NdrWriter w = new NdrWriter();
+            w.OrpcThis(Cid());
+            w.Raw(new byte[16]);                                    // IID_NULL
+            w.Long(1);                                              // the names' conformance
+            w.Long(w.Referent());
+            w.WideString(name);
+            w.Long(1);                                              // cNames
+            w.Long(0x400);                                          // LOCALE_USER_DEFAULT
+            byte[] reply = ComTransport.Call(_where, Dispatch(), ComMarshal.IidIDispatch, 5, w.ToArray());
+            NdrReader r = new NdrReader(reply);
+            r.OrpcThat();
+            r.Long();
+            dispid = r.Int();
+            return r.Int();
+        }
+
+        /// IDispatch::RemoteInvoke, as oleaut32's proxy makes it: the
+        /// by-reference arguments taken out of rgvarg into rgVarRef by their
+        /// indices; the answer, EXCEPINFO and those arguments read back.
+        public override int Invoke(int dispid, int flags, object?[] args, int byRef, out object? result)
+        {
+            result = null;
+            int n = args.Length;
+            bool put = (flags & (ComDispatch.PropertyPut | ComDispatch.PropertyPutRef)) != 0;
+            List<int> refs = new List<int>();
+            for (int i = 0; i < n && i < 31; i++) if ((byRef & (1 << i)) != 0) refs.Add(i);
+            NdrWriter w = new NdrWriter();
+            w.OrpcThis(Cid());
+            w.Long(dispid);
+            w.Raw(new byte[16]);
+            w.Long(0x400);
+            w.Long(flags);
+            // DISPPARAMS, its arrays after it: rgvarg (last argument first,
+            // a by-reference one VT_EMPTY), then the named DISPID.
+            w.Long(n > 0 ? w.Referent() : 0);
+            w.Long(put ? w.Referent() : 0);
+            w.Long(n);
+            w.Long(put ? 1 : 0);
+            if (n > 0)
+            {
+                w.Long(n);
+                for (int k = 0; k < n; k++) w.Long(NdrWriter.UserMarker);
+                for (int k = 0; k < n; k++)
+                {
+                    int i = n - 1 - k;
+                    w.Align(8);
+                    w.VariantBody(refs.Contains(i) ? null : args[i]);
+                }
+            }
+            if (put) { w.Long(1); w.Long(ComDispatch.DispidPropertyPut); }
+            w.Long(refs.Count);                                     // cVarRef
+            w.Long(refs.Count);
+            foreach (int i in refs) w.Long(n - 1 - i);              // rgVarRefIdx: places in rgvarg
+            w.Long(refs.Count);
+            foreach (int i in refs) w.Long(NdrWriter.UserMarker);
+            foreach (int i in refs) { w.Align(8); w.VariantBody(new VariantWrapper(args[i])); }
+            byte[] reply = ComTransport.Call(_where, Dispatch(), ComMarshal.IidIDispatch, 6, w.ToArray());
+            NdrReader r = new NdrReader(reply);
+            r.OrpcThat();
+            result = r.Variant();
+            // EXCEPINFO: its BSTRs' markers in place, their bodies after it.
+            r.Short(); r.Short();
+            long[] markers = new long[3];
+            for (int k = 0; k < 3; k++) markers[k] = r.Long();
+            r.Long(); r.Long(); r.Long();
+            int scode = r.Int();
+            string?[] texts = new string?[3];
+            for (int k = 0; k < 3; k++) if (markers[k] != 0) { r.Align(8); texts[k] = r.BstrBody(); }
+            r.Long();                                               // puArgErr
+            int count = r.Int();
+            for (int k = 0; k < count; k++) r.Long();
+            for (int k = 0; k < count; k++)
+            {
+                r.Align(8);
+                object? v = r.VariantBody();
+                if (k < refs.Count) args[refs[k]] = v;
+            }
+            int hr = r.Int();
+            if (hr == ComMarshal.DispEException) throw new COMException(texts[1] ?? "Exception occurred.", scode != 0 ? scode : hr);
+            return hr;
+        }
+
+        /// IRemUnknown::RemRelease of every reference held.
+        public override void Release()
+        {
+            List<KeyValuePair<string, byte[]>> all = new List<KeyValuePair<string, byte[]>>();
+            Dictionary<string, int> held;
+            lock (_lock)
+            {
+                if (_released) return;
+                _released = true;
+                foreach (KeyValuePair<string, byte[]> e in _ipids) all.Add(e);
+                held = new Dictionary<string, int>(_held);
+            }
+            List<KeyValuePair<string, byte[]>> counted = all.FindAll(e => held.ContainsKey(e.Key) && held[e.Key] > 0);
+            if (counted.Count == 0) return;
+            try
+            {
+                NdrWriter w = new NdrWriter();
+                w.OrpcThis(Cid());
+                w.Short(counted.Count);
+                w.Long(counted.Count);
+                foreach (KeyValuePair<string, byte[]> e in counted)
+                {
+                    w.Raw(e.Value);
+                    w.Long(held[e.Key]);
+                    w.Long(0);
+                }
+                ComTransport.Call(_where, _where.RemUnknown, IidIRemUnknown, 5, w.ToArray());
+            }
+            catch (Exception) { }
+        }
+
+        /// IRemUnknown::RemAddRef: `count` more references on `iid`, for an OBJREF handed on.
+        public byte[] Share(string iid, int count)
+        {
+            string want = ComMarshal.Normal(iid);
+            if (!Has(want)) throw new InvalidCastException("The remote object does not have " + want + " (E_NOINTERFACE).");
+            byte[] ipid = IpidOf(want)!;
+            NdrWriter w = new NdrWriter();
+            w.OrpcThis(Cid());
+            w.Short(1);
+            w.Long(1);
+            w.Raw(ipid);
+            w.Long(count);
+            w.Long(0);
+            byte[] reply = ComTransport.Call(_where, _where.RemUnknown, IidIRemUnknown, 4, w.ToArray());
+            NdrReader r = new NdrReader(reply);
+            r.OrpcThat();
+            r.Long();
+            int result = r.Int();
+            ComMarshal.Check(r.Int());
+            ComMarshal.Check(result);
+            return ipid;
+        }
+
+        /// A native pointer for native code: a COM-callable stand-in
+        /// forwarding IDispatch to this object.
+        public override nint Pointer(string iid)
+        {
+            string want = ComMarshal.Normal(iid);
+            if (want != ComMarshal.IidIUnknown && want != ComMarshal.IidIDispatch) return 0;
+            return ComCallable.For(new RemoteStandIn(this)).Query(want);
+        }
+    }
+
+    /// <summary>A remote object's stand-in for native code in this process: its IDispatch forwarded.</summary>
+    sealed class RemoteStandIn : IComCallable
+    {
+        readonly RemoteObject _remote;
+        public RemoteStandIn(RemoteObject remote) { _remote = remote; }
+        public ComInterfaceEntry[] __ComInterfaces() { return new ComInterfaceEntry[0]; }
+        public int __ComDispId(string name)
+        {
+            int id;
+            return _remote.GetDispId(name, out id) < 0 ? -1 : id;
+        }
+        public int __ComInvoke(int dispid, int flags, object?[] args, out object? result)
+        {
+            return _remote.Invoke(dispid, flags, args, 0, out result);
+        }
+    }
+
+    /// <summary>A ComFrame slot read and written by its kind's name: what remote calls fill.</summary>
+    public static class ComSlots
+    {
+        public static object? Read(string kind, nint at)
+        {
+            switch (kind)
+            {
+                case "I1": return ComMarshal.ReadI1(at);
+                case "U1": return ComMarshal.ReadU1(at);
+                case "I2": return ComMarshal.ReadI2(at);
+                case "U2": return ComMarshal.ReadU2(at);
+                case "I4": return ComMarshal.ReadI4(at);
+                case "U4": return ComMarshal.ReadU4(at);
+                case "I8": return ComMarshal.ReadI8(at);
+                case "U8": return ComMarshal.ReadU8(at);
+                case "R4": return ComMarshal.ReadR4(at);
+                case "R8": return ComMarshal.ReadR8(at);
+                case "Char": return ComMarshal.ReadChar(at);
+                case "VBool": return ComMarshal.ReadVBool(at);
+                case "Bool": return ComMarshal.ReadBool(at);
+                case "Bool1": return ComMarshal.ReadBool1(at);
+                case "Bstr": return ComMarshal.ReadBstr(at);
+                case "LpwStr": return ComMarshal.ReadLpwStr(at);
+                case "LpStr": return ComMarshal.ReadLpStr(at);
+                case "Variant": return ComMarshal.ReadVariant(at);
+                case "Unknown": case "Dispatch": case "Interface": return ComMarshal.ReadInterface(at);
+                case "Guid": return ComMarshal.ReadGuid(at);
+                case "SafeArray": return ComMarshal.ReadSafeArray(at);
+            }
+            throw new NotSupportedException("a " + kind + " does not cross processes");
+        }
+
+        public static void Write(string kind, nint at, object? v, string iid)
+        {
+            switch (kind)
+            {
+                case "I1": case "U1": case "Bool1": Sys.PokeByte(at, kind == "Bool1" ? (ComMarshal.Bool(v) ? 1 : 0) : ComMarshal.Long(v)); return;
+                case "I2": case "U2": Sys.PokeHalf(at, ComMarshal.Long(v)); return;
+                case "Char": Sys.PokeHalf(at, v is char c ? c : ComMarshal.Long(v)); return;
+                case "VBool": ComMarshal.WriteVBool(at, ComMarshal.Bool(v)); return;
+                case "I4": case "U4": Sys.PokeWord(at, ComMarshal.Long(v)); return;
+                case "Bool": ComMarshal.WriteBool(at, ComMarshal.Bool(v)); return;
+                case "R4": ComMarshal.WriteR4(at, (float)ComMarshal.Double(v)); return;
+                case "I8": case "U8": ComMarshal.WriteI8(at, ComMarshal.Long(v)); return;
+                case "R8": ComMarshal.WriteR8(at, ComMarshal.Double(v)); return;
+                case "Bstr": ComMarshal.WriteBstr(at, (string?)v); return;
+                case "LpwStr": ComMarshal.WriteLpwStr(at, (string?)v); return;
+                case "LpStr": ComMarshal.WriteLpStr(at, (string?)v); return;
+                case "Variant": ComMarshal.WriteVariant(at, v); return;
+                case "Unknown": ComMarshal.WriteUnknown(at, v); return;
+                case "Dispatch": ComMarshal.WriteDispatch(at, v); return;
+                case "Interface": ComMarshal.WriteInterface(at, v, iid); return;
+                case "Guid": ComMarshal.WriteGuid(at, (Guid)v!); return;
+                case "SafeArray": ComMarshal.WriteSafeArray(at, v); return;
+            }
+            throw new NotSupportedException("a " + kind + " does not cross processes");
+        }
+
+        public static void Replace(string kind, nint at, object? v, string iid)
+        {
+            switch (kind)
+            {
+                case "Bstr": ComMarshal.ReplaceBstr(at, (string?)v); return;
+                case "LpwStr": ComMarshal.ReplaceLpwStr(at, (string?)v); return;
+                case "LpStr": ComMarshal.ReplaceLpStr(at, (string?)v); return;
+                case "Variant": ComMarshal.ReplaceVariant(at, v); return;
+                case "Unknown": ComMarshal.ReplaceUnknown(at, v); return;
+                case "Dispatch": ComMarshal.ReplaceDispatch(at, v); return;
+                case "Interface": ComMarshal.ReplaceInterface(at, v, iid); return;
+                case "SafeArray": ComMarshal.ReplaceSafeArray(at, v); return;
+            }
+            Write(kind, at, v, iid);
+        }
+
+        /// A ComFrame argument by its kind's name: what the exporter's stub passes.
+        public static void In(ComFrame f, string kind, object? v, string iid)
+        {
+            switch (kind)
+            {
+                case "I1": f.InI1((sbyte)ComMarshal.Long(v)); return;
+                case "U1": f.InU1((byte)ComMarshal.Long(v)); return;
+                case "I2": f.InI2((short)ComMarshal.Long(v)); return;
+                case "U2": f.InU2((ushort)ComMarshal.Long(v)); return;
+                case "I4": f.InI4((int)ComMarshal.Long(v)); return;
+                case "U4": f.InU4((uint)ComMarshal.Long(v)); return;
+                case "I8": f.InI8(ComMarshal.Long(v)); return;
+                case "U8": f.InU8((ulong)ComMarshal.Long(v)); return;
+                case "R4": f.InR4((float)ComMarshal.Double(v)); return;
+                case "R8": f.InR8(ComMarshal.Double(v)); return;
+                case "Char": f.InChar(v is char c ? c : (char)ComMarshal.Long(v)); return;
+                case "VBool": f.InVBool(ComMarshal.Bool(v)); return;
+                case "Bool": f.InBool(ComMarshal.Bool(v)); return;
+                case "Bool1": f.InBool1(ComMarshal.Bool(v)); return;
+                case "Bstr": f.InBstr((string?)v); return;
+                case "LpwStr": f.InLpwStr((string?)v); return;
+                case "LpStr": f.InLpStr((string?)v); return;
+                case "Variant": f.InVariant(v); return;
+                case "Unknown": f.InUnknown(v); return;
+                case "Dispatch": f.InDispatch(v); return;
+                case "Interface": f.InInterface(v, iid); return;
+                case "Guid": f.InGuid((Guid)v!); return;
+                case "SafeArray": f.InSafeArray(v); return;
+            }
+            throw new NotSupportedException("a " + kind + " does not cross processes");
+        }
+
+        public static object? Take(string kind, nint at)
+        {
+            switch (kind)
+            {
+                case "Bstr": return ComMarshal.TakeBstr(at);
+                case "LpwStr": return ComMarshal.TakeLpwStr(at);
+                case "LpStr": return ComMarshal.TakeLpStr(at);
+                case "Variant": return ComMarshal.TakeVariant(at);
+                case "Unknown": case "Dispatch": case "Interface": return ComMarshal.TakeInterface(at);
+                case "SafeArray": return ComMarshal.TakeSafeArray(at);
+            }
+            return Read(kind, at);
+        }
+    }
+
+    /// <summary>OBJREFs made from objects and objects from OBJREFs: what NDR's interface pointers are.</summary>
+    sealed class ComObjRefCodec : IComObjRefs
+    {
+        public byte[]? Marshal(object? o, string iid)
+        {
+            if (o == null) return null;
+            System.__ComObject? c = o as System.__ComObject;
+            if (c != null)
+            {
+                RemoteObject? remote = c._remote as RemoteObject;
+                if (remote == null) throw new NotSupportedException("a COM object of this process's native code cannot be passed to another process here");
+                // Handed on: references asked of its own exporter for whoever gets it.
+                byte[] ipid = remote.Share(iid, 5);
+                ComObjRef shared = new ComObjRef { Iid = ComMarshal.Normal(iid), Flags = 0, PublicRefs = 5, Oxid = remote.Where.Oxid, Oid = remote.Oid, Ipid = ipid };
+                return shared.Write();
+            }
+            return ComExporter.Export(o, iid);
+        }
+
+        public object? Unmarshal(byte[] objref)
+        {
+            ComObjRef? r = ComObjRef.Read(objref);
+            if (r == null) throw new COMException("not an OBJREF", unchecked((int)0x80040007));
+            if (ComExporter.IsOwn(r.Oxid))
+            {
+                object? own = ComExporter.Local(r.Ipid);
+                if (own != null) { ComExporter.GiveBack(r.Ipid, r.PublicRefs); return own; }
+            }
+            ComOxid where = ComOxid.Resolve(r.Oxid);
+            return new System.__ComObject(new RemoteObject(where, r.Oid, r.Iid, r.Ipid, r.PublicRefs));
+        }
+    }
+
+    /// <summary>
+    /// THIS PROGRAM'S OBJECTS SERVED TO OTHER PROCESSES: one object exporter
+    /// (OXID) registered with the broker the first time an object is handed
+    /// out, reached at "com.CORSAC.&lt;pid&gt;", serving IRemUnknown, IDispatch,
+    /// IClassFactory and the compiler-made vtables of what it exports.
+    /// </summary>
+    public static class ComExporter
+    {
+        public const string IidIClassFactory = "00000001-0000-0000-C000-000000000046";
+        const int RpcBadStub = 0x6F7, OperationRange = 0x1C010002, UnknownInterface = 0x1C010003, Disconnected = unchecked((int)0x80010108);
+        static readonly object _lock = new object();
+        static bool _started;
+        static long _oxid, _nextOid;
+        static int _nextIpid;
+        static string _endpoint = "";
+        static byte[] _remUnknown = new byte[16];
+        static readonly Dictionary<string, Export> _byIpid = new Dictionary<string, Export>();
+        static readonly Dictionary<long, Exported> _byObject = new Dictionary<long, Exported>();
+
+        static ComExporter()
+        {
+            if (ComObjRefs.Current == null) ComObjRefs.Current = new ComObjRefCodec();
+        }
+
+        sealed class Exported
+        {
+            public object Target = null!;
+            public long Oid;
+            public readonly Dictionary<string, Export> ByIid = new Dictionary<string, Export>();
+        }
+
+        sealed class Export
+        {
+            public Exported Owner = null!;
+            public string Iid = "";
+            public byte[] Ipid = new byte[16];
+            public int PublicRefs;
+            public nint Pointer;
+            public ComInterfaceEntry? Entry;
+        }
+
+        public static string Endpoint { get { Start(); return _endpoint; } }
+        public static long Oxid { get { Start(); return _oxid; } }
+
+        public static bool IsOwn(long oxid) { return _started && oxid == _oxid; }
+
+        static string Key(byte[] ipid)
+        {
+            StringBuilder s = new StringBuilder(32);
+            foreach (byte b in ipid) s.Append(b.ToString("X2"));
+            return s.ToString();
+        }
+
+        /// An IPID: a count, this process, and four bytes of chance, so that
+        /// one from an earlier run of the same pid is not taken for one now.
+        static byte[] NewIpid()
+        {
+            byte[] ipid = Guid.NewGuid().ToByteArray();
+            int n = ++_nextIpid;
+            ComTransport.Put(ipid, 0, n);
+            ComTransport.Put(ipid, 4, Os.Getpid());
+            return ipid;
+        }
+
+        /// The exporter registered and listening: the broker's OXID for it,
+        /// its OXID_INFO (this thread, pid, IRemUnknown's IPID) and its
+        /// binding, "ncalrpc:[CORSAC.<pid>]".
+        public static void Start()
+        {
+            lock (_lock)
+            {
+                if (_started) return;
+                long key = ComBroker.Key;
+                int pid = Os.Getpid();
+                _endpoint = "CORSAC." + pid;
+                int fd = Os.Socket(1, 1 | 0x80000, 0);
+                if (fd < 0 || Os.Bind(fd, ComTransport.Address("com." + _endpoint)) < 0 || Os.Listen(fd, 16) < 0)
+                    throw new COMException("The COM exporter could not listen at com." + _endpoint + ".", unchecked((int)0x80080005));
+                _remUnknown = NewIpid();
+                byte[] info = new byte[36];
+                ComTransport.Put(info, 0, ComBroker.Thread);
+                ComTransport.Put(info, 4, pid);
+                ComTransport.Put(info, 8, 1);                       // RPC_C_AUTHN_LEVEL_NONE
+                info[12] = 5; info[14] = 7;                         // COM 5.7
+                Array.Copy(_remUnknown, 0, info, 16, 16);
+                // The DUALSTRINGARRAY as the broker keeps it: the security
+                // part's offset, then the words -- ncalrpc (0x10) and the
+                // endpoint, the end of the strings, then NTLM's binding.
+                List<int> words = new List<int> { 0x10 };
+                foreach (char c in _endpoint) words.Add(c);
+                words.Add(0);
+                words.Add(0);
+                int security = words.Count;
+                words.Add(10); words.Add(0xFFFF); words.Add(0); words.Add(0);
+                List<byte> dsa = new List<byte> { (byte)security, (byte)(security >> 8) };
+                foreach (int w in words) { dsa.Add((byte)w); dsa.Add((byte)(w >> 8)); }
+                WireWriter req = new WireWriter();
+                req.Int(key);
+                req.Int(0);                                         // free-threaded
+                req.Bytes(info);
+                req.Bytes(dsa.ToArray());
+                req.Bytes(new byte[0]);
+                req.Int(4096);
+                WireReader r = ComBroker.Ask(ServiceRequest.ComOxidRegister, req);
+                _oxid = r.Quad();
+                _nextOid = r.Quad();
+                _started = true;
+                int listening = fd;
+                Thread accept = new Thread(() => Accept(listening));
+                accept.IsBackground = true;
+                accept.Start();
+            }
+        }
+
+        static void Accept(int listening)
+        {
+            while (true)
+            {
+                int fd = Os.Accept(listening, null);
+                if (fd < 0) { if (fd == -4) continue; return; }
+                int one = fd;
+                Thread serve = new Thread(() => Serve(one));
+                serve.IsBackground = true;
+                serve.Start();
+            }
+        }
+
+        /// One connection: frames read and answered until it ends.
+        static void Serve(int fd)
+        {
+            try
+            {
+                while (true)
+                {
+                    byte[]? body = ComTransport.ReceiveFrame(fd);
+                    if (body == null) return;
+                    byte[] answer = Answer(body);
+                    if (!ComTransport.SendAll(fd, ComTransport.Frame(answer))) return;
+                }
+            }
+            finally { Os.Close(fd); }
+        }
+
+        /// A call frame's answer: the status, then the response NDR.
+        public static byte[] Answer(byte[] body)
+        {
+            long status = 0;
+            byte[] ndr = new byte[0];
+            try
+            {
+                if (body.Length < 4 + 16 + 16 + 8 || ComTransport.Get(body, 0) != ComTransport.KindCall) status = RpcBadStub;
+                else
+                {
+                    byte[] ipid = new byte[16];
+                    Array.Copy(body, 4, ipid, 0, 16);
+                    byte[] iid = new byte[16];
+                    Array.Copy(body, 20, iid, 0, 16);
+                    int opnum = ComTransport.Get(body, 36);
+                    int length = ComTransport.Get(body, 40);
+                    if (length < 0 || 44 + length > body.Length) status = RpcBadStub;
+                    else
+                    {
+                        byte[] request = new byte[length];
+                        Array.Copy(body, 44, request, 0, length);
+                        ndr = Dispatch(ipid, ComMarshal.Normal(new Guid(iid).ToString()), opnum, request, out status);
+                    }
+                }
+            }
+            catch (Exception) { status = RpcBadStub; ndr = new byte[0]; }
+            byte[] made = new byte[8 + ndr.Length];
+            ComTransport.Put(made, 0, status);
+            ComTransport.Put(made, 4, ndr.Length);
+            Array.Copy(ndr, 0, made, 8, ndr.Length);
+            return made;
+        }
+
+        /// The interface `iid` of `o` exported: its OBJREF, five references
+        /// given with it.
+        public static byte[] Export(object o, string iid)
+        {
+            Start();
+            Export e = ExportOf(o, ComMarshal.Normal(iid), 5);
+            ComObjRef r = new ComObjRef { Iid = e.Iid, Flags = ComObjRef.NoPing, PublicRefs = 5, Oxid = _oxid, Oid = e.Owner.Oid, Ipid = e.Ipid };
+            return r.Write();
+        }
+
+        static Export ExportOf(object o, string iid, int refs)
+        {
+            lock (_lock)
+            {
+                long key = Sys.Word(o);
+                Exported? x;
+                if (!_byObject.TryGetValue(key, out x) || x == null)
+                {
+                    x = new Exported { Target = o, Oid = _nextOid++ };
+                    _byObject[key] = x;
+                }
+                Export? e;
+                if (!x.ByIid.TryGetValue(iid, out e) || e == null)
+                {
+                    ComCallableWrapper ccw = ComCallable.For(o);
+                    nint pointer = o is ComClassObject ? 0 : ccw.Query(iid);
+                    if (pointer == 0 && !(o is ComClassObject && (iid == IidIClassFactory || iid == ComMarshal.IidIUnknown)))
+                        throw new InvalidCastException("The object does not have the interface " + iid + " (E_NOINTERFACE).");
+                    e = new Export { Owner = x, Iid = iid, Ipid = NewIpid(), Pointer = pointer, Entry = pointer == 0 ? null : ccw.EntryOf(pointer) };
+                    x.ByIid[iid] = e;
+                    _byIpid[Key(e.Ipid)] = e;
+                }
+                e.PublicRefs += refs;
+                return e;
+            }
+        }
+
+        /// The object one of this exporter's IPIDs stands for, or null.
+        public static object? Local(byte[] ipid)
+        {
+            lock (_lock)
+            {
+                Export? e;
+                return _byIpid.TryGetValue(Key(ipid), out e) && e != null ? e.Owner.Target : null;
+            }
+        }
+
+        /// References an OBJREF of this exporter's carried back to it, given up.
+        public static void GiveBack(byte[] ipid, int refs)
+        {
+            lock (_lock)
+            {
+                Export? e;
+                if (_byIpid.TryGetValue(Key(ipid), out e) && e != null) Drop(e, refs);
+            }
+        }
+
+        /// `refs` public references let go of: at 0 the IPID ends, its
+        /// interface pointer released, and with the last the object's OID.
+        static void Drop(Export e, int refs)
+        {
+            e.PublicRefs -= refs;
+            if (e.PublicRefs > 0) return;
+            _byIpid.Remove(Key(e.Ipid));
+            e.Owner.ByIid.Remove(e.Iid);
+            if (e.Pointer != 0) ComMarshal.Release(e.Pointer);
+            if (e.Owner.ByIid.Count == 0) _byObject.Remove(Sys.Word(e.Owner.Target));
+        }
+
+        // ---- the calls ---------------------------------------------------------------------
+
+        static byte[] Dispatch(byte[] ipid, string iid, int opnum, byte[] ndr, out long status)
+        {
+            status = 0;
+            if (Key(ipid) == Key(_remUnknown)) return RemUnknown(opnum, ndr, out status);
+            Export? e;
+            lock (_lock) { if (!_byIpid.TryGetValue(Key(ipid), out e)) e = null; }
+            if (e == null)
+            {
+                NdrWriter gone = new NdrWriter();
+                gone.OrpcThat();
+                gone.Long(Disconnected);
+                return gone.ToArray();
+            }
+            if (e.Owner.Target is ComClassObject factory) return ClassFactory(factory, opnum, ndr, out status);
+            bool dispatch = e.Iid == ComMarshal.IidIDispatch || (e.Entry != null && e.Entry.Dual && opnum >= 3 && opnum <= 6);
+            if (dispatch) return DispatchCall(e.Owner.Target, opnum, ndr, out status);
+            if (e.Entry == null || opnum < e.Entry.BaseSlots || opnum - e.Entry.BaseSlots >= e.Entry.Signatures.Length)
+            {
+                status = OperationRange;
+                return new byte[0];
+            }
+            return Vtable(e, opnum, e.Entry.Signatures[opnum - e.Entry.BaseSlots], ndr);
+        }
+
+        /// A vtable entry's call: its arguments read by the signature, the
+        /// call made through the interface pointer as a caller in this
+        /// process would, the [out]s and the HRESULT written back.
+        static byte[] Vtable(Export e, int opnum, string signature, byte[] ndr)
+        {
+            NdrReader r = new NdrReader(ndr);
+            r.OrpcThis();
+            bool preserve = signature.StartsWith("!");
+            string[] tokens = (preserve ? signature.Substring(1) : signature).Split(',');
+            ComFrame f = new ComFrame(e.Pointer);
+            List<nint> slots = new List<nint>();
+            List<string> kinds = new List<string>(), iids = new List<string>();
+            try
+            {
+                foreach (string token in tokens)
+                {
+                    if (token.Length < 2) continue;
+                    char dir = token[0];
+                    string rest = token.Substring(1);
+                    int colon = rest.IndexOf(':');
+                    string kind = colon < 0 ? rest : rest.Substring(0, colon);
+                    string iid = colon < 0 ? "" : rest.Substring(colon + 1);
+                    if (dir == 'p') continue;                       // a [PreserveSig] member's answer
+                    if (dir == 'i') { ComSlots.In(f, kind, r.Value(kind), iid); continue; }
+                    nint slot = f.Out(kind, iid);
+                    if (dir == 'r') ComSlots.Write(kind, slot, r.Value(kind), iid);
+                    slots.Add(slot); kinds.Add(kind); iids.Add(iid);
+                }
+                int hr = f.Call(opnum);
+                NdrWriter w = new NdrWriter();
+                w.OrpcThat();
+                for (int i = 0; i < slots.Count; i++) w.Value(kinds[i], ComSlots.Take(kinds[i], slots[i]), iids[i]);
+                w.Long(hr);
+                return w.ToArray();
+            }
+            finally { f.Done(); }
+        }
+
+        /// IRemUnknown: RemQueryInterface (3), RemAddRef (4), RemRelease (5).
+        static byte[] RemUnknown(int opnum, byte[] ndr, out long status)
+        {
+            status = 0;
+            NdrReader r = new NdrReader(ndr);
+            r.OrpcThis();
+            NdrWriter w = new NdrWriter();
+            w.OrpcThat();
+            if (opnum == 3)
+            {
+                byte[] ripid = r.Guid();
+                int refs = r.Int();
+                int count = r.Short();
+                r.Long();
+                List<byte[]> iids = new List<byte[]>();
+                for (int i = 0; i < count; i++) iids.Add(r.Guid());
+                Export? from;
+                lock (_lock) { if (!_byIpid.TryGetValue(Key(ripid), out from)) from = null; }
+                if (from == null) { w.Long(0); w.Long(Disconnected); return w.ToArray(); }
+                w.Long(w.Referent());
+                w.Long(count);
+                foreach (byte[] iid in iids)
+                {
+                    w.Align(8);
+                    Export? got = null;
+                    int hr = 0;
+                    try { got = ExportOf(from.Owner.Target, ComMarshal.Normal(new Guid(iid).ToString()), Math.Max(refs, 1)); }
+                    catch (Exception) { hr = ComMarshal.ENoInterface; }
+                    w.Long(hr);
+                    w.Align(8);
+                    w.Long(ComObjRef.NoPing);
+                    w.Long(got == null ? 0 : Math.Max(refs, 1));
+                    w.Hyper(got == null ? 0 : _oxid);
+                    w.Hyper(got == null ? 0 : got.Owner.Oid);
+                    w.Raw(got == null ? new byte[16] : got.Ipid);
+                }
+                w.Long(0);
+                return w.ToArray();
+            }
+            if (opnum == 4 || opnum == 5)
+            {
+                int count = r.Short();
+                r.Long();
+                List<int> results = new List<int>();
+                lock (_lock)
+                {
+                    for (int i = 0; i < count; i++)
+                    {
+                        byte[] ipid = r.Bytes(16);
+                        int publicRefs = r.Int();
+                        r.Int();                                    // private references
+                        Export? e;
+                        if (!_byIpid.TryGetValue(Key(ipid), out e) || e == null) { results.Add(ComMarshal.EInvalidArg); continue; }
+                        if (opnum == 4) e.PublicRefs += publicRefs;
+                        else Drop(e, publicRefs);
+                        results.Add(0);
+                    }
+                }
+                if (opnum == 4)
+                {
+                    w.Long(count);
+                    foreach (int hr in results) w.Long(hr);
+                }
+                w.Long(0);
+                return w.ToArray();
+            }
+            status = OperationRange;
+            return new byte[0];
+        }
+
+        /// IClassFactory: RemoteCreateInstance (3), RemoteLockServer (4).
+        static byte[] ClassFactory(ComClassObject factory, int opnum, byte[] ndr, out long status)
+        {
+            status = 0;
+            NdrReader r = new NdrReader(ndr);
+            r.OrpcThis();
+            NdrWriter w = new NdrWriter();
+            w.OrpcThat();
+            if (opnum == 3)
+            {
+                string iid = ComMarshal.Normal(new Guid(r.Guid()).ToString());
+                try
+                {
+                    object made = factory.Create();
+                    byte[] objref = Export(made, iid);
+                    w.Long(w.Referent());
+                    w.InterfaceBody(objref);
+                    w.Long(0);
+                }
+                catch (Exception e)
+                {
+                    w.Long(0);
+                    w.Long(ComMarshal.HResultOf(e));
+                }
+                return w.ToArray();
+            }
+            if (opnum == 4)
+            {
+                r.Long();
+                w.Long(0);
+                return w.ToArray();
+            }
+            status = OperationRange;
+            return new byte[0];
+        }
+
+        /// IDispatch served for an exported object: GetTypeInfoCount (3),
+        /// GetTypeInfo (4), GetIDsOfNames (5), RemoteInvoke (6).
+        static byte[] DispatchCall(object target, int opnum, byte[] ndr, out long status)
+        {
+            status = 0;
+            IComCallable? c = target as IComCallable;
+            NdrReader r = new NdrReader(ndr);
+            r.OrpcThis();
+            NdrWriter w = new NdrWriter();
+            w.OrpcThat();
+            switch (opnum)
+            {
+                case 3:
+                    w.Long(0);
+                    w.Long(0);
+                    return w.ToArray();
+                case 4:
+                    w.Long(0);                                      // no ITypeInfo
+                    w.Long(unchecked((int)0x8002000B));
+                    return w.ToArray();
+                case 5:
+                {
+                    r.Guid();
+                    int max = r.Int();
+                    List<bool> present = new List<bool>();
+                    for (int i = 0; i < max; i++) present.Add(r.Long() != 0);
+                    List<string> names = new List<string>();
+                    foreach (bool p in present) names.Add(p ? r.WideString() : "");
+                    int count = r.Int();
+                    r.Long();
+                    int hr = 0;
+                    w.Long(count);
+                    for (int i = 0; i < count; i++)
+                    {
+                        int id = i == 0 && c != null && i < names.Count ? c.__ComDispId(names[i]) : -1;
+                        if (id == -1) hr = ComMarshal.DispEUnknownName;
+                        w.Long(id);
+                    }
+                    w.Long(hr);
+                    return w.ToArray();
+                }
+                case 6:
+                    return RemoteInvoke(c, r, w);
+            }
+            status = OperationRange;
+            return new byte[0];
+        }
+
+        /// IDispatch::RemoteInvoke's stub: the DISPPARAMS and the
+        /// by-reference arguments (rgVarRef at rgVarRefIdx) read, the call
+        /// made on the object's IComCallable, the answer, an EXCEPINFO and
+        /// the by-reference arguments written back.
+        static byte[] RemoteInvoke(IComCallable? c, NdrReader r, NdrWriter w)
+        {
+            int dispid = r.Int();
+            r.Guid();
+            r.Long();
+            int flags = r.Int() & 0xFFFF;
+            bool hasArgs = r.Long() != 0, hasNamed = r.Long() != 0;
+            int count = r.Int();
+            int named = r.Int();
+            object?[] wire = new object?[count];
+            if (hasArgs)
+            {
+                int max = r.Int();
+                for (int i = 0; i < max; i++) r.Long();
+                for (int i = 0; i < max; i++) { r.Align(8); object? v = r.VariantBody(); if (i < count) wire[i] = v; }
+            }
+            List<int> namedIds = new List<int>();
+            if (hasNamed)
+            {
+                int max = r.Int();
+                for (int i = 0; i < max; i++) namedIds.Add(r.Int());
+            }
+            int refCount = r.Int();
+            int idxMax = r.Int();
+            int[] indices = new int[idxMax];
+            for (int i = 0; i < idxMax; i++) indices[i] = r.Int();
+            int refMax = r.Int();
+            for (int i = 0; i < refMax; i++) r.Long();
+            for (int i = 0; i < refMax; i++) { r.Align(8); object? v = r.VariantBody(); if (i < indices.Length && indices[i] >= 0 && indices[i] < count) wire[indices[i]] = v; }
+            int positional = count - named;
+            object?[] args = new object?[count];
+            for (int i = 0; i < positional; i++) args[i] = wire[count - 1 - i];
+            if (named == 1 && namedIds.Count == 1 && namedIds[0] == ComDispatch.DispidPropertyPut) args[positional] = wire[0];
+            object? result = null;
+            int hr;
+            string? description = null, source = null;
+            int scode = 0;
+            try
+            {
+                if (c == null) hr = ComMarshal.DispEMemberNotFound;
+                else if (named > 0 && (named != 1 || namedIds.Count != 1 || namedIds[0] != ComDispatch.DispidPropertyPut)) hr = ComMarshal.DispEParamNotFound;
+                else hr = c.__ComInvoke(dispid, flags, args, out result);
+            }
+            catch (Exception e)
+            {
+                hr = ComMarshal.DispEException;
+                scode = ComMarshal.HResultOf(e);
+                description = e.Message;
+                source = e.GetType().Name;
+            }
+            w.Variant(hr < 0 ? null : result);
+            // EXCEPINFO: three BSTR markers in place, their bodies after it.
+            w.Short(0); w.Short(0);
+            w.Long(NdrWriter.UserMarker); w.Long(NdrWriter.UserMarker); w.Long(NdrWriter.UserMarker);
+            w.Long(0); w.Long(0); w.Long(0);
+            w.Long(scode);
+            w.Align(8); w.BstrBody(source);
+            w.Align(8); w.BstrBody(description);
+            w.Align(8); w.BstrBody(null);
+            w.Long(0);                                              // puArgErr
+            w.Long(indices.Length);
+            foreach (int i in indices) w.Long(NdrWriter.UserMarker);
+            foreach (int idx in indices)
+            {
+                int arg = count - 1 - idx;
+                w.Align(8);
+                w.VariantBody(new VariantWrapper(arg >= 0 && arg < count ? args[arg] : null));
+            }
+            w.Long(hr);
+            return w.ToArray();
+        }
+
+        // ---- class objects ------------------------------------------------------------------
+
+        /// A class's object registered with the broker (CoRegisterClassObject):
+        /// its IClassFactory's IPID, REGCLS_MULTIPLEUSE. The broker's key.
+        public static long RegisterClass(string clsid, Func<object> create)
+        {
+            Start();
+            ComClassObject factory = new ComClassObject(create);
+            Export e = ExportOf(factory, IidIClassFactory, 1);
+            WireWriter w = new WireWriter();
+            w.Int(ComBroker.Key);
+            w.Int(1);
+            w.Text(ComMarshal.Normal(clsid));
+            w.Quad(_oxid);
+            w.Bytes(e.Ipid);
+            w.Int(1);
+            WireReader r = ComBroker.Ask(ServiceRequest.ComClassRegister, w);
+            r.Int();
+            return r.Int();
+        }
+
+        public static void RevokeClass(long key)
+        {
+            WireWriter w = new WireWriter();
+            w.Int(1);
+            w.Int(key);
+            ComBroker.Ask(ServiceRequest.ComClassRevoke, w);
+        }
+    }
+
+    /// <summary>A class object this program serves (IClassFactory): what makes the class's instances.</summary>
+    sealed class ComClassObject
+    {
+        readonly Func<object> _create;
+        public ComClassObject(Func<object> create) { _create = create; }
+        public object Create() { return _create(); }
+    }
+
+    /// <summary>
+    /// A NATIVE COM SERVER'S CALLS: a class's object registered (what the
+    /// broker activates a client's request with), an object made the
+    /// running one of its class (the running object table,
+    /// Marshal.GetActiveObject's), and whether the program was started to
+    /// serve ("-Embedding", as the broker starts a class's server).
+    /// </summary>
+    public static class ComServer
+    {
+        public static long RegisterClassObject(Guid clsid, Func<object> create) { return ComExporter.RegisterClass(clsid.ToString(), create); }
+
+        public static void RevokeClassObject(long cookie) { ComExporter.RevokeClass(cookie); }
+
+        public static bool IsEmbedding(string[] args)
+        {
+            foreach (string a in args) if (string.Equals(a, "-Embedding", StringComparison.OrdinalIgnoreCase) || string.Equals(a, "/Embedding", StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
+        /// RegisterActiveObject: the object entered in the running object
+        /// table under its class's item moniker ("!{CLSID}"), as oleaut32
+        /// enters it. The entry's key, for RevokeActiveObject.
+        public static long RegisterActiveObject(object o, Guid clsid)
+        {
+            byte[] objref = ComExporter.Export(o, ComMarshal.IidIUnknown);
+            WireWriter w = new WireWriter();
+            w.Int(ComBroker.Key);
+            w.Text("");
+            w.Bytes(RunningObjects.ClassMoniker(clsid.ToString()));
+            w.Bytes(objref);
+            w.Bytes(new byte[0]);
+            w.Quad(DateTime.UtcNow.ToFileTimeUtc());
+            w.Int(Os.Getpid());
+            w.Text(Environment.ProcessPath ?? "");
+            WireReader r = ComBroker.Ask(ServiceRequest.RotRegister, w);
+            long entry = r.Quad();
+            long scm = r.Int();
+            return entry | (scm << 48);
+        }
+
+        public static void RevokeActiveObject(long cookie)
+        {
+            WireWriter w = new WireWriter();
+            w.Quad(cookie & 0xFFFFFFFFFFFF);
+            w.Int(cookie >> 48);
+            w.Int(1);
+            ComBroker.Ask(ServiceRequest.RotRevoke, w);
+        }
+    }
+
+    /// <summary>The running object table's comparison data and lookups.</summary>
+    public static class RunningObjects
+    {
+        const string ItemMoniker = "00000304-0000-0000-C000-000000000046";
+
+        /// An item moniker's comparison data (IROTData): CLSID_ItemMoniker,
+        /// then the delimiter and the item, upper case, each ended by a zero.
+        public static byte[] ClassMoniker(string clsid)
+        {
+            List<byte> made = new List<byte>(ComMarshal.GuidBytes(ItemMoniker));
+            string item = "{" + ComMarshal.Normal(clsid) + "}";
+            foreach (string part in new[] { "!", item })
+            {
+                foreach (char c in part.ToUpperInvariant()) { made.Add((byte)c); made.Add((byte)(c >> 8)); }
+                made.Add(0); made.Add(0);
+            }
+            return made.ToArray();
+        }
+
+        /// The running object of a class, by CLSID or ProgID: MK_E_UNAVAILABLE when none is.
+        public static object GetActiveObject(string name)
+        {
+            string clsid = name;
+            Guid parsed;
+            if (!Guid.TryParse(ComMarshal.Normal(name), out parsed))
+            {
+                string[]? info = ComBroker.ClassInfo(name);
+                if (info == null) throw new COMException("Invalid class string (CO_E_CLASSSTRING).", unchecked((int)0x800401F3));
+                clsid = info[0];
+            }
+            WireWriter w = new WireWriter();
+            w.Text("");
+            w.Int(0);
+            w.Bytes(ClassMoniker(clsid));
+            int hr;
+            WireReader? r = ComBroker.Try(ServiceRequest.RotGetObject, w, out hr);
+            if (r == null || hr != 0) throw new COMException("Operation unavailable (MK_E_UNAVAILABLE).", hr != 0 ? hr : unchecked((int)0x800401E3));
+            r.Quad();
+            r.Int();
+            byte[] objref = r.Bytes();
+            object? o = ComObjRefs.Need().Unmarshal(objref);
+            if (o == null) throw new COMException("Operation unavailable (MK_E_UNAVAILABLE).", unchecked((int)0x800401E3));
+            return o;
+        }
+    }
+
+    /// <summary>
+    /// ACTIVATION: a class's object asked of the broker, its server started
+    /// if need be. A native server's class object answers
+    /// IClassFactory::RemoteCreateInstance itself; a Windows server's is
+    /// reached through the NT kernel, which runs ole32's activation with it
+    /// and answers the new object's OBJREF.
+    /// </summary>
+    public static class ComActivation
+    {
+        public static object CreateInstance(string clsid, string iid)
+        {
+            if (ComObjRefs.Current == null) ComObjRefs.Current = new ComObjRefCodec();
+            WireWriter w = new WireWriter();
+            w.Text(ComMarshal.Normal(clsid));
+            w.Int(ComBroker.ClassContextLocalServer);
+            w.Texts(new List<string>());
+            w.Text("");
+            WireReader r = ComBroker.Ask(ServiceRequest.ComActivate, w);
+            bool windows = r.Int() != 0;
+            long oxid = r.Quad();
+            byte[] ipid = r.Bytes();
+            byte[] info = r.Bytes();
+            byte[] bindings = r.Bytes();
+            r.Bytes();
+            if (windows) return Windows(clsid, iid);
+            ComOxid where = ComOxid.From(oxid, info, bindings, false);
+            NdrWriter q = new NdrWriter();
+            q.OrpcThis(Guid.NewGuid().ToByteArray());
+            q.Guid(ComMarshal.Normal(iid));
+            byte[] reply = ComTransport.Call(where, ipid, ComExporter.IidIClassFactory, 3, q.ToArray());
+            NdrReader a = new NdrReader(reply);
+            a.OrpcThat();
+            byte[]? objref = a.Long() != 0 ? a.InterfaceBody() : null;
+            ComMarshal.Check(a.Int());
+            if (objref == null) throw new COMException("The server made no object (E_UNEXPECTED).", ComMarshal.EUnexpected);
+            return ComObjRefs.Need().Unmarshal(objref)!;
+        }
+
+        /// A Windows class, activated by the NT kernel (kind 4 on "nt-com"):
+        /// its answer the HRESULT, then for the one interface asked its
+        /// HRESULT and OBJREF.
+        static object Windows(string clsid, string iid)
+        {
+            List<byte> body = new List<byte>();
+            ComTransport.PutWord(body, ComTransport.KindActivate);
+            ComTransport.PutText(body, ComMarshal.Normal(clsid));
+            ComTransport.PutWord(body, ComBroker.ClassContextLocalServer);
+            ComTransport.PutWord(body, 1);
+            body.AddRange(ComMarshal.GuidBytes(iid));
+            byte[] answer = ComTransport.Exchange(ComTransport.NtSocket, body.ToArray());
+            if (answer.Length < 8) throw new COMException("The NT kernel's activation answered nothing.", ComMarshal.EUnexpected);
+            ComMarshal.Check(ComTransport.Get(answer, 0));
+            int count = ComTransport.Get(answer, 4);
+            if (count < 1 || answer.Length < 16) throw new COMException("The NT kernel's activation answered no interface.", ComMarshal.EUnexpected);
+            ComMarshal.Check(ComTransport.Get(answer, 8));
+            int length = ComTransport.Get(answer, 12);
+            byte[] objref = new byte[Math.Max(0, Math.Min(length, answer.Length - 16))];
+            Array.Copy(answer, 16, objref, 0, objref.Length);
+            return ComObjRefs.Need().Unmarshal(objref)!;
+        }
+    }
+
+    /// <summary>The COM classes Type.GetTypeFromProgID and GetTypeFromCLSID answer, each a Type of its own.</summary>
+    public static class ComClassTypes
+    {
+        static readonly Dictionary<long, string> _clsidOf = new Dictionary<long, string>();
+        static readonly Dictionary<string, Type> _byClsid = new Dictionary<string, Type>();
+
+        /// A Type for the class: a copy of System.__ComObject's descriptor
+        /// (FullName "System.__ComObject", as .NET's are), told apart from
+        /// every other class's by its address.
+        public static Type For(string clsid)
+        {
+            string key = ComMarshal.Normal(clsid);
+            lock (_clsidOf)
+            {
+                Type? had;
+                if (_byClsid.TryGetValue(key, out had) && had != null) return had;
+                long original = Sys.Word((object)typeof(System.__ComObject));
+                int bytes = 12 * WordSize.Bytes;
+                nint copy = Marshal.AllocHGlobal(bytes);
+                for (int i = 0; i < bytes; i++) Sys.PokeByte(copy + i, Sys.PeekByte(original + i));
+                Type made = (Type)Sys.FromWord(copy)!;
+                _clsidOf[copy] = key;
+                _byClsid[key] = made;
+                return made;
+            }
+        }
+
+        /// The CLSID of a Type For made, or null.
+        public static string? ClsidOf(Type t)
+        {
+            lock (_clsidOf)
+            {
+                string? found;
+                return _clsidOf.TryGetValue(Sys.Word((object)t), out found) ? found : null;
+            }
+        }
+    }
+}
+
+namespace System.Reflection
+{
+    /// .NET's BindingFlags, the ones InvokeMember reads.
+    public enum BindingFlags
+    {
+        Default = 0, IgnoreCase = 1, DeclaredOnly = 2, Instance = 4, Static = 8, Public = 16, NonPublic = 32,
+        FlattenHierarchy = 64, InvokeMethod = 256, CreateInstance = 512, GetField = 1024, SetField = 2048,
+        GetProperty = 4096, SetProperty = 8192, PutDispProperty = 16384, PutRefDispProperty = 32768,
+        ExactBinding = 65536, SuppressChangeType = 131072, OptionalParamBinding = 262144, IgnoreReturn = 16777216,
+    }
+
+    /// .NET's Binder: InvokeMember takes one, and COM's late binding needs none.
+    public abstract class Binder
+    {
+    }
+}
+
+namespace System
+{
+    /// <summary>.NET's Activator: COM classes made through the broker; other types made as `new T()` makes them.</summary>
+    public static class Activator
+    {
+        public static object? CreateInstance(Type type)
+        {
+            string? clsid = System.Runtime.InteropServices.ComClassTypes.ClsidOf(type);
+            if (clsid != null) return System.Runtime.InteropServices.ComActivation.CreateInstance(clsid, System.Runtime.InteropServices.ComMarshal.IidIUnknown);
+            throw new MissingMethodException("Cannot create an instance of " + type.FullName + " without reflection: use new, or Activator.CreateInstance<T>().");
+        }
+
+        public static object? CreateInstance(Type type, bool nonPublic) { return CreateInstance(type); }
+
+        public static T CreateInstance<T>() where T : new() { return new T(); }
+    }
+}
+
+/// <summary>
+/// System.Type's static members and the ones its instances take beyond
+/// their name: the COM classes by ProgID and CLSID, and InvokeMember,
+/// late binding over IDispatch. (The compiler looks here for a member of
+/// Type it does not answer itself.)
+/// </summary>
+static class SystemType
+{
+    public static readonly object Missing = new object();
+
+    public static Type? GetTypeFromProgID(string progID) { return GetTypeFromProgID(progID, false); }
+
+    public static Type? GetTypeFromProgID(string progID, bool throwOnError)
+    {
+        if (progID == null) throw new ArgumentNullException("progID");
+        string[]? info = null;
+        try { info = System.Runtime.InteropServices.ComBroker.ClassInfo(progID); }
+        catch (Exception) when (!throwOnError) { }
+        if (info == null)
+        {
+            if (throwOnError) throw new System.Runtime.InteropServices.COMException("Invalid class string (CO_E_CLASSSTRING).", unchecked((int)0x800401F3));
+            return null;
+        }
+        return System.Runtime.InteropServices.ComClassTypes.For(info[0]);
+    }
+
+    public static Type? GetTypeFromProgID(string progID, string? server, bool throwOnError) { return GetTypeFromProgID(progID, throwOnError); }
+
+    public static Type? GetTypeFromCLSID(Guid clsid) { return System.Runtime.InteropServices.ComClassTypes.For(clsid.ToString()); }
+
+    public static Type? GetTypeFromCLSID(Guid clsid, bool throwOnError) { return GetTypeFromCLSID(clsid); }
+
+    public static Type? GetTypeFromCLSID(Guid clsid, string? server, bool throwOnError) { return GetTypeFromCLSID(clsid); }
+
+    /// Late binding: a COM object's member called through IDispatch by name,
+    /// as .NET's InvokeMember does for a __ComObject.
+    public static object? InvokeMember(Type self, string name, System.Reflection.BindingFlags invokeAttr, System.Reflection.Binder? binder, object? target, object?[]? args)
+    {
+        if (target == null) throw new ArgumentNullException("target");
+        int flags = 0;
+        if ((invokeAttr & System.Reflection.BindingFlags.InvokeMethod) != 0) flags |= System.Runtime.InteropServices.ComDispatch.Method;
+        if ((invokeAttr & (System.Reflection.BindingFlags.GetProperty | System.Reflection.BindingFlags.GetField)) != 0) flags |= System.Runtime.InteropServices.ComDispatch.PropertyGet;
+        if ((invokeAttr & (System.Reflection.BindingFlags.SetProperty | System.Reflection.BindingFlags.SetField | System.Reflection.BindingFlags.PutDispProperty)) != 0) flags |= System.Runtime.InteropServices.ComDispatch.PropertyPut;
+        if ((invokeAttr & System.Reflection.BindingFlags.PutRefDispProperty) != 0) flags |= System.Runtime.InteropServices.ComDispatch.PropertyPutRef;
+        if (flags == 0) flags = System.Runtime.InteropServices.ComDispatch.Method;
+        return System.Runtime.InteropServices.ComDispatch.Invoke(target, int.MinValue, name, flags, args ?? new object?[0], 0);
+    }
+
+    public static object? InvokeMember(Type self, string name, System.Reflection.BindingFlags invokeAttr, System.Reflection.Binder? binder, object? target, object?[]? args, CultureInfo? culture)
+    {
+        return InvokeMember(self, name, invokeAttr, binder, target, args);
+    }
+
+    public static bool IsCOMObject(Type self) { return System.Runtime.InteropServices.ComClassTypes.ClsidOf(self) != null || self == typeof(System.__ComObject); }
+}
+
+/// .NET's Marshal, its running-object member.
+static partial class Marshal
+{
+    public static object GetActiveObject(string progID) { return System.Runtime.InteropServices.RunningObjects.GetActiveObject(progID); }
+}

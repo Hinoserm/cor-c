@@ -14419,6 +14419,11 @@ public sealed partial class Binder
         "char"   => "Char",
         "string" => "String",
         "object" => "Object",
+        // System.Type's statics and the members of a Type the compiler does
+        // not answer itself (Name, FullName and the Is* flags it reads from
+        // the descriptor): GetTypeFromProgID, GetTypeFromCLSID, Missing,
+        // InvokeMember, as String's are String's.
+        "Type"   => "SystemType",
         _        => null,
     };
 

@@ -21,7 +21,7 @@
 // DirectoryNotFoundException, UnauthorizedAccessException or IOException --
 // with the errno kept in HResult so the message can still be recovered.
 
-static class Marshal
+static partial class Marshal
 {
     /// The errno of the last call that failed on THIS thread, as .NET's is:
     /// set by a [DllImport] declared with SetLastError = true, and by the

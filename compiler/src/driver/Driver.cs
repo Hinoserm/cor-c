@@ -1347,6 +1347,7 @@ public static class Driver
                 "System/Text/RegularExpressions.cor", "System/Xml/Xml.cor", "System/Text/Json/Json.cor", "System/console.cor", "System/environment.cor",
                 "System/Net/Net.cor", "System/Security/Cryptography/Cryptography.cor", "System/Security/Cryptography/Hashing.cor",
                 "System/ServiceProcess/ServiceWire.cor", "System/ServiceProcess/ServiceProcess.cor", "System/Security/Cryptography/ProtectedData.cor",
+                "System/Runtime/InteropServices/ComInterop.cor", "System/Runtime/InteropServices/ComNdr.cor", "System/Runtime/InteropServices/ComRemote.cor",
                 "System/signals.cor", "System/unix.cor", "System/process.cor", "System/power.cor",
                 "Microsoft/Win32/Registry.cor",
                 "System/Drawing/Drawing.cor", "System/Drawing/Drawing2D.cor", "System/Drawing/FontEngine.cor", "System/Drawing/TrueType.cor", "System/Drawing/BitmapFont.cor", "System/Drawing/Text.cor",

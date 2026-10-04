@@ -266,6 +266,14 @@ public sealed partial class Lowering
         }
 
         VReg? fromC = CalledByC(m) ? EnterFromC(decl) : null;
+        if (fromC is not null && _t.WordSize == 4 && CalledStdcall(m))
+        {
+            // STDCALL'S CALLEE TAKES ITS ARGUMENTS OFF: every parameter a
+            // word, a 64-bit one two, as the stack holds them.
+            int pops = 0;
+            foreach (ParamSymbol p in m.Params) pops += !p.ByRef && IrTypes.Of(p.Type) is IrType.I64 or IrType.F64 ? 8 : 4;
+            _f.CalleePops = pops;
+        }
 
         if (NativeImportOf(m) is NativeImport native)
         {

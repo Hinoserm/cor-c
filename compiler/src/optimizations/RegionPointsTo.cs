@@ -802,7 +802,7 @@ public sealed class RegionPointsTo : IModulePass
         Function made = new(name, f.Returns)
         {
             Exported = false, SourceFile = f.SourceFile, Line = f.Line, Display = f.Display, FromLibrary = f.FromLibrary,
-            NoInlining = f.NoInlining,
+            NoInlining = f.NoInlining, CalleePops = f.CalleePops,
         };
         Dictionary<VReg, VReg> regs = new();
         Dictionary<FrameSlot, FrameSlot> slots = new();

@@ -925,6 +925,13 @@ internal sealed class Encoder
         {
             _out.Add((byte)(0x58 + (int)_m.SavedRegs[k]));
         }
+        int pops = _m.Source.CalleePops;
+        if (pops > 0)
+        {
+            B(0xC9, 0xC2);  // leave; ret n: stdcall's callee takes its arguments off
+            B((byte)pops, (byte)(pops >> 8));
+            return;
+        }
         B(0xC9, 0xC3);  // leave; ret
     }
 

@@ -3121,6 +3121,7 @@ public sealed class Parser
             bool? whenProved = null;
             CallerInfo caller = CallerInfo.None;
             string? callerArgument = null;
+            string? marshalAs = null;
 
             // AND THE CALLER-INFORMATION ATTRIBUTES, which make the compiler
             // pass what it knows at the call for an argument left out: the
@@ -3140,6 +3141,7 @@ public sealed class Parser
                     caller = CallerInfo.ArgumentExpression;
                     callerArgument = of;
                 }
+                else if (named == "MarshalAs" && written.Argument is { Length: > 0 } unmanaged) marshalAs = unmanaged;
             }
 
             Token at = Cur;
@@ -3166,7 +3168,7 @@ public sealed class Parser
                 Name = name, Type = type, IsRef = byRef || byIn, IsOut = byOut,
                 IsReadOnlyRef = byIn, IsParams = variadic, IsThis = receiver,
                 NotNullWhen = whenProved, Caller = caller, CallerArgument = callerArgument,
-                Default = def, Line = at.Line, Col = at.Col,
+                MarshalAs = marshalAs, Default = def, Line = at.Line, Col = at.Col,
             });
 
             if (variadic && type.ArrayRank == 0)

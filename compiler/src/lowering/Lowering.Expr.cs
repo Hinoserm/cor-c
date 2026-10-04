@@ -1831,9 +1831,55 @@ public sealed partial class Lowering
         return result;
     }
 
+    /// <summary>
+    /// A [ComImport] INTERFACE'S RUNTIME-CALLABLE WRAPPER: `__Wrap`, the
+    /// static method of the class ComDeclarations wrote beside the
+    /// interface, or null when the type is not one. A COM object a program
+    /// holds (System.__ComObject) implements no interface of its own: being
+    /// cast to one is a QueryInterface for its IID, answered by a wrapper
+    /// that does implement it, as .NET's cast of a __ComObject is.
+    /// </summary>
+    private MethodSymbol? ComWrap(TypeSymbol want)
+    {
+        if (want.Kind != TypeKind.Interface || want.Decl is not TypeDecl d || !ComDeclarations.IsComImport(d)) return null;
+        string key = (d.Outer is null ? "" : d.Outer + ".") + ComDeclarations.RcwName(d);
+        if (!_b.Types.TryGetValue(key, out TypeSymbol? rcw)) return null;
+        return rcw.Methods.FirstOrDefault(m => m.Name == ComDeclarations.WrapMethod && m.Static && m.Params.Count == 1);
+    }
+
+    /// <summary>
+    /// `o as IFoo` for a [ComImport] IFoo: the object itself when it
+    /// implements the interface, else its wrapper's answer -- a new wrapper
+    /// over the interface the COM object gave for the IID, or null when it
+    /// is not a COM object or would not give one.
+    /// </summary>
+    private VReg ComAs(VReg obj, TypeSymbol want, MethodSymbol wrap)
+    {
+        VReg test = TypeTest(obj, want);
+        VReg result = _f.NewReg(IrTypes.Word, "comas");
+        Block yes = _f.NewBlock("comyes");
+        Block no = _f.NewBlock("comno");
+        Block end = _f.NewBlock("comend");
+        _e.Branch(test, yes, no);
+        _e.SetBlock(yes);
+        _e.CopyTo(result, R(obj));
+        _e.Jump(end);
+        _e.SetBlock(no);
+        Require(wrap);
+        VReg wrapped = _e.Call(CallLabel(wrap), IrTypes.Word, R(AsParam(obj, wrap.Params[0].Type)))!;
+        _e.CopyTo(result, R(wrapped));
+        _e.Jump(end);
+        _e.SetBlock(end);
+        return result;
+    }
+
     /// <summary>The object when it is of the type, null otherwise: what `as` answers.</summary>
     private VReg AsType(VReg obj, TypeSymbol want)
     {
+        if (ComWrap(want) is MethodSymbol comWrap)
+        {
+            return ComAs(obj, want, comWrap);
+        }
         VReg test = TypeTest(obj, want);
         VReg result = _f.NewReg(IrTypes.Word, "as");
         Block yes = _f.NewBlock("asyes");
@@ -1946,6 +1992,22 @@ public sealed partial class Lowering
     /// <summary>A cast that is not a reinterpretation: null passes, anything else must be the type.</summary>
     private VReg CheckedCast(Node at, VReg obj, TypeSymbol want)
     {
+        // A COM object cast to a [ComImport] interface: its wrapper, or
+        // InvalidCastException when it has none to give (E_NOINTERFACE).
+        if (ComWrap(want) is MethodSymbol comWrap)
+        {
+            VReg wrapped = ComAs(obj, want, comWrap);
+            Block given = _f.NewBlock("comgiven");
+            Block asked = _f.NewBlock("comasked");
+            Block refused = _f.NewBlock("comrefused");
+            _e.Branch(obj, asked, given);
+            _e.SetBlock(asked);
+            _e.Branch(wrapped, given, refused);
+            _e.SetBlock(refused);
+            CastFailed(obj, new Type { Prim = Prim.Void, Symbol = want });
+            _e.SetBlock(given);
+            return wrapped;
+        }
         Block check = _f.NewBlock("castck");
         Block ok = _f.NewBlock("castok");
         Block bad = _f.NewBlock("castbad");

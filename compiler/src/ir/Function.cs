@@ -51,6 +51,17 @@ public sealed class Function
     public bool NoInlining { get; set; }
 
     /// <summary>
+    /// The bytes of arguments the function takes off the stack itself as it
+    /// returns: stdcall's rule, which COM's interfaces are called by on
+    /// i386 -- `[UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]`,
+    /// what a COM-callable wrapper's vtable entries are (ComDeclarations).
+    /// 0 for every other function: C's rule, the caller's to take back. The
+    /// i386 backend returns with `ret n`; x86-64 has one convention and
+    /// never sets it.
+    /// </summary>
+    public int CalleePops { get; set; }
+
+    /// <summary>
     /// What an analysis keeps of this function between questions, with the
     /// instruction count it was made at (Escape.StampOf): asked again of a
     /// function that has grown since, it is made again.

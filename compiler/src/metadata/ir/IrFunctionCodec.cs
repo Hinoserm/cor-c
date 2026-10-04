@@ -42,9 +42,10 @@ public static class IrFunctionCodec
             throw new InvalidDataException("An async body's suspension result is not a constant");
         using MemoryStream stream = new();
         using BinaryWriter writer = new(stream, IrBinary.Utf8, leaveOpen: true);
-        writer.Write(5); IrBinary.Text(writer, function.Name); writer.Write((byte)function.Returns);
+        writer.Write(6); IrBinary.Text(writer, function.Name); writer.Write((byte)function.Returns);
         writer.Write(function.Exported); writer.Write(function.Coalescible); writer.Write(function.FromLibrary);
         writer.Write(function.NoInlining);
+        writer.Write(function.CalleePops);
         IrBinary.Text(writer, function.SourceFile); writer.Write(function.Line); IrBinary.Text(writer, function.Display);
         Dictionary<int, IrType> registers = new();
         void Remember(VReg? register)
@@ -129,11 +130,14 @@ public static class IrFunctionCodec
         using BinaryReader reader = new(stream, IrBinary.Utf8);
         try
         {
-            if (reader.ReadInt32() != 5) throw new InvalidDataException("Unsupported IR function version");
+            // Version 6 adds the bytes a stdcall function pops (CalleePops);
+            // a version 5 record's function pops none.
+            int version = reader.ReadInt32();
+            if (version is not (5 or 6)) throw new InvalidDataException("Unsupported IR function version");
             Function function = new(IrBinary.Name(reader, budget), IrBinary.Type(reader))
             {
                 Exported = IrBinary.Flag(reader), Coalescible = IrBinary.Flag(reader), FromLibrary = IrBinary.Flag(reader),
-                NoInlining = IrBinary.Flag(reader),
+                NoInlining = IrBinary.Flag(reader), CalleePops = version >= 6 ? reader.ReadInt32() : 0,
                 SourceFile = IrBinary.Text(reader, budget), Line = reader.ReadInt32(), Display = IrBinary.Text(reader, budget),
             };
             int count = IrBinary.Count(reader);

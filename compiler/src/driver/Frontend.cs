@@ -187,6 +187,17 @@ public static class Frontend
             return null;
         }
 
+        // AND .NET'S COM INTEROP, written out as source: a wrapper class for
+        // each [ComImport] interface, and the vtables and IDispatch of each
+        // class COM can call (ComDeclarations). Before binding, which is
+        // where the classes they write are bound with everything else.
+        List<CompileError> com = new();
+        ComDeclarations.Expand(unit, symbols, com);
+        if (Report(com))
+        {
+            return null;
+        }
+
         IReadOnlyList<CompileError> generic;
         Meter expanding = Meter.Start();
         unit = Monomorphiser.Expand(unit, name, library, out generic, declarations is null ? null : declarations.Require);
