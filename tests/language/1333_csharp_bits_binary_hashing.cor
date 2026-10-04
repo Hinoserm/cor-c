@@ -1,0 +1,43 @@
+// test: csharp_bits_binary_hashing
+// expect-exit: 0
+// expect-output:
+// math 7 -2 9 10 3 8 10 True True 1 AB01 255 10
+// binary 4 1 16909060 -1 1027 True 2 hi ok
+// hash BA7816BF8F01CFEA True True
+//
+// NUMBERS, BITS, BINARY AND HASHING: Math, BitOperations, BitConverter,
+// Convert, BinaryPrimitives, the encodings, SHA-256, HashCode.
+//
+// Split out of the canary of the C# the compiler's own sources use: one
+// family a test, so a form the compiler cannot build yet fails only its own.
+// Every line is what .NET prints.
+
+using System;
+using System.Buffers.Binary;
+using System.Numerics;
+using System.Security.Cryptography;
+using System.Text;
+
+public static class Program
+{
+    private static void Say(params object?[] parts) => Console.WriteLine(string.Join(" ", parts));
+
+    public static int Main()
+    {
+        Say("math", Math.Max(3, 7), Math.Min(-2, 5), Math.Abs(-9), Math.Clamp(15, 0, 10), BitOperations.TrailingZeroCount(8), BitOperations.PopCount(0xFFu),
+            BitOperations.Log2(1024u), BitConverter.DoubleToInt64Bits(1.0) == 0x3FF0000000000000, BitConverter.SingleToInt32Bits(1.0f) == 0x3F800000,
+            BitConverter.ToInt32(new byte[] { 1, 0, 0, 0 }, 0), Convert.ToHexString(new byte[] { 0xAB, 0x01 }), Convert.ToInt32("ff", 16), Convert.ToUInt32("10"));
+        byte[] bytes = new byte[8];
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes, 0x01020304u);
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(4), -1);
+        bool wrote = BitConverter.TryWriteBytes(new byte[4], 7);
+        Say("binary", bytes[0], bytes[3], BinaryPrimitives.ReadUInt32LittleEndian(bytes), BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(4)),
+            BinaryPrimitives.ReadUInt16BigEndian(bytes), wrote, Encoding.UTF8.GetBytes("\u00e9").Length, Encoding.ASCII.GetString(new byte[] { 104, 105 }),
+            Encoding.UTF8.GetString(Encoding.UTF8.GetBytes("ok")));
+        byte[] abc = Encoding.UTF8.GetBytes("abc");
+        using SHA256 sha = SHA256.Create();
+        Say("hash", Convert.ToHexString(SHA256.HashData(abc))[..16], sha.ComputeHash(abc).AsSpan().SequenceEqual(SHA256.HashData(abc)),
+            HashCode.Combine(1, 2) == HashCode.Combine(1, 2));
+        return 0;
+    }
+}

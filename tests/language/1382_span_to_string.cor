@@ -1,0 +1,31 @@
+// test: span_to_string
+// expect-exit: 0
+// expect-output:
+// System.Span<Int32>[3]
+// System.ReadOnlySpan<Byte>[2]
+// System.Span<Int64>[0]
+// abc
+// hi
+//
+// A SPAN'S ToString: the characters of a span of char, and .NET's
+// description of any other -- its element type's name and its length.
+// Every line is what .NET prints.
+
+using System;
+
+public static class Program
+{
+    public static int Main()
+    {
+        Span<int> ints = new int[] { 1, 2, 3 };
+        ReadOnlySpan<byte> bytes = new byte[2];
+        Span<long> none = Span<long>.Empty;
+        Span<char> chars = new char[] { 'h', 'i' };
+        Console.WriteLine(ints.ToString());
+        Console.WriteLine(bytes.ToString());
+        Console.WriteLine(none.ToString());
+        Console.WriteLine("abc".AsSpan().ToString());
+        Console.WriteLine(chars.ToString());
+        return 0;
+    }
+}

@@ -1,0 +1,66 @@
+// test: csharp_switch_expressions_and_patterns
+// expect-exit: 0
+// expect-output:
+// switch null neg bit small7 big empty s3 tok3 other other
+// lists none one4 ends13
+// tuples-switch zero pos-yes no neg-yes
+// patterns True True True True
+//
+// SWITCH EXPRESSIONS AND EVERY PATTERN KIND the sources use: constant, type,
+// declaration with a guard, and/or/not, relational, property and extended
+// property, list, tuple and character ranges.
+//
+// Split out of the canary of the C# the compiler's own sources use: one
+// family a test, so a form the compiler cannot build yet fails only its own.
+// Every line is what .NET prints.
+
+using System;
+
+public sealed record Token(string Kind, int Line);
+
+public static class Program
+{
+    private static void Say(params object?[] parts) => Console.WriteLine(string.Join(" ", parts));
+
+    private static string Classify(object? o) => o switch
+    {
+        null => "null",
+        int n when n < 0 => "neg",
+        int and (0 or 1) => "bit",
+        int n and >= 2 and < 10 => "small" + n,
+        int => "big",
+        string { Length: 0 } => "empty",
+        string s => "s" + s.Length,
+        Token { Kind: "ident", Line: > 2 } tk => "tok" + tk.Line,
+        _ => "other",
+    };
+
+    private static string Ends(int[] a) => a switch
+    {
+        [] => "none",
+        [var only] => "one" + only,
+        [var first, .., var last] => "ends" + first + last,
+    };
+
+    private static string Pair(int a, bool b) => (a, b) switch
+    {
+        (0, _) => "zero",
+        (> 0, true) => "pos-yes",
+        (_, false) => "no",
+        _ => "neg-yes",
+    };
+
+    public static int Main()
+    {
+        Say("switch", Classify(null), Classify(-5), Classify(1), Classify(7), Classify(42), Classify(""), Classify("abc"),
+            Classify(new Token("ident", 3)), Classify(new Token("ident", 1)), Classify(2.5));
+        Say("lists", Ends(new int[0]), Ends(new[] { 4 }), Ends(new[] { 1, 2, 3 }));
+        Say("tuples-switch", Pair(0, true), Pair(3, true), Pair(3, false), Pair(-1, true));
+        Token t = new("ident", 3);
+        char q = 'q';
+        object boxed = "x";
+        int five = 5;
+        Say("patterns", q is >= 'a' and <= 'z', boxed is not int, t is { Kind.Length: 5 }, five is not (1 or 2));
+        return 0;
+    }
+}

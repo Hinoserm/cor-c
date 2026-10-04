@@ -1,0 +1,69 @@
+// test: csharp_iterators_async_threads
+// expect-exit: 0
+// expect-output:
+// threads 0,2,4,6 10 4 105 6 3 6 True 5 0
+//
+// AN ITERATOR, AN ASYNC METHOD, AND THREADS: Task.Run and WhenAll,
+// Interlocked, lock, Volatile, Thread.Sleep, a thread of its own, a
+// ThreadStatic field.
+//
+// Split out of the canary of the C# the compiler's own sources use: one
+// family a test, so a form the compiler cannot build yet fails only its own.
+// Every line is what .NET prints.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+
+public static class Program
+{
+    private static void Say(params object?[] parts) => Console.WriteLine(string.Join(" ", parts));
+
+    [ThreadStatic] private static int t_value;
+
+    private static IEnumerable<int> Evens(int n)
+    {
+        for (int i = 0; i < n; i++)
+        {
+            if (i % 2 == 1) continue;
+            yield return i;
+        }
+    }
+
+    private static async Task<int> SumAsync(int n)
+    {
+        await Task.Yield();
+        int s = 0;
+        for (int i = 1; i <= n; i++) s += i;
+        return s;
+    }
+
+    public static int Main()
+    {
+        int asyncSum = SumAsync(4).GetAwaiter().GetResult();
+        int shared = 0, locked = 0;
+        object gate = new();
+        Task[] tasks = Enumerable.Range(0, 4).Select(i => Task.Run(() =>
+        {
+            Interlocked.Increment(ref shared);
+            lock (gate) locked += i;
+        })).ToArray();
+        Task.WhenAll(tasks).Wait();
+        int exchanged = Interlocked.Exchange(ref shared, 100);
+        Interlocked.Add(ref shared, 5);
+        int flag = 0;
+        Volatile.Write(ref flag, 3);
+        int readBack = Volatile.Read(ref flag);
+        Thread.Sleep(1);
+        t_value = 5;
+        int onOther = -1;
+        Thread other = new(() => onOther = t_value);
+        other.Start();
+        other.Join();
+        Say("threads", string.Join(",", Evens(7)), asyncSum, exchanged, shared, locked, readBack, Task.FromResult(6).Result,
+            Environment.ProcessorCount > 0, t_value, onOther);
+        return 0;
+    }
+}

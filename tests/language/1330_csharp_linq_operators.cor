@@ -1,0 +1,45 @@
+// test: csharp_linq_operators
+// expect-exit: 0
+// expect-output:
+// linq1 50,30,80,90 1,2,3,5,8,9 9,8 28 9 1 2 True True
+// linq2 8 0 2 9,2 5,3 2,9,1,8,3,5 True a5 7 0 7
+// linq3 3:1,4:3,5:1 3 True fig,kiwi,pear,plum,apple pafpk fig 2 apple none
+// linq4 1,2,3 2 10 zzz False none 2
+//
+// THE LINQ OPERATORS the sources use, and a list's Count(...) invoked as the
+// extension method past the Count property.
+//
+// Split out of the canary of the C# the compiler's own sources use: one
+// family a test, so a form the compiler cannot build yet fails only its own.
+// Every line is what .NET prints.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+public static class Program
+{
+    private static void Say(params object?[] parts) => Console.WriteLine(string.Join(" ", parts));
+
+    public static int Main()
+    {
+        int[] nums = [5, 3, 8, 1, 9, 2];
+        Say("linq1", string.Join(",", nums.Where(n => n > 2).Select(n => n * 10)), string.Join(",", nums.Order()),
+            string.Join(",", nums.OrderByDescending(n => n).Take(2)), nums.Sum(), nums.Max(), nums.Min(), nums.Count(n => n % 2 == 0),
+            nums.Any(n => n > 8), nums.All(n => n > 0));
+        Say("linq2", nums.First(n => n > 5), nums.FirstOrDefault(n => n > 100), nums.Last(), string.Join(",", nums.Skip(4)),
+            string.Join(",", nums.Take(2)), string.Join(",", Enumerable.Reverse(nums)), nums.SequenceEqual(new[] { 5, 3, 8, 1, 9, 2 }),
+            nums.Zip("abcdef", (n, c) => c + n.ToString()).First(), nums.Concat(new[] { 0 }).Count(), nums.Prepend(0).First(), nums.Append(7).Last());
+        string[] words = ["pear", "apple", "fig", "plum", "kiwi"];
+        Say("linq3", string.Join(",", words.GroupBy(w => w.Length).OrderBy(g => g.Key).Select(g => g.Key + ":" + g.Count())),
+            words.ToDictionary(w => w, w => w.Length)["fig"], words.ToHashSet().Contains("kiwi"),
+            string.Join(",", words.OrderBy(w => w.Length).ThenBy(w => w, StringComparer.Ordinal)), string.Concat(words.SelectMany(w => w.Take(1))),
+            words.MinBy(w => w.Length), words.ToLookup(w => w[0])['p'].Count(), words.Single(w => w.StartsWith("ap", StringComparison.Ordinal)),
+            words.SingleOrDefault(w => w == "x") ?? "none");
+        List<int> counted = [1, 2, 3];
+        Say("linq4", string.Join(",", new[] { 1, 2 }.Union(new[] { 2, 3 })), string.Join(",", new[] { 1, 2 }.Intersect(new[] { 2, 3 })),
+            Enumerable.Range(1, 4).Sum(), string.Concat(Enumerable.Repeat("z", 3)), Enumerable.Empty<int>().Any(),
+            words.LastOrDefault(w => w.Length == 9) ?? "none", counted.Count(n => n > 1));
+        return 0;
+    }
+}
