@@ -1,0 +1,178 @@
+// test: array_field_owns_elements
+// expect-exit: 0
+// expect-output:
+// allocator 2960000 True
+// kept out 1 2 3
+// copied out 4 4
+// reassigned 7 8
+// shared 9 9
+// late 21
+//
+// AN ARRAY FIELD WHOSE ARRAYS OWN THEIR LISTS (Escape.ArrayFieldElements):
+// a register allocator's per-register lists -- `_occ[v] = new List<int>()`
+// in its constructor, read and added to where they are -- go back with it
+// when it dies (the owned-field map's element bits, Runtime.FreeOwnedFields):
+// `allocator` leaves at most a few bytes a call to the collector. Every
+// other line is an array field whose lists must NOT be freed with it: one
+// handed out of the object and kept, one copied out with Array.Copy, a
+// field given a new array while a list of the old one is still in use, one
+// array shared by two objects, and a list read out and used after the
+// object's last use. Each is checked after enough churn that a list freed
+// by mistake would have been made into another.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+sealed class Allocator
+{
+    readonly List<int>[] _occ;
+    readonly List<long>[] _ranges;
+
+    public Allocator(int n)
+    {
+        _occ = new List<int>[n];
+        _ranges = new List<long>[n];
+        for (int v = 0; v < n; v++)
+        {
+            _occ[v] = new List<int>();
+            _ranges[v] = new List<long>();
+        }
+    }
+
+    public int Run(int steps)
+    {
+        for (int k = 0; k < steps; k++)
+        {
+            _occ[k % _occ.Length].Add(k);
+            _ranges[k % _ranges.Length].Add(k * 2L);
+        }
+        int total = 0;
+        for (int v = 0; v < _occ.Length; v++) total += _occ[v].Count + (int)_ranges[v].Count * 2 + v;
+        return total;
+    }
+}
+
+sealed class KeptOut
+{
+    readonly List<int>[] _lists = new List<int>[2];
+    public KeptOut() { _lists[0] = new List<int> { 1, 2, 3 }; _lists[1] = new List<int>(); }
+    public List<int> First() { return _lists[0]; }
+}
+
+sealed class CopiedOut
+{
+    readonly List<int>[] _lists = new List<int>[2];
+    public CopiedOut() { _lists[0] = new List<int> { 4 }; _lists[1] = new List<int> { 4 }; }
+    public void CopyTo(List<int>[] into) { Array.Copy(_lists, into, 2); }
+}
+
+sealed class Reassigned
+{
+    List<int>[] _lists;
+    public Reassigned() { _lists = new List<int>[1]; _lists[0] = new List<int> { 7 }; }
+    public int Replace()
+    {
+        List<int> old = _lists[0];
+        _lists = new List<int>[1];
+        _lists[0] = new List<int> { 8 };
+        Program.Churn();
+        return old[0] * 10 + _lists[0][0];
+    }
+}
+
+sealed class Shared
+{
+    public List<int>[] Lists = new List<int>[1];
+}
+
+sealed class Late
+{
+    readonly List<int>[] _lists = new List<int>[1];
+    public Late() { _lists[0] = new List<int>(); for (int i = 0; i < 7; i++) _lists[0].Add(i); }
+    public List<int> Peek() { return _lists[0]; }
+}
+
+static class Program
+{
+    static long _churned;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void Churn()
+    {
+        for (int k = 0; k < 2000; k++)
+        {
+            List<int> noise = new List<int> { k, k + 1, k + 2 };
+            int[] more = new int[16];
+            more[3] = noise[1];
+            _churned += more[3];
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Allocate() { Allocator a = new Allocator(8); return a.Run(40); }
+
+    static List<int>? _kept;
+    static List<int>[] _copies = new List<int>[2];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void KeepOut() { KeptOut k = new KeptOut(); _kept = k.First(); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void CopyOut() { CopiedOut c = new CopiedOut(); c.CopyTo(_copies); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Reassign() { Reassigned r = new Reassigned(); int got = r.Replace(); return got; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Share()
+    {
+        Shared a = new Shared();
+        a.Lists[0] = new List<int> { 9 };
+        Shared b = new Shared();
+        b.Lists = a.Lists;
+        a = null!;
+        Churn(); Gc.Collect(); Churn();
+        return b.Lists[0][0] * 11;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int LateUse()
+    {
+        Late l = new Late();
+        List<int> list = l.Peek();
+        Churn();
+        int sum = 0;
+        foreach (int x in list) sum += x;
+        return sum;
+    }
+
+    static void Main()
+    {
+        const int N = 20000;
+        Gc.Collect();
+        long taken = Gc.CollectedBytes, frees = Gc.Frees;
+        long total = 0;
+        for (int k = 0; k < N; k++) total += Allocate();
+        bool given = Gc.Frees - frees >= N * 16;
+        Gc.Collect();
+        long left = (Gc.CollectedBytes - taken) / N;
+        Console.WriteLine("allocator " + total + " " + (given && left <= 32 ? "True" : "False " + left));
+
+        KeepOut();
+        Churn(); Gc.Collect(); Churn();
+        Console.WriteLine("kept out " + string.Join(" ", _kept!));
+
+        CopyOut();
+        Churn(); Gc.Collect(); Churn();
+        Console.WriteLine("copied out " + _copies[0][0] + " " + _copies[1][0]);
+
+        int replaced = Reassign();
+        Console.WriteLine("reassigned " + replaced / 10 + " " + replaced % 10);
+
+        int shared = Share();
+        Console.WriteLine("shared " + shared / 10 + " " + shared % 10);
+
+        Console.WriteLine("late " + LateUse());
+    }
+}
