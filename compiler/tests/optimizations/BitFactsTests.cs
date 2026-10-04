@@ -19,7 +19,8 @@ public static partial class Program
                 Operands = { new RegOperand(pointer), new ImmOperand(offset, IrType.I32) } });
             if (reassigned) block.Instrs.Add(new Instr { Op = Opcode.Copy, Dest = adjusted,
                 Operands = { new ImmOperand(0, IrType.I32) } });
-            Instr read = new() { Op = Opcode.Load, Dest = value, Size = 4, Operands = { new RegOperand(adjusted) } };
+            Instr read = new() { Op = Opcode.Load, Dest = value, Size = 4, Operands = { new RegOperand(adjusted) },
+                Field = "Node::Left", Family = "Node::Left" };
             block.Instrs.Add(read); new Builder(f, block).Ret(new RegOperand(value));
             Verifier.Check(f, "before frame address fold");
             new FrameAddressFold().Run(f);
@@ -28,6 +29,9 @@ public static partial class Program
             bool folded = !reassigned && offset >= 0 && offset <= 12;
             Assert((read.Operands[0] is SlotOperand) == folded, $"frame offset={offset} reassigned={reassigned}");
             if (folded) Assert(read.Offset == offset, "frame displacement retained exactly");
+            // The field the read is, kept: the owned-field rules take an
+            // untagged load for a number's, region inference for any field.
+            Assert(read.Field == "Node::Left" && read.Family == "Node::Left", $"frame offset={offset}: the field's tags kept");
             Assert(block.Instrs.Contains(read), "address folding keeps the read");
         }
     }
