@@ -484,7 +484,10 @@ value it frees is a load it inserted, which names no field.
 Before the library makes a new array, it tries `Runtime.GrowInPlace` (above).
 The lifetime and region passes know that call by name as one that keeps
 nothing (`Escape.IsCollectorNote`, `RegionPointsTo.Harmless`), so the inliner
-keeps it a call until they have run (`Inline`'s pinned helpers). Inlined,
+keeps it a call until they have run: the unit's inliners pin it with the
+other helpers (`Inline`'s pinned helpers), and the link's per-function
+inliners keep it (`UnitBackend`, `Keep`), there being no inliner after the
+link's lifetime and region passes. Inlined,
 its body handed the storage to `Gc.RegionGrow`, whose stores into the
 thread's block leaked it. Elements a collection owns are made beside it the
 same way (`OwnedElements.ElementSites`). Tests 1270, 1271, 942, 1303, 1304.
