@@ -234,6 +234,9 @@ class Process : IDisposable
         {
             throw new IOException("pipe failed");
         }
+        // MADE BEFORE THE FORK, and the child only makes system calls on it:
+        // it may not allocate (Os.PrepareExec).
+        ExecPlan plan = UnixProcess.PrepareExec(program, args.ToArray(), StartInfo.EnvironmentBlock(), StartInfo.WorkingDirectory);
         int pid = UnixProcess.Fork();
         if (pid < 0)
         {
@@ -259,13 +262,11 @@ class Process : IDisposable
                 UnixProcess.Close(inPipe[0]);
                 UnixProcess.Close(inPipe[1]);
             }
-            if (StartInfo.WorkingDirectory.Length > 0)
-            {
-                UnixProcess.ChangeDirectory(StartInfo.WorkingDirectory);
-            }
-            UnixProcess.Exec(program, args.ToArray(), StartInfo.EnvironmentBlock());
-            Environment.Exit(127);
+            UnixProcess.ChangeDirectory(plan);
+            UnixProcess.Exec(plan);
+            UnixProcess.ExitNow(127);
         }
+        GC.KeepAlive(plan);
         _pid = pid;
         if (StartInfo.RedirectStandardOutput)
         {

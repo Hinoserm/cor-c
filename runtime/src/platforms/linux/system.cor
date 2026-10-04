@@ -1483,6 +1483,54 @@ static partial class Os
         return Exec(path, argv, null);
     }
 
+    /// EVERYTHING execve(2) AND chdir(2) ARE HANDED, MADE BEFORE A FORK. The
+    /// child of a process with other threads has only the one that forked:
+    /// a lock another held stays held there, and a collection waits on
+    /// threads that are not there. So the child may not allocate: it calls
+    /// ChdirPlanned, ExecPlanned and ExitNow, which are system calls on what
+    /// this made. Without it, a native link's backends hung between fork and
+    /// exec for good.
+    public static ExecPlan PrepareExec(string path, string[] argv, string[]? envp, string? directory)
+    {
+        ExecPlan plan = new ExecPlan();
+        int room = argv.Length + (envp == null ? 0 : envp.Length);
+        plan.Keep = new byte[room][];
+        plan.Path = CString(path);
+        plan.Args = Vector(argv, plan.Keep, 0);
+        if (envp == null)
+        {
+            plan.EnvAddress = EnvironAddress();
+        }
+        else
+        {
+            plan.Env = Vector(envp, plan.Keep, argv.Length);
+            plan.EnvAddress = Platform.Linear(Sys.ArrayData(plan.Env));
+        }
+        if (directory != null && directory.Length > 0) plan.Directory = CString(directory);
+        return plan;
+    }
+
+    /// chdir(2) to the plan's directory, if it has one; nothing allocated.
+    public static int ChdirPlanned(ExecPlan plan)
+    {
+        if (plan.Directory == null) return 0;
+        return (int)Platform.Result(Sys.Syscall(Call.Chdir, Platform.Linear(Sys.ArrayData(plan.Directory)), 0, 0));
+    }
+
+    /// execve(2) on the plan; nothing allocated. Returns only on failure.
+    public static int ExecPlanned(ExecPlan plan)
+    {
+        return (int)Platform.Result(Sys.Syscall(Call.Execve, Platform.Linear(Sys.ArrayData(plan.Path)),
+            Platform.Linear(Sys.ArrayData(plan.Args)), plan.EnvAddress));
+    }
+
+    /// exit_group(2) at once: no handler, no flush -- a forked child's buffers
+    /// are its parent's too.
+    public static void ExitNow(int code)
+    {
+        Sys.Syscall(Call.ExitGroup, code, 0, 0);
+    }
+
     /// waitpid(2). -1 for `pid` means any child. `status` gets the raw status
     /// word at index 0; Wait below reads it.
     public static int Waitpid(int pid, int[] status, int options)
@@ -2252,4 +2300,15 @@ enum ExitCode
     NotExecutable = 126,
     NotFound = 127,
     Signalled = 128,        // a BASE: add the signal, so an interrupt is 130
+}
+
+/// What a forked child hands execve(2) and chdir(2), made before the fork (Os.PrepareExec).
+sealed class ExecPlan
+{
+    public byte[] Path = null!;
+    public byte[] Args = null!;
+    public byte[][] Keep = null!;
+    public byte[]? Env;
+    public long EnvAddress;
+    public byte[]? Directory;
 }

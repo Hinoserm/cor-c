@@ -1,0 +1,53 @@
+// test: process_start_beside_allocating_threads
+// expect-exit: 0
+// expect-output:
+// started 40 of 40
+//
+// Process.Start forks, and the child of a process with other threads has
+// only the one that forked: a lock another held stays held there, and a
+// collection waits on threads that are not there. The child built execve's
+// arguments and its environment after the fork, allocating, and hung for
+// good while other threads allocated -- every time here, and in the native
+// compiler's link, whose backends never started. Everything is made before
+// the fork; the child only makes system calls. The output is real .NET's.
+
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Threading;
+
+static class P
+{
+    static volatile bool stop;
+
+    static void Churn()
+    {
+        List<string> held = new();
+        int n = 0;
+        while (!stop)
+        {
+            held.Add(new string('x', 1 + n % 64));
+            if (held.Count > 5000) held.Clear();
+            n++;
+        }
+    }
+
+    static void Main()
+    {
+        Thread[] busy = new Thread[4];
+        for (int i = 0; i < busy.Length; i++) { busy[i] = new Thread(Churn); busy[i].Start(); }
+        int ok = 0;
+        for (int i = 0; i < 40; i++)
+        {
+            ProcessStartInfo start = new("/bin/echo") { UseShellExecute = false, RedirectStandardOutput = true };
+            start.ArgumentList.Add("run" + i);
+            using Process child = Process.Start(start)!;
+            string line = child.StandardOutput.ReadToEnd().Trim();
+            child.WaitForExit();
+            if (line == "run" + i && child.ExitCode == 0) ok++;
+        }
+        stop = true;
+        foreach (Thread t in busy) t.Join();
+        Console.WriteLine("started " + ok + " of 40");
+    }
+}

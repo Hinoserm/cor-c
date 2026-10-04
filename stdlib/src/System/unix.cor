@@ -137,6 +137,17 @@ static class UnixProcess
         return Os.Exec(path, argv, envp);
     }
 
+    /// What a forked child will execute, made before the fork (Os.PrepareExec).
+    public static ExecPlan PrepareExec(string path, string[] argv, string[]? envp, string? directory)
+    {
+        return Os.PrepareExec(path, argv, envp, directory);
+    }
+
+    /// In a forked child, on what was prepared: no allocation (Os.ExecPlanned).
+    public static int ChangeDirectory(ExecPlan plan) { return Os.ChdirPlanned(plan); }
+    public static int Exec(ExecPlan plan) { return Os.ExecPlanned(plan); }
+    public static void ExitNow(int code) { Os.ExitNow(code); }
+
     /// With this process's environment, including what SetEnvironmentVariable changed.
     public static int Exec(string path, string[] argv)
     {
