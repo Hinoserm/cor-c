@@ -1593,6 +1593,58 @@ internal sealed class RegionEscape
         /// <summary>For a report: past its bounds, made coarse (Coarse, Everything).</summary>
         public bool MadeCoarse;
 
+        /// <summary>
+        /// THE FIELD EACH WORD WAS WRITTEN AS (RegionConstraint.Family, as the
+        /// engine numbers it), by an object and an offset of it: a word every
+        /// cell of which a write naming one field put there, from the object's
+        /// start. A caller applying the summary writes it as that field, so
+        /// what a callee writes into its parameters is kept apart by field
+        /// there as a write of the caller's own is (Aliased). -2 where the
+        /// cells were written two ways or untyped, and nothing for most words:
+        /// both untyped. Never at any offset.
+        /// </summary>
+        public Dictionary<long, int>? Fields;
+
+        private static long WordKey(int from, int offset) => ((long)from << 32) | (uint)offset;
+
+        /// <summary>The field a word was written as; -1 for none.</summary>
+        public int FieldAt(int from, int offset)
+            => offset != Any && Fields is not null && Fields.TryGetValue(WordKey(from, offset), out int f) && f >= 0 ? f : -1;
+
+        /// <summary>A cell into a word, written as `family` (-1: untyped): the word typed only while every cell of it agrees.</summary>
+        public void NoteField(int from, int offset, int family)
+        {
+            if (offset == Any) return;
+            long key = WordKey(from, offset);
+            int v = family >= 0 ? family : -2;
+            Fields ??= new();
+            if (!Fields.TryGetValue(key, out int had)) Fields[key] = v;
+            else if (had != v) Fields[key] = -2;
+        }
+
+        // Whether two summaries type the same words the same way.
+        private bool SameFields(Summary other)
+        {
+            int Typed(Summary x) => x.Fields?.Values.Count(v => v >= 0) ?? 0;
+            if (Typed(this) != Typed(other)) return false;
+            if (Fields is null) return true;
+            foreach (var (key, v) in Fields)
+                if (v >= 0 && (other.Fields is null || !other.Fields.TryGetValue(key, out int w) || w != v)) return false;
+            return true;
+        }
+
+        // The words of `source`'s cells, as this summary's objects `map` makes
+        // them, at the offsets they keep (-1 for a word made any offset).
+        private void CarryFields(Summary source, int[] map, Func<int, int, int> offsetOf)
+        {
+            if (source.Fields is null) return;
+            foreach (var c in source.Cells)
+            {
+                int at = offsetOf(map[c.From], c.Offset);
+                if (at != Any) NoteField(map[c.From], at, source.FieldAt(c.From, c.Offset));
+            }
+        }
+
         public static Summary Unknown => new() { IsUnknown = true };
 
         /// <summary>Whether two summaries say the same, object by object, origins and all.</summary>
@@ -1608,7 +1660,7 @@ internal sealed class RegionEscape
             }
             for (int k = 0; k < Cells.Count; k++) if (Cells[k] != other.Cells[k]) return false;
             for (int k = 0; k < Result.Count; k++) if (Result[k] != other.Result[k]) return false;
-            return true;
+            return SameFields(other);
         }
 
         /// <summary>Whether two summaries say the same but for their made objects' origins (Publish: then updated in place).</summary>
@@ -1625,7 +1677,7 @@ internal sealed class RegionEscape
             }
             for (int k = 0; k < Cells.Count; k++) if (Cells[k] != other.Cells[k]) return false;
             for (int k = 0; k < Result.Count; k++) if (Result[k] != other.Result[k]) return false;
-            return MadeCoarse == other.MadeCoarse;
+            return MadeCoarse == other.MadeCoarse && SameFields(other);
         }
 
         /// <summary>Every summary's effects at once: what any of a virtual call's overrides may do.</summary>
@@ -1633,7 +1685,11 @@ internal sealed class RegionEscape
         {
             Summary merged = new();
             Dictionary<(Kind, int, string), int> places = new();
-            foreach (Summary s in each)
+            List<Summary> all = each as List<Summary> ?? each.ToList();
+            // Fields only where some summary types a word: then every cell
+            // into a word counts, untyped ones too.
+            bool typed = all.Any(x => x.Fields is not null);
+            foreach (Summary s in all)
             {
                 if (s.IsUnknown) return Unknown;
                 int[] map = new int[s.Objects.Count];
@@ -1651,7 +1707,12 @@ internal sealed class RegionEscape
                     map[k] = merged.Objects.Count;
                     merged.Objects.Add(s.Holder >= 0 ? (o.Kind, o.Param, o.Path, new[] { Ref(s.Holder, k) }) : o);
                 }
-                foreach (var c in s.Cells) merged.Cells.Add((map[c.From], c.Offset, map[c.To], c.ToOffset));
+                foreach (var c in s.Cells)
+                {
+                    merged.Cells.Add((map[c.From], c.Offset, map[c.To], c.ToOffset));
+                    // Each word as every summary wrote it: typed where they agree.
+                    if (typed) merged.NoteField(map[c.From], c.Offset, s.FieldAt(c.From, c.Offset));
+                }
                 foreach (var r in s.Result) merged.Result.Add((map[r.To], r.ToOffset));
             }
             merged.Cells.Sort(); merged.Result.Sort();
@@ -1899,6 +1960,8 @@ internal sealed class RegionEscape
             }
             foreach (var c in Cells) b.Cells.Add((map[c.From], c.Offset, map[c.To], c.ToOffset));
             foreach (var r in Result) b.Result.Add((map[r.To], r.ToOffset));
+            // Offsets kept: each word's field kept, where every word mapped to it agrees.
+            b.CarryFields(this, map, (_, offset) => offset);
             b.Cells.Sort(); b.Result.Sort();
             Dedupe(b.Cells); Dedupe(b.Result);
             return b;
@@ -2018,6 +2081,8 @@ internal sealed class RegionEscape
                 b.Cells.Add((from, Merged(from) ? Any : c.Offset, to, Merged(to) ? Any : c.ToOffset));
             }
             foreach (var r in Result) b.Result.Add((map[r.To], Merged(map[r.To]) ? Any : r.ToOffset));
+            // A word kept where it was keeps its field; one made any offset none.
+            b.CarryFields(this, map, (from, offset) => Merged(from) ? Any : offset);
             b.Cells.Sort(); b.Result.Sort();
             Dedupe(b.Cells); Dedupe(b.Result);
             return b;
@@ -2710,6 +2775,8 @@ internal sealed class RegionEscape
         private readonly List<int> _wideReaders = new();
         // Per cell node of a place: the family every write into it named, -2 written two ways or untyped.
         private readonly Dictionary<int, int> _cellFamily = new();
+        // Whether any write into a place named a field: else a summary types no word.
+        private bool _anyTyped;
 
         private int WrittenNode()
         {
@@ -2796,6 +2863,7 @@ internal sealed class RegionEscape
             if (_kind[o] is Kind.Place or Kind.Deep)
             {
                 int named = family >= 0 && at != Any && _locOffset[loc] == 0 ? family : -2;
+                if (named >= 0) _anyTyped = true;
                 if (!_cellFamily.TryGetValue(cell, out int had)) _cellFamily[cell] = named;
                 else if (had != named) _cellFamily[cell] = -2;
             }
@@ -3429,7 +3497,8 @@ internal sealed class RegionEscape
                 {
                     into = NewNode();
                     gathered[(c.From, c.Offset)] = into;
-                    StoreEdge(node[c.From], c.Offset, into);
+                    // Written as the field the callee wrote it as (Summary.Fields).
+                    StoreEdge(node[c.From], c.Offset, into, s.FieldAt(c.From, c.Offset));
                 }
                 CopyEdge(At(c.To, c.ToOffset), into, 0);
             }
@@ -3844,6 +3913,9 @@ internal sealed class RegionEscape
                             bool fromLeaked = leaked.Contains(o);
                             if (to == 0 && fromLeaked) continue;
                             s.Cells.Add((fromLeaked ? 0 : index[o], fromLeaked || Merged(index[o]) ? Any : offset, t, Merged(t) ? Any : _locOffset[loc]));
+                            // A place's word, as every write into it named it (Stored).
+                            if (!fromLeaked && !Merged(index[o]) && offset != Any && _kind[o] is Kind.Place or Kind.Deep && _anyTyped)
+                                s.NoteField(index[o], offset, _cellFamily.TryGetValue(node, out int named) && named >= 0 ? named : -1);
                         }
             if (Pts(Ret(m)) is { } back)
                 foreach (int loc in back)
