@@ -136,7 +136,7 @@ public sealed class Parser
             return ParseExpr();
         }
 
-        if (!At(Tok.KwOut) && !At(Tok.KwRef))
+        if (!At(Tok.KwOut) && !At(Tok.KwRef) || StartsRefLambda())
         {
             return ParseExpr();
         }
@@ -1595,6 +1595,15 @@ public sealed class Parser
 
     private TypeDecl ParseDelegateDeclaration(Token start, Mods mods)
     {
+        // `delegate ref int D(...)` RETURNS A VARIABLE, as a method written so
+        // does: its Invoke carries Mods.RefReturn, and so does every lambda's
+        // made for it (Binder.CheckLambda).
+        Mods byReference = Mods.None;
+        if (Take(Tok.KwRef))
+        {
+            byReference = Mods.RefReturn;
+            if (Take(Tok.KwReadonly)) byReference |= Mods.RefReadonlyReturn;
+        }
         int firstToken = _i;
         TypeRef returns = ParseTypeRef();
         string name = Expect(Tok.Ident, "a delegate name").Text;
@@ -1614,13 +1623,13 @@ public sealed class Parser
         }
         MethodDecl invoke = new()
         {
-            Name = "Invoke", Returns = returns, Mods = Mods.Public | Mods.Abstract,
+            Name = "Invoke", Returns = returns, Mods = Mods.Public | Mods.Abstract | byReference,
             File = _file, Scope = _fileScope, Namespace = _namespace, Line = start.Line, Col = start.Col,
         };
         ParseParams(invoke.Params); ParseConstraints(declaration.TypeParams);
         declaration.Members.Add(invoke);
         declaration.SourceTo = Expect(Tok.Semi, "';' after delegate declaration").Pos + 1;
-        TypeDecl? multicast = Multicast(declaration, firstToken, _i - 1);
+        TypeDecl? multicast = Multicast(declaration, firstToken, _i - 1, byReference);
         if (multicast is not null)
         {
             _nested.Add(multicast);
@@ -1661,7 +1670,7 @@ public sealed class Parser
     /// return type and parameters and reassembling them is simpler and less
     /// fragile than building the tree by hand.
     /// </summary>
-    private TypeDecl? Multicast(TypeDecl delegateDecl, int firstToken, int semicolon)
+    private TypeDecl? Multicast(TypeDecl delegateDecl, int firstToken, int semicolon, Mods byReference = Mods.None)
     {
         System.Text.StringBuilder head = new();
         for (int k = firstToken; k < semicolon; k++)
@@ -1715,6 +1724,11 @@ public sealed class Parser
             }
         }
         bool isVoid = returns == "void";
+        // A delegate that returns by reference answers, combined, the
+        // variable its last target does -- C#'s rule for any result -- and
+        // its Invoke returns it as the delegate's does.
+        string refKind = (byReference & Mods.RefReadonlyReturn) != 0 ? "ref readonly "
+                       : (byReference & Mods.RefReturn) != 0 ? "ref " : "";
         string args = string.Join(", ", names);
         string ctor = name + "__Multicast";
         string m = ctor + typeParams;
@@ -1724,9 +1738,14 @@ public sealed class Parser
         src.Append("public sealed class ").Append(m).Append(" : ").Append(name).Append("\n{\n");
         src.Append("    public ").Append(name).Append("[] Items;\n");
         src.Append("    public ").Append(ctor).Append("(").Append(name).Append("[] items) { Items = items; }\n");
-        src.Append("    public ").Append(returns).Append(" Invoke(").Append(parameters).Append(")\n    {\n");
+        src.Append("    public ").Append(refKind).Append(returns).Append(" Invoke(").Append(parameters).Append(")\n    {\n");
         if (isVoid)
             src.Append("        for (int i = 0; i < Items.Length; i++) Items[i].Invoke(").Append(args).Append(");\n");
+        else if (refKind.Length > 0)
+        {
+            src.Append("        for (int i = 0; i < Items.Length - 1; i++) Items[i].Invoke(").Append(args).Append(");\n");
+            src.Append("        return ref Items[Items.Length - 1].Invoke(").Append(args).Append(");\n");
+        }
         else
         {
             // The last target's answer. A multicast delegate always has at
@@ -4626,6 +4645,35 @@ public sealed class Parser
         return -1;
     }
 
+    /// <summary>
+    /// Whether `ref` here begins a LAMBDA WITH ITS RESULT WRITTEN, `ref int
+    /// (int[] a) => ref a[0]` or `ref readonly T (...) => ...` (C# 10): a
+    /// type, then a bracket that the arrow follows. Anywhere else `ref` is a
+    /// variable's, and `ref a[0]` and `ref F(x)` are not types and brackets
+    /// with an arrow after.
+    /// </summary>
+    private bool StartsRefLambda()
+    {
+        if (!At(Tok.KwRef)) return false;
+        int was = _i;
+        try
+        {
+            _i++;
+            Take(Tok.KwReadonly);
+            if (!At(Tok.Ident) && !At(Tok.LParen)) return false;
+            ParseTypeRef();
+            return At(Tok.LParen) && IsLambdaHead();
+        }
+        catch (CompileError)
+        {
+            return false;
+        }
+        finally
+        {
+            _i = was;
+        }
+    }
+
     private bool IsLambdaHeadAt(int from)
     {
         int depth = 0;
@@ -4668,9 +4716,11 @@ public sealed class Parser
         // what the lambda is converted to; the method's return type is not it.
         TypeRef? savedReturns = _returns;
         _returns = null;
+        // `=> ref a[0]`: the body of a lambda that returns by reference is
+        // the variable it answers (ParseRefValue).
         LambdaExpr done = At(Tok.LBrace)
             ? new LambdaExpr { BlockBody = ParseBlock(), Line = made.Line, Col = made.Col, Async = made.Async }
-            : new LambdaExpr { Body = ParseExpr(), Line = made.Line, Col = made.Col, Async = made.Async };
+            : new LambdaExpr { Body = At(Tok.KwRef) ? ParseRefValue() : ParseExpr(), Line = made.Line, Col = made.Col, Async = made.Async };
         _returns = savedReturns;
 
         for (int k = 0; k < names.Count; k++)
@@ -5148,12 +5198,21 @@ public sealed class Parser
 
     private bool StartsLocalFunction()
     {
-        if (!At(Tok.KwVoid) && !At(Tok.Ident) && !At(Tok.LParen))
+        // `ref int At(int[] xs, int i) => ref xs[i];` RETURNS A VARIABLE. The
+        // word in front is the return's, as a method's is; `ref int x = ref
+        // y;`, the ref local, has `=` where this has its bracket, which is
+        // what tells the two apart below.
+        int j = _i;
+        if (_t[j].Kind == Tok.KwRef)
+        {
+            j++;
+            if (j < _t.Count && _t[j].Kind == Tok.KwReadonly) j++;
+            if (j >= _t.Count || _t[j].Kind is not (Tok.Ident or Tok.LParen)) return false;
+        }
+        else if (!At(Tok.KwVoid) && !At(Tok.Ident) && !At(Tok.LParen))
         {
             return false;
         }
-
-        int j = _i;
 
         // Step over the return type: a name, possibly dotted and generic, a
         // tuple in brackets, or the keyword void.
@@ -5255,14 +5314,14 @@ public sealed class Parser
     /// which is exactly how C# spells them, so the type a user could write by
     /// hand is the type this builds.
     /// </summary>
-    private Stmt ParseGenericLocalFunction(Token at, TypeRef? returns, string name)
+    private Stmt ParseGenericLocalFunction(Token at, TypeRef? returns, string name, Mods byReference)
     {
         if (_blocks.Count == 0) throw Error("a generic local function must be declared in a block");
         MethodDecl m = new()
         {
             Name = name + "$" + _memberName + "$" + _hoistSerial++,
             Returns = returns ?? VoidType(),
-            Mods = _memberStatic ? Mods.Static | Mods.Private : Mods.Private,
+            Mods = (_memberStatic ? Mods.Static | Mods.Private : Mods.Private) | byReference,
             Line = at.Line, Col = at.Col, Body = null,
         };
         if (At(Tok.Lt)) ParseTypeParams(m.WritableTypeParams);
@@ -5276,11 +5335,13 @@ public sealed class Parser
 
     /// <summary>
     /// The delegate a local function's signature needs when Func and Action
-    /// cannot say it: a parameter passed by ref, out or in, or more than eight.
+    /// cannot say it: a parameter passed by ref, out or in, more than eight,
+    /// or a result returned by reference (<paramref name="byReference"/>,
+    /// Mods.RefReturn on its Invoke, as `delegate ref int D(...)` has it).
     /// Declared nested in the type being read, under a name no source can
     /// write, with that type's own type parameters as a nested type has them.
     /// </summary>
-    private TypeRef LocalFunctionDelegate(Token at, string name, TypeRef? returns, List<Param> parameters)
+    private TypeRef LocalFunctionDelegate(Token at, string name, TypeRef? returns, List<Param> parameters, Mods byReference)
     {
         string delegateName = "LocalFunction$" + name + "$" + _hoistSerial++;
         TypeDecl declaration = new()
@@ -5300,7 +5361,7 @@ public sealed class Parser
         MethodDecl invoke = new()
         {
             Name = "Invoke", Returns = returns ?? new TypeRef { Name = "void", Line = at.Line, Col = at.Col },
-            Mods = Mods.Public | Mods.Abstract,
+            Mods = Mods.Public | Mods.Abstract | byReference,
             File = _file, Scope = _fileScope, Namespace = _namespace, Line = at.Line, Col = at.Col,
         };
         foreach (Param p in parameters)
@@ -5318,7 +5379,18 @@ public sealed class Parser
 
     private Stmt ParseLocalFunction(Token at)
     {
-        TypeRef? returns = Take(Tok.KwVoid)
+        // `ref int At(...)` and `ref readonly int At(...)` RETURN A VARIABLE,
+        // as a method written so does (Mods.RefReturn): the generic one is
+        // such a method, and the delegate the others are has an Invoke that
+        // says so.
+        Mods byReference = Mods.None;
+        if (Take(Tok.KwRef))
+        {
+            byReference = Mods.RefReturn;
+            if (Take(Tok.KwReadonly)) byReference |= Mods.RefReadonlyReturn;
+        }
+
+        TypeRef? returns = byReference == Mods.None && Take(Tok.KwVoid)
                          ? null
                          : ParseTypeRef();
 
@@ -5330,7 +5402,7 @@ public sealed class Parser
         // functions are, cannot be generic.
         if (At(Tok.Lt))
         {
-            return ParseGenericLocalFunction(at, returns, name);
+            return ParseGenericLocalFunction(at, returns, name, byReference);
         }
 
         // THE SAME PARAMETER LIST A METHOD HAS: attributes (caller
@@ -5338,7 +5410,7 @@ public sealed class Parser
         LambdaExpr made = new() { BlockBody = null!, Line = at.Line, Col = at.Col };
         ParseParams(made.Params);
         List<TypeRef> takes = made.Params.Select(p => p.Type).ToList();
-        bool byReference = made.Params.Any(p => p.IsRef || p.IsOut);
+        bool passedByReference = made.Params.Any(p => p.IsRef || p.IsOut);
 
         // EXPRESSION-BODIED, which is how the short ones are written:
         // `long Twice(long n) => n * 2;` -- and that form DOES end with a
@@ -5347,7 +5419,9 @@ public sealed class Parser
 
         if (Take(Tok.FatArrow))
         {
-            lam = new LambdaExpr { Body = ParseExpr(), Line = at.Line, Col = at.Col };
+            // `=> ref xs[i]`: the body of one that returns by reference is
+            // the variable it answers (ParseRefValue).
+            lam = new LambdaExpr { Body = At(Tok.KwRef) ? ParseRefValue() : ParseExpr(), Line = at.Line, Col = at.Col };
             Expect(Tok.Semi, "';' after the expression body");
         }
         else
@@ -5361,14 +5435,15 @@ public sealed class Parser
         lam.Params.AddRange(made.Params);
 
         // Action for no result, Func with the result last -- C#'s own spelling
-        // -- when one fits: nothing passed by reference, and no more than the
-        // eight parameters those carry. Otherwise the local function's type is
-        // a delegate of its exact signature, as C# gives it one, declared
-        // beside the type it is written in.
+        // -- when one fits: nothing passed by reference, the result not
+        // returned by reference, and no more than the eight parameters those
+        // carry. Otherwise the local function's type is a delegate of its
+        // exact signature, as C# gives it one, declared beside the type it is
+        // written in.
         TypeRef shape;
-        if (byReference || takes.Count > 8)
+        if (passedByReference || byReference != Mods.None || takes.Count > 8)
         {
-            shape = LocalFunctionDelegate(at, name, returns, made.Params);
+            shape = LocalFunctionDelegate(at, name, returns, made.Params, byReference);
         }
         else
         {
@@ -6578,6 +6653,9 @@ public sealed class Parser
     private Expr ParseRefValue()
     {
         Token at = Cur;
+        // Unless what follows is a LAMBDA THAT RETURNS BY REFERENCE, `return
+        // ref int (int[] a) => ref a[0];`, whose `ref` is its own.
+        if (StartsRefLambda()) return ParseConditional();
         Expect(Tok.KwRef, "'ref' and the variable referred to");
         return new RefArgExpr { Target = ParseConditional(), Line = at.Line, Col = at.Col };
     }
@@ -7139,6 +7217,26 @@ public sealed class Parser
                 LambdaExpr made = new()
                 {
                     Body = inner.Body, BlockBody = inner.BlockBody, Async = true,
+                    Line = at.Line, Col = at.Col,
+                };
+                made.Params.AddRange(inner.Params);
+                return made;
+            }
+
+            // A LAMBDA WITH ITS RESULT WRITTEN: `ref int (int[] a) => ref
+            // a[0]` (C# 10). The lambda is read as any other, and keeps what
+            // it said it returns for the binder to hold the delegate to.
+            case Tok.KwRef when StartsRefLambda():
+            {
+                _i++;
+                Mods returnMods = Mods.RefReturn;
+                if (Take(Tok.KwReadonly)) returnMods |= Mods.RefReadonlyReturn;
+                TypeRef returns = ParseTypeRef();
+                LambdaExpr inner = (LambdaExpr)ParseUnary();
+                LambdaExpr made = new()
+                {
+                    Body = inner.Body, BlockBody = inner.BlockBody, Async = inner.Async,
+                    Returns = returns, ReturnMods = returnMods,
                     Line = at.Line, Col = at.Col,
                 };
                 made.Params.AddRange(inner.Params);

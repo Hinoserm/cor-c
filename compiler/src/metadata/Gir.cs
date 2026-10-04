@@ -957,6 +957,9 @@ public static class Gir
 
                     Expr(la.Body);
                     Stmt(la.BlockBody);
+                    // A result written in front (`ref int (...) => ...`).
+                    Type(la.Returns);
+                    I32((int)la.ReturnMods);
                     break;
 
                 case SwitchExpr se:
@@ -1889,7 +1892,9 @@ public static class Gir
                     }
 
                     Expr? body = Expr();
-                    LambdaExpr la = new() { Async = async, Body = body, BlockBody = Stmt() as Block };
+                    Block? blockBody = Stmt() as Block;
+                    TypeRef? returns = TypeOrNull();
+                    LambdaExpr la = new() { Async = async, Body = body, BlockBody = blockBody, Returns = returns, ReturnMods = (Mods)I32() };
 
                     la.Params.AddRange(ps);
                     return la;

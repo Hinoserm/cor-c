@@ -2362,6 +2362,7 @@ public sealed class Monomorphiser
                     Body = lambda.Body is null ? null : Rewrite(lambda.Body, map),
                     BlockBody = lambda.BlockBody is null ? null : (Block)Rewrite(lambda.BlockBody, map),
                     Async = lambda.Async, Line = lambda.Line, Col = lambda.Col,
+                    Returns = lambda.Returns is null ? null : Sub(lambda.Returns, map), ReturnMods = lambda.ReturnMods,
                 };
                 foreach (Param p in lambda.Params)
                 {

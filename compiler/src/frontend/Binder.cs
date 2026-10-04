@@ -6277,6 +6277,28 @@ public sealed partial class Binder
             return Type.Error;
         }
 
+        // A RESULT WRITTEN IN FRONT, `ref int (int[] a) => ref a[0]` (C# 10),
+        // is the delegate's exactly: its type, and whether and how it is
+        // returned by reference.
+        if (lam.Returns is not null)
+        {
+            bool byReference = (lam.ReturnMods & Mods.RefReturn) != 0;
+            bool readOnly = (lam.ReturnMods & Mods.RefReadonlyReturn) != 0;
+            static string How(bool reference, bool readOnlyReference)
+                => reference ? readOnlyReference ? "by 'ref readonly'" : "by 'ref'" : "by value";
+            Type written = Resolve(lam.Returns, _thisType);
+            Type delegated = ContextualMemberResult(wanted, invoke);
+            if (byReference != invoke.RefReturn || readOnly != invoke.RefReturnReadOnly)
+            {
+                Error(lam, $"the lambda returns {How(byReference, readOnly)}, and '{face!.Name}' returns {How(invoke.RefReturn, invoke.RefReturnReadOnly)}");
+            }
+            else if (!written.IsError && !delegated.IsError
+                     && !MethodSignatures.SameType(written.AsNonNullable(), delegated.AsNonNullable()))
+            {
+                Error(lam, $"the lambda returns '{written}', and '{face!.Name}' returns '{delegated}'");
+            }
+        }
+
         // ---- pass one: which of the enclosing locals does it read? ----------
         Dictionary<string, Type>? outerCaptured = _captured;
         Dictionary<string, ConstSym>? outerConstants = _capturedConstants;
@@ -6503,7 +6525,13 @@ public sealed partial class Binder
         Type closureReturns = ContextualMemberResult(wanted, invoke);
         MethodDecl body = new()
         {
-            Name = "Invoke", Mods = Mods.Public, Returns = new TypeRef { Name = "" },
+            // RETURNED BY REFERENCE AS THE DELEGATE SAYS: for `delegate ref
+            // int D(...)`, and a ref-returning local function's delegate
+            // (Parser.LocalFunctionDelegate), the body answers a variable --
+            // `=> ref a[i]`, `return ref a[i];` -- and its Invoke the address.
+            Name = "Invoke", Returns = new TypeRef { Name = "" },
+            Mods = Mods.Public | (invoke.RefReturn ? Mods.RefReturn : Mods.None)
+                 | (invoke.RefReturnReadOnly ? Mods.RefReadonlyReturn : Mods.None),
             // An async expression lambda returns what its TASK holds, so
             // `async () => await Work()` of a Func<Task> is a statement.
             Body = lam.BlockBody ?? Wrap(lam.Body!, lam.Async ? AsyncBodyType(closureReturns) : closureReturns),
@@ -6634,7 +6662,7 @@ public sealed partial class Binder
                     new ParamSym(i, run.Params[i].Type, lam.Params[i].Name, run.Params[i].ByRef, run.Params[i].ReadOnly));
         }
 
-        Look(lam, closureReturns);
+        Look(lam, closureReturns, final: true);
         _r.FrameSize[body] = _nextSlot;
         PopScope();
         PopScope();
@@ -6661,8 +6689,12 @@ public sealed partial class Binder
         return wanted;
     }
 
-    /// <summary>Checks a lambda's body, whichever of the two shapes it is.</summary>
-    private void Look(LambdaExpr lam, Type returns)
+    /// <summary>
+    /// Checks a lambda's body, whichever of the two shapes it is.
+    /// <paramref name="final"/> when it is checked as its closure's own
+    /// Invoke (<see cref="_method"/>), rather than for what it captures.
+    /// </summary>
+    private void Look(LambdaExpr lam, Type returns, bool final = false)
     {
         if (lam.BlockBody != null)
         {
@@ -6673,6 +6705,17 @@ public sealed partial class Binder
                 CheckStmt(s);
             }
             if (labels) _labels.RemoveAt(_labels.Count - 1);
+            return;
+        }
+
+        // `=> ref a[0]`, OR ANY BODY OF ONE THAT RETURNS BY REFERENCE, is
+        // `return ref a[0];` and is checked as that is (CheckRefReturn): a
+        // variable, of the delegate's type exactly, that outlives the call.
+        // The wrapped return the closure's Invoke is lowered from (Wrap) is
+        // this same expression.
+        if (final && (lam.Body is RefArgExpr { IsOut: false, Name: null } || _method is { RefReturn: true }))
+        {
+            CheckRefReturn(new ReturnStmt { Value = lam.Body, Line = lam.Body!.Line, Col = lam.Body.Col });
             return;
         }
 
@@ -7191,7 +7234,9 @@ public sealed partial class Binder
         }
 
         CallExpr call = new() { Target = callTarget, Line = source.Line, Col = source.Col };
-        LambdaExpr made = new() { Body = call, Line = source.Line, Col = source.Col };
+        // A DELEGATE THAT RETURNS BY REFERENCE hands on the variable the
+        // method answers: `=> ref Method(...)`.
+        LambdaExpr made = new() { Body = Answer(invoke, call), Line = source.Line, Col = source.Col };
         // Which method the group means here is the one whose arity the
         // delegate's Invoke has; its identity names the closure class, so a
         // second conversion of the same method anywhere in the type is the
@@ -7227,6 +7272,13 @@ public sealed partial class Binder
     }
 
     /// <summary>
+    /// What a delegate made of a method group answers: the call, or for an
+    /// Invoke that returns by reference, the variable the call answers.
+    /// </summary>
+    private static Expr Answer(MethodSymbol invoke, CallExpr call)
+        => invoke.RefReturn ? new RefArgExpr { Target = call, Line = call.Line, Col = call.Col } : call;
+
+    /// <summary>
     /// Whether a local function's name, written where a delegate of ANOTHER
     /// type is wanted, converts to it: a local function is a method group
     /// (C# 10.8), and `values.RemoveAll(Big)` over `bool Big(long v)` is a
@@ -7250,7 +7302,8 @@ public sealed partial class Binder
             && mine.Params.Count == theirs.Params.Count
             && mine.Params.Zip(theirs.Params).All(pair => MethodSignatures.SameType(pair.First.Type, pair.Second.Type)
                                                         && pair.First.ByRef == pair.Second.ByRef)
-            && MethodSignatures.SameType(mine.Returns, theirs.Returns);
+            && MethodSignatures.SameType(mine.Returns, theirs.Returns)
+            && mine.RefReturn == theirs.RefReturn && mine.RefReturnReadOnly == theirs.RefReturnReadOnly;
     }
 
     /// <summary>
@@ -7262,7 +7315,7 @@ public sealed partial class Binder
         MethodSymbol invoke = wanted.Symbol!.FindMethods("Invoke").First();
         CallExpr call = new() { Target = new NameExpr { Name = source.Name, Line = source.Line, Col = source.Col },
                                 Line = source.Line, Col = source.Col };
-        LambdaExpr made = new() { Body = call, Line = source.Line, Col = source.Col };
+        LambdaExpr made = new() { Body = Answer(invoke, call), Line = source.Line, Col = source.Col };
         for (int i = 0; i < invoke.Params.Count; i++)
         {
             string name = "$arg" + i;

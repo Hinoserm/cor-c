@@ -1,0 +1,18 @@
+// test: ref readonly local function not written
+// expect-compile-error: 'Peek' returns a ref readonly variable
+// What a `ref readonly` local function answers is only read, as a ref
+// readonly method's is: writing through it is refused (C#'s CS8331).
+
+using System;
+
+public static class Program
+{
+    public static int Main()
+    {
+        int[] items = { 1, 2 };
+        ref readonly int Peek(int[] xs) => ref xs[0];
+        Peek(items) = 5;
+        Console.WriteLine(items[0]);
+        return 0;
+    }
+}

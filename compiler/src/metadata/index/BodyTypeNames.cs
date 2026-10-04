@@ -88,6 +88,7 @@ public static class BodyTypeNames
                 case IsExpr e: Expression(e.Operand); Type(e.Type); return;
                 case LambdaExpr e:
                     foreach (Param parameter in e.Params) { Type(parameter.Type); Expression(parameter.Default); }
+                    if (e.Returns is not null) Type(e.Returns);
                     Expression(e.Body); Statement(e.BlockBody);
                     return;
                 case MemberExpr e:

@@ -1,0 +1,81 @@
+// test: ref returning delegates
+// expect-exit: 0
+// expect-output:
+// lambda 1,12,3,4
+// block 1,12,3,40
+// explicit 1,12,4,40
+// group 21,12,4,40
+// readonly 40 41
+// generic b z
+// multicast 21,12,55,41
+// local group 21,12,55,66
+//
+// A DELEGATE THAT RETURNS BY REFERENCE: `delegate ref int Picker(int[]
+// xs);`, `ref readonly`, and generic. A lambda converted to one answers a
+// variable -- `xs => ref xs[1]`, a block's `return ref`, and C# 10's lambda
+// with its result written, `ref int (int[] xs) => ref xs[2]` -- and so does
+// a method group, a ref-returning local function's among them. Calling the
+// delegate is a variable: assigned, incremented, compound-assigned, taken by
+// a ref readonly local and read. Combined with `+=`, it answers the
+// variable its last target does, as .NET's multicast does.
+//
+// Every line is what .NET prints.
+
+using System;
+
+delegate ref int Picker(int[] xs);
+delegate ref readonly int Viewer(int[] xs);
+delegate ref T Cell<T>(T[] xs, int i);
+
+public static class Program
+{
+    static ref int Head(int[] xs) => ref xs[0];
+
+    static void Use(Picker pick, int[] xs, int value) => pick(xs) = value;
+
+    public static int Main()
+    {
+        int[] arr = { 1, 2, 3, 4 };
+        Picker second = xs => ref xs[1];
+        second(arr) = 12;
+        Console.WriteLine("lambda " + string.Join(",", arr));
+
+        Picker last = (int[] xs) =>
+        {
+            int at = xs.Length - 1;
+            return ref xs[at];
+        };
+        last(arr) *= 10;
+        Console.WriteLine("block " + string.Join(",", arr));
+
+        Picker third = ref int (int[] xs) => ref xs[2];
+        third(arr)++;
+        Console.WriteLine("explicit " + string.Join(",", arr));
+
+        Picker head = Head;
+        Use(head, arr, 21);
+        Console.WriteLine("group " + string.Join(",", arr));
+
+        Viewer view = xs => ref xs[3];
+        ref readonly int seen = ref view(arr);
+        arr[3]++;
+        Console.WriteLine("readonly " + (seen - 1) + " " + view(arr));
+
+        Cell<string> cell = (xs, i) => ref xs[i];
+        string[] words = { "a", "b" };
+        cell(words, 0) = cell(words, 1);
+        cell(words, 1) = "z";
+        Console.WriteLine("generic " + words[0] + " " + words[1]);
+
+        Picker both = second;
+        both += third;
+        both(arr) = 55;
+        Console.WriteLine("multicast " + string.Join(",", arr));
+
+        ref int Fourth(int[] xs) => ref xs[3];
+        Picker fourth = Fourth;
+        fourth(arr) = 66;
+        Console.WriteLine("local group " + string.Join(",", arr));
+        return 0;
+    }
+}

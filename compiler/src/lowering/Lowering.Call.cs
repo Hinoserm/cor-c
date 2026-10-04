@@ -63,9 +63,16 @@ public sealed partial class Lowering
     /// </summary>
     private static IrType ReturnIr(MethodSymbol m) => m.RefReturn ? IrTypes.Word : IrTypes.Of(m.Returns);
 
-    /// <summary>The method a call returns a variable of, or null (ReturnIr).</summary>
+    /// <summary>
+    /// The method a call returns a variable of, or null (ReturnIr). A
+    /// delegate's call -- a ref-returning local function's -- is its Invoke's,
+    /// and EmitCall calls that through the interface slot, answering the
+    /// address the closure's Invoke returned.
+    /// </summary>
     private MethodSymbol? RefCallee(CallExpr call)
-        => _b.Calls.TryGetValue(call, out MethodSymbol? m) && m.RefReturn && !_b.Invocations.ContainsKey(call) ? m : null;
+        => _b.Invocations.TryGetValue(call, out MethodSymbol? invoke)
+           ? invoke.RefReturn ? invoke : null
+           : _b.Calls.TryGetValue(call, out MethodSymbol? m) && m.RefReturn ? m : null;
 
     /// <summary>
     /// The variable a ref-returning call answers: the call made, and its
@@ -154,7 +161,11 @@ public sealed partial class Lowering
             // Whatever implementation answers, a struct it returns other than
             // through a buffer is a copy made for this caller.
             if (!Buffered(m) && !m.RefReturn && IsStructValue(m.Returns)) _e.Block.Instrs[^1].Field = Instr.FreshStruct;
-            else if (m.Name == "Invoke" && m.Owner.Kind == TypeKind.Interface) _e.Block.Instrs[^1].Field = Instr.DelegateInvoke;
+            // NOT ONE THAT RETURNS BY REFERENCE: what it answers is an address
+            // its closure's captures may reach -- an element of an array it
+            // holds -- so the closure is not merely run by the call, and the
+            // escape pass asks the overrides instead (Escape, DelegateInvoke).
+            else if (m.Name == "Invoke" && m.Owner.Kind == TypeKind.Interface && !m.RefReturn) _e.Block.Instrs[^1].Field = Instr.DelegateInvoke;
             return called;
         }
 

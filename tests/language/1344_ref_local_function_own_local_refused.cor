@@ -1,0 +1,20 @@
+// test: ref local function own local refused
+// expect-compile-error: cannot return a reference to this variable: it lives in this method
+// A local function's own local is gone when it returns, so a reference to
+// it may not be returned (C#'s CS8168), as a method's may not.
+
+using System;
+
+public static class Program
+{
+    public static int Main()
+    {
+        ref int Copy(int seed)
+        {
+            int copy = seed;
+            return ref copy;
+        }
+        Console.WriteLine(Copy(4));
+        return 0;
+    }
+}
