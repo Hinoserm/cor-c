@@ -1,0 +1,68 @@
+// test: lambda_capturing_nothing_made_once
+// expect-exit: 0
+// expect-output:
+// same lambda True
+// same method group True
+// same generic copy True False
+// capturing differ True
+// locked 3
+// sum 199980000
+// kept by another True
+// allocated per call none True
+//
+// A lambda that captures nothing is one delegate, as .NET caches it: every
+// evaluation answers the same object, laid down once in the data section
+// (Lowering.StaticClosure), and nothing is allocated for it per call. A LINQ
+// operator's predicate was 24 bytes at every call, left to the collector
+// whenever another unit's iterator kept it. A static method group is the
+// same; a lambda that captures is made where it is written, every time.
+// The object takes a lock and outlives everything that held it.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    static Func<int, int> Plain() => x => x + 1;
+    static int Twice(int x) => x * 2;
+    static Func<int, int> Group() => Twice;
+    static Func<T, T> Same<T>() => x => x;
+    static Func<int, int> Adder(int k) => x => x + k;
+
+    static readonly List<Func<int, int>> _kept = new();
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Apply(int v, Func<int, int> f) => f(v);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Keep(Func<int, int> f) => _kept.Add(f);
+
+    static void Main()
+    {
+        Console.WriteLine("same lambda " + ReferenceEquals(Plain(), Plain()));
+        Console.WriteLine("same method group " + ReferenceEquals(Group(), Group()));
+        Console.WriteLine("same generic copy " + ReferenceEquals(Same<int>(), Same<int>()) + " " + ReferenceEquals(Same<int>(), Same<string>()));
+        Console.WriteLine("capturing differ " + !ReferenceEquals(Adder(1), Adder(1)));
+
+        Func<int, int> f = Plain();
+        int locked = 0;
+        for (int i = 0; i < 3; i++) lock (f) { locked++; }
+        Console.WriteLine("locked " + locked);
+
+        long sum = 0;
+        for (int i = 0; i < 10000; i++) sum += Apply(i, x => x * 2) + Apply(i, Twice);
+        Console.WriteLine("sum " + sum);
+
+        for (int i = 0; i < 5; i++) Keep(x => x - 1);
+        Gc.Collect();
+        bool kept = _kept.Count == 5 && ReferenceEquals(_kept[0], _kept[4]) && _kept[3](10) == 9;
+        Console.WriteLine("kept by another " + kept);
+
+        long before = Gc.AllocatedByThread;
+        long more = 0;
+        for (int i = 0; i < 10000; i++) more += Apply(i, x => x + 3);
+        long made = Gc.AllocatedByThread - before;
+        Console.WriteLine("allocated per call none " + (made < 10000 && more == 49995000L + 30000L));
+    }
+}
