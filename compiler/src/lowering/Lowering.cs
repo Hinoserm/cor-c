@@ -2178,11 +2178,11 @@ public sealed partial class Lowering
             }
             else if (i == _b.EqualsSlot && t.Kind == TypeKind.Class)
             {
-                target = EqualsGuard(t) ?? ObjectEqualsStub();
+                target = (DelegateClosure(t) ? DelegateEqualsStub(t) : null) ?? EqualsGuard(t) ?? ObjectEqualsStub();
             }
             else if (i == _b.HashSlot && t.Kind == TypeKind.Class)
             {
-                target = ObjectHashStub();
+                target = (DelegateClosure(t) ? DelegateHashStub(t) : null) ?? ObjectHashStub();
             }
             else if (i == _b.CompareSlot && t.Kind == TypeKind.Class)
             {

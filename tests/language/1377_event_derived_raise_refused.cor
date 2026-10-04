@@ -1,0 +1,29 @@
+// test: event derived raise refused
+// expect-compile-error: can only appear on the left hand side of += or -=
+// A derived class is outside the class that declares a field-like event: it
+// subscribes as anyone may, and raises it through a method the base gives it
+// (an OnChanged), as .NET's own classes do. Raising the base's event itself
+// is refused (CS0070).
+
+using System;
+
+class Base
+{
+    public event Action? Changed;
+}
+
+class Derived : Base
+{
+    public void Touch() { Changed?.Invoke(); }
+}
+
+static class P
+{
+    static int Main()
+    {
+        Derived d = new Derived();
+        d.Changed += () => Console.WriteLine("changed");
+        d.Touch();
+        return 0;
+    }
+}

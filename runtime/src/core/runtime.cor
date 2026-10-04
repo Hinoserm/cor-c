@@ -437,6 +437,97 @@ interface IOwnsStorage
     void FreeStorage();
 }
 
+/// .NET's System.Delegate: WHAT EVERY DELEGATE IS. A delegate type here is an
+/// interface with an Invoke (Parser.ParseDelegateDeclaration), and the binder
+/// gives each one this as its base (Binder.DeclareMembersIn), as every .NET
+/// delegate type derives from Delegate -- so an Action is a Delegate, an
+/// array of Delegates holds any of them, and the members below are every
+/// delegate's.
+///
+/// A delegate is one of two things. A closure the compiler made of a lambda
+/// or a method group, which is one target and answers these members with the
+/// bodies written here and the two its delegate type writes (CombineImpl and
+/// RemoveImpl: only the type knows the multicast class it combines into); the
+/// binder fills a closure's slots with them (Binder.DelegateMembers). Or that
+/// multicast class, written beside every delegate type (Parser.Multicast),
+/// which holds the targets in order and answers all of them itself.
+///
+/// Method and Target are not here: they answer a MethodInfo and the object a
+/// closure was made over, and there is no reflection to make the one, nor a
+/// target .NET would name in a closure that captured locals.
+interface Delegate
+{
+    /// The targets a call runs, in the order it runs them: for a single
+    /// delegate, itself alone.
+    public Delegate[] GetInvocationList() { return new Delegate[] { this }; }
+
+    /// This delegate followed by `follow`, which is a delegate of the same
+    /// type -- Delegate.Combine's work once neither side is null. Each
+    /// delegate type answers it for its own closures, the one place that can
+    /// name the multicast class to make.
+    public Delegate? CombineImpl(Delegate follow) { throw new NotSupportedException("Delegates of this type cannot be combined."); }
+
+    /// This delegate without the last run of `value`'s targets in it, or null
+    /// when that leaves nothing -- Delegate.Remove's work. A single delegate
+    /// is removed only by one equal to it, as its own Equals says (a method
+    /// group's closure answers for its method, Runtime.GroupEquals).
+    public Delegate? RemoveImpl(Delegate value) { return ((object)this).Equals(value) ? null : this; }
+
+    /// .NET's Delegate.Combine: the two run one after the other, either
+    /// alone when the other is null. Delegates of two types do not combine
+    /// (ArgumentException), as .NET's do not.
+    public static Delegate? Combine(Delegate? a, Delegate? b)
+    {
+        if (a == null) return b;
+        if (b == null) return a;
+        return a.CombineImpl(b);
+    }
+
+    /// Every one of them combined, in order; null for none.
+    public static Delegate? Combine(params Delegate?[]? delegates)
+    {
+        if (delegates == null || delegates.Length == 0) return null;
+        Delegate? all = delegates[0];
+        for (int i = 1; i < delegates.Length; i++) all = Combine(all, delegates[i]);
+        return all;
+    }
+
+    /// .NET's Delegate.Remove: `source` without the LAST contiguous run of
+    /// `value`'s targets -- a multicast removes a multicast out of the middle
+    /// of another -- and `source` itself when there is none.
+    public static Delegate? Remove(Delegate? source, Delegate? value)
+    {
+        if (source == null) return null;
+        if (value == null) return source;
+        return source.RemoveImpl(value);
+    }
+
+    /// .NET's Delegate.RemoveAll: Remove until nothing more comes out. Remove
+    /// hands back the very delegate it was given when it removes nothing.
+    public static Delegate? RemoveAll(Delegate? source, Delegate? value)
+    {
+        Delegate? before;
+        do
+        {
+            before = source;
+            source = Remove(source, value);
+        }
+        while (Sys.Word(before) != Sys.Word(source));
+        return before;
+    }
+}
+
+/// A delegate made of several, as the runtime sees one: the multicast class
+/// the parser writes beside every delegate type answers it, and nothing else
+/// does -- which is how the runtime's equality (Runtime.DelegateEquals) tells a
+/// multicast from a single closure without asking a delegate type it cannot
+/// name.
+interface IMulticastDelegate
+{
+    int InvocationCount();
+    object InvocationAt(int index);
+}
+
 interface IOwnsElements : IOwnsStorage
 {
     void FreeOwnedElements();
@@ -502,6 +593,92 @@ static class Runtime
             if (Sys.Peek(pa + at) != Sys.Peek(pb + at)) return false;
         }
         return true;
+    }
+
+    /// DELEGATE EQUALITY AS .NET HAS IT (Delegate.Equals, and the `==` C#
+    /// gives every delegate type, which the binder turns into this): the same
+    /// method on the same target. A multicast is equal to another of the same
+    /// type whose targets are equal one by one and in order, and never to a
+    /// single delegate. What a lambda's closure answers through its Equals
+    /// slot (Lowering.DelegateEqualsStub), and what the multicast class the
+    /// parser writes answers through its own.
+    public static bool DelegateEquals(object? a, object? b)
+    {
+        if (Sys.Word(a) == Sys.Word(b)) return true;
+        if (a == null || b == null) return false;
+        IMulticastDelegate? many = a as IMulticastDelegate;
+        IMulticastDelegate? others = b as IMulticastDelegate;
+        if (many == null || others == null) return many == null && others == null && SameClosure(a, b);
+        if (Sys.Peek(Sys.Word(a)) != Sys.Peek(Sys.Word(b))) return false;
+        int count = many.InvocationCount();
+        if (count != others.InvocationCount()) return false;
+        // EACH TARGET ASKED ITS OWN QUESTION, through its Equals slot: a
+        // method group's closure is equal to another class's closure of the
+        // same method (GroupEquals), which no comparison of the two layouts
+        // can see.
+        for (int i = 0; i < count; i++)
+        {
+            if (!many.InvocationAt(i).Equals(others.InvocationAt(i))) return false;
+        }
+        return true;
+    }
+
+    /// `a == b` OVER TWO DELEGATES, as C# gives every delegate type the
+    /// operator (Binder.CheckBinary): .NET's Delegate.op_Equality, the same
+    /// reference or both there and equal by the right one's own Equals.
+    public static bool SameDelegate(object? a, object? b)
+    {
+        if (Sys.Word(a) == Sys.Word(b)) return true;
+        if (a == null || b == null) return false;
+        return b.Equals(a);
+    }
+
+    /// A METHOD GROUP'S DELEGATE, compared: equal to any other delegate made
+    /// from the same method on the same target, whichever class made it. The
+    /// compiler names a method group's closure by the type that converted it
+    /// as well as by the method, so `Handlers.Run` turned into an Action in
+    /// one class and in another are two closure classes -- and .NET calls the
+    /// two delegates equal, which is what `-=` from somewhere else needs.
+    /// Every closure of the one method has the same routine in its Equals
+    /// slot (Lowering.GroupEqualsStub, named by the method), `slot` bytes past
+    /// its vtable: that routine is the method's identity, and the target is
+    /// the closure's one word, or nothing for a static method.
+    public static bool GroupEquals(object? a, object? b, int slot)
+    {
+        if (DelegateEquals(a, b)) return true;
+        if (a == null || b == null) return false;
+        long va = Sys.Peek(Sys.Word(a));
+        long vb = Sys.Peek(Sys.Word(b));
+        // A string or an array has no slots to read; its flags say so.
+        if ((Sys.Peek(vb - 12 * WordSize.Bytes + 6 * WordSize.Bytes) & 1) != 0) return false;
+        if (Sys.Peek(va + slot) != Sys.Peek(vb + slot)) return false;
+        long size = Sys.Peek(va - 12 * WordSize.Bytes + WordSize.Bytes);
+        if (size != Sys.Peek(vb - 12 * WordSize.Bytes + WordSize.Bytes)) return false;
+        long pa = Sys.Word(a);
+        long pb = Sys.Word(b);
+        for (long at = 2 * WordSize.Bytes; at + WordSize.Bytes <= size; at += WordSize.Bytes)
+        {
+            if (Sys.Peek(pa + at) != Sys.Peek(pb + at)) return false;
+        }
+        return true;
+    }
+
+    /// The hash that goes with DelegateEquals and GroupEquals: equal
+    /// delegates hash alike. A multicast combines its targets' own hashes, a
+    /// method group's closure hashes its method's identity (`identity`, the
+    /// address of the routine GroupEquals compares), and any other closure
+    /// its class -- which is what a lambda written once is.
+    public static int DelegateHash(object self, long identity)
+    {
+        if (self is IMulticastDelegate many)
+        {
+            int hash = 0;
+            int count = many.InvocationCount();
+            for (int i = 0; i < count; i++) hash = unchecked(hash * 33 + many.InvocationAt(i).GetHashCode());
+            return hash;
+        }
+        long word = identity != 0 ? identity : Sys.Peek(Sys.Word(self));
+        return (int)((word & WordSize.AddressMask) >> 3);
     }
 
     // State is a naturally aligned static word: 0 unclaimed, 1 completed,

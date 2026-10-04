@@ -1736,7 +1736,7 @@ public sealed class Monomorphiser
             {
                 FieldDecl copy = new()
                 {
-                    Name = f.Name, Mods = f.Mods, Type = Sub(f.Type, map),
+                    Name = f.Name, Mods = f.Mods, Type = Sub(f.Type, map), IsEvent = f.IsEvent,
                     Init = f.Init is null ? null : Rewrite(f.Init, map),
                     DeclaredInit = f.DeclaredInit is null ? null : Rewrite(f.DeclaredInit, map),
                     StaticData = f.StaticData,

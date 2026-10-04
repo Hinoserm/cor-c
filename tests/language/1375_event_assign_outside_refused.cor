@@ -1,0 +1,25 @@
+// test: event assign outside refused
+// expect-compile-error: can only appear on the left hand side of += or -=
+// Assigning a field-like event from outside the type that declares it would
+// throw away every other subscriber's handler, which is why C# allows only
+// += and -= there (CS0070). `s.Fired = null` from another class is refused.
+
+using System;
+
+class Source
+{
+    public event Action? Fired;
+    public void Raise() { Fired?.Invoke(); }
+}
+
+static class P
+{
+    static int Main()
+    {
+        Source s = new Source();
+        s.Fired += () => Console.WriteLine("fired");
+        s.Fired = null;
+        s.Raise();
+        return 0;
+    }
+}
