@@ -1,0 +1,88 @@
+// test: boxed_primitives_implement_interfaces
+// expect-exit: 0
+// expect-output:
+// -1 0 1
+// 1 True False
+// 00FF 00255
+// True 0 True False
+// CFEi-- C---Cs C----- CF---- CF---- ------
+// 0
+// True
+// 1,2,3
+// 1 True False
+// 1 -1 1 Green 00000001
+// True
+// 5 True
+// Object must be of type Int32.
+//
+// A NUMBER, A BOOL, AN ENUM AND A STRING ARE THE SYSTEM INTERFACES .NET
+// DECLARES THEM TO BE: every integer type and the floats IComparable,
+// IComparable<T>, IEquatable<T> and IFormattable; bool all but IFormattable;
+// an enum IComparable and IFormattable; a string IComparable,
+// IComparable<string> and IEquatable<string>. Converted to one implicitly,
+// as C# boxes; called through it; found by `is` and `as`; ordered and
+// compared by the default comparers through it; and refused, as .NET's
+// CompareTo(object) refuses it, when handed another type.
+
+using System;
+using System.Collections.Generic;
+
+enum Color { Red, Green, Blue }
+enum Small : byte { A = 1, B = 200 }
+
+class P
+{
+    static string Kinds(object o) =>
+        (o is IComparable ? "C" : "-") + (o is IFormattable ? "F" : "-")
+        + (o is IEquatable<int> ? "Ei" : "--") + (o is IComparable<string> ? "Cs" : "--");
+
+    static int Main()
+    {
+        IComparable a = 5;
+        IComparable<int> b = 7;
+        IEquatable<int> c = 3;
+        IFormattable d = 255;
+        IComparable s = "pear";
+        IEquatable<string> t = "fig";
+        Console.WriteLine(a.CompareTo(9) + " " + a.CompareTo(5) + " " + a.CompareTo(null));
+        Console.WriteLine(b.CompareTo(2) + " " + c.Equals(3) + " " + c.Equals(4));
+        Console.WriteLine(d.ToString("X4", null) + " " + d.ToString("D5", null));
+        Console.WriteLine((s.CompareTo("apple") > 0) + " " + s.CompareTo("pear") + " " + t.Equals("fig") + " " + t.Equals("Fig"));
+
+        Console.WriteLine(Kinds(5) + " " + Kinds("x") + " " + Kinds(true) + " " + Kinds(2.5) + " " + Kinds(Color.Green) + " " + Kinds(new object()));
+
+        object o = 12;
+        IComparable? ic = o as IComparable;
+        Console.WriteLine(ic != null ? ic.CompareTo(12).ToString() : "null");
+        IFormattable? f = (object)true as IFormattable;
+        Console.WriteLine(f == null);
+
+        List<IComparable> items = new() { 3, 1, 2 };
+        items.Sort();
+        Console.WriteLine(string.Join(",", items));
+        Console.WriteLine(Comparer<IComparable>.Default.Compare(10, 4) + " " + EqualityComparer<IComparable>.Default.Equals(4, 4)
+            + " " + EqualityComparer<IComparable>.Default.Equals(4, 4L));
+
+        IComparable e1 = Color.Blue;
+        IComparable e2 = Small.A;
+        IFormattable ef = Color.Green;
+        Console.WriteLine(e1.CompareTo(Color.Red) + " " + Math.Sign(e2.CompareTo(Small.B)) + " " + ef.ToString("D", null)
+            + " " + ef.ToString("G", null) + " " + ef.ToString("X", null));
+        Console.WriteLine(Comparer<IComparable>.Default.Compare("b", "a") > 0);
+
+        long? none = null;
+        IComparable? nb = none;
+        Console.WriteLine((int)a + " " + (nb == null));
+
+        try
+        {
+            a.CompareTo("x");
+            Console.WriteLine("not refused");
+        }
+        catch (ArgumentException ex)
+        {
+            Console.WriteLine(ex.Message);
+        }
+        return 0;
+    }
+}

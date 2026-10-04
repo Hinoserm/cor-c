@@ -1787,6 +1787,16 @@ public sealed partial class Lowering
 
         if (want.Kind == TypeKind.Interface)
         {
+            // A BOXED NUMBER, ENUM OR A STRING IS ITS SYSTEM INTERFACES
+            // (BoxedFaces), asked of its descriptor here: a box of int is
+            // one table in every unit, which lists no specialisation only
+            // some units make.
+            if (BoxedFaceTest(desc, want) is VReg boxedFace)
+            {
+                Block scan = _f.NewBlock("tscan0");
+                _e.Branch(boxedFace, yes, scan);
+                _e.SetBlock(scan);
+            }
             // Scan the zero-terminated interface array.
             VReg wanted = _e.Address(InterfaceDescriptor(want));
             VReg cursor = _f.NewReg(IrTypes.Word, "ifc");
@@ -1824,6 +1834,43 @@ public sealed partial class Lowering
         _e.Jump(end);
         _e.SetBlock(end);
         return result;
+    }
+
+    /// <summary>
+    /// Whether an object, by its descriptor, is a box of a number, bool, char
+    /// or enum, or a string, that implements a system interface
+    /// (BoxedFaces): nonzero when it is; null when the interface is none of
+    /// them.
+    /// </summary>
+    private VReg? BoxedFaceTest(VReg desc, TypeSymbol want)
+    {
+        Type? argument = want.TemplateArgTypes.Count == 1 ? want.TemplateArgTypes[0] : null;
+        BoxedFaces.Face face = BoxedFaces.Of(want, argument);
+        if (face == BoxedFaces.Face.None) return null;
+        int w = _t.WordSize;
+        VReg Is(string descriptor) => _e.Binary(Opcode.Eq, R(desc), R(_e.Address(descriptor)), IrType.I32);
+        VReg flags = _e.Load(IrType.I32, desc, DescFlags * w);
+        VReg Flagged(int flag) => _e.Binary(Opcode.Ne, R(_e.Binary(Opcode.And, flags, flag)), new ImmOperand(0, IrType.I32), IrType.I32);
+        switch (face)
+        {
+            case BoxedFaces.Face.Comparable:
+                return _e.Binary(Opcode.Or, Flagged(TypeFlagPrimitive | TypeFlagEnum), Is(StringDescriptor()));
+            case BoxedFaces.Face.Formattable:
+            {
+                VReg number = _e.Binary(Opcode.And, Flagged(TypeFlagPrimitive),
+                    _e.Binary(Opcode.Ne, R(desc), R(_e.Address(BoxDescriptor(Type.Bool))), IrType.I32));
+                return _e.Binary(Opcode.Or, Flagged(TypeFlagEnum), number);
+            }
+            default:
+                if (argument is null) return null;
+                if (argument.Prim == Prim.String && !argument.IsArray) return Is(StringDescriptor());
+                if (argument.Symbol is null && !argument.IsArray && !argument.IsNullableValue && !argument.IsPointer
+                    && BoxedFaces.IsPrimitive(argument.Prim))
+                {
+                    return Is(BoxDescriptor(argument));
+                }
+                return null;
+        }
     }
 
     /// <summary>The object when it is of the type, null otherwise: what `as` answers.</summary>

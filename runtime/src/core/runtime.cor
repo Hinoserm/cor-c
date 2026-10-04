@@ -2896,6 +2896,14 @@ static class Runtime
         throw new InvalidOperationException("Nullable object must have a value.");
     }
 
+    /// A boxed number, an enum or a string compared through IComparable with
+    /// something of another type: .NET's CompareTo(object) refuses it so,
+    /// in the message the compiler wrote for the type.
+    public static void CompareToRefused(string message)
+    {
+        throw new ArgumentException(message);
+    }
+
     /// A boxed tuple compared with a box of another type: ValueTuple's
     /// CompareTo(object) refuses it so.
     public static void ArgumentFailure()

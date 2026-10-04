@@ -42,6 +42,14 @@ public sealed partial class BindResult
     public int CompareSlot { get; set; }
 
     /// <summary>
+    /// Every interface family's slots, by template, arity and member: what a
+    /// box's table fills for an interface no specialisation of which this
+    /// unit made -- IEquatable&lt;int&gt;'s Equals on a boxed int -- since the
+    /// family's slot is the same in every unit whatever it instantiates.
+    /// </summary>
+    public Dictionary<(string Template, int Arity, int Member), int> InterfaceFamilySlots { get; } = new();
+
+    /// <summary>
     /// Expressions whose value has to be put in a Nullable&lt;T&gt; cell.
     ///
     /// A T written where a T? is wanted -- `int? n = 5;`, `f(3)` against an

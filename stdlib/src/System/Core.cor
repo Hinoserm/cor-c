@@ -421,6 +421,42 @@ static class String {
         return "" + value;
     }
 
+    /// A BOXED NUMBER'S IFormattable.ToString(format, provider), which the
+    /// box's table reaches here: the number by the format, as its type
+    /// formats one; with no format, as it says itself. Never asks the value
+    /// as an IFormattable -- the box is how that question got here.
+    public static string FormatBoxed(object? value, string? format, IFormatProvider? provider) {
+        if (value == null) { return ""; }
+        if (format == null || format.Length == 0) { return "" + value; }
+        if (value is int i32) { return i32.ToString(format); }
+        if (value is long i64) { return i64.ToString(format); }
+        if (value is double f64) { return f64.ToString(format, provider); }
+        if (value is float f32) { return f32.ToString(format, provider); }
+        if (value is uint u32) { return u32.ToString(format); }
+        if (value is ulong u64) { return u64.ToString(format); }
+        if (value is short i16) { return i16.ToString(format); }
+        if (value is ushort u16) { return u16.ToString(format); }
+        if (value is byte u8) { return u8.ToString(format); }
+        if (value is sbyte i8) { return i8.ToString(format); }
+        if (value is nint native) { return ((long)native).ToString(format); }
+        if (value is nuint unative) { return ((ulong)unative).ToString(format); }
+        return "" + value;
+    }
+
+    /// AN ENUM'S IFormattable.ToString(format, provider), as .NET's
+    /// Enum.ToString(format): G (and F, and none) its name, D the number, X
+    /// the number in hexadecimal, two digits a byte of its underlying type.
+    public static string FormatEnum(string name, long value, int bytes, string? format) {
+        if (format == null || format.Length == 0) { return name; }
+        if (format == "D" || format == "d") { return value.ToString(); }
+        if (format == "X" || format == "x") {
+            long kept = bytes >= 8 ? value : value & ((1L << (bytes * 8)) - 1);
+            return kept.ToString(format + (bytes * 2));
+        }
+        if (format == "G" || format == "g" || format == "F" || format == "f") { return name; }
+        throw new FormatException("Format string can be only \"G\", \"g\", \"X\", \"x\", \"F\", \"f\", \"D\" or \"d\".");
+    }
+
     /// POSITIVE PADS ON THE LEFT and negative on the right, which is .NET's
     /// rule for an alignment and reads backwards until you think of it as
     /// "right-aligned in a field this wide".

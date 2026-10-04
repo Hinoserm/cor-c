@@ -267,6 +267,12 @@ public sealed partial class Lowering
         // the interface reaches the struct's own member through the box's
         // table, with the value inside the box as its `this` (C# 8.2.4).
         TypeSymbol? shape = BoxedBlock(of) ? of.Symbol : null;
+        // A NUMBER'S, A BOOL'S, A CHAR'S AND AN ENUM'S SYSTEM INTERFACES
+        // (BoxedFaces), in their families' slots: the same in every unit,
+        // whatever specialisations each made, so every unit's copy of the
+        // box is one table.
+        List<(int Slot, string Target)> systemFaces = shape is null ? BoxFaceSlots(of, key) : new();
+        foreach (var (faceSlot, _) in systemFaces) slots = Math.Max(slots, faceSlot + 1);
         if (shape is not null)
         {
             foreach (int interfaceSlot in shape.InterfaceImplementations.Keys) slots = Math.Max(slots, interfaceSlot + 1);
@@ -326,6 +332,11 @@ public sealed partial class Lowering
             }
         }
 
+        foreach (var (faceSlot, target) in systemFaces)
+        {
+            item.Relocs.Add(new DataReloc(_t.DescriptorBytes + faceSlot * w, target, 0));
+        }
+
         // A BOXED STRUCT'S OWN POINTERS. The collector holds the box, not the
         // struct, so the map has to cover the whole object -- the header word
         // first, then each of the struct's fields at its offset within it.
@@ -348,9 +359,217 @@ public sealed partial class Lowering
         item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.ToStringSlot * w, unmade ? ObjectToStringStub() : BoxToString(of, name, key), 0));
         item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.EqualsSlot * w, unmade ? ObjectEqualsStub() : BoxEquals(of, key), 0));
         item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.HashSlot * w, unmade ? ObjectHashStub() : BoxHash(of, key), 0));
+        // A NUMBER'S ORDER is its value's, at the shared slot the default
+        // comparer asks through as much as at IComparable's.
         item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.CompareSlot * w,
-            BoxedBlock(of) && IsTupleShape(of.Symbol!) && !unmade ? BoxTupleCompare(of.Symbol!, key) : ObjectCompareStub(), 0));
+            BoxedBlock(of) && IsTupleShape(of.Symbol!) && !unmade ? BoxTupleCompare(of.Symbol!, key)
+            : systemFaces.Count > 0 ? BoxCompare(of, key) : ObjectCompareStub(), 0));
         return sym;
+    }
+
+    // ---- the system interfaces of a boxed number -----------------------------
+
+    /// <summary>The slots a box of a number, bool, char or enum fills for its system interfaces (BoxedFaces), and what fills each.</summary>
+    private List<(int, string)> BoxFaceSlots(Type of, string key)
+    {
+        List<(int, string)> slots = new();
+        bool isEnum = of.Symbol is { Kind: TypeKind.Enum };
+        if (!isEnum && (of.Symbol is not null || !BoxedFaces.IsPrimitive(of.Prim))) return slots;
+        if (FaceSlot("IComparable", 0) is int compare) slots.Add((compare, BoxCompare(of, key)));
+        if (of.Prim != Prim.Bool && FaceSlot("IFormattable", 0) is int format) slots.Add((format, BoxFormat(of, key)));
+        if (!isEnum)
+        {
+            if (FaceSlot("IComparable", 1) is int compareOf) slots.Add((compareOf, BoxCompareValue(of, key)));
+            if (FaceSlot("IEquatable", 1) is int equatableOf) slots.Add((equatableOf, BoxEqualsValue(of, key)));
+        }
+        return slots;
+    }
+
+    /// <summary>
+    /// The slot of a system interface family's one member, by the family's
+    /// plain name and arity: numbered by the binder over the declarations
+    /// alone, so the same in every unit. Null when the library declares none.
+    /// </summary>
+    private int? FaceSlot(string plain, int arity)
+    {
+        foreach (var ((template, a, member), slot) in _b.InterfaceFamilySlots)
+            if (a == arity && member == 0 && !template.Contains('.') && BoxedFaces.Plain(template) == plain) return slot;
+        return null;
+    }
+
+    /// <summary>A box's value, read as its type is kept (BoxEquals' reading).</summary>
+    private VReg BoxedValue(Builder e, VReg box, Type of)
+        => e.Load(BoxSlot(of), box, _t.ObjectHeaderBytes, Math.Max(1, of.Size), !of.IsUnsigned && of.Prim != Prim.Bool);
+
+    /// <summary>
+    /// Two values of a box's type ordered as .NET's own CompareTo orders
+    /// them: byte, sbyte, short, ushort and char (and an enum over one) by
+    /// their difference, a float with NaN before every number and equal to
+    /// itself, everything else -1, 0 or 1.
+    /// </summary>
+    private void EmitValueOrder(Function f, Builder e, Type of, VReg a, VReg b)
+    {
+        if (a.Type.IsFloat())
+        {
+            Block less = f.NewBlock("vless"), notLess = f.NewBlock("vnless"), more = f.NewBlock("vmore"), notMore = f.NewBlock("vnmore");
+            Block same = f.NewBlock("vsame"), unordered = f.NewBlock("vnan"), aNan = f.NewBlock("vanan"), bothNan = f.NewBlock("vbnan");
+            e.Branch(e.Binary(Opcode.FLt, R(a), R(b), IrType.I32), less, notLess);
+            e.SetBlock(less);
+            e.Ret(new ImmOperand(-1, IrType.I32));
+            e.SetBlock(notLess);
+            e.Branch(e.Binary(Opcode.FGt, R(a), R(b), IrType.I32), more, notMore);
+            e.SetBlock(more);
+            e.Ret(new ImmOperand(1, IrType.I32));
+            e.SetBlock(notMore);
+            e.Branch(e.Binary(Opcode.FEq, R(a), R(b), IrType.I32), same, unordered);
+            e.SetBlock(same);
+            e.Ret(new ImmOperand(0, IrType.I32));
+            // UNORDERED: one of them is NaN. NaN comes first, and two are equal.
+            e.SetBlock(unordered);
+            e.Branch(e.Binary(Opcode.FNe, R(a), R(a), IrType.I32), aNan, more);
+            e.SetBlock(aNan);
+            e.Branch(e.Binary(Opcode.FNe, R(b), R(b), IrType.I32), bothNan, less);
+            e.SetBlock(bothNan);
+            e.Ret(new ImmOperand(0, IrType.I32));
+            return;
+        }
+        Prim width = of.Symbol is { Kind: TypeKind.Enum } named ? named.EnumUnderlying : of.Prim;
+        if (width is Prim.I8 or Prim.U8 or Prim.I16 or Prim.U16 or Prim.Char)
+        {
+            e.Ret(new RegOperand(e.Binary(Opcode.Sub, R(a), R(b), IrType.I32)));
+            return;
+        }
+        EmitOrder(f, e, a, b, unsigned: of.IsUnsigned || of.Prim is Prim.Bool or Prim.Char);
+    }
+
+    /// <summary>
+    /// A boxed number's CompareTo(object), .NET's: null after it, a box of
+    /// another type refused with ArgumentException, else the two values in
+    /// order (EmitValueOrder).
+    /// </summary>
+    private string BoxCompare(Type of, string key)
+    {
+        string label = "__box_icompare_" + Safe(key);
+        if (!_structHelpers.Add(label)) return label;
+        Function f = new(label, IrType.I32) { Coalescible = true };
+        VReg self = f.NewReg(IrTypes.Word, "this");
+        VReg other = f.NewReg(IrTypes.Word, "other");
+        f.Params.Add(self);
+        f.Params.Add(other);
+        Builder e = new(f, f.NewBlock("entry"));
+        Block some = f.NewBlock("bisome"), none = f.NewBlock("binone"), same = f.NewBlock("bisame"), wrong = f.NewBlock("biwrong");
+        e.Branch(other, some, none);
+        e.SetBlock(none);
+        e.Ret(new ImmOperand(1, IrType.I32));
+        e.SetBlock(some);
+        e.Branch(e.Binary(Opcode.Eq, e.Load(IrTypes.Word, self, 0), e.Load(IrTypes.Word, other, 0)), same, wrong);
+        e.SetBlock(wrong);
+        string type = BoxName(of);
+        Refuse(e, of.Symbol is { Kind: TypeKind.Enum }
+            ? "Object must be the same type as the enum. The enum type was '" + type + "'."
+            : "Object must be of type " + type[(type.LastIndexOf('.') + 1)..] + ".");
+        e.SetBlock(same);
+        EmitValueOrder(f, e, of, BoxedValue(e, self, of), BoxedValue(e, other, of));
+        _m.Functions.Add(f);
+        return label;
+    }
+
+    /// <summary>ArgumentException with the message, from where a stub refuses its argument.</summary>
+    private void Refuse(Builder e, string message)
+    {
+        if (RuntimeMethod("CompareToRefused", 1) is MethodSymbol refused)
+        {
+            Require(refused);
+            e.Call(CallLabel(refused), IrType.Void, R(e.Address(InternString(message))));
+        }
+        e.Emit(Opcode.Trap, null);
+        e.Unreachable();
+    }
+
+    /// <summary>A boxed number's IComparable&lt;T&gt;.CompareTo(T): its value and the one handed over, in order.</summary>
+    private string BoxCompareValue(Type of, string key)
+    {
+        string label = "__box_compareof_" + Safe(key);
+        if (!_structHelpers.Add(label)) return label;
+        Function f = new(label, IrType.I32) { Coalescible = true };
+        VReg self = f.NewReg(IrTypes.Word, "this");
+        VReg other = f.NewReg(BoxSlot(of), "other");
+        f.Params.Add(self);
+        f.Params.Add(other);
+        Builder e = new(f, f.NewBlock("entry"));
+        EmitValueOrder(f, e, of, BoxedValue(e, self, of), other);
+        _m.Functions.Add(f);
+        return label;
+    }
+
+    /// <summary>A boxed number's IEquatable&lt;T&gt;.Equals(T): .NET's, under which a NaN equals a NaN.</summary>
+    private string BoxEqualsValue(Type of, string key)
+    {
+        string label = "__box_equalsof_" + Safe(key);
+        if (!_structHelpers.Add(label)) return label;
+        Function f = new(label, IrType.I32) { Coalescible = true };
+        VReg self = f.NewReg(IrTypes.Word, "this");
+        VReg other = f.NewReg(BoxSlot(of), "other");
+        f.Params.Add(self);
+        f.Params.Add(other);
+        Builder e = new(f, f.NewBlock("entry"));
+        VReg mine = BoxedValue(e, self, of);
+        if (mine.Type.IsFloat())
+        {
+            VReg equal = e.Binary(Opcode.FEq, R(mine), R(other), IrType.I32);
+            VReg bothNan = e.Binary(Opcode.And, e.Binary(Opcode.FNe, R(mine), R(mine), IrType.I32), e.Binary(Opcode.FNe, R(other), R(other), IrType.I32));
+            e.Ret(new RegOperand(e.Binary(Opcode.Or, equal, bothNan)));
+        }
+        else e.Ret(new RegOperand(e.Binary(Opcode.Eq, R(mine), R(other), IrType.I32)));
+        _m.Functions.Add(f);
+        return label;
+    }
+
+    /// <summary>
+    /// A boxed number's IFormattable.ToString(format, provider): the
+    /// library's formatting of a number by a format string
+    /// (String.FormatBoxed); an enum's G, D and X (String.FormatEnum), its
+    /// name read through the box's own ToString.
+    /// </summary>
+    private string BoxFormat(Type of, string key)
+    {
+        string label = "__box_format_" + Safe(key);
+        if (!_structHelpers.Add(label)) return label;
+        Function f = new(label, IrTypes.Word) { Coalescible = true };
+        VReg self = f.NewReg(IrTypes.Word, "this");
+        VReg format = f.NewReg(IrTypes.Word, "format");
+        VReg provider = f.NewReg(IrTypes.Word, "provider");
+        f.Params.Add(self);
+        f.Params.Add(format);
+        f.Params.Add(provider);
+        Builder e = new(f, f.NewBlock("entry"));
+        if (of.Symbol is { Kind: TypeKind.Enum } && StringRoutine("FormatEnum", 4) is MethodSymbol enumFormat)
+        {
+            VReg vt = e.Load(IrTypes.Word, self, 0);
+            VReg fn = e.Load(IrTypes.Word, vt, (long)_b.ToStringSlot * _t.WordSize);
+            VReg name = e.CallIndirect(R(fn), IrTypes.Word, new Operand[] { R(self) })!;
+            e.Block.Instrs[^1].DispatchType = ObjectDispatch;
+            VReg raw = BoxedValue(e, self, of);
+            VReg wide = raw.Type == IrType.I64 ? raw : e.Unary(of.IsUnsigned ? Opcode.ZExt32 : Opcode.SExt32, raw);
+            Require(enumFormat);
+            e.Ret(new RegOperand(e.Call(CallLabel(enumFormat), IrTypes.Word, R(name), R(wide),
+                new ImmOperand(Math.Max(1, of.Size), IrType.I32), R(format))!));
+        }
+        else if (StringRoutine("FormatBoxed", 3) is MethodSymbol boxedFormat)
+        {
+            Require(boxedFormat);
+            e.Ret(new RegOperand(e.Call(CallLabel(boxedFormat), IrTypes.Word, R(self), R(format), R(provider))!));
+        }
+        else
+        {
+            VReg vt = e.Load(IrTypes.Word, self, 0);
+            VReg fn = e.Load(IrTypes.Word, vt, (long)_b.ToStringSlot * _t.WordSize);
+            VReg said = e.CallIndirect(R(fn), IrTypes.Word, new Operand[] { R(self) })!;
+            e.Block.Instrs[^1].DispatchType = ObjectDispatch;
+            e.Ret(new RegOperand(said));
+        }
+        _m.Functions.Add(f);
+        return label;
     }
 
     /// <summary>
@@ -425,6 +644,102 @@ public sealed partial class Lowering
         e.SetBlock(same);
         e.Ret(new RegOperand(e.Call(TupleCompare(shape), IrType.I32,
             R(e.Binary(Opcode.Add, self, _t.ObjectHeaderBytes)), R(e.Binary(Opcode.Add, other, _t.ObjectHeaderBytes)))!));
+        _m.Functions.Add(f);
+        return label;
+    }
+
+    /// <summary>What a string's table fills for its system interfaces (BoxedFaces), and with what.</summary>
+    private List<(int, string)> StringFaceSlots()
+    {
+        List<(int, string)> slots = new();
+        if (FaceSlot("IComparable", 0) is int compare) slots.Add((compare, StringCompareTo(checks: true)));
+        if (FaceSlot("IComparable", 1) is int compareOf) slots.Add((compareOf, StringCompareTo(checks: false)));
+        if (FaceSlot("IEquatable", 1) is int equatableOf) slots.Add((equatableOf, StringEqualsTo()));
+        return slots;
+    }
+
+    /// <summary>
+    /// A string's CompareTo: null after it, and -- through IComparable, which
+    /// is handed any object -- anything but a string refused as .NET's
+    /// String.CompareTo(object) refuses it; then the library's own order of
+    /// two strings, the default comparer's.
+    /// </summary>
+    private string StringCompareTo(bool checks)
+    {
+        string label = checks ? "__string_icompare" : "__string_compareof";
+        if (!_structHelpers.Add(label)) return label;
+        Function f = new(label, IrType.I32) { Coalescible = true };
+        VReg self = f.NewReg(IrTypes.Word, "this");
+        VReg other = f.NewReg(IrTypes.Word, "other");
+        f.Params.Add(self);
+        f.Params.Add(other);
+        Builder e = new(f, f.NewBlock("entry"));
+        Block some = f.NewBlock("scsome"), none = f.NewBlock("scnone"), text = f.NewBlock("sctext");
+        e.Branch(other, some, none);
+        e.SetBlock(none);
+        e.Ret(new ImmOperand(1, IrType.I32));
+        e.SetBlock(some);
+        if (checks)
+        {
+            Block wrong = f.NewBlock("scwrong");
+            VReg vt = e.Load(IrTypes.Word, other, 0);
+            VReg flags = e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize);
+            e.Branch(e.Binary(Opcode.Eq, e.Binary(Opcode.And, flags, 3), 3), text, wrong);
+            e.SetBlock(wrong);
+            Refuse(e, "Object must be of type String.");
+        }
+        else e.Jump(text);
+        e.SetBlock(text);
+        if (StringRoutine(Prelude.CompareMethod, 2) is MethodSymbol compare)
+        {
+            VReg order = e.Call(CallLabel(compare), IrTypes.Of(compare.Returns), R(self), R(other))!;
+            e.Ret(new RegOperand(order));
+        }
+        else e.Ret(new ImmOperand(0, IrType.I32));
+        _m.Functions.Add(f);
+        return label;
+    }
+
+    /// <summary>A string's ToString through its table: itself.</summary>
+    private string StringItself()
+    {
+        const string label = "__string_tostring";
+        if (!_structHelpers.Add(label)) return label;
+        Function f = new(label, IrTypes.Word) { Coalescible = true };
+        VReg self = f.NewReg(IrTypes.Word, "this");
+        f.Params.Add(self);
+        Builder e = new(f, f.NewBlock("entry"));
+        e.Ret(new RegOperand(self));
+        _m.Functions.Add(f);
+        return label;
+    }
+
+    /// <summary>A string's IEquatable&lt;string&gt;.Equals: the same text, never null.</summary>
+    private string StringEqualsTo()
+    {
+        const string label = "__string_equalsof";
+        if (!_structHelpers.Add(label)) return label;
+        Function f = new(label, IrType.I32) { Coalescible = true };
+        VReg self = f.NewReg(IrTypes.Word, "this");
+        VReg other = f.NewReg(IrTypes.Word, "other");
+        f.Params.Add(self);
+        f.Params.Add(other);
+        Builder e = new(f, f.NewBlock("entry"));
+        Block some = f.NewBlock("sesome"), none = f.NewBlock("senone");
+        e.Branch(other, some, none);
+        e.SetBlock(none);
+        e.Ret(new ImmOperand(0, IrType.I32));
+        e.SetBlock(some);
+        if (StringEqualsRoutine() is MethodSymbol equals)
+        {
+            e.Ret(new RegOperand(e.Call(CallLabel(equals), IrTypes.Of(equals.Returns), R(self), R(other))!));
+        }
+        else if (StringRoutine(Prelude.CompareMethod, 2) is MethodSymbol compare)
+        {
+            VReg order = e.Call(CallLabel(compare), IrTypes.Of(compare.Returns), R(self), R(other))!;
+            e.Ret(new RegOperand(e.Binary(Opcode.Eq, R(order), new ImmOperand(0, order.Type), IrType.I32)));
+        }
+        else e.Ret(new ImmOperand(0, IrType.I32));
         _m.Functions.Add(f);
         return label;
     }
