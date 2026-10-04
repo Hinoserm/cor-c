@@ -8377,9 +8377,6 @@ static class Gc
     /// once, and the wait is here, the thread counted as blocked. 0: none.
     public static long RoomHook;
 
-    /// Waits for room the allocator made (RoomHook), for the census.
-    public static long RoomWaits;
-
     /// The heap lock is held on entry and on return, and let go between: the
     /// platform asked for `need` bytes of room (RoomHook), then whatever was
     /// owed while this thread was away -- a handshake's answer, a buffer
@@ -8388,7 +8385,6 @@ static class Gc
     static void WaitForRoom(long tb, long need)
     {
         if (RoomHook == 0 || tb == 0 || Sys.Peek(tb + Tls.InAlloc) != 0) return;
-        RoomWaits = RoomWaits + 1;
         GcLock.Exit();
         Sys.Call(RoomHook, need, 0, 0);
         GcLock.Enter();
