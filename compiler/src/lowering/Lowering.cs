@@ -1700,7 +1700,14 @@ public sealed partial class Lowering
             return sym;
         }
 
-        sym = "q_" + (isString ? "string" : "array_" + Safe(element));
+        // ONE NAME FOR EACH KEY, AND NEVER ONE FOR TWO: the element as
+        // written, every character but a letter or a digit spelt out
+        // (SequenceName), and the stride, which the key holds too. Safe made
+        // `_` of every one of them, so two tuples of arrays named alike --
+        // `ValueTuple<int, int[]>` and its kin -- were one symbol with two
+        // descriptors, and the compiler's own late units (tuples of int
+        // arrays throughout) failed "an item with the same key".
+        sym = "q_" + (isString ? "string" : "array_" + SequenceName(element) + "_" + stride);
         // Named before it is built: a string's slots are routines that write
         // string literals, each of which asks for this descriptor.
         _sequenceDescriptors[key] = sym;
@@ -1900,6 +1907,25 @@ public sealed partial class Lowering
         // error a moving collector cannot survive; an extra one costs a
         // check that fails.
         return !Primitives.Contains(element);
+    }
+
+    /// <summary>
+    /// An element's name as a symbol, one-to-one: an ASCII letter or digit as
+    /// it is, `_` as `__`, any other ASCII character as `_` and its two hex
+    /// digits, and anything past ASCII as `_u` and its four.
+    /// </summary>
+    private static string SequenceName(string s)
+    {
+        const string hex = "0123456789abcdef";
+        StringBuilder sb = new();
+        foreach (char c in s)
+        {
+            if (c is >= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9') sb.Append(c);
+            else if (c == '_') sb.Append("__");
+            else if (c < 128) sb.Append('_').Append(hex[c >> 4]).Append(hex[c & 15]);
+            else sb.Append("_u").Append(hex[c >> 12]).Append(hex[(c >> 8) & 15]).Append(hex[(c >> 4) & 15]).Append(hex[c & 15]);
+        }
+        return sb.ToString();
     }
 
     private static string Safe(string s)
