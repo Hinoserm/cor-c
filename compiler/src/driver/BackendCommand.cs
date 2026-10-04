@@ -24,7 +24,14 @@ public static class BackendCommand
                 ElfWriter.WriteObjectFile(result, request.Output);
                 BackendProtocol.WriteResponse(writer, null);
             }
-            catch (Exception error) { BackendProtocol.WriteResponse(writer, error.Message); }
+            catch (Exception error)
+            {
+                // The whole of it where a person can read it: the link hears
+                // only the message, and a failure in a backend process had no
+                // trace anywhere.
+                Console.Error.WriteLine("corc backend: " + request.Input + ": " + error);
+                BackendProtocol.WriteResponse(writer, error.Message);
+            }
         }
     }
 }
