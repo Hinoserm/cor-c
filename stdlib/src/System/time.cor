@@ -175,6 +175,17 @@ class Stopwatch {
     /// object to hold.
     public static long GetTimestamp() { return Clock.Now(); }
 
+    /// THE TIME BETWEEN TWO TIMESTAMPS, or from one until now, as .NET 7's
+    /// static pair answers it: no object to start and stop, for code that
+    /// times a step with a long it already has.
+    public static TimeSpan GetElapsedTime(long startingTimestamp) {
+        return GetElapsedTime(startingTimestamp, Clock.Now());
+    }
+
+    public static TimeSpan GetElapsedTime(long startingTimestamp, long endingTimestamp) {
+        return new TimeSpan((endingTimestamp - startingTimestamp) / 100);
+    }
+
     public static Stopwatch StartNew() {
         Stopwatch made = new Stopwatch();
         made.Start();
