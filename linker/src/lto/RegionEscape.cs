@@ -88,6 +88,13 @@ internal sealed class RegionEscape
         _summaries = new Summary?[functions.Count];
     }
 
+    // A NUMBER HANDED TO A CALL holds no address: an argument every target
+    // takes as a parameter of a number type (RegionFunction.NumberParams)
+    // is nothing the call is handed. Where nobody can say who is called, it
+    // is still handed on.
+    private bool NumberArgument(int[]? targets, int a)
+        => targets is { Length: > 0 } && targets.All(t => _functions[t].IsNumber(a));
+
     // ---- where an object came from ----------------------------------------
     //
     // AN OBJECT'S ORIGINS, not its sites: a site of its own (Leaf), or an
@@ -1872,7 +1879,9 @@ internal sealed class RegionEscape
             for (int m = 0; m < _members.Length; m++)
             {
                 RegionFunction f = Function(m);
-                for (int k = 0; k < f.Parameters; k++) Add(Node(m, k), Location(Place(m * ParamStride + k, Array.Empty<int>()), 0));
+                // A parameter of a number type points to no place.
+                for (int k = 0; k < f.Parameters; k++)
+                    if (!f.IsNumber(k)) Add(Node(m, k), Location(Place(m * ParamStride + k, Array.Empty<int>()), 0));
                 foreach (RegionConstraint c in f.Constraints)
                 {
                     int a = Node(m, c.A);
@@ -1933,7 +1942,7 @@ internal sealed class RegionEscape
             int f = _members[m];
             int[]? targets = _owner._targets[f][k];
             int[] args = new int[call.Arguments.Length];
-            for (int a = 0; a < args.Length; a++) args[a] = call.Arguments[a] < 0 ? -1 : Node(m, call.Arguments[a]);
+            for (int a = 0; a < args.Length; a++) args[a] = call.Arguments[a] < 0 || _owner.NumberArgument(targets, a) ? -1 : Node(m, call.Arguments[a]);
             int dest = call.Dest < 0 ? -1 : Node(m, call.Dest);
             if (targets is null) { UnknownCall(args, dest); return; }
             if (targets.Length == 0) return;                       // no object of the type exists
@@ -2858,7 +2867,7 @@ internal sealed class RegionEscape
             int f = _members[m];
             int[]? targets = _owner._targets[f][k];
             int[] args = new int[call.Arguments.Length];
-            for (int a = 0; a < args.Length; a++) args[a] = call.Arguments[a] < 0 ? -1 : Node(m, call.Arguments[a]);
+            for (int a = 0; a < args.Length; a++) args[a] = call.Arguments[a] < 0 || _owner.NumberArgument(targets, a) ? -1 : Node(m, call.Arguments[a]);
             int dest = call.Dest < 0 ? -1 : Node(m, call.Dest);
             if (targets is null) { UnknownCall(args, dest); return; }
             if (targets.Length == 0) return;
@@ -3068,7 +3077,8 @@ internal sealed class RegionEscape
             bool any = false, argsGlobal = false, resultGlobal = false;
             for (int k = 0; k <= n; k++)
             {
-                int own = _pointee[Node(m, k)] < 0 ? -1 : Pointee(Node(m, k));
+                // A parameter of a number type is handed no address.
+                int own = _pointee[Node(m, k)] < 0 || f.IsNumber(k) ? -1 : Pointee(Node(m, k));
                 info[k] = own < 0 ? (Array.Empty<int>(), Array.Empty<int>(), new HashSet<int>(), false) : Info(own);
                 if (own >= 0 && k < n) any = true;
                 bool global = own >= 0 && (info[k].Global || _globalClasses!.Contains(own));

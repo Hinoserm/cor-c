@@ -810,6 +810,7 @@ public sealed class RegionPointsTo : IModulePass
         Dictionary<Instr, Instr> from = new(ReferenceEqualityComparer.Instance);
         VReg Reg(VReg r) => regs.TryGetValue(r, out VReg? m) ? m : regs[r] = made.NewReg(r.Type, r.Name);
         foreach (VReg p in f.Params) made.Params.Add(Reg(p));
+        foreach (VReg p in f.Params) regs[p].Number = p.Number;
         foreach (FrameSlot s in f.Slots) slots[s] = made.NewSlot(s.Bytes, s.Align, s.Name);
         foreach (Block b in f.Blocks)
         {
@@ -823,7 +824,7 @@ public sealed class RegionPointsTo : IModulePass
                 Instr c = new()
                 {
                     Op = i.Op, Dest = i.Dest is null ? null : Reg(i.Dest), Size = i.Size, Signed = i.Signed, Offset = i.Offset,
-                    Callee = i.Callee, DispatchType = i.DispatchType, Field = i.Field, Line = i.Line,
+                    Callee = i.Callee, DispatchType = i.DispatchType, Field = i.Field, Number = i.Number, Line = i.Line,
                     Default = i.Default is null ? null : blocks[i.Default],
                 };
                 foreach (Operand o in i.Operands)

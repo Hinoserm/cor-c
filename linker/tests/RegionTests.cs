@@ -88,6 +88,18 @@ public static class RegionTests
         bool refused = false;
         try { RegionHints.Read(bytes[..^3]); } catch (ElfFormatException) { refused = true; }
         Check(refused, "truncated region hints accepted");
+        // A function's parameters of a number type read back as they were;
+        // one that is no parameter is refused.
+        RegionHints numbers = new();
+        numbers.Functions.Add(new("Count", true, true, false, 3, 4, 0, Array.Empty<RegionSite>()) { NumberParams = new[] { 0, 2 } });
+        RegionFunction counted = RegionHints.Read(numbers.Write()).Functions.Single();
+        Check(counted.NumberParams.SequenceEqual(new[] { 0, 2 }) && counted.IsNumber(2) && !counted.IsNumber(1) && !counted.IsNumber(3),
+            "a function's number parameters do not read back alike");
+        RegionHints past = new();
+        past.Functions.Add(new("Past", true, true, false, 1, 2, 0, Array.Empty<RegionSite>()) { NumberParams = new[] { 1 } });
+        refused = false;
+        try { RegionHints.Read(past.Write()); } catch (ElfFormatException) { refused = true; }
+        Check(refused, "a number parameter past the parameters accepted");
 
         RegionHints unitB = RegionHints.Read(b.Write());
         Check(unitB.Functions.Single(f => f.Name == "MakeDescribed").Sites[0] == new RegionSite(true, 1, "t_T", 48, RegionWords.Described),

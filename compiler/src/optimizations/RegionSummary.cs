@@ -197,6 +197,8 @@ public static class RegionSummary
 
                 case Opcode.Load:
                 {
+                    // A number read (Instr.Number) is no address.
+                    if (i.Number) return;
                     int at = Base(i.Operands[0]);
                     if (dest >= 0 && at >= 0) _constraints.Add(new(RegionConstraintKind.Load, dest, at, i.Offset));
                     return;
@@ -397,7 +399,8 @@ public static class RegionSummary
             List<int>?[] copiesTo = new List<int>?[count];
             bool[] source = new bool[count], sink = new bool[count];
             int[] incoming = new int[count];
-            for (int k = 0; k < _params; k++) { source[k] = true; sink[k] = true; }
+            // A parameter of a number type is handed no address (VReg.Number).
+            for (int k = 0; k < _params; k++) { source[k] = !_f.Params[k].Number; sink[k] = true; }
             sink[Return] = true;
             foreach (RegionConstraint c in _constraints)
                 switch (c.Kind)
@@ -483,7 +486,8 @@ public static class RegionSummary
                     Nodes(loop.Live), Nodes(loop.Invariant), Sorted(loop.KeptSlots.Where(_slots.ContainsKey).Select(slot => _slots[slot]))));
             List<Instr> must = RegionPointsTo.MustRunCalls(_f);
             RegionFunction result = new(_f.Name, _f.Exported, _f.Async is null && !_f.Name.Contains("StaticInit", StringComparison.Ordinal) && !_main,
-                _params > 0 && _f.Params[0].Name == "this", _params, next, _slots.Count, _sites.ToArray()) { Main = _main };
+                _params > 0 && _f.Params[0].Name == "this", _params, next, _slots.Count, _sites.ToArray())
+            { Main = _main, NumberParams = Sorted(Enumerable.Range(0, _params).Where(k => _f.Params[k].Number)) };
             result.Constraints.AddRange(kept);
             result.Calls.AddRange(calls);
             result.MustCalls = CallsAmong(must);
