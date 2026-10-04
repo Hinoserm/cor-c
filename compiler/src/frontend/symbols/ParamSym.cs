@@ -36,7 +36,7 @@ public sealed record ParamSym(int Index, Type Type, string Name, bool ByRef = fa
     /// </summary>
     public bool Cell { get; init; }
 
-    /// <summary>Any captured variable of a generic local function, a struct's too (MethodDecl.Captures).</summary>
+    /// <summary>Any captured variable of a generic local function (MethodDecl.Captures); each is a Cell.</summary>
     public bool CapturedVariable { get; init; }
 
     /// <summary>Which parameter this is; the flags are set later, as LocalSym's Boxed is.</summary>

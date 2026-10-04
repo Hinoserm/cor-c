@@ -110,7 +110,9 @@ public sealed partial class Lowering
         int at = IterFirstParamField;
         for (int i = 0; i < m.Params.Count; i++)
         {
-            if (m.Params[i].ByRef)
+            // A captured variable's cell (ParamSymbol.Cell) is an object the
+            // machine may hold, and every enumerator it makes shares.
+            if (m.Params[i].ByRef && !m.Params[i].Cell)
             {
                 Error(decl, $"'{m.Name}': an iterator cannot take a ref, out or in parameter");
             }
@@ -174,7 +176,7 @@ public sealed partial class Lowering
         List<VReg> args = new();
         foreach (ParamSymbol p in m.Params)
         {
-            VReg r = _f.NewReg(IrTypes.Of(p.Type), p.Name);
+            VReg r = _f.NewReg(p.ByRef ? IrTypes.Word : IrTypes.Of(p.Type), p.Name);
             _f.Params.Add(r);
             args.Add(r);
         }
@@ -373,7 +375,7 @@ public sealed partial class Lowering
         for (int i = 0; i < m.Params.Count; i++)
         {
             ParamSymbol p = m.Params[i];
-            IrType type = IrTypes.Of(p.Type);
+            IrType type = p.ByRef ? IrTypes.Word : IrTypes.Of(p.Type);
             _params[i] = _e.Load(type, machine, it.ParamOffsets[i], type.Bytes());
         }
 

@@ -5,14 +5,6 @@ public sealed class LocalDecl : Stmt
 {
     /// <summary>Null when written as <c>var</c>; inference fills it in later.</summary>
     public TypeRef? Type { get; init; }
-
-    /// <summary>
-    /// `var f = (int x) => x + 1;`: the delegate type C# 10 gives a lambda or
-    /// a method group with no target (its NATURAL TYPE), as the checker
-    /// worked it out -- Func or Action -- and spelt so the next expansion
-    /// makes it when no source names it (BindResult.Reexpand).
-    /// </summary>
-    public TypeRef? NaturalType { get; set; }
     public required string Name { get; init; }
     public Expr? Init { get; init; }
 

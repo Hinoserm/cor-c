@@ -232,6 +232,17 @@ public static class Frontend
 #endif
                 HashSet<string> known = new(unit.Types.Select(t => t.Name), StringComparer.Ordinal);
                 bool reexpand = bound.Reexpand;
+
+                // THE DELEGATES C# SYNTHESISES for natural types no Func or
+                // Action can say, declared once a unit by shape.
+                foreach (string shape in bound.AnonymousDelegates)
+                {
+                    if (!known.Contains(Lang.Parser.AnonymousDelegateName(shape)))
+                    {
+                        unit.Types.AddRange(Lang.Parser.AnonymousDelegates(shape));
+                        known.Add(Lang.Parser.AnonymousDelegateName(shape));
+                    }
+                }
                 if (!Specialise(unit, bound) && !reexpand)
                 {
                     break;
@@ -546,6 +557,7 @@ public static class Frontend
                 copy.LocalCopy = true;
                 copy.Fresh = true;
                 owner.Members.Add(copy);
+                RehostLocals(owner, template, copy, args, values);
                 made = true;
             }
 
@@ -598,10 +610,72 @@ public static class Frontend
             copy.LocalCopy = true;
             copy.Fresh = true;
             owner.Members.Add(copy);
+            RehostLocals(owner, template, copy, args, values);
             made = true;
             made |= CanonicalTwin(owner, template, args, wanted);
         }
         return made;
+    }
+
+    /// <summary>
+    /// THE GENERIC LOCAL FUNCTIONS WRITTEN IN A GENERIC METHOD GO WITH EACH
+    /// COPY OF IT, as Roslyn gives a local function the type parameters of the
+    /// method around it. Each one hoisted out of the template -- and out of
+    /// those, however deep -- is copied beside the copy with the copy's type
+    /// arguments put in for the template's type parameters, its own kept, so
+    /// what it captured is typed as the copy has it and it is still generic
+    /// in its own. The copy, and each carried function, says which carried
+    /// function each written name now means (MethodDecl.Rehosted).
+    /// </summary>
+    private static void RehostLocals(Lang.TypeDecl owner, Lang.MethodDecl template, Lang.MethodDecl copy,
+                                     List<Lang.TypeRef> args, HashSet<string> values)
+    {
+        List<Lang.MethodDecl> carried = new();
+        HashSet<string> parents = new(StringComparer.Ordinal) { template.HoistKey };
+        for (bool more = true; more;)
+        {
+            more = false;
+            foreach (Lang.MethodDecl m in owner.Members.OfType<Lang.MethodDecl>())
+            {
+                if (m.HoistedIn is string parent && parents.Contains(parent) && !carried.Contains(m))
+                {
+                    carried.Add(m);
+                    parents.Add(m.HoistKey);
+                    more = true;
+                }
+            }
+        }
+
+        // What each written name meant in the template, and means now.
+        Dictionary<string, string> rehosted = new(template.Rehosted, StringComparer.Ordinal);
+        Dictionary<string, string> renamed = new(StringComparer.Ordinal);
+        foreach (Lang.MethodDecl m in carried)
+        {
+            renamed[m.Name] = copy.Name + "$" + m.Name;
+        }
+        foreach (string written in rehosted.Keys.ToList())
+        {
+            if (renamed.TryGetValue(rehosted[written], out string? now)) rehosted[written] = now;
+        }
+        foreach ((string was, string now) in renamed)
+        {
+            rehosted[was] = now;
+        }
+
+        foreach (string written in rehosted.Keys) copy.Rehosted[written] = rehosted[written];
+        foreach (Lang.MethodDecl m in carried)
+        {
+            Lang.MethodDecl made = Lang.Monomorphiser.Rehost(m, template.TypeParams, args, renamed[m.Name], values);
+            made.File = m.File;
+            made.Scope = m.Scope;
+            made.Namespace = m.Namespace;
+            made.LocalCopy = true;
+            made.Fresh = true;
+            made.HoistedIn = m.HoistedIn == template.HoistKey ? copy.HoistKey : renamed[m.HoistedIn!];
+            made.Rehosted.Clear();
+            foreach ((string written, string now) in rehosted) made.Rehosted[written] = now;
+            owner.Members.Add(made);
+        }
     }
 
     /// <summary>

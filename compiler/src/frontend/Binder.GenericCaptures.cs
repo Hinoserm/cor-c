@@ -13,11 +13,18 @@ namespace Corsac.Lang;
 /// (PassCaptures).
 ///
 /// ONE VARIABLE, HOWEVER MANY SEE IT. A variable a generic local function
-/// captures lives in a cell, as one a lambda captures does (Lookup), and the
-/// reference handed over is the address of that cell (ParamSym.Cell): a
-/// lambda inside the generic function holds the cell itself, so the method,
-/// its lambdas, the generic function and the lambdas inside that all read and
-/// write the one variable, and a write on any side is seen on every other.
+/// captures lives in a cell, as one a lambda captures does (Lookup), and what
+/// is handed over is that cell (ParamSym.Cell; Lowering.CellOf), a struct's
+/// too: a lambda inside the generic function holds the cell itself, so the
+/// method, its lambdas, the generic function and the lambdas inside that all
+/// read and write the one variable, and a write on any side is seen on every
+/// other. A call names the variable the function saw where it was declared,
+/// not one a lambda at the call calls the same (LookupCaptured).
+///
+/// THE TYPE PARAMETERS AROUND IT GO WITH IT. A generic local function written
+/// in a generic method, or in another generic local function, is carried with
+/// every copy of that one, its type arguments put in (Frontend.RehostLocals),
+/// so a variable it captured whose type is the outer T is the copy's own.
 ///
 /// WHAT IS CAPTURED IS FOUND ONCE, by reading the body where it was written
 /// with the enclosing method's scopes open (ProbeGenericLocal): every name
@@ -79,6 +86,12 @@ public sealed partial class Binder
     /// </summary>
     private void DeclareGenericLocal(Node at, string name, string method)
     {
+        // IN A COPY OF A GENERIC METHOD the name means the function carried
+        // with the copy (Frontend.RehostLocals), typed as the copy is.
+        if (_member is MethodDecl { Rehosted.Count: > 0 } copy && copy.Rehosted.TryGetValue(method, out string? carried))
+        {
+            method = carried;
+        }
         List<MethodSymbol>? methods = HostType()?.FindMethods(method);
         if (methods is not { Count: > 0 }) return;
         Sym group = _thisType is not null && IsClosure(_thisType) && _capturedThisField is not null && methods.Any(m => !m.Static)
@@ -106,7 +119,7 @@ public sealed partial class Binder
     /// CapturesPassed). Each is a cell from then on, here, so the address the
     /// function is given is one a lambda of its may keep.
     /// </summary>
-    private void PassCaptures(CallExpr c, MethodDecl template)
+    private void PassCaptures(CallExpr c, MethodDecl template, string written)
     {
         if (_probeCalls is not null)
         {
@@ -121,7 +134,9 @@ public sealed partial class Binder
             {
                 c.Args.Insert(i, new RefArgExpr
                 {
-                    Target = new NameExpr { Name = template.Params[i].Name, Line = c.Line, Col = c.Col },
+                    // THE VARIABLE THE FUNCTION SAW, by where it was written,
+                    // not by whatever is called the same here (LookupCaptured).
+                    Target = new NameExpr { Name = template.Params[i].Name, CaptureOf = written, Line = c.Line, Col = c.Col },
                     Line = c.Line, Col = c.Col,
                 });
             }
@@ -131,7 +146,7 @@ public sealed partial class Binder
 
         for (int i = 0; i < template.Captures; i++)
         {
-            switch (Lookup(template.Params[i].Name))
+            switch (LookupCaptured(template.Params[i].Name, written))
             {
                 case LocalSym { IsRef: false } local:
                     local.Boxed = true;
@@ -142,6 +157,26 @@ public sealed partial class Binder
                     break;
             }
         }
+    }
+
+    /// <summary>
+    /// A VARIABLE A GENERIC LOCAL FUNCTION CAPTURED, at a call of it: the one
+    /// in scope where the function's own name was declared, looked for from
+    /// that scope outwards. A lambda at the call may have a parameter or a
+    /// local of the same name (C# 8 lets it), and that is not the variable;
+    /// from inside a closure, the variable is the closure's field (CheckName
+    /// finds it when this does not).
+    /// </summary>
+    private Sym? LookupCaptured(string name, string function)
+    {
+        for (int i = _scopes.Count - 1; i >= 0; i--)
+        {
+            if (_scopes[i].TryGetValue(function, out Sym? named) && _genericLocalSyms.Contains(named))
+            {
+                return LookupFrom(name, i);
+            }
+        }
+        return Lookup(name);
     }
 
     /// <summary>The block's generic local functions whose captures are not known yet, probed.</summary>
@@ -328,7 +363,7 @@ public sealed partial class Binder
         List<Param> hidden = new();
         foreach ((string name, Type held) in p.Variables)
         {
-            if (RefOf(held) is not TypeRef spelt)
+            if (SpellOpen(held) is not TypeRef spelt)
             {
                 Error(template, $"the local function '{written}' captures '{name}', whose type '{held}' cannot be written");
                 continue;
@@ -352,6 +387,44 @@ public sealed partial class Binder
                 Name = name, Type = type, Init = value, IsConst = true, Line = template.Line, Col = template.Col,
             });
         }
+    }
+
+    /// <summary>
+    /// A type spelt back into source, OPEN ones too: a variable of a generic
+    /// local function nested in another, or in a generic method, may be a T
+    /// of the one around it -- spelt `T`, and put in for when that one is
+    /// copied (Frontend.RehostLocals).
+    /// </summary>
+    private static TypeRef? SpellOpen(Type t)
+    {
+        if (RefOf(t) is TypeRef plain) return plain;
+        int rank = 0;
+        Type bare = t;
+        while (bare.IsArray && bare.Element is Type of)
+        {
+            bare = of;
+            rank++;
+        }
+        bool nullable = rank == 0 ? bare.Nullable : t.Nullable;
+        if (bare.ParamName is string name)
+        {
+            return new TypeRef { Name = name, ArrayRank = rank, Nullable = nullable, ElementNullable = rank > 0 && bare.Nullable };
+        }
+        if (bare.Symbol?.Decl is { TypeParams.Count: > 0 } template && bare.Args.Count > 0)
+        {
+            TypeRef made = new()
+            {
+                Name = template.Outer is null ? template.Name : template.Outer + "." + template.Name,
+                ArrayRank = rank, Nullable = nullable, ElementNullable = rank > 0 && bare.Nullable,
+            };
+            foreach (Type argument in bare.Args)
+            {
+                if (SpellOpen(argument) is not TypeRef spelt) return null;
+                made.Arguments.Add(spelt);
+            }
+            return made;
+        }
+        return null;
     }
 
     /// <summary>A constant's value, written as source a `const` declaration accepts.</summary>
@@ -390,8 +463,4 @@ public sealed partial class Binder
         }
         return new CastExpr { Type = type, Operand = literal, Line = at.Line, Col = at.Col };
     }
-
-    /// <summary>A struct held by value, which a reference reaches by the address of its bytes.</summary>
-    private static bool IsStructType(Type t)
-        => !t.IsPointer && !t.IsArray && (t.IsNullableValue || t.Symbol is { Kind: TypeKind.Struct } && !t.Nullable);
 }

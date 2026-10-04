@@ -3101,10 +3101,9 @@ public sealed partial class Binder
                             ReadOnly = p.IsReadOnlyRef,
                             IsParams = p.IsParams,
                             // A generic local function's captured variable,
-                            // by the address of its cell (ParamSym.Cell) --
-                            // not a struct's, which a reference reaches by
-                            // the address of its bytes.
-                            Cell = pi < md.Captures && !IsStructType(resolved),
+                            // by the address of its cell (ParamSym.Cell), a
+                            // struct's too: the cell holds the struct.
+                            Cell = pi < md.Captures,
                             CapturedVariable = pi < md.Captures,
                         });
                     }
@@ -4234,9 +4233,12 @@ public sealed partial class Binder
         return slot;
     }
 
-    private Sym? Lookup(string name)
+    private Sym? Lookup(string name) => LookupFrom(name, _scopes.Count - 1);
+
+    /// <summary>A name, looked for from scope <paramref name="top"/> outwards (LookupCaptured).</summary>
+    private Sym? LookupFrom(string name, int top)
     {
-        for (int i = _scopes.Count - 1; i >= 0; i--)
+        for (int i = top; i >= 0; i--)
         {
             if (_scopes[i].TryGetValue(name, out Sym? s))
             {
@@ -4496,7 +4498,7 @@ public sealed partial class Binder
                     // A LAMBDA'S NATURAL TYPE (C# 10), and once worked out,
                     // whatever the initialiser: it is spelt on the declaration
                     // (Binder.NaturalTypes).
-                    else if (d.Init is LambdaExpr || d.NaturalType is not null)
+                    else if (d.Init is LambdaExpr || d.Init.NaturalType is not null)
                     {
                         type = NaturalDelegate(d, null);
                     }
@@ -5243,6 +5245,18 @@ public sealed partial class Binder
     {
         if (from.IsError || to.IsError || Unmade(to))
         {
+            return;
+        }
+
+        // A METHOD GROUP CONVERTED TO OBJECT is its natural type (C# 10):
+        // converted to that delegate, which is the object.
+        if (NaturalTarget(to) && at is Expr groupSource && !_r.Rewrites.ContainsKey(groupSource)
+            && _r.Resolved.TryGetValue(groupSource, out Sym? objectGroup) && objectGroup is MethodGroupSym or CapturedMethodGroupSym)
+        {
+            if (NaturalTypeOf(groupSource, objectGroup, "this method group") is Type natural)
+            {
+                CheckAssignable(from, natural, at, what);
+            }
             return;
         }
 
@@ -6291,6 +6305,13 @@ public sealed partial class Binder
     /// </summary>
     private Type CheckLambda(LambdaExpr lam, Type wanted)
     {
+        // CONVERTED TO OBJECT, a lambda is its natural type (C# 10), and that
+        // delegate is the object (Binder.NaturalTypes).
+        if (NaturalTarget(wanted))
+        {
+            return NaturalTypeOf(lam, null, "this lambda") is Type natural ? CheckLambda(lam, natural) : Type.Error;
+        }
+
         TypeSymbol? face = wanted.Symbol;
 
         // NOT YET, IF WHAT IT HAS TO BE IS STILL OPEN.
@@ -6339,6 +6360,19 @@ public sealed partial class Binder
                      && !MethodSignatures.SameType(written.AsNonNullable(), delegated.AsNonNullable()))
             {
                 Error(lam, $"the lambda returns '{written}', and '{face!.Name}' returns '{delegated}'");
+            }
+        }
+
+        // PARAMETER TYPES WRITTEN ARE THE DELEGATE'S EXACTLY (CS1678): `(long
+        // x) => ...` is no Func<int, int>, however an int would convert.
+        if (lam.TypesWritten)
+        {
+            for (int i = 0; i < lam.Params.Count && i < invoke.Params.Count; i++)
+            {
+                if (WrittenParameterMismatch(lam, i, wanted, invoke) is (Type written, Type delegated))
+                {
+                    Error(lam, $"parameter {i + 1} of the lambda is declared '{written}', and the delegate's is '{delegated}'");
+                }
             }
         }
 
@@ -6771,6 +6805,27 @@ public sealed partial class Binder
     }
 
     /// <summary>
+    /// A lambda's written parameter type that is not the delegate's (CS1678),
+    /// with the delegate's, or null when they are the same or the delegate's
+    /// is not settled yet (a type parameter still open). Nullable annotations
+    /// on references are no difference, as they are only a warning in C#.
+    /// </summary>
+    private (Type Written, Type Delegated)? WrittenParameterMismatch(LambdaExpr lam, int i, Type delegateType, MethodSymbol invoke)
+    {
+        if (!lam.TypesWritten || i >= lam.Params.Count || i >= invoke.Params.Count) return null;
+        Type delegated = ContextualParameterType(delegateType, invoke, i);
+        if (delegated.IsError || Open(delegated) || Unmade(delegated)) return null;
+        _quiet++;
+        Type written = Resolve(lam.Params[i].Type, _thisType);
+        _quiet--;
+        if (written.IsError) return null;
+        return MethodSignatures.SameType(written.AsNonNullable(), delegated.AsNonNullable()) ? null : (written, delegated);
+
+        static bool Open(Type t)
+            => t.ParamName is not null || t.Args.Any(Open) || t.Element is Type e && Open(e);
+    }
+
+    /// <summary>
     /// Checks a lambda's body, whichever of the two shapes it is.
     /// <paramref name="final"/> when it is checked as its closure's own
     /// Invoke (<see cref="_method"/>), rather than for what it captures.
@@ -6906,7 +6961,10 @@ public sealed partial class Binder
                         // Names are put in order before the receiver of an
                         // extension joins the arguments: written argument k
                         // is span pair k + 1.
-                        placed[i] = CallerValue(spare, m.Decl.Params, CallLine(c), k => from[k] < 0 ? null : SpanText(c.Spans, c.Source, from[k] + 1))
+                        // The variables a generic local function captured
+                        // come first and were never written (Hidden).
+                        int hidden = Hidden(c, m);
+                        placed[i] = CallerValue(spare, m.Decl.Params, CallLine(c), k => from[k] < hidden ? null : SpanText(c.Spans, c.Source, from[k] - hidden + 1))
                                     ?? Written(m, spare);
                         filled++;
                     }
@@ -10986,6 +11044,10 @@ public sealed partial class Binder
             case LambdaExpr lam when _wanted is { Symbol: not null } wantedType:
                 return CheckLambda(lam, wantedType);
 
+            // Wanted as an object, it is its natural type (C# 10).
+            case LambdaExpr lam when _wanted is { } objectWanted && NaturalTarget(objectWanted):
+                return CheckLambda(lam, objectWanted);
+
             case LambdaExpr lam:
                 Error(lam, "a lambda here has nothing to tell it what type it is");
                 return Type.Error;
@@ -14202,7 +14264,9 @@ public sealed partial class Binder
             return new Type { Prim = Prim.Void, Symbol = globalType };
         }
 
-        Sym? sym = Lookup(n.Name);
+        // A generic local function's captured variable, handed to it at a
+        // call: the one it saw, whatever is called the same here.
+        Sym? sym = n.CaptureOf is string function ? LookupCaptured(n.Name, function) : Lookup(n.Name);
 
         if (sym != null)
         {
@@ -15545,6 +15609,10 @@ public sealed partial class Binder
         => spans is null || source is null || pair < 0 || 2 * pair + 1 >= spans.Length || spans[2 * pair] < 0
             ? null : source[spans[2 * pair]..spans[2 * pair + 1]];
 
+    /// <summary>How many arguments in front of a call are a generic local function's captured variables (PassCaptures).</summary>
+    private static int Hidden(CallExpr c, MethodSymbol m)
+        => c.CapturesPassed && m.Decl is MethodDecl { Captures: > 0 } d ? d.Captures : 0;
+
     /// <summary>The line [CallerLineNumber] gives a call: where the method's name is.</summary>
     private static int CallLine(CallExpr c) => c.Target is NameExpr or MemberExpr ? c.Target.Line : c.Line;
 
@@ -16041,7 +16109,7 @@ public sealed partial class Binder
             if (localTarget is not null && LocalFunctionDeclaration(localTarget) is { } localFunction)
                 CompleteLocalArguments(c, localFunction);
             if (localTarget is not null && _genericLocalSyms.Contains(localTarget) && GenericLocalTemplate(localTarget) is MethodDecl hoisted)
-                PassCaptures(c, hoisted);
+                PassCaptures(c, hoisted, localName.Name);
         }
 
         // NAMED ARGUMENTS ARE PUT IN ORDER BEFORE ANYTHING ELSE HAPPENS.
@@ -16594,12 +16662,16 @@ public sealed partial class Binder
             if (shorter != null)
             {
                 int writtenCount = args.Count;
+                int hidden = Hidden(c, shorter);
                 for (int i = args.Count; i < shorter.Params.Count; i++)
                 {
                     // Argument k is span pair k + 1, or k once an extension's
-                    // receiver has become argument 0 (pair 0 is the receiver).
+                    // receiver has become argument 0 (pair 0 is the receiver),
+                    // counted after the variables a generic local function
+                    // captured, which come first and were never written.
                     Expr fallback = CallerValue(shorter.Decl!.Params[i], shorter.Decl.Params, CallLine(c),
-                                        k => k >= writtenCount ? null : SpanText(c.Spans, c.Source, c.ReceiverAdded ? k : k + 1))
+                                        k => k >= writtenCount || k < hidden ? null
+                                           : SpanText(c.Spans, c.Source, (c.ReceiverAdded ? k : k + 1) - hidden))
                                     ?? Written(shorter, shorter.Decl.Params[i]);
 
                     c.Args.Add(fallback);
@@ -16666,8 +16738,14 @@ public sealed partial class Binder
                 List<MethodSymbol> invokes = m.Params[i].Type.Symbol?.FindMethods("Invoke")
                                           ?? new List<MethodSymbol>();
 
+                // AND BY THE TYPES IT WROTE, when it wrote them: `(string s)
+                // => ...` is no Func<int, ...> (C# 7.5.3.1 -- an explicitly
+                // typed lambda is applicable only where they are the same).
                 if (c.Args[i] is LambdaExpr lam
-                    && !invokes.Any(v => v.Params.Count == lam.Params.Count))
+                    && !invokes.Any(v => v.Params.Count == lam.Params.Count
+                                      && (!lam.TypesWritten
+                                          || Enumerable.Range(0, lam.Params.Count)
+                                                       .All(k => WrittenParameterMismatch(lam, k, m.Params[i].Type, v) is null))))
                 {
                     return false;
                 }

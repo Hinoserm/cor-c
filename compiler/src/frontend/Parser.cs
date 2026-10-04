@@ -2768,9 +2768,18 @@ public sealed class Parser
     {
         bool saved = _templateMethod;
         _templateMethod = m.TypeParams.Count > 0;
+        // Its generic local functions are hoisted out of it (MethodDecl.HoistedIn).
+        _hoistParents.Push(m.HoistKey);
         try { return FinishMethodCore(m, init); }
-        finally { _templateMethod = saved; }
+        finally
+        {
+            _templateMethod = saved;
+            _hoistParents.Pop();
+        }
     }
+
+    /// <summary>The methods whose bodies are being read, innermost on top, by their HoistKey.</summary>
+    private readonly Stack<string> _hoistParents = new();
 
     private MethodDecl FinishMethodCore(MethodDecl m, CtorInit? init)
     {
@@ -4207,9 +4216,19 @@ public sealed class Parser
             // may name, which the binder enforces for every local function
             // already by giving it no enclosing scope it should not have; the
             // word therefore adds no meaning here and is stepped over.
-            case Tok.KwStatic when StartsLocalFunctionAfterStatic():
-                _i++;
-                return ParseLocalFunction(Cur);
+            // `static`, `async`, both: a local function's modifiers. `async`
+            // makes it an async method of its own, as C# has it; `static`
+            // adds no meaning here and is stepped over.
+            case Tok.KwStatic or Tok.Ident when LocalFunctionModifiers() is int modifiers and > 0:
+            {
+                bool isAsync = false;
+                for (int k = 0; k < modifiers; k++)
+                {
+                    isAsync |= _t[_i].Kind == Tok.Ident;
+                    _i++;
+                }
+                return ParseLocalFunction(Cur, isAsync);
+            }
 
             case Tok.KwSwitch:
                 return ParseSwitch();
@@ -4671,6 +4690,48 @@ public sealed class Parser
             }
         }
         return -1;
+    }
+
+    /// <summary>The name C#'s synthesised delegate of a shape is declared under (AnonymousDelegates).</summary>
+    public static string AnonymousDelegateName(string shape) => "__AnonymousDelegate_" + shape;
+
+    /// <summary>
+    /// THE DELEGATE C# SYNTHESISES for a lambda's or a method group's natural
+    /// type where no Func or Action can say it (C# 10): a parameter passed by
+    /// reference, a result returned by one, more than sixteen parameters.
+    /// Declared once a unit, by its SHAPE -- a letter a parameter, v by
+    /// value, r ref, o out, i in, then the result: V nothing, R a value, F
+    /// by reference, G by ref readonly -- and generic over the parameters'
+    /// types and the result, so one declaration serves every signature of
+    /// that shape (Binder.NaturalTypes asks for it; the driver adds it).
+    /// </summary>
+    public static List<TypeDecl> AnonymousDelegates(string shape)
+    {
+        int split = shape.LastIndexOf('_');
+        string modes = shape[..split];
+        char result = shape[split + 1];
+        System.Text.StringBuilder text = new("internal delegate ");
+        text.Append(result switch { 'V' => "void", 'F' => "ref TR", 'G' => "ref readonly TR", _ => "TR" });
+        text.Append(' ').Append(AnonymousDelegateName(shape));
+        List<string> typeParams = Enumerable.Range(0, modes.Length).Select(k => "T" + k).ToList();
+        if (result != 'V') typeParams.Add("TR");
+        if (typeParams.Count > 0) text.Append('<').Append(string.Join(", ", typeParams)).Append('>');
+        text.Append('(');
+        for (int k = 0; k < modes.Length; k++)
+        {
+            if (k > 0) text.Append(", ");
+            text.Append(modes[k] switch { 'r' => "ref ", 'o' => "out ", 'i' => "in ", _ => "" }).Append('T').Append(k).Append(" a").Append(k);
+        }
+        text.Append(");");
+        string source = text.ToString();
+        Parser sub = new(Lexer.Tokenize(source, "<anonymous delegate>"), "<anonymous delegate>") { Source = source };
+        CompilationUnit made = sub.ParseUnit();
+        foreach (TypeDecl declared in made.Types)
+        {
+            // This unit's alone, as a local function's delegate is.
+            declared.LocalOnly = true;
+        }
+        return made.Types;
     }
 
     /// <summary>
@@ -5357,15 +5418,24 @@ public sealed class Parser
     /// decision needs the name AND the bracket -- one token is not enough, the
     /// same reason the declaration below is tried and fallen back from.
     /// </summary>
-    /// <summary>Whether `static` here is a local function's modifier.</summary>
-    private bool StartsLocalFunctionAfterStatic()
+    /// <summary>
+    /// How many words here -- `static`, `async`, in either order -- are a
+    /// local function's modifiers, or 0 when what follows them is no local
+    /// function (an `async` lambda, a name that is only called async).
+    /// </summary>
+    private int LocalFunctionModifiers()
     {
+        int j = _i;
+        while (j < _t.Count && (_t[j].Kind == Tok.KwStatic || _t[j].Kind == Tok.Ident && _t[j].Text == "async"))
+        {
+            j++;
+        }
+        if (j == _i) return 0;
         int was = _i;
-
-        _i++;
+        _i = j;
         bool yes = StartsLocalFunction();
         _i = was;
-        return yes;
+        return yes ? j - was : 0;
     }
 
     private bool StartsLocalFunction()
@@ -5495,12 +5565,15 @@ public sealed class Parser
             Returns = returns ?? VoidType(),
             Mods = (_memberStatic ? Mods.Static | Mods.Private : Mods.Private) | byReference,
             Line = at.Line, Col = at.Col, Body = null,
+            HoistedName = name,
         };
+        string? parent = _hoistParents.Count > 0 ? _hoistParents.Peek() : null;
         if (At(Tok.Lt)) ParseTypeParams(m.WritableTypeParams);
         ParseParams(m.Params);
         ParseConstraints(m.TypeParams);
         MethodDecl finished = FinishMethod(m);
         finished.HoistedName = name;
+        finished.HoistedIn = parent;
         _blocks.Peek().GenericLocals.Add((name, finished.Name));
         _hoisted.Add(finished);
         return new Block { Line = at.Line, Col = at.Col };
@@ -5550,7 +5623,7 @@ public sealed class Parser
         return new TypeRef { Name = delegateName, Line = at.Line, Col = at.Col };
     }
 
-    private Stmt ParseLocalFunction(Token at)
+    private Stmt ParseLocalFunction(Token at, bool isAsync = false)
     {
         // `ref int At(...)` and `ref readonly int At(...)` RETURN A VARIABLE,
         // as a method written so does (Mods.RefReturn): the generic one is
@@ -5575,7 +5648,7 @@ public sealed class Parser
         // functions are, cannot be generic.
         if (At(Tok.Lt))
         {
-            return ParseGenericLocalFunction(at, returns, name, byReference);
+            return ParseGenericLocalFunction(at, returns, name, byReference | (isAsync ? Mods.Async : Mods.None));
         }
 
         // THE SAME PARAMETER LIST A METHOD HAS: attributes (caller
@@ -5594,7 +5667,7 @@ public sealed class Parser
         {
             // `=> ref xs[i]`: the body of one that returns by reference is
             // the variable it answers (ParseRefValue).
-            lam = new LambdaExpr { Body = At(Tok.KwRef) ? ParseRefValue() : ParseExpr(), Line = at.Line, Col = at.Col };
+            lam = new LambdaExpr { Body = At(Tok.KwRef) ? ParseRefValue() : ParseExpr(), Async = isAsync, Line = at.Line, Col = at.Col };
             Expect(Tok.Semi, "';' after the expression body");
         }
         else
@@ -5602,7 +5675,7 @@ public sealed class Parser
             // ITS OWN BODY, as a method's is: a local function may be an
             // iterator of its own, and its `yield`s are not its enclosing
             // method's.
-            lam = new LambdaExpr { BlockBody = ReadBodyBlock(returns, at.Line, at.Col), Line = at.Line, Col = at.Col };
+            lam = new LambdaExpr { BlockBody = ReadBodyBlock(returns, at.Line, at.Col), Async = isAsync, Line = at.Line, Col = at.Col };
         }
 
         lam.Params.AddRange(made.Params);

@@ -489,6 +489,7 @@ public static class Gir
                     I32(d.LocalGenerics.Count);
                     foreach ((string written, string member) in d.LocalGenerics) { Str(written); Str(member); }
                     I32(d.Captures);
+                    Str(d.HoistedIn ?? "");
                     break;
 
                 case PropertyDecl p2:
@@ -1372,6 +1373,8 @@ public static class Gir
                     int generics = Count();
                     for (int i = 0; i < generics; i++) { string written = Str(); d.LocalGenerics.Add((written, Str())); }
                     d.Captures = I32();
+                    string hoistedIn = Str();
+                    d.HoistedIn = hoistedIn.Length == 0 ? null : hoistedIn;
                     return d;
                 }
 

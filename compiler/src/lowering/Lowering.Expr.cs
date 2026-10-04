@@ -89,7 +89,30 @@ public sealed partial class Lowering
     private static TypeSymbol? TupleShapeOf(Type t)
         => t is { Nullable: false, IsPointer: false, IsArray: false, Symbol: { Kind: TypeKind.Struct } shape } && IsTupleShape(shape) ? shape : null;
 
-    private VReg EvalAs(Expr e, ParamSymbol p) => EvalAs(e, p.Type, p.ByRef, p.ReadOnly);
+    private VReg EvalAs(Expr e, ParamSymbol p) => p.Cell ? CellOf(e) : EvalAs(e, p.Type, p.ByRef, p.ReadOnly);
+
+    /// <summary>
+    /// THE CELL A CAPTURED VARIABLE LIVES IN, handed to a generic local
+    /// function that captured it (ParamSymbol.Cell): a boxed local's or
+    /// parameter's, a closure's field over one, or the cell the function was
+    /// itself handed. Every such variable is a cell (Binder.PassCaptures).
+    /// </summary>
+    private VReg CellOf(Expr e)
+    {
+        Expr target = e is RefArgExpr reference ? reference.Target : e;
+        if (target is NameExpr n && _b.Resolved.TryGetValue(n, out Sym? sym))
+        {
+            if (sym is ParamSym { Cell: true } handed)
+            {
+                return _params[handed.Index];
+            }
+            if (PlaceOfSym(sym, n) is MemPlace { Address: RegOperand cell, Offset: 0, Inline: false })
+            {
+                return cell.Reg;
+            }
+        }
+        return Fail(e, "a variable a generic local function captured is not in a cell");
+    }
 
     private VReg EvalAs(Expr e, Type target, bool byRef = false, bool readOnly = false)
     {
@@ -3030,7 +3053,8 @@ public sealed partial class Lowering
     /// </summary>
     private VReg StructReference(Expr target, Type type, bool fresh = false)
     {
-        if (target is NameExpr n && _b.Resolved.TryGetValue(n, out Sym? s) && s is ParamSym { ByRef: true } passed)
+        // A struct's cell (ParamSym.Cell) holds the struct; that is read below.
+        if (target is NameExpr n && _b.Resolved.TryGetValue(n, out Sym? s) && s is ParamSym { ByRef: true, Cell: false } passed)
         {
             return _params[passed.Index];
         }

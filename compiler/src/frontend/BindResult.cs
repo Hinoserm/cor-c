@@ -374,6 +374,13 @@ public sealed partial class BindResult
     /// </summary>
     public bool Reexpand { get; set; }
 
+    /// <summary>
+    /// The shapes of the delegates C# synthesises that a natural type here
+    /// needs and the unit does not declare yet (Parser.AnonymousDelegates):
+    /// the driver adds them, and the round goes again.
+    /// </summary>
+    public HashSet<string> AnonymousDelegates { get; } = new(StringComparer.Ordinal);
+
     /// <summary>`&Method`: the static method whose address this is, as a function pointer.</summary>
     public Dictionary<UnaryExpr, MethodSymbol> MethodAddresses { get; } = new(ReferenceEqualityComparer.Instance);
 

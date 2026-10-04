@@ -50,4 +50,23 @@ public sealed class MethodDecl : MemberDecl
     /// writes the enclosing method's own variable. -1 until they are known.
     /// </summary>
     public int Captures { get; set; } = -1;
+
+    /// <summary>
+    /// Where a hoisted generic local function was written: the HoistKey of
+    /// the method or hoisted function around it. A copy of that one carries
+    /// a copy of this one with it (Frontend.RehostLocals), so the function
+    /// sees the copy's type arguments as Roslyn's sees the outer type
+    /// parameters it is given.
+    /// </summary>
+    public string? HoistedIn { get; set; }
+
+    /// <summary>
+    /// In a copy of a method, and in the generic local functions carried with
+    /// it: which hoisted function each written block's name now means, by
+    /// the name it was hoisted under (Binder.DeclareGenericLocal).
+    /// </summary>
+    public Dictionary<string, string> Rehosted { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>What a hoisted function names its parent by: unique for a hoisted one, by place for a member.</summary>
+    public string HoistKey => HoistedName is not null ? Name : Name + "@" + Line + ":" + Col;
 }

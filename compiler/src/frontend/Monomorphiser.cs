@@ -115,6 +115,31 @@ public sealed class Monomorphiser
     /// specialisations included: a `T?` over one of them stays the value
     /// type (Sub's rule for an unconstrained T), which this copy cannot tell
     /// from the arguments' names alone.</param>
+    /// <summary>
+    /// A hoisted generic local function carried into a copy of the method it
+    /// was written in (Frontend.RehostLocals): the copy's type arguments put
+    /// in for its type parameters, the function's own type parameters kept.
+    /// </summary>
+    public static MethodDecl Rehost(MethodDecl local, IReadOnlyList<TypeParam> outer, IReadOnlyList<TypeRef> args,
+                                    string name, IEnumerable<string>? valueTypes = null)
+    {
+        Monomorphiser m = new("<rehost>");
+        if (valueTypes is not null)
+        {
+            m._byValue.UnionWith(valueTypes);
+        }
+        Dictionary<string, TypeRef> map = new(StringComparer.Ordinal);
+        for (int i = 0; i < outer.Count && i < args.Count; i++)
+        {
+            m.Settled(args[i]);
+            map[outer[i].Name] = args[i];
+            if (outer[i].Struct) m._structParams.Add(outer[i].Name);
+        }
+        MethodDecl made = (MethodDecl)m.RewriteMember(local, map, local.Name);
+        made.Name = name;
+        return made;
+    }
+
     public static MethodDecl Specialise(MethodDecl template, IReadOnlyList<TypeRef> args, string name,
                                         IEnumerable<string>? valueTypes = null)
     {
@@ -1852,6 +1877,8 @@ public sealed class Monomorphiser
                 made.HoistedName = md.HoistedName;
                 made.LocalGenerics.AddRange(md.LocalGenerics);
                 made.Captures = md.Captures;
+                made.HoistedIn = md.HoistedIn;
+                foreach ((string written, string now) in md.Rehosted) made.Rehosted[written] = now;
 
                 return made;
             }
@@ -1924,9 +1951,6 @@ public sealed class Monomorphiser
                     // declared.
                     IsConst = d.IsConst,
                     IsRef = d.IsRef, IsReadOnlyRef = d.IsReadOnlyRef,
-                    // The natural type the checker spelt, substituted -- and
-                    // so made, which is what it was spelt for.
-                    NaturalType = d.NaturalType is null ? null : Sub(d.NaturalType, map),
                     Line = d.Line, Col = d.Col,
                 };
 
@@ -2183,6 +2207,17 @@ public sealed class Monomorphiser
         if (made.File.Length == 0)
         {
             made.File = e.File;
+        }
+
+        // The natural type the checker spelt, substituted -- and so made,
+        // which is what it was spelt for.
+        if (e.NaturalType is not null && !ReferenceEquals(made, e))
+        {
+            made.NaturalType = Sub(e.NaturalType, map);
+        }
+        if (e is NameExpr { CaptureOf: not null } captured && made is NameExpr copied)
+        {
+            copied.CaptureOf = captured.CaptureOf;
         }
         return made;
     }
