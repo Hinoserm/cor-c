@@ -1,6 +1,7 @@
 #nullable enable
 using System.Text;
 using Corsac.Lang.Elf;
+using Corsac.Lang.Ir;
 
 namespace Corsac.Lang.Lto;
 
