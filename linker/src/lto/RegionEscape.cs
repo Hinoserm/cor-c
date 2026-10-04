@@ -754,6 +754,22 @@ internal sealed class RegionEscape
             return b.Cells.Count > MostCells ? b.Everything() : b;
         }
 
+        // Whether a made object is reached from the unknown object by the cells.
+        private bool LeaksMade()
+        {
+            HashSet<int> seen = new() { 0 };
+            Stack<int> next = new();
+            next.Push(0);
+            while (next.TryPop(out int o))
+                foreach (var c in Cells)
+                    if (c.From == o && seen.Add(c.To))
+                    {
+                        if (Objects[c.To].Kind == Kind.Made) return true;
+                        next.Push(c.To);
+                    }
+            return false;
+        }
+
         /// <summary>
         /// THE SHAPE PAST EVEN THE COARSE ONE: every argument and all it
         /// reaches one object, everything made another, each holding the
@@ -781,6 +797,11 @@ internal sealed class RegionEscape
                 if (global) e.Cells.Add((from, Any, 0, Any));
             }
             if (global && all >= 0) e.Cells.Add((0, Any, all, Any));
+            // WHAT THE UNKNOWN OBJECT REACHED stays its: with no place to
+            // reach the made objects through, its cell holds them itself.
+            // (Through the arguments' object alone, a function of no
+            // parameters lost every object it put where nobody follows.)
+            if (blob >= 0 && LeaksMade()) e.Cells.Add((0, Any, blob, Any));
             if (Result.Count > 0)
             {
                 if (all >= 0) e.Result.Add((all, Any));
@@ -1311,6 +1332,8 @@ internal sealed class RegionEscape
                     _dispatch[inside] = through;
                 }
                 for (int j = 0; j < args.Length && j < through.Args.Length; j++) if (args[j] >= 0) CopyEdge(args[j], through.Args[j], 0);
+                // A parameter this call passes nothing for: whatever its word holds.
+                for (int j = args.Length; j < through.Args.Length; j++) Add(through.Args[j], Unknown);
                 if (dest >= 0) CopyEdge(through.Ret, dest, 0);
             }
             if (outside.Length > 0)
@@ -1361,9 +1384,17 @@ internal sealed class RegionEscape
             {
                 var o = s.Objects[k];
                 int arg = o.Param >= 0 && o.Param < args.Length ? args[o.Param] : -1;
+                // A PARAMETER THE CALL PASSES NOTHING FOR is whatever its word
+                // holds: the unknown object, and what is written there
+                // escapes. (Nothing at all, a callee's writes through it
+                // were dropped.)
+                bool unpassed = o.Param >= args.Length;
                 switch (o.Kind)
                 {
                     case Kind.Unknown:
+                        node[k] = NewNode(); Add(node[k], Unknown); break;
+                    case Kind.Place when unpassed:
+                    case Kind.Deep when unpassed:
                         node[k] = NewNode(); Add(node[k], Unknown); break;
                     case Kind.Place:
                         node[k] = arg < 0 ? NewNode() : Chain(arg, o.Path);     // nothing passed that could hold an address: nothing
@@ -1919,6 +1950,7 @@ internal sealed class RegionEscape
                     _dispatch[inside] = through;
                 }
                 for (int j = 0; j < args.Length && j < through.Args.Length; j++) if (args[j] >= 0) Unify(Pointee(args[j]), Pointee(through.Args[j]));
+                for (int j = args.Length; j < through.Args.Length; j++) Unify(Pointee(through.Args[j]), _global);
                 if (dest >= 0) Unify(Pointee(dest), Pointee(through.Ret));
             }
             if (outside.Length > 0) Apply(args, dest, _owner.MergedFor(outside));
@@ -1942,6 +1974,8 @@ internal sealed class RegionEscape
                 switch (o.Kind)
                 {
                     case Kind.Unknown: cls[k] = _global; break;
+                    // A parameter the call passes nothing for: whatever its word holds.
+                    case Kind.Place or Kind.Deep when o.Param >= args.Length: cls[k] = _global; break;
                     case Kind.Place:
                     {
                         if (arg < 0) { cls[k] = NewClass(); break; }
