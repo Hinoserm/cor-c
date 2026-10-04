@@ -249,9 +249,10 @@ public class Font : IDisposable
     {
         // A NAME NOBODY KNOWS IS NOT AN ERROR HERE: GDI+ itself falls
         // back to a generic face rather than fail a program over a font
-        // that turned out not to be installed, and that is worth keeping
-        // even though our fallback is one face rather than a choice.
-        FontFamily? found = FontFamily.Find(name);
+        // that turned out not to be installed -- here the face the font
+        // store gives for sans-serif, and the bitmap system font only on a
+        // machine with no scalable face at all.
+        FontFamily? found = FontFamily.Find(name) ?? Installed.Generic("sans-serif");
         FontFamily = found ?? FontFamily.SystemFamily;
         Name = FontFamily.Name;
         Size = size;
@@ -326,9 +327,10 @@ public class Font : IDisposable
             if (Rune.TryGetRuneAt(text, i, out rune)) { taken = rune.Utf16SequenceLength; } else { taken = 1; rune = new Rune('?'); }
             i += taken;
 
-            int glyph = scaled.Face.GlyphIndex(rune.Value);
-            width += scaled.Kern(previous, glyph) + scaled.Advance(glyph) + extra;
-            previous = glyph;
+            int glyph;
+            SizedFace from = FontFallback.FaceFor(scaled, rune.Value, out glyph);
+            width += (from == scaled ? scaled.Kern(previous, glyph) : 0) + from.Advance(glyph) + extra;
+            previous = from == scaled ? glyph : -1;
         }
         return width;
     }
@@ -677,13 +679,17 @@ public class Graphics : IDisposable
 
             if (rune.Value == '\n') { penX = x; lineTop += lineHeight; previousGlyph = -1; continue; }
 
-            int glyphIndex = scaled.Face.GlyphIndex(rune.Value);
-            GlyphBitmap? bitmap = scaled.Glyph(glyphIndex);
+            // A CHARACTER THE FACE DOES NOT HAVE is drawn from the face the
+            // font store gives for it (FontFallback), on the same baseline;
+            // there is no kerning across two faces.
+            int glyphIndex;
+            SizedFace from = FontFallback.FaceFor(scaled, rune.Value, out glyphIndex);
+            GlyphBitmap? bitmap = from.Glyph(glyphIndex);
 
-            if (bitmap == null) { previousGlyph = glyphIndex; continue; }
+            if (bitmap == null) { previousGlyph = from == scaled ? glyphIndex : -1; continue; }
 
-            penX += scaled.Kern(previousGlyph, glyphIndex);
-            previousGlyph = glyphIndex;
+            if (from == scaled) penX += scaled.Kern(previousGlyph, glyphIndex);
+            previousGlyph = from == scaled ? glyphIndex : -1;
 
             int advance = bitmap.Advance + boldExtra;
 
@@ -807,13 +813,14 @@ public class Graphics : IDisposable
 
             if (rune.Value == '\n') { penX = x; lineTop += lineHeight; previousGlyph = -1; continue; }
 
-            int glyphIndex = scaled.Face.GlyphIndex(rune.Value);
-            GlyphCoverage? bitmap = scaled.GlyphAA(glyphIndex);
+            int glyphIndex;
+            SizedFace from = FontFallback.FaceFor(scaled, rune.Value, out glyphIndex);
+            GlyphCoverage? bitmap = from.GlyphAA(glyphIndex);
 
-            if (bitmap == null) { previousGlyph = glyphIndex; continue; }
+            if (bitmap == null) { previousGlyph = from == scaled ? glyphIndex : -1; continue; }
 
-            penX += scaled.Kern(previousGlyph, glyphIndex);
-            previousGlyph = glyphIndex;
+            if (from == scaled) penX += scaled.Kern(previousGlyph, glyphIndex);
+            previousGlyph = from == scaled ? glyphIndex : -1;
 
             int advance = bitmap.Advance + boldExtra;
 
@@ -936,10 +943,11 @@ public class Graphics : IDisposable
 
             if (rune.Value == '\n') { lines++; if (run > widest) { widest = run; } run = 0; previousGlyph = -1; continue; }
 
-            int glyphIndex = scaled.Face.GlyphIndex(rune.Value);
+            int glyphIndex;
+            SizedFace from = FontFallback.FaceFor(scaled, rune.Value, out glyphIndex);
 
-            run += scaled.Kern(previousGlyph, glyphIndex) + scaled.Advance(glyphIndex) + boldExtra;
-            previousGlyph = glyphIndex;
+            run += (from == scaled ? scaled.Kern(previousGlyph, glyphIndex) : 0) + from.Advance(glyphIndex) + boldExtra;
+            previousGlyph = from == scaled ? glyphIndex : -1;
         }
         if (run > widest) { widest = run; }
         return new SizeF(widest, lines * lineHeight);

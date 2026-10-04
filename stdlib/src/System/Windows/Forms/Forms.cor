@@ -6097,7 +6097,8 @@ public static class Application
         if (f == null && m.Kind != 1 && m.Kind != 11 && m.Kind != 12 && m.Kind != 13
             && m.Kind != 14 && m.Kind != 15 && m.Kind != 16 && m.Kind != 17
             && m.Kind != 23 && m.Kind != 24 && m.Kind != 25 && m.Kind != 28
-            && m.Kind != Seat.ClipboardChanged && m.Kind != Seat.ClipboardRender && m.Kind != Seat.ClipboardLost) return;
+            && m.Kind != Seat.ClipboardChanged && m.Kind != Seat.ClipboardRender && m.Kind != Seat.ClipboardLost
+            && m.Kind != Seat.FontsChanged) return;
         switch (m.Kind)
         {
             case 1:
@@ -6234,6 +6235,12 @@ public static class Application
                 break;
             case Seat.ClipboardLost:
                 Clipboard.Lost();
+                break;
+            case Seat.FontsChanged:
+                // A font directory changed: the fallbacks asked of the store
+                // asked again, and whoever cares told.
+                System.Drawing.FontFallback.Forget();
+                SystemEvents.RaiseInstalledFontsChanged();
                 break;
             case 28:
                 // A press on one of this thread's notification-area icons.

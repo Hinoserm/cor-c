@@ -6,13 +6,14 @@
 using System;
 using System.IO;
 using System.Collections.Generic;
+using Corsac.GUI;
 
 namespace System.Drawing;
 
 /// The three families every GDI+ program can ask for without naming one:
 /// a face with serifs, one without, and one where every character is the
-/// same width. Answered from GenericSansSerif and friends below rather
-/// than from a real choice among faces, since none is bundled yet.
+/// same width: the faces the GUI kernel's font store gives for serif,
+/// sans-serif and monospace.
 public enum GenericFontFamilies { Serif, SansSerif, Monospace }
 
 /// <summary>
@@ -48,19 +49,17 @@ public sealed class FontFamily : IDisposable
     }
 
     /// <summary>
-    /// One of the three generic families. None is bundled as a distinct
-    /// face yet, so all three are the system bitmap font today; a program
-    /// that draws with GenericSansSerif rather than naming "System" will
-    /// pick up a real scalable face the day one ships, with no changes of
-    /// its own -- which is the whole reason .NET offers the generic names.
+    /// One of the three generic families: the face the font store gives
+    /// for serif, sans-serif or monospace -- its stand-ins and its kind's
+    /// defaults, as it matches any request.
     /// </summary>
     public FontFamily(GenericFontFamilies genericFamily)
     {
-        // The installed face that plays each part, where it is installed;
-        // the bitmap system font where it is not, so a machine with no
-        // fonts directory still draws.
-        FontFamily? found = Find(genericFamily == GenericFontFamilies.Serif ? "Times New Roman"
-                               : genericFamily == GenericFontFamilies.Monospace ? "Courier New" : "Tahoma");
+        // The installed face that plays each part, where one is installed;
+        // the bitmap system font where none is, so a machine with no fonts
+        // still draws.
+        FontFamily? found = Installed.Generic(genericFamily == GenericFontFamilies.Serif ? "serif"
+                                            : genericFamily == GenericFontFamilies.Monospace ? "monospace" : "sans-serif");
 
         _name = found == null ? "System" : found._name;
         Face = found == null ? null : found.Face;
@@ -146,9 +145,16 @@ public sealed class FontFamily : IDisposable
 
     internal static FontFamily? Find(string name)
     {
+        FontFamily? known = Known(name);
+        return known ?? Installed.Find(name);
+    }
+
+    /// A family already in the roster (or "System"), asking nobody.
+    internal static FontFamily? Known(string name)
+    {
         if (Same(name, "System")) { return SystemFamily; }
         for (int i = 0; i < _roster.Count; i++) { if (Same(_roster[i]._name, name)) { return _roster[i]; } }
-        return Installed.Find(name);
+        return null;
     }
 
     static FontFamily? _system;
@@ -199,64 +205,26 @@ public abstract class FontCollection : IDisposable
 }
 
 /// <summary>
-/// The fonts directory, read. A face is installed by being a TrueType file
-/// in /usr/share/fonts; there is no registration step, which is one fewer
-/// thing to be out of step with what is on the disc.
+/// THE INSTALLED FONTS ARE THE GUI KERNEL'S (os/gui/fontstore.cor): it indexes
+/// every font directory, and this asks it through the seat (Seat.MatchFont,
+/// Seat.FontFamilies) which face answers a family, rather than reading the
+/// directories in every program. The face's file is then mapped here, once
+/// a file for the program's life, and parsed by the one font engine.
 ///
-/// LAZY ON PURPOSE. Every graphical program asks for the interface font
-/// and almost none asks for anything else, and a dozen faces are four
-/// megabytes. So a family asked for by name is looked for by FILE name
-/// first -- "Tahoma" against Tahoma-Regular.ttf -- and
-/// only that file is read; its own name table then confirms it. Reading
-/// every file happens when somebody enumerates the families, which is a
-/// font picker and nobody else.
+/// A family asked for by name is the store's match for that name when the
+/// store answers with that family; a name it stands another family in for
+/// is not this family (FontFamily(string) refuses it, as .NET does), but a
+/// Font still draws with the stand-in (Font's fallback). Bold is the
+/// family's own bold design when the store has one.
 /// </summary>
 static class Installed
 {
-    public const string Folder = "/usr/share/fonts";
-
-    static string[]? _files;
-    static bool _all;
-
-    static string[] Files()
-    {
-        if (_files == null)
-        {
-            try { _files = Directory.Exists(Folder) ? Directory.GetFiles(Folder) : new string[0]; }
-            catch (IOException) { _files = new string[0]; }
-        }
-        return _files;
-    }
-
-    /// Letters and digits only, lower case: what a family name and a file
-    /// name are compared as.
-    static string Squash(string text)
-    {
-        string built = "";
-
-        for (int i = 0; i < text.Length; i++)
-        {
-            char c = text[i];
-            if (c >= 'A' && c <= 'Z') { c = (char)(c + 32); }
-            if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) { built = built + c; }
-        }
-        return built;
-    }
-
-    static string FileName(string path)
-    {
-        int slash = path.LastIndexOf('/');
-        return slash < 0 ? path : path.Substring(slash + 1);
-    }
-
-    static bool IsFont(string path) { return path.EndsWith(".ttf") || path.EndsWith(".TTF"); }
-
     /// A face of the file, from its pages mapped read-only where the system
     /// maps files, so every program drawing Tahoma has the one copy the page
     /// cache holds -- read into each, the greeter and every Forms program held
     /// most of a megabyte of each font it used, twice over for two fonts.
     /// Mapped once a file, for the program's life.
-    static TrueTypeFace? Read(string path)
+    internal static TrueTypeFace? Read(string path)
     {
         long at, length;
         lock (_mapped)
@@ -276,66 +244,124 @@ static class Installed
     static readonly Dictionary<string, long> _mapped = new Dictionary<string, long>();
     static readonly Dictionary<string, long> _mappedLength = new Dictionary<string, long>();
 
+    /// The store's scalable face for a request, or null -- with no GUI
+    /// kernel to ask, too.
+    internal static SeatFont? Match(string family, int weight, bool italic, int character)
+    {
+        try { return Seat.Current.MatchFont(family, weight, italic, 5, character, true); }
+        catch (Exception) { return null; }
+    }
+
+    static bool Same(string a, string b)
+    {
+        if (a.Length != b.Length) { return false; }
+        for (int i = 0; i < a.Length; i++)
+        {
+            char x = a[i], y = b[i];
+            if (x >= 'A' && x <= 'Z') { x = (char)(x + 32); }
+            if (y >= 'A' && y <= 'Z') { y = (char)(y + 32); }
+            if (x != y) { return false; }
+        }
+        return true;
+    }
+
+    /// The family of that name, as the store has it; null when the store
+    /// has no family of that name.
     public static FontFamily? Find(string name)
     {
-        string key = Squash(name);
-        if (key.Length == 0) { return null; }
+        if (name.Length == 0) { return null; }
+        SeatFont? regular = Match(name, 400, false, 0);
+        if (regular == null || !Same(regular.Family, name)) { return null; }
+        return Made(regular);
+    }
 
-        string[] files = Files();
-        TrueTypeFace? regular = null, bold = null;
-
-        for (int i = 0; i < files.Length; i++)
-        {
-            if (!IsFont(files[i])) { continue; }
-
-            string squashed = Squash(FileName(files[i]));
-            if (!squashed.StartsWith(key)) { continue; }
-
-            bool isBold = squashed.IndexOf("bold") >= 0;
-            if (squashed.IndexOf("italic") >= 0 || squashed.IndexOf("oblique") >= 0) { continue; }
-            if (isBold ? bold != null : regular != null) { continue; }
-
-            TrueTypeFace? face = Read(files[i]);
-
-            // THE FILE'S OWN WORD for what it is. A file name is a hint,
-            // and "PT Sans" is a prefix of "PT Sans Narrow".
-            if (face == null || Squash(face.FamilyName) != key) { continue; }
-
-            if (isBold) { bold = face; } else { regular = face; }
-        }
-
-        if (regular == null) { regular = bold; }
+    /// The family the store gives for a generic name (serif, sans-serif,
+    /// monospace), under its own name; null when it gives none.
+    public static FontFamily? Generic(string generic)
+    {
+        SeatFont? regular = Match(generic, 400, false, 0);
         if (regular == null) { return null; }
+        FontFamily? known = FontFamily.Known(regular.Family);
+        return known ?? Made(regular);
+    }
 
-        FontFamily family = new FontFamily(regular.FamilyName, regular);
-        family.BoldFace = bold == regular ? null : bold;
+    /// A family from the store's regular face, with its bold design when
+    /// the store's bold face for it is another file.
+    static FontFamily? Made(SeatFont regular)
+    {
+        TrueTypeFace? face = Read(regular.Path);
+        if (face == null) { return null; }
+        SeatFont? bold = Match(regular.Family, 700, false, 0);
+        TrueTypeFace? boldFace = null;
+        if (bold != null && Same(bold.Family, regular.Family) && bold.Path != regular.Path && bold.Weight > regular.Weight)
+            boldFace = Read(bold.Path);
+        FontFamily family = new FontFamily(regular.Family, face);
+        family.BoldFace = boldFace;
         FontFamily.Register(family);
         return family;
     }
 
-    /// Every file, for the one caller that wants the whole list.
+    /// Every family the store has, for the one caller that wants the whole
+    /// list (a font picker, through InstalledFontCollection).
     public static void LoadAll()
     {
-        if (_all) { return; }
-        _all = true;
-
-        string[] files = Files();
-
-        for (int i = 0; i < files.Length; i++)
-        {
-            if (!IsFont(files[i])) { continue; }
-
-            string squashed = Squash(FileName(files[i]));
-            if (squashed.IndexOf("bold") >= 0 || squashed.IndexOf("italic") >= 0) { continue; }
-
-            TrueTypeFace? face = Read(files[i]);
-            if (face != null && face.FamilyName.Length > 0) { FontFamily.Find(face.FamilyName); }
-        }
+        string[] names;
+        try { names = Seat.Current.FontFamilies(true); }
+        catch (Exception) { return; }
+        foreach (string name in names) { FontFamily.Find(name); }
     }
 }
 
-/// The system's own faces: the kernel's bitmap font, and whatever is in the
-/// fonts directory.
+/// A CHARACTER A FACE DOES NOT HAVE, drawn from the face the font store gives
+/// for it: a face of the same family's kind that draws it, at the same size.
+/// What the store answered is kept for the program's life, a character at a
+/// time and the misses too, so a missing glyph costs one question.
+internal static class FontFallback
+{
+    static readonly Dictionary<string, string> _paths = new Dictionary<string, string>();
+
+    /// The face to draw `character` with: `scaled`'s own when it has it (or
+    /// the character is a control), else the store's fallback at the same
+    /// size, else `scaled`'s own missing-glyph box. The glyph is its index
+    /// there.
+    public static SizedFace FaceFor(SizedFace scaled, int character, out int glyph)
+    {
+        if (character < 0x20 || scaled.Face.HasGlyph(character)) { glyph = scaled.Face.GlyphIndex(character); return scaled; }
+        SizedFace? other = For(scaled, character);
+        if (other == null) { glyph = scaled.Face.GlyphIndex(character); return scaled; }
+        glyph = other.Face.GlyphIndex(character);
+        return other;
+    }
+
+    /// The fonts changed (the store's FontsChanged): every answer asked
+    /// again.
+    public static void Forget()
+    {
+        lock (_paths) { _paths.Clear(); }
+    }
+
+    static SizedFace? For(SizedFace scaled, int character)
+    {
+        string key = scaled.Face.FamilyName + "\0" + character;
+        string? path;
+        lock (_paths)
+        {
+            if (!_paths.TryGetValue(key, out path))
+            {
+                SeatFont? found = Installed.Match(scaled.Face.FamilyName, 400, false, character);
+                path = found != null ? found.Path : "";
+                _paths[key] = path;
+            }
+        }
+        if (path.Length == 0) { return null; }
+        TrueTypeFace? face = Installed.Read(path);
+        if (face == null || !face.HasGlyph(character)) { return null; }
+        return TrueTypeSize.For(face, scaled.PixelsPerEm);
+    }
+}
+
+/// The system's own faces: the kernel's bitmap font, and every family the
+/// GUI kernel's font store has.
 public sealed class InstalledFontCollection : FontCollection
 {
     public InstalledFontCollection()

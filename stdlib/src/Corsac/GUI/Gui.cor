@@ -130,6 +130,8 @@ enum SeatIoctl : long
     ClipboardOpen = 0x47550060,
     ClipboardClose = 0x47550061,
     ClipboardWatch = 0x47550062,
+    FontFamilies = 0x47550063,
+    FontMatch = 0x47550064,
 }
 
 public class Seat : IDrawingTarget
@@ -652,6 +654,89 @@ public class Seat : IDrawingTarget
 
     /// The event kinds the clipboard sends.
     public const int ClipboardChanged = 30, ClipboardRender = 31, ClipboardLost = 32;
+
+    // ---- the fonts -------------------------------------------------------------
+    //
+    // THE GUI KERNEL'S FONT STORE (os/gui/fontstore.cor) indexes every font
+    // directory -- the native one and a Windows installation's Fonts -- and
+    // answers which families there are and which face answers a request, as
+    // CSS matches one: the family, the families that stand in for it, its
+    // kind's defaults; then stretch, slant and weight; and a character the
+    // face must draw, for a missing glyph's fallback. A program maps the
+    // face's file itself (its path is in the record): one font engine, the
+    // store's choice. FontsChanged (event 33, A the index's generation) comes
+    // to every program when a font directory changes.
+
+    /// The event the font store sends.
+    public const int FontsChanged = 33;
+
+    /// Every installed family, each once, sorted without case; scalable
+    /// faces' families only with `scalableOnly`.
+    public string[] FontFamilies(bool scalableOnly)
+    {
+        byte[] args = new byte[12];
+        PutWord(args, 8, scalableOnly ? 1 : 0);
+        long size = Ioctl(SeatIoctl.FontFamilies, Sys.ArrayData(args));
+        while (size > 0)
+        {
+            byte[] list = new byte[(int)size];
+            PutWord(args, 0, Sys.ArrayData(list)); PutWord(args, 4, list.Length);
+            long again = Ioctl(SeatIoctl.FontFamilies, Sys.ArrayData(args));
+            GC.KeepAlive(list);
+            if (again == size)
+            {
+                List<string> names = new List<string>();
+                int at = 0;
+                while (at + 4 <= list.Length) names.Add(FontText(list, ref at));
+                return names.ToArray();
+            }
+            size = again;
+        }
+        return new string[0];
+    }
+
+    /// The face the font store gives for a family (or a generic name --
+    /// serif, sans-serif, monospace, cursive, fantasy -- or "" for the
+    /// default), a weight (100-900), a slant, a stretch (1-9, 5 normal) and,
+    /// when not 0, a character it must draw; null when no face will do.
+    public SeatFont? MatchFont(string family, int weight, bool italic, int stretch, int character, bool scalableOnly)
+    {
+        char[] name = family.ToCharArray();
+        byte[] text = new byte[name.Length * 2 + 2];
+        for (int i = 0; i < name.Length; i++) { text[i * 2] = (byte)name[i]; text[i * 2 + 1] = (byte)(name[i] >> 8); }
+        byte[] args = new byte[32];
+        PutWord(args, 0, Sys.ArrayData(text)); PutWord(args, 4, name.Length);
+        PutWord(args, 8, weight); PutWord(args, 12, (italic ? 1 : 0) | (scalableOnly ? 2 : 0));
+        PutWord(args, 16, stretch); PutWord(args, 20, character);
+        long size = Ioctl(SeatIoctl.FontMatch, Sys.ArrayData(args));
+        while (size > 0)
+        {
+            byte[] record = new byte[(int)size];
+            PutWord(args, 24, Sys.ArrayData(record)); PutWord(args, 28, record.Length);
+            long again = Ioctl(SeatIoctl.FontMatch, Sys.ArrayData(args));
+            GC.KeepAlive(record);
+            if (again == size)
+            {
+                GC.KeepAlive(text);
+                return SeatFont.Parse(record);
+            }
+            size = again;
+        }
+        GC.KeepAlive(text);
+        return null;
+    }
+
+    /// One of the store's texts: a word of its length in UTF-16 units, the
+    /// units, padded to a word.
+    internal static string FontText(byte[] b, ref int at)
+    {
+        int length = b[at] | (b[at + 1] << 8) | (b[at + 2] << 16) | (b[at + 3] << 24);
+        at += 4;
+        char[] chars = new char[length];
+        for (int i = 0; i < length && at + i * 2 + 1 < b.Length; i++) chars[i] = (char)(b[at + i * 2] | (b[at + i * 2 + 1] << 8));
+        at += (length * 2 + 3) & ~3;
+        return new string(chars);
+    }
 
     /// The number a named format has, the same in every program; 0 on failure.
     public int RegisterClipboardFormat(string name)
@@ -1566,4 +1651,47 @@ static class SeatText
         }
         return Utf8Transcoder.Decode(block, from, length);
     }
+}
+
+/// A face as the GUI kernel's font store answers a request (Seat.MatchFont):
+/// what it is, and the file it is in, which the program maps itself.
+public sealed class SeatFont
+{
+    public int Weight, Stretch;
+    public bool Italic, Oblique, Monospace, Symbol, Scalable;
+    /// What kind of letters (the store's FontGeneric: 1 serif, 2 sans
+    /// serif, 3 monospace, 4 script, 5 decorative, 6 symbol; 0 not known).
+    public int Generic;
+    /// Its place in its file, and the store's index generation it came from.
+    public int Index;
+    public long Generation;
+    /// A bitmap face's pixel heights; none for a scalable one.
+    public int[] BitmapSizes = new int[0];
+    public string Family = "", Style = "", FullName = "", Path = "";
+
+    internal static SeatFont? Parse(byte[] r)
+    {
+        if (r.Length < 28) return null;
+        SeatFont f = new SeatFont();
+        f.Weight = Word(r, 0);
+        f.Stretch = Word(r, 4);
+        int flags = Word(r, 8);
+        f.Italic = (flags & 1) != 0; f.Oblique = (flags & 2) != 0; f.Monospace = (flags & 4) != 0;
+        f.Symbol = (flags & 8) != 0; f.Scalable = (flags & 16) != 0;
+        f.Generic = Word(r, 12);
+        f.Index = Word(r, 16);
+        f.Generation = Word(r, 20);
+        int sizes = Word(r, 24);
+        int at = 28;
+        if (sizes < 0 || at + sizes * 4 > r.Length) return null;
+        f.BitmapSizes = new int[sizes];
+        for (int i = 0; i < sizes; i++) { f.BitmapSizes[i] = Word(r, at); at += 4; }
+        f.Family = Seat.FontText(r, ref at);
+        f.Style = Seat.FontText(r, ref at);
+        f.FullName = Seat.FontText(r, ref at);
+        f.Path = Seat.FontText(r, ref at);
+        return f;
+    }
+
+    static int Word(byte[] b, int at) { return b[at] | (b[at + 1] << 8) | (b[at + 2] << 16) | (b[at + 3] << 24); }
 }
