@@ -18,6 +18,13 @@
 // other cast: InvalidCastException
 // string faces: equatable True, comparable True
 // item faces: equatable False, comparable False
+// int faces: equatable True, comparable True
+// int as object faces: equatable False, comparable False
+// int as string faces: equatable False, comparable False
+// char faces: equatable True, comparable True
+// direct int faces: equatable True, comparable True
+// direct long faces of an int: equatable False, comparable False
+// string as object faces: equatable False, comparable False
 // pairs item int: dictionary 1
 // pairs item string: no dictionary
 // pairs other int: no dictionary
@@ -33,7 +40,9 @@
 // false for another; through `is`, `as`, a cast, a switch expression's
 // arms; a T inferred rather than written; a U handed on to another such
 // method; a string's IEquatable<string> and IComparable<string>, which its
-// table does not name; and an interface over the class's T and a method's
+// table does not name, and a boxed number's IEquatable<X> and
+// IComparable<X> of its own type alone, whichever way the test is made;
+// and an interface over the class's T and a method's
 // own type argument together.
 
 using System;
@@ -96,6 +105,14 @@ class Shelf<T>
     public string Pairs<V>() => Ask.Pairs<T, V>(Held!);
 }
 
+// A value-type T: a copy of its own, whose test of IEquatable<T> names it.
+class Faced<T>
+{
+    public object? Held;
+
+    public string Faces() => Ask.Faces<T>(Held!);
+}
+
 static class P
 {
     static IEnumerable<Item> Gen()
@@ -138,6 +155,13 @@ static class P
 
         Console.WriteLine("string faces: " + new Shelf<string> { Held = "abc" }.Faces());
         Console.WriteLine("item faces: " + new Shelf<Item> { Held = "abc" }.Faces());
+        Console.WriteLine("int faces: " + new Faced<int> { Held = 5 }.Faces());
+        Console.WriteLine("int as object faces: " + new Shelf<object> { Held = 5 }.Faces());
+        Console.WriteLine("int as string faces: " + new Shelf<string> { Held = 5 }.Faces());
+        Console.WriteLine("char faces: " + new Faced<char> { Held = 'c' }.Faces());
+        Console.WriteLine("direct int faces: " + Ask.Faces<int>(5));
+        Console.WriteLine("direct long faces of an int: " + Ask.Faces<long>(5));
+        Console.WriteLine("string as object faces: " + new Shelf<object> { Held = "abc" }.Faces());
 
         Console.WriteLine("pairs item int: " + new Shelf<Item> { Held = pairs }.Pairs<int>());
         Console.WriteLine("pairs item string: " + new Shelf<Item> { Held = pairs }.Pairs<string>());

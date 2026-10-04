@@ -3061,7 +3061,7 @@ static class Runtime
         long named = Sys.Peek(want + DescElementWord * w) & WordSize.AddressMask;
         if ((wantFlags & FaceOfFlag) != 0)
         {
-            return named != 0 && named == desc;
+            return named != 0 && named == desc && FaceOverItself(desc);
         }
         if ((wantFlags & FaceComparableFlag) != 0)
         {
@@ -3072,6 +3072,19 @@ static class Runtime
             return (flags & TypeEnumFlag) != 0 || (flags & TypePrimitiveFlag) != 0 && desc != named;
         }
         return false;
+    }
+
+    /// Whether a descriptor is one that is IComparable<X> and IEquatable<X>
+    /// over itself without its table naming them (BoxedFaces): the string's,
+    /// or the box of a number, a bool or a char -- not an enum's box, nor a
+    /// class's. Every route asks it alike: an interface's word 10 for
+    /// DescribedAs (BoxedFace), X's own descriptor for a shared copy's
+    /// ShapedAs, and the box itself for the test Lowering makes inline
+    /// (BoxedFaceTest).
+    static bool FaceOverItself(long desc)
+    {
+        long flags = Sys.Peek(desc + DescFlagsWordHere * WordSize.Bytes);
+        return (flags & 3) == (1 | TypeStringFlag) || (flags & TypePrimitiveFlag) != 0;
     }
 
     // An interface's identity record (Lowering.ShapeRecord), named by its
@@ -3086,7 +3099,8 @@ static class Runtime
     /// test a shared method copy makes of `x is IList<U>` when only the call
     /// knew what U is (Lowering.ShapeTest). `shape` is the argument count,
     /// with ShapeFaceOf for IComparable<X> and IEquatable<X>, which a string
-    /// implements over itself without its table naming them (BoxedFace).
+    /// and a box of a number, a bool or a char implement over themselves
+    /// without their tables naming them (BoxedFace).
     /// False when any argument is 0, which no caller could say: the copy's
     /// own test answers then.
     public static bool ShapedAs(long obj, long family, long shape, long a0, long a1, long a2, long a3)
@@ -3122,10 +3136,12 @@ static class Runtime
                 }
             }
         }
-        // A string is IComparable<string> and IEquatable<string>, which its
-        // table does not list (BoxedFaces).
-        if ((shape & ShapeFaceOf) != 0 && count == 1 && (a0 & mask) == desc
-            && (Sys.Peek(desc + DescFlagsWordHere * w) & 3) == (1 | TypeStringFlag))
+        // A string is IComparable<string> and IEquatable<string>, a boxed int
+        // IComparable<int> and IEquatable<int>, which their tables do not list
+        // (BoxedFaces): X's descriptor is the object's own, as an interface's
+        // word 10 names it for DescribedAs. Only the string answered here,
+        // and a box asked of its own number from a shared copy said no.
+        if ((shape & ShapeFaceOf) != 0 && count == 1 && (a0 & mask) == desc && FaceOverItself(desc))
         {
             return true;
         }
