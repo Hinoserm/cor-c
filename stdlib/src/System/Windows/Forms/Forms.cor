@@ -5177,6 +5177,14 @@ internal static class SystemMenus
         try { m.Write(w); }
         finally { m.Writing = false; }
         Seat.Current.SetMenu(w.Done());
+        // A form's bar: its shortcuts are the seat's keys (ProcessCmdKey's
+        // place), answered as the item's Command.
+        if (m is MainMenu bar)
+        {
+            List<byte> accels = new List<byte>();
+            bar.WriteKeys(accels);
+            Seat.Current.SetMenuKeys(m.RootId, accels.ToArray(), accels.Count / 6);
+        }
         m.Sent = true;
     }
 
@@ -5263,6 +5271,25 @@ public abstract class Menu : MenuSource
 
     /// The tree's own popup opening: a ContextMenu's Popup.
     internal virtual void RootPopup() { }
+
+    /// Every shortcut of this menu's items and theirs as an ACCEL (FVIRTKEY
+    /// with FSHIFT, FCONTROL, FALT as the Shortcut has them; the key; the
+    /// item's id): the items ForShortcut would find -- enabled, visible,
+    /// with no submenu, under enabled items -- and whose id fits an ACCEL.
+    internal void WriteKeys(List<byte> accels)
+    {
+        foreach (MenuItem item in MenuItems)
+        {
+            if (!item.Enabled || !item.Visible) continue;
+            if (item.MenuItems.Count > 0) { item.WriteKeys(accels); continue; }
+            int key = (int)item.Shortcut;
+            if (key == 0 || item.Id > 0xFFFF) continue;
+            int fVirt = 1 | ((key & 0x10000) != 0 ? 4 : 0) | ((key & 0x20000) != 0 ? 8 : 0) | ((key & 0x40000) != 0 ? 0x10 : 0);
+            accels.Add((byte)fVirt); accels.Add(0);
+            accels.Add((byte)key); accels.Add((byte)(key >> 8));
+            accels.Add((byte)item.Id); accels.Add((byte)(item.Id >> 8));
+        }
+    }
 
     /// The item a shortcut belongs to, among this menu's and theirs.
     internal MenuItem? ForShortcut(Shortcut key)
@@ -6404,7 +6431,10 @@ public static class Application
                 // still gets Tab, Escape and Alt from everywhere else.
                 // A MENU'S SHORTCUT COMES FIRST, as ProcessCmdKey gives the
                 // form's menu the key before any control sees it: a key with
-                // Ctrl or Alt, or one that types nothing (F1, Delete).
+                // Ctrl or Alt, or one that types nothing (F1, Delete). The
+                // seat takes a bar's shortcuts itself (SetMenuKeys) and sends
+                // the item's Command; what reaches here is one it could not
+                // carry.
                 if (form != null && form.Menu != null && ((mods & 6) != 0 || ch == 0))
                 {
                     MenuItem? chosen = form.Menu.ForShortcut((Shortcut)(int)data);

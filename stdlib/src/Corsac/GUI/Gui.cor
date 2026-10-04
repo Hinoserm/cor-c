@@ -166,6 +166,10 @@ enum SeatIoctl : long
     CursorWear = 0x47550406,
     FrameIconImage = 0x47550407,
     WindowIcon = 0x47550408,
+    // A menu run ended from the program (EndMenu); a tree's keys, which the
+    // seat answers with the tree's Command (seataccelerators.cor).
+    MenuEnd = 0x47550202,
+    MenuKeys = 0x47550206,
 }
 
 public class Seat : IDrawingTarget, IFontStore, ISystemTheme
@@ -403,6 +407,9 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme
         List<byte[]> trees;
         lock (_keep) trees = new List<byte[]>(_menuTrees.Values);
         foreach (byte[] tree in trees) Ioctl(SeatIoctl.MenuSet, Sys.ArrayData(tree));
+        List<byte[]> keys;
+        lock (_keep) keys = new List<byte[]>(_menuKeys.Values);
+        foreach (byte[] table in keys) Ioctl(SeatIoctl.MenuKeys, Sys.ArrayData(table));
         if (watchWindows) Ioctl(SeatIoctl.WatchWindows, 0);
         if (watchPointer) Ioctl(SeatIoctl.WatchPointer, 0);
         foreach (TrayKept t in trays) { Ioctl(SeatIoctl.TraySet16, Sys.ArrayData(t.Record)); GC.KeepAlive(t.Tip); }
@@ -1583,11 +1590,32 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme
     /// The answer to MenuPopup when nothing changed.
     public void MenuReady() { Flush(); Ioctl(SeatIoctl.MenuReady, 0); }
 
+    /// The running menu of this program ended, nothing chosen (EndMenu).
+    public void EndMenu() { Flush(); Ioctl(SeatIoctl.MenuEnd, 0); }
+
+    /// Every tree's keys handed over, by its id, for a restart.
+    readonly Dictionary<int, byte[]> _menuKeys = new Dictionary<int, byte[]>();
+
+    /// The keys of tree `root`: `count` ACCELs in `accels` (fVirt, a pad
+    /// byte, the key, the item's id; 6 bytes each). A press of one of them
+    /// to a window whose bar the tree is comes back as the tree's Command
+    /// for the item, and the window never sees the key. None: the keys gone.
+    public void SetMenuKeys(int root, byte[] accels, int count)
+    {
+        byte[] table = new byte[12 + count * 6];
+        int[] head = new int[] { table.Length, root, count };
+        for (int i = 0; i < 3; i++) { table[i * 4] = (byte)head[i]; table[i * 4 + 1] = (byte)(head[i] >> 8); table[i * 4 + 2] = (byte)(head[i] >> 16); table[i * 4 + 3] = (byte)(head[i] >> 24); }
+        Array.Copy(accels, 0, table, 12, count * 6);
+        Flush();
+        Ioctl(SeatIoctl.MenuKeys, Sys.ArrayData(table));
+        lock (_keep) { if (count == 0) _menuKeys.Remove(root); else _menuKeys[root] = table; }
+    }
+
     /// A tree let go of.
     public void DeleteMenu(int root)
     {
         Flush(); Ioctl(SeatIoctl.MenuDelete, root);
-        lock (_keep) _menuTrees.Remove(root);
+        lock (_keep) { _menuTrees.Remove(root); _menuKeys.Remove(root); }
     }
 
     public void SetTitle(int handle, string title)
