@@ -295,18 +295,38 @@ and what functions called from where nobody follows hand back (roots: the
 entry, code outside the IR, a taken address).
 
 **Cost bounds.** Every bound only ever answers more outliving.
-- A node past `MostHeld` (256) made objects, or `MostPlacesHeld` (512)
-  places, is saturated: it holds the unknown object, and what it held goes
-  to the unknown object's cell. That cell and the node fed by `Aliased`
-  are never saturated.
+- A node past `MostHeld` (256) made objects is saturated: it keeps what it
+  holds, and every made object that comes to it after joins the node's
+  **blob** (`BlobOf`, `Join`), one more made object it holds for all of
+  them. The blob and each member are joined by their cells both ways: what
+  is written into a member at any offset is in the blob's cell, and what is
+  written into the blob is in each member's cell at any offset. A member
+  reached by a place or the unknown object makes its blob so for loads, and
+  whatever reaches the blob reaches every member (`Reached`). A blob has no
+  sites: a virtual call on it may run any target, and a guard lets it
+  through. A summary makes a blob and its members one object. Before blobs,
+  a saturated node's made objects went to the unknown object's cell, and
+  every one of them was global.
+- A node past `MostPlacesHeld` (512) places sends its places to the unknown
+  object's cell and holds the unknown object. That cell and the node fed by
+  `Aliased` are never saturated.
 - Copy cycles are collapsed online. Tarjan's components over the copy edges
   are found at each solve's start and whenever a quarter more copy edges
   have appeared. A worklist in wave order (sources first) carries each
   node's delta.
 - A function or cycle that carries more than `_mostCarried` locations
-  (150,000 plus 20 a node) falls back to unification. So does a cycle of more
-  than 300 functions (`LargeCycle`), or one with more than 100,000 nodes
-  (`LargeNodes`).
+  (150,000 plus 20 a node) goes on with work granted from the link's pool
+  (`InclusionPool`, 400 million locations offered to nodes), up to
+  `InclusionCap` (40 million) of its own, in grants that double. Work is
+  counted as locations offered to nodes (`Add`), which is what costs time.
+  What a component that finishes did not use goes back to the pool. Past
+  its cap, or with the pool spent, it falls back to unification. The counts
+  are of work done in solve order, so one link always answers alike; a time
+  budget would not. So does a cycle of more than 300 functions
+  (`LargeCycle`), or one with more than 100,000 nodes (`LargeNodes`). A
+  component that falls back, or a large cycle, is summarised by field
+  (`Unified.ByField`), and coarsely (`Coarsest`) only past that's own
+  bounds.
 
 **Unification (`Unified`).** Steensgaard's analysis by field: every node
 points to one class, and a class holds one class at each offset. It is
@@ -653,6 +673,8 @@ loops and refusals are reported. Switches:
 | `+cycles` | The largest cycle with wide calls of more than 256, 64, 16 and 4 targets left out, and the widest slots. |
 | `+wide=N` | Virtual calls of more than N targets are stand-ins (default 16; 0 follows every call). |
 | `+widefirst` | Stand-ins start with every site their targets reach. |
+| `+pool=M` | The link's pool of inclusion work past each component's own bound, in millions of locations offered (default 400; 0: none). |
+| `+cap=M` | The most of the pool one component may have, in millions (default 40). |
 | `+loopold` | Weigh a loop's region as before the loop rule's change: what it sends to the heap against every site its laps make that it takes, a boundary's included (an A/B of the rule). |
 | `+classoff` | No receiver classes or guards: a virtual call runs every override. |
 | `+noroots` | Leave out what functions called from where nobody follows hand back (a diagnostic only; unsound for an image). |

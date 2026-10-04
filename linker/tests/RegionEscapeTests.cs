@@ -26,7 +26,7 @@ public static class RegionEscapeTests
         ("a constant's address holds nothing", Constants),
         ("a number parameter is handed no address", NumberParameters),
         ("a virtual call runs on each object only what it may", Guards),
-        ("a node past MostHeld objects sends them to the unknown object", Saturation),
+        ("a node past MostHeld objects holds a blob of the rest", Saturation),
         ("a summary past MostCells is everything", MostCells),
         ("a parameter passed nothing is the unknown object", Unpassed),
         ("a function called from where nobody follows", Rooted),
@@ -67,7 +67,7 @@ public static class RegionEscapeTests
         /// <summary>A site of a function, numbered among every function's.</summary>
         public int Site(string function, int ordinal) => SiteBase()[Index(function)] + ordinal;
 
-        public RegionEscape Solve(int wide = 16, Func<int, int, int, int[]?>? targetsOn = null, string[]? rooted = null, Action<string>? progress = null)
+        public RegionEscape Solve(int wide = 16, Func<int, int, int, int[]?>? targetsOn = null, string[]? rooted = null, Action<string>? progress = null, long? pool = null)
         {
             int count = Functions.Count;
             int[]?[][] targets = new int[]?[count][];
@@ -97,6 +97,7 @@ public static class RegionEscapeTests
             {
                 WideTargets = wide, TargetsOn = targetsOn, Progress = progress,
             };
+            if (pool is { } work) escape.InclusionPool = work;
             escape.Run();
             return escape;
         }
@@ -213,11 +214,18 @@ public static class RegionEscapeTests
         for (int k = 2; k <= 1001; k++) big.Constraints.Add(Copy(k, 1));
         big.Constraints.Add(Copy(0, 2));
         big.Constraints.Add(Site(1002, 200));
-        RegionEscape e = p.Solve();
-        Check(e.Fallbacks == 1, "Big went past its bound by inclusion and was unified");
-        Check(e.Escapes(p.Index("Big"), p.Site("Big", 0)) && e.Escapes(p.Index("Big"), p.Site("Big", 199)), "Big: the copied sites are handed back");
-        Check(!e.Escapes(p.Index("Big"), p.Site("Big", 200)), "Big: site 200, alone in its node, is dead by its return");
-        Check(!e.Global.Any(g => g), "nothing reaches the unknown object");
+        // With no pool past its own bound, unified; with the link's pool, it
+        // finishes by inclusion. Either way the same answers.
+        foreach (bool pooled in new[] { false, true })
+        {
+            string how = pooled ? "with the pool" : "with no pool";
+            RegionEscape e = p.Solve(pool: pooled ? null : 0);
+            if (pooled) Check(e.Fallbacks == 0 && e.PoolComponents == 1 && e.PoolDrawn > 0, how + ": Big went past its own bound and finished by inclusion on the pool's work");
+            else Check(e.Fallbacks == 1, how + ": Big went past its bound by inclusion and was unified");
+            Check(e.Escapes(p.Index("Big"), p.Site("Big", 0)) && e.Escapes(p.Index("Big"), p.Site("Big", 199)), how + ": Big: the copied sites are handed back");
+            Check(!e.Escapes(p.Index("Big"), p.Site("Big", 200)), how + ": Big: site 200, alone in its node, is dead by its return");
+            Check(!e.Global.Any(g => g), how + ": nothing reaches the unknown object");
+        }
     }
 
     /// <summary>
@@ -435,9 +443,12 @@ public static class RegionEscapeTests
     }
 
     /// <summary>
-    /// A node may hold MostHeld (256) made objects; the 257th sends all it
-    /// held, and all it is given after, to the unknown object. Fill257's
-    /// node holds 257 sites: every one is global. Fill256's holds 256: none.
+    /// A node may hold MostHeld (256) made objects; the 257th, and all it is
+    /// given after, join the node's blob, which it holds for them. Fill257's
+    /// node holds 257 sites and goes nowhere: none is global, as Fill256's
+    /// 256 are not. Leak257's node holds 257 and is thrown: the 256 it holds
+    /// and, through its blob, the 257th are all global. Hand257 hands its
+    /// node back: every one outlives it, the blob's member too.
     /// </summary>
     private static void Saturation()
     {
@@ -446,9 +457,17 @@ public static class RegionEscapeTests
         for (int s = 0; s < 257; s++) over.Constraints.Add(Site(1, s));
         RegionFunction under = p.Add("Fill256", 0, 2, sites: 256);
         for (int s = 0; s < 256; s++) under.Constraints.Add(Site(1, s));
+        RegionFunction leak = p.Add("Leak257", 0, 2, sites: 257);
+        for (int s = 0; s < 257; s++) leak.Constraints.Add(Site(1, s));
+        leak.Constraints.Add(Leak(1));
+        RegionFunction hand = p.Add("Hand257", 0, 2, sites: 257);
+        for (int s = 0; s < 257; s++) hand.Constraints.Add(Site(1, s));
+        hand.Constraints.Add(Copy(0, 1));
         RegionEscape e = p.Solve();
-        for (int s = 0; s < 257; s++) Check(e.Global[p.Site("Fill257", s)], $"Fill257: site {s} went to the unknown object");
+        for (int s = 0; s < 257; s++) Check(!e.Global[p.Site("Fill257", s)], $"Fill257: site {s} stays, the 257th in the node's blob");
         for (int s = 0; s < 256; s++) Check(!e.Global[p.Site("Fill256", s)], $"Fill256: site {s} stays");
+        for (int s = 0; s < 257; s++) Check(e.Global[p.Site("Leak257", s)], $"Leak257: site {s} is thrown, the 257th through the blob");
+        for (int s = 0; s < 257; s++) Check(e.Escapes(p.Index("Hand257"), p.Site("Hand257", s)) && !e.Global[p.Site("Hand257", s)], $"Hand257: site {s} is handed back, not global");
     }
 
     /// <summary>
