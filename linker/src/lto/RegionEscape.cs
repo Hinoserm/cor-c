@@ -103,10 +103,17 @@ internal sealed class RegionEscape
     private const int IndexBits = 10;
 
     // Per holder: each of its summary's objects' origins (null for a place).
+    // A HOLDER IS NEVER RENAMED: once registered, its objects' origins stay
+    // what they were, so a Ref anything still holds -- a summary, an answer,
+    // what is global -- means what it meant when it was made. A summary solved
+    // again comes out under a new holder unless it is the same as before.
     private readonly List<int[]?[]?> _holders = new();
-    private readonly HashSet<int> _globalRefs = new();
+    // What is global, and what roots hand back, while one component is
+    // answered: each component's own (_globalOf, _rootedOf), so one solved
+    // again takes back what it said before. Gathered at the end (Close).
+    private HashSet<int> _globalRefs = new();
     // For a report: what only the rule for functions called from where nobody follows made global.
-    private readonly HashSet<int> _rootedRefs = new();
+    private HashSet<int> _rootedRefs = new();
     public int GlobalByUnknown, GlobalByRoots;
 
     /// <summary>A summary's objects named for what is made from them: under its holder.</summary>
@@ -196,6 +203,10 @@ internal sealed class RegionEscape
 
     private void Close()
     {
+        _globalRefs = new();
+        _rootedRefs = new();
+        foreach (HashSet<int>? each in _globalOf) if (each is not null) _globalRefs.UnionWith(each);
+        foreach (HashSet<int>? each in _rootedOf) if (each is not null) _rootedRefs.UnionWith(each);
         Mark(_globalRefs);
         GlobalByUnknown = Global.Count(g => g);
         if (!NoRoots) Mark(_rootedRefs);
@@ -276,6 +287,13 @@ internal sealed class RegionEscape
     /// </summary>
     public int WideTargets;
 
+    /// <summary>
+    /// A diagnostic and a trade: every stand-in made from the first round
+    /// with every site its targets reach (as WidenAfter makes one that still
+    /// grows), so only its bits are left to grow.
+    /// </summary>
+    public bool WidenFirst;
+
     public void Run()
     {
         if (WideTargets > 0)
@@ -284,17 +302,17 @@ internal sealed class RegionEscape
             for (int round = 1; ; round++)
             {
                 long began = System.Diagnostics.Stopwatch.GetTimestamp();
-                Order();
+                int solved = round == 1 ? Order() : Again();
                 int grew = Check(round >= WidenAfter);
-                Progress?.Invoke($"escape graphs: round {round}: {_assumed.Count} wide calls assumed, {grew} grew, largest cycle {LargestCycle}, "
+                Progress?.Invoke($"escape graphs: round {round}: {_assumed.Count} wide calls assumed, {grew} grew, {solved} of {_components.Count} components solved, largest cycle {LargestCycle}, "
                     + $"{Work} carried, {System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds:F0} ms");
                 if (ReportStandIns) DescribeStandIns();
                 if (grew == 0) break;
-                Reset();
                 if (round == MostRounds)
                 {
                     // Still growing: every call followed in order after all.
                     Progress?.Invoke($"escape graphs: wide calls still growing after {round} rounds: every call followed");
+                    Reset();
                     _assumed = null;
                     Order();
                     break;
@@ -420,7 +438,11 @@ internal sealed class RegionEscape
     private Summary StandIn(int[] targets)
     {
         if (_standIns.TryGetValue(targets, out Summary? known)) return known;
-        if (!_assumed!.TryGetValue(targets, out Assumed? a)) _assumed[targets] = a = new Assumed();
+        if (!_assumed!.TryGetValue(targets, out Assumed? a))
+        {
+            _assumed[targets] = a = new Assumed();
+            if (WidenFirst) { a.Widened = true; a.Sites = Beneath(targets).Order().ToArray(); }
+        }
         Summary s = a.Build();
         if (!s.IsUnknown) Register(s, NewHolder());
         return _standIns[targets] = s;
@@ -450,7 +472,6 @@ internal sealed class RegionEscape
     /// <summary>Grows every stand-in its targets' summaries are not covered by: how many grew.</summary>
     private int Check(bool widen)
     {
-        Dictionary<int, (ulong[] Bits, int[] Sites)> shapes = new();
         int grew = 0;
         foreach (var (targets, a) in _assumed!)
         {
@@ -458,7 +479,9 @@ internal sealed class RegionEscape
             HashSet<int> sites = new();
             foreach (int t in targets)
             {
-                if (!shapes.TryGetValue(t, out var shape)) shapes[t] = shape = Shape(_summaries[t] ?? Summary.Unknown);
+                // By the summary itself: one a round kept (Publish) keeps its shape.
+                Summary summary = _summaries[t] ?? _noSummary;
+                if (!_shapes.TryGetValue(summary, out var shape)) _shapes[summary] = shape = Shape(summary);
                 for (int w = 0; w < ShapeWords; w++) bits[w] |= shape.Bits[w];
                 sites.UnionWith(shape.Sites);
             }
@@ -467,6 +490,9 @@ internal sealed class RegionEscape
             for (int w = 0; w < ShapeWords; w++) if ((bits[w] & ~a.Bits[w]) != 0) covered = false;
             if (covered) continue;
             grew++;
+            // Built again, under a new holder, where next applied.
+            _grown.Add(targets);
+            _standIns.Remove(targets);
             for (int w = 0; w < ShapeWords; w++) a.Bits[w] |= bits[w];
             if (widen && !a.Widened)
             {
@@ -478,6 +504,9 @@ internal sealed class RegionEscape
         }
         return grew;
     }
+
+    private readonly Dictionary<Summary, (ulong[] Bits, int[] Sites)> _shapes = new(ReferenceEqualityComparer.Instance);
+    private static readonly Summary _noSummary = Summary.Unknown;
 
     // Every site in the targets and every function they may call.
     private IEnumerable<int> Beneath(int[] targets)
@@ -492,7 +521,7 @@ internal sealed class RegionEscape
         }
     }
 
-    /// <summary>Everything a round solved, forgotten for the next.</summary>
+    /// <summary>Everything solved, forgotten: every call to be followed in order from nothing.</summary>
     private void Reset()
     {
         Array.Clear(_summaries);
@@ -505,11 +534,102 @@ internal sealed class RegionEscape
         _standIns.Clear();
         _escapingBits = null;
         _bitsByOrigins.Clear();
+        _components.Clear(); _globalOf.Clear(); _rootedOf.Clear(); _shapes.Clear();
+        _grown.Clear();
         Work = Applied = Unfollowed = LargestCycle = Fallbacks = 0;
     }
 
-    // Callees first, a cycle together; a wide call is no edge.
-    private void Order()
+    // ---- solving again: only what a grown stand-in changed -----------------
+    //
+    // THE COMPONENTS, IN THE ORDER THE FIRST ROUND SOLVED THEM: a wide call is
+    // no edge of the order, so the order is the same every round. A later
+    // round solves a component again only if it applies a stand-in that grew,
+    // or calls (not as a wide call) a function outside it whose summary came
+    // out different this round; callers come after their callees, so one pass
+    // reaches every change. A summary that comes out the same as before keeps
+    // its holder and object (Publish), and nothing above it is solved again
+    // for its sake. What a component not solved again answered -- what
+    // outlives its members, its loops, what it made global -- was answered
+    // from summaries, stand-ins and merged summaries that are all still the
+    // ones it read, under holders whose origins never change; so every answer
+    // is the final summaries' answer, as a round solving everything gives.
+    private readonly List<int[]> _components = new();
+    private readonly List<HashSet<int>?> _globalOf = new(), _rootedOf = new();
+    private readonly HashSet<int[]> _grown = new(TargetsComparer.Instance);
+    private bool[]? _changed;
+    private int[]? _componentOf;
+    private List<(int[] Functions, int[][] Wide)>? _inputs;
+
+    private int Again()
+    {
+        Work = Applied = Unfollowed = Fallbacks = 0;
+        _escapingBits = null;
+        int count = _functions.Count;
+        if (_componentOf is null || _inputs is null)
+        {
+            _componentOf = new int[count];
+            for (int c = 0; c < _components.Count; c++) foreach (int f in _components[c]) _componentOf[f] = c;
+            _inputs = new();
+            for (int c = 0; c < _components.Count; c++)
+            {
+                HashSet<int> callees = new();
+                HashSet<int[]> wide = new(TargetsComparer.Instance);
+                foreach (int f in _components[c])
+                    foreach (int[]? targets in _targets[f])
+                    {
+                        if (targets is null) continue;
+                        if (IsWide(targets)) { wide.Add(targets); continue; }
+                        foreach (int t in targets) if (_componentOf[t] != c) callees.Add(t);
+                    }
+                _inputs.Add((callees.ToArray(), wide.ToArray()));
+            }
+        }
+        _changed = new bool[count];
+        int solved = 0;
+        for (int c = 0; c < _components.Count; c++)
+        {
+            (int[] callees, int[][] wide) = _inputs[c];
+            bool again = false;
+            foreach (int[] targets in wide) if (_grown.Contains(targets)) { again = true; break; }
+            if (!again) foreach (int t in callees) if (_changed[t]) { again = true; break; }
+            if (!again) continue;
+            solved++;
+            SolveComponent(c);
+        }
+        _grown.Clear();
+        _changed = null;
+        return solved;
+    }
+
+    /// <summary>Component c solved (again): its answers replace what it answered before.</summary>
+    private void SolveComponent(int c)
+    {
+        int[] members = _components[c];
+        foreach (int f in members) { Escaping[f] = null; LoopHeld[f] = null; }
+        HashSet<int> global = _globalRefs, rooted = _rootedRefs;
+        _globalRefs = new(); _rootedRefs = new();
+        Solve(new List<int>(members));
+        _globalOf[c] = _globalRefs; _rootedOf[c] = _rootedRefs;
+        _globalRefs = global; _rootedRefs = rooted;
+    }
+
+    /// <summary>
+    /// Member f's summary, solved: the one it had if this is the same (its
+    /// holder, and every Ref to it, still good), else this under a holder of
+    /// its own -- f itself the first time, a new one after.
+    /// </summary>
+    private void Publish(int f, Summary s)
+    {
+        Summary? before = _summaries[f];
+        if (before is not null && before.SameAs(s)) return;
+        int holder = before is null && (_holders.Count <= f || _holders[f] is null) ? f : NewHolder();
+        Register(_summaries[f] = s, holder);
+        if (_changed is not null) _changed[f] = true;
+    }
+
+    // Callees first, a cycle together; a wide call is no edge. Each component
+    // is kept, in the order solved, for the rounds after (Again).
+    private int Order()
     {
         int count = _functions.Count;
         int[] index = new int[count], low = new int[count];
@@ -551,11 +671,14 @@ internal sealed class RegionEscape
                     List<int> component = new();
                     int w;
                     do { w = stack.Pop(); onStack[w] = false; component.Add(w); } while (w != v);
-                    Solve(component);
+                    _components.Add(component.ToArray()); _globalOf.Add(null); _rootedOf.Add(null);
+                    SolveComponent(_components.Count - 1);
                 }
                 if (walk.Count > 0) { int parent = walk.Peek().Node; low[parent] = Math.Min(low[parent], low[v]); }
             }
         }
+        _componentOf = null; _inputs = null;
+        return _components.Count;
     }
 
     // A cycle this large, or with this many nodes, is solved by unification (Unified).
@@ -571,7 +694,7 @@ internal sealed class RegionEscape
         if (component.Count > LargeCycle || nodes > LargeNodes)
         {
             Unified u = new Unified(this, component.ToArray()).Solved();
-            for (int m = 0; m < component.Count; m++) Register(_summaries[component[m]] = u.Summarise(m), component[m]);
+            for (int m = 0; m < component.Count; m++) Publish(component[m], u.Summarise(m));
             for (int m = 0; m < component.Count; m++) u.Answer(m);
             Progress?.Invoke($"escape graphs: cycle of {component.Count} ({_functions[component[0]].Name}) unified in {System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds:F0} ms: "
                 + u.Describe() + $", heap {GC.GetTotalMemory(false) >> 20} MB");
@@ -585,13 +708,13 @@ internal sealed class RegionEscape
             // in it global and its summary the unknown call's.
             Fallbacks++;
             Unified u = new Unified(this, component.ToArray()).Solved();
-            for (int m = 0; m < component.Count; m++) Register(_summaries[component[m]] = u.Summarise(m), component[m]);
+            for (int m = 0; m < component.Count; m++) Publish(component[m], u.Summarise(m));
             for (int m = 0; m < component.Count; m++) u.Answer(m);
             if (Progress is not null && System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds > 300)
                 Progress($"escape graphs: {_functions[component[0]].Name} ({component.Count}) past its bound by inclusion, unified in {System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds:F0} ms: " + g.Describe());
             return;
         }
-        for (int m = 0; m < component.Count; m++) Register(_summaries[component[m]] = g.Summarise(m), component[m]);
+        for (int m = 0; m < component.Count; m++) Publish(component[m], g.Summarise(m));
         for (int m = 0; m < component.Count; m++) g.Answer(m);
         if (Progress is not null && (component.Count > 50 || System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds > 300))
             Progress($"escape graphs: cycle of {component.Count} ({_functions[component[0]].Name}) in {System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds:F0} ms: "
@@ -610,16 +733,23 @@ internal sealed class RegionEscape
             return h.ToHashCode();
         }
     }
-    private readonly Dictionary<int[], Summary> _merged = new(TargetsComparer.Instance);
+    private readonly Dictionary<int[], (Summary Merged, int[] From)> _merged = new(TargetsComparer.Instance);
 
-    /// <summary>The one summary for a set of targets solved before: any of them may run.</summary>
+    /// <summary>
+    /// The one summary for a set of targets solved before: any of them may
+    /// run. Kept while every target's summary is the one it was made from
+    /// (by holder): a round that changed one makes it again, under a new holder.
+    /// </summary>
     private Summary MergedFor(int[] targets)
     {
         if (targets.Length == 1) return _summaries[targets[0]] ?? Summary.Unknown;
-        if (_merged.TryGetValue(targets, out Summary? done)) return done;
+        int[] from = new int[targets.Length];
+        for (int k = 0; k < targets.Length; k++) from[k] = _summaries[targets[k]] is { } s ? s.Holder : -2;
+        if (_merged.TryGetValue(targets, out var done) && done.From.AsSpan().SequenceEqual(from)) return done.Merged;
         Summary merged = Summary.Merge(targets.Select(t => _summaries[t] ?? Summary.Unknown));
         if (!merged.IsUnknown) Register(merged, NewHolder());
-        return _merged[targets] = merged;
+        _merged[targets] = (merged, from);
+        return merged;
     }
 
     // ---- a summary --------------------------------------------------------
@@ -644,6 +774,22 @@ internal sealed class RegionEscape
         public int Holder = -1;
 
         public static Summary Unknown => new() { IsUnknown = true };
+
+        /// <summary>Whether two summaries say the same, object by object, origins and all.</summary>
+        public bool SameAs(Summary other)
+        {
+            if (IsUnknown || other.IsUnknown) return IsUnknown == other.IsUnknown;
+            if (Objects.Count != other.Objects.Count || Cells.Count != other.Cells.Count || Result.Count != other.Result.Count) return false;
+            for (int k = 0; k < Objects.Count; k++)
+            {
+                var a = Objects[k];
+                var b = other.Objects[k];
+                if (a.Kind != b.Kind || a.Param != b.Param || !a.Path.AsSpan().SequenceEqual(b.Path) || !a.Origins.AsSpan().SequenceEqual(b.Origins)) return false;
+            }
+            for (int k = 0; k < Cells.Count; k++) if (Cells[k] != other.Cells[k]) return false;
+            for (int k = 0; k < Result.Count; k++) if (Result[k] != other.Result[k]) return false;
+            return true;
+        }
 
         /// <summary>Every summary's effects at once: what any of a virtual call's overrides may do.</summary>
         public static Summary Merge(IEnumerable<Summary> each)
