@@ -2869,8 +2869,17 @@ internal sealed class RegionEscape
             Kind.Place => $"place {_param[o]} [{string.Join(",", _path[o].Select(Step))}]",
             Kind.Deep => $"deep place {_param[o]} below [{string.Join(",", _path[o].Select(Step))}]",
             Kind.Unknown => "the unknown object",
+            _ when IsConstant(o) => "the constant (an address no one writes)",
+            _ when _origins[o].Length == 0 && SlotOf(o) is { } held => $"frame slot {held.Slot} of {_owner._functions[_members[held.M]].Name}",
             _ => $"made object (origins {string.Join(",", _origins[o].Take(4))})",
         };
+
+        // For a report: which member's frame slot an object of no origin is, if it is one.
+        private (int M, int Slot)? SlotOf(int o)
+        {
+            foreach (var ((m, slot), held) in _slotObjects) if (held == o) return (m, slot);
+            return null;
+        }
     }
 
     // ---- a large cycle, by unification ------------------------------------

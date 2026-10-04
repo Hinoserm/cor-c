@@ -265,6 +265,8 @@ public static class RegionSummary
 
                 case Opcode.MemCopy:
                 {
+                    // Characters or bytes (Instr.Number) move no address.
+                    if (i.Number) return;
                     int to = Base(i.Operands[0]), from = Base(i.Operands[1]);
                     long count = i.Operands.Count > 2 && i.Operands[2] is ImmOperand n ? n.Value : RegionConstraint.Any;
                     if (to >= 0 && from >= 0) _constraints.Add(new(RegionConstraintKind.MemCopy, to, from, count));

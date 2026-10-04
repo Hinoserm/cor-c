@@ -46,8 +46,10 @@ public sealed class Instr
 
     /// <summary>
     /// Load: the word read is a field's, an element's or a cell's of a
-    /// number type, never an address (Lowering.NeverAddress). Left unset it
-    /// says nothing, so a pass making a load of its own need not know.
+    /// number type, never an address (Lowering.NeverAddress). MemCopy: the
+    /// bytes moved are a string's characters or a byte array's bytes
+    /// (Sys.Copy, Sys.CopyNoOverlap), never an address. Left unset it says
+    /// nothing, so a pass making a load or a copy of its own need not know.
     /// </summary>
     public bool Number { get; set; }
 
