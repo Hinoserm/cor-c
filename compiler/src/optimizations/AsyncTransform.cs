@@ -282,7 +282,7 @@ public static class AsyncTransform
                     }
                     if (i is null
                         || i.Op is not (Opcode.Store or Opcode.MemCopy or Opcode.MemSet or Opcode.AtomicCas or Opcode.AtomicAdd or Opcode.AtomicAnd or Opcode.AtomicOr or Opcode.AtomicXor)
-                        || i.Operands.Count == 0 || i.Operands[0] is not RegOperand { Reg: var into } || !fieldAddrs.Contains(into)
+                        || i.Operands.Count == 0 || i.Operands[0] is not RegOperand { Reg: var target } || !fieldAddrs.Contains(target)
                         || i.Op == Opcode.Store && (i.Size < wordSize || i.Operands.Count > 1 && i.Operands[1] is not RegOperand)) continue;
                     pending = true;
                 }

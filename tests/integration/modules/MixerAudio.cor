@@ -1,0 +1,44 @@
+// A module of several files (modules.sh): its interface and the class that
+// implements it, a unit of their own. The other units see them through the
+// module's index, made on the kernel's (corc index --on).
+
+using System.Collections.Generic;
+
+namespace Sound;
+
+// The module's own interface: numbered in the module's tier, above the
+// kernel's classes, never among the kernel's interfaces -- it sorts before
+// the kernel's IDevice.
+public interface IAudio
+{
+    int Volume { get; }
+    string Describe();
+}
+
+public sealed class Channel : IAudio
+{
+    readonly string _name;
+    readonly int _volume;
+
+    public Channel(string name, int volume)
+    {
+        _name = name;
+        _volume = volume;
+    }
+
+    public int Volume => _volume;
+
+    public string Describe() { return _name + "=" + _volume; }
+}
+
+public static class Channels
+{
+    public static List<IAudio> All = new List<IAudio>();
+
+    public static int Total()
+    {
+        int sum = 0;
+        foreach (IAudio channel in All) sum += channel.Volume;
+        return sum;
+    }
+}

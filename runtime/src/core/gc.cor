@@ -656,7 +656,12 @@ static class Gc
     static long OldGrowth(long majorLive)
     {
         long bound = NextThreshold(majorLive);
-        return majorLive < bound ? majorLive : bound;
+        long growth = majorLive < bound ? majorLive : bound;
+        // A QUARTER WHEN MEMORY IS SHORT (ShortHook): a ring-1 kernel's heap
+        // let its old generation reach twice its live size before a major,
+        // and held 22 MB with 9 live while the machine ran out.
+        if (MemoryShort()) growth = growth / 4;
+        return growth > MinThreshold ? growth : MinThreshold;
     }
 
     // PACED BY WHAT THEY COST. A minor cycle is worth running only if it
@@ -717,6 +722,9 @@ static class Gc
             return _nurseryFixed;
         }
         long n = _majorLive != 0 && _majorLive < live ? _majorLive : live;
+        // A QUARTER OF IT WHEN MEMORY IS SHORT: the nursery is memory the
+        // heap holds between cycles, and the pool keeps as much again.
+        if (MemoryShort()) n = n / 4;
         if (n < NurseryLeast) n = NurseryLeast;
         // NEAR A HARD LIMIT a quarter of what it leaves, as before: a nursery
         // as large as the limit allows spreads each cycle's survivors over
@@ -4599,6 +4607,9 @@ static class Gc
         // of its own.
         for (long attempt = 0; block == 0 && attempt < 3; attempt++)
         {
+            // A cycle has not found the room: the platform asked for it,
+            // with the heap lock let go (WaitForRoom).
+            if (attempt > 0) WaitForRoom(tb, need);
             // Memory itself ran out: only a whole collection finds all of it.
             _forceMajor = true;
             if (_collecting) WaitOutCycle();
@@ -4659,6 +4670,9 @@ static class Gc
         long failedAt = -1;
         for (long attempt = 0; attempt < 4; attempt++)
         {
+            // After a whole cycle has failed it: room asked for, the lock
+            // let go meanwhile (WaitForRoom).
+            if (attempt >= 2) WaitForRoom(tb, ClassSize(c));
             long cache = EnsureCache(tb);
             if (cache != 0)
             {
@@ -8354,12 +8368,36 @@ static class Gc
     /// garbage, which a machine with room to spare can afford and one without
     /// cannot. It must not allocate. 0, a platform that never says so.
     public static long ShortHook;
+
+    /// THE PLATFORM ASKED FOR ROOM, WITH THE HEAP LOCK LET GO: called with
+    /// the bytes a map was refused for, after a whole cycle has not found
+    /// them; nonzero when the platform made room. A ring-1 kernel's map no
+    /// longer sleeps for memory with this heap's lock held -- every other
+    /// thread of the kernel waited behind it, up to a second -- it fails at
+    /// once, and the wait is here, the thread counted as blocked. 0: none.
+    public static long RoomHook;
+
+    /// The heap lock is held on entry and on return, and let go between: the
+    /// platform asked for `need` bytes of room (RoomHook), then whatever was
+    /// owed while this thread was away -- a handshake's answer, a buffer
+    /// given back -- seen to as at the allocator's entry. The caller's state
+    /// is what it reads again after: the free lists, a cycle under way.
+    static void WaitForRoom(long tb, long need)
+    {
+        if (RoomHook == 0 || tb == 0 || Sys.Peek(tb + Tls.InAlloc) != 0) return;
+        GcLock.Exit();
+        Sys.Call(RoomHook, need, 0, 0);
+        GcLock.Enter();
+        AnswerBeforeTaking(tb);
+    }
     public static long ShortCollections;
 
     static long ShortThreshold()
     {
-        long quarter = _liveBytes / 4;
-        return quarter > MinThreshold ? quarter : MinThreshold;
+        // AN EIGHTH: on a machine short of memory every megabyte of garbage
+        // is a megabyte a program or the page cache does not have.
+        long eighth = _liveBytes / 8;
+        return eighth > MinThreshold ? eighth : MinThreshold;
     }
 
     /// Collections given up half way -- a barrier report lost to a full
@@ -11722,8 +11760,8 @@ static class GcThreads
 
             if (turns >= nextPrompt)
             {
-                long owed = Pending();
-                if (owed < owedAtPrompt)
+                long owedNow = Pending();
+                if (owedNow < owedAtPrompt)
                 {
                     gap = PromptGapLeast;
                 }
@@ -11731,7 +11769,7 @@ static class GcThreads
                 {
                     gap = gap * 2;
                 }
-                owedAtPrompt = owed;
+                owedAtPrompt = owedNow;
                 nextPrompt = turns + gap;
                 Prompts = Prompts + 1;
                 Platform.PromptStop();

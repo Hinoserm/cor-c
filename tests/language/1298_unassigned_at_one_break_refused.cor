@@ -1,0 +1,21 @@
+// test: a local missed at one break of an endless loop is not assigned after it
+// expect-compile-error: 'kick' is used before it is definitely assigned
+
+using System;
+
+static class Program
+{
+    static int Pick(int n)
+    {
+        bool kick;
+        while (true)
+        {
+            if (n > 5) break;
+            if (n > 0) { kick = n > 1; break; }
+            n++;
+        }
+        return kick ? 2 : 1;
+    }
+
+    static void Main() { Console.WriteLine(Pick(0)); }
+}

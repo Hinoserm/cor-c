@@ -31,6 +31,30 @@ public sealed class DeclarationCatalog : IDisposable
         }
     }
 
+    /// <summary>
+    /// The interface families of the KERNEL a module is compiled against:
+    /// those of the index under this one, when it was made on one, else of
+    /// this index -- a module compiled whole against the kernel's index
+    /// alone. What a module adds is the rest (Binder, the module's tier).
+    /// </summary>
+    public IReadOnlySet<(string Name, int Arity)> KernelInterfaces(string assembly)
+    {
+        lock (gate)
+        {
+            if (disposed) throw new ObjectDisposedException(nameof(DeclarationCatalog));
+            if (kernelInterfaces is not null) return kernelInterfaces;
+            HashSet<(string Name, int Arity)> families = new();
+            foreach (var family in InterfaceFamilies.Read(index.Under ?? index, assembly)) families.Add(family.Key);
+            kernelInterfaces = families;
+            return families;
+        }
+    }
+
+    private IReadOnlySet<(string Name, int Arity)>? kernelInterfaces;
+
+    /// <summary>The build stamp the index under this one had when this one was made on it, or null for an index made on none.</summary>
+    public byte[]? UnderStamp => index.UnderStamp;
+
     public IReadOnlySet<(string Name, int Arity)> LibraryInterfaces(string assembly)
     {
         lock (gate)

@@ -1,0 +1,37 @@
+// test: await checks walk a user-defined conversion once
+// expect-exit: 0
+// expect-output:
+// 7
+// 9
+// A user-defined conversion is rewritten into a call to its operator with
+// the converted expression as the argument: the rewrite holds the very
+// expression it replaces. The await-safety walk followed that rewrite again
+// at the argument, without end, until the compiler ran out of memory.
+
+using System;
+using System.Threading.Tasks;
+
+struct Meters
+{
+    public int Value;
+    public Meters(int value) { Value = value; }
+    public static implicit operator Meters(int value) { return new Meters(value); }
+    public static explicit operator int(Meters m) { return m.Value; }
+}
+
+static class Program
+{
+    static async Task<int> Twice(int value)
+    {
+        Meters m = value;
+        await Task.Yield();
+        return (int)m + 2;
+    }
+
+    static async Task Main()
+    {
+        Console.WriteLine(await Twice(5));
+        Meters again = await Twice(7);
+        Console.WriteLine(again.Value);
+    }
+}

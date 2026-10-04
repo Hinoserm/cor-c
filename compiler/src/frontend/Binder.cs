@@ -25,6 +25,14 @@ public sealed partial class Binder
     private readonly Metadata.DeclarationBatch _declarationBatch = new();
     private readonly IReadOnlyDictionary<(string Name, int Arity), int>? _indexedInterfaces;
     private readonly IReadOnlySet<(string Name, int Arity)>? _libraryInterfaces;
+    /// <summary>
+    /// A kernel module's compile: every interface family the KERNEL'S index
+    /// holds. A family outside it is the module's own, and is numbered in a
+    /// tier of its own above the kernel's classes (see the numbering), so
+    /// that declaring one never moves a slot the kernel was built with.
+    /// Null for anything that is not a module.
+    /// </summary>
+    private readonly IReadOnlySet<(string Name, int Arity)>? _kernelInterfaces;
 
     /// <summary>
     /// Whether a source file belongs to the compiler's own libraries. Set by
@@ -88,6 +96,40 @@ public sealed partial class Binder
     private int _nextSlot;
     private int _maxSlot;
     private int _loopDepth;
+
+    /// <summary>
+    /// What is definitely assigned at the breaks out of each loop or switch
+    /// section being checked, innermost last: the intersection of every
+    /// break's state, null while none has been met. After a loop whose
+    /// condition is always true, that is what is assigned (C#'s rule: its
+    /// only way out is a break).
+    /// </summary>
+    private readonly List<HashSet<LocalSym>?> _breaks = new();
+
+    private void EnterBreakable()
+    {
+        _loopDepth++;
+        _breaks.Add(null);
+    }
+
+    private HashSet<LocalSym>? LeaveBreakable()
+    {
+        _loopDepth--;
+        HashSet<LocalSym>? broke = _breaks[^1];
+        _breaks.RemoveAt(_breaks.Count - 1);
+        return broke;
+    }
+
+    /// <summary>After a loop that only a break leaves: what every break had assigned.</summary>
+    private void AfterEndlessLoop(Expr? cond, HashSet<LocalSym>? broke)
+    {
+        if (broke is null || cond is not null && !(cond is LiteralExpr { Kind: Lit.Bool, IntValue: 1 }))
+        {
+            return;
+        }
+        _assigned.Clear();
+        _assigned.UnionWith(broke);
+    }
     private readonly List<SwitchStmt> _switches = new();
 
     /// <summary>
@@ -849,9 +891,11 @@ public sealed partial class Binder
         IReadOnlyDictionary<(string Name, int Arity), int>? indexedInterfaces = null,
         Action<string, string>? requireExtensions = null,
         IReadOnlySet<(string Name, int Arity)>? libraryInterfaces = null,
-        Action<string, int>? requireOverrides = null)
+        Action<string, int>? requireOverrides = null,
+        IReadOnlySet<(string Name, int Arity)>? kernelInterfaces = null)
     {
         _file = file;
+        _kernelInterfaces = kernelInterfaces;
         _requireDeclaration = requireDeclaration;
         _requireExtensions = requireExtensions;
         _requireOverrides = requireOverrides;
@@ -891,9 +935,10 @@ public sealed partial class Binder
         IReadOnlyDictionary<(string Name, int Arity), int>? indexedInterfaces = null,
         Action<string, string>? requireExtensions = null,
         IReadOnlySet<(string Name, int Arity)>? libraryInterfaces = null,
-        Action<string, int>? requireOverrides = null, bool freshOnly = false)
+        Action<string, int>? requireOverrides = null, bool freshOnly = false,
+        IReadOnlySet<(string Name, int Arity)>? kernelInterfaces = null)
     {
-        Binder b = new(file, requireDeclaration, indexedInterfaces, requireExtensions, libraryInterfaces, requireOverrides);
+        Binder b = new(file, requireDeclaration, indexedInterfaces, requireExtensions, libraryInterfaces, requireOverrides, kernelInterfaces);
         b._freshOnly = freshOnly;
         b.Run(unit);
         // The declarations' tables carry straight on into the bodies': a copy
@@ -2004,12 +2049,21 @@ public sealed partial class Binder
         // what the sources cannot say, a family listed as the library's.
         bool IsLibraryInterface(TypeSymbol t, (string, int) family)
             => IsLibraryType(t) || (_libraryInterfaces?.Contains(family) ?? false);
-        SortedDictionary<(string, int), int> families = new(), local = new(), unitLocal = new();
+        // AND A MODULE'S OWN, in a kernel module's compile: a family the
+        // kernel's index does not hold. Numbered among the kernel's project
+        // families, as they were while a module was one compile against the
+        // kernel's index alone, one that sorted before a kernel family moved
+        // that family's slots, and every class the kernel's interface region
+        // ends below, in the module's view and not in the kernel's. They are
+        // numbered above the kernel's classes instead, where the kernel has
+        // nothing (moduleTier).
+        SortedDictionary<(string, int), int> families = new(), local = new(), unitLocal = new(), moduleTier = new();
         bool IsLibraryFamily((string, int) family, bool declaredHere)
             => _libraryInterfaces is null ? true : _libraryInterfaces.Contains(family) && !declaredHere;
+        bool IsModuleFamily((string, int) family) => _kernelInterfaces is not null && !_kernelInterfaces.Contains(family);
         if (_indexedInterfaces is not null)
             foreach (var family in _indexedInterfaces)
-                (IsLibraryFamily(family.Key, false) ? families : local)[family.Key] = family.Value;
+                (IsLibraryFamily(family.Key, false) ? families : IsModuleFamily(family.Key) ? moduleTier : local)[family.Key] = family.Value;
         foreach (TypeSymbol t in _r.Types.Values.Where(t => t.Kind == TypeKind.Interface))
         {
             (string, int) family = Family(t);
@@ -2019,8 +2073,8 @@ public sealed partial class Binder
                 continue;
             }
             bool library = IsLibraryInterface(t, family);
-            SortedDictionary<(string, int), int> into = library ? families : local;
-            if (library) local.Remove(family);
+            SortedDictionary<(string, int), int> into = library ? families : IsModuleFamily(family) ? moduleTier : local;
+            if (library) { local.Remove(family); moduleTier.Remove(family); }
             // THE DECLARED MEMBERS, not the copies this unit made beside them:
             // a copy of the interface's generic method is local to the unit,
             // and counting it gave the family one more slot here than in every
@@ -2082,6 +2136,8 @@ public sealed partial class Binder
                 Console.Error.WriteLine("  lib " + template + "`" + arity + " methods=" + methods);
             foreach (((string template, int arity), int methods) in local)
                 Console.Error.WriteLine("  project " + template + "`" + arity + " methods=" + methods);
+            foreach (((string template, int arity), int methods) in moduleTier)
+                Console.Error.WriteLine("  module " + template + "`" + arity + " methods=" + methods);
             foreach (((string template, int arity), int methods) in unitLocal)
                 Console.Error.WriteLine("  unit " + template + "`" + arity + " methods=" + methods);
         }
@@ -2099,15 +2155,26 @@ public sealed partial class Binder
             // project's own classes, per type and not per object.
             _interfaceSlots = _librarySlots + LibraryClassReserve;
             Number(local);
-            Assign(false);
+            if (moduleTier.Count == 0) Assign(false);
         }
         _projectClassSlots = _interfaceSlots;
+
+        // THE MODULE'S TIER: a fixed distance above where the kernel's
+        // classes begin their virtuals, as the project's own interfaces sit
+        // above the library's classes. Every unit of the module numbers the
+        // same families here, the module's index listing them all.
+        if (moduleTier.Count > 0)
+        {
+            _interfaceSlots = _projectClassSlots + ProjectClassReserve;
+            Number(moduleTier);
+            Assign(false);
+        }
 
         // Only closures the compiler made implement these, and they declare
         // no virtuals of their own, so the reserve is room to spare.
         if (unitLocal.Count > 0)
         {
-            _interfaceSlots = _projectClassSlots + ProjectClassReserve;
+            _interfaceSlots = (moduleTier.Count > 0 ? _interfaceSlots : _projectClassSlots) + ProjectClassReserve;
             Number(unitLocal);
             Assign(false, unitOnly: true);
         }
@@ -4601,18 +4668,19 @@ public sealed partial class Binder
 
                 List<Sym> inLoop = Assume(w.Cond, true);
 
-                _loopDepth++;
+                EnterBreakable();
                 CheckStmt(w.Body);
-                _loopDepth--;
+                HashSet<LocalSym>? whileBroke = LeaveBreakable();
                 Forget(inLoop);
                 PopScope();
+                AfterEndlessLoop(w.Cond, whileBroke);
                 break;
             }
 
             case DoStmt dd:
-                _loopDepth++;
+                EnterBreakable();
                 CheckStmt(dd.Body);
-                _loopDepth--;
+                LeaveBreakable();
                 CheckCondition(dd.Cond);
                 break;
 
@@ -4643,9 +4711,9 @@ public sealed partial class Binder
                 // proved -- so checking it first took the proof away from the
                 // body, and `t.Interfaces` two lines in was reported as a read
                 // through something that may be null.
-                _loopDepth++;
+                EnterBreakable();
                 CheckStmt(f.Body);
-                _loopDepth--;
+                HashSet<LocalSym>? forBroke = LeaveBreakable();
 
                 foreach (Expr step in f.Step)
                 {
@@ -4654,6 +4722,7 @@ public sealed partial class Binder
 
                 Forget(proved);
                 PopScope();
+                AfterEndlessLoop(f.Cond, forBroke);
                 break;
             }
 
@@ -4752,9 +4821,9 @@ public sealed partial class Binder
                 // Recorded as a pattern's binding is: a lambda that captures
                 // it makes it a cell, and the lowering stores into the cell.
                 _r.PatternSym[fe] = iteration;
-                _loopDepth++;
+                EnterBreakable();
                 CheckStmt(fe.Body);
-                _loopDepth--;
+                LeaveBreakable();
                 PopScope();
                 break;
             }
@@ -4859,6 +4928,12 @@ public sealed partial class Binder
                 {
                     Error(s, $"'{(s is BreakStmt ? "break" : "continue")}' is only valid inside a loop");
                 }
+                else if (s is BreakStmt && _breaks.Count > 0)
+                {
+                    HashSet<LocalSym>? broke = _breaks[^1];
+                    if (broke is null) _breaks[^1] = new HashSet<LocalSym>(_assigned, ReferenceEqualityComparer.Instance);
+                    else broke.IntersectWith(_assigned);
+                }
                 break;
 
             case GotoCaseStmt jump:
@@ -4951,7 +5026,7 @@ public sealed partial class Binder
                     _assigned.Clear();
                     _assigned.UnionWith(beforeSwitch);
                     PushScope();
-                    _loopDepth++;
+                    EnterBreakable();
 
                     // A LABEL IS A CONDITION, checked as one. Any binding in it
                     // declares into the scope just pushed and so is visible in
@@ -4984,7 +5059,7 @@ public sealed partial class Binder
                         continuingAssignments.Add(new HashSet<LocalSym>(
                             _assigned, ReferenceEqualityComparer.Instance));
                     }
-                    _loopDepth--;
+                    LeaveBreakable();
                     Forget(caseProof);
                     PopScope();
                 }

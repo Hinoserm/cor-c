@@ -64,6 +64,8 @@ public delegate void MouseEventHandler(object sender, MouseEventArgs e);
 public delegate void KeyPressEventHandler(object sender, KeyPressEventArgs e);
 public delegate void KeyEventHandler(object sender, KeyEventArgs e);
 public delegate void FormClosingEventHandler(object sender, FormClosingEventArgs e);
+public delegate void DragEventHandler(object sender, DragEventArgs e);
+public delegate void GiveFeedbackEventHandler(object sender, GiveFeedbackEventArgs e);
 public delegate void InputLanguageChangingEventHandler(object sender, InputLanguageChangingEventArgs e);
 public delegate void InputLanguageChangedEventHandler(object sender, InputLanguageChangedEventArgs e);
 
@@ -680,7 +682,12 @@ public class ControlCollection
     /// Added controls take their tab order from the order they were added
     /// in, which is what a form built in code expects and what .NET does
     /// when nothing sets TabIndex. Setting it afterwards still wins.
-    public void Add(Control c) { c.Parent = _owner; if (c.TabIndex < 0) c.TabIndex = _items.Count; _items.Add(c); c.Invalidate(); }
+    public void Add(Control c)
+    {
+        c.Parent = _owner; if (c.TabIndex < 0) c.TabIndex = _items.Count; _items.Add(c); c.Invalidate();
+        // A drop target joining a form: the form's window registered.
+        if (c.AllowDrop) { Form? f = _owner.FindForm(); if (f != null) f.WantDrops(); }
+    }
     public void Insert(int at, Control c) { c.Parent = _owner; if (c.TabIndex < 0) c.TabIndex = at; _items.Insert(at, c); c.Invalidate(); }
     public bool Contains(Control c) { return _items.Contains(c); }
     public int IndexOf(Control c) { return _items.IndexOf(c); }
@@ -904,6 +911,42 @@ public class Control
     public Font Font { get { return _font; } set { _font = value; Invalidate(); } }
     public bool Visible { get { return _visible; } set { if (_visible == value) return; _visible = value; if (_parent != null) _parent.Invalidate(Bounds); else Invalidate(); OnVisibleChanged(EventArgs.Empty); } }
     public event EventHandler? VisibleChanged;
+
+    // ---- drag and drop (the seat's; DragDrop below) ----
+
+    bool _allowDrop;
+    /// .NET's AllowDrop: the control a drop target. Its form's window is
+    /// registered with the seat as one, and the seat's drag over it reaches
+    /// the control under the pointer that allows drops.
+    public virtual bool AllowDrop
+    {
+        get { return _allowDrop; }
+        set { _allowDrop = value; if (value) { Form? f = FindForm(); if (f != null) f.WantDrops(); } }
+    }
+    public event DragEventHandler? DragEnter;
+    public event DragEventHandler? DragOver;
+    public event EventHandler? DragLeave;
+    public event DragEventHandler? DragDrop;
+    public event GiveFeedbackEventHandler? GiveFeedback;
+    protected virtual void OnDragEnter(DragEventArgs e) { if (DragEnter != null) DragEnter(this, e); }
+    protected virtual void OnDragOver(DragEventArgs e) { if (DragOver != null) DragOver(this, e); }
+    protected virtual void OnDragLeave(EventArgs e) { if (DragLeave != null) DragLeave(this, e); }
+    protected virtual void OnDragDrop(DragEventArgs e) { if (DragDrop != null) DragDrop(this, e); }
+    protected virtual void OnGiveFeedback(GiveFeedbackEventArgs e) { if (GiveFeedback != null) GiveFeedback(this, e); }
+    internal void RaiseDragEnter(DragEventArgs e) { OnDragEnter(e); }
+    internal void RaiseDragOver(DragEventArgs e) { OnDragOver(e); }
+    internal void RaiseDragLeave() { OnDragLeave(EventArgs.Empty); }
+    internal void RaiseDragDrop(DragEventArgs e) { OnDragDrop(e); }
+    internal void RaiseGiveFeedback(GiveFeedbackEventArgs e) { OnGiveFeedback(e); }
+
+    /// .NET's DoDragDrop: a drag of `data` from this control, the seat's
+    /// modal loop running until it is dropped or given up; the effect done.
+    public DragDropEffects DoDragDrop(object data, DragDropEffects allowedEffects)
+    {
+        Form? f = FindForm();
+        if (f == null || f.Handle == 0) return DragDropEffects.None;
+        return DragDrop_.Run(this, f, data is IDataObject d ? d : new DataObject(data), allowedEffects);
+    }
 
     // ---- another thread's work, done on the one that runs the loop ------
     //
@@ -1454,6 +1497,23 @@ public class Form : ScrollableControl
     /// a message box and will grow a proper modal state when a dialog
     /// needs to shut its owner out.
     public DialogResult ShowDialog() { return Application.RunModal(this); }
+
+    bool _wantsDrops, _dropRegistered;
+
+    /// A control of this form allows drops: the window registered with the
+    /// seat as a drop target, now or when it is made (SendFrame), and with
+    /// the COM broker through the COM runtime when there is one
+    /// (DragDrop_.ComRegister), so a Windows program's drag reaches it too.
+    internal void WantDrops()
+    {
+        _wantsDrops = true;
+        if (_handle == 0 || _dropRegistered) return;
+        _dropRegistered = true;
+        long cookie = 0;
+        Func<Form, long>? com = DragDrop_.ComRegister;
+        if (com != null) { try { cookie = com(this); } catch (Exception) { cookie = 0; } }
+        try { Seat.Current.RegisterDropTarget(_handle, cookie); } catch (IOException) { }
+    }
     /// The desktop is a surface of its own kind: it sits under every other
     /// window and a click on it never raises it. Corsac.GUI.Shell.MakeDesktop
     /// sets it, before Show.
@@ -1635,6 +1695,7 @@ public class Form : ScrollableControl
     void SendFrame()
     {
         if (_handle == 0) return;
+        if (_wantsDrops && !_dropRegistered) WantDrops();
         Seat seat = Seat.Current;
         long style = FrameStyleBits(), ex = FrameExStyleBits();
         if (style != _sentStyle || ex != _sentExStyle)
@@ -1848,6 +1909,7 @@ public class Form : ScrollableControl
         if (e.Cancel) return;
         _closed = true;
         Application.Unregister(this);
+        if (_dropRegistered) { Action<Form>? revoke = DragDrop_.ComRevoke; if (revoke != null) { try { revoke(this); } catch (Exception) { } } }
         if (_handle != 0) Seat.Current.DestroyWindow(_handle);
         _handle = 0;
         OnFormClosed(EventArgs.Empty);
@@ -2585,11 +2647,18 @@ public static class SendKeys
     }
 
     /// A character typed: its virtual key and shift from the layout
-    /// (VkKeyScan), with any Ctrl or Alt the syntax asked.
+    /// (VkKeyScan), with any Ctrl or Alt the syntax asked. One no key on the
+    /// layout types goes as itself (VK_PACKET, KEYEVENTF_UNICODE's).
     static void Char(Corsac.GUI.Seat seat, char c, bool control, bool alt, bool shiftToo = false)
     {
         int scan = seat.VkKeyScan(c);
-        if (scan == 0xFFFF) return;
+        if (scan == 0xFFFF || (scan & 0xFF) == 0xFF)
+        {
+            if (control || alt || shiftToo) return;
+            seat.InjectChar(c, true);
+            seat.InjectChar(c, false);
+            return;
+        }
         int vk = scan & 0xFF;
         bool shift = shiftToo || (scan & 0x100) != 0;
         bool ctrl = control || (scan & 0x200) != 0;
@@ -4843,12 +4912,12 @@ internal class ComboPopup : Form
         ShowInTaskbar = false;
         BackColor = SystemColors.Window;
         Height = rows * owner.ItemHeight + 2;
-        Scroll();
+        ScrollToHot();
     }
 
     int Height_ { get { return _owner.ItemHeight; } }
 
-    void Scroll()
+    void ScrollToHot()
     {
         if (_hot < _top) _top = _hot;
         else if (_hot >= _top + _rows) _top = _hot - _rows + 1;
@@ -4898,10 +4967,10 @@ internal class ComboPopup : Form
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
-        if (e.KeyCode == Keys.Down && _hot + 1 < _owner.Items.Count) { _hot++; Scroll(); Invalidate(); e.Handled = true; }
-        else if (e.KeyCode == Keys.Up && _hot > 0) { _hot--; Scroll(); Invalidate(); e.Handled = true; }
-        else if (e.KeyCode == Keys.Home) { _hot = 0; Scroll(); Invalidate(); e.Handled = true; }
-        else if (e.KeyCode == Keys.End) { _hot = _owner.Items.Count - 1; Scroll(); Invalidate(); e.Handled = true; }
+        if (e.KeyCode == Keys.Down && _hot + 1 < _owner.Items.Count) { _hot++; ScrollToHot(); Invalidate(); e.Handled = true; }
+        else if (e.KeyCode == Keys.Up && _hot > 0) { _hot--; ScrollToHot(); Invalidate(); e.Handled = true; }
+        else if (e.KeyCode == Keys.Home) { _hot = 0; ScrollToHot(); Invalidate(); e.Handled = true; }
+        else if (e.KeyCode == Keys.End) { _hot = _owner.Items.Count - 1; ScrollToHot(); Invalidate(); e.Handled = true; }
         else if (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Space) { _owner.Chose(_hot); e.Handled = true; }
         else if (e.KeyCode == Keys.Escape || e.KeyCode == Keys.F4) { _owner.Shut(); _owner.Focus(); e.Handled = true; }
         base.OnKeyDown(e);
@@ -6958,6 +7027,20 @@ public static class Application
     }
 
     /// Runs the loop until `dialog` closes, and answers what it said.
+    /// The loop run until `done` says so, or the program exits: a modal
+    /// wait that keeps the program's windows answering (DoDragDrop's).
+    internal static void RunUntil(Func<bool> done)
+    {
+        Seat seat = Seat.Current;
+        bool was = _running;
+        _running = true;
+        while (_running && !done())
+        {
+            if (!Iterate(seat)) break;
+        }
+        _running = was;
+    }
+
     internal static DialogResult RunModal(Form dialog)
     {
         dialog.Show();
@@ -7243,7 +7326,7 @@ public static class Application
                 // others, or a dead key that did not combine and the key
                 // after it -- each a KeyPress, as each WM_CHAR is. A dead
                 // key waiting (B 1, WM_DEADCHAR) is no KeyPress in .NET.
-                if (m.B != 0 || AutoScroll.Active) break;
+                if (m.B != 0 || PanScroll.Active) break;
                 Control? target = _focus ?? _active;
                 if (target == null) break;
                 KeyPressEventArgs press = new KeyPressEventArgs((char)(m.A & 0xFFFF));
@@ -7286,6 +7369,21 @@ public static class Application
             case Seat.HotKeyPressed:
                 // A hot key of this thread's pressed (HotKey).
                 HotKey.Raise(f, m.A, m.B);
+                break;
+            case Seat.DragEnterEvent:
+            case Seat.DragOverEvent:
+            case Seat.DragLeaveEvent:
+            case Seat.DragDropEvent:
+                if (f != null) DragDrop_.Target(f, m.Kind, m.A, m.B);
+                break;
+            case Seat.DragEndedEvent:
+            case Seat.DragRenderEvent:
+            case Seat.DragFeedbackEvent:
+            case Seat.DragBridgeEnterEvent:
+            case Seat.DragBridgeOverEvent:
+            case Seat.DragBridgeLeaveEvent:
+            case Seat.DragBridgeDropEvent:
+                DragDrop_.Source(m.Kind, m.Window, m.A, m.B);
                 break;
             case 28:
                 // A press on one of this thread's notification-area icons.
@@ -7795,7 +7893,7 @@ public static class Clipboard
     /// Text -- Windows' own registered text formats as Windows has them, with
     /// their NUL (UTF-8 for HTML Format, 1252 for the rest); a picture as a
     /// .bmp file; a file list as text/uri-list; a stream or array as it is.
-    static byte[] Encode(string format, object data)
+    internal static byte[] Encode(string format, object data)
     {
         if (data is byte[] raw) return raw;
         if (data is MemoryStream ms) return ms.ToArray();
@@ -7825,7 +7923,7 @@ public static class Clipboard
     /// A format's bytes as .NET answers them: text formats as strings up to
     /// their NUL if they have one, pictures as Bitmaps, FileDrop as a string
     /// array, the rest as a MemoryStream.
-    static object? Decode(string format, byte[] bytes)
+    internal static object? Decode(string format, byte[] bytes)
     {
         if (format == DataFormats.UnicodeText || format == DataFormats.StringFormat)
         {
@@ -7952,7 +8050,7 @@ public static class Clipboard
 
     /// text/uri-list: each path a file: URI, its bytes outside the
     /// unreserved ones and "/" written %XX in UTF-8, CRLF after each.
-    static byte[] UriList(string[] files)
+    internal static byte[] UriList(string[] files)
     {
         System.Text.StringBuilder made = new System.Text.StringBuilder();
         foreach (string f in files)
@@ -7972,7 +8070,7 @@ public static class Clipboard
 
     /// text/uri-list's file: URIs as paths, %XX undone; comment lines and
     /// other schemes passed over.
-    static string[] FilesOf(byte[] list)
+    internal static string[] FilesOf(byte[] list)
     {
         List<string> files = new List<string>();
         foreach (string raw in System.Text.Encoding.UTF8.GetString(list).Split('\n'))
@@ -8163,4 +8261,885 @@ public static class Clipboard
     public static Stream? GetAudioStream() { return GetData(DataFormats.WaveAudio) as Stream; }
     public static void SetAudio(byte[] audioBytes) { if (audioBytes == null) throw new ArgumentNullException("audioBytes"); SetData(DataFormats.WaveAudio, audioBytes); }
     public static void SetAudio(Stream audioStream) { if (audioStream == null) throw new ArgumentNullException("audioStream"); SetData(DataFormats.WaveAudio, audioStream); }
+}
+
+// ---- drag and drop -----------------------------------------------------------
+//
+// .NET's DoDragDrop, AllowDrop and the Drag events on the seat's drag
+// (os/gui/seatdrag.cor), shaped as OLE's: the data goes as clipboard
+// formats -- .NET's names on the MIME names the clipboard keeps
+// (Clipboard.NativeName), which win32k maps to CF_* for Windows programs --
+// and what a target reads is an IDataObject over the drag.
+
+public enum DragDropEffects { None = 0, Copy = 1, Move = 2, Link = 4, Scroll = -2147483648, All = -2147483645 }
+
+public class DragEventArgs : EventArgs
+{
+    public IDataObject? Data { get; }
+    public int KeyState { get; }
+    public int X { get; }
+    public int Y { get; }
+    public DragDropEffects AllowedEffect { get; }
+    public DragDropEffects Effect { get; set; }
+    public DragEventArgs(IDataObject? data, int keyState, int x, int y, DragDropEffects allowedEffect, DragDropEffects effect)
+    {
+        Data = data; KeyState = keyState; X = x; Y = y; AllowedEffect = allowedEffect; Effect = effect;
+    }
+}
+
+public class GiveFeedbackEventArgs : EventArgs
+{
+    public DragDropEffects Effect { get; }
+    public bool UseDefaultCursors { get; set; }
+    public GiveFeedbackEventArgs(DragDropEffects effect, bool useDefaultCursors) { Effect = effect; UseDefaultCursors = useDefaultCursors; }
+}
+
+/// The drag a target is told of, as an IDataObject: its formats and their
+/// data asked of the seat (the source renders a promised one then).
+sealed class SeatDragData : DataObject
+{
+    public override object? GetData(string format, bool autoConvert)
+    {
+        if (format == DataFormats.StringFormat && autoConvert) format = DataFormats.UnicodeText;
+        int id = Seat.Current.RegisterClipboardFormat(Clipboard.NativeName(format));
+        if (id == 0) return null;
+        byte[]? bytes = Seat.Current.GetDragData(id);
+        return bytes == null ? null : Clipboard.Decode(format, bytes);
+    }
+
+    public override bool GetDataPresent(string format, bool autoConvert)
+    {
+        if (format == DataFormats.StringFormat && autoConvert) format = DataFormats.UnicodeText;
+        return Array.IndexOf(GetFormats(false), format) >= 0;
+    }
+
+    public override string[] GetFormats(bool autoConvert)
+    {
+        List<string> all = new List<string>();
+        foreach (int id in Seat.Current.DragFormatList())
+        {
+            string? native = Seat.Current.GetClipboardFormatName(id);
+            string name = native != null ? Clipboard.DotNetName(native) : "Format" + id;
+            if (!all.Contains(name)) all.Add(name);
+        }
+        if (autoConvert && all.Contains(DataFormats.UnicodeText) && !all.Contains(DataFormats.StringFormat)) all.Add(DataFormats.StringFormat);
+        return all.ToArray();
+    }
+}
+
+/// The two ends of the seat's drag in this program.
+static class DragDrop_
+{
+    /// THE COM SEAMS, OLE's side's (OleDrop): a window's endpoint -- an
+    /// IInterfaceFromWindowProp of this program's, which turns ole32's
+    /// PrivDragDrop into this program's Drag events -- exported and
+    /// registered with the broker (WindowPropRegister, ISCM's opnum 4); the
+    /// broker's cookie answered, which the seat puts in the window's
+    /// "OleEndPointID" so a Windows program's DoDragDrop finds it. Taken back
+    /// when the form closes. Null: native drags still reach the window.
+    public static Func<Form, long>? ComRegister = form => OleDrop.Register(form);
+    public static Action<Form>? ComRevoke = form => OleDrop.Revoke(form);
+
+    // ---- the source -----------------------------------------------------------------
+
+    static bool _running, _ended;
+    static DragDropEffects _done;
+    static Control? _source;
+    static IDataObject? _data;
+    /// The drag's formats as put, for a Windows program's window (OleDragBridge).
+    static List<string> _names = new List<string>();
+    static List<byte[]> _encoded = new List<byte[]>();
+    static OleDragBridge? _bridge;
+
+    internal static DragDropEffects Run(Control source, Form form, IDataObject data, DragDropEffects allowed)
+    {
+        if (_running) return DragDropEffects.None;
+        Seat seat = Seat.Current;
+        string[] names = data.GetFormats(false);
+        List<int> ids = new List<int>();
+        List<string> kept = new List<string>();
+        List<byte[]> bytes = new List<byte[]>();
+        foreach (string name in names)
+        {
+            object? value = data.GetData(name, false);
+            if (value == null) continue;
+            byte[] encoded;
+            try { encoded = Clipboard.Encode(name, value); }
+            catch (ArgumentException) { continue; }
+            int id = seat.RegisterClipboardFormat(Clipboard.NativeName(name));
+            if (id == 0 || ids.Contains(id)) continue;
+            ids.Add(id); kept.Add(name); bytes.Add(encoded);
+        }
+        _running = true; _ended = false; _done = DragDropEffects.None; _source = source; _data = data;
+        _names = kept; _encoded = bytes; _bridge = null;
+        try
+        {
+            if (!seat.BeginDrag(form.Handle, (int)allowed & 7, ids.ToArray())) return DragDropEffects.None;
+            for (int i = 0; i < ids.Count; i++) seat.PutDragData(ids[i], bytes[i]);
+            // THE SEAT'S LOOP HAS THE POINTER; this program goes on reading
+            // its events -- painting, being a target of its own drag, telling
+            // a Windows program's window of it -- until the seat says the
+            // drag is over.
+            Application.RunUntil(() => _ended);
+            return _done;
+        }
+        finally
+        {
+            OleDragBridge? bridge = _bridge;
+            if (bridge != null) bridge.Close();
+            _running = false; _source = null; _data = null; _bridge = null;
+            _names = new List<string>(); _encoded = new List<byte[]>();
+        }
+    }
+
+    /// The source's events: the end, a render asked (every format was put
+    /// already: put again), the effect shown, and a Windows program's
+    /// window under the pointer to tell (Bridge).
+    internal static void Source(int kind, int window, int a, int b)
+    {
+        if (!_running) return;
+        if (kind == Seat.DragEndedEvent) { _done = (DragDropEffects)a; _ended = true; return; }
+        if (kind == Seat.DragFeedbackEvent) { if (_source != null) _source.RaiseGiveFeedback(new GiveFeedbackEventArgs((DragDropEffects)a, true)); return; }
+        if (kind >= Seat.DragBridgeEnterEvent && kind <= Seat.DragBridgeDropEvent) { Bridge(kind, window, a, b); return; }
+        // DragRender: the format asked for, encoded again from the data.
+        IDataObject? data = _data;
+        string? native = Seat.Current.GetClipboardFormatName(a);
+        if (data == null || native == null) return;
+        string name = Clipboard.DotNetName(native);
+        object? value = data.GetData(name, true);
+        if (value == null) return;
+        try { Seat.Current.PutDragData(a, Clipboard.Encode(name, value)); } catch (ArgumentException) { }
+    }
+
+    /// The drag over a Windows program's drop target: each step carried to
+    /// its window's ole32 as DoDragDrop carries it, and its answer given the
+    /// seat -- the effect it would take, or the one it took.
+    static void Bridge(int kind, int window, int a, int b)
+    {
+        Seat seat = Seat.Current;
+        int keys = a & 0xFFFF, allowed = (a >> 16) & 7;
+        int x = Seat.LowSigned(b), y = Seat.HighSigned(b);
+        if (kind == Seat.DragBridgeEnterEvent)
+        {
+            if (_bridge == null) _bridge = new OleDragBridge(_names, _encoded);
+            seat.DragBridgeAnswer(window, _bridge.Enter(window, keys, x, y, allowed));
+            return;
+        }
+        OleDragBridge? bridge = _bridge;
+        if (kind == Seat.DragBridgeOverEvent) { seat.DragBridgeAnswer(window, bridge != null ? bridge.Over(window, keys, x, y, allowed) : 0); return; }
+        if (kind == Seat.DragBridgeLeaveEvent) { if (bridge != null) bridge.Leave(window); return; }
+        seat.DragBridgeDone(window, bridge != null ? bridge.Drop(window, keys, x, y, allowed) : 0);
+    }
+
+    // ---- the target -----------------------------------------------------------------
+
+    static Control? _over;
+    static IDataObject? _overData;
+
+    /// A seat drag event for `form`: the control under the pointer that
+    /// allows drops told, and the seat answered with the effect it chose.
+    internal static void Target(Form form, int kind, int a, int b)
+    {
+        int effect = Deliver(form, kind, a & 0xFFFF, (a >> 16) & 7, Seat.LowSigned(b), Seat.HighSigned(b), null);
+        Seat seat = Seat.Current;
+        if (kind == Seat.DragDropEvent) seat.DropDone(effect);
+        else if (kind != Seat.DragLeaveEvent) seat.AnswerDrag(effect);
+    }
+
+    /// A Windows program's drag over `form`, through the form's endpoint
+    /// (OleDropEndpoint, on this thread by Invoke): the same steps, with
+    /// that program's data; the effect answered.
+    internal static int ComTarget(Form form, int kind, int keys, int allowed, int sx, int sy, IDataObject? data)
+    {
+        return Deliver(form, kind, keys, allowed, sx, sy, data ?? new DataObject());
+    }
+
+    /// One step of a drag over `form`: the control under the pointer that
+    /// allows drops told -- entered, over, left, dropped on -- and the
+    /// effect it chose, of those allowed. `data` the drag's, or null for the
+    /// seat's own (SeatDragData).
+    static int Deliver(Form form, int kind, int keys, int allowedBits, int sx, int sy, IDataObject? data)
+    {
+        if (kind == Seat.DragLeaveEvent) { Leave(); return 0; }
+        DragDropEffects allowed = (DragDropEffects)allowedBits;
+        Point co = form.ClientOffset();
+        Control? hit = form.HitTest(sx - form.Left - co.X, sy - form.Top - co.Y);
+        while (hit != null && !hit.AllowDrop) hit = hit.Parent;
+        if (hit != _over)
+        {
+            Leave();
+            _over = hit;
+            _overData = hit != null ? (data ?? new SeatDragData()) : null;
+            if (hit != null && kind != Seat.DragDropEvent)
+            {
+                DragEventArgs enter = new DragEventArgs(_overData, keys, sx, sy, allowed, DragDropEffects.None);
+                hit.RaiseDragEnter(enter);
+                return (int)enter.Effect & (int)allowed;
+            }
+        }
+        if (hit == null) return 0;
+        DragEventArgs e = new DragEventArgs(_overData, keys, sx, sy, allowed, DragDropEffects.None);
+        if (kind == Seat.DragDropEvent)
+        {
+            // The drop asks the effect again, as OLE's Drop does after DragOver.
+            hit.RaiseDragOver(e);
+            DragEventArgs drop = new DragEventArgs(_overData, keys, sx, sy, allowed, e.Effect);
+            hit.RaiseDragDrop(drop);
+            _over = null; _overData = null;
+            return (int)drop.Effect & (int)allowed;
+        }
+        hit.RaiseDragOver(e);
+        return (int)e.Effect & (int)allowed;
+    }
+
+    static void Leave()
+    {
+        Control? was = _over;
+        _over = null; _overData = null;
+        if (was != null) was.RaiseDragLeave();
+    }
+}
+
+// ---- drag and drop with Windows programs: OLE's -------------------------------
+//
+// A Windows program's drag reaches a native window, and a native drag a
+// Windows program's window, as ole32 carries a drag between two of its own
+// processes (System.Runtime.InteropServices' ComOle.cor): through the
+// window's endpoint, an IInterfaceFromWindowProp found by the cookie in its
+// "OleEndPointID" property, whose PrivDragDrop is each step; the data an
+// IDataObject of the source's, its formats asked for as HGLOBALs by their
+// CF_* numbers. The numbers and the bytes are the ones win32k gives Windows
+// programs for the clipboard (os/gui/win32kclipboard.cor): OleData.
+
+/// CF_* AND THE CLIPBOARD'S FORMATS, for an IDataObject's HGLOBALs: the
+/// table win32k keeps for the clipboard (os/gui/win32kclipboard.cor's
+/// PredefinedName, CfOf, WindowsToNative and NativeToWindows) -- a
+/// predefined format's MIME name, any other below 0xC000 as
+/// application/x-windows-cf-N, a registered one its own name, whose atom is
+/// its number -- and the bytes each side keeps: text with and without its
+/// NUL, a packed DIB and a .bmp file, DROPFILES and a URI list.
+static class OleData
+{
+    const string GenericPrefix = "application/x-windows-cf-";
+    const int CfText = 1, CfOemText = 7, CfDib = 8, CfUnicodeText = 13, CfHdrop = 15, LastPredefined = 17;
+
+    static string Predefined(int cf)
+    {
+        switch (cf)
+        {
+            case 1: return "text/plain;charset=windows-1252";
+            case 2: return "application/x-windows-bitmap";
+            case 3: return "application/x-windows-metafilepict";
+            case 6: return "image/tiff";
+            case 7: return "text/plain;charset=ibm437";
+            case 8: return "image/bmp";
+            case 9: return "application/x-windows-palette";
+            case 12: return "audio/wav";
+            case 13: return "text/plain;charset=utf-16";
+            case 14: return "image/emf";
+            case 15: return "text/uri-list";
+            case 16: return "application/x-windows-locale";
+            case 17: return "application/x-windows-dibv5";
+        }
+        return GenericPrefix + cf.ToString();
+    }
+
+    /// The CF_* number a Windows program knows a .NET format by; 0 when the
+    /// atom table refuses its name.
+    internal static int CfOf(string format)
+    {
+        string native = Clipboard.NativeName(format);
+        for (int cf = 1; cf <= LastPredefined; cf++)
+        {
+            string name = Predefined(cf);
+            if (!name.StartsWith(GenericPrefix) && string.Equals(name, native, StringComparison.OrdinalIgnoreCase)) return cf;
+        }
+        if (native.StartsWith(GenericPrefix))
+        {
+            int n = 0;
+            for (int i = GenericPrefix.Length; i < native.Length; i++)
+            {
+                char c = native[i];
+                if (c < '0' || c > '9') { n = 0; break; }
+                n = n * 10 + (c - '0');
+            }
+            if (n > 0 && n < 0xC000) return n;
+        }
+        return Seat.Current.RegisterClipboardFormat(native);
+    }
+
+    /// .NET's name for a CF_* number.
+    internal static string NameOf(int cf)
+    {
+        cf &= 0xFFFF;
+        if (cf >= 0xC000)
+        {
+            string? name = Seat.Current.GetClipboardFormatName(cf);
+            return name != null ? Clipboard.DotNetName(name) : "Format" + cf;
+        }
+        return Clipboard.DotNetName(Predefined(cf));
+    }
+
+    /// Windows' bytes for a format, from the clipboard's (NativeToWindows):
+    /// text ended by its NUL, a .bmp file's DIB, a URI list as DROPFILES.
+    internal static byte[] ToWindows(int cf, byte[] native)
+    {
+        if (cf == CfText || cf == CfOemText) return Ended(native, 1);
+        if (cf == CfUnicodeText) return Ended(native, 2);
+        if (cf == CfDib && native.Length > 14 && native[0] == (byte)'B' && native[1] == (byte)'M') return Slice(native, 14, native.Length - 14);
+        if (cf == CfHdrop) return DropFiles(Clipboard.FilesOf(native));
+        return native;
+    }
+
+    /// The clipboard's bytes for a format, from Windows' (WindowsToNative).
+    internal static byte[] FromWindows(int cf, byte[] bytes)
+    {
+        if (cf == CfText || cf == CfOemText)
+        {
+            int n = 0;
+            while (n < bytes.Length && bytes[n] != 0) n++;
+            return Slice(bytes, 0, n);
+        }
+        if (cf == CfUnicodeText)
+        {
+            int n = 0;
+            while (n + 1 < bytes.Length && (bytes[n] | bytes[n + 1]) != 0) n += 2;
+            return Slice(bytes, 0, n);
+        }
+        if (cf == CfDib) return BmpFile(bytes);
+        if (cf == CfHdrop) return Clipboard.UriList(FilesOfDrop(bytes));
+        return bytes;
+    }
+
+    static byte[] Slice(byte[] bytes, int from, int count)
+    {
+        byte[] made = new byte[Math.Max(count, 0)];
+        if (count > 0) Array.Copy(bytes, from, made, 0, count);
+        return made;
+    }
+
+    static byte[] Ended(byte[] bytes, int nul)
+    {
+        byte[] made = new byte[bytes.Length + nul];
+        Array.Copy(bytes, made, bytes.Length);
+        return made;
+    }
+
+    static int Word(byte[] b, int at) { return at + 4 <= b.Length ? b[at] | (b[at + 1] << 8) | (b[at + 2] << 16) | (b[at + 3] << 24) : 0; }
+    static void Put(byte[] b, int at, int v) { b[at] = (byte)v; b[at + 1] = (byte)(v >> 8); b[at + 2] = (byte)(v >> 16); b[at + 3] = (byte)(v >> 24); }
+
+    /// A packed DIB as a .bmp file, its bits' offset past the header, the
+    /// BI_BITFIELDS masks of a 40-byte header and the colour table, as
+    /// win32k's BmpFile has it.
+    static byte[] BmpFile(byte[] dib)
+    {
+        int header = dib.Length >= 40 ? Word(dib, 0) : 40;
+        int bits = dib.Length >= 16 ? dib[14] | (dib[15] << 8) : 0;
+        int compression = dib.Length >= 20 ? Word(dib, 16) : 0;
+        int used = dib.Length >= 36 ? Word(dib, 32) : 0;
+        int masks = compression == 3 && header == 40 ? 12 : 0;
+        int colours = bits <= 8 && bits > 0 ? (used != 0 ? used : 1 << bits) : used;
+        byte[] file = new byte[14 + dib.Length];
+        file[0] = (byte)'B'; file[1] = (byte)'M';
+        Put(file, 2, file.Length);
+        Put(file, 10, 14 + header + masks + colours * 4);
+        Array.Copy(dib, 0, file, 14, dib.Length);
+        return file;
+    }
+
+    /// Paths as DROPFILES, wide: the twenty-byte header (pFiles 20, fWide
+    /// 1), each path and its NUL, a NUL after the last.
+    static byte[] DropFiles(string[] files)
+    {
+        List<byte> made = new List<byte>();
+        byte[] head = new byte[20];
+        Put(head, 0, 20); Put(head, 16, 1);
+        made.AddRange(head);
+        foreach (string f in files)
+        {
+            made.AddRange(System.Text.Encoding.Unicode.GetBytes(f));
+            made.Add(0); made.Add(0);
+        }
+        made.Add(0); made.Add(0);
+        return made.ToArray();
+    }
+
+    /// DROPFILES' paths, wide or not.
+    static string[] FilesOfDrop(byte[] drop)
+    {
+        List<string> files = new List<string>();
+        if (drop.Length < 20) return files.ToArray();
+        int at = Word(drop, 0);
+        bool wide = Word(drop, 16) != 0;
+        while (at >= 0 && at < drop.Length)
+        {
+            int end = at;
+            if (wide) { while (end + 1 < drop.Length && (drop[end] | drop[end + 1]) != 0) end += 2; }
+            else { while (end < drop.Length && drop[end] != 0) end++; }
+            if (end == at) break;
+            files.Add(wide ? System.Text.Encoding.Unicode.GetString(drop, at, end - at) : System.Text.Encoding.GetEncoding(1252).GetString(drop, at, end - at));
+            at = end + (wide ? 2 : 1);
+        }
+        return files.ToArray();
+    }
+}
+
+/// THIS PROGRAM'S DRAG AS AN IDataObject, for a Windows program's window it
+/// is over: the formats put with the drag, each by its CF_* number with
+/// Windows' bytes, made once when the drag first reaches such a window --
+/// asked for later on the COM runtime's threads, which read only what is
+/// here. CF_TEXT and CF_UNICODETEXT each stand for the other when only one
+/// was put, as win32k's text formats do.
+[ComVisible(true)]
+sealed class OleDataExport : System.Runtime.InteropServices.ComTypes.IDataObject
+{
+    readonly List<int> _formats = new List<int>();
+    readonly Dictionary<int, byte[]> _bytes = new Dictionary<int, byte[]>();
+
+    public OleDataExport(List<string> names, List<byte[]> encoded)
+    {
+        for (int i = 0; i < names.Count && i < encoded.Count; i++) Add(OleData.CfOf(names[i]), encoded[i]);
+        byte[]? unicode, ansi;
+        _bytes.TryGetValue(13, out unicode);
+        _bytes.TryGetValue(1, out ansi);
+        if (unicode != null && ansi == null)
+        {
+            string text = System.Text.Encoding.Unicode.GetString(unicode, 0, Math.Max(unicode.Length - 2, 0));
+            Add(1, System.Text.Encoding.GetEncoding(1252).GetBytes(text));
+        }
+        else if (ansi != null && unicode == null)
+        {
+            string text = System.Text.Encoding.GetEncoding(1252).GetString(ansi, 0, Math.Max(ansi.Length - 1, 0));
+            Add(13, System.Text.Encoding.Unicode.GetBytes(text));
+        }
+    }
+
+    /// A format's clipboard bytes, kept as Windows has them.
+    void Add(int cf, byte[] native)
+    {
+        if (cf == 0 || _bytes.ContainsKey(cf)) return;
+        _formats.Add(cf);
+        _bytes[cf] = OleData.ToWindows(cf, native);
+    }
+
+    /// Whether the FORMATETC at `at` is one given here: the content, in an HGLOBAL.
+    int Check(nint at)
+    {
+        if (at == 0) return System.Runtime.InteropServices.ComMarshal.EInvalidArg;
+        System.Runtime.InteropServices.ComTypes.FORMATETC f = System.Runtime.InteropServices.OleMemory.ReadFormatEtc(at);
+        if (!_bytes.ContainsKey((ushort)f.cfFormat)) return System.Runtime.InteropServices.OleCodes.DvEFormatEtc;
+        if (((int)f.dwAspect & (int)System.Runtime.InteropServices.ComTypes.DVASPECT.DVASPECT_CONTENT) == 0) return System.Runtime.InteropServices.OleCodes.DvEDvAspect;
+        if (((int)f.tymed & (int)System.Runtime.InteropServices.ComTypes.TYMED.TYMED_HGLOBAL) == 0) return System.Runtime.InteropServices.OleCodes.DvETymed;
+        return 0;
+    }
+
+    public int GetData(nint pformatetcIn, nint pmedium)
+    {
+        int hr = Check(pformatetcIn);
+        if (hr != 0) return hr;
+        if (pmedium == 0) return System.Runtime.InteropServices.ComMarshal.EInvalidArg;
+        System.Runtime.InteropServices.ComTypes.FORMATETC f = System.Runtime.InteropServices.OleMemory.ReadFormatEtc(pformatetcIn);
+        System.Runtime.InteropServices.OleMemory.WriteHglobal(pmedium, _bytes[(ushort)f.cfFormat]);
+        return 0;
+    }
+
+    public int GetDataHere(nint pformatetc, nint pmedium) { return System.Runtime.InteropServices.ComMarshal.ENotImpl; }
+
+    public int QueryGetData(nint pformatetc) { return Check(pformatetc); }
+
+    public int GetCanonicalFormatEtc(nint pformatectIn, nint pformatetcOut)
+    {
+        if (pformatectIn == 0 || pformatetcOut == 0) return System.Runtime.InteropServices.ComMarshal.EInvalidArg;
+        System.Runtime.InteropServices.ComTypes.FORMATETC f = System.Runtime.InteropServices.OleMemory.ReadFormatEtc(pformatectIn);
+        f.ptd = 0;
+        System.Runtime.InteropServices.OleMemory.WriteFormatEtc(pformatetcOut, f);
+        return System.Runtime.InteropServices.OleCodes.DataSSameFormatEtc;
+    }
+
+    public int SetData(nint pformatetc, nint pmedium, bool fRelease) { return System.Runtime.InteropServices.ComMarshal.ENotImpl; }
+
+    public int EnumFormatEtc(int dwDirection, out System.Runtime.InteropServices.ComTypes.IEnumFORMATETC ppenumFormatEtc)
+    {
+        if (dwDirection != (int)System.Runtime.InteropServices.ComTypes.DATADIR.DATADIR_GET) { ppenumFormatEtc = null!; return System.Runtime.InteropServices.ComMarshal.ENotImpl; }
+        ppenumFormatEtc = new OleFormatList(_formats.ToArray(), 0);
+        return 0;
+    }
+
+    public int DAdvise(nint pformatetc, int advf, object pAdvSink, out int pdwConnection) { pdwConnection = 0; return System.Runtime.InteropServices.OleCodes.OleEAdviseNotSupported; }
+    public int DUnadvise(int dwConnection) { return System.Runtime.InteropServices.OleCodes.OleENoConnection; }
+    public int EnumDAdvise(out object ppenumAdvise) { ppenumAdvise = null!; return System.Runtime.InteropServices.OleCodes.OleEAdviseNotSupported; }
+}
+
+/// OleDataExport's formats, one FORMATETC each: the content, all of it, in an HGLOBAL.
+[ComVisible(true)]
+sealed class OleFormatList : System.Runtime.InteropServices.ComTypes.IEnumFORMATETC
+{
+    readonly int[] _formats;
+    int _next;
+
+    public OleFormatList(int[] formats, int next) { _formats = formats; _next = next; }
+
+    public int Next(int celt, nint rgelt, nint pceltFetched)
+    {
+        int n = 0;
+        while (n < celt && _next < _formats.Length && rgelt != 0)
+        {
+            System.Runtime.InteropServices.OleMemory.WriteFormatEtc(rgelt + n * System.Runtime.InteropServices.OleMemory.FormatEtcBytes, System.Runtime.InteropServices.OleMemory.Hglobal(_formats[_next]));
+            n++;
+            _next++;
+        }
+        if (pceltFetched != 0) System.Runtime.InteropServices.ComMarshal.WriteI4(pceltFetched, n);
+        return n == celt ? 0 : 1;
+    }
+
+    public int Skip(int celt)
+    {
+        int left = _formats.Length - _next;
+        _next += Math.Min(Math.Max(celt, 0), left);
+        return celt <= left ? 0 : 1;
+    }
+
+    public int Reset() { _next = 0; return 0; }
+
+    public int Clone(out System.Runtime.InteropServices.ComTypes.IEnumFORMATETC ppenum)
+    {
+        ppenum = new OleFormatList(_formats, _next);
+        return 0;
+    }
+}
+
+/// A WINDOWS PROGRAM'S DRAG, as a native target reads it: its IDataObject (in
+/// its process) asked for each format as an HGLOBAL by its CF_* number, the
+/// bytes made the clipboard's (OleData) and decoded as .NET decodes them.
+/// What it answers is kept for the drag. Asked on the form's thread.
+sealed class ComDragData : DataObject
+{
+    readonly System.Runtime.InteropServices.ComTypes.IDataObject _source;
+    readonly object _held;
+    string[]? _formats;
+    readonly Dictionary<int, byte[]?> _got = new Dictionary<int, byte[]?>();
+
+    public ComDragData(System.Runtime.InteropServices.ComTypes.IDataObject source, object held) { _source = source; _held = held; }
+
+    /// The source let go, when the drag leaves or drops.
+    public void Release()
+    {
+        try
+        {
+            // The wrapper and the object it wraps share one record of the
+            // other process's object, whose references go back once.
+            if (_source is System.__ComObject w) System.Runtime.InteropServices.Marshal.ReleaseComObject(w);
+            if (_held is System.__ComObject c) System.Runtime.InteropServices.Marshal.ReleaseComObject(c);
+        }
+        catch (Exception) { }
+    }
+
+    byte[]? Bytes(int cf)
+    {
+        byte[]? had;
+        if (_got.TryGetValue(cf, out had)) return had;
+        nint f = System.Runtime.InteropServices.OleMemory.NewFormatEtc(System.Runtime.InteropServices.OleMemory.Hglobal(cf));
+        nint m = System.Runtime.InteropServices.OleMemory.NewStgMedium();
+        byte[]? made = null;
+        try
+        {
+            if (_source.GetData(f, m) >= 0 && System.Runtime.InteropServices.OleMemory.MediumTymed(m) == (int)System.Runtime.InteropServices.ComTypes.TYMED.TYMED_HGLOBAL)
+                made = OleData.FromWindows(cf, System.Runtime.InteropServices.OleGlobal.Bytes(System.Runtime.InteropServices.OleMemory.MediumHandle(m)));
+        }
+        catch (Exception) { made = null; }
+        finally
+        {
+            System.Runtime.InteropServices.OleMemory.FreeFormatEtc(f);
+            System.Runtime.InteropServices.OleMemory.FreeStgMedium(m);
+        }
+        _got[cf] = made;
+        return made;
+    }
+
+    public override object? GetData(string format, bool autoConvert)
+    {
+        if (format == DataFormats.StringFormat && autoConvert) format = DataFormats.UnicodeText;
+        int cf = OleData.CfOf(format);
+        byte[]? bytes = cf == 0 ? null : Bytes(cf);
+        if (bytes != null) return Clipboard.Decode(format, bytes);
+        // Text the source has only in its other character set.
+        if (autoConvert && format == DataFormats.UnicodeText) { byte[]? ansi = Bytes(1); return ansi == null ? null : Clipboard.Decode(DataFormats.Text, ansi); }
+        if (autoConvert && format == DataFormats.Text) { byte[]? wide = Bytes(13); return wide == null ? null : Clipboard.Decode(DataFormats.UnicodeText, wide); }
+        return null;
+    }
+
+    public override bool GetDataPresent(string format, bool autoConvert)
+    {
+        if (format == DataFormats.StringFormat && autoConvert) format = DataFormats.UnicodeText;
+        return Array.IndexOf(GetFormats(autoConvert), format) >= 0;
+    }
+
+    public override string[] GetFormats(bool autoConvert)
+    {
+        if (_formats == null) _formats = Enumerate();
+        List<string> all = new List<string>(_formats);
+        if (autoConvert)
+        {
+            if (all.Contains(DataFormats.UnicodeText) && !all.Contains(DataFormats.Text)) all.Add(DataFormats.Text);
+            if (all.Contains(DataFormats.Text) && !all.Contains(DataFormats.UnicodeText)) all.Add(DataFormats.UnicodeText);
+            if (all.Contains(DataFormats.UnicodeText) && !all.Contains(DataFormats.StringFormat)) all.Add(DataFormats.StringFormat);
+        }
+        return all.ToArray();
+    }
+
+    /// The source's formats that come in an HGLOBAL (EnumFormatEtc,
+    /// DATADIR_GET), sixteen at a time.
+    string[] Enumerate()
+    {
+        List<string> all = new List<string>();
+        try
+        {
+            System.Runtime.InteropServices.ComTypes.IEnumFORMATETC e;
+            if (_source.EnumFormatEtc((int)System.Runtime.InteropServices.ComTypes.DATADIR.DATADIR_GET, out e) < 0 || e == null) return all.ToArray();
+            const int AtOnce = 16;
+            nint list = System.Runtime.InteropServices.OleMemory.NewFormatEtcs(AtOnce);
+            nint fetched = System.Runtime.InteropServices.Marshal.AllocHGlobal(4);
+            try
+            {
+                for (int rounds = 0; rounds < 64; rounds++)
+                {
+                    System.Runtime.InteropServices.ComMarshal.WriteI4(fetched, 0);
+                    int hr = e.Next(AtOnce, list, fetched);
+                    int got = Math.Min(System.Runtime.InteropServices.ComMarshal.ReadI4(fetched), AtOnce);
+                    for (int i = 0; i < got; i++)
+                    {
+                        System.Runtime.InteropServices.ComTypes.FORMATETC f = System.Runtime.InteropServices.OleMemory.ReadFormatEtc(list + i * System.Runtime.InteropServices.OleMemory.FormatEtcBytes);
+                        if (((int)f.tymed & (int)System.Runtime.InteropServices.ComTypes.TYMED.TYMED_HGLOBAL) == 0) continue;
+                        string name = OleData.NameOf((ushort)f.cfFormat);
+                        if (!all.Contains(name)) all.Add(name);
+                    }
+                    if (hr != 0 || got < AtOnce) break;
+                }
+            }
+            finally
+            {
+                System.Runtime.InteropServices.Marshal.FreeHGlobal(list);
+                System.Runtime.InteropServices.Marshal.FreeHGlobal(fetched);
+                if (e is System.__ComObject c) System.Runtime.InteropServices.Marshal.ReleaseComObject(c);
+            }
+        }
+        catch (Exception) { }
+        return all.ToArray();
+    }
+}
+
+/// A NATIVE WINDOW'S ENDPOINT for Windows programs' drags: what ole32's
+/// AssignEndpointProperty makes for a window of its own (a
+/// CInterfaceFromWindowProp), exported from here and registered with the
+/// broker for the form's window. A Windows program's DoDragDrop calls
+/// PrivDragDrop on it, on one of the COM runtime's threads; each step is
+/// made on the form's thread (Invoke) as the seat's are, with the source's
+/// IDataObject, unmarshalled from the InterfaceData at DRAGOP_ENTER and let
+/// go at the leave or the drop. Its IDropTarget is the same steps, for one
+/// who asks for it.
+[ComVisible(true)]
+sealed class OleDropEndpoint : System.Runtime.InteropServices.ComTypes.IInterfaceFromWindowProp, System.Runtime.InteropServices.ComTypes.IDropTarget
+{
+    readonly Form _form;
+    readonly object _lock = new object();
+    ComDragData? _data;
+    public long Cookie;
+    public byte[] Ipid = new byte[0];
+
+    public OleDropEndpoint(Form form) { _form = form; }
+
+    public int GetInterfaceFromWindowProp(nint hWnd, nint riid, out object ppunk, nint pwszPropName)
+    {
+        ppunk = null!;
+        return System.Runtime.InteropServices.ComMarshal.ENotImpl;
+    }
+
+    public int PrivDragDrop(nint hWnd, nint pInterfaceData, int dop, int grfKeyState, long pt, ref int pdwEffect,
+        int dwSourceThread, object pDataObject, nint hwndSource)
+    {
+        int kind = dop == System.Runtime.InteropServices.OleCodes.DragOpEnter ? Seat.DragEnterEvent
+                 : dop == System.Runtime.InteropServices.OleCodes.DragOpOver ? Seat.DragOverEvent
+                 : dop == System.Runtime.InteropServices.OleCodes.DragOpLeave ? Seat.DragLeaveEvent
+                 : dop == System.Runtime.InteropServices.OleCodes.DragOpDrop ? Seat.DragDropEvent : 0;
+        if (kind == 0) return unchecked((int)0x8000FFFF);
+        ComDragData? data;
+        lock (_lock)
+        {
+            if (kind == Seat.DragEnterEvent)
+            {
+                Forget();
+                object? source = pDataObject;
+                if (source == null) { try { source = System.Runtime.InteropServices.OleMemory.Unmarshal(pInterfaceData); } catch (Exception) { source = null; } }
+                System.Runtime.InteropServices.ComTypes.IDataObject? d = source as System.Runtime.InteropServices.ComTypes.IDataObject;
+                _data = d != null ? new ComDragData(d, source!) : null;
+            }
+            data = _data;
+        }
+        int keys = grfKeyState, allowed = pdwEffect & 7;
+        int x = System.Runtime.InteropServices.OleMemory.PointX(pt), y = System.Runtime.InteropServices.OleMemory.PointY(pt);
+        Form form = _form;
+        int effect = 0;
+        try { effect = form.Invoke<int>(() => DragDrop_.ComTarget(form, kind, keys, allowed, x, y, data)); }
+        catch (Exception) { effect = 0; }
+        if (kind == Seat.DragLeaveEvent || kind == Seat.DragDropEvent) lock (_lock) { Forget(); }
+        pdwEffect = effect;
+        return 0;
+    }
+
+    void Forget()
+    {
+        ComDragData? had = _data;
+        _data = null;
+        if (had != null) had.Release();
+    }
+
+    public int DragEnter(object pDataObj, int grfKeyState, long pt, ref int pdwEffect)
+    {
+        return PrivDragDrop(0, 0, System.Runtime.InteropServices.OleCodes.DragOpEnter, grfKeyState, pt, ref pdwEffect, 0, pDataObj, 0);
+    }
+
+    public int DragOver(int grfKeyState, long pt, ref int pdwEffect)
+    {
+        return PrivDragDrop(0, 0, System.Runtime.InteropServices.OleCodes.DragOpOver, grfKeyState, pt, ref pdwEffect, 0, null!, 0);
+    }
+
+    public int DragLeave()
+    {
+        int none = 0;
+        return PrivDragDrop(0, 0, System.Runtime.InteropServices.OleCodes.DragOpLeave, 0, 0, ref none, 0, null!, 0);
+    }
+
+    public int Drop(object pDataObj, int grfKeyState, long pt, ref int pdwEffect)
+    {
+        return PrivDragDrop(0, 0, System.Runtime.InteropServices.OleCodes.DragOpDrop, grfKeyState, pt, ref pdwEffect, 0, pDataObj, 0);
+    }
+}
+
+/// The forms' endpoints, registered and taken back (DragDrop_.ComRegister
+/// and ComRevoke).
+static class OleDrop
+{
+    static readonly Dictionary<int, OleDropEndpoint> _endpoints = new Dictionary<int, OleDropEndpoint>();
+
+    internal static long Register(Form form)
+    {
+        System.Runtime.InteropServices.OleNdr.FormatOfName = name => Seat.Current.RegisterClipboardFormat(name);
+        int window = form.Handle;
+        OleDropEndpoint endpoint = new OleDropEndpoint(form);
+        byte[] ipid;
+        long cookie = System.Runtime.InteropServices.OleWindows.Register(window, endpoint, out ipid);
+        endpoint.Cookie = cookie;
+        endpoint.Ipid = ipid;
+        lock (_endpoints) { _endpoints[window] = endpoint; }
+        return cookie;
+    }
+
+    internal static void Revoke(Form form)
+    {
+        int window = form.Handle;
+        OleDropEndpoint? endpoint;
+        lock (_endpoints)
+        {
+            if (!_endpoints.TryGetValue(window, out endpoint)) endpoint = null;
+            _endpoints.Remove(window);
+        }
+        if (endpoint != null) System.Runtime.InteropServices.OleWindows.Revoke(window, endpoint.Cookie, endpoint.Ipid);
+    }
+}
+
+/// THIS PROGRAM'S DRAG OVER WINDOWS PROGRAMS' WINDOWS, told as ole32's
+/// DoDragDrop tells another process's window (PrivDragDrop, 0x77B20DE4):
+/// the window's endpoint found by its cookie (the seat's DragBridgeTarget,
+/// then the broker), and DRAGOP_ENTER, OVER, LEAVE and DROP with the keys,
+/// the point on the screen and the effects allowed, the drag's data
+/// exported once as an IDataObject (OleDataExport) whose OBJREF goes in an
+/// InterfaceData. The endpoint answers the effect its IDropTarget chose.
+/// On this program's thread, in DoDragDrop's loop; what the window asks of
+/// the data comes to the COM runtime's threads meanwhile.
+sealed class OleDragBridge
+{
+    readonly OleDataExport _data;
+    nint _interfaceData;
+    byte[] _ipid = new byte[0];
+    System.Runtime.InteropServices.ComTypes.IInterfaceFromWindowProp? _target;
+    int _window;
+
+    public OleDragBridge(List<string> names, List<byte[]> encoded) { _data = new OleDataExport(names, encoded); }
+
+    public int Enter(int window, int keys, int x, int y, int allowed)
+    {
+        if (_target != null) Leave(_window);
+        try
+        {
+            long cookie = Seat.Current.DragBridgeTarget(window);
+            if (cookie == 0) return 0;
+            _target = System.Runtime.InteropServices.OleWindows.Endpoint(window, cookie);
+            _window = window;
+            if (_interfaceData == 0)
+            {
+                // Marshalled as a table keeps it, as the drag's whole life:
+                // each window that unmarshals it asks its own references.
+                byte[] objref = System.Runtime.InteropServices.ComExporter.ExportTable(_data, System.Runtime.InteropServices.OleCodes.IidIDataObject);
+                _ipid = new byte[16];
+                Array.Copy(objref, 48, _ipid, 0, 16);
+                _interfaceData = System.Runtime.InteropServices.OleMemory.InterfaceData(objref);
+            }
+            return Step(System.Runtime.InteropServices.OleCodes.DragOpEnter, keys, x, y, allowed);
+        }
+        catch (Exception) { Forget(); return 0; }
+    }
+
+    public int Over(int window, int keys, int x, int y, int allowed)
+    {
+        if (_target == null || window != _window) return 0;
+        try { return Step(System.Runtime.InteropServices.OleCodes.DragOpOver, keys, x, y, allowed); }
+        catch (Exception) { Forget(); return 0; }
+    }
+
+    public void Leave(int window)
+    {
+        if (_target == null || window != _window) return;
+        try { Step(System.Runtime.InteropServices.OleCodes.DragOpLeave, 0, 0, 0, 0); }
+        catch (Exception) { }
+        Forget();
+    }
+
+    public int Drop(int window, int keys, int x, int y, int allowed)
+    {
+        if (_target == null || window != _window) return 0;
+        int effect;
+        try { effect = Step(System.Runtime.InteropServices.OleCodes.DragOpDrop, keys, x, y, allowed); }
+        catch (Exception) { effect = 0; }
+        Forget();
+        return effect;
+    }
+
+    /// One PrivDragDrop: the effects allowed in, the one chosen out. The
+    /// source's thread is the broker's for this process; no source window
+    /// (the target's ole32 would attach its input to the window's thread).
+    int Step(int dop, int keys, int x, int y, int allowed)
+    {
+        System.Runtime.InteropServices.ComTypes.IInterfaceFromWindowProp? target = _target;
+        if (target == null) return 0;
+        int effect = allowed;
+        int hr = target.PrivDragDrop((nint)_window, _interfaceData, dop, keys, System.Runtime.InteropServices.OleMemory.Point(x, y), ref effect,
+            (int)System.Runtime.InteropServices.ComBroker.Thread, null!, 0);
+        return hr < 0 ? 0 : effect & allowed;
+    }
+
+    void Forget()
+    {
+        System.Runtime.InteropServices.ComTypes.IInterfaceFromWindowProp? target = _target;
+        _target = null;
+        _window = 0;
+        if (target is System.__ComObject c) { try { System.Runtime.InteropServices.Marshal.ReleaseComObject(c); } catch (Exception) { } }
+    }
+
+    /// The drag over: the window left if it was not, the data's export let go.
+    public void Close()
+    {
+        if (_target != null) Leave(_window);
+        if (_interfaceData != 0) { System.Runtime.InteropServices.Marshal.FreeHGlobal(_interfaceData); _interfaceData = 0; }
+        if (_ipid.Length == 16) System.Runtime.InteropServices.ComExporter.Unexport(_ipid);
+    }
 }

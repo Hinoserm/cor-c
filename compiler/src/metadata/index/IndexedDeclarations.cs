@@ -26,6 +26,17 @@ public sealed class IndexedDeclarations : IDisposable
     public IReadOnlyDictionary<(string Name, int Arity), int> Interfaces { get; }
     public IReadOnlySet<(string Name, int Arity)> LibraryInterfaces { get; }
 
+    /// <summary>
+    /// Set for a kernel module's compile (--kernel): then the kernel's own
+    /// interface families are told apart from the module's (Binder's module
+    /// tier). Null otherwise.
+    /// </summary>
+    public bool ModuleOfKernel { get; set; }
+    public IReadOnlySet<(string Name, int Arity)>? KernelInterfaces => ModuleOfKernel ? catalog.KernelInterfaces(assembly) : null;
+
+    /// <summary>The stamp of the kernel's index this unit's index was made on (a module's), or null.</summary>
+    public byte[]? UnderStamp => catalog.UnderStamp;
+
     public IndexedDeclarations(string path, string assembly, IEnumerable<string> ownedFiles,
         long declarationBudgetBytes = 2 * 1024 * 1024)
     {
@@ -388,7 +399,15 @@ public sealed class IndexedDeclarations : IDisposable
                             source.ConditionalSymbols, declarationsOnly: true, includeTemplateBodies: true);
                         templateFiles[templateKey] = templates;
                     }
-                    root = templates.Types.Single(type => type.SourceFrom == source.From && type.SourceTo == source.To);
+                    // BY ITS SPAN, AND ITS NAME WHERE TWO SHARE ONE: declarations
+                    // a pass made beside a type (COM's wrappers for a
+                    // [ComImport] interface) carry the span of what they were
+                    // made from, and Single found two.
+                    string simple = typeName[(Math.Max(typeName.LastIndexOf('+'), typeName.LastIndexOf('.')) + 1)..];
+                    int tick = simple.IndexOf('`');
+                    if (tick >= 0) simple = simple[..tick];
+                    List<TypeDecl> spanned = templates.Types.Where(type => type.SourceFrom == source.From && type.SourceTo == source.To).ToList();
+                    root = spanned.Count == 1 ? spanned[0] : spanned.FirstOrDefault(type => type.Name == simple) ?? spanned.First();
                 }
                 // Nested declarations have separate index records. Import the
                 // requested declaration only, retaining its own lexical scope.

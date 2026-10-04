@@ -32,13 +32,7 @@
       it not to, and with it the same compile peaks well below that, because
       a limit makes it collect instead of grow.
 
-      2 GB since 2026-10-04: a kernel module is one compile of all its
-      sources against the kernel's index, and win32k as the NT extension's
-      ring-1 module, a hundred thousand lines in one unit, ran out at
-      768 MB in the liveness of its biggest functions. Eight compilers at
-      2 GB is still a fraction of a build machine.
-
-      768 MB before that, and not less, because the limit is a WALL and not a target: the
+      768 MB, and not less, because the limit is a WALL and not a target: the
       biggest single compile this repository does, the whole class library
       inline as a fifteen megabyte object, already holds about 270 MB by
       itself, and a cap of 256 MB left it nothing. It survived alone and
@@ -57,7 +51,7 @@
     <ServerGarbageCollection>true</ServerGarbageCollection>
     <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
     <GCHeapCount>4</GCHeapCount>
-    <GCHeapHardLimit>2147483648</GCHeapHardLimit>
+    <GCHeapHardLimit>805306368</GCHeapHardLimit>
   </PropertyGroup>
 
   <!--

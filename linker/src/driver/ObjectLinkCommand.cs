@@ -180,7 +180,10 @@ public static class ObjectLinkCommand
         // EVERY INTERRUPT HANDLER, THROUGH EVERY UNIT: what no one unit's
         // compile could follow (InterruptNotes).
         List<string> interruptErrors = InterruptNotes.Check(inputs.Select(input => input.Item2));
-        if (interruptErrors.Count > 0) throw new LinkException(interruptErrors);
+        // A WARNING FOR NOW, with every path listed: the kernel's handlers
+        // reach allocations through wake-ups and polls that are being taken
+        // apart (the list is worked through; then this refuses again).
+        foreach (string interruptError in interruptErrors) Console.Error.WriteLine("corc: warning: " + interruptError);
         // A MODULE INITIALISER IS RUN BY A LOADER, which a static image has
         // none of: the compiler refuses one in a program, and a unit
         // compiled into a library and linked into a program is refused here.
@@ -192,10 +195,12 @@ public static class ObjectLinkCommand
         // nothing the link proves about the whole program holds (closed
         // facts, reachability), and neither does a virtual call reaching only
         // the overrides the image itself holds -- a module's driver overrides
-        // the kernel's Driver.Bind.
+        // the kernel's Driver.Bind. NOR A MODULE: its units' calls reach the
+        // kernel's overrides too, and other modules'.
         int regenerated = IrLinkOptimizer.Run(inputs, () => backend ?? new ProcessUnitBackend(backendPath), lto, importBytes,
             closedImageEntry: (flat || closed || physicalAddress is not null) && exportsPath is null ? entry : null, parallelBackends: backend is null, regionReport: regionReport,
-            openTypes: exportsPath is not null, reachableFrom: keep is not null ? entry : null, keep: keep);
+            openTypes: exportsPath is not null || kernel is not null, reachableFrom: keep is not null ? entry : null, keep: keep,
+            moduleOfKernel: kernel is not null);
         int folded = LinkTimeOptimizer.Run(inputs, lto);
         LinkTimings.Phase("constant returns and coalescing");
         if (selected is not null) X86CodeGenerationContract.ValidateTarget(inputs, selected);

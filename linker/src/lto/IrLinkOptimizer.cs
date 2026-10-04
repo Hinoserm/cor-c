@@ -8,7 +8,8 @@ public static class IrLinkOptimizer
 {
     public static int Run(List<(string Name, ObjectFile Object)> inputs, Func<IUnitBackend> backend,
         bool enabled = true, int importBytes = 1024 * 1024, int bodyLimit = 32, string? closedImageEntry = null, bool parallelBackends = false,
-        string? regionReport = null, bool openTypes = false, string? reachableFrom = null, IEnumerable<string>? keep = null)
+        string? regionReport = null, bool openTypes = false, string? reachableFrom = null, IEnumerable<string>? keep = null,
+        bool moduleOfKernel = false)
     {
         if (importBytes < 0 || bodyLimit < 0) throw new ArgumentOutOfRangeException(nameof(importBytes));
         TargetContract.Validate(inputs); ManagedLayoutContract.Validate(inputs);
@@ -333,7 +334,7 @@ public static class IrLinkOptimizer
         List<LifetimeHints> siteOrder = new(hintOrder);
         foreach (var replacement in replacements)
             if (LifetimeHints.Read(replacement.Object) is LifetimeHints regeneratedSites) siteOrder.Add(regeneratedSites);
-        (int sites, int sitesFreed) = DefineFieldSites(inputs, siteOrder, lifetimes);
+        (int sites, int sitesFreed) = DefineFieldSites(inputs, siteOrder, lifetimes, moduleOfKernel);
         foreach (var input in inputs)
             input.Object.Sections.RemoveAll(section => section.Name == IrArchive.SectionName || section.Name == LifetimeHints.SectionName
                 || section.Name == RegionHints.SectionName);
@@ -390,9 +391,32 @@ public static class IrLinkOptimizer
     // order was the objects' identity hashes, the symbols it adds landed in a
     // different order in each link, and no two images were the same bytes.
     private static (int Sites, int Freed) DefineFieldSites(List<(string Name, ObjectFile Object)> inputs,
-        List<LifetimeHints> hints, LifetimeSolver? solver)
+        List<LifetimeHints> hints, LifetimeSolver? solver, bool moduleOfKernel = false)
     {
         if (hints.All(unit => unit.FieldSites.Count == 0)) return (0, 0);
+        // A KERNEL MODULE'S SITES are defined in the module: the routines
+        // they would become are the kernel's, which the module reaches only
+        // through its GOT, and a symbol here can only be an address here. So
+        // every site keeps what its field holds -- KeepField does nothing,
+        // and this is the same nothing, a return, in an object of the link's
+        // own -- as all of them do with the link-time optimizer off.
+        if (moduleOfKernel)
+        {
+            ObjectFile kept = new();
+            Section text = new(".text", SectionKind.Code) { Align = 16 };
+            text.Bytes.Add(0xC3);                                                            // ret
+            kept.Sections.Add(text);
+            Symbol nothing = new() { Name = "__corsac_field_kept", Section = text, Offset = 0, Size = 1, IsFunction = true };
+            kept.Symbols.Add(nothing);
+            HashSet<string> named = new(StringComparer.Ordinal);
+            foreach (LifetimeHints unit in hints)
+                foreach ((LifetimeFields fields, List<(string Symbol, long Offset)> list) in unit.FieldSites)
+                    foreach ((string name, long offset) in list)
+                        if (named.Add(name))
+                            kept.Symbols.Add(new Symbol { Name = name, Section = text, Offset = 0, Size = 1, IsFunction = true, Global = true });
+            inputs.Add(("the module's field sites", kept));
+            return (named.Count, 0);
+        }
         (ObjectFile Object, Symbol Symbol)? Find(string name)
         {
             foreach (var input in inputs)
