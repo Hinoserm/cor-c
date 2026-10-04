@@ -578,12 +578,27 @@ internal sealed class RegionEscape
 
     // A stand-in's objects, by class: the unknown object, what its targets
     // make, every argument past the first ParamClasses and all they reach
-    // (Deep -1), and for each of the first ParamClasses parameters its own
-    // object (Place) and all below it (Deep). Which class may hold which is
-    // a bit a pair, which may be returned a bit a class, and the unknown
-    // call one more.
+    // (Deep -1), for each of the first ParamClasses parameters its own
+    // object (Place) and all below it (Deep), and -- last -- what its
+    // targets make that the unknown object reaches in their own summaries
+    // (HeldClass). Which class may hold which is a bit a pair, which may be
+    // returned a bit a class, and the unknown call one more.
+    //
+    // WHAT A TARGET MAKES IS TWO CLASSES, NOT ONE. One, a set of targets
+    // one of which throws (an exception the unknown object holds) or caches
+    // what it made in a static said that the unknown object holds every
+    // object any of them makes: every string a ToString hands back, every
+    // enumerator a GetEnumerator does, every object stored into an
+    // argument -- and past WidenAfter, every site beneath every target --
+    // was global wherever the call was. The unknown object holding a made
+    // object of a target is held-class now, and the rest stay apart:
+    // returned, stored into an argument, or kept by nothing. Each object is
+    // still in one class and each cell between two classes, so a shape is
+    // as sound as it was; only the made objects no target leaks are no
+    // longer the unknown object's for another target's sake.
     private const int ParamClasses = 6;
-    private const int Classes = 3 + 2 * ParamClasses;
+    private const int HeldClass = 3 + 2 * ParamClasses;
+    private const int Classes = HeldClass + 1;
     private const int ResultBits = Classes * Classes;
     private const int UnknownBit = ResultBits + Classes;
     private const int ShapeWords = (UnknownBit + 64) / 64;
@@ -595,6 +610,8 @@ internal sealed class RegionEscape
     {
         public readonly ulong[] Bits = new ulong[ShapeWords];
         public int[] Sites = Array.Empty<int>();
+        /// <summary>The sites of what its targets make that the unknown object reaches (HeldClass).</summary>
+        public int[] HeldSites = Array.Empty<int>();
         public bool Widened;
 
         public Summary Build()
@@ -612,11 +629,12 @@ internal sealed class RegionEscape
             }
             for (int cls = 1; cls < Classes; cls++)
             {
-                if (!Uses(cls) && !(cls == 1 && Sites.Length > 0)) continue;
+                if (!Uses(cls) && !(cls == 1 && Sites.Length > 0) && !(cls == HeldClass && HeldSites.Length > 0)) continue;
                 index[cls] = s.Objects.Count;
                 s.Objects.Add(cls switch
                 {
                     1 => (Kind.Made, -1, Array.Empty<int>(), Sites.Select(Leaf).Order().ToArray()),
+                    HeldClass => (Kind.Made, -1, Array.Empty<int>(), HeldSites.Select(Leaf).Order().ToArray()),
                     2 => (Kind.Deep, -1, Array.Empty<int>(), Array.Empty<int>()),
                     _ => (cls - 3) % 2 == 0 ? (Kind.Place, (cls - 3) / 2, Array.Empty<int>(), Array.Empty<int>()) : (Kind.Deep, (cls - 3) / 2, DeepBelow, Array.Empty<int>()),
                 });
@@ -638,9 +656,9 @@ internal sealed class RegionEscape
 
     private void DescribeStandIns()
     {
-        string Name(int cls) => cls switch { 0 => "U", 1 => "M", 2 => "A*", _ => ((cls - 3) % 2 == 0 ? "P" : "D") + (cls - 3) / 2 };
+        string Name(int cls) => cls switch { 0 => "U", 1 => "M", 2 => "A*", HeldClass => "Mu", _ => ((cls - 3) % 2 == 0 ? "P" : "D") + (cls - 3) / 2 };
         int unknown = _assumed!.Values.Count(a => Has(a.Bits, UnknownBit));
-        int holding = _assumed.Values.Count(a => !Has(a.Bits, UnknownBit) && Enumerable.Range(2, Classes - 2).Any(y => Has(a.Bits, y)));
+        int holding = _assumed.Values.Count(a => !Has(a.Bits, UnknownBit) && Enumerable.Range(2, HeldClass - 2).Any(y => Has(a.Bits, y)));
         int past = 0, unified = 0;
         for (int f = 0; f < _how.Length; f++) { if (_how[f] == How.PastBound) past++; else if (_how[f] == How.Unified) unified++; }
         Progress?.Invoke($"escape graphs: stand-ins: {unknown} of {_assumed.Count} the unknown call, {holding} more with the unknown object holding an argument; "
@@ -663,7 +681,7 @@ internal sealed class RegionEscape
             // made coarse past a summary's bounds.
             bool LeaksArgument(ulong[] bits)
             {
-                for (int y = 2; y < Classes; y++) if (Has(bits, y)) return true;
+                for (int y = 2; y < HeldClass; y++) if (Has(bits, y)) return true;
                 return false;
             }
             if (LeaksArgument(a.Bits))
@@ -673,7 +691,7 @@ internal sealed class RegionEscape
                     + (_summaries[t]!.MadeCoarse ? ", coarse" : "");
                 held.Add($"U>arg by {leaking.Count}: " + string.Join(", ", leaking.Take(4).Select(t => _functions[t].Name + " (" + Tag(t) + ")")));
             }
-            Progress?.Invoke($"escape graphs:   {targets.Length} targets ({_functions[targets[0]].Name}): {a.Sites.Length} sites; " + string.Join(" ", held));
+            Progress?.Invoke($"escape graphs:   {targets.Length} targets ({_functions[targets[0]].Name}): {a.Sites.Length} sites, {a.HeldSites.Length} held; " + string.Join(" ", held));
         }
     }
 
@@ -716,24 +734,27 @@ internal sealed class RegionEscape
 
     // A summary as a stand-in's shape: which classes hold which, and the
     // sites its made objects may be.
-    private (ulong[] Bits, int[] Sites) Shape(Summary s)
+    private (ulong[] Bits, int[] Sites, int[] HeldSites) Shape(Summary s)
     {
         ulong[] bits = new ulong[ShapeWords];
-        if (s.IsUnknown) { Set(bits, UnknownBit); return (bits, Array.Empty<int>()); }
+        if (s.IsUnknown) { Set(bits, UnknownBit); return (bits, Array.Empty<int>(), Array.Empty<int>()); }
+        HashSet<int> leaked = s.Leaked();
         int Class(int k)
         {
             var o = s.Objects[k];
             if (o.Kind == Kind.Unknown) return 0;
-            if (o.Kind == Kind.Made) return 1;
+            if (o.Kind == Kind.Made) return leaked.Contains(k) && o.Param != ConstantParam ? HeldClass : 1;
             if (o.Param < 0 || o.Param >= ParamClasses) return 2;
             // (A place guarded at its parameter is still that object.)
             return 3 + 2 * o.Param + (o.Kind == Kind.Place && Fields(o.Path) == 0 && Array.IndexOf(o.Path, DeepStep) < 0 ? 0 : 1);
         }
         foreach (var c in s.Cells) Set(bits, Class(c.From) * Classes + Class(c.To));
         foreach (var r in s.Result) Set(bits, ResultBits + Class(r.To));
-        List<int> origins = new();
-        foreach (var o in s.Objects) if (o.Kind == Kind.Made) origins.AddRange(o.Origins);
-        return (bits, origins.Count == 0 ? Array.Empty<int>() : SitesOf(origins.ToArray()));
+        List<int> origins = new(), heldOrigins = new();
+        for (int k = 0; k < s.Objects.Count; k++)
+            if (s.Objects[k].Kind == Kind.Made) (Class(k) == HeldClass ? heldOrigins : origins).AddRange(s.Objects[k].Origins);
+        return (bits, origins.Count == 0 ? Array.Empty<int>() : SitesOf(origins.ToArray()),
+                heldOrigins.Count == 0 ? Array.Empty<int>() : SitesOf(heldOrigins.ToArray()));
     }
 
     /// <summary>Grows every stand-in its targets' summaries are not covered by: how many grew.</summary>
@@ -743,7 +764,7 @@ internal sealed class RegionEscape
         foreach (var (targets, a) in _assumed!)
         {
             ulong[] bits = new ulong[ShapeWords];
-            HashSet<int> sites = new();
+            HashSet<int> sites = new(), heldSites = new();
             foreach (int t in targets)
             {
                 // By the summary itself: one a round kept (Publish) keeps its shape.
@@ -751,9 +772,10 @@ internal sealed class RegionEscape
                 if (!_shapes.TryGetValue(summary, out var shape)) _shapes[summary] = shape = Shape(summary);
                 for (int w = 0; w < ShapeWords; w++) bits[w] |= shape.Bits[w];
                 sites.UnionWith(shape.Sites);
+                heldSites.UnionWith(shape.HeldSites);
             }
-            HashSet<int> had = new(a.Sites);
-            bool covered = sites.IsSubsetOf(had);
+            HashSet<int> had = new(a.Sites), hadHeld = new(a.HeldSites);
+            bool covered = sites.IsSubsetOf(had) && heldSites.IsSubsetOf(hadHeld);
             for (int w = 0; w < ShapeWords; w++) if ((bits[w] & ~a.Bits[w]) != 0) covered = false;
             if (covered) continue;
             grew++;
@@ -761,18 +783,23 @@ internal sealed class RegionEscape
             _grown.Add(targets);
             _standIns.Remove(targets);
             for (int w = 0; w < ShapeWords; w++) a.Bits[w] |= bits[w];
+            // Widened, every site beneath its targets is taken at once as
+            // what they make, not what the unknown object holds: those it
+            // holds still grow, a site at a time, and are finitely many.
             if (widen && !a.Widened)
             {
                 a.Widened = true;
                 sites.UnionWith(Beneath(targets));
             }
             sites.UnionWith(had);
+            heldSites.UnionWith(hadHeld);
             a.Sites = sites.Order().ToArray();
+            a.HeldSites = heldSites.Order().ToArray();
         }
         return grew;
     }
 
-    private readonly Dictionary<Summary, (ulong[] Bits, int[] Sites)> _shapes = new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<Summary, (ulong[] Bits, int[] Sites, int[] HeldSites)> _shapes = new(ReferenceEqualityComparer.Instance);
     private static readonly Summary _noSummary = Summary.Unknown;
 
     // Every site in the targets and every function they may call.
@@ -1128,6 +1155,20 @@ internal sealed class RegionEscape
         }
 
         /// <summary>
+        /// The objects the unknown object reaches in this summary, through
+        /// its cells: what is everyone's whatever calls it. (0 among them.)
+        /// </summary>
+        public HashSet<int> Leaked()
+        {
+            HashSet<int> leaked = new() { 0 };
+            Stack<int> next = new();
+            next.Push(0);
+            while (next.TryPop(out int o))
+                foreach (var c in Cells) if (c.From == o && leaked.Add(c.To)) next.Push(c.To);
+            return leaked;
+        }
+
+        /// <summary>
         /// THE COARSEST SUMMARY BUT THE UNKNOWN CALL'S: each parameter's own
         /// object, everything below it one deep place, everything made one
         /// object, every cell at any offset.
@@ -1145,16 +1186,32 @@ internal sealed class RegionEscape
                 b.Objects.Add((kind, param, path, origins));
                 return kept[key] = at;
             }
+            // A made object: its key's path tells the two apart; the object
+            // itself has none.
+            int KeepMade(int[] key, int[] origins)
+            {
+                int at = Keep(Kind.Made, -1, key, origins);
+                b.Objects[at] = (Kind.Made, -1, Array.Empty<int>(), origins);
+                return at;
+            }
             int KeepPlace(int param, int[] path)
             {
                 if (param < 0) return Keep(Kind.Deep, param, DeepBelow, Array.Empty<int>());
                 int[] coarse = Coarsened(path);
                 return Keep(KindOf(coarse), param, coarse, Array.Empty<int>());
             }
-            List<int> all = new();
-            foreach (var o in Objects) if (o.Kind == Kind.Made && o.Param != ConstantParam) all.AddRange(o.Origins);
-            all.Sort();
-            int[] origins = all.Distinct().ToArray();
+            // EVERYTHING MADE TWO OBJECTS, not one: what the unknown object
+            // reaches, and the rest. One, an exception a call throws made
+            // every object it hands back or stores into an argument the
+            // unknown object's too, and every site of it global.
+            HashSet<int> leaked = Leaked();
+            List<int> heldAll = new(), freeAll = new();
+            for (int k = 0; k < Objects.Count; k++)
+                if (Objects[k] is { Kind: Kind.Made } made && made.Param != ConstantParam) (leaked.Contains(k) ? heldAll : freeAll).AddRange(made.Origins);
+            heldAll.Sort(); freeAll.Sort();
+            int[] heldOrigins = heldAll.Distinct().ToArray(), freeOrigins = freeAll.Distinct().ToArray();
+            // Kept apart by a path no made object has.
+            int[] heldKey = { DeepStep, DeepStep };
             for (int k = 0; k < Objects.Count; k++)
             {
                 var o = Objects[k];
@@ -1166,7 +1223,7 @@ internal sealed class RegionEscape
                     Kind.Unknown => 0,
                     Kind.Place or Kind.Deep => KeepPlace(o.Param, o.Path),
                     Kind.Made when o.Param == ConstantParam => Keep(Kind.Made, ConstantParam, Array.Empty<int>(), Array.Empty<int>()),
-                    _ => Keep(Kind.Made, -1, Array.Empty<int>(), origins),
+                    _ => leaked.Contains(k) ? KeepMade(heldKey, heldOrigins) : KeepMade(Array.Empty<int>(), freeOrigins),
                 };
             }
             // Merged objects are pointed into anywhere: their parts' offsets differ.
@@ -1179,28 +1236,72 @@ internal sealed class RegionEscape
         }
 
         /// <summary>
-        /// THE SHAPE PAST EVEN THE COARSE ONE: every argument and all it
-        /// reaches one object, everything made another, and the unknown
-        /// object -- what a coarse summary dense with cells, each object to
-        /// every other, came to anyway, at one closure a call. Each holds what
-        /// one of the objects merged into it held of one merged into the
-        /// other: a merge, so no less than the summary said. It held every
-        /// pair, and the unknown object every argument wherever a cell
-        /// touched it at all: a ToString that read a static, or an argument
-        /// handed a literal, leaked every argument of every call of it --
-        /// and, through a wide call's stand-in, of every override's call.
+        /// THE SHAPE PAST EVEN THE COARSE ONE: each parameter's own object and
+        /// one deep place below it, the deep place past every parameter, what
+        /// was made in two -- what the unknown object reaches, and the rest
+        /// -- a constant, and the unknown object: what a coarse summary dense
+        /// with cells, each object to every other, came to anyway, at a few
+        /// cells a call. Each holds what one of the objects merged into it
+        /// held of one merged into the other: a merge, so no less than the
+        /// summary said. It held every pair once, and the unknown object
+        /// every argument wherever a cell touched it at all: a ToString that
+        /// read a static, or an argument handed a literal, leaked every
+        /// argument of every call of it -- and, through a wide call's
+        /// stand-in, of every override's call. Then every argument was one
+        /// object, and one argument leaked was all of them.
         /// </summary>
         public Summary Everything()
         {
             Summary e = new();
-            bool places = false;
-            List<int> origins = new();
-            foreach (var o in Objects) { if (o.Kind is Kind.Place or Kind.Deep) places = true; if (o.Kind == Kind.Made) origins.AddRange(o.Origins); }
-            origins.Sort();
-            int all = -1, blob = -1;
-            if (places) { all = e.Objects.Count; e.Objects.Add((Kind.Deep, -1, Array.Empty<int>(), Array.Empty<int>())); }
-            if (origins.Count > 0) { blob = e.Objects.Count; e.Objects.Add((Kind.Made, -1, Array.Empty<int>(), origins.Distinct().ToArray())); }
-            int Merged(int k) => Objects[k].Kind switch { Kind.Unknown => 0, Kind.Made => blob, _ => all };
+            // STILL TWO MADE OBJECTS AND EACH PARAMETER ITS OWN (as Coarse):
+            // what the unknown object reaches made one, the rest another; each
+            // parameter its own object and one deep place below it, and the
+            // deep place past every parameter where there was one. Merging
+            // two objects is everything either was, so this is only ever
+            // more than the summary said. All one, one argument leaked or
+            // one object thrown made every argument, and every object handed
+            // back, everyone's -- and through a wide call's stand-in, at
+            // every call of every override.
+            HashSet<int> leaked = Leaked();
+            List<int> heldOrigins = new(), freeOrigins = new();
+            bool Fresh(int k) => Objects[k].Kind == Kind.Made && Objects[k].Param != ConstantParam;
+            for (int k = 0; k < Objects.Count; k++)
+                if (Fresh(k)) (leaked.Contains(k) ? heldOrigins : freeOrigins).AddRange(Objects[k].Origins);
+            int held = -1, free = -1, constant = -1;
+            bool anyHeld = false, anyFree = false;
+            for (int k = 0; k < Objects.Count; k++) if (Fresh(k)) { if (leaked.Contains(k)) anyHeld = true; else anyFree = true; }
+            // A constant stays the constant: it makes nothing escape.
+            if (Objects.Any(o => o.Kind == Kind.Made && o.Param == ConstantParam)) { constant = e.Objects.Count; e.Objects.Add((Kind.Made, ConstantParam, Array.Empty<int>(), Array.Empty<int>())); }
+            if (anyHeld) { held = e.Objects.Count; e.Objects.Add((Kind.Made, -1, Array.Empty<int>(), heldOrigins.Distinct().Order().ToArray())); }
+            if (anyFree) { free = e.Objects.Count; e.Objects.Add((Kind.Made, -1, Array.Empty<int>(), freeOrigins.Distinct().Order().ToArray())); }
+            Dictionary<int, int> paramPlace = new();
+            int PlaceOf(int param)
+            {
+                int key = param >= 0 ? param : -1;
+                if (paramPlace.TryGetValue(key, out int at)) return at;
+                at = e.Objects.Count;
+                e.Objects.Add(key < 0 ? (Kind.Deep, -1, Array.Empty<int>(), Array.Empty<int>()) : (Kind.Place, key, Array.Empty<int>(), Array.Empty<int>()));
+                return paramPlace[key] = at;
+            }
+            Dictionary<int, int> deepOf = new();
+            int DeepOf(int param)
+            {
+                int key = param >= 0 ? param : -1;
+                if (key < 0) return PlaceOf(-1);
+                if (deepOf.TryGetValue(key, out int at)) return at;
+                at = e.Objects.Count;
+                e.Objects.Add((Kind.Deep, key, DeepBelow, Array.Empty<int>()));
+                return deepOf[key] = at;
+            }
+            int Merged(int k)
+            {
+                var o = Objects[k];
+                if (o.Kind == Kind.Unknown) return 0;
+                if (o.Kind == Kind.Made) return o.Param == ConstantParam ? constant : leaked.Contains(k) ? held : free;
+                if (o.Param < 0) return PlaceOf(-1);
+                // (A place guarded at its parameter is still that object.)
+                return o.Kind == Kind.Place && Fields(o.Path) == 0 && Array.IndexOf(o.Path, DeepStep) < 0 ? PlaceOf(o.Param) : DeepOf(o.Param);
+            }
             foreach (var c in Cells)
             {
                 int from = Merged(c.From), to = Merged(c.To);
@@ -1351,7 +1452,13 @@ internal sealed class RegionEscape
                 collapsed.Add(param);
                 left -= count;
             }
-            List<int> blobOrigins = new();
+            // THE MADE OBJECTS PAST `keep`, TWO: those the unknown object
+            // reaches, and the rest. One, a row a sheet's maker hands back
+            // merged with an exception it may throw was everyone's, and
+            // every object below it.
+            HashSet<int> leaked = Leaked();
+            int heldBlob = -1;
+            List<int> blobOrigins = new(), heldOrigins = new();
             int keptMade = 0;
             for (int k = 0; k < Objects.Count; k++)
             {
@@ -1360,6 +1467,13 @@ internal sealed class RegionEscape
                 if (o.Kind == Kind.Made && o.Param == ConstantParam) { map[k] = b.Objects.Count; b.Objects.Add(o); continue; }
                 if (o.Kind == Kind.Made && ++keptMade > keep - 1)
                 {
+                    if (leaked.Contains(k))
+                    {
+                        if (heldBlob < 0) { heldBlob = b.Objects.Count; b.Objects.Add((Kind.Made, -1, Array.Empty<int>(), Array.Empty<int>())); }
+                        heldOrigins.AddRange(o.Origins);
+                        map[k] = heldBlob;
+                        continue;
+                    }
                     if (blob < 0) { blob = b.Objects.Count; b.Objects.Add((Kind.Made, -1, Array.Empty<int>(), Array.Empty<int>())); }
                     blobOrigins.AddRange(o.Origins);
                     map[k] = blob;
@@ -1376,15 +1490,19 @@ internal sealed class RegionEscape
                 blobOrigins.Sort();
                 b.Objects[blob] = (Kind.Made, -1, Array.Empty<int>(), blobOrigins.Distinct().ToArray());
             }
+            if (heldBlob >= 0)
+            {
+                heldOrigins.Sort();
+                b.Objects[heldBlob] = (Kind.Made, -1, Array.Empty<int>(), heldOrigins.Distinct().ToArray());
+            }
+            bool Merged(int at) => at == blob || at == heldBlob || b.Objects[at].Kind == Kind.Deep;
             // A merged object's cells are at any offset: its parts' fields differ.
             foreach (var c in Cells)
             {
                 int from = map[c.From], to = map[c.To];
-                bool mergedFrom = from == blob || b.Objects[from].Kind == Kind.Deep;
-                bool mergedTo = to == blob || b.Objects[to].Kind == Kind.Deep;
-                b.Cells.Add((from, mergedFrom ? Any : c.Offset, to, mergedTo ? Any : c.ToOffset));
+                b.Cells.Add((from, Merged(from) ? Any : c.Offset, to, Merged(to) ? Any : c.ToOffset));
             }
-            foreach (var r in Result) b.Result.Add((map[r.To], map[r.To] == blob || b.Objects[map[r.To]].Kind == Kind.Deep ? Any : r.ToOffset));
+            foreach (var r in Result) b.Result.Add((map[r.To], Merged(map[r.To]) ? Any : r.ToOffset));
             b.Cells.Sort(); b.Result.Sort();
             Dedupe(b.Cells); Dedupe(b.Result);
             return b;
