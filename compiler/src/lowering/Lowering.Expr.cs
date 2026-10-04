@@ -2230,12 +2230,12 @@ public sealed partial class Lowering
                           : _b.TestedTypes.TryGetValue(isx, out TypeSymbol? tested0) ? new Type { Prim = Prim.Void, Symbol = tested0 }
                           : _b.Types.TryGetValue(isx.Type.Name, out TypeSymbol? named0) ? new Type { Prim = Prim.Void, Symbol = named0 } : null;
             VReg subject = Eval(isx.Operand);
-            VReg found = CanonTest(isx, subject, NamedTest(subject, written));
+            VReg canonFound = CanonTest(isx, subject, NamedTest(subject, written));
             if (_b.PatternSlot.TryGetValue(isx, out int boundTo))
             {
                 BindPattern(isx, boundTo, written ?? Type.Any, subject);
             }
-            return found;
+            return canonFound;
         }
         // `x is T` IN A SHARED COPY: of what T is for the object at hand.
         if (isx.CanonSlot >= 0 && HeldByReference(_b.TypeOf(isx.Operand)))
