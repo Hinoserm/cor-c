@@ -936,12 +936,14 @@ public static class RegionEscapeTests
 
     /// <summary>
     /// Every field the hints carry, written, read back and written again:
-    /// the same bytes, at the format's version 9, and each field as it was.
+    /// the same bytes, at the format's version 10, and each field as it was.
     /// </summary>
     private static void HintsRoundTrip()
     {
         RegionHints hints = new() { WordSize = 8 };
         hints.AddressTaken.Add("Hook");
+        hints.MethodsTaken.Add("Work");
+        hints.CallsThroughMethods = true;
         RegionFunction f = new("Work", true, true, true, 2, 6, 1,
             new[] { new RegionSite(true, 7, "t_T", 48, RegionWords.Described), new RegionSite(false, 9, null, 0, RegionWords.Leaf) })
         {
@@ -969,11 +971,15 @@ public static class RegionEscapeTests
         hints.Functions.Add(main);
 
         byte[] bytes = hints.Write();
-        Check(BitConverter.ToInt32(bytes, 4) == 9, "the hints are written at version 9");
+        Check(BitConverter.ToInt32(bytes, 4) == 10, "the hints are written at version 10");
         RegionHints again = RegionHints.Read(bytes);
         Check(again.Write().AsSpan().SequenceEqual(bytes), "read back, the hints write the same bytes");
         RegionFunction w = again.Functions.Single(x => x.Name == "Work");
         Check(again.WordSize == 8 && again.AddressTaken.SetEquals(new[] { "Hook" }), "the word size and the addresses taken");
+        Check(again.MethodsTaken.SetEquals(new[] { "Work" }) && again.CallsThroughMethods, "the methods only descriptors name, and that the unit calls one blind");
+        hints.MethodsTaken.Clear(); hints.CallsThroughMethods = false;
+        RegionHints none = RegionHints.Read(hints.Write());
+        Check(none.MethodsTaken.Count == 0 && !none.CallsThroughMethods, "no methods taken and no blind call, read back so");
         Check(w.Instance && !w.Main && w.Parameters == 2 && w.Nodes == 6 && w.Slots == 1, "the function's shape");
         Check(w.NumberParams.SequenceEqual(new[] { 1 }) && w.Symbols.SequenceEqual(new[] { "s_Table" }), "its number parameters and symbols");
         Check(w.Families.SequenceEqual(new[] { "Node::Next", "Sym::Name" }), "the fields its loads and stores name");
