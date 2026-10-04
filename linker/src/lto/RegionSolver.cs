@@ -1641,6 +1641,7 @@ public static class RegionSolver
 
         private RegionFacts?[]? Judge()
         {
+            _judgeBytes = _report?.Contains("+judgebytes") == true;
             _globalReach = new();
             if (_escape is not null)
             {
@@ -1752,12 +1753,16 @@ public static class RegionSolver
                 taken = verdict.Taken;
                 final = verdict;
                 if (round == 3) break;
-                List<int> dropped = chosen.Where(f => verdict.Loss.GetValueOrDefault(f) > verdict.Gain.GetValueOrDefault(f)).ToList();
+                List<int> dropped = _judgeBytes
+                    ? chosen.Where(f => verdict.LossBytes.GetValueOrDefault(f) > verdict.GainBytes.GetValueOrDefault(f)).ToList()
+                    : chosen.Where(f => verdict.Loss.GetValueOrDefault(f) > verdict.Gain.GetValueOrDefault(f)).ToList();
                 if (dropped.Count == 0) break;
                 foreach (int f in dropped)
                 {
                     chosen.Remove(f);
-                    if (_report is not null) Log("boundary dropped " + _functions[f].Name + ": keeps " + verdict.Loss[f] + " sites out, takes " + verdict.Gain.GetValueOrDefault(f));
+                    if (_report is not null)
+                        Log("boundary dropped " + _functions[f].Name + ": keeps " + verdict.Loss.GetValueOrDefault(f) + " sites out, takes " + verdict.Gain.GetValueOrDefault(f)
+                            + (_judgeBytes ? $" ({verdict.LossBytes.GetValueOrDefault(f)} bytes out, {verdict.GainBytes.GetValueOrDefault(f)} taken)" : ""));
                 }
             }
 
@@ -1803,6 +1808,57 @@ public static class RegionSolver
             return facts;
         }
 
+        // --region-report +judgebytes: the drop rule's A/B (SiteWeight, TakenAbove).
+        private bool _judgeBytes;
+
+        // What a site costs a call, estimated: its block's bytes (the sizes
+        // hints; 32 where not a constant) times how often it runs in its
+        // function, the product of its loops' trip counts (16 a loop of no
+        // known count), capped. A pass's Run over thousands of instructions
+        // weighs what it makes in its loops, where a leaf's one array weighs
+        // one array.
+        private long SiteWeight(int f, int site)
+        {
+            const long Cap = 1L << 30;
+            RegionFunction function = _functions[f];
+            long bytes = function.BytesOf(site) is long b and > 0 ? b : 32;
+            long times = 1;
+            int loop = function.LoopOfSite(site);
+            if (loop == RegionFunction.Throwing) return bytes;
+            if (loop == RegionFunction.Unbounded) times = 16;
+            for (int l = loop, steps = 0; l >= 0 && l < function.Repeats.Length && steps < 16; l = function.Repeats[l].Parent, steps++)
+            {
+                long trip = function.Repeats[l].Trip;
+                times = Math.Min(Cap, times * (trip > 0 ? Math.Min(trip, 4096) : 16));
+            }
+            return Math.Min(Cap, bytes * times);
+        }
+
+        // Whether a boundary above the copy that refused each object --
+        // the first on each way up past it -- would take the object: what
+        // Loss charges a boundary for is what it keeps out of a region that
+        // would hold it. The rule before charged every refusal beneath any
+        // other boundary, though that one refused the same objects: a pass's
+        // Run beneath its driver was charged for every IR object it kept,
+        // which outlives the driver too.
+        private bool TakenAbove(List<int> objects)
+        {
+            foreach (int o in objects)
+            {
+                int b = _refusedBy[o];
+                if (b < 0) continue;
+                bool takes = false;
+                foreach (int p in _callersOf[b])
+                {
+                    foreach (int g in _isBoundary[p] ? Alone(p) : _nearest[_component[p]])
+                        if (_copyFunction[g] != _copyFunction[b] && !Outlives(o, g, EscapingBits(g))) { takes = true; break; }
+                    if (takes) break;
+                }
+                if (!takes) return false;
+            }
+            return true;
+        }
+
         private sealed class Verdict
         {
             public readonly HashSet<(int, int)> Taken = new();
@@ -1814,6 +1870,8 @@ public static class RegionSolver
             public readonly Dictionary<int, int> Loss = new();
             /// <summary>Per boundary: the sites taken that only it is above.</summary>
             public readonly Dictionary<int, int> Gain = new();
+            /// <summary>+judgebytes: Loss and Gain as estimated bytes a call (SiteWeight), Loss only where a boundary above would take the site.</summary>
+            public readonly Dictionary<int, long> LossBytes = new(), GainBytes = new();
         }
 
         /// <summary>
@@ -1905,8 +1963,12 @@ public static class RegionSolver
                     // Taken only for the one boundary above all of it.
                     int only = -1;
                     foreach (int o in objects)
-                        if (above[o] is int f and not -1) only = (only == -1 || only == f) && !outer[o] ? f : -2;
-                    if (only >= 0) verdict.Gain[only] = verdict.Gain.GetValueOrDefault(only) + 1;
+                        if (above[o] is int f and not -1) only = (only == -1 || only == f) && (_judgeBytes || !outer[o]) ? f : -2;
+                    if (only >= 0)
+                    {
+                        verdict.Gain[only] = verdict.Gain.GetValueOrDefault(only) + 1;
+                        verdict.GainBytes[only] = verdict.GainBytes.GetValueOrDefault(only) + SiteWeight(key.Item1, key.Item2);
+                    }
                     continue;
                 }
                 // Refused by one boundary alone, with another above it too.
@@ -1918,6 +1980,8 @@ public static class RegionSolver
                     if (outer[o] || above[o] is int a and not -1 && (a == -2 || refuser[o] != a)) other = true;
                 }
                 if (sole >= 0 && other) verdict.Loss[sole] = verdict.Loss.GetValueOrDefault(sole) + 1;
+                if (_judgeBytes && sole >= 0 && other && TakenAbove(objects))
+                    verdict.LossBytes[sole] = verdict.LossBytes.GetValueOrDefault(sole) + SiteWeight(key.Item1, key.Item2);
             }
             return verdict;
         }
