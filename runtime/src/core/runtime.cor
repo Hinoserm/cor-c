@@ -1250,6 +1250,17 @@ static class Runtime
         Free((nint)held);
     }
 
+    /// An array its collection's own storage field alone holds, grown to
+    /// `length` elements where it is when it is its region's top (Gc.RegionGrow):
+    /// true when it was, and the collection keeps it; false, and it makes a
+    /// new one as it always has. Keeps no pointer (EscapeFields.IsCollectorNote).
+    public static bool GrowInPlace(nint array, nint length)
+    {
+        long at = (long)(nuint)array;
+        if (at == 0 || !Gc.InOwnRegion(at)) return false;
+        return Gc.RegionGrow(at, (long)length);
+    }
+
     // THE FIELD FREES, LOGGED (CORSAC_FREE_LOG). A ring of the last entries,
     // four words each -- what was freed, whose field it was, the offset, and
     // the return address into the code that freed it -- whose first word

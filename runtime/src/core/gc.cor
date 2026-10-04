@@ -2205,6 +2205,9 @@ static class Gc
     /// -- not counted again in RegionFreedBytes when the region ends.
     public static long RegionTopFrees;
     public static long RegionTopFreedBytes;
+    /// Arrays grown where they were, at their region's top (RegionGrow),
+    /// where a new one would have been made and the old left behind.
+    public static long RegionGrownInPlace;
     /// Blocks made in regions: each given back when its region ends, as a
     /// free would have given it back (what Frees counts for the heap).
     public static long RegionBlocks;
@@ -2646,6 +2649,68 @@ static class Gc
         }
         RegionTopFreedBytes = RegionTopFreedBytes + freed;
         FreedBytes = FreedBytes + freed;
+    }
+
+    /// <summary>
+    /// AN ARRAY GROWN WHERE IT IS, to `length` elements, when it is the block
+    /// at the innermost region's top in the chunk being filled and the chunk
+    /// has the room: the bump pointer goes on past the new end, the block's
+    /// size and its count follow, and the new elements are the zeroed bytes
+    /// the arena keeps past its pointer. False otherwise -- anywhere else, on
+    /// the heap -- and nothing is changed.
+    ///
+    /// ONLY FOR AN ARRAY HELD BY ITS COLLECTION'S OWN STORAGE FIELD AND
+    /// NOTHING ELSE (List's items, never lent; a builder's buffer, a string
+    /// no one else is ever handed): every reader reads its length again
+    /// through that field, and none holds the old one.
+    ///
+    /// A stopped thread's arena reads whole after every step: the pointer
+    /// moves first, so a scan meets the block at its old size and then the
+    /// zeroed bytes after it, which end the chunk's walk; the new footer is
+    /// written past the old end, the old footer -- now inside the elements --
+    /// cleared, then the header, and the count last, so a scan never reads
+    /// more elements than the block holds, nor a word that is not one.
+    /// </summary>
+    public static bool RegionGrow(long at, long length)
+    {
+        long tb = Sys.ThreadBlock();
+        if (tb == 0 || at == 0 || length <= 0 || length > 0x7FFFFFFF) return false;
+        long open = Sys.Peek(tb + Tls.RegionOpen);
+        if (open == 0) return false;
+        long w = WordSize.Bytes;
+        long last = Sys.Peek(tb + Tls.RegionEnd);
+        long top = Sys.Peek(tb + Tls.RegionAt);
+        long start = ChunkStart(last);
+        long floor = open >= start && open < last ? open + RecordBytes : start;
+        long block = at - HeaderBytes;
+        if (block < floor || block >= top) return false;
+        long word = Sys.Peek(block);
+        long size = word & SizeMask;
+        if (size < Smallest || block + size != top || Sys.Peek(block + size - FooterBytes) != word || (word & ~SizeMask) != 0) return false;
+        long kind = Sys.Peek(block + KindAt);
+        if (kind != KindObject && kind != KindLeaf) return false;
+        // An array, or a string's characters, by its descriptor.
+        long vt = Sys.Peek(at) & WordSize.AddressMask;
+        if (vt == 0) return false;
+        long desc = vt - DescWords * w;
+        if ((Sys.Peek(desc + DescSelfWord * w) & WordSize.AddressMask) != desc) return false;
+        long flags = Sys.Peek(desc + DescFlagsWord * w);
+        if ((flags & SequenceFlag) == 0) return false;
+        long stride = Sys.Peek(desc + DescSizeWord * w);
+        long payload = Sys.Peek(desc + DescPayloadWord * w);
+        long count = Sys.Peek(at + ArrayCountAt) & 0x7FFFFFFF;
+        if (stride <= 0 || length <= count) return false;
+        long need = (payload + length * stride + Overhead + 7) & SizeMask;
+        if (need <= size || block + need > last) return false;
+        // The pointer first, then the footer past the old end, the old footer
+        // cleared, the header, and the count last.
+        Sys.Poke(tb + Tls.RegionAt, block + need);
+        Sys.Poke(block + need - FooterBytes, need);
+        Sys.Poke(block + size - FooterBytes, 0);
+        Sys.Poke(block, need);
+        Sys.PokeWord(at + ArrayCountAt, (Sys.PeekWord(at + ArrayCountAt) & 0x80000000) | length);
+        RegionGrownInPlace = RegionGrownInPlace + 1;
+        return true;
     }
 
     /// Whether the block of a region's `at` is an object -- the only kind

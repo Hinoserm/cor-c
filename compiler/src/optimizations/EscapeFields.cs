@@ -82,6 +82,9 @@ public sealed partial class Escape
             // passes: the link runs its lifetime pass after them (RunAtLink),
             // and took every object a field store was barriered for as gone.
             or "__x86.i.barrier" or "__x86.i.cardmark"
+            // An array grown where it is (Runtime.GrowInPlace): its length and
+            // its new zeroed elements written, nothing kept.
+            or Corsac.Lang.Lto.RuntimeAbi.GrowInPlace
             // The mark on a collection whose elements go with its storage
             // (OwnedElements.Marker), a flag set and nothing kept: placed by
             // the unit's late passes, it is a call the link's lifetime pass
