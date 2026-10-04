@@ -27,6 +27,7 @@ public static class RegionEscapeTests
         ("a number parameter is handed no address", NumberParameters),
         ("a virtual call runs on each object only what it may", Guards),
         ("what one field of a place is written is read by no other field's load", TypedAliasing),
+        ("a callee's write of a field into a parameter keeps its field at the caller", TypedAliasingThroughSummary),
         ("a wide call on a parameter is deferred for the targets that leak", WideDeferred),
         ("a wide call deferred through two levels of parameters", WideDeferredTwoLevels),
         ("a node past MostHeld objects holds a blob of the rest", Saturation),
@@ -495,6 +496,41 @@ public static class RegionEscapeTests
         Check(!Solve(2).Global[s], "a load of TypeSymbol::Name reads nothing written into Instr::Value: S is not global");
         Check(Solve(-1).Global[s], "an untyped load reads what is written into places: S is global");
         Check(Solve(0).Global[s], "a load of Instr::Value reads what was written into it: S is global");
+    }
+
+    /// <summary>
+    /// TypedAliasing with the write in a callee: G(p, v) writes v into p's
+    /// field Instr::Value at 16; F hands G its parameter and S, and reads
+    /// O's field TypeSymbol::Name at 16 as before. G's summary says the word
+    /// it wrote was Instr::Value (Summary.Fields), and F, applying it, writes
+    /// S as that field: S is not global. G's write untyped, it is.
+    /// </summary>
+    private static void TypedAliasingThroughSummary()
+    {
+        RegionEscape Solve(int storeFamily)
+        {
+            Prog p = new();
+            RegionFunction g = p.Add("G", 2, 3);
+            g.Families = new[] { "Instr::Value" };
+            g.Constraints.Add(new RegionConstraint(RegionConstraintKind.Store, 0, 1, 16, storeFamily));
+            RegionFunction f = p.Add("F", 2, 6, sites: 2);
+            f.Families = new[] { "TypeSymbol::Cache", "TypeSymbol::Name" };
+            f.Constraints.AddRange(new[]
+            {
+                Site(3, 0), Site(5, 1),
+                new RegionConstraint(RegionConstraintKind.Store, 1, 3, 24, 0),
+                new RegionConstraint(RegionConstraintKind.Load, 4, 3, 16, 1),
+                Leak(4),
+            });
+            f.Calls.Add(new("G", -1, new[] { 0, 5 }));
+            return p.Solve();
+        }
+        Prog shape = new();
+        shape.Add("G", 2, 3);
+        shape.Add("F", 2, 6, sites: 2);
+        int s = shape.Site("F", 1);
+        Check(!Solve(0).Global[s], "G writes S as Instr::Value: F's load of TypeSymbol::Name does not read it");
+        Check(Solve(-1).Global[s], "G's write untyped: F's load reads it, and S is global");
     }
 
     /// <summary>
