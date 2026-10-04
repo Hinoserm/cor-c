@@ -1,0 +1,25 @@
+// The other unit of 1313_region_arena_stats_across_units: a list and a
+// builder made beneath one boundary and grown, as 1304's, so that every call
+// fills its region and gives it back.
+
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+using System.Text;
+
+public static class ArenaWork
+{
+    /// The list's values, its count, the builder's length and its last character.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long Build(int seed)
+    {
+        List<int> list = new();
+        for (int i = 0; i < 5000; i++) list.Add(i ^ seed);
+        long sum = 0;
+        foreach (int x in list) sum += x;
+        sum += list.Count;
+        StringBuilder text = new();
+        for (int i = 0; i < 3000; i++) text.Append("ab");
+        string made = text.ToString();
+        return sum + made.Length + made[made.Length - 1];
+    }
+}
