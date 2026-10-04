@@ -62,6 +62,14 @@ public static class VirtualTargets
     public static string? MethodAt(List<(string Name, ObjectFile Object)> inputs, string descriptor, long offset)
         => IndexOf(inputs).MethodAt(descriptor, offset);
 
+    /// <summary>
+    /// Whether an object stamped with <paramref name="descriptor"/> is a
+    /// <paramref name="type"/> (the type itself or one it derives from or
+    /// implements); null when the descriptor is not one known here.
+    /// </summary>
+    public static bool? IsA(List<(string Name, ObjectFile Object)> inputs, string descriptor, string type)
+        => IndexOf(inputs).IsA(descriptor, type);
+
     /// <summary>Whether a word of an object stamped with a descriptor is never read as a reference (Index.HoldsNoReference).</summary>
     public static bool HoldsNoReference(List<(string Name, ObjectFile Object)> inputs, string descriptor, long at, long? offset)
         => IndexOf(inputs).HoldsNoReference(descriptor, at, offset);
@@ -188,6 +196,13 @@ public static class VirtualTargets
                                 pending.Push(upper);
             }
             return _ancestry[d] = found;
+        }
+
+        public bool? IsA(string descriptor, string type)
+        {
+            if (type == "t_object") return true;
+            if (_named.GetValueOrDefault(descriptor) != 1 || !ByName.TryGetValue(descriptor, out int d)) return null;
+            return Ancestors(d).Contains(type);
         }
 
         public string? MethodAt(string descriptor, long offset)

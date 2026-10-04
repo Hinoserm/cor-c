@@ -70,7 +70,7 @@ public static class RegionSolver
     /// </summary>
     public static RegionFacts?[]? Solve(IReadOnlyList<RegionHints> units, Dictionary<string, string[]> virtuals,
         Func<string, long, string?> methodAt, string entry, IReadOnlySet<string> foreign, string? report, Func<int, string, bool>? live = null,
-        Func<string, long, long?, bool>? noReference = null, bool loops = false)
+        Func<string, long, long?, bool>? noReference = null, bool loops = false, Func<string, string, bool?>? isA = null)
     {
         // CONTEXTS AS FAR AS THE BUDGET GOES: two objects deep, then one, then none
         // at all -- every function one copy, coarser but far smaller.
@@ -83,7 +83,7 @@ public static class RegionSolver
         // still the deepest that fits; the coarse one is kept, not made again.
         if (Switches.RegionEngine == "escape")
         {
-            Solver graphs = new(units, virtuals, methodAt, entry, foreign, report, live, 0, noReference) { LoopRegions = loops, Graphs = true };
+            Solver graphs = new(units, virtuals, methodAt, entry, foreign, report, live, 0, noReference) { LoopRegions = loops, Graphs = true, IsA = isA };
             if (graphs.Run() is { } found) return found;
             Console.Error.WriteLine("regions: nothing made a region");
             return null;
@@ -300,6 +300,8 @@ public static class RegionSolver
         private readonly IReadOnlyList<RegionHints> _units;
         private readonly Dictionary<string, string[]> _virtuals;
         private readonly Func<string, long, string?> _methodAt;
+        /// <summary>Whether objects of a descriptor are of a type (VirtualTargets.IsA); null for no such knowledge.</summary>
+        public Func<string, string, bool?>? IsA { get; init; }
         private readonly string _entry;
         private readonly IReadOnlySet<string> _foreign;
         private readonly string[]? _report;
@@ -564,6 +566,7 @@ public static class RegionSolver
             {
                 Progress = _report is null ? null : Log, NoRoots = _report?.Contains("+noroots") == true,
                 NoReference = _report?.Contains("+norefoff") == true ? null : (site, at) => SiteHoldsNoReference(siteFunction[site], site - siteBase[siteFunction[site]], at),
+                TargetsOn = _report?.Contains("+classoff") == true ? null : TargetsOnSite(targets, keys, siteFunction, siteBase),
             };
             if (_report?.FirstOrDefault(w => w.StartsWith("+why=", StringComparison.Ordinal)) is { } whyOf)
             {
@@ -586,6 +589,42 @@ public static class RegionSolver
             Log($"escape graphs: {count} functions, {sites} sites, {_escape.Applied} summaries applied, largest cycle {_escape.LargestCycle}, "
                 + $"{_escape.Unfollowed} not followed, {_escape.Fallbacks} unified past their bound, {_escape.Work} carried, global {_escape.GlobalByUnknown} by the unknown object + {_escape.GlobalByRoots} by roots, {_clock.ElapsedMilliseconds} ms");
             return Judge();
+        }
+
+        /// <summary>
+        /// WHAT A VIRTUAL CALL RUNS ON AN OBJECT OF A SITE, for the escape
+        /// graphs (RegionEscape.TargetsOn): the method the site's descriptor
+        /// holds at the call's slot, as Received finds it, among the call's
+        /// targets; null for a site of no descriptor, or a method that is
+        /// none of them -- any of them may run. A stamp is written once, by
+        /// the site, and only read after, so an object of the site runs that
+        /// method and no other. NONE (empty) for a descriptor not of the
+        /// call's type: its targets are what every object of the type runs
+        /// there, and nothing else is ever its receiver -- a list or a token
+        /// a coarse enumerator handed a foreach over nodes is no node.
+        /// </summary>
+        private Func<int, int, int, int[]?> TargetsOnSite(int[]?[][] targets, string?[][] keys, int[] siteFunction, int[] siteBase)
+        {
+            Dictionary<(string, string, long), int[]?> known = new();
+            return (f, k, site) =>
+            {
+                if (keys[f][k] is not { } key || targets[f][k] is not { } those) return null;
+                int g = siteFunction[site];
+                if (_functions[g].Sites[site - siteBase[g]] is not { Table: { } table } s) return null;
+                if (known.TryGetValue((key, table, s.At), out int[]? done)) return done;
+                int[]? runs = null;
+                string callee = _functions[f].Calls[k].Callee!;
+                int plus = callee.LastIndexOf('+');
+                if (plus > VirtualTargets.Prefix.Length && IsA?.Invoke(table, callee[VirtualTargets.Prefix.Length..plus]) == false) runs = Array.Empty<int>();
+                else if (SlotOf(callee) is long slot && _methodAt(table, s.At + slot) is { } method
+                    && _virtuals.TryGetValue(callee, out string[]? overrides) && overrides.Contains(method, StringComparer.Ordinal)
+                    && ResolveOverride(_unitOf[f], method) is { } resolved)
+                {
+                    int[] among = resolved.Where(x => Array.BinarySearch(those, x) >= 0).Order().ToArray();
+                    if (among.Length > 0) runs = among;
+                }
+                return known[(key, table, s.At)] = runs;
+            };
         }
 
         /// <summary>The functions a call may run, as Call finds them; null when one is nothing summarised.</summary>

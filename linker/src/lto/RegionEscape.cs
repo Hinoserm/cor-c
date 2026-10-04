@@ -43,7 +43,12 @@ internal sealed class RegionEscape
     private const int FarthestField = 4096;
     public const int Any = -1;
     // How many fields a place follows from its parameter before every deeper
-    // object is one (Deep): a list, its array, and the elements in it.
+    // object is one (Deep): a list, its array, and the elements in it. An
+    // element read after them (any offset) is one field more: a list a
+    // parameter holds -- an enumerator's, a struct's `this` -- is a field
+    // further from it, and its array's elements are still kept apart from
+    // all they reach. (Below the deep place instead, a foreach over a list
+    // of nodes was handed every object of the tree for its loop variable.)
     private const int PlaceDepth = 2;
     // The most objects a summary keeps that the function made: past it the
     // rest are one object with all their origins.
@@ -248,6 +253,155 @@ internal sealed class RegionEscape
         }
     }
 
+    // ---- what a virtual call runs on an object, and guarded places ---------
+    //
+    // A VIRTUAL CALL RUNS ONE OVERRIDE ON EACH OBJECT: the one its
+    // descriptor holds at the call's slot. On an object whose site is known,
+    // that one's summary is applied, and no other's (Graph.Received). On a
+    // place, whose object nobody here knows, each override's summary is
+    // applied to the place GUARDED by it: the objects there that run that
+    // override. A guard is a step of a place's path, as a field is; a caller
+    // reaching the place by the same path keeps, at that step, only the
+    // objects a guard lets through -- those of a site whose descriptor runs
+    // the override, and any of no known descriptor. (Merged, every
+    // override's effects fell on every object: the field a Name keeps its
+    // string in, leaked by Name.Emit, is where an Add keeps its left
+    // operand, and an Assign's whole tree leaked with its target's name.)
+
+    /// <summary>Per function, per call, per site: the targets a virtual call runs on an object of the site; null for any of them (RegionSolver).</summary>
+    public Func<int, int, int, int[]?>? TargetsOn;
+
+    // A path's steps: a field (an offset, or Any), a guard (-2 - its id),
+    // or the deep step -- every object below, by one field or more.
+    private const int DeepStep = int.MinValue;
+    private static bool IsField(int step) => step >= Any;
+    private static bool IsGuard(int step) => step < Any && step != DeepStep;
+    private static int GuardStep(int guard) => -2 - guard;
+    private static int GuardOf(int step) => -2 - step;
+    private static readonly int[] DeepBelow = { DeepStep };
+
+    private static int Fields(int[] path)
+    {
+        int n = 0;
+        foreach (int step in path) if (IsField(step)) n++;
+        return n;
+    }
+
+    /// <summary>A deep place's path with its deep step: one made without is everything below the path it names.</summary>
+    private static int[] DeepPath(int[] path) => KindOf(path) == Kind.Deep ? path : [.. path, DeepStep];
+
+    /// <summary>A place's kind by its path: deep when it ends in the deep step and guards after it.</summary>
+    private static Kind KindOf(int[] path)
+    {
+        int d = Array.LastIndexOf(path, DeepStep);
+        if (d < 0) return Kind.Place;
+        for (int i = d + 1; i < path.Length; i++) if (IsField(path[i])) return Kind.Place;
+        return Kind.Deep;
+    }
+
+    /// <summary>
+    /// A path one field further, kept to so many: past PlaceDepth fields,
+    /// everything below the first PlaceDepth is the deep place; a field of
+    /// the deep place is the deep place. A GUARD BEGINS THE COUNT AGAIN:
+    /// what the objects of a class there hold is kept apart, PlaceDepth
+    /// fields of it, before a deep place of its own -- a node's type, and
+    /// the type that holds, not all the tree below the node. (A path has
+    /// one guard, so it is at most twice as long.)
+    /// </summary>
+    private static int[] WithField(int[] path, int offset)
+    {
+        int g = Array.FindLastIndex(path, IsGuard);
+        int fields = 0;
+        for (int i = g + 1; i < path.Length; i++)
+        {
+            if (path[i] == DeepStep) return path;
+            fields++;
+        }
+        return fields > PlaceDepth || fields == PlaceDepth && offset != Any ? [.. path, DeepStep] : [.. path, offset];
+    }
+
+    /// <summary>
+    /// A place made coarse, KEEPING ITS GUARD: the guard's objects anywhere
+    /// below the parameter where the path took fields to them, and all below
+    /// them where it went on. Each covers what it was; a guard left out made
+    /// a name's string, leaked deep in a tree, the whole tree below the
+    /// parameter, once a summary went past its bounds.
+    /// </summary>
+    private static int[] Coarsened(int[] path)
+    {
+        bool below = Fields(path) > 0 || Array.IndexOf(path, DeepStep) >= 0;
+        int g = Array.FindIndex(path, IsGuard);
+        if (g < 0) return below ? DeepBelow : Array.Empty<int>();
+        List<int> kept = new();
+        if (g > 0) kept.Add(DeepStep);
+        kept.Add(path[g]);
+        for (int i = g + 1; i < path.Length; i++) if (!IsGuard(path[i])) { kept.Add(DeepStep); break; }
+        return kept.ToArray();
+    }
+
+    /// <summary>
+    /// A path guarded at its end: two guards running are both at once. ONE
+    /// GUARD A PATH, the last: a guard further up is left out (and what it
+    /// kept apart below a deep step is the deep place again). A caller's
+    /// filter at the last guard already drops every object of another
+    /// class, whatever the path took to it; kept, each guard of a recursion
+    /// was another place at each level, and a cycle's receivers ran past
+    /// what a node holds.
+    /// </summary>
+    private int[] WithGuard(int[] path, int guard)
+    {
+        if (path.Length > 0 && IsGuard(path[^1]))
+        {
+            int had = GuardOf(path[^1]);
+            return had == guard ? path : [.. path[..^1], GuardStep(Both(had, guard))];
+        }
+        return path.Any(IsGuard) ? [.. Stripped(path), GuardStep(guard)] : [.. path, GuardStep(guard)];
+    }
+
+    /// <summary>A path's guards left out: its fields again from the parameter, what is below the first deep step that deep place.</summary>
+    private static int[] Stripped(int[] path)
+    {
+        if (!path.Any(IsGuard)) return path;
+        int[] kept = Array.Empty<int>();
+        foreach (int step in path)
+        {
+            if (step == DeepStep) return Array.IndexOf(kept, DeepStep) >= 0 ? kept : [.. kept, DeepStep];
+            if (IsField(step)) kept = WithField(kept, step);
+        }
+        return kept;
+    }
+
+    // A guard: what must hold of an object's site, each a virtual call
+    // (named by its symbol and unit, through one call of it) that runs the
+    // target on it.
+    private readonly List<(int F, int K, int Target)[]> _guards = new();
+    private readonly Dictionary<string, int> _guardIds = new(StringComparer.Ordinal);
+    private readonly Dictionary<(int, int), bool> _sitePasses = new();
+
+    private int Guard(int f, int k, int target) => Intern(new[] { (f, k, target) });
+
+    private int Both(int a, int b) => Intern(_guards[a].Concat(_guards[b]));
+
+    private int Intern(IEnumerable<(int F, int K, int Target)> conditions)
+    {
+        SortedDictionary<string, (int, int, int)> each = new(StringComparer.Ordinal);
+        foreach (var c in conditions) each.TryAdd(_keys[c.F][c.K] + "#" + c.Target, c);
+        string key = string.Join("|", each.Keys);
+        if (_guardIds.TryGetValue(key, out int id)) return id;
+        _guards.Add(each.Values.ToArray());
+        return _guardIds[key] = _guards.Count - 1;
+    }
+
+    /// <summary>Whether an object of a site may be among what a guard lets through: every call of it runs its target there, or nobody knows what it runs.</summary>
+    private bool SitePasses(int site, int guard)
+    {
+        if (_sitePasses.TryGetValue((site, guard), out bool known)) return known;
+        bool passes = true;
+        foreach (var (f, k, target) in _guards[guard])
+            if (TargetsOn!(f, k, site) is { } runs && Array.BinarySearch(runs, target) < 0) { passes = false; break; }
+        return _sitePasses[(site, guard)] = passes;
+    }
+
     // ---- the order: callees first, a cycle together -----------------------
 
     /// <summary>Progress for a report (null: none).</summary>
@@ -413,7 +567,7 @@ internal sealed class RegionEscape
                 {
                     1 => (Kind.Made, -1, Array.Empty<int>(), Sites.Select(Leaf).Order().ToArray()),
                     2 => (Kind.Deep, -1, Array.Empty<int>(), Array.Empty<int>()),
-                    _ => ((cls - 3) % 2 == 0 ? Kind.Place : Kind.Deep, (cls - 3) / 2, Array.Empty<int>(), Array.Empty<int>()),
+                    _ => (cls - 3) % 2 == 0 ? (Kind.Place, (cls - 3) / 2, Array.Empty<int>(), Array.Empty<int>()) : (Kind.Deep, (cls - 3) / 2, DeepBelow, Array.Empty<int>()),
                 });
             }
             for (int x = 0; x < Classes; x++)
@@ -465,7 +619,7 @@ internal sealed class RegionEscape
             {
                 List<int> leaking = targets.Where(t => _summaries[t] is { IsUnknown: false } s && LeaksArgument(Shape(s).Bits)).ToList();
                 string Tag(int t) => (t < _how.Length ? _how[t] : How.None) switch { How.Unified => "unified", How.PastBound => "past bound", How.Inclusion => "inclusion", _ => "?" }
-                    + (_summaries[t]!.Coarsened ? ", coarse" : "");
+                    + (_summaries[t]!.MadeCoarse ? ", coarse" : "");
                 held.Add($"U>arg by {leaking.Count}: " + string.Join(", ", leaking.Take(4).Select(t => _functions[t].Name + " (" + Tag(t) + ")")));
             }
             Progress?.Invoke($"escape graphs:   {targets.Length} targets ({_functions[targets[0]].Name}): {a.Sites.Length} sites; " + string.Join(" ", held));
@@ -507,7 +661,8 @@ internal sealed class RegionEscape
             if (o.Kind == Kind.Unknown) return 0;
             if (o.Kind == Kind.Made) return 1;
             if (o.Param < 0 || o.Param >= ParamClasses) return 2;
-            return 3 + 2 * o.Param + (o.Kind == Kind.Place && o.Path.Length == 0 ? 0 : 1);
+            // (A place guarded at its parameter is still that object.)
+            return 3 + 2 * o.Param + (o.Kind == Kind.Place && Fields(o.Path) == 0 && Array.IndexOf(o.Path, DeepStep) < 0 ? 0 : 1);
         }
         foreach (var c in s.Cells) Set(bits, Class(c.From) * Classes + Class(c.To));
         foreach (var r in s.Result) Set(bits, ResultBits + Class(r.To));
@@ -602,6 +757,15 @@ internal sealed class RegionEscape
     // from summaries, stand-ins and merged summaries that are all still the
     // ones it read, under holders whose origins never change; so every answer
     // is the final summaries' answer, as a round solving everything gives.
+    //
+    // WHAT ELSE A SOLVE READS does not change between rounds: what a virtual
+    // call runs on an object of a site (TargetsOn) is the descriptors' and
+    // the targets', and a guard is interned once for good (Intern), so a path
+    // that names one names it in every round and a summary kept (SameAs)
+    // still means what it says. A call watched at its receiver (Received)
+    // applies merged summaries of some of its targets outside the component
+    // (Group): each of them is one of the call's targets, so among the
+    // callees whose change solves the component again.
     private readonly List<int[]> _components = new();
     private readonly List<HashSet<int>?> _globalOf = new(), _rootedOf = new();
     private readonly HashSet<int[]> _grown = new(TargetsComparer.Instance);
@@ -823,7 +987,7 @@ internal sealed class RegionEscape
         /// <summary>Whose objects these are, for an object made from one (Ref): a function, or a merged summary registered as one; -1 for none.</summary>
         public int Holder = -1;
         /// <summary>For a report: past its bounds, made coarse (Coarse, Everything).</summary>
-        public bool Coarsened;
+        public bool MadeCoarse;
 
         public static Summary Unknown => new() { IsUnknown = true };
 
@@ -893,14 +1057,20 @@ internal sealed class RegionEscape
         {
             Summary b = new();
             int[] map = new int[Objects.Count];
-            Dictionary<(Kind, int, int), int> kept = new();
+            Dictionary<(Kind, int, string), int> kept = new();
             int Keep(Kind kind, int param, int[] path, int[] origins)
             {
-                int first = path.Length > 0 ? path[0] : int.MinValue;
-                if (kept.TryGetValue((kind, param, first), out int at)) return at;
+                var key = (kind, param, string.Join(",", path));
+                if (kept.TryGetValue(key, out int at)) return at;
                 at = b.Objects.Count;
-                b.Objects.Add((kind, param, path.Length > 0 ? new[] { path[0] } : Array.Empty<int>(), origins));
-                return kept[(kind, param, first)] = at;
+                b.Objects.Add((kind, param, path, origins));
+                return kept[key] = at;
+            }
+            int KeepPlace(int param, int[] path)
+            {
+                if (param < 0) return Keep(Kind.Deep, param, DeepBelow, Array.Empty<int>());
+                int[] coarse = Coarsened(path);
+                return Keep(KindOf(coarse), param, coarse, Array.Empty<int>());
             }
             List<int> all = new();
             foreach (var o in Objects) if (o.Kind == Kind.Made) all.AddRange(o.Origins);
@@ -909,14 +1079,13 @@ internal sealed class RegionEscape
             for (int k = 0; k < Objects.Count; k++)
             {
                 var o = Objects[k];
-                // A parameter's own object and the object a field of it holds
-                // stay places; what is further down is the deep place below
-                // its first field.
+                // A parameter's own object stays a place; what is below it is
+                // its deep place, or the objects of a guard's class below it
+                // (Coarsened).
                 map[k] = o.Kind switch
                 {
                     Kind.Unknown => 0,
-                    Kind.Place when o.Path.Length == 0 => Keep(Kind.Place, o.Param, o.Path, Array.Empty<int>()),
-                    Kind.Place or Kind.Deep => Keep(Kind.Deep, o.Param, Array.Empty<int>(), Array.Empty<int>()),
+                    Kind.Place or Kind.Deep => KeepPlace(o.Param, o.Path),
                     _ => Keep(Kind.Made, -1, Array.Empty<int>(), origins),
                 };
             }
@@ -925,7 +1094,7 @@ internal sealed class RegionEscape
             foreach (var r in Result) b.Result.Add((map[r.To], b.Objects[map[r.To]].Kind == Kind.Place ? r.ToOffset : Any));
             b.Cells.Sort(); b.Result.Sort();
             Dedupe(b.Cells); Dedupe(b.Result);
-            b.Coarsened = true;
+            b.MadeCoarse = true;
             return b.Cells.Count > MostCells ? b.Everything() : b;
         }
 
@@ -960,7 +1129,7 @@ internal sealed class RegionEscape
             foreach (var r in Result) if (Merged(r.To) is int to and >= 0) e.Result.Add((to, Any));
             e.Cells.Sort(); e.Result.Sort();
             Dedupe(e.Cells); Dedupe(e.Result);
-            e.Coarsened = true;
+            e.MadeCoarse = true;
             return e;
         }
 
@@ -976,18 +1145,131 @@ internal sealed class RegionEscape
             int made = 0, placed = 0;
             foreach (var o in Objects) { if (o.Kind == Kind.Made) made++; else if (o.Kind == Kind.Place) placed++; }
             if (made <= MostFresh && placed <= MostPlaces && Cells.Count <= MostCells) return this;
-            if (Cells.Count > MostCells || Objects.Count > 512) return Coarse();
+            if (Objects.Any(o => o.Kind is Kind.Place or Kind.Deep && o.Path.Any(IsGuard)))
+            {
+                Summary loose = Loosened();
+                if (loose.Objects.Count < Objects.Count) return loose.Bounded();
+            }
+            if (Cells.Count <= MostCells && Objects.Count <= 512) return Fewer(MostFresh, placed);
+            // PAST THE CELLS, FIRST EVERY OBJECT MADE ONE: what a list's
+            // grown arrays and a node's instructions held of each place, each
+            // of them apart, was most of an emitter's cells; its places, and
+            // the guards on them, are kept.
+            Summary one = Fewer(0, placed);
+            if (one.Cells.Count <= MostCells && one.Objects.Count <= 512) return one;
+            // Then every parameter of no guard all one deep place below it:
+            // what is kept apart is only what tells classes apart.
+            one = Fewer(0, placed, unguarded: true);
+            return one.Cells.Count <= MostCells && one.Objects.Count <= 512 ? one : Coarse();
+        }
+
+        /// <summary>
+        /// PAST THE BOUNDS, GUARDS ONLY WHERE WHAT LEAKS IS: a guarded place
+        /// the unknown object does not reach is the place unguarded -- what
+        /// is written into it written into an object of any class there,
+        /// what is read from it read from one. A place leaked keeps its
+        /// guard, which keeps a tree from leaking with a name in it, but not
+        /// where the class was: below a field of its parameter, any object
+        /// of the class anywhere below it, and what the path takes from
+        /// there. (Each node's Bind writing its type, guarded once for each
+        /// class, was four places at each place a node may be; and each
+        /// place a node may be leaked the name of each class of node.)
+        /// </summary>
+        private Summary Loosened()
+        {
+            HashSet<int> leaked = new() { 0 };
+            Stack<int> next = new();
+            next.Push(0);
+            while (next.TryPop(out int o))
+                foreach (var c in Cells) if (c.From == o && leaked.Add(c.To)) next.Push(c.To);
+            Summary b = new();
+            int[] map = new int[Objects.Count];
+            Dictionary<(Kind, int, string), int> places = new();
+            for (int k = 0; k < Objects.Count; k++)
+            {
+                var o = Objects[k];
+                if (k == 0) { map[k] = 0; continue; }
+                if (o.Kind is Kind.Place or Kind.Deep && o.Param >= 0)
+                {
+                    int[] path = leaked.Contains(k) ? Anywhere(o.Path) : Stripped(o.Path);
+                    Kind kind = KindOf(path);
+                    var key = (kind, o.Param, string.Join(",", path));
+                    if (!places.TryGetValue(key, out int at)) { at = b.Objects.Count; b.Objects.Add((kind, o.Param, path, o.Origins)); places[key] = at; }
+                    map[k] = at;
+                    continue;
+                }
+                map[k] = b.Objects.Count;
+                b.Objects.Add(o);
+            }
+            foreach (var c in Cells) b.Cells.Add((map[c.From], c.Offset, map[c.To], c.ToOffset));
+            foreach (var r in Result) b.Result.Add((map[r.To], r.ToOffset));
+            b.Cells.Sort(); b.Result.Sort();
+            Dedupe(b.Cells); Dedupe(b.Result);
+            return b;
+        }
+
+        private static int[] Anywhere(int[] path)
+        {
+            int g = Array.FindIndex(path, IsGuard);
+            if (g <= 0 || Fields(path[..g]) == 0 && Array.IndexOf(path, DeepStep, 0, g) < 0) return path;
+            int[] rest = path[g..];
+            return Array.IndexOf(rest, DeepStep) >= 0 && Array.IndexOf(rest, DeepStep) != Array.LastIndexOf(rest, DeepStep) ? path : [DeepStep, .. rest];
+        }
+
+        // The made objects past `keep` one; a place past MostPlaces its parameter's deep place.
+        private Summary Fewer(int keep, int placed, bool unguarded = false)
+        {
             Summary b = new();
             int[] map = new int[Objects.Count];
             int blob = -1;
-            // A deep place by its parameter and first field: below that field.
-            Dictionary<(int, int), int> deep = new();
+            // A place below its parameter made coarse (Coarsened): the deep
+            // place, or the objects of its guard's class below.
+            Dictionary<(int, string), int> deep = new();
             int Deep(int param, int[] path)
             {
-                if (deep.TryGetValue((param, 0), out int d)) return d;
+                int[] coarse = Coarsened(path);
+                var key = (param, string.Join(",", coarse));
+                if (deep.TryGetValue(key, out int d)) return d;
                 d = b.Objects.Count;
-                b.Objects.Add((Kind.Deep, param, Array.Empty<int>(), Array.Empty<int>()));
-                return deep[(param, 0)] = d;
+                b.Objects.Add((KindOf(coarse), param, coarse, Array.Empty<int>()));
+                return deep[key] = d;
+            }
+            // PAST MostPlaces, A PARAMETER AT A TIME: its places below a
+            // field of a field are its deep place, until the rest are few
+            // enough -- those of no guard first, which lose no class kept
+            // apart, the most places first; then, before a guarded one's,
+            // every place below a field of theirs; then the guarded ones'.
+            // (All at once, a dictionary's insides made a tree's guarded
+            // places one deep place, the whole tree.)
+            static bool Further(int[] path) => Fields(path) >= PlaceDepth || Array.IndexOf(path, DeepStep) >= 0;
+            static bool Below(int[] path) => Fields(path) > 0 || Array.IndexOf(path, DeepStep) >= 0;
+            HashSet<int> collapsed = new(), whole = new(), guarded = new();
+            Dictionary<int, int> further = new(), below = new();
+            foreach (var o in Objects)
+            {
+                if (o.Kind is not (Kind.Place or Kind.Deep) || o.Param < 0) continue;
+                if (o.Path.Any(IsGuard)) guarded.Add(o.Param);
+                if (o.Kind == Kind.Place && Further(o.Path)) further[o.Param] = further.GetValueOrDefault(o.Param) + 1;
+                if (o.Kind == Kind.Place && Below(o.Path)) below[o.Param] = below.GetValueOrDefault(o.Param) + 1;
+            }
+            int left = placed;
+            foreach (var (param, count) in further.Where(x => !guarded.Contains(x.Key)).OrderByDescending(x => x.Value).ThenBy(x => x.Key))
+            {
+                if (left <= MostPlaces) break;
+                collapsed.Add(param);
+                left -= count;
+            }
+            foreach (var (param, count) in below.Where(x => !guarded.Contains(x.Key)).OrderByDescending(x => x.Value).ThenBy(x => x.Key))
+            {
+                if (!unguarded && (left <= MostPlaces || guarded.Count == 0)) break;
+                whole.Add(param);
+                left -= count - further.GetValueOrDefault(param);
+            }
+            foreach (var (param, count) in further.Where(x => guarded.Contains(x.Key)).OrderByDescending(x => x.Value).ThenBy(x => x.Key))
+            {
+                if (left <= MostPlaces) break;
+                collapsed.Add(param);
+                left -= count;
             }
             List<int> blobOrigins = new();
             int keptMade = 0;
@@ -995,15 +1277,16 @@ internal sealed class RegionEscape
             {
                 var o = Objects[k];
                 if (o.Kind == Kind.Unknown) { map[k] = 0; continue; }
-                if (o.Kind == Kind.Made && ++keptMade > MostFresh - 1)
+                if (o.Kind == Kind.Made && ++keptMade > keep - 1)
                 {
                     if (blob < 0) { blob = b.Objects.Count; b.Objects.Add((Kind.Made, -1, Array.Empty<int>(), Array.Empty<int>())); }
                     blobOrigins.AddRange(o.Origins);
                     map[k] = blob;
                     continue;
                 }
-                if (o.Kind == Kind.Place && placed > MostPlaces && o.Path.Length == PlaceDepth) { map[k] = Deep(o.Param, o.Path); continue; }
-                if (o.Kind == Kind.Deep && placed > MostPlaces && o.Path.Length > 1) { map[k] = Deep(o.Param, o.Path); continue; }
+                if (o.Kind is Kind.Place or Kind.Deep && whole.Contains(o.Param) && (Fields(o.Path) > 0 || Array.IndexOf(o.Path, DeepStep) >= 0)) { map[k] = Deep(o.Param, o.Path); continue; }
+                if (o.Kind == Kind.Place && collapsed.Contains(o.Param) && Further(o.Path)) { map[k] = Deep(o.Param, o.Path); continue; }
+                if (o.Kind == Kind.Deep && collapsed.Contains(o.Param) && Fields(o.Path) > 1) { map[k] = Deep(o.Param, o.Path); continue; }
                 map[k] = b.Objects.Count;
                 b.Objects.Add(o);
             }
@@ -1176,6 +1459,10 @@ internal sealed class RegionEscape
         // nothing the first has not, wherever it falls in the list.
         private readonly HashSet<long> _plainCopies = new();
         private readonly HashSet<(int, int, int)> _shiftedCopies = new();
+        // A guard's filter: what of a node's locations a guard lets through.
+        private readonly List<List<(int To, int Guard)>?> _filters = new();
+        // The virtual calls a node is the receiver of (Received).
+        private readonly List<List<VCall>?> _vcalls = new();
 
         // PAST THIS MUCH WORK A FUNCTION, OR A CYCLE, IS NOT FOLLOWED: its
         // summary is the unknown call's, and everything made beneath it is
@@ -1219,6 +1506,7 @@ internal sealed class RegionEscape
         {
             _pts.Add(null); _copies.Add(null); _loads.Add(null); _stores.Add(null); _readsAll.Add(null); _deltaBuf.Add(null); _deltaLen.Add(0);
             _parent.Add(_pts.Count - 1); _wave.Add(int.MaxValue);
+            _filters.Add(null); _vcalls.Add(null);
             _madeHeld.Add(0); _nodeFlags.Add(0);
             if (_pts.Count > _mostNodes) Overflowed = true;
             return _pts.Count - 1;
@@ -1255,13 +1543,12 @@ internal sealed class RegionEscape
         // is below a field of a field, not everything below the parameter --
         // a string kept in a node's field and leaked, all of the node's
         // subtree with it.
+        // (The path comes kept so already: WithField, WithGuard.)
         private int Place(int param, int[] path)
         {
-            bool deep = path.Length > PlaceDepth;
-            int[] kept = deep ? path[..PlaceDepth] : path;
-            string key = (deep ? "d:" : "") + string.Join(",", kept);
+            string key = string.Join(",", path);
             if (_places.TryGetValue((param, key), out int known)) return known;
-            int o = NewObject(deep ? Kind.Deep : Kind.Place, param, kept, Array.Empty<int>());
+            int o = NewObject(KindOf(path), param, path, Array.Empty<int>());
             _places[(param, key)] = o;
             return o;
         }
@@ -1274,15 +1561,7 @@ internal sealed class RegionEscape
             switch (_kind[o])
             {
                 case Kind.Unknown: return Unknown;
-                case Kind.Deep: return Location(o, 0);
-                case Kind.Place:
-                {
-                    int[] path = _path[o];
-                    int[] further = new int[path.Length + 1];
-                    path.CopyTo(further, 0);
-                    further[path.Length] = offset;
-                    return Location(Place(_param[o], further), 0);
-                }
+                case Kind.Place or Kind.Deep: return Location(Place(_param[o], WithField(_path[o], offset)), 0);
                 default: return -1;
             }
         }
@@ -1448,6 +1727,49 @@ internal sealed class RegionEscape
         // first reading of a cell does more than add the edge (Loaded), and
         // two cells one node are still two objects' cells.
         private static long Pair(int a, int b) => ((long)a << 32) | (uint)b;
+
+        private void FilterEdge(int from, int to, int guard)
+        {
+            from = Find(from);
+            (_filters[from] ??= new()).Add((to, guard));
+            if (_pts[from] is { } pts) for (int i = 0, n = pts.Count; i < n; i++) Add(to, Filtered(pts.Items[i], guard));
+        }
+        /// <summary>
+        /// A location through a guard: an object made of no site the guard
+        /// lets through is dropped; a place is the place guarded, the caller's
+        /// to filter in turn; anything else -- the unknown object, an address
+        /// into an object, an object of no known site -- goes through as it is.
+        /// </summary>
+        private int Filtered(int loc, int guard)
+        {
+            int o = _locObject[loc];
+            if (_kind[o] == Kind.Made && _locOffset[loc] is 0 or Any) return Passes(o, guard) ? loc : -1;
+            if (_locOffset[loc] != 0) return loc;
+            switch (_kind[o])
+            {
+                case Kind.Place or Kind.Deep: return Location(Place(_param[o], _owner.WithGuard(_path[o], guard)), 0);
+                default: return loc;
+            }
+        }
+
+        private readonly Dictionary<(int, int), bool> _passes = new();
+
+        private bool Passes(int o, int guard)
+        {
+            if (_passes.TryGetValue((o, guard), out bool known)) return known;
+            int[] sites = SitesOfObject(o);
+            bool passes = sites.Length == 0;
+            foreach (int site in sites) if (_owner.SitePasses(site, guard)) { passes = true; break; }
+            return _passes[(o, guard)] = passes;
+        }
+
+        private readonly Dictionary<int, int[]> _objectSites = new();
+
+        private int[] SitesOfObject(int o)
+        {
+            if (_objectSites.TryGetValue(o, out int[]? known)) return known;
+            return _objectSites[o] = _origins[o].Length == 0 ? Array.Empty<int>() : _owner.SitesOf(_origins[o]);
+        }
 
         private static int Offset(int at, int offset) => at == Any || offset == Any ? Any : at + offset <= FarthestField ? at + offset : Any;
 
@@ -1618,6 +1940,9 @@ internal sealed class RegionEscape
             if (_owner.IsWide(targets)) { Apply(args, dest, _owner.StandIn(targets)); return; }
             int[] inside = targets.Where(_memberSet.Contains).ToArray();
             int[] outside = inside.Length == 0 ? targets : targets.Where(t => !_memberSet.Contains(t)).ToArray();
+            // A VIRTUAL CALL OF MORE THAN ONE TARGET ON A RECEIVER: each
+            // location of it to the overrides that run on it (Received).
+            bool watched = _owner._keys[f][k] is not null && _owner.TargetsOn is not null && targets.Length > 1 && args.Length > 0 && args[0] >= 0;
             if (inside.Length > 0)
             {
                 // WITHIN THE CYCLE: into the callees' own nodes, through one
@@ -1637,18 +1962,21 @@ internal sealed class RegionEscape
                     through = (p, r);
                     _dispatch[inside] = through;
                 }
-                for (int j = 0; j < args.Length && j < through.Args.Length; j++) if (args[j] >= 0) CopyEdge(args[j], through.Args[j], 0);
+                for (int j = watched ? 1 : 0; j < args.Length && j < through.Args.Length; j++) if (args[j] >= 0) CopyEdge(args[j], through.Args[j], 0);
                 if (dest >= 0) CopyEdge(through.Ret, dest, 0);
+            }
+            if (watched)
+            {
+                VCall v = new() { F = f, K = k, Args = args, Dest = dest, Inside = inside, Outside = outside, Callee = call.Callee };
+                int receiver = Find(args[0]);
+                (_vcalls[receiver] ??= new()).Add(v);
+                if (_pts[receiver] is { } pts) for (int i = 0, n = pts.Count; i < n; i++) Received(v, pts.Items[i]);
+                return;
             }
             if (outside.Length > 0)
             {
                 Summary applied = _owner.MergedFor(outside);
-                if (_owner.Why is not null && _owner.Progress is not null && _owner.WhyFunction?.Invoke(f) == true)
-                {
-                    var leaks = applied.Cells.Where(c => c.From == 0).Select(c => applied.Objects[c.To]).Select(o => o.Kind + " " + o.Param + " [" + string.Join(",", o.Path) + "]");
-                    if (applied.IsUnknown || leaks.Any())
-                        _owner.Progress($"escape graphs why: in {_owner._functions[f].Name}: call {call.Callee} ({outside.Length} targets{(outside.Length == 1 ? " " + _owner._functions[outside[0]].Name : "")}) {(applied.IsUnknown ? "is the unknown call" : "leaks " + string.Join("; ", leaks))}");
-                }
+                Explain(f, call.Callee, outside, applied);
                 Apply(args, dest, applied);
             }
         }
@@ -1658,6 +1986,117 @@ internal sealed class RegionEscape
             foreach (int a in args) if (a >= 0) Leak(a);
             if (dest >= 0) Add(dest, Unknown);
         }
+
+        // A virtual call watched at its receiver: per set of targets outside
+        // the cycle, the receiver node their summary was applied with.
+        private sealed class VCall
+        {
+            public int F, K, Dest;
+            public int[] Args = null!, Inside = null!, Outside = null!;
+            public string? Callee;
+            public readonly Dictionary<int[], int> Groups = new(TargetsComparer.Instance);
+            public readonly Dictionary<int, int[]?> Classes = new();
+            public bool? SplitOutside;
+        }
+
+        // The most sets of targets a call applies apart, past which a set is
+        // all of them merged; and the most targets a place is guarded for,
+        // one by one.
+        private const int MostGroups = 8;
+        private const int MostGuarded = 8;
+        private const int MostGuardedCycle = 16;
+
+        /// <summary>
+        /// A LOCATION THE RECEIVER MAY BE, to the overrides that run on it.
+        /// An object made at sites whose descriptors are known runs theirs,
+        /// and their summaries alone are applied to it, it alone their
+        /// `this`. A place runs, for each override, that override on the
+        /// objects there of a class that runs it: the place guarded by it.
+        /// Anything else -- the unknown object, an address into an object, a
+        /// place of a call of too many targets -- may run any of them.
+        /// Within the cycle, the same: a member's `this` is handed only what
+        /// it may run on.
+        /// </summary>
+        private void Received(VCall v, int loc)
+        {
+            int o = _locObject[loc];
+            // (A receiver is an object's start: anywhere in a made object,
+            // it is that object.)
+            bool whole = _locOffset[loc] == 0;
+            if ((whole || _locOffset[loc] == Any) && _kind[o] == Kind.Made && ClassTargets(v, o) is { } runs)
+            {
+                List<int> outside = new();
+                foreach (int g in runs)
+                    if (_memberSet.Contains(g)) Receives(g, loc);
+                    else outside.Add(g);
+                if (outside.Count > 0) Add(Group(v, outside.ToArray()), loc);
+                return;
+            }
+            if (whole && _kind[o] is Kind.Place or Kind.Deep && v.Inside.Length + v.Outside.Length <= MostGuarded)
+            {
+                // Apart only where it may tell: the targets outside when
+                // their summaries do anything to what the receiver is or
+                // reaches, the members of a small cycle. (Each place apart
+                // in each of a large cycle's calls carried its solve past
+                // its bound.)
+                v.SplitOutside ??= v.Outside.Length > 1 && _owner.MergedFor(v.Outside).Objects.Any(x => x.Kind is Kind.Place or Kind.Deep && x.Param == 0);
+                bool inside = _members.Length <= MostGuardedCycle;
+                foreach (int g in v.Inside) Receives(g, inside ? Guarded(o, v, g) : loc);
+                if (v.SplitOutside == true) foreach (int g in v.Outside) Add(Group(v, new[] { g }), Guarded(o, v, g));
+                else if (v.Outside.Length > 0) Add(Group(v, v.Outside), loc);
+                return;
+            }
+            foreach (int g in v.Inside) Receives(g, loc);
+            if (v.Outside.Length > 0) Add(Group(v, v.Outside), loc);
+        }
+
+        private void Receives(int member, int loc)
+        {
+            if (_owner._functions[member].Parameters > 0) Add(Node(_memberOf[member], 0), loc);
+        }
+
+        private int Guarded(int place, VCall v, int target) =>
+            Location(Place(_param[place], _owner.WithGuard(_path[place], _owner.Guard(v.F, v.K, target))), 0);
+
+        /// <summary>The targets the call runs on an object, by its sites; null when any may run.</summary>
+        private int[]? ClassTargets(VCall v, int o)
+        {
+            if (v.Classes.TryGetValue(o, out int[]? known)) return known;
+            int[] sites = SitesOfObject(o);
+            SortedSet<int>? runs = sites.Length == 0 ? null : new();
+            foreach (int site in sites)
+            {
+                if (_owner.TargetsOn!(v.F, v.K, site) is not { } those) { runs = null; break; }
+                runs!.UnionWith(those);
+            }
+            return v.Classes[o] = runs?.ToArray();
+        }
+
+        /// <summary>The receiver node of a set of targets outside the cycle, their summary applied to it on first use.</summary>
+        private int Group(VCall v, int[] targets)
+        {
+            if (v.Groups.TryGetValue(targets, out int recv)) return recv;
+            if (v.Groups.Count >= MostGroups && !TargetsComparer.Instance.Equals(targets, v.Outside)) return Group(v, v.Outside);
+            recv = NewNode();
+            v.Groups[targets] = recv;
+            int[] args = (int[])v.Args.Clone();
+            args[0] = recv;
+            Summary applied = _owner.MergedFor(targets);
+            Explain(v.F, v.Callee, targets, applied);
+            Apply(args, v.Dest, applied);
+            return recv;
+        }
+
+        // For a report: what a summary applied for a function asked about leaks.
+        private void Explain(int f, string? callee, int[] targets, Summary applied)
+        {
+            if (_owner.Why is null || _owner.Progress is null || _owner.WhyFunction?.Invoke(f) != true) return;
+            var leaks = applied.Cells.Where(c => c.From == 0).Select(c => applied.Objects[c.To]).Select(o => o.Kind + " " + o.Param + " [" + string.Join(",", o.Path.Select(Step)) + "]");
+            if (applied.IsUnknown || leaks.Any())
+                _owner.Progress($"escape graphs why: in {_owner._functions[f].Name}: call {callee} ({targets.Length} targets{(targets.Length == 1 ? " " + _owner._functions[targets[0]].Name : "")}) {(applied.IsUnknown ? "is the unknown call" : "leaks " + string.Join("; ", leaks))}");
+        }
+
+        private static string Step(int step) => step == DeepStep ? "deep" : IsGuard(step) ? "g" + GuardOf(step) : step.ToString();
 
         /// <summary>
         /// A CALLEE'S SUMMARY AT THIS CALL: its places the caller's own reach
@@ -1670,15 +2109,19 @@ internal sealed class RegionEscape
             if (s.IsUnknown) { UnknownCall(args, dest); return; }
             int[] node = new int[s.Objects.Count];
             Dictionary<(int, int), int> chains = new();
+            // A place's path from the argument: a field a load, a guard its
+            // filter, the deep step everything below.
             int Chain(int at, int[] path)
             {
-                foreach (int field in path)
+                foreach (int step in path)
                 {
-                    if (!chains.TryGetValue((at, field), out int next))
+                    if (!chains.TryGetValue((at, step), out int next))
                     {
                         next = NewNode();
-                        LoadEdge(next, at, field);
-                        chains[(at, field)] = next;
+                        if (step == DeepStep) { LoadAllEdge(next, at); LoadAllEdge(next, next); }
+                        else if (IsGuard(step)) FilterEdge(at, next, GuardOf(step));
+                        else LoadEdge(next, at, step);
+                        chains[(at, step)] = next;
                     }
                     at = next;
                 }
@@ -1695,20 +2138,21 @@ internal sealed class RegionEscape
                     case Kind.Place:
                         node[k] = arg < 0 ? NewNode() : Chain(arg, o.Path);     // nothing passed that could hold an address: nothing
                         break;
+                    case Kind.Deep when o.Param >= 0:
+                        // Everything below what the argument reaches by the
+                        // deep place's fields (its path's deep step).
+                        node[k] = arg < 0 ? NewNode() : Chain(arg, DeepPath(o.Path));
+                        break;
                     case Kind.Deep:
                     {
+                        // Past every parameter (-1): what every argument is and reaches.
                         node[k] = NewNode();
-                        // Everything below what the argument reaches by the
-                        // deep place's fields; past every parameter (-1): what
-                        // every argument is and reaches.
-                        if (o.Param < 0)
-                            foreach (int a in args)
-                            {
-                                if (a < 0) continue;
-                                CopyEdge(a, node[k], 0);
-                                LoadAllEdge(node[k], a);
-                            }
-                        else if (arg >= 0) LoadAllEdge(node[k], Chain(arg, o.Path));
+                        foreach (int a in args)
+                        {
+                            if (a < 0) continue;
+                            CopyEdge(a, node[k], 0);
+                            LoadAllEdge(node[k], a);
+                        }
                         LoadAllEdge(node[k], node[k]);
                         break;
                     }
@@ -1799,6 +2243,20 @@ internal sealed class RegionEscape
                     {
                         int dest = all[e];
                         for (int k = 0; k < count; k++) LoadedAll(delta[k], dest);
+                    }
+                // Through a guard, and to a virtual call's overrides by what
+                // the receiver may be (Received).
+                if (_filters[n] is { } filters)
+                    for (int e = 0; e < filters.Count; e++)
+                    {
+                        (int to, int guard) = filters[e];
+                        for (int k = 0; k < count; k++) Add(to, Filtered(delta[k], guard));
+                    }
+                if (_vcalls[n] is { } vcalls)
+                    for (int e = 0; e < vcalls.Count; e++)
+                    {
+                        VCall v = vcalls[e];
+                        for (int k = 0; k < count; k++) Received(v, delta[k]);
                     }
                 _spareDeltas.Push(delta);
             }
@@ -1896,6 +2354,20 @@ internal sealed class RegionEscape
                 if (_loads[n] is { } loads) { _loads[n] = null; foreach ((int dest, int offset) in loads) LoadEdge(dest, keep, offset); }
                 if (_stores[n] is { } stores) { _stores[n] = null; foreach ((int value, int offset) in stores) StoreEdge(keep, offset, value); }
                 if (_readsAll[n] is { } all) { _readsAll[n] = null; foreach (int dest in all) LoadAllEdge(dest, keep); }
+                // A guard's filter and a call's receiver are edges as a copy
+                // is: what keep holds goes along them now, and what the
+                // member held below.
+                if (_filters[n] is { } filters) { _filters[n] = null; foreach ((int to, int guard) in filters) FilterEdge(keep, to, guard); }
+                if (_vcalls[n] is { } vcalls)
+                {
+                    _vcalls[n] = null;
+                    List<VCall> into = _vcalls[keep] ??= new();
+                    foreach (VCall v in vcalls)
+                    {
+                        into.Add(v);
+                        if (_pts[keep] is { } had) for (int i = 0, c = had.Count; i < c; i++) Received(v, had.Items[i]);
+                    }
+                }
                 if (_pts[n] is { } held)
                 {
                     _pts[n] = null;
@@ -2009,29 +2481,66 @@ internal sealed class RegionEscape
             if (Pts(Ret(m)) is { } result) foreach (int loc in result) start.Add(_locObject[loc]);
             HashSet<int> outside = Reached(start, o => ForeignPlace(o, m));
             outside.RemoveWhere(o => ForeignPlace(o, m));
-            List<int> order = outside.Where(o => o != 0).ToList();
+            // WHAT THE UNKNOWN OBJECT REACHES IS EVERYONE'S, whatever holds
+            // it: the objects made among it are one, and every one of it is
+            // a cell of the unknown object's -- what it holds in turn is
+            // reached anyway, and a load of it finds the unknown object.
+            // (Kept apart, the exceptions a list's Add and a dictionary's
+            // indexer may throw made a node's Emit a hundred cells past the
+            // bound, and its coarse summary leaked the whole tree below it.)
+            HashSet<int> leaked = Reached(new[] { 0 }, o => ForeignPlace(o, m));
+            leaked.IntersectWith(outside);
+            // A place leaked below another leaked place is reached from it:
+            // only what else holds it, or hands it back, keeps it.
+            HashSet<int> held = new();
+            foreach (int o in outside)
+                if (!leaked.Contains(o))
+                    foreach (int node in _cells[o].Values)
+                        if (Pts(node) is { } pts) foreach (int loc in pts) held.Add(_locObject[loc]);
+            if (Pts(Ret(m)) is { } handed) foreach (int loc in handed) held.Add(_locObject[loc]);
+            HashSet<(int, string)> leakedPlaces = new();
+            foreach (int o in leaked) if (_kind[o] is Kind.Place or Kind.Deep) leakedPlaces.Add((_param[o], string.Join(",", _path[o])));
+            bool Below(int o)
+            {
+                if (_kind[o] is not (Kind.Place or Kind.Deep) || held.Contains(o)) return false;
+                int[] path = _path[o];
+                for (int n = 0; n < path.Length; n++) if (leakedPlaces.Contains((_param[o], string.Join(",", path[..n])))) return true;
+                return false;
+            }
+            List<int> order = outside.Where(o => o != 0 && !(leaked.Contains(o) && Below(o))).ToList();
             order.Sort(Compare);
             Summary s = new();
             Dictionary<int, int> index = new() { [0] = 0 };
+            int blob = -1;
+            List<int> blobOrigins = new();
             foreach (int o in order)
             {
+                if (_kind[o] == Kind.Made && leaked.Contains(o))
+                {
+                    if (blob < 0) { blob = s.Objects.Count; s.Objects.Add((Kind.Made, -1, Array.Empty<int>(), Array.Empty<int>())); }
+                    index[o] = blob;
+                    blobOrigins.AddRange(_origins[o]);
+                    continue;
+                }
                 index[o] = s.Objects.Count;
                 int param = _kind[o] is Kind.Place or Kind.Deep && _param[o] >= 0 ? _param[o] - m * ParamStride : _param[o];
                 s.Objects.Add((_kind[o], param, _path[o], _origins[o]));
             }
+            if (blob >= 0) { blobOrigins.Sort(); s.Objects[blob] = (Kind.Made, -1, Array.Empty<int>(), blobOrigins.Distinct().ToArray()); }
             foreach (int o in outside)
                 foreach (var (offset, node) in _cells[o])
                     if (Pts(node) is { } pts)
                         foreach (int loc in pts)
                         {
                             int to = _locObject[loc];
-                            if (to == 0 && o == 0) continue;
                             if (!index.TryGetValue(to, out int t)) continue;   // another member's place
-                            s.Cells.Add((index[o], offset, t, _locOffset[loc]));
+                            bool fromLeaked = leaked.Contains(o);
+                            if (to == 0 && fromLeaked) continue;
+                            s.Cells.Add((fromLeaked ? 0 : index[o], fromLeaked ? Any : offset, t, t == blob ? Any : _locOffset[loc]));
                         }
             if (Pts(Ret(m)) is { } back)
                 foreach (int loc in back)
-                    if (index.TryGetValue(_locObject[loc], out int t)) s.Result.Add((t, _locOffset[loc]));
+                    if (index.TryGetValue(_locObject[loc], out int t)) s.Result.Add((t, t == blob ? Any : _locOffset[loc]));
             s.Cells.Sort(); s.Result.Sort();
             Summary.Dedupe(s.Cells); Summary.Dedupe(s.Result);
             return s.Bounded();
@@ -2130,8 +2639,8 @@ internal sealed class RegionEscape
 
         private string Describe(int o) => _kind[o] switch
         {
-            Kind.Place => $"place {_param[o]} [{string.Join(",", _path[o])}]",
-            Kind.Deep => $"deep place {_param[o]} below [{string.Join(",", _path[o])}]",
+            Kind.Place => $"place {_param[o]} [{string.Join(",", _path[o].Select(Step))}]",
+            Kind.Deep => $"deep place {_param[o]} below [{string.Join(",", _path[o].Select(Step))}]",
             Kind.Unknown => "the unknown object",
             _ => $"made object (origins {string.Join(",", _origins[o].Take(4))})",
         };
@@ -2379,6 +2888,24 @@ internal sealed class RegionEscape
             if (outside.Length > 0) Apply(args, dest, _owner.MergedFor(outside));
         }
 
+        // A place's path from an argument's class: a field its field, the
+        // deep step one class below that holds itself, a guard nothing --
+        // one class has every object of every class there.
+        private int Walk(int c, int[] path)
+        {
+            foreach (int step in path)
+            {
+                if (IsGuard(step)) continue;
+                if (step != DeepStep) { c = Field(c, step); continue; }
+                int d = NewClass();
+                Collapse(d);
+                Unify(Field(d, Any), d);
+                Unify(Field(c, Any), d);
+                c = Find(d);
+            }
+            return c;
+        }
+
         private void UnknownCall(int[] args, int dest)
         {
             foreach (int a in args) if (a >= 0) Unify(Pointee(a), _global);
@@ -2398,28 +2925,19 @@ internal sealed class RegionEscape
                 {
                     case Kind.Unknown: cls[k] = _global; break;
                     case Kind.Place:
-                    {
-                        if (arg < 0) { cls[k] = NewClass(); break; }
-                        int c = Pointee(arg);
-                        foreach (int field in o.Path) c = Field(c, field);
-                        cls[k] = c;
+                        cls[k] = arg < 0 ? NewClass() : Walk(Pointee(arg), o.Path);
                         break;
-                    }
+                    case Kind.Deep when o.Param >= 0:
+                        cls[k] = arg < 0 ? NewClass() : Walk(Pointee(arg), DeepPath(o.Path));
+                        break;
                     case Kind.Deep:
                     {
-                        // EVERYTHING BELOW, ONE CLASS that holds itself: what
-                        // the argument reaches past its own object, for good.
+                        // EVERYTHING, ONE CLASS that holds itself: past every
+                        // parameter, every argument and all it reaches, for good.
                         int d = NewClass();
                         Collapse(d);
                         Unify(Field(d, Any), d);
-                        IEnumerable<int> from = o.Param < 0 ? args.Where(a => a >= 0) : arg >= 0 ? new[] { arg } : Array.Empty<int>();
-                        foreach (int a in from)
-                        {
-                            if (o.Param < 0) { Unify(Pointee(a), d); continue; }
-                            int c = Pointee(a);
-                            foreach (int field in o.Path) c = Field(c, field);
-                            Unify(Field(c, Any), d);
-                        }
+                        foreach (int a in args) if (a >= 0) Unify(Pointee(a), d);
                         cls[k] = Find(d);
                         break;
                     }
@@ -2578,7 +3096,7 @@ internal sealed class RegionEscape
             }
             s.Cells.Sort(); s.Result.Sort();
             Summary.Dedupe(s.Cells); Summary.Dedupe(s.Result);
-            s.Coarsened = true;
+            s.MadeCoarse = true;
             return s;
         }
 
