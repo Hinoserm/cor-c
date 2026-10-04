@@ -643,7 +643,7 @@ public static class RegionSummary
             List<Instr> must = RegionPointsTo.MustRunCalls(_f);
             RegionFunction result = new(_f.Name, _f.Exported, _f.Async is null && !_f.Name.Contains("StaticInit", StringComparison.Ordinal) && !_main,
                 _params > 0 && _f.Params[0].Name == "this", _params, next, _slots.Count, _sites.ToArray())
-            { Main = _main, NumberParams = Sorted(Enumerable.Range(0, _params).Where(k => _f.Params[k].Number)), Symbols = KeptSymbols(kept), Families = _families.ToArray() };
+            { Main = _main, CallsThroughMethod = CallsThroughMethod, NumberParams = Sorted(Enumerable.Range(0, _params).Where(k => _f.Params[k].Number)), Symbols = KeptSymbols(kept), Families = _families.ToArray() };
             result.Constraints.AddRange(kept);
             result.Calls.AddRange(calls);
             result.MustCalls = CallsAmong(must);

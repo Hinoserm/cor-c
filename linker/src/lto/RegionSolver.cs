@@ -697,10 +697,12 @@ public static class RegionSolver
         private IEnumerable<string> Addressed(int u)
         {
             _methodsBlind ??= _units.Any(unit => unit.CallsThroughMethods) || AnyUnresolvedVirtual();
-            if (_methodsBlind.Value && _report is not null && !_saidBlind)
+            if (_report is not null && !_saidBlind)
             {
                 _saidBlind = true;
-                Log("methods are called blind: " + (_units.Any(unit => unit.CallsThroughMethods) ? "a unit calls a method it read from a descriptor" : "a virtual call is unresolved"));
+                if (_methodsBlind.Value)
+                    Log("methods are called blind: " + (_units.Any(unit => unit.CallsThroughMethods) ? "a unit calls a method it read from a descriptor" : "a virtual call is unresolved"));
+                ReportBlind();
             }
             return _methodsBlind.Value ? _units[u].AddressTaken.Concat(_units[u].MethodsTaken) : _units[u].AddressTaken;
         }
@@ -709,20 +711,51 @@ public static class RegionSolver
         private bool _saidBlind;
 
         // Whether some virtual call's targets the link cannot say (GraphTargets' rule).
-        private bool AnyUnresolvedVirtual()
+        private bool AnyUnresolvedVirtual() => Unresolved(stopAtFirst: true).Count > 0;
+
+        /// <summary>
+        /// THE VIRTUAL CALLS THE LINK CANNOT SAY THE TARGETS OF, by name: one
+        /// no descriptor answers for as code (VirtualTargets.Targets: a slot
+        /// holding what is not a function here), or an override the image
+        /// keeps no summary of. Each with why, how many calls, and the first
+        /// function making one. Any one of them roots every method a
+        /// descriptor names (Addressed).
+        /// </summary>
+        private SortedDictionary<string, (string Why, int Calls, string First)> Unresolved(bool stopAtFirst)
         {
+            SortedDictionary<string, (string Why, int Calls, string First)> found = new(StringComparer.Ordinal);
             for (int f = 0; f < _functions.Count; f++)
             {
                 int u = _unitOf[f];
                 foreach (RegionCall call in _functions[f].Calls)
                 {
                     if (call.Callee is not { } name || !name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal)) continue;
-                    if (!_virtuals.TryGetValue(name, out string[]? found)) return true;
-                    foreach (string target in found)
-                        if (ResolveOverride(u, target) is null && !_summarised.Contains(target)) return true;
+                    string? why = null;
+                    if (!_virtuals.TryGetValue(name, out string[]? targets)) why = "a slot holds what is not code here";
+                    else
+                        foreach (string target in targets)
+                            if (ResolveOverride(u, target) is null && !_summarised.Contains(target)) { why = "no summary of " + target; break; }
+                    if (why is null) continue;
+                    found[name] = found.TryGetValue(name, out var had) ? (had.Why, had.Calls + 1, had.First) : (why, 1, _functions[f].Name);
+                    if (stopAtFirst) return found;
                 }
             }
-            return false;
+            return found;
+        }
+
+        // For a report: every virtual call left unresolved, and every function
+        // that calls a method it read from a descriptor (RegionFunction.CallsThroughMethod).
+        private void ReportBlind()
+        {
+            var unresolved = Unresolved(stopAtFirst: false);
+            Log($"unresolved virtual calls: {unresolved.Count}");
+            foreach (var (name, (why, calls, first)) in unresolved)
+                Log($"unresolved virtual call {name}: {why}; {calls} call(s), first in {first}");
+            List<string> blind = new();
+            for (int f = 0; f < _functions.Count; f++) if (_functions[f].CallsThroughMethod) blind.Add(_functions[f].Name);
+            Log($"functions calling a method read from a descriptor: {blind.Count}"
+                + (_units.Any(unit => unit.CallsThroughMethods) && blind.Count == 0 ? " (named by no function: hints before the per-function mark)" : ""));
+            foreach (string name in blind.Order(StringComparer.Ordinal)) Log("calls a method read from a descriptor: " + name);
         }
 
         /// <summary>The functions a call may run, as Call finds them; null when one is nothing summarised.</summary>
