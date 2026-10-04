@@ -3788,7 +3788,9 @@ public sealed partial class Binder
             case "double": return Type.F64;
             case "char":   return Type.Char;
             case "string": return Type.String;
-            case "object": return Type.Any;
+            // A SHARED METHOD COPY'S TYPE ARGUMENT is object, carrying which
+            // of its type parameters it is (TypeRef.CanonIndex).
+            case "object": return Type.CanonAny(r.CanonIndex);
 
             // .NET'S NAMES FOR THE SAME TYPES, bare or with their namespace:
             // `string` is an alias for System.String and `int` for
@@ -3823,7 +3825,10 @@ public sealed partial class Binder
             // (somebody's list of objects) at a glance.
             //
             // See Monomorphiser.CanonName and TypeDecl.Canon.
-            case Monomorphiser.CanonName: return Type.Any;
+            //
+            // And which of the copy's parameters it is, where the copy was
+            // written so (TypeRef.CanonIndex, Type.CanonParam).
+            case Monomorphiser.CanonName: return Type.CanonAny(r.CanonIndex);
 
             // A TYPE, AS A VALUE -- what typeof(T) and GetType() produce.
             //
@@ -12256,6 +12261,7 @@ public sealed partial class Binder
                 Type operand = CheckExpr(cast.Operand);
                 if (cast.CanonSelf is { } castSelf) CheckExpr(castSelf);
                 Type wanted = Resolve(cast.Type, _thisType);
+                NoteShape(cast, wanted);
 
                 // AN ARRAY OR A STRING CAST TO A SPAN IS MADE ONE, as its
                 // implicit conversion makes one where it is assigned: the cast
@@ -12923,6 +12929,7 @@ public sealed partial class Binder
                 if (tested.Symbol is { } testedSymbol)
                 {
                     _r.TestedTypes[isx] = testedSymbol;
+                    NoteShape(isx, tested);
                 }
                 else if (tested.IsArray)
                 {
@@ -13048,6 +13055,7 @@ public sealed partial class Binder
                 if (type.Symbol is { } asSymbol)
                 {
                     _r.TestedTypes[asx] = asSymbol;
+                    NoteShape(asx, type);
                 }
                 else if (type.IsArray)
                 {
@@ -16973,6 +16981,7 @@ public sealed partial class Binder
         if (best.TypeParams.Count > 0 && bound != null && best.Decl is { } generic)
         {
             List<TypeRef> spelt = new();
+            List<Type> given = new();
 
             foreach (string p in best.TypeParams)
             {
@@ -16983,7 +16992,39 @@ public sealed partial class Binder
                 }
 
                 spelt.Add(spell);
+                given.Add(was);
             }
+
+            // A TYPE ARGUMENT ONLY RUN TIME KNOWS: a shared copy's T, or a
+            // shared method copy's own, handed on (Type.CanonParam). The
+            // call reaches the shared method copy (Monomorphiser.CopyName),
+            // which is given each such argument's descriptor as a hidden
+            // argument (Lowering.HiddenTypeArguments), so that its tests of
+            // an interface over it ask the object at hand. Not a generic
+            // virtual method, whose copies are reached by a dispatch that
+            // passes nothing more, and not an iterator or an async method,
+            // whose bodies run in a state machine the hidden arguments do not
+            // reach: those stay the copy over object, as every call was.
+            int[]? hidden = null;
+            if (spelt.Count == best.TypeParams.Count && !best.GenericVirtual && !best.Async
+                && generic.Body is not { Iterator: true })
+            {
+                for (int i = 0; i < spelt.Count; i++)
+                {
+                    if (given[i] is { CanonParam: not -1, Prim: Prim.Any, Symbol: null, ArrayRank: 0, PointerDepth: 0 })
+                    {
+                        spelt[i].CanonIndex = -2 - i;
+                        if (hidden is null)
+                        {
+                            hidden = new int[spelt.Count];
+                            for (int unset = 0; unset < hidden.Length; unset++) hidden[unset] = -1;
+                        }
+                        hidden[i] = given[i].CanonParam;
+                    }
+                }
+            }
+            // On the call, for the round that binds it to the copy (CallExpr.HiddenTypeArgs).
+            c.HiddenTypeArgs = hidden;
 
             // A GENERIC VIRTUAL METHOD IS DISPATCHED ON THE RECEIVER, except
             // through `base.`, which names one implementation and is an
@@ -17002,8 +17043,7 @@ public sealed partial class Binder
                     member = declaring.Members.IndexOf(generic);
                 }
 
-                string wanted = Monomorphiser.MethodName(generic.Name, spelt)
-                              + "$" + member;
+                string wanted = Monomorphiser.CopyName(generic.Name, spelt, member);
                 MethodSymbol? existing = best.Owner.Methods
                     .FirstOrDefault(m => m.Name == wanted);
 
@@ -17094,6 +17134,28 @@ public sealed partial class Binder
         }
 
         return answer;
+    }
+
+    /// <summary>
+    /// A shared method copy's test or cast to a generic interface over its
+    /// own type parameters (ICanonShape, Monomorphiser.Shaped): the family
+    /// and the arguments, resolved, for the lowering to ask the object
+    /// (BindResult.Shapes). Only an interface made from a template, with as
+    /// many arguments as were written, and no more than a record holds.
+    /// </summary>
+    private void NoteShape<T>(T node, Type tested) where T : Expr, ICanonShape
+    {
+        if (node.ShapeArgs is not { Count: > 0 } written || tested.IsArray || tested.IsPointer
+            || tested.Symbol is not { Kind: TypeKind.Interface } face
+            || face.Decl is not { Specialised: true, Template: not null } decl
+            || decl.TemplateArgs.Count != written.Count || written.Count > CanonShape.MostArguments)
+        {
+            _r.Shapes.Remove(node);
+            return;
+        }
+        List<Type> args = new(written.Count);
+        foreach (TypeRef a in written) args.Add(Resolve(a, _thisType));
+        _r.Shapes[node] = new CanonShape { Interface = face, Args = args };
     }
 
     /// <summary>

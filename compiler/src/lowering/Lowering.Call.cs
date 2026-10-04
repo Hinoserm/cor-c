@@ -81,6 +81,21 @@ public sealed partial class Lowering
         Require(m);
         VReg? buffer = Buffered(m) ? ResultBuffer(_decl ?? (Node)new MethodDecl { Name = m.Name, Line = 0, Col = 0 }, m.Returns) : null;
         if (buffer is not null) args = new List<Operand>(args) { R(buffer) };
+        // A SHARED METHOD COPY'S HIDDEN TYPE ARGUMENTS, after the buffer as
+        // its parameters have them (EmitMethod): what the call found for
+        // them (EmitCall), and 0 -- the copy over object's answers -- from
+        // any call that found nothing.
+        int hidden = Monomorphiser.SharedMethodCopy(m.Name);
+        if (hidden > 0)
+        {
+            List<Operand>? given = _pendingTypeArgs is { } pending && ReferenceEquals(pending.Method, m) ? pending.Args : null;
+            _pendingTypeArgs = null;
+            args = new List<Operand>(args);
+            for (int i = 0; i < hidden; i++)
+            {
+                args.Add(given is not null && i < given.Count ? given[i] : Imm(0, IrTypes.Word));
+            }
+        }
         // THE PROGRAM'S OWN SOURCE CALLING INTO THE COLLECTOR -- asking its
         // heap where a block is, collecting -- means it has one, whatever its
         // allocations need (Escape). Reading a counter (a getter) does not.
@@ -401,6 +416,9 @@ public sealed partial class Lowering
         }
 
         TypeSymbol? through = call.Target is MemberExpr { Target: var throughExpr } && _b.TypeOf(throughExpr) is { IsArray: false, PointerDepth: 0, Symbol: TypeSymbol { Kind: TypeKind.Class or TypeKind.Interface } st } ? st : null;
+        // Read after the arguments, which may make calls of their own.
+        int hiddenCount = Monomorphiser.SharedMethodCopy(target.Name);
+        _pendingTypeArgs = hiddenCount > 0 ? (target, HiddenTypeArguments(call, hiddenCount)) : null;
         VReg? result = CallMethod(target, receiver, args, viaBase, through);
         return result ?? _e.Const(0, IrTypes.Word);
     }

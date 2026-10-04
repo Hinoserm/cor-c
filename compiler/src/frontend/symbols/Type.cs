@@ -73,7 +73,37 @@ public sealed class Type : IEquatable<Type>
     /// </summary>
     public FunctionPointer? Function { get; init; }
 
-    public static readonly Type Void   = new() { Prim = Prim.Void };
+    /// <summary>
+    /// WHERE A SHARED COPY'S MACHINE WORD COMES FROM (TypeRef.CanonIndex):
+    /// -1 for an ordinary object; k for a shared class copy's type parameter
+    /// k, which its `this`'s type context answers at run time; -2 - k for a
+    /// shared method copy's type parameter k, which its hidden arguments
+    /// answer (Lowering.HiddenTypeArguments). Still object in every other
+    /// respect, and NOT PART OF EQUALITY: it says where the type argument can
+    /// be found, not what type this is. Inference and closing carry it as
+    /// they carry the instance, which is what lets a generic method called
+    /// from shared code be handed its type argument.
+    /// </summary>
+    public int CanonParam { get; init; } = -1;
+
+    /// <summary>object, as the shared type argument at `index` (CanonParam): one instance per index.</summary>
+    public static Type CanonAny(int index)
+    {
+        if (index == -1) return Any;
+        lock (CanonAnys)
+        {
+            if (!CanonAnys.TryGetValue(index, out Type? made))
+            {
+                made = new Type { Prim = Prim.Any, CanonParam = index };
+                CanonAnys[index] = made;
+            }
+            return made;
+        }
+    }
+
+    private static readonly Dictionary<int, Type> CanonAnys = new();
+
+    public static readonly Type Void  = new() { Prim = Prim.Void };
     public static readonly Type Bool   = new() { Prim = Prim.Bool };
     public static readonly Type I8     = new() { Prim = Prim.I8 };
     public static readonly Type I16    = new() { Prim = Prim.I16 };
@@ -212,6 +242,7 @@ public sealed class Type : IEquatable<Type>
         Prim = Prim, Symbol = Symbol, Nullable = nullable, Element = Element,
         ArrayRank = ArrayRank, Args = Args, ParamName = ParamName, StructParam = StructParam,
         Names = Names, PointerDepth = PointerDepth, Pointee = Pointee, UseArgs = UseArgs, Function = Function,
+        CanonParam = CanonParam,
     };
 
     public Type WithNames(IReadOnlyList<string>? names) => new()
@@ -219,6 +250,7 @@ public sealed class Type : IEquatable<Type>
         Prim = Prim, Symbol = Symbol, Nullable = Nullable, Element = Element,
         ArrayRank = ArrayRank, Args = Args, ParamName = ParamName, StructParam = StructParam,
         Names = names, PointerDepth = PointerDepth, Pointee = Pointee, UseArgs = UseArgs, Function = Function,
+        CanonParam = CanonParam,
     };
 
     /// <summary>

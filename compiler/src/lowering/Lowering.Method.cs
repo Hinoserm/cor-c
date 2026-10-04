@@ -93,6 +93,20 @@ public sealed partial class Lowering
     /// <summary>The caller's buffer this method writes its struct result to (Buffered), or null.</summary>
     private VReg? _resultBuffer;
 
+    /// <summary>
+    /// A SHARED METHOD COPY'S HIDDEN ARGUMENTS (Monomorphiser.CopyName): the
+    /// descriptor of each of its type arguments, as its caller found it, 0
+    /// where the caller could not. After the declared parameters and the
+    /// result buffer, one word each, numbers to every analysis -- a
+    /// descriptor is read-only data, never an object a region or the
+    /// collector need follow. Null in every other function, a lambda's
+    /// included, whose tests then answer as the copy over object.
+    /// </summary>
+    private VReg[]? _typeArgs;
+
+    /// <summary>The hidden arguments the next direct call of this method passes (EmitCall, CallDirect).</summary>
+    private (MethodSymbol Method, List<Operand> Args)? _pendingTypeArgs;
+
     /// <summary>Struct values known to be blocks of the heap, which a store into the heap may keep as they are.</summary>
     private readonly HashSet<VReg> _heapStructs = new();
 
@@ -124,6 +138,8 @@ public sealed partial class Lowering
         _returnBlock = null;
         _returnValue = null;
         _resultBuffer = null;
+        _typeArgs = null;
+        _pendingTypeArgs = null;
         _heapStructs.Clear();
         _returnType = null;
         _boundsFail = null;
@@ -201,6 +217,19 @@ public sealed partial class Lowering
         {
             _resultBuffer = _f.NewReg(IrTypes.Word, "retbuf");
             _f.Params.Add(_resultBuffer);
+        }
+
+        // A SHARED METHOD COPY'S TYPE ARGUMENTS, last (CallDirect passes them).
+        int hidden = Monomorphiser.SharedMethodCopy(m.Name);
+        if (hidden > 0)
+        {
+            _typeArgs = new VReg[hidden];
+            for (int i = 0; i < hidden; i++)
+            {
+                _typeArgs[i] = _f.NewReg(IrTypes.Word, "targ" + i);
+                _typeArgs[i].Number = true;
+                _f.Params.Add(_typeArgs[i]);
+            }
         }
 
         ScanAddressTaken(decl.Body!);

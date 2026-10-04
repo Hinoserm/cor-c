@@ -242,6 +242,14 @@ public sealed partial class BindResult
     /// </summary>
     public Dictionary<Node, Type> TestedArrays { get; } = new(ReferenceEqualityComparer.Instance);
 
+    /// <summary>
+    /// A TEST OR CAST TO A GENERIC INTERFACE OVER A SHARED METHOD COPY'S OWN
+    /// TYPE PARAMETERS (ICanonShape): the interface's family and its
+    /// arguments as resolved, a CanonParam of -2 - k standing for hidden
+    /// argument k. Asked of the object at run time (Runtime.ShapedAs).
+    /// </summary>
+    public Dictionary<Node, CanonShape> Shapes { get; } = new(ReferenceEqualityComparer.Instance);
+
     public Dictionary<SwitchArm, int> ArmSlot { get; } = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>
@@ -546,6 +554,7 @@ public sealed partial class BindResult
         BoxPatterns.Clear();
         StringTests.Clear();
         TestedTypes.Clear();
+        Shapes.Clear();
         TestedArrays.Clear();
         ArmSlot.Clear();
         PatternSym.Clear();
@@ -608,6 +617,51 @@ public sealed class StaticArray
     public List<double> Reals { get; } = new();
     public List<string?> Strings { get; } = new();
     public int Count => Element == "string" ? Strings.Count : Element is "float" or "double" ? Reals.Count : Integers.Count;
+}
+
+/// <summary>
+/// A generic interface tested or cast to in a shared method copy, over one
+/// or more of the copy's own type parameters (BindResult.Shapes): the
+/// interface as the copy names it -- over object, the static answer -- and
+/// its type arguments, each resolved, the copy's hidden argument k where its
+/// CanonParam is -2 - k.
+/// </summary>
+public sealed class CanonShape
+{
+    public required TypeSymbol Interface { get; init; }
+    public required List<Type> Args { get; init; }
+
+    /// <summary>The most type arguments an interface's identity record holds and Runtime.ShapedAs is given.</summary>
+    public const int MostArguments = 4;
+
+    /// <summary>
+    /// WHICH GENERIC INTERFACE A SPECIALISED ONE IS MADE FROM, as a number
+    /// every unit computes alike: the template's path and arity, hashed
+    /// (FNV-1a) to the word. IList of string and IList of Node share it, and
+    /// nothing else does but by a collision a matching argument list would
+    /// also have to share. Null for an interface that was not made from a
+    /// template.
+    /// </summary>
+    public static long? FamilyOf(TypeSymbol face)
+    {
+        if (face.Decl is not { Specialised: true, Template: string template } decl || decl.TemplateArgs.Count == 0)
+        {
+            return null;
+        }
+        string key = template + "`" + decl.TemplateArgs.Count;
+        ulong hash = 14695981039346656037UL;
+        foreach (char c in key)
+        {
+            hash ^= c;
+            hash *= 1099511628211UL;
+        }
+        // Folded to 31 bits, a positive number every target's word holds and
+        // every instruction takes as an immediate; a collision would also
+        // need the arguments to match to answer wrongly.
+        long family = (long)((hash ^ (hash >> 32)) & 0x7fffffffUL);
+        // Zero is no family (a record's absence), so never a family's number.
+        return family == 0 ? 1 : family;
+    }
 }
 
 /// <summary>Where a generic virtual call may land. See BindResult.GenericDispatches.</summary>
