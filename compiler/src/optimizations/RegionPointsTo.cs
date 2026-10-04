@@ -2534,6 +2534,21 @@ public sealed class RegionPointsTo : IModulePass
     /// <summary>Runtime.InvalidCastTo(object, string): a failed cast's throw.</summary>
     internal const string FailedCast = "m_Runtime_InvalidCastTo_2_V$Any_V$String";
 
+    /// <summary>
+    /// The runtime's type checks made with types known only at run time: a
+    /// reference stored into an array of a shared generic (ArrayStoreCheck),
+    /// `x is T[]` (ArrayOf), and a shared copy's tests (DescribedAs,
+    /// ShapedAs). Each reads descriptors and answers yes or no, or throws
+    /// what it makes; none keeps what it is handed (Escape.KeepsNothing).
+    /// </summary>
+    private static readonly string[] TypeChecks =
+    {
+        "m_Runtime_ArrayStoreCheck_2_V$I64_V$I64",
+        "m_Runtime_ArrayOf_2_V$I64_V$I64",
+        "m_Runtime_DescribedAs_2_V$I64_V$I64",
+        "m_Runtime_ShapedAs_7_V$I64_V$I64_V$I64_V$I64_V$I64_V$I64_V$I64",
+    };
+
     // The collector's notes and the runtime's frees keep no pointer.
     internal static bool Harmless(string callee) =>
         Opt.Escape.IsCollectorNote(callee) || callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive
@@ -2546,6 +2561,11 @@ public sealed class RegionPointsTo : IModulePass
         // cast in that cycle hands it, the unknown object among them: every
         // object any boundary cast -- `(Leaf)r.Child` -- went to the heap.
         || callee == FailedCast
+        // NOR THE RUNTIME'S TYPE CHECKS (TypeChecks), for the same reason:
+        // the store check every List of a reference type makes as it adds,
+        // followed into the same cycle, handed every Row a sheet's list held
+        // and every array it grew into to the unknown object (1290).
+        || Array.IndexOf(TypeChecks, callee) >= 0
         || callee.StartsWith("m_Runtime_Card", StringComparison.Ordinal)
         || callee.StartsWith("m_Runtime_WriteBarrier", StringComparison.Ordinal);
 
