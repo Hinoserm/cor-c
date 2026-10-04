@@ -417,7 +417,11 @@ internal sealed class RegionEscape
     {
         string Name(int cls) => cls switch { 0 => "U", 1 => "M", 2 => "A*", _ => ((cls - 3) % 2 == 0 ? "P" : "D") + (cls - 3) / 2 };
         int unknown = _assumed!.Values.Count(a => Has(a.Bits, UnknownBit));
-        Progress?.Invoke($"escape graphs: stand-ins: {unknown} of {_assumed.Count} the unknown call");
+        int holding = _assumed.Values.Count(a => !Has(a.Bits, UnknownBit) && Enumerable.Range(2, Classes - 2).Any(y => Has(a.Bits, y)));
+        int past = 0, unified = 0;
+        for (int f = 0; f < _how.Length; f++) { if (_how[f] == How.PastBound) past++; else if (_how[f] == How.Unified) unified++; }
+        Progress?.Invoke($"escape graphs: stand-ins: {unknown} of {_assumed.Count} the unknown call, {holding} more with the unknown object holding an argument; "
+            + $"{past} functions unified past their bound, {unified} in large cycles");
         foreach (var (targets, a) in _assumed.OrderByDescending(x => x.Value.Bits.Sum(w => System.Numerics.BitOperations.PopCount(w))).Take(40))
         {
             List<string> held = new();
@@ -430,11 +434,31 @@ internal sealed class RegionEscape
                 string[] why = targets.Where(t => _summaries[t] is null or { IsUnknown: true }).Take(4).Select(t => _functions[t].Name).ToArray();
                 held.Add("UNKNOWN by " + string.Join(", ", why));
             }
+            // WHO MAKES THE UNKNOWN OBJECT HOLD AN ARGUMENT: the targets
+            // whose own summaries say so, how many, and how each was found
+            // -- by inclusion, unified as a large cycle or past its bound,
+            // made coarse past a summary's bounds.
+            bool LeaksArgument(ulong[] bits)
+            {
+                for (int y = 2; y < Classes; y++) if (Has(bits, y)) return true;
+                return false;
+            }
+            if (LeaksArgument(a.Bits))
+            {
+                List<int> leaking = targets.Where(t => _summaries[t] is { IsUnknown: false } s && LeaksArgument(Shape(s).Bits)).ToList();
+                string Tag(int t) => (t < _how.Length ? _how[t] : How.None) switch { How.Unified => "unified", How.PastBound => "past bound", How.Inclusion => "inclusion", _ => "?" }
+                    + (_summaries[t]!.Coarsened ? ", coarse" : "");
+                held.Add($"U>arg by {leaking.Count}: " + string.Join(", ", leaking.Take(4).Select(t => _functions[t].Name + " (" + Tag(t) + ")")));
+            }
             Progress?.Invoke($"escape graphs:   {targets.Length} targets ({_functions[targets[0]].Name}): {a.Sites.Length} sites; " + string.Join(" ", held));
         }
     }
 
     private Dictionary<int[], Assumed>? _assumed;
+
+    // For a report: how each function's summary was found.
+    private enum How : byte { None, Inclusion, Unified, PastBound }
+    private How[] _how = Array.Empty<How>();
     private readonly Dictionary<int[], Summary> _standIns = new(TargetsComparer.Instance);
 
     private bool IsWide(int[] targets) => _assumed is not null && targets.Length > WideTargets;
@@ -519,6 +543,7 @@ internal sealed class RegionEscape
     private void Reset()
     {
         Array.Clear(_summaries);
+        Array.Clear(_how);
         Array.Clear(Escaping);
         Array.Clear(LoopHeld);
         _holders.Clear();
@@ -588,6 +613,7 @@ internal sealed class RegionEscape
 
     private void Solve(List<int> component)
     {
+        if (_how.Length != _functions.Count) _how = new How[_functions.Count];
         LargestCycle = Math.Max(LargestCycle, component.Count);
         long began = Progress is null ? 0 : System.Diagnostics.Stopwatch.GetTimestamp();
         long nodes = 0;
@@ -596,7 +622,7 @@ internal sealed class RegionEscape
         {
             Unified u = new Unified(this, component.ToArray()).Solved();
             for (int m = 0; m < component.Count; m++) Register(_summaries[component[m]] = u.Summarise(m), component[m]);
-            for (int m = 0; m < component.Count; m++) u.Answer(m);
+            for (int m = 0; m < component.Count; m++) { u.Answer(m); _how[component[m]] = How.Unified; }
             Progress?.Invoke($"escape graphs: cycle of {component.Count} ({_functions[component[0]].Name}) unified in {System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds:F0} ms: "
                 + u.Describe() + $", heap {GC.GetTotalMemory(false) >> 20} MB");
             return;
@@ -610,13 +636,13 @@ internal sealed class RegionEscape
             Fallbacks++;
             Unified u = new Unified(this, component.ToArray()).Solved();
             for (int m = 0; m < component.Count; m++) Register(_summaries[component[m]] = u.Summarise(m), component[m]);
-            for (int m = 0; m < component.Count; m++) u.Answer(m);
+            for (int m = 0; m < component.Count; m++) { u.Answer(m); _how[component[m]] = How.PastBound; }
             if (Progress is not null && System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds > 300)
                 Progress($"escape graphs: {_functions[component[0]].Name} ({component.Count}) past its bound by inclusion, unified in {System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds:F0} ms: " + g.Describe());
             return;
         }
         for (int m = 0; m < component.Count; m++) Register(_summaries[component[m]] = g.Summarise(m), component[m]);
-        for (int m = 0; m < component.Count; m++) g.Answer(m);
+        for (int m = 0; m < component.Count; m++) { g.Answer(m); _how[component[m]] = How.Inclusion; }
         if (Progress is not null && (component.Count > 50 || System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds > 300))
             Progress($"escape graphs: cycle of {component.Count} ({_functions[component[0]].Name}) in {System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds:F0} ms: "
                 + g.Describe() + $", heap {GC.GetTotalMemory(false) >> 20} MB");
@@ -666,6 +692,8 @@ internal sealed class RegionEscape
         public bool IsUnknown;
         /// <summary>Whose objects these are, for an object made from one (Ref): a function, or a merged summary registered as one; -1 for none.</summary>
         public int Holder = -1;
+        /// <summary>For a report: past its bounds, made coarse (Coarse, Everything).</summary>
+        public bool Coarsened;
 
         public static Summary Unknown => new() { IsUnknown = true };
 
@@ -751,44 +779,42 @@ internal sealed class RegionEscape
             foreach (var r in Result) b.Result.Add((map[r.To], b.Objects[map[r.To]].Kind == Kind.Place ? r.ToOffset : Any));
             b.Cells.Sort(); b.Result.Sort();
             Dedupe(b.Cells); Dedupe(b.Result);
+            b.Coarsened = true;
             return b.Cells.Count > MostCells ? b.Everything() : b;
         }
 
         /// <summary>
         /// THE SHAPE PAST EVEN THE COARSE ONE: every argument and all it
-        /// reaches one object, everything made another, each holding the
-        /// other and itself, the unknown object as either reaches it -- what
-        /// a coarse summary dense with cells, each object to every other,
-        /// came to anyway, at one closure a call.
+        /// reaches one object, everything made another, and the unknown
+        /// object -- what a coarse summary dense with cells, each object to
+        /// every other, came to anyway, at one closure a call. Each holds what
+        /// one of the objects merged into it held of one merged into the
+        /// other: a merge, so no less than the summary said. It held every
+        /// pair, and the unknown object every argument wherever a cell
+        /// touched it at all: a ToString that read a static, or an argument
+        /// handed a literal, leaked every argument of every call of it --
+        /// and, through a wide call's stand-in, of every override's call.
         /// </summary>
         public Summary Everything()
         {
             Summary e = new();
-            bool places = false, global = false;
+            bool places = false;
             List<int> origins = new();
             foreach (var o in Objects) { if (o.Kind is Kind.Place or Kind.Deep) places = true; if (o.Kind == Kind.Made) origins.AddRange(o.Origins); }
-            foreach (var c in Cells) if (c.From == 0 || c.To == 0) global = true;
-            foreach (var r in Result) if (r.To == 0) global = true;
             origins.Sort();
             int all = -1, blob = -1;
             if (places) { all = e.Objects.Count; e.Objects.Add((Kind.Deep, -1, Array.Empty<int>(), Array.Empty<int>())); }
             if (origins.Count > 0) { blob = e.Objects.Count; e.Objects.Add((Kind.Made, -1, Array.Empty<int>(), origins.Distinct().ToArray())); }
-            foreach (int from in new[] { all, blob })
+            int Merged(int k) => Objects[k].Kind switch { Kind.Unknown => 0, Kind.Made => blob, _ => all };
+            foreach (var c in Cells)
             {
-                if (from < 0) continue;
-                if (all >= 0) e.Cells.Add((from, Any, all, Any));
-                if (blob >= 0) e.Cells.Add((from, Any, blob, Any));
-                if (global) e.Cells.Add((from, Any, 0, Any));
+                int from = Merged(c.From), to = Merged(c.To);
+                if (from >= 0 && to >= 0 && !(from == 0 && to == 0)) e.Cells.Add((from, Any, to, Any));
             }
-            if (global && all >= 0) e.Cells.Add((0, Any, all, Any));
-            if (Result.Count > 0)
-            {
-                if (all >= 0) e.Result.Add((all, Any));
-                if (blob >= 0) e.Result.Add((blob, Any));
-                if (global) e.Result.Add((0, Any));
-            }
+            foreach (var r in Result) if (Merged(r.To) is int to and >= 0) e.Result.Add((to, Any));
             e.Cells.Sort(); e.Result.Sort();
             Dedupe(e.Cells); Dedupe(e.Result);
+            e.Coarsened = true;
             return e;
         }
 
@@ -2075,6 +2101,15 @@ internal sealed class RegionEscape
         /// closure a call, where a cell from each parameter to each other's
         /// deep place made a call into the cycle cost the square of its
         /// arguments' reach.
+        ///
+        /// WHAT THE RESULT REACHES IS NOT THE ARGUMENTS': a member handing
+        /// back a literal or a static's object -- a ToString -- reaches the
+        /// unknown object by its result alone, and that once made the
+        /// unknown object hold every argument, so that every argument of
+        /// every call of it escaped. Only what the arguments reach decides
+        /// whether the unknown object may hold them: a class of the caller's
+        /// that the result reaches and the unknown object holds is one the
+        /// arguments reach too, or the caller never had it.
         /// </summary>
         public Summary Summarise(int m)
         {
@@ -2083,13 +2118,14 @@ internal sealed class RegionEscape
             int n = f.Parameters;
             Summary s = new();
             var info = new (int[] All, int[] Local, HashSet<int> Roots, bool Global)[n + 1];
-            bool any = false, global = false;
+            bool any = false, argsGlobal = false, resultGlobal = false;
             for (int k = 0; k <= n; k++)
             {
                 int own = _pointee[Node(m, k)] < 0 ? -1 : Pointee(Node(m, k));
                 info[k] = own < 0 ? (Array.Empty<int>(), Array.Empty<int>(), new HashSet<int>(), false) : Info(own);
                 if (own >= 0 && k < n) any = true;
-                if (own >= 0 && (info[k].Global || _globalClasses!.Contains(own))) global = true;
+                bool global = own >= 0 && (info[k].Global || _globalClasses!.Contains(own));
+                if (k < n) argsGlobal |= global; else resultGlobal = global;
             }
             int all = -1;
             if (any) { all = s.Objects.Count; s.Objects.Add((Kind.Deep, -1, Array.Empty<int>(), Array.Empty<int>())); }
@@ -2101,17 +2137,19 @@ internal sealed class RegionEscape
                 if (from < 0) continue;
                 if (all >= 0) s.Cells.Add((from, Any, all, Any));
                 if (blob >= 0) s.Cells.Add((from, Any, blob, Any));
-                if (global) s.Cells.Add((from, Any, 0, Any));
+                // What was made may be reached from the result alone.
+                if (argsGlobal || from == blob && resultGlobal) s.Cells.Add((from, Any, 0, Any));
             }
-            if (global && all >= 0) s.Cells.Add((0, Any, all, Any));
+            if (argsGlobal && all >= 0) s.Cells.Add((0, Any, all, Any));
             if (_pointee[Node(m, n)] >= 0)
             {
                 if (all >= 0) s.Result.Add((all, Any));
                 if (blob >= 0) s.Result.Add((blob, Any));
-                if (global) s.Result.Add((0, Any));
+                if (resultGlobal || argsGlobal) s.Result.Add((0, Any));
             }
             s.Cells.Sort(); s.Result.Sort();
             Summary.Dedupe(s.Cells); Summary.Dedupe(s.Result);
+            s.Coarsened = true;
             return s;
         }
 
