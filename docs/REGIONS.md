@@ -190,7 +190,7 @@ back from the top); 1304 (grown in place).
 ## The unit's hints
 
 `compiler/src/optimizations/RegionSummary.cs`, format in
-`linker/src/lto/RegionHints.cs` (section `.corsac.regions`, version 10).
+`linker/src/lto/RegionHints.cs` (section `.corsac.regions`, version 11).
 
 A unit compile states, function by function, the pointer constraints of the
 IR the link will regenerate the unit from:
@@ -233,10 +233,15 @@ IR the link will regenerate the unit from:
   everything it touched. Since version 8. Test 1298. Each saved register,
   and each frame slot's contents, is stored at a field of its own, eight
   bytes apart from offset 2048 (`SavedFieldsStart`), past any declared field;
-  past 4088, at any offset. At any offset, every load of the machine (its
+  past 4088, from 2048 again (two values in one field; at any offset, every
+  load of the machine and of what a place reaches read every one past the
+  last). At any offset, every load of the machine (its
   receiver, its arguments, its current element) read all of them, and the
   unified solver collapsed the machine with all it reached: an iterator's
-  source and what it yields were one. Test 1319.
+  source and what it yields were one. Test 1319. The saved fields name a
+  field of the body's own (`$saved:` and the function's name): two machines
+  unified into one class past a bound keep each one's saved fields apart,
+  and a typed load of what a place reaches no longer reads them.
 - **Sites**: whether a region may take it, its line, the descriptor it
   stamps and where the method table begins (what a virtual call on its
   object runs), and how the collector reads its words (`RegionWords`).
@@ -251,7 +256,14 @@ IR the link will regenerate the unit from:
   `RegionSummary.MethodRead`). A virtual call the link follows reaches its
   overrides with its own arguments; the method-slot functions are rooted
   only when some unit calls one blind or a virtual call is left unresolved
-  (`RegionSolver.Addressed`; a `--region-report` says which). Rooted otherwise, every
+  (`RegionSolver.Addressed`; a `--region-report` says which). Since version
+  11, a function that calls a method read out of a descriptor says at which
+  offsets of the method table it reads it (`BlindSlots`; any offset where the
+  table was moved or the read is past knowing), and only a method some
+  descriptor holds at one of them is rooted for it (`VirtualTargets.SlotsOf`):
+  a blind call reading one slot no longer roots every MoveNext, Current,
+  Dispose and closure Invoke. An unresolved virtual call still roots
+  them all. Rooted otherwise, every
   virtual method was called with anything, and what each override made and
   wrote into its object was everyone's. A body is rooted when any copy of it
   is.

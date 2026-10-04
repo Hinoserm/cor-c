@@ -58,6 +58,9 @@ internal sealed class RegionEscape
     // The most cells a summary keeps: past it, every place below a
     // parameter is its deep place and every object made is one.
     private const int MostCells = 128;
+    // The fields of each parameter the shape past even the coarse one keeps
+    // apart (Summary.Everything), each with all below it.
+    private const int MostFieldsKept = 4;
     // A member of a cycle's parameters are numbered past every member before
     // it: its place in the cycle times this, plus the parameter.
     private const int ParamStride = 1 << 12;
@@ -687,6 +690,22 @@ internal sealed class RegionEscape
     }
 
     /// <summary>
+    /// A PLACE MADE COARSE BY ITS FIRST FIELD (Summary.Coarse): a field of
+    /// its parameter the place that field is, and everything below that
+    /// field one deep place of the field's own -- so a leak through p.f no
+    /// longer covers p.g. A path through any offset first, or no field, is
+    /// everything below the parameter, and a guarded one Coarsened's.
+    /// Each covers what it was: a place below p.f is below p.f.
+    /// </summary>
+    private static int[] CoarsenedByField(int[] path)
+    {
+        if (path.Length == 0 || Array.FindIndex(path, IsGuard) >= 0) return Coarsened(path);
+        int first = path[0];
+        if (first < 0) return DeepBelow;                    // any offset, or the deep step itself
+        return path.Length == 1 ? path : [first, DeepStep];
+    }
+
+    /// <summary>
     /// A path guarded at its end: two guards running are both at once. ONE
     /// GUARD A PATH, the last: a guard further up is left out (and what it
     /// kept apart below a deep step is the deep place again). A caller's
@@ -745,8 +764,23 @@ internal sealed class RegionEscape
         if (_sitePasses.TryGetValue((site, guard), out bool known)) return known;
         bool passes = true;
         foreach (var (f, k, target) in _guards[guard])
-            if (RunsOn(f, k, site) is { } runs && Array.BinarySearch(runs, target) < 0) { passes = false; break; }
+            if (RunsOn(f, k, site) is { } runs && (target >= 0 ? Array.BinarySearch(runs, target) < 0 : !runs.Any(_targetSets[-1 - target].Contains)))
+            { passes = false; break; }
         return _sitePasses[(site, guard)] = passes;
+    }
+
+    // A GUARD'S TARGET MAY BE A SET: a target below zero is -1 less the set's
+    // number, and an object passes it if its class runs any of the set
+    // (Graph.Deferred, past MostDeferred targets apart). Numbered as they
+    // are first asked for, by what they hold, so a link answers alike.
+    private readonly List<HashSet<int>> _targetSets = new();
+    private readonly Dictionary<int[], int> _targetSetIds = new(TargetsComparer.Instance);
+
+    private int TargetSet(int[] targets)
+    {
+        if (_targetSetIds.TryGetValue(targets, out int id)) return id;
+        _targetSets.Add(new HashSet<int>(targets));
+        return _targetSetIds[targets] = -1 - (_targetSets.Count - 1);
     }
 
     // ---- the order: callees first, a cycle together -----------------------
@@ -1954,8 +1988,11 @@ internal sealed class RegionEscape
 
         /// <summary>
         /// THE COARSEST SUMMARY BUT THE UNKNOWN CALL'S: each parameter's own
-        /// object, everything below it one deep place, everything made one
-        /// object, every cell at any offset.
+        /// object, each field of it its own object and all below that field
+        /// one deep place (CoarsenedByField), everything made one object --
+        /// two, what the unknown object reaches apart -- every cell at any
+        /// offset. (Everything below a parameter one deep place, a leak
+        /// through one field of it let every field go.)
         /// </summary>
         public Summary Coarse()
         {
@@ -1981,7 +2018,7 @@ internal sealed class RegionEscape
             int KeepPlace(int param, int[] path)
             {
                 if (param < 0) return Keep(Kind.Deep, param, DeepBelow, Array.Empty<int>());
-                int[] coarse = Coarsened(path);
+                int[] coarse = CoarsenedByField(path);
                 return Keep(KindOf(coarse), param, coarse, Array.Empty<int>());
             }
             // EVERYTHING MADE TWO OBJECTS, not one: what the unknown object
@@ -2020,7 +2057,8 @@ internal sealed class RegionEscape
         }
 
         /// <summary>
-        /// THE SHAPE PAST EVEN THE COARSE ONE: each parameter's own object and
+        /// THE SHAPE PAST EVEN THE COARSE ONE: each parameter's own object,
+        /// its first few fields each with a deep place below (MostFieldsKept),
         /// one deep place below it, the deep place past every parameter, what
         /// was made in two -- what the unknown object reaches, and the rest
         /// -- a constant, and the unknown object: what a coarse summary dense
@@ -2077,6 +2115,27 @@ internal sealed class RegionEscape
                 e.Objects.Add((Kind.Deep, key, DeepBelow, Array.Empty<int>()));
                 return deepOf[key] = at;
             }
+            // AND THE FIRST FEW FIELDS OF EACH PARAMETER APART, each its own
+            // object and one deep place below it (CoarsenedByField), as many
+            // as MostFieldsKept a parameter, the first the summary names: a
+            // leak through one of them is not every field's. The rest, and
+            // what a guard or any offset leads to, are the parameter's deep
+            // place, which covers them all.
+            Dictionary<int, List<int>> firsts = new();
+            foreach (var o in Objects)
+            {
+                if (o.Kind is not (Kind.Place or Kind.Deep) || o.Param < 0 || o.Path.Length == 0 || o.Path[0] < 0 || o.Path.Any(IsGuard)) continue;
+                if (!firsts.TryGetValue(o.Param, out List<int>? kept)) firsts[o.Param] = kept = new();
+                if (!kept.Contains(o.Path[0]) && kept.Count < MostFieldsKept) kept.Add(o.Path[0]);
+            }
+            Dictionary<(int, int, bool), int> fieldOf = new();
+            int FieldOf(int param, int field, bool below)
+            {
+                if (fieldOf.TryGetValue((param, field, below), out int at)) return at;
+                at = e.Objects.Count;
+                e.Objects.Add(below ? (Kind.Deep, param, new[] { field, DeepStep }, Array.Empty<int>()) : (Kind.Place, param, new[] { field }, Array.Empty<int>()));
+                return fieldOf[(param, field, below)] = at;
+            }
             int Merged(int k)
             {
                 var o = Objects[k];
@@ -2084,7 +2143,10 @@ internal sealed class RegionEscape
                 if (o.Kind == Kind.Made) return o.Param == ConstantParam ? constant : leaked.Contains(k) ? held : free;
                 if (o.Param < 0) return PlaceOf(-1);
                 // (A place guarded at its parameter is still that object.)
-                return o.Kind == Kind.Place && Fields(o.Path) == 0 && Array.IndexOf(o.Path, DeepStep) < 0 ? PlaceOf(o.Param) : DeepOf(o.Param);
+                if (o.Kind == Kind.Place && Fields(o.Path) == 0 && Array.IndexOf(o.Path, DeepStep) < 0) return PlaceOf(o.Param);
+                if (o.Path.Length > 0 && o.Path[0] >= 0 && !o.Path.Any(IsGuard) && firsts.TryGetValue(o.Param, out List<int>? fields) && fields.Contains(o.Path[0]))
+                    return FieldOf(o.Param, o.Path[0], o.Path.Length > 1);
+                return DeepOf(o.Param);
             }
             foreach (var c in Cells)
             {
@@ -3363,9 +3425,11 @@ internal sealed class RegionEscape
             /// <summary>A wide call's targets kept apart on places (Deferred): each one's receiver node.</summary>
             public readonly Dictionary<int, int> Deferred = new();
             public bool? SplitOutside;
-            /// <summary>Its targets that leak an argument (LeaksArgument), once asked; null past MostDeferred of them (Dispatch).</summary>
+            /// <summary>Its targets that leak an argument (LeaksArgument), once asked, however many (Dispatch, Deferred).</summary>
             public int[]? Leaky;
             public bool LeakyAsked;
+            /// <summary>Past MostDeferred leaky targets: their receiver node, all of them applied together (DeferredSet).</summary>
+            public int LeakySet = -1;
         }
 
         // The most sets of targets a call applies apart, past which a set is
@@ -3516,7 +3580,8 @@ internal sealed class RegionEscape
         /// leaks -- and to the group of each leaky target it runs, that
         /// target alone. Every target it runs is applied to it, so this is
         /// sound; only what it runs leaks it. With more leaky targets than
-        /// MostDeferred, the whole call, as before. (A target not solved yet
+        /// MostDeferred, all of them in one group (DeferredSet) for an object
+        /// that runs any of them. (A target not solved yet
         /// does not leak: what applied it, wide, is solved again when its
         /// stand-in grows, and whatever is not wide was solved first.)
         /// </summary>
@@ -3528,24 +3593,16 @@ internal sealed class RegionEscape
                 Add(v.Wide ? WideGroup(v, targets) : Group(v, targets), loc);
                 return;
             }
-            if (!v.LeakyAsked)
-            {
-                v.LeakyAsked = true;
-                List<int> leaky = new();
-                foreach (int t in v.Outside)
-                    if (_owner.LeaksArgument(t)) { leaky.Add(t); if (leaky.Count > MostDeferred) break; }
-                v.Leaky = leaky.Count > MostDeferred ? null : leaky.ToArray();
-            }
-            if (v.Leaky is not { } apart)
-            {
-                Add(v.Wide ? WideGroup(v, v.Outside) : Group(v, v.Outside), loc);
-                return;
-            }
+            int[] apart = LeakyOf(v);
+            // PAST MostDeferred LEAKY TARGETS, those together: an object that
+            // runs any of them is handed them all at once, one that runs none
+            // only the rest (more than one by one, far less than the whole call).
+            bool together = apart.Length > MostDeferred;
             bool quiet = false;
             foreach (int t in targets)
             {
-                if (Array.IndexOf(apart, t) >= 0) Add(DeferredGroup(v, t), loc);
-                else quiet = true;
+                if (Array.BinarySearch(apart, t) < 0) quiet = true;
+                else Add(together ? DeferredSet(v, apart) : DeferredGroup(v, t), loc);
             }
             if (!quiet) return;
             int[] rest = apart.Length == 0 ? v.Outside : v.Outside.Except(apart).ToArray();
@@ -3576,10 +3633,12 @@ internal sealed class RegionEscape
         /// solved yet, or grew since, is covered where it is applied; and a
         /// rest that grows to let its receiver go is solved again
         /// (ChangedAt), when the target that made it grow is apart. Bounded:
-        /// no more than MostDeferred targets apart, and a place whose guard
-        /// has been deferred through MostDeferredLevels calls already takes
-        /// the whole call as before, as does a call with nothing to keep
-        /// apart. Only the receiver is kept apart: what a leaky target does
+        /// no more than MostDeferred targets apart one by one -- past that,
+        /// all of them as one, guarded by "runs any of them" (TargetSet), one
+        /// guard more on the place, not one a target -- and a place whose
+        /// guard has been deferred through MostDeferredLevels calls already
+        /// takes the whole call as before, as does a call with nothing to
+        /// keep apart. Only the receiver is kept apart: what a leaky target does
         /// to the other arguments is done as its stand-in says, at every
         /// call, as before.
         /// </summary>
@@ -3587,20 +3646,44 @@ internal sealed class RegionEscape
         {
             int[] path = _path[o];
             if (path.Length > 0 && IsGuard(path[^1]) && _owner._guards[GuardOf(path[^1])].Length >= MostDeferredLevels) return false;
-            List<int>? leaky = null;
-            foreach (int t in v.Outside)
-                if (_owner.LeaksArgument(t))
-                {
-                    if ((leaky ??= new()).Count >= MostDeferred) return false;
-                    leaky.Add(t);
-                }
-            if (leaky is null) return false;
+            int[] leaky = LeakyOf(v);
+            if (leaky.Length == 0) return false;
             int[] rest = v.Outside.Except(leaky).ToArray();
             if (_owner.Why is not null && _owner.Progress is { } tell && _owner.WhyFunction?.Invoke(v.F) == true)
-                tell($"escape graphs why: in {_owner._functions[v.F].Name}: call {v.Callee} on {Describe(o)} deferred for {string.Join(", ", leaky.Select(t => _owner._functions[t].Name))}");
-            foreach (int t in leaky) Add(DeferredGroup(v, t), Guarded(o, v, t));
+                tell($"escape graphs why: in {_owner._functions[v.F].Name}: call {v.Callee} on {Describe(o)} deferred for {string.Join(", ", leaky.Take(8).Select(t => _owner._functions[t].Name))}{(leaky.Length > 8 ? " and " + (leaky.Length - 8) + " more" : "")}");
+            // PAST MostDeferred OF THEM, ONE GUARD FOR ALL: the leaky targets
+            // applied together to the place guarded by "runs any of them".
+            // The caller's objects of a class that runs none are not handed
+            // them; where once the whole call, a stand-in letting go every
+            // receiver, was applied to every one.
+            if (leaky.Length > MostDeferred) Add(DeferredSet(v, leaky), Guarded(o, v, _owner.TargetSet(leaky)));
+            else foreach (int t in leaky) Add(DeferredGroup(v, t), Guarded(o, v, t));
             if (rest.Length > 0) Add(v.Wide ? WideGroup(v, rest, apart: true) : Group(v, rest, apart: true), loc);
             return true;
+        }
+
+        /// <summary>A call's targets outside the cycle that leak an argument (LeaksArgument), in order, asked once.</summary>
+        private int[] LeakyOf(VCall v)
+        {
+            if (v.LeakyAsked) return v.Leaky!;
+            v.LeakyAsked = true;
+            List<int> leaky = new();
+            foreach (int t in v.Outside) if (_owner.LeaksArgument(t)) leaky.Add(t);
+            return v.Leaky = leaky.ToArray();
+        }
+
+        /// <summary>The receiver node of every leaky target of a call at once (past MostDeferred of them): their stand-in, or merged summary, applied to it on first use.</summary>
+        private int DeferredSet(VCall v, int[] leaky)
+        {
+            if (v.LeakySet >= 0) return v.LeakySet;
+            int recv = NewNode();
+            v.LeakySet = recv;
+            int[] args = (int[])v.Args.Clone();
+            args[0] = recv;
+            Summary applied = v.Wide ? _owner.NarrowedStandIn(v.F, leaky) : _owner.MergedFor(leaky);
+            Explain(v.F, "(deferred for its leaky targets' receivers) " + v.Callee, leaky, applied);
+            Apply(args, v.Dest, applied);
+            return recv;
         }
 
         // The most targets of a wide call kept apart on a place, and the

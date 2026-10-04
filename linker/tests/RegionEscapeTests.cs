@@ -1,3 +1,4 @@
+using Corsac.Lang.Ir;
 using Corsac.Lang.Lto;
 
 namespace Corsac.Tests.Elf;
@@ -42,6 +43,15 @@ public static class RegionEscapeTests
         ("copies of one body in several units are solved once, answered alike", Copies),
         ("region hints round trip at the current version", HintsRoundTrip),
         ("backend facts round trip: region sizes and owned-field flags", BackendRoundTrip),
+        ("a virtual call runs nothing on a type the image never makes", MadeTypes),
+        ("a virtual call runs only what its receiver's types run", ReceiverTypes),
+        ("an iterator's yielded elements die in the loop that walks it", IteratorElements),
+        ("a closure that leaks one capture keeps the other", ClosureCaptures),
+        ("a method no blind call's slot holds is not called from where nobody follows", BlindSlots),
+        ("a visitor's call on this.Left runs only what Left ever holds", VisitorLeft),
+        ("a wide call on a place past eight leaky targets keeps them apart together", ManyLeaky),
+        ("a coarse summary keeps each field of a parameter apart", CoarseByField),
+        ("a method called blind runs on objects of its own class", BlindThis),
     };
 
     private static void Check(bool value, string message) { if (!value) throw new Exception(message); }
@@ -77,7 +87,8 @@ public static class RegionEscapeTests
         /// <summary>A site of a function, numbered among every function's.</summary>
         public int Site(string function, int ordinal) => SiteBase()[Index(function)] + ordinal;
 
-        public RegionEscape Solve(int wide = 16, Func<int, int, int, int[]?>? targetsOn = null, string[]? rooted = null, Action<string>? progress = null, long? pool = null)
+        public RegionEscape Solve(int wide = 16, Func<int, int, int, int[]?>? targetsOn = null, string[]? rooted = null, Action<string>? progress = null, long? pool = null,
+            Action<int[]?[][], string?[][], bool[]>? narrow = null)
         {
             int count = Functions.Count;
             int[]?[][] targets = new int[]?[count][];
@@ -103,6 +114,8 @@ public static class RegionEscapeTests
             int sites = count == 0 ? 0 : siteBase[^1] + Functions[^1].Sites.Length;
             bool[] wanted = Enumerable.Repeat(true, count).ToArray();
             bool[] roots = Functions.Select(f => rooted?.Contains(f.Name) == true).ToArray();
+            // The link's narrowing of each virtual call to what its receiver's types run (RegionTypes), where a test asks.
+            narrow?.Invoke(targets, keys, roots);
             RegionEscape escape = new(Functions, targets, keys, siteBase, sites, wanted, roots)
             {
                 WideTargets = wide, TargetsOn = targetsOn, Progress = progress,
@@ -939,7 +952,7 @@ public static class RegionEscapeTests
 
     /// <summary>
     /// Every field the hints carry, written, read back and written again:
-    /// the same bytes, at the format's version 10, and each field as it was.
+    /// the same bytes, at the format's version 11, and each field as it was.
     /// </summary>
     private static void HintsRoundTrip()
     {
@@ -951,6 +964,7 @@ public static class RegionEscapeTests
             new[] { new RegionSite(true, 7, "t_T", 48, RegionWords.Described), new RegionSite(false, 9, null, 0, RegionWords.Leaf) })
         {
             Main = false, NumberParams = new[] { 1 }, Symbols = new[] { "s_Table" }, Families = new[] { "Node::Next", "Sym::Name" },
+            CallsThroughMethod = true, BlindSlots = new[] { RegionConstraint.Any, 4L, 12L },
         };
         f.Constraints.AddRange(new[]
         {
@@ -974,7 +988,7 @@ public static class RegionEscapeTests
         hints.Functions.Add(main);
 
         byte[] bytes = hints.Write();
-        Check(BitConverter.ToInt32(bytes, 4) == 10, "the hints are written at version 10");
+        Check(BitConverter.ToInt32(bytes, 4) == 11, "the hints are written at version 11");
         RegionHints again = RegionHints.Read(bytes);
         Check(again.Write().AsSpan().SequenceEqual(bytes), "read back, the hints write the same bytes");
         RegionFunction w = again.Functions.Single(x => x.Name == "Work");
@@ -986,6 +1000,7 @@ public static class RegionEscapeTests
         Check(w.Instance && !w.Main && w.Parameters == 2 && w.Nodes == 6 && w.Slots == 1, "the function's shape");
         Check(w.NumberParams.SequenceEqual(new[] { 1 }) && w.Symbols.SequenceEqual(new[] { "s_Table" }), "its number parameters and symbols");
         Check(w.Families.SequenceEqual(new[] { "Node::Next", "Sym::Name" }), "the fields its loads and stores name");
+        Check(w.CallsThroughMethod && w.BlindSlots.SequenceEqual(new[] { RegionConstraint.Any, 4L, 12L }), "that it calls a method read out of a descriptor, and the slots it reads");
         Check(w.Sites[0] == new RegionSite(true, 7, "t_T", 48, RegionWords.Described) && w.Sites[1] == new RegionSite(false, 9, null, 0, RegionWords.Leaf), "its sites");
         Check(w.Constraints.SequenceEqual(f.Constraints), "its constraints, every kind");
         Check(w.Calls.Count == 2 && w.Calls[0].Callee == "Hook" && w.Calls[0].Arguments.SequenceEqual(new[] { 3, -1 }) && w.Calls[1].Callee is null, "its calls");
@@ -1034,5 +1049,465 @@ public static class RegionEscapeTests
         Check(r.Boundaries.SetEquals(regions.Boundaries) && r.Sites.SetEquals(regions.Sites) && r.Loops.SetEquals(regions.Loops), "the boundaries, sites and loops");
         Check(r.BoundaryBytes.Count == 1 && r.BoundaryBytes["Work"] == 96, "a boundary's size, and none for the unsized");
         Check(r.LoopBytes.Count == 1 && r.LoopBytes[("Lines", 3)] == 40, "a loop's size");
+    }
+
+    /// <summary>
+    /// ONLY THE TYPES AN IMAGE MAKES (VirtualTargets.Made), over objects
+    /// laid out as Lowering lays them (word 4, twelve words before the
+    /// method table at 48): Base, and Made, Never and Static deriving from
+    /// it, each overriding slot 0 with a Run of its own. Main's code stamps
+    /// a Made (a relocation to it at 48); a static object in data is a
+    /// Static, stamped in data; nothing names Never but its own self word
+    /// and its display, and nothing names Base but the displays and its
+    /// self word. A call on a Base runs Made's Run and Static's, and neither
+    /// Base's nor Never's: no object of theirs exists. Without the set, all
+    /// four. And a unit whose IR still makes a Never -- a function naming
+    /// it, which a late pass took out of the object -- makes it again.
+    /// </summary>
+    private static void MadeTypes()
+    {
+        const int w = 4, table = 48;
+        List<(string Name, ObjectFile Object)> Image(bool archived)
+        {
+            ObjectFile o = new();
+            Section text = new(".text", SectionKind.Code);
+            Section data = new(".data.rel.ro", SectionKind.ReadOnlyData);
+            o.Sections.Add(text); o.Sections.Add(data);
+            string[] types = { "Base", "Made", "Never", "Static" };
+            foreach (string type in types)
+            {
+                text.Bytes.Add(0xc3);
+                o.Symbols.Add(new Symbol { Name = "m_" + type + "_Run", Section = text, Offset = text.Bytes.Count - 1, Size = 1, IsFunction = true });
+            }
+            text.Bytes.AddRange(new byte[] { 0xb8, 0, 0, 0, 0, 0xc3 });
+            o.Symbols.Add(new Symbol { Name = "main", Section = text, Offset = text.Bytes.Count - 6, Size = 6, IsFunction = true });
+            // `new Made()`: the stamp's address in main's code.
+            text.Relocs.Add(new Relocation(text.Bytes.Count - 5, "t_Made", table, RelocKind.Abs32));
+            foreach (string type in types)
+            {
+                // Its display: Base, then itself.
+                string[] chain = type == "Base" ? new[] { "t_Base" } : new[] { "t_Base", "t_" + type };
+                int displayAt = data.Bytes.Count;
+                for (int i = 0; i < chain.Length; i++) { data.Relocs.Add(new Relocation(displayAt + i * w, chain[i], 0, RelocKind.Abs32)); data.Bytes.AddRange(new byte[w]); }
+                o.Symbols.Add(new Symbol { Name = "d_" + type, Section = data, Offset = displayAt, Size = chain.Length * w, Global = false });
+                int at = data.Bytes.Count;
+                data.Bytes.AddRange(new byte[table + w]);
+                data.Relocs.Add(new Relocation(at + 3 * w, "d_" + type, 0, RelocKind.Abs32));
+                data.Relocs.Add(new Relocation(at + 5 * w, "t_" + type, 0, RelocKind.Abs32));
+                data.Relocs.Add(new Relocation(at + table, "m_" + type + "_Run", 0, RelocKind.Abs32));
+                o.Symbols.Add(new Symbol { Name = "t_" + type, Section = data, Offset = at, Size = table + w });
+            }
+            // A static Static laid down whole: its stamp a data relocation.
+            int stat = data.Bytes.Count;
+            data.Bytes.AddRange(new byte[2 * w]);
+            data.Relocs.Add(new Relocation(stat, "t_Static", table, RelocKind.Abs32));
+            o.Symbols.Add(new Symbol { Name = "s_static", Section = data, Offset = stat, Size = 2 * w, Global = false });
+            if (archived)
+                IrArchive.Attach(o, new[] { new IrArchiveRecord("F:main", false, 2, Array.Empty<string>(), new byte[] { 1 }, new[] { "t_Made", "t_Never" }) });
+            return new() { ("app", o) };
+        }
+        const string call = VirtualTargets.Prefix + "t_Base+0";
+
+        var inputs = Image(archived: false);
+        VirtualTargets.Made made = VirtualTargets.MadeIn(inputs, Array.Empty<IrArchive>());
+        Check(made.Descriptors.SetEquals(new[] { "t_Made", "t_Static" }), "made: what code and data stamp, not what a self word or a display names: " + string.Join(",", made.Descriptors));
+        string[] all = VirtualTargets.Resolve(inputs, new[] { call })[call];
+        Check(all.SequenceEqual(new[] { "m_Base_Run", "m_Made_Run", "m_Never_Run", "m_Static_Run" }), "every type's override without the set: " + string.Join(",", all));
+        string[] runs = VirtualTargets.Resolve(inputs, new[] { call }, made)[call];
+        Check(runs.SequenceEqual(new[] { "m_Made_Run", "m_Static_Run" }), "only the made types' overrides: " + string.Join(",", runs));
+        Check(made.Calls == 1 && made.Narrowed == 1 && made.Removed == 2 && made.Targets == 4, "the report's counts");
+        Check(made.Dropped.SetEquals(new[] { "t_Base", "t_Never" }), "the unmade types the call reached");
+
+        var again = Image(archived: true);
+        VirtualTargets.Made remade = VirtualTargets.MadeIn(again, again.Select(input => IrArchive.Read(input.Object)!));
+        string[] still = VirtualTargets.Resolve(again, new[] { call }, remade)[call];
+        Check(still.SequenceEqual(new[] { "m_Made_Run", "m_Never_Run", "m_Static_Run" }), "a type the unit's IR makes is made: " + string.Join(",", still));
+    }
+
+    /// <summary>
+    /// RECEIVER TYPES (RegionTypes). Main makes an A, a B and a holder H,
+    /// stores the A into H at 8, and hands the A to Use, the B to Other and
+    /// H to Leaky and ReadBack. Use and Other each make the call of slot 0
+    /// whose overrides are RunA and RunB: Use's receiver only ever holds
+    /// the A, so it runs RunA alone; Other's only the B, RunB alone. Leaky
+    /// lets H go where nobody follows, where anything may be written into
+    /// it: what ReadBack loads out of H and calls the slot on may be
+    /// anything, and runs both. Without Leaky, ReadBack's receiver holds
+    /// only what Main stored, the A.
+    /// </summary>
+    private static void ReceiverTypes()
+    {
+        foreach (bool leaks in new[] { true, false })
+        {
+            Prog p = new();
+            RegionFunction main = new("Main", true, true, false, 0, 4, 0,
+                new[] { new RegionSite(true, 1, "t_A", 48), new RegionSite(true, 2, "t_B", 48), new RegionSite(true, 3, "t_H", 48) });
+            p.Functions.Add(main);
+            main.Constraints.AddRange(new[] { Site(1, 0), Site(2, 1), Site(3, 2), Store(3, 1, 8) });
+            main.Calls.Add(new RegionCall("Use", -1, new[] { 1 }));
+            main.Calls.Add(new RegionCall("Other", -1, new[] { 2 }));
+            main.Calls.Add(new RegionCall("Leaky", -1, new[] { 3 }));
+            main.Calls.Add(new RegionCall("ReadBack", -1, new[] { 3 }));
+            const string slot = VirtualTargets.Prefix + "t_Base+0";
+            p.Add("Use", 1, 2).Calls.Add(new RegionCall(slot, -1, new[] { 0 }));
+            p.Add("Other", 1, 2).Calls.Add(new RegionCall(slot, -1, new[] { 0 }));
+            RegionFunction leaky = p.Add("Leaky", 1, 2);
+            if (leaks) leaky.Constraints.Add(Leak(0));
+            RegionFunction readBack = p.Add("ReadBack", 1, 3);
+            readBack.Constraints.Add(Load(2, 0, 8));
+            readBack.Calls.Add(new RegionCall(slot, -1, new[] { 2 }));
+            p.Add("RunA", 1, 2); p.Add("RunB", 1, 2);
+            int runA = p.Index("RunA"), runB = p.Index("RunB");
+
+            int count = p.Functions.Count;
+            int[]?[][] targets = new int[]?[count][];
+            string?[][] keys = new string?[count][];
+            for (int f = 0; f < count; f++)
+            {
+                targets[f] = new int[]?[p.Functions[f].Calls.Count];
+                keys[f] = new string?[p.Functions[f].Calls.Count];
+                for (int k = 0; k < p.Functions[f].Calls.Count; k++)
+                {
+                    string callee = p.Functions[f].Calls[k].Callee!;
+                    if (callee == slot) { targets[f][k] = new[] { runA, runB }; keys[f][k] = slot + "@0"; }
+                    else targets[f][k] = new[] { p.Index(callee) };
+                }
+            }
+            bool[] rooted = p.Functions.Select(f => f.Name == "Main").ToArray();
+            RegionTypes types = new(p.Functions, targets, keys, rooted,
+                (f, k, table, at) => table == "t_A" ? new[] { runA } : table == "t_B" ? new[] { runB } : Array.Empty<int>());
+            Check(types.Prune(), "it solves within its budget");
+            int[] TargetsOf(string name) => targets[p.Index(name)][0]!;
+            Check(TargetsOf("Use").SequenceEqual(new[] { runA }), "a receiver holding only an A runs RunA alone");
+            Check(TargetsOf("Other").SequenceEqual(new[] { runB }), "a receiver holding only a B runs RunB alone");
+            Check(TargetsOf("ReadBack").SequenceEqual(leaks ? new[] { runA, runB } : new[] { runA }),
+                leaks ? "what is loaded out of an object that went where nobody follows may be anything" : "what is loaded out of the holder is what was stored");
+            Check(types.Calls == 3 && types.Narrowed == (leaks ? 2 : 3) && types.Unknown == (leaks ? 1 : 0), "the report's counts");
+        }
+    }
+
+    // A Prog's virtual calls narrowed by RegionTypes, each receiver's
+    // descriptor running what `runs` says it does at the call's slot.
+    private static Action<int[]?[][], string?[][], bool[]> Narrowed(Prog p, Func<string, string, string?> runs)
+        => (targets, keys, roots) =>
+        {
+            RegionTypes types = new(p.Functions, targets, keys, roots, (f, k, table, at) =>
+                runs(p.Functions[f].Calls[k].Callee!, table) is { } method ? new[] { p.Index(method) } : Array.Empty<int>());
+            Check(types.Prune(), "the receiver types solve within their budget");
+        };
+
+    /// <summary>
+    /// AN ITERATOR OVER AN ITERATOR, as LINQ makes them. Walk(list) makes an
+    /// inner machine over the list and a Wrap machine over the inner one
+    /// (its source at 8), and walks Wrap: MoveNext, then Current, on it.
+    /// Wrap's MoveNext calls MoveNext and Current on its source -- a place,
+    /// what its `this` holds at 8 -- and stores what Current hands back as
+    /// its own current (16). The inner MoveNext makes an element a lap,
+    /// stores it as its current, and keeps the list it read in a saved
+    /// field of its own (2048, named its own). Both slots have every
+    /// machine's override as targets, nineteen MoveNexts: one, Leaky's,
+    /// lets its current go where nobody follows, and sixteen do nothing.
+    /// A stand-in of all of them has the unknown object hold what is below
+    /// every receiver, and every element any walk made was global.
+    ///
+    /// Narrowed by the receivers' types (RegionTypes), Walk's calls run
+    /// Wrap's MoveNext and Current, and Wrap's run the inner machine's
+    /// alone: no Leaky machine is ever its source. The elements are stored
+    /// into Walk's own machines and handed back to no one: dead by Walk's
+    /// return, and nothing global. Nor is the list, read and kept apart.
+    /// </summary>
+    private static void IteratorElements()
+    {
+        Prog p = new();
+        const string moveNext = VirtualTargets.Prefix + "i_IEnumerator+0", current = VirtualTargets.Prefix + "i_IEnumerator+4";
+        RegionFunction inner = new("InnerMoveNext", true, true, true, 1, 4, 0, new[] { new RegionSite(true, 1, "t_E", 48) }) { Families = new[] { "Inner::current", "$saved:InnerMoveNext" } };
+        // Its element, made and stored as its current; its source read and kept in a saved field.
+        inner.Constraints.AddRange(new[] { Site(2, 0), new RegionConstraint(RegionConstraintKind.Store, 0, 2, 16, 0), Load(3, 0, 8),
+            new RegionConstraint(RegionConstraintKind.Store, 0, 3, 2048, 1) });
+        p.Functions.Add(inner);
+        RegionFunction innerCurrent = p.Add("InnerCurrent", 1, 2);
+        innerCurrent.Constraints.Add(Load(1, 0, 16));
+        RegionFunction leaky = p.Add("LeakyMoveNext", 1, 3);
+        leaky.Constraints.AddRange(new[] { Load(2, 0, 16), Leak(2) });
+        p.Add("LeakyCurrent", 1, 2).Constraints.Add(Load(1, 0, 16));
+        for (int t = 1; t <= 16; t++) p.Add("Quiet" + t + "MoveNext", 1, 2);
+        RegionFunction wrap = p.Add("WrapMoveNext", 1, 4);
+        wrap.Constraints.AddRange(new[] { Load(2, 0, 8), Store(0, 3, 16) });
+        wrap.Calls.Add(new(moveNext, -1, new[] { 2 }));
+        wrap.Calls.Add(new(current, 3, new[] { 2 }));
+        p.Add("WrapCurrent", 1, 2).Constraints.Add(Load(1, 0, 16));
+        RegionFunction walk = new("Walk", true, true, false, 1, 5, 0,
+            new[] { new RegionSite(true, 2, "t_Inner", 48), new RegionSite(true, 3, "t_Wrap", 48) });
+        walk.Constraints.AddRange(new[] { Site(2, 0), Store(2, 0, 8), Site(3, 1), Store(3, 2, 8) });
+        walk.Calls.Add(new(moveNext, -1, new[] { 3 }));
+        walk.Calls.Add(new(current, 4, new[] { 3 }));
+        p.Functions.Add(walk);
+        // The list, an object of its own class: what the inner machine keeps
+        // of it is no receiver of either slot.
+        RegionFunction main = new("Main", true, true, false, 0, 2, 0, new[] { new RegionSite(true, 4, "t_List", 48) });
+        main.Constraints.Add(Site(1, 0));
+        main.Calls.Add(new("Walk", -1, new[] { 1 }));
+        p.Functions.Add(main);
+        p.Virtuals[moveNext] = new[] { "InnerMoveNext", "LeakyMoveNext", "WrapMoveNext" }.Concat(Enumerable.Range(1, 16).Select(t => "Quiet" + t + "MoveNext")).ToArray();
+        p.Virtuals[current] = new[] { "InnerCurrent", "LeakyCurrent", "WrapCurrent" };
+        string? Runs(string callee, string table) => (callee == moveNext, table) switch
+        {
+            (true, "t_Inner") => "InnerMoveNext", (true, "t_Wrap") => "WrapMoveNext", (true, "t_Leaky") => "LeakyMoveNext",
+            (false, "t_Inner") => "InnerCurrent", (false, "t_Wrap") => "WrapCurrent", (false, "t_Leaky") => "LeakyCurrent",
+            _ => null,
+        };
+        RegionEscape e = p.Solve(rooted: new[] { "Main" }, narrow: Narrowed(p, Runs));
+        int element = p.Site("InnerMoveNext", 0);
+        Check(!e.Global[element], "an element the walk made is not global");
+        Check(!e.Escapes(p.Index("Walk"), element), "an element the walk made is dead by Walk's return");
+        Check(!e.Global[p.Site("Walk", 0)] && !e.Global[p.Site("Walk", 1)], "nor are the machines");
+        Check(!e.Global[p.Site("Main", 0)], "nor is the list the inner machine read and kept");
+    }
+
+    /// <summary>
+    /// A CLOSURE OF TWO CAPTURES. Caller makes A and B and a closure C
+    /// holding A at 8 and B at 16, and hands C to Apply, which calls Invoke
+    /// on it -- a place, Apply's parameter. Invoke's slot has seventeen
+    /// targets, every lambda's: C's own lets what it captured at 8 go where
+    /// nobody follows and reads what it captured at 16; sixteen others do
+    /// nothing. A stand-in of all of them has the unknown object hold all
+    /// below the receiver: B too. Narrowed by the receiver's type, Apply
+    /// runs C's Invoke alone, and only A goes where nobody follows.
+    /// </summary>
+    private static void ClosureCaptures()
+    {
+        Prog p = new();
+        const string invoke = VirtualTargets.Prefix + "t_Func+0";
+        RegionFunction body = p.Add("CInvoke", 1, 4);
+        body.Constraints.AddRange(new[] { Load(2, 0, 8), Leak(2), Load(3, 0, 16) });
+        for (int t = 1; t <= 16; t++) p.Add("Lambda" + t + "Invoke", 1, 2);
+        p.Add("Apply", 1, 2).Calls.Add(new(invoke, -1, new[] { 0 }));
+        RegionFunction caller = new("Caller", true, true, false, 0, 4, 0,
+            new[] { new RegionSite(true, 1, "t_C", 48), new RegionSite(true, 2, "t_A", 48), new RegionSite(true, 3, "t_B", 48) });
+        caller.Constraints.AddRange(new[] { Site(1, 0), Site(2, 1), Site(3, 2), Store(1, 2, 8), Store(1, 3, 16) });
+        caller.Calls.Add(new("Apply", -1, new[] { 1 }));
+        p.Functions.Add(caller);
+        p.Virtuals[invoke] = new[] { "CInvoke" }.Concat(Enumerable.Range(1, 16).Select(t => "Lambda" + t + "Invoke")).ToArray();
+        RegionEscape e = p.Solve(rooted: new[] { "Caller" }, narrow: Narrowed(p, (callee, table) => table == "t_C" ? "CInvoke" : null));
+        Check(e.Global[p.Site("Caller", 1)], "the capture Invoke lets go is global");
+        Check(!e.Global[p.Site("Caller", 2)], "the capture it only reads is not");
+        Check(!e.Global[p.Site("Caller", 0)], "nor is the closure");
+    }
+
+    /// <summary>
+    /// ONLY THE METHODS A BLIND CALL'S SLOT HOLDS ARE CALLED FROM WHERE
+    /// NOBODY FOLLOWS (RegionSolver.Addressed). Walk makes a machine and
+    /// calls its MoveNext (slot 0, resolved), which makes an element and
+    /// stores it into the machine: dead by Walk's return, made in its
+    /// region. Blind, elsewhere, calls a method it read out of a descriptor
+    /// at slot 4. MoveNext is held at slot 0 alone: it is not called blind,
+    /// not rooted, and its element is taken. Read at slot 0, or with the
+    /// link not saying where methods are held, MoveNext is called with
+    /// anything, and what it stores into its machine is everyone's.
+    /// </summary>
+    private static void BlindSlots()
+    {
+        RegionFacts?[]? Solve(long slot, bool known)
+        {
+            RegionHints unit = new();
+            RegionFunction start = new("_start", true, false, false, 0, 1, 0, Array.Empty<RegionSite>());
+            start.Calls.Add(new("Main", -1, Array.Empty<int>()));
+            unit.Functions.Add(start);
+            RegionFunction main = new("Main", true, false, false, 0, 1, 0, Array.Empty<RegionSite>()) { Main = true };
+            main.Calls.Add(new("Walk", -1, Array.Empty<int>()));
+            main.Calls.Add(new("Blind", -1, Array.Empty<int>()));
+            unit.Functions.Add(main);
+            RegionFunction walk = new("Walk", true, true, false, 0, 2, 0, new[] { new RegionSite(true, 1, "t_It", 48) });
+            walk.Constraints.Add(Site(1, 0));
+            walk.Calls.Add(new(VirtualTargets.Prefix + "t_It+0", -1, new[] { 1 }));
+            walk.SiteBytes = new[] { 32L }; walk.SiteLoops = new[] { -1 }; walk.CallLoops = new[] { -1 };
+            unit.Functions.Add(walk);
+            RegionFunction moveNext = new("MoveNext", true, true, true, 1, 3, 0, new[] { new RegionSite(true, 1, null, 0) });
+            moveNext.Constraints.AddRange(new[] { Site(2, 0), Store(0, 2, 8) });
+            moveNext.SiteBytes = new[] { 32L }; moveNext.SiteLoops = new[] { -1 };
+            unit.Functions.Add(moveNext);
+            RegionFunction blind = new("Blind", true, false, false, 0, 1, 0, Array.Empty<RegionSite>()) { CallsThroughMethod = true, BlindSlots = new[] { slot } };
+            blind.Calls.Add(new(null, -1, Array.Empty<int>()));
+            unit.Functions.Add(blind);
+            unit.MethodsTaken.Add("MoveNext");
+            unit.CallsThroughMethods = true;
+            RegionHints read = RegionHints.Read(unit.Write());
+            Func<string, IReadOnlyCollection<long>?>? slotsOf = null;
+            if (known) slotsOf = method => method == "MoveNext" ? new long[] { 0 } : null;
+            Dictionary<string, string[]> virtuals = new(StringComparer.Ordinal) { [VirtualTargets.Prefix + "t_It+0"] = new[] { "MoveNext" } };
+            return RegionSolver.Solve(new[] { read }, virtuals, (table, at) => table == "t_It" && at == 48 ? "MoveNext" : null,
+                "_start", new HashSet<string>(StringComparer.Ordinal), null, slotsOf: slotsOf);
+        }
+        Check(Solve(4, known: true) is [{ } apart] && apart.Sites.Contains(("MoveNext", 0)), "read at slot 4 alone, MoveNext is not called blind, and its element is made in Walk's region");
+        Check(Solve(0, known: true) is not [{ } at0] || !at0.Sites.Contains(("MoveNext", 0)), "read at slot 0, MoveNext is called blind, and its element is everyone's");
+        Check(Solve(4, known: false) is not [{ } blindAll] || !blindAll.Sites.Contains(("MoveNext", 0)), "not knowing where methods are held, every method is called blind");
+    }
+
+    /// <summary>
+    /// A VISITOR OVER A TREE, the call on a field of `this`. Every node's
+    /// Accept(v) has twenty overrides: a binary node's, which calls Accept on
+    /// its Left (8) and its Right (16); a number's and a string's, which do
+    /// nothing; Leak's, which lets the node go where nobody follows; sixteen
+    /// more doing nothing. Main makes two binary nodes, a number for the
+    /// first one's Left and a string for the second one's, and one Leak for
+    /// both their Rights, and visits both. Left only ever holds a number or
+    /// a string: by the receivers' types, field by field (RegionTypes), the
+    /// call on Left runs those two overrides and the call on Right Leak's
+    /// alone -- one cell for every field of a node, and the Left call would
+    /// have run Leak's too. Only the Leak node is global. In a program of its
+    /// own, VisitAny, called from where nobody follows, calls Accept on what
+    /// it was handed: that receiver may be anything, and the call keeps every
+    /// override (a stand-in, wide) -- as does every Accept it may run, handed
+    /// anything for `this`.
+    /// </summary>
+    private static void VisitorLeft()
+    {
+        foreach (bool any in new[] { false, true }) Visitor(any);
+    }
+
+    private static void Visitor(bool any)
+    {
+        Prog p = new();
+        const string accept = VirtualTargets.Prefix + "t_Node+0";
+        RegionFunction bin = p.Add("BinAccept", 2, 5);
+        bin.Constraints.AddRange(new[] { Load(3, 0, 8), Load(4, 0, 16) });
+        bin.Calls.Add(new(accept, -1, new[] { 3, 1 }));
+        bin.Calls.Add(new(accept, -1, new[] { 4, 1 }));
+        p.Add("NumAccept", 2, 3);
+        p.Add("StrAccept", 2, 3);
+        p.Add("LeakAccept", 2, 3).Constraints.Add(Leak(0));
+        for (int t = 1; t <= 16; t++) p.Add("Other" + t + "Accept", 2, 3);
+        if (any) p.Add("VisitAny", 2, 3).Calls.Add(new(accept, -1, new[] { 0, 1 }));
+        RegionFunction main = new("Main", true, true, false, 0, 7, 0, new[]
+        {
+            new RegionSite(true, 1, "t_Bin", 48), new RegionSite(true, 2, "t_Bin", 48), new RegionSite(true, 3, "t_Num", 48),
+            new RegionSite(true, 4, "t_Str", 48), new RegionSite(true, 5, "t_Leak", 48), new RegionSite(true, 6, "t_Visitor", 48),
+        });
+        main.Constraints.AddRange(new[] { Site(1, 0), Site(2, 1), Site(3, 2), Site(4, 3), Site(5, 4), Site(6, 5),
+            Store(1, 3, 8), Store(2, 4, 8), Store(1, 5, 16), Store(2, 5, 16) });
+        main.Calls.Add(new(accept, -1, new[] { 1, 6 }));
+        main.Calls.Add(new(accept, -1, new[] { 2, 6 }));
+        p.Functions.Add(main);
+        p.Virtuals[accept] = new[] { "BinAccept", "NumAccept", "StrAccept", "LeakAccept" }.Concat(Enumerable.Range(1, 16).Select(t => "Other" + t + "Accept")).ToArray();
+        string? Runs(string callee, string table) => table switch
+        {
+            "t_Bin" => "BinAccept", "t_Num" => "NumAccept", "t_Str" => "StrAccept", "t_Leak" => "LeakAccept", _ => null,
+        };
+        int[]?[][]? narrowed = null;
+        Action<int[]?[][], string?[][], bool[]> narrow = Narrowed(p, Runs);
+        RegionEscape e = p.Solve(rooted: new[] { "Main", "VisitAny" }, narrow: (targets, keys, roots) => { narrow(targets, keys, roots); narrowed = targets; });
+        if (any)
+        {
+            Check(narrowed![p.Index("VisitAny")][0]!.Length == 20, "a receiver handed from where nobody follows keeps every override: the stand-in");
+            Check(narrowed[p.Index("BinAccept")][0]!.Length == 20, "and so does the call on what a node it may run on holds");
+            return;
+        }
+        int[] Of(params string[] names) => names.Select(p.Index).Order().ToArray();
+        Check(narrowed![p.Index("BinAccept")][0]!.SequenceEqual(Of("NumAccept", "StrAccept")), "the call on Left runs the number's and the string's Accept");
+        Check(narrowed[p.Index("BinAccept")][1]!.SequenceEqual(Of("LeakAccept")), "the call on Right runs Leak's alone");
+        Check(narrowed[p.Index("Main")][0]!.SequenceEqual(Of("BinAccept")), "Main's calls run the binary node's");
+        Check(e.Global[p.Site("Main", 4)], "the Leak node goes where nobody follows");
+        Check(!e.Global[p.Site("Main", 2)] && !e.Global[p.Site("Main", 3)], "the number and the string, only ever on the Left, do not");
+        Check(!e.Global[p.Site("Main", 0)] && !e.Global[p.Site("Main", 1)] && !e.Global[p.Site("Main", 5)], "nor do the binary nodes or the visitor");
+    }
+
+    /// <summary>
+    /// WideDeferred's program with ten overrides that throw their receiver
+    /// and nine that do nothing: nineteen, a wide call, made by Pass on its
+    /// parameter. Past MostDeferred (8) leaky targets, the call was not
+    /// deferred at all: its whole stand-in let every receiver go, and the
+    /// caller's object of a class running Keep1 was global with the one
+    /// running Leak1. Now the ten are deferred together, guarded by "runs
+    /// any of them": only the object that runs one is global.
+    /// </summary>
+    private static void ManyLeaky()
+    {
+        Prog p = new();
+        const string slot = "__virtual:t_X+48";
+        for (int t = 1; t <= 10; t++) p.Add("Leak" + t, 1, 2).Constraints.Add(Leak(0));
+        for (int t = 1; t <= 9; t++) p.Add("Keep" + t, 1, 2);
+        p.Virtuals[slot] = Enumerable.Range(1, 10).Select(t => "Leak" + t).Concat(Enumerable.Range(1, 9).Select(t => "Keep" + t)).ToArray();
+        p.Add("Pass", 1, 2).Calls.Add(new(slot, -1, new[] { 0 }));
+        RegionFunction caller = p.Add("Caller", 0, 3, sites: 2);
+        caller.Constraints.AddRange(new[] { Site(1, 0), Site(2, 1) });
+        caller.Calls.Add(new("Pass", -1, new[] { 1 }));
+        caller.Calls.Add(new("Pass", -1, new[] { 2 }));
+        int keeper = p.Site("Caller", 0), leaker = p.Site("Caller", 1);
+        int keep = p.Index("Keep1"), leak = p.Index("Leak1");
+        RegionEscape e = p.Solve(targetsOn: (f, k, site) => site == keeper ? new[] { keep } : site == leaker ? new[] { leak } : null);
+        Check(!e.Global[keeper], "an object that runs Keep1 is not handed the leaky targets");
+        Check(e.Global[leaker], "an object that runs Leak1 is, and goes where nobody follows");
+    }
+
+    /// <summary>
+    /// A SUMMARY PAST EVERY BOUND (Summary.Coarse). Fill writes what it
+    /// makes into 131 fields of its parameter -- 131 cells, past MostCells
+    /// however its made objects and places are merged -- and lets what the
+    /// parameter holds at 8 go where nobody follows. Coarse, everything
+    /// below the parameter was one deep place, and the unknown object held
+    /// all of it: the caller's B, at 4000 of the holder, was global with A,
+    /// at 8. The deep place split by first field, the unknown object holds
+    /// the place at 8 alone: A is global, B is not.
+    /// </summary>
+    private static void CoarseByField()
+    {
+        Prog p = new();
+        RegionFunction fill = p.Add("Fill", 1, 4, sites: 1);
+        fill.Constraints.Add(Site(2, 0));
+        for (int k = 0; k <= 130; k++) fill.Constraints.Add(Store(0, 2, 16 + 8 * k));
+        fill.Constraints.AddRange(new[] { Load(3, 0, 8), Leak(3) });
+        RegionFunction caller = p.Add("Caller", 0, 4, sites: 3);
+        caller.Constraints.AddRange(new[] { Site(1, 0), Site(2, 1), Site(3, 2), Store(1, 2, 8), Store(1, 3, 4000) });
+        caller.Calls.Add(new("Fill", -1, new[] { 1 }));
+        RegionEscape e = p.Solve();
+        var summary = e.SummaryOf(p.Index("Fill"));
+        Check(summary is { Coarse: true } s && s.Objects.Contains("Place 0 [8]"), "Fill's summary is the coarse one, the place at 8 its own");
+        Check(e.Global[p.Site("Caller", 1)], "A, at the field Fill lets go, is global");
+        Check(!e.Global[p.Site("Caller", 2)], "B, at a field Fill only writes beside, is not");
+    }
+
+    /// <summary>
+    /// A METHOD CALLED BLIND (RegionTypes.TypedThis). ItMoveNext is rooted
+    /// -- some call reads it out of a descriptor -- and calls the slot on
+    /// what its `this` holds at 8, and on its other parameter. Main makes an
+    /// It holding an A at 8 and an Other holding a B at 8. Its `this` the
+    /// unknown object, both calls ran RunA and RunB; an object of its own
+    /// class, an It, the call on `this` at 8 runs RunA alone, and the call on
+    /// the other parameter, anything still, both.
+    /// </summary>
+    private static void BlindThis()
+    {
+        foreach (bool typed in new[] { true, false })
+        {
+            const string slot = VirtualTargets.Prefix + "t_Run+0";
+            List<RegionFunction> functions = new();
+            RegionFunction move = new("ItMoveNext", true, true, true, 2, 4, 0, Array.Empty<RegionSite>());
+            move.Constraints.Add(Load(3, 0, 8));
+            move.Calls.Add(new(slot, -1, new[] { 3 }));
+            move.Calls.Add(new(slot, -1, new[] { 1 }));
+            functions.Add(move);
+            functions.Add(new("RunA", true, true, true, 1, 2, 0, Array.Empty<RegionSite>()));
+            functions.Add(new("RunB", true, true, true, 1, 2, 0, Array.Empty<RegionSite>()));
+            RegionFunction main = new("Main", true, true, false, 0, 5, 0, new[]
+            {
+                new RegionSite(true, 1, "t_It", 48), new RegionSite(true, 2, "t_A", 48), new RegionSite(true, 3, "t_Other", 48), new RegionSite(true, 4, "t_B", 48),
+            });
+            main.Constraints.AddRange(new[] { Site(1, 0), Site(2, 1), Site(3, 2), Site(4, 3), Store(1, 2, 8), Store(3, 4, 8) });
+            functions.Add(main);
+            int[]?[][] targets = { new int[]?[] { new[] { 1, 2 }, new[] { 1, 2 } }, Array.Empty<int[]?>(), Array.Empty<int[]?>(), Array.Empty<int[]?>() };
+            string?[][] keys = { new string?[] { slot, slot }, Array.Empty<string?>(), Array.Empty<string?>(), Array.Empty<string?>() };
+            bool[] rooted = { true, false, false, true };
+            RegionTypes types = new(functions, targets, keys, rooted,
+                (f, k, table, at) => table == "t_A" ? new[] { 1 } : table == "t_B" ? new[] { 2 } : Array.Empty<int>())
+            {
+                TypedThis = typed ? new[] { true, false, false, false } : null,
+                Receives = (f, table, at) => table == "t_It",
+                ThisMadeOutside = f => false,
+            };
+            Check(types.Prune(), "the receiver types solve within their budget");
+            Check(targets[0][0]!.SequenceEqual(typed ? new[] { 1 } : new[] { 1, 2 }),
+                typed ? "on what an It holds at 8, RunA alone" : "its `this` the unknown object, both");
+            Check(targets[0][1]!.SequenceEqual(new[] { 1, 2 }), "on its other parameter, anything, both");
+        }
     }
 }

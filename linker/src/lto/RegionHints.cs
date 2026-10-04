@@ -38,7 +38,10 @@ public sealed class RegionHints
     // apart from every other address taken, and whether the unit calls a
     // method it read from a descriptor as no named call (CallsThroughMethods),
     // after the addresses taken.
-    private const int Version = 10;
+    // 11: the slots each such function reads its method at (BlindSlots),
+    // after its families, so the link calls blind only the methods some
+    // descriptor holds at one of them.
+    private const int Version = 11;
     private static readonly UTF8Encoding Utf8 = new(false, true);
 
     public List<RegionFunction> Functions { get; } = new();
@@ -131,6 +134,11 @@ public sealed class RegionHints
             foreach (string symbol in function.Symbols) Var(index[symbol]);
             Var(function.Families.Length);
             foreach (string family in function.Families) Var(index[family]);
+            if (function.CallsThroughMethod)
+            {
+                Var(function.BlindSlots.Length);
+                foreach (long slot in function.BlindSlots) Var(slot);
+            }
             Var(function.Constraints.Count);
             foreach (RegionConstraint c in function.Constraints)
             {
@@ -253,8 +261,17 @@ public sealed class RegionHints
                 for (int s = 0; s < symbols.Length; s++) symbols[s] = Name();
                 string[] families = new string[Count()];
                 for (int s = 0; s < families.Length; s++) families[s] = Name();
+                // In order, each once; Any (every slot) first where it is one.
+                long[] blindSlots = Array.Empty<long>();
+                if ((flags & 16) != 0)
+                {
+                    blindSlots = new long[Count()];
+                    for (int k = 0; k < blindSlots.Length; k++)
+                        if ((blindSlots[k] = Var()) < 0 && blindSlots[k] != RegionConstraint.Any || k > 0 && blindSlots[k] <= blindSlots[k - 1])
+                            throw new ElfFormatException("Invalid region hint function");
+                }
                 RegionFunction function = new(name, (flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0, parameters, nodes, slots, sites)
-                    { Main = (flags & 8) != 0, CallsThroughMethod = (flags & 16) != 0, NumberParams = numbers, Symbols = symbols, Families = families };
+                    { Main = (flags & 8) != 0, CallsThroughMethod = (flags & 16) != 0, NumberParams = numbers, Symbols = symbols, Families = families, BlindSlots = blindSlots };
                 bool Node(int n) => n >= 0 && n < nodes;
                 for (int k = Count(); k > 0; k--)
                 {
@@ -357,6 +374,14 @@ public sealed class RegionFunction
     public bool Main { get; init; }
     /// <summary>Calls a method it read out of a descriptor by a call naming no virtual target (RegionHints.CallsThroughMethods), for a report.</summary>
     public bool CallsThroughMethod { get; init; }
+    /// <summary>
+    /// WHERE IN A METHOD TABLE SUCH A CALL READS ITS METHOD: the offsets from
+    /// where an object's first word points, in order, each once
+    /// (RegionConstraint.Any, first: some offset nobody can say). Only a
+    /// method some descriptor holds at one of them is called so
+    /// (RegionSolver.Addressed); a function that is no such caller reads none.
+    /// </summary>
+    public long[] BlindSlots { get; init; } = Array.Empty<long>();
     public int Parameters { get; }
     public int Nodes { get; }
     public int Slots { get; }

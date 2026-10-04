@@ -61,6 +61,8 @@ public static class RegionSummary
     // (RegionEscape.FarthestField, 4096).
     private const long SavedFieldsStart = 2048;
     private const long SavedFieldsEnd = 4088;
+    // The field name a body's saved fields carry: its own, no other body's.
+    private const string SavedFamilyPrefix = "$saved:";
 
     private sealed class Builder
     {
@@ -211,25 +213,57 @@ public static class RegionSummary
             // before. The real offsets are the transform's, made after this
             // IR; nothing reads these but the body's own resumption, which
             // the flow of its registers already is.
+            //
+            // AND NAMED AS THIS BODY'S OWN (RegionConstraint.Family): two
+            // machines' saved fields at one offset are two fields. The escape
+            // engine unifies every machine a call may run on into one class
+            // past its bound, and a cycle's every target's receiver with it;
+            // unnamed, the first saved field of each was one field class, and
+            // what one machine kept was every other's -- an iterator's walk
+            // one class with another's source. Sound as any field's name is:
+            // only this body stores at these offsets, nothing loads them
+            // (the resumption is the registers' own flow), and a load naming
+            // no field still reads every one.
             if (_f.Async is { Lowered: false } frame)
             {
                 int machine = Reg(frame.StateMachine);
+                // PAST THE LAST FIELD, THE FIRST AGAIN: two saved values in one
+                // field of the machine, which holds both -- not at any offset,
+                // where every load of the machine, and of everything a place
+                // reaches (RegionEscape.Aliased), read every one of them. A
+                // large async body, its callees inlined, may save more values
+                // than there are fields, and every load in it then carried all
+                // of those past the last.
                 long next = SavedFieldsStart;
                 long Field()
                 {
-                    if (next > SavedFieldsEnd) return RegionConstraint.Any;
+                    if (next > SavedFieldsEnd) next = SavedFieldsStart;
                     long at = next;
                     next += 8;
                     return at;
                 }
+                int saved = -1;
+                int Saved(long at)
+                {
+                    if (saved < 0)
+                    {
+                        string name = SavedFamilyPrefix + _f.Name;
+                        if (!_familyIndex.TryGetValue(name, out saved)) { saved = _families.Count; _families.Add(name); _familyIndex[name] = saved; }
+                    }
+                    return saved;
+                }
                 foreach (VReg r in RegionPointsTo.Saved(_f, frame))
-                    _constraints.Add(new(RegionConstraintKind.Store, machine, Reg(r), Field()));
+                {
+                    long at = Field();
+                    _constraints.Add(new(RegionConstraintKind.Store, machine, Reg(r), at, Saved(at)));
+                }
                 foreach (FrameSlot slot in _f.Slots)
                     if (Value(new SlotOperand(slot)) is int held and >= 0)
                     {
                         int contents = _next++;
+                        long at = Field();
                         _constraints.Add(new(RegionConstraintKind.Load, contents, held, RegionConstraint.Any));
-                        _constraints.Add(new(RegionConstraintKind.Store, machine, contents, Field()));
+                        _constraints.Add(new(RegionConstraintKind.Store, machine, contents, at, Saved(at)));
                     }
             }
             // ITS LOOPS, for the link to give a region of their own where
@@ -354,7 +388,11 @@ public static class RegionSummary
                     // One that calls a method read out of a descriptor names no
                     // virtual target: it may run any function a method slot
                     // names (RegionHints.CallsThroughMethods).
-                    if (callee is null && i.Operands.Count > 0 && i.Operands[0] is RegOperand { Reg: var through } && MethodRead(through, 0)) CallsThroughMethod = true;
+                    if (callee is null && i.Operands.Count > 0 && i.Operands[0] is RegOperand { Reg: var through } && MethodRead(through, 0))
+                    {
+                        CallsThroughMethod = true;
+                        MethodSlots(through, 0);
+                    }
                     _callOf[i] = _calls.Count;
                     _calls.Add(new(callee, dest, Arguments(i, 1)));
                     return;
@@ -419,6 +457,46 @@ public static class RegionSummary
 
         /// <summary>Whether this function calls, by a call naming no virtual target, a method read out of a descriptor.</summary>
         public bool CallsThroughMethod;
+
+        /// <summary>The offsets from a method table those calls read their methods at (RegionFunction.BlindSlots).</summary>
+        private readonly SortedSet<long> _blindSlots = new();
+
+        /// <summary>
+        /// WHERE A METHOD CALLED BLIND WAS READ: on each write of the register
+        /// that is a load from what an object's first word points to, that
+        /// load's offset -- the slot, as a virtual call's is (Escape.
+        /// VirtualSlot) -- where the table is the first word itself, through
+        /// copies; moved by anything (an add, a mask) or past knowing, any
+        /// offset (RegionConstraint.Any), and every method is called so.
+        /// </summary>
+        private void MethodSlots(VReg r, int depth)
+        {
+            if (depth > 8 || !_writes!.TryGetValue(r, out List<Instr>? writes)) { _blindSlots.Add(RegionConstraint.Any); return; }
+            foreach (Instr w in writes)
+            {
+                if (w.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.Phi)
+                {
+                    foreach (Operand o in w.Operands) if (o is RegOperand { Reg: var from } && MethodRead(from, depth + 1)) MethodSlots(from, depth + 1);
+                    continue;
+                }
+                if (w.Op == Opcode.Load && w.Offset >= 0 && w.Operands[0] is RegOperand { Reg: var table } && Table(table, depth + 1))
+                    _blindSlots.Add(ExactTable(table, depth + 1) ? w.Offset : RegionConstraint.Any);
+            }
+        }
+
+        // Whether every write of a register is an object's first word itself, through copies.
+        private bool ExactTable(VReg r, int depth)
+        {
+            if (depth > 8 || !_writes!.TryGetValue(r, out List<Instr>? writes)) return false;
+            foreach (Instr w in writes)
+            {
+                if (w.Op == Opcode.Load && w.Offset == 0) continue;
+                if (w.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.Phi
+                    && w.Operands.All(o => o is RegOperand { Reg: var from } && ExactTable(from, depth + 1))) continue;
+                return false;
+            }
+            return true;
+        }
 
         // Every write of each register.
         private Dictionary<VReg, List<Instr>>? _writes;
@@ -643,7 +721,7 @@ public static class RegionSummary
             List<Instr> must = RegionPointsTo.MustRunCalls(_f);
             RegionFunction result = new(_f.Name, _f.Exported, _f.Async is null && !_f.Name.Contains("StaticInit", StringComparison.Ordinal) && !_main,
                 _params > 0 && _f.Params[0].Name == "this", _params, next, _slots.Count, _sites.ToArray())
-            { Main = _main, CallsThroughMethod = CallsThroughMethod, NumberParams = Sorted(Enumerable.Range(0, _params).Where(k => _f.Params[k].Number)), Symbols = KeptSymbols(kept), Families = _families.ToArray() };
+            { Main = _main, CallsThroughMethod = CallsThroughMethod, BlindSlots = CallsThroughMethod ? _blindSlots.ToArray() : Array.Empty<long>(), NumberParams = Sorted(Enumerable.Range(0, _params).Where(k => _f.Params[k].Number)), Symbols = KeptSymbols(kept), Families = _families.ToArray() };
             result.Constraints.AddRange(kept);
             result.Calls.AddRange(calls);
             result.MustCalls = CallsAmong(must);
