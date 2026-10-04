@@ -648,9 +648,10 @@ public sealed partial class Binder
     /// <summary>A condition, and what is held where it says yes and where it says no.</summary>
     private void WalkLockCondition(Expr c, HeldLocks h, LockWalk w, out HeldLocks yes, out HeldLocks no)
     {
-        if (_r.Rewrites.TryGetValue(c, out Expr? instead) && !ReferenceEquals(instead, c))
+        if (_r.Rewrites.TryGetValue(c, out Expr? instead) && !ReferenceEquals(instead, c) && _inOwnRewrite.Add(c))
         {
-            WalkLockCondition(instead, h, w, out yes, out no);
+            try { WalkLockCondition(instead, h, w, out yes, out no); }
+            finally { _inOwnRewrite.Remove(c); }
             return;
         }
         switch (c)
@@ -698,9 +699,10 @@ public sealed partial class Binder
         {
             return h;
         }
-        if (_r.Rewrites.TryGetValue(e, out Expr? instead) && !ReferenceEquals(instead, e))
+        if (_r.Rewrites.TryGetValue(e, out Expr? instead) && !ReferenceEquals(instead, e) && _inOwnRewrite.Add(e))
         {
-            return WalkLockExpr(instead, h, w);
+            try { return WalkLockExpr(instead, h, w); }
+            finally { _inOwnRewrite.Remove(e); }
         }
         switch (e)
         {
