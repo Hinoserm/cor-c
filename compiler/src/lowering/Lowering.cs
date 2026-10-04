@@ -2625,12 +2625,12 @@ public sealed partial class Lowering
             else if (m.ExplicitMember == "get_Current")
             {
                 // IEnumerator's Current, an object: the element boxed.
-                VReg value = LoadElement(items, e.Load(IrType.I32, self, cursor.Offset), of, At(m));
+                VReg value = LoadElement(items, Numbered(e, e.Load(IrType.I32, self, cursor.Offset)), of, At(m));
                 e.Ret(new RegOperand(Boxable(of) ? BoxValue(At(m), value, of) : value));
             }
             else if (m.Name == "MoveNext")
             {
-                VReg next = e.Binary(Opcode.Add, e.Load(IrType.I32, self, cursor.Offset), 1);
+                VReg next = e.Binary(Opcode.Add, Numbered(e, e.Load(IrType.I32, self, cursor.Offset)), 1);
 
                 e.Store(new RegOperand(self), new RegOperand(next), cursor.Offset, 4);
                 e.Ret(new RegOperand(e.Binary(Opcode.LtS, next,
@@ -2638,7 +2638,7 @@ public sealed partial class Lowering
             }
             else
             {
-                VReg value = LoadElement(items, e.Load(IrType.I32, self, cursor.Offset), of,
+                VReg value = LoadElement(items, Numbered(e, e.Load(IrType.I32, self, cursor.Offset)), of,
                                          At(m));
                 // A struct element into the caller's buffer, or a copy.
                 if (buffer is not null) { e.Emit(Opcode.MemCopy, null, R(buffer), R(value), Imm(Math.Max(1, StructOf(of).InstanceSize), IrTypes.Word)); value = buffer; }

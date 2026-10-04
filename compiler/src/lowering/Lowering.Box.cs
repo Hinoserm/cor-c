@@ -160,8 +160,8 @@ public sealed partial class Lowering
             return CopyStruct(at, inside, StructOf(want));
         }
 
-        return _e.Load(BoxSlot(want), obj, _t.ObjectHeaderBytes, Math.Max(1, want.Size),
-                       !want.IsUnsigned && want.Prim != Prim.Bool);
+        return Numbered(_e, _e.Load(BoxSlot(want), obj, _t.ObjectHeaderBytes, Math.Max(1, want.Size),
+                       !want.IsUnsigned && want.Prim != Prim.Bool), NeverAddress(want));
     }
 
     /// <summary>Whether a value of this type, held in an object, is a box of that type.</summary>
@@ -399,7 +399,7 @@ public sealed partial class Lowering
 
     /// <summary>A box's value, read as its type is kept (BoxEquals' reading).</summary>
     private VReg BoxedValue(Builder e, VReg box, Type of)
-        => e.Load(BoxSlot(of), box, _t.ObjectHeaderBytes, Math.Max(1, of.Size), !of.IsUnsigned && of.Prim != Prim.Bool);
+        => Numbered(e, e.Load(BoxSlot(of), box, _t.ObjectHeaderBytes, Math.Max(1, of.Size), !of.IsUnsigned && of.Prim != Prim.Bool), NeverAddress(of));
 
     /// <summary>
     /// Two values of a box's type ordered as .NET's own CompareTo orders
@@ -683,7 +683,7 @@ public sealed partial class Lowering
         {
             Block wrong = f.NewBlock("scwrong");
             VReg vt = e.Load(IrTypes.Word, other, 0);
-            VReg flags = e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize);
+            VReg flags = Numbered(e, e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize));
             e.Branch(e.Binary(Opcode.Eq, e.Binary(Opcode.And, flags, 3), 3), text, wrong);
             e.SetBlock(wrong);
             Refuse(e, "Object must be of type String.");
@@ -784,8 +784,8 @@ public sealed partial class Lowering
         }
         else
         {
-            VReg raw = e.Load(BoxSlot(of), self, _t.ObjectHeaderBytes, Math.Max(1, of.Size),
-                              !of.IsUnsigned && of.Prim != Prim.Bool);
+            VReg raw = Numbered(e, e.Load(BoxSlot(of), self, _t.ObjectHeaderBytes, Math.Max(1, of.Size),
+                              !of.IsUnsigned && of.Prim != Prim.Bool), NeverAddress(of));
             // Straight into the same rendering a written `"" + value` reaches,
             // so a boxed double prints what an unboxed one prints.
             VReg text = Stringify(new LiteralExpr { Kind = Lit.Int, Text = "0", Line = 0, Col = 0 }, raw, of);
@@ -854,8 +854,8 @@ public sealed partial class Lowering
 
         int size = Math.Max(1, of.Size);
         bool signed = !of.IsUnsigned && of.Prim != Prim.Bool;
-        VReg a = e.Load(BoxSlot(of), self, _t.ObjectHeaderBytes, size, signed);
-        VReg b = e.Load(BoxSlot(of), other, _t.ObjectHeaderBytes, size, signed);
+        VReg a = Numbered(e, e.Load(BoxSlot(of), self, _t.ObjectHeaderBytes, size, signed), NeverAddress(of));
+        VReg b = Numbered(e, e.Load(BoxSlot(of), other, _t.ObjectHeaderBytes, size, signed), NeverAddress(of));
         if (a.Type.IsFloat())
         {
             // Boxed Single/Double.Equals differs from operator ==: all NaN

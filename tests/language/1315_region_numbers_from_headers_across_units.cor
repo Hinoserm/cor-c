@@ -1,0 +1,54 @@
+// test: region_numbers_from_headers_across_units
+// units: tests/language/support/1315_number_shapes_units.cor
+// regions: taken
+// expect-exit: 0
+// expect-output:
+// total 26378000
+// given back True
+//
+// NUMBERS READ OUT OF OBJECTS' HEADERS AND VALUES ARE NO ADDRESSES (Instr.
+// Number): Work makes a shelf of items in the other unit and hands back a
+// long made only of such numbers -- strings' counts, arrays' lengths, a
+// character, a type test and the int in a box, a Nullable's has-value byte
+// and value, a box's hash -- and a name's Length of its own. On a 32-bit
+// target each is a word read out of an object; read as an address, it took
+// whatever that object's summary said its words held, and the long Work
+// hands back carried the items to Run, which hands its total on when it
+// prints it (1290's Length). Marked numbers, they carry nothing: what Work
+// makes is given back at its return.
+//
+// Per round, for each of 40 items k with name "r<round%7>-<k>": twice the
+// name's length, 'r' (114), k + round, k or -1 where k is a multiple of 3,
+// and (k + round) & 7; plus the last name's length; over rounds 1..1000.
+
+using System;
+using System.Runtime.CompilerServices;
+using NumberShapes;
+
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Work(int n, int round)
+    {
+        Shelf s = Shelf.Make(n, round);
+        return Measure.Of(s) + s.Items[n - 1].Name.Length;
+    }
+
+    // Not Main itself: what the entry calls is never a boundary.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Run()
+    {
+        // Given back at a region's end, or before it from its top (Gc.RegionFree).
+        long total = 0, before = Gc.RegionFreedBytes + Gc.RegionTopFreedBytes;
+        for (int round = 1; round <= 1000; round++)
+        {
+            total += Work(40, round);
+            if (round % 250 == 0) GC.Collect();
+        }
+        Console.WriteLine("total " + total);
+        Console.WriteLine("given back " + (Gc.RegionFreedBytes + Gc.RegionTopFreedBytes - before >= 500000L));
+        return 0;
+    }
+
+    static int Main() => Run();
+}

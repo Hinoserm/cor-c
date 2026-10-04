@@ -151,7 +151,7 @@ public sealed partial class Lowering
         // The machine's size is decided after optimisation, when the
         // transform knows what has to survive a suspension, so it is read
         // from data the transform fills in rather than written here.
-        VReg size = _e.Load(IrTypes.Word, new SymOperand(am.SizeSymbol));
+        VReg size = Numbered(_e, _e.Load(IrTypes.Word, new SymOperand(am.SizeSymbol)));
         VReg machine = AllocateDynamic(decl, size);
         _e.Store(R(machine), VtableOf(am.StateMachine), 0, _t.WordSize);
 
@@ -251,7 +251,7 @@ public sealed partial class Lowering
         {
             ParamSymbol p = m.Params[i];
             IrType it = IrTypes.Of(p.Type);
-            _params[i] = _e.Load(it, machine, am.ParamOffsets[i], it.Bytes());
+            _params[i] = Numbered(_e, _e.Load(it, machine, am.ParamOffsets[i], it.Bytes()), !p.ByRef && NeverAddress(p.Type));
         }
 
         ScanAddressTaken(decl.Body!);

@@ -160,7 +160,7 @@ public sealed partial class Lowering
         {
             _m.NativeLibraries.Add("libc.so.6");
             VReg? location = _e.Call(NativeCall.Of("__errno_location"), IrTypes.Word);
-            errno = _e.Load(IrType.I32, new RegOperand(location!), 0);
+            errno = Numbered(_e, _e.Load(IrType.I32, new RegOperand(location!), 0));
         }
 
         if (import.Transition && RequireRuntime(at, "LeaveNative", 0, "a call into C") is MethodSymbol leave)

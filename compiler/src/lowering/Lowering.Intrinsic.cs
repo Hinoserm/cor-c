@@ -145,14 +145,14 @@ public sealed partial class Lowering
                 VReg s = Arg(call, target, 0);
                 VReg at = WordOf(Arg(call, target, 1));
                 VReg p = _e.Binary(Opcode.Add, s, _e.Binary(Opcode.Mul, at, 2));
-                return _e.Load(IrType.I32, p, _t.ArrayHeaderBytes, 2, signed: false);
+                return Numbered(_e, _e.Load(IrType.I32, p, _t.ArrayHeaderBytes, 2, signed: false));
             }
             case "GetCharPair":
             {
                 VReg s = Arg(call, target, 0);
                 VReg at = WordOf(Arg(call, target, 1));
                 VReg p = _e.Binary(Opcode.Add, s, _e.Binary(Opcode.Mul, at, 2));
-                return _e.Load(IrType.I32, p, _t.ArrayHeaderBytes, 4, signed: false);
+                return Numbered(_e, _e.Load(IrType.I32, p, _t.ArrayHeaderBytes, 4, signed: false));
             }
             case "SetChar":
             {
@@ -292,7 +292,7 @@ public sealed partial class Lowering
                 _e.Branch(obj, some, end);
                 _e.SetBlock(some);
                 VReg vt = _e.Load(word, obj, 0);
-                VReg flags = _e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize);
+                VReg flags = Numbered(_e, _e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize));
                 VReg bit = _e.Binary(Opcode.And, flags, 2);
                 _e.CopyTo(result, R(_e.Binary(Opcode.Ne, R(bit), Imm(0, IrType.I32), IrType.I32)));
                 _e.Jump(end);

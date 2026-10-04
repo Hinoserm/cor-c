@@ -1100,7 +1100,7 @@ public sealed partial class Lowering
         // a box's descriptor a value type's, an interface's its own.
         if (target.Prim == Prim.Type && m.Name is "IsValueType" or "IsEnum" or "IsInterface" or "IsPrimitive" or "IsArray" or "IsClass")
         {
-            VReg flags = _e.Load(IrType.I32, obj, DescFlags * _t.WordSize, 4, false);
+            VReg flags = Numbered(_e, _e.Load(IrType.I32, obj, DescFlags * _t.WordSize, 4, false));
             int bits = m.Name switch
             {
                 "IsValueType" => TypeFlagValue, "IsEnum" => TypeFlagEnum, "IsInterface" => TypeFlagInterface,
@@ -1280,7 +1280,7 @@ public sealed partial class Lowering
     private TypeSymbol StructOf(Type t) => _b.StructOf(t);
 
     /// <summary>Whether a Nullable&lt;T&gt; has a value: its first byte, hasValue.</summary>
-    private VReg HasValue(VReg nullable) => _e.Load(IrType.I32, nullable, 0, 1, false);
+    private VReg HasValue(VReg nullable) => Numbered(_e, _e.Load(IrType.I32, nullable, 0, 1, false));
 
     /// <summary>Where a Nullable&lt;T&gt;'s value is, after hasValue at T's alignment.</summary>
     private MemPlace NullableValuePlace(VReg nullable, Type type)
@@ -1779,7 +1779,7 @@ public sealed partial class Lowering
         _e.Branch(obj, some, end);
         _e.SetBlock(some);
         VReg vt = _e.Load(IrTypes.Word, obj, 0);
-        VReg flags = _e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize);
+        VReg flags = Numbered(_e, _e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize));
         VReg bit = _e.Binary(Opcode.And, flags, 2);
         _e.CopyTo(result, R(_e.Binary(Opcode.Ne, R(bit), Imm(0, IrType.I32), IrType.I32)));
         _e.Jump(end);
@@ -1860,7 +1860,7 @@ public sealed partial class Lowering
         }
         else
         {
-            VReg depth = _e.Load(IrType.I32, desc, DescDepth * w);
+            VReg depth = Numbered(_e, _e.Load(IrType.I32, desc, DescDepth * w));
             Block deep = _f.NewBlock("tdeep");
             _e.Branch(_e.Binary(Opcode.GeS, depth, want.Depth), deep, no);
             _e.SetBlock(deep);
@@ -1893,7 +1893,7 @@ public sealed partial class Lowering
         if (face == BoxedFaces.Face.None) return null;
         int w = _t.WordSize;
         VReg Is(string descriptor) => _e.Binary(Opcode.Eq, R(desc), R(_e.Address(descriptor)), IrType.I32);
-        VReg flags = _e.Load(IrType.I32, desc, DescFlags * w);
+        VReg flags = Numbered(_e, _e.Load(IrType.I32, desc, DescFlags * w));
         VReg Flagged(int flag) => _e.Binary(Opcode.Ne, R(_e.Binary(Opcode.And, flags, flag)), new ImmOperand(0, IrType.I32), IrType.I32);
         switch (face)
         {
@@ -1971,8 +1971,8 @@ public sealed partial class Lowering
             Block other = _f.NewBlock("arrcov");
             _e.Branch(result, end, other);
             _e.SetBlock(other);
-            VReg flags = _e.Load(IrTypes.Word, vt, DescFlags * w - _t.DescriptorBytes);
-            VReg gc = _e.Load(IrTypes.Word, vt, DescGcFlags * w - _t.DescriptorBytes);
+            VReg flags = Numbered(_e, _e.Load(IrTypes.Word, vt, DescFlags * w - _t.DescriptorBytes));
+            VReg gc = Numbered(_e, _e.Load(IrTypes.Word, vt, DescGcFlags * w - _t.DescriptorBytes));
             VReg sequence = _e.Binary(Opcode.Eq, R(flags), Imm(1, IrTypes.Word), IrType.I32);
             VReg refs = _e.Binary(Opcode.And, gc, GcElementsAreReferences);
             VReg anyRefs = _e.Binary(Opcode.Ne, R(refs), Imm(0, IrTypes.Word), IrType.I32);
@@ -2125,7 +2125,7 @@ public sealed partial class Lowering
         VReg vt = _e.Load(IrTypes.Word, obj, 0);
         VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes);
         VReg table = _e.Load(IrTypes.Word, context, (long)self.Depth * w);
-        VReg count = _e.Load(IrTypes.Word, table, 0);
+        VReg count = Numbered(_e, _e.Load(IrTypes.Word, table, 0));
         VReg result = _f.NewReg(IrTypes.Word, "madevt");
         Block read = _f.NewBlock("maderead");
         Block own = _f.NewBlock("madeown");
@@ -2182,7 +2182,7 @@ public sealed partial class Lowering
         VReg vt = _e.Load(IrTypes.Word, obj, 0);
         VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes);
         VReg table = _e.Load(IrTypes.Word, context, (long)self.Depth * w);
-        VReg count = _e.Load(IrTypes.Word, table, 0);
+        VReg count = Numbered(_e, _e.Load(IrTypes.Word, table, 0));
         VReg result = _f.NewReg(IrTypes.Word, "canonty");
         Block read = _f.NewBlock("canontyread");
         Block end = _f.NewBlock("canontyend");
@@ -2617,9 +2617,9 @@ public sealed partial class Lowering
         else
         {
             BindPattern(at, held, boxed,
-                        _e.Load(BoxSlot(boxed), obj, _t.ObjectHeaderBytes,
+                        Numbered(_e, _e.Load(BoxSlot(boxed), obj, _t.ObjectHeaderBytes,
                                 Math.Max(1, boxed.Size),
-                                !boxed.IsUnsigned && boxed.Prim != Prim.Bool));
+                                !boxed.IsUnsigned && boxed.Prim != Prim.Bool), NeverAddress(boxed)));
         }
         _e.Jump(after);
         _e.SetBlock(after);
@@ -4586,7 +4586,7 @@ public sealed partial class Lowering
             // the slot behind that is somebody else's data. Reading it and calling
             // through it is how `object b = "hi"; "b " + b` crashed.
             Block text = _f.NewBlock("tstext");
-            VReg flags = _e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize);
+            VReg flags = Numbered(_e, _e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize));
             _e.Branch(_e.Binary(Opcode.And, flags, 2), text, call);
             _e.SetBlock(text);
             _e.CopyTo(result, R(obj));

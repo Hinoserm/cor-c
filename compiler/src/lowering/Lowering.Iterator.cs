@@ -179,7 +179,7 @@ public sealed partial class Lowering
             args.Add(r);
         }
 
-        VReg machine = AllocateDynamic(decl, _e.Load(IrTypes.Word, new SymOperand(it.SizeSymbol)));
+        VReg machine = AllocateDynamic(decl, Numbered(_e, _e.Load(IrTypes.Word, new SymOperand(it.SizeSymbol))));
         _e.Store(R(machine), VtableOf(it.Machine), 0, _t.WordSize);
         _e.Store(R(machine), Imm(it.Enumerable ? -2 : 0, IrType.I32), IterStateField, 4);
         if (self is not null)
@@ -237,13 +237,13 @@ public sealed partial class Lowering
                     // original arguments whenever it is asked again.
                     Block fresh = f.NewBlock("fresh");
                     Block itself = f.NewBlock("itself");
-                    VReg state = e.Load(IrType.I32, self, IterStateField);
+                    VReg state = Numbered(e, e.Load(IrType.I32, self, IterStateField));
                     e.Branch(e.Binary(Opcode.Eq, state, -2), itself, fresh);
                     e.SetBlock(itself);
                     e.Store(R(self), Imm(0, IrType.I32), IterStateField, 4);
                     e.Ret(R(self));
                     e.SetBlock(fresh);
-                    VReg copy = AllocateDynamic(it.Decl, e.Load(IrTypes.Word, new SymOperand(it.SizeSymbol)));
+                    VReg copy = AllocateDynamic(it.Decl, Numbered(e, e.Load(IrTypes.Word, new SymOperand(it.SizeSymbol))));
                     e.Store(R(copy), VtableOf(it.Machine), 0, _t.WordSize);
                     e.Store(R(copy), R(e.Load(IrTypes.Word, self, IterReceiverField)), IterReceiverField, _t.WordSize);
                     foreach (int offset in it.ParamOffsets)
@@ -294,7 +294,7 @@ public sealed partial class Lowering
                     // simply finished.
                     Block resume = f.NewBlock("stopbody");
                     Block done = f.NewBlock("finished");
-                    VReg state = e.Load(IrType.I32, self, IterStateField);
+                    VReg state = Numbered(e, e.Load(IrType.I32, self, IterStateField));
                     e.Branch(e.Binary(Opcode.GtS, state, 0), resume, done);
                     e.SetBlock(resume);
                     e.Store(R(self), Imm(1, IrType.I32), IterDisposingField, 4);
@@ -357,7 +357,7 @@ public sealed partial class Lowering
         // not yet enumerated -- answers false.
         Block start = _f.NewBlock("start");
         Block nothing = _f.NewBlock("nothing");
-        _e.Branch(_e.Binary(Opcode.Eq, _e.Load(IrType.I32, machine, IterStateField), 0), start, nothing);
+        _e.Branch(_e.Binary(Opcode.Eq, Numbered(_e, _e.Load(IrType.I32, machine, IterStateField)), 0), start, nothing);
         _e.SetBlock(nothing);
         _e.Ret(Imm(0, IrType.I32));
         _e.SetBlock(start);
@@ -374,7 +374,7 @@ public sealed partial class Lowering
         {
             ParamSymbol p = m.Params[i];
             IrType type = IrTypes.Of(p.Type);
-            _params[i] = _e.Load(type, machine, it.ParamOffsets[i], type.Bytes());
+            _params[i] = Numbered(_e, _e.Load(type, machine, it.ParamOffsets[i], type.Bytes()), !p.ByRef && NeverAddress(p.Type));
         }
 
         ScanAddressTaken(decl.Body!);
@@ -501,7 +501,7 @@ public sealed partial class Lowering
         {
             Block stopping = _f.NewBlock("stopping");
             Block running = _f.NewBlock("running");
-            _e.Branch(_e.Load(IrType.I32, machine, IterDisposingField), stopping, running);
+            _e.Branch(Numbered(_e, _e.Load(IrType.I32, machine, IterDisposingField)), stopping, running);
             _e.SetBlock(stopping);
             _e.Call(CallLabel(stop), IrType.Void);
             _e.Jump(running);
