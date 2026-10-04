@@ -5622,12 +5622,19 @@ static class ThrowHelper {
         throw new InvalidOperationException("Collection was modified; enumeration operation may not execute.");
     }
 
-    public static void KeyNotFound(object? key) {
-        throw new KeyNotFoundException($"The given key '{key}' was not present in the dictionary.");
+    // THE KEY'S TEXT, NOT THE KEY: made where the key's own type is known
+    // (Dictionary's KeyText), so the throw holds a string made for it and
+    // never the key. Handed the key as an object, its ToString was every
+    // class's, and the key went with the exception to where nobody follows:
+    // every string a front end looked up -- a name node's own Id -- outlived
+    // the tree it was read from, and a tree's emit, merged over its nodes'
+    // classes, took a child for that field (test 1200).
+    public static void KeyNotFound(string? key) {
+        throw new KeyNotFoundException("The given key '" + key + "' was not present in the dictionary.");
     }
 
-    public static void DuplicateKey(object? key) {
-        throw new ArgumentException($"An item with the same key has already been added. Key: {key}");
+    public static void DuplicateKey(string? key) {
+        throw new ArgumentException("An item with the same key has already been added. Key: " + key);
     }
 }
 
@@ -10564,6 +10571,10 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         return (int)(multiplied ^ (multiplied >> 29));
     }
 
+    // A key as an error says it, by ToString on its own type (ThrowHelper):
+    // in a table of strings, the string, read and copied, never kept.
+    private static string KeyText(K key) => "" + key;
+
     // THE INDEXER, which is how a Dictionary is read and written in C#. This
     // was Put and Get(key, fallback) -- our own spelling, and two more places
     // the compiler's own source could not compile here.
@@ -10579,7 +10590,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
                 if (state[i] == 1 && Same(keys[i], key)) { return values[i]; }
                 i = (i + 1) & mask;
             }
-            ThrowHelper.KeyNotFound(key);
+            ThrowHelper.KeyNotFound(KeyText(key));
             return default(V)!;
         }
         set {
@@ -10616,7 +10627,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     /// A key already there is an error, as in .NET: the indexer is how a value
     /// is replaced.
     public void Add(K key, V value) {
-        if (ContainsKey(key)) ThrowHelper.DuplicateKey(key);
+        if (ContainsKey(key)) ThrowHelper.DuplicateKey(KeyText(key));
         this[key] = value;
     }
 
