@@ -138,6 +138,7 @@ public static partial class Program
         Try("gvn: memory facts reach an if arm but not a loop header", GvnScopes);
         Try("dse: overwritten and unread-before-return stores go", DseBasic);
         Try("dse: reads, calls, register stores and partial overlap keep stores", DseKept);
+        Try("regions: every leave a return passes comes after its frees", RegionLeavesAfterFrees);
 
         Console.WriteLine($"{_passes} passed, {_failures} failed");
         return _failures == 0 ? 0 : 1;

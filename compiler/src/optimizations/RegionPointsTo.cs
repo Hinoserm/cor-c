@@ -1243,18 +1243,23 @@ public sealed class RegionPointsTo : IModulePass
         {
             if (b.Terminator is not { Op: Opcode.Ret }) continue;
             int ret = b.Instrs.Count - 1;
-            for (int k = ret - 1; k >= 0; k--)
-            {
-                if (b.Instrs[k] is not { Op: Opcode.Call, Callee: Leave } leave) continue;
-                bool allocates = false;
-                for (int j = k + 1; j < ret && !allocates; j++)
-                    allocates = IsSiteCall(b.Instrs[j]) || b.Instrs[j].Op == Opcode.Call && b.Instrs[j].Callee is InRegion or Near or Enter;
-                if (allocates || k == ret - 1) break;
-                b.Instrs.RemoveAt(k);
-                b.Instrs.Insert(ret - 1, leave);
-                moved++;
-                break;
-            }
+            // EVERY LEAVE, in the order they were: a function's own and each
+            // loop's a return inside it passes (OpenLoops), the frees behind
+            // all of them. Only the ones past the block's last allocation
+            // move; one before it stays, and what was made after it is cut
+            // with its region as before.
+            int last = -1;
+            for (int k = 0; k < ret; k++)
+                if (IsSiteCall(b.Instrs[k]) || b.Instrs[k].Op == Opcode.Call && b.Instrs[k].Callee is InRegion or Near or Enter) last = k;
+            List<Instr> leaves = new();
+            for (int k = last + 1; k < ret; k++)
+                if (b.Instrs[k] is { Op: Opcode.Call, Callee: Leave } leave) leaves.Add(leave);
+            if (leaves.Count == 0) continue;
+            List<Instr> rest = b.Instrs.GetRange(last + 1, ret - last - 1).Where(i => !leaves.Contains(i)).ToList();
+            if (rest.Count == 0) continue;
+            b.Instrs.RemoveRange(last + 1, ret - last - 1);
+            b.Instrs.InsertRange(last + 1, rest.Concat(leaves));
+            moved += leaves.Count;
         }
         return moved;
     }
