@@ -190,7 +190,7 @@ back from the top); 1304 (grown in place).
 ## The unit's hints
 
 `compiler/src/optimizations/RegionSummary.cs`, format in
-`linker/src/lto/RegionHints.cs` (section `.corsac.regions`, version 9).
+`linker/src/lto/RegionHints.cs` (section `.corsac.regions`, version 10).
 
 A unit compile states, function by function, the pointer constraints of the
 IR the link will regenerate the unit from:
@@ -242,6 +242,19 @@ IR the link will regenerate the unit from:
   object runs), and how the collector reads its words (`RegionWords`).
 - **Symbols**: the names of the symbols whose addresses the code takes, in
   the order the `Symbol` constraints number them.
+- **Addresses taken** (per unit): every symbol the unit names as a value, in
+  code or in data -- a function among them may be called from where nobody
+  follows, with anything, and is rooted. Since version 10, those only a
+  descriptor's method slots name are apart (`MethodsTaken`), with whether
+  some function of the unit calls a method it read out of a descriptor by a
+  call naming no virtual target (`CallsThroughMethods`,
+  `RegionSummary.MethodRead`). A virtual call the link follows reaches its
+  overrides with its own arguments; the method-slot functions are rooted
+  only when some unit calls one blind or a virtual call is left unresolved
+  (`RegionSolver.Addressed`; `+report` says which). Rooted otherwise, every
+  virtual method was called with anything, and what each override made and
+  wrote into its object was everyone's. A body is rooted when any copy of it
+  is.
 - **Number parameters** (`NumberParams`): int, char, double and 32-bit enum
   parameters. Nothing a caller hands one is an address. Test 1290.
 - **Number loads.** A load, or a copy, marked `Instr.Number` is never an
