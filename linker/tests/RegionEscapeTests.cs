@@ -1,3 +1,4 @@
+using Corsac.Lang.Ir;
 using Corsac.Lang.Lto;
 
 namespace Corsac.Tests.Elf;
@@ -42,6 +43,7 @@ public static class RegionEscapeTests
         ("copies of one body in several units are solved once, answered alike", Copies),
         ("region hints round trip at the current version", HintsRoundTrip),
         ("backend facts round trip: region sizes and owned-field flags", BackendRoundTrip),
+        ("a virtual call runs nothing on a type the image never makes", MadeTypes),
     };
 
     private static void Check(bool value, string message) { if (!value) throw new Exception(message); }
@@ -1031,5 +1033,78 @@ public static class RegionEscapeTests
         Check(r.Boundaries.SetEquals(regions.Boundaries) && r.Sites.SetEquals(regions.Sites) && r.Loops.SetEquals(regions.Loops), "the boundaries, sites and loops");
         Check(r.BoundaryBytes.Count == 1 && r.BoundaryBytes["Work"] == 96, "a boundary's size, and none for the unsized");
         Check(r.LoopBytes.Count == 1 && r.LoopBytes[("Lines", 3)] == 40, "a loop's size");
+    }
+
+    /// <summary>
+    /// ONLY THE TYPES AN IMAGE MAKES (VirtualTargets.Made), over objects
+    /// laid out as Lowering lays them (word 4, twelve words before the
+    /// method table at 48): Base, and Made, Never and Static deriving from
+    /// it, each overriding slot 0 with a Run of its own. Main's code stamps
+    /// a Made (a relocation to it at 48); a static object in data is a
+    /// Static, stamped in data; nothing names Never but its own self word
+    /// and its display, and nothing names Base but the displays and its
+    /// self word. A call on a Base runs Made's Run and Static's, and neither
+    /// Base's nor Never's: no object of theirs exists. Without the set, all
+    /// four. And a unit whose IR still makes a Never -- a function naming
+    /// it, which a late pass took out of the object -- makes it again.
+    /// </summary>
+    private static void MadeTypes()
+    {
+        const int w = 4, table = 48;
+        List<(string Name, ObjectFile Object)> Image(bool archived)
+        {
+            ObjectFile o = new();
+            Section text = new(".text", SectionKind.Code);
+            Section data = new(".data.rel.ro", SectionKind.ReadOnlyData);
+            o.Sections.Add(text); o.Sections.Add(data);
+            string[] types = { "Base", "Made", "Never", "Static" };
+            foreach (string type in types)
+            {
+                text.Bytes.Add(0xc3);
+                o.Symbols.Add(new Symbol { Name = "m_" + type + "_Run", Section = text, Offset = text.Bytes.Count - 1, Size = 1, IsFunction = true });
+            }
+            text.Bytes.AddRange(new byte[] { 0xb8, 0, 0, 0, 0, 0xc3 });
+            o.Symbols.Add(new Symbol { Name = "main", Section = text, Offset = text.Bytes.Count - 6, Size = 6, IsFunction = true });
+            // `new Made()`: the stamp's address in main's code.
+            text.Relocs.Add(new Relocation(text.Bytes.Count - 5, "t_Made", table, RelocKind.Abs32));
+            foreach (string type in types)
+            {
+                // Its display: Base, then itself.
+                string[] chain = type == "Base" ? new[] { "t_Base" } : new[] { "t_Base", "t_" + type };
+                int displayAt = data.Bytes.Count;
+                for (int i = 0; i < chain.Length; i++) { data.Relocs.Add(new Relocation(displayAt + i * w, chain[i], 0, RelocKind.Abs32)); data.Bytes.AddRange(new byte[w]); }
+                o.Symbols.Add(new Symbol { Name = "d_" + type, Section = data, Offset = displayAt, Size = chain.Length * w, Global = false });
+                int at = data.Bytes.Count;
+                data.Bytes.AddRange(new byte[table + w]);
+                data.Relocs.Add(new Relocation(at + 3 * w, "d_" + type, 0, RelocKind.Abs32));
+                data.Relocs.Add(new Relocation(at + 5 * w, "t_" + type, 0, RelocKind.Abs32));
+                data.Relocs.Add(new Relocation(at + table, "m_" + type + "_Run", 0, RelocKind.Abs32));
+                o.Symbols.Add(new Symbol { Name = "t_" + type, Section = data, Offset = at, Size = table + w });
+            }
+            // A static Static laid down whole: its stamp a data relocation.
+            int stat = data.Bytes.Count;
+            data.Bytes.AddRange(new byte[2 * w]);
+            data.Relocs.Add(new Relocation(stat, "t_Static", table, RelocKind.Abs32));
+            o.Symbols.Add(new Symbol { Name = "s_static", Section = data, Offset = stat, Size = 2 * w, Global = false });
+            if (archived)
+                IrArchive.Attach(o, new[] { new IrArchiveRecord("F:main", false, 2, Array.Empty<string>(), new byte[] { 1 }, new[] { "t_Made", "t_Never" }) });
+            return new() { ("app", o) };
+        }
+        const string call = VirtualTargets.Prefix + "t_Base+0";
+
+        var inputs = Image(archived: false);
+        VirtualTargets.Made made = VirtualTargets.MadeIn(inputs, Array.Empty<IrArchive>());
+        Check(made.Descriptors.SetEquals(new[] { "t_Made", "t_Static" }), "made: what code and data stamp, not what a self word or a display names: " + string.Join(",", made.Descriptors));
+        string[] all = VirtualTargets.Resolve(inputs, new[] { call })[call];
+        Check(all.SequenceEqual(new[] { "m_Base_Run", "m_Made_Run", "m_Never_Run", "m_Static_Run" }), "every type's override without the set: " + string.Join(",", all));
+        string[] runs = VirtualTargets.Resolve(inputs, new[] { call }, made)[call];
+        Check(runs.SequenceEqual(new[] { "m_Made_Run", "m_Static_Run" }), "only the made types' overrides: " + string.Join(",", runs));
+        Check(made.Calls == 1 && made.Narrowed == 1 && made.Removed == 2 && made.Targets == 4, "the report's counts");
+        Check(made.Dropped.SetEquals(new[] { "t_Base", "t_Never" }), "the unmade types the call reached");
+
+        var again = Image(archived: true);
+        VirtualTargets.Made remade = VirtualTargets.MadeIn(again, again.Select(input => IrArchive.Read(input.Object)!));
+        string[] still = VirtualTargets.Resolve(again, new[] { call }, remade)[call];
+        Check(still.SequenceEqual(new[] { "m_Made_Run", "m_Never_Run", "m_Static_Run" }), "a type the unit's IR makes is made: " + string.Join(",", still));
     }
 }

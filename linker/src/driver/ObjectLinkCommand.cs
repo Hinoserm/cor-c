@@ -122,7 +122,10 @@ public static class ObjectLinkCommand
         if (selected is not null) X86CodeGenerationContract.ValidateTarget(inputs, selected);
         ManagedLayoutContract.Validate(inputs);
         int regenerated = IrLinkOptimizer.Run(inputs, () => backend ?? new ProcessUnitBackend(backendPath), lto, importBytes,
-            closedImageEntry: flat || closed || physicalAddress is not null ? entry : null, parallelBackends: backend is null, regionReport: regionReport);
+            closedImageEntry: flat || closed || physicalAddress is not null ? entry : null, parallelBackends: backend is null, regionReport: regionReport,
+            // Only the types the image makes, where nothing outside it makes
+            // any: no shared object, no shared library (VirtualTargets.Made).
+            madeOnly: !Switches.NoRta && !shared && sharedLibraries.Count == 0);
         int folded = LinkTimeOptimizer.Run(inputs, lto);
         LinkTimings.Phase("constant returns and coalescing");
         if (selected is not null) X86CodeGenerationContract.ValidateTarget(inputs, selected);

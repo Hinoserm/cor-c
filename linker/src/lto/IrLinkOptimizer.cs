@@ -8,7 +8,7 @@ public static class IrLinkOptimizer
 {
     public static int Run(List<(string Name, ObjectFile Object)> inputs, Func<IUnitBackend> backend,
         bool enabled = true, int importBytes = 1024 * 1024, int bodyLimit = 32, string? closedImageEntry = null, bool parallelBackends = false,
-        string? regionReport = null)
+        string? regionReport = null, bool madeOnly = false)
     {
         if (importBytes < 0 || bodyLimit < 0) throw new ArgumentOutOfRangeException(nameof(importBytes));
         TargetContract.Validate(inputs); ManagedLayoutContract.Validate(inputs);
@@ -133,12 +133,27 @@ public static class IrLinkOptimizer
             // Each symbol's address a constant or the unknown object, from every object's data.
             int constants = RegionConstants.Resolve(regionUnits, regionOrder, inputs.Select(input => input.Object));
             if (regionReport is not null) Console.Error.WriteLine("regions: " + constants + " symbol addresses constants");
-            Dictionary<string, string[]> regionVirtuals = VirtualTargets.Resolve(inputs, RegionSolver.VirtualNames(regionUnits));
             // What code outside the IR names: it may call any of it, with anything.
             SortedSet<string> foreign = new(StringComparer.Ordinal);
             foreach (var input in inputs)
                 if (!archives.ContainsKey(input.Object))
                     foreach (Section section in input.Object.Sections) foreach (Relocation reloc in section.Relocs) foreign.Add(reloc.Symbol);
+            // ONLY THE TYPES THE IMAGE MAKES (VirtualTargets.Made): a virtual
+            // call's targets on a type nothing stamps an object with drop out
+            // of the engine's calls and the judge's callers. Only where
+            // nothing outside makes objects: a closed image (the caller says
+            // it is not a shared object, links no shared library and exports
+            // nothing), whose foreign code names what it calls ("*" for
+            // anything) -- and not under --no-rta.
+            VirtualTargets.Made? made = madeOnly && !foreign.Contains("*") ? VirtualTargets.MadeIn(inputs, archives.Values) : null;
+            Dictionary<string, string[]> regionVirtuals = VirtualTargets.Resolve(inputs, RegionSolver.VirtualNames(regionUnits), made);
+            if (regionReport is not null)
+            {
+                Console.Error.WriteLine("regions: rta " + (made is null ? "off" : made.Summary()));
+                // --region-report +rta: which types nothing makes a call reached.
+                if (made is not null && regionReport.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Contains("+rta"))
+                    foreach (string type in made.Dropped) Console.Error.WriteLine("regions: rta never made " + type);
+            }
             RegionFacts?[]? solved = RegionSolver.Solve(regionUnits, regionVirtuals, (table, offset) => VirtualTargets.MethodAt(inputs, table, offset),
                 closedImageEntry!, foreign, regionReport,
                 (u, name) => reachability?.GetValueOrDefault(regionOrder[u]) is not { } kept || kept.Contains("F:" + name),
