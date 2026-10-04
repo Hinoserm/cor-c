@@ -139,7 +139,41 @@ public static class InterruptNotes
                 break;
             }
         }
+        if (errors.Count > 0) errors.AddRange(EveryAllocation(handlers, facts));
         return errors;
+    }
+
+    /// EVERY METHOD THAT ALLOCATES AND A HANDLER REACHES, each once, with the
+    /// path from the first handler found to reach it: the errors above name
+    /// only the first allocation on each handler's way, so fixing them one
+    /// build at a time found the next one each time.
+    static List<string> EveryAllocation(List<Fact> handlers, Dictionary<string, Fact> facts)
+    {
+        List<string> lines = new();
+        Dictionary<string, string?> cameFrom = new(StringComparer.Ordinal);
+        Queue<Fact> work = new();
+        foreach (Fact handler in handlers)
+        {
+            if (cameFrom.TryAdd(handler.Name, null)) work.Enqueue(handler);
+        }
+        while (work.Count > 0)
+        {
+            Fact f = work.Dequeue();
+            if (f.Allocates is string what)
+            {
+                List<string> path = new();
+                for (string? at = f.Name; at is not null; at = cameFrom[at])
+                    path.Add(facts.TryGetValue(at, out Fact? step) ? step.Display : at);
+                path.Reverse();
+                lines.Add($"  allocation reached from an interrupt handler: '{f.Display}' {what}; via {string.Join(" -> ", path)}");
+            }
+            foreach (string call in f.Calls)
+            {
+                if (!facts.TryGetValue(call, out Fact? callee)) continue;
+                if (cameFrom.TryAdd(callee.Name, f.Name)) work.Enqueue(callee);
+            }
+        }
+        return lines;
     }
 
     public static void Strip(IEnumerable<ObjectFile> objects)
