@@ -235,6 +235,12 @@ public static class IrLinkOptimizer
         string?[] reports = new string?[plans.Count];
         int next = -1;
         Exception? failure = null;
+        // THE BIGGEST UNIT FIRST, by its IR records: taken in the order the
+        // link was given them, the compiler's largest unit -- near ten
+        // thousand functions -- could start late and finish alone while every
+        // other backend sat idle. Each answer still goes in its own place.
+        int[] order = Enumerable.Range(0, plans.Count)
+            .OrderByDescending(k => archives[inputs[plans[k].Index].Object].Entries.Count).ThenBy(k => k).ToArray();
         void Work()
         {
             IUnitBackend? service = null;
@@ -242,8 +248,9 @@ public static class IrLinkOptimizer
             {
                 while (Volatile.Read(ref failure) is null)
                 {
-                    int k = Interlocked.Increment(ref next);
-                    if (k >= plans.Count) break;
+                    int taken = Interlocked.Increment(ref next);
+                    if (taken >= plans.Count) break;
+                    int k = order[taken];
                     var plan = plans[k];
                     long began = LinkTimings.Enabled ? Environment.TickCount64 : 0;
                     service ??= backend();
@@ -282,8 +289,12 @@ public static class IrLinkOptimizer
         }
         // Several only where each worker's backend is a process of its own:
         // a backend the caller handed in is one object, and not to be shared.
+        // Half the processors, as far as there is memory for a gigabyte each
+        // (no limit where the machine does not say what it has).
+        long memory = MachineMemory.MachineAvailable();
+        int byMemory = memory <= 0 ? int.MaxValue : (int)Math.Min(int.MaxValue, Math.Max(1, memory >> 30));
         int workerCount = !parallelBackends ? 1 : Math.Max(1, Math.Min(plans.Count, Switches.LtoJobs > 0
-            ? Switches.LtoJobs : Math.Min(12, Math.Max(1, Environment.ProcessorCount / 2))));
+            ? Switches.LtoJobs : Math.Max(1, Math.Min(Environment.ProcessorCount / 2, byMemory))));
         if (workerCount == 1) Work();
         else
         {
