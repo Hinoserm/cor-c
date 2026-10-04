@@ -7052,6 +7052,40 @@ public sealed partial class Binder
         _ => false,
     };
 
+    /// <summary>
+    /// AN INDEX WHOSE TYPE THE INDEXER DECIDES -- `d[(null, "x")]` on a
+    /// Dictionary keyed by a tuple of a class and a string -- checked as the
+    /// parameter it is passed as, when every indexer taking that many has
+    /// the same one there: C# converts the literal to the key's tuple type,
+    /// element by element, as it does an argument of a method. Checked with
+    /// nothing wanted, its null element had no type and the access was
+    /// refused.
+    /// </summary>
+    private List<Type> CheckIndexArgs(Type target, List<Expr> args, IEnumerable<MethodSymbol> indexers)
+    {
+        List<MethodSymbol> taking = indexers.Where(m => m.Params.Count == args.Count).ToList();
+        List<Type> index = new();
+        for (int i = 0; i < args.Count; i++)
+        {
+            Type? want = null;
+            if (HoldsLambda(args[i]) && taking.Count > 0)
+            {
+                List<Type> wants = taking.Select(m => ThroughUnmade(target, m, m.Params[i].Type)).Distinct().ToList();
+                if (wants.Count == 1) want = wants[0];
+            }
+            if (want is null)
+            {
+                index.Add(CheckExpr(args[i]));
+                continue;
+            }
+            Type? outer = _wanted;
+            _wanted = want;
+            try { index.Add(CheckExpr(args[i])); }
+            finally { _wanted = outer; }
+        }
+        return index;
+    }
+
     /// <summary>An expression with no type until something waiting for it gives it one.</summary>
     private static bool Typeless(Expr e)
         => e is LambdaExpr or LiteralExpr { Kind: Lit.Null } or DefaultExpr { Type.Name.Length: 0 }
@@ -11177,7 +11211,7 @@ public sealed partial class Binder
                     && Reachable(target.Symbol, "get_Item")
                              .Any(m => m.Params.Count == ix.Args.Count))
                 {
-                    List<Type> index = ix.Args.Select(CheckExpr).ToList();
+                    List<Type> index = CheckIndexArgs(target, ix.Args, Reachable(target.Symbol, "get_Item"));
                     MethodSymbol? getter = IndexerFor(
                         Reachable(target.Symbol, "get_Item"), index, ix.Args.Count);
 
