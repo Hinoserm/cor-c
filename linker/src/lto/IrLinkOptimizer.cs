@@ -8,7 +8,7 @@ public static class IrLinkOptimizer
 {
     public static int Run(List<(string Name, ObjectFile Object)> inputs, Func<IUnitBackend> backend,
         bool enabled = true, int importBytes = 1024 * 1024, int bodyLimit = 32, string? closedImageEntry = null, bool parallelBackends = false,
-        string? regionReport = null, bool openTypes = false)
+        string? regionReport = null, bool openTypes = false, string? reachableFrom = null, IEnumerable<string>? keep = null)
     {
         if (importBytes < 0 || bodyLimit < 0) throw new ArgumentOutOfRangeException(nameof(importBytes));
         TargetContract.Validate(inputs); ManagedLayoutContract.Validate(inputs);
@@ -110,8 +110,15 @@ public static class IrLinkOptimizer
         // see the whole unit, what the image keeps of it or not (UnitBackend),
         // and the one holding the runtime called it unkept.
         linkRoots.Add(RuntimeAbi.WriteBarrierValues);
-        Dictionary<ObjectFile, HashSet<string>>? reachability = enabled && closedImageEntry is not null
-            ? IrReachability.Find(inputs, archives, owners, closedImageEntry, linkRoots) : null;
+        // A KERNEL WITH EXPORTS, PRUNED (reachableFrom, keep): open -- its
+        // types are subclassed and its virtual calls overridden by modules, so
+        // no closed fact holds -- but what neither the kernel nor any module
+        // of its build reaches is still nobody's, and is dropped. `keep` is
+        // every name those modules import.
+        if (keep is not null) linkRoots.UnionWith(keep);
+        string? reachEntry = closedImageEntry ?? reachableFrom;
+        Dictionary<ObjectFile, HashSet<string>>? reachability = enabled && reachEntry is not null
+            ? IrReachability.Find(inputs, archives, owners, reachEntry, linkRoots) : null;
         LinkTimings.Phase("reachability");
         // REGIONS OVER EVERY UNIT (RegionSolver): the boundaries to open and
         // the allocation sites to make in the innermost open region, for a

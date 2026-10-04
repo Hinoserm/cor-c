@@ -40,7 +40,7 @@ public static class ObjectLinkCommand
         // kernel's globals beside it, stamped with the hash of --decl-index,
         // the index its units were compiled against. --kernel FILE links a
         // module against such a file (Linker.LinkModule).
-        string? exportsPath = null, stampIndex = null, kernelPath = null;
+        string? exportsPath = null, stampIndex = null, kernelPath = null, keepPath = null;
         List<string> cpuArguments = new();
         for (int i = 0; i < args.Length; i++)
         {
@@ -62,10 +62,10 @@ public static class ObjectLinkCommand
             }
             // The program's dead code (UnusedReport), into a file ("-": the
             // error stream), from the notes units compiled with the same flag left.
-            if (arg is "--exports" or "--decl-index" or "--kernel")
+            if (arg is "--exports" or "--decl-index" or "--kernel" or "--keep")
             {
                 if (++i == args.Length) return Fail("missing value for " + arg);
-                if (arg == "--exports") exportsPath = args[i]; else if (arg == "--kernel") kernelPath = args[i]; else stampIndex = args[i];
+                if (arg == "--exports") exportsPath = args[i]; else if (arg == "--kernel") kernelPath = args[i]; else if (arg == "--keep") keepPath = args[i]; else stampIndex = args[i];
                 continue;
             }
             if (arg == "--unused-report")
@@ -118,7 +118,7 @@ public static class ObjectLinkCommand
         }
         if (output is null || paths.Count == 0)
             return Fail("usage: corlink <file.o> ... -o <output> [--entry symbol] [--flat] [--closed] [--base address] [--paddr address] [--no-lto] [--timings] [--unused-report file]"
-                + " [--exports file --decl-index index] [--kernel exports]");
+                + " [--exports file --decl-index index [--keep names]] [--kernel exports]");
         if (unusedReport is not null && shared) return Fail("--unused-report is for an image with an entry, not a shared object");
         if (exportsPath is not null)
         {
@@ -128,8 +128,15 @@ public static class ObjectLinkCommand
             if (stampIndex is null) return Fail("--exports needs --decl-index: the declaration index the kernel was compiled against, whose hash is its build stamp");
             if (declarationStamp is null) return Fail("--exports: this linker cannot read a declaration index; link with `corc link`");
             if (!File.Exists(stampIndex)) return Fail("--decl-index '" + stampIndex + "' does not exist");
+            if (keepPath is not null && !File.Exists(keepPath)) return Fail("--keep '" + keepPath + "' does not exist");
         }
         else if (stampIndex is not null) return Fail("--decl-index stamps a kernel linked with --exports");
+        else if (keepPath is not null) return Fail("--keep names what a kernel linked with --exports keeps for its modules");
+        // WHAT THE BUILD'S MODULES IMPORT, one name a line: with it the kernel
+        // is pruned to what it and they reach, as a closed image is; without
+        // it every global is kept, for modules nobody has built yet.
+        string[]? keep = keepPath is null ? null
+            : File.ReadAllLines(keepPath).Select(line => line.Trim()).Where(line => line.Length > 0 && !line.StartsWith('#')).ToArray();
         KernelExports? kernel = null;
         if (kernelPath is not null)
         {
@@ -184,7 +191,7 @@ public static class ObjectLinkCommand
         // the kernel's Driver.Bind.
         int regenerated = IrLinkOptimizer.Run(inputs, () => backend ?? new ProcessUnitBackend(backendPath), lto, importBytes,
             closedImageEntry: (flat || closed || physicalAddress is not null) && exportsPath is null ? entry : null, parallelBackends: backend is null, regionReport: regionReport,
-            openTypes: exportsPath is not null);
+            openTypes: exportsPath is not null, reachableFrom: keep is not null ? entry : null, keep: keep);
         int folded = LinkTimeOptimizer.Run(inputs, lto);
         LinkTimings.Phase("constant returns and coalescing");
         if (selected is not null) X86CodeGenerationContract.ValidateTarget(inputs, selected);
