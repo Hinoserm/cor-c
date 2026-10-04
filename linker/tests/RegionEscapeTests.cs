@@ -22,6 +22,7 @@ public static class RegionEscapeTests
         ("past the inclusion bound, unified", Overflow),
         ("a large cycle's summary, field by field", UnifiedByField),
         ("wide calls: stand-ins and rounds answer as following every call", WideCalls),
+        ("wide calls: what one target leaks of what it makes leaves what another hands back", WideHeldApart),
         ("a constant's address holds nothing", Constants),
         ("a number parameter is handed no address", NumberParameters),
         ("a virtual call runs on each object only what it may", Guards),
@@ -309,6 +310,43 @@ public static class RegionEscapeTests
                 for (int site = 0; site < sites; site++)
                     Check(byRounds.Escapes(f, site) == inOrder.Escapes(f, site), $"{how}: {rounds.Functions[f].Name}: site {site} outlives it the same by rounds as in order");
         }
+    }
+
+    /// <summary>
+    /// T0 makes an object and leaks it (as a throw does); T1 to T16 each
+    /// make one and hand it back. C makes a call of all seventeen (a wide
+    /// call, a stand-in) and drops what comes back; E calls C. T0's object
+    /// is global, and nothing else is: what T1 to T16 make is handed back
+    /// to C and dropped there. One class for everything the targets make
+    /// said the unknown object held all of it, and every target's object
+    /// was global for T0's sake; held apart (RegionEscape.HeldClass), the
+    /// answers are those of following every call, which keep each
+    /// target's objects its own.
+    /// </summary>
+    private static void WideHeldApart()
+    {
+        Prog Build()
+        {
+            Prog p = new();
+            RegionFunction t0 = p.Add("T0", 1, 3, sites: 1);
+            t0.Constraints.Add(Site(2, 0));
+            t0.Constraints.Add(Leak(2));
+            for (int t = 1; t <= 16; t++) p.Add("T" + t, 1, 2, sites: 1).Constraints.Add(Site(1, 0));
+            p.Virtuals["__virtual:t_A+48"] = Enumerable.Range(0, 17).Select(t => "T" + t).ToArray();
+            p.Add("C", 1, 3).Calls.Add(new("__virtual:t_A+48", 2, new[] { 0 }));
+            RegionFunction e = p.Add("E", 0, 2, sites: 1);
+            e.Constraints.Add(Site(1, 0));
+            e.Calls.Add(new("C", -1, new[] { 1 }));
+            return p;
+        }
+        Prog rounds = Build(), whole = Build();
+        RegionEscape byRounds = rounds.Solve(wide: 16);
+        RegionEscape inOrder = whole.Solve(wide: 0);
+        Check(byRounds.Global[rounds.Site("T0", 0)], "T0's object, leaked, is global");
+        for (int t = 1; t <= 16; t++)
+            Check(!byRounds.Global[rounds.Site("T" + t, 0)], $"T{t}'s object, handed back and dropped, is not global for T0's leak");
+        Check(!byRounds.Global[rounds.Site("E", 0)], "E's object, handed to targets that keep nothing of it, is not");
+        Check(byRounds.Global.SequenceEqual(inOrder.Global), "what is global is the same by rounds as following every call");
     }
 
     /// <summary>
