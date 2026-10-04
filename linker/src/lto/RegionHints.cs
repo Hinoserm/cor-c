@@ -32,14 +32,27 @@ public sealed class RegionHints
     // 8: an async or iterator body states its state machine's stores
     // (what its registers and slots hold across a suspension), rather
     // than leaking every one: the same bytes, another meaning.
-    private const int Version = 8;
+    // 9: the functions only a descriptor's method slots name (MethodsTaken),
+    // apart from every other address taken, and whether the unit calls a
+    // method it read from a descriptor as no named call (CallsThroughMethods).
+    private const int Version = 9;
     private static readonly UTF8Encoding Utf8 = new(false, true);
 
     public List<RegionFunction> Functions { get; } = new();
     /// <summary>The bytes of the unit's target's word, which the arena's blocks are laid out by (RegionLayout).</summary>
     public int WordSize { get; set; } = 4;
-    /// <summary>Every symbol the unit names as a value, in code or in data: the functions among them may be called by anything.</summary>
+    /// <summary>Every symbol the unit names as a value, in code or in data, but in a descriptor's method slots: the functions among them may be called by anything.</summary>
     public SortedSet<string> AddressTaken { get; } = new(StringComparer.Ordinal);
+    /// <summary>
+    /// The functions the unit's descriptors name in their method slots
+    /// (Target.DescriptorBytes on): reached by a virtual call, which the link
+    /// follows to them, and by anything else only through a method read out
+    /// of a descriptor and called as no virtual call is (CallsThroughMethods),
+    /// or a virtual call the link cannot resolve.
+    /// </summary>
+    public SortedSet<string> MethodsTaken { get; } = new(StringComparer.Ordinal);
+    /// <summary>Whether some function of the unit calls a method read out of a descriptor by a call that names no virtual target (RegionSummary).</summary>
+    public bool CallsThroughMethods { get; set; }
 
     public void Attach(ObjectFile obj)
     {
@@ -62,6 +75,7 @@ public sealed class RegionHints
         // Every name once, in ordinal order: the same hints are the same bytes.
         SortedSet<string> names = new(StringComparer.Ordinal);
         names.UnionWith(AddressTaken);
+        names.UnionWith(MethodsTaken);
         foreach (RegionFunction function in Functions)
         {
             names.Add(function.Name);
@@ -91,6 +105,9 @@ public sealed class RegionHints
         }
         Var(AddressTaken.Count);
         foreach (string name in AddressTaken) Var(index[name]);
+        Var(MethodsTaken.Count);
+        foreach (string name in MethodsTaken) Var(index[name]);
+        writer.Write((byte)(CallsThroughMethods ? 1 : 0));
         Var(Functions.Count);
         foreach (RegionFunction function in Functions)
         {
@@ -196,6 +213,10 @@ public sealed class RegionHints
             }
             RegionHints hints = new() { WordSize = wordSize };
             for (int i = Count(); i > 0; i--) hints.AddressTaken.Add(Name());
+            for (int i = Count(); i > 0; i--) hints.MethodsTaken.Add(Name());
+            byte calls = reader.ReadByte();
+            if (calls > 1) throw new ElfFormatException("Invalid region hint flags");
+            hints.CallsThroughMethods = calls == 1;
             for (int i = Count(); i > 0; i--)
             {
                 string name = Name();

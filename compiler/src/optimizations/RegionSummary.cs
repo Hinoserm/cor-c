@@ -29,7 +29,12 @@ public static class RegionSummary
         foreach (DataItem d in m.Data)
         {
             data.Add(d.Name);
-            foreach (DataReloc r in d.Relocs) hints.AddressTaken.Add(r.Symbol);
+            // A DESCRIPTOR'S METHOD SLOTS name what its objects' virtual
+            // calls run, which the link follows: apart from every other
+            // address taken (RegionHints.MethodsTaken).
+            bool descriptor = IsDescriptor(d.Name);
+            foreach (DataReloc r in d.Relocs)
+                (descriptor && r.Offset >= Target.Current.DescriptorBytes ? hints.MethodsTaken : hints.AddressTaken).Add(r.Symbol);
         }
         foreach (Function f in m.Functions)
         {
@@ -37,12 +42,18 @@ public static class RegionSummary
                 foreach (Instr i in b.Instrs)
                     foreach (Operand o in i.Operands)
                         if (o is SymOperand { Name: var n }) hints.AddressTaken.Add(n);
-            hints.Functions.Add(new Builder(f, f.Name == m.Main).Build());
+            Builder built = new(f, f.Name == m.Main);
+            hints.Functions.Add(built.Build());
+            if (built.CallsThroughMethod) hints.CallsThroughMethods = true;
         }
         // A data item's name is never a function's.
         hints.AddressTaken.RemoveWhere(data.Contains);
+        hints.MethodsTaken.RemoveWhere(data.Contains);
         return hints;
     }
+
+    // A class's, an array's or a string's, or a box's descriptor (Escape.IsDescriptor): its method table from Target.DescriptorBytes.
+    private static bool IsDescriptor(string name) => name.Length > 2 && name[1] == '_' && name[0] is 't' or 'q' or 'v' or 'b';
 
     private sealed class Builder
     {
@@ -277,6 +288,10 @@ public static class RegionSummary
                     // A virtual call: every override the link finds for its
                     // declaring type and slot. Any other: nobody can say.
                     string? callee = _virtuals!.TryGetValue(i, out string[]? named) && named.Length == 1 ? named[0] : null;
+                    // One that calls a method read out of a descriptor names no
+                    // virtual target: it may run any function a method slot
+                    // names (RegionHints.CallsThroughMethods).
+                    if (callee is null && i.Operands.Count > 0 && i.Operands[0] is RegOperand { Reg: var through } && MethodRead(through, 0)) CallsThroughMethod = true;
                     _callOf[i] = _calls.Count;
                     _calls.Add(new(callee, dest, Arguments(i, 1)));
                     return;
@@ -337,6 +352,55 @@ public static class RegionSummary
             }
             _callOf[i] = _calls.Count;
             _calls.Add(new(callee, dest, Arguments(i, 0)));
+        }
+
+        /// <summary>Whether this function calls, by a call naming no virtual target, a method read out of a descriptor.</summary>
+        public bool CallsThroughMethod;
+
+        // Every write of each register.
+        private Dictionary<VReg, List<Instr>>? _writes;
+
+        /// <summary>
+        /// Whether a register may hold a method read out of a descriptor: a
+        /// word loaded at an offset at or past the start of what an object's
+        /// first word points to -- its descriptor's method table -- through
+        /// copies and constant moves, on any of its writes.
+        /// </summary>
+        private bool MethodRead(VReg r, int depth)
+        {
+            if (depth > 8) return true;
+            if (_writes is null)
+            {
+                _writes = new();
+                foreach (Block b in _f.Blocks)
+                    foreach (Instr i in b.Instrs)
+                        if (i.Dest is { } d) (_writes.TryGetValue(d, out List<Instr>? list) ? list : _writes[d] = new()).Add(i);
+            }
+            if (!_writes.TryGetValue(r, out List<Instr>? writes)) return false;
+            foreach (Instr w in writes)
+            {
+                if (w.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.Phi)
+                {
+                    foreach (Operand o in w.Operands) if (o is RegOperand { Reg: var from } && MethodRead(from, depth + 1)) return true;
+                    continue;
+                }
+                if (w.Op == Opcode.Load && w.Offset >= 0 && w.Operands[0] is RegOperand { Reg: var table } && Table(table, depth + 1)) return true;
+            }
+            return false;
+        }
+
+        // Whether a register may hold what an object's first word points to, moved by a constant.
+        private bool Table(VReg r, int depth)
+        {
+            if (depth > 8) return true;
+            if (!_writes!.TryGetValue(r, out List<Instr>? writes)) return false;
+            foreach (Instr w in writes)
+            {
+                if (w.Op == Opcode.Load && w.Offset == 0) return true;
+                if (w.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.Phi or Opcode.Add or Opcode.Sub or Opcode.And)
+                    foreach (Operand o in w.Operands) if (o is RegOperand { Reg: var from } && Table(from, depth + 1)) return true;
+            }
+            return false;
         }
 
         // Each register written once, to its instruction; null where written more.

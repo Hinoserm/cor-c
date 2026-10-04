@@ -465,7 +465,7 @@ public static class RegionSolver
                 if (_functions[f].Name == _entry || _foreign.Contains(_functions[f].Name)) started.Add(f);
             if (started.Count == 0) return GiveUp("no entry " + _entry);
             for (int u = 0; u < _units.Count; u++)
-                foreach (string name in _units[u].AddressTaken)
+                foreach (string name in Addressed(u))
                     if (Resolve(u, name) is { } targets) addressed.UnionWith(targets);
             // The entry and what code outside the IR names run as they are
             // written, in the copy every followed call runs: the program
@@ -563,7 +563,7 @@ public static class RegionSolver
                 if (_functions[f].Name == _entry || _foreign.Contains(_functions[f].Name)) { rooted[f] = true; anyStart = true; }
             if (!anyStart) return GiveUp("no entry " + _entry);
             for (int u = 0; u < _units.Count; u++)
-                foreach (string name in _units[u].AddressTaken)
+                foreach (string name in Addressed(u))
                     if (Resolve(u, name) is { } those) foreach (int f in those) rooted[f] = true;
             bool[] wanted = new bool[count];
             for (int f = 0; f < count; f++) wanted[f] = _functions[f].MayBeBoundary || _functions[f].Loops.Count > 0;
@@ -636,6 +636,51 @@ public static class RegionSolver
         }
 
         /// <summary>The functions a call may run, as Call finds them; null when one is nothing summarised.</summary>
+        /// <summary>
+        /// WHAT A CALL NOBODY CAN NAME MAY RUN, of unit u's addresses taken:
+        /// every one it names as a value -- and those only its descriptors'
+        /// method slots name, when anything may call one of them blind. A
+        /// virtual call the link follows reaches its overrides with its own
+        /// arguments; anything else reaches a method only by reading it out of
+        /// a descriptor and calling it as no virtual call (a unit says so,
+        /// RegionHints.CallsThroughMethods), or by a virtual call the link
+        /// cannot resolve. (The runtime reads a descriptor's own words, at
+        /// its start, never a method to keep as a value.) Taken for one that
+        /// may be, a virtual method was called with anything: what each
+        /// override made and wrote into its object -- an iterator's item, a
+        /// node's emitted instruction -- was everyone's, and no region took it.
+        /// </summary>
+        private IEnumerable<string> Addressed(int u)
+        {
+            _methodsBlind ??= _units.Any(unit => unit.CallsThroughMethods) || AnyUnresolvedVirtual();
+            if (_methodsBlind.Value && _report is not null && !_saidBlind)
+            {
+                _saidBlind = true;
+                Log("methods are called blind: " + (_units.Any(unit => unit.CallsThroughMethods) ? "a unit calls a method it read from a descriptor" : "a virtual call is unresolved"));
+            }
+            return _methodsBlind.Value ? _units[u].AddressTaken.Concat(_units[u].MethodsTaken) : _units[u].AddressTaken;
+        }
+
+        private bool? _methodsBlind;
+        private bool _saidBlind;
+
+        // Whether some virtual call's targets the link cannot say (GraphTargets' rule).
+        private bool AnyUnresolvedVirtual()
+        {
+            for (int f = 0; f < _functions.Count; f++)
+            {
+                int u = _unitOf[f];
+                foreach (RegionCall call in _functions[f].Calls)
+                {
+                    if (call.Callee is not { } name || !name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal)) continue;
+                    if (!_virtuals.TryGetValue(name, out string[]? found)) return true;
+                    foreach (string target in found)
+                        if (ResolveOverride(u, target) is null && !_summarised.Contains(target)) return true;
+                }
+            }
+            return false;
+        }
+
         private int[]? GraphTargets(int f, RegionCall call, out bool isVirtual)
         {
             isVirtual = false;
