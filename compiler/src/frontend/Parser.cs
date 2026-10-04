@@ -7128,6 +7128,19 @@ public sealed class Parser
             // parenthesised expression, and a cast. What settles it is the
             // arrow, which is why this scans ahead for one rather than
             // committing and backing out.
+            // `static x => ...`, `static (a, b) => ...`, `static async ...`: a
+            // lambda that captures nothing, by its own promise -- nothing to
+            // do but read past the word, as a capture would be refused by
+            // C# before it ever reached here.
+            case Tok.KwStatic
+                when Ahead().Kind == Tok.Ident && _t[_i + 2].Kind == Tok.FatArrow && _i + 2 != _armArrow
+                  || Ahead().Kind == Tok.LParen && IsLambdaHeadAt(_i + 1)
+                  || Ahead().Kind == Tok.Ident && Ahead().Text == "async":
+            {
+                _i++;
+                return ParseUnary();
+            }
+
             // `async x => ...` and `async (a, b) => ...`: the word is a
             // modifier here and nowhere else in an expression.
             case Tok.Ident when Cur.Text == "async"
