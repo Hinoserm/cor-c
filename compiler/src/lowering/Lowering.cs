@@ -2165,37 +2165,7 @@ public sealed partial class Lowering
         for (int i = 0; i < slots; i++)
         {
             int at = _t.DescriptorBytes + i * w;
-            string? target;
-
-            // object's own members are symbols with no body (the binder's
-            // Rooted): a slot that still holds one -- `new object()`, or a
-            // class that overrides none of them -- gets the stub below, as a
-            // slot nobody filled does.
-            if (table[i] is { } m && !(m.Decl is null && m.Owner?.Name == "object" && m.Owner.Kind == TypeKind.Class))
-            {
-                Require(m);
-                target = CallLabel(m);
-            }
-            else if (i == _b.EqualsSlot && t.Kind == TypeKind.Class)
-            {
-                target = EqualsGuard(t) ?? ObjectEqualsStub();
-            }
-            else if (i == _b.HashSlot && t.Kind == TypeKind.Class)
-            {
-                target = ObjectHashStub();
-            }
-            else if (i == _b.CompareSlot && t.Kind == TypeKind.Class)
-            {
-                target = OwnCompare(t) ?? ObjectCompareStub();
-            }
-            else if (i == _b.ToStringSlot && t.Kind == TypeKind.Class)
-            {
-                target = ObjectToStringStub();
-            }
-            else
-            {
-                target = null;      // abstract: calling it is a null call, which traps
-            }
+            string? target = SlotTarget(t, i, table[i]);
 
             if (target is not null)
             {

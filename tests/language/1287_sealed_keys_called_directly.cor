@@ -1,0 +1,54 @@
+// test: sealed_keys_called_directly
+// expect-exit: 0
+// expect-output:
+// True False
+// True False
+// B7 Plain B7
+// True False
+// -1 1 0
+//
+// A SEALED CLASS'S KEY QUESTIONS ARE DIRECT CALLS to what its descriptor
+// holds: the overrides it inherits, object's own answers where nothing in its
+// chain overrides one (the same reference; the type's name), and the
+// CompareTo it implements.
+
+using System;
+using System.Collections.Generic;
+
+class Base
+{
+    public int V;
+    public Base(int v) { V = v; }
+    public override bool Equals(object? o) => o is Base b && b.V == V;
+    public override int GetHashCode() => V;
+    public override string ToString() => "B" + V;
+}
+
+sealed class Leaf : Base { public Leaf(int v) : base(v) { } }
+
+sealed class Plain { }
+
+sealed class Grade : IComparable<Grade>
+{
+    public int G;
+    public Grade(int g) { G = g; }
+    public int CompareTo(Grade? o) => o is null ? 1 : G.CompareTo(o.G);
+}
+
+class P
+{
+    static int Main()
+    {
+        var set = new HashSet<(Leaf, int)> { (new Leaf(1), 0) };
+        Console.WriteLine(set.Contains((new Leaf(1), 0)) + " " + set.Contains((new Leaf(2), 0)));
+        Plain p = new Plain();
+        var plains = new HashSet<(Plain, int)> { (p, 0) };
+        Console.WriteLine(plains.Contains((p, 0)) + " " + plains.Contains((new Plain(), 0)));
+        Leaf l = new Leaf(7);
+        Console.WriteLine($"{l} {p} {l.ToString()}");
+        Console.WriteLine(object.Equals(l, new Leaf(7)) + " " + object.Equals(p, new Plain()));
+        (Grade, int) low = (new Grade(1), 0), high = (new Grade(2), 0), again = (new Grade(1), 0);
+        Console.WriteLine(low.CompareTo(high) + " " + high.CompareTo(low) + " " + low.CompareTo(again));
+        return 0;
+    }
+}

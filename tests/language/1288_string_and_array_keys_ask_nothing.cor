@@ -1,0 +1,42 @@
+// test: string_and_array_keys_ask_nothing
+// expect-exit: 0
+// expect-output:
+// 5 6 False
+// True
+// True False
+// null2 a3 b0 b1
+// True False
+//
+// A STRING KEY IS COMPARED AS TEXT, AND AN ARRAY KEY AS ITSELF, with no call
+// through any slot: their own routines (`__key_equals$$string`,
+// `__key_equals$$array`). A null string is equal to null and sorts first.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+class P
+{
+    static int Main()
+    {
+        var d = new Dictionary<(string?, int), int>();
+        d[("ab", 1)] = 5;
+        d[(null, 1)] = 6;
+        string k = "a";
+        k += "b";
+        Console.WriteLine(d[(k, 1)] + " " + d[(null, 1)] + " " + d.ContainsKey(("ab", 2)));
+        Console.WriteLine(("ab", 1).GetHashCode() == (k, 1).GetHashCode());
+
+        int[] arr = { 1, 2 };
+        var ad = new Dictionary<(int[], int), string> { [(arr, 0)] = "x" };
+        Console.WriteLine(ad.ContainsKey((arr, 0)) + " " + ad.ContainsKey((new[] { 1, 2 }, 0)));
+
+        var sorted = new List<(string?, int)> { ("b", 1), (null, 2), ("a", 3), ("b", 0) };
+        sorted.Sort();
+        Console.WriteLine(string.Join(" ", sorted.Select(t => (t.Item1 ?? "null") + t.Item2)));
+
+        string? none = null;
+        Console.WriteLine(object.Equals(k, "ab") + " " + object.Equals(none, "ab"));
+        return 0;
+    }
+}

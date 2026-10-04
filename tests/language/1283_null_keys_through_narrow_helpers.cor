@@ -1,0 +1,45 @@
+// test: null_keys_through_narrow_helpers
+// expect-exit: 0
+// expect-output:
+// 3 1 2 3 False
+// True True 0 1 -1
+// (, s) (N4, )
+// []
+//
+// NULL KEYS OF A CLASS TYPE through the routines narrowed to that class: two
+// nulls are equal and hash alike, null is equal to nothing else, sorts before
+// anything, and is written as nothing -- without asking the null anything.
+
+using System;
+using System.Collections.Generic;
+
+class Node
+{
+    public int V;
+    public Node(int v) { V = v; }
+    public override bool Equals(object? o) => o is Node n && n.V == V;
+    public override int GetHashCode() => V;
+    public override string ToString() => "N" + V;
+}
+
+class P
+{
+    static int Main()
+    {
+        var d = new Dictionary<(Node?, string?), int>();
+        d[(null, null)] = 1;
+        d[(new Node(1), null)] = 2;
+        d[(null, "x")] = 3;
+        Console.WriteLine(d.Count + " " + d[(null, null)] + " " + d[(new Node(1), null)] + " " + d[(null, "x")] + " " + d.ContainsKey((new Node(2), null)));
+
+        (Node?, int) a = (null, 1), b = (null, 1), one = (new Node(1), 1);
+        Console.WriteLine(a.Equals(b) + " " + (a.GetHashCode() == b.GetHashCode()) + " " + a.CompareTo(b) + " " + one.CompareTo(b) + " " + b.CompareTo(one));
+
+        (Node?, string) first = (null, "s");
+        (Node, string?) second = (new Node(4), null);
+        Console.WriteLine(first.ToString() + " " + second.ToString());
+        Node? n = null;
+        Console.WriteLine($"[{n}]");
+        return 0;
+    }
+}

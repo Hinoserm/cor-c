@@ -1909,16 +1909,25 @@ public sealed class Parser
                 src.Append("        if (GetType() != other.GetType()) return false;\n");
             }
             src.Append("        return true");
+            // EqualityComparer<P>.Default.Equals, as the comparer's own body
+            // asks it (DefaultEqualityComparer), written out for P: through the
+            // comparer, every record's Equals ran its one shared copy, whose
+            // key question is asked of any object at all -- every Equals in
+            // the program a callee of every record's. Here P is known, and
+            // the question is asked of a P (Lowering.KeyEqualsStub).
             foreach (Param p in positional)
-                src.Append("\n            && EqualityComparer<").Append(p.Type).Append(">.Default.Equals(this.").Append(p.Name).Append(", other.").Append(p.Name).Append(")");
+                src.Append("\n            && (Sys.IsObject(this.").Append(p.Name).Append(") ? Sys.KeyEquals(this.").Append(p.Name).Append(", other.").Append(p.Name)
+                   .Append(") : Sys.EqualValues(this.").Append(p.Name).Append(", other.").Append(p.Name).Append("))");
             src.Append(";\n    }\n");
             src.Append("    public override bool Equals(object? obj) { return obj is ").Append(self).Append(" other && Equals(other); }\n");
         }
         if (!decl.Members.Exists(m => m.Name == "GetHashCode"))
         {
             src.Append("    public override int GetHashCode()\n    {\n        int hash = 0;\n");
+            // And EqualityComparer<P>.Default.GetHashCode, written out as Equals is.
             foreach (Param p in positional)
-                src.Append("        hash = unchecked(hash * -1521134295 + EqualityComparer<").Append(p.Type).Append(">.Default.GetHashCode(this.").Append(p.Name).Append("));\n");
+                src.Append("        hash = unchecked(hash * -1521134295 + (Sys.IsObject(this.").Append(p.Name).Append(") ? Sys.KeyHash(this.").Append(p.Name)
+                   .Append(") : (int)Sys.HashValue(this.").Append(p.Name).Append(")));\n");
             src.Append("        return hash;\n    }\n");
         }
         if (!decl.Members.Exists(m => m.Name is "op_Equality" or "op_Inequality"))

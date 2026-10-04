@@ -344,7 +344,7 @@ public sealed partial class Lowering
                 }
                 VReg one = ToWord(Arg(call, target, 0));
                 VReg two = ToWord(Arg(call, target, 1));
-                return _e.Call(KeyEqualsStub(), IrType.I32, R(one), R(two))!;
+                return _e.Call(KeyEqualsStub(_b.TypeOf(call.Args[0])), IrType.I32, R(one), R(two))!;
             }
             case "EqualValues":
             {
@@ -439,7 +439,7 @@ public sealed partial class Lowering
                 }
                 VReg before = ToWord(Arg(call, target, 0));
                 VReg after = ToWord(Arg(call, target, 1));
-                return _e.Call(KeyCompareStub(), IrType.I32, R(before), R(after))!;
+                return _e.Call(KeyCompareStub(_b.TypeOf(call.Args[0])), IrType.I32, R(before), R(after))!;
             }
             case "KeyHash":
             {
@@ -451,7 +451,7 @@ public sealed partial class Lowering
                     Eval(call.Args[0]);
                     return _e.Const(0, IrType.I32);
                 }
-                return _e.Call(KeyHashStub(), IrType.I32, R(ToWord(Arg(call, target, 0))))!;
+                return _e.Call(KeyHashStub(_b.TypeOf(call.Args[0])), IrType.I32, R(ToWord(Arg(call, target, 0))))!;
             }
             case "ArrayData":
             case "StringData":
@@ -840,9 +840,9 @@ public sealed partial class Lowering
         {
             return question switch
             {
-                "KeyEquals" => _e.Call(KeyEqualsStub(), IrType.I32, R(ToWord(x)), R(ToWord(y!)))!,
-                "KeyHash" => _e.Call(KeyHashStub(), IrType.I32, R(ToWord(x)))!,
-                _ => _e.Call(KeyCompareStub(), IrType.I32, R(ToWord(x)), R(ToWord(y!)))!,
+                "KeyEquals" => _e.Call(KeyEqualsStub(value), IrType.I32, R(ToWord(x)), R(ToWord(y!)))!,
+                "KeyHash" => _e.Call(KeyHashStub(value), IrType.I32, R(ToWord(x)))!,
+                _ => _e.Call(KeyCompareStub(value), IrType.I32, R(ToWord(x)), R(ToWord(y!)))!,
             };
         }
         // A number (or an enum, a bool, a char): its value, as the comparers

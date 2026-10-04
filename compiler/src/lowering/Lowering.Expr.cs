@@ -4019,7 +4019,7 @@ public sealed partial class Lowering
         if (type.Prim == Prim.Any || type.ParamName is not null
             || type.Symbol is { Kind: TypeKind.Class or TypeKind.Interface })
         {
-            return ObjectString(v);
+            return ObjectString(v, NarrowKey(type));
         }
 
         // A NULLABLE VALUE IS ITS VALUE, OR NOTHING AT ALL. `"n " + n` for an
@@ -4151,35 +4151,50 @@ public sealed partial class Lowering
         return result;
     }
 
-    /// <summary>What an object's ToString says, through the shared slot; null renders as "".</summary>
-    private VReg ObjectString(VReg obj)
+    /// <summary>
+    /// What an object's ToString says, through the shared slot; null renders
+    /// as "". `narrow` is the type the object is known to be, when it is
+    /// (NarrowSymbol): the call names its descriptor rather than object's,
+    /// so the ToStrings that can answer are that type's and its subclasses'
+    /// rather than every one in the program -- and a sealed class's is
+    /// called directly. A class is never a string, so is not asked whether
+    /// it is one.
+    /// </summary>
+    private VReg ObjectString(VReg obj, TypeSymbol? narrow = null)
     {
+        narrow = NarrowSymbol(narrow);
         VReg result = _f.NewReg(IrTypes.Word, "ts");
         Block some = _f.NewBlock("tssome");
         Block none = _f.NewBlock("tsnone");
-        Block text = _f.NewBlock("tstext");
         Block call = _f.NewBlock("tscall");
         Block end = _f.NewBlock("tsend");
         _e.Branch(obj, some, none);
         _e.SetBlock(some);
         VReg vt = _e.Load(IrTypes.Word, obj, 0);
 
-        // A STRING HELD AS AN OBJECT IS ITS OWN ToString, which is what .NET
-        // says and what this has to say too: a string has no vtable at all --
-        // its first word points at the descriptor every string shares, and
-        // the slot behind that is somebody else's data. Reading it and calling
-        // through it is how `object b = "hi"; "b " + b` crashed.
-        VReg flags = _e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize);
-        _e.Branch(_e.Binary(Opcode.And, flags, 2), text, call);
-        _e.SetBlock(text);
-        _e.CopyTo(result, R(obj));
-        _e.Jump(end);
+        if (narrow is { Kind: TypeKind.Class })
+        {
+            _e.Jump(call);
+        }
+        else
+        {
+            // A STRING HELD AS AN OBJECT IS ITS OWN ToString, which is what .NET
+            // says and what this has to say too: a string has no vtable at all --
+            // its first word points at the descriptor every string shares, and
+            // the slot behind that is somebody else's data. Reading it and calling
+            // through it is how `object b = "hi"; "b " + b` crashed.
+            Block text = _f.NewBlock("tstext");
+            VReg flags = _e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize);
+            _e.Branch(_e.Binary(Opcode.And, flags, 2), text, call);
+            _e.SetBlock(text);
+            _e.CopyTo(result, R(obj));
+            _e.Jump(end);
+        }
 
         _e.SetBlock(call);
-        VReg fn = _e.Load(IrTypes.Word, vt, (long)_b.ToStringSlot * _t.WordSize);
-        VReg said = _e.CallIndirect(R(fn), IrTypes.Word, new Operand[] { R(obj) })!;
-        // Declared on object: every type's ToString slot (Escape.IndirectTargets).
-        _e.Block.Instrs[^1].DispatchType = ObjectDispatch;
+        // Declared on object: every type's ToString slot (Escape.IndirectTargets),
+        // unless the type it is narrowed to says whose.
+        VReg said = AskSlot(_e, obj, vt, _b.ToStringSlot, narrow, IrTypes.Word, R(obj));
         _e.CopyTo(result, R(said));
         _e.Jump(end);
         _e.SetBlock(none);
