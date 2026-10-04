@@ -281,7 +281,12 @@ public static class ProjectCommand
     /// </summary>
     private static int Processes(int workers, int units)
     {
-        const long Space = 4L * 1024 * 1024 * 1024;
+        // WHAT A CHILD HOLDS, not what its address space could: a child of
+        // the native compiler peaks near a gigabyte (its heap paced by its
+        // live size), and was counted as four -- six children on a machine
+        // with thirty-two processors and twenty-six gigabytes free. Two keeps
+        // room for the biggest units, which all start at once (biggest first).
+        const long Space = 2L * 1024 * 1024 * 1024;
         // IN PROCESS UNDER DOTNET ONLY: its heap copes with a dozen units at
         // once, and one warm JIT beats twelve cold ones. A native compiler, of
         // either word size, gives each unit a process: in long mode the in-
