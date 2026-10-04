@@ -344,21 +344,48 @@ of some two thousand MoveNexts does with `this`. A narrowed stand-in is
 assumed and grown like any other, never the targets' summaries, which may
 not be solved yet. A cycle solved by unification keeps the whole stand-in.
 
-After a round, each stand-in is checked against its targets' summaries
-(`Check`) and grows where it does not cover them. After round 3 a stand-in
-that still grows takes every site its targets reach at once
-(`WidenAfter`), and after round 8 every call is followed in order instead
-(`MostRounds`).
+**Growing a stand-in.** A stand-in grows as soon as it is seen short
+(`Cover`), not only between rounds:
+- made, it covers at once every target already solved, so what applies it
+  later in the same round has it right;
+- a target published with a new shape grows every stand-in it is among
+  (`_standInsOf`);
+- at the end of a round each stand-in is checked against all its targets'
+  summaries (`Check`), in passes while a pass grew some stand-in's sites.
 
-**Incremental rounds.** Rounds after the first re-solve only the components
-that applied a stand-in that grew, or call a function whose summary came out
-different (`Again`). Holder numbers are never reused:
+After round 3 a stand-in that still grows takes every site its targets reach
+at once (`WidenAfter`), and after round 8 every call is followed in order
+instead (`MostRounds`). A stand-in keeps one holder for good, with its made
+object always at index 1: what an applier made of it is `Ref(holder, 1)`
+whatever the stand-in grows to.
+
+**Incremental rounds.** Each solve is a tick, and each change is stamped
+with the tick it was made at. A later round re-solves a component only if,
+since its last solve (`Again`):
+- a callee outside it, not called as a wide call, came out with a summary
+  of another shape;
+- a stand-in it applied, whole or narrowed, grew in shape (new bits);
+- a holder it read sites through changed its origins in place. Sites are
+  read when an object's sites are asked: a virtual call's targets on it, a
+  guard, a word never read as a reference (`SitesOf` notes the holders).
+
+A summary that changes only in its made objects' origins is updated in
+place, under the same holder (`Publish`, `SameShapeAs`). A caller re-solved
+would come out the same except for what it asked of those sites, so only
+the components that asked are re-solved. Every answer is read from the
+holders at the end (`Close`, `BitsOf`), so an answer not re-solved is still
+the final one. Otherwise, holder numbers are never reused:
 - a summary that comes out the same keeps its holder and object;
-- a changed one gets a new holder, so every reference still held elsewhere
-  means what it meant;
+- one of another shape gets a new holder, so every reference still held
+  elsewhere means what it meant;
 - each component's global and rooted origins are its own, replaced when it
-  is re-solved;
-- a component that applied a narrowed stand-in is re-solved when it grows.
+  is re-solved.
+
+A component that went past its bound by inclusion is unified at once in
+later rounds (`StraightToUnified`): what it reads only grows, so inclusion
+would give up again after the same work. The round's line in the report
+counts stand-ins made, grown in shape and in sites alone, and why each
+component was re-solved.
 
 `+widefirst` starts every stand-in with all its targets' sites. That means
 fewer rounds, but coarser answers above wide calls.

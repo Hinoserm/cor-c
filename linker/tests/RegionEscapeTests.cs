@@ -256,18 +256,26 @@ public static class RegionEscapeTests
     /// call of T0 to T16 (17 targets, past WideTargets 16: a wide call, a
     /// stand-in) with p; D hands its object to C1: T0 may run, so D's object
     /// is global. C2 hands its object to a call of T1 to T17: none keeps it.
-    /// With stand-ins the first round assumes C1's call does nothing; the
-    /// next finds T0's summary not covered, grows the stand-in, and solves
-    /// again only what changed. The answers must be those of following
-    /// every call in order (WideTargets 0), every one of them.
+    ///
+    /// Callers first, C1 is solved before T0 and applies a stand-in that
+    /// does nothing; T0's summary grows it as T0 is published, and the next
+    /// round solves again only what applied it before, and what that
+    /// changed. Targets first, the stand-in is made covering them all, and
+    /// a second round finds nothing to solve again. Either way the answers
+    /// must be those of following every call in order (WideTargets 0),
+    /// every one of them.
     /// </summary>
     private static void WideCalls()
     {
-        Prog Build()
+        Prog Build(bool callersFirst)
         {
             Prog p = new();
-            p.Add("T0", 1, 2).Constraints.Add(Leak(0));
-            for (int t = 1; t <= 17; t++) p.Add("T" + t, 1, 2);
+            void Targets()
+            {
+                p.Add("T0", 1, 2).Constraints.Add(Leak(0));
+                for (int t = 1; t <= 17; t++) p.Add("T" + t, 1, 2);
+            }
+            if (!callersFirst) Targets();
             p.Virtuals["__virtual:t_A+48"] = Enumerable.Range(0, 17).Select(t => "T" + t).ToArray();
             p.Virtuals["__virtual:t_B+48"] = Enumerable.Range(1, 17).Select(t => "T" + t).ToArray();
             p.Add("C1", 1, 2).Calls.Add(new("__virtual:t_A+48", -1, new[] { 0 }));
@@ -277,20 +285,30 @@ public static class RegionEscapeTests
             RegionFunction d = p.Add("D", 0, 2, sites: 1);
             d.Constraints.Add(Site(1, 0));
             d.Calls.Add(new("C1", -1, new[] { 1 }));
+            if (callersFirst) Targets();
             return p;
         }
-        Prog rounds = Build(), whole = Build();
-        List<string> said = new();
-        RegionEscape byRounds = rounds.Solve(wide: 16, progress: said.Add);
-        RegionEscape inOrder = whole.Solve(wide: 0);
-        Check(said.Any(line => line.Contains("round 2:", StringComparison.Ordinal)), "the stand-in grew and a second round ran");
-        Check(byRounds.Global[rounds.Site("D", 0)], "D's object, handed to a call that may run T0, is global");
-        Check(!byRounds.Global[rounds.Site("C2", 0)], "C2's object, handed to targets that keep nothing, is not");
-        Check(byRounds.Global.SequenceEqual(inOrder.Global), "what is global is the same by rounds as following every call");
-        int sites = byRounds.Global.Length;
-        for (int f = 0; f < rounds.Functions.Count; f++)
-            for (int site = 0; site < sites; site++)
-                Check(byRounds.Escapes(f, site) == inOrder.Escapes(f, site), $"{rounds.Functions[f].Name}: site {site} outlives it the same by rounds as in order");
+        foreach (bool callersFirst in new[] { true, false })
+        {
+            string how = callersFirst ? "callers first" : "targets first";
+            Prog rounds = Build(callersFirst), whole = Build(callersFirst);
+            List<string> said = new();
+            RegionEscape byRounds = rounds.Solve(wide: 16, progress: said.Add);
+            RegionEscape inOrder = whole.Solve(wide: 0);
+            if (callersFirst)
+                Check(said.Any(line => line.Contains("round 2:", StringComparison.Ordinal) && !line.Contains("nothing to solve again", StringComparison.Ordinal)),
+                    how + ": the stand-in grew after C1 applied it, and a second round solved C1 again");
+            else
+                Check(said.Any(line => line.Contains("round 2: nothing to solve again", StringComparison.Ordinal)),
+                    how + ": the stand-in was made covering its targets, and nothing was solved again");
+            Check(byRounds.Global[rounds.Site("D", 0)], how + ": D's object, handed to a call that may run T0, is global");
+            Check(!byRounds.Global[rounds.Site("C2", 0)], how + ": C2's object, handed to targets that keep nothing, is not");
+            Check(byRounds.Global.SequenceEqual(inOrder.Global), how + ": what is global is the same by rounds as following every call");
+            int sites = byRounds.Global.Length;
+            for (int f = 0; f < rounds.Functions.Count; f++)
+                for (int site = 0; site < sites; site++)
+                    Check(byRounds.Escapes(f, site) == inOrder.Escapes(f, site), $"{how}: {rounds.Functions[f].Name}: site {site} outlives it the same by rounds as in order");
+        }
     }
 
     /// <summary>

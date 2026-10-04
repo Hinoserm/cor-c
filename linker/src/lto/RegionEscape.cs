@@ -93,6 +93,7 @@ internal sealed class RegionEscape
         Global = new bool[sites];
         LoopHeld = new (int[], int[])[]?[functions.Count];
         _summaries = new Summary?[functions.Count];
+        _changedAt = new long[functions.Count];
     }
 
     // A NUMBER HANDED TO A CALL holds no address: an argument every target
@@ -143,6 +144,9 @@ internal sealed class RegionEscape
         int[]?[] origins = new int[]?[s.Objects.Count];
         for (int k = 0; k < s.Objects.Count; k++) if (s.Objects[k].Kind == Kind.Made) origins[k] = s.Objects[k].Origins;
         _holders[holder] = origins;
+        // A holder registered again (a stand-in's) may differ in length.
+        _holderFirst = null;
+        if (_bitsByOrigins.Count > 0) _bitsByOrigins.Clear();
     }
 
     private int NewHolder() => Math.Max(_holders.Count, _functions.Count);
@@ -258,6 +262,8 @@ internal sealed class RegionEscape
         while (next.TryPop(out int r))
         {
             if (r < 0) { sites.Add(-r - 1); continue; }
+            // Read by the component being solved: solved again if it changes (Again).
+            _reading?.Add(r >> IndexBits);
             if (OriginsOf(r) is { } below) foreach (int c in below) if (seen.Add(c)) next.Push(c);
         }
         return sites.Order().ToArray();
@@ -530,12 +536,23 @@ internal sealed class RegionEscape
             for (int round = 1; ; round++)
             {
                 long began = System.Diagnostics.Stopwatch.GetTimestamp();
+                GrewShape = GrewOrigins = MadeStandIns = AgainForCallee = AgainForStandIn = AgainForSites = StraightToUnified = 0;
                 int solved = round == 1 ? Order() : Again();
+                // NOTHING TO SOLVE AGAIN: every component was solved last with
+                // the summaries, stand-ins and sites it reads as they stand,
+                // and the Check after those solves grew nothing.
+                if (round > 1 && solved == 0)
+                {
+                    Progress?.Invoke($"escape graphs: round {round}: nothing to solve again, {System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds:F0} ms");
+                    break;
+                }
                 int grew = Check(round >= WidenAfter);
-                Progress?.Invoke($"escape graphs: round {round}: {_assumed.Count} wide calls assumed, {grew} grew, {solved} of {_components.Count} components solved, largest cycle {LargestCycle}, "
-                    + $"{Work} carried, {System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds:F0} ms");
+                Progress?.Invoke($"escape graphs: round {round}: {_assumed.Count} wide calls assumed ({MadeStandIns} made this round), {grew} grew at its end; "
+                    + $"grown in shape {GrewShape}, in sites only {GrewOrigins} (as solved and at the end); "
+                    + $"{solved} of {_components.Count} components solved"
+                    + (round == 1 ? "" : $" ({AgainForCallee} for a callee's summary, {AgainForStandIn} for a stand-in, {AgainForSites} for sites they read)")
+                    + $", {StraightToUnified} straight to unification, largest cycle {LargestCycle}, {Work} carried, {System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds:F0} ms");
                 if (ReportStandIns) DescribeStandIns();
-                if (grew == 0) break;
                 if (round == MostRounds)
                 {
                     // Still growing: every call followed in order after all.
@@ -551,6 +568,9 @@ internal sealed class RegionEscape
         Close();
     }
 
+    /// <summary>For a report, per round: stand-ins grown in shape or in their sites alone, made, and why components were solved again.</summary>
+    public long GrewShape, GrewOrigins, MadeStandIns, AgainForCallee, AgainForStandIn, AgainForSites, StraightToUnified;
+
     // ---- wide calls -------------------------------------------------------
     //
     // A VIRTUAL CALL OF MANY TARGETS -- Equals, GetHashCode, ToString, an
@@ -558,12 +578,12 @@ internal sealed class RegionEscape
     // override and all that calls it into one cycle: on the compiler's own
     // link, thirteen thousand functions, solved together and coarsely. So a
     // wide call is not an edge of the order: each set of targets is assumed
-    // a summary (a stand-in), empty at first, and every function solved with
-    // it. Then the targets' own summaries are asked whether the stand-in
-    // covers them all; where it does not, it grows to cover them and every
-    // function is solved again. What every stand-in covers is a fixed point
-    // above the least one, so the answers are sound: by induction on how
-    // deep calls go, each call does no more than its stand-in says.
+    // a summary (a stand-in) and every function solved with it. The targets'
+    // own summaries are asked whether the stand-in covers them all; where it
+    // does not, it grows to cover them, and whatever applied it is solved
+    // again. What every stand-in covers is a fixed point above the least
+    // one, so the answers are sound: by induction on how deep calls go, each
+    // call does no more than its stand-in says.
     //
     // A stand-in is a shape of a few objects -- the unknown object, each
     // argument's own object and all below it, and every object its targets
@@ -572,6 +592,24 @@ internal sealed class RegionEscape
     // grow and are finite, so the rounds end; past WidenAfter, a stand-in
     // that grew takes every site its targets reach at once, and only its
     // bits are left to grow.
+    //
+    // A STAND-IN GROWS AS SOON AS IT IS SEEN SHORT, not only at a round's
+    // end: made, it covers at once every target solved already, and each
+    // target's summary, published with a new shape, grows every stand-in it
+    // is among (Cover). What applies it after that in the same round has
+    // it grown; only what applied it before is solved again. (Made empty,
+    // and grown only between rounds, every stand-in a round made -- each of
+    // a receiver's class's targets (NarrowedStandIn), made as the first
+    // solve to see such a receiver asks -- cost every caller of its call one
+    // more round.)
+    //
+    // ITS MADE OBJECT IS ALWAYS ITS FIRST BUT THE UNKNOWN ONE, and its holder
+    // is its own for good: what any applier made of it is Ref(holder, 1)
+    // whatever it grows to, so a summary built on it comes out the same when
+    // only the stand-in's sites grew (the sites are the holder's, read at
+    // the end), and nothing above it is solved again for that. A grown shape
+    // is registered again under the same holder; the one object a Ref names
+    // in it is still the made one.
 
     private const int MostRounds = 8;
     private const int WidenAfter = 3;
@@ -587,15 +625,24 @@ internal sealed class RegionEscape
     private const int ResultBits = Classes * Classes;
     private const int UnknownBit = ResultBits + Classes;
     private const int ShapeWords = (UnknownBit + 64) / 64;
+    // A stand-in's made object, in every shape it takes.
+    private const int StandInMade = 1;
 
     private static bool Has(ulong[] bits, int bit) => (bits[bit >> 6] >> (bit & 63) & 1) != 0;
     private static void Set(ulong[] bits, int bit) => bits[bit >> 6] |= 1UL << (bit & 63);
 
     private sealed class Assumed
     {
+        public readonly int[] Targets;
         public readonly ulong[] Bits = new ulong[ShapeWords];
         public int[] Sites = Array.Empty<int>();
         public bool Widened;
+        // Its holder, its own for good (-1 until first built), and the tick
+        // its shape last grew at (Again).
+        public int Holder = -1;
+        public long ChangedAt;
+
+        public Assumed(int[] targets) { Targets = targets; }
 
         public Summary Build()
         {
@@ -612,7 +659,8 @@ internal sealed class RegionEscape
             }
             for (int cls = 1; cls < Classes; cls++)
             {
-                if (!Uses(cls) && !(cls == 1 && Sites.Length > 0)) continue;
+                // The made object always, at StandInMade: what a Ref names.
+                if (cls != 1 && !Uses(cls)) continue;
                 index[cls] = s.Objects.Count;
                 s.Objects.Add(cls switch
                 {
@@ -668,7 +716,7 @@ internal sealed class RegionEscape
             }
             if (LeaksArgument(a.Bits))
             {
-                List<int> leaking = targets.Where(t => _summaries[t] is { IsUnknown: false } s && LeaksArgument(Shape(s).Bits)).ToList();
+                List<int> leaking = targets.Where(t => _summaries[t] is { IsUnknown: false } s && LeaksArgument(ShapeOf(s).Bits)).ToList();
                 string Tag(int t) => (t < _how.Length ? _how[t] : How.None) switch { How.Unified => "unified", How.PastBound => "past bound", How.Inclusion => "inclusion", _ => "?" }
                     + (_summaries[t]!.MadeCoarse ? ", coarse" : "");
                 held.Add($"U>arg by {leaking.Count}: " + string.Join(", ", leaking.Take(4).Select(t => _functions[t].Name + " (" + Tag(t) + ")")));
@@ -678,6 +726,8 @@ internal sealed class RegionEscape
     }
 
     private Dictionary<int[], Assumed>? _assumed;
+    // Per function: the stand-ins it is a target of, to grow as its summary does (Cover).
+    private readonly Dictionary<int, List<Assumed>> _standInsOf = new();
 
     // For a report: how each function's summary was found.
     private enum How : byte { None, Inclusion, Unified, PastBound }
@@ -686,36 +736,104 @@ internal sealed class RegionEscape
 
     private bool IsWide(int[] targets) => _assumed is not null && targets.Length > WideTargets;
 
-    // THE NARROWED STAND-INS each function applied (NarrowedStandIn): a wide
-    // call's targets that run on one receiver's class, assumed as any wide
-    // call's are and grown by Check, so a component that applied one is
-    // solved again when it grows (Again), as for its wide calls' own.
-    private readonly Dictionary<int, HashSet<int[]>> _narrowedBy = new();
+    /// <summary>The stand-in of some of a wide call's targets, those that run on a receiver of a known class.</summary>
+    private Summary NarrowedStandIn(int f, int[] targets) => StandIn(targets);
 
-    /// <summary>The stand-in of some of a wide call's targets, those that run on a receiver of a known class, noted as f's.</summary>
-    private Summary NarrowedStandIn(int f, int[] targets)
-    {
-        if (!_narrowedBy.TryGetValue(f, out HashSet<int[]>? sets)) _narrowedBy[f] = sets = new(TargetsComparer.Instance);
-        sets.Add(targets);
-        return StandIn(targets);
-    }
-
-    /// <summary>The summary a wide call is assumed to have this round.</summary>
+    /// <summary>
+    /// The summary a wide call is assumed to have, as it stands: noted as
+    /// applied by the component being solved (Again), and made, the first
+    /// time, covering every target solved already.
+    /// </summary>
     private Summary StandIn(int[] targets)
     {
-        if (_standIns.TryGetValue(targets, out Summary? known)) return known;
         if (!_assumed!.TryGetValue(targets, out Assumed? a))
         {
-            _assumed[targets] = a = new Assumed();
+            _assumed[targets] = a = new Assumed(targets);
+            MadeStandIns++;
             if (WidenFirst) { a.Widened = true; a.Sites = Beneath(targets).Order().ToArray(); }
+            // Covering what is solved already: nothing has applied it yet,
+            // so none of that is growth anything is solved again for.
+            long shapes = GrewShape, origins = GrewOrigins;
+            foreach (int t in targets)
+            {
+                if (!_standInsOf.TryGetValue(t, out List<Assumed>? those)) _standInsOf[t] = those = new();
+                those.Add(a);
+                if (_summaries[t] is { } solved) Cover(a, solved, false);
+            }
+            GrewShape = shapes; GrewOrigins = origins;
+            a.ChangedAt = 0;
         }
+        _applying?.Add(a);
+        if (_standIns.TryGetValue(targets, out Summary? known)) return known;
+        return Built(a);
+    }
+
+    // A stand-in built as it stands, under its own holder.
+    private Summary Built(Assumed a)
+    {
         Summary s = a.Build();
-        if (!s.IsUnknown) Register(s, NewHolder());
-        return _standIns[targets] = s;
+        if (!s.IsUnknown)
+        {
+            if (a.Holder < 0) a.Holder = NewHolder();
+            Register(s, a.Holder);
+        }
+        return _standIns[a.Targets] = s;
+    }
+
+    /// <summary>
+    /// A STAND-IN GROWN TO COVER ONE TARGET'S SUMMARY: its bits and its
+    /// sites. A new bit is a new shape -- whatever applied it is solved
+    /// again (ChangedAt) -- and new sites alone are its holder's, read by
+    /// what asks their classes (OriginsAt). Rebuilt at once, so what is
+    /// applied next and what is read at the end are the grown one. Whether
+    /// it grew.
+    /// </summary>
+    private bool Cover(Assumed a, Summary summary, bool widen)
+    {
+        if (Has(a.Bits, UnknownBit)) return false;
+        (ulong[] bits, int[] sites) = ShapeOf(summary);
+        bool shape = false;
+        for (int w = 0; w < ShapeWords; w++) if ((bits[w] & ~a.Bits[w]) != 0) shape = true;
+        bool more = false;
+        if (sites.Length > 0)
+        {
+            // Both sorted: one walk.
+            int i = 0;
+            foreach (int site in sites)
+            {
+                while (i < a.Sites.Length && a.Sites[i] < site) i++;
+                if (i >= a.Sites.Length || a.Sites[i] != site) { more = true; break; }
+            }
+        }
+        bool widening = widen && !a.Widened;
+        if (!shape && !more && !widening) return false;
+        for (int w = 0; w < ShapeWords; w++) a.Bits[w] |= bits[w];
+        if (more || widening)
+        {
+            SortedSet<int> all = new(a.Sites);
+            all.UnionWith(sites);
+            if (widening)
+            {
+                a.Widened = true;
+                all.UnionWith(Beneath(a.Targets));
+            }
+            int had = a.Sites.Length;
+            a.Sites = all.ToArray();
+            more = a.Sites.Length > had;
+        }
+        if (shape) { a.ChangedAt = _tick; GrewShape++; }
+        else if (more) GrewOrigins++;
+        if (a.Holder >= 0 || _standIns.ContainsKey(a.Targets))
+        {
+            Built(a);
+            // Its sites, read through its holder by whatever asked them.
+            if (more && a.Holder >= 0) OriginsChanged(a.Holder);
+        }
+        return shape || more;
     }
 
     // A summary as a stand-in's shape: which classes hold which, and the
-    // sites its made objects may be.
+    // sites its made objects may be -- the sites as the holders say now.
     private (ulong[] Bits, int[] Sites) Shape(Summary s)
     {
         ulong[] bits = new ulong[ShapeWords];
@@ -733,47 +851,57 @@ internal sealed class RegionEscape
         foreach (var r in s.Result) Set(bits, ResultBits + Class(r.To));
         List<int> origins = new();
         foreach (var o in s.Objects) if (o.Kind == Kind.Made) origins.AddRange(o.Origins);
-        return (bits, origins.Count == 0 ? Array.Empty<int>() : SitesOf(origins.ToArray()));
+        if (origins.Count == 0) return (bits, Array.Empty<int>());
+        // Not what the component being solved reads: a stand-in's sites
+        // are its holder's, and that is what an applier reads.
+        HashSet<int>? reading = _reading;
+        _reading = null;
+        int[] sites = SitesOf(origins.ToArray());
+        _reading = reading;
+        return (bits, sites);
     }
 
-    /// <summary>Grows every stand-in its targets' summaries are not covered by: how many grew.</summary>
+    // BY THE SUMMARY ITSELF, while no holder's origins changed in place since
+    // (OriginsAt): one a round kept (Publish) keeps its shape, and its sites
+    // while nothing beneath them moved.
+    private (ulong[] Bits, int[] Sites) ShapeOf(Summary s)
+    {
+        if (_shapes.TryGetValue(s, out var known) && known.At > _lastOriginsChange) return (known.Bits, known.Sites);
+        var shape = Shape(s);
+        _shapes[s] = (shape.Bits, shape.Sites, _tick);
+        return shape;
+    }
+
+    /// <summary>
+    /// Grows every stand-in its targets' summaries are not covered by: how
+    /// many grew. Again while a pass grew some stand-in's sites in place: a
+    /// target that applied it makes those sites too, and the stand-ins it is
+    /// among read that from its holders, as they are now.
+    /// </summary>
     private int Check(bool widen)
     {
-        int grew = 0;
-        foreach (var (targets, a) in _assumed!)
+        HashSet<Assumed> grown = new(ReferenceEqualityComparer.Instance);
+        for (int pass = 0; ; pass++)
         {
-            ulong[] bits = new ulong[ShapeWords];
-            HashSet<int> sites = new();
-            foreach (int t in targets)
+            // Past every solve: what grows here is newer than all of them.
+            long began = ++_tick;
+            foreach (Assumed a in _assumed!.Values)
             {
-                // By the summary itself: one a round kept (Publish) keeps its shape.
-                Summary summary = _summaries[t] ?? _noSummary;
-                if (!_shapes.TryGetValue(summary, out var shape)) _shapes[summary] = shape = Shape(summary);
-                for (int w = 0; w < ShapeWords; w++) bits[w] |= shape.Bits[w];
-                sites.UnionWith(shape.Sites);
+                bool more = false;
+                foreach (int t in a.Targets) more |= Cover(a, _summaries[t] ?? _noSummary, false);
+                // Widened once grown, as WidenAfter has it.
+                if (more && widen) Cover(a, _noShape, true);
+                if (more) grown.Add(a);
             }
-            HashSet<int> had = new(a.Sites);
-            bool covered = sites.IsSubsetOf(had);
-            for (int w = 0; w < ShapeWords; w++) if ((bits[w] & ~a.Bits[w]) != 0) covered = false;
-            if (covered) continue;
-            grew++;
-            // Built again, under a new holder, where next applied.
-            _grown.Add(targets);
-            _standIns.Remove(targets);
-            for (int w = 0; w < ShapeWords; w++) a.Bits[w] |= bits[w];
-            if (widen && !a.Widened)
-            {
-                a.Widened = true;
-                sites.UnionWith(Beneath(targets));
-            }
-            sites.UnionWith(had);
-            a.Sites = sites.Order().ToArray();
+            if (_lastOriginsChange < began || pass >= MostRounds) break;
         }
-        return grew;
+        return grown.Count;
     }
 
-    private readonly Dictionary<Summary, (ulong[] Bits, int[] Sites)> _shapes = new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<Summary, (ulong[] Bits, int[] Sites, long At)> _shapes = new(ReferenceEqualityComparer.Instance);
     private static readonly Summary _noSummary = Summary.Unknown;
+    // A summary of no effect: what widens a stand-in without growing it otherwise.
+    private static readonly Summary _noShape = new();
 
     // Every site in the targets and every function they may call.
     private IEnumerable<int> Beneath(int[] targets)
@@ -795,34 +923,52 @@ internal sealed class RegionEscape
         Array.Clear(_how);
         Array.Clear(Escaping);
         Array.Clear(LoopHeld);
+        Array.Clear(_changedAt);
         _holders.Clear();
         _globalRefs.Clear();
         _rootedRefs.Clear();
         _merged.Clear();
         _standIns.Clear();
+        _standInsOf.Clear();
         _escapingBits = null;
         _holderFirst = null;
         _bitsByOrigins.Clear();
         _components.Clear(); _globalOf.Clear(); _rootedOf.Clear(); _shapes.Clear();
-        _grown.Clear();
-        _narrowedBy.Clear();
+        _solvedAt.Clear(); _appliedOf.Clear(); _sitesReadOf.Clear();
+        _originsAt.Clear();
+        _componentOf = null; _callees = null;
         Work = Applied = Unfollowed = LargestCycle = Fallbacks = 0;
     }
 
-    // ---- solving again: only what a grown stand-in changed -----------------
+    // ---- solving again: only what changed what a component read -----------
     //
     // THE COMPONENTS, IN THE ORDER THE FIRST ROUND SOLVED THEM: a wide call is
     // no edge of the order, so the order is the same every round. A later
-    // round solves a component again only if it applies a stand-in that grew,
-    // or calls (not as a wide call) a function outside it whose summary came
-    // out different this round; callers come after their callees, so one pass
-    // reaches every change. A summary that comes out the same as before keeps
-    // its holder and object (Publish), and nothing above it is solved again
-    // for its sake. What a component not solved again answered -- what
-    // outlives its members, its loops, what it made global -- was answered
-    // from summaries, stand-ins and merged summaries that are all still the
-    // ones it read, under holders whose origins never change; so every answer
-    // is the final summaries' answer, as a round solving everything gives.
+    // round solves a component again only if, since it was solved last (a
+    // tick: each solve is one, and each change is stamped with the tick it
+    // was made in):
+    //  - a callee outside it, called not as a wide call, came out with a
+    //    summary of another shape (ChangedAt);
+    //  - a stand-in it applied grew in shape (Assumed.ChangedAt);
+    //  - a holder it read sites through -- a virtual call's targets on an
+    //    object, a guard, a word never read as a reference, each asked of
+    //    an object's sites (SitesOf) -- had its origins changed in place
+    //    (OriginsAt).
+    // Callers come after their callees, so one pass reaches every change
+    // made below; one made above what was solved before it -- a stand-in
+    // grown by a target solved after its applier -- is the next round's.
+    //
+    // A SUMMARY THAT CHANGED ONLY IN ITS MADE OBJECTS' ORIGINS is updated in
+    // place (Publish): same holder, same objects, the new origins. What any
+    // caller made of it is Ref(holder, k), so a caller solved again would
+    // come out the same, but for what it asked of those objects' sites --
+    // and those that asked are solved again. Every answer is read from the
+    // holders at the end (Close, BitsOf), so what a component not solved
+    // again answered is the final summaries' answer, as a round solving
+    // everything gives. (A new holder for every summary that changed made
+    // every Ref to it new, so every caller's summary came out different,
+    // and every caller's caller was solved again: half the components a
+    // round, for a few sites.)
     //
     // WHAT ELSE A SOLVE READS does not change between rounds: what a virtual
     // call runs on an object of a site (TargetsOn) is the descriptors' and
@@ -831,55 +977,67 @@ internal sealed class RegionEscape
     // still means what it says. A call watched at its receiver (Received)
     // applies merged summaries of some of its targets outside the component
     // (Group): each of them is one of the call's targets, so among the
-    // callees whose change solves the component again.
+    // callees whose change solves the component again; and stand-ins of
+    // some of a wide call's (NarrowedStandIn), noted as applied.
     private readonly List<int[]> _components = new();
     private readonly List<HashSet<int>?> _globalOf = new(), _rootedOf = new();
-    private readonly HashSet<int[]> _grown = new(TargetsComparer.Instance);
-    private bool[]? _changed;
+    // Per component: the tick it was solved at, the stand-ins it applied, the
+    // holders it read sites through (null: more than MostRead, so any).
+    private readonly List<long> _solvedAt = new();
+    private readonly List<Assumed[]> _appliedOf = new();
+    private readonly List<int[]?> _sitesReadOf = new();
+    // Per function: the tick its summary last changed shape at. Per holder:
+    // the tick its origins last changed in place at, and the latest of those.
+    private readonly long[] _changedAt;
+    private readonly Dictionary<int, long> _originsAt = new();
+    private long _lastOriginsChange = -1;
+    private long _tick;
+    // While a component is solved: what it applies and reads.
+    private HashSet<Assumed>? _applying;
+    private HashSet<int>? _reading;
+    private const int MostRead = 4096;
     private int[]? _componentOf;
-    private List<(int[] Functions, int[][] Wide)>? _inputs;
+    private int[][]? _callees;
 
     private int Again()
     {
         Work = Applied = Unfollowed = Fallbacks = 0;
         _escapingBits = null;
         int count = _functions.Count;
-        if (_componentOf is null || _inputs is null)
+        if (_componentOf is null || _callees is null)
         {
             _componentOf = new int[count];
             for (int c = 0; c < _components.Count; c++) foreach (int f in _components[c]) _componentOf[f] = c;
-            _inputs = new();
+            _callees = new int[_components.Count][];
             for (int c = 0; c < _components.Count; c++)
             {
                 HashSet<int> callees = new();
-                HashSet<int[]> wide = new(TargetsComparer.Instance);
                 foreach (int f in _components[c])
                     foreach (int[]? targets in _targets[f])
                     {
-                        if (targets is null) continue;
-                        if (IsWide(targets)) { wide.Add(targets); continue; }
+                        if (targets is null || IsWide(targets)) continue;
                         foreach (int t in targets) if (_componentOf[t] != c) callees.Add(t);
                     }
-                _inputs.Add((callees.ToArray(), wide.ToArray()));
+                _callees[c] = callees.ToArray();
             }
         }
-        _changed = new bool[count];
         int solved = 0;
         for (int c = 0; c < _components.Count; c++)
         {
-            (int[] callees, int[][] wide) = _inputs[c];
+            long at = _solvedAt[c];
             bool again = false;
-            foreach (int[] targets in wide) if (_grown.Contains(targets)) { again = true; break; }
+            foreach (int t in _callees[c]) if (_changedAt[t] > at) { again = true; AgainForCallee++; break; }
             if (!again)
-                foreach (int f in _components[c])
-                    if (_narrowedBy.TryGetValue(f, out HashSet<int[]>? narrowed) && narrowed.Overlaps(_grown)) { again = true; break; }
-            if (!again) foreach (int t in callees) if (_changed[t]) { again = true; break; }
+                foreach (Assumed a in _appliedOf[c]) if (a.ChangedAt > at) { again = true; AgainForStandIn++; break; }
+            if (!again && _lastOriginsChange > at)
+            {
+                if (_sitesReadOf[c] is not { } read) { again = true; AgainForSites++; }
+                else foreach (int h in read) if (_originsAt.TryGetValue(h, out long changed) && changed > at) { again = true; AgainForSites++; break; }
+            }
             if (!again) continue;
             solved++;
             SolveComponent(c);
         }
-        _grown.Clear();
-        _changed = null;
         return solved;
     }
 
@@ -890,15 +1048,28 @@ internal sealed class RegionEscape
         foreach (int f in members) { Escaping[f] = null; LoopHeld[f] = null; }
         HashSet<int> global = _globalRefs, rooted = _rootedRefs;
         _globalRefs = new(); _rootedRefs = new();
+        // Solved at one tick; whatever it changes, at the next: a change it
+        // makes to what it read itself -- a stand-in it applied, grown by its
+        // own member's summary -- is newer than its solve.
+        long start = ++_tick;
+        _tick++;
+        _applying = new(); _reading = new();
         Solve(new List<int>(members));
+        _solvedAt[c] = start;
+        _appliedOf[c] = _applying.Count == 0 ? Array.Empty<Assumed>() : _applying.ToArray();
+        _sitesReadOf[c] = _reading.Count > MostRead ? null : _reading.ToArray();
+        _applying = null; _reading = null;
         _globalOf[c] = _globalRefs; _rootedOf[c] = _rootedRefs;
         _globalRefs = global; _rootedRefs = rooted;
     }
 
     /// <summary>
     /// Member f's summary, solved: the one it had if this is the same (its
-    /// holder, and every Ref to it, still good), else this under a holder of
-    /// its own -- f itself the first time, a new one after.
+    /// holder, and every Ref to it, still good); the one it had with these
+    /// origins if only its made objects' origins differ (in place, under the
+    /// same holder: Again); else this under a holder of its own -- f itself
+    /// the first time, a new one after -- grown into every stand-in it is a
+    /// target of.
     /// </summary>
     private void Publish(int f, Summary s)
     {
@@ -914,9 +1085,38 @@ internal sealed class RegionEscape
         }
         Summary? before = _summaries[f];
         if (before is not null && before.SameAs(s)) return;
+        if (before is { IsUnknown: false, Holder: >= 0 } && before.SameShapeAs(s))
+        {
+            int[]?[] origins = _holders[before.Holder]!;
+            for (int k = 0; k < before.Objects.Count; k++)
+            {
+                var o = before.Objects[k];
+                if (o.Kind != Kind.Made) continue;
+                before.Objects[k] = (o.Kind, o.Param, o.Path, s.Objects[k].Origins);
+                origins[k] = s.Objects[k].Origins;
+            }
+            OriginsChanged(before.Holder);
+            // Its sites as a target: each stand-in it is among takes them.
+            if (_assumed is not null && _standInsOf.TryGetValue(f, out List<Assumed>? among))
+                foreach (Assumed a in among) Cover(a, before, false);
+            return;
+        }
         int holder = before is null && (_holders.Count <= f || _holders[f] is null) ? f : NewHolder();
         Register(_summaries[f] = s, holder);
-        if (_changed is not null) _changed[f] = true;
+        _changedAt[f] = _tick;
+        if (_assumed is not null && _standInsOf.TryGetValue(f, out List<Assumed>? those))
+            foreach (Assumed a in those) Cover(a, s, false);
+    }
+
+    // A holder's origins changed where they were: stamped, and what was
+    // worked out from every holder's forgotten.
+    private void OriginsChanged(int holder)
+    {
+        _originsAt[holder] = _tick;
+        _lastOriginsChange = _tick;
+        _holderFirst = null;
+        _escapingBits = null;
+        if (_bitsByOrigins.Count > 0) _bitsByOrigins.Clear();
     }
 
     // Callees first, a cycle together; a wide call is no edge. Each component
@@ -964,12 +1164,13 @@ internal sealed class RegionEscape
                     int w;
                     do { w = stack.Pop(); onStack[w] = false; component.Add(w); } while (w != v);
                     _components.Add(component.ToArray()); _globalOf.Add(null); _rootedOf.Add(null);
+                    _solvedAt.Add(0); _appliedOf.Add(Array.Empty<Assumed>()); _sitesReadOf.Add(Array.Empty<int>());
                     SolveComponent(_components.Count - 1);
                 }
                 if (walk.Count > 0) { int parent = walk.Peek().Node; low[parent] = Math.Min(low[parent], low[v]); }
             }
         }
-        _componentOf = null; _inputs = null;
+        _componentOf = null; _callees = null;
         return _components.Count;
     }
 
@@ -993,8 +1194,14 @@ internal sealed class RegionEscape
                 + u.Describe() + $", heap {GC.GetTotalMemory(false) >> 20} MB");
             return;
         }
-        Graph g = new Graph(this, component.ToArray()).Solved();
-        if (g.Overflowed)
+        // PAST ITS BOUND LAST ROUND, past it again: what it reads only grows
+        // from round to round, so inclusion would carry as much and more
+        // before it gave up -- half a second, often, for each of a few dozen
+        // components a round. Unified at once.
+        bool pastBefore = component.All(f => _how[f] == How.PastBound);
+        Graph? g = pastBefore ? null : new Graph(this, component.ToArray()).Solved();
+        if (g is null) StraightToUnified++;
+        if (g is null || g.Overflowed)
         {
             // PAST ITS BOUND BY INCLUSION, solved by unification: coarser,
             // and still each object's own, where giving up made every site
@@ -1003,7 +1210,7 @@ internal sealed class RegionEscape
             Unified u = new Unified(this, component.ToArray()).Solved();
             for (int m = 0; m < component.Count; m++) Publish(component[m], u.Summarise(m));
             for (int m = 0; m < component.Count; m++) { u.Answer(m); _how[component[m]] = How.PastBound; }
-            if (Progress is not null && System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds > 300)
+            if (g is not null && Progress is not null && System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds > 300)
                 Progress($"escape graphs: {_functions[component[0]].Name} ({component.Count}) past its bound by inclusion, unified in {System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds:F0} ms: " + g.Describe());
             return;
         }
@@ -1084,6 +1291,23 @@ internal sealed class RegionEscape
             for (int k = 0; k < Cells.Count; k++) if (Cells[k] != other.Cells[k]) return false;
             for (int k = 0; k < Result.Count; k++) if (Result[k] != other.Result[k]) return false;
             return true;
+        }
+
+        /// <summary>Whether two summaries say the same but for their made objects' origins (Publish: then updated in place).</summary>
+        public bool SameShapeAs(Summary other)
+        {
+            if (IsUnknown || other.IsUnknown) return IsUnknown == other.IsUnknown;
+            if (Objects.Count != other.Objects.Count || Cells.Count != other.Cells.Count || Result.Count != other.Result.Count) return false;
+            for (int k = 0; k < Objects.Count; k++)
+            {
+                var a = Objects[k];
+                var b = other.Objects[k];
+                if (a.Kind != b.Kind || a.Param != b.Param || !a.Path.AsSpan().SequenceEqual(b.Path)) return false;
+                if (a.Kind != Kind.Made && !a.Origins.AsSpan().SequenceEqual(b.Origins)) return false;
+            }
+            for (int k = 0; k < Cells.Count; k++) if (Cells[k] != other.Cells[k]) return false;
+            for (int k = 0; k < Result.Count; k++) if (Result[k] != other.Result[k]) return false;
+            return MadeCoarse == other.MadeCoarse;
         }
 
         /// <summary>Every summary's effects at once: what any of a virtual call's overrides may do.</summary>
