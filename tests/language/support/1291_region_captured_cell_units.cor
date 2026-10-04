@@ -1,0 +1,32 @@
+// The other unit of 1291_region_captured_cell_freed_with_its_frame_across_units:
+// a forward-copy step in the shape of the compiler's peephole pass. It
+// captures a parameter and a local in lambdas handed to LINQ, so each call
+// makes captured-variable cells, and it returns early on some calls.
+
+using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.CompilerServices;
+
+public sealed class Reg
+{
+    public readonly int Id;
+    public Reg(int id) { Id = id; }
+}
+
+public static class Forward
+{
+    // 9 when `a` is among the uses (the early return), else 828 for the
+    // eight made registers past it and 3 for its label: 831.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int Copy(List<Reg> uses, Reg a)
+    {
+        List<Reg> made = new();
+        for (int n = 0; n < 8; n++) made.Add(new Reg(100 + n));
+        if (uses.Any(g => g.Id == a.Id)) return made.Count + 1;
+        Reg first = made[0];
+        int sum = 0;
+        foreach (Reg r in made.Where(r => r.Id >= first.Id && r.Id > a.Id)) sum += r.Id;
+        string label = "r" + a.Id;
+        return sum + label.Length;
+    }
+}

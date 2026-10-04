@@ -1,0 +1,61 @@
+// test: region_captured_cell_freed_with_its_frame_across_units
+// units: tests/language/support/1291_region_captured_cell_units.cor
+// expect-exit: 0
+// expect-output:
+// checksum 84000000
+//
+// Forward.Copy captures a parameter and a local in lambdas it hands to Any
+// and Where, so every call makes captured-variable cells: blocks of no type,
+// held through a field of the call's frame object and freed with it when the
+// call returns. Nothing keeps a cell or a lambda, so their sites are taken
+// into the region of Step, a boundary. Freeing a cell made in the region read
+// its first word as a type pointer (the native compiler died in
+// Runtime.FreeOwnedFields from Peephole.ForwardCopy); a cell made on the heap
+// went to Free, which takes any block. Half the calls return early, the rest
+// run to the end; Step makes enough besides to keep its region busy.
+//
+// Per Step, 50 calls: residues (10k + i) % 20 below 10 return 9, the rest
+// 831. Even k: 30 * 9 + 20 * 831 = 16890; odd k: 20 * 9 + 30 * 831 = 25110.
+// Over 4000 steps: 2000 * 42000.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Step(int k)
+    {
+        List<Reg> uses = new();
+        for (int u = 0; u < 10; u++) uses.Add(new Reg(u));
+        long total = 0;
+        for (int i = 0; i < 50; i++)
+        {
+            int seed = k * 50 + i;
+            total += Forward.Copy(uses, new Reg(seed % 20));
+            List<string> junk = new() { "j" + seed, "k" + i };
+            total += junk.Count - 2;
+        }
+        return total;
+    }
+
+    // Not Main itself: what the entry calls is never a boundary.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Run()
+    {
+        long sum = 0;
+        for (int k = 0; k < 4000; k++)
+        {
+            sum += Step(k);
+            if (k % 400 == 399) GC.Collect();
+        }
+        return sum;
+    }
+
+    static int Main()
+    {
+        Console.WriteLine("checksum " + Run());
+        return 0;
+    }
+}
