@@ -55,4 +55,16 @@ public sealed class CallExpr : Expr
     /// <summary>The text <see cref="Spans"/> index: the file, or the part of it a sub-parser read.</summary>
     public string? Source { get; set; }
 
+    /// <summary>
+    /// WHERE A CALL OF A SHARED METHOD COPY FINDS THE TYPE ARGUMENTS IT HANDS
+    /// IT (Monomorphiser.CopyName, Lowering.HiddenTypeArguments): for each of
+    /// the method's type parameters, the CanonParam of the type the binder
+    /// bound it to -- k for the caller's own shared class's parameter k, read
+    /// from its `this`'s type context; -2 - k for the caller's own hidden
+    /// argument k; -1 for a type the copy was written over, which it never
+    /// asks. Written on the call itself, as ReceiverAdded is, because the
+    /// round that sees the generic method is not the last: by then the call
+    /// names the copy, and there is nothing left to infer.
+    /// </summary>
+    public int[]? HiddenTypeArgs { get; set; }
 }

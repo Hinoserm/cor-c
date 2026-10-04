@@ -1340,6 +1340,8 @@ public sealed partial class Lowering
     private const int DescName = 0, DescSize = 1, DescDepth = 2, DescDisplay = 3,
                       DescInterfaces = 4, DescSelf = 5, DescFlags = 6, DescPayload = 7,
                       DescRefMap = 8, DescGcFlags = 9, DescElement = 10,
+                      // An interface's word 8, which only a class's holds a map in: its identity record (ShapeRecord).
+                      DescShape = 8,
                       // A class's word 10, as an array's is its element's; 11 is its owned-field map (Escape).
                       DescTypeContext = 10;
 
@@ -2069,7 +2071,52 @@ public sealed partial class Lowering
         item.Relocs.Add(new DataReloc(DescName * w, InternString(FullTypeName(t)), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
         if (faceOf is not null) item.Relocs.Add(new DataReloc(DescElement * w, faceOf, 0));
+        if (ShapeRecord(t, sym) is string record) item.Relocs.Add(new DataReloc(DescShape * w, record, 0));
         return sym;
+    }
+
+    /// <summary>
+    /// AN INTERFACE'S IDENTITY RECORD, which its descriptor's word 8
+    /// (DescShape, a word only a class's descriptor uses) names: the family
+    /// it was made from (CanonShape.FamilyOf), how many type arguments, and
+    /// each argument's identity (ShapeDescriptor) -- a reference's descriptor
+    /// as a shared copy's type context names it, a number's or an enum's
+    /// box's. What Runtime.ShapedAs reads of each interface an object lists, to find
+    /// IList of string when a shared method copy knows only at run time that
+    /// its U is string. Only for an interface whose every argument has one:
+    /// not over a struct, a pointer, a Nullable, an array or anything made
+    /// over a shared copy's own word. Read from the interface alone, so every
+    /// unit's copy is the same bytes and the same relocations, as the
+    /// descriptor is.
+    /// </summary>
+    private string? ShapeRecord(TypeSymbol t, string descriptor)
+    {
+        if (CanonShape.FamilyOf(t) is not long family || t.Decl is not { } decl
+            || t.TemplateArgTypes.Count != decl.TemplateArgs.Count || t.TemplateArgTypes.Count > CanonShape.MostArguments)
+        {
+            return null;
+        }
+        int count = t.TemplateArgTypes.Count;
+        List<string> identities = new(count);
+        foreach (Type a in t.TemplateArgTypes)
+        {
+            if (ShapeDescriptor(a) is not string identity) return null;
+            identities.Add(identity);
+        }
+        int w = _t.WordSize;
+        byte[] words = new byte[(2 + count) * w];
+        WriteWord(words, 0, family);
+        WriteWord(words, w, count);
+        DataItem record = new(descriptor + "$shape", words)
+        {
+            ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), Coalescible = decl.Specialised,
+        };
+        for (int i = 0; i < count; i++)
+        {
+            record.Relocs.Add(new DataReloc((2 + i) * w, identities[i], 0));
+        }
+        _m.Data.Add(record);
+        return record.Name;
     }
 
     /// <summary>

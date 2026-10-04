@@ -115,6 +115,18 @@ public sealed class TypeRef : Node
     /// </summary>
     public List<string>? TupleNames { get; set; }
 
+    /// <summary>
+    /// WHICH SHARED TYPE ARGUMENT THIS MACHINE WORD STANDS FOR (Type.CanonParam):
+    /// -1 for none; k for a shared class copy's parameter k, written `__canon`
+    /// (Monomorphiser.Canonicalise); -2 - k for a shared method copy's type
+    /// parameter k, written `object` (Monomorphiser.CopyName). It resolves to
+    /// the same object it always did, carrying where it came from, so that a
+    /// generic method called with it knows where its caller finds the type
+    /// argument at run time. Not part of the spelling: two references
+    /// differing only here name one type.
+    /// </summary>
+    public int CanonIndex { get; set; } = -1;
+
     public override string ToString()
     {
         string s = Name;

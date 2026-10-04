@@ -132,6 +132,16 @@ public sealed class Monomorphiser
             if (template.TypeParams[i].Struct) m._structParams.Add(template.TypeParams[i].Name);
         }
 
+        // A SHARED METHOD COPY (CopyName): which of its type parameters only
+        // run time knows, for the tests of interfaces over them (Shaped).
+        for (int i = 0; i < template.TypeParams.Count && i < args.Count; i++)
+        {
+            if (args[i].CanonIndex <= -2)
+            {
+                (m._shapeParams ??= new(StringComparer.Ordinal))[template.TypeParams[i].Name] = i;
+            }
+        }
+
         MethodDecl made = (MethodDecl)m.RewriteMember(template, map, template.Name);
 
         made.WritableTypeParams.Clear();
@@ -169,6 +179,46 @@ public sealed class Monomorphiser
     /// <summary>The name a specialised method gets, readable on purpose.</summary>
     public static string MethodName(string baseName, IReadOnlyList<TypeRef> args)
         => MangledName(baseName, args.ToList());
+
+    /// <summary>What a shared method copy's name ends with, before the count of its hidden arguments.</summary>
+    public const string HiddenTypeArgumentsMark = "$__targs";
+
+    /// <summary>
+    /// THE NAME OF A GENERIC METHOD'S COPY: its name, its arguments and the
+    /// member's place -- two overloads specialise at one T -- and, for a
+    /// SHARED METHOD COPY, a mark and how many type parameters it has.
+    ///
+    /// A shared method copy is the one a shared generic copy's code calls
+    /// with a type argument only run time knows (Type.CanonParam): its body
+    /// is the copy over object, as every such call reached before, but it is
+    /// given each type argument's descriptor as a hidden argument after the
+    /// declared ones (Lowering.HiddenTypeArguments), so that `x is IList<U>`
+    /// in it asks the object for the IList of what U is for this call
+    /// (Runtime.ShapedAs). The mark is in the NAME because the name is what
+    /// every unit agrees on: a caller and the copy it reaches, compiled
+    /// anywhere, both read the hidden arguments' count off it
+    /// (SharedMethodCopy). A copy over object called with object meant is
+    /// the plain one, as it always was.
+    /// </summary>
+    public static string CopyName(string baseName, IReadOnlyList<TypeRef> args, int member)
+    {
+        string name = MethodName(baseName, args) + "$" + member;
+        return args.Any(a => a.CanonIndex <= -2) ? name + HiddenTypeArgumentsMark + args.Count : name;
+    }
+
+    /// <summary>How many hidden type arguments a method copy takes (CopyName): 0 for any other method.</summary>
+    public static int SharedMethodCopy(string name)
+    {
+        int at = name.LastIndexOf(HiddenTypeArgumentsMark, StringComparison.Ordinal);
+        if (at < 0) return 0;
+        int count = 0;
+        for (int i = at + HiddenTypeArgumentsMark.Length; i < name.Length; i++)
+        {
+            if (name[i] < '0' || name[i] > '9') return 0;
+            count = count * 10 + (name[i] - '0');
+        }
+        return count;
+    }
 
     public static CompilationUnit Expand(CompilationUnit unit, string file, out IReadOnlyList<CompileError> errors)
         => Expand(unit, file, false, out errors);
@@ -780,9 +830,12 @@ public sealed class Monomorphiser
             // Only a constraint naming a plain reference type: a value type is
             // not word-shaped and never shares this copy, and a constraint with
             // type arguments of its own would need those substituted too.
+            // EACH __canon KNOWS WHICH PARAMETER IT IS (TypeRef.CanonIndex),
+            // so that a generic method called with it is handed the argument
+            // the object's type context holds (Monomorphiser.CopyName).
             List<TypeRef> bodyArgs = template.TypeParams
-                .Select(p => Constraining(p)
-                          ?? new TypeRef { Name = CanonName, Line = template.Line, Col = template.Col })
+                .Select((p, i) => Constraining(p)
+                          ?? new TypeRef { Name = CanonName, CanonIndex = i, Line = template.Line, Col = template.Col })
                 .ToList();
 
             // External when it came from a library: the code is in that
@@ -909,6 +962,64 @@ public sealed class Monomorphiser
         _canonMarked = true;
         return made;
     }
+
+    /// <summary>A shared method copy's type parameters that only run time knows, by name: their places (Specialise, Shaped).</summary>
+    private Dictionary<string, int>? _shapeParams;
+
+    /// <summary>
+    /// A TEST OR A CAST TO A GENERIC INTERFACE OVER A SHARED METHOD COPY'S
+    /// OWN TYPE PARAMETERS -- `o is IList<U> l` in a copy whose U only run
+    /// time knows (CopyName). Over the machine word the copy names IList of
+    /// object, which a list of strings does not implement; so the arguments
+    /// are kept as written (ICanonShape), U's as the hidden argument it is,
+    /// and the binder and the lowering ask the object for the interface of
+    /// that family over those arguments (Runtime.ShapedAs).
+    ///
+    /// Every argument U itself or no mention of any such parameter: an
+    /// argument made over U (`IList<List<U>>`) has no descriptor any call
+    /// hands in, and stays the copy's own answer. Whether the type is an
+    /// interface is the binder's to say, which knows what it names.
+    ///
+    /// ONLY INTERFACES. A class test, typeof(U), `new List<U>()` and an
+    /// array of U keep the copy over object's answer, as before. Option 1,
+    /// left for later: a hidden type-context table for the copy like a
+    /// shared class's (TypeContext), made by every caller, with the
+    /// descriptors of each class the copy makes or tests over U -- which
+    /// needs those classes' descriptors made at each caller's arguments,
+    /// and so each caller's unit to instantiate them.
+    /// </summary>
+    private void Shaped<T>(T made, T source, TypeRef written, Dictionary<string, TypeRef> map) where T : Node, ICanonShape
+    {
+        if (source.ShapeArgs is { } kept)
+        {
+            made.ShapeArgs = SubAll(kept, map);
+            return;
+        }
+        if (_shapeParams is null || written.Args.Count == 0 || written.Args.Count > CanonShape.MostArguments
+            || written.ArrayRank != 0 || written.PointerDepth != 0)
+        {
+            return;
+        }
+        bool any = false;
+        foreach (TypeRef a in written.Args)
+        {
+            if (a.Args.Count == 0 && a.ArrayRank == 0 && a.PointerDepth == 0 && _shapeParams.ContainsKey(a.Name))
+            {
+                any = true;
+            }
+            else if (MentionsShaped(a))
+            {
+                return;
+            }
+        }
+        if (any)
+        {
+            made.ShapeArgs = SubAll(written.Args, map);
+        }
+    }
+
+    private bool MentionsShaped(TypeRef a)
+        => _shapeParams is not null && (_shapeParams.ContainsKey(a.Name) || a.Args.Any(MentionsShaped));
 
     private static Dictionary<string, int> CanonParams(TypeDecl template)
     {
@@ -1385,6 +1496,8 @@ public sealed class Monomorphiser
                 // here, and a copy that kept its shape but lost its names left
                 // `l[0].Label` reporting that the element does not exist.
                 TupleNames = bound.TupleNames is null ? null : new List<string>(bound.TupleNames),
+                // Which shared type argument it stands for, if any (CanonIndex).
+                CanonIndex = bound.CanonIndex,
                 Line = r.Line, Col = r.Col,
             };
             _settled.Add(substituted);
@@ -1440,6 +1553,7 @@ public sealed class Monomorphiser
                 ElementNullable = r.ElementNullable,
                 InnerNullable = r.InnerNullable,
                 PointerDepth = r.PointerDepth,
+                CanonIndex = r.CanonIndex,
                 Line = r.Line, Col = r.Col,
             };
         }
@@ -2328,6 +2442,7 @@ public sealed class Monomorphiser
                 made.LocalArgumentOrder.AddRange(c.LocalArgumentOrder);
                 made.Spans = c.Spans;
                 made.Source = c.Source;
+                made.HiddenTypeArgs = c.HiddenTypeArgs;
                 made.ResultTupleNames = c.ResultTupleNames is null ? null : new List<string>(c.ResultTupleNames);
                 made.ResultTypeUse = c.ResultTypeUse is null ? null : Sub(c.ResultTypeUse, map);
                 if (c.ArgumentTypeUses is not null)
@@ -2402,8 +2517,36 @@ public sealed class Monomorphiser
                         Discard = arm.Discard, Result = Rewrite(arm.Result, map),
                         Fallback = arm.Fallback, Line = arm.Line, Col = arm.Col,
                     };
-                    // `ICollection<T> c => ...` in a shared copy, as `is` (CanonTested).
-                    made.Arms.Add(arm.CanonSlot >= 0 || arm.Type is { Args.Count: > 0 } ? CanonTested(copied, arm, arm.Type!) : copied);
+                    // `ICollection<T> c => ...` IN A SHARED COPY, as `is`
+                    // (CanonTested): the arm made the test `is` already is --
+                    // `_ when <subject> is ICollection<T> c => ...`, which a
+                    // switch statement's case label is too, and its name in
+                    // scope for the result as a guard's pattern names are.
+                    // (Marked as an arm of its own, the type was asked of the
+                    // shared copy's own name and no list answered it.)
+                    // A shared METHOD copy's arm over its own type parameter
+                    // (Shaped) is made the same guard, for the same test.
+                    if (arm.Type is { Args.Count: > 0 } written && !arm.Discard && arm.Value is null)
+                    {
+                        IsExpr test = CanonTested(new IsExpr
+                        {
+                            Operand = new SubjectExpr { Line = arm.Line, Col = arm.Col },
+                            Type = copied.Type!, Binding = arm.Binding, Line = arm.Line, Col = arm.Col,
+                        }, new IsExpr { Operand = new SubjectExpr(), Type = written }, written);
+                        Shaped(test, new IsExpr { Operand = new SubjectExpr(), Type = written }, written, map);
+                        if (test.CanonSlot >= 0 || test.ShapeArgs is not null)
+                        {
+                            made.Arms.Add(new SwitchArm
+                            {
+                                Discard = true,
+                                When = copied.When is null ? test
+                                     : new BinaryExpr { Op = BinOp.AndAlso, Left = test, Right = copied.When, Line = arm.Line, Col = arm.Col },
+                                Result = copied.Result, Fallback = copied.Fallback, Line = arm.Line, Col = arm.Col,
+                            });
+                            continue;
+                        }
+                    }
+                    made.Arms.Add(copied);
                 }
                 return made;
             }
@@ -2584,14 +2727,23 @@ public sealed class Monomorphiser
                 CastExpr made = new() { Type = Sub(cast.Type, map), Operand = Rewrite(cast.Operand, map), Line = cast.Line, Col = cast.Col };
                 // Only a cast to a constructed type over the parameters: a
                 // cast to T itself is the word it always was.
+                Shaped(made, cast, cast.Type, map);
                 return cast.CanonSlot >= 0 || cast.Type.Args.Count > 0 ? Canon(made, cast, cast.Type, arrayToo: false) : made;
             }
 
             case IsExpr isx:
-                return Canon(new IsExpr { Operand = Rewrite(isx.Operand, map), Type = Sub(isx.Type, map), Binding = isx.Binding, Line = isx.Line, Col = isx.Col }, isx, isx.Type, arrayToo: false);
+            {
+                IsExpr made = new() { Operand = Rewrite(isx.Operand, map), Type = Sub(isx.Type, map), Binding = isx.Binding, Line = isx.Line, Col = isx.Col };
+                Shaped(made, isx, isx.Type, map);
+                return Canon(made, isx, isx.Type, arrayToo: false);
+            }
 
             case AsExpr asx:
-                return Canon(new AsExpr { Operand = Rewrite(asx.Operand, map), Type = Sub(asx.Type, map), Line = asx.Line, Col = asx.Col }, asx, asx.Type, arrayToo: false);
+            {
+                AsExpr made = new() { Operand = Rewrite(asx.Operand, map), Type = Sub(asx.Type, map), Line = asx.Line, Col = asx.Col };
+                Shaped(made, asx, asx.Type, map);
+                return Canon(made, asx, asx.Type, arrayToo: false);
+            }
 
             case AwaitExpr aw:
                 return new AwaitExpr { Operand = Rewrite(aw.Operand, map), Line = aw.Line, Col = aw.Col };

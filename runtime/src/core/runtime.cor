@@ -3074,6 +3074,64 @@ static class Runtime
         return false;
     }
 
+    // An interface's identity record (Lowering.ShapeRecord), named by its
+    // descriptor's word 8: its family, its argument count, its arguments'
+    // descriptors.
+    const long DescShapeWord = 8;
+    const long ShapeCountMask = 255;
+    const long ShapeFaceOf = 256;
+
+    /// Whether an object implements the generic interface of `family`
+    /// (CanonShape.FamilyOf) over these type arguments' descriptors -- the
+    /// test a shared method copy makes of `x is IList<U>` when only the call
+    /// knew what U is (Lowering.ShapeTest). `shape` is the argument count,
+    /// with ShapeFaceOf for IComparable<X> and IEquatable<X>, which a string
+    /// implements over itself without its table naming them (BoxedFace).
+    /// False when any argument is 0, which no caller could say: the copy's
+    /// own test answers then.
+    public static bool ShapedAs(long obj, long family, long shape, long a0, long a1, long a2, long a3)
+    {
+        if (obj == 0)
+        {
+            return false;
+        }
+        long count = shape & ShapeCountMask;
+        if (count < 1 || count > 4 || a0 == 0 || count > 1 && a1 == 0 || count > 2 && a2 == 0 || count > 3 && a3 == 0)
+        {
+            return false;
+        }
+        long w = WordSize.Bytes;
+        long mask = WordSize.AddressMask;
+        long desc = (Sys.Peek(obj) & mask) - DescWordsHere * w;
+        long faces = Sys.Peek(desc + DescInterfacesWord * w) & mask;
+        if (faces != 0)
+        {
+            for (long at = faces; ; at = at + w)
+            {
+                long face = Sys.Peek(at) & mask;
+                if (face == 0) break;
+                long record = Sys.Peek(face + DescShapeWord * w) & mask;
+                if (record != 0 && (Sys.Peek(record) & mask) == (family & mask)
+                    && (Sys.Peek(record + w) & mask) == count
+                    && (Sys.Peek(record + 2 * w) & mask) == (a0 & mask)
+                    && (count < 2 || (Sys.Peek(record + 3 * w) & mask) == (a1 & mask))
+                    && (count < 3 || (Sys.Peek(record + 4 * w) & mask) == (a2 & mask))
+                    && (count < 4 || (Sys.Peek(record + 5 * w) & mask) == (a3 & mask)))
+                {
+                    return true;
+                }
+            }
+        }
+        // A string is IComparable<string> and IEquatable<string>, which its
+        // table does not list (BoxedFaces).
+        if ((shape & ShapeFaceOf) != 0 && count == 1 && (a0 & mask) == desc
+            && (Sys.Peek(desc + DescFlagsWordHere * w) & 3) == (1 | TypeStringFlag))
+        {
+            return true;
+        }
+        return false;
+    }
+
     // ---- iterators (Lowering.Iterator) -----------------------------------
 
     /// An iterator's Reset, which C# iterators do not support.

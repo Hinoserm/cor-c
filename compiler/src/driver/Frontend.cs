@@ -523,8 +523,9 @@ public static class Frontend
             // only of `Join` and `Node` gives one copy two meanings, and the
             // second call is told that Join$Node does not accept an array.
             // The member's position says which overload it came from.
-            string wanted = Lang.Monomorphiser.MethodName(template.Name, args)
-                          + "$" + owner.Members.IndexOf(template);
+            // A SHARED METHOD COPY'S NAME SAYS SO (Monomorphiser.CopyName),
+            // as the binder spelt it.
+            string wanted = Lang.Monomorphiser.CopyName(template.Name, args, owner.Members.IndexOf(template));
 
             if (!owner.Members.Any(m => m.Name == wanted))
             {

@@ -773,6 +773,9 @@ public sealed partial class Lowering
                     && !(from.Symbol is not null && from.Symbol.DerivesFrom(wanted)))
                 {
                     // In a shared copy, to what the type is for the object at hand.
+                    // In a shared method copy, to the interface over what its
+                    // type arguments are at this call.
+                    if (ShapeOf(cast) is { } castShape) return ShapeCheckedCast(castShape, v, to);
                     return cast.CanonSlot >= 0 ? CanonCheckedCast(cast, v, to) : CheckedCast(cast, v, wanted);
                 }
 
@@ -908,6 +911,22 @@ public sealed partial class Lowering
 
             case IsExpr isx:
                 return EmitIs(isx);
+
+            case AsExpr shapedAs when ShapeOf(shapedAs) is { } asShape && HeldByReference(_b.TypeOf(shapedAs.Operand)):
+            {
+                VReg v = Eval(shapedAs.Operand);
+                VReg test = ShapeTest(asShape, v, NamedTest(v, _b.TypeOf(shapedAs)));
+                VReg result = _f.NewReg(IrTypes.Word, "asshape");
+                Block yes = _f.NewBlock("asshyes");
+                Block end = _f.NewBlock("asshend");
+                _e.CopyTo(result, Imm(0, IrTypes.Word));
+                _e.Branch(test, yes, end);
+                _e.SetBlock(yes);
+                _e.CopyTo(result, R(v));
+                _e.Jump(end);
+                _e.SetBlock(end);
+                return result;
+            }
 
             case AsExpr { CanonSlot: >= 0 } canonAs when HeldByReference(_b.TypeOf(canonAs.Operand)):
             {
@@ -2191,6 +2210,165 @@ public sealed partial class Lowering
         return obj;
     }
 
+    /// <summary>
+    /// WHAT A CALL OF A SHARED METHOD COPY HANDS IT (Monomorphiser.CopyName):
+    /// for each of its type parameters, the descriptor of what the caller
+    /// bound it to where only run time knows that (CallExpr.HiddenTypeArgs)
+    /// -- read from the caller's `this`'s type context, or passed on from
+    /// the caller's own hidden arguments -- and 0 for the rest. A type
+    /// argument the caller knows was put in the copy's body, which never
+    /// reads its hidden argument.
+    /// </summary>
+    private List<Operand> HiddenTypeArguments(CallExpr call, int count)
+    {
+        List<Operand> args = new(count);
+        int[]? given = call.HiddenTypeArgs;
+        for (int i = 0; i < count; i++)
+        {
+            args.Add(given is not null && i < given.Length ? RunTimeDescriptor(Type.CanonAny(given[i]), statics: false) : Imm(0, IrTypes.Word));
+        }
+        return args;
+    }
+
+    /// <summary>
+    /// A TYPE'S DESCRIPTOR WHERE RUN TIME MAY BE ASKED FOR IT (Type.CanonParam):
+    /// a shared method copy's hidden argument; a shared class copy's type
+    /// argument, from its `this`'s type context (TypeContext), where this
+    /// function is that class's own instance code; with `statics`, any
+    /// other type an interface's identity record could name, as
+    /// ArgumentDescriptor names it. 0 for what none of these answer.
+    /// </summary>
+    private Operand RunTimeDescriptor(Type t, bool statics)
+    {
+        if (t.CanonParam <= -2)
+        {
+            int k = -2 - t.CanonParam;
+            return _typeArgs is not null && k < _typeArgs.Length ? R(_typeArgs[k]) : Imm(0, IrTypes.Word);
+        }
+        if (t.CanonParam >= 0)
+        {
+            if (_this is null || _method is not { Static: false } running || !SharedCopy(running.Owner))
+            {
+                return Imm(0, IrTypes.Word);
+            }
+            int w = _t.WordSize;
+            VReg vt = _e.Load(IrTypes.Word, _this, 0);
+            VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes);
+            VReg table = _e.Load(IrTypes.Word, context, (long)running.Owner.Depth * w);
+            return R(_e.Load(IrTypes.Word, table, (long)(2 * t.CanonParam + 1) * w));
+        }
+        return statics && ShapeDescriptor(t) is string named ? R(_e.Address(named)) : Imm(0, IrTypes.Word);
+    }
+
+    /// <summary>
+    /// The descriptor that is a type argument's identity in an interface's
+    /// identity record (ShapeRecord), or null for one that has none: a
+    /// reference's as a shared copy's type context names it
+    /// (ArgumentDescriptor, ShapeIdentifiable), a number's, a bool's, a
+    /// char's or an enum's its box's -- one per type, every unit's copy one
+    /// table -- and nothing for a struct, a pointer, a Nullable, an array or
+    /// a type parameter.
+    /// </summary>
+    private string? ShapeDescriptor(Type t)
+    {
+        if (ShapeIdentifiable(t)) return ArgumentDescriptor(t);
+        if (t.IsError || t.ParamName is not null || t.IsPointer || t.IsArray || t.IsNullableValue || t.Function is not null) return null;
+        // Not a struct: its box's table would bring the struct's own members
+        // into every program that names an interface over it.
+        bool value = t.Symbol is null
+            ? t.IsNumeric || t.Prim is Prim.Bool or Prim.Char
+            : t.Symbol.Kind is TypeKind.Enum;
+        return value ? BoxDescriptor(t) : null;
+    }
+
+    /// <summary>
+    /// Whether a type argument has a descriptor that is its identity, for an
+    /// interface's identity record (InterfaceDescriptor): a class, an
+    /// interface, a string or object -- what a shared copy's type argument
+    /// can be. Not a value type, whose ArgumentDescriptor is object's; not an
+    /// array, nor anything made over a shared copy's own word.
+    /// </summary>
+    private static bool ShapeIdentifiable(Type t)
+        => !t.IsError && t.ParamName is null && !t.IsPointer && !t.IsArray && !t.IsNullableValue
+        && (t.Symbol is null ? t.Prim is Prim.String or Prim.Any
+            : t.Symbol.Kind is TypeKind.Class or TypeKind.Interface && !MentionsCanon(t));
+
+    /// <summary>
+    /// A SHARED METHOD COPY'S TEST OF A GENERIC INTERFACE OVER ITS OWN TYPE
+    /// PARAMETERS (BindResult.Shapes): whether the object implements the
+    /// interface of that family over the descriptors its type arguments have
+    /// at this call (Runtime.ShapedAs) -- IList of string, for a list of
+    /// strings handed to a copy whose U is string -- or else the copy's own
+    /// answer, as it names the interface over object: what a caller that
+    /// could not say what U is gets, as every call did before.
+    /// </summary>
+    private VReg ShapeTest(CanonShape shape, VReg obj, Func<VReg>? named)
+    {
+        VReg result = _f.NewReg(IrType.I32, "isshape");
+        _e.CopyTo(result, Imm(0, IrType.I32));
+        Block namedBlock = _f.NewBlock("isshnamed");
+        Block end = _f.NewBlock("isshend");
+        if (CanonShape.FamilyOf(shape.Interface) is long family
+            && RuntimeMethod("ShapedAs", 3 + CanonShape.MostArguments) is MethodSymbol shaped)
+        {
+            Require(shaped);
+            Block some = _f.NewBlock("isshsome");
+            _e.Branch(obj, some, end);
+            _e.SetBlock(some);
+            // IComparable<X> and IEquatable<X> of a string, which its table
+            // does not name (BoxedFaces): the runtime answers it by X.
+            long faceOf = BoxedFaces.Of(shape.Interface, Type.String) is BoxedFaces.Face.ComparableOf or BoxedFaces.Face.EquatableOf
+                ? FaceOfShape : 0;
+            List<VReg> words = new()
+            {
+                obj,
+                _e.Const(family, IrTypes.Word),
+                _e.Const(shape.Args.Count | faceOf, IrTypes.Word),
+            };
+            for (int i = 0; i < CanonShape.MostArguments; i++)
+            {
+                Operand a = i < shape.Args.Count ? RunTimeDescriptor(shape.Args[i], statics: true) : Imm(0, IrTypes.Word);
+                words.Add(a is RegOperand held ? held.Reg : _e.Const(((ImmOperand)a).Value, IrTypes.Word));
+            }
+            Operand[] args = new Operand[words.Count];
+            for (int i = 0; i < words.Count; i++) args[i] = R(AsParam(words[i], shaped.Params[i].Type));
+            VReg answer = _e.Call(CallLabel(shaped), IrTypes.Of(shaped.Returns), args)!;
+            _e.CopyTo(result, R(answer.Type == IrType.I32 ? answer : _e.Unary(Opcode.Trunc64, R(answer), IrType.I32)));
+            _e.Branch(result, end, namedBlock);
+        }
+        else
+        {
+            _e.Jump(namedBlock);
+        }
+        _e.SetBlock(namedBlock);
+        if (named is not null) _e.CopyTo(result, R(named()));
+        _e.Jump(end);
+        _e.SetBlock(end);
+        return result;
+    }
+
+    /// <summary>Runtime.ShapedAs's flag, beside the argument count: the family is IComparable`1 or IEquatable`1.</summary>
+    private const long FaceOfShape = 256;
+
+    /// <summary>The shape a test or cast asks, in a shared method copy that has its hidden arguments (ShapeTest), or null.</summary>
+    private CanonShape? ShapeOf(Node node)
+        => _typeArgs is not null && _b.Shapes.TryGetValue(node, out CanonShape? shape) ? shape : null;
+
+    /// <summary>A shared method copy's cast to a generic interface over its type parameters: null passes, anything else must be one (ShapeTest).</summary>
+    private VReg ShapeCheckedCast(CanonShape shape, VReg obj, Type want)
+    {
+        Block check = _f.NewBlock("scastck");
+        Block ok = _f.NewBlock("scastok");
+        Block bad = _f.NewBlock("scastbad");
+        _e.Branch(obj, check, ok);
+        _e.SetBlock(check);
+        _e.Branch(ShapeTest(shape, obj, NamedTest(obj, want)), ok, bad);
+        _e.SetBlock(bad);
+        CastFailed(obj, want);
+        _e.SetBlock(ok);
+        return obj;
+    }
+
     /// <summary>The shared copy's own test of a type, as it names it: an array's (ArrayTest), or a class's or an interface's (TypeTest).</summary>
     private Func<VReg>? NamedTest(VReg obj, Type? want)
         => want is null ? null
@@ -2222,6 +2400,19 @@ public sealed partial class Lowering
 
     private VReg EmitIs(IsExpr isx)
     {
+        // `x is IList<U>` IN A SHARED METHOD COPY: of what U is at this call
+        // (ShapeTest), bound as the type it is written.
+        if (ShapeOf(isx) is { } isShape && HeldByReference(_b.TypeOf(isx.Operand)))
+        {
+            Type written = new() { Prim = Prim.Void, Symbol = isShape.Interface };
+            VReg subject = Eval(isx.Operand);
+            VReg shapeFound = ShapeTest(isShape, subject, NamedTest(subject, written));
+            if (_b.PatternSlot.TryGetValue(isx, out int shapeBound))
+            {
+                BindPattern(isx, shapeBound, written, subject);
+            }
+            return shapeFound;
+        }
         // `x is ICollection<T>` IN A SHARED COPY: of what that type is for
         // the object at hand (CanonTest), bound as the type it is written.
         if (isx.CanonSlot >= 0 && isx.Type.Args.Count > 0 && HeldByReference(_b.TypeOf(isx.Operand)))
