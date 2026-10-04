@@ -214,7 +214,7 @@ public static class Frontend
         Meter binding = Meter.Start();
         BindResult bound = Binder.Bind(unit, name, declarations is null ? null : declarations.Require, declarations?.Interfaces,
             declarations is null ? null : declarations.RequireExtensions, declarations?.LibraryInterfaces,
-                declarations is null ? null : declarations.RequireOverrides);
+                declarations is null ? null : declarations.RequireOverrides, kernelInterfaces: declarations?.KernelInterfaces);
         binding.Stop("front:bind");
 
         // The checker's first pass discovers which generic methods were called
@@ -270,7 +270,7 @@ public static class Frontend
                 Meter fresh = Meter.Start();
                 bound = Binder.Bind(unit, name, declarations is null ? null : declarations.Require, declarations?.Interfaces,
                     declarations is null ? null : declarations.RequireExtensions, declarations?.LibraryInterfaces,
-                    declarations is null ? null : declarations.RequireOverrides, freshOnly: true);
+                    declarations is null ? null : declarations.RequireOverrides, freshOnly: true, kernelInterfaces: declarations?.KernelInterfaces);
                 fresh.Stop("front:bind-fresh");
 
                 foreach (TypeDecl t in unit.Types)
@@ -291,7 +291,7 @@ public static class Frontend
             Meter rebinding = Meter.Start();
             bound = Binder.Bind(unit, name, declarations is null ? null : declarations.Require, declarations?.Interfaces,
                 declarations is null ? null : declarations.RequireExtensions, declarations?.LibraryInterfaces,
-                declarations is null ? null : declarations.RequireOverrides);
+                declarations is null ? null : declarations.RequireOverrides, kernelInterfaces: declarations?.KernelInterfaces);
             rebinding.Stop("front:bind-round");
             if (Switches.TraceWants)
             {

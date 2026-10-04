@@ -79,7 +79,10 @@ public static class ProjectCompile
         long declBudget = Switches.DeclBudget >= 0 ? Switches.DeclBudget : 32L * 1024 * 1024;
         long tokBudget = Switches.TokenBudget >= 0 ? Switches.TokenBudget : 0;
         long srcBudget = Switches.SourceBudget >= 0 ? Switches.SourceBudget : 16L * 1024 * 1024;
-        using DeclarationSession session = new(index, assembly, declBudget, tokBudget, srcBudget);
+        // A MODULE'S UNITS share its own index, made on the kernel's
+        // (--module-index, Driver.Compile): the session reads both through it.
+        string sessionIndex = Driver.Value(args, "--module-index") ?? index;
+        using DeclarationSession session = new(sessionIndex, assembly, declBudget, tokBudget, srcBudget);
         using WorkerPool? pool = WorkerPool.Open(Driver.Value(args, "--worker-pool"));
         int limit = pool is null ? workers : Math.Max(workers, pool.Size);
         Driver.Session = session;
@@ -138,7 +141,7 @@ public static class ProjectCompile
             {
                 string stampPath = unit.Receipt + ".stamp";
                 if (!File.Exists(stampPath) || File.ReadAllText(stampPath) != Stamp(unit)) return false;
-                return UnitDependencies.IsCurrent(unit.Receipt, index);
+                return UnitDependencies.IsCurrent(unit.Receipt, sessionIndex);
             }
             catch (IOException) { return false; }
             catch (InvalidDataException) { return false; }
@@ -352,7 +355,8 @@ public static class ProjectCompile
         // must be compiled alone before the units that switch it off run
         // beside it -- or all of them see it on and the link refuses eight
         // definitions of __corsac_init.
-        bool dynamic = common.Contains("--dynamic") || common.Contains("--link-shared") || common.Contains("--shared");
+        // A kernel module is a shared object too (Driver.Compile adds --shared for --kernel).
+        bool dynamic = common.Contains("--dynamic") || common.Contains("--link-shared") || common.Contains("--shared") || common.Contains("--kernel");
         // UNITS SHARED WITH SIBLING PROCESSES (ProjectCommand): each is the
         // one whose claim file -- made only if it is not there -- it makes.
         string? claims = Driver.Value(args, "--claim-dir");

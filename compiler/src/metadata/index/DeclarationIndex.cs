@@ -48,7 +48,38 @@ public sealed class DeclarationIndex : IDisposable
             verified = new bool[Count];
         }
         catch { reader.Dispose(); stream.Dispose(); throw; }
+        // AN INDEX ON ANOTHER (a kernel module's, SourceIndexBuilder's `on`):
+        // its record names the kernel's index and that index's stamp, and
+        // every lookup here answers from both -- the kernel's declarations
+        // from the kernel's index, the module's own from its own. An index
+        // under it that has changed since is refused: the module's index
+        // was made over declarations that are no longer the kernel's.
+        try
+        {
+            foreach (DeclarationRecord record in Range(OnKey, false))
+            {
+                if (record.Payload.Length <= 32) throw new InvalidDataException("Invalid base index record");
+                byte[] stamp = record.Payload.AsSpan(0, 32).ToArray();
+                string path = Utf8.GetString(record.Payload, 32, record.Payload.Length - 32);
+                if (!File.Exists(path)) throw new InvalidDataException("declaration index " + path + ", which this one was made on, is not there");
+                if (!DeclarationStamp.Of(path).AsSpan().SequenceEqual(stamp))
+                    throw new InvalidDataException("declaration index is out of date: " + path + ", which it was made on, has changed since; rebuild the index before compiling against it");
+                Under = new DeclarationIndex(path);
+                UnderStamp = stamp;
+                break;
+            }
+        }
+        catch { reader.Dispose(); stream.Dispose(); throw; }
     }
+
+    /// <summary>The key of the record that names the index this one was made on, and its stamp.</summary>
+    public const string OnKey = "K:on";
+
+    /// <summary>The index this one was made on, whose records every lookup also answers with: a kernel's, under a module's.</summary>
+    public DeclarationIndex? Under { get; }
+
+    /// <summary>The build stamp of <see cref="Under"/>, as this index recorded it when it was made.</summary>
+    public byte[]? UnderStamp { get; }
 
     /// <summary>Where each record starts, and where the last one ends.</summary>
     private readonly long[] offsets = Array.Empty<long>();
@@ -64,8 +95,22 @@ public sealed class DeclarationIndex : IDisposable
     private readonly string?[] keys = Array.Empty<string?>();
     private readonly bool[] verified = Array.Empty<bool>();
 
-    public IEnumerable<DeclarationRecord> Find(string key) => Range(key, false);
-    public IEnumerable<DeclarationRecord> WithPrefix(string prefix) => Range(prefix, true);
+    /// <summary>
+    /// Every record of the key, the index under this one's first: the two
+    /// hold different declarations (SourceIndexBuilder refuses a type the
+    /// one under it has), and a list -- extensions, overrides, interface
+    /// families -- is the two lists one after the other.
+    /// </summary>
+    public IEnumerable<DeclarationRecord> Find(string key) => Under is null ? Range(key, false) : Both(key, false);
+    public IEnumerable<DeclarationRecord> WithPrefix(string prefix) => Under is null ? Range(prefix, true) : Both(prefix, true);
+
+    private IEnumerable<DeclarationRecord> Both(string key, bool prefix)
+    {
+        foreach (DeclarationRecord record in prefix ? Under!.WithPrefix(key) : Under!.Find(key))
+            if (record.Key != OnKey) yield return record;
+        foreach (DeclarationRecord record in Range(key, prefix))
+            if (record.Key != OnKey) yield return record;
+    }
 
     private IEnumerable<DeclarationRecord> Range(string key, bool prefix)
     {
@@ -155,5 +200,5 @@ public sealed class DeclarationIndex : IDisposable
         return hash.GetHashAndReset();
     }
 
-    public void Dispose() { reader.Dispose(); stream.Dispose(); }
+    public void Dispose() { Under?.Dispose(); reader.Dispose(); stream.Dispose(); }
 }

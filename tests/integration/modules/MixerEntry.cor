@@ -1,0 +1,28 @@
+// The entry unit of the several-file module (modules.sh): its alias and its
+// initialiser, which reaches both other units.
+
+using System.Runtime.CompilerServices;
+using Kernel;
+
+namespace Sound;
+
+[ModuleAlias("pnp:MIX0001")]
+static class MixerModule
+{
+    [ModuleInitializer]
+    internal static void Load()
+    {
+        Channels.All.Add(new Channel("master", 7));
+        Channels.All.Add(new Channel("wave", 5));
+        Mixer mixer = new Mixer();
+        Drivers.Register(mixer);
+        Devices.Add(mixer);
+    }
+}
+
+// The ring-1 half: in neither the module's index nor its ring-0 units.
+[Ring1]
+static class MixerPanel
+{
+    public static int Show() { return Seat.Paint(); }
+}

@@ -547,7 +547,7 @@ public static class Driver
                     or "--load" or "--paddr" or "--cpu" or "--tune" or "--fpu" or "--with" or "--asm-entry"
                     or "--ref" or "--libdir" or "--runpath" or "--trace-opt" or "--batch-without" or "--region-report" or "--unused-report"
                     or "-D" or "--define" or "--jobs" or "--decl-index" or "--assembly" or "--dependency-file" or "--main-type"
-                    or "--subsystem" or "--resources" or "--icon-resource" or "--using" or "--kernel" or "--ring")
+                    or "--subsystem" or "--resources" or "--icon-resource" or "--using" or "--kernel" or "--ring" or "--module-index")
                 {
                     i++;
                 }
@@ -747,9 +747,24 @@ public static class Driver
             if (!indexStamp.AsSpan().SequenceEqual(kernel.Stamp))
                 return Fail($"--decl-index {declarationIndex} is not the index {kernel.Name} was compiled against: its stamp is {KernelExports.Text(indexStamp)}, the kernel's {KernelExports.Text(kernel.Stamp)}");
         }
+        // A MODULE OF SEVERAL UNITS (--module-index): each unit is compiled
+        // against the module's own index, made on the kernel's (corc index
+        // --on), which answers for the kernel's declarations from the
+        // kernel's index and for the module's other units from its own. The
+        // stamp is still the kernel index's: the module index must have been
+        // made on the very index --decl-index names, the one checked above.
+        string? moduleIndex = Value(args, "--module-index");
+        if (moduleIndex is not null && kernel is null)
+            return Fail("--module-index is a kernel module's own index, made on its kernel's: it goes with --kernel");
         using IndexedDeclarations? declarations = declarationIndex is null ? null
             : Session is not null ? new IndexedDeclarations(Session, files)
-            : new IndexedDeclarations(declarationIndex, Value(args, "--assembly")!, files);
+            : new IndexedDeclarations(moduleIndex ?? declarationIndex, Value(args, "--assembly")!, files);
+        if (declarations is not null && kernel is not null)
+        {
+            declarations.ModuleOfKernel = true;
+            if (moduleIndex is not null && (declarations.UnderStamp is not { } under || !under.AsSpan().SequenceEqual(kernel.Stamp)))
+                return Fail($"--module-index {moduleIndex} was not made on the index {kernel.Name} was compiled against (corc index --on {declarationIndex})");
+        }
         // WHERE A UNIT'S TIME AND ALLOCATION GO, by phase, when asked. The
         // frontend's own line covers what happened before this point.
         bool phases = Switches.ReportPhases;
@@ -792,10 +807,16 @@ public static class Driver
         // position-dependent, with the link-time optimizer on, linked against
         // no shared library. Only such an object may call symbols only the
         // link defines (field sites).
+        // AND A UNIT OF A KERNEL MODULE (--kernel --obj), position-independent
+        // as a module is, whose units the module's link optimises together as
+        // a kernel's units are (IrLinkOptimizer): the link defines its field
+        // sites in the module itself, and regenerates it position-independent
+        // again (IrUnitCodec.Settings.PositionIndependent, UnitBackend).
         List<Corsac.Lang.Lto.IrArchiveRecord>? linkRecords = null;
         module.NoCollector = args.Contains("--no-collector");
+        bool moduleUnit = kernel is not null && args.Contains("--obj");
         module.LeavesLinkHints = (args.Contains("--obj") || library) && !args.Contains("--no-lto") && !args.Contains("--no-opt")
-            && sharedLibs.Count == 0 && !(shared || args.Contains("--pic"));
+            && sharedLibs.Count == 0 && (moduleUnit || !(shared || args.Contains("--pic")));
         if (!args.Contains("--no-opt"))
         {
 #if COR_SELFHOST_BENCHMARK
@@ -811,7 +832,7 @@ public static class Driver
                 linkRecords = Corsac.Lang.Metadata.IrUnitCodec.Snapshot(m,
                     !args.Contains("--no-stackmaps"),
                     new(true, m.NoCollector, m.CallsCollector, m.LeavesLinkHints, args.Contains("--opt-size"), args.Contains("--experimental-batch"),
-                        m.RuntimeHelpers.ToArray()));
+                        m.RuntimeHelpers.ToArray(), PositionIndependent: moduleUnit));
                 // Not without an operating system: no arena there (baremetal.cor),
                 // and a unit with no summary keeps the link from finding regions.
                 m.RegionHints = freestanding ? null : Corsac.Lang.Opt.RegionSummary.Of(m);
@@ -1043,7 +1064,12 @@ public static class Driver
 
         if (args.Contains("--obj") || library)
         {
-            if (x86Backend.EmitLinkSummary && !x86Backend.PositionIndependent && sharedLibs.Count == 0)
+            // A module's unit only with the IR taken before the late passes,
+            // whose settings say it is position-independent: regenerated
+            // from an archive that does not say so, it would come back as a
+            // kernel's code is, with absolute addresses in its text.
+            if (x86Backend.EmitLinkSummary && sharedLibs.Count == 0
+                && (!x86Backend.PositionIndependent || moduleUnit && linkRecords is not null))
             {
                 // The lifetime hints first: the IR archive's integrity hash
                 // covers every other section, these included.

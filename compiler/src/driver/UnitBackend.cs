@@ -52,6 +52,8 @@ public sealed class UnitBackend : IUnitBackend
         // them. What they leave is what a version 1 archive held, and the
         // per-function steps below go on from there as before.
         bool preLate = IrUnitCodec.ReadSettings(archive).Settings is { PreLate: true };
+        // A kernel module's unit is part of a shared object, and is made again as one.
+        bool positionIndependent = IrUnitCodec.ReadSettings(archive).Settings is { PositionIndependent: true };
         // The late passes need the unit whole, so its decode is bounded by a
         // fixed limit, the same on every machine: sized by what the machine
         // has free (a quarter of what the process's 768 MB heap leaves), a
@@ -111,6 +113,13 @@ public sealed class UnitBackend : IUnitBackend
             // found needs no heap carries none, as its compile would have.
             unit.StackMaps = unit.StackMaps && module.NeedsHeap;
             if (retained is not null) PruneAfterLate(module, archive, retained);
+            // A MODULE'S UNIT keeps only what its compile defined: what that
+            // compile gave up because the kernel exports it (Module.Provided)
+            // is still in the IR, taken before, and made again here it would
+            // be a second copy of the kernel's, in the module.
+            else if (positionIndependent)
+                PruneAfterLate(module, archive, original.Symbols.Where(symbol => symbol.IsDefined)
+                    .SelectMany(symbol => new[] { "F:" + symbol.Name, "D:" + symbol.Name }).ToHashSet(StringComparer.Ordinal));
             lateDone = Environment.TickCount64;
         }
         HashSet<string> originalNames = module.Functions.Select(function => function.Name).ToHashSet(StringComparer.Ordinal);
@@ -269,6 +278,7 @@ public sealed class UnitBackend : IUnitBackend
         {
             Corsac.Lang.X64.X64Backend backend = new()
             {
+                PositionIndependent = positionIndependent,
                 StackMaps = unit.StackMaps, EmitLinkSummary = true, Workers = workers,
                 FunctionLoader = Load, FunctionLoadBytes = Cost, FunctionMemoryBudget = budget,
             };
@@ -279,6 +289,7 @@ public sealed class UnitBackend : IUnitBackend
         {
             X86Backend backend = new()
             {
+                PositionIndependent = positionIndependent,
                 AutomaticPacked = cpu.AutomaticPacked,
                 StackMaps = unit.StackMaps, EmitLinkSummary = true, Workers = workers,
                 FunctionLoader = Load, FunctionLoadBytes = Cost, FunctionMemoryBudget = budget,
@@ -293,7 +304,11 @@ public sealed class UnitBackend : IUnitBackend
                 + "ms, functions and code " + (Environment.TickCount64 - lateDone) + "ms" : ""));
         if (errors.Count > 0) throw new InvalidDataException("IR backend: " + string.Join("; ", errors));
         foreach (Section section in original.Sections.Where(section => section.Name is TargetContract.SectionName or ManagedLayoutContract.SectionName
-                       or ".corsac.tag" or RegistrySchema.SectionName or NativeLibraries.SectionName))
+                       or ".corsac.tag" or RegistrySchema.SectionName or NativeLibraries.SectionName
+                       // A module's unit: the kernel's stamp it was compiled
+                       // against, what it says of itself and its initialisers,
+                       // which its link reads after this (Linker.LinkModule).
+                       or KernelExports.StampSection or ModuleInfo.SectionName or ModuleInfo.InitializerSection))
         {
             Section copy = new(section.Name, section.Kind) { Align = section.Align };
             // A layout a link left in its file (ElfReader.LeftInFile) stays

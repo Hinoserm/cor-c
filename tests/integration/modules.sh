@@ -3,8 +3,9 @@
 # freestanding kernel linked with --exports, a module compiled against its
 # declaration index and linked against those exports, and the kernel loading
 # the module the way its binder binds a library -- built in rings, stamped,
-# with its aliases in .corsac.modinfo. Then a kernel whose declarations
-# differ, whose stamp the module does not carry, refusing it.
+# with its aliases in .corsac.modinfo; and a module of several files, a unit
+# a file against its own index made on the kernel's. Then a kernel whose
+# declarations differ, whose stamp the modules do not carry, refusing them.
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 cd "$root"
@@ -138,6 +139,65 @@ cp "$work/linked/sb16.ko" "$work/pruned/module.ko"
 cmp -s "$work/run.out" "$work/pruned/run.out" || { cat "$work/pruned/run.out"; fail "the module ran otherwise in the pruned kernel"; }
 if "$corc" link $objects -o "$work/pruned/wrong" --keep "$work/keep" 2> "$work/pruned/wrong.log"; then fail "--keep linked without --exports"; fi
 
+# A MODULE OF SEVERAL FILES, built as the image builder builds every module:
+# its own index made on the kernel's, a unit a file in one compile-project
+# against both indexes -- the kernel's still the stamp -- and the units
+# linked, and optimised, together. Each unit sees the others' types only
+# through the module's index; the kernel loads it and calls through a
+# kernel interface into it, which the module's own interface, sorting
+# before, must not have moved.
+m=$work/units
+mkdir -p "$m"
+mixer="$here/MixerAudio.cor $here/MixerDriver.cor $here/MixerEntry.cor"
+# shellcheck disable=SC2086
+"$corc" index --assembly Kernel --ring 0 --on "$a/kernel.idx" $mixer -o "$m/module.idx" 2> "$m/index.log" \
+    || { cat "$m/index.log"; fail "the module's index"; }
+: > "$m/units.tsv"
+for source in $mixer; do
+    role=lib; case $source in */MixerEntry.cor) role=entry ;; esac
+    name=$(basename "$source" .cor)
+    printf '%s\t%s\t%s\t%s\n' "$(realpath "$source")" "$m/$name.o" "$m/$name.o.deps" "$role" >> "$m/units.tsv"
+done
+"$corc" compile-project --units "$m/units.tsv" --obj --kernel "$a/kernel.exports" --decl-index "$a/kernel.idx" \
+    --module-index "$m/module.idx" --assembly Kernel --ring 0 2> "$m/units.log" || { cat "$m/units.log"; fail "the module's units"; }
+for name in MixerAudio MixerDriver MixerEntry; do
+    test -s "$m/$name.o" || fail "no unit $name"
+    test "$(stamp "$m/$name.o")" = "$(stamp "$a/kernel")" || fail "unit $name does not carry the kernel's stamp"
+done
+# Each type defined by its own unit alone; the others name it.
+readelf -s -W "$m/MixerAudio.o" | awk '$8 == "t_Sound$002eChannel" && $7 != "UND" { found = 1 } END { exit !found }' \
+    || fail "the unit that declares Channel does not define it"
+if readelf -s -W "$m/MixerEntry.o" | awk '$8 == "t_Sound$002eChannel" && $7 != "UND" { found = 1 } END { exit !found }'; then
+    fail "the entry unit defines Channel, which another unit declares"
+fi
+objects=$(cut -f2 "$m/units.tsv" | tr '\n' ' ')
+# shellcheck disable=SC2086
+"$corc" link $objects --kernel "$a/kernel.exports" -o "$m/mixer.ko" 2> "$m/link.log" || { cat "$m/link.log"; fail "the module's units' link"; }
+ko=$m/mixer.ko
+readelf -h "$ko" | grep -q 'DYN (Shared object file)' || fail "$ko is not a shared object"
+readelf -d "$ko" > "$ko.dynamic"
+if grep -q 'NEEDED\|TEXTREL' "$ko.dynamic"; then fail "$ko needs a library or relocates its text"; fi
+readelf -r -W "$ko" | awk '/^[0-9a-f]+ / { print $3 }' | sort -u > "$ko.kinds"
+if grep -v -x -e R_386_RELATIVE -e R_386_32 -e R_386_GLOB_DAT -e R_386_JMP_SLOT "$ko.kinds"; then fail "$ko has a relocation the binder does not apply"; fi
+readelf --dyn-syms -W "$ko" > "$ko.syms"
+if awk '$7 != "UND" && $8 ~ /^m_(Runtime|Gc|String)_/ { found = 1 } END { exit !found }' "$ko.syms"; then fail "$ko carries a runtime"; fi
+test "$(stamp "$ko")" = "$(stamp "$a/kernel")" || fail "$ko does not carry the kernel's stamp"
+readelf -p .corsac.modinfo "$ko" | sed -n 's/^ *\[ *[0-9a-f]*\]  //p' > "$ko.modinfo"
+printf '%s\n' name=mixer ring=0 alias=pnp:MIX0001 | cmp -s - "$ko.modinfo" || { cat "$ko.modinfo"; fail "$ko: .corsac.modinfo"; }
+if readelf -s -W "$ko" | grep -q 'MixerPanel'; then fail "$ko holds its [Ring1] half"; fi
+mkdir -p "$m/run"
+cp "$a/kernel" "$a/kernel.exports" "$m/run/"
+cp "$ko" "$m/run/module.ko"
+(cd "$m/run" && ./kernel) > "$m/run.out" 2>&1 || { cat "$m/run.out"; fail "the kernel did not load the several-file module"; }
+printf '%s\n' 'kernel 0' 'registered mixer' 'modinfo name=mixer' 'modinfo ring=0' 'modinfo alias=pnp:MIX0001' 'drivers 1' \
+    'probe 2' 'mixer at 544, master=7 wave=5' 'bind 12' \
+    | cmp -s - "$m/run.out" || { cat "$m/run.out"; fail "the several-file module ran other than it should"; }
+# A module may not declare a type of its kernel's: its index is refused.
+if "$corc" index --assembly Kernel --ring 0 --on "$a/kernel.idx" $here/KernelType.cor -o "$m/wrong.idx" 2> "$m/wrong-index.log"; then
+    fail "a module's index declared a type of its kernel's"
+fi
+grep -q 'a module may not declare a type of its kernel' "$m/wrong-index.log" || { cat "$m/wrong-index.log"; fail "the wrong index said otherwise"; }
+
 # A KERNEL WHOSE DECLARATIONS DIFFER -- one more field in Driver -- has
 # another stamp; the module built for the first is refused by its loader,
 # by the link, and its index refused by the compile.
@@ -159,5 +219,23 @@ if "$corc" compile --kernel "$b/kernel.exports" --decl-index "$a/kernel.idx" --a
 fi
 grep -q 'is not the index kernel was compiled against' "$work/wrong-compile.log" || { cat "$work/wrong-compile.log"; fail "the wrong compile said otherwise"; }
 test ! -e "$work/wrong.ko"
+
+# AND THE SEVERAL-FILE MODULE'S, unchanged by its index: its units are
+# refused by kernel b's link, its index made on a's refused beside b's
+# index, and a compile against b's exports with a's index refused as before.
+if "$corc" link $objects --kernel "$b/kernel.exports" -o "$m/wrong.ko" 2> "$m/wrong-link.log"; then fail "a several-file module of another kernel linked"; fi
+grep -q 'compiled against the declarations of another kernel' "$m/wrong-link.log" || { cat "$m/wrong-link.log"; fail "the several-file wrong link said otherwise"; }
+mkdir -p "$m/wrong"
+sed "s|$m/|$m/wrong/|g" "$m/units.tsv" > "$m/wrong/units.tsv"
+if "$corc" compile-project --units "$m/wrong/units.tsv" --obj --kernel "$b/kernel.exports" --decl-index "$b/kernel.idx" \
+    --module-index "$m/module.idx" --assembly Kernel --ring 0 2> "$m/wrong/units.log"; then
+    fail "a module's units compiled with an index made on another kernel's"
+fi
+grep -q 'was not made on the index kernel was compiled against' "$m/wrong/units.log" || { cat "$m/wrong/units.log"; fail "the wrong module index said otherwise"; }
+if "$corc" compile-project --units "$m/wrong/units.tsv" --obj --kernel "$b/kernel.exports" --decl-index "$a/kernel.idx" \
+    --module-index "$m/module.idx" --assembly Kernel --ring 0 2> "$m/wrong/units-a.log"; then
+    fail "a module's units compiled against another kernel's index"
+fi
+grep -q 'is not the index kernel was compiled against' "$m/wrong/units-a.log" || { cat "$m/wrong/units-a.log"; fail "the wrong kernel index said otherwise"; }
 
 printf 'PASS kernel modules: %s\n' "$work"
