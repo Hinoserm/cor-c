@@ -203,8 +203,8 @@ public sealed class KernelExports
         long dynamicAt = Align(dynstrAt + strings.Length, word);
         (long Tag, ulong Value)[] dynamic =
         {
-            (Elf.DtSoName, soname), (Elf.DtHash, (ulong)hashAt), (Elf.DtStrTab, (ulong)dynstrAt), (Elf.DtSymTab, (ulong)dynsymAt),
-            (Elf.DtStrSz, (ulong)strings.Length), (Elf.DtSymEnt, (ulong)symbolSize), (Elf.DtNull, 0),
+            ((long)Elf.DtSoName, (ulong)soname), ((long)Elf.DtHash, (ulong)hashAt), ((long)Elf.DtStrTab, (ulong)dynstrAt), ((long)Elf.DtSymTab, (ulong)dynsymAt),
+            ((long)Elf.DtStrSz, (ulong)strings.Length), ((long)Elf.DtSymEnt, (ulong)symbolSize), ((long)Elf.DtNull, 0UL),
         };
         long loadEnd = dynamicAt + dynamic.Length * 2L * word;
 
