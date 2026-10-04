@@ -1,0 +1,54 @@
+// test: gc_revoke
+// expect-exit: 134
+// expect-output:
+// revoked 2
+// bystander 7
+// still a Victim: False
+// calling it
+//
+// Gc.Revoke tombstones every live object whose vtable lies in a range: what
+// a kernel does to a module forced out while objects of its types live
+// (docs/software/DRIVERS.md in the CORSAC tree, "Forced"). The objects stay
+// readable memory; a type test of one fails; calling one ends the program
+// (Platform.Revoked: on Linux, a crash, exit 134). Objects of other types
+// are untouched.
+
+using System;
+
+class Victim
+{
+    public int Value = 3;
+    public virtual int Say() { return Value; }
+}
+
+class Bystander
+{
+    public virtual int Say() { return 7; }
+}
+
+static class Program
+{
+    // In statics, so that they are the collector's to walk: a local that does
+    // not escape is the compiler's to place, and may never reach the heap.
+    static Victim? _first, _second;
+    static Bystander? _other;
+
+    static int Main()
+    {
+        _first = new Victim();
+        _second = new Victim();
+        _other = new Bystander();
+        Victim first = _first;
+        Victim second = _second;
+        Bystander other = _other;
+        long vtable = Sys.PeekWord(Sys.Word(first));
+        long count = Gc.Revoke(vtable, vtable + 1);
+        Console.WriteLine("revoked " + count);
+        Console.WriteLine("bystander " + other.Say());
+        object o = second;
+        Console.WriteLine("still a Victim: " + (o is Victim));
+        Console.WriteLine("calling it");
+        Console.Out.Flush();
+        return first.Say();
+    }
+}

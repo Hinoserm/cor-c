@@ -324,6 +324,17 @@ static class Platform
     /// only where nobody did.
     public static long NanosHook;
 
+    /// WHO ENDS A CALLER OF A REVOKED OBJECT (Gc.Revoke): the kernel installs
+    /// it -- a program is crashed, a kernel thread killed -- and it does not
+    /// return. With none installed the processor stops.
+    public static long RevokedHook;
+
+    public static void Revoked()
+    {
+        if (RevokedHook != 0) Sys.Call(RevokedHook, 0, 0, 0);
+        while (true) Sys.Hlt();
+    }
+
     public static long Nanos() => Clock.Now();
 
     // ---- the machine's memory, for GC.GetGCMemoryInfo ------------------------

@@ -1360,6 +1360,15 @@ static class Runtime
         Platform.ArmFaultReport();
     }
 
+    /// An image gone (a kernel module unloaded): its statics no longer roots,
+    /// its stack maps no longer read. Its objects must be gone first, or
+    /// tombstoned (Gc.Revoke).
+    public static void EndImage(long dataStart, long dataEnd, long frames)
+    {
+        UnregisterRoots(dataStart, dataEnd);
+        UnregisterFrames(frames);
+    }
+
     // WHO RUNS A LIBRARY'S INITIALISER. On Linux the dynamic linker does,
     // before the program is entered, and by the time the entry stub runs
     // there is nothing left to do. A loader that lives in a KERNEL cannot:
@@ -1881,7 +1890,23 @@ static class Runtime
         }
         Sys.Poke(_tables + _tableCount * WordSize.Bytes, table);
         _tableCount = _tableCount + 1;
+        Gc.MapsChanged();
         return true;
+    }
+
+    /// An image's directory taken out again: a kernel module unloaded. The
+    /// collector's index is rebuilt at its next collection.
+    public static bool UnregisterFrames(long table)
+    {
+        for (long i = 0; i < _tableCount; i++)
+        {
+            if (Sys.Peek(_tables + i * WordSize.Bytes) != table) continue;
+            for (long j = i; j + 1 < _tableCount; j++) Sys.Poke(_tables + j * WordSize.Bytes, Sys.Peek(_tables + (j + 1) * WordSize.Bytes));
+            _tableCount = _tableCount - 1;
+            Gc.MapsChanged();
+            return true;
+        }
+        return false;
     }
 
     /// The end of Main. A process lives on while any FOREGROUND thread does,

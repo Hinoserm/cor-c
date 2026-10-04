@@ -1026,6 +1026,15 @@ static class Platform
         if (Runtime.CollectorLinked()) Gc.CollectInner();
     }
 
+    /// A call into an object whose code was taken away (Gc.Revoke): a
+    /// program has no modules to lose, so this is only ever a fault, and the
+    /// process ends as a crash would end it.
+    public static void Revoked()
+    {
+        Runtime.WriteLiteral(2, "a revoked object was called\n");
+        Exit(134);
+    }
+
     /// Ends the whole process. exit_group rather than exit, so that the day
     /// this runtime has threads, exiting means what a C program means by it.
     public static void Exit(int code)

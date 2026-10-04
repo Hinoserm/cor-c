@@ -121,6 +121,8 @@ static class Gc
     const long DescPayloadWord = 7;
     const long DescRefMapWord = 8;
     const long DescGcFlagsWord = 9;
+    const long DescDepthWord = 2;           // as Runtime's type tests read them
+    const long DescDisplayWord = 3;
     const long SequenceFlag = 1;         // DescFlags: an array or a string
     const long StringFlag = 2;
     const long ElementsAreReferences = 1; // DescGcFlags, on an array
@@ -805,9 +807,28 @@ static class Gc
 
     /// Every stack map table of every registered image, indexed by the code
     /// it covers. Once, at the first collection, with the heap lock held.
+    /// THE INDEX IS BUILT AGAIN when an image comes or goes after it was
+    /// built (Runtime.RegisterFrames, Runtime.UnregisterFrames): a kernel
+    /// module loaded or taken out while the kernel runs. The next collection
+    /// rebuilds it, with the heap lock held, before it reads a stack.
+    public static void MapsChanged()
+    {
+#if !TARGET_64BIT
+        _mapsBuilt = false;
+#endif
+    }
+
+    static long _mapsBytes;
+
     static void BuildMaps()
     {
         _mapsBuilt = true;
+        if (_maps != 0)
+        {
+            Platform.Unmap(_maps, _mapsBytes);
+            _maps = 0;
+            _mapCount = 0;
+        }
         long total = 0;
         long pass = 0;
         while (pass < 2)
@@ -860,6 +881,7 @@ static class Gc
                 {
                     return;
                 }
+                _mapsBytes = total * MapRecord;
             }
             else
             {
@@ -5946,6 +5968,144 @@ static class Gc
     /// The heap check (CheckHeap, before and after every collection) turned
     /// on by a program after the heap has started -- a kernel from its
     /// command line (gc.heapcheck=1).
+    // ---- revoking a kernel module's objects ------------------------------------
+    //
+    // A module forced out while objects of its types are still alive
+    // (docs/software/DRIVERS.md, "Forced") leaves vtables and descriptors that
+    // are about to be unmapped. Every such object is TOMBSTONED, with the
+    // world stopped for a collection: its block becomes a leaf (never scanned
+    // again, so its descriptor is never read), and its vtable word points at
+    // the Revoked table -- a descriptor that is no type's, so every cast and
+    // type test of it fails, and a vtable whose every slot calls Revoked,
+    // which hands the caller to the platform to be ended (Platform.Revoked: a
+    // kernel kills the thread or crashes the program; a program on Linux
+    // dies). The object's memory stays good, so whatever still refers to it
+    // reads valid memory, and the collector frees it once nothing does.
+
+    static long _revokeLow, _revokeHigh, _revokedTable, _revokedCount;
+    const long RevokedSlots = 1024;
+
+    /// Every live object whose vtable is in [low, high) tombstoned; how many.
+    /// Runs a full collection to do it.
+    public static long Revoke(long low, long high)
+    {
+        if (high <= low) return 0;
+        _revokedCount = 0;
+        _revokeLow = low;
+        _revokeHigh = high;
+        Collect();
+        _revokeLow = 0;
+        _revokeHigh = 0;
+        return _revokedCount;
+    }
+
+    /// Where every slot of the Revoked table leads.
+    static void Revoked()
+    {
+        Platform.Revoked();
+    }
+
+    static long RevokedVtable()
+    {
+        long w = WordSize.Bytes;
+        if (_revokedTable == 0)
+        {
+            // The descriptor, the vtable after it, and a class display of
+            // RevokedSlots zeros after that.
+            long bytes = (DescWords + 2 * RevokedSlots) * w;
+            long table = Platform.Map(bytes);
+            if (table == 0) return 0;
+            Sys.MemorySet(table, 0, bytes);
+            // The descriptor names itself, as every one does (the census and
+            // the type tests check it), and is no type: as deep in a class
+            // chain as any type can be, so the compiler's inline test of a
+            // class reads its display at the class's depth, and every entry of
+            // the display is 0, which is no class. No interfaces, no element,
+            // no references.
+            Sys.Poke(table + DescSelfWord * w, table);
+            Sys.Poke(table + DescDepthWord * w, RevokedSlots - 1);
+            Sys.Poke(table + DescDisplayWord * w, table + (DescWords + RevokedSlots) * w);
+            long stub = Sys.AddressOf(Revoked);
+            for (long i = 0; i < RevokedSlots; i++) Sys.Poke(table + (DescWords + i) * w, stub);
+            _revokedTable = table;
+        }
+        return _revokedTable + DescWords * w;
+    }
+
+    static void Tombstone(long block, long vtable)
+    {
+        if ((Sys.Peek(block) & FlagFree) != 0 || Sys.Peek(block + KindAt) != KindObject) return;
+        long vt = Sys.Peek(block + HeaderBytes) & WordSize.AddressMask;
+        if (vt < _revokeLow || vt >= _revokeHigh) return;
+        Sys.Poke(block + KindAt, KindLeaf);
+        Sys.Poke(block + HeaderBytes, vtable);
+        _revokedCount = _revokedCount + 1;
+    }
+
+    /// The walk CheckHeap makes -- every chunk's chain, every thread's
+    /// buffer up to its pointer -- tombstoning as it goes.
+    static void RevokeNow()
+    {
+        long vtable = RevokedVtable();
+        if (vtable == 0) return;
+        if (_heapCheckTable == 0)
+        {
+            _heapCheckTable = Platform.Map(GcThreads.BufferTableBytes());
+            if (_heapCheckTable == 0) return;
+        }
+        long buffers = GcThreads.CaptureBuffersInto(_heapCheckTable);
+        long chunk = HeapChunks.Newest();
+        while (chunk != 0)
+        {
+            // A SIZE-CLASS PAGE is laid out whole in blocks of its class's
+            // size, free or not, whether or not a thread is allocating from
+            // it now: stepped through by size to its limit.
+            if (HeapChunks.PageClass(chunk) != 0)
+            {
+                long size = ClassSize(HeapChunks.PageClass(chunk) - 1);
+                long limit = HeapChunks.Limit(chunk);
+                for (long at = HeapChunks.First(chunk); at + size <= limit; at = at + size)
+                {
+                    if ((Sys.Peek(at) & SizeMask) != size) break;
+                    Tombstone(at, vtable);
+                }
+                chunk = HeapChunks.Next(chunk);
+                continue;
+            }
+            long block = HeapChunks.First(chunk);
+            long end = chunk == _current ? _bump : HeapChunks.End(chunk);
+            long step = 0;
+            while (block < end)
+            {
+                while (step < buffers && Sys.Peek(_heapCheckTable + step * (2 * WordSize.Bytes)) < block) step = step + 1;
+                if (step < buffers && Sys.Peek(_heapCheckTable + step * (2 * WordSize.Bytes)) == block)
+                {
+                    block = Sys.Peek(_heapCheckTable + step * (2 * WordSize.Bytes) + WordSize.Bytes);
+                    step = step + 1;
+                    continue;
+                }
+                long size = Sys.Peek(block) & SizeMask;
+                if (size < Smallest || block + size > end) break;
+                Tombstone(block, vtable);
+                block = block + size;
+            }
+            chunk = HeapChunks.Next(chunk);
+        }
+        for (long i = 0; i < buffers; i++)
+        {
+            long at = Sys.Peek(_heapCheckTable + i * (2 * WordSize.Bytes));
+            long upto = GcThreads.BufferPointer(at);
+            while (at < upto)
+            {
+                long word = Sys.Peek(at);
+                long size = word & SizeMask;
+                if (word == 0 || size < Smallest || at + size > upto) break;
+                Tombstone(at, vtable);
+                at = at + size;
+            }
+        }
+    }
+
     public static void CheckHeapOn()
     {
         _heapCheck = true;
@@ -8044,6 +8204,10 @@ static class Gc
         if (_heapCheck)
         {
             CheckHeap(0);
+        }
+        if (_revokeHigh != 0)
+        {
+            RevokeNow();
         }
 #if !TARGET_64BIT
         if (!_mapsBuilt)
