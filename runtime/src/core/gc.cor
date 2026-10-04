@@ -11722,8 +11722,8 @@ static class GcThreads
 
             if (turns >= nextPrompt)
             {
-                long owed = Pending();
-                if (owed < owedAtPrompt)
+                long owedNow = Pending();
+                if (owedNow < owedAtPrompt)
                 {
                     gap = PromptGapLeast;
                 }
@@ -11731,7 +11731,7 @@ static class GcThreads
                 {
                     gap = gap * 2;
                 }
-                owedAtPrompt = owed;
+                owedAtPrompt = owedNow;
                 nextPrompt = turns + gap;
                 Prompts = Prompts + 1;
                 Platform.PromptStop();
