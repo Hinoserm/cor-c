@@ -298,7 +298,7 @@ internal sealed class RegionEscape
     /// </summary>
     private int[]? RunsOn(int f, int k, int site)
     {
-        if (!_copiesOf.TryGetValue(f, out List<int>? copies)) return TargetsOn!(f, k, site) is { } runs ? AsBodies(runs) : null;
+        if (!_copiesOf.TryGetValue(f, out List<int>? copies)) return TargetsOn!(f, k, site) is { } alone ? AsBodies(alone) : null;
         SortedSet<int> all = new();
         foreach (int copy in copies)
         {
