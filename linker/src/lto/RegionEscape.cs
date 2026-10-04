@@ -1995,7 +1995,13 @@ internal sealed class RegionEscape
             int dest = call.Dest < 0 ? -1 : Node(m, call.Dest);
             if (targets is null) { UnknownCall(args, dest); return; }
             if (targets.Length == 0) return;                       // no object of the type exists
-            if (_owner.IsWide(targets)) { Apply(args, dest, _owner.StandIn(targets)); return; }
+            if (_owner.IsWide(targets))
+            {
+                Summary standIn = _owner.StandIn(targets);
+                Explain(f, "(wide, a stand-in) " + call.Callee, targets, standIn);
+                Apply(args, dest, standIn);
+                return;
+            }
             int[] inside = targets.Where(_memberSet.Contains).ToArray();
             int[] outside = inside.Length == 0 ? targets : targets.Where(t => !_memberSet.Contains(t)).ToArray();
             // A VIRTUAL CALL OF MORE THAN ONE TARGET ON A RECEIVER: each
@@ -2106,6 +2112,9 @@ internal sealed class RegionEscape
                 else if (v.Outside.Length > 0) Add(Group(v, v.Outside), loc);
                 return;
             }
+            if (_owner.Why is not null && _owner.Progress is { } say && _owner.WhyFunction?.Invoke(v.F) == true)
+                say($"escape graphs why: in {_owner._functions[v.F].Name}: call {v.Callee} runs any of its {v.Inside.Length + v.Outside.Length} targets on {Describe(o)} +{_locOffset[loc]}"
+                    + (_kind[o] == Kind.Made ? " (sites " + string.Join(",", SitesOfObject(o).Take(8)) + ")" : ""));
             foreach (int g in v.Inside) Receives(g, loc);
             if (v.Outside.Length > 0) Add(Group(v, v.Outside), loc);
         }
@@ -2151,7 +2160,8 @@ internal sealed class RegionEscape
         private void Explain(int f, string? callee, int[] targets, Summary applied)
         {
             if (_owner.Why is null || _owner.Progress is null || _owner.WhyFunction?.Invoke(f) != true) return;
-            var leaks = applied.Cells.Where(c => c.From == 0).Select(c => applied.Objects[c.To]).Select(o => o.Kind + " " + o.Param + " [" + string.Join(",", o.Path.Select(Step)) + "]");
+            var leaks = applied.Cells.Where(c => c.From == 0).Select(c => applied.Objects[c.To]).Select(o => o.Kind + " " + o.Param + " [" + string.Join(",", o.Path.Select(Step)) + "]"
+                + (o.Kind == Kind.Made && o.Origins.Length > 0 ? " (sites " + string.Join(",", _owner.SitesOf(o.Origins).Take(8)) + ")" : ""));
             if (applied.IsUnknown || leaks.Any())
                 _owner.Progress($"escape graphs why: in {_owner._functions[f].Name}: call {callee} ({targets.Length} targets{(targets.Length == 1 ? " " + _owner._functions[targets[0]].Name : "")}) {(applied.IsUnknown ? "is the unknown call" : "leaks " + string.Join("; ", leaks))}");
         }
