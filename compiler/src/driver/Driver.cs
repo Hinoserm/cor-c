@@ -599,7 +599,12 @@ public static class Driver
         Corsac.Lang.Lower.Lowering.Freestanding = freestanding;
         Corsac.Lang.Lower.Lowering.TlsGs = freestanding && args.Contains("--tls-gs");
         Corsac.Lang.Lower.Lowering.Ring1Syscalls = freestanding && args.Contains("--ring1-syscalls");
-        // Its threads are stopped at any instruction (Lowering.CardMarkBefore).
+        // ITS THREADS ARE STOPPED AT ANY INSTRUCTION: every reference store is
+        // made one sequence no thread is stopped inside (Lowering.StoreSequences;
+        // --store-sequences asks for them in any freestanding image, for a test
+        // run as a process). The card mark before a store stays only for a store
+        // that cannot be made one (Lowering.CardMarkBefore): a sequence drops it.
+        Corsac.Lang.Lower.Lowering.StoreSequences = freestanding && (Corsac.Lang.Lower.Lowering.Ring1Syscalls || args.Contains("--store-sequences"));
         Corsac.Lang.Lower.Lowering.CardMarkBefore = Corsac.Lang.Lower.Lowering.Ring1Syscalls;
 
         // --asm-entry: an assembled object supplies `_start`, and this is the

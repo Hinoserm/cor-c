@@ -103,4 +103,19 @@ public enum MOp : byte
     /// and it destroys none, so nothing live is spilled around it.
     /// </summary>
     CallKeep,
+    /// <summary>
+    /// CallKeep through a register: `call r`, to a stub of another image
+    /// (a module's to its kernel's store sequences, X86Backend.RefStoreStub),
+    /// whose address a position-independent object reads from its GOT. Its
+    /// first operand is the target; the rest are the registers the stub
+    /// reads, as CallKeep's.
+    /// </summary>
+    CallKeepInd,
+    /// <summary>
+    /// CallKeep to a stub that answers in EAX (X86Backend's reference
+    /// exchanges): every other register kept, EAX written.
+    /// </summary>
+    CallKeepEax,
+    /// <summary>CallKeepEax through a register, as CallKeepInd is CallKeep's.</summary>
+    CallKeepEaxInd,
 }
