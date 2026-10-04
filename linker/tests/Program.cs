@@ -21,7 +21,10 @@ public static partial class Program
 
     public static int Main(string[] args)
     {
-        _dir = args.Length > 0 ? args[0] : Path.Combine(Path.GetTempPath(), "corsac-elf-tests");
+        // Beside the test program, in the build output, unless told
+        // otherwise: never the machine's temporary directory, which on a
+        // build host is a small tmpfs other jobs fill and share.
+        _dir = args.Length > 0 ? args[0] : Path.Combine(AppContext.BaseDirectory, "elf-tests");
         Directory.CreateDirectory(_dir);
         Console.WriteLine($"work directory: {_dir}");
 
