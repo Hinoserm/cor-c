@@ -70,6 +70,24 @@ public sealed partial class Lowering
     public static bool Ring1Syscalls { get; set; }
 
     /// <summary>
+    /// THE CARD MARK BEFORE A REFERENCE STORE AS WELL AS AFTER IT: the
+    /// program's threads can be stopped by its collector at ANY instruction,
+    /// not only at a poll or a call. CORSAC's ring-1 kernels are: ring 0
+    /// sends a thread that owes their collector an answer to its handshake
+    /// from wherever the trap found it (Ring1Kernel.SendToAnswer). With the
+    /// mark only after the store, a thread sent there between the two, its
+    /// value already in the old object and in no register any more, left the
+    /// card unset while a minor cycle took the cards, and the young object
+    /// was swept with an old one still holding it. With a mark before too,
+    /// the card is set for every store a stop can fall inside: taken before
+    /// the store, the value is still in the stopped thread's registers, which
+    /// its handshake saved on its stack; taken after it, the old object holds
+    /// it and its card was read. The mark after stays, for a cycle that takes
+    /// the cards while the thread runs. Set with --ring1-syscalls.
+    /// </summary>
+    public static bool CardMarkBefore { get; set; }
+
+    /// <summary>
     /// The runtime and the class library are shared objects this program
     /// links rather than source compiled into it.
     ///
