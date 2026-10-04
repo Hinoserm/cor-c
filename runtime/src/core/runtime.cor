@@ -1203,7 +1203,10 @@ static class Runtime
             // Cleared first: the object's owned-field map (FreeOwnedFields)
             // may name the same field, and must find it empty.
             Sys.Poke(at + offset, 0);
-            if (CollectorLinked() && Gc.VerifyingFieldFrees)
+            // The checked mode poisons and keeps a heap block: a region's
+            // goes with its region, as FreeHeld sends it, and is no block of
+            // the heap's to mark freed -- a cell of no type among them.
+            if (CollectorLinked() && Gc.VerifyingFieldFrees && !Gc.InOwnRegion(held))
             {
                 Gc.FreeFieldChecked(held);
                 return;
