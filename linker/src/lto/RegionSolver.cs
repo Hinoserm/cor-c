@@ -74,11 +74,24 @@ public static class RegionSolver
     {
         // CONTEXTS AS FAR AS THE BUDGET GOES: two objects deep, then one, then none
         // at all -- every function one copy, coarser but far smaller.
-        foreach (int depth in new[] { 2, 1, 0 })
+        //
+        // NONE FIRST, to know whether any can fit. A deeper context only
+        // copies more, so a solve too big with none is too big with any: the
+        // compiler's own link outgrew the budget at two, one and none in turn,
+        // a minute each for nothing, and the third, in a heap the first two
+        // had broken up, ran a 32-bit process out of room. The answer kept is
+        // still the deepest that fits; the coarse one is kept, not made again.
+        Solver coarse = new(units, virtuals, methodAt, entry, foreign, report, live, 0, noReference) { LoopRegions = loops };
+        RegionFacts?[]? coarseFacts = coarse.Run();
+        if (coarseFacts is not null || !coarse.TooBig)
         {
-            Solver solver = new(units, virtuals, methodAt, entry, foreign, report, live, depth, noReference) { LoopRegions = loops };
-            if (solver.Run() is { } facts) return facts;
-            if (!solver.TooBig) break;
+            foreach (int depth in new[] { 2, 1 })
+            {
+                Solver solver = new(units, virtuals, methodAt, entry, foreign, report, live, depth, noReference) { LoopRegions = loops };
+                if (solver.Run() is { } facts) return facts;
+                if (!solver.TooBig) { coarseFacts = null; break; }
+            }
+            if (coarseFacts is not null) return coarseFacts;
         }
         Console.Error.WriteLine("regions: nothing made a region");
         return null;
