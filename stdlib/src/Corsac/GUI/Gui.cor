@@ -208,6 +208,13 @@ enum SeatIoctl : long
     AnimateCaption = 0x47550604,
     WindowPixels = 0x47550605,
     ShellWindowTitle = 0x47550606,
+    // The display and layered windows (seatdisplay.cor, seatlayers.cor).
+    ModeTry = 0x47550A00,
+    ModeKeep = 0x47550A01,
+    ModeRevert = 0x47550A02,
+    MonitorInfo = 0x47550A03,
+    Layer = 0x47550A04,
+    LayerPixels = 0x47550A05,
 }
 
 public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
@@ -616,6 +623,90 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
         Sys.PokeWord(at + 8, refresh);
         Sys.PokeWord(at + 12, bits);
         return Ioctl(SeatIoctl.SetModeExact, at) == 0;
+    }
+
+    /// A MODE TRIED, as desk.cpl tries one: set now, and put back by the
+    /// seat itself unless KeepMode comes within `seconds` (0: 15) -- so a
+    /// mode the monitor cannot show undoes itself with nobody able to see
+    /// to answer. ModeTrialEnded says how it ended. False for a mode the
+    /// display does not have, or while another program's trial runs.
+    public bool TryMode(int width, int height, int refresh, int bits, int seconds)
+    {
+        Flush();
+        byte[] request = new byte[20];
+        long at = Sys.ArrayData(request);
+        Sys.PokeWord(at, width); Sys.PokeWord(at + 4, height); Sys.PokeWord(at + 8, refresh);
+        Sys.PokeWord(at + 12, bits); Sys.PokeWord(at + 16, seconds);
+        return Ioctl(SeatIoctl.ModeTry, at) == 0;
+    }
+
+    /// The mode tried kept ("Keep these settings").
+    public bool KeepMode() { return Ioctl(SeatIoctl.ModeKeep, 0) == 0; }
+
+    /// The mode tried given up now, the one before back.
+    public bool RevertMode() { return Ioctl(SeatIoctl.ModeRevert, 0) == 0; }
+
+    /// The trial is over (an event's kind): A 1 kept, 0 put back. And the
+    /// work area changed: A its height.
+    public const int WorkAreaChanged = 280, ModeTrialEnded = 281;
+
+    /// <summary>One monitor as the seat describes it.</summary>
+    public struct SeatMonitor
+    {
+        public int X, Y, Width, Height;
+        public int WorkX, WorkY, WorkWidth, WorkHeight;
+        public int Bits, Refresh;
+        public bool Primary;
+    }
+
+    /// Monitor `index` (0 the first); false past the last.
+    public bool MonitorAt(int index, out SeatMonitor monitor)
+    {
+        monitor = new SeatMonitor();
+        byte[] info = new byte[48];
+        long at = Sys.ArrayData(info);
+        Sys.PokeWord(at, index);
+        if (Ioctl(SeatIoctl.MonitorInfo, at) <= 0) return false;
+        monitor.X = (int)Sys.PeekWord(at + 4); monitor.Y = (int)Sys.PeekWord(at + 8);
+        monitor.Width = (int)Sys.PeekWord(at + 12); monitor.Height = (int)Sys.PeekWord(at + 16);
+        monitor.WorkX = (int)Sys.PeekWord(at + 20); monitor.WorkY = (int)Sys.PeekWord(at + 24);
+        monitor.WorkWidth = (int)Sys.PeekWord(at + 28); monitor.WorkHeight = (int)Sys.PeekWord(at + 32);
+        monitor.Bits = (int)Sys.PeekWord(at + 36); monitor.Refresh = (int)Sys.PeekWord(at + 40);
+        monitor.Primary = (Sys.PeekWord(at + 44) & 1) != 0;
+        return true;
+    }
+
+    /// How many monitors there are.
+    public int MonitorCount()
+    {
+        byte[] info = new byte[48];
+        long answer = Ioctl(SeatIoctl.MonitorInfo, Sys.ArrayData(info));
+        return answer > 0 ? (int)answer : 1;
+    }
+
+    /// A window layered: composed over what is under it with a constant
+    /// `alpha` (255 opaque), `colourKey` (a COLORREF, -1 none) not drawn,
+    /// its own per-pixel alpha with `perPixel`, and the pointer passing
+    /// through with `clickThrough` -- SetLayeredWindowAttributes' work. Not
+    /// `on`: an ordinary window again.
+    public void SetLayer(int window, bool on, int alpha, int colourKey, bool perPixel, bool clickThrough)
+    {
+        Flush(); Select(window);
+        byte[] args = new byte[12];
+        PutWord(args, 0, (on ? 1 : 0) | (perPixel ? 2 : 0) | (clickThrough ? 4 : 0)); PutWord(args, 4, alpha); PutWord(args, 8, colourKey);
+        Ioctl(SeatIoctl.Layer, Sys.ArrayData(args));
+    }
+
+    /// UpdateLayeredWindow's native equivalent: the window shown as this
+    /// picture -- 0xAARRGGBB, premultiplied, top row first -- with its own
+    /// alpha per pixel, from now on.
+    public void SetLayerPixels(int window, int width, int height, int[] argb)
+    {
+        Flush();
+        byte[] args = new byte[16];
+        PutWord(args, 0, window); PutWord(args, 4, width); PutWord(args, 8, height); PutWord(args, 12, Sys.ArrayData(argb));
+        Ioctl(SeatIoctl.LayerPixels, Sys.ArrayData(args));
+        GC.KeepAlive(argb);
     }
 
     /// The refresh rate in use, or zero where the card chose it.

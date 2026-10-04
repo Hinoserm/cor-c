@@ -1650,6 +1650,57 @@ public class Form : ScrollableControl
             seat.SetFrameIconImage(_handle, _icon != null ? (long)_icon.Handle : 0);
             _iconSent = true;
         }
+        if (!_layerSent)
+        {
+            // Opacity and TransparencyKey are the seat's layered window, as
+            // .NET's are WS_EX_LAYERED and SetLayeredWindowAttributes.
+            bool layered = _opacity < 1.0 || !_transparencyKey.IsEmpty;
+            int key = _transparencyKey.IsEmpty ? -1 : _transparencyKey.R | (_transparencyKey.G << 8) | (_transparencyKey.B << 16);
+            if (layered || _layerOn) seat.SetLayer(_handle, layered, (int)(_opacity * 255 + 0.5), key, false, false);
+            _layerOn = layered;
+            _layerSent = true;
+        }
+    }
+
+    double _opacity = 1.0;
+    Color _transparencyKey = Color.Empty;
+    bool _layerSent = true, _layerOn;
+
+    /// .NET's Opacity: 0 to 1, the whole form drawn that much over what is
+    /// under it; below 1 the form is a layered window of the seat's.
+    public double Opacity
+    {
+        get { return _opacity; }
+        set { _opacity = value < 0 ? 0 : value > 1 ? 1 : value; _layerSent = false; SendFrame(); }
+    }
+
+    /// .NET's TransparencyKey: where the form is this colour, it is not
+    /// drawn and the pointer passes through to what is under it.
+    public Color TransparencyKey
+    {
+        get { return _transparencyKey; }
+        set { _transparencyKey = value; _layerSent = false; SendFrame(); }
+    }
+
+    /// .NET's AllowTransparency: set by Opacity and TransparencyKey as they
+    /// need it; setting it false takes both away.
+    public bool AllowTransparency
+    {
+        get { return _layerOn || _opacity < 1.0 || !_transparencyKey.IsEmpty; }
+        set { if (!value) { _opacity = 1.0; _transparencyKey = Color.Empty; _layerSent = false; SendFrame(); } }
+    }
+
+    /// The form shown as a picture with its own alpha per pixel --
+    /// UpdateLayeredWindow's native equivalent (CORSAC's): its pixels
+    /// 0xAARRGGBB premultiplied, as big as the form.
+    public void SetLayeredPicture(Bitmap picture)
+    {
+        if (_handle == 0) return;
+        int[] argb = new int[picture.Width * picture.Height];
+        for (int i = 0; i < argb.Length; i++)
+            argb[i] = (picture.Pixels[i * 4] & 255) | ((picture.Pixels[i * 4 + 1] & 255) << 8) | ((picture.Pixels[i * 4 + 2] & 255) << 16) | ((picture.Pixels[i * 4 + 3] & 255) << 24);
+        Seat.Current.SetLayerPixels(_handle, picture.Width, picture.Height, argb);
+        _layerOn = true;
     }
 
     /// A caption button, or the caption double-clicked: WM_SYSCOMMAND,
@@ -2235,21 +2286,69 @@ public static class Cursors
 /// </summary>
 public class Screen
 {
-    Screen() { }
+    readonly int _index;
+    Screen(int index) { _index = index; }
 
-    static readonly Screen _primary = new Screen();
+    static Screen[] _all = new Screen[] { new Screen(0) };
 
-    public static Screen PrimaryScreen { get { return _primary; } }
+    /// The monitors as the seat describes them (SeatIoctl.MonitorInfo).
+    static Seat.SeatMonitor Monitor(int index)
+    {
+        Seat.SeatMonitor m;
+        try
+        {
+            if (Seat.Current.MonitorAt(index, out m)) return m;
+        }
+        catch (IOException) { }
+        m = new Seat.SeatMonitor();
+        try { m.Width = Seat.Current.Width; m.Height = Seat.Current.Height; } catch (IOException) { }
+        m.WorkWidth = m.Width; m.WorkHeight = m.Height; m.Primary = index == 0;
+        return m;
+    }
 
-    public static Screen[] AllScreens { get { return new Screen[] { _primary }; } }
+    public static Screen PrimaryScreen
+    {
+        get { foreach (Screen s in AllScreens) if (s.Primary) return s; return AllScreens[0]; }
+    }
 
-    public Rectangle Bounds { get { return new Rectangle(0, 0, Seat.Current.Width, Seat.Current.Height); } }
+    public static Screen[] AllScreens
+    {
+        get
+        {
+            int count = 1;
+            try { count = Seat.Current.MonitorCount(); } catch (IOException) { }
+            if (count < 1) count = 1;
+            if (_all.Length != count)
+            {
+                Screen[] made = new Screen[count];
+                for (int i = 0; i < count; i++) made[i] = new Screen(i);
+                _all = made;
+            }
+            return _all;
+        }
+    }
 
-    public Rectangle WorkingArea { get { return new Rectangle(0, 0, Seat.Current.Width, Seat.Current.WorkAreaHeight()); } }
+    public Rectangle Bounds { get { Seat.SeatMonitor m = Monitor(_index); return new Rectangle(m.X, m.Y, m.Width, m.Height); } }
 
-    public string DeviceName { get { return "seat0"; } }
+    /// The screen less what bars reserve (the taskbar).
+    public Rectangle WorkingArea { get { Seat.SeatMonitor m = Monitor(_index); return new Rectangle(m.WorkX, m.WorkY, m.WorkWidth, m.WorkHeight); } }
 
-    public bool Primary { get { return true; } }
+    public int BitsPerPixel { get { return Monitor(_index).Bits; } }
+
+    public string DeviceName { get { return "\\\\.\\DISPLAY" + (_index + 1); } }
+
+    public bool Primary { get { return Monitor(_index).Primary; } }
+
+    public static Screen FromControl(Control control) { return PrimaryScreen; }
+    public static Screen FromPoint(Point point) { return PrimaryScreen; }
+    public static Screen FromRectangle(Rectangle rect) { return PrimaryScreen; }
+
+    public override string ToString()
+    {
+        Rectangle b = Bounds, w = WorkingArea;
+        return "Screen[Bounds={X=" + b.X + ",Y=" + b.Y + ",Width=" + b.Width + ",Height=" + b.Height + "} WorkingArea={X=" + w.X + ",Y=" + w.Y
+             + ",Width=" + w.Width + ",Height=" + w.Height + "} Primary=" + (Primary ? "True" : "False") + " DeviceName=" + DeviceName;
+    }
 
     /// <summary>The mode changed. .NET raises SystemEvents.DisplaySettingsChanged
     /// for this; the name here says which display it was.</summary>
@@ -2258,8 +2357,18 @@ public class Screen
     internal static void RaiseChanged()
     {
         EventHandler? h = DisplaySettingsChanged;
-        if (h != null) { h(_primary, EventArgs.Empty); }
+        if (h != null) { h(PrimaryScreen, EventArgs.Empty); }
         SystemEvents.RaiseDisplaySettingsChanged();
+    }
+
+    /// A mode tried (Seat.TryMode) is over: true kept, false put back.
+    /// CORSAC's, for a display applet's "Keep these settings?".
+    public static event EventHandler<bool>? ModeTrialEnded;
+
+    internal static void RaiseTrialEnded(bool kept)
+    {
+        EventHandler<bool>? h = ModeTrialEnded;
+        if (h != null) h(PrimaryScreen, kept);
     }
 }
 
@@ -6815,7 +6924,7 @@ public static class Application
             && m.Kind != 14 && m.Kind != 15 && m.Kind != 16 && m.Kind != 17
             && m.Kind != 23 && m.Kind != 24 && m.Kind != 25 && m.Kind != 28
             && m.Kind != Seat.ClipboardChanged && m.Kind != Seat.ClipboardRender && m.Kind != Seat.ClipboardLost
-            && m.Kind != Seat.FontsChanged
+            && m.Kind != Seat.FontsChanged && m.Kind != Seat.WorkAreaChanged && m.Kind != Seat.ModeTrialEnded
             && m.Kind != Seat.TimerElapsed && m.Kind != Seat.HotKeyPressed
             && m.Kind != Seat.KeyChar && m.Kind != Seat.InputLanguageRequest && m.Kind != Seat.InputLanguageChanged
             && (m.Kind < Seat.ShellCreated || m.Kind > Seat.ShellTray)) return;
@@ -7074,6 +7183,14 @@ public static class Application
             // the size is taken again, whoever cares is told, and every
             // form repaints. A form that filled the screen is made to fill
             // the new one, which is what a desktop and a taskbar are.
+            case Seat.WorkAreaChanged:
+                // A bar took rows or gave them back: SPI_SETWORKAREA's
+                // WM_SETTINGCHANGE, which .NET raises as Desktop.
+                SystemEvents.RaiseUserPreferenceChanged(UserPreferenceCategory.Desktop);
+                break;
+            case Seat.ModeTrialEnded:
+                Screen.RaiseTrialEnded(m.A != 0);
+                break;
             case 15:
             {
                 Seat.Current.Rescreen(m.A & 0xFFFF, (m.A >> 16) & 0xFFFF);
