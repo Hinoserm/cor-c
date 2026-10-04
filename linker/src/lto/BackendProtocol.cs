@@ -252,15 +252,15 @@ public static class BackendProtocol
                 if (sized < 0 || sized > boundaries) throw new InvalidDataException("Invalid backend region fact");
                 for (int i = 0; i < sized; i++)
                 {
-                    string function = ReadText(reader); long bytes = reader.ReadInt64();
-                    if (bytes <= 0 || !regions.Boundaries.Contains(function) || !regions.BoundaryBytes.TryAdd(function, bytes)) throw new InvalidDataException("Invalid backend region size");
+                    string function = ReadText(reader); long regionBytes = reader.ReadInt64();
+                    if (regionBytes <= 0 || !regions.Boundaries.Contains(function) || !regions.BoundaryBytes.TryAdd(function, regionBytes)) throw new InvalidDataException("Invalid backend region size");
                 }
                 sized = reader.ReadInt32();
                 if (sized < 0 || sized > loops) throw new InvalidDataException("Invalid backend region fact");
                 for (int i = 0; i < sized; i++)
                 {
-                    string function = ReadText(reader); int header = reader.ReadInt32(); long bytes = reader.ReadInt64();
-                    if (bytes <= 0 || !regions.Loops.Contains((function, header)) || !regions.LoopBytes.TryAdd((function, header), bytes)) throw new InvalidDataException("Invalid backend region size");
+                    string function = ReadText(reader); int header = reader.ReadInt32(); long regionBytes = reader.ReadInt64();
+                    if (regionBytes <= 0 || !regions.Loops.Contains((function, header)) || !regions.LoopBytes.TryAdd((function, header), regionBytes)) throw new InvalidDataException("Invalid backend region size");
                 }
                 facts.Regions = regions;
             }

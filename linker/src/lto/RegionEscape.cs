@@ -1527,7 +1527,7 @@ internal sealed class RegionEscape
             int made = _locObject.Count;
             _locations[key] = made;
             _locObject.Add(o); _locOffset.Add(offset);
-            _locClass.Add(o == 0 ? UnknownClass : _kind[o] switch { Kind.Made => MadeClass, Kind.Place or Kind.Deep => PlaceClass, _ => 0 });
+            _locClass.Add(o == 0 ? UnknownClass : _kind[o] switch { Kind.Made => MadeClass, Kind.Place or Kind.Deep => PlaceClass, _ => (byte)0 });
             return made;
         }
 
