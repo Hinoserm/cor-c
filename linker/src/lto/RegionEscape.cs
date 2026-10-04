@@ -964,7 +964,18 @@ internal sealed class RegionEscape
         private readonly List<int[]?> _deltaBuf = new();
         private readonly List<int> _deltaLen = new();
         private readonly Stack<int[]> _spareDeltas = new();
-        private readonly Queue<int> _work = new();
+        // THE NODES WITH SOMETHING TO CARRY, in wave order: by each node's
+        // place in the copy graph as it last stood (Collapse), sources first,
+        // so a node is carried once after what feeds it rather than once for
+        // each of its feeders. A node made since is carried after those.
+        private readonly PriorityQueue<int, int> _work = new();
+        private readonly List<int> _wave = new();
+        // NODES ON ONE CYCLE OF COPIES ARE ONE NODE (Collapse): each node's
+        // representative, by union-find. What a node holds, and its edges,
+        // are its representative's; every edge and every addition is made to
+        // the representative.
+        private readonly List<int> _parent = new();
+        private long _copyEdges, _edgesAtCollapse;
         // Each copy edge once (CopyEdge): a second of the same carries
         // nothing the first has not, wherever it falls in the list.
         private readonly HashSet<long> _plainCopies = new();
@@ -1011,6 +1022,7 @@ internal sealed class RegionEscape
         private int NewNode()
         {
             _pts.Add(null); _copies.Add(null); _loads.Add(null); _stores.Add(null); _readsAll.Add(null); _deltaBuf.Add(null); _deltaLen.Add(0);
+            _parent.Add(_pts.Count - 1); _wave.Add(int.MaxValue);
             _madeHeld.Add(0); _nodeFlags.Add(0);
             if (_pts.Count > _mostNodes) Overflowed = true;
             return _pts.Count - 1;
@@ -1121,6 +1133,7 @@ internal sealed class RegionEscape
         private void Add(int node, int loc)
         {
             if (loc < 0) return;
+            node = Find(node);
             byte kind = _locClass[loc];
             byte flags = _nodeFlags[node];
             if ((flags & Saturated) != 0 && !((kind & PlaceClass) != 0 && (flags & PlacesDumped) == 0))
@@ -1170,7 +1183,7 @@ internal sealed class RegionEscape
             }
             buffer[length] = loc;
             _deltaLen[node] = length + 1;
-            if (length == 0) _work.Enqueue(node);
+            if (length == 0) _work.Enqueue(node, _wave[node]);
         }
 
         private int UnknownCell()
@@ -1188,9 +1201,10 @@ internal sealed class RegionEscape
         // where it goes in the same order.
         private void CopyEdge(int from, int to, int shift)
         {
+            from = Find(from); to = Find(to);
             if (from == to && shift == 0) return;
             bool fresh = shift == 0 ? _plainCopies.Add(((long)from << 32) | (uint)to) : _shiftedCopies.Add((from, to, shift));
-            if (fresh) (_copies[from] ??= new()).Add((to, shift));
+            if (fresh) { (_copies[from] ??= new()).Add((to, shift)); _copyEdges++; }
             if (_pts[from] is not { } pts) return;
             if (shift == 0) for (int i = 0, n = pts.Count; i < n; i++) Add(to, pts.Items[i]);
             else for (int i = 0, n = pts.Count; i < n; i++) Add(to, Shift(pts.Items[i], shift));
@@ -1198,12 +1212,14 @@ internal sealed class RegionEscape
 
         private void LoadEdge(int dest, int address, int offset)
         {
+            address = Find(address);
             (_loads[address] ??= new()).Add((dest, offset));
             if (_pts[address] is { } pts) for (int i = 0, n = pts.Count; i < n; i++) Loaded(pts.Items[i], dest, offset);
         }
 
         private void StoreEdge(int address, int offset, int value)
         {
+            address = Find(address);
             (_stores[address] ??= new()).Add((value, offset));
             if (_pts[address] is { } pts) for (int i = 0, n = pts.Count; i < n; i++) Stored(pts.Items[i], value, offset);
         }
@@ -1211,11 +1227,30 @@ internal sealed class RegionEscape
         // Every cell of what `address` points to, into `dest`.
         private void LoadAllEdge(int dest, int address)
         {
+            address = Find(address);
             (_readsAll[address] ??= new()).Add(dest);
             if (_pts[address] is { } pts) for (int i = 0, n = pts.Count; i < n; i++) LoadedAll(pts.Items[i], dest);
         }
 
-        // A pair of nodes (or an object and a word) as one key.
+        /// <summary>A node's representative (union-find, halving the path as it goes).</summary>
+        private int Find(int node)
+        {
+            Span<int> parent = CollectionsMarshal.AsSpan(_parent);
+            while (parent[node] != node)
+            {
+                parent[node] = parent[parent[node]];
+                node = parent[node];
+            }
+            return node;
+        }
+
+        /// <summary>What a node holds: its representative's set.</summary>
+        private LocSet? Pts(int node) => _pts[Find(node)];
+
+        // A pair of nodes (or an object and a word) as one key. Kept by the
+        // nodes as they were named, never their representatives: a load's
+        // first reading of a cell does more than add the edge (Loaded), and
+        // two cells one node are still two objects' cells.
         private static long Pair(int a, int b) => ((long)a << 32) | (uint)b;
 
         private static int Offset(int at, int offset) => at == Any || offset == Any ? Any : at + offset <= FarthestField ? at + offset : Any;
@@ -1521,8 +1556,17 @@ internal sealed class RegionEscape
 
         private void Propagate()
         {
-            while (_work.TryDequeue(out int n))
+            if (_copyEdges > _edgesAtCollapse) Collapse();
+            while (_work.TryDequeue(out int n, out _))
             {
+                // Cycles closed by the edges loads and stores have added, once
+                // there are enough new ones to be worth a walk of the graph.
+                if (_copyEdges - _edgesAtCollapse > Math.Max(4096, _edgesAtCollapse >> 2))
+                {
+                    Collapse();
+                    if (Overflowed) return;
+                    if (_deltaBuf[n] is null) continue;
+                }
                 int[]? delta = _deltaBuf[n];
                 int count = _deltaLen[n];
                 if (delta is null || count == 0) continue;
@@ -1561,6 +1605,106 @@ internal sealed class RegionEscape
                         for (int k = 0; k < count; k++) LoadedAll(delta[k], dest);
                     }
                 _spareDeltas.Push(delta);
+            }
+        }
+
+        /// <summary>
+        /// CYCLES OF COPIES COLLAPSED, and the wave order found. Nodes that copy
+        /// into each other round a cycle (shift 0) hold the same at the end,
+        /// so they are made one: Tarjan's components over the copy edges as
+        /// they stand, each merged into the member holding most. What would
+        /// be carried round the cycle once a member is carried once. Not the
+        /// unknown object's cell nor a node never cut short, whose own rules
+        /// (Add) a merge would lend to others or take from them. A merged
+        /// node holds the union of what its members would: at most it fills
+        /// past MostHeld where one alone would not, and sends what it holds
+        /// to the unknown object -- more outlives, never less.
+        /// The components come out sinks first; numbered back from there,
+        /// each node's wave is its place, sources first.
+        /// </summary>
+        private void Collapse()
+        {
+            _edgesAtCollapse = _copyEdges;
+            int count = _pts.Count;
+            int[] index = new int[count], low = new int[count], finished = new int[count];
+            Array.Fill(index, -1);
+            bool[] onStack = new bool[count];
+            int[] stack = new int[count], frameNode = new int[count], frameEdge = new int[count];
+            int sp = 0, next = 0, done = 0;
+            List<int[]> cycles = new();
+            List<int> members = new();
+            bool Collapsible(int n) => _parent[n] == n && n != _unknownCell && (_nodeFlags[n] & NeverSaturated) == 0;
+            for (int root = 0; root < count; root++)
+            {
+                if (index[root] >= 0 || !Collapsible(root) || _copies[root] is null) continue;
+                int fp = 0;
+                frameNode[0] = root; frameEdge[0] = 0;
+                index[root] = low[root] = next++; stack[sp++] = root; onStack[root] = true;
+                while (fp >= 0)
+                {
+                    int v = frameNode[fp];
+                    List<(int To, int Shift)>? edges = _copies[v];
+                    bool deeper = false;
+                    while (edges is not null && frameEdge[fp] < edges.Count)
+                    {
+                        (int to, int shift) = edges[frameEdge[fp]++];
+                        if (shift != 0) continue;
+                        int w = Find(to);
+                        if (w == v || !Collapsible(w)) continue;
+                        if (index[w] < 0)
+                        {
+                            index[w] = low[w] = next++; stack[sp++] = w; onStack[w] = true;
+                            fp++; frameNode[fp] = w; frameEdge[fp] = 0;
+                            deeper = true;
+                            break;
+                        }
+                        if (onStack[w] && index[w] < low[v]) low[v] = index[w];
+                    }
+                    if (deeper) continue;
+                    if (low[v] == index[v])
+                    {
+                        members.Clear();
+                        int w;
+                        done++;
+                        do { w = stack[--sp]; onStack[w] = false; finished[w] = done; members.Add(w); } while (w != v);
+                        if (members.Count > 1) cycles.Add(members.ToArray());
+                    }
+                    fp--;
+                    if (fp >= 0 && low[v] < low[frameNode[fp]]) low[frameNode[fp]] = low[v];
+                }
+            }
+            for (int n = 0; n < count; n++) _wave[n] = finished[n] > 0 ? done - finished[n] : int.MaxValue;
+            foreach (int[] cycle in cycles)
+            {
+                int keep = cycle[0];
+                foreach (int n in cycle) if ((_pts[n]?.Count ?? 0) > (_pts[keep]?.Count ?? 0)) keep = n;
+                Merge(keep, cycle);
+                if (Overflowed) return;
+            }
+        }
+
+        /// <summary>
+        /// The members of a cycle made `keep`: each one's edges become keep's,
+        /// carrying what keep holds along them as a new edge does, and what
+        /// each held is added to keep, carried along every edge it now has.
+        /// What a member had gained and not yet carried is in what it held.
+        /// </summary>
+        private void Merge(int keep, int[] cycle)
+        {
+            foreach (int n in cycle) if (n != keep) _parent[n] = keep;
+            foreach (int n in cycle)
+            {
+                if (n == keep) continue;
+                if (_deltaBuf[n] is { } pending) { _spareDeltas.Push(pending); _deltaBuf[n] = null; _deltaLen[n] = 0; }
+                if (_copies[n] is { } copies) { _copies[n] = null; foreach ((int to, int shift) in copies) CopyEdge(keep, to, shift); }
+                if (_loads[n] is { } loads) { _loads[n] = null; foreach ((int dest, int offset) in loads) LoadEdge(dest, keep, offset); }
+                if (_stores[n] is { } stores) { _stores[n] = null; foreach ((int value, int offset) in stores) StoreEdge(keep, offset, value); }
+                if (_readsAll[n] is { } all) { _readsAll[n] = null; foreach (int dest in all) LoadAllEdge(dest, keep); }
+                if (_pts[n] is { } held)
+                {
+                    _pts[n] = null;
+                    for (int i = 0; i < held.Count; i++) Add(keep, held.Items[i]);
+                }
             }
         }
 
@@ -1621,7 +1765,7 @@ internal sealed class RegionEscape
             {
                 if (skipped is not null && skipped(o)) continue;
                 foreach (int node in _cells[o].Values)
-                    if (_pts[node] is { } pts)
+                    if (Pts(node) is { } pts)
                         foreach (int loc in pts)
                             if (seen.Add(_locObject[loc])) next.Push(_locObject[loc]);
             }
@@ -1630,7 +1774,7 @@ internal sealed class RegionEscape
 
         private bool Written(int o)
         {
-            foreach (int node in _cells[o].Values) if (_pts[node] is { Count: > 0 }) return true;
+            foreach (int node in _cells[o].Values) if (Pts(node) is { Count: > 0 }) return true;
             return false;
         }
 
@@ -1666,7 +1810,7 @@ internal sealed class RegionEscape
             if (Overflowed) return Summary.Unknown;
             List<int> start = new() { 0 };
             for (int o = 1; o < _kind.Count; o++) if (PlaceOf(o, m) && Written(o)) start.Add(o);
-            if (_pts[Ret(m)] is { } result) foreach (int loc in result) start.Add(_locObject[loc]);
+            if (Pts(Ret(m)) is { } result) foreach (int loc in result) start.Add(_locObject[loc]);
             HashSet<int> outside = Reached(start, o => ForeignPlace(o, m));
             outside.RemoveWhere(o => ForeignPlace(o, m));
             List<int> order = outside.Where(o => o != 0).ToList();
@@ -1681,7 +1825,7 @@ internal sealed class RegionEscape
             }
             foreach (int o in outside)
                 foreach (var (offset, node) in _cells[o])
-                    if (_pts[node] is { } pts)
+                    if (Pts(node) is { } pts)
                         foreach (int loc in pts)
                         {
                             int to = _locObject[loc];
@@ -1689,7 +1833,7 @@ internal sealed class RegionEscape
                             if (!index.TryGetValue(to, out int t)) continue;   // another member's place
                             s.Cells.Add((index[o], offset, t, _locOffset[loc]));
                         }
-            if (_pts[Ret(m)] is { } back)
+            if (Pts(Ret(m)) is { } back)
                 foreach (int loc in back)
                     if (index.TryGetValue(_locObject[loc], out int t)) s.Result.Add((t, _locOffset[loc]));
             s.Cells.Sort(); s.Result.Sort();
@@ -1732,7 +1876,7 @@ internal sealed class RegionEscape
                 next.Enqueue((0, -1));
                 while (next.TryDequeue(out var at))
                     foreach (var (offset, node) in _cells[at.O])
-                        if (_pts[node] is { } pts)
+                        if (Pts(node) is { } pts)
                             foreach (int loc in pts)
                             {
                                 int to = _locObject[loc];
@@ -1754,7 +1898,7 @@ internal sealed class RegionEscape
                 // was dead by the writer's return and freed with its region.)
                 List<int> start = new() { 0 };
                 for (int k = 0; k <= function.Parameters; k++)
-                    if (_pts[Node(m, k)] is { } held) foreach (int loc in held) start.Add(_locObject[loc]);
+                    if (Pts(Node(m, k)) is { } held) foreach (int loc in held) start.Add(_locObject[loc]);
                 for (int o = 1; o < _kind.Count; o++) if (_kind[o] is Kind.Place or Kind.Deep && Written(o)) start.Add(o);
                 SortedSet<int> escaping = new();
                 foreach (int o in Reached(start)) escaping.UnionWith(_origins[o]);
@@ -1778,7 +1922,7 @@ internal sealed class RegionEscape
         private int[] OriginsHeld(int m, int[] nodes, IEnumerable<int> slots)
         {
             List<int> start = new();
-            foreach (int n in nodes) if (n < Function(m).Nodes && _pts[Node(m, n)] is { } pts) foreach (int loc in pts) start.Add(_locObject[loc]);
+            foreach (int n in nodes) if (n < Function(m).Nodes && Pts(Node(m, n)) is { } pts) foreach (int loc in pts) start.Add(_locObject[loc]);
             foreach (int slot in slots) if (_slotObjects.TryGetValue((m, slot), out int o)) start.Add(o);
             start.RemoveAll(o => o == 0);
             SortedSet<int> origins = new();
