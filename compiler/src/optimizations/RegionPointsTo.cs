@@ -496,6 +496,117 @@ public sealed class RegionPointsTo : IModulePass
         return sites;
     }
 
+    /// <summary>
+    /// STORAGE MADE BESIDE ITS OWNER. A collection made in a region grows
+    /// inside its own methods, whose allocations no boundary proves anything
+    /// of: every array a List or a Dictionary grew into was the heap's, and
+    /// the collector's when the region ended. But an array stored into a
+    /// field the link found owns what it holds (OwnedFieldFacts) -- every
+    /// object stored there made for it and kept nowhere else, every read of
+    /// it going nowhere and dead before anything could replace it -- is
+    /// reachable through that field alone, so it is dead whenever the object
+    /// holding the field is. Made beside that object (AllocNear), it is in
+    /// the object's region when that is the innermost one open, and on the
+    /// heap otherwise: given back with the region, at the latest, with the
+    /// object it belongs to.
+    ///
+    /// Only fields the collection frees itself as it replaces them (SelfFreed,
+    /// Escape's self-replacing frees): their old values are given back by
+    /// Runtime.Free, which leaves a region's block to its region; no other
+    /// free is ever handed one. The owner is found here, on the IR as it is
+    /// now, not as the link saw it -- the body may have been inlined anywhere
+    /// since: the allocation's value, through copies, is stored only into such
+    /// fields, all of one object, held by a register written once (or a
+    /// parameter never written) whose value is there before the allocation is
+    /// made. Anything else stays where it was, on the heap.
+    /// </summary>
+    public static int MakeStorageBeside(Function f, Corsac.Lang.Lto.OwnedFieldFacts owned)
+    {
+        if (owned.SelfFreed.Count == 0) return 0;
+        List<(Block, Instr)> made = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Op == Opcode.Call && IsRewritable(i.Callee) && i.Dest is not null) made.Add((b, i));
+        if (made.Count == 0) return 0;
+        Dictionary<VReg, Instr> defs = new();
+        HashSet<VReg> many = new(), written = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Dest is { } d)
+                {
+                    written.Add(d);
+                    if (!defs.TryAdd(d, i)) many.Add(d);
+                }
+        foreach (VReg r in many) defs.Remove(r);
+        // What a register holds the object of, through copies: one written
+        // once, or a parameter never written.
+        VReg? Root(VReg r)
+        {
+            for (int hop = 0; hop < 8; hop++)
+            {
+                if (f.Params.Contains(r)) return written.Contains(r) ? null : r;
+                if (!defs.TryGetValue(r, out Instr? d)) return null;
+                if (d.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && d.Operands is [RegOperand from]) { r = from.Reg; continue; }
+                return r;
+            }
+            return null;
+        }
+        Cfg? cfg = null;
+        int beside = 0;
+        foreach ((Block home, Instr alloc) in made)
+        {
+            if (!defs.ContainsKey(alloc.Dest!)) continue;
+            // The registers that hold what it made: its own, and copies of it.
+            HashSet<VReg> names = new() { alloc.Dest! };
+            for (bool grew = true; grew;)
+            {
+                grew = false;
+                foreach (Block b in f.Blocks)
+                    foreach (Instr i in b.Instrs)
+                        if (i.Dest is { } d && !names.Contains(d) && defs.ContainsKey(d) && i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32
+                            && i.Operands is [RegOperand { Reg: var from }] && names.Contains(from))
+                        { names.Add(d); grew = true; }
+            }
+            VReg? owner = null;
+            bool ok = true;
+            foreach (Block b in f.Blocks)
+            {
+                foreach (Instr i in b.Instrs)
+                {
+                    bool storesIt = i.Op == Opcode.Store && i.Operands.Count >= 2 && i.Operands[1] is RegOperand { Reg: var value } && names.Contains(value)
+                        || i.Op is Opcode.MemCopy or Opcode.AtomicSwap or Opcode.AtomicCas && i.Operands.Skip(1).Any(o => o is RegOperand { Reg: var r } && names.Contains(r));
+                    if (!storesIt) continue;
+                    if (i.Op != Opcode.Store || i.Field is not string field || !owned.SelfFreed.Contains(field)
+                        || !owned.Fields.TryGetValue(field, out long offset) || offset != i.Offset
+                        || i.Operands[0] is not RegOperand { Reg: var into } || Root(into) is not VReg root
+                        || owner is not null && owner != root) { ok = false; break; }
+                    owner = root;
+                }
+                if (!ok) break;
+            }
+            if (!ok || owner is null) continue;
+            // The owner there before the allocation, on every way to it.
+            if (!f.Params.Contains(owner))
+            {
+                Instr def = defs[owner];
+                Block? at = f.Blocks.FirstOrDefault(b => b.Instrs.Contains(def));
+                if (at is null) continue;
+                if (ReferenceEquals(at, home))
+                {
+                    if (home.Instrs.IndexOf(def) >= home.Instrs.IndexOf(alloc)) continue;
+                }
+                else if (!(cfg ??= new Cfg(f)).Dominates(at, home)) continue;
+            }
+            int k = home.Instrs.IndexOf(alloc);
+            home.Instrs.RemoveAt(k);
+            home.Instrs.InsertRange(k, Beside(f, alloc, owner));
+            beside++;
+        }
+        // As MakeSitesInRegion: a catch closes the regions it caught out of.
+        if (beside > 0) CatchUp(f);
+        return beside;
+    }
+
     // ---- applying -------------------------------------------------------------
 
     /// <summary>

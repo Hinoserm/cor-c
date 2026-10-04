@@ -1202,7 +1202,9 @@ static class Runtime
             // Cleared first: the object's owned-field map (FreeOwnedFields)
             // may name the same field, and must find it empty.
             Sys.Poke(at + offset, 0);
-            if (CollectorLinked() && Gc.VerifyingFieldFrees)
+            // Not a region's block, which the checked free would take for a
+            // heap block gone wrong: given back with its region (FreeHeld).
+            if (CollectorLinked() && Gc.VerifyingFieldFrees && !Gc.InOwnRegion(held))
             {
                 Gc.FreeFieldChecked(held);
                 return;

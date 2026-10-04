@@ -28,6 +28,13 @@ public sealed class OwnedFieldFacts
     /// it (Opt.Escape, EscapeSelfFrees): no call is watched for replacing one.
     /// </summary>
     public HashSet<string> SelfFreed { get; } = new(StringComparer.Ordinal);
+    /// <summary>
+    /// Whether the image opens regions: then what is stored into a self-freed
+    /// field is made beside the object stored into (Runtime.AllocNear,
+    /// Opt.RegionPointsTo.MakeStorageBeside) -- in its region when it is in
+    /// the innermost one open, on the heap otherwise.
+    /// </summary>
+    public bool Beside { get; set; }
     /// <summary>The fields some unit kept the reads of from the inliner for that rule: where not proved, its calls are the inliner's again.</summary>
     public HashSet<string> ElementKept { get; } = new(StringComparer.Ordinal);
 
