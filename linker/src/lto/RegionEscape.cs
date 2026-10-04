@@ -1972,6 +1972,8 @@ internal sealed class RegionEscape
                     _dispatch[inside] = through;
                 }
                 for (int j = watched ? 1 : 0; j < args.Length && j < through.Args.Length; j++) if (args[j] >= 0) CopyEdge(args[j], through.Args[j], 0);
+                // A parameter this call passes nothing for: whatever its word holds.
+                for (int j = args.Length; j < through.Args.Length; j++) Add(through.Args[j], Unknown);
                 if (dest >= 0) CopyEdge(through.Ret, dest, 0);
             }
             if (watched)
@@ -2140,9 +2142,17 @@ internal sealed class RegionEscape
             {
                 var o = s.Objects[k];
                 int arg = o.Param >= 0 && o.Param < args.Length ? args[o.Param] : -1;
+                // A PARAMETER THE CALL PASSES NOTHING FOR is whatever its word
+                // holds: the unknown object, and what is written there
+                // escapes. (Nothing at all, a callee's writes through it
+                // were dropped.)
+                bool unpassed = o.Param >= args.Length;
                 switch (o.Kind)
                 {
                     case Kind.Unknown:
+                        node[k] = NewNode(); Add(node[k], Unknown); break;
+                    case Kind.Place when unpassed:
+                    case Kind.Deep when unpassed:
                         node[k] = NewNode(); Add(node[k], Unknown); break;
                     case Kind.Place:
                         node[k] = arg < 0 ? NewNode() : Chain(arg, o.Path);     // nothing passed that could hold an address: nothing
@@ -2892,6 +2902,7 @@ internal sealed class RegionEscape
                     _dispatch[inside] = through;
                 }
                 for (int j = 0; j < args.Length && j < through.Args.Length; j++) if (args[j] >= 0) Unify(Pointee(args[j]), Pointee(through.Args[j]));
+                for (int j = args.Length; j < through.Args.Length; j++) Unify(Pointee(through.Args[j]), _global);
                 if (dest >= 0) Unify(Pointee(dest), Pointee(through.Ret));
             }
             if (outside.Length > 0) Apply(args, dest, _owner.MergedFor(outside));
@@ -2933,6 +2944,8 @@ internal sealed class RegionEscape
                 switch (o.Kind)
                 {
                     case Kind.Unknown: cls[k] = _global; break;
+                    // A parameter the call passes nothing for: whatever its word holds.
+                    case Kind.Place or Kind.Deep when o.Param >= args.Length: cls[k] = _global; break;
                     case Kind.Place:
                         cls[k] = arg < 0 ? NewClass() : Walk(Pointee(arg), o.Path);
                         break;
