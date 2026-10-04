@@ -1,4 +1,5 @@
 // test: region_captured_cell_freed_with_its_frame_across_units
+// regions: taken
 // units: tests/language/support/1291_region_captured_cell_units.cor
 // expect-exit: 0
 // expect-output:

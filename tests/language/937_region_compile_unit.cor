@@ -1,4 +1,5 @@
 // test: region_compile_unit
+// regions: taken
 // expect-exit: 0
 // expect-output:
 // units 6000 errors 0
