@@ -816,6 +816,62 @@ internal sealed class RegionEscape
     /// </summary>
     public bool WidenFirst;
 
+    // ---- memory, for a report ---------------------------------------------
+    //
+    // Under --region-report (MemReport): the managed heap after each slow
+    // solve and each round, and what it grew by; +memtop=N (MemTop) the N
+    // components whose solves grew it most each round; at the end, the
+    // sizes of the tables that live for the whole solve (ReportTables).
+    // None of it is asked for otherwise: a heap reading is a call, a table's
+    // size a walk.
+    public bool MemReport;
+    public int MemTop;
+    /// <summary>Blobs every graph made, for a report.</summary>
+    public long TotalBlobs;
+    private readonly List<(long Grew, string What)> _memGrowth = new();
+
+    private static string Megabytes(long bytes) => (bytes >= 0 ? "+" : "") + (bytes >> 20) + " MB";
+
+    // A component's solve and what the heap did over it, for +memtop.
+    private void NoteGrowth(long before, List<int> component, string how, string describe)
+    {
+        if (MemTop <= 0) return;
+        long grew = GC.GetTotalMemory(false) - before;
+        _memGrowth.Add((grew, $"{_functions[component[0]].Name} ({component.Count}, {how}): {Megabytes(grew)}; {describe}"));
+    }
+
+    private void ReportMemTop(int round)
+    {
+        if (MemTop <= 0 || Progress is null) { _memGrowth.Clear(); return; }
+        Progress($"escape graphs: round {round}: the {Math.Min(MemTop, _memGrowth.Count)} solves the heap grew most over, of {_memGrowth.Count}");
+        foreach (var (_, what) in _memGrowth.OrderByDescending(x => x.Grew).Take(MemTop)) Progress($"escape graphs:   {what}");
+        _memGrowth.Clear();
+    }
+
+    // The tables the whole solve keeps, by size.
+    private void ReportTables()
+    {
+        if (!MemReport || Progress is null) return;
+        long holders = 0, holderObjects = 0;
+        foreach (int[]?[]? h in _holders) if (h is not null) { holders++; holderObjects += h.Length; }
+        long summaries = 0, objects = 0, cells = 0, results = 0, typed = 0;
+        foreach (Summary? x in _summaries)
+        {
+            if (x is null || x.IsUnknown) continue;
+            summaries++; objects += x.Objects.Count; cells += x.Cells.Count; results += x.Result.Count;
+            typed += (x.Fields?.Count ?? 0) + (x.CellFamilies?.Count ?? 0);
+        }
+        long read = 0, applied = 0;
+        foreach (int[]? r in _sitesReadOf) read += r?.Length ?? 0;
+        foreach (Assumed[] a in _appliedOf) applied += a.Length;
+        long standInSites = 0;
+        if (_assumed is not null) foreach (Assumed a in _assumed.Values) standInSites += a.Sites.Length + a.HeldSites.Length;
+        Progress($"escape graphs: tables: {holders} holders ({holderObjects} objects); {summaries} summaries ({objects} objects, {cells} cells, {results} results, {typed} field marks); "
+            + $"{_assumed?.Count ?? 0} stand-ins ({standInSites} sites), {_standIns.Count} built; {_merged.Count} merged summaries; {_shapes.Count} shapes; "
+            + $"{_bitsByOrigins.Count} origin bit sets; {_components.Count} components ({read} sites read, {applied} stand-ins applied); "
+            + $"{_globalRefs.Count} global, {_rootedRefs.Count} rooted origins; {TotalBlobs} blobs made; heap {GC.GetTotalMemory(false) >> 20} MB");
+    }
+
     public void Run()
     {
         if (WideTargets > 0)
@@ -824,6 +880,7 @@ internal sealed class RegionEscape
             for (int round = 1; ; round++)
             {
                 long began = System.Diagnostics.Stopwatch.GetTimestamp();
+                long roundHeap = MemReport ? GC.GetTotalMemory(false) : 0;
                 GrewShape = GrewOrigins = MadeStandIns = AgainForCallee = AgainForStandIn = AgainForSites = StraightToUnified = 0;
                 InclusionPool = InclusionPerRound;
                 int solved = round == 1 ? Order() : Again();
@@ -833,6 +890,7 @@ internal sealed class RegionEscape
                 if (round > 1 && solved == 0)
                 {
                     Progress?.Invoke($"escape graphs: round {round}: nothing to solve again, {System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds:F0} ms");
+                    ReportMemTop(round);
                     break;
                 }
                 int grew = Check(round >= WidenAfter);
@@ -840,7 +898,9 @@ internal sealed class RegionEscape
                     + $"grown in shape {GrewShape}, in sites only {GrewOrigins} (as solved and at the end); "
                     + $"{solved} of {_components.Count} components solved"
                     + (round == 1 ? "" : $" ({AgainForCallee} for a callee's summary, {AgainForStandIn} for a stand-in, {AgainForSites} for sites they read)")
-                    + $", {StraightToUnified} straight to unification, largest cycle {LargestCycle}, {Work} carried, {System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds:F0} ms");
+                    + $", {StraightToUnified} straight to unification, largest cycle {LargestCycle}, {Work} carried, {System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds:F0} ms"
+                    + (MemReport ? $", heap {GC.GetTotalMemory(false) >> 20} MB ({Megabytes(GC.GetTotalMemory(false) - roundHeap)} this round)" : ""));
+                ReportMemTop(round);
                 if (ReportStandIns) DescribeStandIns();
                 if (round == MostRounds)
                 {
@@ -854,8 +914,9 @@ internal sealed class RegionEscape
                 }
             }
         }
-        else { InclusionPool = InclusionPerRound; Order(); }
+        else { InclusionPool = InclusionPerRound; long heap = MemReport ? GC.GetTotalMemory(false) : 0; Order(); ReportMemTop(1); if (MemReport) Progress?.Invoke($"escape graphs: solved in order, heap {GC.GetTotalMemory(false) >> 20} MB ({Megabytes(GC.GetTotalMemory(false) - heap)})"); }
         Close();
+        ReportTables();
     }
 
     /// <summary>For a report, per round: stand-ins grown in shape or in their sites alone, made, and why components were solved again.</summary>
@@ -1532,6 +1593,8 @@ internal sealed class RegionEscape
         if (_how.Length != _functions.Count) _how = new How[_functions.Count];
         LargestCycle = Math.Max(LargestCycle, component.Count);
         long began = Progress is null ? 0 : System.Diagnostics.Stopwatch.GetTimestamp();
+        long heapBefore = MemReport ? GC.GetTotalMemory(false) : 0;
+        string Heap() => MemReport ? $", heap {GC.GetTotalMemory(false) >> 20} MB ({Megabytes(GC.GetTotalMemory(false) - heapBefore)})" : $", heap {GC.GetTotalMemory(false) >> 20} MB";
         long nodes = 0;
         foreach (int f in component) nodes += _functions[f].Nodes;
         if (component.Count > LargeCycle || nodes > LargeNodes)
@@ -1540,7 +1603,8 @@ internal sealed class RegionEscape
             for (int m = 0; m < component.Count; m++) Publish(component[m], u.Summarise(m));
             for (int m = 0; m < component.Count; m++) { u.Answer(m); _how[component[m]] = How.Unified; }
             Progress?.Invoke($"escape graphs: cycle of {component.Count} ({_functions[component[0]].Name}) unified in {System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds:F0} ms: "
-                + u.Describe() + $", heap {GC.GetTotalMemory(false) >> 20} MB");
+                + u.Describe() + Heap());
+            NoteGrowth(heapBefore, component, "unified", u.Describe());
             return;
         }
         // PAST ITS BOUND LAST ROUND, past it again: what it reads only grows
@@ -1560,14 +1624,16 @@ internal sealed class RegionEscape
             for (int m = 0; m < component.Count; m++) Publish(component[m], u.Summarise(m));
             for (int m = 0; m < component.Count; m++) { u.Answer(m); _how[component[m]] = How.PastBound; }
             if (g is not null && Progress is not null && System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds > 300)
-                Progress($"escape graphs: {_functions[component[0]].Name} ({component.Count}) past its bound by inclusion, unified in {System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds:F0} ms: " + g.Describe());
+                Progress($"escape graphs: {_functions[component[0]].Name} ({component.Count}) past its bound by inclusion, unified in {System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds:F0} ms: " + g.Describe() + Heap());
+            NoteGrowth(heapBefore, component, "past its bound", g?.Describe() ?? u.Describe());
             return;
         }
         for (int m = 0; m < component.Count; m++) Publish(component[m], g.Summarise(m));
         for (int m = 0; m < component.Count; m++) { g.Answer(m); _how[component[m]] = How.Inclusion; }
         if (Progress is not null && (component.Count > 50 || System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds > 300))
             Progress($"escape graphs: cycle of {component.Count} ({_functions[component[0]].Name}) in {System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds:F0} ms: "
-                + g.Describe() + $", heap {GC.GetTotalMemory(false) >> 20} MB");
+                + g.Describe() + Heap());
+        NoteGrowth(heapBefore, component, "inclusion", g.Describe());
     }
 
     // One merged summary for each set of targets, whatever call asks.
@@ -2297,7 +2363,7 @@ internal sealed class RegionEscape
         // are its representative's; every edge and every addition is made to
         // the representative.
         private readonly List<int> _parent = new();
-        private long _copyEdges, _edgesAtCollapse;
+        private long _copyEdges, _edgesAtCollapse, _loadEdges, _storeEdges;
         // Each copy edge once (CopyEdge): a second of the same carries
         // nothing the first has not, wherever it falls in the list.
         private readonly HashSet<long> _plainCopies = new();
@@ -2582,6 +2648,7 @@ internal sealed class RegionEscape
             _blobOfNode[node] = blob;
             _membersOf[blob] = new();
             _blobs++;
+            _owner.TotalBlobs++;
             int loc = Location(blob, Any);
             LocSet pts = _pts[node] ??= new();
             if (pts.Add(loc)) { Delta(node, loc); CollectionsMarshal.AsSpan(_madeHeld)[node]++; }
@@ -2693,6 +2760,7 @@ internal sealed class RegionEscape
         {
             address = Find(address);
             (_loads[address] ??= new()).Add((dest, offset, family));
+            _loadEdges++;
             if (_pts[address] is { } pts) for (int i = 0, n = pts.Count; i < n; i++) Loaded(pts.Items[i], dest, offset, family);
         }
 
@@ -2700,6 +2768,7 @@ internal sealed class RegionEscape
         {
             address = Find(address);
             (_stores[address] ??= new()).Add((value, offset, family));
+            _storeEdges++;
             if (_pts[address] is { } pts) for (int i = 0, n = pts.Count; i < n; i++) Stored(pts.Items[i], value, offset, family);
         }
 
@@ -4177,7 +4246,13 @@ internal sealed class RegionEscape
             return origins.ToArray();
         }
 
-        public string Describe() => $"{_kind.Count} objects, {_locObject.Count} locations, {_pts.Count} nodes, {_carried} carried, {_adds} offered, {_drawn} from the pool, {_saturatedCount} saturated, {_blobs} blobs{(Overflowed ? ", NOT FOLLOWED" : "")}";
+        public string Describe()
+        {
+            long cells = 0;
+            foreach (Dictionary<int, int> c in _cells) cells += c.Count;
+            return $"{_kind.Count} objects, {_locObject.Count} locations, {_pts.Count} nodes, {cells} cells, {_copyEdges + _loadEdges + _storeEdges} edges ({_copyEdges} copies, {_loadEdges} loads, {_storeEdges} stores), "
+                + $"{_carried} carried, {_adds} offered, {_drawn} from the pool, {_saturatedCount} saturated, {_blobs} blobs{(Overflowed ? ", NOT FOLLOWED" : "")}";
+        }
 
         private string Describe(int o) => _kind[o] switch
         {

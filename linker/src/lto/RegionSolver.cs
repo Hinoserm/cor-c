@@ -628,6 +628,11 @@ public static class RegionSolver
             if (_report?.FirstOrDefault(w => w.StartsWith("+cap=", StringComparison.Ordinal)) is { } capOf && long.TryParse(capOf[5..], out long cap))
                 _escape.InclusionCap = cap * 1_000_000;
             _escape.ReportStandIns = _report?.Contains("+standins") == true;
+            // Memory, for a report: the heap at each slow solve and round, and
+            // with +memtop=N the N solves it grew most over each round.
+            _escape.MemReport = _report is not null;
+            if (_report?.FirstOrDefault(w => w.StartsWith("+memtop=", StringComparison.Ordinal)) is { } memTop && int.TryParse(memTop[8..], out int top))
+                _escape.MemTop = top;
             // A trade: stand-ins with every site their targets reach from the first round.
             _escape.WidenFirst = _report?.Contains("+widefirst") == true;
             if (_report is not null && _report.Contains("+cycles")) foreach (int most in new[] { 256, 64, 16, 4 }) _escape.ReportCycles(most);
