@@ -8,7 +8,7 @@ public static class BackendProtocol
     public static readonly UTF8Encoding Utf8 = new(false, true);
     public static void WriteRequest(BinaryWriter writer, BackendRequest request)
     {
-        writer.Write((byte)0x52); writer.Write(12);
+        writer.Write((byte)0x52); writer.Write(13);
         WriteText(writer, request.Input); WriteText(writer, request.Output); writer.Write(request.Imports.Count);
         foreach (IrImport import in request.Imports)
         {
@@ -75,6 +75,8 @@ public static class BackendProtocol
                 { WriteText(writer, callee); writer.Write(argument); WriteText(writer, field); }
                 writer.Write(owned.ElementKept.Count);
                 foreach (string field in owned.ElementKept.Order(StringComparer.Ordinal)) WriteText(writer, field);
+                // Whether storage is made beside its owner (OwnedFieldFacts.Beside).
+                writer.Write(owned.Beside);
             }
             // The regions: boundaries by name, then sites by function and
             // ordinal, then loops by function and header, then the bytes the
@@ -100,7 +102,7 @@ public static class BackendProtocol
     {
         int marker = reader.BaseStream.ReadByte();
         if (marker == -1) return null;
-        if (marker != 0x52 || reader.ReadInt32() != 12) throw new InvalidDataException("Unsupported backend protocol");
+        if (marker != 0x52 || reader.ReadInt32() != 13) throw new InvalidDataException("Unsupported backend protocol");
         string input = ReadText(reader), output = ReadText(reader);
         int count = reader.ReadInt32(), bytes = 0;
         if (count < 0 || count > 256) throw new InvalidDataException("Backend import count exceeds budget");
@@ -222,6 +224,7 @@ public static class BackendProtocol
                 int kept = reader.ReadInt32();
                 if (kept < 0 || kept > 1000000) throw new InvalidDataException("Invalid backend owned-elements fact");
                 for (int i = 0; i < kept; i++) fields.ElementKept.Add(ReadText(reader));
+                fields.Beside = reader.ReadBoolean();
                 facts.OwnedFields = fields;
             }
             int boundaries = reader.ReadInt32();

@@ -248,6 +248,9 @@ public sealed class UnitBackend : IUnitBackend
             // in the frame or freed where it dies was never the region's.
             // And those of the bodies brought in that it inlined.
             if (module.RegionFacts is not null || importedSites) RegionPointsTo.MakeSitesInRegion(function);
+            // And what is grown into a field the object frees itself, made
+            // beside that object (RegionPointsTo.MakeStorageBeside).
+            if (facts?.OwnedFields is { Beside: true } beside) RegionPointsTo.MakeStorageBeside(function, beside);
             // Written out last here too: the link's lifetime pass saw them as
             // notes to the collector (CardMarks).
             new CardMarks().Run(local);

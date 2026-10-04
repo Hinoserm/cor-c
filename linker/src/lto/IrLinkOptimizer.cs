@@ -149,6 +149,14 @@ public static class IrLinkOptimizer
             }
         }
 
+        // STORAGE BESIDE ITS OWNER: where some boundary or loop opens a region,
+        // what a collection grows into, stored into a field it frees itself as
+        // it replaces it, is made beside the collection (AllocNear) -- in the
+        // collection's region when that is the innermost one open. Nowhere a
+        // region opens, it would only ever be the heap's, by a longer way.
+        if (ownedFields is { SelfFreed.Count: > 0 } && regionFacts is { Count: > 0 } && owners.ContainsKey(RuntimeAbi.AllocNear))
+            ownedFields.Beside = true;
+
         // WHAT THE SOLVE HELD, given back before the units are regenerated:
         // its graph over every unit -- most of a gigabyte for the compiler's
         // own build, given up on or not -- was garbage the collector had no
