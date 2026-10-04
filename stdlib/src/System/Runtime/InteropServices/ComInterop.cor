@@ -1006,7 +1006,7 @@ namespace System.Runtime.InteropServices
             else if (o is uint u4) { vt = VtUi4; Sys.PokeWord(data, u4); }
             else if (o is ulong u8) { vt = VtUi8; WriteI8(data, (long)u8); }
             else if (o is char ch) { vt = VtUi2; Sys.PokeHalf(data, ch); }
-            else if (o is DateTime when) { vt = VtDate; WriteR8(data, ToOADate(when)); }
+            else if (o is DateTime date) { vt = VtDate; WriteR8(data, ToOADate(date)); }
             else if (o is ErrorWrapper ew) { vt = VtError; Sys.PokeWord(data, ew.ErrorCode); }
             else if (o is BStrWrapper bw) { vt = VtBstr; Sys.Poke(data, AllocBstr(bw.WrappedObject)); }
             else if (o is UnknownWrapper uw) { vt = VtUnknown; Sys.Poke(data, InterfaceFor(uw.WrappedObject, IidIUnknown)); }

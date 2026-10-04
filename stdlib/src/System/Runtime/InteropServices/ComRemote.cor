@@ -295,14 +295,21 @@ namespace System.Runtime.InteropServices
         /// A frame sent, its answer read: the status checked, the NDR answered.
         public static byte[] Exchange(string socket, byte[] body)
         {
-            ComConnection c;
-            lock (_connections)
+            // The NT kernel's relay answers one request a connection; a
+            // native exporter keeps one open a client.
+            byte[] answer;
+            if (socket == NtSocket) answer = ComConnection.Once(socket, Frame(body));
+            else
             {
-                ComConnection? had;
-                if (!_connections.TryGetValue(socket, out had) || had == null) { had = new ComConnection(socket); _connections[socket] = had; }
-                c = had;
+                ComConnection c;
+                lock (_connections)
+                {
+                    ComConnection? had;
+                    if (!_connections.TryGetValue(socket, out had) || had == null) { had = new ComConnection(socket); _connections[socket] = had; }
+                    c = had;
+                }
+                answer = c.Exchange(Frame(body));
             }
-            byte[] answer = c.Exchange(Frame(body));
             if (answer.Length < 8) throw new COMException("The RPC protocol was not followed (RPC_S_PROTOCOL_ERROR).", unchecked((int)0x800706C0));
             int status = Get(answer, 0);
             int length = Get(answer, 4);
@@ -325,6 +332,23 @@ namespace System.Runtime.InteropServices
         int _fd = -1;
 
         public ComConnection(string socket) { _socket = socket; }
+
+        /// One frame on a connection of its own, its answer read, the connection closed.
+        public static byte[] Once(string socket, byte[] frame)
+        {
+            int fd = ComTransport.Connect(socket);
+            if (fd < 0) throw new COMException("The RPC server is unavailable: " + socket + " (RPC_S_SERVER_UNAVAILABLE).", unchecked((int)0x800706BA));
+            try
+            {
+                if (ComTransport.SendAll(fd, frame))
+                {
+                    byte[]? answer = ComTransport.ReceiveFrame(fd);
+                    if (answer != null) return answer;
+                }
+                throw new COMException("The remote procedure call failed: " + socket + " ended the connection (RPC_S_CALL_FAILED).", unchecked((int)0x800706BE));
+            }
+            finally { Os.Close(fd); }
+        }
 
         public byte[] Exchange(byte[] frame)
         {
@@ -846,7 +870,7 @@ namespace System.Runtime.InteropServices
         static int _nextIpid;
         static string _endpoint = "";
         static byte[] _remUnknown = new byte[16];
-        static readonly Dictionary<string, Export> _byIpid = new Dictionary<string, Export>();
+        static readonly Dictionary<string, ExportEntry> _byIpid = new Dictionary<string, ExportEntry>();
         static readonly Dictionary<long, Exported> _byObject = new Dictionary<long, Exported>();
 
         static ComExporter()
@@ -858,10 +882,10 @@ namespace System.Runtime.InteropServices
         {
             public object Target = null!;
             public long Oid;
-            public readonly Dictionary<string, Export> ByIid = new Dictionary<string, Export>();
+            public readonly Dictionary<string, ExportEntry> ByIid = new Dictionary<string, ExportEntry>();
         }
 
-        sealed class Export
+        sealed class ExportEntry
         {
             public Exported Owner = null!;
             public string Iid = "";
@@ -1011,12 +1035,12 @@ namespace System.Runtime.InteropServices
         public static byte[] Export(object o, string iid)
         {
             Start();
-            Export e = ExportOf(o, ComMarshal.Normal(iid), 5);
+            ExportEntry e = ExportOf(o, ComMarshal.Normal(iid), 5);
             ComObjRef r = new ComObjRef { Iid = e.Iid, Flags = ComObjRef.NoPing, PublicRefs = 5, Oxid = _oxid, Oid = e.Owner.Oid, Ipid = e.Ipid };
             return r.Write();
         }
 
-        static Export ExportOf(object o, string iid, int refs)
+        static ExportEntry ExportOf(object o, string iid, int refs)
         {
             lock (_lock)
             {
@@ -1027,14 +1051,14 @@ namespace System.Runtime.InteropServices
                     x = new Exported { Target = o, Oid = _nextOid++ };
                     _byObject[key] = x;
                 }
-                Export? e;
+                ExportEntry? e;
                 if (!x.ByIid.TryGetValue(iid, out e) || e == null)
                 {
                     ComCallableWrapper ccw = ComCallable.For(o);
                     nint pointer = o is ComClassObject ? 0 : ccw.Query(iid);
                     if (pointer == 0 && !(o is ComClassObject && (iid == IidIClassFactory || iid == ComMarshal.IidIUnknown)))
                         throw new InvalidCastException("The object does not have the interface " + iid + " (E_NOINTERFACE).");
-                    e = new Export { Owner = x, Iid = iid, Ipid = NewIpid(), Pointer = pointer, Entry = pointer == 0 ? null : ccw.EntryOf(pointer) };
+                    e = new ExportEntry { Owner = x, Iid = iid, Ipid = NewIpid(), Pointer = pointer, Entry = pointer == 0 ? null : ccw.EntryOf(pointer) };
                     x.ByIid[iid] = e;
                     _byIpid[Key(e.Ipid)] = e;
                 }
@@ -1048,7 +1072,7 @@ namespace System.Runtime.InteropServices
         {
             lock (_lock)
             {
-                Export? e;
+                ExportEntry? e;
                 return _byIpid.TryGetValue(Key(ipid), out e) && e != null ? e.Owner.Target : null;
             }
         }
@@ -1058,14 +1082,14 @@ namespace System.Runtime.InteropServices
         {
             lock (_lock)
             {
-                Export? e;
+                ExportEntry? e;
                 if (_byIpid.TryGetValue(Key(ipid), out e) && e != null) Drop(e, refs);
             }
         }
 
         /// `refs` public references let go of: at 0 the IPID ends, its
         /// interface pointer released, and with the last the object's OID.
-        static void Drop(Export e, int refs)
+        static void Drop(ExportEntry e, int refs)
         {
             e.PublicRefs -= refs;
             if (e.PublicRefs > 0) return;
@@ -1081,7 +1105,7 @@ namespace System.Runtime.InteropServices
         {
             status = 0;
             if (Key(ipid) == Key(_remUnknown)) return RemUnknown(opnum, ndr, out status);
-            Export? e;
+            ExportEntry? e;
             lock (_lock) { if (!_byIpid.TryGetValue(Key(ipid), out e)) e = null; }
             if (e == null)
             {
@@ -1104,7 +1128,7 @@ namespace System.Runtime.InteropServices
         /// A vtable entry's call: its arguments read by the signature, the
         /// call made through the interface pointer as a caller in this
         /// process would, the [out]s and the HRESULT written back.
-        static byte[] Vtable(Export e, int opnum, string signature, byte[] ndr)
+        static byte[] Vtable(ExportEntry e, int opnum, string signature, byte[] ndr)
         {
             NdrReader r = new NdrReader(ndr);
             r.OrpcThis();
@@ -1155,7 +1179,7 @@ namespace System.Runtime.InteropServices
                 r.Long();
                 List<byte[]> iids = new List<byte[]>();
                 for (int i = 0; i < count; i++) iids.Add(r.Guid());
-                Export? from;
+                ExportEntry? from;
                 lock (_lock) { if (!_byIpid.TryGetValue(Key(ripid), out from)) from = null; }
                 if (from == null) { w.Long(0); w.Long(Disconnected); return w.ToArray(); }
                 w.Long(w.Referent());
@@ -1163,7 +1187,7 @@ namespace System.Runtime.InteropServices
                 foreach (byte[] iid in iids)
                 {
                     w.Align(8);
-                    Export? got = null;
+                    ExportEntry? got = null;
                     int hr = 0;
                     try { got = ExportOf(from.Owner.Target, ComMarshal.Normal(new Guid(iid).ToString()), Math.Max(refs, 1)); }
                     catch (Exception) { hr = ComMarshal.ENoInterface; }
@@ -1190,7 +1214,7 @@ namespace System.Runtime.InteropServices
                         byte[] ipid = r.Bytes(16);
                         int publicRefs = r.Int();
                         r.Int();                                    // private references
-                        Export? e;
+                        ExportEntry? e;
                         if (!_byIpid.TryGetValue(Key(ipid), out e) || e == null) { results.Add(ComMarshal.EInvalidArg); continue; }
                         if (opnum == 4) e.PublicRefs += publicRefs;
                         else Drop(e, publicRefs);
@@ -1203,6 +1227,37 @@ namespace System.Runtime.InteropServices
                     foreach (int hr in results) w.Long(hr);
                 }
                 w.Long(0);
+                return w.ToArray();
+            }
+            if (opnum == 6)
+            {
+                // IRemUnknown2::RemQueryInterface2: each interface's
+                // HRESULT and its whole OBJREF.
+                byte[] ripid = r.Guid();
+                int count = r.Short();
+                r.Long();
+                List<byte[]> iids = new List<byte[]>();
+                for (int i = 0; i < count; i++) iids.Add(r.Guid());
+                ExportEntry? from;
+                lock (_lock) { if (!_byIpid.TryGetValue(Key(ripid), out from)) from = null; }
+                List<int> results = new List<int>();
+                List<byte[]?> objrefs = new List<byte[]?>();
+                foreach (byte[] iid in iids)
+                {
+                    try
+                    {
+                        if (from == null) throw new InvalidOperationException();
+                        objrefs.Add(Export(from.Owner.Target, ComMarshal.Normal(new Guid(iid).ToString())));
+                        results.Add(0);
+                    }
+                    catch (Exception) { objrefs.Add(null); results.Add(ComMarshal.ENoInterface); }
+                }
+                w.Long(count);
+                foreach (int hr in results) w.Long(hr);
+                w.Long(count);
+                foreach (byte[]? o in objrefs) w.Long(o == null ? 0 : w.Referent());
+                foreach (byte[]? o in objrefs) if (o != null) w.InterfaceBody(o);
+                w.Long(from == null ? Disconnected : 0);
                 return w.ToArray();
             }
             status = OperationRange;
@@ -1377,7 +1432,7 @@ namespace System.Runtime.InteropServices
         {
             Start();
             ComClassObject factory = new ComClassObject(create);
-            Export e = ExportOf(factory, IidIClassFactory, 1);
+            ExportEntry e = ExportOf(factory, IidIClassFactory, 1);
             WireWriter w = new WireWriter();
             w.Int(ComBroker.Key);
             w.Int(1);
