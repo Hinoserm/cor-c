@@ -1,0 +1,100 @@
+// test: a kernel's async contract on the bare-metal runtime -- context flows with each continuation, and an interrupt's completion is finished by the scheduler
+// expect-exit: 0
+// expect-output:
+// flow a resumed in a
+// flow b resumed in b
+// flow a again in a
+// flow b again in b
+// outside z
+// statics a=1 b=2
+// interrupt 42 in z
+// late handler False
+//
+// What a kernel gets when it installs Platform.ContextHook (AsyncContext):
+// each continuation runs in what was current where it was registered -- here
+// an Owner object standing for the kernel's process -- and the flow's
+// [ThreadStatic] cells are its own, whichever block it lands on. Two flows
+// interleave on Task.Yield; each sees its own owner and its own static, and
+// the code outside them sees its own again after. Then the interrupt half
+// (InterruptCompletions): a task armed, completed as a handler completes it
+// -- nothing allocated, nothing run -- and finished by the scheduler's round,
+// its continuation resuming in its own context; a second completion of the
+// same handle, a late interrupt, completes nothing. No timer: the host has
+// no 8254 for Clock to read.
+
+using System;
+
+class Owner
+{
+    public string Name;
+    public Owner(string name) { Name = name; }
+}
+
+static class Program
+{
+    static object? _current;
+    [ThreadStatic] static int _mine;
+    static int _seenA, _seenB;
+
+    /// Platform.ContextHook: the "process" is _current.
+    static long Context(long op, long word, long unused)
+    {
+        if (op == AsyncContext.CaptureOp) return Sys.Word(_current);
+        if (op == AsyncContext.EnterOp)
+        {
+            long was = Sys.Word(_current);
+            _current = Sys.FromWord(word);
+            return was;
+        }
+        _current = Sys.FromWord(word);
+        return 0;
+    }
+
+    static string Now()
+    {
+        Owner? owner = _current as Owner;
+        return owner == null ? "nobody" : owner.Name;
+    }
+
+    static async Task Flow(string name)
+    {
+        await Task.Yield();
+        Host.Line("flow " + name + " resumed in " + Now());
+        _mine = name == "a" ? 1 : 2;
+        await Task.Yield();
+        Host.Line("flow " + name + " again in " + Now());
+        if (name == "a") _seenA = _mine;
+        else _seenB = _mine;
+    }
+
+    static async Task<long> Awaiting(Task<long> device)
+    {
+        long value = await device;
+        Host.Line("interrupt " + value + " in " + Now());
+        return value;
+    }
+
+    static int Main()
+    {
+        Host.Start(16 * 1024 * 1024);
+        Platform.ContextHook = Sys.AddressOf(Program.Context);
+
+        _current = new Owner("a");
+        Task a = Flow("a");
+        _current = new Owner("b");
+        Task b = Flow("b");
+        _current = new Owner("z");
+        Scheduler.RunUntil(Task.WhenAll(a, b));
+        Host.Line("outside " + Now());
+        Host.Line("statics a=" + _seenA + " b=" + _seenB);
+
+        long handle;
+        Task<long> device = InterruptCompletions.Make(out handle);
+        Task<long> waiter = Awaiting(device);
+        // As a handler completes it: claimed and queued, nothing run yet.
+        InterruptCompletions.Complete(handle, 42);
+        Scheduler.RunUntil(waiter);
+        Host.Line("late handler " + InterruptCompletions.Complete(handle, 7));
+        return waiter.Result == 42 ? 0 : 1;
+    }
+}
