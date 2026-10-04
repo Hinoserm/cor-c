@@ -15,8 +15,8 @@ static class P
 {
     static void Main()
     {
-        long s = 0, before = Gc.RegionFreedBytes;
+        long s = 0, before = (Gc.RegionFreedBytes + Gc.RegionTopFreedBytes);
         for (int k = 0; k < 1000; k++) s += W.Work(40);
-        Console.WriteLine(s + " given back " + (Gc.RegionFreedBytes - before >= 500000L));
+        Console.WriteLine(s + " given back " + ((Gc.RegionFreedBytes + Gc.RegionTopFreedBytes) - before >= 500000L));
     }
 }

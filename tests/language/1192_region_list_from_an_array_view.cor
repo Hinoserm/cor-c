@@ -42,8 +42,8 @@ static class P
     {
         List<Tok> kept = W.Make(40);
         for (int i = 0; i < kept.Count; i++) Keep.All.Add(kept[i]);
-        long s = 0; long before = Gc.RegionFreedBytes;
+        long s = 0; long before = (Gc.RegionFreedBytes + Gc.RegionTopFreedBytes);
         for (int k = 0; k < 1000; k++) s += W.Work(40);
-        Console.WriteLine(s + " given back " + (Gc.RegionFreedBytes - before >= 2400000L));
+        Console.WriteLine(s + " given back " + ((Gc.RegionFreedBytes + Gc.RegionTopFreedBytes) - before >= 2400000L));
     }
 }

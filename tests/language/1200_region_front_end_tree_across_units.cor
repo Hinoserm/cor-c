@@ -48,9 +48,9 @@ static class P
     {
         string source = "a = 1 + 2 + 3; b = a + 4; c = b + a + 10; d = c + c; e = d + 1 + 2 + 3 + 4;";
         long total = 0;
-        long freedBefore = Gc.RegionFreedBytes, blocksBefore = Gc.RegionBlocks;
+        long freedBefore = (Gc.RegionFreedBytes + Gc.RegionTopFreedBytes), blocksBefore = Gc.RegionBlocks;
         for (int k = 0; k < 2000; k++) total += Run(Front.CompileUnit(source));
-        long freed = Gc.RegionFreedBytes - freedBefore, perCall = (Gc.RegionBlocks - blocksBefore) / 2000;
+        long freed = (Gc.RegionFreedBytes + Gc.RegionTopFreedBytes) - freedBefore, perCall = (Gc.RegionBlocks - blocksBefore) / 2000;
         Console.WriteLine(total);
         // 31 nodes a call, and some 38 blocks more of the call's region
         // (what owned elements do not free one at a time first); without

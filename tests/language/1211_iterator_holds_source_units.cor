@@ -67,9 +67,9 @@ static class P
         const int N = 20000;
         total = 0;
         Gc.Collect();
-        long taken = Gc.CollectedBytes, frees = Gc.Frees, region = Gc.RegionFreedBytes;
+        long taken = Gc.CollectedBytes, frees = Gc.Frees, region = (Gc.RegionFreedBytes + Gc.RegionTopFreedBytes);
         for (int k = 0; k < N; k++) total += f(9);
-        bool given = Gc.Frees - frees >= N || Gc.RegionFreedBytes - region >= N * 16;
+        bool given = Gc.Frees - frees >= N || (Gc.RegionFreedBytes + Gc.RegionTopFreedBytes) - region >= N * 16;
         Gc.Collect();
         long left = (Gc.CollectedBytes - taken) / N;
         return given && left <= 32 ? "True" : "False " + left;
