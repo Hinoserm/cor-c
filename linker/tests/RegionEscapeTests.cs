@@ -44,6 +44,7 @@ public static class RegionEscapeTests
         ("region hints round trip at the current version", HintsRoundTrip),
         ("backend facts round trip: region sizes and owned-field flags", BackendRoundTrip),
         ("a virtual call runs nothing on a type the image never makes", MadeTypes),
+        ("a virtual call runs only what its receiver's types run", ReceiverTypes),
     };
 
     private static void Check(bool value, string message) { if (!value) throw new Exception(message); }
@@ -1106,5 +1107,67 @@ public static class RegionEscapeTests
         VirtualTargets.Made remade = VirtualTargets.MadeIn(again, again.Select(input => IrArchive.Read(input.Object)!));
         string[] still = VirtualTargets.Resolve(again, new[] { call }, remade)[call];
         Check(still.SequenceEqual(new[] { "m_Made_Run", "m_Never_Run", "m_Static_Run" }), "a type the unit's IR makes is made: " + string.Join(",", still));
+    }
+
+    /// <summary>
+    /// RECEIVER TYPES (RegionTypes). Main makes an A, a B and a holder H,
+    /// stores the A into H at 8, and hands the A to Use, the B to Other and
+    /// H to Leaky and ReadBack. Use and Other each make the call of slot 0
+    /// whose overrides are RunA and RunB: Use's receiver only ever holds
+    /// the A, so it runs RunA alone; Other's only the B, RunB alone. Leaky
+    /// lets H go where nobody follows, where anything may be written into
+    /// it: what ReadBack loads out of H and calls the slot on may be
+    /// anything, and runs both. Without Leaky, ReadBack's receiver holds
+    /// only what Main stored, the A.
+    /// </summary>
+    private static void ReceiverTypes()
+    {
+        foreach (bool leaks in new[] { true, false })
+        {
+            Prog p = new();
+            RegionFunction main = new("Main", true, true, false, 0, 4, 0,
+                new[] { new RegionSite(true, 1, "t_A", 48), new RegionSite(true, 2, "t_B", 48), new RegionSite(true, 3, "t_H", 48) });
+            p.Functions.Add(main);
+            main.Constraints.AddRange(new[] { Site(1, 0), Site(2, 1), Site(3, 2), Store(3, 1, 8) });
+            main.Calls.Add(new RegionCall("Use", -1, new[] { 1 }));
+            main.Calls.Add(new RegionCall("Other", -1, new[] { 2 }));
+            main.Calls.Add(new RegionCall("Leaky", -1, new[] { 3 }));
+            main.Calls.Add(new RegionCall("ReadBack", -1, new[] { 3 }));
+            const string slot = VirtualTargets.Prefix + "t_Base+0";
+            p.Add("Use", 1, 2).Calls.Add(new RegionCall(slot, -1, new[] { 0 }));
+            p.Add("Other", 1, 2).Calls.Add(new RegionCall(slot, -1, new[] { 0 }));
+            RegionFunction leaky = p.Add("Leaky", 1, 2);
+            if (leaks) leaky.Constraints.Add(Leak(0));
+            RegionFunction readBack = p.Add("ReadBack", 1, 3);
+            readBack.Constraints.Add(Load(2, 0, 8));
+            readBack.Calls.Add(new RegionCall(slot, -1, new[] { 2 }));
+            p.Add("RunA", 1, 2); p.Add("RunB", 1, 2);
+            int runA = p.Index("RunA"), runB = p.Index("RunB");
+
+            int count = p.Functions.Count;
+            int[]?[][] targets = new int[]?[count][];
+            string?[][] keys = new string?[count][];
+            for (int f = 0; f < count; f++)
+            {
+                targets[f] = new int[]?[p.Functions[f].Calls.Count];
+                keys[f] = new string?[p.Functions[f].Calls.Count];
+                for (int k = 0; k < p.Functions[f].Calls.Count; k++)
+                {
+                    string callee = p.Functions[f].Calls[k].Callee!;
+                    if (callee == slot) { targets[f][k] = new[] { runA, runB }; keys[f][k] = slot + "@0"; }
+                    else targets[f][k] = new[] { p.Index(callee) };
+                }
+            }
+            bool[] rooted = p.Functions.Select(f => f.Name == "Main").ToArray();
+            RegionTypes types = new(p.Functions, targets, keys, rooted,
+                (f, k, table, at) => table == "t_A" ? new[] { runA } : table == "t_B" ? new[] { runB } : Array.Empty<int>());
+            Check(types.Prune(), "it solves within its budget");
+            int[] TargetsOf(string name) => targets[p.Index(name)][0]!;
+            Check(TargetsOf("Use").SequenceEqual(new[] { runA }), "a receiver holding only an A runs RunA alone");
+            Check(TargetsOf("Other").SequenceEqual(new[] { runB }), "a receiver holding only a B runs RunB alone");
+            Check(TargetsOf("ReadBack").SequenceEqual(leaks ? new[] { runA, runB } : new[] { runA }),
+                leaks ? "what is loaded out of an object that went where nobody follows may be anything" : "what is loaded out of the holder is what was stored");
+            Check(types.Calls == 3 && types.Narrowed == (leaks ? 2 : 3) && types.Unknown == (leaks ? 1 : 0), "the report's counts");
+        }
     }
 }

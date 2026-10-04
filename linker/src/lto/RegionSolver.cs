@@ -583,8 +583,6 @@ public static class RegionSolver
                     int[]? those = GraphTargets(f, call, out bool isVirtual);
                     targets[f][k] = those;
                     if (isVirtual && those is { Length: > 0 }) keys[f][k] = call.Callee + "@" + u;
-                    if (those is null) continue;
-                    foreach (int g in those) { Beneath(f, g); _named[f].Add(g); }
                 }
             }
             // CALLED FROM WHERE NOBODY FOLLOWS, with anything: the entry,
@@ -598,6 +596,22 @@ public static class RegionSolver
             for (int u = 0; u < _units.Count; u++)
                 foreach (string name in Addressed(u))
                     if (Resolve(u, name) is { } those) foreach (int f in those) rooted[f] = true;
+            // ONLY WHAT EACH RECEIVER'S TYPES RUN (RegionTypes): a virtual
+            // call's targets narrowed before the graphs and the judge's
+            // callers are built from them (+typesoff: every override).
+            // Every call's targets before, for what a site's own stamp runs (TargetsOnSite).
+            int[]?[][] unpruned = targets.Select(calls => (int[]?[])calls.Clone()).ToArray();
+            if (_report?.Contains("+typesoff") != true)
+            {
+                RegionTypes types = new(_functions, targets, keys, rooted, (f, k, table, at) => RunsOn(f, k, targets[f][k]!, table, at));
+                bool pruned = types.Prune();
+                Log(pruned
+                    ? $"receiver types: {types.Objects} objects; {types.Narrowed} of {types.Calls} virtual calls narrowed, {types.Unknown} left every target, targets {types.Before} -> {types.After}, {_clock.ElapsedMilliseconds} ms"
+                    : $"receiver types: gave up past its budget, every target kept, {_clock.ElapsedMilliseconds} ms");
+            }
+            for (int f = 0; f < count; f++)
+                for (int k = 0; k < targets[f].Length; k++)
+                    if (targets[f][k] is { } those) foreach (int g in those) { Beneath(f, g); _named[f].Add(g); }
             bool[] wanted = new bool[count];
             for (int f = 0; f < count; f++) wanted[f] = _functions[f].MayBeBoundary || _functions[f].Loops.Count > 0;
             int[] siteFunction = new int[sites];
@@ -606,7 +620,7 @@ public static class RegionSolver
             {
                 Progress = _report is null ? null : Log, NoRoots = _report?.Contains("+noroots") == true,
                 NoReference = _report?.Contains("+norefoff") == true ? null : (site, at) => SiteHoldsNoReference(siteFunction[site], site - siteBase[siteFunction[site]], at),
-                TargetsOn = _report?.Contains("+classoff") == true ? null : TargetsOnSite(targets, keys, siteFunction, siteBase),
+                TargetsOn = _report?.Contains("+classoff") == true ? null : TargetsOnSite(targets, unpruned, keys, siteFunction, siteBase),
             };
             if (_report?.FirstOrDefault(w => w.StartsWith("+why=", StringComparison.Ordinal)) is { } whyOf)
             {
@@ -653,29 +667,47 @@ public static class RegionSolver
         /// call's type: its targets are what every object of the type runs
         /// there, and nothing else is ever its receiver -- a list or a token
         /// a coarse enumerator handed a foreach over nodes is no node.
+        /// AMONG THE CALL'S OWN TARGETS, narrowed or not (RegionTypes): what
+        /// the stamp runs is found once a symbol, among every target the
+        /// symbol has (<paramref name="unpruned"/>, alike for every call of
+        /// it in a unit), and kept to those this call has; a method this
+        /// call no longer has is any of them.
         /// </summary>
-        private Func<int, int, int, int[]?> TargetsOnSite(int[]?[][] targets, string?[][] keys, int[] siteFunction, int[] siteBase)
+        private Func<int, int, int, int[]?> TargetsOnSite(int[]?[][] targets, int[]?[][] unpruned, string?[][] keys, int[] siteFunction, int[] siteBase)
         {
             Dictionary<(string, string, long), int[]?> known = new();
             return (f, k, site) =>
             {
-                if (keys[f][k] is not { } key || targets[f][k] is not { } those) return null;
+                if (keys[f][k] is not { } key || targets[f][k] is not { } those || unpruned[f][k] is not { } every) return null;
                 int g = siteFunction[site];
                 if (_functions[g].Sites[site - siteBase[g]] is not { Table: { } table } s) return null;
-                if (known.TryGetValue((key, table, s.At), out int[]? done)) return done;
-                int[]? runs = null;
-                string callee = _functions[f].Calls[k].Callee!;
-                int plus = callee.LastIndexOf('+');
-                if (plus > VirtualTargets.Prefix.Length && IsA?.Invoke(table, callee[VirtualTargets.Prefix.Length..plus]) == false) runs = Array.Empty<int>();
-                else if (SlotOf(callee) is long slot && _methodAt(table, s.At + slot) is { } method
-                    && _virtuals.TryGetValue(callee, out string[]? overrides) && overrides.Contains(method, StringComparer.Ordinal)
-                    && ResolveOverride(_unitOf[f], method) is { } resolved)
-                {
-                    int[] among = resolved.Where(x => Array.BinarySearch(those, x) >= 0).Order().ToArray();
-                    if (among.Length > 0) runs = among;
-                }
-                return known[(key, table, s.At)] = runs;
+                if (!known.TryGetValue((key, table, s.At), out int[]? runs)) known[(key, table, s.At)] = runs = RunsOn(f, k, every, table, s.At);
+                if (runs is null || runs.Length == 0 || ReferenceEquals(those, every)) return runs;
+                int[] kept = runs.Where(x => Array.BinarySearch(those, x) >= 0).ToArray();
+                return kept.Length > 0 ? kept : null;
             };
+        }
+
+        /// <summary>
+        /// What virtual call k of function f runs on an object stamped with
+        /// <paramref name="table"/>, its method table <paramref name="at"/>
+        /// bytes in, among <paramref name="those"/> (sorted): nothing for a
+        /// descriptor not of the call's type, the method the descriptor holds
+        /// at the slot where it is one of them, null where it cannot say.
+        /// </summary>
+        private int[]? RunsOn(int f, int k, int[] those, string table, long at)
+        {
+            string callee = _functions[f].Calls[k].Callee!;
+            int plus = callee.LastIndexOf('+');
+            if (plus > VirtualTargets.Prefix.Length && IsA?.Invoke(table, callee[VirtualTargets.Prefix.Length..plus]) == false) return Array.Empty<int>();
+            if (SlotOf(callee) is long slot && _methodAt(table, at + slot) is { } method
+                && _virtuals.TryGetValue(callee, out string[]? overrides) && overrides.Contains(method, StringComparer.Ordinal)
+                && ResolveOverride(_unitOf[f], method) is { } resolved)
+            {
+                int[] among = resolved.Where(x => Array.BinarySearch(those, x) >= 0).Order().ToArray();
+                if (among.Length > 0) return among;
+            }
+            return null;
         }
 
         /// <summary>
