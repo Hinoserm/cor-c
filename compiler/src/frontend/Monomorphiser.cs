@@ -2402,8 +2402,33 @@ public sealed class Monomorphiser
                         Discard = arm.Discard, Result = Rewrite(arm.Result, map),
                         Fallback = arm.Fallback, Line = arm.Line, Col = arm.Col,
                     };
-                    // `ICollection<T> c => ...` in a shared copy, as `is` (CanonTested).
-                    made.Arms.Add(arm.CanonSlot >= 0 || arm.Type is { Args.Count: > 0 } ? CanonTested(copied, arm, arm.Type!) : copied);
+                    // `ICollection<T> c => ...` IN A SHARED COPY, as `is`
+                    // (CanonTested): the arm made the test `is` already is --
+                    // `_ when <subject> is ICollection<T> c => ...`, which a
+                    // switch statement's case label is too, and its name in
+                    // scope for the result as a guard's pattern names are.
+                    // (Marked as an arm of its own, the type was asked of the
+                    // shared copy's own name and no list answered it.)
+                    if (arm.Type is { Args.Count: > 0 } written && !arm.Discard && arm.Value is null)
+                    {
+                        IsExpr test = CanonTested(new IsExpr
+                        {
+                            Operand = new SubjectExpr { Line = arm.Line, Col = arm.Col },
+                            Type = copied.Type!, Binding = arm.Binding, Line = arm.Line, Col = arm.Col,
+                        }, new IsExpr { Operand = new SubjectExpr(), Type = written }, written);
+                        if (test.CanonSlot >= 0)
+                        {
+                            made.Arms.Add(new SwitchArm
+                            {
+                                Discard = true,
+                                When = copied.When is null ? test
+                                     : new BinaryExpr { Op = BinOp.AndAlso, Left = test, Right = copied.When, Line = arm.Line, Col = arm.Col },
+                                Result = copied.Result, Fallback = copied.Fallback, Line = arm.Line, Col = arm.Col,
+                            });
+                            continue;
+                        }
+                    }
+                    made.Arms.Add(copied);
                 }
                 return made;
             }
