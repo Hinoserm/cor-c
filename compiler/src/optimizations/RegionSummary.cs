@@ -139,16 +139,28 @@ public static class RegionSummary
             foreach (Block b in _f.Blocks)
                 foreach (Instr i in b.Instrs)
                     Constrain(i);
-            // AN ASYNC OR ITERATOR BODY'S FRAME OUTLIVES ITS RETURN: what its
-            // registers and slots hold across a suspension is moved into a
-            // frame on the heap after this IR (AsyncTransform), there for as
-            // long as the task or the enumerator is. Nothing it holds is
-            // dead by any return.
-            if (_f.Async is not null)
+            // AN ASYNC OR ITERATOR BODY KEEPS IN ITS STATE MACHINE what it holds
+            // across a suspension: AsyncTransform, after this IR, stores every
+            // register live after a resumption (and every one a landing pad
+            // reads) into a field of the machine at each suspension, and
+            // every frame slot becomes a field of it. So each is a store into
+            // the machine -- the body's first parameter, `this` of a MoveNext
+            // -- at a field nobody here names, kept for as long as the machine
+            // is: an enumerator a boundary walks and drops takes what its
+            // laps made with it. A resumption reloads the registers' own
+            // values, so nothing flows that does not flow already, as
+            // RegionPointsTo has it. Where the machine goes nobody follows --
+            // an awaiter's OnCompleted handed it, a scheduler keeping it --
+            // that is the call's, as any argument's. (Every register leaked,
+            // every object any iterator touched was everyone's.)
+            if (_f.Async is { Lowered: false } frame)
             {
-                foreach (int node in _regs.Values.ToArray()) Leak(node);
-                foreach (int node in _slotNodes.Values.ToArray()) Leak(node);
-                Leak(Return);
+                int machine = Reg(frame.StateMachine);
+                foreach (VReg r in RegionPointsTo.Saved(_f, frame))
+                    _constraints.Add(new(RegionConstraintKind.Store, machine, Reg(r), RegionConstraint.Any));
+                foreach (FrameSlot slot in _f.Slots)
+                    if (Value(new SlotOperand(slot)) is int held and >= 0)
+                        _constraints.Add(new(RegionConstraintKind.Store, machine, held, RegionConstraint.Any));
             }
             // ITS LOOPS, for the link to give a region of their own where
             // RegionPointsTo would (its "loops"): stated over this IR, by the

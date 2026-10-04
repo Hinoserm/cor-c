@@ -1,0 +1,30 @@
+// The other unit of 1298_region_iterator_locals_across_units: an iterator
+// whose body makes scratch for every element it yields -- an array and a
+// list, held across the yield in the iterator's state machine -- and yields
+// a fresh item labelled with a fresh string.
+using System.Collections.Generic;
+
+public sealed class Item
+{
+    public readonly int Value;
+    public readonly string Label;
+    public Item(int value, string label) { Value = value; Label = label; }
+}
+
+public static class Source
+{
+    public static IEnumerable<Item> Items(int n, int seed)
+    {
+        for (int i = 0; i < n; i++)
+        {
+            int[] scratch = new int[4];
+            for (int k = 0; k < 4; k++) scratch[k] = seed + i + k;
+            List<int> parts = new();
+            parts.Add(scratch[0]);
+            parts.Add(scratch[3]);
+            yield return new Item(parts[0] + parts[1], "i" + (i % 10));
+            // Read again after the yield: the scratch lives in the machine.
+            if (parts.Count != 2 || scratch[3] != seed + i + 3) yield break;
+        }
+    }
+}
