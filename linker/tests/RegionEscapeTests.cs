@@ -21,6 +21,7 @@ public static class RegionEscapeTests
         ("a cycle of calls solved together", Cycle),
         ("past the inclusion bound, unified", Overflow),
         ("a large cycle's summary, field by field", UnifiedByField),
+        ("a large cycle keeps two fields at one offset apart", UnifiedFamilies),
         ("wide calls: stand-ins and rounds answer as following every call", WideCalls),
         ("wide calls: what one target leaks of what it makes leaves what another hands back", WideHeldApart),
         ("a constant's address holds nothing", Constants),
@@ -265,6 +266,60 @@ public static class RegionEscapeTests
         bool Leaked(string place) => cells.Any(c => c.From == 0 && objects[c.To] == place);
         Check(Leaked("Place 1 []"), "R0's summary: the unknown object holds parameter 1");
         Check(!Leaked("Place 0 []") && !Leaked("Place 2 []") && !Leaked("Place 0 [16]"), "R0's summary: not parameter 0, parameter 2, or what is at 16 of parameter 0");
+    }
+
+    /// <summary>
+    /// A ring of 301 functions, unified, each handing back what the next
+    /// does. The last makes a holder, writes A into it at 8 as the field
+    /// A::f and B as the field B::g -- two types' fields at one offset of
+    /// one class, as unification merges unrelated objects -- loads A::f and
+    /// throws it, and hands the holder back. A is global, B is not: B::g is
+    /// a field class of its own. Loaded naming no field, the offset is one
+    /// field again, and both are global. R0's summary keeps the split: the
+    /// holder's cells at 8 name A::f and B::g.
+    /// </summary>
+    private static void UnifiedFamilies()
+    {
+        foreach (int loadFamily in new[] { 0, -1 })
+        {
+            Prog p = new();
+            const int ring = 301;
+            for (int i = 0; i < ring - 1; i++)
+            {
+                // Nodes: 0 the parameter, 1 the return, 2 what the next hands back.
+                RegionFunction r = p.Add("R" + i, 1, 3);
+                r.Calls.Add(new("R" + (i + 1), 2, new[] { 0 }));
+                r.Constraints.Add(Copy(1, 2));
+            }
+            // Nodes: 0 the parameter, 1 the return, 2 the holder, 3 A, 4 B, 5 what is loaded.
+            RegionFunction last = p.Add("R" + (ring - 1), 1, 6, sites: 3);
+            last.Families = new[] { "A::f", "B::g" };
+            last.Constraints.AddRange(new[]
+            {
+                Site(2, 0), Site(3, 1), Site(4, 2),
+                new RegionConstraint(RegionConstraintKind.Store, 2, 3, 8, 0),
+                new RegionConstraint(RegionConstraintKind.Store, 2, 4, 8, 1),
+                new RegionConstraint(RegionConstraintKind.Load, 5, 2, 8, loadFamily),
+                Leak(5),
+                Copy(1, 2),
+            });
+            last.Calls.Add(new("R0", -1, new[] { 0 }));
+            RegionFunction caller = p.Add("Caller", 0, 3);
+            caller.Calls.Add(new("R0", 2, new[] { 1 }));
+            RegionEscape e = p.Solve();
+            string how = loadFamily >= 0 ? "loaded as A::f" : "loaded naming no field";
+            int a = p.Site("R" + (ring - 1), 1), b = p.Site("R" + (ring - 1), 2);
+            Check(e.LargestCycle == ring, how + ": the ring is one cycle of 301");
+            Check(e.Global[a], how + ": A is thrown: global");
+            Check(e.Global[b] == (loadFamily < 0), how + (loadFamily >= 0 ? ": B, in B::g, is not global" : ": the offset is one field: B is global too"));
+            if (loadFamily >= 0)
+            {
+                var (_, cells, _, _) = e.SummaryOf(p.Index("R0")) ?? throw new Exception("R0 has no summary");
+                string?[] names = e.CellFamiliesOf(p.Index("R0")) ?? throw new Exception("R0 has no summary");
+                bool Named(string field) => Enumerable.Range(0, cells.Length).Any(k => cells[k].Offset == 8 && names[k] == field);
+                Check(Named("B::g"), how + ": R0's summary: the holder's cell at 8 names B::g");
+            }
+        }
     }
 
     /// <summary>

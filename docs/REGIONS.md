@@ -365,6 +365,30 @@ points to one class, and a class holds one class at each offset. It is
 linear in what the cycle states, and coarser. Calls out of the cycle apply
 summaries as the inclusion solve does.
 
+**Fields by name in unification.** A class is most often a merge of objects
+of unrelated types, so two types' fields at one offset would be one field
+class. Where an access names its field (`RegionConstraint.Family`), the
+class keeps a field class for each field at the offset (`Unified.Field`,
+keyed by `FieldKey(offset, family)`). An access naming no field (an address
+into an object, an element, a copy, a callee's place below a field) may be
+any field there: every field class at the offset joins one, and the offset
+stays one field from then on. A merge of two classes merges by key, and an
+offset mixed in either is mixed in the merge. Collapsing a class merges
+everything. Sound for a type-safe program, as typed aliasing is: a word at an
+offset of an object is one field, so a store naming F and a load naming G at
+one offset of one class never meet in one object. A class's offsets are from
+an object's start, because everything that moves a pointer into an object
+collapses its class.
+
+A summary by field (`ByField`) states, for each cell, the field it was
+written as (`Summary.CellFamilies`, via `NoteFamily`): a cell written as two
+fields, or as none, names none. A caller keeps the split: unification stores
+the cell into that field's class, inclusion stores it as that field
+(`Graph.Apply`). A place below a field is still by its offset, so a callee's
+place merges the fields there at the caller. Every other way of making a
+summary (merging, bounding, stand-ins) leaves the fields out, which is only
+less precise. Test: engine `UnifiedFamilies`.
+
 A member's own summary, for calls from outside, is stated field by field
 (`ByField`):
 - each argument's class is its place;
