@@ -29,10 +29,13 @@ public static class CoalescingTests
         Check(CoalescingContract.Read(b).Count == 1, "contract round trip");
         Section maps = new(".corsac.stackmaps", SectionKind.Note);
         maps.Bytes.AddRange(new byte[4]); maps.Relocs.Add(new Relocation(0, "specialization", 0, RelocKind.Abs32)); b.Sections.Add(maps);
-        Check(DefinitionCoalescer.Run(new[] { ("b", b), ("a", a) }, true) == 1, "validation plan");
+        // THE FIRST IN LINK ORDER keeps the definition, not the first by
+        // name (5fcca37): a is linked first under a name that sorts last, so
+        // only link order makes it the owner.
+        Check(DefinitionCoalescer.Run(new[] { ("z", a), ("b", b) }, true) == 1, "validation plan");
         Check(b.Symbols.Single(symbol => symbol.Name == "specialization").IsDefined, "validation mutated input");
-        Check(DefinitionCoalescer.Run(new[] { ("b", b), ("a", a) }) == 1, "equivalent different machine code rejected");
-        Check(a.Symbols.Single(symbol => symbol.Name == "specialization").IsDefined, "input-name ownership not deterministic");
+        Check(DefinitionCoalescer.Run(new[] { ("z", a), ("b", b) }) == 1, "equivalent different machine code rejected");
+        Check(a.Symbols.Single(symbol => symbol.Name == "specialization").IsDefined, "link-order ownership not deterministic");
         Check(!b.Symbols.Single(symbol => symbol.Name == "specialization").IsDefined, "loser remains global");
         Check(maps.Relocs[0].Symbol == "__corsac_retained_specialization", "stack maps point to wrong body");
         Check(b.Section(".text").Bytes[0] == 0x91, "retained code changed");
