@@ -5857,6 +5857,11 @@ sealed class Posted : IAsyncResult
 
 public static class Application
 {
+    // The font store reachable through the seat before any Font is made
+    // (System.Drawing.FontStores).
+    static readonly bool _fontsLinked = LinkFonts();
+    static bool LinkFonts() { Corsac.GUI.Seat.LinkFontStore(); return true; }
+
     // THE DOUBLE-CLICK: a second press of the same button on the same
     // control, within SystemInformation.DoubleClickTime and inside the
     // DoubleClickSize box centred on the first. A third press starts again,

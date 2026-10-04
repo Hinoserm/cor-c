@@ -150,8 +150,17 @@ enum SeatIoctl : long
     ForegroundLock = 0x4755009F,
 }
 
-public class Seat : IDrawingTarget
+public class Seat : IDrawingTarget, IFontStore
 {
+    // The font store's door for System.Drawing, which cannot name the seat
+    // (it is the library below this one): set when this class is first
+    // touched, which Forms' Application does at its own start.
+    static readonly bool _fontsLinked = LinkFonts();
+    static bool LinkFonts() { FontStores.Open = OpenFonts; return true; }
+    static IFontStore? OpenFonts() { return Current; }
+    /// Forms' start: the font store reachable before any Font is made.
+    public static void LinkFontStore() { FontStores.Open = OpenFonts; }
+
     static Seat? _current;
     public static Seat Current
     {
@@ -734,7 +743,7 @@ public class Seat : IDrawingTarget
             if (again == size)
             {
                 GC.KeepAlive(text);
-                return SeatFont.Parse(record);
+                return ParseFont(record);
             }
             size = again;
         }
@@ -744,6 +753,32 @@ public class Seat : IDrawingTarget
 
     /// One of the store's texts: a word of its length in UTF-16 units, the
     /// units, padded to a word.
+    internal static SeatFont? ParseFont(byte[] r)
+    {
+        if (r.Length < 28) return null;
+        SeatFont f = new SeatFont();
+        f.Weight = FontWord(r, 0);
+        f.Stretch = FontWord(r, 4);
+        int flags = FontWord(r, 8);
+        f.Italic = (flags & 1) != 0; f.Oblique = (flags & 2) != 0; f.Monospace = (flags & 4) != 0;
+        f.Symbol = (flags & 8) != 0; f.Scalable = (flags & 16) != 0;
+        f.Generic = FontWord(r, 12);
+        f.Index = FontWord(r, 16);
+        f.Generation = FontWord(r, 20);
+        int sizes = FontWord(r, 24);
+        int at = 28;
+        if (sizes < 0 || at + sizes * 4 > r.Length) return null;
+        f.BitmapSizes = new int[sizes];
+        for (int i = 0; i < sizes; i++) { f.BitmapSizes[i] = FontWord(r, at); at += 4; }
+        f.Family = FontText(r, ref at);
+        f.Style = FontText(r, ref at);
+        f.FullName = FontText(r, ref at);
+        f.Path = FontText(r, ref at);
+        return f;
+    }
+
+    static int FontWord(byte[] b, int at) { return b[at] | (b[at + 1] << 8) | (b[at + 2] << 16) | (b[at + 3] << 24); }
+
     internal static string FontText(byte[] b, ref int at)
     {
         int length = b[at] | (b[at + 1] << 8) | (b[at + 2] << 16) | (b[at + 3] << 24);
@@ -1778,47 +1813,4 @@ static class SeatText
         }
         return Utf8Transcoder.Decode(block, from, length);
     }
-}
-
-/// A face as the GUI kernel's font store answers a request (Seat.MatchFont):
-/// what it is, and the file it is in, which the program maps itself.
-public sealed class SeatFont
-{
-    public int Weight, Stretch;
-    public bool Italic, Oblique, Monospace, Symbol, Scalable;
-    /// What kind of letters (the store's FontGeneric: 1 serif, 2 sans
-    /// serif, 3 monospace, 4 script, 5 decorative, 6 symbol; 0 not known).
-    public int Generic;
-    /// Its place in its file, and the store's index generation it came from.
-    public int Index;
-    public long Generation;
-    /// A bitmap face's pixel heights; none for a scalable one.
-    public int[] BitmapSizes = new int[0];
-    public string Family = "", Style = "", FullName = "", Path = "";
-
-    internal static SeatFont? Parse(byte[] r)
-    {
-        if (r.Length < 28) return null;
-        SeatFont f = new SeatFont();
-        f.Weight = Word(r, 0);
-        f.Stretch = Word(r, 4);
-        int flags = Word(r, 8);
-        f.Italic = (flags & 1) != 0; f.Oblique = (flags & 2) != 0; f.Monospace = (flags & 4) != 0;
-        f.Symbol = (flags & 8) != 0; f.Scalable = (flags & 16) != 0;
-        f.Generic = Word(r, 12);
-        f.Index = Word(r, 16);
-        f.Generation = Word(r, 20);
-        int sizes = Word(r, 24);
-        int at = 28;
-        if (sizes < 0 || at + sizes * 4 > r.Length) return null;
-        f.BitmapSizes = new int[sizes];
-        for (int i = 0; i < sizes; i++) { f.BitmapSizes[i] = Word(r, at); at += 4; }
-        f.Family = Seat.FontText(r, ref at);
-        f.Style = Seat.FontText(r, ref at);
-        f.FullName = Seat.FontText(r, ref at);
-        f.Path = Seat.FontText(r, ref at);
-        return f;
-    }
-
-    static int Word(byte[] b, int at) { return b[at] | (b[at + 1] << 8) | (b[at + 2] << 16) | (b[at + 3] << 24); }
 }

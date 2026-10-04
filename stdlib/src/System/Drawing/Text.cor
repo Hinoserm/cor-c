@@ -248,7 +248,9 @@ static class Installed
     /// kernel to ask, too.
     internal static SeatFont? Match(string family, int weight, bool italic, int character)
     {
-        try { return Seat.Current.MatchFont(family, weight, italic, 5, character, true); }
+        IFontStore? store = FontStores.Current;
+        if (store == null) return null;
+        try { return store.MatchFont(family, weight, italic, 5, character, true); }
         catch (Exception) { return null; }
     }
 
@@ -306,7 +308,9 @@ static class Installed
     public static void LoadAll()
     {
         string[] names;
-        try { names = Seat.Current.FontFamilies(true); }
+        IFontStore? store = FontStores.Current;
+        if (store == null) return;
+        try { names = store.FontFamilies(true); }
         catch (Exception) { return; }
         foreach (string name in names) { FontFamily.Find(name); }
     }
@@ -414,5 +418,56 @@ public sealed class PrivateFontCollection : FontCollection
         FontFamily family = new FontFamily(name, face);
         Held.Add(family);
         FontFamily.Register(family);
+    }
+}
+
+/// A face as the GUI kernel's font store answers a request (Seat.MatchFont):
+/// what it is, and the file it is in, which the program maps itself.
+public sealed class SeatFont
+{
+    public int Weight, Stretch;
+    public bool Italic, Oblique, Monospace, Symbol, Scalable;
+    /// What kind of letters (the store's FontGeneric: 1 serif, 2 sans
+    /// serif, 3 monospace, 4 script, 5 decorative, 6 symbol; 0 not known).
+    public int Generic;
+    /// Its place in its file, and the store's index generation it came from.
+    public int Index;
+    public long Generation;
+    /// A bitmap face's pixel heights; none for a scalable one.
+    public int[] BitmapSizes = new int[0];
+    public string Family = "", Style = "", FullName = "", Path = "";
+
+
+}
+
+/// THE GUI KERNEL'S FONT STORE as System.Drawing reaches it: through the seat
+/// (Corsac.GUI.Seat), which is in the library above this one and so cannot be
+/// named here. The seat sets FontStores.Open when its class is first touched,
+/// which Forms' Application does at its start; a program with no seat has no
+/// store, and draws with the system font.
+public interface IFontStore
+{
+    string[] FontFamilies(bool scalableOnly);
+    SeatFont? MatchFont(string family, int weight, bool italic, int stretch, int character, bool scalableOnly);
+}
+
+public static class FontStores
+{
+    public static Func<IFontStore?>? Open;
+    static IFontStore? _store;
+    static bool _asked;
+
+    /// The store, asked for once; null when there is none.
+    public static IFontStore? Current
+    {
+        get
+        {
+            if (!_asked && Open != null)
+            {
+                _asked = true;
+                try { _store = Open(); } catch (Exception) { _store = null; }
+            }
+            return _store;
+        }
     }
 }
