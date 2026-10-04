@@ -578,7 +578,7 @@ public class Icon : IDisposable
     }
 
     /// One of the system's icons (SystemIcons): OIC_* `id`.
-    internal static Icon? System(int id)
+    internal static Icon? SystemImage(int id)
     {
         long handle;
         try { handle = Seat.Current.SystemImage(id, Seat.ImageIcon); }
@@ -777,7 +777,7 @@ public static class SystemIcons
     {
         int at = id - 32512;
         Icon? icon = _made[at];
-        if (icon == null) { icon = Icon.System(id); _made[at] = icon; }
+        if (icon == null) { icon = Icon.SystemImage(id); _made[at] = icon; }
         if (icon == null) throw new InvalidOperationException("The GUI kernel has no system icon " + id + ".");
         return icon;
     }

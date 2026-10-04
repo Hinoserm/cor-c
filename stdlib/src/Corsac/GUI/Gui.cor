@@ -547,7 +547,7 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
         {
             char[] text = new char[room];
             int[] block = new int[13];
-            block[0] = Sys.ArrayData(text);
+            block[0] = (int)Sys.ArrayData(text);
             block[1] = room;
             long answer = Ioctl(SeatIoctl.AdapterInfo16, Sys.ArrayData(block));
             GC.KeepAlive(text);
@@ -1872,7 +1872,7 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
         {
             int[] records = new int[7 * roomWindows];
             char[] text = new char[roomText];
-            int[] header = new int[] { Sys.ArrayData(records), roomWindows, Sys.ArrayData(text), roomText };
+            int[] header = new int[] { (int)Sys.ArrayData(records), roomWindows, (int)Sys.ArrayData(text), roomText };
             int n = (int)Ioctl(SeatIoctl.ListWindows16, Sys.ArrayData(header));
             GC.KeepAlive(records); GC.KeepAlive(text);
             if (n == Erange)
@@ -1974,7 +1974,7 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
         {
             int[] records = new int[TrayListWords * roomIcons];
             char[] text = new char[roomText];
-            int[] header = new int[] { Sys.ArrayData(records), roomIcons, Sys.ArrayData(text), roomText };
+            int[] header = new int[] { (int)Sys.ArrayData(records), roomIcons, (int)Sys.ArrayData(text), roomText };
             int n = (int)Ioctl(SeatIoctl.TrayList16, Sys.ArrayData(header));
             GC.KeepAlive(records); GC.KeepAlive(text);
             if (n == Erange)
@@ -2062,7 +2062,7 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget
         while (true)
         {
             char[] text = new char[room];
-            int[] record = new int[] { Sys.ArrayData(text), room };
+            int[] record = new int[] { (int)Sys.ArrayData(text), room };
             int n = (int)Ioctl(SeatIoctl.InspectRead16, Sys.ArrayData(record));
             GC.KeepAlive(text);
             if (n < 0) return "";
