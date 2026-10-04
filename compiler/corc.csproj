@@ -34,7 +34,7 @@
 
       2 GB since 2026-10-04: a kernel module is one compile of all its
       sources against the kernel's index, and win32k as the NT extension's
-      ring-1 module -- a hundred thousand lines in one unit -- ran out at
+      ring-1 module, a hundred thousand lines in one unit, ran out at
       768 MB in the liveness of its biggest functions. Eight compilers at
       2 GB is still a fraction of a build machine.
 
