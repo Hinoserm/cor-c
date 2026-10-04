@@ -547,7 +547,19 @@ internal static class Peephole
     private static bool Removable(MInstr i)
         => i.Op is MOp.Mov or MOp.Lea or MOp.Movzx or MOp.Movsx
            && i.Operands[0] is MReg { Id: not ((int)Gpr.Esp or (int)Gpr.Ebp) }
-           && (i.Op == MOp.Lea || i.Operands.Count < 2 || i.Operands[1] is not MMem { Base: { Id: not ((int)Gpr.Esp or (int)Gpr.Ebp) } });
+           && (i.Op == MOp.Lea || i.Operands.Count < 2 || i.Operands[1] is not MMem m || CannotFault(m));
+
+    /// <summary>
+    /// Whether reading the operand can never fault: the frame, or a symbol's
+    /// static storage. A read through any other register, or of a bare
+    /// address, is kept though nothing reads what it loads -- it may be the
+    /// NullReferenceException a call on null must raise, and a receiver the
+    /// optimiser had proved null was a load of address 0 with no base that
+    /// went as dead: `((Thing)null).ToString()` answered "" (test 1284).
+    /// </summary>
+    private static bool CannotFault(MMem m)
+        => m.Base is { Id: (int)Gpr.Esp or (int)Gpr.Ebp }
+           || m.Base is null && m.Index is null && (m.Symbol is not null || m.Label is not null);
 
     /// <summary>Whether the operand roles fully describe what the instruction reads and writes.</summary>
     private static bool Understood(MInstr i) => i.Op switch

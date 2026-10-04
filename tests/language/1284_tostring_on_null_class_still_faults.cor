@@ -1,0 +1,35 @@
+// test: tostring_on_null_class_still_faults
+// expect-exit: 0
+// expect-output:
+// before
+// caught sealed
+// caught open
+// [] []
+//
+// AN EXPLICIT ToString() ON NULL THROWS, as C#'s callvirt has it, even where
+// the call is narrowed to the receiver's class -- a sealed one's a direct
+// call -- while joining null to a string writes nothing.
+
+using System;
+
+sealed class Thing { public override string ToString() => "thing"; }
+class Open { public override string ToString() => "open"; }
+
+class P
+{
+    static Thing? PickThing(bool b) => b ? new Thing() : null;
+    static Open? PickOpen(bool b) => b ? new Open() : null;
+
+    static int Main()
+    {
+        Thing? t = PickThing(false);
+        Open? o = PickOpen(false);
+        Console.WriteLine("before");
+        try { Console.WriteLine(t!.ToString()); }
+        catch (NullReferenceException) { Console.WriteLine("caught sealed"); }
+        try { Console.WriteLine(o!.ToString()); }
+        catch (NullReferenceException) { Console.WriteLine("caught open"); }
+        Console.WriteLine($"[{t}] [{o}]");
+        return 0;
+    }
+}
