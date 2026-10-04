@@ -573,8 +573,14 @@ static class Gc
         {
             return;
         }
-        long cards = Platform.Map(CardTableBytes);
-        long taken = Platform.Map(CardTableBytes);
+        // THE CARDS COMMITTED ON FIRST TOUCH (Platform.MapLazy): a card is a
+        // byte for every kilobyte of the address space, and only the heap's
+        // are ever read or written. The held-block tables are not: a single
+        // collection may write the whole of one, in bursts no page fault
+        // should have to keep up with (a kernel's lazy faults take frames set
+        // aside beforehand), and they are a sixteenth of the cards' size.
+        long cards = Platform.MapLazy(CardTableBytes);
+        long taken = Platform.MapLazy(CardTableBytes);
         long held = Platform.Map(HeldBytes);
         long holding = Platform.Map(HeldBytes);
         if (cards == 0 || taken == 0 || held == 0 || holding == 0)
@@ -590,6 +596,31 @@ static class Gc
         _holding = holding;
         Runtime.Cards = cards;
         _generational = true;
+        // THE CARDS OF WHAT IS THERE ALREADY, committed now (CommitCards):
+        // the heap's chunks and the statics, which every store into either
+        // marks. From here each chunk's are committed as it is mapped.
+        for (long chunk = HeapChunks.Newest(); chunk != 0; chunk = HeapChunks.Next(chunk))
+        {
+            CommitCards(chunk, HeapChunks.End(chunk) - chunk);
+        }
+        CommitCards(Sys.DataStart(), Sys.DataEnd() - Sys.DataStart());
+    }
+
+    /// THE CARDS OF [at, at + bytes) COMMITTED, in both tables: what a store
+    /// there marks is a page that is there, so a card mark never takes a
+    /// lazily committed page's fault (Platform.MapLazy) for memory the
+    /// collector knows of. Called in thread context as the heap grows by a
+    /// chunk (HeapChunks.Take, TakePages), and by a platform for memory of
+    /// its own that holds references -- a kernel's stacks, an arena. Nothing
+    /// where the tables are committed by touch anyway (Platform.Commit).
+    public static void CommitCards(long at, long bytes)
+    {
+        long cards = Runtime.Cards;
+        if (cards == 0 || bytes <= 0) return;
+        long first = (at & WordSize.AddressMask) >> Runtime.CardShift;
+        long last = ((at + bytes - 1) & WordSize.AddressMask) >> Runtime.CardShift;
+        Platform.Commit(cards + first, last - first + 1);
+        if (_taken != 0) Platform.Commit(_taken + first, last - first + 1);
     }
 
     /// Whether the cycle about to run may be minor: there has been a major
@@ -625,7 +656,12 @@ static class Gc
     static long OldGrowth(long majorLive)
     {
         long bound = NextThreshold(majorLive);
-        return majorLive < bound ? majorLive : bound;
+        long growth = majorLive < bound ? majorLive : bound;
+        // A QUARTER WHEN MEMORY IS SHORT (ShortHook): a ring-1 kernel's heap
+        // let its old generation reach twice its live size before a major,
+        // and held 22 MB with 9 live while the machine ran out.
+        if (MemoryShort()) growth = growth / 4;
+        return growth > MinThreshold ? growth : MinThreshold;
     }
 
     // PACED BY WHAT THEY COST. A minor cycle is worth running only if it
@@ -686,6 +722,9 @@ static class Gc
             return _nurseryFixed;
         }
         long n = _majorLive != 0 && _majorLive < live ? _majorLive : live;
+        // A QUARTER OF IT WHEN MEMORY IS SHORT: the nursery is memory the
+        // heap holds between cycles, and the pool keeps as much again.
+        if (MemoryShort()) n = n / 4;
         if (n < NurseryLeast) n = NurseryLeast;
         // NEAR A HARD LIMIT a quarter of what it leaves, as before: a nursery
         // as large as the limit allows spreads each cycle's survivors over
@@ -2216,6 +2255,7 @@ static class Gc
             if (_regionSlice <= 0) return -1;
             long arena = Platform.Map(_regionSlice);
             if (arena == 0) { _regionSlice = 0; return -1; }
+            CommitCards(arena, _regionSlice);
             Sys.Poke(tb + Tls.RegionAt, arena);
             Sys.Poke(tb + Tls.RegionEnd, arena + _regionSlice);
             Sys.Poke(tb + Tls.RegionBase, arena);
@@ -4567,6 +4607,9 @@ static class Gc
         // of its own.
         for (long attempt = 0; block == 0 && attempt < 3; attempt++)
         {
+            // A cycle has not found the room: the platform asked for it,
+            // with the heap lock let go (WaitForRoom).
+            if (attempt > 0) WaitForRoom(tb, need);
             // Memory itself ran out: only a whole collection finds all of it.
             _forceMajor = true;
             if (_collecting) WaitOutCycle();
@@ -4627,6 +4670,9 @@ static class Gc
         long failedAt = -1;
         for (long attempt = 0; attempt < 4; attempt++)
         {
+            // After a whole cycle has failed it: room asked for, the lock
+            // let go meanwhile (WaitForRoom).
+            if (attempt >= 2) WaitForRoom(tb, ClassSize(c));
             long cache = EnsureCache(tb);
             if (cache != 0)
             {
@@ -8322,12 +8368,63 @@ static class Gc
     /// garbage, which a machine with room to spare can afford and one without
     /// cannot. It must not allocate. 0, a platform that never says so.
     public static long ShortHook;
+
+    /// THE PLATFORM ASKED FOR ROOM, WITH THE HEAP LOCK LET GO: called with
+    /// the bytes a map was refused for, after a whole cycle has not found
+    /// them; nonzero when the platform made room. A ring-1 kernel's map no
+    /// longer sleeps for memory with this heap's lock held -- every other
+    /// thread of the kernel waited behind it, up to a second -- it fails at
+    /// once, and the wait is here, the thread counted as blocked. 0: none.
+    public static long RoomHook;
+
+    /// The heap lock is held on entry and on return, and let go between: the
+    /// platform asked for `need` bytes of room (RoomHook), then whatever was
+    /// owed while this thread was away -- a handshake's answer, a buffer
+    /// given back -- seen to as at the allocator's entry. The caller's state
+    /// is what it reads again after: the free lists, a cycle under way.
+    static void WaitForRoom(long tb, long need)
+    {
+        if (RoomHook == 0 || tb == 0 || Sys.Peek(tb + Tls.InAlloc) != 0) return;
+        GcLock.Exit();
+        Sys.Call(RoomHook, need, 0, 0);
+        GcLock.Enter();
+        AnswerBeforeTaking(tb);
+    }
     public static long ShortCollections;
 
     static long ShortThreshold()
     {
-        long quarter = _liveBytes / 4;
-        return quarter > MinThreshold ? quarter : MinThreshold;
+        // AN EIGHTH: on a machine short of memory every megabyte of garbage
+        // is a megabyte a program or the page cache does not have.
+        long eighth = _liveBytes / 8;
+        return eighth > MinThreshold ? eighth : MinThreshold;
+    }
+
+    /// Every element of the array at `payload` freed and its slot cleared
+    /// (Runtime.FreeArrayElements): only for an array whose elements are
+    /// references a word each, read off its descriptor as the mark reads
+    /// it; anything else is left alone.
+    public static void FreeReferenceElements(long payload)
+    {
+        long w = WordSize.Bytes;
+        long vt = Sys.Peek(payload) & WordSize.AddressMask;
+        if (vt == 0) return;
+        long desc = vt - DescWords * w;
+        if ((Sys.Peek(desc + DescSelfWord * w) & WordSize.AddressMask) != desc) return;
+        long flags = Sys.Peek(desc + DescFlagsWord * w);
+        if ((flags & SequenceFlag) == 0 || (flags & StringFlag) != 0) return;
+        if ((Sys.Peek(desc + DescGcFlagsWord * w) & ElementsAreReferences) == 0) return;
+        if (Sys.Peek(desc + DescSizeWord * w) != w) return;
+        long count = Sys.Peek(payload + ArrayCountAt) & 0x7FFFFFFF;
+        long first = payload + Sys.Peek(desc + DescPayloadWord * w);
+        for (long i = 0; i < count; i++)
+        {
+            long cell = first + i * w;
+            long element = Sys.Peek(cell) & WordSize.AddressMask;
+            if (element == 0) continue;
+            Sys.Poke(cell, 0);
+            Runtime.Free(element);
+        }
     }
 
     /// Collections given up half way -- a barrier report lost to a full
@@ -10673,6 +10770,7 @@ static class HeapChunks
             _chunks = page;
         }
         _heapBytes = _heapBytes + n * PageBytes;
+        Gc.CommitCards(raw, n * PageBytes);
         CheckNew(raw, n * PageBytes);
         IndexAddRun(raw, n, PageBytes);
         if (_floor == 0 || raw + ChunkBytes < _floor)
@@ -10927,6 +11025,7 @@ static class HeapChunks
         if (_chunks != 0) Sys.Poke(_chunks + ChunkPrevious, raw);
         _chunks = raw;
         _heapBytes = _heapBytes + ask;
+        Gc.CommitCards(raw, ask);
         CheckNew(raw, ask);
         IndexAdd(raw);
 
@@ -11573,6 +11672,15 @@ static class GcThreads
 
     public static long Answered, AnsweredFor;
 
+    /// Prompts sent while waiting for a round (Platform.PromptStop), over
+    /// all rounds.
+    public static long Prompts;
+
+    /// The turns of the round's wait between two prompts: the first gap,
+    /// and the most it doubles to while prompts move nobody.
+    const long PromptGapLeast = 16;
+    const long PromptGapMost = 1024;
+
     /// Asks every other thread for `request` and returns when all have
     /// answered. Called by the collector, without the heap lock. While it
     /// waits it answers for the blocked, marks what is queued, prompts the
@@ -11640,7 +11748,19 @@ static class GcThreads
         GcLock.Exit();
         Gc.HandshakeRounds = Gc.HandshakeRounds + 1;
 
+        // RE-PROMPT PACING. A prompt interrupts every processor that still
+        // owes the round; one found inside a store sequence puts its answer
+        // off to the next prompt (the kernel counts those). Prompting again
+        // every few turns would keep those processors in their interrupt
+        // handlers and the collector hot on interrupts, so while a prompt
+        // moves nobody the gap to the next doubles, up to PromptGapMost
+        // turns, and falls back to the first gap as soon as anyone answers.
+        // Nothing here gives up: a round waits until everybody has answered,
+        // and a put-off answer is only a later one.
         long turns = 0;
+        long gap = PromptGapLeast;
+        long nextPrompt = 0;
+        long owedAtPrompt = Pending();
 
         while (true)
         {
@@ -11665,8 +11785,20 @@ static class GcThreads
                 Gc.Assist(64);
             }
 
-            if ((turns & 0xF) == 0)
+            if (turns >= nextPrompt)
             {
+                long owedNow = Pending();
+                if (owedNow < owedAtPrompt)
+                {
+                    gap = PromptGapLeast;
+                }
+                else if (turns != 0 && gap < PromptGapMost)
+                {
+                    gap = gap * 2;
+                }
+                owedAtPrompt = owedNow;
+                nextPrompt = turns + gap;
+                Prompts = Prompts + 1;
                 Platform.PromptStop();
             }
 

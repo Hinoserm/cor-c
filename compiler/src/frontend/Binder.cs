@@ -96,6 +96,40 @@ public sealed partial class Binder
     private int _nextSlot;
     private int _maxSlot;
     private int _loopDepth;
+
+    /// <summary>
+    /// What is definitely assigned at the breaks out of each loop or switch
+    /// section being checked, innermost last: the intersection of every
+    /// break's state, null while none has been met. After a loop whose
+    /// condition is always true, that is what is assigned (C#'s rule: its
+    /// only way out is a break).
+    /// </summary>
+    private readonly List<HashSet<LocalSym>?> _breaks = new();
+
+    private void EnterBreakable()
+    {
+        _loopDepth++;
+        _breaks.Add(null);
+    }
+
+    private HashSet<LocalSym>? LeaveBreakable()
+    {
+        _loopDepth--;
+        HashSet<LocalSym>? broke = _breaks[^1];
+        _breaks.RemoveAt(_breaks.Count - 1);
+        return broke;
+    }
+
+    /// <summary>After a loop that only a break leaves: what every break had assigned.</summary>
+    private void AfterEndlessLoop(Expr? cond, HashSet<LocalSym>? broke)
+    {
+        if (broke is null || cond is not null && !(cond is LiteralExpr { Kind: Lit.Bool, IntValue: 1 }))
+        {
+            return;
+        }
+        _assigned.Clear();
+        _assigned.UnionWith(broke);
+    }
     private readonly List<SwitchStmt> _switches = new();
 
     /// <summary>
@@ -4639,18 +4673,19 @@ public sealed partial class Binder
 
                 List<Sym> inLoop = Assume(w.Cond, true);
 
-                _loopDepth++;
+                EnterBreakable();
                 CheckStmt(w.Body);
-                _loopDepth--;
+                HashSet<LocalSym>? whileBroke = LeaveBreakable();
                 Forget(inLoop);
                 PopScope();
+                AfterEndlessLoop(w.Cond, whileBroke);
                 break;
             }
 
             case DoStmt dd:
-                _loopDepth++;
+                EnterBreakable();
                 CheckStmt(dd.Body);
-                _loopDepth--;
+                LeaveBreakable();
                 CheckCondition(dd.Cond);
                 break;
 
@@ -4681,9 +4716,9 @@ public sealed partial class Binder
                 // proved -- so checking it first took the proof away from the
                 // body, and `t.Interfaces` two lines in was reported as a read
                 // through something that may be null.
-                _loopDepth++;
+                EnterBreakable();
                 CheckStmt(f.Body);
-                _loopDepth--;
+                HashSet<LocalSym>? forBroke = LeaveBreakable();
 
                 foreach (Expr step in f.Step)
                 {
@@ -4692,6 +4727,7 @@ public sealed partial class Binder
 
                 Forget(proved);
                 PopScope();
+                AfterEndlessLoop(f.Cond, forBroke);
                 break;
             }
 
@@ -4798,9 +4834,9 @@ public sealed partial class Binder
                 // Recorded as a pattern's binding is: a lambda that captures
                 // it makes it a cell, and the lowering stores into the cell.
                 _r.PatternSym[fe] = iteration;
-                _loopDepth++;
+                EnterBreakable();
                 CheckStmt(fe.Body);
-                _loopDepth--;
+                LeaveBreakable();
                 PopScope();
                 break;
             }
@@ -4905,6 +4941,12 @@ public sealed partial class Binder
                 {
                     Error(s, $"'{(s is BreakStmt ? "break" : "continue")}' is only valid inside a loop");
                 }
+                else if (s is BreakStmt && _breaks.Count > 0)
+                {
+                    HashSet<LocalSym>? broke = _breaks[^1];
+                    if (broke is null) _breaks[^1] = new HashSet<LocalSym>(_assigned, ReferenceEqualityComparer.Instance);
+                    else broke.IntersectWith(_assigned);
+                }
                 break;
 
             case GotoCaseStmt jump:
@@ -4997,7 +5039,7 @@ public sealed partial class Binder
                     _assigned.Clear();
                     _assigned.UnionWith(beforeSwitch);
                     PushScope();
-                    _loopDepth++;
+                    EnterBreakable();
 
                     // A LABEL IS A CONDITION, checked as one. Any binding in it
                     // declares into the scope just pushed and so is visible in
@@ -5030,7 +5072,7 @@ public sealed partial class Binder
                         continuingAssignments.Add(new HashSet<LocalSym>(
                             _assigned, ReferenceEqualityComparer.Instance));
                     }
-                    _loopDepth--;
+                    LeaveBreakable();
                     Forget(caseProof);
                     PopScope();
                 }

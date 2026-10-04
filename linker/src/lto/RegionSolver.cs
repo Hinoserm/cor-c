@@ -274,9 +274,19 @@ public static class RegionSolver
         // Past this many pairs of source and destination a block copy is one
         // node, everything from every source to anywhere in every destination.
         private const int MostPairs = 1024;
-        // Past this many objects' copies of one method, the rest share its
-        // copy in no object's context.
+        // Past this many objects' copies of one method, the rest share a few
+        // copies among them (OverflowContext).
         private const int MostContexts = 16;
+        // THE REST, SPREAD OVER EIGHT COPIES: one shared copy held every
+        // receiver past the sixteenth, and every value they were handed --
+        // a List's Add on a program's lists, a base constructor under every
+        // derived one -- and past MostHeld that node saturated, putting all
+        // of them where nobody follows. Each shared copy is as sound as the
+        // one copy in no context (it runs for whatever is handed to it) and
+        // holds an eighth; the objects made in it are its own.
+        private const int OverflowShift = 3;
+        private const int FirstOverflow = -3;
+        private static int OverflowContext(int o) => FirstOverflow - (int)(unchecked((uint)o * 2654435761u) >> (32 - OverflowShift));
         // Past this many locations a node holds the unknown object, and they escape.
         private const int MostHeld = 256;
         private readonly int _maxDepth;
@@ -566,12 +576,12 @@ public static class RegionSolver
             else if (!function.Instance) context = -1;
             else if (context >= 0 && (_objectSite[context] < 0 || _objectDepth[context] >= _maxDepth)) context = -1;
             if (_copyIds.TryGetValue(Key(f, context), out int known)) return known;
-            // A METHOD CALLED ON MANY OBJECTS is called on the rest without a
-            // context: each object its own copy multiplied the objects made
-            // in them, and those the copies (RegionPointsTo.MostContexts).
+            // A METHOD CALLED ON MANY OBJECTS is called on the rest in a few
+            // shared copies: each object its own copy multiplied the objects
+            // made in them, and those the copies (RegionPointsTo.MostContexts).
             if (context >= 0)
             {
-                if (_contexts[f] >= MostContexts) return CopyOf(f, -1);
+                if (_contexts[f] >= MostContexts) return CopyOf(f, OverflowContext(context));
                 _contexts[f]++;
             }
             int copy = _copyFunction.Count;

@@ -1,0 +1,185 @@
+// test: array_of_lists_owns_elements
+// expect-exit: 0
+// expect-output:
+// buckets 600000 True
+// kept 0 1 2 3 4 5 6 7
+// shared 30 30
+// outside 99 98 97
+// late 45
+// returned 3 6
+// copied 7 7 7
+// carried 11 12
+// overwritten 5
+//
+// AN ARRAY OF LISTS a function makes, fills with lists made for it and
+// reads only to use them where they are, gives its lists back with it
+// (Escape.ConfirmArrayElements, Runtime.FreeArrayElements): `buckets`
+// leaves at most a few bytes a call to the collector while the program
+// frees them itself. Every other line is a list that must NOT be freed --
+// read out of such an array and kept, stored in two slots, made elsewhere
+// and stored in, used after the array's last use, handed back in the
+// array, copied out with Array.Copy, carried from one array to the next
+// round a loop, or put back over another -- each checked after enough
+// churn that a list freed by mistake would have been made into another.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Buckets(int n)
+    {
+        List<int>[] buckets = new List<int>[4];
+        for (int i = 0; i < buckets.Length; i++) buckets[i] = new List<int>();
+        for (int k = 0; k < n; k++) buckets[k & 3].Add(k);
+        int total = 0;
+        for (int i = 0; i < buckets.Length; i++) total += buckets[i].Count * (i + 1);
+        return total;
+    }
+
+    static List<int>? _kept;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Keep()
+    {
+        List<int>[] lists = new List<int>[2];
+        lists[0] = new List<int>();
+        lists[1] = new List<int>();
+        for (int i = 0; i < 8; i++) lists[0].Add(i);
+        _kept = lists[0];
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static List<int> Shared()
+    {
+        List<int>[] lists = new List<int>[2];
+        List<int> one = new List<int>();
+        lists[0] = one;
+        lists[1] = one;
+        lists[0].Add(10);
+        lists[1].Add(20);
+        return one;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Outside(List<int> given)
+    {
+        List<int>[] lists = new List<int>[1];
+        lists[0] = given;
+        lists[0].Add(97);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Late()
+    {
+        List<int>[] lists = new List<int>[1];
+        lists[0] = new List<int>();
+        List<int> late = lists[0];
+        for (int i = 0; i < 10; i++) late.Add(i);
+        Churn();
+        int sum = 0;
+        foreach (int x in late) sum += x;
+        return sum;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static List<int>[] Returned()
+    {
+        List<int>[] lists = new List<int>[2];
+        lists[0] = new List<int> { 1, 2 };
+        lists[1] = new List<int> { 3, 3 };
+        return lists;
+    }
+
+    static List<int>[] _copies = new List<int>[3];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Copied()
+    {
+        List<int>[] lists = new List<int>[3];
+        for (int i = 0; i < 3; i++) lists[i] = new List<int> { 7 };
+        Array.Copy(lists, _copies, 3);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Carried()
+    {
+        List<int>? carried = null;
+        for (int round = 0; round < 2; round++)
+        {
+            List<int>[] lists = new List<int>[1];
+            lists[0] = new List<int> { 11 + round };
+            if (carried == null) carried = lists[0];
+            else carried.Add(lists[0][0]);
+            Churn();
+        }
+        return carried![0] + " " + carried[1];
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Overwritten()
+    {
+        List<int>[] lists = new List<int>[2];
+        lists[0] = new List<int> { 5 };
+        lists[1] = new List<int> { 6 };
+        List<int> first = lists[0];
+        lists[0] = lists[1];
+        Churn();
+        return first[0];
+    }
+
+    static long _churned;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn()
+    {
+        for (int k = 0; k < 2000; k++)
+        {
+            List<int> noise = new List<int> { k, k + 1, k + 2 };
+            int[] more = new int[16];
+            more[3] = noise[1];
+            _churned += more[3];
+        }
+    }
+
+    static void Main()
+    {
+        const int N = 20000;
+        Gc.Collect();
+        long taken = Gc.CollectedBytes, frees = Gc.Frees;
+        long total = 0;
+        for (int k = 0; k < N; k++) total += Buckets(12);
+        bool given = Gc.Frees - frees >= N;
+        Gc.Collect();
+        long left = (Gc.CollectedBytes - taken) / N;
+        Console.WriteLine("buckets " + total + " " + (given && left <= 32 ? "True" : "False " + left));
+
+        Keep();
+        Churn(); Gc.Collect(); Churn();
+        Console.WriteLine("kept " + string.Join(" ", _kept!));
+
+        List<int> shared = Shared();
+        Churn(); Gc.Collect();
+        Console.WriteLine("shared " + (shared[0] + shared[1]) + " " + (shared.Count == 2 ? 30 : -1));
+
+        List<int> outside = new List<int> { 99, 98 };
+        Outside(outside);
+        Churn(); Gc.Collect(); Churn();
+        Console.WriteLine("outside " + string.Join(" ", outside));
+
+        Console.WriteLine("late " + Late());
+
+        List<int>[] back = Returned();
+        Churn(); Gc.Collect();
+        Console.WriteLine("returned " + (back[0][0] + back[0][1]) + " " + (back[1][0] + back[1][1]));
+
+        Copied();
+        Churn(); Gc.Collect(); Churn();
+        Console.WriteLine("copied " + _copies[0][0] + " " + _copies[1][0] + " " + _copies[2][0]);
+
+        Console.WriteLine("carried " + Carried());
+        Console.WriteLine("overwritten " + Overwritten());
+    }
+}

@@ -200,6 +200,7 @@ public sealed partial class Escape : IModulePass
             : !m.PreserveExports && m.Entry is not null ? ElementMode.Whole
             : m.AtLink ? _elementFacts is not null ? ElementMode.Linked : ElementMode.Off
             : _hinting ? ElementMode.Hints : ElementMode.Off;
+        _arrayFreer = canFree && Provided(OwnedElements.ArrayFreer);
         if (canFree) ConfirmOwnedElements(m, summaries);
         foreach (Function f in m.Functions)
         {

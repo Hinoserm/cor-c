@@ -1,0 +1,32 @@
+// test: an interrupt handler's allocation in another unit refused at link
+// units: tests/language/support/1295_irq_units.cor
+// expect-compile-error: interrupt handler and must not allocate: 'IrqHelpers.Note' makes a new
+//
+// The compile of this unit cannot see into IrqHelpers.Note, which another
+// unit compiles; each unit keeps its methods' interrupt facts (what each
+// allocates itself, what it calls), and the link walks from every handler
+// through all of them. Disc.OnIrq calls Note, which makes a list: refused.
+
+using System;
+
+interface IIrqHandler
+{
+    void OnIrq(long n);
+}
+
+class Disc : IIrqHandler
+{
+    public void OnIrq(long n)
+    {
+        IrqHelpers.Note(n);
+    }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        new Disc().OnIrq(3);
+        return 0;
+    }
+}

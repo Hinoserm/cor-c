@@ -373,6 +373,31 @@ static class Platform
         return FreeMemoryQuietly();
     }
 
+    /// MEMORY COMMITTED AS IT IS FIRST TOUCHED, for the collector's tables that
+    /// cover the whole address space and are read only where the heap is
+    /// (Gc.StartGenerations): a kernel's routine that hands out addresses and
+    /// makes each page when it is first touched (ring 0's KernelMapLazy), or,
+    /// with none, an ordinary Map -- a ring-1 kernel's, which its kernel
+    /// commits on touch already.
+    public static long MapLazyHook;
+
+    public static long MapLazy(long bytes)
+    {
+        if (MapLazyHook != 0) return Sys.Call(MapLazyHook, bytes, 0, 0);
+        return Map(bytes);
+    }
+
+    /// The pages of [at, at + bytes) of a MapLazy range committed now, in
+    /// thread context, by the kernel's routine (CommitHook) -- so nothing
+    /// the collector knows will be touched waits on a fault (Gc.CommitCards).
+    /// No hook: nothing to do.
+    public static long CommitHook;
+
+    public static void Commit(long at, long bytes)
+    {
+        if (CommitHook != 0) Sys.Call(CommitHook, at, bytes, 0);
+    }
+
     /// Whether a mapping costs only the pages that are touched: false alone
     /// on the machine -- the collector keeps no card table and collects the
     /// whole heap -- and true for an image whose kernel commits its memory
@@ -403,9 +428,10 @@ static class Platform
 
     /// What is current, as a kernel keeps it (AsyncContext): called with
     /// AsyncContext.CaptureOp (answers a word for what is current now: an
-    /// object's, which the context then holds), EnterOp and a word (makes it
-    /// current, answering the word it displaced) and LeaveOp and that
-    /// displaced word (puts it back). 0: no context flows.
+    /// object's, which the context then holds as its Owner; asked only where
+    /// a flow begins), EnterOp and the Owner's word as a continuation starts
+    /// (the platform may make it current or only note it; it answers a word)
+    /// and LeaveOp and that answer as it ends. 0: no context flows.
     public static long ContextHook;
 
     /// Called with no arguments by InterruptCompletions.Complete -- from an

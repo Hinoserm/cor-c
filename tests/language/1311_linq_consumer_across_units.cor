@@ -1,0 +1,77 @@
+// test: linq_consumer_across_units
+// units: tests/language/support/1311_consumer_units.cor
+// expect-exit: 0
+// expect-output:
+// odd 100000 True
+// positive 100000 True
+// tripled 540000 True
+// above 40000 True
+// kept 27 27
+//
+// 1211's other half, measured: a list made in this unit and handed to a
+// LINQ walk in another (Consumers), which keeps it nowhere -- the iterator
+// holding it, the walk's enumerator and a closure capturing nothing are
+// that unit's, and dead when its call returns. The link's lifetime answer
+// for the consumer's parameter (EscapeHints, the iterator's Held box and
+// its virtual GetEnumerator through TypedTargets) lets this unit free the
+// list and its array at the call's return, and the other unit frees what
+// it made. A closure that captures the caller's number (Above) is made per
+// call and freed in that unit too. Each line: what the calls computed, and
+// whether each left at most a few bytes to the collector while the program
+// gave memory back itself. A list handed over and then kept by this unit
+// stays intact.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    static List<int> Make(int n) { List<int> l = new(); for (int i = 0; i < n; i++) l.Add(i - 3); return l; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Odd(int n) { return Consumers.Odd(Make(n)); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Positive(int n) { return Consumers.Positive(Make(n)); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Tripled(int n) { return Consumers.Tripled(Make(n)); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Above(int n) { return Consumers.Above(Make(n), 3); }
+
+    static string Measure(Func<int, int> f, out long total)
+    {
+        const int N = 20000;
+        total = 0;
+        Gc.Collect();
+        long taken = Gc.CollectedBytes, frees = Gc.Frees, region = Gc.RegionFreedBytes;
+        for (int k = 0; k < N; k++) total += f(9);
+        bool given = Gc.Frees - frees >= N || Gc.RegionFreedBytes - region >= N * 16;
+        Gc.Collect();
+        long left = (Gc.CollectedBytes - taken) / N;
+        return given && left <= 32 ? "True" : "False " + left;
+    }
+
+    static List<int> _kept = new();
+
+    static void Main()
+    {
+        string freed = Measure(Odd, out long total);
+        Console.WriteLine("odd " + total + " " + freed);
+        freed = Measure(Positive, out total);
+        Console.WriteLine("positive " + total + " " + freed);
+        freed = Measure(Tripled, out total);
+        Console.WriteLine("tripled " + total + " " + freed);
+        freed = Measure(Above, out total);
+        Console.WriteLine("above " + total + " " + freed);
+
+        // Handed over, then kept here: the other unit's walk does not end it.
+        _kept = Make(9);
+        int first = Consumers.Tripled(_kept);
+        for (int k = 0; k < 20000; k++) Odd(9);
+        Gc.Collect();
+        Console.WriteLine("kept " + first + " " + Consumers.Tripled(_kept));
+    }
+}

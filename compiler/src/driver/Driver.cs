@@ -600,12 +600,16 @@ public static class Driver
         Corsac.Lang.Lower.Lowering.TlsGs = freestanding && args.Contains("--tls-gs");
         Corsac.Lang.Lower.Lowering.Ring1Syscalls = freestanding && args.Contains("--ring1-syscalls");
         // ITS THREADS ARE STOPPED AT ANY INSTRUCTION: every reference store is
-        // made one sequence no thread is stopped inside (Lowering.StoreSequences;
-        // --store-sequences asks for them in any freestanding image, for a test
-        // run as a process). The card mark before a store stays only for a store
-        // that cannot be made one (Lowering.CardMarkBefore): a sequence drops it.
+        // made one sequence no thread is stopped inside (Lowering.StoreSequences):
+        // a ring-1 kernel's, sent to its handshake from wherever a trap finds
+        // it (--ring1-syscalls), and ring 0's kernel and its modules, whose
+        // processors answer their collector from a Kick's interrupt -- the
+        // image build asks with --store-sequences, which a freestanding test
+        // run as a process may ask too. The card mark before a store stays
+        // only for a store that cannot be made one (Lowering.CardMarkBefore),
+        // in the same images: one scheme an image.
         Corsac.Lang.Lower.Lowering.StoreSequences = freestanding && (Corsac.Lang.Lower.Lowering.Ring1Syscalls || args.Contains("--store-sequences"));
-        Corsac.Lang.Lower.Lowering.CardMarkBefore = Corsac.Lang.Lower.Lowering.Ring1Syscalls;
+        Corsac.Lang.Lower.Lowering.CardMarkBefore = Corsac.Lang.Lower.Lowering.StoreSequences;
 
         // --asm-entry: an assembled object supplies `_start`, and this is the
         // name it calls once it has a stack and a cleared .bss.
@@ -734,6 +738,9 @@ public static class Driver
         List<string> libraryMark = library ? new List<string>(files) : classLibrary;
         Corsac.Lang.Lower.Lowering.SharedObject = shared && !args.Contains("--no-shared-init");
         Corsac.Lang.Lower.Lowering.PartOfALibrary = references.Count > 0 || args.Contains("--decl-index") || args.Contains("--obj");
+        // A unit linked with others keeps its interrupt facts for the link's
+        // check of handlers across units (InterruptNotes).
+        Binder.CollectInterruptFacts = args.Contains("--obj") || library;
         Corsac.Lang.Lower.Lowering.Dynamic = !library && sharedLibs.Count > 0;
 #if !NET
         // Native task workers serve parsing, optimization and code generation.
@@ -986,6 +993,8 @@ public static class Driver
         NativeLibraries.Attach(obj, module.NativeLibraries);
         ManagedLayoutContract.Attach(obj, layouts);
         if (usesNotes is not null) Corsac.Lang.Lto.UsesNotes.Attach(obj, usesNotes);
+        // What the link checks interrupt handlers' calls into other units by.
+        if (module.InterruptFacts is { Count: > 0 } interruptFacts) Corsac.Lang.Lto.InterruptNotes.Attach(obj, interruptFacts);
 
         // WHAT THIS PROGRAM'S SETTINGS ARE, for the kernel to read out of the
         // file rather than out of the running process -- which is why the
@@ -1124,6 +1133,14 @@ public static class Driver
         // The report before link-time optimisation; the notes out after it,
         // whose IR archives' integrity hash covers them.
         if (Value(args, "--unused-report") is string unusedReport) Corsac.Lang.Lto.UnusedReport.Write(link, entry, unusedReport);
+        // Every interrupt handler, through every object linked here
+        // (InterruptNotes): what each unit's compile could not follow.
+        List<string> interruptErrors = Corsac.Lang.Lto.InterruptNotes.Check(link.Select(input => input.Item2));
+        // REFUSED, every path listed (InterruptNotes.EveryAllocation): the
+        // kernel's handlers reach no allocation since the wake predicate
+        // left WaitQueue.WakeAll (Sched.WakeQueuedIfOver) and the AIC's
+        // drain stopped making its messages.
+        if (interruptErrors.Count > 0) throw new LinkException(interruptErrors);
 
         if (flat)
         {
@@ -1132,6 +1149,7 @@ public static class Driver
             TargetContract.Validate(link);
             Corsac.Lang.Lto.LinkTimeOptimizer.Run(link, !args.Contains("--no-lto") && !args.Contains("--no-opt"));
             Corsac.Lang.Lto.UsesNotes.Strip(link.Select(input => input.Item2));
+            Corsac.Lang.Lto.InterruptNotes.Strip(link.Select(input => input.Item2));
             // --map FILE: every symbol of the image, largest first, as `corc link` writes it.
             Linker.FlatImage image = Linker.LinkFlat(link, entry, checked((uint)(loadBase ?? 0x10000)), mapPath: Value(args, "--map"));
             File.WriteAllBytes(output, image.Bytes);
@@ -1149,6 +1167,7 @@ public static class Driver
             Corsac.Lang.Lto.LinkTimeOptimizer.Run(link, !args.Contains("--no-lto") && !args.Contains("--no-opt"));
         }
         Corsac.Lang.Lto.UsesNotes.Strip(link.Select(input => input.Item2));
+        Corsac.Lang.Lto.InterruptNotes.Strip(link.Select(input => input.Item2));
         // What a CORSAC program carries beyond its code: --subsystem
         // console|gui|service, --resources <segment file>, --icon-resource <id>.
         // See docs/software/GUI-EXECUTABLE.md in the OS repository.
