@@ -1,0 +1,102 @@
+// test: csharp_exceptions_enums_events_operators
+// expect-exit: 0
+// expect-output:
+// exceptions True overflow filtered maybe 11
+// misc True 5 7 4,6 True square 9 set 3 Level 0 3 42 8 10
+//
+// CHECKED ARITHMETIC AND EXCEPTIONS -- filters, a throw expression, finally --
+// and the rest of the language the sources use: a flags enum, an event,
+// operators on a record struct, an explicit interface implementation, a
+// generic method with params and a constraint, ??=, ?., nameof, default,
+// goto, a local const, sizeof, MethodImpl.
+//
+// Split out of the canary of the C# the compiler's own sources use: one
+// family a test, so a form the compiler cannot build yet fails only its own.
+// Every line is what .NET prints.
+
+using System;
+using System.Runtime.CompilerServices;
+
+public sealed class Options
+{
+    public string Name { get; set; } = "";
+    public int Level { get; set; }
+}
+
+public readonly record struct Vec(int X, int Y)
+{
+    public static Vec operator +(Vec a, Vec b) => new(a.X + b.X, a.Y + b.Y);
+}
+
+[Flags]
+public enum Mode { None = 0, Read = 1, Write = 2, Exec = 4 }
+
+public interface IShape { string Name(); }
+
+public sealed class Square : IShape
+{
+    string IShape.Name() => "square";
+}
+
+public sealed class Notifier
+{
+    public event Action<int>? Fired;
+    public void Fire(int v) => Fired?.Invoke(v);
+}
+
+public static class Program
+{
+    private static void Say(params object?[] parts) => Console.WriteLine(string.Join(" ", parts));
+
+    private static T Largest<T>(params T[] xs) where T : IComparable<T>
+    {
+        T best = xs[0];
+        foreach (T x in xs) if (x.CompareTo(best) > 0) best = x;
+        return best;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static int Twice(int x) => x * 2;
+
+    public static int Main()
+    {
+        int big = int.MaxValue;
+        int wrapped = unchecked(big + 1);
+        string overflow;
+        try { overflow = checked(big + 1).ToString(); }
+        catch (OverflowException) { overflow = "overflow"; }
+        string filtered;
+        try { throw new InvalidOperationException("bad"); }
+        catch (InvalidOperationException e) when (e.Message == "good") { filtered = "wrong"; }
+        catch (InvalidOperationException e) when (e.Message == "bad") { filtered = "filtered"; }
+        string? maybe = null;
+        string thrown;
+        try { thrown = maybe ?? throw new ArgumentNullException(nameof(maybe)); }
+        catch (ArgumentNullException e) { thrown = e.ParamName!; }
+        int fin = 0;
+        try { fin = 1; }
+        finally { fin += 10; }
+        Say("exceptions", wrapped == int.MinValue, overflow, filtered, thrown, fin);
+
+        Mode mode = Mode.Read | Mode.Exec;
+        Notifier notifier = new();
+        int total = 0;
+        notifier.Fired += value => total += value;
+        notifier.Fire(3);
+        notifier.Fire(4);
+        Vec sum = new Vec(1, 2) + new Vec(3, 4);
+        IShape shape = new Square();
+        string? unset = null;
+        unset ??= "set";
+        int? length = unset?.Length;
+        int nothing = default;
+        int g = 0;
+    again:
+        g++;
+        if (g < 3) goto again;
+        const int Local = 2 * 21;
+        Say("misc", mode.HasFlag(Mode.Exec), (int)mode, total, sum.X + "," + sum.Y, sum == new Vec(4, 6), shape.Name(), Largest(3, 9, 4), unset, length,
+            nameof(Options.Level), nothing, g, Local, sizeof(long), Twice(5));
+        return 0;
+    }
+}

@@ -1,0 +1,44 @@
+// test: csharp_records_init_required_with
+// expect-exit: 0
+// expect-output:
+// records True 4 False x2 7 True
+//
+// RECORDS, A RECORD STRUCT, INIT AND REQUIRED MEMBERS, WITH, in a file-scoped
+// namespace.
+//
+// Split out of the canary of the C# the compiler's own sources use: one
+// family a test, so a form the compiler cannot build yet fails only its own.
+// Every line is what .NET prints.
+
+using System;
+
+namespace Canary;
+
+public sealed record Token(string Kind, int Line);
+
+public record struct Span2(int Start, int Length)
+{
+    public int End => Start + Length;
+}
+
+public sealed class Options
+{
+    public required string Name { get; init; }
+    public int Level { get; init; } = 2;
+}
+
+public static class Program
+{
+    private static void Say(params object?[] parts) => Console.WriteLine(string.Join(" ", parts));
+
+    public static int Main()
+    {
+        Token t = new("ident", 3);
+        Token u = t with { Line = 4 };
+        Options o = new() { Name = "x" };
+        Span2 sp = new(2, 5);
+        Span2 narrowed = sp with { Length = 1 };
+        Say("records", t == new Token("ident", 3), u.Line, t.Equals(u), o.Name + o.Level, sp.End, narrowed == new Span2(2, 1));
+        return 0;
+    }
+}

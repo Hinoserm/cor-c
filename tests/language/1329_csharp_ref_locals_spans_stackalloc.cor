@@ -1,0 +1,43 @@
+// test: csharp_ref_locals_spans_stackalloc
+// expect-exit: 0
+// expect-output:
+// spans 15 99 10 100 ell 7,3,7,7 True True
+//
+// REF LOCALS AND A REF-RETURNING LOCAL FUNCTION, SPANS, STACKALLOC, a list's
+// storage as a span (CollectionsMarshal), a string's span, and comparing
+// spans.
+//
+// Split out of the canary of the C# the compiler's own sources use: one
+// family a test, so a form the compiler cannot build yet fails only its own.
+// Every line is what .NET prints.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+
+public static class Program
+{
+    private static void Say(params object?[] parts) => Console.WriteLine(string.Join(" ", parts));
+
+    public static int Main()
+    {
+        int[] arr = [10, 20, 30];
+        ref int head = ref arr[0];
+        head += 5;
+        ref int At(int[] xs, int i) => ref xs[i];
+        At(arr, 2) = 99;
+        Span<int> buf = stackalloc int[4];
+        buf.Fill(7);
+        buf[1] = 3;
+        Span<int> slice = buf.Slice(1, 2);
+        List<int> list = [1, 2, 3];
+        Span<int> listView = CollectionsMarshal.AsSpan(list);
+        listView[0] = 100;
+        ReadOnlySpan<char> chars = "hello".AsSpan(1, 3);
+        int[] copy = new int[4];
+        buf.CopyTo(copy);
+        Say("spans", arr[0], arr[2], slice[0] + slice[1], list[0], chars.ToString(), string.Join(",", copy),
+            "abc".AsSpan().SequenceEqual("abc".AsSpan()), "abc".AsSpan().SequenceCompareTo("abd".AsSpan()) < 0);
+        return 0;
+    }
+}

@@ -1,0 +1,29 @@
+// test: csharp_regex_and_paths
+// expect-exit: 0
+// expect-output:
+// text a#b# val True a\.b dir/file.txt z.cs z /x/y a.o True
+//
+// REGULAR EXPRESSIONS AND PATHS: Regex Replace, Match and its groups,
+// IsMatch and Escape; Path Combine, GetFileName, without its extension,
+// GetDirectoryName, ChangeExtension and IsPathRooted, as on Linux.
+//
+// Split out of the canary of the C# the compiler's own sources use: one
+// family a test, so a form the compiler cannot build yet fails only its own.
+// Every line is what .NET prints.
+
+using System;
+using System.IO;
+using System.Text.RegularExpressions;
+
+public static class Program
+{
+    private static void Say(params object?[] parts) => Console.WriteLine(string.Join(" ", parts));
+
+    public static int Main()
+    {
+        Say("text", Regex.Replace("a1b22", "[0-9]+", "#"), Regex.Match("key=val", "(\\w+)=(\\w+)").Groups[2].Value, Regex.IsMatch("abc", "^a.c$"),
+            Regex.Escape("a.b"), Path.Combine("dir", "file.txt"), Path.GetFileName("/x/y/z.cs"), Path.GetFileNameWithoutExtension("/x/y/z.cs"),
+            Path.GetDirectoryName("/x/y/z.cs"), Path.ChangeExtension("a.cs", ".o"), Path.IsPathRooted("/a"));
+        return 0;
+    }
+}
