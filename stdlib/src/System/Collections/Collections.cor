@@ -150,10 +150,20 @@ class Stack<T> : IReadOnlyCollection<T>, IEnumerable<T> {
     public Enumerator GetEnumerator() { return new Enumerator(this); }
     IEnumerator<T> IEnumerable<T>.GetEnumerator() { return new StackEnumerator<T>(this); }
 
+    // THE ARRAY IS THE STACK'S ALONE -- ToArray and CopyTo copy out of it,
+    // the enumerators read through the stack -- so at its region's top it
+    // grows where it is (Runtime.GrowInPlace), and elsewhere the one it
+    // outgrew is given back after the store that replaces it, as Queue's is
+    // (OutgrownStorage, the self-replacing free). Left to the collector,
+    // every array a stack outgrew stayed until a collection.
     private void Grow() {
-        T[] bigger = new T[items.Length * 2];
+        int size = items.Length * 2;
+        if (Runtime.GrowInPlace((nint)Sys.Word(items), size)) { return; }
+        T[] bigger = new T[size];
         for (int i = 0; i < count; i++) { bigger[i] = items[i]; }
+        T[] outgrown = items;
         items = bigger;
+        OutgrownStorage.Release(outgrown);
     }
 }
 
