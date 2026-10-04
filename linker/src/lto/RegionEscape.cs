@@ -473,7 +473,7 @@ internal sealed class RegionEscape
     internal (string[] Objects, (int From, int Offset, int To, int ToOffset)[] Cells, (int To, int ToOffset)[] Result, bool Coarse)? SummaryOf(int f)
     {
         if (_summaries[f] is not { IsUnknown: false } s) return null;
-        static string Step(int step) => step == DeepStep ? "deep" : IsGuard(step) ? "g" : step.ToString();
+        static string Step(int step) => StepText(step, guardIds: false);
         return (s.Objects.Select(o => o.Kind + " " + o.Param + " [" + string.Join(",", o.Path.Select(Step)) + "]").ToArray(),
             s.Cells.ToArray(), s.Result.ToArray(), s.MadeCoarse);
     }
@@ -593,6 +593,27 @@ internal sealed class RegionEscape
     // or the deep step -- every object below, by one field or more.
     private const int DeepStep = int.MinValue;
     private static bool IsField(int step) => step >= Any;
+
+    // A FIELD STEP NAMING ITS FIELD (RegionConstraint.Family, the engine's
+    // number for it): the offset in the low StepBits bits, the field's
+    // number plus one above them -- one int still, and still a field step
+    // (>= Any). A step naming none is its offset alone, or Any. A place
+    // below a typed step is what that one field holds; below an untyped
+    // one, whatever is at the offset. Applied at a caller, a typed step is
+    // a load naming the field, which reads that field's words, the words
+    // written naming none, and any offset's (Graph.Loaded); an untyped one
+    // reads every field at its offset.
+    private const int StepBits = 13;            // FarthestField (4096) below 1 << StepBits
+    private const int MostStepFamily = (1 << (31 - StepBits)) - 2;
+    private static int TypedStep(int offset, int family)
+        => family < 0 || offset < 0 || offset > FarthestField || family > MostStepFamily ? offset : offset | ((family + 1) << StepBits);
+    private static int StepOffset(int step) => step < 0 ? step : step & ((1 << StepBits) - 1);
+    private static int StepFamily(int step) => step < 0 ? -1 : (step >> StepBits) - 1;
+
+    /// <summary>A path step for a report: an offset, "8:f3" for a field named, "deep", a guard.</summary>
+    private static string StepText(int step, bool guardIds = true)
+        => step == DeepStep ? "deep" : IsGuard(step) ? (guardIds ? "g" + GuardOf(step) : "g")
+            : StepFamily(step) >= 0 ? StepOffset(step) + ":f" + StepFamily(step) : step.ToString();
     private static bool IsGuard(int step) => step < Any && step != DeepStep;
     private static int GuardStep(int guard) => -2 - guard;
     private static int GuardOf(int step) => -2 - step;
@@ -1404,7 +1425,7 @@ internal sealed class RegionEscape
         // gives its callers, and what of it the unknown object holds.
         if (Why is not null && WhyFunction?.Invoke(f) == true && Progress is { } say)
         {
-            static string Step(int step) => step == DeepStep ? "deep" : IsGuard(step) ? "g" + GuardOf(step) : step.ToString();
+            static string Step(int step) => StepText(step);
             string Of(int k) => s.Objects[k].Kind + " " + s.Objects[k].Param + " [" + string.Join(",", s.Objects[k].Path.Select(Step)) + "]";
             say(s.IsUnknown ? $"escape graphs why: summary of {_functions[f].Name}: the unknown call's"
                 : $"escape graphs why: summary of {_functions[f].Name}: {s.Objects.Count} objects, {s.Cells.Count} cells, {s.Result.Count} results{(s.MadeCoarse ? ", made coarse" : "")}; "
@@ -2418,12 +2439,13 @@ internal sealed class RegionEscape
         // What a load of an object at `offset` finds there besides what was
         // written: the place one field on, the deep place itself, the unknown
         // object itself.
-        private int Implicit(int o, int offset)
+        private int Implicit(int o, int offset, int family = -1)
         {
             switch (_kind[o])
             {
                 case Kind.Unknown: return Unknown;
-                case Kind.Place or Kind.Deep: return Location(Place(_param[o], WithField(_path[o], offset)), 0);
+                // A load naming its field finds the place below that field.
+                case Kind.Place or Kind.Deep: return Location(Place(_param[o], WithField(_path[o], TypedStep(offset, family))), 0);
                 default: return -1;
             }
         }
@@ -2436,6 +2458,9 @@ internal sealed class RegionEscape
             node = NewNode();
             _cells[o][offset] = node;
             if (o == 0) _unknownCell = node;
+            // A field's word: read by every load at its offset naming none (FieldsAt).
+            if (StepFamily(offset) >= 0 && _offsetReaders.TryGetValue(Pair(o, StepOffset(offset)), out List<int>? atReaders))
+                foreach (int r in atReaders.ToArray()) CopyEdge(node, r, 0);
             // A blob's member's: what is written here is in the blob (Join),
             // linked from Propagate's loop (Link), never from inside this.
             if (_blobsOf.ContainsKey(o)) _cellJoins.Enqueue((node, o));
@@ -2754,6 +2779,15 @@ internal sealed class RegionEscape
 
         private readonly HashSet<long> _loadedFrom = new();
 
+        // AN OBJECT'S WORD, BY FIELD: a store naming its field, from the
+        // object's start, writes that field's word of the offset (a cell
+        // keyed TypedStep(offset, field)); any other store, the offset's
+        // untyped word. A load naming a field reads its field's word, the
+        // untyped word and the any-offset word; one naming none reads every
+        // field's word at the offset, now and as they are made (FieldsAt).
+        // Sound for a type-safe program, as typed aliasing is (Aliased): a
+        // word at an offset of an object is one field, so a store naming F
+        // and a load naming G never meet in one object.
         private void Loaded(int loc, int dest, int offset, int family = -1)
         {
             int o = _locObject[loc];
@@ -2762,16 +2796,38 @@ internal sealed class RegionEscape
             if (at == Any) { LoadedAll(loc, dest); return; }
             // A word never read as a reference holds a number: the unknown object at most.
             if (NoReference(o, at)) { Add(dest, Unknown); return; }
-            int cell = Cell(o, at);
-            if (!_loadedFrom.Add(Pair(cell, dest))) return;
-            CopyEdge(cell, dest, 0);
+            // Typed only from the object's start: at an address into it, the
+            // field named is not where the offset says.
+            int named = _locOffset[loc] == 0 ? family : -1;
+            int own = Cell(o, TypedStep(at, named));
+            if (!_loadedFrom.Add(Pair(own, dest))) return;
+            CopyEdge(own, dest, 0);
+            if (StepFamily(TypedStep(at, named)) >= 0)
+            {
+                // What was written naming no field may be this one.
+                int word = Cell(o, at);
+                if (_loadedFrom.Add(Pair(word, dest))) CopyEdge(word, dest, 0);
+            }
+            else FieldsAt(o, at, dest);
             // What was written at an offset nobody knew may be here too.
             int any = Cell(o, Any);
             if (_loadedFrom.Add(Pair(any, dest))) CopyEdge(any, dest, 0);
-            // Typed only from the object's start: at an address into it, the
-            // field named is not where the offset says.
-            Aliasing(o, dest, at, _locOffset[loc] == 0 ? family : -1);
-            Add(dest, Implicit(o, at));
+            Aliasing(o, dest, at, named);
+            Add(dest, Implicit(o, at, named));
+        }
+
+        // Per object and offset: the loads naming no field there, which read
+        // every field's word at it, those made later too (Cell).
+        private readonly Dictionary<long, List<int>> _offsetReaders = new();
+
+        // A load naming no field at `at` of object o: every field's word there.
+        private void FieldsAt(int o, int at, int dest)
+        {
+            long key = Pair(o, at);
+            if (!_offsetReaders.TryGetValue(key, out List<int>? readers)) _offsetReaders[key] = readers = new();
+            readers.Add(dest);
+            foreach (var (step, node) in _cells[o].ToArray())
+                if (StepFamily(step) >= 0 && StepOffset(step) == at && _loadedFrom.Add(Pair(node, dest))) CopyEdge(node, dest, 0);
         }
 
         private void LoadedAll(int loc, int dest)
@@ -2814,8 +2870,6 @@ internal sealed class RegionEscape
         // symbol's: every graph a function was handed, one.)
         private readonly Dictionary<long, int> _typedWritten = new();
         private readonly List<int> _wideReaders = new();
-        // Per cell node of a place: the family every write into it named, -2 written two ways or untyped.
-        private readonly Dictionary<int, int> _cellFamily = new();
         // Whether any write into a place named a field: else a summary types no word.
         private bool _anyTyped;
 
@@ -2899,15 +2953,11 @@ internal sealed class RegionEscape
             // A number kept where no reference is, or a constant, which is
             // never written: nothing anyone reaches.
             if (NoReference(o, at) || IsConstant(o)) return;
-            int cell = Cell(o, at);
-            // A place's word: which field every write into it named (Aliased).
-            if (_kind[o] is Kind.Place or Kind.Deep)
-            {
-                int named = family >= 0 && at != Any && _locOffset[loc] == 0 ? family : -2;
-                if (named >= 0) _anyTyped = true;
-                if (!_cellFamily.TryGetValue(cell, out int had)) _cellFamily[cell] = named;
-                else if (had != named) _cellFamily[cell] = -2;
-            }
+            // Its field's word, named from the object's start; else the
+            // offset's untyped word (Loaded).
+            int named = family >= 0 && at != Any && _locOffset[loc] == 0 ? family : -1;
+            int cell = Cell(o, TypedStep(at, named));
+            if (StepFamily(TypedStep(at, named)) >= 0 && _kind[o] is Kind.Place or Kind.Deep) _anyTyped = true;
             if (_storedInto.Add(Pair(value, cell))) CopyEdge(value, cell, 0);
         }
 
@@ -3439,7 +3489,7 @@ internal sealed class RegionEscape
                 _owner.Progress($"escape graphs why: in {_owner._functions[f].Name}: call {callee} ({targets.Length} targets{(targets.Length == 1 ? " " + _owner._functions[targets[0]].Name : "")}) {(applied.IsUnknown ? "is the unknown call" : "leaks " + string.Join("; ", leaks))}");
         }
 
-        private static string Step(int step) => step == DeepStep ? "deep" : IsGuard(step) ? "g" + GuardOf(step) : step.ToString();
+        private static string Step(int step) => StepText(step);
 
         /// <summary>
         /// A CALLEE'S SUMMARY AT THIS CALL: its places the caller's own reach
@@ -3463,7 +3513,8 @@ internal sealed class RegionEscape
                         next = NewNode();
                         if (step == DeepStep) { LoadAllEdge(next, at); LoadAllEdge(next, next); }
                         else if (IsGuard(step)) FilterEdge(at, next, GuardOf(step));
-                        else LoadEdge(next, at, step);
+                        // A field naming its field, loaded as it.
+                        else LoadEdge(next, at, StepOffset(step), StepFamily(step));
                         chains[(at, step)] = next;
                     }
                     at = next;
@@ -3780,9 +3831,9 @@ internal sealed class RegionEscape
                 if (_written >= 0)
                     for (int o = 1; o < _kind.Count; o++)
                         if (_kind[o] is Kind.Place or Kind.Deep)
-                            foreach (var (offset, node) in _cells[o].ToArray())
+                            foreach (var (step, node) in _cells[o].ToArray())
                             {
-                                int family = offset != Any && _cellFamily.TryGetValue(node, out int named) ? named : -2;
+                                int family = StepFamily(step), offset = StepOffset(step);
                                 int into = family >= 0 ? TypedWritten(offset, family) : _written;
                                 if (feeding.Add(Pair(node, into))) { CopyEdge(node, into, 0); more = true; }
                             }
@@ -3948,8 +3999,10 @@ internal sealed class RegionEscape
             foreach (var (at, origins) in groupOrigins) { origins.Sort(); s.Objects[at] = (Kind.Made, -1, Array.Empty<int>(), origins.Distinct().ToArray()); }
             // Objects made one: every offset of them is any.
             bool Merged(int k) => k == blob || groupOrigins.ContainsKey(k);
+            Summary cellFamilies = new();
+            bool typedCells = false;
             foreach (int o in outside)
-                foreach (var (offset, node) in _cells[o])
+                foreach (var (step, node) in _cells[o])
                     if (Pts(node) is { } pts)
                         foreach (int loc in pts)
                         {
@@ -3957,11 +4010,20 @@ internal sealed class RegionEscape
                             if (!index.TryGetValue(to, out int t)) continue;   // another member's place
                             bool fromLeaked = leaked.Contains(o);
                             if (to == 0 && fromLeaked) continue;
-                            s.Cells.Add((fromLeaked ? 0 : index[o], fromLeaked || Merged(index[o]) ? Any : offset, t, Merged(t) ? Any : _locOffset[loc]));
+                            int offset = StepOffset(step), family = StepFamily(step);
+                            var cell = (fromLeaked ? 0 : index[o], fromLeaked || Merged(index[o]) ? Any : offset, t, Merged(t) ? Any : _locOffset[loc]);
+                            s.Cells.Add(cell);
+                            if (fromLeaked || Merged(index[o]) || offset == Any) continue;
                             // A place's word, as every write into it named it (Stored).
-                            if (!fromLeaked && !Merged(index[o]) && offset != Any && _kind[o] is Kind.Place or Kind.Deep && _anyTyped)
-                                s.NoteField(index[o], offset, _cellFamily.TryGetValue(node, out int named) && named >= 0 ? named : -1);
+                            if (_kind[o] is Kind.Place or Kind.Deep && _anyTyped) s.NoteField(index[o], offset, family);
+                            // And each cell as the field it was written as: two
+                            // fields at one word stay apart at the caller. (Every
+                            // cell noted, untyped ones too, so one written both
+                            // ways names none; kept only if any names one.)
+                            cellFamilies.NoteFamily(cell, family);
+                            typedCells |= family >= 0;
                         }
+            if (typedCells) s.CellFamilies = cellFamilies.CellFamilies;
             if (Pts(Ret(m)) is { } back)
                 foreach (int loc in back)
                     if (index.TryGetValue(_locObject[loc], out int t)) s.Result.Add((t, Merged(t) ? Any : _locOffset[loc]));
@@ -4012,7 +4074,7 @@ internal sealed class RegionEscape
                                 if (!seen.Add(to)) continue;
                                 next.Enqueue((to, at.O));
                                 foreach (int site in _owner.SitesOf(_origins[to]))
-                                    if (why(site)) _owner.Progress?.Invoke($"escape graphs why: in {_owner._functions[f].Name}{(_members.Length > 1 ? " (cycle of " + _members.Length + ")" : "")}: site {site} reached from {(at.O == 0 ? "the unknown object" : Describe(at.O))} +{offset}, saturated {_saturatedCount}");
+                                    if (why(site)) _owner.Progress?.Invoke($"escape graphs why: in {_owner._functions[f].Name}{(_members.Length > 1 ? " (cycle of " + _members.Length + ")" : "")}: site {site} reached from {(at.O == 0 ? "the unknown object" : Describe(at.O))} +{StepText(offset)}, saturated {_saturatedCount}");
                             }
             }
             bool rooted = _owner._rooted[f];
@@ -4082,7 +4144,7 @@ internal sealed class RegionEscape
                     if (!asked(site) || told >= 40) continue;
                     told++;
                     List<string> path = new();
-                    for (int at = o; parent.TryGetValue(at, out var up); at = up.From) path.Add("+" + up.Offset + " " + Describe(at));
+                    for (int at = o; parent.TryGetValue(at, out var up); at = up.From) path.Add("+" + StepText(up.Offset) + " " + Describe(at));
                     int start = o;
                     while (parent.TryGetValue(start, out var up)) start = up.From;
                     path.Reverse();
@@ -4438,7 +4500,7 @@ internal sealed class RegionEscape
             foreach (int step in path)
             {
                 if (IsGuard(step)) continue;
-                if (step != DeepStep) { c = Field(c, step); continue; }
+                if (step != DeepStep) { c = Field(c, StepOffset(step), StepFamily(step)); continue; }
                 int d = NewClass();
                 Collapse(d);
                 Unify(Field(d, Any), d);
@@ -4696,7 +4758,7 @@ internal sealed class RegionEscape
                     Meet(t);
                     // (A place below a field is by its offset: every field
                     // named at it is one place to the caller.)
-                    if (obj.Kind is Kind.Place or Kind.Deep && obj.Param >= 0) Add(t, Place(obj.Param, WithField(obj.Path, KeyOffset(key))));
+                    if (obj.Kind is Kind.Place or Kind.Deep && obj.Param >= 0) Add(t, Place(obj.Param, WithField(obj.Path, TypedStep(KeyOffset(key), KeyFamily(key)))));
                 }
             }
             if (walked > MostWalked || s.Objects.Count > MostStated) return null;

@@ -389,10 +389,24 @@ A summary by field (`ByField`) states, for each cell, the field it was
 written as (`Summary.CellFamilies`, via `NoteFamily`): a cell written as two
 fields, or as none, names none. A caller keeps the split: unification stores
 the cell into that field's class, inclusion stores it as that field
-(`Graph.Apply`). A place below a field is still by its offset, so a callee's
-place merges the fields there at the caller. Every other way of making a
-summary (merging, bounding, stand-ins) leaves the fields out, which is only
-less precise. Test: engine `UnifiedFamilies`.
+(`Graph.Apply`). Every other way of making a summary (merging, bounding,
+stand-ins) leaves the cells' fields out, which is only less precise. Test:
+engine `UnifiedFamilies`.
+
+**Fields in inclusion and in places.** The inclusion solve keeps an object's
+words by field as well: a store naming its field from the object's start
+writes that field's word of the offset, any other store the offset's untyped
+word. A load naming a field reads its field's word, the untyped word and the
+any-offset word; one naming none reads every field's word at the offset,
+including those made later (`Graph.Loaded`, `Stored`, `FieldsAt`). A place
+below a field names the field it was loaded as: a path step is one int, the
+offset in its low 13 bits and the field's number plus one above them
+(`TypedStep`, `StepOffset`, `StepFamily`). Applied at a caller, a typed step
+is a load naming that field (`Chain`, `Unified.Walk`), so a callee reading
+`A::f` through its parameter binds nothing a caller wrote as `B::g` at the same
+offset. An untyped step reads everything at its offset. Paths keep their
+steps through `WithField`, guards, `Stripped`, `Coarsened` and `Loosened`.
+Reports print a typed step as `8:f3`. Test: engine `TypedPlaceSteps`.
 
 A member's own summary, for calls from outside, is stated field by field
 (`ByField`):

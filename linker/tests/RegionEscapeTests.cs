@@ -22,6 +22,7 @@ public static class RegionEscapeTests
         ("past the inclusion bound, unified", Overflow),
         ("a large cycle's summary, field by field", UnifiedByField),
         ("a large cycle keeps two fields at one offset apart", UnifiedFamilies),
+        ("a place below a field names the field", TypedPlaceSteps),
         ("wide calls: stand-ins and rounds answer as following every call", WideCalls),
         ("wide calls: what one target leaks of what it makes leaves what another hands back", WideHeldApart),
         ("a constant's address holds nothing", Constants),
@@ -320,6 +321,38 @@ public static class RegionEscapeTests
                 bool Named(string field) => Enumerable.Range(0, cells.Length).Any(k => cells[k].Offset == 8 && names[k] == field);
                 Check(Named("B::g"), how + ": R0's summary: the holder's cell at 8 names B::g");
             }
+        }
+    }
+
+    /// <summary>
+    /// Read(p) loads p's field A::f at 8 and throws it: its summary throws
+    /// the place below that field, Place 0 [8:A::f]. Caller makes an object
+    /// and writes B into it at 8 as the field B::g, and hands it to Read: the
+    /// place binds to what the object's A::f holds -- nothing -- so B is not
+    /// global. Read loading at 8 naming no field throws whatever is there: B
+    /// is global. Caller writing B as A::f itself: B is global. Inclusion
+    /// keeps an object's words by field (Graph.Loaded, Stored), and a summary
+    /// place's step names the field it was loaded as (TypedStep).
+    /// </summary>
+    private static void TypedPlaceSteps()
+    {
+        foreach (var (readAs, writeAs, global) in new[] { (0, 1, false), (-1, 1, true), (0, 0, true) })
+        {
+            Prog p = new();
+            // Nodes: 0 p, 1 the return, 2 what is loaded.
+            RegionFunction read = p.Add("Read", 1, 3);
+            read.Families = new[] { "A::f", "B::g" };
+            read.Constraints.Add(new RegionConstraint(RegionConstraintKind.Load, 2, 0, 8, readAs));
+            read.Constraints.Add(Leak(2));
+            // Nodes: 0 the return, 1 the object, 2 B.
+            RegionFunction caller = p.Add("Caller", 0, 3, sites: 2);
+            caller.Families = new[] { "A::f", "B::g" };
+            caller.Constraints.AddRange(new[] { Site(1, 0), Site(2, 1), new RegionConstraint(RegionConstraintKind.Store, 1, 2, 8, writeAs) });
+            caller.Calls.Add(new("Read", -1, new[] { 1 }));
+            RegionEscape e = p.Solve();
+            string how = $"read as {(readAs < 0 ? "no field" : read.Families[readAs])}, written as {caller.Families[writeAs]}";
+            Check(e.Global[p.Site("Caller", 1)] == global, how + (global ? ": B is global" : ": B is not global"));
+            Check(!e.Global[p.Site("Caller", 0)], how + ": the object itself is not global");
         }
     }
 
