@@ -61,6 +61,13 @@ internal sealed class RegionEscape
     // A member of a cycle's parameters are numbered past every member before
     // it: its place in the cycle times this, plus the parameter.
     private const int ParamStride = 1 << 12;
+    // A CONSTANT IN A SUMMARY: a made object of no origins whose parameter
+    // is this. Applied, it is the caller's own constant -- one object for
+    // every constant, never written, what is read from it a constant again --
+    // not a fresh object of its own: as one, a List's empty array became a
+    // place every Add stored into, and a virtual call that ran any target on
+    // it, as it must on a constant, leaked what those stores put there.
+    private const int ConstantParam = -2;
 
     private readonly IReadOnlyList<RegionFunction> _functions;
     private readonly int[]?[][] _targets;
@@ -1127,7 +1134,7 @@ internal sealed class RegionEscape
                 return Keep(KindOf(coarse), param, coarse, Array.Empty<int>());
             }
             List<int> all = new();
-            foreach (var o in Objects) if (o.Kind == Kind.Made) all.AddRange(o.Origins);
+            foreach (var o in Objects) if (o.Kind == Kind.Made && o.Param != ConstantParam) all.AddRange(o.Origins);
             all.Sort();
             int[] origins = all.Distinct().ToArray();
             for (int k = 0; k < Objects.Count; k++)
@@ -1140,6 +1147,7 @@ internal sealed class RegionEscape
                 {
                     Kind.Unknown => 0,
                     Kind.Place or Kind.Deep => KeepPlace(o.Param, o.Path),
+                    Kind.Made when o.Param == ConstantParam => Keep(Kind.Made, ConstantParam, Array.Empty<int>(), Array.Empty<int>()),
                     _ => Keep(Kind.Made, -1, Array.Empty<int>(), origins),
                 };
             }
@@ -1331,6 +1339,7 @@ internal sealed class RegionEscape
             {
                 var o = Objects[k];
                 if (o.Kind == Kind.Unknown) { map[k] = 0; continue; }
+                if (o.Kind == Kind.Made && o.Param == ConstantParam) { map[k] = b.Objects.Count; b.Objects.Add(o); continue; }
                 if (o.Kind == Kind.Made && ++keptMade > keep - 1)
                 {
                     if (blob < 0) { blob = b.Objects.Count; b.Objects.Add((Kind.Made, -1, Array.Empty<int>(), Array.Empty<int>())); }
@@ -2251,6 +2260,8 @@ internal sealed class RegionEscape
                         LoadAllEdge(node[k], node[k]);
                         break;
                     }
+                    case Kind.Made when o.Param == ConstantParam:
+                        node[k] = NewNode(); Add(node[k], Constant); break;
                     case Kind.Made:
                     {
                         int made = NewObject(Kind.Made, -1, Array.Empty<int>(), s.Holder >= 0 ? new[] { Ref(s.Holder, k) } : o.Origins);
@@ -2610,7 +2621,7 @@ internal sealed class RegionEscape
             List<int> blobOrigins = new();
             foreach (int o in order)
             {
-                if (_kind[o] == Kind.Made && leaked.Contains(o))
+                if (_kind[o] == Kind.Made && leaked.Contains(o) && !IsConstant(o))
                 {
                     if (blob < 0) { blob = s.Objects.Count; s.Objects.Add((Kind.Made, -1, Array.Empty<int>(), Array.Empty<int>())); }
                     index[o] = blob;
@@ -2618,7 +2629,8 @@ internal sealed class RegionEscape
                     continue;
                 }
                 index[o] = s.Objects.Count;
-                int param = _kind[o] is Kind.Place or Kind.Deep && _param[o] >= 0 ? _param[o] - m * ParamStride : _param[o];
+                int param = _kind[o] is Kind.Place or Kind.Deep && _param[o] >= 0 ? _param[o] - m * ParamStride
+                    : IsConstant(o) ? ConstantParam : _param[o];
                 s.Objects.Add((_kind[o], param, _path[o], _origins[o]));
             }
             if (blob >= 0) { blobOrigins.Sort(); s.Objects[blob] = (Kind.Made, -1, Array.Empty<int>(), blobOrigins.Distinct().ToArray()); }
@@ -3096,6 +3108,10 @@ internal sealed class RegionEscape
                         cls[k] = Find(d);
                         break;
                     }
+                    // A constant: a class of no origin, as a constant's address binds to nothing.
+                    case Kind.Made when o.Param == ConstantParam:
+                        cls[k] = NewClass();
+                        break;
                     case Kind.Made:
                         cls[k] = s.Holder >= 0 ? Fresh(Ref(s.Holder, k)) : FreshAll(o.Origins);
                         break;
