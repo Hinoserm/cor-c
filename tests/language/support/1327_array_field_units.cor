@@ -1,0 +1,57 @@
+// The other unit of 1327_array_field_across_units: the classes whose array
+// fields hold lists. The calling unit makes them, reads their fields, and
+// drops them; the link decides whether each field's arrays own their lists.
+using System.Collections.Generic;
+
+public sealed class UnitAllocator
+{
+    readonly List<int>[] _occ;
+    readonly List<long>[] _ranges;
+
+    public UnitAllocator(int n)
+    {
+        _occ = new List<int>[n];
+        _ranges = new List<long>[n];
+        for (int v = 0; v < n; v++)
+        {
+            _occ[v] = new List<int>();
+            _ranges[v] = new List<long>();
+        }
+    }
+
+    public int Run(int steps)
+    {
+        for (int k = 0; k < steps; k++)
+        {
+            _occ[k % _occ.Length].Add(k);
+            _ranges[k % _ranges.Length].Add(k * 2L);
+        }
+        int total = 0;
+        for (int v = 0; v < _occ.Length; v++) total += _occ[v].Count + (int)_ranges[v].Count * 2 + v;
+        return total;
+    }
+}
+
+public sealed class UnitKept
+{
+    public readonly List<int>[] Lists = new List<int>[2];
+    public UnitKept() { Lists[0] = new List<int> { 1, 2, 3 }; Lists[1] = new List<int>(); }
+}
+
+public sealed class UnitSwapper
+{
+    public List<int>[] Lists;
+    public UnitSwapper() { Lists = new List<int>[1]; Lists[0] = new List<int> { 7 }; }
+    public void Renew() { Lists = new List<int>[1]; Lists[0] = new List<int> { 8 }; }
+}
+
+public sealed class UnitHolder
+{
+    public List<int>[] Lists = new List<int>[1];
+}
+
+public sealed class UnitLate
+{
+    public readonly List<int>[] Lists = new List<int>[1];
+    public UnitLate() { Lists[0] = new List<int>(); for (int i = 0; i < 7; i++) Lists[0].Add(i); }
+}

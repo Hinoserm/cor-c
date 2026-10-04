@@ -1,0 +1,172 @@
+// test: dictionary_of_lists_owns_values
+// expect-exit: 0
+// expect-output:
+// group 8200000 True
+// indexed 600000 True
+// kept 1 2 3
+// twice 5 6
+// shelved 7 8 9
+//
+// A DICTIONARY WHOSE VALUES ARE LISTS gives them back as it dies, by the
+// rule that already frees a Dictionary's object values (OwnedElements): a
+// list made for one key, added once, and read back only to be used where it
+// is -- grouped through TryGetValue and added to after (`group`), or filled
+// first and handed with the dictionary to an object's field that reads it
+// by key (`indexed`) -- goes with its dictionary, storage and all: each line
+// leaves at most a few bytes a call to the collector. The others must NOT
+// be freed with their dictionary: a value read out and kept in a static, a
+// list added to two dictionaries of which one is kept, and a value an
+// object hands out of its field and the caller keeps. Each is checked
+// after enough churn that a list freed by mistake would have been made
+// into another.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+sealed class Index
+{
+    readonly Dictionary<int, List<int>> _by;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public Index(Dictionary<int, List<int>> by) { _by = by; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Sum()
+    {
+        int s = 0;
+        for (int k = 0; k < _by.Count; k++) s += _by[k].Count + _by[k][1];
+        return s;
+    }
+}
+
+sealed class Shelf
+{
+    readonly Dictionary<int, List<int>> _d;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public Shelf(Dictionary<int, List<int>> d) { _d = d; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public List<int> Get(int k) => _d[k];
+}
+
+static class Program
+{
+    static long _churned;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn()
+    {
+        for (int k = 0; k < 2000; k++)
+        {
+            List<int> noise = new List<int> { k, k + 1, k + 2 };
+            int[] more = new int[16];
+            more[3] = noise[1];
+            _churned += more[3];
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Group(int n)
+    {
+        Dictionary<int, List<int>> groups = new();
+        for (int i = 0; i < n; i++)
+        {
+            if (!groups.TryGetValue(i % 5, out List<int>? l))
+            {
+                l = new List<int>();
+                groups[i % 5] = l;
+            }
+            l.Add(i);
+        }
+        int total = 0;
+        for (int k = 0; k < 5; k++) total += groups[k].Count * 10 + groups[k][0];
+        return total;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Indexed(int n)
+    {
+        Dictionary<int, List<int>> by = new();
+        for (int k = 0; k < 4; k++)
+        {
+            List<int> l = new List<int>();
+            for (int i = 0; i < n; i++) l.Add(k * i);
+            by[k] = l;
+        }
+        Index x = new Index(by);
+        return x.Sum();
+    }
+
+    static List<int>? _kept;
+    static Dictionary<int, List<int>>? _other;
+    static List<int>? _shelved;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Keep()
+    {
+        Dictionary<int, List<int>> d = new();
+        d[1] = new List<int> { 1, 2, 3 };
+        d[2] = new List<int> { 4 };
+        _kept = d[1];
+        return d.Count;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Twice()
+    {
+        List<int> l = new List<int> { 5, 6 };
+        Dictionary<int, List<int>> a = new();
+        Dictionary<int, List<int>> b = new();
+        a[0] = l;
+        b[0] = l;
+        _other = b;
+        return a.Count;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Shelve()
+    {
+        Dictionary<int, List<int>> d = new();
+        d[3] = new List<int> { 7, 8, 9 };
+        Shelf s = new Shelf(d);
+        _shelved = s.Get(3);
+    }
+
+    static string Measure(long before, long frees, int n, int each)
+    {
+        bool given = Gc.Frees - frees >= (long)n * each;
+        Gc.Collect();
+        long left = (Gc.CollectedBytes - before) / n;
+        return given && left <= 32 ? "True" : "False " + left;
+    }
+
+    static void Main()
+    {
+        const int N = 20000;
+        Gc.Collect();
+        long taken = Gc.CollectedBytes, frees = Gc.Frees;
+        long total = 0;
+        for (int k = 0; k < N; k++) total += Group(40);
+        Console.WriteLine("group " + total + " " + Measure(taken, frees, N, 5));
+
+        Gc.Collect();
+        taken = Gc.CollectedBytes; frees = Gc.Frees;
+        total = 0;
+        for (int k = 0; k < N; k++) total += Indexed(6);
+        Console.WriteLine("indexed " + total + " " + Measure(taken, frees, N, 4));
+
+        Keep();
+        Churn(); Gc.Collect(); Churn();
+        Console.WriteLine("kept " + string.Join(" ", _kept!));
+
+        Twice();
+        Churn(); Gc.Collect(); Churn();
+        Console.WriteLine("twice " + string.Join(" ", _other![0]));
+
+        Shelve();
+        Churn(); Gc.Collect(); Churn();
+        Console.WriteLine("shelved " + string.Join(" ", _shelved!));
+    }
+}

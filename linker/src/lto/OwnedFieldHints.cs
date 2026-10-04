@@ -96,7 +96,8 @@ public sealed class OwnedFieldHints
             if (Virtual(callee)) yield return callee;
             foreach (string danger in read.Danger) if (Virtual(danger)) yield return danger;
         }
-        foreach (OwnedFieldRecord field in Fields.Values) foreach (string danger in field.Danger) if (Virtual(danger)) yield return danger;
+        foreach (OwnedFieldRecord field in Fields.Values)
+            foreach (string danger in field.Danger.Concat(field.ElementDanger)) if (Virtual(danger)) yield return danger;
     }
 
     internal void Write(BinaryWriter writer)
@@ -108,6 +109,7 @@ public sealed class OwnedFieldHints
             names.Add(field); Condition(record.Needs);
             foreach (var sink in record.Sinks) names.Add(sink.Callee);
             names.UnionWith(record.Danger); names.UnionWith(record.Kinds); names.UnionWith(record.Assumes);
+            Condition(record.ElementNeeds); names.UnionWith(record.ElementDanger); names.UnionWith(record.ElementDangerFields);
         }
         foreach ((string name, OwnedFunctionRecord record) in Functions)
         {
@@ -153,6 +155,8 @@ public sealed class OwnedFieldHints
             writer.Write(index[field]); writer.Write(record.Offset); writer.Write(record.Refused); writer.Write(record.Stored);
             Needs(record.Needs); Pairs(record.Sinks); Names(record.Danger, record.Danger.Count);
             Names(record.Kinds, record.Kinds.Count); Names(record.Assumes, record.Assumes.Count);
+            writer.Write(record.ElementsRefused); writer.Write(record.ElementArrays); Needs(record.ElementNeeds);
+            Names(record.ElementDanger, record.ElementDanger.Count); Names(record.ElementDangerFields, record.ElementDangerFields.Count);
         }
         writer.Write(Functions.Count);
         foreach ((string name, OwnedFunctionRecord record) in Functions)
@@ -228,11 +232,13 @@ public sealed class OwnedFieldHints
             return c;
         }
         OwnedFieldHints hints = new();
-        for (int i = Count(14); i > 0; i--)
+        for (int i = Count(32); i > 0; i--)
         {
             string field = Name();
             OwnedFieldRecord record = new() { Offset = reader.ReadInt64(), Refused = reader.ReadBoolean(), Stored = reader.ReadBoolean() };
             record.Needs.Add(Needs()); Pairs(record.Sinks); NameSet(record.Danger); NameSet(record.Kinds); NameSet(record.Assumes);
+            record.ElementsRefused = reader.ReadBoolean(); record.ElementArrays = reader.ReadBoolean();
+            record.ElementNeeds.Add(Needs()); NameSet(record.ElementDanger); NameSet(record.ElementDangerFields);
             if (!hints.Fields.TryAdd(field, record)) throw new ElfFormatException("Duplicate owned-field record");
         }
         for (int i = Count(20); i > 0; i--)
@@ -322,6 +328,19 @@ public sealed class OwnedFieldRecord
     /// every unit's stores put nothing else in it.
     /// </summary>
     public SortedSet<string> Assumes { get; } = new(StringComparer.Ordinal);
+
+    // ---- its arrays owning their elements (Escape.ArrayFieldElements) ----
+
+    /// <summary>A store or read here is not proved to keep the arrays' elements to the field: they are not owned.</summary>
+    public bool ElementsRefused { get; set; }
+    /// <summary>A store here puts an array whose elements are proved in it.</summary>
+    public bool ElementArrays { get; set; }
+    /// <summary>What the proof of its elements needs of other units' functions.</summary>
+    public LifetimeCondition ElementNeeds { get; } = new();
+    /// <summary>The calls an element is live across: none may store into the field.</summary>
+    public SortedSet<string> ElementDanger { get; } = new(StringComparer.Ordinal);
+    /// <summary>The fields stored into while an element is live: none may be owned.</summary>
+    public SortedSet<string> ElementDangerFields { get; } = new(StringComparer.Ordinal);
 
     /// <summary>A store of something whose type the unit cannot name.</summary>
     public const string UnknownKind = "?";

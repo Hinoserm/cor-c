@@ -3363,8 +3363,10 @@ public sealed partial class Escape
     /// Every element stored null or a collection made here for that one
     /// slot and going nowhere else, every element read going nowhere: the
     /// registers that hold any of them, or null when one is not proved.
+    /// `needs`, at a unit compile, takes down what that asks of other
+    /// units' functions instead of refusing it.
     /// </summary>
-    private static HashSet<VReg>? ElementValues(Function f, Defs defs, List<Instr> loads, List<Instr> stores, Dictionary<string, bool[]> summaries)
+    private static HashSet<VReg>? ElementValues(Function f, Defs defs, List<Instr> loads, List<Instr> stores, Dictionary<string, bool[]> summaries, Needs? needs = null)
     {
         HashSet<VReg> held = new();
         HashSet<Instr> origins = new(ReferenceEqualityComparer.Instance);
@@ -3376,18 +3378,95 @@ public sealed partial class Escape
             Instr? origin = ElementOrigin(defs, value.Reg);
             if (origin is null || !IsAllocator(origin.Callee) || origin.Dest is null || !origins.Add(origin)) return null;
             if (OwnedElements.KindOf(f, origin, OwnedElements.Container(f, defs, origin)) is not ("List" or "Dictionary")) return null;
-            Flow flow = Analyse(f, new[] { origin.Dest }, summaries, origin, ownedStores: new HashSet<Instr>(ReferenceEqualityComparer.Instance) { st });
+            Flow flow = Analyse(f, new[] { origin.Dest }, summaries, origin, ownedStores: new HashSet<Instr>(ReferenceEqualityComparer.Instance) { st }, needs: needs);
             if (flow.Escapes) return null;
             held.UnionWith(flow.Derived);
         }
         foreach (Instr load in loads)
         {
-            Flow flow = Analyse(f, new[] { load.Dest! }, summaries, null);
+            Flow flow = Analyse(f, new[] { load.Dest! }, summaries, null, needs: needs);
             if (flow.Escapes) return null;
             held.UnionWith(flow.Derived);
         }
         return held;
     }
+
+    /// <summary>
+    /// One field's stores and reads among `stores` and `loads`, judged as
+    /// above: what any element is held in, by function, or null when one is
+    /// not proved; `anyArray` when some store puts an array there.
+    /// `refusedStores` are the stores of a shape other than a fresh
+    /// object's (a `??=`, a store whose value is read after it).
+    /// </summary>
+    private static Dictionary<Function, HashSet<VReg>>? ArrayFieldHeld(string field,
+        List<(Function F, Block B, Instr I)> stores, List<(Function F, Block B, Instr I)> loads, IReadOnlySet<Instr> refusedStores,
+        Func<Function, Defs> defsOf, Dictionary<string, bool[]> summaries, Needs? needs, out bool anyArray)
+    {
+        anyArray = false;
+        Dictionary<Function, HashSet<VReg>> heldIn = new();
+        void Hold(Function f, HashSet<VReg> regs)
+        {
+            if (!heldIn.TryGetValue(f, out HashSet<VReg>? all)) heldIn[f] = all = new();
+            all.UnionWith(regs);
+        }
+        foreach ((Function f, Block _, Instr st) in stores)
+        {
+            if (st.Field != field) continue;
+            if (refusedStores.Contains(st) || f.Async is not null) return null;
+            if (st.Operands.Count < 2 || st.Operands[1] is ImmOperand { Value: 0 }) continue;
+            if (st.Operands[1] is not RegOperand v) return null;
+            Defs defs = defsOf(f);
+            Instr? made = ElementOrigin(defs, v.Reg);
+            if (made is null || !IsAllocator(made.Callee) || made.Dest is null) return null;
+            HashSet<VReg> array = OwnedElements.Container(f, defs, made);
+            if (!IsArrayOfReferences(f, array)) return null;
+            List<Instr> elementLoads = new(), elementStores = new();
+            if (!ArrayFieldUses(f, defs, array, st, elementLoads, elementStores)
+                || ElementValues(f, defs, elementLoads, elementStores, summaries, needs) is not { } held) return null;
+            anyArray = true;
+            Hold(f, held);
+        }
+        foreach ((Function f, Block _, Instr ld) in loads)
+        {
+            if (ld.Field != field) continue;
+            if (ld.Op != Opcode.Load || ld.Dest is null || f.Async is not null) return null;
+            Defs defs = defsOf(f);
+            HashSet<VReg> array = OwnedElements.Container(f, defs, ld.Dest);
+            List<Instr> elementLoads = new(), elementStores = new();
+            if (!ArrayFieldUses(f, defs, array, null, elementLoads, elementStores)
+                || ElementValues(f, defs, elementLoads, elementStores, summaries, needs) is not { } held) return null;
+            Hold(f, held);
+        }
+        return heldIn;
+    }
+
+    /// <summary>
+    /// DEAD BEFORE ANYTHING THAT COULD FREE THE ARRAY, every element: each
+    /// instruction in the stretch any of them is live over put to `safe`,
+    /// false at the first it refuses, or where liveness does not follow
+    /// them, or into a handler.
+    /// </summary>
+    private static bool ElementsDeadInTime(Dictionary<Function, HashSet<VReg>> heldIn,
+        Func<Function, Liveness> livenessOf, Func<Function, HashSet<VReg>> padsOf, Func<Instr, bool> safe)
+    {
+        foreach ((Function f, HashSet<VReg> held) in heldIn)
+        {
+            if (held.Count == 0) continue;
+            Liveness liveness = livenessOf(f);
+            if (held.Any(r => !liveness.Tracks(r)) || held.Overlaps(padsOf(f))) return false;
+            foreach (Block x in f.Blocks)
+            {
+                (int from, int to) = LiveStretch(liveness, x, -1, held);
+                for (int k = from; k < to; k++)
+                    if (!safe(x.Instrs[k])) return false;
+            }
+        }
+        return true;
+    }
+
+    /// <summary>A call no element may be live across, wherever it is judged: a free, a catch's end, a replaced value's free, a suspension.</summary>
+    private static bool FreesUnderElements(Instr i)
+        => i.Op == Opcode.Call && (IsFreeCall(i.Callee) || IsCatchEnd(i.Callee) || i.Callee == OwnedReplacedFreer || i.Callee == AsyncFrame.Suspend);
 }
 
 public sealed partial class Escape
@@ -3406,75 +3485,68 @@ public sealed partial class Escape
         HashSet<string> proved = new(StringComparer.Ordinal);
         Dictionary<Function, Defs> defsOf = new();
         Defs DefsOf(Function f) => defsOf.TryGetValue(f, out Defs? known) ? known : defsOf[f] = new Defs(f, buildCfg: false);
+        Liveness LivenessOf(Function f) => livenessOf.TryGetValue(f, out Liveness? l) ? l : livenessOf[f] = new Liveness(f);
+        HashSet<VReg> PadsOf(Function f) => padsOf.TryGetValue(f, out HashSet<VReg>? p) ? p : padsOf[f] = PadLive(LivenessOf(f));
         foreach (string field in owned.Order(StringComparer.Ordinal))
         {
             if (borrowed.Contains(field)) continue;
-            // What any element is held in, by function: judged together below.
-            Dictionary<Function, HashSet<VReg>> heldIn = new();
-            bool ok = true, anyArray = false;
-            void Hold(Function f, HashSet<VReg> regs)
-            {
-                if (!heldIn.TryGetValue(f, out HashSet<VReg>? all)) heldIn[f] = all = new();
-                all.UnionWith(regs);
-            }
-            foreach ((Function f, Block _, Instr st) in stores)
-            {
-                if (!ok) break;
-                if (st.Field != field) continue;
-                if (refusedStores.Contains(st) || f.Async is not null) { ok = false; break; }
-                if (st.Operands.Count < 2 || st.Operands[1] is ImmOperand { Value: 0 }) continue;
-                if (st.Operands[1] is not RegOperand v) { ok = false; break; }
-                Defs defs = DefsOf(f);
-                Instr? made = ElementOrigin(defs, v.Reg);
-                if (made is null || !IsAllocator(made.Callee) || made.Dest is null) { ok = false; break; }
-                HashSet<VReg> array = OwnedElements.Container(f, defs, made);
-                if (!IsArrayOfReferences(f, array)) { ok = false; break; }
-                List<Instr> elementLoads = new(), elementStores = new();
-                if (!ArrayFieldUses(f, defs, array, st, elementLoads, elementStores)
-                    || ElementValues(f, defs, elementLoads, elementStores, summaries) is not { } held) { ok = false; break; }
-                anyArray = true;
-                Hold(f, held);
-            }
-            foreach ((Function f, Block _, Instr ld) in loads)
-            {
-                if (!ok) break;
-                if (ld.Field != field) continue;
-                if (ld.Op != Opcode.Load || ld.Dest is null || f.Async is not null) { ok = false; break; }
-                Defs defs = DefsOf(f);
-                HashSet<VReg> array = OwnedElements.Container(f, defs, ld.Dest);
-                List<Instr> elementLoads = new(), elementStores = new();
-                if (!ArrayFieldUses(f, defs, array, null, elementLoads, elementStores)
-                    || ElementValues(f, defs, elementLoads, elementStores, summaries) is not { } held) { ok = false; break; }
-                Hold(f, held);
-            }
-            if (!ok || !anyArray) continue;
-            // DEAD BEFORE ANYTHING THAT COULD FREE THE ARRAY, every element.
+            if (ArrayFieldHeld(field, stores, loads, refusedStores, DefsOf, summaries, null, out bool anyArray) is not { } heldIn || !anyArray) continue;
             HashSet<string> writers = mayWrite(field);
-            foreach ((Function f, HashSet<VReg> held) in heldIn)
-            {
-                if (held.Count == 0) continue;
-                if (!livenessOf.TryGetValue(f, out Liveness? liveness)) livenessOf[f] = liveness = new Liveness(f);
-                if (!padsOf.TryGetValue(f, out HashSet<VReg>? pads)) padsOf[f] = pads = PadLive(liveness);
-                if (held.Any(r => !liveness.Tracks(r)) || held.Overlaps(pads)) { ok = false; break; }
-                foreach (Block x in f.Blocks)
-                {
-                    (int from, int to) = LiveStretch(liveness, x, -1, held);
-                    for (int k = from; k < to && ok; k++)
-                    {
-                        Instr i = x.Instrs[k];
-                        bool danger = i.Op == Opcode.CallIndirect && (_indirect is null || !_indirect.TryGetValue(i, out string[]? t) || t.Any(writers.Contains))
-                            || i.Op == Opcode.Call && (IsFreeCall(i.Callee) || IsCatchEnd(i.Callee) || i.Callee == OwnedReplacedFreer
-                                                       || i.Callee == AsyncFrame.Suspend
-                                                       || i.Callee is not null && writers.Contains(i.Callee) && !NeverWritesFields(i.Callee))
-                            || i.Op == Opcode.Store && i.Field is not null && owned.Contains(i.Field);
-                        if (danger) ok = false;
-                    }
-                    if (!ok) break;
-                }
-                if (!ok) break;
-            }
-            if (ok) proved.Add(field);
+            bool Safe(Instr i)
+                => !(i.Op == Opcode.CallIndirect && (_indirect is null || !_indirect.TryGetValue(i, out string[]? t) || t.Any(writers.Contains))
+                     || FreesUnderElements(i)
+                     || i.Op == Opcode.Call && i.Callee is not null && writers.Contains(i.Callee) && !NeverWritesFields(i.Callee)
+                     || i.Op == Opcode.Store && i.Field is not null && owned.Contains(i.Field));
+            if (ElementsDeadInTime(heldIn, LivenessOf, PadsOf, Safe)) proved.Add(field);
         }
         return proved;
+    }
+
+    /// <summary>
+    /// THE UNIT'S SIDE OF ArrayFieldElements: each field's stores and reads
+    /// here judged as above, the record refused where one is not proved;
+    /// what the link must answer -- other units' functions keeping nothing
+    /// of an element, the calls an element is live across (none may store
+    /// into the field), the fields stored into meanwhile (none may be
+    /// owned) -- written into the record. Without the runtime's freer of an
+    /// array's elements, every field here is refused it.
+    /// </summary>
+    private void ArrayFieldElementHints(Corsac.Lang.Lto.OwnedFieldHints hints, List<(Function F, Block B, Instr I)> stores, List<(Function F, Block B, Instr I)> loads,
+        IReadOnlySet<Instr> refusedStores, Func<Function, Liveness> livenessOf, Func<Function, HashSet<VReg>> padsOf, Dictionary<string, bool[]> summaries, bool canFree)
+    {
+        Dictionary<Function, Defs> defsOf = new();
+        Defs DefsOf(Function f) => defsOf.TryGetValue(f, out Defs? known) ? known : defsOf[f] = new Defs(f, buildCfg: false);
+        // Each field's own stores and reads, found once: a unit has many fields.
+        Dictionary<string, (List<(Function F, Block B, Instr I)> Stores, List<(Function F, Block B, Instr I)> Loads)> byField = new(StringComparer.Ordinal);
+        (List<(Function F, Block B, Instr I)> Stores, List<(Function F, Block B, Instr I)> Loads) Of(string field)
+            => byField.TryGetValue(field, out var known) ? known : byField[field] = (new(), new());
+        foreach (var st in stores) if (st.I.Field is not null) Of(st.I.Field).Stores.Add(st);
+        foreach (var ld in loads) if (ld.I.Field is not null) Of(ld.I.Field).Loads.Add(ld);
+        foreach ((string field, Corsac.Lang.Lto.OwnedFieldRecord record) in hints.Fields)
+        {
+            if (record.Refused || !canFree) { record.ElementsRefused = true; continue; }
+            var (ownStores, ownLoads) = Of(field);
+            Needs needs = new(this);
+            Dictionary<Function, HashSet<VReg>>? heldIn = ArrayFieldHeld(field, ownStores, ownLoads, refusedStores, DefsOf, summaries, needs, out bool anyArray);
+            if (heldIn is null || needs.Condition.Count > Corsac.Lang.Lto.LifetimeCondition.Limit) { record.ElementsRefused = true; continue; }
+            SortedSet<string> danger = new(StringComparer.Ordinal), dangerFields = new(StringComparer.Ordinal);
+            bool Safe(Instr i)
+            {
+                if (FreesUnderElements(i)) return false;
+                if (i.Op == Opcode.CallIndirect)
+                {
+                    if (_indirect is null || !_indirect.TryGetValue(i, out string[]? t)) return false;
+                    danger.UnionWith(t);
+                }
+                else if (i.Op == Opcode.Call && i.Callee is not null && !NeverWritesFields(i.Callee)) danger.Add(i.Callee);
+                else if (i.Op == Opcode.Store && i.Field is not null) dangerFields.Add(i.Field);
+                return danger.Count <= Corsac.Lang.Lto.OwnedFieldHints.Limit && dangerFields.Count <= Corsac.Lang.Lto.OwnedFieldHints.Limit;
+            }
+            if (!ElementsDeadInTime(heldIn, livenessOf, padsOf, Safe)) { record.ElementsRefused = true; continue; }
+            if (!record.ElementNeeds.Add(needs.Condition)) { record.ElementsRefused = true; continue; }
+            record.ElementArrays |= anyArray;
+            record.ElementDanger.UnionWith(danger);
+            record.ElementDangerFields.UnionWith(dangerFields);
+        }
     }
 }
