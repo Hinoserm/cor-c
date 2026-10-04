@@ -30,6 +30,7 @@ public static class ObjectLinkCommand
         List<string> sharedLibraries = new();
         string? runpath = null;
         string? regionReport = null;
+        string? unusedReport = null;
         List<string> cpuArguments = new();
         for (int i = 0; i < args.Length; i++)
         {
@@ -47,6 +48,14 @@ public static class ObjectLinkCommand
             {
                 if (++i == args.Length) return Fail("missing value for " + arg);
                 regionReport = args[i];
+                continue;
+            }
+            // The program's dead code (UnusedReport), into a file ("-": the
+            // error stream), from the notes units compiled with the same flag left.
+            if (arg == "--unused-report")
+            {
+                if (++i == args.Length) return Fail("missing value for " + arg);
+                unusedReport = args[i];
                 continue;
             }
             if (arg is "--cpu" or "--tune" or "--fpu")
@@ -92,7 +101,8 @@ public static class ObjectLinkCommand
             else paths.Add(arg);
         }
         if (output is null || paths.Count == 0)
-            return Fail("usage: corlink <file.o> ... -o <output> [--entry symbol] [--flat] [--closed] [--base address] [--paddr address] [--no-lto] [--timings]");
+            return Fail("usage: corlink <file.o> ... -o <output> [--entry symbol] [--flat] [--closed] [--base address] [--paddr address] [--no-lto] [--timings] [--unused-report file]");
+        if (unusedReport is not null && shared) return Fail("--unused-report is for an image with an entry, not a shared object");
         if (flat && physicalAddress is not null) return Fail("--paddr is for ELF output; use --base for flat images");
         if (closed && (shared || sharedLibraries.Count > 0)) return Fail("--closed is for an image linked against no shared library");
         if ((shared || sharedLibraries.Count > 0) && (flat || physicalAddress is not null))
@@ -121,6 +131,9 @@ public static class ObjectLinkCommand
         X86CodeGenerationContract? selected = cpuArguments.Count == 0 ? null : Lang.X86.X86Cpu.Parse(cpuArguments).Contract;
         if (selected is not null) X86CodeGenerationContract.ValidateTarget(inputs, selected);
         ManagedLayoutContract.Validate(inputs);
+        // Before the link-time optimiser regenerates any unit: the notes are
+        // the units' own, and the IR archive's digest covers them.
+        if (unusedReport is not null) UnusedReport.Write(inputs, entry, unusedReport);
         int regenerated = IrLinkOptimizer.Run(inputs, () => backend ?? new ProcessUnitBackend(backendPath), lto, importBytes,
             closedImageEntry: flat || closed || physicalAddress is not null ? entry : null, parallelBackends: backend is null, regionReport: regionReport);
         int folded = LinkTimeOptimizer.Run(inputs, lto);
@@ -135,7 +148,8 @@ public static class ObjectLinkCommand
         foreach (var input in inputs)
             input.Item2.Sections.RemoveAll(section => section.Name == TargetContract.SectionName
                 || section.Name == X86CodeGenerationContract.SectionName
-                || section.Name == ManagedLayoutContract.SectionName);
+                || section.Name == ManagedLayoutContract.SectionName
+                || section.Name == UsesNotes.SectionName);
         // Every unit's frame table names from one pool (FramePool).
         if (lto) FramePool.Run(inputs);
         LinkTimings.Phase("frame names");

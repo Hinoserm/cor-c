@@ -30,6 +30,14 @@ public sealed class Function
     public bool FromLibrary { get; init; }
 
     /// <summary>
+    /// Written in the system library's own sources (stdlib, runtime), as
+    /// against FromLibrary, which a unit compiled with --lib says of all its
+    /// code. Only the unused-code report reads it (UsesCapture); not kept
+    /// in IR archives.
+    /// </summary>
+    public bool SystemCode { get; init; }
+
+    /// <summary>
     /// `[MethodImpl(MethodImplOptions.NoInlining)]`: every call stays a call,
     /// so the method keeps its own frame in a stack trace and its own entry
     /// for a profiler, as the attribute promises in .NET.

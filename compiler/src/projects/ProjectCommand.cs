@@ -21,7 +21,7 @@ public static class ProjectCommand
 
     public static int Run(string[] arguments)
     {
-        string? path = null, output = null, framework = null, targetName = null, regionReport = null;
+        string? path = null, output = null, framework = null, targetName = null, regionReport = null, unusedReport = null;
         string configuration = "Release";
         int workers = Environment.ProcessorCount;
         bool linkOnly = false, runtimeOnly = false, timings = false;
@@ -51,6 +51,9 @@ public static class ProjectCommand
                 case "--target": targetName = Value(); break;
                 // The link's region report (corc link --region-report NAMES).
                 case "--region-report": regionReport = Value(); break;
+                // The program's dead code (corc link --unused-report): every
+                // unit leaves its notes, and the link says what nothing reaches.
+                case "--unused-report": unusedReport = Value(); break;
                 // The link's phases timed (corc link --timings).
                 case "--timings": timings = true; break;
                 case "--cpu": case "--tune": case "--fpu":
@@ -95,6 +98,7 @@ public static class ProjectCommand
         // compiler's own build made no region at all.
         linkArguments.Add("--closed");
         if (regionReport is not null) { linkArguments.Add("--region-report"); linkArguments.Add(regionReport); }
+        if (unusedReport is not null) { linkArguments.Add("--unused-report"); linkArguments.Add(unusedReport); }
         if (timings) linkArguments.Add("--timings");
         string directory = Path.GetDirectoryName(project.Path)!;
         string work = Path.Combine(directory, "obj", "cor-c", configuration, project.Framework);
@@ -156,6 +160,7 @@ public static class ProjectCommand
         List<string> runtimeArgs = new() { "compile", "--nostdlib", "--lib", "--obj", "--jobs", workers.ToString(), "--decl-index", index, "--assembly", project.AssemblyName };
         runtimeArgs.AddRange(libraries);
         runtimeArgs.AddRange(cpuArguments);
+        if (unusedReport is not null) { runtimeArgs.Add("--unused-report"); runtimeArgs.Add(unusedReport); }
         if (linkOnly && !runtimeOnly)
         {
             if (!File.Exists(runtime)) throw new InvalidDataException("--link-only: the runtime object was never compiled: " + runtime);
@@ -180,6 +185,7 @@ public static class ProjectCommand
             bool entry = source == entries[0].Path;
             List<string> options = new() { "--nostdlib", "--obj", "--decl-index", index, "--assembly", project.AssemblyName };
             options.AddRange(cpuArguments);
+            if (unusedReport is not null) { options.Add("--unused-report"); options.Add(unusedReport); }
             if (entry) { options.Add("--main-type"); options.Add(entries[0].Type); }
             if (!owner.WarningsAsErrors) options.Add("-Wno-error");
             foreach (string define in owner.Defines) { options.Add("--define"); options.Add(define); }

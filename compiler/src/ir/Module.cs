@@ -6,6 +6,15 @@ namespace Corsac.Lang.Ir;
 /// <summary>One compilation's worth of IR: what the backend is handed.</summary>
 public sealed class Module
 {
+    /// <summary>
+    /// The program's own declarations lowering never emitted -- a method no
+    /// lowered code calls, a static nothing touches, a generic method whose
+    /// copies (if any) other units make -- for the unused-code report
+    /// (UsesCapture, UnusedReport): whether it is a method, its name as
+    /// written, and where it was declared.
+    /// </summary>
+    public List<(bool Method, string Display, string File, int Line)> Unlowered { get; } = new();
+
     public string Name { get; }
     public List<Function> Functions { get; } = new();
     public List<DataItem> Data { get; } = new();

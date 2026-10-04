@@ -165,7 +165,7 @@ public static class Driver
     private static int LinkUsage()
     {
         Console.WriteLine("corc link <file.o> ... -o <output> [--entry symbol] [--flat] "
-            + "[--base address] [--paddr address] [--shared] [--cpu name] [--no-lto] [--region-report names] [--timings]");
+            + "[--base address] [--paddr address] [--shared] [--cpu name] [--no-lto] [--region-report names] [--unused-report file] [--timings]");
         return 0;
     }
 
@@ -180,7 +180,7 @@ public static class Driver
               corc link <file.o> ... -o <output> [--entry <symbol>]
               corc link @objects.list -o <output> [--entry <symbol>]
               corc index --assembly <identity> <sources...> -o <declarations.idx>
-              corc project <file.csproj> [--configuration Release] [--framework net10.0] [--jobs N] [--link-only | --runtime-only] [--region-report NAMES] [--timings] [-o output]
+              corc project <file.csproj> [--configuration Release] [--framework net10.0] [--jobs N] [--link-only | --runtime-only] [--region-report NAMES] [--unused-report FILE] [--timings] [-o output]
               corc compile-project --units <units.tsv> --decl-index <idx> --assembly <identity> [--unit-census]
               corc build [target/path] [Name=Value ...] [--file corsac.build] [--jobs N]
               corc asm --target x86-16 <file.asm> -o <output.bin>
@@ -222,6 +222,12 @@ public static class Driver
                                  these (comma-separated), which allocations their return
                                  is proved to leave dead; corc link takes it too, for
                                  the regions it finds over every unit of a closed image
+              --unused-report <file> the program's dead code: every function of its own
+                                 sources nothing reaches from the entry, and every static
+                                 nothing reads, judged on what each definition names as
+                                 written; to <file> ("-" for the error stream). On a unit
+                                 compiled with --obj it leaves the notes the link reads;
+                                 corc link, compile-project and corc project take it too
               --experimental-batch enable the staged large-batch optimizer checkpoint
               --batch-without <pass> omit one experimental pass for regression isolation
               --experimental-ssa run verified SSA optimisations after the default pipeline
@@ -492,7 +498,7 @@ public static class Driver
             {
                 if (args[i] is "-o" or "--target" or "--entry" or "--link-shared" or "--base" or "--tag" or "--map"
                     or "--load" or "--paddr" or "--cpu" or "--tune" or "--fpu" or "--with" or "--asm-entry"
-                    or "--ref" or "--libdir" or "--runpath" or "--trace-opt" or "--batch-without" or "--region-report"
+                    or "--ref" or "--libdir" or "--runpath" or "--trace-opt" or "--batch-without" or "--region-report" or "--unused-report"
                     or "-D" or "--define" or "--jobs" or "--decl-index" or "--assembly" or "--dependency-file" or "--main-type"
                     or "--subsystem" or "--resources" or "--icon-resource" or "--using")
                 {
@@ -709,6 +715,10 @@ public static class Driver
             return 1;
         }
         Module module = made.Module;
+        // --unused-report: what each definition names as written, taken now,
+        // before a pass inlines a call away (UsesCapture), for the link's
+        // report of the program's dead code (UnusedReport).
+        List<Corsac.Lang.Lto.UsesNotes.Definition>? usesNotes = Value(args, "--unused-report") is not null ? UsesCapture.Of(module) : null;
         Dictionary<string, string> entries = made.Entries;
         Dictionary<string, byte[]> definitionSemantics = made.DefinitionSemantics;
         List<ManagedTypeLayout> layouts = made.Layouts;
@@ -877,6 +887,7 @@ public static class Driver
         // The C libraries its [DllImport]s call, for the link to need.
         NativeLibraries.Attach(obj, module.NativeLibraries);
         ManagedLayoutContract.Attach(obj, layouts);
+        if (usesNotes is not null) Corsac.Lang.Lto.UsesNotes.Attach(obj, usesNotes);
 
         // WHAT THIS PROGRAM'S SETTINGS ARE, for the kernel to read out of the
         // file rather than out of the running process -- which is why the
@@ -983,6 +994,11 @@ public static class Driver
             {
                 return Fail($"--with '{with}': {e.Message}");
             }
+        }
+        if (Value(args, "--unused-report") is string unusedReport)
+        {
+            Corsac.Lang.Lto.UnusedReport.Write(link, entry, unusedReport);
+            Corsac.Lang.Lto.UsesNotes.Strip(link.Select(input => input.Item2));
         }
 
         if (flat)

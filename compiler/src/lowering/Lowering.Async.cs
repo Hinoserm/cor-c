@@ -125,7 +125,7 @@ public sealed partial class Lowering
             return;
         }
 
-        _f = new Function(Label(m), IrTypes.Of(m.Returns)) { SourceFile = _in, Line = decl.Line, Display = Display(m), FromLibrary = IsLibrary(m.Owner),
+        _f = new Function(Label(m), IrTypes.Of(m.Returns)) { SourceFile = _in, Line = decl.Line, Display = Display(m), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCode(m.Owner),
             Coalescible = decl.LocalCopy || m.Owner.Decl?.Specialised == true, Exported = m.Owner.Decl?.LocalOnly != true };
         _e = new Builder(_f, _f.NewBlock("entry"));
 
@@ -224,7 +224,7 @@ public sealed partial class Lowering
         // state machines the unit happened to lower first.
         int outsideAwaits = _awaitPoints;
         _awaitPoints = 0;
-        _f = new Function(Label(am.MoveNext), IrType.Void) { SourceFile = _in, Line = decl.Line, Display = Display(am.MoveNext), FromLibrary = IsLibrary(am.MoveNext.Owner), Exported = false };
+        _f = new Function(Label(am.MoveNext), IrType.Void) { SourceFile = _in, Line = decl.Line, Display = Display(am.MoveNext), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCode(m.Owner), Exported = false };
         Block entry = _f.NewBlock("entry");
         _e = new Builder(_f, entry);
 

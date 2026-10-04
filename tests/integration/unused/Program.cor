@@ -1,0 +1,26 @@
+using System;
+
+class Program
+{
+    static int _counted;
+    static int _never;
+    static int _read;
+
+    static void Unused() { OnlyFromUnused(); }
+    static void OnlyFromUnused() { Console.WriteLine(_never); }
+    static void Chain() { }
+    static int Small(int x) => x + 1;
+
+    interface IShape { int Sides(); }
+    class Square : IShape { public int Sides() => 4; }
+    class Never : IShape { public int Sides() => 0; }
+
+    static void Main()
+    {
+        _counted = 3;
+        _read = Small(1);
+        Func<int, int> twice = x => x * 2;
+        IShape shape = new Square();
+        Console.WriteLine(_read + twice(shape.Sides()));
+    }
+}
