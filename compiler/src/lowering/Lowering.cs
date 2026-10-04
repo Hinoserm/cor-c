@@ -1693,6 +1693,9 @@ public sealed partial class Lowering
         }
 
         sym = "q_" + (isString ? "string" : "array_" + Safe(element));
+        // Named before it is built: a string's slots are routines that write
+        // string literals, each of which asks for this descriptor.
+        _sequenceDescriptors[key] = sym;
         int w = _t.WordSize;
 
         // AN ARRAY IS AN OBJECT, and answers object's virtuals: `o.ToString()`
@@ -1701,6 +1704,21 @@ public sealed partial class Lowering
         // read whatever data followed the descriptor and jumped there. A
         // string's own methods are reached by name, never through here.
         int slots = isString ? 0 : Math.Max(Math.Max(_b.ToStringSlot, _b.CompareSlot), Math.Max(_b.EqualsSlot, _b.HashSlot)) + 1;
+        // A STRING'S SYSTEM INTERFACES (BoxedFaces): IComparable,
+        // IComparable<string> and IEquatable<string>, in their families'
+        // slots, the same in every unit -- `IComparable s = "a"` called
+        // through.
+        // And object's own slots, for a string held as one of those: the
+        // key routines, which ask a string as text and never through here.
+        List<(int Slot, string Target)> stringFaces = isString ? StringFaceSlots() : new();
+        if (stringFaces.Count > 0)
+        {
+            stringFaces.Add((_b.ToStringSlot, StringItself()));
+            stringFaces.Add((_b.EqualsSlot, KeyEqualsStub()));
+            stringFaces.Add((_b.HashSlot, KeyHashStub()));
+            stringFaces.Add((_b.CompareSlot, KeyCompareStub()));
+        }
+        foreach (var (faceSlot, _) in stringFaces) slots = Math.Max(slots, faceSlot + 1);
         byte[] d = new byte[_t.DescriptorBytes + slots * w];
         WriteWord(d, DescSize * w, stride);
         WriteWord(d, DescDepth * w, -1);
@@ -1712,7 +1730,6 @@ public sealed partial class Lowering
         // byte[]` compares descriptor addresses, so two copies of an array's
         // descriptor would be two types.
         DataItem item = new(sym, d) { ReadOnly = true, Align = _t.Align64, FromLibrary = true, Coalescible = true };
-        _sequenceDescriptors[key] = sym;
         _m.Data.Add(item);
         item.Relocs.Add(new DataReloc(DescName * w, InternString(isString ? "System.String"
             : elementType?.AsNonNullable().Symbol is TypeSymbol shaped && (shaped.Kind == TypeKind.Struct && IsTupleShape(shaped) || shaped.Decl is { Specialised: true })
@@ -1737,7 +1754,8 @@ public sealed partial class Lowering
         DataItem faces = new("sf_" + sym, new byte[w]) { ReadOnly = true, Exported = false };
         _m.Data.Add(faces);
         item.Relocs.Add(new DataReloc(DescInterfaces * w, faces.Name, 0));
-        if (slots > 0)
+        foreach (var (faceSlot, target) in stringFaces) item.Relocs.Add(new DataReloc(_t.DescriptorBytes + faceSlot * w, target, 0));
+        if (slots > 0 && !isString)
         {
             item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.ToStringSlot * w, ObjectToStringStub(), 0));
             item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.EqualsSlot * w, ObjectEqualsStub(), 0));

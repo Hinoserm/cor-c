@@ -2067,6 +2067,7 @@ public sealed partial class Binder
 
         Number(families);
         Assign(true);
+        foreach (var (family, slot) in shared) _r.InterfaceFamilySlots[family] = slot;
         // The table this unit numbered over, for diffing the two sides of a
         // link that stops with a layout conflict: a family present on one
         // side only moves every slot after it. Pass --dump-families.
@@ -5936,11 +5937,29 @@ public sealed partial class Binder
             return true;
         }
 
+        // A NUMBER, A BOOL, A CHAR OR AN ENUM BOXED, AND A STRING AS IT IS,
+        // IS EACH SYSTEM INTERFACE .NET DECLARES IT TO IMPLEMENT (BoxedFaces):
+        // `IComparable x = 5;`, `IEquatable<int> e = 3;`, `IComparable s =
+        // "a";` -- implicit, as C#'s boxing and reference conversions are.
+        if (!to.IsArray && to.AsNonNullable().Symbol is { Kind: TypeKind.Interface } face
+            && BoxedFaces.Implements(from, face, FaceArgument(to.AsNonNullable(), face)))
+        {
+            return true;
+        }
+
         if (from.Symbol != null && to.Symbol != null)
         {
             return from.Symbol.DerivesFrom(to.Symbol);
         }
         return false;
+    }
+
+    /// <summary>The type argument a one-argument specialisation of an interface was made with, or null.</summary>
+    private Type? FaceArgument(Type to, TypeSymbol face)
+    {
+        if (face.TemplateArgTypes.Count == 1) return face.TemplateArgTypes[0];
+        if (to.Args.Count == 1) return to.Args[0];
+        return face.Decl is { Template: not null, TemplateArgs.Count: 1 } made ? Resolve(made.TemplateArgs[0], _thisType) : null;
     }
 
     /// <summary>
