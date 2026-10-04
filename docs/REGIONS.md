@@ -24,9 +24,10 @@ detail; each section names the files.
   (`Runtime.AllocRegion`) instead of on the heap.
 - **Loop region**: a region opened at the top of every lap of a natural loop
   (`Runtime.RegionLoop`), whose laps each leave dead what they make in it.
-- **Beside**: an allocation made in the region of the object that will own
-  it, if that object is in the innermost open region, and on the heap
-  otherwise (`Runtime.AllocNear`).
+- **Beside**: an allocation made in the innermost open region for the object
+  that will own it, if that object is in that region or in a stack frame that
+  returns no later than the region ends, and on the heap otherwise
+  (`Runtime.AllocNear`).
 
 ## The runtime arena
 
@@ -63,7 +64,8 @@ it.
 
 **Records and closing.** Each region begins with a record: a two-word leaf
 block naming the region it is inside and the frame of the call that opened
-it (`OpenRecord`). `RegionLeave` sets the arena back to the record (`Cut`):
+it (`OpenRecord`), with the frame word's low bit set for a loop's region
+(`LoopMark`; `OpenerFrame` reads the frame without it). `RegionLeave` sets the arena back to the record (`Cut`):
 - everything past it is zeroed;
 - every chunk past the record's chunk is unmapped, except the next one, which
   is kept as **the spare** so that a loop whose laps cross a chunk's end
@@ -94,10 +96,29 @@ its throw left (`RegionCatch`, inserted into every landing pad by
 `RegionPointsTo.CatchUp`).
 
 **Beside an owner.** `AllocRegion(bytes, kind, owner, frame)` with an owner
-puts the block in the innermost region only if the owner lies in it
-(`InInnermost`, which handles a region spanning chunks). Otherwise the block
-goes on the heap: an owner on the heap, in an outer region or in a frame
-always gets heap storage.
+puts the block in the innermost region when the owner lies in it
+(`InInnermost`, which handles a region spanning chunks), or when the owner is
+on this thread's stack in a frame that returns no later than the region ends
+(`OnStackWithin`). The second is for a collection the link's lifetime pass
+put in its function's frame: its storage grows in the region, not on the
+heap. The rule:
+- Every prologue is `push ebp; mov ebp, esp`, so the frame pointers form a
+  chain of callers, each higher on the stack than its callee. The walk up the
+  chain from the allocating frame must meet the region's opener frame
+  exactly (at most 64 frames). That proves the opener is a live call on this
+  stack, and that the stack between is its and its callees'.
+- A function's region ends at its opener's return. An owner below the
+  opener's frame pointer and at or above the stack pointer is in the opener's
+  locals or a deeper call, so it is dead no later. A boundary is never
+  inlined, so its frame is its own call's.
+- A loop's region ends with each lap, while its frame lives on, so an owner
+  in the loop function's own frame does not qualify. Only an owner below the
+  frame pointer of the opener's callee on the chain qualifies: that call
+  returns before its lap ends. With no callee (the allocation made in the
+  opener's own frame), nothing qualifies.
+
+Anything else goes on the heap: an owner on the heap, in an outer region, in
+a frame above the opener, or in a loop function's own frame. Test 1315.
 
 **Frees.** A free through a register does nothing to a region block:
 `Runtime.Free`, `Gc.Free` and `FreeReplaced` check `InOwnRegion` first, and

@@ -833,8 +833,10 @@ static class Runtime
     // The sampler's kind of a block: 1 scanned word by word, 2 a leaf, 3 an object.
     static long SampleKind(nint kind) => kind == (nint)Gc.LeafKind ? 2 : kind == (nint)Gc.ObjectKind ? 3 : 1;
 
-    /// Storage made for `owner` and dead when it is: in owner's region when
-    /// owner is in the innermost open one, on the heap otherwise.
+    /// Storage made for `owner` and dead when it is: in the innermost open
+    /// region when owner is in it, or on this thread's stack in a frame that
+    /// returns no later than that region ends (a collection the lifetime pass
+    /// put in a boundary's frame; Gc.OnStackWithin); on the heap otherwise.
     public static long AllocNear(nint bytes, nint kind, nint owner, nint frame)
     {
         long at = (long)(nuint)Gc.AllocRegion(bytes, kind, owner == 0 ? -1 : (long)(nuint)owner, (long)(nuint)frame);
