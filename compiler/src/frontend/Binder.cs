@@ -819,6 +819,51 @@ public sealed partial class Binder
     /// <summary>Whether this symbol is a template rather than something real.</summary>
     private static bool IsTemplate(TypeSymbol t) => t.Decl?.TypeParams.Count > 0;
 
+    /// <summary>Specialisations whose `new()` arguments have been checked (CS0310): once each.</summary>
+    private readonly HashSet<string> _constraintsChecked = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// WHETHER A TYPE ARGUMENT MEETS `new()` (C# 15.2.5): a value type, or a
+    /// class neither abstract nor static with a public constructor of no
+    /// parameters -- the one C# gives a class that declares none counts.
+    /// Not an interface, a delegate, an array, a pointer or string. A type
+    /// parameter, or a shared copy's word, is its own declaration's to
+    /// answer for, and passes here.
+    /// </summary>
+    private static bool HasPublicParameterless(Type a)
+    {
+        if (a.IsError || a.ParamName is not null || a.CanonParam != -1)
+        {
+            return true;
+        }
+        if (a.IsArray || a.IsPointer || a.Function is not null)
+        {
+            return false;
+        }
+        if (a.IsNullableValue)
+        {
+            return true;
+        }
+        if (a.Symbol is not TypeSymbol s)
+        {
+            return a.Prim != Prim.String && a.Prim != Prim.Type;
+        }
+        if (s.Kind is TypeKind.Struct or TypeKind.Enum)
+        {
+            return true;
+        }
+        if (s.Kind != TypeKind.Class || s.Decl is { IsDelegate: true } || s.Decl is { } d && (d.Mods & (Mods.Abstract | Mods.Static)) != 0)
+        {
+            return false;
+        }
+        List<MethodSymbol> ctors = s.Methods.Where(m => m.IsCtor && !m.Static).ToList();
+        return ctors.Count == 0 || ctors.Any(m => m.Params.Count == 0 && (m.Decl is null || m.Decl.Mods.HasFlag(Mods.Public)));
+    }
+
+    /// <summary>C#'s refusal of a type argument that does not meet `new()` (CS0310).</summary>
+    private static string NotConstructible(Type a, string parameter, string generic)
+        => $"CS0310: '{a}' must be a non-abstract type with a public parameterless constructor in order to use it as parameter '{parameter}' in the generic type or method '{generic}'";
+
     /// <summary>The type parameters of the method signature being declared.</summary>
     private List<TypeParam>? _signature;
 
@@ -2207,6 +2252,26 @@ public sealed partial class Binder
             }
         }
         finally { _quiet--; _namingOnly = false; }
+
+        // `where T : new()` OF A GENERIC TYPE, against each specialisation's
+        // arguments (CS0310), once the arguments are known. Said where the
+        // template is: the copy has no use site of its own.
+        foreach (TypeSymbol made in _r.Types.Values.Where(t => t.Decl is { Specialised: true, TemplateParams: { } }).ToList())
+        {
+            List<TypeParam> ps = made.Decl!.TemplateParams!;
+            if (made.TemplateArgTypes.Count != ps.Count || !_constraintsChecked.Add(made.Name))
+            {
+                continue;
+            }
+            for (int i = 0; i < ps.Count; i++)
+            {
+                if (ps[i].New && !HasPublicParameterless(made.TemplateArgTypes[i]))
+                {
+                    Error(made.Decl, NotConstructible(made.TemplateArgTypes[i], ps[i].Name,
+                        made.Decl.Template + "<" + string.Join(", ", ps.Select(p => p.Name)) + ">"));
+                }
+            }
+        }
 
         // The tuple shapes met so far take ValueTuple's interfaces now that
         // those have slots; any made from here on take them as they are made.
@@ -11467,6 +11532,18 @@ public sealed partial class Binder
                           ? (_wanted is { IsNullableValue: true } lifted ? lifted.Underlying : _wanted ?? Type.Error)
                           : Resolve(nw.Type, _thisType);
 
+                // `new int()`, `new E()`: ZERO, as a value type's parameterless
+                // constructor makes it -- written so, or a copy's `new T()`
+                // over a number, a bool, a char or an enum.
+                if (nw.Type.Name.Length != 0 && nw.Elements is null && nw.ArraySize is null && nw.Utf8Bytes is null && !nw.Collection
+                    && nw.Args.Count == 0 && nw.Body.IsEmpty && !type.IsArray && !type.IsPointer && !type.IsNullableValue
+                    && (type.Symbol is null ? type.IsNumeric || type.Prim is Prim.Bool or Prim.Char : type.Symbol.Kind == TypeKind.Enum))
+                {
+                    DefaultExpr zero = new() { Type = nw.Type, Line = nw.Line, Col = nw.Col };
+                    _r.Rewrites[nw] = zero;
+                    return CheckExpr(zero);
+                }
+
                 if (nw.Elements is { } written)
                 {
                     // `new[] { a, b }` TAKES THE BEST COMMON TYPE of what is
@@ -12826,6 +12903,16 @@ public sealed partial class Binder
                 // resolve it, and inside a generic the answer depends on which
                 // instantiation is being compiled.
                 Type named = Resolve(to.Type, _thisType);
+
+                // A TYPE ARGUMENT ONLY RUN TIME KNOWS (Type.CanonParam): a
+                // shared method copy's, handed in as a hidden argument, or a
+                // shared class copy's where no mark reads it (ICanonSlot) --
+                // what it is for this call, and object where nothing says.
+                if (named is { CanonParam: not -1, Prim: Prim.Any, Symbol: null, ArrayRank: 0, PointerDepth: 0 })
+                {
+                    _r.RunTimeTypeOfs[to] = named;
+                    return Type.TypeHandle;
+                }
 
                 // A PRIMITIVE HAS A DESCRIPTOR TOO. It has no vtable to put
                 // one in front of, but a descriptor is what a type's IDENTITY
@@ -17106,6 +17193,20 @@ public sealed partial class Binder
 
                 spelt.Add(spell);
                 given.Add(was);
+            }
+
+            // `where T : new()` OF THE METHOD, against what T was given or
+            // worked out to be (CS0310).
+            if (spelt.Count == best.TypeParams.Count)
+            {
+                for (int i = 0; i < given.Count && i < generic.TypeParams.Count; i++)
+                {
+                    if (generic.TypeParams[i].New && !HasPublicParameterless(given[i]))
+                    {
+                        Error(c, NotConstructible(given[i], generic.TypeParams[i].Name,
+                            best.Name + "<" + string.Join(", ", generic.TypeParams.Select(p => p.Name)) + ">"));
+                    }
+                }
             }
 
             // A TYPE ARGUMENT ONLY RUN TIME KNOWS: a shared copy's T, or a

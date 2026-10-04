@@ -347,9 +347,20 @@ public static class Header
     {
         foreach (TypeParam p in ps)
         {
+            // And `new()` and `unmanaged`, which a consumer checks its own
+            // type arguments by (CS0310) and which keep a class from sharing
+            // one copy among them (Monomorphiser.Shareable).
             if (p.Struct)
             {
                 s.Append(" where ").Append(p.Name).Append(" : struct");
+            }
+            else if (p.Unmanaged)
+            {
+                s.Append(" where ").Append(p.Name).Append(" : unmanaged");
+            }
+            else if (p.New)
+            {
+                s.Append(" where ").Append(p.Name).Append(" : new()");
             }
         }
     }

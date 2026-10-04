@@ -356,6 +356,9 @@ public sealed partial class BindResult
     /// one descriptor, so `typeof(byte[]) == typeof(byte[])` holds.</summary>
     public Dictionary<TypeOfExpr, Type> ArrayTypeOfs { get; } = new(ReferenceEqualityComparer.Instance);
 
+    /// <summary>`typeof(T)` of a type argument only run time knows (Type.CanonParam): its descriptor as run time finds it (Lowering.RunTimeDescriptor).</summary>
+    public Dictionary<TypeOfExpr, Type> RunTimeTypeOfs { get; } = new(ReferenceEqualityComparer.Instance);
+
     /// <summary>The calls that are GetType(), which is not a declared method.</summary>
     public HashSet<CallExpr> GetTypes { get; } = new(ReferenceEqualityComparer.Instance);
 
@@ -578,6 +581,7 @@ public sealed partial class BindResult
         TypeOfs.Clear();
         PrimitiveTypeOfs.Clear();
         ArrayTypeOfs.Clear();
+        RunTimeTypeOfs.Clear();
         GetTypes.Clear();
         Invocations.Clear();
         GenericDispatches.Clear();

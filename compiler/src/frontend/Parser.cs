@@ -2107,12 +2107,12 @@ public sealed class Parser
                 // and ParseTypeRef met `class` and stopped -- so ordinary C#
                 // carrying any of them did not parse at all.
                 //
-                // They are read and dropped, all but `struct`. This compiler
-                // makes a COPY of a generic per type argument, so what a
-                // constraint rules out is ruled out by that copy failing to
-                // compile, on the line that depended on it rather than on the
-                // declaration; there is nothing here for a constraint to be
-                // checked against.
+                // They are read and dropped, all but `struct`, `new()` and
+                // `unmanaged`. This compiler makes a COPY of a generic per
+                // type argument, so what any other constraint rules out is
+                // ruled out by that copy failing to compile, on the line that
+                // depended on it rather than on the declaration; there is
+                // nothing here for one to be checked against.
                 //
                 // `struct` IS KEPT because it changes what `T?` means: over a
                 // struct-constrained T it is Nullable<T>, a real cell, where
@@ -2129,16 +2129,24 @@ public sealed class Parser
                     continue;
                 }
 
+                // `new()` IS KEPT: it is what lets `new T()` be written over
+                // T, and what a type argument without a public parameterless
+                // constructor is refused by (TypeParam.New).
                 if (At(Tok.KwNew))
                 {
                     _i++;
                     Expect(Tok.LParen, "'(' after 'new' in a constraint");
                     Expect(Tok.RParen, "')' to close 'new()' in a constraint");
+                    target.New = true;
                     continue;
                 }
 
                 if (At(Tok.Ident) && Cur.Text is "notnull" or "unmanaged")
                 {
+                    if (Cur.Text == "unmanaged")
+                    {
+                        target.Unmanaged = true;
+                    }
                     _i++;
                     continue;
                 }

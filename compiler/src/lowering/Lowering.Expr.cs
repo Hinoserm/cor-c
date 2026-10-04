@@ -857,6 +857,28 @@ public sealed partial class Lowering
             case TypeOfExpr { CanonSlot: >= 0 } canonType:
                 return CanonEntry(canonType);
 
+            // A TYPE ARGUMENT ONLY RUN TIME KNOWS (BindResult.RunTimeTypeOfs):
+            // the descriptor run time finds for it, and object's where it
+            // finds none -- a copy called with nothing to hand it.
+            case TypeOfExpr to when _b.RunTimeTypeOfs.TryGetValue(to, out Type? runTime):
+            {
+                Operand found = RunTimeDescriptor(runTime, statics: false);
+                if (found is ImmOperand)
+                {
+                    return _e.Address(ObjectDescriptor());
+                }
+                VReg runTimeResult = _f.NewReg(IrTypes.Word, "typeofrt");
+                Block runTimeObject = _f.NewBlock("typeofobject");
+                Block runTimeEnd = _f.NewBlock("typeofrtend");
+                _e.CopyTo(runTimeResult, found);
+                _e.Branch(found, runTimeEnd, runTimeObject);
+                _e.SetBlock(runTimeObject);
+                _e.CopyTo(runTimeResult, R(_e.Address(ObjectDescriptor())));
+                _e.Jump(runTimeEnd);
+                _e.SetBlock(runTimeEnd);
+                return runTimeResult;
+            }
+
             case TypeOfExpr to when _b.TypeOfs.TryGetValue(to, out TypeSymbol? named):
                 return _e.Address(named.Kind is TypeKind.Enum or TypeKind.Struct
                     ? BoxDescriptor(new Type { Symbol = named }) : DescriptorOf(named));

@@ -214,8 +214,10 @@ public sealed partial class Lowering
         item.Relocs.Add(new DataReloc(DescName * w, InternString("System.Object"), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
 
-        DataItem display = new("td_System_Object", new byte[w]) { ReadOnly = true, Exported = false };
+        // Itself, and its maker (Lowering.Make): `new object()`.
+        DataItem display = new("td_System_Object", new byte[2 * w]) { ReadOnly = true, Exported = false };
         display.Relocs.Add(new DataReloc(0, sym, 0));
+        display.Relocs.Add(new DataReloc(w, ObjectMaker(), 0));
         _m.Data.Add(display);
         item.Relocs.Add(new DataReloc(DescDisplay * w, display.Name, 0));
 
@@ -303,8 +305,10 @@ public sealed partial class Lowering
         // display holds only itself and the interface array is the terminator
         // alone. They exist because `is` and `as` read them without knowing
         // what they are looking at.
-        DataItem display = new("bd_" + Safe(key), new byte[w]) { ReadOnly = true, Exported = false };
+        // And after itself the box's maker (Lowering.Make): the value's zero, boxed.
+        DataItem display = new("bd_" + Safe(key), new byte[2 * w]) { ReadOnly = true, Exported = false };
         display.Relocs.Add(new DataReloc(0, sym, 0));
+        display.Relocs.Add(new DataReloc(w, BoxMaker(of, key), 0));
         _m.Data.Add(display);
         item.Relocs.Add(new DataReloc(DescDisplay * w, display.Name, 0));
 

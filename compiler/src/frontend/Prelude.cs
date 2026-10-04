@@ -877,6 +877,9 @@ public static class Prelude
             // The same reference as a string, once IsString has said it is one.
             // A reinterpretation, not a conversion: no bytes move.
             public static string AsString(object x) { return ""; }
+            // A new object of the type a Type names, by its public parameterless
+            // constructor: what Activator.CreateInstance is (Lowering.Make).
+            public static object Make(object type) { return type; }
             public static long DataStart() { return 0; }
             public static long DataEnd() { return 0; }
 

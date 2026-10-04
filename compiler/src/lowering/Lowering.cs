@@ -470,9 +470,16 @@ public sealed partial class Lowering
             }
         }
 
-        while (_work.Count > 0)
+        while (_work.Count > 0 || _makers.Count > 0)
         {
             SealFunctions();
+            // THE MAKERS THE DESCRIPTORS MADE SO FAR NAME, between methods
+            // (Lowering.Make): each may need a constructor, and so more work.
+            if (_work.Count == 0)
+            {
+                EmitMakers();
+                continue;
+            }
             MethodSymbol m = _work.Dequeue();
 
             if (m.Decl is null
@@ -2272,13 +2279,22 @@ public sealed partial class Lowering
             }
         }
 
-        // The display: every ancestor's descriptor, root first, self last.
+        // The display: every ancestor's descriptor, root first, self last --
+        // and after it the class's maker, or why it has none (Lowering.Make).
         {
-            byte[] display = new byte[chain.Count * w];
+            byte[] display = new byte[(chain.Count + 1) * w];
             DataItem disp = new("d_" + TypeKey(t), display) { ReadOnly = true, Exported = false };
             for (int i = 0; i < chain.Count; i++)
             {
                 disp.Relocs.Add(new DataReloc(i * w, ClassDescriptor(chain[i]), 0));
+            }
+            if (ClassMaker(t, out long noMaker) is string maker)
+            {
+                disp.Relocs.Add(new DataReloc(chain.Count * w, maker, 0));
+            }
+            else
+            {
+                WriteWord(display, chain.Count * w, noMaker);
             }
             _m.Data.Add(disp);
             item.Relocs.Add(new DataReloc(DescDisplay * w, disp.Name, 0));

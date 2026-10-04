@@ -51,6 +51,10 @@ public sealed partial class Lowering
 
         switch (name)
         {
+            // AN OBJECT OF A TYPE GIVEN AT RUN TIME, made by the maker its
+            // descriptor names (Lowering.Make): Activator.CreateInstance.
+            case "Make":
+                return MakeDescribed(ToWord(Arg(call, target, 0)));
             case "Rethrow":
                 Rethrow(Arg(call, target, 0), call);
                 return Void();
