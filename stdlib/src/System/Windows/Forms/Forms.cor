@@ -445,17 +445,104 @@ public static class ControlPaint
 }
 
 /// Fires Tick on the message loop every Interval milliseconds while Enabled.
+/// .NET's Forms.Timer: a timer the GUI kernel's seat keeps for this thread
+/// (Seat.SetTimer) and fires as an event the message loop reads, as Windows'
+/// SetTimer does -- one Tick for each coming due, however late the loop is.
 public class Timer
 {
-    public int Interval = 100;
-    public event EventHandler? Tick;
-    long _due;
+    int _interval = 100;
+    int _id;
     bool _enabled;
+    public event EventHandler? Tick;
+
+    /// Milliseconds between Ticks; changed while running, it starts again.
+    public int Interval
+    {
+        get { return _interval; }
+        set
+        {
+            if (value <= 0) throw new ArgumentOutOfRangeException("Interval");
+            _interval = value;
+            if (_enabled) { Stop(); Start(); }
+        }
+    }
+
     public bool Enabled { get { return _enabled; } set { if (value) Start(); else Stop(); } }
-    public void Start() { if (!_enabled) { _enabled = true; _due = Application.Now() + Interval; Application.AddTimer(this); } }
-    public void Stop() { if (_enabled) { _enabled = false; Application.RemoveTimer(this); } }
-    internal long Due { get { return _due; } }
-    internal void Fire() { _due = Application.Now() + Interval; if (Tick != null) Tick(this, EventArgs.Empty); }
+
+    public void Start()
+    {
+        if (_enabled) return;
+        _id = Seat.Current.SetTimer(0, _id, _interval, 0, false);
+        if (_id == 0) return;
+        _enabled = true;
+        Application.AddTimer(_id, this);
+    }
+
+    public void Stop()
+    {
+        if (!_enabled) return;
+        _enabled = false;
+        Seat.Current.KillTimer(0, _id, false);
+        Application.RemoveTimer(_id);
+    }
+
+    internal void Fire() { if (_enabled && Tick != null) Tick(this, EventArgs.Empty); }
+}
+
+/// A hot key pressed: the id it was registered with, its key and its
+/// modifiers, and the form it was registered for (null for the thread).
+public class HotKeyEventArgs : EventArgs
+{
+    public HotKeyEventArgs(Form? form, int id, Keys key, Keys modifiers) { Owner = form; Id = id; Key = key; Modifiers = modifiers; }
+    public Form? Owner { get; }
+    public int Id { get; }
+    public Keys Key { get; }
+    public Keys Modifiers { get; }
+}
+
+public delegate void HotKeyEventHandler(object? sender, HotKeyEventArgs e);
+
+/// <summary>
+/// HOT KEYS, the GUI kernel's (Seat.RegisterHotKey): a key and its modifiers
+/// that, pressed anywhere, come to this program and to nobody else -- what
+/// a Windows program has from RegisterHotKey, in .NET's words: a key as
+/// Keys with its modifiers or'd in, an id the program chooses, and an event.
+/// Registered for a form, the hot key goes with the form's window.
+/// </summary>
+public static class HotKey
+{
+    /// Pressed: on the thread that registered it, from the message loop.
+    public static event HotKeyEventHandler? Pressed;
+
+    /// `keys` -- a key code with Shift, Control and Alt or'd in -- made a hot
+    /// key with this id, for `owner` (null: this thread). False when the key
+    /// is somebody's already, or not one.
+    public static bool Register(Form? owner, int id, Keys keys)
+    {
+        int mods = ((keys & Keys.Alt) != 0 ? 1 : 0) | ((keys & Keys.Control) != 0 ? 2 : 0) | ((keys & Keys.Shift) != 0 ? 4 : 0);
+        int vk = (int)(keys & Keys.KeyCode);
+        int window = owner != null ? owner.Handle : 0;
+        if (owner != null && window == 0) return false;
+        try { return Seat.Current.RegisterHotKey(window, id, mods, vk); }
+        catch (IOException) { return false; }
+    }
+
+    public static bool Unregister(Form? owner, int id)
+    {
+        int window = owner != null ? owner.Handle : 0;
+        try { return Seat.Current.UnregisterHotKey(window, id); }
+        catch (IOException) { return false; }
+    }
+
+    /// The seat's HotKeyPressed: the modifiers' MOD_ bits and the key back
+    /// into Keys.
+    internal static void Raise(Form? form, int id, int packed)
+    {
+        Keys modifiers = ((packed & 1) != 0 ? Keys.Alt : Keys.None) | ((packed & 2) != 0 ? Keys.Control : Keys.None) | ((packed & 4) != 0 ? Keys.Shift : Keys.None);
+        Keys key = (Keys)((packed >> 16) & 0xFFFF);
+        HotKeyEventHandler? h = Pressed;
+        if (h != null) h(form, new HotKeyEventArgs(form, id, key, modifiers));
+    }
 }
 
 public class ControlCollection
@@ -3173,8 +3260,46 @@ public class TextBox : Control
         {
             g.DrawString(shown, Font, new SolidBrush(ForeColor), BackColor, left, top);
         }
-        if (Focused) g.FillRectangle(new SolidBrush(ForeColor), left + Font.TextWidth(shown, 0, _caret > shown.Length ? shown.Length : _caret), top, 1, Font.Height);
+        // THE SYSTEM CARET, the seat's (Seat.CreateCaret): it draws it, blinks
+        // it at the blink time and keeps it off what is painted here.
+        if (Focused) PlaceCaret(left + Font.TextWidth(shown, 0, _caret > shown.Length ? shown.Length : _caret), top);
         base.OnPaint(e);
+    }
+
+    // The text box whose caret this thread's is, and the window it is in.
+    static TextBox? _caretBox;
+    static int _caretWindow;
+
+    /// The caret made in this box's form, if it is not there, and put at
+    /// (x, y) in the box.
+    void PlaceCaret(int x, int y)
+    {
+        Form? f = FindForm();
+        if (f == null || f.Handle == 0) return;
+        try
+        {
+            Seat seat = Seat.Current;
+            if (_caretBox != this || _caretWindow != f.Handle)
+            {
+                if (!seat.CreateCaret(f.Handle, 1, Font.Height)) return;
+                seat.ShowCaret(true);
+                _caretBox = this;
+                _caretWindow = f.Handle;
+            }
+            Point o = ClientOrigin(), frame = f.ClientOffset();
+            seat.MoveCaret(frame.X + o.X + x, frame.Y + o.Y + y);
+        }
+        catch (IOException) { }
+    }
+
+    /// The caret gone with the focus.
+    void DropCaret()
+    {
+        if (_caretBox != this) return;
+        _caretBox = null;
+        _caretWindow = 0;
+        try { Seat.Current.DestroyCaret(); }
+        catch (IOException) { }
     }
 
     /// Remove the selection from the text, leaving the caret where it was.
@@ -3277,7 +3402,7 @@ public class TextBox : Control
         _clickFocus = false;
         base.OnGotFocus(e);
     }
-    protected override void OnLostFocus(EventArgs e) { _dragging = false; base.OnLostFocus(e); }
+    protected override void OnLostFocus(EventArgs e) { _dragging = false; DropCaret(); base.OnLostFocus(e); }
     bool _clickFocus;
     internal void FocusByClick() { _clickFocus = true; }
 }
@@ -5763,24 +5888,19 @@ public static class Application
     static List<Form> _forms = new List<Form>();
 
 
-    static List<Timer> _timers = new List<Timer>();
-    internal static void AddTimer(Timer t) { if (!_timers.Contains(t)) _timers.Add(t); }
-    internal static void RemoveTimer(Timer t) { _timers.Remove(t); }
+    // THE TIMERS ARE THE SEAT'S (Timer): each running one by the id the seat
+    // gave it, found again when its event comes.
+    static readonly List<int> _timerIds = new List<int>();
+    static readonly List<Timer> _timers = new List<Timer>();
+    internal static void AddTimer(int id, Timer t) { RemoveTimer(id); _timerIds.Add(id); _timers.Add(t); }
+    internal static void RemoveTimer(int id) { int at = _timerIds.IndexOf(id); if (at >= 0) { _timerIds.RemoveAt(at); _timers.RemoveAt(at); } }
+    static void TimerElapsed(int id) { int at = _timerIds.IndexOf(id); if (at >= 0) _timers[at].Fire(); }
     /// Milliseconds on a clock that only goes forward.
     public static long Now() { return DateTime.UtcNow.Ticks / 10000; }
-    /// How long the loop may wait before a timer is due: -1 for ever.
-    static int TimerWait()
-    {
-        if (_timers.Count == 0) return -1;
-        long now = Now(), soonest = -1;
-        for (int i = 0; i < _timers.Count; i++) { long left = _timers[i].Due - now; if (left < 0) left = 0; if (soonest < 0 || left < soonest) soonest = left; }
-        return soonest > 1000000 ? 1000000 : (int)soonest;
-    }
-    static void FireTimers()
-    {
-        long now = Now();
-        for (int i = 0; i < _timers.Count; i++) if (_timers[i].Due <= now) _timers[i].Fire();
-    }
+    /// How long the loop may wait: for ever, since the seat wakes it for a
+    /// timer with the timer's event.
+    static int TimerWait() { return -1; }
+    static void FireTimers() { }
     /// Where the next window with no position of its own goes: down and
     /// right of the windows already on the seat, a caption's height per
     /// window, back to the corner when it would run off the screen. Asked of
@@ -6098,7 +6218,8 @@ public static class Application
             && m.Kind != 14 && m.Kind != 15 && m.Kind != 16 && m.Kind != 17
             && m.Kind != 23 && m.Kind != 24 && m.Kind != 25 && m.Kind != 28
             && m.Kind != Seat.ClipboardChanged && m.Kind != Seat.ClipboardRender && m.Kind != Seat.ClipboardLost
-            && m.Kind != Seat.FontsChanged) return;
+            && m.Kind != Seat.FontsChanged
+            && m.Kind != Seat.TimerElapsed && m.Kind != Seat.HotKeyPressed) return;
         switch (m.Kind)
         {
             case 1:
@@ -6241,6 +6362,14 @@ public static class Application
                 // asked again, and whoever cares told.
                 System.Drawing.FontFallback.Forget();
                 SystemEvents.RaiseInstalledFontsChanged();
+                break;
+            case Seat.TimerElapsed:
+                // A timer of this thread's come due (Timer).
+                if (m.Window == 0) TimerElapsed(m.A);
+                break;
+            case Seat.HotKeyPressed:
+                // A hot key of this thread's pressed (HotKey).
+                HotKey.Raise(f, m.A, m.B);
                 break;
             case 28:
                 // A press on one of this thread's notification-area icons.

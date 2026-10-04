@@ -132,6 +132,22 @@ enum SeatIoctl : long
     ClipboardWatch = 0x47550062,
     FontFamilies = 0x47550063,
     FontMatch = 0x47550064,
+    TimerSet = 0x47550090,
+    TimerKill = 0x47550091,
+    CaretCreate = 0x47550092,
+    CaretShow = 0x47550093,
+    CaretMove = 0x47550094,
+    CaretDestroy = 0x47550095,
+    CaretBlinkTime = 0x47550096,
+    HotKeyRegister = 0x47550097,
+    HotKeyUnregister = 0x47550098,
+    Atom16 = 0x47550099,
+    PropSet = 0x4755009A,
+    PropGet = 0x4755009B,
+    PropRemove = 0x4755009C,
+    PropList = 0x4755009D,
+    ForegroundAllow = 0x4755009E,
+    ForegroundLock = 0x4755009F,
 }
 
 public class Seat : IDrawingTarget
@@ -737,6 +753,117 @@ public class Seat : IDrawingTarget
         at += (length * 2 + 3) & ~3;
         return new string(chars);
     }
+
+    // ---- the window services ------------------------------------------------------
+    //
+    // THE GUI KERNEL'S OWN (os/gui/seatservices.cor): timers the seat fires,
+    // the system caret the seat draws and blinks, hot keys the seat matches
+    // before any program sees the key, a window's properties, and the
+    // foreground's rules. A Windows program has the same ones through win32k.
+
+    /// A timer come due (its window, A its id, B 1 for a system timer); a hot
+    /// key pressed (its window, A its id, B the MOD_ bits | the key << 16).
+    public const int TimerElapsed = 34, HotKeyPressed = 35;
+
+    /// A timer on `window` (0: this thread's) every `milliseconds` (at least
+    /// 10), allowed to fire up to `tolerance` milliseconds early to go with
+    /// another; its id -- `id`, or a new one for a thread timer of id 0 -- or
+    /// 0 when it could not be made. Set again, it starts again.
+    public int SetTimer(int window, int id, int milliseconds, int tolerance, bool system)
+    {
+        byte[] args = new byte[20];
+        PutWord(args, 0, window); PutWord(args, 4, id); PutWord(args, 8, milliseconds); PutWord(args, 12, tolerance); PutWord(args, 16, system ? 1 : 0);
+        long answer = Ioctl(SeatIoctl.TimerSet, Sys.ArrayData(args));
+        return answer > 0 ? (int)answer : 0;
+    }
+
+    public bool KillTimer(int window, int id, bool system)
+    {
+        byte[] args = new byte[12];
+        PutWord(args, 0, window); PutWord(args, 4, id); PutWord(args, 8, system ? 1 : 0);
+        return Ioctl(SeatIoctl.TimerKill, Sys.ArrayData(args)) == 0;
+    }
+
+    /// This thread's caret, in `window`, `width` by `height`: made hidden;
+    /// ShowCaret(true) shows it. The seat draws it and blinks it.
+    // THE DRAWING SO FAR GOES FIRST: the caret is inverted on what is in the
+    // window, and drawing still in this program's batch would land over it
+    // afterwards.
+    public bool CreateCaret(int window, int width, int height)
+    {
+        Flush();
+        byte[] args = new byte[12];
+        PutWord(args, 0, window); PutWord(args, 4, width); PutWord(args, 8, height);
+        return Ioctl(SeatIoctl.CaretCreate, Sys.ArrayData(args)) == 0;
+    }
+
+    /// One fewer hide (true) or one more (false), as ShowCaret and HideCaret.
+    public bool ShowCaret(bool show) { Flush(); return Ioctl(SeatIoctl.CaretShow, show ? 1 : 0) == 0; }
+    /// The caret to (x, y) in its window.
+    public bool MoveCaret(int x, int y) { Flush(); return Ioctl(SeatIoctl.CaretMove, (x & 0xFFFF) | ((long)(y & 0xFFFF) << 16)) == 0; }
+    public bool DestroyCaret() { Flush(); return Ioctl(SeatIoctl.CaretDestroy, 0) == 0; }
+    /// The caret's blink time in milliseconds; set, for every program.
+    public int CaretBlinkTime
+    {
+        get { return (int)Ioctl(SeatIoctl.CaretBlinkTime, 0); }
+        set { Ioctl(SeatIoctl.CaretBlinkTime, value > 0 ? value : 1); }
+    }
+
+    /// A hot key: `vk` with the MOD_ bits `modifiers` (Alt 1, Ctrl 2, Shift
+    /// 4, Win 8), for `window` (0: this thread). False when the key is
+    /// somebody's already or not one.
+    public bool RegisterHotKey(int window, int id, int modifiers, int vk)
+    {
+        byte[] args = new byte[16];
+        PutWord(args, 0, window); PutWord(args, 4, id); PutWord(args, 8, modifiers); PutWord(args, 12, vk);
+        return Ioctl(SeatIoctl.HotKeyRegister, Sys.ArrayData(args)) == 0;
+    }
+
+    public bool UnregisterHotKey(int window, int id)
+    {
+        byte[] args = new byte[8];
+        PutWord(args, 0, window); PutWord(args, 4, id);
+        return Ioctl(SeatIoctl.HotKeyUnregister, Sys.ArrayData(args)) == 0;
+    }
+
+    /// A name's atom, for a window property; 0 when it is not one.
+    public int Atom(string name)
+    {
+        byte[] text = System.Text.Encoding.Unicode.GetBytes(name);
+        byte[] args = new byte[8];
+        PutWord(args, 0, Sys.ArrayData(text)); PutWord(args, 4, name.Length);
+        long answer = Ioctl(SeatIoctl.Atom16, Sys.ArrayData(args));
+        GC.KeepAlive(text);
+        return answer > 0 ? (int)answer : 0;
+    }
+
+    /// A property on one of this program's windows (SetProp, GetProp,
+    /// RemoveProp), by atom.
+    public bool SetProperty(int window, int atom, int value)
+    {
+        byte[] args = new byte[12];
+        PutWord(args, 0, window); PutWord(args, 4, atom); PutWord(args, 8, value);
+        return Ioctl(SeatIoctl.PropSet, Sys.ArrayData(args)) == 0;
+    }
+
+    public bool GetProperty(int window, int atom, out int value) { return Property(SeatIoctl.PropGet, window, atom, out value); }
+    public bool RemoveProperty(int window, int atom, out int value) { return Property(SeatIoctl.PropRemove, window, atom, out value); }
+
+    bool Property(SeatIoctl request, int window, int atom, out int value)
+    {
+        byte[] args = new byte[12];
+        PutWord(args, 0, window); PutWord(args, 4, atom);
+        bool there = Ioctl(request, Sys.ArrayData(args)) == 0;
+        value = there ? args[8] | (args[9] << 8) | (args[10] << 16) | (args[11] << 24) : 0;
+        return there;
+    }
+
+    /// AllowSetForegroundWindow: the program `group` (-1 any) may take the
+    /// foreground from this one; false when this one could not itself.
+    public bool AllowSetForeground(int group) { return Ioctl(SeatIoctl.ForegroundAllow, group) == 0; }
+    /// LockSetForegroundWindow: no program takes the foreground until this
+    /// one unlocks it, the person presses Alt, or the foreground moves.
+    public bool LockSetForeground(bool locked) { return Ioctl(SeatIoctl.ForegroundLock, locked ? 1 : 2) == 0; }
 
     /// The number a named format has, the same in every program; 0 on failure.
     public int RegisterClipboardFormat(string name)
