@@ -1357,8 +1357,12 @@ public static partial class Linker
                 // string, table or literal is found by address and nothing
                 // reads its name -- faults are named by the frame tables -- and
                 // they were half the compiler's symbol table. Functions, type
-                // descriptors and the runtime's own tables stay.
-                if (!sym.IsFunction && !KeepsLocalName(sym.Name))
+                // descriptors and the runtime's own tables stay. So does a
+                // local VARIABLE, in data or bss: a C file's static counter is
+                // what one looks for in a debugger, and the compiler's objects
+                // hold a few dozen of them against ten thousand constants.
+                if (!sym.IsFunction && !KeepsLocalName(sym.Name)
+                    && d.Section?.Kind is not (SectionKind.Data or SectionKind.Uninitialised))
                 {
                     continue;
                 }
