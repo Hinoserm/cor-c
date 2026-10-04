@@ -64,6 +64,8 @@ public delegate void MouseEventHandler(object sender, MouseEventArgs e);
 public delegate void KeyPressEventHandler(object sender, KeyPressEventArgs e);
 public delegate void KeyEventHandler(object sender, KeyEventArgs e);
 public delegate void FormClosingEventHandler(object sender, FormClosingEventArgs e);
+public delegate void InputLanguageChangingEventHandler(object sender, InputLanguageChangingEventArgs e);
+public delegate void InputLanguageChangedEventHandler(object sender, InputLanguageChangedEventArgs e);
 
 public class PaintEventArgs : EventArgs
 {
@@ -156,6 +158,129 @@ public class KeyEventArgs : EventArgs
 public class FormClosingEventArgs : EventArgs
 {
     public bool Cancel;
+}
+
+/// The language hot key asks for another input language
+/// (WM_INPUTLANGCHANGEREQUEST): set Cancel to stay with this one.
+public class InputLanguageChangingEventArgs : EventArgs
+{
+    public bool Cancel;
+    readonly InputLanguage _language;
+    readonly bool _sysCharSet;
+    public InputLanguageChangingEventArgs(InputLanguage inputLanguage, bool sysCharSet) { _language = inputLanguage; _sysCharSet = sysCharSet; }
+    public InputLanguageChangingEventArgs(CultureInfo culture, bool sysCharSet) { _language = InputLanguage.FromCulture(culture) ?? InputLanguage.DefaultInputLanguage; _sysCharSet = sysCharSet; }
+    public InputLanguage InputLanguage { get { return _language; } }
+    public CultureInfo Culture { get { return _language.Culture; } }
+    /// Whether the system's character set serves the language.
+    public bool SysCharSet { get { return _sysCharSet; } }
+}
+
+/// The input language changed (WM_INPUTLANGCHANGE).
+public class InputLanguageChangedEventArgs : EventArgs
+{
+    readonly InputLanguage _language;
+    readonly byte _charSet;
+    public InputLanguageChangedEventArgs(InputLanguage inputLanguage, byte charSet) { _language = inputLanguage; _charSet = charSet; }
+    public InputLanguageChangedEventArgs(CultureInfo culture, byte charSet) { _language = InputLanguage.FromCulture(culture) ?? InputLanguage.DefaultInputLanguage; _charSet = charSet; }
+    public InputLanguage InputLanguage { get { return _language; } }
+    public CultureInfo Culture { get { return _language.Culture; } }
+    /// The language's character set; 0 (ANSI_CHARSET), as this machine has one.
+    public byte CharSet { get { return _charSet; } }
+}
+
+/// <summary>
+/// AN INPUT LANGUAGE: one of the keyboard layouts the GUI kernel keeps
+/// (os/gui/keyboardstore.cor), named by its KLID -- Windows' number for it,
+/// the language in the low word. The user's are the installed ones, the
+/// default first; each thread types with its own current one, which the
+/// language hot key (Left Alt+Shift) asks a form to change.
+/// </summary>
+public sealed class InputLanguage
+{
+    readonly long _klid;
+
+    internal InputLanguage(long klid) { _klid = klid & 0xFFFFFFFF; }
+
+    /// The KLID: 0x00000407 for German.
+    internal long Klid { get { return _klid; } }
+
+    /// The language the layout is for: its KLID's low word.
+    public CultureInfo Culture { get { return new CultureInfo((int)(_klid & 0xFFFF)); } }
+
+    /// Its HKL, as Windows gives it: the language, and the device above it
+    /// (an IntPtr, which nint is).
+    public nint Handle
+    {
+        get
+        {
+            long hkl = Seat.Current.KeyboardLayoutHandle(_klid);
+            return (nint)(hkl < 0 ? (_klid & 0xFFFF) * 0x10001 : hkl);
+        }
+    }
+
+    /// The layout's name, as Windows' setup names it ("German (IBM)").
+    public string LayoutName { get { return Seat.Current.KeyboardLayoutName(_klid) ?? Culture.Name; } }
+
+    /// The calling thread's; set, the thread types with that one from now
+    /// on -- one of the installed ones, or ArgumentException.
+    public static InputLanguage CurrentInputLanguage
+    {
+        get { return new InputLanguage(Seat.Current.ActiveKeyboardLayout()); }
+        set
+        {
+            if (value == null) throw new ArgumentNullException("value");
+            if (Seat.Current.ActivateKeyboardLayout(value._klid) < 0) throw new ArgumentException("The input language is not installed.");
+        }
+    }
+
+    /// What a thread types with until it chooses.
+    public static InputLanguage DefaultInputLanguage { get { return new InputLanguage(Seat.Current.DefaultKeyboardLayout()); } }
+
+    /// The user's input languages, in their order.
+    public static InputLanguageCollection InstalledInputLanguages
+    {
+        get
+        {
+            long[] klids = Seat.Current.KeyboardLayouts();
+            InputLanguage[] made = new InputLanguage[klids.Length];
+            for (int i = 0; i < klids.Length; i++) made[i] = new InputLanguage(klids[i]);
+            return new InputLanguageCollection(made);
+        }
+    }
+
+    /// The first installed language for a culture; null for none.
+    public static InputLanguage? FromCulture(CultureInfo culture)
+    {
+        if (culture == null) throw new ArgumentNullException("culture");
+        foreach (InputLanguage l in InstalledInputLanguages) if ((l._klid & 0xFFFF) == culture.LCID) return l;
+        return null;
+    }
+
+    public override bool Equals(object? value) { return value is InputLanguage other && other._klid == _klid; }
+    public override int GetHashCode() { return (int)_klid; }
+}
+
+/// The installed input languages (InputLanguage.InstalledInputLanguages).
+public class InputLanguageCollection : IEnumerable<InputLanguage>
+{
+    // The non-generic IEnumerable's, as .NET's collections have it.
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
+    readonly InputLanguage[] _items;
+    internal InputLanguageCollection(InputLanguage[] items) { _items = items; }
+    public int Count { get { return _items.Length; } }
+    public InputLanguage this[int index] { get { return _items[index]; } }
+    public bool Contains(InputLanguage value) { return IndexOf(value) >= 0; }
+    public int IndexOf(InputLanguage value)
+    {
+        for (int i = 0; i < _items.Length; i++) if (_items[i].Equals(value)) return i;
+        return -1;
+    }
+    public void CopyTo(InputLanguage[] array, int index) { Array.Copy(_items, 0, array, index, _items.Length); }
+    public IEnumerator<InputLanguage> GetEnumerator()
+    {
+        for (int i = 0; i < _items.Length; i++) yield return _items[i];
+    }
 }
 
 /// A message, as WndProc sees one. The four words of the seat's event.
@@ -1161,6 +1286,11 @@ public class Form : Control
     public event EventHandler? FormClosed;
     public event EventHandler? Activated;
     public event EventHandler? Deactivate;
+    /// The language hot key asks for another input language; Cancel keeps
+    /// this one.
+    public event InputLanguageChangingEventHandler? InputLanguageChanging;
+    /// The thread's input language changed.
+    public event InputLanguageChangedEventHandler? InputLanguageChanged;
 
     public Form() { Width = 320; Height = 240; BackColor = SystemColors.Control; }
 
@@ -1587,6 +1717,12 @@ public class Form : Control
     internal void RaiseActivated() { FrameChanged(); OnActivated(EventArgs.Empty); }
     protected virtual void OnDeactivate(EventArgs e) { if (Deactivate != null) Deactivate(this, e); }
     internal void RaiseDeactivate() { FrameChanged(); OnDeactivate(EventArgs.Empty); }
+    /// WM_INPUTLANGCHANGEREQUEST: unless cancelled, the language is the
+    /// thread's from now on, as DefWindowProc makes it.
+    protected virtual void OnInputLanguageChanging(InputLanguageChangingEventArgs e) { if (InputLanguageChanging != null) InputLanguageChanging(this, e); }
+    protected virtual void OnInputLanguageChanged(InputLanguageChangedEventArgs e) { if (InputLanguageChanged != null) InputLanguageChanged(this, e); }
+    internal void RaiseInputLanguageChanging(InputLanguageChangingEventArgs e) { OnInputLanguageChanging(e); }
+    internal void RaiseInputLanguageChanged(InputLanguageChangedEventArgs e) { OnInputLanguageChanged(e); }
 
     /// The frame's style, icon or state changed: the seat is told, and it
     /// draws the frame again. Activation is the seat's own to show.
@@ -6102,6 +6238,13 @@ public static class Application
 
     public static Control? FocusedControl { get { return _focus; } }
     public static Form? ActiveForm { get { return _active; } }
+
+    /// The calling thread's input language (InputLanguage.CurrentInputLanguage).
+    public static InputLanguage CurrentInputLanguage
+    {
+        get { return InputLanguage.CurrentInputLanguage; }
+        set { InputLanguage.CurrentInputLanguage = value; }
+    }
     /// Any shown form of the program: what a menu with no control to come
     /// from (a ContextMenuStrip shown at a point) is for.
     internal static Form? AnyForm() { foreach (Form f in _forms) if (f.Handle != 0) return f; return null; }
@@ -6392,7 +6535,8 @@ public static class Application
             && m.Kind != 23 && m.Kind != 24 && m.Kind != 25 && m.Kind != 28
             && m.Kind != Seat.ClipboardChanged && m.Kind != Seat.ClipboardRender && m.Kind != Seat.ClipboardLost
             && m.Kind != Seat.FontsChanged
-            && m.Kind != Seat.TimerElapsed && m.Kind != Seat.HotKeyPressed) return;
+            && m.Kind != Seat.TimerElapsed && m.Kind != Seat.HotKeyPressed
+            && m.Kind != Seat.KeyChar && m.Kind != Seat.InputLanguageRequest && m.Kind != Seat.InputLanguageChanged) return;
         switch (m.Kind)
         {
             case 1:
@@ -6536,6 +6680,39 @@ public static class Application
                 // A format this program promised, wanted now.
                 Clipboard.Render(m.A);
                 break;
+            case Seat.KeyChar:
+            {
+                // More than the Key event's one character: a ligature's
+                // others, or a dead key that did not combine and the key
+                // after it -- each a KeyPress, as each WM_CHAR is. A dead
+                // key waiting (B 1, WM_DEADCHAR) is no KeyPress in .NET.
+                if (m.B != 0 || AutoScroll.Active) break;
+                Control? target = _focus ?? _active;
+                if (target == null) break;
+                KeyPressEventArgs press = new KeyPressEventArgs((char)(m.A & 0xFFFF));
+                target.RaiseKeyPress(press);
+                Message raw = m; target.DispatchRaw(ref raw);
+                break;
+            }
+            case Seat.InputLanguageRequest:
+            {
+                // WM_INPUTLANGCHANGEREQUEST: the form may refuse; else the
+                // language is the thread's, as DefWindowProc activates it.
+                if (m.B == 0) break;
+                Form? asked = f ?? _active;
+                InputLanguage wanted = new InputLanguage((long)(uint)m.B);
+                InputLanguageChangingEventArgs e = new InputLanguageChangingEventArgs(wanted, (m.A & 1) != 0);
+                if (asked != null) asked.RaiseInputLanguageChanging(e);
+                if (!e.Cancel) Seat.Current.ActivateKeyboardLayout((long)(uint)m.B);
+                break;
+            }
+            case Seat.InputLanguageChanged:
+            {
+                // WM_INPUTLANGCHANGE: the thread's language is another now.
+                Form? told = _active;
+                if (told != null) told.RaiseInputLanguageChanged(new InputLanguageChangedEventArgs(new InputLanguage((long)(uint)m.A), 0));
+                break;
+            }
             case Seat.ClipboardLost:
                 Clipboard.Lost();
                 break;

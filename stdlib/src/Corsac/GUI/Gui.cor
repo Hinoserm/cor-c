@@ -170,6 +170,22 @@ enum SeatIoctl : long
     // seat answers with the tree's Command (seataccelerators.cor).
     MenuEnd = 0x47550202,
     MenuKeys = 0x47550206,
+    KeyboardList = 0x47550101,
+    KeyboardInstalled = 0x47550102,
+    KeyboardName = 0x47550103,
+    KeyboardActive = 0x47550104,
+    KeyboardActivate = 0x47550105,
+    KeyboardLoad = 0x47550106,
+    KeyboardUnload = 0x47550107,
+    KeyboardDefault = 0x47550108,
+    KeyboardSetDefault = 0x47550109,
+    KeyboardKeyName = 0x4755010A,
+    KeyboardMapKey = 0x4755010B,
+    KeyboardAttributes = 0x4755010C,
+    KeyboardSetAttributes = 0x4755010D,
+    KeyboardHotKey = 0x4755010E,
+    KeyboardSetHotKey = 0x4755010F,
+    KeyboardHandle = 0x47550110,
 }
 
 public class Seat : IDrawingTarget, IFontStore, ISystemTheme
@@ -1172,6 +1188,128 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme
     }
 
     static void PutWord(byte[] b, int at, long v) { b[at] = (byte)v; b[at + 1] = (byte)(v >> 8); b[at + 2] = (byte)(v >> 16); b[at + 3] = (byte)(v >> 24); }
+
+    // ---- keyboard layouts -----------------------------------------------------
+    //
+    // THE GUI KERNEL'S (os/gui/keyboardstore.cor): every layout the machine
+    // has, the user's (the default first), and each thread's active one,
+    // each named by its KLID -- Windows' number, 0x00000407 for German, the
+    // language in the low word. The seat types a thread's keys through its
+    // active layout: a Key event's character is the first it types, and a
+    // dead key or the rest of a ligature come as KeyChar (101), its B 1 for
+    // a dead key waiting. The language hot key sends the focus's thread
+    // InputLanguageRequest (102: A the step -- 2 forward, 4 backward, 0 the
+    // default --, B the KLID it would be), which it answers with
+    // ActivateKeyboardLayout or does not; a thread whose layout changed is
+    // sent InputLanguageChanged (103: A the KLID, B the one before).
+
+    /// The event kinds the keyboard layouts send.
+    public const int KeyChar = 101, InputLanguageRequest = 102, InputLanguageChanged = 103;
+
+    /// An answer that is a KLID or an HKL: all 32 bits, or -1 for an error.
+    static long Unsigned(long answer) { return answer < 0 && answer > -4096 ? -1 : answer & 0xFFFFFFFF; }
+
+    long[] KlidList(SeatIoctl request)
+    {
+        byte[] args = new byte[8];
+        long count = Ioctl(request, Sys.ArrayData(args));
+        while (count > 0)
+        {
+            byte[] list = new byte[(int)count * 4];
+            PutWord(args, 0, Sys.ArrayData(list)); PutWord(args, 4, count);
+            long again = Ioctl(request, Sys.ArrayData(args));
+            GC.KeepAlive(list);
+            if (again == count)
+            {
+                long[] made = new long[(int)count];
+                for (int i = 0; i < made.Length; i++) made[i] = (long)BitConverter.ToUInt32(list, i * 4);
+                return made;
+            }
+            count = again;
+        }
+        return new long[0];
+    }
+
+    /// The user's layouts, in their order (Windows' GetKeyboardLayoutList).
+    public long[] KeyboardLayouts() { return KlidList(SeatIoctl.KeyboardList); }
+
+    /// Every layout the machine has.
+    public long[] InstalledKeyboardLayouts() { return KlidList(SeatIoctl.KeyboardInstalled); }
+
+    /// A text the seat answers into a buffer of UTF-16 units: asked once
+    /// for its length, then again with room for it.
+    string? AskText(SeatIoctl request, long first)
+    {
+        byte[] args = new byte[12];
+        PutWord(args, 0, first);
+        long length = Ioctl(request, Sys.ArrayData(args));
+        if (length < 0) return null;
+        if (length == 0) return "";
+        byte[] text = new byte[(int)length * 2];
+        PutWord(args, 4, Sys.ArrayData(text)); PutWord(args, 8, length);
+        long again = Ioctl(request, Sys.ArrayData(args));
+        GC.KeepAlive(text);
+        return again == length ? System.Text.Encoding.Unicode.GetString(text, 0, text.Length) : null;
+    }
+
+    /// A layout's name, as setup names it ("German"); null for none.
+    public string? KeyboardLayoutName(long klid) { return AskText(SeatIoctl.KeyboardName, klid); }
+
+    /// The calling thread's layout.
+    public long ActiveKeyboardLayout() { return Unsigned(Ioctl(SeatIoctl.KeyboardActive, 0)); }
+
+    /// The calling thread's layout made `klid`, one of the user's -- or 0
+    /// the one before and 1 the next: the layout it had, or -1 for one the
+    /// user does not have. The thread is sent InputLanguageChanged.
+    public long ActivateKeyboardLayout(long klid) { return Unsigned(Ioctl(SeatIoctl.KeyboardActivate, klid & 0xFFFFFFFF)); }
+
+    /// A layout the machine has added to the user's -- kept in their
+    /// setting with `keep`, made this thread's with `activate` --: its KLID,
+    /// or -1 for none.
+    public long LoadKeyboardLayout(long klid, bool keep, bool activate)
+    {
+        return Unsigned(Ioctl(SeatIoctl.KeyboardLoad, (klid & 0xFFFFFFFF) | (keep ? 0x100000000 : 0) | (activate ? 0x200000000 : 0)));
+    }
+
+    /// One of the user's taken away; never the default.
+    public bool UnloadKeyboardLayout(long klid, bool keep) { return Ioctl(SeatIoctl.KeyboardUnload, (klid & 0xFFFFFFFF) | (keep ? 0x100000000 : 0)) == 0; }
+
+    /// The layout a thread types with until it chooses.
+    public long DefaultKeyboardLayout() { return Unsigned(Ioctl(SeatIoctl.KeyboardDefault, 0)); }
+
+    public bool SetDefaultKeyboardLayout(long klid, bool keep) { return Ioctl(SeatIoctl.KeyboardSetDefault, (klid & 0xFFFFFFFF) | (keep ? 0x100000000 : 0)) == 0; }
+
+    /// The HKL Windows gives a layout; -1 for none.
+    public long KeyboardLayoutHandle(long klid) { return Unsigned(Ioctl(SeatIoctl.KeyboardHandle, klid & 0xFFFFFFFF)); }
+
+    /// A key's name on this thread's layout, as Windows' GetKeyNameText
+    /// takes its lParam: the scan code in bits 16-23, extended in 24.
+    public string? KeyName(long lParam) { return AskText(SeatIoctl.KeyboardKeyName, lParam & 0xFFFFFFFF); }
+
+    /// MapVirtualKey on this thread's layout: type 0 a virtual key's scan
+    /// code, 1 a scan code's virtual key (3 keeping left and right apart),
+    /// 2 a virtual key's character (bit 31 for a dead key).
+    public long MapVirtualKey(long code, int type) { return Unsigned(Ioctl(SeatIoctl.KeyboardMapKey, (code & 0xFFFFFFFF) | ((long)(type & 3) << 32))); }
+
+    /// VkKeyScan on this thread's layout: the virtual key that types `ch`,
+    /// the shift state (1 Shift, 2 Ctrl, 4 Alt) above it; -1 for none.
+    public int VkKeyScan(char ch) { long r = Ioctl(SeatIoctl.KeyboardMapKey, ch | (4L << 32)); return r < 0 || r == 0xFFFF ? -1 : (int)r; }
+
+    /// Whether caps lock is a shift lock for every layout -- Windows'
+    /// "press SHIFT to turn off Caps Lock" -- and setting it.
+    public bool ShiftLock
+    {
+        get { return (Ioctl(SeatIoctl.KeyboardAttributes, 0) & 0x10000) != 0; }
+        set { Ioctl(SeatIoctl.KeyboardSetAttributes, value ? 0x10000 : 0); }
+    }
+
+    /// The language hot key, as Windows numbers it: 1 Left Alt+Shift, 2
+    /// Ctrl+Shift, 3 none.
+    public int LanguageHotKey
+    {
+        get { return (int)Ioctl(SeatIoctl.KeyboardHotKey, 0); }
+        set { Ioctl(SeatIoctl.KeyboardSetHotKey, value); }
+    }
 
     /// Put the pointer somewhere, as moving the mouse would: SetCursorPos.
     public void MoveCursorTo(int x, int y) { Ioctl(SeatIoctl.CursorTo, (x & 0xFFFF) | ((y & 0xFFFF) << 16)); }
