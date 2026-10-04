@@ -573,12 +573,16 @@ static class Gc
         {
             return;
         }
-        // COMMITTED ON FIRST TOUCH (Platform.MapLazy): a card is a byte for
-        // every kilobyte of the address space, and only the heap's are read.
+        // THE CARDS COMMITTED ON FIRST TOUCH (Platform.MapLazy): a card is a
+        // byte for every kilobyte of the address space, and only the heap's
+        // are ever read or written. The held-block tables are not: a single
+        // collection may write the whole of one, in bursts no page fault
+        // should have to keep up with (a kernel's lazy faults take frames set
+        // aside beforehand), and they are a sixteenth of the cards' size.
         long cards = Platform.MapLazy(CardTableBytes);
         long taken = Platform.MapLazy(CardTableBytes);
-        long held = Platform.MapLazy(HeldBytes);
-        long holding = Platform.MapLazy(HeldBytes);
+        long held = Platform.Map(HeldBytes);
+        long holding = Platform.Map(HeldBytes);
         if (cards == 0 || taken == 0 || held == 0 || holding == 0)
         {
             if (cards != 0) Platform.Unmap(cards, CardTableBytes);

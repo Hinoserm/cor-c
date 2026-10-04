@@ -1013,14 +1013,39 @@ public sealed partial class Binder
             {
                 if (_r.Calls.TryGetValue(call, out MethodSymbol? callee) && !ReferenceEquals(callee, m))
                 {
-                    string label = Corsac.Lang.Lower.Lowering.Label(callee);
+                    string label = DefinitionName(callee);
                     if (seen.Add(label)) calls.Add(label);
                 }
             }
-            made.Add(new Corsac.Lang.Lto.InterruptNotes.Fact(Corsac.Lang.Lower.Lowering.Label(m), $"{m.Owner.Name}.{m.Name}",
+            made.Add(new Corsac.Lang.Lto.InterruptNotes.Fact(DefinitionName(m), $"{m.Owner.Name}.{m.Name}",
                 IsInterruptHandler(m), allocates, calls.ToArray()));
         }
         return made;
+    }
+
+    /// <summary>
+    /// A method's name as its DEFINITION is known in every unit, whatever
+    /// copy of it a unit binds: the owner's key with any type arguments taken
+    /// out and its arity written instead, the method's name and arity, and
+    /// its parameters as the declaration writes them. The emitted label
+    /// spells a specialisation's arguments out, so a call to `List<long>.Add`
+    /// in one unit and the shared code of `List<T>.Add` in another would not
+    /// meet by it; by this they do. A method no declaration wrote is known
+    /// by its label.
+    /// </summary>
+    private static string DefinitionName(MethodSymbol m)
+    {
+        if (m.Decl is not MethodDecl d) return Corsac.Lang.Lower.Lowering.Label(m);
+        System.Text.StringBuilder owner = new();
+        int depth = 0;
+        foreach (char c in m.Owner.Key)
+        {
+            if (c == '<') { depth++; continue; }
+            if (c == '>') { if (depth > 0) depth--; continue; }
+            if (depth == 0) owner.Append(c);
+        }
+        int ownerArity = m.Owner.Decl?.TypeParams.Count ?? 0;
+        return $"{owner}`{ownerArity}.{m.Name}`{d.TypeParams.Count}({string.Join(",", d.Params.Select(p => (p.IsRef || p.IsOut ? "ref " : "") + p.Type))})";
     }
 
     /// <summary>The first allocation a method makes, itself or in what it calls directly with a body in this unit.</summary>
