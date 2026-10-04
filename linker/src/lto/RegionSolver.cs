@@ -77,7 +77,8 @@ public static class RegionSolver
     /// </summary>
     public static RegionFacts?[]? Solve(IReadOnlyList<RegionHints> units, Dictionary<string, string[]> virtuals,
         Func<string, long, string?> methodAt, string entry, IReadOnlySet<string> foreign, string? report, Func<int, string, bool>? live = null,
-        Func<string, long, long?, bool>? noReference = null, bool loops = false, Func<string, string, bool?>? isA = null)
+        Func<string, long, long?, bool>? noReference = null, bool loops = false, Func<string, string, bool?>? isA = null,
+        Func<string, IReadOnlyCollection<long>?>? slotsOf = null)
     {
         // CONTEXTS AS FAR AS THE BUDGET GOES: two objects deep, then one, then none
         // at all -- every function one copy, coarser but far smaller.
@@ -90,18 +91,18 @@ public static class RegionSolver
         // still the deepest that fits; the coarse one is kept, not made again.
         if (!Switches.AndersenRegions)
         {
-            Solver graphs = new(units, virtuals, methodAt, entry, foreign, report, live, 0, noReference) { LoopRegions = loops, Graphs = true, IsA = isA };
+            Solver graphs = new(units, virtuals, methodAt, entry, foreign, report, live, 0, noReference) { LoopRegions = loops, Graphs = true, IsA = isA, SlotsOf = slotsOf };
             if (graphs.Run() is { } found) return found;
             Console.Error.WriteLine("regions: nothing made a region");
             return null;
         }
-        Solver coarse = new(units, virtuals, methodAt, entry, foreign, report, live, 0, noReference) { LoopRegions = loops };
+        Solver coarse = new(units, virtuals, methodAt, entry, foreign, report, live, 0, noReference) { LoopRegions = loops, SlotsOf = slotsOf };
         RegionFacts?[]? coarseFacts = coarse.Run();
         if (coarseFacts is not null || !coarse.TooBig)
         {
             foreach (int depth in new[] { 2, 1 })
             {
-                Solver solver = new(units, virtuals, methodAt, entry, foreign, report, live, depth, noReference) { LoopRegions = loops };
+                Solver solver = new(units, virtuals, methodAt, entry, foreign, report, live, depth, noReference) { LoopRegions = loops, SlotsOf = slotsOf };
                 if (solver.Run() is { } facts) return facts;
                 if (!solver.TooBig) { coarseFacts = null; break; }
             }
@@ -725,22 +726,69 @@ public static class RegionSolver
         /// node's emitted instruction -- was everyone's, and no region took it.
         /// Rooted so, a function is rooted as a body too: any copy of a body
         /// rooted roots it (RegionEscape's bodies).
+        ///
+        /// ONLY THE METHODS HELD AT A SLOT SUCH A CALL READS: a function that
+        /// calls a method it read out of a descriptor says where in the
+        /// method table it read it (RegionFunction.BlindSlots), and a method
+        /// that only descriptors name is reached so only if some descriptor
+        /// holds it at one of those offsets (SlotsOf). Every method, where a
+        /// virtual call is unresolved, a read's offset is not known, a unit
+        /// says it calls one blind but no function of it does (hints older
+        /// than the mark), or the link cannot say where methods are held.
+        /// Rooted for a blind call that reads one slot, every MoveNext,
+        /// Current, Dispose and closure Invoke was called with anything, and
+        /// all each made and stored into its object was everyone's.
         /// </summary>
         private IEnumerable<string> Addressed(int u)
         {
-            _methodsBlind ??= _units.Any(unit => unit.CallsThroughMethods) || AnyUnresolvedVirtual();
+            Blindness();
             if (_report is not null && !_saidBlind)
             {
                 _saidBlind = true;
-                if (_methodsBlind.Value)
-                    Log("methods are called blind: " + (_units.Any(unit => unit.CallsThroughMethods) ? "a unit calls a method it read from a descriptor" : "a virtual call is unresolved"));
+                if (_methodsBlind!.Value)
+                    Log("methods are called blind: " + (_units.Any(unit => unit.CallsThroughMethods) ? "a unit calls a method it read from a descriptor" : "a virtual call is unresolved")
+                        + (_blindAll ? ", at any slot" : ", at slots " + string.Join(",", _blindSlots!.Order())));
                 ReportBlind();
             }
-            return _methodsBlind.Value ? _units[u].AddressTaken.Concat(_units[u].MethodsTaken) : _units[u].AddressTaken;
+            return _methodsBlind!.Value ? _units[u].AddressTaken.Concat(_units[u].MethodsTaken.Where(CalledBlind)) : _units[u].AddressTaken;
         }
+
+        /// <summary>Where each method is held in a method table (VirtualTargets.SlotsOf); null: every method may be called blind.</summary>
+        public Func<string, IReadOnlyCollection<long>?>? SlotsOf { get; init; }
 
         private bool? _methodsBlind;
         private bool _saidBlind;
+        // The slots methods are read at to be called blind; every one (_blindAll).
+        private HashSet<long>? _blindSlots;
+        private bool _blindAll;
+
+        private void Blindness()
+        {
+            if (_methodsBlind is not null) return;
+            bool through = _units.Any(unit => unit.CallsThroughMethods);
+            bool unresolved = AnyUnresolvedVirtual();
+            _methodsBlind = through || unresolved;
+            _blindAll = unresolved || SlotsOf is null;
+            if (_blindAll || !through) return;
+            _blindSlots = new();
+            foreach (RegionHints unit in _units)
+            {
+                if (!unit.CallsThroughMethods) continue;
+                bool said = false;
+                foreach (RegionFunction function in unit.Functions)
+                {
+                    if (!function.CallsThroughMethod) continue;
+                    said = true;
+                    if (function.BlindSlots.Length == 0 || function.BlindSlots.Contains(RegionConstraint.Any)) { _blindAll = true; return; }
+                    _blindSlots.UnionWith(function.BlindSlots);
+                }
+                if (!said) { _blindAll = true; return; }
+            }
+        }
+
+        // Whether a method only descriptors name may be called blind.
+        private bool CalledBlind(string method)
+            => _blindAll || SlotsOf!(method) is not { } slots || slots.Any(_blindSlots!.Contains);
 
         // Whether some virtual call's targets the link cannot say (GraphTargets' rule).
         private bool AnyUnresolvedVirtual() => Unresolved(stopAtFirst: true).Count > 0;

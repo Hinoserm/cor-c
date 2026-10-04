@@ -185,6 +185,19 @@ public static class VirtualTargets
     public static Made MadeIn(List<(string Name, ObjectFile Object)> inputs, IEnumerable<IrArchive> archives)
         => IndexOf(inputs).MadeTypes(archives);
 
+    /// <summary>
+    /// WHERE EACH METHOD IS HELD IN A METHOD TABLE: for every function some
+    /// descriptor's slot names, each offset from where a method table begins
+    /// (every base objects are stamped with) it lies at in any descriptor;
+    /// null for one no descriptor holds. What a call that read its method out
+    /// of a descriptor at one of those offsets may run (RegionSolver.Addressed).
+    /// </summary>
+    public static Func<string, IReadOnlyCollection<long>?> SlotsOf(List<(string Name, ObjectFile Object)> inputs)
+    {
+        Dictionary<string, HashSet<long>> slots = IndexOf(inputs).Slots();
+        return method => slots.TryGetValue(method, out HashSet<long>? found) ? found : null;
+    }
+
     // ONE INDEX A LINK: the descriptors, the functions and the method-table
     // offsets read from the objects once, for every question the link asks
     // of them (its virtual calls, then the catches' ancestry).
@@ -384,6 +397,26 @@ public static class VirtualTargets
                         if (IsDescriptor(named) && (function || named != own)) made.Descriptors.Add(named);
                 }
             return _made = made;
+        }
+
+        private Dictionary<string, HashSet<long>>? _slots;
+
+        public Dictionary<string, HashSet<long>> Slots()
+        {
+            if (_slots is not null) return _slots;
+            Dictionary<string, HashSet<long>> slots = new(StringComparer.Ordinal);
+            for (int d = 0; d < _descriptors.Count; d++)
+                foreach (var (offset, symbol, addend) in Relocs(d))
+                {
+                    if (addend != 0 || offset < DescriptorWords * _word || !_functions.Contains(symbol)) continue;
+                    foreach (long b in _bases)
+                        if (offset >= b)
+                        {
+                            if (!slots.TryGetValue(symbol, out HashSet<long>? at)) slots[symbol] = at = new();
+                            at.Add(offset - b);
+                        }
+                }
+            return _slots = slots;
         }
 
         private IEnumerable<string> TableEntries(string table)
