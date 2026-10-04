@@ -1,0 +1,105 @@
+// test: pattern_variable_scope_in_embedded_statement
+// expect-exit: 0
+// expect-output:
+// runs 2 -1 8 -2
+// int5. +textab INT3?
+// loops 140
+// usings 212
+// leak 44 -1
+// lambdas 4 5
+//
+// AN EMBEDDED STATEMENT IS A SCOPE OF ITS OWN, braces or not. What an
+// expression in the then or else of an if, or the body of a while, do, for
+// or foreach, declares -- a pattern's name, an `out var` -- is that
+// statement's alone, so a statement beside it may declare the same name
+// again. What an if's condition declares belongs to the scope the if is in,
+// and is seen after it; a do's condition, to the do. The compiler read the
+// names in a braceless then into the enclosing block, and refused the
+// escape engine's own RunsOn: "'runs' is already declared in an enclosing
+// or nested local scope".
+
+using System;
+using System.Collections.Generic;
+
+sealed class Res : IDisposable
+{
+    public static int Disposed;
+    public int Value = 7;
+    public void Dispose() { Disposed++; }
+}
+
+static class P
+{
+    static int[]? Lookup(int key) => key % 2 == 0 ? new[] { key, key + 1 } : null;
+
+    // The shape that stopped the compiler building itself (RegionEscape.RunsOn).
+    static int Runs(Dictionary<int, List<int>> copiesOf, int f)
+    {
+        if (!copiesOf.TryGetValue(f, out List<int>? copies)) return Lookup(f) is { } runs ? runs.Length : -1;
+        int total = 0;
+        foreach (int copy in copies)
+        {
+            if (Lookup(copy) is not { } runs) return -2;
+            total += runs[0];
+        }
+        return total + copies.Count;
+    }
+
+    // A then's and an else's names, each its own: the same name beside.
+    static string Embedded(object o, bool flag)
+    {
+        string said = "";
+        if (flag) said += o is int k ? "int" + k : "-";
+        if (!flag) said += o is int k ? "INT" + k : "+";
+        if (flag) said += "."; else said += o is string k ? "text" + k : "?";
+        return said;
+    }
+
+    // Every loop's body, and two do conditions, naming the same thing.
+    static int Loops(int[] values)
+    {
+        int sum = 0, i = 0;
+        while (i < values.Length) sum += Lookup(values[i++]) is { } w ? w[1] : 0;
+        for (int j = 0; j < values.Length; j++) sum += Lookup(values[j]) is { } w ? w[0] : 100;
+        foreach (int v in values) sum += Lookup(v) is { } w ? 1 : 0;
+        int d = 0;
+        do sum += Lookup(d) is { } w ? w.Length : 0; while (++d < 2);
+        int e = 0;
+        do e++; while (Lookup(e) is not { } got);
+        int f = 0;
+        do f += 2; while (Lookup(f + 1) is { } got && got.Length > 5);
+        return sum + e * 10 + f;
+    }
+
+    // A using's body, braceless, twice.
+    static int Usings()
+    {
+        int got = 0;
+        using (Res r = new()) got += r.Value is int u ? u : 0;
+        using (Res r = new()) got += r.Value is int u ? u * 2 : 0;
+        return got * 10 + Res.Disposed;
+    }
+
+    // An if's condition declares into the scope the if is in: seen after it.
+    static int Leak(string s)
+    {
+        if (!int.TryParse(s, out int parsed)) return -1;
+        return parsed + s.Length;
+    }
+
+    static int Main()
+    {
+        Dictionary<int, List<int>> copiesOf = new();
+        copiesOf.Add(5, new List<int> { 2, 4 });
+        copiesOf.Add(7, new List<int> { 2, 3 });
+        Console.WriteLine("runs " + Runs(copiesOf, 2) + " " + Runs(copiesOf, 3) + " " + Runs(copiesOf, 5) + " " + Runs(copiesOf, 7));
+        Console.WriteLine(Embedded(5, true) + " " + Embedded("ab", false) + " " + Embedded(3, false));
+        Console.WriteLine("loops " + Loops(new[] { 2, 3, 4 }));
+        Console.WriteLine("usings " + Usings());
+        Console.WriteLine("leak " + Leak("42") + " " + Leak("x"));
+        Func<object, int> a = o => o is int q ? q : 0;
+        Func<object, int> b = o => o is int q ? q + 1 : 1;
+        Console.WriteLine("lambdas " + a(4) + " " + b(4));
+        return 0;
+    }
+}
