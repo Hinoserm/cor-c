@@ -1,0 +1,191 @@
+// The other unit of 1291_region_captured_cell_freed_with_its_frame_across_units:
+// the compiler's peephole copy forwarding (Peephole.FindCopy, ForwardCopy)
+// over its own instruction shapes, as written there. ForwardCopy's pattern
+// variable `a` is captured by the lambda it hands Any, so every call makes
+// a captured-variable cell for it, owned through a field of the call's
+// frame object, and given back with it when the call returns -- the early
+// returns before the lambda is ever made as well.
+
+using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.CompilerServices;
+
+public enum Gpr { Eax, Ecx, Edx, Ebx, Esp, Ebp, Esi, Edi }
+
+public enum MOp { Mov, Add, Div, Xchg, CallKeep }
+
+public abstract class MOperand { }
+
+public sealed class MReg : MOperand
+{
+    public readonly int Id;
+    public MReg(int id) { Id = id; }
+    public static MReg Of(Gpr g) => new((int)g);
+}
+
+public sealed class MImm : MOperand
+{
+    public readonly long Value;
+    public MImm(long value) { Value = value; }
+}
+
+public sealed class MMem : MOperand
+{
+    public MReg? Base { get; init; }
+    public MReg? Index { get; init; }
+    public int Disp { get; init; }
+    public MMem(MReg? b, int disp) { Base = b; Disp = disp; }
+}
+
+public sealed class MInstr
+{
+    public MOp Op { get; init; }
+    public List<MOperand> Operands { get; } = new();
+    public int Width { get; init; } = 4;
+
+    public MInstr(MOp op, params MOperand[] operands)
+    {
+        Op = op;
+        Operands.AddRange(operands);
+    }
+}
+
+public static class Roles
+{
+    public enum Role { Use, Def, UseDef }
+
+    private static readonly Gpr[] Gpr_ImplicitUses0 = { Gpr.Eax, Gpr.Edx };
+    private static readonly Gpr[] None = { };
+
+    /// <summary>Registers an instruction reads without naming them.</summary>
+    public static Gpr[] ImplicitUses(MInstr i)
+    {
+        switch (i.Op)
+        {
+            case MOp.Div:
+                return Gpr_ImplicitUses0;
+            default:
+                return None;
+        }
+    }
+
+    public static Role Of(MOp op, int operand) => op switch
+    {
+        MOp.Mov => operand == 0 ? Role.Def : Role.Use,
+        MOp.Add => operand == 0 ? Role.UseDef : Role.Use,
+        _ => Role.Use,
+    };
+}
+
+public static class Peephole
+{
+    /// Copies forwarded into the instructions after them, and removed: how many.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int Run(List<MInstr> instrs, HashSet<int> deadAfter)
+    {
+        int removed = 0;
+        for (int k = 1; k < instrs.Count; k++)
+        {
+            int j = FindCopy(instrs, k, deadAfter);
+            if (j >= 0)
+            {
+                instrs.RemoveAt(j);
+                removed++;
+                k--;
+            }
+        }
+        return removed;
+    }
+
+    private static bool IsMov(MInstr i) => i.Op == MOp.Mov;
+
+    private static bool Understood(MInstr i) => i.Op != MOp.CallKeep;
+
+    private static long Bit(int id) => 1L << (id & 63);
+
+    private static void Masks(MInstr i, out long reads, out long writes)
+    {
+        reads = 0;
+        writes = 0;
+        foreach (MOperand o in i.Operands)
+            if (o is MReg r) reads |= Bit(r.Id);
+    }
+
+    private static bool FixedByEncoding(MOp op, int operand) => false;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static int FindCopy(List<MInstr> instrs, int k, HashSet<int> deadAfter)
+    {
+        long touched = 0;
+        for (int j = k - 1; j >= 0 && j >= k - 6; j--)
+        {
+            MInstr c = instrs[j];
+            if (IsMov(c) && c.Operands[0] is MReg a && c.Operands[1] is MReg b
+                && (touched & Bit(a.Id)) == 0 && (touched & Bit(b.Id)) == 0)
+            {
+                return ForwardCopy(c, instrs[k], deadAfter) ? j : -1;
+            }
+            if (!Understood(c))
+            {
+                return -1;
+            }
+            Masks(c, out long reads, out long writes);
+            touched |= reads | writes;
+        }
+        return -1;
+    }
+
+    /// As the compiler's: `a` is captured by the lambda below, so its cell
+    /// is made as the call begins and freed with the call's frame object on
+    /// every return, the early ones first among them.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool ForwardCopy(MInstr copy, MInstr user, HashSet<int> deadAfter)
+    {
+        if (!IsMov(copy) || copy.Operands[0] is not MReg a || copy.Operands[1] is not MReg b || a.Id == b.Id
+            || !deadAfter.Contains(a.Id) || !Understood(user) || user.Op is MOp.Xchg or MOp.CallKeep)
+        {
+            return false;
+        }
+        bool reads = false;
+        for (int k = 0; k < user.Operands.Count; k++)
+        {
+            switch (user.Operands[k])
+            {
+                case MReg r when r.Id == a.Id:
+                    if (Roles.Of(user.Op, k) != Roles.Role.Use || FixedByEncoding(user.Op, k))
+                    {
+                        return false;
+                    }
+                    reads = true;
+                    break;
+                case MMem m when m.Base?.Id == a.Id || m.Index?.Id == a.Id:
+                    reads = true;
+                    break;
+            }
+        }
+        if (!reads || Roles.ImplicitUses(user).Any(g => (int)g == a.Id))
+        {
+            return false;
+        }
+        if (user.Width == 1 && b.Id > (int)Gpr.Ebx)
+        {
+            return false;
+        }
+        for (int k = 0; k < user.Operands.Count; k++)
+        {
+            switch (user.Operands[k])
+            {
+                case MReg r when r.Id == a.Id:
+                    user.Operands[k] = new MReg(b.Id);
+                    break;
+                case MMem m when m.Base?.Id == a.Id || m.Index?.Id == a.Id:
+                    user.Operands[k] = new MMem(m.Base?.Id == a.Id ? new MReg(b.Id) : m.Base, m.Disp)
+                    {
+                        Index = m.Index?.Id == a.Id ? new MReg(b.Id) : m.Index,
+                    };
+                    break;
+            }
+        }
+        return true;
+    }
+}

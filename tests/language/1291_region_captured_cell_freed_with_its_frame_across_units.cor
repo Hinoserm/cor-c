@@ -1,0 +1,89 @@
+// test: region_captured_cell_freed_with_its_frame_across_units
+// units: tests/language/support/1291_region_captured_cell_units.cor
+// expect-exit: 0
+// expect-output:
+// removed 80000
+// weight 22640000
+//
+// The compiler's peephole copy forwarding, as written there: ForwardCopy
+// captures its pattern variable `a` in the lambda it hands Any, so each call
+// makes a captured-variable cell, owned through a field (offset 8) of the
+// call's frame object and freed with it when the call returns -- early, on
+// most calls, before the lambda is made. Nothing keeps the cell, so its site
+// is taken into ForwardCopy's region. The cell is a block of no type: the
+// owned-field free handed it to FreeHeld, which, finding it in the thread's
+// region, read the MReg it holds as the cell's type, and the self-hosted
+// compiler faulted in Runtime.FreeOwnedFields once its region arena grew
+// instead of sending such cells to the heap.
+//
+// Each round's ten instructions after forwarding (s = 8 * (round % 4)):
+// two copies go, into `add d, a1` and `div a2`; `mov edx, b3` stays, as div
+// reads EDX by itself (the lambda, true); `mov a4, a4` stays (an early
+// return), as do `mov a5, 7` (no register source) and `mov a6, b6` (a6 not
+// dead after). Weight, every register's number and immediate's value:
+// 386 + 15 s a round; over 40000 rounds, 40000 * 386 + 15 * 480000.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    static MReg R(int id) => new(id);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static List<MInstr> Program(int s)
+    {
+        MReg edx = MReg.Of(Gpr.Edx);
+        return new List<MInstr>
+        {
+            new MInstr(MOp.Mov, R(20 + s), R(21 + s)),
+            new MInstr(MOp.Add, R(22 + s), R(20 + s)),
+            new MInstr(MOp.Mov, R(23 + s), R(24 + s)),
+            new MInstr(MOp.Div, R(23 + s)),
+            new MInstr(MOp.Mov, edx, R(25 + s)),
+            new MInstr(MOp.Div, MReg.Of(Gpr.Edx)),
+            new MInstr(MOp.Mov, R(26 + s), R(26 + s)),
+            new MInstr(MOp.Add, R(22 + s), R(26 + s)),
+            new MInstr(MOp.Mov, R(27 + s), new MImm(7)),
+            new MInstr(MOp.Add, R(22 + s), R(27 + s)),
+            new MInstr(MOp.Mov, R(28 + s), R(29 + s)),
+            new MInstr(MOp.Add, R(22 + s), R(28 + s)),
+        };
+    }
+
+    // One round: a program, its dead registers, the pass, the weight left.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Round(int round, ref long removed)
+    {
+        int s = 8 * (round % 4);
+        List<MInstr> instrs = Program(s);
+        HashSet<int> deadAfter = new() { 20 + s, 23 + s, (int)Gpr.Edx, 26 + s, 27 + s };
+        removed += Peephole.Run(instrs, deadAfter);
+        long weight = 0;
+        foreach (MInstr i in instrs)
+            foreach (MOperand o in i.Operands)
+                weight += o is MReg r ? r.Id : o is MImm imm ? imm.Value : 1000000;
+        return weight;
+    }
+
+    // Not Main itself: what the entry calls is never a boundary.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Run()
+    {
+        long removed = 0, weight = 0;
+        for (int round = 0; round < 40000; round++)
+        {
+            weight += Round(round, ref removed);
+            if (round % 4000 == 3999) GC.Collect();
+        }
+        Console.WriteLine("removed " + removed);
+        Console.WriteLine("weight " + weight);
+    }
+
+    static int Main()
+    {
+        Run();
+        return 0;
+    }
+}
