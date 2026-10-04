@@ -5518,6 +5518,16 @@ public sealed class Parser
             return true;
         }
 
+        // A '<' after the name opens its type arguments: a constant is never
+        // followed by one (a relational pattern begins with it instead), so
+        // `o is System.Collections.Generic.List<int>` is a generic type, with
+        // or without a binding after the '>'. Read as a constant, its first
+        // segment was looked up as a variable: "'System' is not declared".
+        if (j + 1 < _t.Count && _t[j + 1].Kind == Tok.Lt)
+        {
+            return true;
+        }
+
         return j + 1 < _t.Count && _t[j + 1].Kind == Tok.Ident
             && _t[j + 1].Text is not ("or" or "and" or "when");
     }
