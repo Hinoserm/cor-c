@@ -193,8 +193,19 @@ public sealed class UnitBackend : IUnitBackend
             // And the functions the whole program found fresh: inlined first,
             // their results would be branches and no longer calls the rules
             // can recognise.
-            string[] allocators = facts is null ? Array.Empty<string>()
-                : facts.Fresh.Append(Escape.Allocator).Append(Escape.LeafAllocator).Append(Escape.ObjectAllocator).Order(StringComparer.Ordinal).ToArray();
+            // AND AN ARRAY GROWN WHERE IT IS (Runtime.GrowInPlace) a call through
+            // every inliner here, as the unit's own inliners keep it: the
+            // lifetime rules (Escape.IsCollectorNote) and the region passes
+            // after them (MakeSitesInRegion, MakeStorageBeside) know it by
+            // name as a call that keeps nothing. Its body inlined by the
+            // link's inliner -- which, unlike the unit's, pinned nothing but
+            // the allocators -- handed List's storage to Gc.RegionGrow before
+            // RunAtLink saw it, as the unit's inliner did before 0847b27.
+            // No inliner runs after those passes here, so it stays a call.
+            string[] growers = { Corsac.Lang.Lto.RuntimeAbi.GrowInPlace };
+            string[] allocators = facts is null ? growers
+                : facts.Fresh.Append(Escape.Allocator).Append(Escape.LeafAllocator).Append(Escape.ObjectAllocator)
+                    .Concat(growers).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
             new Inline { SmallBody = 40, GrowthLimit = 1024, ConstantBranchBody = 160, FreshOwnerBody = 0, Keep = allocators }.Run(local);
             cleanup.Run(local);
             // WHAT THE LINK'S INLINING PUT IN SIGHT, made direct: a consumer
@@ -221,7 +232,7 @@ public sealed class UnitBackend : IUnitBackend
                     taken = 0;
                 }
                 Interlocked.Add(ref _lifetimes, taken);
-                new Inline { SmallBody = 40, GrowthLimit = 1024, ConstantBranchBody = 160, FreshOwnerBody = 0 }.Run(local);
+                new Inline { SmallBody = 40, GrowthLimit = 1024, ConstantBranchBody = 160, FreshOwnerBody = 0, Keep = growers }.Run(local);
                 cleanup.Run(local);
                 // AND AGAIN OVER WHAT THAT INLINED: an imported body is the IR
                 // its unit archived before its own lifetime pass, so a block
@@ -239,7 +250,7 @@ public sealed class UnitBackend : IUnitBackend
                 if (more > 0)
                 {
                     Interlocked.Add(ref _lifetimes, more);
-                    new Inline { SmallBody = 40, GrowthLimit = 1024, ConstantBranchBody = 160, FreshOwnerBody = 0 }.Run(local);
+                    new Inline { SmallBody = 40, GrowthLimit = 1024, ConstantBranchBody = 160, FreshOwnerBody = 0, Keep = growers }.Run(local);
                     cleanup.Run(local);
                 }
             }
