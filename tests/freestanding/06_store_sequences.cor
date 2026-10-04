@@ -18,7 +18,7 @@
 // kernel never sends a thread out of -- and Store itself compares nothing (no CMP of Marking),
 // stores no reference and marks no card. Interlocked's exchange is the same:
 // __corsac_refxchg, with no test and no card of its own. Compiled and read, not run: the
-// gate is CORSAC's (07_store_sequences runs the sequences).
+// gate is CORSAC's (09_store_sequences_run runs the sequences).
 
 using System.Threading;
 
