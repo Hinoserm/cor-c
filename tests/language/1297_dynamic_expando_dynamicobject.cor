@@ -1,0 +1,92 @@
+// test: dynamic_expando_dynamicobject
+// expect-exit: 0
+// expect-output:
+// expando 4 42
+// Name
+// Size
+// Twice
+// 'System.Dynamic.ExpandoObject' does not contain a definition for 'Nope'
+// red no Shape
+// Paint(2)
+// Add 5
+// 99
+//
+// The two ways a value binds its own dynamic operations, as .NET has them:
+// an ExpandoObject's members made by assigning them (a number, a string, a
+// Func called as a member), read as the IDictionary it is, in the order they
+// were made, and a member never made the binder's error; and a
+// DynamicObject's overrides answering a read, a write, a call, an operator
+// and a conversion.
+
+using System;
+using System.Collections.Generic;
+using System.Dynamic;
+using Microsoft.CSharp.RuntimeBinder;
+
+class Bag : DynamicObject
+{
+    readonly Dictionary<string, object?> _held = new Dictionary<string, object?>();
+
+    public override bool TryGetMember(GetMemberBinder binder, out object? result)
+    {
+        if (_held.TryGetValue(binder.Name, out result)) return true;
+        result = "no " + binder.Name;
+        return true;
+    }
+
+    public override bool TrySetMember(SetMemberBinder binder, object? value)
+    {
+        _held[binder.Name] = value;
+        return true;
+    }
+
+    public override bool TryInvokeMember(InvokeMemberBinder binder, object?[]? args, out object? result)
+    {
+        result = binder.Name + "(" + (args == null ? 0 : args.Length) + ")";
+        return true;
+    }
+
+    public override bool TryBinaryOperation(BinaryOperationBinder binder, object arg, out object? result)
+    {
+        result = binder.Operation + " " + arg;
+        return true;
+    }
+
+    public override bool TryConvert(ConvertBinder binder, out object? result)
+    {
+        if (binder.Type == typeof(int))
+        {
+            result = 99;
+            return true;
+        }
+        result = null;
+        return false;
+    }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        dynamic e = new ExpandoObject();
+        e.Name = "expando";
+        e.Size = 3;
+        e.Size += 1;
+        Func<int, int> twice = x => x * 2;
+        e.Twice = twice;
+        Console.WriteLine(e.Name + " " + e.Size + " " + e.Twice(21));
+        IDictionary<string, object?> map = e;
+        foreach (KeyValuePair<string, object?> kv in map) Console.WriteLine(kv.Key);
+        try { Console.WriteLine(e.Nope); }
+        catch (RuntimeBinderException x) { Console.WriteLine(x.Message); }
+
+        dynamic b = new Bag();
+        b.Colour = "red";
+        Console.WriteLine(b.Colour + " " + b.Shape);
+        Console.WriteLine(b.Paint(1, 2));
+        Console.WriteLine(b + 5);
+        int n = b;
+        Console.WriteLine(n);
+        return 0;
+    }
+}

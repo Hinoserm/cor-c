@@ -1,0 +1,41 @@
+// test: dynamic_com_dispatch
+// expect-exit: 0
+// expect-output:
+// hello, world
+// CORSAC
+// 42
+// unknown 0x80020006
+//
+// `dynamic` over a COM object, late-bound through IDispatch as .NET's COM
+// binder does it: a [ComVisible] class's COM-callable wrapper, seen as a COM
+// object (System.__ComObject), its method called (DISPATCH_METHOD), its
+// property written (DISPATCH_PROPERTYPUT) and read (DISPATCH_PROPERTYGET),
+// and a name it does not have answered DISP_E_UNKNOWNNAME by GetIDsOfNames.
+
+using System;
+using System.Runtime.InteropServices;
+
+[ComVisible(true)]
+class Greeter
+{
+    string _who = "world";
+    public string Who { get { return _who; } set { _who = value; } }
+    public string Greet(string greeting) { return greeting + ", " + _who; }
+    public int Add(int a, int b) { return a + b; }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Greeter g = new Greeter();
+        dynamic com = Marshal.GetUniqueObjectForIUnknown(Marshal.GetIUnknownForObject(g));
+        Console.WriteLine(com.Greet("hello"));
+        com.Who = "CORSAC";
+        Console.WriteLine(com.Who);
+        Console.WriteLine(com.Add(40, 2));
+        try { com.Nope(); }
+        catch (COMException e) { Console.WriteLine("unknown 0x" + ((uint)e.HResult).ToString("X8")); }
+        return 0;
+    }
+}

@@ -408,7 +408,7 @@ public sealed class Monomorphiser
             return false;
         }
 
-        if (r.Name is "string" or "object" or CanonName || _byRef.Contains(r.Name))
+        if (r.Name is "string" or "object" or "dynamic" or CanonName || _byRef.Contains(r.Name))
         {
             return true;
         }
@@ -574,7 +574,7 @@ public sealed class Monomorphiser
             Canonicalise(t);
         }
 
-        CompilationUnit output = new() { Line = unit.Line, Col = unit.Col };
+        CompilationUnit output = new() { Line = unit.Line, Col = unit.Col, UsesDynamic = unit.UsesDynamic };
         output.Usings.AddRange(unit.Usings);
         output.TupleNamings.AddRange(unit.TupleNamings);
         output.RegistrySchemas.AddRange(unit.RegistrySchemas);

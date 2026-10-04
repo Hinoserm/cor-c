@@ -906,6 +906,7 @@ public sealed partial class Binder
     {
         Binder b = new(file, requireDeclaration, indexedInterfaces, requireExtensions, libraryInterfaces, requireOverrides, kernelInterfaces);
         b._freshOnly = freshOnly;
+        b._usesDynamic = unit.UsesDynamic;
         b.Run(unit);
         // The declarations' tables carry straight on into the bodies': a copy
         // of every one, the original then dropped, was a unit's whole binding
@@ -3822,6 +3823,10 @@ public sealed partial class Binder
             case "string": return Type.String;
             case "object": return Type.Any;
 
+            // C#'S `dynamic`: object, with its operations bound when the
+            // program runs (Type.Dynamic; Binder.Dynamic.cs).
+            case "dynamic": return Type.DynamicAny;
+
             // .NET'S NAMES FOR THE SAME TYPES, bare or with their namespace:
             // `string` is an alias for System.String and `int` for
             // System.Int32 (C# 8.2.1), so `String s` and `s is System.String`
@@ -4738,6 +4743,14 @@ public sealed partial class Binder
             {
                 Type seq = Peek(fe.Sequence);
 
+                // OVER A DYNAMIC VALUE: over what the binder enumerates of it.
+                if (LateForeach(fe, seq) is Stmt lateLoop)
+                {
+                    _r.Lowered[fe] = lateLoop;
+                    CheckStmt(lateLoop);
+                    break;
+                }
+
                 // ANYTHING BUT AN ARRAY IS REWRITTEN, which is what C# does to
                 // all of them: an array keeps its own loop here only because it
                 // has one already and it is the tighter code.
@@ -5134,6 +5147,12 @@ public sealed partial class Binder
     {
         Type t = CheckExpr(e);
 
+        // A DYNAMIC CONDITION: its operator true, asked when the program runs.
+        if (LateCondition(e, t))
+        {
+            return;
+        }
+
         if (!t.IsError && t.Prim != Prim.Bool)
         {
             // No truthiness. An integer is not a condition, and saying so is
@@ -5184,6 +5203,29 @@ public sealed partial class Binder
         if (from.IsError || to.IsError || Unmade(to))
         {
             return;
+        }
+
+        // DYNAMIC, EITHER WAY. From it to anything but object, the binder's
+        // implicit conversion at run time (Binder.Dynamic); to it, or from it
+        // to object, the identity conversion C# has between dynamic and
+        // object -- with no null check, dynamic being oblivious as C#'s is.
+        if (LateConversion(from, to, at))
+        {
+            return;
+        }
+        if (from.Dynamic)
+        {
+            from = Type.Any;
+        }
+        if (to.Dynamic)
+        {
+            // A DELEGATE MADE DYNAMIC is held so the binder can call it with
+            // objects (DynamicRuntime.Callable).
+            if (LateCallable(from, at))
+            {
+                return;
+            }
+            to = Type.Any.AsNullable();
         }
 
         // Method groups have the same contextual delegate conversion in
@@ -11171,6 +11213,12 @@ public sealed partial class Binder
             {
                 Type target = CheckExpr(ix.Target);
 
+                // AN ELEMENT OF A DYNAMIC VALUE, bound when the program runs.
+                if (_usesDynamic && target.Dynamic && !target.IsError && !target.IsArray)
+                {
+                    return LateIndex(ix);
+                }
+
                 // AN INDEXER, when the thing is not an array.
                 //
                 // `b[i]` becomes a call to get_Item, and `b[i] = v` a call to
@@ -11570,6 +11618,12 @@ public sealed partial class Binder
                     return Type.Error;
                 }
 
+                // AN OPERATOR ON A DYNAMIC VALUE, bound when the program runs.
+                if (_usesDynamic && LateUnary(u, t) is Type lateUnary)
+                {
+                    return lateUnary;
+                }
+
                 // A TYPE'S OWN OPERATOR (C# 12.9): `-v`, `~flags`, `!ok`,
                 // `+x` and `i++` on a struct or class that declares one.
                 if (UserUnary(u, t) is Type byOperator)
@@ -11874,6 +11928,13 @@ public sealed partial class Binder
                 else
                 {
                     target = targetPrechecked ? assignmentWanted! : CheckExpr(a.Target);
+
+                    // A STORE BOUND LATE: a dynamic value's member or element,
+                    // or a compound assignment to a dynamic variable.
+                    if (_usesDynamic && LateAssignment(a, target) is Type lateStore)
+                    {
+                        return lateStore;
+                    }
 
                     // A FIELD WRITTEN THROUGH SOMETHING READ-ONLY -- a `ref
                     // readonly` local's struct, an `in` struct, a ref readonly
@@ -12241,6 +12302,12 @@ public sealed partial class Binder
             {
                 Type operand = CheckExpr(cast.Operand);
                 Type wanted = Resolve(cast.Type, _thisType);
+
+                // A DYNAMIC VALUE CAST: the binder's explicit conversion.
+                if (LateCast(cast, operand, wanted) is Type lateCast)
+                {
+                    return lateCast;
+                }
 
                 // AN ARRAY OR A STRING CAST TO A SPAN IS MADE ONE, as its
                 // implicit conversion makes one where it is assigned: the cast
@@ -14644,6 +14711,13 @@ public sealed partial class Binder
             return Type.Error;
         }
 
+        // A MEMBER OF A DYNAMIC VALUE is bound when the program runs
+        // (Binder.Dynamic).
+        if (_usesDynamic && target.Dynamic && asType is null)
+        {
+            return LateMember(m);
+        }
+
         // THE SAME NAME AS A MEMBER AND AS A TYPE, which C# calls the
         // colour-colour rule: `Colour Colour { get; }` is legal, and
         // `Colour.Red` then has to mean the enum member rather than a member of
@@ -15957,6 +16031,13 @@ public sealed partial class Binder
             args[0] = _r.TypeOf(movedReceiver);
         }
 
+        // A CALL OF A DYNAMIC VALUE'S MEMBER, or of a dynamic value, is bound
+        // when the program runs (Binder.Dynamic).
+        if (_usesDynamic && LateInvocation(c, targetType) is Type lateCall)
+        {
+            return lateCall;
+        }
+
         // ONE OF NULLABLE<T>'S METHODS, which CheckMember found on a cell and
         // left for the call to write out; see NullableMemberCall.
         if (c.Target is MemberExpr cellMember && _cellMethods.Remove(cellMember, out Type? cell))
@@ -16133,6 +16214,8 @@ public sealed partial class Binder
 
         bool WrittenFits(Type had, Type want, Expr written)
         {
+            // A DYNAMIC ARGUMENT converts to anything (C# 10.2.10), at run time.
+            if (had.Dynamic && !want.IsPointer) return true;
             if (written is NewExpr { Type.Name.Length: 0, Elements: null } && (want.Symbol is not null || (written is NewExpr { Collection: true } && want.IsArray))) return true;
             if (NullableIntoValue(had, want)) return false;
             if (Convertible(had, want) || had.IsError || Unmade(want) || Variant(had, want)
@@ -16627,6 +16710,8 @@ public sealed partial class Binder
                     return false;
                 }
 
+                // A DYNAMIC ARGUMENT converts to anything, at run time.
+                if (args[i].Dynamic && !want.IsPointer) continue;
                 if (NullableIntoValue(args[i], want)) return false;
                 // AN OBJECT IS NO NARROWER TYPE without a cast (C# 10.2): the
                 // machine word goes anywhere here, but an overload that wants
@@ -16689,6 +16774,16 @@ public sealed partial class Binder
         if (byWord.Count > 0)
         {
             byArity = byWord;
+        }
+
+        // A DYNAMIC ARGUMENT AND MORE THAN ONE OVERLOAD THAT COULD TAKE IT:
+        // chosen when the program runs, by the argument's own type
+        // (Binder.Dynamic).
+        if (_usesDynamic && args.Any(a => a.Dynamic)
+            && LateOverloads(c, byArity.Where(m => m.TypeParams.Count == 0 && Accepts(m, variant: true)).ToList(), args,
+                             (a, b) => Implicitly(a, b) && !Implicitly(b, a) || SignedIntegral(a) && UnsignedIntegral(b)) is Type lateChoice)
+        {
+            return lateChoice;
         }
 
         MethodSymbol? best = byArity.FirstOrDefault(
@@ -17658,6 +17753,11 @@ public sealed partial class Binder
         //
         // It matters more than it looks, because `is { Kind: K }` lowers to
         // exactly this shape: the null test and the member read, joined by &&.
+        if (b.Op is BinOp.AndAlso or BinOp.OrElse && LateLogical(b) is Type lateLogic)
+        {
+            return lateLogic;
+        }
+
         if (b.Op == BinOp.AndAlso)
         {
             Type left = CheckExpr(b.Left);
@@ -17713,6 +17813,12 @@ public sealed partial class Binder
         if (l.IsError || r.IsError)
         {
             return Type.Error;
+        }
+
+        // AN OPERATOR WITH A DYNAMIC OPERAND, bound when the program runs.
+        if (_usesDynamic && LateBinary(b, l, r) is Type lateBinary)
+        {
+            return lateBinary;
         }
 
         AdoptUnsignedConstant(b.Left, ref l, b.Right, ref r);

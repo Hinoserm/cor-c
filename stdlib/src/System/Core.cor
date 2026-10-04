@@ -6862,9 +6862,71 @@ static class OutgrownStorage {
     }
 }
 
-class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
+class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements, System.Dynamic.IDynamicMembers {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
+    // WHAT A DYNAMIC RECEIVER FINDS ON A LIST (C#'s `dynamic`; System.Dynamic.
+    // IDynamicMembers, which the compiler writes for a program's own classes):
+    // Count, the indexer, and Add, Insert, Remove, RemoveAt, Contains,
+    // IndexOf and Clear, an argument made a T as the binder makes it
+    // (DynamicValues.Take). Written here, explicitly, rather than for every
+    // member, so that a list costs a program little for it.
+    int System.Dynamic.IDynamicMembers.__DynGet(string name, out object? result) {
+        result = null;
+        if (name == "Count") { result = count; return 0; }
+        return name is "Add" or "Insert" or "Remove" or "RemoveAt" or "Contains" or "IndexOf" or "Clear" ? 3 : 1;
+    }
+
+    int System.Dynamic.IDynamicMembers.__DynSet(string name, object? value) { return name == "Count" ? 4 : 1; }
+
+    int System.Dynamic.IDynamicMembers.__DynCall(string name, object?[] args, out object? result) {
+        result = null;
+        T item;
+        int at;
+        switch (name) {
+            case "Add":
+                if (args.Length == 1 && DynamicValues.Take<T>(args[0], out item)) { Add(item); return 0; }
+                return 2;
+            case "Insert":
+                if (args.Length == 2 && DynamicValues.Take<int>(args[0], out at) && DynamicValues.Take<T>(args[1], out item)) { Insert(at, item); return 0; }
+                return 2;
+            case "Remove":
+                if (args.Length == 1 && DynamicValues.Take<T>(args[0], out item)) { result = Remove(item); return 0; }
+                return 2;
+            case "RemoveAt":
+                if (args.Length == 1 && DynamicValues.Take<int>(args[0], out at)) { RemoveAt(at); return 0; }
+                return 2;
+            case "Contains":
+                if (args.Length == 1 && DynamicValues.Take<T>(args[0], out item)) { result = Contains(item); return 0; }
+                return 2;
+            case "IndexOf":
+                if (args.Length == 1 && DynamicValues.Take<T>(args[0], out item)) { result = IndexOf(item); return 0; }
+                return 2;
+            case "Clear":
+                if (args.Length == 0) { Clear(); return 0; }
+                return 2;
+        }
+        return 1;
+    }
+
+    int System.Dynamic.IDynamicMembers.__DynGetIndex(object?[] keys, out object? result) {
+        result = null;
+        int at;
+        if (keys.Length == 1 && DynamicValues.Take<int>(keys[0], out at)) { result = this[at]; return 0; }
+        return 2;
+    }
+
+    int System.Dynamic.IDynamicMembers.__DynSetIndex(object?[] keys, object? value) {
+        int at;
+        T item;
+        if (keys.Length == 1 && DynamicValues.Take<int>(keys[0], out at) && DynamicValues.Take<T>(value, out item)) { this[at] = item; return 0; }
+        return 2;
+    }
+
+    int System.Dynamic.IDynamicMembers.__DynOperator(int op, object? left, object? right, out object? result) { result = null; return 1; }
+
+    int System.Dynamic.IDynamicMembers.__DynConvert(Type target, bool explicitly, out object? result) { result = null; return 1; }
 
     bool ICollection<T>.IsReadOnly => false;
 
@@ -10330,9 +10392,60 @@ interface IReadOnlyDictionary<K, V> : IEnumerable<KeyValuePair<K, V>> {
     bool TryGetValue(K key, out V value);
 }
 
-class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>>, IOwnsElements {
+class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>>, IOwnsElements, System.Dynamic.IDynamicMembers {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
+    // WHAT A DYNAMIC RECEIVER FINDS ON A DICTIONARY, as on a List: Count,
+    // Keys, Values, the indexer, and Add, Remove, ContainsKey and Clear.
+    int System.Dynamic.IDynamicMembers.__DynGet(string name, out object? result) {
+        result = null;
+        if (name == "Count") { result = Count; return 0; }
+        if (name == "Keys") { result = Keys; return 0; }
+        if (name == "Values") { result = Values; return 0; }
+        return name is "Add" or "Remove" or "ContainsKey" or "Clear" ? 3 : 1;
+    }
+
+    int System.Dynamic.IDynamicMembers.__DynSet(string name, object? value) { return name is "Count" or "Keys" or "Values" ? 4 : 1; }
+
+    int System.Dynamic.IDynamicMembers.__DynCall(string name, object?[] args, out object? result) {
+        result = null;
+        K key;
+        V value;
+        switch (name) {
+            case "Add":
+                if (args.Length == 2 && DynamicValues.Take<K>(args[0], out key) && DynamicValues.Take<V>(args[1], out value)) { Add(key, value); return 0; }
+                return 2;
+            case "Remove":
+                if (args.Length == 1 && DynamicValues.Take<K>(args[0], out key)) { result = Remove(key); return 0; }
+                return 2;
+            case "ContainsKey":
+                if (args.Length == 1 && DynamicValues.Take<K>(args[0], out key)) { result = ContainsKey(key); return 0; }
+                return 2;
+            case "Clear":
+                if (args.Length == 0) { Clear(); return 0; }
+                return 2;
+        }
+        return 1;
+    }
+
+    int System.Dynamic.IDynamicMembers.__DynGetIndex(object?[] keys, out object? result) {
+        result = null;
+        K key;
+        if (keys.Length == 1 && DynamicValues.Take<K>(keys[0], out key)) { result = this[key]; return 0; }
+        return 2;
+    }
+
+    int System.Dynamic.IDynamicMembers.__DynSetIndex(object?[] keys, object? value) {
+        K key;
+        V held;
+        if (keys.Length == 1 && DynamicValues.Take<K>(keys[0], out key) && DynamicValues.Take<V>(value, out held)) { this[key] = held; return 0; }
+        return 2;
+    }
+
+    int System.Dynamic.IDynamicMembers.__DynOperator(int op, object? left, object? right, out object? result) { result = null; return 1; }
+
+    int System.Dynamic.IDynamicMembers.__DynConvert(Type target, bool explicitly, out object? result) { result = null; return 1; }
 
     private K[] keys;
     private V[] values;
@@ -15301,5 +15414,302 @@ namespace System.Runtime.CompilerServices
     {
         int Length { get; }
         object? this[int index] { get; }
+    }
+}
+
+namespace Microsoft.CSharp.RuntimeBinder
+{
+    /// What a dynamic operation that cannot be bound throws (System.DynamicRuntime,
+    /// in Microsoft.CSharp; here because a class's own members, written for
+    /// a dynamic receiver, convert their arguments with DynamicValues).
+    public class RuntimeBinderException : Exception
+    {
+        public RuntimeBinderException() : base("An error occurred while binding a dynamic operation.") { }
+        public RuntimeBinderException(string message) : base(message) { }
+        public RuntimeBinderException(string message, Exception inner) : base(message, inner) { }
+    }
+
+    public class RuntimeBinderInternalCompilerException : Exception
+    {
+        public RuntimeBinderInternalCompilerException() : base("An unexpected exception occurred while binding a dynamic operation.") { }
+        public RuntimeBinderInternalCompilerException(string message) : base(message) { }
+    }
+}
+
+namespace System.Dynamic
+{
+    /// <summary>
+    /// What the compiler writes into a class for a dynamic receiver to find
+    /// (DynamicDeclarations): each answers 0 done, 1 no such member, 2 none
+    /// that takes these arguments, 3 a method where a value was asked for,
+    /// 4 a member that cannot be written.
+    /// </summary>
+    public interface IDynamicMembers
+    {
+        int __DynGet(string name, out object? result);
+        int __DynSet(string name, object? value);
+        int __DynCall(string name, object?[] args, out object? result);
+        int __DynGetIndex(object?[] keys, out object? result);
+        int __DynSetIndex(object?[] keys, object? value);
+        int __DynOperator(int op, object? left, object? right, out object? result);
+        int __DynConvert(Type target, bool explicitly, out object? result);
+    }
+
+    /// A delegate held as a dynamic value: called with objects (DynamicRuntime.Callable).
+    public interface ILateInvocable
+    {
+        object Inner { get; }
+        object? Invoke(object?[] args);
+    }
+
+    /// A delegate held as a dynamic value: called with objects (DynamicRuntime.Callable).
+    public interface ILateInvocable
+    {
+        object Inner { get; }
+        object? Invoke(object?[] args);
+    }
+}
+
+namespace System
+{
+    /// <summary>
+    /// The conversions C#'s run-time binder makes (Microsoft.CSharp's
+    /// DynamicRuntime and the members the compiler writes into a class for a
+    /// dynamic receiver -- DynamicDeclarations -- both use them).
+    /// </summary>
+    public static class DynamicValues
+    {
+        const int Done = 0;
+
+        public static string TypeName(object? o)
+        {
+            if (o == null) return "<null>";
+            if (o is string) return "string";
+            if (o is int) return "int";
+            if (o is long) return "long";
+            if (o is double) return "double";
+            if (o is bool) return "bool";
+            if (o is char) return "char";
+            if (o is float) return "float";
+            if (o is uint) return "uint";
+            if (o is ulong) return "ulong";
+            if (o is short) return "short";
+            if (o is ushort) return "ushort";
+            if (o is byte) return "byte";
+            if (o is sbyte) return "sbyte";
+            return o.GetType().FullName;
+        }
+
+        static long AsLong(object? v)
+        {
+            if (v is int i) return i;
+            if (v is long l) return l;
+            if (v is short s) return s;
+            if (v is sbyte sb) return sb;
+            if (v is byte b) return b;
+            if (v is ushort us) return us;
+            if (v is char c) return c;
+            if (v is uint ui) return ui;
+            if (v is ulong ul) return (long)ul;
+            if (v is float f) return (long)f;
+            if (v is double d) return (long)d;
+            throw new InvalidCastException();
+        }
+
+        static double AsDouble(object? v)
+        {
+            if (v is double d) return d;
+            if (v is float f) return f;
+            if (v is ulong ul) return (double)ul;
+            return AsLong(v);
+        }
+
+        /// An argument made a T as the binder makes one, or false: what it
+        /// already is, else what an implicit conversion makes it (Fits).
+        public static bool Take<T>(object? value, out T taken)
+        {
+            if (value is T same) { taken = same; return true; }
+            if (Fits(value, typeof(T))) { taken = (T)Convert(value, typeof(T), false); return true; }
+            taken = default!;
+            return false;
+        }
+
+        /// Whether every argument from `from` on passes a test (an expanded `params` array).
+        public static bool All(object?[] args, int from, Func<object?, bool> test)
+        {
+            for (int i = from; i < args.Length; i++) if (!test(args[i])) return false;
+            return true;
+        }
+
+        /// <summary>
+        /// Whether a value converts implicitly to a type (an overload's
+        /// parameter, the compiler's late overload choice): null to a
+        /// reference or a Nullable; a number to itself or a wider number
+        /// (C# 10.2.3); anything else to its own run-time type.
+        /// </summary>
+        public static bool Fits(object? value, Type type)
+        {
+            if (type == typeof(object)) return true;
+            if (value == null) return !type.IsValueType || IsNullable(type);
+            Type held = value.GetType();
+            if (held == type) return true;
+            if (value is System.Dynamic.ILateInvocable late) return late.Inner.GetType() == type;
+            int target = NumberKind(type);
+            if (target != 0) return Widens(value, target);
+            return false;
+        }
+
+        /// Whether a value is exactly of a type.
+        public static bool Exact(object? value, Type type) { return value != null && value.GetType() == type; }
+
+        static bool IsNullable(Type t) { return t.Name.StartsWith("Nullable", StringComparison.Ordinal); }
+
+        /// A type as C# writes it in a message: its keyword for a number, a bool, a char, a string or object.
+        public static string TypeText(Type t)
+        {
+            if (t == typeof(int)) return "int";
+            if (t == typeof(long)) return "long";
+            if (t == typeof(double)) return "double";
+            if (t == typeof(bool)) return "bool";
+            if (t == typeof(char)) return "char";
+            if (t == typeof(string)) return "string";
+            if (t == typeof(object)) return "object";
+            if (t == typeof(float)) return "float";
+            if (t == typeof(uint)) return "uint";
+            if (t == typeof(ulong)) return "ulong";
+            if (t == typeof(short)) return "short";
+            if (t == typeof(ushort)) return "ushort";
+            if (t == typeof(byte)) return "byte";
+            if (t == typeof(sbyte)) return "sbyte";
+            return t.FullName;
+        }
+
+        // A number type's kind: 1 sbyte, 2 byte, 3 short, 4 ushort, 5 int, 6 uint, 7 long, 8 ulong, 9 char, 10 float, 11 double.
+        static int NumberKind(Type t)
+        {
+            if (t == typeof(sbyte)) return 1;
+            if (t == typeof(byte)) return 2;
+            if (t == typeof(short)) return 3;
+            if (t == typeof(ushort)) return 4;
+            if (t == typeof(int)) return 5;
+            if (t == typeof(uint)) return 6;
+            if (t == typeof(long)) return 7;
+            if (t == typeof(ulong)) return 8;
+            if (t == typeof(char)) return 9;
+            if (t == typeof(float)) return 10;
+            if (t == typeof(double)) return 11;
+            return 0;
+        }
+
+        static int ValueKind(object v)
+        {
+            if (v is sbyte) return 1;
+            if (v is byte) return 2;
+            if (v is short) return 3;
+            if (v is ushort) return 4;
+            if (v is int) return 5;
+            if (v is uint) return 6;
+            if (v is long) return 7;
+            if (v is ulong) return 8;
+            if (v is char) return 9;
+            if (v is float) return 10;
+            if (v is double) return 11;
+            return 0;
+        }
+
+        /// C#'s implicit numeric conversions (10.2.3), from a value's kind to a target kind.
+        static bool Widens(object value, int to)
+        {
+            int from = ValueKind(value);
+            if (from == 0) return false;
+            if (from == to) return true;
+            switch (from)
+            {
+                case 1: return to == 3 || to == 5 || to == 7 || to == 10 || to == 11;
+                case 2: return to == 3 || to == 4 || to == 5 || to == 6 || to == 7 || to == 8 || to == 10 || to == 11;
+                case 3: return to == 5 || to == 7 || to == 10 || to == 11;
+                case 4: return to == 5 || to == 6 || to == 7 || to == 8 || to == 10 || to == 11;
+                case 5: return to == 7 || to == 10 || to == 11;
+                case 6: return to == 7 || to == 8 || to == 10 || to == 11;
+                case 7: return to == 10 || to == 11;
+                case 8: return to == 10 || to == 11;
+                case 9: return to == 4 || to == 5 || to == 6 || to == 7 || to == 8 || to == 10 || to == 11;
+                case 10: return to == 11;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// A value made a type (the compiler casts what this answers to it):
+        /// implicitly, what Fits allows; explicitly, any number to any other
+        /// (unchecked, as C# casts outside `checked`) and an object to what it
+        /// is. A class's own conversion operators are asked
+        /// first (a DynamicObject's TryConvert, by DynamicRuntime before this). A delegate held for dynamic is let go of.
+        /// </summary>
+        public static object Convert(object? value, Type type, bool explicitly)
+        {
+            if (value is System.Dynamic.ILateInvocable late) value = late.Inner;
+            if (type == typeof(object)) return value!;
+            object? result;
+            if (value == null)
+            {
+                if (!type.IsValueType || IsNullable(type)) return null!;
+                throw new Microsoft.CSharp.RuntimeBinder.RuntimeBinderException("Cannot convert null to '" + TypeText(type) + "' because it is a non-nullable value type");
+            }
+            if (value.GetType() == type) return value;
+            if (value is System.Dynamic.IDynamicMembers m && m.__DynConvert(type, explicitly, out result) == Done) return result!;
+            int target = NumberKind(type);
+            if (target != 0 && ValueKind(value) != 0)
+            {
+                if (!explicitly && !Widens(value, target))
+                    throw new Microsoft.CSharp.RuntimeBinder.RuntimeBinderException("Cannot implicitly convert type '" + TypeName(value) + "' to '" + TypeText(type) + "'. An explicit conversion exists (are you missing a cast?)");
+                return Number(value, target);
+            }
+            if (IsNullable(type) && ValueKind(value) != 0) return value;
+            // A REFERENCE: the cast the compiler writes after this checks it,
+            // with InvalidCastException; asked here only to say it C#'s way.
+            if (type.IsValueType && !type.IsEnum)
+                throw new Microsoft.CSharp.RuntimeBinder.RuntimeBinderException("Cannot " + (explicitly ? "" : "implicitly ") + "convert type '" + TypeName(value) + "' to '" + TypeText(type) + "'");
+            return value;
+        }
+
+        static object Number(object v, int to)
+        {
+            if (v is double || v is float)
+            {
+                double d = AsDouble(v);
+                switch (to)
+                {
+                    case 10: return (float)d;
+                    case 11: return d;
+                }
+                long whole = unchecked((long)d);
+                return Integer(whole, to);
+            }
+            if (v is ulong ul && to == 10) return (float)ul;
+            if (v is ulong ul2 && to == 11) return (double)ul2;
+            long n = AsLong(v);
+            if (to == 10) return (float)n;
+            if (to == 11) return (double)n;
+            return Integer(n, to);
+        }
+
+        static object Integer(long n, int to)
+        {
+            switch (to)
+            {
+                case 1: return unchecked((sbyte)n);
+                case 2: return unchecked((byte)n);
+                case 3: return unchecked((short)n);
+                case 4: return unchecked((ushort)n);
+                case 5: return unchecked((int)n);
+                case 6: return unchecked((uint)n);
+                case 7: return n;
+                case 8: return unchecked((ulong)n);
+                case 9: return unchecked((char)n);
+            }
+            throw new InvalidCastException();
+        }
+
     }
 }

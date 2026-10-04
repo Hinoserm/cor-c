@@ -1,0 +1,17 @@
+// test: dynamic_lambda_argument_refused
+// expect-compile-error: a lambda cannot be passed to a dynamically bound call
+//
+// C#'s CS1977: a lambda has no type of its own to hand the run-time binder,
+// so it cannot be an argument of a dynamically bound call without a cast.
+
+using System;
+
+static class Program
+{
+    static int Main()
+    {
+        dynamic d = new object();
+        d.Apply(x => x);
+        return 0;
+    }
+}
