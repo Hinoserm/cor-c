@@ -116,6 +116,28 @@ printf '%s\n' 'kernel 0' 'registered sb16' 'modinfo name=sb16' 'modinfo ring=0' 
     'modinfo alias=isa:sb16@220,240,260,280' 'modinfo depends=mpu401' 'drivers 1' 'sb16 at 544, loaded 1 time' 'bind 1' \
     | cmp -s - "$work/run.out" || { cat "$work/run.out"; fail "the module ran other than it should"; }
 
+# PRUNED WITH --keep: the kernel linked again keeping only what it and the
+# module reach -- the module's imports the roots beside the entry -- drops
+# what nobody calls, keeps every import, and loads and runs the module the
+# same, bound by name against the pruned exports.
+readelf -s -W "$a/kernel" | grep -q 'Unused_Never' || fail "the open kernel dropped what a module might call"
+readelf --dyn-syms -W "$work/linked/sb16.ko" | awk '$7 == "UND" && $8 != "" { print $8 }' | sort -u > "$work/keep"
+mkdir -p "$work/pruned"
+objects=$(cut -f2 "$a/units.tsv" | tr '\n' ' ')
+# shellcheck disable=SC2086
+"$corc" link $objects -o "$work/pruned/kernel" --exports "$work/pruned/kernel.exports" --decl-index "$a/kernel.idx" --keep "$work/keep" \
+    2> "$work/pruned/link.log" || { cat "$work/pruned/link.log"; fail "the kernel did not link with --keep"; }
+if readelf -s -W "$work/pruned/kernel" | grep -q 'Unused_Never'; then fail "the pruned kernel kept what nothing reaches"; fi
+test "$(stat -c %s "$work/pruned/kernel")" -lt "$(stat -c %s "$a/kernel")" || fail "the pruned kernel is no smaller"
+readelf --dyn-syms -W "$work/pruned/kernel.exports" | awk '$8 != "" { print $8 }' | sort -u > "$work/pruned/exported"
+comm -23 "$work/keep" "$work/pruned/exported" > "$work/pruned/missing"
+test ! -s "$work/pruned/missing" || { cat "$work/pruned/missing"; fail "the pruned kernel does not export what the module imports"; }
+test "$(stamp "$work/pruned/kernel")" = "$(stamp "$a/kernel")" || fail "pruning changed the build stamp"
+cp "$work/linked/sb16.ko" "$work/pruned/module.ko"
+(cd "$work/pruned" && ./kernel) > "$work/pruned/run.out" 2>&1 || { cat "$work/pruned/run.out"; fail "the pruned kernel did not load the module"; }
+cmp -s "$work/run.out" "$work/pruned/run.out" || { cat "$work/pruned/run.out"; fail "the module ran otherwise in the pruned kernel"; }
+if "$corc" link $objects -o "$work/pruned/wrong" --keep "$work/keep" 2> "$work/pruned/wrong.log"; then fail "--keep linked without --exports"; fi
+
 # A KERNEL WHOSE DECLARATIONS DIFFER -- one more field in Driver -- has
 # another stamp; the module built for the first is refused by its loader,
 # by the link, and its index refused by the compile.

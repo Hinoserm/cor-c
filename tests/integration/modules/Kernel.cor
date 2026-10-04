@@ -42,6 +42,14 @@ public static class Log
     }
 }
 
+// NOTHING CALLS IT, neither the kernel nor the module: an open kernel keeps
+// it for modules nobody has built, and one linked with --keep, pruned to
+// what it and its build's modules reach, does not.
+public static class Unused
+{
+    public static string Never() { return "never " + Log.Lines; }
+}
+
 // RING 1'S, and left out of this ring-0 kernel before anything is bound:
 // what it names exists only in a ring-1 image.
 [Ring1]
