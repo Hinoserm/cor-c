@@ -225,6 +225,23 @@ internal sealed class RegionEscape
             s.Cells.ToArray(), s.Result.ToArray(), s.MadeCoarse);
     }
 
+    /// <summary>
+    /// For a report: where an origin comes from -- a site, or an object of
+    /// whose summary (a function's, or a merged or stand-in one), what kind
+    /// of object it is there, and so on down, `depth` steps.
+    /// </summary>
+    private string Lineage(int r, int depth)
+    {
+        if (r < 0) return "site " + (-r - 1);
+        int h = r >> IndexBits, k = r & ((1 << IndexBits) - 1);
+        string holder = h < _functions.Count ? _functions[h].Name : "merged or stand-in summary " + h;
+        string kind = h < _functions.Count && _summaries[h] is { IsUnknown: false } s && k < s.Objects.Count ? s.Objects[k].Kind.ToString() : "object";
+        int[]? below = OriginsOf(r);
+        if (below is null) return $"{kind} {k} of {holder} (unregistered)";
+        if (below.Length == 0) return $"{kind} {k} of {holder}, of no origin (a constant or a frame slot)";
+        return $"{kind} {k} of {holder}" + (depth <= 0 ? "" : " < " + string.Join(" | ", below.Take(3).Select(x => Lineage(x, depth - 1))));
+    }
+
     /// <summary>The sites the given origins may be.</summary>
     public int[] SitesOf(int[] origins)
     {
@@ -2114,7 +2131,7 @@ internal sealed class RegionEscape
             }
             if (_owner.Why is not null && _owner.Progress is { } say && _owner.WhyFunction?.Invoke(v.F) == true)
                 say($"escape graphs why: in {_owner._functions[v.F].Name}: call {v.Callee} runs any of its {v.Inside.Length + v.Outside.Length} targets on {Describe(o)} +{_locOffset[loc]}"
-                    + (_kind[o] == Kind.Made ? " (sites " + string.Join(",", SitesOfObject(o).Take(8)) + ")" : ""));
+                    + (_kind[o] == Kind.Made ? " (sites " + string.Join(",", SitesOfObject(o).Take(8)) + "; made from " + string.Join(", ", _origins[o].Take(3).Select(r => _owner.Lineage(r, 4))) + ")" : ""));
             foreach (int g in v.Inside) Receives(g, loc);
             if (v.Outside.Length > 0) Add(Group(v, v.Outside), loc);
         }
