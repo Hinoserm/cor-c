@@ -15629,11 +15629,16 @@ public sealed partial class Binder
         switch (target)
         {
             case NameExpr name when Lookup(name.Name) is not null:
-            case NameExpr field when _thisType?.FindField(field.Name) is not null && _thisType.FindMethods(field.Name).Count == 0:
+            // A FIELD ONLY WHEN IT HOLDS A POINTER: checking any other field
+            // named like the call here bound the name before CheckCall had
+            // marked it invoked, so `Fields(path)` in a nested class with a
+            // table called Fields was refused instead of reaching the outer
+            // class's method (C# passes over what cannot be invoked).
+            case NameExpr field when _thisType?.FindField(field.Name) is { Type.Function: not null } && _thisType.FindMethods(field.Name).Count == 0:
             case CastExpr:
                 return CheckExpr(target).Function;
             case MemberExpr member when member.Target is not null && ConstantOwner(member.Target) is TypeSymbol owner
-                && owner.FindField(member.Name) is not null && owner.FindMethods(member.Name).Count == 0:
+                && owner.FindField(member.Name) is { Type.Function: not null } && owner.FindMethods(member.Name).Count == 0:
                 return CheckExpr(target).Function;
             default:
                 return null;
