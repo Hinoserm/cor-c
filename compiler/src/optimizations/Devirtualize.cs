@@ -145,7 +145,10 @@ public sealed class Devirtualize : IModulePass
                     continue;
                 }
                 if (Symbol(i.Operands[0]) is not { Offset: 0 } target || !target.Name.StartsWith("m_", StringComparison.Ordinal)) continue;
-                Instr call = new() { Op = Opcode.Call, Dest = i.Dest, Line = i.Line, Callee = target.Name };
+                // A struct made for the call is made for it whoever answers
+                // it (FreshStruct); a delegate's Invoke is a slot's call no
+                // more, and a direct call needs no declaring type.
+                Instr call = new() { Op = Opcode.Call, Dest = i.Dest, Line = i.Line, Callee = target.Name, Field = Fresh(i) };
                 for (int a = 1; a < i.Operands.Count; a++) call.Operands.Add(i.Operands[a]);
                 b.Instrs[k] = call;
                 Resolved++;
@@ -253,7 +256,7 @@ public sealed class Devirtualize : IModulePass
                 }
                 Instr Direct(string target, VReg? into)
                 {
-                    Instr call = new() { Op = Opcode.Call, Dest = into, Line = i.Line, Callee = target };
+                    Instr call = new() { Op = Opcode.Call, Dest = into, Line = i.Line, Callee = target, Field = Fresh(i) };
                     for (int a = 1; a < i.Operands.Count; a++) call.Operands.Add(i.Operands[a]);
                     return call;
                 }
@@ -459,6 +462,11 @@ public sealed class Devirtualize : IModulePass
         bool Shadow(string name, DataItem item)
             => name.StartsWith("t_", StringComparison.Ordinal) && !item.Relocs.Any(rel => rel.Offset == 5 * word && rel.Symbol == name);
     }
+
+    // What a direct call made of `i` keeps of its Field: a struct made for
+    // it alone (Instr.FreshStruct). Escape reads a delegate's Invoke mark on
+    // any call, and a direct one is not through a slot.
+    private static string? Fresh(Instr i) => i.Field == Instr.FreshStruct ? Instr.FreshStruct : null;
 
     private static bool KeepsFields(string? callee) =>
         callee is not null && (Escape.IsAllocator(callee) || Escape.NeverWritesFields(callee) || Escape.IsCollectorNote(callee)

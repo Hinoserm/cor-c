@@ -90,7 +90,14 @@ public sealed class ConstantSpecialize : IModulePass
                 growth[target.Name] = growth.GetValueOrDefault(target.Name) + cost;
                 module.Functions.Add(version);
             }
-            Instr replacement = new() { Op = Opcode.Call, Dest = call.Dest, Callee = version.Name, Line = call.Line };
+            // The same call to another copy: what it was marked keeps -- a
+            // struct made for it (FreshStruct), a site the link chose for a
+            // region, a catch's type.
+            Instr replacement = new()
+            {
+                Op = Opcode.Call, Dest = call.Dest, Callee = version.Name, Line = call.Line,
+                Field = call.Field, RegionSite = call.RegionSite, DispatchType = call.DispatchType, Number = call.Number, Family = call.Family,
+            };
             replacement.Operands.AddRange(call.Operands);
             block.Instrs[at] = replacement;
         }
