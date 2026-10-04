@@ -2172,7 +2172,11 @@ public sealed partial class Binder
                 foreach (TypeRef each in made.Decl!.CanonMade!)
                 {
                     Type resolved = Resolve(each, made);
-                    made.CanonMadeTypes.Add(Unresolved(resolved) ? null : resolved.Symbol);
+                    // An array of one (Monomorphiser.CanonTested) by its element:
+                    // lowering makes the array's descriptor of it.
+                    made.CanonMadeTypes.Add(Unresolved(resolved) ? null
+                        : resolved.IsArray ? resolved.Element is { Symbol: { } element } inner && !inner.IsArray ? element : null
+                        : resolved.Symbol);
                 }
             }
         }
@@ -12385,6 +12389,7 @@ public sealed partial class Binder
 
                 foreach (SwitchArm arm in sx.Arms)
                 {
+                    if (arm.CanonSelf is { } armSelf) CheckExpr(armSelf);
                     // A TYPE PATTERN NAMES WHAT IT MATCHED, exactly as `is`
                     // does, and the name belongs to the ARM rather than to the
                     // whole switch -- two arms may both call it `n` and mean
