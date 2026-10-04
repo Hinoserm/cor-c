@@ -1,0 +1,85 @@
+// test: null_faults_survive_optimisation
+// expect-exit: 0
+// expect-output:
+// virtual caught
+// call caught
+// read caught
+// discarded read caught
+// byte read caught
+// write caught
+// array read caught
+// length caught
+// struct method caught
+// ref field caught
+// struct ref argument caught
+// done 0
+//
+// EVERY NULL FAULT C# REQUIRES SURVIVES THE OPTIMISER, on a receiver it
+// has proved null: a virtual call and a non-virtual one (the read of the
+// receiver's first word that is the call's fault, Lowering's "a call on
+// null throws at the call"), a field read -- used, discarded, a byte --
+// and a field written, an element read and an array's length. Each
+// becomes a load or store of a bare address, which a pass that drops a
+// load nothing reads lost (x86 Peephole.Removable, test 1284). And the
+// ADDRESS of a field of null throws, as .NET's ldflda does, though nothing
+// is read through it: a struct's method called on one held in line in the
+// object, a field passed by `ref`, a struct field passed by `ref`, to
+// callees that never touch what they are handed (Lowering.FieldBase).
+
+using System;
+
+class Animal { public virtual string Speak() => "..."; }
+
+struct Pair
+{
+    public int A, B;
+    public int Seven() => 7;
+}
+
+class Plain
+{
+    public int X;
+    public double F;
+    public byte Small;
+    public Pair P;
+    public int Answer() => 42;
+}
+
+static class Program
+{
+    static int Sink;
+
+    static void Touch(ref int x) { Sink++; }
+
+    static void TouchPair(ref Pair p) { Sink++; }
+
+    static void Try(string what, Action a)
+    {
+        try
+        {
+            a();
+            Console.WriteLine(what + " not caught");
+        }
+        catch (NullReferenceException)
+        {
+            Console.WriteLine(what + " caught");
+        }
+    }
+
+    static int Main()
+    {
+        Try("virtual", () => { Animal a = null!; Console.WriteLine(a.Speak()); });
+        Try("call", () => { Plain p = null!; Sink += p.Answer(); });
+        Try("read", () => { Plain p = null!; Sink += p.X; });
+        Try("discarded read", () => { Plain p = null!; _ = p.F; });
+        Try("byte read", () => { Plain p = null!; _ = p.Small; });
+        Try("write", () => { Plain p = null!; p.X = 5; });
+        Try("array read", () => { int[] a = null!; Sink += a[0]; });
+        Try("length", () => { int[] a = null!; Sink += a.Length; });
+        Try("struct method", () => { Plain p = null!; Sink += p.P.Seven(); });
+        Try("ref field", () => { Plain p = null!; Touch(ref p.X); });
+        Try("struct ref argument", () => { Plain p = null!; TouchPair(ref p.P); });
+        Console.WriteLine("done " + Sink);
+        return 0;
+    }
+}

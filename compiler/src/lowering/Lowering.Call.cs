@@ -343,7 +343,9 @@ public sealed partial class Lowering
                 switch (call.Target)
                 {
                     case MemberExpr m:
-                        receiver = BoxedForObject(target, m.Target, Eval(m.Target));
+                        // A struct held in line in an object: its address,
+                        // with the object's null fault (FieldAddress).
+                        receiver = BoxedForObject(target, m.Target, InlineFieldAddress(m.Target) ?? Eval(m.Target));
                         break;
                     case NameExpr:
                         receiver = _this;
