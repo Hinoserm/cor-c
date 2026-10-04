@@ -424,6 +424,20 @@ offset. An untyped step reads everything at its offset. Paths keep their
 steps through `WithField`, guards, `Stripped`, `Coarsened` and `Loosened`.
 Reports print a typed step as `8:f3`. Test: engine `TypedPlaceSteps`.
 
+**Memory bounds on fields.** One object keeps at most 4 fields apart at one
+offset (`Graph.Named`, `MostFieldsAt`; `Unified.MostFieldsAtUnified`, also
+after a merge of classes). Past that, a field named there is the offset's
+untyped word, read by every load at it. That bounds the words, the places
+below them and the readers of each offset by a small factor on a place of an
+interface's or a base's type, a blob or a merged object. A published summary
+keeps only the words and cells that name a field (`Summary.Compact`).
+A summary's shape is held weakly by the summary (`_shapes`), and what only
+asks whether a target leaks an argument reads its classes alone
+(`ShapeBits`), never resolving its sites. Per component, what is kept after
+its solve is arrays: what it made global and rooted, and at most 1,024
+holders it read sites through (`MostRead`; past that, any change of origins
+solves it again).
+
 A member's own summary, for calls from outside, is stated field by field
 (`ByField`):
 - each argument's class is its place;
