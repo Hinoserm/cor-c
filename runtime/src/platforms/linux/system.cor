@@ -207,6 +207,9 @@ static class Platform
     /// printed as the process ends (AllocSamples).
     public static bool AllocSample() => EnvironmentFlag("CORSAC_ALLOC_SAMPLE=");
 
+    /// Which sampled blocks were freed, and which the collector took.
+    public static bool AllocSampleFrees() => true;
+
     /// CORSAC_GC_STATS=1: the collector's counts, pauses and heap said at exit.
     public static bool GcStats() => EnvironmentFlag("CORSAC_GC_STATS=");
 

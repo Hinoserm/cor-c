@@ -273,14 +273,50 @@ static class AllocSamples
     static long _places;
     public static bool Tracking;
 
+    /// Also called by a kernel once it has read its own command line
+    /// (gui.allocsample=1), after the collector started without it.
     public static void Start()
     {
-        if (!Platform.AllocSample()) return;
+        if (_table != 0 || !Platform.AllocSample()) return;
         _table = Platform.Map(Slots * Words * WordSize.Bytes);
         if (_table == 0) return;
-        _places = Platform.Map(Places * 3 * WordSize.Bytes);
-        Tracking = _places != 0;
+        // WHICH WERE FREED takes twelve megabytes more, past what a small
+        // machine's kernel can spare: there the sites and their bytes only.
+        if (Platform.AllocSampleFrees())
+        {
+            _places = Platform.Map(Places * 3 * WordSize.Bytes);
+            Tracking = _places != 0;
+        }
         Runtime.AllocHook = Sys.AddressOf(AllocSamples.Record);
+    }
+
+    /// The `most` heaviest sites by bytes, said as Dump says them and left
+    /// counting: what a running kernel allocates, at each census.
+    public static void Top(long most)
+    {
+        long table = _table;
+        if (table == 0) return;
+        long w = WordSize.Bytes;
+        long lastBytes = 0x7FFFFFFFFFFFFFFF, lastAt = -1;
+        for (long said = 0; said < most; said++)
+        {
+            long best = -1, bestBytes = 0;
+            for (long i = 0; i < Slots; i++)
+            {
+                long e = table + i * Words * w;
+                if (Sys.Peek(e) == 0) continue;
+                long bytes = Sys.Peek(e + 2 * w);
+                bool below = bytes < lastBytes || bytes == lastBytes && e > lastAt;
+                if (below && bytes > bestBytes) { bestBytes = bytes; best = e; }
+            }
+            if (best < 0) return;
+            Gc.SayNumber("alloc sample site ", Sys.Peek(best));
+            Gc.SayNumber("alloc sample caller ", Sys.Peek(best + w));
+            Gc.SayNumber("alloc sample bytes ", bestBytes);
+            Gc.SayNumber("alloc sample count ", Sys.Peek(best + 3 * w));
+            lastBytes = bestBytes;
+            lastAt = best;
+        }
     }
 
     // Bytes sampled by allocator: Alloc (a struct's block, a nullable cell,

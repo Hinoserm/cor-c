@@ -6594,6 +6594,8 @@ static class Gc
             Runtime.WriteLiteral(2, "gc dead census: everything swept so far\n");
             SayTable(_deadAt, "gc dead census: bytes ", "gc dead census:   blocks ", "gc dead census:   key ", false);
         }
+        // And where the allocations came from, when they are sampled.
+        AllocSamples.Top(CensusShown);
     }
 
     /// The largest entries of a census table; `take` clears each as it is
@@ -8320,6 +8322,7 @@ static class Gc
         // Asked afresh at every collection: a program may be told to take
         // the census after it started (Platform.CensusWanted).
         _census = Platform.GcCensus();
+        _deadCensus = _census && Platform.GcDeadCensus();
         _thresholdCap = Platform.GcThreshold();
         long clock = PauseClock;
         long began = clock != 0 ? Sys.Call(clock, 0, 0, 0) : 0;

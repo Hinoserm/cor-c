@@ -492,14 +492,30 @@ static class Platform
         return 0;
     }
 
+    /// Set by a kernel asked for where its allocations come from
+    /// (gui.allocsample=1): every sixteenth sampled by site
+    /// (AllocSamples), the heaviest said at each census.
+    public static bool AllocSampleWanted;
+
     public static bool AllocSample()
+    {
+        return AllocSampleWanted;
+    }
+
+    /// No record of which sampled blocks were freed: twelve megabytes.
+    public static bool AllocSampleFrees()
     {
         return false;
     }
 
+    /// Set with CensusWanted by a kernel asked for the census of what its
+    /// collections swept too, by type (gui.deadcensus=1): what a heap that
+    /// holds steady is churning through.
+    public static bool DeadCensusWanted;
+
     public static bool GcDeadCensus()
     {
-        return false;
+        return DeadCensusWanted;
     }
 
     /// No environment to ask: no collector report at exit.
