@@ -1,0 +1,41 @@
+// test: dynamic_implicit_conversion_operand
+// expect-exit: 0
+// expect-output:
+// 7
+// 7
+// 7
+// 7
+// 2.5
+// 9
+//
+// An implicit conversion from dynamic -- a local's initialiser, an
+// assignment, an argument -- becomes a call of the binder's Convert with the
+// very value written as its argument. Lowering took that argument's type
+// from the conversion it was being rewritten into, and boxed the reference
+// it held as a double: a pointer printed as a tiny number.
+
+using System;
+
+static class Program
+{
+    static double Pass(double x) => x;
+    static long Wide(long x) => x;
+
+    static int Main()
+    {
+        dynamic a = 7;
+        double c = (double)a;
+        Console.WriteLine(c);
+        double d2; d2 = a;
+        Console.WriteLine(d2);
+        Console.WriteLine(Pass(a));
+        double d = a;
+        Console.WriteLine(d);
+        dynamic half = 2.5;
+        double h = half;
+        Console.WriteLine(h);
+        long l = Wide(a) + 2;
+        Console.WriteLine(l);
+        return 0;
+    }
+}
