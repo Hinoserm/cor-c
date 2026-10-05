@@ -73,7 +73,7 @@ public static class DynamicDeclarations
     public static void Expand(CompilationUnit unit, IReadOnlyCollection<string>? symbols, List<CompileError> errors)
     {
         Scope scope = new(unit);
-        foreach (TypeDecl d in unit.Types.Where(t => LateDelegate(t) || unit.UsesDynamic && FunctionShape(t)))
+        foreach (TypeDecl d in unit.Types.Where(t => unit.UsesDynamic && LateDelegate(t)))
         {
             MethodDecl? invoke = d.Members.OfType<MethodDecl>().FirstOrDefault(m => m.Name == "Invoke");
             if (invoke is null || d.Members.Any(m => m is MethodDecl { Name: "__LateInvoke" })) continue;
@@ -132,11 +132,18 @@ public static class DynamicDeclarations
     static bool Marked(TypeDecl t) => t.AttributeParts.Any(a => a.Target.Length == 0 && a.Is("LateBound"));
 
     /// <summary>Whether this unit has anything to write: it uses `dynamic`, or holds a [LateBound] class.</summary>
-    public static bool Wanted(CompilationUnit unit) => unit.UsesDynamic || unit.Types.Any(t => Marked(t) && Shaped(t) && t.TypeParams.Count == 0 || LateDelegate(t));
+    public static bool Wanted(CompilationUnit unit) => unit.UsesDynamic || unit.Types.Any(t => Marked(t) && Shaped(t) && t.TypeParams.Count == 0);
 
-    /// <summary>A delegate type given its __LateInvoke here: declared in this unit, not a local function's.</summary>
+    /// <summary>
+    /// A delegate type given its __LateInvoke here: one of a program's own
+    /// that uses dynamic, not a local function's. Never the library's: a
+    /// base and a method added to a delegate type the declaration index and
+    /// the other units see without them renumbered every interface slot
+    /// above it. The library's delegate types, Func and Action among them,
+    /// are invoked through their adapters (LateUnit).
+    /// </summary>
     static bool LateDelegate(TypeDecl d)
-        => d.IsDelegate && !d.SignatureOnly && !d.Elsewhere && !d.LocalOnly
+        => d.IsDelegate && !d.FromLibrary && !d.SignatureOnly && !d.Elsewhere && !d.LocalOnly
         && !d.Name.Contains('$') && !d.Name.StartsWith("__", StringComparison.Ordinal);
 
     /// <summary>
@@ -193,6 +200,9 @@ public static class DynamicDeclarations
         HashSet<string> stored = new(StringComparer.Ordinal);
         foreach (TypeDecl at in chain)
         {
+            // An interface's members are public without saying so: a delegate's Invoke.
+            bool Visible(MemberDecl m) => DynamicDeclarations.Visible(m)
+                || at.Kind == TypeKind.Interface && !m.Mods.HasFlag(Mods.Private) && !m.Mods.HasFlag(Mods.Static) && m.ExplicitInterface is null && !m.Name.StartsWith("__", StringComparison.Ordinal);
             foreach (MemberDecl m in at.Members)
             {
                 switch (m)
@@ -620,9 +630,9 @@ public static class DynamicDeclarations
         Dictionary<string, List<TypeDecl>> library = new(StringComparer.Ordinal);
         foreach (TypeDecl t in unit.Types)
         {
-            if (!t.FromLibrary || t.Outer is not null || t.LocalOnly || t.SignatureOnly || t.IsDelegate || t.Mods.HasFlag(Mods.Static)) continue;
+            if (!t.FromLibrary || t.Outer is not null || t.LocalOnly || t.SignatureOnly || t.Mods.HasFlag(Mods.Static)) continue;
             if (t.Name.Contains('$') || t.Name.Contains('<') || t.Name.StartsWith("__", StringComparison.Ordinal) || ownNames.Contains(t.Name)) continue;
-            if (t.Kind != TypeKind.Class && !(t.Kind == TypeKind.Interface && FunctionShape(t))) continue;
+            if (t.Kind != TypeKind.Class && !(t.Kind == TypeKind.Interface && (FunctionShape(t) || t.IsDelegate))) continue;
             if (!library.TryGetValue(t.Name, out List<TypeDecl>? list)) library[t.Name] = list = new();
             list.Add(t);
         }
