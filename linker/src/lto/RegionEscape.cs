@@ -105,6 +105,15 @@ internal sealed class RegionEscape
     /// </summary>
     public long InclusionPool = 400_000_000, InclusionCap = 40_000_000;
     /// <summary>
+    /// PAST THIS MANY LOCATIONS OFFERED, A COMPONENT IS NOT FOLLOWED, however
+    /// little it carries. The budget above is asked only once a component
+    /// carries past its own bound; the compiler's binder cycle of 78 carried
+    /// a tenth of that and offered 1.36 billion locations over seventeen
+    /// minutes of the link, then was unified all the same. No component that
+    /// inclusion finished offered more than 49 million.
+    /// </summary>
+    public long OfferedCap = 200_000_000;
+    /// <summary>
     /// THE POOL EACH ROUND STARTS WITH (+pool): filled again at every round's
     /// start, so a re-solve in a late round has what the first round had,
     /// and is not starved by what round 1 spent on other components. The
@@ -2564,6 +2573,15 @@ internal sealed class RegionEscape
         // work done in the order the link solves, so the same link gives
         // the same answers: a time budget would not.
         private long _adds, _mostAdds = long.MaxValue, _drawn;
+        // WHAT AN EDGE OFFERS AS IT IS MADE: each location already held where
+        // a load, store or whole-object read is added, walked once. Merging a
+        // cycle remakes every edge of its members on the one kept, and each
+        // walks that node's whole set -- the binder's cycle of 78 spent most
+        // of the link there, in no count the budget asked. Counted apart, so
+        // the budget of every component it never troubled is as it was, and
+        // held to OfferedCap with what is offered to nodes.
+        private long _edgeWork;
+        private bool OverWorked => _adds + _edgeWork > _owner.OfferedCap;
 
         // More work granted from the link's pool: false when it is spent, or
         // this component has had its InclusionCap.
@@ -2870,7 +2888,7 @@ internal sealed class RegionEscape
                 // same budget: joins that chained without end held the
                 // compiler's own link in one component, never back in
                 // Propagate where the budget was asked.
-                if (_mostAdds != long.MaxValue && _adds > _mostAdds && !MoreWork()) { Overflowed = true; return; }
+                if (OverWorked || _mostAdds != long.MaxValue && _adds > _mostAdds && !MoreWork()) { Overflowed = true; return; }
                 if (_joins.TryDequeue(out var join))
                 {
                     int into = Cell(join.Blob, Any);
@@ -2962,7 +2980,11 @@ internal sealed class RegionEscape
             if (!_loadEdges.Add((address, Find(dest), offset, family))) return;
             (_loads[address] ??= new()).Add((dest, offset, family));
             _loadEdgeCount++;
-            if (_pts[address] is { } pts) for (int i = 0, n = pts.Count; i < n; i++) Loaded(pts.Items[i], dest, offset, family);
+            if (_pts[address] is { } pts)
+            {
+                _edgeWork += pts.Count;
+                for (int i = 0, n = pts.Count; i < n; i++) Loaded(pts.Items[i], dest, offset, family);
+            }
         }
 
         private void StoreEdge(int address, int offset, int value, int family = -1)
@@ -2971,7 +2993,11 @@ internal sealed class RegionEscape
             if (!_storeEdges.Add((address, Find(value), offset, family))) return;
             (_stores[address] ??= new()).Add((value, offset, family));
             _storeEdgeCount++;
-            if (_pts[address] is { } pts) for (int i = 0, n = pts.Count; i < n; i++) Stored(pts.Items[i], value, offset, family);
+            if (_pts[address] is { } pts)
+            {
+                _edgeWork += pts.Count;
+                for (int i = 0, n = pts.Count; i < n; i++) Stored(pts.Items[i], value, offset, family);
+            }
         }
 
         // Every cell of what `address` points to, into `dest`.
@@ -3956,7 +3982,7 @@ internal sealed class RegionEscape
                 // a new delta, carried in its turn.
                 _deltaBuf[n] = null; _deltaLen[n] = 0;
                 _owner.Work += count;
-                if ((_carried += count) > _mostCarried && (_mostAdds == long.MaxValue || _adds > _mostAdds) && !MoreWork() || Overflowed) { Overflowed = true; return; }
+                if ((_carried += count) > _mostCarried && (_mostAdds == long.MaxValue || _adds > _mostAdds) && !MoreWork() || OverWorked || Overflowed) { Overflowed = true; return; }
                 if (_big && _owner.Progress is not null && (_carried & ~0xFFFFFL) != ((_carried - count) & ~0xFFFFFL))
                     _owner.Progress($"escape graphs:   cycle solve: {Describe()}, heap {GC.GetTotalMemory(false) >> 20} MB");
                 // Edges are read afresh each time: one made while these are
@@ -4116,10 +4142,30 @@ internal sealed class RegionEscape
             foreach (int n in cycle)
             {
                 if (n == keep) continue;
+                if (OverWorked) { Overflowed = true; return; }
                 if (_deltaBuf[n] is { } pending) { _spareDeltas.Push(pending); _deltaBuf[n] = null; _deltaLen[n] = 0; }
                 if (_copies[n] is { } copies) { _copies[n] = null; foreach ((int to, int shift) in copies) CopyEdge(keep, to, shift); }
-                if (_loads[n] is { } loads) { _loads[n] = null; foreach ((int dest, int offset, int family) in loads) LoadEdge(dest, keep, offset, family); }
-                if (_stores[n] is { } stores) { _stores[n] = null; foreach ((int value, int offset, int family) in stores) StoreEdge(keep, offset, value, family); }
+                // Asked at every edge: one member's loads, each over the kept
+                // node's whole set, ran past the cap many times over before
+                // the next member was reached.
+                if (_loads[n] is { } loads)
+                {
+                    _loads[n] = null;
+                    foreach ((int dest, int offset, int family) in loads)
+                    {
+                        if (OverWorked) { Overflowed = true; return; }
+                        LoadEdge(dest, keep, offset, family);
+                    }
+                }
+                if (_stores[n] is { } stores)
+                {
+                    _stores[n] = null;
+                    foreach ((int value, int offset, int family) in stores)
+                    {
+                        if (OverWorked) { Overflowed = true; return; }
+                        StoreEdge(keep, offset, value, family);
+                    }
+                }
                 if (_readsAll[n] is { } all) { _readsAll[n] = null; foreach (int dest in all) LoadAllEdge(dest, keep); }
                 // A guard's filter and a call's receiver are edges as a copy
                 // is: what keep holds goes along them now, and what the
