@@ -9,12 +9,14 @@
 //   Invoke -- DISPATCH_PROPERTYGET for a read, DISPATCH_METHOD with
 //   PROPERTYGET for a call, DISPATCH_PROPERTYPUT(REF) for a write,
 //   DISPID_VALUE for an index, by-reference arguments written back);
-//   a struct's own members (System.Dynamic.IDynamicMembers), which the
-//   compiler writes into every struct (DynamicDeclarations);
-//   the program's providers (System.Dynamic.ILateMembers), one for each unit
-//   that writes `dynamic`, over every class and struct that unit can reach
-//   (compiler/src/metadata/DynamicProvider.cs), registered at load;
-//   an array's Length and elements, and the four members every object has.
+//   a class's or struct's own members (System.Dynamic.IDynamicMembers),
+//   which the compiler writes into each of a program's own types that uses
+//   `dynamic`, and into the library's [LateBound] ones (DynamicDeclarations);
+//   a primitive's (LateBuiltIns: string's String statics, a number's
+//   CompareTo and the rest), written the same way;
+//   any provider registered (System.Dynamic.ILateMembers, Register);
+//   an array's Length and elements, a string's Length and chars, and the
+//   four members every object has.
 //
 // A call's arguments travel as a LateCall: their names, how each was passed
 // (ref, out, in) and the type arguments written, matched to each candidate's

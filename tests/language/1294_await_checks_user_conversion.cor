@@ -3,6 +3,7 @@
 // expect-output:
 // 7
 // 9
+//
 // A user-defined conversion is rewritten into a call to its operator with
 // the converted expression as the argument: the rewrite holds the very
 // expression it replaces. The await-safety walk followed that rewrite again
