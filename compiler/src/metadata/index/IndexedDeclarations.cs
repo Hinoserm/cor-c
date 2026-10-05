@@ -9,16 +9,18 @@ public sealed class IndexedDeclarations : IDisposable
     private readonly HashSet<string> owned;
     private readonly HashSet<string> loaded = new(StringComparer.Ordinal);
     private readonly HashSet<string> implementations = new(StringComparer.Ordinal);
-    private readonly HashSet<string> queries = new(StringComparer.Ordinal);
+    // WHAT THIS UNIT ASKED THE INDEX, by kind and name: spelled out as the
+    // index spells a query ("B:" and this assembly's identity before the
+    // name) only when the receipt is written. Kept spelled, every name the
+    // binder resolved carried the identity again -- ninety thousand strings.
+    private readonly HashSet<(char Kind, string Name)> queries = new();
     private readonly HashSet<string> resolvedExtensions = new(StringComparer.Ordinal);
     private readonly HashSet<string> resolvedOverrides = new(StringComparer.Ordinal);
     /// <summary>
-    /// What each binding name the binder required came to, and the two query
-    /// prefixes, spelled once: the binder asks for the same names thousands of
-    /// times a unit, and each ask built both queries afresh.
+    /// What each binding name the binder required came to: the binder asks
+    /// for the same names thousands of times a unit.
     /// </summary>
     private readonly Dictionary<string, string?> required = new(StringComparer.Ordinal);
-    private readonly string bindingPrefix, solePrefix;
     public long PayloadLoads => catalog.PayloadLoads;
     public SyntaxTokenCache Tokens { get; }
     public int Passes { get; set; }
@@ -48,9 +50,7 @@ public sealed class IndexedDeclarations : IDisposable
         // Interface slots are reserved over the project's compact family
         // table, even for declarations this unit never demand-loads. Adding
         // an earlier family can move every later slot: it is an ABI input.
-        queries.Add("I:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n");
-        bindingPrefix = "B:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n";
-        solePrefix = "S:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n";
+        queries.Add(('I', ""));
         owned = ownedFiles.Select(Path.GetFullPath).ToHashSet(StringComparer.Ordinal);
     }
 
@@ -67,9 +67,7 @@ public sealed class IndexedDeclarations : IDisposable
         assembly = session.Assembly;
         Interfaces = session.Interfaces;
         LibraryInterfaces = session.LibraryInterfaces;
-        queries.Add("I:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n");
-        bindingPrefix = "B:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n";
-        solePrefix = "S:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n";
+        queries.Add(('I', ""));
         owned = ownedFiles.Select(Path.GetFullPath).ToHashSet(StringComparer.Ordinal);
     }
 
@@ -77,8 +75,8 @@ public sealed class IndexedDeclarations : IDisposable
     {
         if (!required.TryGetValue(bindingName, out string? key))
         {
-            string query = bindingPrefix + bindingName;
-            queries.Add(query);
+            // A monomorphised name ('$') is in no index, so it is no dependency.
+            if (!bindingName.Contains('$')) queries.Add(('B', bindingName));
             key = catalog.BindingKey(assembly, bindingName) ?? Sole(bindingName);
             required[bindingName] = key;
         }
@@ -100,8 +98,7 @@ public sealed class IndexedDeclarations : IDisposable
     {
         if (name.Length == 0 || name.Contains('.') || name.Contains('`')) return null;
         // Only what the binder asks is a dependency; a prefetch is a guess.
-        string query = solePrefix + name;
-        if (asked) queries.Add(query);
+        if (asked) queries.Add(('S', name));
         return catalog.SoleKey(assembly, name);
     }
 
@@ -260,7 +257,7 @@ public sealed class IndexedDeclarations : IDisposable
     public void RequireExtensions(string space, string method)
     {
         string query = space + "\n" + method;
-        queries.Add("E:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + query);
+        queries.Add(('E', query));
         if (resolvedExtensions.Contains(query)) return;
         foreach (string key in catalog.ExtensionKeys(assembly, space, method))
             if (!loaded.Contains(key)) throw new DeclarationDemand(key);
@@ -275,7 +272,7 @@ public sealed class IndexedDeclarations : IDisposable
     public void RequireOverrides(string method, int arity)
     {
         string query = method + "`" + arity;
-        queries.Add("G:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + query);
+        queries.Add(('G', query));
         if (resolvedOverrides.Contains(query)) return;
         DeclarationBatch missing = new();
         foreach (string key in catalog.OverrideKeys(assembly, query))
@@ -292,7 +289,7 @@ public sealed class IndexedDeclarations : IDisposable
         foreach (string name in new[] { "Runtime", "String", "Boolean", "Byte", "SByte", "Int16", "UInt16",
             "Int32", "UInt32", "Int64", "UInt64", "Single", "Double", "Char" })
         {
-            queries.Add("B:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + name);
+            queries.Add(('B', name));
             string? key = catalog.BindingKey(assembly, name);
             if (key is not null && !loaded.Contains(key)) Include(key);
         }
@@ -307,7 +304,7 @@ public sealed class IndexedDeclarations : IDisposable
         foreach (TypeDecl type in unit.Types.Where(type => type.Mods.HasFlag(Mods.Partial)))
         {
             string name = Binder.TypeKey(type);
-            queries.Add("B:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + name);
+            queries.Add(('B', name));
             string? key = catalog.BindingKey(assembly, name) ?? Sole(name);
             if (key is not null) Load(key);
         }
@@ -478,5 +475,10 @@ public sealed class IndexedDeclarations : IDisposable
         if (session is null) { Tokens.Clear(); catalog.Dispose(); }
     }
 
-    public void WriteDependencies(string path) => UnitDependencies.Write(path, catalog, loaded, implementations, queries);
+    public void WriteDependencies(string path)
+    {
+        string identity = SourceIndexBuilder.AssemblyIdentity(assembly);
+        UnitDependencies.Write(path, catalog, loaded, implementations,
+            queries.Select(asked => asked.Kind + ":" + identity + "\n" + asked.Name));
+    }
 }
