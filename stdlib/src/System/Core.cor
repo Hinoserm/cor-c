@@ -6862,6 +6862,7 @@ static class OutgrownStorage {
     }
 }
 
+[LateBound]
 class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
@@ -7653,6 +7654,7 @@ class QueueEnumerator<T> : IEnumerator<T> {
     }
 }
 
+[LateBound]
 class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T> {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
@@ -10331,6 +10333,7 @@ interface IReadOnlyDictionary<K, V> : IEnumerable<KeyValuePair<K, V>> {
     bool TryGetValue(K key, out V value);
 }
 
+[LateBound]
 class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>>, IOwnsElements {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
@@ -11911,6 +11914,7 @@ class Random {
     }
 }
 
+[LateBound]
 class StringBuilder : IOwnsStorage {
     private string buffer;
     private int used;
@@ -12240,6 +12244,7 @@ class HashSetEnumerator<T> : IEnumerator<T> {
     }
 }
 
+[LateBound]
 class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
@@ -15882,7 +15887,9 @@ namespace System
             for (int i = 0; i < call.Args.Length; i++)
             {
                 int ta = TypeFor(group, maps, a, i), tb = TypeFor(group, maps, b, i);
-                if (ta < 0 || tb < 0 || ta == tb) continue;
+                // One type however it was annotated: `string?` and `string`
+                // are one parameter type to C# (an annotation, not a type).
+                if (ta < 0 || tb < 0 || ta == tb || group.Types[ta] == group.Types[tb]) continue;
                 same = false;
                 bool exactA = call.ExactlyOf(i, group.Types[ta]), exactB = call.ExactlyOf(i, group.Types[tb]);
                 int said = exactA && !exactB ? 1 : exactB && !exactA ? -1
@@ -15908,8 +15915,3 @@ namespace System
         }
     }
 }
-
-// THE LIBRARY'S DELEGATES CALLED BY A DYNAMIC BINDER: each one's own Invoke,
-// its arguments matched to its parameters and converted as C#'s binder
-// converts them (System.Dynamic.ILateInvocable). A program's own delegates
-// get theirs from the compiler (DynamicDeclarations).

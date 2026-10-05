@@ -72,7 +72,23 @@ public static class DynamicDeclarations
     public static void Expand(CompilationUnit unit, IReadOnlyCollection<string>? symbols, List<CompileError> errors)
     {
         Scope scope = new(unit);
-        List<TypeDecl> made = unit.Types.Where(t => (unit.UsesDynamic && Eligible(t)) || (Marked(t) && Shaped(t))).ToList();
+        foreach (TypeDecl d in unit.Types.Where(t => LateDelegate(t) || unit.UsesDynamic && FunctionShape(t)))
+        {
+            MethodDecl? invoke = d.Members.OfType<MethodDecl>().FirstOrDefault(m => m.Name == "Invoke");
+            if (invoke is null || d.Members.Any(m => m is MethodDecl { Name: "__LateInvoke" })) continue;
+            CompilationUnit late;
+            try { late = Parser.ParseText(DelegateMembers(scope, d, invoke), "<dynamic:" + d.Name + ">", symbols); }
+            catch (CompileError e) { errors.Add(e); continue; }
+            d.Bases.Add(new TypeRef { Name = "System.Dynamic.ILateInvocable", Line = d.Line, Col = d.Col });
+            foreach (MemberDecl m in late.Types[0].Members)
+            {
+                m.Scope = d.Scope;
+                m.Namespace = d.Namespace;
+                m.File = d.File;
+                d.Members.Add(m);
+            }
+        }
+        List<TypeDecl> made = unit.Types.Where(t => (unit.UsesDynamic && Eligible(t)) || (Marked(t) && Shaped(t) && (unit.UsesDynamic || t.TypeParams.Count == 0))).ToList();
         HashSet<TypeDecl> given = new(made);
         foreach (TypeDecl t in made)
         {
@@ -96,6 +112,7 @@ public static class DynamicDeclarations
                 t.Members.Add(m);
             }
         }
+        if (unit.UsesDynamic) PrimitiveMembers(unit, scope, symbols, errors);
     }
 
     static bool Eligible(TypeDecl t) => !t.FromLibrary && Shaped(t);
@@ -108,12 +125,27 @@ public static class DynamicDeclarations
     /// <summary>
     /// A class of the library's that a dynamic receiver finds the members of
     /// whatever program uses it: `[LateBound]` (the collections and
-    /// StringBuilder), given them where the library is compiled.
+    /// StringBuilder), given them where the library is compiled -- a generic
+    /// one only in a program that uses dynamic, which specializes its own.
     /// </summary>
     static bool Marked(TypeDecl t) => t.AttributeParts.Any(a => a.Target.Length == 0 && a.Is("LateBound"));
 
     /// <summary>Whether this unit has anything to write: it uses `dynamic`, or holds a [LateBound] class.</summary>
-    public static bool Wanted(CompilationUnit unit) => unit.UsesDynamic || unit.Types.Any(t => Marked(t) && Shaped(t));
+    public static bool Wanted(CompilationUnit unit) => unit.UsesDynamic || unit.Types.Any(t => Marked(t) && Shaped(t) && t.TypeParams.Count == 0 || LateDelegate(t));
+
+    /// <summary>A delegate type given its __LateInvoke here: declared in this unit, not a local function's.</summary>
+    static bool LateDelegate(TypeDecl d)
+        => d.IsDelegate && !d.SignatureOnly && !d.Elsewhere && !d.LocalOnly
+        && !d.Name.Contains('$') && !d.Name.StartsWith("__", StringComparison.Ordinal);
+
+    /// <summary>
+    /// The library's Func and Action: interfaces with one Invoke, which is
+    /// what a delegate type is here (Core.cor), given __LateInvoke only in a
+    /// program that uses dynamic, so that no other program's closures pay for it.
+    /// </summary>
+    static bool FunctionShape(TypeDecl d)
+        => d.Kind == TypeKind.Interface && d.FromLibrary && d.Name is "Func" or "Action" or "Predicate" or "Comparison"
+        && d.Members.Count == 1 && d.Members[0] is MethodDecl { Name: "Invoke" };
 
     /// <summary>A generic base that has the members already: a [LateBound] template (List&lt;int&gt;).</summary>
     static bool GenericMarkedBase(Scope scope, TypeRef b)
@@ -155,6 +187,7 @@ public static class DynamicDeclarations
         List<string> methodOrder = new();
         List<PropertyDecl> indexers = new();
         List<MethodDecl> operators = new();
+        List<(string Name, TypeRef Type)> events = new();
         HashSet<string> stored = new(StringComparer.Ordinal);
         foreach (TypeDecl at in chain)
         {
@@ -162,6 +195,12 @@ public static class DynamicDeclarations
             {
                 switch (m)
                 {
+                    case FieldDecl e when Visible(e) && e.IsEvent:
+                        foreach (FieldDecl one in new[] { e }.Concat(e.More))
+                        {
+                            if (stored.Add(one.Name)) events.Add((one.Name, e.Type));
+                        }
+                        break;
                     case FieldDecl f when Visible(f) && !f.IsEvent && !f.Mods.HasFlag(Mods.Const):
                         foreach (FieldDecl one in new[] { f }.Concat(f.More))
                         {
@@ -183,8 +222,7 @@ public static class DynamicDeclarations
                     case MethodDecl md when Visible(md) && !md.IsCtor && md.TypeParams.Count == 0 && md.Name != at.Name
                                          && !md.Name.StartsWith("op_", StringComparison.Ordinal)
                                          && !md.Name.StartsWith("get_", StringComparison.Ordinal) && !md.Name.StartsWith("set_", StringComparison.Ordinal)
-                                         && !md.Name.StartsWith("add_", StringComparison.Ordinal) && !md.Name.StartsWith("remove_", StringComparison.Ordinal)
-                                         && md.Params.All(prm => !prm.IsRef && !prm.IsOut):
+                                         && !md.Name.StartsWith("add_", StringComparison.Ordinal) && !md.Name.StartsWith("remove_", StringComparison.Ordinal):
                         if (!methods.TryGetValue(md.Name, out List<MethodDecl>? overloads)) { methods[md.Name] = overloads = new(); methodOrder.Add(md.Name); }
                         // An override is the method it overrides: called
                         // through `this`, it dispatches the same.
@@ -221,7 +259,7 @@ public static class DynamicDeclarations
         s.Append("        }\n").Append(Fallback("__DynSet(name, value)", "1")).Append("    }\n");
 
         // ---- a method called
-        s.Append("    public ").Append(modifier).Append(" int __DynCall(string name, object?[] args, out object? result)\n    {\n");
+        s.Append("    public ").Append(modifier).Append(" int __DynCall(string name, System.Dynamic.LateCall call, out object? result)\n    {\n");
         s.Append("        result = null;\n        switch (name)\n        {\n");
         foreach (string name in methodOrder)
         {
@@ -234,31 +272,32 @@ public static class DynamicDeclarations
             }
             s.Append("                return 2;\n            }\n");
         }
-        s.Append("        }\n").Append(Fallback("__DynCall(name, args, out result)", "1")).Append("    }\n");
+        s.Append("        }\n").Append(Fallback("__DynCall(name, call, out result)", "1")).Append("    }\n");
 
         // ---- the indexer
-        s.Append("    public ").Append(modifier).Append(" int __DynGetIndex(object?[] keys, out object? result)\n    {\n");
-        s.Append("        result = null;\n");
+        s.Append("    public ").Append(modifier).Append(" int __DynGetIndex(System.Dynamic.LateCall keys, out object? result)\n    {\n");
+        s.Append("        result = null;\n        object?[] __keys = keys.Args;\n");
         foreach (bool exact in new[] { true, false })
         {
             foreach (PropertyDecl ix in indexers.Where(x => x.Auto || x.Getter is not null))
             {
-                s.Append("        if (keys.Length == ").Append(ix.Params.Count);
-                for (int k = 0; k < ix.Params.Count; k++) s.Append(" && ").Append(Test(scope, t, ix.Params[k].Type, "keys[" + k + "]", exact));
-                s.Append(") { result = this[").Append(string.Join(", ", Enumerable.Range(0, ix.Params.Count).Select(k => Converted(scope, t, ix.Params[k].Type, "keys[" + k + "]")))).Append("]; return 0; }\n");
+                s.Append("        if (__keys.Length == ").Append(ix.Params.Count);
+                for (int k = 0; k < ix.Params.Count; k++) s.Append(" && ").Append(Test(scope, t, ix.Params[k].Type, "__keys[" + k + "]", exact));
+                s.Append(") { result = this[").Append(string.Join(", ", Enumerable.Range(0, ix.Params.Count).Select(k => Converted(scope, t, ix.Params[k].Type, "__keys[" + k + "]")))).Append("]; return 0; }\n");
             }
         }
         s.Append(indexers.Count > 0 ? "        return 2;\n" : inherits ? "        return base.__DynGetIndex(keys, out result);\n" : "        return 1;\n");
         s.Append("    }\n");
-        s.Append("    public ").Append(modifier).Append(" int __DynSetIndex(object?[] keys, object? value)\n    {\n");
+        s.Append("    public ").Append(modifier).Append(" int __DynSetIndex(System.Dynamic.LateCall keys, object? value)\n    {\n");
+        s.Append("        object?[] __keys = keys.Args;\n");
         foreach (bool exact in new[] { true, false })
         {
             foreach (PropertyDecl ix in indexers.Where(x => x.HasSetter))
             {
-                s.Append("        if (keys.Length == ").Append(ix.Params.Count);
-                for (int k = 0; k < ix.Params.Count; k++) s.Append(" && ").Append(Test(scope, t, ix.Params[k].Type, "keys[" + k + "]", exact));
+                s.Append("        if (__keys.Length == ").Append(ix.Params.Count);
+                for (int k = 0; k < ix.Params.Count; k++) s.Append(" && ").Append(Test(scope, t, ix.Params[k].Type, "__keys[" + k + "]", exact));
                 s.Append(" && ").Append(Fits(scope, t, ix.Type, "value"));
-                s.Append(") { this[").Append(string.Join(", ", Enumerable.Range(0, ix.Params.Count).Select(k => Converted(scope, t, ix.Params[k].Type, "keys[" + k + "]"))))
+                s.Append(") { this[").Append(string.Join(", ", Enumerable.Range(0, ix.Params.Count).Select(k => Converted(scope, t, ix.Params[k].Type, "__keys[" + k + "]"))))
                  .Append("] = ").Append(Converted(scope, t, ix.Type, "value")).Append("; return 0; }\n");
             }
         }
@@ -290,7 +329,41 @@ public static class DynamicDeclarations
         }
         s.Append(Fallback("__DynConvert(target, explicitly, out result)", "1")).Append("    }\n");
 
+        // ---- the events: a handler added or taken away
+        s.Append("    public ").Append(modifier).Append(" int __DynEvent(string name, bool add, object? handler)\n    {\n");
+        s.Append("        switch (name)\n        {\n");
+        foreach ((string name, TypeRef type) in events)
+        {
+            string p = Plain(type);
+            s.Append("            case \"").Append(name).Append("\":\n");
+            s.Append("                if (!(handler == null || handler is ").Append(p).Append(")) return 2;\n");
+            s.Append("                if (add) this.").Append(name).Append(" += (").Append(p).Append(")handler!; else this.").Append(name).Append(" -= (").Append(p).Append(")handler!;\n");
+            s.Append("                return 0;\n");
+        }
+        s.Append("        }\n").Append(Fallback("__DynEvent(name, add, handler)", "1")).Append("    }\n");
+
         s.Append("}\n");
+        return s.ToString();
+    }
+
+    /// <summary>
+    /// A DELEGATE CALLED BY A DYNAMIC BINDER (System.DynamicRuntime.Invoke):
+    /// every delegate type, the library's and the program's, is made
+    /// System.Dynamic.ILateInvocable with a default __LateInvoke, which a
+    /// closure takes up as any class implementing the delegate's interface
+    /// would (Binder.ImplementDefaults). Its arguments go to Invoke's
+    /// parameters as a method's do (CallCases); no match is C#'s binder's
+    /// error.
+    /// </summary>
+    static string DelegateMembers(Scope scope, TypeDecl t, MethodDecl invoke)
+    {
+        StringBuilder s = new();
+        s.Append("class __Members\n{\n");
+        s.Append("    object? System.Dynamic.ILateInvocable.__LateInvoke(System.Dynamic.LateCall call)\n    {\n");
+        s.Append("        object? result = null;\n");
+        foreach (bool exact in new[] { true, false }) CallCases(scope, t, s, invoke, exact, "return result;");
+        s.Append("        throw new Microsoft.CSharp.RuntimeBinder.RuntimeBinderException(\"Delegate '").Append(t.Name).Append("' has some invalid arguments\");\n");
+        s.Append("    }\n}\n");
         return s.ToString();
     }
 
@@ -312,30 +385,86 @@ public static class DynamicDeclarations
     }
 
     /// <summary>
-    /// One overload's calls: each argument count it takes (its optional
-    /// parameters left out one by one, its `params` array expanded),
-    /// tested exactly or by conversion.
+    /// One overload's call, its arguments matched to its parameters by the
+    /// binder's own rules (LateCall.Map: by position and by name, `ref`,
+    /// `out` and `in` as the parameters take them, the optional ones left
+    /// out), each present one tested exactly or by conversion; the call made
+    /// with every present argument named, one form for each set of optional
+    /// parameters given, so a left-out one takes the method's own default;
+    /// `ref` and `out` through locals of the parameter's type, written back
+    /// to the caller's arguments after (LateCall.Back). Then, for a `params`
+    /// method, its expanded form (LateCall.MapExpanded).
     /// </summary>
-    static void CallCases(Scope scope, TypeDecl t, StringBuilder s, MethodDecl md, bool exact)
+    static void CallCases(Scope scope, TypeDecl t, StringBuilder s, MethodDecl md, bool exact, string ret = "return 0;", string? callee = null, string? self = null)
     {
+        callee ??= "this." + md.Name;
+        string head = self is null ? "" : self;
         const string pad = "                ";
         int total = md.Params.Count;
         int required = total;
         while (required > 0 && md.Params[required - 1].Default is not null) required--;
         bool expands = total > 0 && md.Params[^1].IsParams && md.Params[^1].Type.ArrayRank > 0;
         bool returns = md.Returns is not null && md.Returns.Name != "void";
-        string Done(string call) => returns ? "result = " + call + "; return 0;" : call + "; return 0;";
+        static int Kind(Param p) => p.IsOut ? 2 : p.IsReadOnlyRef ? 3 : p.IsRef ? 1 : 0;
+        string names = "new string[] { " + string.Join(", ", md.Params.Select(p => "\"" + p.Name + "\"")) + " }";
+        string kinds = "new int[] { " + string.Join(", ", md.Params.Select(Kind)) + " }";
 
-        for (int count = required; count <= total; count++)
+        // Each argument in a local of its own: the tests' null checks follow
+        // a local, not an element of an element.
+        s.Append(pad).Append("{\n");
+        s.Append(pad).Append("    int[]? __m = call.Map(").Append(names).Append(", ").Append(kinds).Append(", ").Append(required).Append(");\n");
+        s.Append(pad).Append("    if (__m != null)\n").Append(pad).Append("    {\n");
+        for (int k = 0; k < total; k++)
+            s.Append(pad).Append("    object? __a").Append(k).Append(" = __m[").Append(k).Append("] < 0 ? null : call.Args[__m[").Append(k).Append("]];\n");
+        s.Append(pad).Append("    if (true");
+        for (int k = 0; k < total; k++)
         {
-            s.Append(pad).Append("if (args.Length == ").Append(count);
-            for (int k = 0; k < count; k++) s.Append(" && ").Append(Test(scope, t, md.Params[k].Type, "args[" + k + "]", exact));
-            s.Append(") { ").Append(Done("this." + md.Name + "(" + string.Join(", ", Enumerable.Range(0, count).Select(k => Converted(scope, t, md.Params[k].Type, "args[" + k + "]"))) + ")")).Append(" }\n");
+            if (md.Params[k].IsOut) continue;
+            s.Append(" && (__m[").Append(k).Append("] < 0 || ").Append(Test(scope, t, md.Params[k].Type, "__a" + k, exact)).Append(')');
         }
-        if (!expands) return;
+        s.Append(")\n").Append(pad).Append("    {\n");
+        // The locals a ref or out argument goes through.
+        for (int k = 0; k < total; k++)
+        {
+            Param prm = md.Params[k];
+            if (!prm.IsRef && !prm.IsOut) continue;
+            string type = Plain(prm.Type) + (prm.Type.Nullable ? "?" : "");
+            s.Append(pad).Append("        ").Append(type).Append(" __r").Append(k);
+            if (prm.IsRef) s.Append(" = ").Append(Converted(scope, t, prm.Type, "__a" + k));
+            else s.Append(" = default(").Append(type).Append(')');
+            s.Append(";\n");
+        }
+        // One call for each set of the optional parameters given.
+        List<int> optional = Enumerable.Range(required, total - required).ToList();
+        int forms = optional.Count <= 4 ? 1 << optional.Count : 1;
+        for (int mask = forms - 1; mask >= 0; mask--)
+        {
+            List<string> conditions = new();
+            List<string> passed = new();
+            for (int k = 0; k < total; k++)
+            {
+                int bit = optional.IndexOf(k);
+                bool given = bit < 0 || optional.Count > 4 || (mask & (1 << bit)) != 0;
+                // Past four optional parameters, the one form that takes them all.
+                if (bit >= 0) conditions.Add("__m[" + k + "] " + (given ? ">= 0" : "< 0"));
+                if (!given) continue;
+                Param prm = md.Params[k];
+                string value = prm.IsRef ? "ref __r" + k : prm.IsOut ? "out __r" + k : Converted(scope, t, prm.Type, "__a" + k);
+                passed.Add(prm.Name + ": " + value);
+            }
+            string invoke = callee + "(" + string.Join(", ", (self is null ? passed : passed.Prepend(head))) + ")";
+            s.Append(pad).Append("        ");
+            if (conditions.Count > 0) s.Append("if (").Append(string.Join(" && ", conditions)).Append(") ");
+            s.Append("{ ").Append(returns ? "result = " + invoke + ";" : invoke + ";");
+            for (int k = 0; k < total; k++)
+                if (md.Params[k].IsRef || md.Params[k].IsOut) s.Append(" call.Back(__m, ").Append(k).Append(", __r").Append(k).Append(");");
+            s.Append(' ').Append(ret).Append(" }\n");
+        }
+        s.Append(pad).Append("    }\n").Append(pad).Append("    }\n").Append(pad).Append("}\n");
+        if (!expands || md.Params.Any(p => p.IsRef || p.IsOut)) return;
 
-        // THE EXPANDED FORM: the fixed arguments, then each of the rest an
-        // element of the array.
+        // THE EXPANDED FORM: the fixed arguments as Map has them, each of the
+        // rest an element of the array.
         TypeRef array = md.Params[^1].Type;
         TypeRef element = new()
         {
@@ -343,17 +472,116 @@ public static class DynamicDeclarations
             Line = array.Line, Col = array.Col,
         };
         int fixedCount = total - 1;
-        s.Append(pad).Append("if (args.Length >= ").Append(fixedCount);
-        for (int k = 0; k < fixedCount; k++) s.Append(" && ").Append(Test(scope, t, md.Params[k].Type, "args[" + k + "]", exact));
-        s.Append(" && " + Rt + ".All(args, ").Append(fixedCount).Append(", (object? __e) => ").Append(Test(scope, t, element, "__e", exact)).Append("))\n");
+        // Every fixed parameter given: the expanded form is C#'s only when
+        // they are (12.6.4.2 takes the fixed ones as written).
+        int fixedRequired = fixedCount;
+        string fixedNames = "new string[] { " + string.Join(", ", md.Params.Take(fixedCount).Select(p => "\"" + p.Name + "\"")) + " }";
+        string fixedKinds = "new int[] { " + string.Join(", ", md.Params.Take(fixedCount).Select(Kind)) + " }";
         s.Append(pad).Append("{\n");
-        s.Append(pad).Append("    ").Append(Plain(element)).Append(element.Nullable ? "?" : "").Append("[] __rest = new ").Append(Plain(element)).Append(element.Nullable ? "?" : "")
-         .Append("[args.Length - ").Append(fixedCount).Append("];\n");
-        s.Append(pad).Append("    for (int __k = 0; __k < __rest.Length; __k++) __rest[__k] = ").Append(Converted(scope, t, element, "args[" + fixedCount + " + __k]")).Append(";\n");
-        List<string> passed = Enumerable.Range(0, fixedCount).Select(k => Converted(scope, t, md.Params[k].Type, "args[" + k + "]")).ToList();
-        passed.Add("__rest");
-        s.Append(pad).Append("    ").Append(Done("this." + md.Name + "(" + string.Join(", ", passed) + ")")).Append('\n');
-        s.Append(pad).Append("}\n");
+        s.Append(pad).Append("    int[]? __x = call.MapExpanded(").Append(fixedNames).Append(", ").Append(fixedKinds).Append(", ").Append(fixedRequired).Append(");\n");
+        s.Append(pad).Append("    if (__x != null)\n").Append(pad).Append("    {\n");
+        for (int k = 0; k < fixedCount; k++)
+            s.Append(pad).Append("    object? __f").Append(k).Append(" = call.Args[__x[").Append(k).Append("]];\n");
+        s.Append(pad).Append("    if (true");
+        for (int k = 0; k < fixedCount; k++)
+            s.Append(" && ").Append(Test(scope, t, md.Params[k].Type, "__f" + k, exact));
+        s.Append(" && " + Rt + ".All(call.Rest(").Append(fixedCount).Append("), (object? __e) => ").Append(Test(scope, t, element, "__e", exact)).Append("))\n");
+        s.Append(pad).Append("    {\n");
+        s.Append(pad).Append("        object?[] __given = call.Rest(").Append(fixedCount).Append(");\n");
+        s.Append(pad).Append("        ").Append(Plain(element)).Append(element.Nullable ? "?" : "").Append("[] __rest = new ").Append(Plain(element)).Append(element.Nullable ? "?" : "")
+         .Append("[__given.Length];\n");
+        s.Append(pad).Append("        for (int __k = 0; __k < __rest.Length; __k++) __rest[__k] = ").Append(Converted(scope, t, element, "__given[__k]")).Append(";\n");
+        List<string> fixedPassed = Enumerable.Range(0, fixedCount).Select(k => Converted(scope, t, md.Params[k].Type, "__f" + k)).ToList();
+        fixedPassed.Add("__rest");
+        if (self is not null) fixedPassed.Insert(0, head);
+        string expanded = callee + "(" + string.Join(", ", fixedPassed) + ")";
+        s.Append(pad).Append("        ").Append(returns ? "result = " + expanded + "; " + ret : expanded + "; " + ret).Append('\n');
+        s.Append(pad).Append("    }\n").Append(pad).Append("    }\n").Append(pad).Append("}\n");
+    }
+
+    // ---- the primitives' own members ------------------------------------------------------
+
+    /// <summary>
+    /// What a primitive answers as its members: here a string's are the
+    /// library's String statics that take it first (`s.ToUpper()` is
+    /// String.ToUpper(s)), a number's or a char's the same of Int32, Char and
+    /// the rest. Written into LateBuiltIns.PrimitiveCall (Dynamic.cor), whose
+    /// own body says no such member, in a program that uses dynamic. The
+    /// statics .NET has on these types (String.Join, int.Parse) are left out,
+    /// as C#'s binder leaves statics out of an instance's members.
+    /// </summary>
+    static readonly (string Keyword, string Holder)[] Primitives =
+    {
+        ("string", "String"), ("char", "Char"), ("bool", "Boolean"), ("byte", "Byte"), ("short", "Int16"),
+        ("int", "Int32"), ("uint", "UInt32"), ("long", "Int64"), ("ulong", "UInt64"), ("float", "Single"), ("double", "Double"),
+    };
+
+    static readonly HashSet<string> StringStatics = new(StringComparer.Ordinal)
+    {
+        "Join", "Format", "Concat", "IsNullOrEmpty", "IsNullOrWhiteSpace", "Compare", "CompareOrdinal",
+        "Copy", "Intern", "IsInterned", "Create", "Empty",
+    };
+
+    /// <summary>A number's or a char's instance members, as .NET has them; the rest of its statics are static there.</summary>
+    static readonly HashSet<string> ValueInstance = new(StringComparer.Ordinal)
+    {
+        "CompareTo", "Equals", "GetHashCode", "ToString", "TryFormat", "GetTypeCode",
+    };
+
+    static void PrimitiveMembers(CompilationUnit unit, Scope scope, IReadOnlyCollection<string>? symbols, List<CompileError> errors)
+    {
+        TypeDecl? host = unit.Types.FirstOrDefault(t => t.Name == "LateBuiltIns" && t.FromLibrary);
+        if (host is null) return;
+        StringBuilder s = new();
+        s.Append("class __Members\n{\n");
+        s.Append("    public static int PrimitiveCall(object self, string name, System.Dynamic.LateCall call, out object? result)\n    {\n");
+        s.Append("        result = null;\n");
+        foreach ((string keyword, string holder) in Primitives)
+        {
+            TypeDecl? statics = unit.Types.FirstOrDefault(t => t.Name == holder && t.FromLibrary && t.Outer is null && t.TypeParams.Count == 0
+                                                             && t.Mods.HasFlag(Mods.Static));
+            if (statics is null) continue;
+            Dictionary<string, List<MethodDecl>> methods = new(StringComparer.Ordinal);
+            foreach (MethodDecl md in statics.Members.OfType<MethodDecl>())
+            {
+                if (!md.Mods.HasFlag(Mods.Public) || md.Body is null && !md.Mods.HasFlag(Mods.Extern) || md.TypeParams.Count > 0 || md.Params.Count == 0) continue;
+                if (md.Name.StartsWith("__", StringComparison.Ordinal) || md.Name.Contains('<') || md.Name.StartsWith("op_", StringComparison.Ordinal)) continue;
+                if (keyword == "string" ? StringStatics.Contains(md.Name) : !ValueInstance.Contains(md.Name)) continue;
+                Param first = md.Params[0];
+                if (first.IsRef || first.IsOut || first.IsParams || first.Type.ArrayRank > 0 || first.Type.Args.Count > 0
+                    || first.Type.Name != keyword && first.Type.Name != holder && first.Type.Name != "System." + holder) continue;
+                if (md.Params.Skip(1).Any(p => p.Type.Name.Contains("Span", StringComparison.Ordinal) || p.Type.PointerDepth > 0)) continue;
+                MethodDecl view = new() { Name = md.Name, Returns = md.Returns, Line = md.Line, Col = md.Col };
+                view.Params.AddRange(md.Params.Skip(1));
+                if (!methods.TryGetValue(md.Name, out List<MethodDecl>? all)) methods[md.Name] = all = new();
+                all.Add(view);
+            }
+            if (methods.Count == 0) continue;
+            // Each its own name: an `is` pattern's variable is the enclosing block's.
+            string own = "__self_" + keyword;
+            s.Append("        if (self is ").Append(keyword).Append(' ').Append(own).Append(")\n        {\n            switch (name)\n            {\n");
+            foreach ((string name, List<MethodDecl> overloads) in methods)
+            {
+                s.Append("            case \"").Append(name).Append("\":\n            {\n");
+                List<MethodDecl> ordered = overloads.OrderByDescending(o => o.Params.Sum(prm => Weight(scope, statics, prm.Type))).ToList();
+                foreach (bool exact in new[] { true, false })
+                    foreach (MethodDecl md in ordered) CallCases(scope, statics, s, md, exact, callee: holder + "." + name, self: own);
+                s.Append("                return 2;\n            }\n");
+            }
+            s.Append("            }\n            return 1;\n        }\n");
+        }
+        s.Append("        return 1;\n    }\n}\n");
+        CompilationUnit late;
+        try { late = Parser.ParseText(s.ToString(), "<dynamic:primitives>", symbols); }
+        catch (CompileError e) { errors.Add(e); return; }
+        host.Members.RemoveAll(m => m is MethodDecl { Name: "PrimitiveCall" });
+        foreach (MemberDecl m in late.Types[0].Members)
+        {
+            m.Scope = host.Scope;
+            m.Namespace = host.Namespace;
+            m.File = host.File;
+            host.Members.Add(m);
+        }
     }
 
     // ---- operators ---------------------------------------------------------------------

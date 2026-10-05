@@ -311,6 +311,17 @@ namespace System
     /// The compiler's dynamic binder (Binder.Dynamic.cs names each of these).
     /// Not for programs to call: what they write is `dynamic`.
     /// </summary>
+    /// <summary>
+    /// A primitive's own members bound late -- a string's, a number's: the
+    /// library's String, Int32 and the rest, whose statics take the value
+    /// first. The compiler writes this body in a program that uses dynamic
+    /// (DynamicDeclarations.PrimitiveMembers); this one says no such member.
+    /// </summary>
+    static class LateBuiltIns
+    {
+        public static int PrimitiveCall(object self, string name, LateCall call, out object? result) { result = null; return 1; }
+    }
+
     public static class DynamicRuntime
     {
         const int Done = 0, NoMember = 1, NoFit = 2, MethodGroup = 3, ReadOnly = 4, StaticMember = 5, Ambiguous = 6;
@@ -486,7 +497,7 @@ namespace System
             }
             int said = NoMember;
             if (target is IDynamicMembers members) said = members.__DynCall(name, call, out result);
-            else result = null;
+            else said = LateBuiltIns.PrimitiveCall(target!, name, call, out result);
             if (said == NoMember)
             {
                 foreach (ILateMembers p in Providers())
@@ -1069,6 +1080,7 @@ namespace System
         {
             result = null;
             if (name == "Length" && ArrayLength(target) is int length) { result = length; return true; }
+            if (name == "Length" && target is string text) { result = text.Length; return true; }
             return false;
         }
 
@@ -1095,6 +1107,7 @@ namespace System
             result = null;
             if (keys.Length != 1 || !Fits(keys[0], typeof(long))) return false;
             int k = (int)AsLong(keys[0]);
+            if (target is string text) { result = text[k]; return true; }
             if (target is object[] o) { result = o[k]; return true; }
             if (target is int[] i) { result = i[k]; return true; }
             if (target is long[] l) { result = l[k]; return true; }
