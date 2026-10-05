@@ -480,6 +480,7 @@ static class AppContext
         // The collector's own: read as the process ends, from a flag of its
         // own, so a program that sets no switch carries none of this.
         if (switchName == "Corsac.GC.Stats") Gc.StatsAsked = isEnabled;
+        if (switchName == "Corsac.GC.AllocSample" && isEnabled) AllocSamples.Begin();
     }
 
     public static bool TryGetSwitch(string switchName, out bool isEnabled)

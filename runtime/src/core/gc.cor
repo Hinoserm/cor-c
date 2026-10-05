@@ -10794,6 +10794,31 @@ static class HeapChunks
     // side.
     static long _index;
     static long _indexBase;
+    // THE CHUNK OF EVERY 4 KB OF THE LOW FOUR GIGABYTES, one word each (Of):
+    // a free's chunk found by one read where a binary search over the index
+    // took most of what a compiler's fifty million frees cost the thread
+    // making them. Mapped once, where a mapping costs only the pages touched
+    // (Platform.MapsCommitLazily): a page of the table covers a megabyte or
+    // more of heap. 0 where there is none; the index answers then, and
+    // above four gigabytes.
+    static long _slots;
+    static bool _slotsTried;
+    const long SlotShift = 12;
+    const long SlotSpan = 0x100000000;
+
+    // Chunk `chunk`'s mapped range, every 4 KB of it below four gigabytes, set to `value`.
+    static void SlotsSet(long chunk, long value)
+    {
+        if (!_slotsTried)
+        {
+            _slotsTried = true;
+            if (Platform.MapsCommitLazily) _slots = Platform.Map((SlotSpan >> SlotShift) * WordSize.Bytes);
+        }
+        if (_slots == 0) return;
+        long end = Sys.Peek(chunk + ChunkLimit);
+        for (long at = chunk & ~((1L << (int)SlotShift) - 1); at < end && at < SlotSpan; at = at + (1L << (int)SlotShift))
+            Sys.Poke(_slots + (at >> (int)SlotShift) * WordSize.Bytes, value);
+    }
     static long _indexCount;
     static long _indexCapacity;
     static bool _indexFailed;
@@ -11183,6 +11208,7 @@ static class HeapChunks
     /// the index lies between them, so the entries around them move once.
     static void IndexAddRun(long first, long n, long step)
     {
+        for (long k = 0; k < n; k++) SlotsSet(first + k * step, first + k * step);
         if (_indexFailed) return;
         long front = _index == 0 ? 0 : (_index - _indexBase) / WordSize.Bytes;
         long back = _indexCapacity - front - _indexCount;
@@ -11241,6 +11267,7 @@ static class HeapChunks
 
     static void IndexRemove(long chunk)
     {
+        SlotsSet(chunk, 0);
         if (_indexFailed || _indexCount == 0) return;
         long at = IndexLowerBound(chunk);
         if (at == _indexCount || Sys.Peek(_index + at * WordSize.Bytes) != chunk) return;
@@ -11604,6 +11631,17 @@ static class HeapChunks
         if (memo != 0 && at >= memo + ChunkBytes && at < Sys.Peek(memo + ChunkEnd))
         {
             return memo;
+        }
+
+        if (_slots != 0 && at < SlotSpan)
+        {
+            long slot = Sys.Peek(_slots + (at >> (int)SlotShift) * WordSize.Bytes);
+            if (slot != 0 && at >= slot + ChunkBytes && at < Sys.Peek(slot + ChunkEnd))
+            {
+                _memo = slot;
+                return slot;
+            }
+            return 0;
         }
 
         if (!_indexFailed)

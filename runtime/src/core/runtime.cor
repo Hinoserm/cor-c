@@ -282,6 +282,15 @@ static class AllocSamples
     public static void Start()
     {
         if (!Platform.AllocSample()) return;
+        Begin();
+    }
+
+    /// Sampling from now on, however asked: the environment at start, or
+    /// AppContext.SetSwitch("Corsac.GC.AllocSample", true) -- corc's
+    /// --alloc-sample. Once.
+    public static void Begin()
+    {
+        if (_table != 0) return;
         _table = Platform.Map(Slots * Words * WordSize.Bytes);
         if (_table == 0) return;
         _places = Platform.Map(Places * 3 * WordSize.Bytes);

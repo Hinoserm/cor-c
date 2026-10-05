@@ -100,6 +100,12 @@ public static class Driver
         // The collector's workers in a child a project build started: its
         // share of the machine beside its siblings (ProjectCommand).
         if (Switches.GcWorkers >= 0) AppContext.SetData("Corsac.GC.Workers", Switches.GcWorkers);
+        // Where the allocations come from, sampled and said at exit (AllocSamples).
+        if (taken.Remove("--alloc-sample"))
+        {
+            ChildFlags.Add("--alloc-sample");
+            AppContext.SetSwitch("Corsac.GC.AllocSample", true);
+        }
         if (taken.Remove("--gc-stats"))
         {
             ChildFlags.Add("--gc-stats");
