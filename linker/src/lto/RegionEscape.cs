@@ -554,6 +554,8 @@ internal sealed class RegionEscape
     /// <summary>A diagnostic: the sites to explain the global reach of.</summary>
     public Func<int, bool>? Why;
     public Func<int, bool>? WhyFunction;
+    /// <summary>A diagnostic (+whyall): every constraint and call of a function asked of with +why.</summary>
+    public bool WhyAll;
 
     private void Close()
     {
@@ -4408,7 +4410,7 @@ internal sealed class RegionEscape
                                 if (!seen.Add(to)) continue;
                                 next.Enqueue((to, at.O));
                                 foreach (int site in _owner.SitesOf(_origins[to]))
-                                    if (why(site)) _owner.Progress?.Invoke($"escape graphs why: in {_owner._functions[f].Name}{(_members.Length > 1 ? " (cycle of " + _members.Length + ")" : "")}: site {site} reached from {(at.O == 0 ? "the unknown object" : Describe(at.O))} +{StepText(offset)}, saturated {_saturatedCount}");
+                                    if (why(site)) _owner.Progress?.Invoke($"escape graphs why: in {_owner._functions[f].Name}{(_members.Length > 1 ? " (cycle of " + _members.Length + ")" : "")}: site {site} reached from {(at.O == 0 ? "the unknown object" : Describe(at.O))} +{StepText(offset)} as {Describe(to)}, saturated {_saturatedCount}");
                             }
             }
             bool rooted = _owner._rooted[f];
@@ -4432,6 +4434,21 @@ internal sealed class RegionEscape
                 if (rooted) _owner._rootedRefs.UnionWith(escaping);
                 if (_owner._wanted[f]) _owner.Escaping[f] = escaping.ToArray();
                 if (_owner.Why is { } asked && _owner.WhyFunction?.Invoke(f) == true) WhyOutlives(m, asked);
+            }
+            // A diagnostic (+why on the function): what it hands the unknown
+            // object -- each Leak, an Unknown, a call nobody can name -- and
+            // what writes each node handed.
+            if (_owner.WhyFunction?.Invoke(f) == true)
+            {
+                string Writers(int node) => string.Join("; ", function.Constraints.Where(c => c.A == node).Select(c => c.Kind + " " + c.B + " " + c.C));
+                if (_owner.Why is not null && _owner.WhyAll)
+                    _owner.Progress?.Invoke($"escape graphs why: {_owner._functions[f].Name}: constraints {string.Join("; ", function.Constraints.Select(c => c.Kind + " " + c.A + " " + c.B + " " + c.C))}; calls {string.Join("; ", function.Calls.Select(c => (c.Callee ?? "?") + " -> " + c.Dest + " (" + string.Join(",", c.Arguments) + ")"))}");
+                foreach (RegionConstraint c in function.Constraints)
+                    if (c.Kind is RegionConstraintKind.Leak)
+                        _owner.Progress?.Invoke($"escape graphs why: {_owner._functions[f].Name}: node {c.A} leaked; written by {Writers(c.A)}");
+                for (int k = 0; k < function.Calls.Count; k++)
+                    if (function.Calls[k].Callee is null)
+                        _owner.Progress?.Invoke($"escape graphs why: {_owner._functions[f].Name}: call {k} names nothing, handed {string.Join(",", function.Calls[k].Arguments)}");
             }
             if (function.Loops.Count > 0)
             {
@@ -5222,6 +5239,21 @@ internal sealed class RegionEscape
                 int[] escaping = MergeSorted(parts);
                 if (rooted) _owner._rootedRefs.UnionWith(escaping);
                 if (_owner._wanted[f]) _owner.Escaping[f] = escaping;
+            }
+            // A diagnostic (+why on the function): what it hands the unknown
+            // object -- each Leak, an Unknown, a call nobody can name -- and
+            // what writes each node handed.
+            if (_owner.WhyFunction?.Invoke(f) == true)
+            {
+                string Writers(int node) => string.Join("; ", function.Constraints.Where(c => c.A == node).Select(c => c.Kind + " " + c.B + " " + c.C));
+                if (_owner.Why is not null && _owner.WhyAll)
+                    _owner.Progress?.Invoke($"escape graphs why: {_owner._functions[f].Name}: constraints {string.Join("; ", function.Constraints.Select(c => c.Kind + " " + c.A + " " + c.B + " " + c.C))}; calls {string.Join("; ", function.Calls.Select(c => (c.Callee ?? "?") + " -> " + c.Dest + " (" + string.Join(",", c.Arguments) + ")"))}");
+                foreach (RegionConstraint c in function.Constraints)
+                    if (c.Kind is RegionConstraintKind.Leak)
+                        _owner.Progress?.Invoke($"escape graphs why: {_owner._functions[f].Name}: node {c.A} leaked; written by {Writers(c.A)}");
+                for (int k = 0; k < function.Calls.Count; k++)
+                    if (function.Calls[k].Callee is null)
+                        _owner.Progress?.Invoke($"escape graphs why: {_owner._functions[f].Name}: call {k} names nothing, handed {string.Join(",", function.Calls[k].Arguments)}");
             }
             if (function.Loops.Count > 0)
             {

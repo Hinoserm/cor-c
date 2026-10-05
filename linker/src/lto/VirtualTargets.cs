@@ -274,14 +274,20 @@ public static class VirtualTargets
                         _descriptorObjects.Add(input.Object);
                     }
                 }
-                // Where method tables begin: the addends objects are stamped
+                // WHERE METHOD TABLES BEGIN: the addend objects are stamped
                 // with, by code and by data alike -- a string literal, a static
-                // object laid down whole, is stamped in data. (Any other
-                // addend into a descriptor is only another base tried.)
+                // object laid down whole, is stamped in data -- which is past
+                // the descriptor's words, its table, for every kind of object
+                // (Lowering: a class's, an array's, a box's, a string's). Not
+                // every addend into a descriptor: code reads a descriptor's own
+                // words at addends of their own, and each tried as a base put
+                // methods at offsets no object's table has them -- MoveNext at
+                // slot 0, where `x.ToString()` of an object reads its method,
+                // and every iterator was called with anything (1319).
                 foreach (Section section in input.Object.Sections)
                     if (section.Kind != SectionKind.Note)
                         foreach (Relocation r in section.Relocs)
-                            if (r.Addend > 0 && IsDescriptor(r.Symbol)) _bases.Add(r.Addend);
+                            if (r.Addend == DescriptorWords * _word && IsDescriptor(r.Symbol)) _bases.Add(r.Addend);
             }
             for (int d = 0; d < _descriptors.Count; d++)
             {

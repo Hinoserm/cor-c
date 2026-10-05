@@ -668,6 +668,7 @@ public static class RegionSolver
             _escape.ReportStandIns = _report?.Contains("+standins") == true;
             // Memory, for a report: the heap at each slow solve and round, and
             // with +memtop=N the N solves it grew most over each round.
+            _escape.WhyAll = _report?.Contains("+whyall") == true;
             _escape.MemReport = _report is not null;
             if (_report?.FirstOrDefault(w => w.StartsWith("+memtop=", StringComparison.Ordinal)) is { } memTop && int.TryParse(memTop[8..], out int top))
                 _escape.MemTop = top;
@@ -770,7 +771,7 @@ public static class RegionSolver
                 _saidBlind = true;
                 if (_methodsBlind!.Value)
                     Log("methods are called blind: " + (_units.Any(unit => unit.CallsThroughMethods) ? "a unit calls a method it read from a descriptor" : "a virtual call is unresolved")
-                        + (_blindAll ? ", at any slot" + (_blindBy is null ? "" : " (" + _blindBy + ")") : ", at slots " + string.Join(",", _blindSlots!.Order())));
+                        + (_blindAll ? ", at any slot" : ", at slots " + string.Join(",", _blindSlots!.Order())) + (_blindBy is null ? "" : " (" + _blindBy + ")"));
                 ReportBlind();
             }
             return _methodsBlind!.Value ? _units[u].AddressTaken.Concat(_units[u].MethodsTaken.Where(CalledBlind)) : _units[u].AddressTaken;
@@ -809,6 +810,7 @@ public static class RegionSolver
                     said = true;
                     if (function.BlindSlots.Length == 0 || function.BlindSlots.Contains(RegionConstraint.Any)) { _blindAll = true; _blindBy = function.Name; return; }
                     _blindSlots.UnionWith(function.BlindSlots);
+                    _blindBy = _blindBy is null ? function.Name : _blindBy.Length < 400 ? _blindBy + ", " + function.Name : _blindBy;
                 }
                 if (!said) { _blindAll = true; _blindBy = "a unit whose functions say none"; return; }
             }
