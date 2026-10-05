@@ -1011,7 +1011,10 @@ namespace System.Runtime.InteropServices
                 ComTransport.Put(info, 0, ComBroker.Thread);
                 ComTransport.Put(info, 4, pid);
                 ComTransport.Put(info, 8, 1);                       // RPC_C_AUTHN_LEVEL_NONE
-                info[12] = 5; info[14] = 7;                         // COM 5.7
+                // COM 5.6, Windows 2000's: a client calls with the version
+                // its server's OXID says, and ole32's ThreadInvoke refuses a
+                // minor version past its own (RPC_E_VERSION_MISMATCH).
+                info[12] = 5; info[14] = NdrWriter.ComMinorVersion;
                 Array.Copy(_remUnknown, 0, info, 16, 16);
                 // The DUALSTRINGARRAY as the broker keeps it: the security
                 // part's offset, then the words -- the string binding as

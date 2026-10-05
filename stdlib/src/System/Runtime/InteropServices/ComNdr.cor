@@ -118,10 +118,15 @@ namespace System.Runtime.InteropServices
 
         // ---- ORPC --------------------------------------------------------------------------
 
-        /// ORPCTHIS: COM version 5.7, flags, reserved, the causality ID, no extensions.
+        /// The COM version spoken: 5.6, Windows 2000's. ole32's ThreadInvoke
+        /// refuses a call whose minor version is past its own.
+        public const byte ComMinorVersion = 6;
+
+        /// ORPCTHIS: COM version 5.6 (ComMinorVersion), flags, reserved,
+        /// the causality ID, no extensions.
         public void OrpcThis(byte[] cid)
         {
-            Short(5); Short(7);
+            Short(5); Short(NdrWriter.ComMinorVersion);
             Long(0); Long(0);
             Guid(cid);
             Long(0);
