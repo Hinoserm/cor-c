@@ -36,6 +36,13 @@ public sealed class MethodDecl : MemberDecl
     public string? HoistedName { get; set; }
 
     /// <summary>
+    /// The type parameters of what is around a generic local function that
+    /// it took on as its own, its captures being of them (Binder.
+    /// WriteCaptures): each inferred at a call from the variable handed in.
+    /// </summary>
+    public List<string> CarriedTypeParams { get; set; } = new();
+
+    /// <summary>
     /// The generic local functions a hoisted one can call by their written
     /// names -- its own, its siblings', those of every block around it -- as
     /// (written name, member name) pairs, so its body, checked as a member of

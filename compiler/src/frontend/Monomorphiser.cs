@@ -137,6 +137,14 @@ public sealed class Monomorphiser
         }
         MethodDecl made = (MethodDecl)m.RewriteMember(local, map, local.Name);
         made.Name = name;
+        // A TYPE PARAMETER IT CARRIED FOR WHAT IS AROUND IT (CarriedTypeParams)
+        // is put in here with the rest: the copy's captures are of the type
+        // itself, and a parameter left over is one no call could infer.
+        if (local.CarriedTypeParams.Count > 0)
+        {
+            made.WritableTypeParams.RemoveAll(tp => map.ContainsKey(tp.Name) && local.CarriedTypeParams.Contains(tp.Name));
+            made.CarriedTypeParams = local.CarriedTypeParams.Where(n => !map.ContainsKey(n)).ToList();
+        }
         return made;
     }
 
@@ -1875,6 +1883,7 @@ public sealed class Monomorphiser
                 // name, the names it calls by, and how many of its parameters
                 // are the variables it captured.
                 made.HoistedName = md.HoistedName;
+                made.CarriedTypeParams = md.CarriedTypeParams;
                 made.LocalGenerics.AddRange(md.LocalGenerics);
                 made.Captures = md.Captures;
                 made.HoistedIn = md.HoistedIn;

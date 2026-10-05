@@ -17036,7 +17036,11 @@ public sealed partial class Binder
                 // (Not where the parameter is a type parameter: what it is,
                 // inference says, and `__Delegates.Combine<T>(T? a, T? b)`
                 // with a lambda on the right refused every lambda of all.)
+                // (Nor where it takes object or Delegate and the lambda wrote
+                // its types: it goes as its natural type, C# 10's Func or
+                // Action -- `Describe((int y) => y * 10)` over Describe(object).)
                 if (c.Args[i] is LambdaExpr lam && m.Params[i].Type.ParamName is null
+                    && !(lam.TypesWritten && (NaturalTarget(m.Params[i].Type) || ReferenceEquals(m.Params[i].Type.Symbol, DelegateRoot())))
                     && !invokes.Any(v => v.Params.Count == lam.Params.Count
                                       && (!lam.TypesWritten
                                           || Enumerable.Range(0, lam.Params.Count)

@@ -1644,7 +1644,12 @@ public sealed class Parser
         {
             _nested.Add(multicast);
 
-            string own = string.Join(", ", declaration.TypeParams.Skip(declaration.OuterParams).Select(tp => tp.Name));
+            // EVERY PARAMETER, the outer type's first: a delegate nested in
+            // a generic type is that type's parameters' and its own
+            // (Box<T>.Make is Box.Make<T>), and so is its multicast. Named by
+            // its own alone, the multicast here was the open template, a
+            // Combine no unit made.
+            string own = string.Join(", ", declaration.TypeParams.Select(tp => tp.Name));
             string args = own.Length == 0 ? "" : "<" + own + ">";
             string self = name + args;
             string helper = name + "__Multicast" + args;

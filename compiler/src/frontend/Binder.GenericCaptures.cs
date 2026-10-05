@@ -54,6 +54,12 @@ public sealed partial class Binder
         public HashSet<string> OwnNames { get; } = new(StringComparer.Ordinal);
         /// <summary>What C# refuses it to capture: a ref local, a ref, out or in parameter.</summary>
         public List<string> Refused { get; } = new();
+        /// <summary>
+        /// The type parameters of what is around it that its captures' types
+        /// name -- found in its own variables, and taken on with a callee's
+        /// captures -- which become its own (WriteCaptures).
+        /// </summary>
+        public HashSet<string> Open { get; } = new(StringComparer.Ordinal);
     }
 
     /// <summary>The names a generic local function is called by, wherever they are declared.</summary>
@@ -312,6 +318,7 @@ public sealed partial class Binder
             changed = false;
             foreach (GenericCaptures p in _pendingCaptures)
             {
+                int opened = p.Open.Count;
                 foreach (MethodDecl callee in p.Calls)
                 {
                     if (ReferenceEquals(callee, p.Template)) continue;
@@ -325,6 +332,11 @@ public sealed partial class Binder
                         {
                             if (!p.OwnNames.Contains(name) && !p.Variables.ContainsKey(name) && p.Spelt.TryAdd(name, spelt)) changed = true;
                         }
+                        HashSet<string> theirs = OpenOf(q);
+                        foreach ((string name, Type held) in q.Variables)
+                            if (p.Variables.TryGetValue(name, out Type? mine) && ReferenceEquals(mine, held)) Collect(held, theirs, p.Open);
+                        foreach ((string name, TypeRef spelt) in q.Spelt)
+                            if (p.Spelt.TryGetValue(name, out TypeRef? mine) && ReferenceEquals(mine, spelt)) Collect(spelt, theirs, p.Open);
                         foreach ((string name, ConstSym constant) in q.Constants)
                         {
                             if (!p.OwnNames.Contains(name) && p.Constants.TryAdd(name, constant)) changed = true;
@@ -332,13 +344,16 @@ public sealed partial class Binder
                     }
                     else
                     {
+                        HashSet<string> carried = new(callee.CarriedTypeParams, StringComparer.Ordinal);
                         for (int i = 0; i < callee.Captures; i++)
                         {
                             string name = callee.Params[i].Name;
                             if (!p.OwnNames.Contains(name) && !p.Variables.ContainsKey(name) && p.Spelt.TryAdd(name, callee.Params[i].Type)) changed = true;
+                            if (p.Spelt.TryGetValue(name, out TypeRef? mine) && ReferenceEquals(mine, callee.Params[i].Type)) Collect(mine, carried, p.Open);
                         }
                     }
                 }
+                if (p.Open.Count != opened) changed = true;
             }
         }
 
@@ -377,6 +392,19 @@ public sealed partial class Binder
         template.Params.InsertRange(0, hidden);
         template.Captures = hidden.Count;
 
+        // THE TYPE PARAMETERS ITS CAPTURES ARE OF, made its own, as Roslyn
+        // makes them: `T again` of the generic local function around it, or
+        // `U kept` of the generic method, is no type in the hoisted method
+        // unless it is one of its parameters ("'T' is not a known type"). Each
+        // is inferred at every call from the variable handed to it there.
+        HashSet<string> open = OpenOf(p);
+        foreach (TypeParam tp in template.TypeParams) open.Remove(tp.Name);
+        if (_thisType?.Decl is TypeDecl host) foreach (TypeParam tp in host.TypeParams) open.Remove(tp.Name);
+        List<string> carried = open.OrderBy(n => n, StringComparer.Ordinal).ToList();
+        template.CarriedTypeParams = carried;
+        for (int k = carried.Count - 1; k >= 0; k--)
+            template.WritableTypeParams.Insert(0, new TypeParam { Name = carried[k], Line = template.Line, Col = template.Col });
+
         if (template.Body is null) return;
         int at = 0;
         foreach ((string name, ConstSym constant) in p.Constants)
@@ -387,6 +415,35 @@ public sealed partial class Binder
                 Name = name, Type = type, Init = value, IsConst = true, Line = template.Line, Col = template.Col,
             });
         }
+    }
+
+    // A record's open type parameters: what it took on, and those its own variables' types name.
+    private static HashSet<string> OpenOf(GenericCaptures p)
+    {
+        HashSet<string> open = new(p.Open, StringComparer.Ordinal);
+        foreach ((_, Type held) in p.Variables) Params(held, open);
+        return open;
+
+        static void Params(Type t, HashSet<string> into)
+        {
+            if (t.ParamName is string name) into.Add(name);
+            if (t.Element is Type element) Params(element, into);
+            foreach (Type argument in t.Args) Params(argument, into);
+        }
+    }
+
+    // Of `among`, the type parameters a type names, into `into`.
+    private static void Collect(Type t, HashSet<string> among, HashSet<string> into)
+    {
+        if (t.ParamName is string name && among.Contains(name)) into.Add(name);
+        if (t.Element is Type element) Collect(element, among, into);
+        foreach (Type argument in t.Args) Collect(argument, among, into);
+    }
+
+    private static void Collect(TypeRef r, HashSet<string> among, HashSet<string> into)
+    {
+        if (r.Args.Count == 0 && among.Contains(r.Name)) into.Add(r.Name);
+        foreach (TypeRef argument in r.Args) Collect(argument, among, into);
     }
 
     /// <summary>

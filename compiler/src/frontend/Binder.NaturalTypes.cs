@@ -105,7 +105,7 @@ public sealed partial class Binder
     private static string? AnonymousShape(IReadOnlyList<(bool Ref, bool Out, bool In)> parameters, bool returns, bool byReference, bool readOnly)
     {
         if (!byReference && parameters.Count <= 16 && parameters.All(p => !p.Ref && !p.Out && !p.In)) return null;
-        string modes = string.Concat(parameters.Select(p => p.Out ? 'o' : p.Ref ? 'r' : p.In ? 'i' : 'v'));
+        string modes = string.Concat(parameters.Select(p => p.Out ? 'o' : p.In ? 'i' : p.Ref ? 'r' : 'v'));
         char result = !returns ? 'V' : byReference ? readOnly ? 'G' : 'F' : 'R';
         return modes + "_" + result;
     }

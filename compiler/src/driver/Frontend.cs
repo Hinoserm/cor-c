@@ -222,10 +222,18 @@ public static class Frontend
         // AND A TYPE THE CHECKER SPELT (BindResult.Reexpand) goes round as a
         // copy would: the expansion makes it, and the next binding has it.
         static bool More(Lang.BindResult b) => b.Wanted.Count > 0 || b.WantedOverrides.Count > 0 || b.Reexpand;
-        for (int round = 0; round < 8 && bound.Errors.Count == 0 && More(bound); round++)
+        // A SYNTHESISED DELEGATE NOT YET DECLARED: what the binding found
+        // wrong about a call of it -- `refFirst(arr) = 70` through C#'s
+        // ref-returning natural type -- it found with no Invoke to ask, so
+        // the round goes again with it declared, errors or none, and the next
+        // binding's are the ones that stand.
+        bool Undeclared(Lang.BindResult b)
+            => b.AnonymousDelegates.Any(shape => !unit.Types.Any(t => t.Name == Lang.Parser.AnonymousDelegateName(shape)));
+        bool Go(Lang.BindResult b) => (b.Errors.Count == 0 || Undeclared(b)) && (More(b) || Undeclared(b));
+        for (int round = 0; round < 8 && Go(bound); round++)
         {
             bool made = false;
-            for (int step = 0; step < 8 && bound.Errors.Count == 0 && More(bound); step++)
+            for (int step = 0; step < 8 && Go(bound); step++)
             {
 #if COR_SELFHOST_BENCHMARK
                 Program.BenchmarkStage("specialise-" + round + "-" + step);
@@ -235,15 +243,17 @@ public static class Frontend
 
                 // THE DELEGATES C# SYNTHESISES for natural types no Func or
                 // Action can say, declared once a unit by shape.
+                bool declared = false;
                 foreach (string shape in bound.AnonymousDelegates)
                 {
                     if (!known.Contains(Lang.Parser.AnonymousDelegateName(shape)))
                     {
                         unit.Types.AddRange(Lang.Parser.AnonymousDelegates(shape));
                         known.Add(Lang.Parser.AnonymousDelegateName(shape));
+                        declared = true;
                     }
                 }
-                if (!Specialise(unit, bound) && !reexpand)
+                if (!Specialise(unit, bound) && !reexpand && !declared)
                 {
                     break;
                 }
