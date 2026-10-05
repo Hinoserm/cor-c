@@ -4338,6 +4338,15 @@ continue;
         bool coroutine = f.Async is not null;
 
         if (canFree && !coroutine) OwnFreshResults(f, summaries);
+        // The function's addresses scanned once while this only asks of it,
+        // and again after each change it makes (OwnedFieldEscape.Cache).
+        OwnedFieldEscape.Cache(f);
+        try { PromoteInCore(f, summaries, canFree, fields, coroutine); }
+        finally { OwnedFieldEscape.Uncache(); }
+    }
+
+    private void PromoteInCore(Function f, Dictionary<string, bool[]> summaries, bool canFree, OwnedFieldEscape fields, bool coroutine)
+    {
 
         int budget = FrameBudget;
         // ONE ANALYSIS FOR THE WHOLE FUNCTION. Promoting an allocation or
@@ -4587,7 +4596,7 @@ continue;
                 }
 
                 b.Instrs.RemoveAt(k);
-                b.Instrs.InsertRange(k, replacement);
+                b.Instrs.InsertRange(k, replacement); OwnedFieldEscape.Changed();
                 _promotedMade.Add(replacement[0]);
                 _promotedZeroing.Add(replacement[1]);
                 // ONLY ROUND A CYCLE IS THERE A PREVIOUS OCCUPANT: off every
@@ -4614,7 +4623,7 @@ continue;
                         AppendElementFree(f, before, i, addr, i.Line);
                         if (storage) AppendStorageFree(f, before, addr, i.Line);
                         int renewAt = b.Instrs.IndexOf(replacement[1]);
-                        b.Instrs.InsertRange(renewAt, before);
+                        b.Instrs.InsertRange(renewAt, before); OwnedFieldEscape.Changed();
                         _bookkeeping.UnionWith(before);
                         k += before.Count;
                     }
@@ -4625,7 +4634,7 @@ continue;
                         List<Instr> last = new() { new Instr { Op = Opcode.Copy, Dest = at, Operands = { new SlotOperand(slot) }, Line = exit.Instrs[^1].Line } };
                         AppendElementFree(f, last, i, at, exit.Instrs[^1].Line);
                         if (storage) AppendStorageFree(f, last, at, exit.Instrs[^1].Line);
-                        exit.Instrs.InsertRange(exit.Instrs.Count - 1, last);
+                        exit.Instrs.InsertRange(exit.Instrs.Count - 1, last); OwnedFieldEscape.Changed();
                         _bookkeeping.UnionWith(last);
                     }
                     VReg zeroAt = f.NewReg(IrTypes.Word, "elementsAt");
@@ -4634,7 +4643,7 @@ continue;
                         new Instr { Op = Opcode.Copy, Dest = zeroAt, Operands = { new SlotOperand(slot) }, Line = EntryLine(f, i.Line) },
                         new Instr { Op = Opcode.Store, Size = IrTypes.Word.Bytes(), Operands = { new RegOperand(zeroAt), new ImmOperand(0, IrTypes.Word) }, Line = EntryLine(f, i.Line) },
                     };
-                    f.Entry.Instrs.InsertRange(0, entry);
+                    f.Entry.Instrs.InsertRange(0, entry); OwnedFieldEscape.Changed();
                     _bookkeeping.UnionWith(entry);
                     if (ReferenceEquals(b, f.Entry)) k += entry.Count;
                 }

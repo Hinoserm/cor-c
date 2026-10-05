@@ -95,30 +95,57 @@ internal sealed class OwnedFieldEscape
 
     internal static Dictionary<VReg, long> Addresses(Function f, IEnumerable<VReg> roots)
     {
-        Defs defs = new(f, buildCfg: false);
-        Dictionary<VReg, long> result = roots.Distinct().ToDictionary(r => r, _ => 0L);
-        // THE STEPS AN ADDRESS CAN TAKE, gathered once: every single write
-        // that copies, widens or moves a register by a constant. Followed to
-        // a fixed point over that list alone -- the whole function rescanned
-        // each round was a twentieth of compiling the compiler, and a list of
-        // users for every register made the collector a tenth of its work.
+        AddressScan scan = ReferenceEquals(_cacheFor, f) ? _cached ??= new AddressScan(f) : new AddressScan(f);
+        return scan.Find(roots);
+    }
+
+    // ONE SCAN OF A FUNCTION WHILE NOTHING CHANGES IT (Escape.PromoteIn):
+    // every allocation, every owner of it and every attempt asked for the
+    // addresses of something, and each scanned the whole function again --
+    // a library compiled as one unit sat ten minutes there. The function
+    // marked by Cache is scanned once and the scan kept until Changed says
+    // the function was written; any other is scanned for the one question.
+    [ThreadStatic] private static Function? _cacheFor;
+    [ThreadStatic] private static AddressScan? _cached;
+    internal static void Cache(Function f) { _cacheFor = f; _cached = null; }
+    internal static void Changed() => _cached = null;
+    internal static void Uncache() { _cacheFor = null; _cached = null; }
+
+    private sealed class AddressScan
+    {
+        private readonly Function _f;
+        private readonly Defs _defs;
+        // THE STEPS AN ADDRESS CAN TAKE: every single write that copies,
+        // widens or moves a register by a constant, by the register it reads.
         // The copies into registers written more than once wait for
         // JoinedAliases, which has nothing to do unless one reads an address.
-        List<Instr> steps = new();
-        bool joins = false;
-        foreach (var b in f.Blocks)
-            foreach (Instr i in b.Instrs)
-            {
-                if (i.Dest is not { } d || i.Operands.Count == 0 || i.Operands[0] is not RegOperand) continue;
-                if (!defs.IsSingle(d)) { joins |= i.Op == Opcode.Copy; continue; }
-                if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32
-                    || i.Op is Opcode.Add or Opcode.Sub && i.Operands.Count == 2 && i.Operands[1] is ImmOperand)
-                    steps.Add(i);
-            }
-        steps.Sort(BySource);
-        Follow(steps, result, result.Keys.ToList());
-        if (joins) JoinedAliases(f, defs, result, steps);
-        return result;
+        private readonly List<Instr> _steps = new();
+        private readonly bool _joins;
+        private Dictionary<VReg, List<Instr>>? _writes;
+
+        public AddressScan(Function f)
+        {
+            _f = f;
+            _defs = new(f, buildCfg: false);
+            foreach (var b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Dest is not { } d || i.Operands.Count == 0 || i.Operands[0] is not RegOperand) continue;
+                    if (!_defs.IsSingle(d)) { _joins |= i.Op == Opcode.Copy; continue; }
+                    if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32
+                        || i.Op is Opcode.Add or Opcode.Sub && i.Operands.Count == 2 && i.Operands[1] is ImmOperand)
+                        _steps.Add(i);
+                }
+            _steps.Sort(BySource);
+        }
+
+        public Dictionary<VReg, long> Find(IEnumerable<VReg> roots)
+        {
+            Dictionary<VReg, long> result = roots.Distinct().ToDictionary(r => r, _ => 0L);
+            Follow(_steps, result, result.Keys.ToList());
+            if (_joins) JoinedAliases(_f, _defs, result, _steps, _writes ??= MultiWrites(_f, _defs));
+            return result;
+        }
     }
 
     private static readonly Comparison<Instr> BySource = (x, y) => Source(x).CompareTo(Source(y));
@@ -169,12 +196,11 @@ internal sealed class OwnedFieldEscape
     /// another of the group, all at one offset; to a fixed point, since each
     /// waits on the other.
     /// </summary>
-    private static void JoinedAliases(Function f, Defs defs, Dictionary<VReg, long> result, List<Instr> steps)
+    private static void JoinedAliases(Function f, Defs defs, Dictionary<VReg, long> result, List<Instr> steps,
+        Dictionary<VReg, List<Instr>> writes)
     {
-        Dictionary<VReg, List<Instr>>? writes = null;
         while (true)
         {
-            writes ??= MultiWrites(f, defs);
             HashSet<VReg> group = new();
             foreach ((VReg r, List<Instr> all) in writes)
                 if (!result.ContainsKey(r) && all.All(w => w is { Op: Opcode.Copy, Operands: [ImmOperand { Value: 0 } or RegOperand] }))
