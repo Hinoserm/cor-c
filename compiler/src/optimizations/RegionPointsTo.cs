@@ -3108,6 +3108,12 @@ public sealed class RegionPointsTo : IModulePass
             if (_delta[into] is not { } delta) { _delta[into] = delta = new(); _work.Enqueue(into); }
             else _owedTwice.Add(into);
             delta.AddRange(owed);
+            // A cycle of k nodes merges into one node k times, and each time
+            // it is owed nearly all the set it has grown to: k copies of the
+            // set before the node is next solved. Past the set's own size the
+            // owed list is made distinct here, so it never holds more than
+            // twice what the node holds (1323 asked for a list of 192 MB).
+            if (delta.Count > 2 * _pts[into].Count + 64) _delta[into] = Distinct(delta);
         }
         if (_edges[from] is { } edges)
             foreach (var edge in edges)

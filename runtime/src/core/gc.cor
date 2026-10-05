@@ -7176,6 +7176,14 @@ static class Gc
     static long _nurseryFixed;      // CORSAC_GC_NURSERY, or 0
     static long _censusAt;
 
+    /// The census asked for after start (AppContext.SetSwitch("Corsac.GC.Census", true):
+    /// corc's --gc-census): every whole collection counts what it found live, as the
+    /// environment's CORSAC_GC_CENSUS=1 does from the first.
+    public static void AskCensus()
+    {
+        _census = true;
+    }
+
     static void StartCensus()
     {
         if (_censusAt == 0)
@@ -7668,10 +7676,44 @@ static class Gc
         {
             return false;
         }
+        // ONE OF THIS THREAD'S OWN PAGES, as Free asks: its page, its record
+        // and its blocks' headers are this thread's while it owns the page,
+        // so they are read with no lock. Every free of an object a compiler
+        // made took the heap lock twice, here and in Free.
+        if (tb != 0 && Runtime.Marking == 0 && !_sweeping && !_collecting && OwnPageBlock(tb, block) is long bytes and > 0)
+        {
+            return Described(block, at);
+        }
         GcLock.Enter();
         bool live = ValidAllocated(at) != 0 && Described(block, at);
         GcLock.Exit();
         return live;
+    }
+
+    /// The bytes of the block at `block` when it lies in one of this
+    /// thread's own pages and its header reads as an allocated block of the
+    /// page's class there; 0 otherwise. Nothing is read at the block until it
+    /// is known to lie in such a page.
+    static long OwnPageBlock(long tb, long block)
+    {
+        long cache = Sys.Peek(tb + Tls.Classes);
+        if (cache == 0 || _classSize == 0) return 0;
+        for (long c = 0; c < Classes; c = c + 1)
+        {
+            long page = Sys.Peek(cache + c * (2 * WordSize.Bytes));
+            if (page == 0 || block < HeapChunks.First(page) || block >= HeapChunks.End(page)) continue;
+            if (HeapChunks.Owner(page) != tb) return 0;
+            long bytes = Sys.Peek(_classSize + c * WordSize.Bytes);
+            long head = Sys.Peek(block);
+            if ((head & SizeMask) == bytes && (head & FlagFree) == 0 && block + bytes <= HeapChunks.End(page)
+                && (int)(block - HeapChunks.First(page)) % (int)bytes == 0
+                && Sys.Peek(block + bytes - FooterBytes) == head)
+            {
+                return bytes;
+            }
+            return 0;
+        }
+        return 0;
     }
 
     /// A block made as an object whose first word names a real descriptor.

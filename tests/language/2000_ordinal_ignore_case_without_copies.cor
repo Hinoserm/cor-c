@@ -1,0 +1,34 @@
+// test: ordinal ignore case without copies
+// expect-exit: 0
+// expect-output:
+// True False False False True
+// 0 -1 1 -1
+// True False
+// 3 2
+// True 73 305
+//
+// StringComparer.OrdinalIgnoreCase folds a unit at a time while both
+// strings are ASCII, and past ASCII to the upper case -- but never from
+// beyond ASCII into it, as .NET folds: a dotless i is no I and a long s no
+// S, while é is É. Equals, Compare and GetHashCode agree on every pair, so
+// a table keyed by it finds what it holds; and the invariant upper case of
+// a dotless i is itself.
+
+using System;
+using System.Collections.Generic;
+
+static class P
+{
+    static int Main()
+    {
+        StringComparer c = StringComparer.OrdinalIgnoreCase;
+        Console.WriteLine(c.Equals("Hello", "hELLO") + " " + c.Equals("ıd", "ID") + " " + c.Equals("abc", "abd") + " " + string.Equals("ſ", "S", StringComparison.OrdinalIgnoreCase) + " " + c.Equals("é", "É"));
+        Console.WriteLine(c.Compare("abc", "ABC") + " " + Math.Sign(c.Compare("abc", "abd")) + " " + Math.Sign(c.Compare("b", "A")) + " " + Math.Sign(c.Compare("ab", "abc")));
+        Console.WriteLine((c.GetHashCode("Name") == c.GetHashCode("NAME")) + " " + (c.GetHashCode("ıd") == c.GetHashCode("ID")));
+        Dictionary<string, int> d = new(StringComparer.OrdinalIgnoreCase);
+        d["One"] = 1; d["TWO"] = 2; d["one"] = 3; d["Two"] = 2;
+        Console.WriteLine(d["ONE"] + " " + d.Count);
+        Console.WriteLine(d.ContainsKey("two") + " " + (int)char.ToUpperInvariant('i') + " " + (int)char.ToUpperInvariant('ı'));
+        return 0;
+    }
+}

@@ -390,8 +390,7 @@ public sealed partial class Binder
     private Type? LateLogical(BinaryExpr b)
     {
         if (!_usesDynamic) return null;
-        Type l = Peek(b.Left), r = Peek(b.Right);
-        if (!l.Dynamic && !r.Dynamic) return null;
+        if (!DynamicOperand(b.Left) && !DynamicOperand(b.Right)) return null;
         bool and = b.Op == BinOp.AndAlso;
         PatternExpr made = new()
         {
@@ -409,6 +408,17 @@ public sealed partial class Binder
         CheckExpr(made);
         return Type.DynamicAny;
     }
+
+    /// <summary>
+    /// Whether an operand of `&&` or `||` is dynamic. A chain of them is
+    /// dynamic only when one of its own operands is, so the chain is answered
+    /// from its leaves: peeking the whole left side at every link checked
+    /// `a && b && c && ...` twice per link, exponential in its length.
+    /// </summary>
+    private bool DynamicOperand(Expr e)
+        => e is BinaryExpr { Op: BinOp.AndAlso or BinOp.OrElse } chain
+            ? DynamicOperand(chain.Left) || DynamicOperand(chain.Right)
+            : Peek(e).Dynamic;
 
     /// <summary>
     /// A one-operand operator on a dynamic operand (the UnaryExpr case, once

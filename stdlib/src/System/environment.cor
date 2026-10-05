@@ -481,6 +481,7 @@ static class AppContext
         // own, so a program that sets no switch carries none of this.
         if (switchName == "Corsac.GC.Stats") Gc.StatsAsked = isEnabled;
         if (switchName == "Corsac.GC.AllocSample" && isEnabled) AllocSamples.Begin();
+        if (switchName == "Corsac.GC.Census" && isEnabled) Gc.AskCensus();
     }
 
     public static bool TryGetSwitch(string switchName, out bool isEnabled)

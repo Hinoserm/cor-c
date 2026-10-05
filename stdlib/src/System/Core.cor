@@ -589,9 +589,25 @@ static class String {
         if (kind == StringComparison.OrdinalIgnoreCase
          || kind == StringComparison.InvariantCultureIgnoreCase
          || kind == StringComparison.CurrentCultureIgnoreCase) {
-            return Compare(ToUpperInvariant(a), ToUpperInvariant(b)) == 0;
+            return StringComparer.OrdinalIgnoreCase.Equals(a, b);
         }
         return Compare(a, b) == 0;
+    }
+
+    // ONE UNIT OR PAIR FOLDED AS .NET'S ORDINAL IGNORE-CASE FOLDS IT: to its
+    // upper case, but never from beyond ASCII into it -- the long s is no S,
+    // a dotless i no I. Answers the folded code point, and moves `i` past
+    // what it read.
+    internal static int OrdinalFolded(string s, ref int i) {
+        int c = s[i];
+        i = i + 1;
+        if (c < 0x80) { return c >= 'a' && c <= 'z' ? c - 32 : c; }
+        if (c >= 0xD800 && c <= 0xDBFF && i < s.Length && s[i] >= 0xDC00 && s[i] <= 0xDFFF) {
+            c = 0x10000 + ((c - 0xD800) << 10) + (s[i] - 0xDC00);
+            i = i + 1;
+        }
+        int u = Char.ToUpperInvariantPoint(c);
+        return u < 0x80 ? c : u;
     }
 
     // A read-only character view: the string's own units, which are laid out
@@ -1707,6 +1723,8 @@ static class Char {
     public static char ToUpper(char c, CultureInfo culture) { return ToUpper(c); }
     public static char ToLower(char c, CultureInfo culture) { return ToLower(c); }
     public static char ToUpperInvariant(char c) { return ToUpper(c); }
+    // A code point's invariant upper case, past the basic plane too (String.OrdinalFolded).
+    internal static int ToUpperInvariantPoint(int c) { return UnicodeCase.Upper(c); }
     public static char ToLowerInvariant(char c) { return ToLower(c); }
 
     // .NET's explicitly-ASCII predicates: code that means ASCII says so.
@@ -12184,7 +12202,14 @@ class StringComparer : IEqualityComparer<string>, IComparer<string> {
         if (!fold) { return String.Equals(a, b); }
         if (a.Length != b.Length) { return false; }
         if ((object)a == (object)b) { return true; }
-        return String.Compare(String.ToUpperInvariant(a), String.ToUpperInvariant(b)) == 0;
+        // FOLDED A CHARACTER AT A TIME (String.OrdinalFolded): no upper-case
+        // copy of either string made for each probe of a table keyed this way.
+        int i = 0, j = 0;
+        while (i < a.Length && j < b.Length) {
+            if (a[i] == b[j] && a[i] < 0xD800) { i = i + 1; j = j + 1; continue; }
+            if (String.OrdinalFolded(a, ref i) != String.OrdinalFolded(b, ref j)) { return false; }
+        }
+        return i == a.Length && j == b.Length;
     }
 
     /// .NET's StringComparer is an IComparer<string> as well as an equality
@@ -12193,17 +12218,41 @@ class StringComparer : IEqualityComparer<string>, IComparer<string> {
     /// Null before every string, as .NET's comparers put it.
     public int Compare(string? a, string? b) {
         if (a == null || b == null) { return String.Compare(a, b); }
-        if (fold) { return String.Compare(String.ToUpperInvariant(a), String.ToUpperInvariant(b)); }
-        return String.Compare(a, b);
+        if (!fold) { return String.Compare(a, b); }
+        int i = 0, j = 0;
+        while (i < a.Length && j < b.Length) {
+            int x = String.OrdinalFolded(a, ref i), y = String.OrdinalFolded(b, ref j);
+            if (x == y) { continue; }
+            // As units compare: a pair's leading unit sorts below U+E000.
+            int ux = x > 0xFFFF ? 0xD800 + ((x - 0x10000) >> 10) : x;
+            int uy = y > 0xFFFF ? 0xD800 + ((y - 0x10000) >> 10) : y;
+            if (ux != uy) { return ux < uy ? -1 : 1; }
+            return x < y ? -1 : 1;
+        }
+        int ra = a.Length - i, rb = b.Length - j;
+        return ra == rb ? 0 : ra < rb ? -1 : 1;
     }
 
     // FNV-1a over the code units, which is what makes a table of strings work
     // at all: the same characters hash the same wherever they came from.
     public int GetHashCode(string value) {
         if (value == null) { throw new ArgumentNullException("obj"); }
-        // The folded copy is a new string whose hash is kept on it for nothing;
-        // the ordinal one is the string's own, worked out once (Runtime).
-        return Runtime.StringHashCode(fold ? String.ToUpperInvariant(value) : value);
+        // The ordinal one is the string's own, worked out once (Runtime).
+        if (!fold) { return Runtime.StringHashCode(value); }
+        // Folded as Equals folds, a unit at a time, with nothing made.
+        uint h = 2166136261;
+        int i = 0;
+        while (i < value.Length) {
+            int c = String.OrdinalFolded(value, ref i);
+            if (c > 0xFFFF) {
+                h = (h ^ (uint)(0xD800 + ((c - 0x10000) >> 10))) * 16777619;
+                h = (h ^ (uint)(0xDC00 + ((c - 0x10000) & 0x3FF))) * 16777619;
+            } else {
+                h = (h ^ (uint)c) * 16777619;
+            }
+        }
+        if (h == 0) { h = 1; }
+        return (int)h;
     }
 }
 
