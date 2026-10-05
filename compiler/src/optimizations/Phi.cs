@@ -53,7 +53,7 @@ public static class Phi
             if (k >= 0)
             {
                 phi.Operands.RemoveAt(k);
-                phi.Targets.RemoveAt(k);
+                phi.WritableTargets.RemoveAt(k);
             }
         }
     }
@@ -82,7 +82,7 @@ public static class Phi
             int k = IndexOf(phi, oldPred);
             if (k >= 0)
             {
-                phi.Targets[k] = newPred;
+                phi.WritableTargets[k] = newPred;
             }
         }
     }
@@ -123,7 +123,7 @@ public static class Phi
             if (k >= 0 && IndexOf(phi, newPred) < 0)
             {
                 phi.Operands.Add(phi.Operands[k]);
-                phi.Targets.Add(newPred);
+                phi.WritableTargets.Add(newPred);
             }
         }
     }

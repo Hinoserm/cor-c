@@ -485,8 +485,8 @@ public static class AsyncTransform
                 Operands = { new RegOperand(machine) }, Number = true,
             });
             Instr sw = new() { Op = Opcode.Switch, Operands = { new RegOperand(current) }, Default = originalEntry };
-            sw.Targets.Add(originalEntry);
-            sw.Targets.AddRange(resumptions);
+            sw.WritableTargets.Add(originalEntry);
+            sw.WritableTargets.AddRange(resumptions);
             dispatch.Instrs.Add(sw);
         }
 

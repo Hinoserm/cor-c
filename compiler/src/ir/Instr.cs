@@ -101,7 +101,15 @@ public sealed class Instr
     public bool ReturnsFreshStruct => Op is Opcode.Call or Opcode.CallIndirect && Field == FreshStruct;
 
     /// <summary>Jump, Branch, Switch, LabelAddr: where. Phi: the predecessor each operand comes from.</summary>
-    public List<Block> Targets { get; } = new();
+    // TO READ: one shared empty list for the instructions that have none --
+    // all but the branches, and a list each was a hundred and seventy
+    // thousand of them live through a unit. Never written through: every
+    // writer goes by WritableTargets, which makes the list on first use (the
+    // compiler found them all when this was briefly read-only).
+    public List<Block> Targets => _targets ?? NoTargets;
+    public List<Block> WritableTargets => _targets ??= new();
+    private List<Block>? _targets;
+    private static readonly List<Block> NoTargets = new();
 
     /// <summary>Switch: where an out-of-range index goes.</summary>
     public Block? Default { get; set; }

@@ -282,16 +282,16 @@ public sealed class Devirtualize : IModulePass
                     VReg? got = i.Dest is null ? null : f.NewReg(i.Dest.Type, i.Dest.Name);
                     each.Instrs.Add(Direct(cases[c].Target, got));
                     if (got is not null) each.Instrs.Add(new Instr { Op = Opcode.Copy, Dest = i.Dest, Operands = { new RegOperand(got) }, Line = i.Line });
-                    each.Instrs.Add(new Instr { Op = Opcode.Jump, Targets = { after }, Line = i.Line });
+                    each.Instrs.Add(new Instr { Op = Opcode.Jump, WritableTargets = { after }, Line = i.Line });
                     if (c == cases.Count - 1)
                     {
-                        test.Instrs.Add(new Instr { Op = Opcode.Jump, Targets = { each }, Line = i.Line });
+                        test.Instrs.Add(new Instr { Op = Opcode.Jump, WritableTargets = { each }, Line = i.Line });
                         break;
                     }
                     Block next = f.NewBlock("devirt");
                     VReg same = f.NewReg(IrType.I32, "isType");
                     test.Instrs.Add(new Instr { Op = Opcode.Eq, Dest = same, Operands = { new RegOperand(vt.Reg), new SymOperand(cases[c].Vtable.Name, cases[c].Vtable.Offset) }, Line = i.Line });
-                    test.Instrs.Add(new Instr { Op = Opcode.Branch, Operands = { new RegOperand(same) }, Targets = { each, next }, Line = i.Line });
+                    test.Instrs.Add(new Instr { Op = Opcode.Branch, Operands = { new RegOperand(same) }, WritableTargets = { each, next }, Line = i.Line });
                     test = next;
                 }
                 break;   // the block was split; the rest of it is `after`, met later

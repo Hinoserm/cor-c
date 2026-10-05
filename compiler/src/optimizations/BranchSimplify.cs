@@ -71,7 +71,7 @@ public sealed class BranchSimplify : IPass
         {
             return false;
         }
-        b.Instrs[^1] = new Instr { Op = Opcode.Jump, Targets = { only }, Line = t.Line };
+        b.Instrs[^1] = new Instr { Op = Opcode.Jump, WritableTargets = { only }, Line = t.Line };
         return true;
     }
 
@@ -129,7 +129,7 @@ public sealed class BranchSimplify : IPass
                 continue;
             }
             Phi.AddIncoming(to, b, p);
-            jump.Targets[0] = to;
+            jump.WritableTargets[0] = to;
             Phi.DropEdgeIfGone(p, b);
             changed = true;
         }
@@ -204,7 +204,7 @@ public sealed class BranchSimplify : IPass
                 if (to is not null)
                 {
                     Block old = t.Targets[k];
-                    t.Targets[k] = to;
+                    t.WritableTargets[k] = to;
                     Phi.DropEdgeIfGone(b, old);
                     changed = true;
                 }

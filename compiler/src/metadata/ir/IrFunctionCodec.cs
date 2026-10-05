@@ -263,7 +263,7 @@ public static class IrFunctionCodec
                     }
                     int targets = IrBinary.Count(reader);
                     budget.Charge(targets, 16, "block references");
-                    for (int target = 0; target < targets; target++) instruction.Targets.Add(At(blocks, reader.ReadInt32()));
+                    for (int target = 0; target < targets; target++) instruction.WritableTargets.Add(At(blocks, reader.ReadInt32()));
                     int otherwise = reader.ReadInt32();
                     if (otherwise < -1) throw new InvalidDataException("Invalid IR default target");
                     if (otherwise >= 0) instruction.Default = At(blocks, otherwise);

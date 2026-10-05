@@ -30,7 +30,7 @@ public sealed class BooleanMaskDiamonds : IPass
                 || b.Operands[0] is not ImmOperand { Value: 0 } || aj.Op != Opcode.Jump || bj.Op != Opcode.Jump
                 || aj.Targets.Count != 1 || bj.Targets.Count != 1 || aj.Targets[0] != bj.Targets[0]) continue;
             block.Instrs[^1] = new Instr { Op = Opcode.Neg, Dest = destination, Operands = { condition }, Line = branch.Line };
-            block.Instrs.Add(new Instr { Op = Opcode.Jump, Targets = { aj.Targets[0] }, Line = branch.Line });
+            block.Instrs.Add(new Instr { Op = Opcode.Jump, WritableTargets = { aj.Targets[0] }, Line = branch.Line });
         }
         Cfg.RemoveUnreachable(function);
     }

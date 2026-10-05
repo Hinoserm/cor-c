@@ -997,7 +997,7 @@ public sealed class RegionPointsTo : IModulePass
                 };
                 foreach (Operand o in i.Operands)
                     c.Operands.Add(o switch { RegOperand r => new RegOperand(Reg(r.Reg)), SlotOperand s => new SlotOperand(slots[s.Slot]), _ => o });
-                foreach (Block t in i.Targets) c.Targets.Add(blocks[t]);
+                foreach (Block t in i.Targets) c.WritableTargets.Add(blocks[t]);
                 if (keep.Contains(i)) keep.Add(c);
                 blocks[b].Instrs.Add(c);
                 from[i] = c;
