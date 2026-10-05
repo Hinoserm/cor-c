@@ -6924,6 +6924,13 @@ public sealed partial class Binder
     {
         if (lam.BlockBody != null)
         {
+            // ITS GENERIC LOCAL FUNCTIONS TOO, as CheckBlock declares a
+            // block's: a lambda's body is that block, read here statement by
+            // statement, and `T Mark<T>(T v)` inside one was never named.
+            foreach ((string name, string method) in lam.BlockBody.GenericLocals)
+            {
+                DeclareGenericLocal(lam.BlockBody, name, method);
+            }
             DeclareLocalFunctions(lam.BlockBody);
             bool labels = PushLabels(lam.BlockBody);
             foreach (Stmt s in lam.BlockBody.Statements)
@@ -6931,6 +6938,7 @@ public sealed partial class Binder
                 CheckStmt(s);
             }
             if (labels) _labels.RemoveAt(_labels.Count - 1);
+            if (lam.BlockBody.GenericLocals.Count > 0) DiscoverGenericCaptures(lam.BlockBody);
             return;
         }
 
@@ -14510,6 +14518,23 @@ public sealed partial class Binder
         // A generic local function's captured variable, handed to it at a
         // call: the one it saw, whatever is called the same here.
         Sym? sym = n.CaptureOf is string function ? LookupCaptured(n.Name, function) : Lookup(n.Name);
+        // A VARIABLE HANDED TO A GENERIC LOCAL FUNCTION IS A CELL, made one
+        // where the hidden argument naming it is bound: the pass that binds a
+        // lambda's body for its closure makes its locals afresh, and the call
+        // there is not always where PassCaptures saw it.
+        if (n.CaptureOf is not null)
+        {
+            switch (sym)
+            {
+                case LocalSym { IsRef: false } local:
+                    local.Boxed = true;
+                    if (_declOf.TryGetValue(local, out LocalDecl? where)) _r.BoxedLocals.Add(where);
+                    break;
+                case ParamSym { ByRef: false } parameter:
+                    parameter.ForcedCell = true;
+                    break;
+            }
+        }
 
         if (sym != null)
         {
@@ -18227,7 +18252,8 @@ public sealed partial class Binder
             CallExpr withLambda = DelegateCombination(b.Op == BinOp.Add, b.Left, b.Right, b, l);
             _r.Rewrites[b] = withLambda;
             Type lambdaMade = CheckExpr(withLambda);
-            return b.Op == BinOp.Add && !lambdaMade.IsError ? lambdaMade.AsNonNullable() : lambdaMade;
+            // The left's delegate type: the helper answers Delegate, the one value it is.
+            return lambdaMade.IsError ? lambdaMade : b.Op == BinOp.Add ? l.AsNonNullable() : l.AsNullable();
         }
 
         // WHAT THE LEFT SIDE IS, IS WHAT THE RIGHT SIDE HAS TO BE. `isDefined
@@ -18267,8 +18293,9 @@ public sealed partial class Binder
             CallExpr call = DelegateCombination(b.Op == BinOp.Add, b.Left, b.Right, b, l);
             _r.Rewrites[b] = call;
             Type made = CheckExpr(call);
-            return b.Op == BinOp.Add && !made.IsError && (!l.Nullable || !r.Nullable && r.Prim != Prim.NullLiteral)
-                ? made.AsNonNullable() : made;
+            if (made.IsError) return made;
+            return b.Op == BinOp.Add && (!l.Nullable || !r.Nullable && r.Prim != Prim.NullLiteral)
+                ? l.AsNonNullable() : l.AsNullable();
         }
 
         // AN OPERATOR THE TYPE DECLARED ITSELF. `later - earlier` on two

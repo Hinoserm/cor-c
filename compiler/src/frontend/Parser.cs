@@ -38,6 +38,17 @@ public sealed class Parser
     private List<string> _enclosingParams = new();
     private bool _templateMethod;
     private bool SkipImplementation => _declarationsOnly && !(_includeTemplateBodies && (_templateDepth > 0 || _templateMethod));
+
+    /// <summary>
+    /// Whether members written here from text (a delegate's multicast and its
+    /// Combine and Remove, a record's equality) are read without their
+    /// bodies: as this parser reads the declaration they belong to -- a
+    /// generic one's kept where template bodies are -- not merely because
+    /// it reads declarations. A generic delegate's CombineImpl, read without
+    /// its body in a unit that took the library as declarations, came out of
+    /// that unit empty, answering whatever its result register held.
+    /// </summary>
+    private bool SkipWritten(bool generic) => _declarationsOnly && !(_includeTemplateBodies && (_templateDepth > 0 || _templateMethod || generic));
     /// <summary>Source ranges omitted by declaration-only parsing; end is exclusive.</summary>
     public List<(int From, int To, bool Block)> OmittedBodies { get; } = new();
     private int _i;
@@ -1648,12 +1659,17 @@ public sealed class Parser
             // every closure of the type them (Binder.DelegateMembers). The
             // multicast class answers both itself. That the two delegates are
             // of one type Delegate.Combine has already seen.
+            // `follow` IS this type: Delegate.Combine and Remove have seen
+            // both of one (Runtime.SameDelegateType), so it is taken as it is
+            // (Sys.As). A cast tested it here, where a generic delegate's T is
+            // a shared copy's word, against the canonical type -- an
+            // Action<string>'s closure is no Action<__canon> -- and refused it.
             forward.Append("System.Delegate? System.Delegate.CombineImpl(System.Delegate follow) { return ")
-                   .Append(helper).Append(".Combine(this, (").Append(self).Append(")follow); }\n");
+                   .Append(helper).Append(".Combine(this, Sys.As<").Append(self).Append(">(follow)); }\n");
             forward.Append("System.Delegate? System.Delegate.RemoveImpl(System.Delegate value) { return ")
-                   .Append(helper).Append(".Remove(this, (").Append(self).Append(")value); }\n");
+                   .Append(helper).Append(".Remove(this, Sys.As<").Append(self).Append(">(value)); }\n");
 
-            Parser sub = new(Lexer.Tokenize("interface __Forward { " + forward.ToString() + " }", _file), _file, _declarationsOnly);
+            Parser sub = new(Lexer.Tokenize("interface __Forward { " + forward.ToString() + " }", _file), _file, SkipWritten(declaration.TypeParams.Count > 0), _includeTemplateBodies);
             CompilationUnit wrapped = sub.ParseUnit();
             List<MemberDecl> statics = wrapped.Types[0].Members;
             foreach (MemberDecl member in statics)
@@ -1823,15 +1839,18 @@ public sealed class Parser
         src.Append("        System.Delegate[] list = new System.Delegate[Items.Length];\n");
         src.Append("        for (int i = 0; i < Items.Length; i++) list[i] = Items[i];\n");
         src.Append("        return list;\n    }\n");
-        src.Append("    public System.Delegate? CombineImpl(System.Delegate follow) { return Combine(this, (").Append(d).Append(")follow); }\n");
-        src.Append("    public System.Delegate? RemoveImpl(System.Delegate value) { return Remove(this, (").Append(d).Append(")value); }\n");
+        // Taken as the type, not tested (Sys.As): Delegate.Combine and Remove
+        // have seen both of one, and this class's code is shared by every
+        // reference argument, where a cast tests the canonical type.
+        src.Append("    public System.Delegate? CombineImpl(System.Delegate follow) { return Combine(this, Sys.As<").Append(d).Append(">(follow)); }\n");
+        src.Append("    public System.Delegate? RemoveImpl(System.Delegate value) { return Remove(this, Sys.As<").Append(d).Append(">(value)); }\n");
         src.Append("    public int InvocationCount() { return Items.Length; }\n");
         src.Append("    public object InvocationAt(int index) { return Items[index]; }\n");
         src.Append("    public override bool Equals(object? obj) { return __Delegates.Equal(this, obj); }\n");
         src.Append("    public override int GetHashCode() { return __Delegates.Hash(this); }\n");
         src.Append("}\n");
         string generated = src.ToString();
-        Parser sub = new(Lexer.Tokenize(generated, _file), _file, _declarationsOnly) { Source = generated };
+        Parser sub = new(Lexer.Tokenize(generated, _file), _file, SkipWritten(delegateDecl.TypeParams.Count > 0), _includeTemplateBodies) { Source = generated };
         CompilationUnit unit = sub.ParseUnit();
         if (unit.Types.Count != 1) return null;
         TypeDecl made = unit.Types[0];
@@ -2021,7 +2040,7 @@ public sealed class Parser
         }
         src.Append("}\n");
         string generated = src.ToString();
-        Parser sub = new(Lexer.Tokenize(generated, _file), _file, _declarationsOnly) { Source = generated };
+        Parser sub = new(Lexer.Tokenize(generated, _file), _file, SkipWritten(decl.TypeParams.Count > 0), _includeTemplateBodies) { Source = generated };
         CompilationUnit unit = sub.ParseUnit();
         if (unit.Types.Count != 1) return;
         Adopt(unit.Types[0].Members);

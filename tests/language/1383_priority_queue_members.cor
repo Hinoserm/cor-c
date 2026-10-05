@@ -6,7 +6,7 @@
 // drain f0,i1,h1,b1,e1,g2,d2,c3,a3
 // remove True y2 5 w1,x5,z8,u7,v2 False
 // capacity 8 16 5 w1,v2,x5,u7,z8
-// modified Collection was modified; enumeration operation may not execute.
+// modified Collection was modified after the enumerator was instantiated.
 // empty Queue empty. 0
 //
 // PriorityQueue AS .NET'S: EnqueueRange into an empty queue heapified at

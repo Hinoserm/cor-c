@@ -536,18 +536,24 @@ interface Delegate
 /// answers for itself, and which refuses two delegates of different types.
 static class __Delegates
 {
-    public static T? Combine<T>(T? a, T? b) where T : class
+    // AS A DELEGATE, not as T: the binder types the call as the operator's
+    // own delegate type (Binder.DelegateCombination), and a cast to T here
+    // was a test against the shared copy's T -- `Func<__canon, __canon>`,
+    // which a Func<int, int> is not -- or, for a multicast made in shared
+    // code, against arguments it never had. Combine and Remove of one type
+    // answer that type (Delegate.Combine refuses two), so nothing is tested.
+    public static Delegate? Combine<T>(T? a, T? b) where T : class
     {
-        if (a == null) return b;
-        if (b == null) return a;
-        return (T?)(object?)Delegate.Combine((Delegate)(object)a, (Delegate)(object)b);
+        if (a == null) return (Delegate?)(object?)b;
+        if (b == null) return (Delegate?)(object?)a;
+        return Delegate.Combine((Delegate)(object)a, (Delegate)(object)b);
     }
 
-    public static T? Remove<T>(T? a, T? b) where T : class
+    public static Delegate? Remove<T>(T? a, T? b) where T : class
     {
         if (a == null) return null;
-        if (b == null) return a;
-        return (T?)(object?)Delegate.Remove((Delegate)(object)a, (Delegate)(object)b);
+        if (b == null) return (Delegate?)(object?)a;
+        return Delegate.Remove((Delegate)(object)a, (Delegate)(object)b);
     }
 
     public static bool Same(object? a, object? b) { return Runtime.SameDelegate(a, b); }
@@ -681,9 +687,20 @@ static class Runtime
     /// delegate's type is the one delegate interface its class implements, a
     /// closure's or a multicast's, marked as one in its descriptor's flags
     /// (Lowering.TypeFlagDelegate).
+    ///
+    /// A MULTICAST BY ITS TARGETS: one made in a generic delegate's shared
+    /// code (Delegate.CombineImpl) is of that code's canonical type --
+    /// Action<__canon> for an Action<string> -- while what it combines are
+    /// of the type itself, as is every delegate it was made from.
     public static bool SameDelegateType(object a, object b)
     {
-        return DelegateTypeOf(Sys.Word(a)) == DelegateTypeOf(Sys.Word(b));
+        return DelegateTypeOf(Sys.Word(Targeted(a))) == DelegateTypeOf(Sys.Word(Targeted(b)));
+    }
+
+    static object Targeted(object d)
+    {
+        while (d is IMulticastDelegate many && many.InvocationCount() > 0) d = many.InvocationAt(0);
+        return d;
     }
 
     static long DelegateTypeOf(long obj)

@@ -1029,7 +1029,7 @@ class PriorityQueue<TElement, TPriority> {
                     return true;
                 }
                 if (version != queue.version) {
-                    throw new InvalidOperationException("Collection was modified; enumeration operation may not execute.");
+                    throw new InvalidOperationException("Collection was modified after the enumerator was instantiated.");
                 }
                 index = queue.size + 1;
                 current = default;
@@ -1038,7 +1038,7 @@ class PriorityQueue<TElement, TPriority> {
 
             public void Reset() {
                 if (version != queue.version) {
-                    throw new InvalidOperationException("Collection was modified; enumeration operation may not execute.");
+                    throw new InvalidOperationException("Collection was modified after the enumerator was instantiated.");
                 }
                 index = 0;
                 current = default;

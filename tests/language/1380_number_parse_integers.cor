@@ -48,7 +48,7 @@ public static class Program
             Try(() => int.Parse("1e3", NumberStyles.Float)), Try(() => int.Parse("FF", NumberStyles.HexNumber)),
             Try(() => int.Parse("FFFFFFFF", NumberStyles.HexNumber)), Try(() => sbyte.Parse("80", NumberStyles.HexNumber)),
             Try(() => byte.Parse("-0")), Try(() => int.Parse("101", NumberStyles.BinaryNumber)),
-            Try(() => int.Parse(" ¤5 ", NumberStyles.Currency))));
+            Try(() => int.Parse(" ¤5 ", NumberStyles.Currency, CultureInfo.InvariantCulture))));
 
         Console.WriteLine("fails " + string.Join(" ",
             Try(() => int.Parse("2147483648")), Try(() => int.Parse("99999999999x")), Try(() => int.Parse("- 5")),

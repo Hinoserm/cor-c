@@ -686,6 +686,12 @@ public static class Prelude
             public static long AddressOf(ref long value) { return 0; }
             public static long AddressOf<T>(ref T value) { return 0; }
 
+            // A reference taken as T with no test: .NET's Unsafe.As, for code
+            // that has proved what the object is where a cast's test could not
+            // say it -- a shared generic copy, whose T is any reference's word,
+            // tested a delegate against its canonical type and refused it.
+            public static T As<T>(object? value) { return default!; }
+
             // Calls one: a method of this program's, by its address (a hook,
             // a chore, a callback), with this language's convention -- each
             // argument a long, two words on i386, as the kernel's entry code

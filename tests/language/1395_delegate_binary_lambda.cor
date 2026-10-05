@@ -2,7 +2,7 @@
 // expect-exit: 0
 // expect-output:
 // plus lambda 1L
-// plus group 1G
+// plus group 11G
 // minus group 1
 // func 20
 // typed True

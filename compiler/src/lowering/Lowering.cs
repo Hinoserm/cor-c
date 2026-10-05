@@ -1995,6 +1995,15 @@ public sealed partial class Lowering
         return PrimitiveDescriptor(a.Prim == Prim.String ? Prim.String : Prim.Any);
     }
 
+    /// <summary>
+    /// The descriptor a virtual call names as its receiver's type
+    /// (Instr.DispatchType), a name the escape analysis reads: object's is
+    /// ObjectDispatch, the runtime's own, named and never laid down here --
+    /// asked of DescriptorOf, a unit calling a method object declares (a
+    /// delegate's Equals) defined a second t_object.
+    /// </summary>
+    private string DispatchName(TypeSymbol t) => "t_" + TypeKey(t) == ObjectDispatch ? ObjectDispatch : DescriptorOf(t);
+
     private string DescriptorOf(TypeSymbol t)
         => t.Kind == TypeKind.Interface ? InterfaceDescriptor(t)
          // A STRUCT'S OR AN ENUM'S TYPE IS ITS BOX'S, which is what an object
@@ -2109,7 +2118,11 @@ public sealed partial class Lowering
             bool reference = (a.IsReference || a.Prim == Prim.Any || a.IsArray) && !a.IsNullableValue;
             long kind = (declared.TypeParams[i].Variance switch { Variance.Out => 1, Variance.In => 2, _ => 0 }) | (reference ? 4 : 0);
             WriteWord(block, (2 + 2 * i) * w, kind);
-            if (reference && a.Prim == Prim.Any && a.Symbol is null && !a.IsArray)
+            // OBJECT, however it is spelt -- the keyword or the class: its
+            // descriptor is the runtime's own, made in one unit only, and
+            // asking for it here laid down a second t_object in this one.
+            if (reference && !a.IsArray && (a.Prim == Prim.Any && a.Symbol is null
+                || a.Symbol is TypeSymbol named && "t_" + TypeKey(named) == ObjectDispatch))
             {
                 WriteWord(block, (3 + 2 * i) * w, 1);
                 continue;

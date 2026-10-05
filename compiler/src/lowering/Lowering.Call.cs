@@ -156,7 +156,7 @@ public sealed partial class Lowering
             // enumerator, not every IDisposable in the program -- a
             // TextWriter's Dispose among the targets let every foreach's
             // sequence go (Escape.IndirectTargets reads this).
-            _e.Block.Instrs[^1].DispatchType = DescriptorOf(through is not null && through != m.Owner && Derives(through, m.Owner) ? through : m.Owner);
+            _e.Block.Instrs[^1].DispatchType = DispatchName(through is not null && through != m.Owner && Derives(through, m.Owner) ? through : m.Owner);
             if (buffer is not null) MarkBuffer(buffer, m.Returns);
             // Whatever implementation answers, a struct it returns other than
             // through a buffer is a copy made for this caller.
