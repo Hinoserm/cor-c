@@ -7146,9 +7146,10 @@ public static class Application
         if (_crashing && f != null && f != _crashBox) return;
         // THE EVENTS THAT BELONG TO NO WINDOW: a key for whatever has focus,
         // the window list changing, an inspection, the pointer moving, and
-        // the screen changing size. Everything else names a window and is
-        // dropped when that window has gone.
-        if (f == null && m.Kind != 1 && m.Kind != 11 && m.Kind != 12 && m.Kind != 13
+        // the screen changing size; and a drag of this program's over a
+        // Windows program's window, which names that window. Everything
+        // else names a window and is dropped when that window has gone.
+        if (f == null && (m.Kind < Seat.DragBridgeEnterEvent || m.Kind > Seat.DragBridgeDropEvent) && m.Kind != 1 && m.Kind != 11 && m.Kind != 12 && m.Kind != 13
             && m.Kind != 14 && m.Kind != 15 && m.Kind != 16 && m.Kind != 17
             && m.Kind != 23 && m.Kind != 24 && m.Kind != 25 && m.Kind != 28
             && m.Kind != Seat.ClipboardChanged && m.Kind != Seat.ClipboardRender && m.Kind != Seat.ClipboardLost
@@ -9063,7 +9064,10 @@ sealed class OleDragBridge
     nint _interfaceData;
     byte[] _ipid = new byte[0];
     System.Runtime.InteropServices.ComTypes.IInterfaceFromWindowProp? _target;
-    int _window;
+    /// The seat's window the drag is over, and the Windows window in it
+    /// whose drop target takes the point (Seat.DragBridgeWindow): what
+    /// PrivDragDrop names.
+    int _window, _hwnd;
 
     public OleDragBridge(List<string> names, List<byte[]> encoded) { _data = new OleDataExport(names, encoded); }
 
@@ -9072,10 +9076,13 @@ sealed class OleDragBridge
         if (_target != null) Leave(_window);
         try
         {
+            int hwnd = Seat.Current.DragBridgeWindow(window);
+            if (hwnd == 0) return 0;
             long cookie = Seat.Current.DragBridgeTarget(window);
             if (cookie == 0) return 0;
-            _target = System.Runtime.InteropServices.OleWindows.Endpoint(window, cookie);
+            _target = System.Runtime.InteropServices.OleWindows.Endpoint(hwnd, cookie);
             _window = window;
+            _hwnd = hwnd;
             if (_interfaceData == 0)
             {
                 // Marshalled as a table keeps it, as the drag's whole life:
@@ -9092,7 +9099,10 @@ sealed class OleDragBridge
 
     public int Over(int window, int keys, int x, int y, int allowed)
     {
-        if (_target == null || window != _window) return 0;
+        // Onto another of the window's drop targets, or onto one from a
+        // part of it that is none: the one left, the other entered, as
+        // DoDragDrop moves between them.
+        if (_target == null || window != _window || Seat.Current.DragBridgeWindow(window) != _hwnd) return Enter(window, keys, x, y, allowed);
         try { return Step(System.Runtime.InteropServices.OleCodes.DragOpOver, keys, x, y, allowed); }
         catch (Exception) { Forget(); return 0; }
     }
@@ -9123,7 +9133,7 @@ sealed class OleDragBridge
         System.Runtime.InteropServices.ComTypes.IInterfaceFromWindowProp? target = _target;
         if (target == null) return 0;
         int effect = allowed;
-        int hr = target.PrivDragDrop((nint)_window, _interfaceData, dop, keys, System.Runtime.InteropServices.OleMemory.Point(x, y), ref effect,
+        int hr = target.PrivDragDrop((nint)_hwnd, _interfaceData, dop, keys, System.Runtime.InteropServices.OleMemory.Point(x, y), ref effect,
             (int)System.Runtime.InteropServices.ComBroker.Thread, null!, 0);
         return hr < 0 ? 0 : effect & allowed;
     }
@@ -9133,6 +9143,7 @@ sealed class OleDragBridge
         System.Runtime.InteropServices.ComTypes.IInterfaceFromWindowProp? target = _target;
         _target = null;
         _window = 0;
+        _hwnd = 0;
         if (target is System.__ComObject c) { try { System.Runtime.InteropServices.Marshal.ReleaseComObject(c); } catch (Exception) { } }
     }
 

@@ -241,6 +241,7 @@ enum SeatIoctl : long
     DragBridgeTarget = 0x47550B09,
     DragBridgeAnswer = 0x47550B0A,
     DragBridgeDone = 0x47550B0B,
+    DragBridgeWindow = 0x47550B0C,
 }
 
 public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPageTarget
@@ -1267,6 +1268,15 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
     /// The COM broker's cookie for the endpoint of the Windows program's
     /// window this program's drag is over (its "OleEndPointID"), its ole32
     /// asked to make one first if it has none yet; 0 when there is none.
+    /// The Windows window in `window` whose drop target is under the
+    /// pointer -- WordPad's rich edit in its frame -- as ole32 finds one:
+    /// the HWND PrivDragDrop names. 0 none.
+    public int DragBridgeWindow(int window)
+    {
+        long target = Ioctl(SeatIoctl.DragBridgeWindow, window);
+        return target < 0 ? 0 : (int)target;
+    }
+
     public long DragBridgeTarget(int window)
     {
         long cookie = Ioctl(SeatIoctl.DragBridgeTarget, window);

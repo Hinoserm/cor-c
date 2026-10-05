@@ -364,13 +364,16 @@ namespace System.Runtime.InteropServices
             return cf;
         }
 
-        /// An HWND by value: its 'User' marker, its body after.
-        public static void Hwnd(NdrWriter w, nint hwnd) { w.User(() => { w.Long(WdtInproc); w.Long(hwnd); }); }
+        /// An HWND by value: its 'User' marker, its RemotableHandle after,
+        /// aligned to four as its FC_USER_MARSHAL says -- to eight, after a
+        /// 32-byte ORPCTHIS and the marker, ole32's HWND_UserUnmarshal read
+        /// the padding as the tag and raised RPC_S_INVALID_TAG.
+        public static void Hwnd(NdrWriter w, nint hwnd) { w.User(() => { w.Long(WdtInproc); w.Long(hwnd); }, 4); }
 
         public static nint Hwnd(NdrReader r)
         {
             nint got = 0;
-            r.User(() => { r.Long(); got = (nint)r.Int(); });
+            r.User(() => { r.Long(); got = (nint)r.Int(); }, 4);
             return got;
         }
 
@@ -387,7 +390,7 @@ namespace System.Runtime.InteropServices
         {
             w.Align(4);
             int cf = (ushort)f.cfFormat;
-            w.User(() => ClipFormatBody(w, cf));
+            w.User(() => ClipFormatBody(w, cf), 4);
             w.Long(0);
             w.Long((int)f.dwAspect);
             w.Long(f.lindex);
@@ -412,7 +415,7 @@ namespace System.Runtime.InteropServices
         public static void FormatEtcFlat(NdrReader r, WireFormat into)
         {
             r.Align(4);
-            r.User(() => { into.Cf = ClipFormatBody(r); });
+            r.User(() => { into.Cf = ClipFormatBody(r); }, 4);
             bool device = r.Long() != 0;
             into.Aspect = r.Int();
             into.Lindex = r.Int();
@@ -456,8 +459,11 @@ namespace System.Runtime.InteropServices
 
         // ---- STGMEDIUM --------------------------------------------------------------------
 
-        /// A STGMEDIUM where one goes: its 'User' marker and its body. Only an
-        /// HGLOBAL's bytes are sent; any other medium goes as TYMED_NULL.
+        /// A STGMEDIUM where one goes: its 'User' marker and its body, aligned
+        /// to four (userSTGMEDIUM holds words and pointers; padded to eight,
+        /// ole32's STGMEDIUM_UserUnmarshal read the padding as the tymed and
+        /// refused the reply as bad stub data). Only an HGLOBAL's bytes are
+        /// sent; any other medium goes as TYMED_NULL.
         public static void StgMedium(NdrWriter w, int tymed, byte[]? hglobal)
         {
             w.User(() =>
@@ -477,7 +483,7 @@ namespace System.Runtime.InteropServices
                     w.Long(hglobal.Length);
                     w.Raw(hglobal);
                 }
-            });
+            }, 4);
         }
 
         /// A medium read off the wire: its kind and an HGLOBAL's bytes, or an
@@ -511,7 +517,7 @@ namespace System.Runtime.InteropServices
                     object? unk = ComObjRefs.Need().Unmarshal(r.InterfaceBody());
                     if (unk is System.__ComObject c) Marshal.ReleaseComObject(c);
                 }
-            });
+            }, 4);
             return m;
         }
 
