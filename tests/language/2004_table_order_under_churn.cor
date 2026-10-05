@@ -1,0 +1,51 @@
+// test: table order under churn
+// expect-exit: 0
+// expect-output:
+// 0 40 40 -242483567494759497
+// 1 1979 1979 -9052778734760187723
+// 2 1978 1978 8690652069740657172
+// 3 2001 2001 8770597530647388043
+// 4 2002 2002 -520363400716083391
+// 5 2020 2020 -8807254197628118737
+// -8839949121517457181
+//
+// Dictionary and HashSet walk their members in the order .NET's do --
+// insertion order, a removed one's place given to the next added -- through
+// thousands of adds and removes that grow, refill and empty the tables, and
+// through a Clear and a TrimExcess along the way. A checksum of each walk is
+// compared with .NET's.
+
+using System;
+using System.Collections.Generic;
+
+static class P
+{
+    static uint seed = 12345;
+    static int Next(int bound) { seed = seed * 1664525u + 1013904223u; return (int)((seed >> 8) % (uint)bound); }
+
+    static int Main()
+    {
+        Dictionary<int, int> d = new();
+        HashSet<int> s = new();
+        long check = 0;
+        for (int round = 0; round < 6; round++)
+        {
+            int span = round % 2 == 0 ? 64 : 3000;
+            for (int i = 0; i < 20000; i++)
+            {
+                int k = Next(span);
+                if (Next(3) == 0) { d.Remove(k); s.Remove(k); }
+                else { d[k] = i; s.Add(k); }
+            }
+            long walk = 0;
+            foreach (KeyValuePair<int, int> pair in d) walk = walk * 31 + pair.Key * 7 + pair.Value;
+            foreach (int k in s) walk = walk * 17 + k;
+            check = check * 13 + walk;
+            Console.WriteLine(round + " " + d.Count + " " + s.Count + " " + walk);
+            if (round == 2) { d.Clear(); s.Clear(); }
+            if (round == 4) { d.TrimExcess(); s.TrimExcess(); }
+        }
+        Console.WriteLine(check);
+        return 0;
+    }
+}

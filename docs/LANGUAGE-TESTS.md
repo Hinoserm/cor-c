@@ -12,7 +12,18 @@ bash tests/language/run.sh              # every test
 bash tests/language/run.sh strings      # tests whose file name contains "strings"
 bash tests/language/run.sh -v hello     # also show what the compiler printed
 bash tests/language/run.sh --opt-size   # every test using size-oriented inlining
+bash tests/language/run.sh --through-link                         # every test through the link
+bash tests/language/run.sh --through-link --region-engine andersen region
 ```
+
+`--through-link` compiles each test to an object (`corc compile --obj`, the
+same sources and flags) and links it as the whole program (`corc link
+--closed`), so the link-time optimiser and its region solver decide what an
+ordinary run leaves to the compile alone; a `units` test's link is given the
+same options. `--region-engine escape|andersen` picks the link's engine (the
+default otherwise) and needs `--through-link`. The link is asked for its
+region summary (`--region-report +none`), which the `regions` header is
+checked against. Without `--through-link` a run is exactly as before.
 
 The runner builds `compiler/corc.csproj` (Release) if no `corc.dll` is found,
 then compiles each `tests/language/*.cor` with the configured runtime/library
@@ -60,6 +71,11 @@ Every test starts with a comment block the runner reads:
   test on its own against their declarations as another, the two linked as the
   whole program (`corc link --closed`). For what the link decides across
   separately compiled units.
+- `regions` (optional, checked only with `--through-link`): `taken` when the
+  link must make some site's objects in a region -- a test of what regions
+  give back or keep, whose output would pass as well with none -- or `none`
+  when it must make none. Read from the link's summary line, `regions: N
+  boundaries, L loops, S sites in the innermost region`.
 - `expect-exit` is the exit code `Main` must return. `nonzero` accepts any
   non-zero code, for tests of runtime failures (a bounds check, an uncaught
   exception) whose exact code is the runtime's choice.

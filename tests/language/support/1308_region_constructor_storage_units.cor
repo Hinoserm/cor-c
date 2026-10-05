@@ -1,0 +1,39 @@
+// The other unit of 1308_region_constructor_storage_beside_across_units: a
+// boundary that makes a collection of each kind, fills each without growing
+// it, and reads every one back after a collection, handing out a number.
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+using System.Text;
+
+public static class Made
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long Fill(int round)
+    {
+        // Each within what its constructor made room for: sixteen slots,
+        // filled under three quarters; eight; sixteen; sixty-four.
+        Dictionary<int, int> d = new();
+        HashSet<int> h = new();
+        Queue<int> q = new();
+        List<int> l = new(16);
+        StringBuilder sb = new(64);
+        for (int k = 0; k < 8; k++)
+        {
+            d[k] = round * k;
+            h.Add(round + k);
+            l.Add(k + round);
+            sb.Append((char)('a' + k));
+        }
+        for (int k = 0; k < 6; k++) q.Enqueue(k * round);
+        GC.Collect();
+
+        long sum = 0;
+        for (int k = 0; k < 8; k++) sum += d[k];
+        for (int k = 0; k < 8; k++) if (h.Contains(round + k)) sum += 1;
+        while (q.Count > 0) sum += q.Dequeue();
+        for (int k = 0; k < 8; k++) sum += l[k];
+        for (int k = 0; k < sb.Length; k++) sum += sb[k];
+        return sum;
+    }
+}

@@ -1,0 +1,38 @@
+// test: region_constructor_storage_beside_across_units
+// units: tests/language/support/1308_region_constructor_storage_units.cor
+// regions: taken
+// expect-exit: 0
+// expect-output:
+// total 1182900 first arrays in the region True
+//
+// A collection made in a region made its first arrays -- a Dictionary's
+// keys, values, states and hashes, a HashSet's three, a Queue's items, a
+// List's items for a capacity, a StringBuilder's buffer -- on the heap: its
+// constructor stores them into the fields its growth replaces them in, and
+// only the growth was made beside its owner. Now the constructor's are too
+// (RegionPointsTo.MakeStorageBeside): in the collection's region when it is
+// in one. Made.Fill is a boundary, and its five collections are its
+// region's; filled within the room their constructors made, they grow
+// nothing but the Dictionary's list of what went in, in order (two arrays).
+// So a call makes seventeen blocks in its region with the first arrays
+// beside their collections, and seven without (Gc.RegionBlocks): fourteen
+// or more says they are there. Everything is read back after a collection.
+
+using System;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    // Not Main itself: what the entry calls is never a boundary.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Run()
+    {
+        long total = 0, before = Gc.RegionBlocks;
+        for (int round = 0; round < 200; round++) total += Made.Fill(round);
+        long perCall = (Gc.RegionBlocks - before) / 200;
+        Console.WriteLine("total " + total + " first arrays in the region " + (perCall >= 14));
+        return 0;
+    }
+
+    static int Main() => Run();
+}

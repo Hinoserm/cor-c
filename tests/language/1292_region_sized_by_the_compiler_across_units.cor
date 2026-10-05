@@ -1,0 +1,43 @@
+// test: region_sized_by_the_compiler_across_units
+// regions: taken
+// units: tests/language/support/1292_region_sized_units.cor
+// expect-exit: 0
+// expect-output:
+// fixed 42898500 sized True
+// fields 131900
+//
+// A region needs what the program makes in it, and where the link can
+// prove how much that is, the region is laid down where all of it fits and
+// the arena takes no more for it (Gc, "regions"; RegionSolver.Sizes).
+// Work.Fixed makes eight points, in a loop of a constant count, an array of
+// eight and a pair: its region's bytes are known, and every call opens it
+// sized (Gc.RegionsSized). Work.Fields makes a word for every field of its
+// line, in a loop over the line: nothing bounds it, and its region grows as
+// the arena always has. Collections run between the calls of one and in the
+// middle of the other, and everything is read back.
+
+using System;
+using System.Runtime.CompilerServices;
+using SizedUnits;
+
+static class P
+{
+    // Not Main itself: what the entry calls is never a boundary.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Run()
+    {
+        long sized = Gc.RegionsSized, fixedSum = 0;
+        for (int seed = 0; seed < 1000; seed++)
+        {
+            fixedSum += Work.Fixed(seed);
+            if (seed % 250 == 249) GC.Collect();
+        }
+        Console.WriteLine("fixed " + fixedSum + " sized " + (Gc.RegionsSized - sized >= 1000));
+        long fields = 0;
+        for (int round = 0; round < 200; round++) fields += Work.Fields("3,14,159,2653,58979", round);
+        Console.WriteLine("fields " + fields);
+        return 0;
+    }
+
+    static int Main() => Run();
+}

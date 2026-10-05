@@ -1814,9 +1814,13 @@ class Regex
         return new Regex(pattern, options).Split(input);
     }
 
-    /// Every character the pattern language would read as itself, backslashed.
+    /// Every character the pattern language would not read as itself,
+    /// backslashed: .NET's set -- \, *, +, ?, |, {, [, (, ), ^, $, ., #,
+    /// space -- and tab, newline, carriage return and form feed as their
+    /// letters. A vertical tab is not among them, as it is not in .NET's.
     public static string Escape(string text)
     {
+        if (text == null) { throw new ArgumentNullException("str"); }
         StringBuilder made = new StringBuilder();
         for (int i = 0; i < text.Length; i = i + 1)
         {
@@ -1832,7 +1836,6 @@ class Regex
             else if (c == '\n') { made.Append("\\n"); }
             else if (c == '\r') { made.Append("\\r"); }
             else if (c == '\f') { made.Append("\\f"); }
-            else if (c == (char)11) { made.Append("\\v"); }
             else { made.Append(c); }
         }
         return made.ToString();

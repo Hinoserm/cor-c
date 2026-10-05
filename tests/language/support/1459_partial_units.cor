@@ -1,0 +1,21 @@
+// The other unit of 1459_partial_parts_in_one_file_across_units: one class
+// in three parts in this one file, each with fields of its own.
+namespace PartialUnits;
+
+public sealed partial class Holder
+{
+    public int First = 1;
+    public string Name = "holder";
+}
+
+public sealed partial class Holder
+{
+    public long Second = 2;
+    public bool Flag = true;
+}
+
+public sealed partial class Holder
+{
+    public int Third = 3;
+    public int Sum() => First + (int)Second + Third;
+}

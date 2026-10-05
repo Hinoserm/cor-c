@@ -1,0 +1,64 @@
+// test: multicast_ref_out
+// expect-exit: 0
+// expect-output:
+// out False 30
+// ref 30
+// in 7
+// group True 3
+// removed False 20
+//
+// A DELEGATE WITH OUT, REF OR IN PARAMETERS COMBINES like any other, as
+// .NET's do: every target is handed the caller's same variable, so an out or
+// ref value is what the LAST target left in it, and the result is the last
+// target's. `read("abc", out got)` runs value = 3, then value = 30 (returning
+// false); `t(ref n)` adds one and then multiplies by ten, 2 -> 3 -> 30. A
+// method group with an out parameter combines and is removed by `-=`. These
+// delegates had no multicast at all: `+=` on them did not compile.
+
+using System;
+
+delegate bool TryRead(string text, out int value);
+delegate void Twiddle(ref int value);
+delegate int Measure(in Spot p);
+
+struct Spot
+{
+    public int X;
+    public int Y;
+}
+
+static class P
+{
+    static bool Half(string text, out int value)
+    {
+        value = text.Length / 2;
+        return true;
+    }
+
+    static int Main()
+    {
+        TryRead read = (string text, out int value) => { value = text.Length; return true; };
+        read += (string text, out int value) => { value = text.Length * 10; return false; };
+        bool ok = read("abc", out int got);
+        Console.WriteLine("out " + ok + " " + got);
+
+        Twiddle t = (ref int v) => v += 1;
+        t += (ref int v) => v *= 10;
+        int n = 2;
+        t(ref n);
+        Console.WriteLine("ref " + n);
+
+        Measure m = (in Spot p) => p.X;
+        m += (in Spot p) => p.X + p.Y;
+        Spot pt = new Spot { X = 3, Y = 4 };
+        Console.WriteLine("in " + m(pt));
+
+        read += Half;
+        ok = read("abcdef", out got);
+        Console.WriteLine("group " + ok + " " + got);
+        read -= Half;
+        ok = read("ab", out got);
+        Console.WriteLine("removed " + ok + " " + got);
+        return 0;
+    }
+}

@@ -208,7 +208,7 @@ public sealed partial class Lowering
         // The frees the lifetime passes may add (Escape), by the label they
         // call: declared is enough, the body may be another unit's.
         foreach ((string helper, int arity) in new[] { ("Free", 1), ("FreeField", 2), ("FreeReplaced", 2), ("FreeOwnedReplaced", 2), ("KeepField", 2), ("CardMarkObject", 1), ("FreeOwnedElements", 1), ("FreeArrayElements", 1), ("OwnElements", 1), ("FreeStorageInFrame", 1),
-                                                       ("RegionEnter", 1), ("RegionLeave", 1), ("RegionLoop", 2), ("AllocRegion", 3), ("AllocNear", 4), ("RegionCatch", 1) })
+                                                       ("RegionEnter", 2), ("RegionLeave", 1), ("RegionLoop", 3), ("AllocRegion", 3), ("AllocNear", 4), ("RegionCatch", 1) })
             if (l.RuntimeMethod(helper, arity) is MethodSymbol provided) l._m.RuntimeHelpers.Add(Label(provided));
         if (l.MakesStoreSequences) l._m.RuntimeHelpers.Add(Corsac.Lang.Lto.RuntimeAbi.RefStore);
         errors.AddRange(l.Errors);
@@ -477,7 +477,7 @@ public sealed partial class Lowering
     public const int TlsState = 28;
     /// <summary>This thread's [ThreadStatic] cells: an object?[] (Tls.ThreadStatics).</summary>
     public const int TlsThreadStatics = 168;
-    public const int TlsBytes = 180;
+    public const int TlsBytes = 184;
 
     /// <summary>The type the runtime library provides its hooks in.</summary>
     public const string RuntimeType = "Runtime";
@@ -516,7 +516,7 @@ public sealed partial class Lowering
             // to a routine nothing else reached would name a symbol no one
             // defines.
             foreach ((string helper, int arity) in new[] { ("Free", 1), ("FreeReplaced", 2), ("FreeOwnedReplaced", 2), ("FreeOwnedElements", 1), ("FreeArrayElements", 1), ("OwnElements", 1), ("FreeStorageInFrame", 1),
-                                                           ("RegionEnter", 1), ("RegionLeave", 1), ("RegionLoop", 2), ("AllocRegion", 3), ("AllocNear", 4), ("RegionCatch", 1) })
+                                                           ("RegionEnter", 2), ("RegionLeave", 1), ("RegionLoop", 3), ("AllocRegion", 3), ("AllocNear", 4), ("RegionCatch", 1) })
                 if (RuntimeMethod(helper, arity) is MethodSymbol provided) Require(provided);
         }
 
@@ -946,7 +946,7 @@ public sealed partial class Lowering
 
         Require(all);
         VReg whole = _e.Call(CallLabel(all), IrTypes.Word)!;
-        VReg count = _e.Load(IrType.I32, whole, _t.ArrayCountOffset);
+        VReg count = CountOf(_e, whole);
         VReg rest = _f.NewReg(IrType.I32, "argn");
         _e.CopyTo(rest, R(_e.Binary(Opcode.Sub, count, 1)));
 
@@ -1507,11 +1507,28 @@ public sealed partial class Lowering
     private const int DescName = 0, DescSize = 1, DescDepth = 2, DescDisplay = 3,
                       DescInterfaces = 4, DescSelf = 5, DescFlags = 6, DescPayload = 7,
                       DescRefMap = 8, DescGcFlags = 9, DescElement = 10,
+                      // An interface's word 8, which only a class's holds a map in: its identity record (ShapeRecord).
+                      DescShape = 8,
                       // A class's word 10, as an array's is its element's; 11 is its owned-field map (Escape).
                       DescTypeContext = 10;
 
     // DescFlags beyond a sequence's 1 and a string's 2: what Type answers.
     private const int TypeFlagValue = 4, TypeFlagEnum = 8, TypeFlagInterface = 16, TypeFlagPrimitive = 32;
+
+    // AN INTERFACE'S BOXED FACE (BoxedFaces), in its own descriptor's flags:
+    // IComparable, IFormattable, or IComparable<X> / IEquatable<X> of a
+    // number, a bool, a char or a string X. Runtime.DescribedAs answers by
+    // them for a box or a string, whose tables name none of these.
+    private const int TypeFlagFaceComparable = 64, TypeFlagFaceFormattable = 128, TypeFlagFaceOf = 256;
+
+    // A DELEGATE TYPE'S descriptor (an interface's, as a delegate is one
+    // here): what Runtime.SameDelegateType finds of an object's delegate type.
+    // Past the boxed faces' bits (64, 128, 256), which the same word holds.
+    private const int TypeFlagDelegate = 512;
+
+    // AN INTERFACE'S WORD 11: its declared variance (VarianceRecord). Word 4,
+    // as a class's, the interfaces it extends.
+    private const int DescVariance = 11;
 
     /// <summary>
     /// The descriptor an array of these names as its element's (DescElement):
@@ -1859,7 +1876,17 @@ public sealed partial class Lowering
             return sym;
         }
 
-        sym = "q_" + (isString ? "string" : "array_" + Safe(element));
+        // ONE NAME FOR EACH KEY, AND NEVER ONE FOR TWO: the element as
+        // written, every character but a letter or a digit spelt out
+        // (SequenceName), and the stride, which the key holds too. Safe made
+        // `_` of every one of them, so two tuples of arrays named alike --
+        // `ValueTuple<int, int[]>` and its kin -- were one symbol with two
+        // descriptors, and the compiler's own late units (tuples of int
+        // arrays throughout) failed "an item with the same key".
+        sym = "q_" + (isString ? "string" : "array_" + SequenceName(element) + "_" + stride);
+        // Named before it is built: a string's slots are routines that write
+        // string literals, each of which asks for this descriptor.
+        _sequenceDescriptors[key] = sym;
         int w = _t.WordSize;
 
         // AN ARRAY IS AN OBJECT, and answers object's virtuals: `o.ToString()`
@@ -1868,6 +1895,21 @@ public sealed partial class Lowering
         // read whatever data followed the descriptor and jumped there. A
         // string's own methods are reached by name, never through here.
         int slots = isString ? 0 : Math.Max(Math.Max(_b.ToStringSlot, _b.CompareSlot), Math.Max(_b.EqualsSlot, _b.HashSlot)) + 1;
+        // A STRING'S SYSTEM INTERFACES (BoxedFaces): IComparable,
+        // IComparable<string> and IEquatable<string>, in their families'
+        // slots, the same in every unit -- `IComparable s = "a"` called
+        // through.
+        // And object's own slots, for a string held as one of those: the
+        // key routines, which ask a string as text and never through here.
+        List<(int Slot, string Target)> stringFaces = isString ? StringFaceSlots() : new();
+        if (stringFaces.Count > 0)
+        {
+            stringFaces.Add((_b.ToStringSlot, StringItself()));
+            stringFaces.Add((_b.EqualsSlot, KeyEqualsStub()));
+            stringFaces.Add((_b.HashSlot, KeyHashStub()));
+            stringFaces.Add((_b.CompareSlot, KeyCompareStub()));
+        }
+        foreach (var (faceSlot, _) in stringFaces) slots = Math.Max(slots, faceSlot + 1);
         byte[] d = new byte[_t.DescriptorBytes + slots * w];
         WriteWord(d, DescSize * w, stride);
         WriteWord(d, DescDepth * w, -1);
@@ -1879,7 +1921,6 @@ public sealed partial class Lowering
         // byte[]` compares descriptor addresses, so two copies of an array's
         // descriptor would be two types.
         DataItem item = new(sym, d) { ReadOnly = true, Align = _t.Align64, FromLibrary = true, Coalescible = true };
-        _sequenceDescriptors[key] = sym;
         _m.Data.Add(item);
         item.Relocs.Add(new DataReloc(DescName * w, InternString(isString ? "System.String"
             : elementType?.AsNonNullable().Symbol is TypeSymbol shaped && (shaped.Kind == TypeKind.Struct && IsTupleShape(shaped) || shaped.Decl is { Specialised: true })
@@ -1904,7 +1945,8 @@ public sealed partial class Lowering
         DataItem faces = new("sf_" + sym, new byte[w]) { ReadOnly = true, Exported = false };
         _m.Data.Add(faces);
         item.Relocs.Add(new DataReloc(DescInterfaces * w, faces.Name, 0));
-        if (slots > 0)
+        foreach (var (faceSlot, target) in stringFaces) item.Relocs.Add(new DataReloc(_t.DescriptorBytes + faceSlot * w, target, 0));
+        if (slots > 0 && !isString)
         {
             item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.ToStringSlot * w, ObjectToStringStub(), 0));
             item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.EqualsSlot * w, ObjectEqualsStub(), 0));
@@ -2043,6 +2085,25 @@ public sealed partial class Lowering
         return !Primitives.Contains(element);
     }
 
+    /// <summary>
+    /// An element's name as a symbol, one-to-one: an ASCII letter or digit as
+    /// it is, `_` as `__`, any other ASCII character as `_` and its two hex
+    /// digits, and anything past ASCII as `_u` and its four.
+    /// </summary>
+    private static string SequenceName(string s)
+    {
+        const string hex = "0123456789abcdef";
+        StringBuilder sb = new();
+        foreach (char c in s)
+        {
+            if (c is >= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9') sb.Append(c);
+            else if (c == '_') sb.Append("__");
+            else if (c < 128) sb.Append('_').Append(hex[c >> 4]).Append(hex[c & 15]);
+            else sb.Append("_u").Append(hex[c >> 12]).Append(hex[(c >> 8) & 15]).Append(hex[(c >> 4) & 15]).Append(hex[c & 15]);
+        }
+        return sb.ToString();
+    }
+
     private static string Safe(string s)
     {
         StringBuilder sb = new();
@@ -2092,11 +2153,30 @@ public sealed partial class Lowering
                 table.Relocs.Add(new DataReloc((2 + 2 * i) * w,
                     SequenceDescriptor(ElementKey(args[i]), ElementStride(args[i]), isString: false, elementType: args[i]), 0));
             }
+            List<TypeRef>? written = chain[d].Decl?.CanonMade;
             for (int k = 0; k < made.Count; k++)
             {
+                // An array of a constructed type the shared code tests for
+                // (Monomorphiser.CanonTested): that array's descriptor.
+                if (written is not null && k < written.Count && written[k].ArrayRank == 1)
+                {
+                    if (made[k] is { Kind: TypeKind.Class or TypeKind.Interface } element)
+                    {
+                        Type of = new() { Prim = Prim.Void, Symbol = element };
+                        table.Relocs.Add(new DataReloc((1 + 2 * args.Count + k) * w,
+                            SequenceDescriptor(ElementKey(of), ElementStride(of), isString: false, elementType: of), 0));
+                    }
+                    continue;
+                }
                 if (made[k] is { Kind: TypeKind.Class } cls)
                 {
                     table.Relocs.Add(new DataReloc((1 + 2 * args.Count + k) * w, ClassDescriptor(cls), 0));
+                }
+                // An interface the shared code tests or casts to over its
+                // parameters (Monomorphiser.CanonTested): this instantiation's.
+                else if (made[k] is { Kind: TypeKind.Interface } face)
+                {
+                    table.Relocs.Add(new DataReloc((1 + 2 * args.Count + k) * w, InterfaceDescriptor(face), 0));
                 }
             }
             _m.Data.Add(table);
@@ -2154,6 +2234,15 @@ public sealed partial class Lowering
         return PrimitiveDescriptor(a.Prim == Prim.String ? Prim.String : Prim.Any);
     }
 
+    /// <summary>
+    /// The descriptor a virtual call names as its receiver's type
+    /// (Instr.DispatchType), a name the escape analysis reads: object's is
+    /// ObjectDispatch, the runtime's own, named and never laid down here --
+    /// asked of DescriptorOf, a unit calling a method object declares (a
+    /// delegate's Equals) defined a second t_object.
+    /// </summary>
+    private string DispatchName(TypeSymbol t) => "t_" + TypeKey(t) == ObjectDispatch ? ObjectDispatch : DescriptorOf(t);
+
     private string DescriptorOf(TypeSymbol t)
         => t.Kind == TypeKind.Interface ? InterfaceDescriptor(t)
          // A STRUCT'S OR AN ENUM'S TYPE IS ITS BOX'S, which is what an object
@@ -2185,14 +2274,212 @@ public sealed partial class Lowering
         byte[] d = new byte[_t.DescriptorBytes];
         int w = _t.WordSize;
         WriteWord(d, DescDepth * w, -1);
-        WriteWord(d, DescFlags * w, TypeFlagInterface);
+        int face = BoxedFaceFlags(t, out string? faceOf);
+        WriteWord(d, DescFlags * w, TypeFlagInterface | face | (t.Decl?.IsDelegate == true ? TypeFlagDelegate : 0));
 
         DataItem item = new(sym, d) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), SystemCode = SystemCode(t), SourcePath = SourcePathOf(t), Coalescible = t.Decl?.Specialised == true };
         _m.Data.Add(item);
         item.Relocs.Add(new DataReloc(DescName * w, InternString(FullTypeName(t)), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
+        if (faceOf is not null) item.Relocs.Add(new DataReloc(DescElement * w, faceOf, 0));
+        if (ShapeRecord(t, sym) is string record) item.Relocs.Add(new DataReloc(DescShape * w, record, 0));
+
+        // THE INTERFACES IT EXTENDS, as a class's descriptor lists the ones it
+        // implements: an IList<T> is an ICollection<T> and an IEnumerable<T>,
+        // which Runtime.DescribedAs asks of an interface met as a type
+        // argument (a Func<IList<int>> is a Func<IEnumerable<int>>) or as an
+        // array's element (an IList<int>[] is an IEnumerable<int>[]).
+        List<TypeSymbol> bases = new();
+        foreach (TypeSymbol parent in t.Interfaces) AddInterfaceClosure(parent, bases);
+        bases.Remove(t);
+        if (bases.Count > 0)
+        {
+            foreach (TypeSymbol extended in bases) InterfaceDescriptor(extended);
+            byte[] arr = new byte[(bases.Count + 1) * w];
+            DataItem list = new("f_" + TypeKey(t), arr) { ReadOnly = true, Exported = false };
+            for (int i = 0; i < bases.Count; i++) list.Relocs.Add(new DataReloc(i * w, InterfaceDescriptor(bases[i]), 0));
+            _m.Data.Add(list);
+            item.Relocs.Add(new DataReloc(DescInterfaces * w, list.Name, 0));
+        }
+
+        if (VarianceRecord(t) is string variance)
+        {
+            item.Relocs.Add(new DataReloc(DescVariance * w, variance, 0));
+        }
         return sym;
     }
+
+    /// <summary>
+    /// AN INTERFACE'S IDENTITY RECORD, which its descriptor's word 8
+    /// (DescShape, a word only a class's descriptor uses) names: the family
+    /// it was made from (CanonShape.FamilyOf), how many type arguments, and
+    /// each argument's identity (ShapeDescriptor) -- a reference's descriptor
+    /// as a shared copy's type context names it, a number's or an enum's
+    /// box's. What Runtime.ShapedAs reads of each interface an object lists, to find
+    /// IList of string when a shared method copy knows only at run time that
+    /// its U is string. Only for an interface whose every argument has one:
+    /// not over a struct, a pointer, a Nullable, an array or anything made
+    /// over a shared copy's own word. Read from the interface alone, so every
+    /// unit's copy is the same bytes and the same relocations, as the
+    /// descriptor is.
+    /// </summary>
+    private string? ShapeRecord(TypeSymbol t, string descriptor)
+    {
+        if (CanonShape.FamilyOf(t) is not long family || t.Decl is not { } decl
+            || t.TemplateArgTypes.Count != decl.TemplateArgs.Count || t.TemplateArgTypes.Count > CanonShape.MostArguments)
+        {
+            return null;
+        }
+        int count = t.TemplateArgTypes.Count;
+        List<string> identities = new(count);
+        foreach (Type a in t.TemplateArgTypes)
+        {
+            if (ShapeDescriptor(a) is not string identity) return null;
+            identities.Add(identity);
+        }
+        int w = _t.WordSize;
+        byte[] words = new byte[(2 + count) * w];
+        WriteWord(words, 0, family);
+        WriteWord(words, w, count);
+        DataItem record = new(descriptor + "$shape", words)
+        {
+            ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), Coalescible = decl.Specialised,
+        };
+        for (int i = 0; i < count; i++)
+        {
+            record.Relocs.Add(new DataReloc((2 + i) * w, identities[i], 0));
+        }
+        _m.Data.Add(record);
+        return record.Name;
+    }
+
+    /// <summary>
+    /// WHICH BOXED FACE AN INTERFACE IS (BoxedFaces), for its descriptor's
+    /// flags, and the descriptor its word 10 names: for IComparable&lt;X&gt;
+    /// and IEquatable&lt;X&gt;, X's own -- a string's, or the box of a number,
+    /// a bool or a char -- the one type that implements it so; for
+    /// IFormattable, bool's box, the one primitive that does not. Nothing for
+    /// any other interface, nor for one over any other X (an enum, a class,
+    /// a struct), which no box or string implements without naming it.
+    /// Read from the interface alone, so every unit's copy of its descriptor
+    /// is the same bytes and the same relocations, as a box's is.
+    /// </summary>
+    private int BoxedFaceFlags(TypeSymbol t, out string? faceOf)
+    {
+        faceOf = null;
+        Type? argument = t.TemplateArgTypes.Count == 1 ? t.TemplateArgTypes[0] : null;
+        switch (BoxedFaces.Of(t, argument))
+        {
+            case BoxedFaces.Face.Comparable:
+                return TypeFlagFaceComparable;
+            case BoxedFaces.Face.Formattable:
+                faceOf = BoxDescriptor(Type.Bool);
+                return TypeFlagFaceFormattable;
+            case BoxedFaces.Face.ComparableOf or BoxedFaces.Face.EquatableOf when argument is not null:
+                if (argument.Prim == Prim.String && !argument.IsArray && !argument.IsNullableValue && !argument.IsPointer)
+                {
+                    faceOf = StringDescriptor();
+                    return TypeFlagFaceOf;
+                }
+                if (argument.Symbol is null && !argument.IsArray && !argument.IsNullableValue && !argument.IsPointer
+                    && BoxedFaces.IsPrimitive(argument.Prim))
+                {
+                    faceOf = BoxDescriptor(argument);
+                    return TypeFlagFaceOf;
+                }
+                return 0;
+            default:
+                return 0;
+        }
+    }
+
+    /// WHAT A VARIANT INTERFACE'S ARGUMENTS ARE AND HOW THEY MAY VARY, for the
+    /// run-time type test (Runtime.DescribedAs, VariantFits): a
+    /// `(object)funcOfString is Func&lt;object&gt;` is true in .NET, and so is
+    /// a List&lt;string&gt; tested for IEnumerable&lt;object&gt;, though neither
+    /// object's descriptor names that type. Null for a type whose template
+    /// declares no variance, and for one whose arguments are not all known
+    /// here -- tested for its exact type only, as before.
+    ///
+    /// The record: the template's identity (`vf_`, one per template and
+    /// arity, shared by every unit), the argument count, then for each
+    /// argument its declared variance (1 out, 2 in), 4 added for a reference
+    /// type, and its descriptor -- a class's, an interface's, an array's or
+    /// a string's; 1 for object, which every reference converts to; a value
+    /// type's box, compared for identity only.
+    /// </summary>
+    private string? VarianceRecord(TypeSymbol t)
+    {
+        // NOT A SHARED COPY'S: its arguments are the copy's word, which names
+        // no type (object, as the copy binds it) -- recorded as object, every
+        // List<Item> was an IReadOnlyList<U> by covariance in shared code,
+        // whatever U was.
+        if (t.Decl is not { Template: string template } made || made.TemplateArgs.Count == 0
+            || t.TemplateArgTypes.Count != made.TemplateArgs.Count
+            || CanonicalCopy(t) || t.Name.Contains(Monomorphiser.CanonName, StringComparison.Ordinal))
+        {
+            return null;
+        }
+        int n = made.TemplateArgs.Count;
+        if (!(_b.Types.TryGetValue(template + "`" + n, out TypeSymbol? open) || _b.Types.TryGetValue(template, out open))
+            || open.Decl is not { } declared || declared.TypeParams.Count != n
+            || declared.TypeParams.All(p => p.Variance == Variance.None))
+        {
+            return null;
+        }
+        string sym = "vr_" + TypeKey(t);
+        if (_varianceRecords.Contains(sym))
+        {
+            return sym;
+        }
+        int w = _t.WordSize;
+        byte[] block = new byte[(2 + 2 * n) * w];
+        WriteWord(block, w, n);
+        List<DataReloc> relocs = new();
+        for (int i = 0; i < n; i++)
+        {
+            Type a = t.TemplateArgTypes[i];
+            // A shared copy's stand-in argument (__canon) is no type to
+            // compare: such a copy is tested for its exact type only.
+            if (a.IsError || a.ParamName is not null || a.IsPointer || a.IsNullableValue || a.Symbol?.Name.Contains(Monomorphiser.CanonName, StringComparison.Ordinal) == true)
+            {
+                return null;
+            }
+            bool reference = (a.IsReference || a.Prim == Prim.Any || a.IsArray) && !a.IsNullableValue;
+            long kind = (declared.TypeParams[i].Variance switch { Variance.Out => 1, Variance.In => 2, _ => 0 }) | (reference ? 4 : 0);
+            WriteWord(block, (2 + 2 * i) * w, kind);
+            // OBJECT, however it is spelt -- the keyword or the class: its
+            // descriptor is the runtime's own, made in one unit only, and
+            // asking for it here laid down a second t_object in this one.
+            if (reference && !a.IsArray && (a.Prim == Prim.Any && a.Symbol is null
+                || a.Symbol is TypeSymbol named && "t_" + TypeKey(named) == ObjectDispatch))
+            {
+                WriteWord(block, (3 + 2 * i) * w, 1);
+                continue;
+            }
+            string? described = reference ? ElementDescriptor(a.AsNonNullable()) : BoxDescriptor(a);
+            if (described is null)
+            {
+                return null;
+            }
+            relocs.Add(new DataReloc((3 + 2 * i) * w, described, 0));
+        }
+        string family = "vf_" + Safe(open.Key) + "_" + n;
+        if (_varianceRecords.Add(family))
+        {
+            byte[] one = new byte[w];
+            WriteWord(one, 0, n);
+            _m.Data.Add(new DataItem(family, one) { ReadOnly = true, Align = w, Coalescible = true });
+        }
+        _varianceRecords.Add(sym);
+        DataItem record = new(sym, block) { ReadOnly = true, Align = w, Coalescible = true };
+        record.Relocs.Add(new DataReloc(0, family, 0));
+        record.Relocs.AddRange(relocs);
+        _m.Data.Add(record);
+        return sym;
+    }
+
+    private readonly HashSet<string> _varianceRecords = new(StringComparer.Ordinal);
 
     /// <summary>
     /// The descriptor and vtable of a class, built once and on demand.
@@ -2332,37 +2619,7 @@ public sealed partial class Lowering
         for (int i = 0; i < slots; i++)
         {
             int at = _t.DescriptorBytes + i * w;
-            string? target;
-
-            // object's own members are symbols with no body (the binder's
-            // Rooted): a slot that still holds one -- `new object()`, or a
-            // class that overrides none of them -- gets the stub below, as a
-            // slot nobody filled does.
-            if (table[i] is { } m && !(m.Decl is null && m.Owner?.Name == "object" && m.Owner.Kind == TypeKind.Class))
-            {
-                Require(m);
-                target = CallLabel(m);
-            }
-            else if (i == _b.EqualsSlot && t.Kind == TypeKind.Class)
-            {
-                target = EqualsGuard(t) ?? ObjectEqualsStub();
-            }
-            else if (i == _b.HashSlot && t.Kind == TypeKind.Class)
-            {
-                target = ObjectHashStub();
-            }
-            else if (i == _b.CompareSlot && t.Kind == TypeKind.Class)
-            {
-                target = OwnCompare(t) ?? ObjectCompareStub();
-            }
-            else if (i == _b.ToStringSlot && t.Kind == TypeKind.Class)
-            {
-                target = ObjectToStringStub();
-            }
-            else
-            {
-                target = null;      // abstract: calling it is a null call, which traps
-            }
+            string? target = SlotTarget(t, i, table[i]);
 
             if (target is not null)
             {
@@ -2664,20 +2921,20 @@ public sealed partial class Lowering
             else if (m.ExplicitMember == "get_Current")
             {
                 // IEnumerator's Current, an object: the element boxed.
-                VReg value = LoadElement(items, e.Load(IrType.I32, self, cursor.Offset), of, At(m));
+                VReg value = LoadElement(items, Numbered(e, e.Load(IrType.I32, self, cursor.Offset)), of, At(m));
                 e.Ret(new RegOperand(Boxable(of) ? BoxValue(At(m), value, of) : value));
             }
             else if (m.Name == "MoveNext")
             {
-                VReg next = e.Binary(Opcode.Add, e.Load(IrType.I32, self, cursor.Offset), 1);
+                VReg next = e.Binary(Opcode.Add, Numbered(e, e.Load(IrType.I32, self, cursor.Offset)), 1);
 
                 e.Store(new RegOperand(self), new RegOperand(next), cursor.Offset, 4);
                 e.Ret(new RegOperand(e.Binary(Opcode.LtS, next,
-                                              e.Load(IrType.I32, items, _t.ArrayCountOffset))));
+                                              CountOf(e, items))));
             }
             else
             {
-                VReg value = LoadElement(items, e.Load(IrType.I32, self, cursor.Offset), of,
+                VReg value = LoadElement(items, Numbered(e, e.Load(IrType.I32, self, cursor.Offset)), of,
                                          At(m));
                 // A struct element into the caller's buffer, or a copy.
                 if (buffer is not null) { e.Emit(Opcode.MemCopy, null, R(buffer), R(value), Imm(Math.Max(1, StructOf(of).InstanceSize), IrTypes.Word)); value = buffer; }
@@ -2718,7 +2975,7 @@ public sealed partial class Lowering
 
         if (m.Name == "get_Count" || m.Params.Count == 0)
         {
-            e.Ret(new RegOperand(e.Load(IrType.I32, items, _t.ArrayCountOffset)));
+            e.Ret(new RegOperand(CountOf(e, items)));
         }
         else
         {

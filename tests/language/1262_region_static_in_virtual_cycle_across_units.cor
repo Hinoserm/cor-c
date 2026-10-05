@@ -1,0 +1,58 @@
+// test: region_static_in_virtual_cycle_across_units
+// units: tests/language/support/1262_region_static_in_virtual_cycle_units.cor
+// expect-exit: 0
+// expect-output:
+// steps 1266200 sum 8480000 tags 58000
+//
+// Walk makes an item and its payload and hands them to a ring of visitors in
+// the other unit, whose virtual calls recurse through three classes. Deep
+// in the cycle, Keeper stores the item's payload in a static
+// (`Registry.Last = item.Body`, at every Keeper below a depth the seed
+// picks): a parameter's sub-object escapes, from a method that is part of a
+// large recursive strongly connected component of virtual calls. The
+// payload must not be made in Walk's region; the item, its trail and the
+// copies may be. After each Walk, garbage is made and the payload the
+// static holds is summed; a payload freed with Walk's region reads back
+// another walk's numbers.
+
+using System;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    static readonly Visitor Ring0 = Ring.Make();
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Walk(int seed)
+    {
+        Item item = new(new Payload(seed, "p" + seed));
+        return Ring0.Visit(item, 30 + seed % 3, 3 + seed % 13);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Scribble(int seed)
+    {
+        Payload junk = new(-1000 - seed, "junk");
+        return junk.Values[0] + 1000 + seed;
+    }
+
+    // Not Main itself: what the entry calls is never a boundary.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Run()
+    {
+        long steps = 0, sum = 0, tags = 0;
+        for (int k = 0; k < 20000; k++)
+        {
+            steps += Walk(k % 100);
+            steps += Scribble(k);
+            Payload p = Registry.Last!;
+            for (int i = 0; i < p.Values.Length; i++) sum += p.Values[i];
+            tags += p.Tag.Length;
+            if (k % 2000 == 1999) GC.Collect();
+        }
+        Console.WriteLine("steps " + steps + " sum " + sum + " tags " + tags);
+        return 0;
+    }
+
+    static int Main() => Run();
+}

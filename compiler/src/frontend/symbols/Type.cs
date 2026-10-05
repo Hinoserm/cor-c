@@ -23,7 +23,12 @@ public sealed class Type : IEquatable<Type>
     public Type? Element { get; init; }
     public int ArrayRank { get; init; }
     /// <summary>Type arguments of a constructed generic.</summary>
-    public IReadOnlyList<Type> Args { get; init; } = Array.Empty<Type>();
+    // ONE EMPTY LIST FOR EVERY TYPE WITHOUT ARGUMENTS: an array read as
+    // IReadOnlyList is wrapped in a view where it is converted, so the
+    // default spelt here made a view for every Type -- 120 thousand of them
+    // live in a unit -- all around the same empty array.
+    public IReadOnlyList<Type> Args { get; init; } = NoArgs;
+    internal static readonly IReadOnlyList<Type> NoArgs = Array.Empty<Type>();
     public IReadOnlyList<Type>? UseArgs { get; init; }
     /// <summary>Set when this is a type parameter rather than a concrete type.</summary>
     public string? ParamName { get; init; }
@@ -72,6 +77,37 @@ public sealed class Type : IEquatable<Type>
     /// names are not: two function pointers are the same machine word.
     /// </summary>
     public FunctionPointer? Function { get; init; }
+
+    /// <summary>
+    /// WHERE A SHARED COPY'S MACHINE WORD COMES FROM (TypeRef.CanonIndex):
+    /// -1 for an ordinary object; k for a shared class copy's type parameter
+    /// k, which its `this`'s type context answers at run time; -2 - k for a
+    /// shared method copy's type parameter k, which its hidden arguments
+    /// answer (Lowering.HiddenTypeArguments). Still object in every other
+    /// respect, and NOT PART OF EQUALITY: it says where the type argument can
+    /// be found, not what type this is. Inference and closing carry it as
+    /// they carry the instance, which is what lets a generic method called
+    /// from shared code be handed its type argument.
+    /// </summary>
+    public int CanonParam { get; init; } = -1;
+
+    /// <summary>object, as the shared type argument at `index` (CanonParam): one instance per index.</summary>
+    public static Type CanonAny(int index)
+    {
+        if (index == -1) return Any;
+        lock (CanonAnys)
+        {
+            if (!CanonAnys.TryGetValue(index, out Type? made))
+            {
+                made = new Type { Prim = Prim.Any, CanonParam = index };
+                CanonAnys[index] = made;
+            }
+            return made;
+        }
+    }
+
+    private static readonly Dictionary<int, Type> CanonAnys = new();
+
 
     /// <summary>
     /// C#'s `dynamic`: an object at run time -- Prim.Any -- whose members,
@@ -223,6 +259,7 @@ public sealed class Type : IEquatable<Type>
         Prim = Prim, Symbol = Symbol, Nullable = nullable, Element = Element,
         ArrayRank = ArrayRank, Args = Args, ParamName = ParamName, StructParam = StructParam,
         Names = Names, PointerDepth = PointerDepth, Pointee = Pointee, UseArgs = UseArgs, Function = Function,
+        CanonParam = CanonParam,
         Dynamic = Dynamic,
     };
 
@@ -231,6 +268,7 @@ public sealed class Type : IEquatable<Type>
         Prim = Prim, Symbol = Symbol, Nullable = Nullable, Element = Element,
         ArrayRank = ArrayRank, Args = Args, ParamName = ParamName, StructParam = StructParam,
         Names = names, PointerDepth = PointerDepth, Pointee = Pointee, UseArgs = UseArgs, Function = Function,
+        CanonParam = CanonParam,
         Dynamic = Dynamic,
     };
 

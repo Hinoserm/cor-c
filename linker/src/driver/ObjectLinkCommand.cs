@@ -200,6 +200,10 @@ public static class ObjectLinkCommand
         // kernel's overrides too, and other modules'.
         int regenerated = IrLinkOptimizer.Run(inputs, () => backend ?? new ProcessUnitBackend(backendPath), lto, importBytes,
             closedImageEntry: (flat || closed || physicalAddress is not null) && exportsPath is null ? entry : null, parallelBackends: backend is null, regionReport: regionReport,
+            // Only the types the image makes, where nothing outside it makes
+            // any: no shared object, no shared library, no exports a module
+            // derives from (VirtualTargets.Made).
+            madeOnly: !Switches.NoRta && !shared && sharedLibraries.Count == 0 && exportsPath is null && kernel is null,
             openTypes: exportsPath is not null || kernel is not null, reachableFrom: keep is not null ? entry : null, keep: keep,
             moduleOfKernel: kernel is not null);
         int folded = LinkTimeOptimizer.Run(inputs, lto);

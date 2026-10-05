@@ -11,5 +11,10 @@ public sealed class EnumMember : Node
     /// needs them: a member carries the `[Label]` and `[Description]` a
     /// settings page shows instead of the bare member name.
     /// </summary>
-    public List<AttributeRef> Attributes { get; } = new();
+    // To read: one shared empty list until written (WritableAttributes), never written through.
+    public List<AttributeRef> Attributes => _attributes ?? NoAttributes;
+    /// <summary>To write: made on first use; almost every node has none.</summary>
+    public List<AttributeRef> WritableAttributes => _attributes ??= new();
+    private List<AttributeRef>? _attributes;
+    private static readonly List<AttributeRef> NoAttributes = new();
 }

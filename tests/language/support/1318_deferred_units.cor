@@ -1,0 +1,50 @@
+// The other unit of 1318_region_virtual_call_deferred_for_leaky_override_across_units:
+// a base class with seventeen overrides of one method, one of which lets its
+// receiver go (Keeper keeps the last one weighed in a static), and a helper
+// that makes the virtual call on its base-typed parameter.
+using System.Runtime.CompilerServices;
+
+namespace DeferredUnits;
+
+public abstract class Part
+{
+    public abstract int Weigh();
+}
+
+/// Lets its receiver go: the last one weighed is kept for good.
+public sealed class Keeper : Part
+{
+    public static Part? Last;
+    public override int Weigh() { Last = this; return 1; }
+}
+
+/// Keeps nothing: its weight is its array's length.
+public sealed class P1 : Part
+{
+    public readonly int[] Data;
+    public P1(int n) { Data = new int[n]; }
+    public override int Weigh() => Data.Length;
+}
+
+public sealed class P2 : Part { public override int Weigh() => 2; }
+public sealed class P3 : Part { public override int Weigh() => 3; }
+public sealed class P4 : Part { public override int Weigh() => 4; }
+public sealed class P5 : Part { public override int Weigh() => 5; }
+public sealed class P6 : Part { public override int Weigh() => 6; }
+public sealed class P7 : Part { public override int Weigh() => 7; }
+public sealed class P8 : Part { public override int Weigh() => 8; }
+public sealed class P9 : Part { public override int Weigh() => 9; }
+public sealed class P10 : Part { public override int Weigh() => 10; }
+public sealed class P11 : Part { public override int Weigh() => 11; }
+public sealed class P12 : Part { public override int Weigh() => 12; }
+public sealed class P13 : Part { public override int Weigh() => 13; }
+public sealed class P14 : Part { public override int Weigh() => 14; }
+public sealed class P15 : Part { public override int Weigh() => 15; }
+public sealed class P16 : Part { public override int Weigh() => 16; }
+
+public static class Scale
+{
+    // The call is on a parameter: which override runs is its caller's to say.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int Weigh(Part p) => p.Weigh();
+}

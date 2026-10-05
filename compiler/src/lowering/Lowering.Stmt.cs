@@ -535,7 +535,7 @@ public sealed partial class Lowering
         VReg seq = Eval(fe.Sequence);
         VReg index = _f.NewReg(IrType.I32, "i");
         _e.CopyTo(index, new ImmOperand(0, IrType.I32));
-        VReg count = sequenceType.IsArray ? _e.Unary(Opcode.ArrayLength, R(seq), IrType.I32) : _e.Load(IrType.I32, seq, _t.ArrayCountOffset);
+        VReg count = sequenceType.IsArray ? _e.Unary(Opcode.ArrayLength, R(seq), IrType.I32) : CountOf(_e, seq);
 
         Block top = _f.NewBlock("foreach");
         Block body = _f.NewBlock("febody");
@@ -753,17 +753,37 @@ public sealed partial class Lowering
         int w = _t.WordSize;
         FrameSlot rec = _f.NewSlot(4 * w, w, "handler");
         VReg recAddr = _e.SlotAddress(rec);
-        VReg head = _e.Load(IrTypes.Word, ThreadBlockNow(), TlsHandler / 4 * w);
-        _e.Store(recAddr, head, HandlerPrev / 4 * w);
-        _e.Store(recAddr, _e.LabelAddress(landing), HandlerAddr / 4 * w);
+        VReg head = ChainRead(ThreadBlockNow(), TlsHandler / 4 * w);
+        ChainWrite(recAddr, R(head), HandlerPrev / 4 * w);
+        ChainWrite(recAddr, R(_e.LabelAddress(landing)), HandlerAddr / 4 * w);
         VReg sp = _e.Reg(IrTypes.Word, "sp");
         _e.Emit(Opcode.StackPointer, sp);
-        _e.Store(recAddr, sp, HandlerSp / 4 * w);
+        ChainWrite(recAddr, R(sp), HandlerSp / 4 * w);
         VReg fp = _e.Reg(IrTypes.Word, "fp");
         _e.Emit(Opcode.FramePointer, fp);
-        _e.Store(recAddr, fp, HandlerFp / 4 * w);
-        _e.Store(ThreadBlockNow(), recAddr, TlsHandler / 4 * w);
+        ChainWrite(recAddr, R(fp), HandlerFp / 4 * w);
+        ChainWrite(ThreadBlockNow(), R(recAddr), TlsHandler / 4 * w);
         return rec;
+    }
+
+    /// <summary>
+    /// A WORD OF THE HANDLER CHAIN, read or written: a record's link, its
+    /// landing, its stack and frame pointers, and the chain's head in the
+    /// thread block. Frame and code addresses, never a reference to an
+    /// object, so numbers (Instr.Number) to every analysis that follows
+    /// references. As references, each record was the thread block's, read
+    /// back as the unknown object's; and in an iterator or an async body,
+    /// whose frame the machine saves, the record saved into the machine was
+    /// a place whose every load read whatever any place was written --
+    /// stored back into the chain, everything the machine held became the
+    /// unknown object's, and none of it was ever given back.
+    /// </summary>
+    private VReg ChainRead(VReg address, long offset) => Numbered(_e, _e.Load(IrTypes.Word, address, offset));
+
+    private void ChainWrite(VReg address, Operand value, long offset)
+    {
+        _e.Store(R(address), value, offset);
+        _e.Block.Instrs[^1].Number = true;
     }
 
     /// <summary>Closes the innermost handler: the chain's head goes back to what it was.</summary>
@@ -771,8 +791,8 @@ public sealed partial class Lowering
     {
         int w = _t.WordSize;
         VReg recAddr = _e.SlotAddress(rec);
-        VReg prev = _e.Load(IrTypes.Word, recAddr, HandlerPrev / 4 * w);
-        _e.Store(ThreadBlockNow(), prev, TlsHandler / 4 * w);
+        VReg prev = ChainRead(recAddr, HandlerPrev / 4 * w);
+        ChainWrite(ThreadBlockNow(), R(prev), TlsHandler / 4 * w);
     }
 
     /// <summary>
@@ -838,14 +858,14 @@ public sealed partial class Lowering
     private void Rethrow(VReg obj, Node at)
     {
         int w = _t.WordSize;
-        VReg head = _e.Load(IrTypes.Word, ThreadBlockNow(), TlsHandler / 4 * w);
+        VReg head = ChainRead(ThreadBlockNow(), TlsHandler / 4 * w);
         Block none = _f.NewBlock("nohandler");
         Block some = _f.NewBlock("unwind");
         _e.Branch(head, some, none);
 
         _e.SetBlock(some);
-        VReg prev = _e.Load(IrTypes.Word, head, HandlerPrev / 4 * w);
-        _e.Store(ThreadBlockNow(), prev, TlsHandler / 4 * w);
+        VReg prev = ChainRead(head, HandlerPrev / 4 * w);
+        ChainWrite(ThreadBlockNow(), R(prev), TlsHandler / 4 * w);
         _e.Emit(Opcode.Unwind, null, new RegOperand(head), new RegOperand(obj));
 
         _e.SetBlock(none);

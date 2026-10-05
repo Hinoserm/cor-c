@@ -1,0 +1,57 @@
+// test: record_members_compared_as_their_type
+// expect-exit: 0
+// expect-output:
+// True True
+// True True
+// False False
+// True True True
+// False
+// True True
+//
+// A RECORD'S Equals AND GetHashCode compare each member as
+// EqualityComparer<T>.Default does, written out for the member's own type
+// rather than through the comparer's one shared copy: a double's NaN equal to
+// NaN and 0 to -0, a string as text, a class by its own Equals, an empty
+// nullable equal to another, a tuple item by item -- and a generic record's
+// member as whatever its type argument is.
+
+using System;
+using System.Collections.Generic;
+
+class Node
+{
+    public int V;
+    public Node(int v) { V = v; }
+    public override bool Equals(object? o) => o is Node n && n.V == V;
+    public override int GetHashCode() => V;
+}
+
+record Pt(double X, string? Name, Node? N, int? K, (int, string) T);
+record Box<T>(T Value);
+
+class P
+{
+    static int Main()
+    {
+        string a1 = "a";
+        var a = new Pt(double.NaN, a1, new Node(1), null, (1, "t"));
+        var b = new Pt(double.NaN, "a", new Node(1), null, (1, "t"));
+        Console.WriteLine((a == b) + " " + (a.GetHashCode() == b.GetHashCode()));
+
+        double zero = 0.0;
+        var c = new Pt(zero, null, null, 3, (2, "u"));
+        var d = new Pt(-zero, null, null, 3, (2, "u"));
+        Console.WriteLine(c.Equals(d) + " " + (c.GetHashCode() == d.GetHashCode()));
+
+        var e = new Pt(zero, null, new Node(2), 3, (2, "u"));
+        Console.WriteLine(a.Equals(c) + " " + c.Equals(e));
+
+        Console.WriteLine((new Box<Node>(new Node(2)) == new Box<Node>(new Node(2))) + " " + (new Box<int>(3) == new Box<int>(3))
+            + " " + (new Box<string?>(null) == new Box<string?>(null)));
+        Console.WriteLine(new Box<Node?>(null) == new Box<Node?>(new Node(0)));
+
+        var seen = new HashSet<Pt> { a, c };
+        Console.WriteLine(seen.Contains(b) + " " + seen.Contains(d));
+        return 0;
+    }
+}

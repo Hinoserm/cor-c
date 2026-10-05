@@ -1,0 +1,62 @@
+// test: owned_elements_copy_constructor
+// expect-exit: 0
+// expect-output:
+// e1000 4096 0 - Live 0x0
+// virtio 4096 0 - Live 0x0
+// e1000 4096 0 - Live 0x0
+// virtio 4096 0 - Live 0x0
+//
+// A LIST MADE BY COPYING ANOTHER DOES NOT OWN WHAT IT HOLDS. The owned-
+// elements rule read every List constructor as making an empty list, so a
+// snapshot made with `new List<T>(source)`, read and dropped, freed its
+// elements -- which were still the source's: the kernel's module records,
+// freed by the first read of /proc/modules, and the second read failed a
+// type test on whatever had been allocated over them.
+
+using System;
+using System.Collections.Generic;
+sealed class KernelModule
+{
+    public string Name = "";
+    public string[] Depends = new string[0];
+    public long Base, Bytes;
+    public bool Gone;
+}
+static class Modules
+{
+    static readonly List<KernelModule> _modules = new List<KernelModule>();
+    static readonly object _gate = new object();
+    public static void Add(string name) { lock (_gate) { _modules.Add(new KernelModule { Name = name, Bytes = 4096 }); } }
+    static List<KernelModule> Snapshot()
+    {
+        lock (_gate) { return new List<KernelModule>(_modules); }
+    }
+    public static string Report()
+    {
+        string text = "";
+        List<KernelModule> all = Snapshot();
+        foreach (KernelModule m in all)
+        {
+            string users = "";
+            int count = 0;
+            foreach (KernelModule o in all)
+                if (!o.Gone)
+                    foreach (string dep in o.Depends)
+                        if (dep == m.Name) { users += o.Name + ","; count++; }
+            text += m.Name + " " + m.Bytes + " " + count + " " + (users.Length > 0 ? users : "-") + " "
+                  + (m.Gone ? "Quarantined" : "Live") + " 0x" + (m.Base & 0xFFFFFFFF).ToString("x") + "\n";
+        }
+        return text;
+    }
+}
+static class Program
+{
+    static int Main()
+    {
+        Modules.Add("e1000"); Modules.Add("virtio");
+        Console.Write(Modules.Report());
+        for (int i = 0; i < 2000; i++) { string junk = "x" + i; }
+        Console.Write(Modules.Report());
+        return 0;
+    }
+}

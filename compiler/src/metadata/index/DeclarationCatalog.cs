@@ -152,6 +152,20 @@ public sealed class DeclarationCatalog : IDisposable
         sourceBudget = sourceBudgetBytes;
     }
 
+    /// <summary>
+    /// The hash of the text of a source file this index was made from
+    /// (SourceIndexBuilder.SourceKey), or null when it holds no such file.
+    /// </summary>
+    public byte[]? SourceHash(string path)
+    {
+        lock (gate)
+        {
+            if (disposed) throw new ObjectDisposedException(nameof(DeclarationCatalog));
+            foreach (DeclarationRecord record in index.Find(SourceIndexBuilder.SourceKey(path))) return record.Payload;
+            return null;
+        }
+    }
+
     public DeclarationLease? Acquire(string assembly, string metadataName)
         => AcquireKey("T:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + metadataName);
 
@@ -161,7 +175,7 @@ public sealed class DeclarationCatalog : IDisposable
         {
             if (disposed) throw new ObjectDisposedException(nameof(DeclarationCatalog));
             return index.Find("E:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + space + "\n" + method)
-                .Select(record => DeclarationIndex.Utf8.GetString(record.Payload))
+                .Select(record => DeclarationIndex.Shared(DeclarationIndex.Utf8.GetString(record.Payload)))
                 .Distinct(StringComparer.Ordinal).ToArray();
         }
     }
@@ -173,7 +187,7 @@ public sealed class DeclarationCatalog : IDisposable
         {
             if (disposed) throw new ObjectDisposedException(nameof(DeclarationCatalog));
             return index.Find("G:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + method)
-                .Select(record => DeclarationIndex.Utf8.GetString(record.Payload))
+                .Select(record => DeclarationIndex.Shared(DeclarationIndex.Utf8.GetString(record.Payload)))
                 .Distinct(StringComparer.Ordinal).ToArray();
         }
     }
@@ -190,33 +204,16 @@ public sealed class DeclarationCatalog : IDisposable
     /// not change while a catalog is open, so an answer is an answer for
     /// good; a hit takes a hash lookup under a lock nobody holds for long.
     /// </summary>
-    private readonly Dictionary<string, string?> bindingKeys = new(StringComparer.Ordinal);
+    //
+    // BY THE BARE NAME, a table for each kind of question and assembly: keyed
+    // by the whole query, every name asked kept the assembly's identity in
+    // front of it -- ninety thousand strings, a fifth of what a compile kept
+    // live between its units, each saying "corc, Version=0.0.0.0, ..." again.
+    private readonly Dictionary<(char Kind, string Identity), Dictionary<string, string?>> remembered = new();
     private readonly object bindingGate = new();
 
     public string? BindingKey(string assembly, string bindingName)
-        => BindingKeyOf("B:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + bindingName, bindingName);
-
-    /// <summary>BindingKey for a query already spelled: `B:`, the assembly's identity, a newline, the name.</summary>
-    public string? BindingKeyOf(string query, string bindingName)
-    {
-        lock (bindingGate)
-        {
-            if (bindingKeys.TryGetValue(query, out string? known)) return known;
-        }
-        string? result = null;
-        lock (gate)
-        {
-            if (disposed) throw new ObjectDisposedException(nameof(DeclarationCatalog));
-            foreach (DeclarationRecord record in index.Find(query))
-            {
-                string found = DeclarationIndex.Utf8.GetString(record.Payload);
-                if (result is not null && result != found) throw new InvalidDataException("Ambiguous indexed type identity: " + bindingName);
-                result = found;
-            }
-        }
-        lock (bindingGate) bindingKeys[query] = result;
-        return result;
-    }
+        => Remembered('B', SourceIndexBuilder.AssemblyIdentity(assembly), bindingName);
 
     /// <summary>
     /// The one declaration whose simple name this is, among those keyed by a
@@ -224,15 +221,26 @@ public sealed class DeclarationCatalog : IDisposable
     /// more than one is -- ambiguous is no answer, as in Binder.Sole.
     /// </summary>
     public string? SoleKey(string assembly, string simpleName)
-        => SoleKeyOf("S:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + simpleName);
+        => Remembered('S', SourceIndexBuilder.AssemblyIdentity(assembly), simpleName);
 
-    /// <summary>SoleKey for a query already spelled: `S:`, the assembly's identity, a newline, the name.</summary>
-    public string? SoleKeyOf(string query)
+    // `kind:identity\nname` asked of the index once, and remembered. Two
+    // answers to a binding name are an error in the index; two to a sole
+    // name are no answer.
+    private string? Remembered(char kind, string identity, string name)
     {
+        // A NAME THE MONOMORPHISER MADE ('$' is in no C# identifier, so in no
+        // declaration's key) is in no index. The binder asks for every one it
+        // resolves, and remembering each "no" kept a hundred thousand long
+        // names live through the compile.
+        if (name.Contains('$')) return null;
+        Dictionary<string, string?>? table;
         lock (bindingGate)
         {
-            if (bindingKeys.TryGetValue(query, out string? known)) return known;
+            if (!remembered.TryGetValue((kind, identity), out table))
+                remembered[(kind, identity)] = table = new(StringComparer.Ordinal);
+            else if (table.TryGetValue(name, out string? known)) return known;
         }
+        string query = kind + ":" + identity + "\n" + name;
         string? result = null;
         bool ambiguous = false;
         lock (gate)
@@ -240,13 +248,17 @@ public sealed class DeclarationCatalog : IDisposable
             if (disposed) throw new ObjectDisposedException(nameof(DeclarationCatalog));
             foreach (DeclarationRecord record in index.Find(query))
             {
-                string found = DeclarationIndex.Utf8.GetString(record.Payload);
-                if (result is not null && result != found) ambiguous = true;
+                string found = DeclarationIndex.Shared(DeclarationIndex.Utf8.GetString(record.Payload));
+                if (result is not null && result != found)
+                {
+                    if (kind == 'B') throw new InvalidDataException("Ambiguous indexed type identity: " + name);
+                    ambiguous = true;
+                }
                 result = found;
             }
         }
         if (ambiguous) result = null;
-        lock (bindingGate) bindingKeys[query] = result;
+        lock (bindingGate) table[name] = result;
         return result;
     }
 
@@ -264,6 +276,19 @@ public sealed class DeclarationCatalog : IDisposable
                 writer.Write(record.Payload.Length); writer.Write(record.Payload);
             }
             return System.Security.Cryptography.SHA256.HashData(stream.ToArray());
+        }
+    }
+
+    /// <summary>The declaration keys that begin with this: a type's nested ones are its key and a '+'.</summary>
+    public List<string> KeysWithPrefix(string prefix)
+    {
+        lock (gate)
+        {
+            if (disposed) throw new ObjectDisposedException(nameof(DeclarationCatalog));
+            List<string> keys = new();
+            foreach (DeclarationRecord record in index.WithPrefix(prefix))
+                if (keys.Count == 0 || keys[^1] != record.Key) keys.Add(record.Key);
+            return keys;
         }
     }
 

@@ -191,10 +191,10 @@ public sealed class Builder
     }
 
     public void Jump(Block target)
-        => Append(new Instr { Op = Opcode.Jump, Targets = { target } });
+        => Append(new Instr { Op = Opcode.Jump, WritableTargets = { target } });
 
     public void Branch(Operand cond, Block ifTrue, Block ifFalse)
-        => Append(new Instr { Op = Opcode.Branch, Operands = { cond }, Targets = { ifTrue, ifFalse } });
+        => Append(new Instr { Op = Opcode.Branch, Operands = { cond }, WritableTargets = { ifTrue, ifFalse } });
 
     /// <summary>
     /// A branch tests a 32-bit condition; a wider value (a pointer in long
@@ -210,7 +210,7 @@ public sealed class Builder
     public void Switch(Operand index, IReadOnlyList<Block> targets, Block fallback)
     {
         Instr i = new() { Op = Opcode.Switch, Operands = { index }, Default = fallback };
-        i.Targets.AddRange(targets);
+        i.WritableTargets.AddRange(targets);
         Append(i);
     }
 
@@ -226,7 +226,7 @@ public sealed class Builder
     public VReg LabelAddress(Block target)
     {
         VReg d = Function.NewReg(IrTypes.Word);
-        Append(new Instr { Op = Opcode.LabelAddr, Dest = d, Targets = { target } });
+        Append(new Instr { Op = Opcode.LabelAddr, Dest = d, WritableTargets = { target } });
         return d;
     }
 

@@ -51,6 +51,9 @@ public sealed partial class Lowering
 
         switch (name)
         {
+            // The word as it is: no test, no conversion (Sys.As).
+            case "As":
+                return Arg(call, target, 0);
             case "Rethrow":
                 Rethrow(Arg(call, target, 0), call);
                 return Void();
@@ -145,14 +148,14 @@ public sealed partial class Lowering
                 VReg s = Arg(call, target, 0);
                 VReg at = WordOf(Arg(call, target, 1));
                 VReg p = _e.Binary(Opcode.Add, s, _e.Binary(Opcode.Mul, at, 2));
-                return _e.Load(IrType.I32, p, _t.ArrayHeaderBytes, 2, signed: false);
+                return Numbered(_e, _e.Load(IrType.I32, p, _t.ArrayHeaderBytes, 2, signed: false));
             }
             case "GetCharPair":
             {
                 VReg s = Arg(call, target, 0);
                 VReg at = WordOf(Arg(call, target, 1));
                 VReg p = _e.Binary(Opcode.Add, s, _e.Binary(Opcode.Mul, at, 2));
-                return _e.Load(IrType.I32, p, _t.ArrayHeaderBytes, 4, signed: false);
+                return Numbered(_e, _e.Load(IrType.I32, p, _t.ArrayHeaderBytes, 4, signed: false));
             }
             case "SetChar":
             {
@@ -175,6 +178,14 @@ public sealed partial class Lowering
                 VReg n = Scaled(WordOf(Arg(call, target, 4)));
                 _e.Emit(Opcode.MemCopy, null, R(_e.Binary(Opcode.Add, dst, _t.ArrayHeaderBytes)),
                         R(_e.Binary(Opcode.Add, src, _t.ArrayHeaderBytes)), R(n));
+                // CHARACTERS OR BYTES, NEVER AN ADDRESS (Instr.Number): read
+                // as a copy of words that might be, every string a join was
+                // handed held what its parts held, and a key a dictionary's
+                // missing-key message was made from went with the exception
+                // to where nobody follows -- the name a front end's node
+                // looked up, and with it, merged over the node's class, the
+                // tree (test 1200).
+                _e.Block.Instrs[^1].Number = true;
                 return Void();
             }
             // Two byte ranges equal or not, and in which order. Two ranges of a
@@ -324,7 +335,7 @@ public sealed partial class Lowering
                 _e.Branch(obj, some, end);
                 _e.SetBlock(some);
                 VReg vt = _e.Load(word, obj, 0);
-                VReg flags = _e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize);
+                VReg flags = Numbered(_e, _e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize));
                 VReg bit = _e.Binary(Opcode.And, flags, 2);
                 _e.CopyTo(result, R(_e.Binary(Opcode.Ne, R(bit), Imm(0, IrType.I32), IrType.I32)));
                 _e.Jump(end);
@@ -376,7 +387,7 @@ public sealed partial class Lowering
                 }
                 VReg one = ToWord(Arg(call, target, 0));
                 VReg two = ToWord(Arg(call, target, 1));
-                return _e.Call(KeyEqualsStub(), IrType.I32, R(one), R(two))!;
+                return _e.Call(KeyEqualsStub(_b.TypeOf(call.Args[0])), IrType.I32, R(one), R(two))!;
             }
             case "EqualValues":
             {
@@ -471,7 +482,7 @@ public sealed partial class Lowering
                 }
                 VReg before = ToWord(Arg(call, target, 0));
                 VReg after = ToWord(Arg(call, target, 1));
-                return _e.Call(KeyCompareStub(), IrType.I32, R(before), R(after))!;
+                return _e.Call(KeyCompareStub(_b.TypeOf(call.Args[0])), IrType.I32, R(before), R(after))!;
             }
             case "KeyHash":
             {
@@ -483,7 +494,7 @@ public sealed partial class Lowering
                     Eval(call.Args[0]);
                     return _e.Const(0, IrType.I32);
                 }
-                return _e.Call(KeyHashStub(), IrType.I32, R(ToWord(Arg(call, target, 0))))!;
+                return _e.Call(KeyHashStub(_b.TypeOf(call.Args[0])), IrType.I32, R(ToWord(Arg(call, target, 0))))!;
             }
             case "ArrayData":
             case "StringData":
@@ -877,9 +888,9 @@ public sealed partial class Lowering
         {
             return question switch
             {
-                "KeyEquals" => _e.Call(KeyEqualsStub(), IrType.I32, R(ToWord(x)), R(ToWord(y!)))!,
-                "KeyHash" => _e.Call(KeyHashStub(), IrType.I32, R(ToWord(x)))!,
-                _ => _e.Call(KeyCompareStub(), IrType.I32, R(ToWord(x)), R(ToWord(y!)))!,
+                "KeyEquals" => _e.Call(KeyEqualsStub(value), IrType.I32, R(ToWord(x)), R(ToWord(y!)))!,
+                "KeyHash" => _e.Call(KeyHashStub(value), IrType.I32, R(ToWord(x)))!,
+                _ => _e.Call(KeyCompareStub(value), IrType.I32, R(ToWord(x)), R(ToWord(y!)))!,
             };
         }
         // A number (or an enum, a bool, a char): its value, as the comparers

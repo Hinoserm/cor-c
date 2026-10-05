@@ -1,0 +1,123 @@
+// test: storage_self_freed_on_growth
+// expect-exit: 0
+// expect-output:
+// builder 800490 16009 772444
+// stack 2170655 18894000 3149
+// memory 249928224 5100000 40000
+//
+// A COLLECTION GIVES BACK THE STORAGE IT OUTGROWS, after the store that
+// replaces it (the self-replacing free, EscapeSelfFrees): a StringBuilder's
+// buffer and a Stack's array as List's, Queue's and MemoryStream's are --
+// so each is a self-freed owned field, made beside its owner, given back
+// from a region's top, and grown where it is there (Runtime.GrowInPlace).
+// Each grows many times a round, two hundred rounds; one round in fifty
+// keeps what it built past collections, and everything is read back after
+// the last. The builder's text, the stack's strings and the stream's bytes
+// must all be what was written: an outgrown buffer given back while still
+// the one in use, or grown where it was while something else held it,
+// shows as wrong text, a wrong sum or a fault.
+//
+// builder: the total length of every round's text, then the kept texts'
+// length and the sum of their characters. stack: the lengths of every
+// round's strings popped, then the kept stacks' values popped and summed,
+// and the last one's top. memory: the bytes of every round summed, then the
+// kept streams' bytes and lengths.
+
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text;
+
+static class P
+{
+    static string Built(int round)
+    {
+        StringBuilder text = new();
+        for (int i = 0; i < 2000; i++)
+        {
+            text.Append(i % 10);
+            text.Append(',');
+        }
+        text.Append(round);
+        return text.ToString();
+    }
+
+    static Stack<string> Stacked(int round)
+    {
+        Stack<string> stack = new();
+        for (int i = 0; i < 3000; i++) stack.Push((i + round).ToString());
+        return stack;
+    }
+
+    static MemoryStream Written(int round)
+    {
+        MemoryStream stream = new();
+        byte[] chunk = new byte[7];
+        int at = 0;
+        while (at < 10000)
+        {
+            int n = Math.Min(7, 10000 - at);
+            for (int k = 0; k < n; k++) chunk[k] = (byte)(((at + k) * 7 + round) & 255);
+            stream.Write(chunk, 0, n);
+            at += n;
+        }
+        return stream;
+    }
+
+    static long Sum(byte[] bytes)
+    {
+        long sum = 0;
+        foreach (byte b in bytes) sum += b;
+        return sum;
+    }
+
+    static int Main()
+    {
+        long builtTotal = 0, stackTotal = 0, memoryTotal = 0;
+        List<string> texts = new();
+        List<Stack<string>> stacks = new();
+        List<MemoryStream> streams = new();
+        for (int round = 0; round < 200; round++)
+        {
+            string text = Built(round);
+            builtTotal += text.Length;
+            Stack<string> stack = Stacked(round);
+            MemoryStream stream = Written(round);
+            if (round % 50 == 0)
+            {
+                texts.Add(text);
+                stacks.Add(stack);
+                streams.Add(stream);
+            }
+            else
+            {
+                while (stack.Count > 0) stackTotal += stack.Pop().Length;
+                memoryTotal += Sum(stream.ToArray());
+            }
+            if (round % 40 == 39) GC.Collect();
+        }
+        GC.Collect();
+
+        long keptLength = 0, keptChars = 0;
+        foreach (string text in texts)
+        {
+            keptLength += text.Length;
+            foreach (char c in text) keptChars += c;
+        }
+        string top = stacks[stacks.Count - 1].Peek();
+        long keptValues = 0;
+        foreach (Stack<string> stack in stacks)
+            while (stack.Count > 0) keptValues += long.Parse(stack.Pop());
+        long keptBytes = 0, keptStreamLength = 0;
+        foreach (MemoryStream stream in streams)
+        {
+            keptBytes += Sum(stream.ToArray());
+            keptStreamLength += stream.Length;
+        }
+
+        Console.WriteLine("builder " + builtTotal + " " + keptLength + " " + keptChars);
+        Console.WriteLine("stack " + stackTotal + " " + keptValues + " " + top);
+        Console.WriteLine("memory " + memoryTotal + " " + keptBytes + " " + keptStreamLength);
+        return 0;
+    }
+}

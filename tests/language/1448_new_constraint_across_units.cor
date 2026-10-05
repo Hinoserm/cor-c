@@ -1,0 +1,39 @@
+// test: new_constraint_across_units
+// units: tests/language/support/1448_make_units.cor
+// expect-exit: 0
+// expect-output:
+// pool 2 last Probe #2
+// lazy Probe #3 same True
+// lazy number 0
+// one Probe #4
+//
+// `new()` and Activator-constructed parameters of another unit's generics
+// (TypeParam.New, TypeParam.Made, carried in its GIR): each copy, made in
+// this unit over this unit's types, calls their constructors directly.
+
+using System;
+using MakeUnits;
+
+class Probe
+{
+    static int _made;
+    public readonly int Number = ++_made;
+    public override string ToString() => "Probe #" + Number;
+}
+
+static class P
+{
+    static int Main()
+    {
+        Pool<Probe> pool = new();
+        pool.Take();
+        Probe last = pool.Take();
+        Console.WriteLine("pool " + pool.Count + " last " + last);
+
+        Lazy2<Probe> lazy = new();
+        Console.WriteLine("lazy " + lazy.Value + " same " + ReferenceEquals(lazy.Value, lazy.Value));
+        Console.WriteLine("lazy number " + new Lazy2<int>().Value);
+        Console.WriteLine("one " + Make.One<Probe>());
+        return 0;
+    }
+}

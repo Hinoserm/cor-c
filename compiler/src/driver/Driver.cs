@@ -100,6 +100,18 @@ public static class Driver
         // The collector's workers in a child a project build started: its
         // share of the machine beside its siblings (ProjectCommand).
         if (Switches.GcWorkers >= 0) AppContext.SetData("Corsac.GC.Workers", Switches.GcWorkers);
+        // What every whole collection found live, by type (Gc.AskCensus).
+        if (taken.Remove("--gc-census"))
+        {
+            ChildFlags.Add("--gc-census");
+            AppContext.SetSwitch("Corsac.GC.Census", true);
+        }
+        // Where the allocations come from, sampled and said at exit (AllocSamples).
+        if (taken.Remove("--alloc-sample"))
+        {
+            ChildFlags.Add("--alloc-sample");
+            AppContext.SetSwitch("Corsac.GC.AllocSample", true);
+        }
         if (taken.Remove("--gc-stats"))
         {
             ChildFlags.Add("--gc-stats");
@@ -165,7 +177,7 @@ public static class Driver
     private static int LinkUsage()
     {
         Console.WriteLine("corc link <file.o> ... -o <output> [--entry symbol] [--flat] "
-            + "[--base address] [--paddr address] [--shared] [--cpu name] [--no-lto] [--region-report names] [--unused-report file] [--timings]");
+            + "[--base address] [--paddr address] [--shared] [--cpu name] [--no-lto] [--region-engine escape|andersen] [--no-rta] [--region-report names] [--unused-report file] [--timings]");
         Console.WriteLine("""
 
               --exports <file>     a kernel as a library: write its globals to <file>, a
@@ -193,7 +205,7 @@ public static class Driver
               corc link <file.o> ... -o <output> [--entry <symbol>]
               corc link @objects.list -o <output> [--entry <symbol>]
               corc index --assembly <identity> <sources...> -o <declarations.idx> [--ring n]
-              corc project <file.csproj> [--configuration Release] [--framework net10.0] [--jobs N] [--link-only | --runtime-only] [--region-report NAMES] [--unused-report FILE] [--timings] [-o output]
+              corc project <file.csproj> [--configuration Release] [--framework net10.0] [--jobs N] [--link-only | --runtime-only] [--region-engine escape|andersen] [--no-rta] [--region-report NAMES] [--unused-report FILE] [--timings] [-o output]
               corc compile-project --units <units.tsv> --decl-index <idx> --assembly <identity> [--unit-census]
               corc build [target/path] [Name=Value ...] [--file corsac.build] [--jobs N]
               corc asm --target x86-16 <file.asm> -o <output.bin>
@@ -244,6 +256,12 @@ public static class Driver
                                  these (comma-separated), which allocations their return
                                  is proved to leave dead; corc link takes it too, for
                                  the regions it finds over every unit of a closed image
+              --region-engine <escape|andersen> how the link finds those regions:
+                                 escape (the default) solves each function and cycle
+                                 from the bottom of the calls up; andersen solves the
+                                 whole image at once, with object contexts
+              --no-rta           the link's regions take a virtual call's overrides on
+                                 every type, not only on those the closed image makes
               --unused-report <file> the program's dead code: every function of its own
                                  sources nothing reaches from the entry, and every static
                                  nothing reads, judged on what each definition names as

@@ -1,0 +1,60 @@
+// test: region_virtual_call_deferred_for_leaky_override_across_units
+// units: tests/language/support/1318_deferred_units.cor
+// regions: taken
+// expect-exit: 0
+// expect-output:
+// total 197000 others 136
+// given back True
+//
+// A VIRTUAL CALL ON A PARAMETER IS ITS CALLER'S TO RESOLVE for the
+// overrides that let their receiver go (RegionEscape, Graph.Deferred).
+// Scale.Weigh makes the call p.Weigh() on its base-typed parameter, which
+// has seventeen overrides; one, Keeper's, keeps its receiver in a static.
+// Resolved in Weigh, any override may run, and Keeper's made every Part
+// handed to Weigh everyone's. Deferred, Keeper's is applied to p guarded by
+// it, and Work, which hands Weigh only P1s -- a class that runs P1's
+// override -- keeps them: what Work makes is given back at its return.
+// Run weighs one of every other class too, outside the boundary, so every
+// override is in the image.
+//
+// Per round, fifty P1s, the k-th with an array of k % 7 + 1, weighed: 197
+// a round, over 1000 rounds; and 1 + 2 + ... + 16 less nothing for the
+// others: Keeper's 1 and 2..16.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+using DeferredUnits;
+
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Work(int round)
+    {
+        // Kept together, then weighed: alive across the calls, as a
+        // sheet's rows are (1290), so only a region gives them back early.
+        List<P1> parts = new();
+        for (int k = 0; k < 50; k++) parts.Add(new P1(k % 7 + 1));
+        long total = 0;
+        foreach (P1 part in parts) total += Scale.Weigh(part);
+        return total;
+    }
+
+    // Not Main itself: what the entry calls is never a boundary.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Run()
+    {
+        long total = 0, before = Gc.RegionFreedBytes + Gc.RegionTopFreedBytes;
+        for (int round = 1; round <= 1000; round++)
+        {
+            total += Work(round);
+            if (round % 250 == 0) GC.Collect();
+        }
+        int others = Scale.Weigh(new Keeper()) + Scale.Weigh(new P2()) + Scale.Weigh(new P3()) + Scale.Weigh(new P4()) + Scale.Weigh(new P5()) + Scale.Weigh(new P6()) + Scale.Weigh(new P7()) + Scale.Weigh(new P8()) + Scale.Weigh(new P9()) + Scale.Weigh(new P10()) + Scale.Weigh(new P11()) + Scale.Weigh(new P12()) + Scale.Weigh(new P13()) + Scale.Weigh(new P14()) + Scale.Weigh(new P15()) + Scale.Weigh(new P16());
+        Console.WriteLine("total " + total + " others " + others);
+        Console.WriteLine("given back " + (Gc.RegionFreedBytes + Gc.RegionTopFreedBytes - before >= 500000L));
+        return 0;
+    }
+
+    static int Main() => Run();
+}

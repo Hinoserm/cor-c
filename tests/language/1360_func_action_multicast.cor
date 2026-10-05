@@ -1,0 +1,65 @@
+// test: func_action_multicast
+// expect-exit: 0
+// expect-output:
+// event 22
+// removed 2
+// last 30
+// emptied True
+// predicate False
+// comparison -1
+//
+// FUNC AND ACTION ARE DELEGATES, and so multicast: `+=` combines, `-=`
+// removes the last match, a combined Func answers what its last target
+// answers, and removing the only target leaves null. `event Action<int>?`
+// is where C# programs do it most; corc's Func and Action were plain
+// interfaces and refused the `+=`.
+
+using System;
+
+class Notifier
+{
+    public event Action<int>? Fired;
+    public Action<int>? Plain;
+    public void Raise(int v) { Fired?.Invoke(v); Plain?.Invoke(v); }
+}
+
+static class P
+{
+    static int count;
+    static void Bump(int v) { count += v; }
+
+    static int Main()
+    {
+        Notifier n = new();
+        int total = 0;
+        n.Plain += v => total += v;
+        n.Fired += v => total += v * 10;
+        n.Raise(2);
+        Console.WriteLine("event " + total);
+
+        Action<int>? each = Bump;
+        each += Bump;
+        each += Bump;
+        each -= Bump;
+        each?.Invoke(1);
+        Console.WriteLine("removed " + count);
+
+        Func<int, int>? f = x => x + 1;
+        f += x => x * 10;
+        Console.WriteLine("last " + f(3));
+
+        Action? one = () => { };
+        Action only = one;
+        one -= only;
+        Console.WriteLine("emptied " + (one == null));
+
+        Predicate<int> p = x => x > 0;
+        p += x => x > 5;
+        Console.WriteLine("predicate " + p(3));
+
+        Comparison<int> c = (a, b) => a.CompareTo(b);
+        c += (a, b) => b.CompareTo(a);
+        Console.WriteLine("comparison " + c(2, 1));
+        return 0;
+    }
+}

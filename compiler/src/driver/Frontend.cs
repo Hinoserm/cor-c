@@ -245,16 +245,41 @@ public static class Frontend
         // follows. A full binding each round checked every body in the unit
         // again to find a handful of new wants. Should the full binding still
         // want something, the rounds begin again from it.
-        for (int round = 0; round < 8 && bound.Errors.Count == 0 && (bound.Wanted.Count > 0 || bound.WantedOverrides.Count > 0); round++)
+        // AND A TYPE THE CHECKER SPELT (BindResult.Reexpand) goes round as a
+        // copy would: the expansion makes it, and the next binding has it.
+        static bool More(Lang.BindResult b) => b.Wanted.Count > 0 || b.WantedOverrides.Count > 0 || b.Reexpand;
+        // A SYNTHESISED DELEGATE NOT YET DECLARED: what the binding found
+        // wrong about a call of it -- `refFirst(arr) = 70` through C#'s
+        // ref-returning natural type -- it found with no Invoke to ask, so
+        // the round goes again with it declared, errors or none, and the next
+        // binding's are the ones that stand.
+        bool Undeclared(Lang.BindResult b)
+            => b.AnonymousDelegates.Any(shape => !unit.Types.Any(t => t.Name == Lang.Parser.AnonymousDelegateName(shape)));
+        bool Go(Lang.BindResult b) => (b.Errors.Count == 0 || Undeclared(b)) && (More(b) || Undeclared(b));
+        for (int round = 0; round < 8 && Go(bound); round++)
         {
             bool made = false;
-            for (int step = 0; step < 8 && bound.Errors.Count == 0 && (bound.Wanted.Count > 0 || bound.WantedOverrides.Count > 0); step++)
+            for (int step = 0; step < 8 && Go(bound); step++)
             {
 #if COR_SELFHOST_BENCHMARK
                 Program.BenchmarkStage("specialise-" + round + "-" + step);
 #endif
                 HashSet<string> known = new(unit.Types.Select(t => t.Name), StringComparer.Ordinal);
-                if (!Specialise(unit, bound))
+                bool reexpand = bound.Reexpand;
+
+                // THE DELEGATES C# SYNTHESISES for natural types no Func or
+                // Action can say, declared once a unit by shape.
+                bool declared = false;
+                foreach (string shape in bound.AnonymousDelegates)
+                {
+                    if (!known.Contains(Lang.Parser.AnonymousDelegateName(shape)))
+                    {
+                        unit.Types.AddRange(Lang.Parser.AnonymousDelegates(shape));
+                        known.Add(Lang.Parser.AnonymousDelegateName(shape));
+                        declared = true;
+                    }
+                }
+                if (!Specialise(unit, bound) && !reexpand && !declared)
                 {
                     break;
                 }
@@ -549,8 +574,9 @@ public static class Frontend
             // only of `Join` and `Node` gives one copy two meanings, and the
             // second call is told that Join$Node does not accept an array.
             // The member's position says which overload it came from.
-            string wanted = Lang.Monomorphiser.MethodName(template.Name, args)
-                          + "$" + owner.Members.IndexOf(template);
+            // A SHARED METHOD COPY'S NAME SAYS SO (Monomorphiser.CopyName),
+            // as the binder spelt it.
+            string wanted = Lang.Monomorphiser.CopyName(template.Name, args, owner.Members.IndexOf(template));
 
             if (!owner.Members.Any(m => m.Name == wanted))
             {
@@ -568,6 +594,7 @@ public static class Frontend
                 copy.LocalCopy = true;
                 copy.Fresh = true;
                 owner.Members.Add(copy);
+                RehostLocals(owner, template, copy, args, values);
                 made = true;
             }
 
@@ -620,10 +647,72 @@ public static class Frontend
             copy.LocalCopy = true;
             copy.Fresh = true;
             owner.Members.Add(copy);
+            RehostLocals(owner, template, copy, args, values);
             made = true;
             made |= CanonicalTwin(owner, template, args, wanted);
         }
         return made;
+    }
+
+    /// <summary>
+    /// THE GENERIC LOCAL FUNCTIONS WRITTEN IN A GENERIC METHOD GO WITH EACH
+    /// COPY OF IT, as Roslyn gives a local function the type parameters of the
+    /// method around it. Each one hoisted out of the template -- and out of
+    /// those, however deep -- is copied beside the copy with the copy's type
+    /// arguments put in for the template's type parameters, its own kept, so
+    /// what it captured is typed as the copy has it and it is still generic
+    /// in its own. The copy, and each carried function, says which carried
+    /// function each written name now means (MethodDecl.Rehosted).
+    /// </summary>
+    private static void RehostLocals(Lang.TypeDecl owner, Lang.MethodDecl template, Lang.MethodDecl copy,
+                                     List<Lang.TypeRef> args, HashSet<string> values)
+    {
+        List<Lang.MethodDecl> carried = new();
+        HashSet<string> parents = new(StringComparer.Ordinal) { template.HoistKey };
+        for (bool more = true; more;)
+        {
+            more = false;
+            foreach (Lang.MethodDecl m in owner.Members.OfType<Lang.MethodDecl>())
+            {
+                if (m.HoistedIn is string parent && parents.Contains(parent) && !carried.Contains(m))
+                {
+                    carried.Add(m);
+                    parents.Add(m.HoistKey);
+                    more = true;
+                }
+            }
+        }
+
+        // What each written name meant in the template, and means now.
+        Dictionary<string, string> rehosted = new(template.Rehosted, StringComparer.Ordinal);
+        Dictionary<string, string> renamed = new(StringComparer.Ordinal);
+        foreach (Lang.MethodDecl m in carried)
+        {
+            renamed[m.Name] = copy.Name + "$" + m.Name;
+        }
+        foreach (string written in rehosted.Keys.ToList())
+        {
+            if (renamed.TryGetValue(rehosted[written], out string? now)) rehosted[written] = now;
+        }
+        foreach ((string was, string now) in renamed)
+        {
+            rehosted[was] = now;
+        }
+
+        foreach (string written in rehosted.Keys) copy.WritableRehosted[written] = rehosted[written];
+        foreach (Lang.MethodDecl m in carried)
+        {
+            Lang.MethodDecl made = Lang.Monomorphiser.Rehost(m, template.TypeParams, args, renamed[m.Name], values);
+            made.File = m.File;
+            made.Scope = m.Scope;
+            made.Namespace = m.Namespace;
+            made.LocalCopy = true;
+            made.Fresh = true;
+            made.HoistedIn = m.HoistedIn == template.HoistKey ? copy.HoistKey : renamed[m.HoistedIn!];
+            made.WritableRehosted.Clear();
+            foreach ((string written, string now) in rehosted) made.WritableRehosted[written] = now;
+            owner.Members.Add(made);
+        }
     }
 
     /// <summary>

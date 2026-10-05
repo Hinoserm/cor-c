@@ -8,7 +8,7 @@ public static class BackendProtocol
     public static readonly UTF8Encoding Utf8 = new(false, true);
     public static void WriteRequest(BinaryWriter writer, BackendRequest request)
     {
-        writer.Write((byte)0x52); writer.Write(10);
+        writer.Write((byte)0x52); writer.Write(13);
         WriteText(writer, request.Input); WriteText(writer, request.Output); writer.Write(request.Imports.Count);
         foreach (IrImport import in request.Imports)
         {
@@ -56,14 +56,15 @@ public static class BackendProtocol
             { WriteText(writer, name); WriteFields(writer, fields); }
             writer.Write(facts.ForeignCatchable?.Length ?? -1);
             foreach (string type in facts.ForeignCatchable ?? Array.Empty<string>()) WriteText(writer, type);
-            // The owned fields, by name: offset, and whether a store fills it;
+            // The owned fields, by name: offset, and whether a store fills it
+            // (1) and whether a collection frees what it replaces itself (2);
             // then the functions and virtual symbols that hand one back.
             OwnedFieldFacts? owned = facts.OwnedFields;
             writer.Write(owned?.Fields.Count ?? -1);
             if (owned is not null)
             {
                 foreach ((string field, long offset) in owned.Fields.OrderBy(pair => pair.Key, StringComparer.Ordinal))
-                { WriteText(writer, field); writer.Write(offset); writer.Write(owned.Mapped.Contains(field)); writer.Write(owned.ArrayElements.Contains(field)); }
+                { WriteText(writer, field); writer.Write(offset); writer.Write((byte)((owned.Mapped.Contains(field) ? 1 : 0) | (owned.SelfFreed.Contains(field) ? 2 : 0) | (owned.ArrayElements.Contains(field) ? 4 : 0))); }
                 writer.Write(owned.Borrowers.Count);
                 foreach (string name in owned.Borrowers.Order(StringComparer.Ordinal)) WriteText(writer, name);
                 // The fields elements are owned through, their callees, and the fields kept for it.
@@ -74,9 +75,12 @@ public static class BackendProtocol
                 { WriteText(writer, callee); writer.Write(argument); WriteText(writer, field); }
                 writer.Write(owned.ElementKept.Count);
                 foreach (string field in owned.ElementKept.Order(StringComparer.Ordinal)) WriteText(writer, field);
+                // Whether storage is made beside its owner (OwnedFieldFacts.Beside).
+                writer.Write(owned.Beside);
             }
             // The regions: boundaries by name, then sites by function and
-            // ordinal, then loops by function and header.
+            // ordinal, then loops by function and header, then the bytes the
+            // boundaries and loops proved sized hold.
             RegionFacts? regions = facts.Regions;
             writer.Write(regions?.Boundaries.Count ?? -1);
             if (regions is not null)
@@ -86,6 +90,10 @@ public static class BackendProtocol
                 foreach ((string function, int ordinal) in regions.Sites) { WriteText(writer, function); writer.Write(ordinal); }
                 writer.Write(regions.Loops.Count);
                 foreach ((string function, int header) in regions.Loops) { WriteText(writer, function); writer.Write(header); }
+                writer.Write(regions.BoundaryBytes.Count);
+                foreach ((string function, long bytes) in regions.BoundaryBytes) { WriteText(writer, function); writer.Write(bytes); }
+                writer.Write(regions.LoopBytes.Count);
+                foreach (((string function, int header), long bytes) in regions.LoopBytes) { WriteText(writer, function); writer.Write(header); writer.Write(bytes); }
             }
         }
         writer.Flush();
@@ -94,7 +102,7 @@ public static class BackendProtocol
     {
         int marker = reader.BaseStream.ReadByte();
         if (marker == -1) return null;
-        if (marker != 0x52 || reader.ReadInt32() != 10) throw new InvalidDataException("Unsupported backend protocol");
+        if (marker != 0x52 || reader.ReadInt32() != 13) throw new InvalidDataException("Unsupported backend protocol");
         string input = ReadText(reader), output = ReadText(reader);
         int count = reader.ReadInt32(), bytes = 0;
         if (count < 0 || count > 256) throw new InvalidDataException("Backend import count exceeds budget");
@@ -194,8 +202,11 @@ public static class BackendProtocol
                 {
                     string field = ReadText(reader); long offset = reader.ReadInt64();
                     if (!fields.Fields.TryAdd(field, offset)) throw new InvalidDataException("Duplicate backend owned-field fact");
-                    if (reader.ReadBoolean()) fields.Mapped.Add(field);
-                    if (reader.ReadBoolean()) fields.ArrayElements.Add(field);
+                    byte flags = reader.ReadByte();
+                    if (flags > 7) throw new InvalidDataException("Invalid backend owned-field fact");
+                    if ((flags & 1) != 0) fields.Mapped.Add(field);
+                    if ((flags & 2) != 0) fields.SelfFreed.Add(field);
+                    if ((flags & 4) != 0) fields.ArrayElements.Add(field);
                 }
                 int borrowers = reader.ReadInt32();
                 if (borrowers < 0 || borrowers > 1000000) throw new InvalidDataException("Invalid backend owned-field fact");
@@ -214,6 +225,7 @@ public static class BackendProtocol
                 int kept = reader.ReadInt32();
                 if (kept < 0 || kept > 1000000) throw new InvalidDataException("Invalid backend owned-elements fact");
                 for (int i = 0; i < kept; i++) fields.ElementKept.Add(ReadText(reader));
+                fields.Beside = reader.ReadBoolean();
                 facts.OwnedFields = fields;
             }
             int boundaries = reader.ReadInt32();
@@ -236,6 +248,20 @@ public static class BackendProtocol
                 {
                     string function = ReadText(reader); int header = reader.ReadInt32();
                     if (header < 0 || !regions.Loops.Add((function, header))) throw new InvalidDataException("Invalid backend region loop");
+                }
+                int sized = reader.ReadInt32();
+                if (sized < 0 || sized > boundaries) throw new InvalidDataException("Invalid backend region fact");
+                for (int i = 0; i < sized; i++)
+                {
+                    string function = ReadText(reader); long regionBytes = reader.ReadInt64();
+                    if (regionBytes <= 0 || !regions.Boundaries.Contains(function) || !regions.BoundaryBytes.TryAdd(function, regionBytes)) throw new InvalidDataException("Invalid backend region size");
+                }
+                sized = reader.ReadInt32();
+                if (sized < 0 || sized > loops) throw new InvalidDataException("Invalid backend region fact");
+                for (int i = 0; i < sized; i++)
+                {
+                    string function = ReadText(reader); int header = reader.ReadInt32(); long regionBytes = reader.ReadInt64();
+                    if (regionBytes <= 0 || !regions.Loops.Contains((function, header)) || !regions.LoopBytes.TryAdd((function, header), regionBytes)) throw new InvalidDataException("Invalid backend region size");
                 }
                 facts.Regions = regions;
             }

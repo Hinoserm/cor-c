@@ -1,0 +1,40 @@
+// test: region_literal_stored_is_no_escape_across_units
+// units: tests/language/support/1299_region_literal_stored_units.cor
+// regions: taken
+// expect-exit: 0
+// expect-output:
+// 210000
+// child in regions True
+//
+// The other unit's Ring.Build is a boundary: it makes a record and the
+// leaf the record holds, hands the record round a ring of functions that
+// store string literals, the answers of type tests and a type into it, and
+// lets both go at its return. A literal, a descriptor and a type are
+// constants: read-only data that holds only constants, never written. One
+// stored into a field makes nothing escape -- not the record, and not the
+// leaf kept in another of its fields. Taken for the unknown object, as
+// every symbol's address was, the ring (unified, being so large a cycle)
+// joined the record's fields to the global class, and the leaf left the
+// boundary's region for the heap.
+//
+// The leaf is what is counted, one region block a call. The record never
+// leaves Build's frame -- the compiler places it there, dead at the return
+// and handed only to functions that keep nothing of it -- so it is no
+// region's block, and it would be one only where that placement is lost.
+// `(Leaf)r.Child` hands the leaf to a failed cast's throw, which keeps
+// nothing of it (RegionPointsTo.Harmless).
+
+using System;
+
+static class P
+{
+    static void Main()
+    {
+        long total = 0;
+        long before = Gc.RegionBlocks;
+        for (int k = 0; k < 20000; k++) total += Ring.Build(k & 7);
+        long blocks = Gc.RegionBlocks - before;
+        Console.WriteLine(total);
+        Console.WriteLine("child in regions " + (blocks >= 20000));
+    }
+}

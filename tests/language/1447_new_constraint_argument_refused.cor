@@ -1,0 +1,22 @@
+// test: new constraint argument refused
+// expect-compile-error: CS0310: 'Sized' must be a non-abstract type with a public parameterless constructor in order to use it as parameter 'T' in the generic type or method
+// A type argument for a `new()` parameter needs a public parameterless
+// constructor (C# 15.2.5).
+
+using System;
+
+class Sized { public Sized(int n) { } }
+
+static class Make
+{
+    public static T One<T>() where T : new() => new T();
+}
+
+static class P
+{
+    static int Main()
+    {
+        Console.WriteLine(Make.One<Sized>());
+        return 0;
+    }
+}

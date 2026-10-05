@@ -41,6 +41,9 @@ public static class Switches
     /// <summary>--verify-passes: the IR verified after every pass.</summary>
     public static bool VerifyPasses;
 
+    /// <summary>--verify-marks: every pass checked for a mark it lost off an instruction it kept (MarkVerifier).</summary>
+    public static bool VerifyMarks;
+
     /// <summary>--skip-passes A,B: those optimisation passes left out.</summary>
     public static string? SkipPasses;
 
@@ -113,6 +116,25 @@ public static class Switches
     /// <summary>--trace-virtuals: the link's descriptor index, and what each virtual call reaches.</summary>
     public static bool TraceVirtuals;
 
+    /// <summary>
+    /// --region-engine escape|andersen: which analysis finds the link's
+    /// regions (RegionSolver.Solve). Escape, the default, solves each
+    /// function and each cycle from the bottom of the calls up
+    /// (RegionEscape); andersen is the whole-image inclusion solve with
+    /// object contexts. Null for the default.
+    /// </summary>
+    public static string? RegionEngine;
+
+    /// <summary>Whether the link's regions are found by the whole-image inclusion solve (--region-engine andersen).</summary>
+    public static bool AndersenRegions => RegionEngine == "andersen";
+
+    /// <summary>
+    /// --no-rta: the link's regions take every override of a virtual call,
+    /// on every type, made or not (VirtualTargets.Made) -- what a closed
+    /// image's link otherwise drops for types nothing in it makes.
+    /// </summary>
+    public static bool NoRta;
+
     /// <summary>Takes this process's switches off the command line, wherever they are written.</summary>
     public static List<string> Take(IEnumerable<string> args)
     {
@@ -130,6 +152,7 @@ public static class Switches
         DumpFunction = Valued(taken, "--dump-function");
         if (Number(taken, "--work-budget") is long budget) WorkBudget = budget;
         VerifyPasses = Switch(taken, "--verify-passes");
+        VerifyMarks = Switch(taken, "--verify-marks");
         SkipPasses = Valued(taken, "--skip-passes");
         ReportPasses = Switch(taken, "--report-passes");
         TraceDemand = Switch(taken, "--trace-demand");
@@ -155,6 +178,15 @@ public static class Switches
         TraceJoin = Switch(taken, "--trace-join");
         CompilerIdentity = Valued(taken, "--compiler-identity");
         TraceVirtuals = Switch(taken, "--trace-virtuals");
+        // Kept when absent, as --region-engine is.
+        if (Switch(taken, "--no-rta")) NoRta = true;
+        // Kept when absent: a hosted project link takes the switches again
+        // off its own command line, which does not name them.
+        if (Valued(taken, "--region-engine") is string engine)
+        {
+            if (engine is not ("escape" or "andersen")) throw new ArgumentException("--region-engine takes escape or andersen, not '" + engine + "'");
+            RegionEngine = engine;
+        }
         if (Number(taken, "--gc-workers") is long workers) GcWorkers = (int)Math.Clamp(workers, 0, 15);
         return taken;
     }

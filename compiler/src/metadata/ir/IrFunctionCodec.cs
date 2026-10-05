@@ -7,6 +7,26 @@ namespace Corsac.Lang.Metadata;
 /// <summary>Complete post-async IR function encoding, independently addressable in an object.</summary>
 public static class IrFunctionCodec
 {
+    /// <summary>
+    /// The record's version. 6: WHAT THE ANALYSES MARK ON THE IR, carried.
+    /// A load's or a copy's Number (never an address), a parameter's Number,
+    /// a site the link chose for a region (RegionSite), a loop header it gave
+    /// one (RegionLoop, RegionLoopBytes): written by none before, so whatever
+    /// the link rebuilt from archived IR -- its late passes, its lifetime runs
+    /// and the copy a refused run is taken back from (UnitBackend) -- read a
+    /// number as an address again, and lost the regions it had just marked.
+    /// Names (a register's, a slot's) are for the dump alone and stay out.
+    /// 7: and the field a load or a store names (Instr.Family), after the
+    /// marks when FamilyMark says there is one: so the link can summarise a
+    /// unit's archived IR again with the fields kept apart.
+    /// 8: and the bytes a stdcall function pops (CalleePops), and an async
+    /// frame's MayMove and StackSymbol.
+    /// </summary>
+    private const int Version = 8;
+
+    // An instruction's marks (Instr): one byte.
+    private const byte NumberMark = 1, RegionSiteMark = 2, FamilyMark = 4;
+
     public static long DecodeCost(Function function, int payloadBytes)
     {
         long bytes = 512L + payloadBytes + 64L * function.RegCount + 16L * function.Params.Count
@@ -21,6 +41,7 @@ public static class IrFunctionCodec
             Text(instruction.Callee);
             Text(instruction.DispatchType);
             Text(instruction.Field);
+            Text(instruction.Family);
             foreach (SymOperand address in instruction.Operands.OfType<SymOperand>()) Text(address.Name);
         }
         return bytes;
@@ -42,7 +63,7 @@ public static class IrFunctionCodec
             throw new InvalidDataException("An async body's suspension result is not a constant");
         using MemoryStream stream = new();
         using BinaryWriter writer = new(stream, IrBinary.Utf8, leaveOpen: true);
-        writer.Write(7); IrBinary.Text(writer, function.Name); writer.Write((byte)function.Returns);
+        writer.Write(Version); IrBinary.Text(writer, function.Name); writer.Write((byte)function.Returns);
         writer.Write(function.Exported); writer.Write(function.Coalescible); writer.Write(function.FromLibrary);
         writer.Write(function.NoInlining);
         writer.Write(function.CalleePops);
@@ -65,7 +86,7 @@ public static class IrFunctionCodec
         writer.Write(function.RegCount);
         for (int i = 0; i < function.RegCount; i++) writer.Write((byte)registers.GetValueOrDefault(i, IrType.I32));
         writer.Write(function.Params.Count);
-        foreach (VReg parameter in function.Params) writer.Write(parameter.Id);
+        foreach (VReg parameter in function.Params) { writer.Write(parameter.Id); writer.Write(parameter.Number); }
         // A lowered async body keeps the record that it was one (AsyncFrame).
         writer.Write(function.Async is not null);
         if (function.Async is AsyncFrame frame)
@@ -85,7 +106,11 @@ public static class IrFunctionCodec
         Dictionary<FrameSlot, int> slots = function.Slots.Select((slot, id) => (slot, id)).ToDictionary(pair => pair.slot, pair => pair.id);
         Dictionary<IrBlock, int> blocks = function.Blocks.Select((block, id) => (block, id)).ToDictionary(pair => pair.block, pair => pair.id);
         writer.Write(function.Blocks.Count);
-        foreach (IrBlock block in function.Blocks) writer.Write(block.IsLandingPad);
+        foreach (IrBlock block in function.Blocks)
+        {
+            writer.Write(block.IsLandingPad); writer.Write(block.RegionLoop);
+            if (block.RegionLoop) writer.Write(block.RegionLoopBytes);
+        }
         foreach (IrBlock block in function.Blocks)
         {
             writer.Write(block.Instrs.Count);
@@ -94,6 +119,8 @@ public static class IrFunctionCodec
                 writer.Write((int)instruction.Op); writer.Write(instruction.Dest?.Id ?? -1);
                 writer.Write(instruction.Size); writer.Write(instruction.Signed); writer.Write(instruction.Offset);
                 IrBinary.Text(writer, instruction.Callee); IrBinary.Text(writer, instruction.DispatchType); IrBinary.Text(writer, instruction.Field); writer.Write(instruction.Line);
+                writer.Write((byte)((instruction.Number ? NumberMark : 0) | (instruction.RegionSite ? RegionSiteMark : 0) | (instruction.Family is not null ? FamilyMark : 0)));
+                if (instruction.Family is not null) IrBinary.Text(writer, instruction.Family);
                 writer.Write(instruction.Operands.Count);
                 foreach (Operand operand in instruction.Operands)
                     switch (operand)
@@ -134,15 +161,11 @@ public static class IrFunctionCodec
         using BinaryReader reader = new(stream, IrBinary.Utf8);
         try
         {
-            // Version 6 adds the bytes a stdcall function pops (CalleePops);
-            // a version 5 record's function pops none. Version 7 adds an async
-            // frame's MayMove and StackSymbol.
-            int version = reader.ReadInt32();
-            if (version is not (5 or 6 or 7)) throw new InvalidDataException("Unsupported IR function version");
+            if (reader.ReadInt32() != Version) throw new InvalidDataException("Unsupported IR function version");
             Function function = new(IrBinary.Name(reader, budget), IrBinary.Type(reader))
             {
                 Exported = IrBinary.Flag(reader), Coalescible = IrBinary.Flag(reader), FromLibrary = IrBinary.Flag(reader),
-                NoInlining = IrBinary.Flag(reader), CalleePops = version >= 6 ? reader.ReadInt32() : 0,
+                NoInlining = IrBinary.Flag(reader), CalleePops = reader.ReadInt32(),
                 SourceFile = IrBinary.Text(reader, budget), Line = reader.ReadInt32(), Display = IrBinary.Text(reader, budget),
             };
             int count = IrBinary.Count(reader);
@@ -153,7 +176,12 @@ public static class IrFunctionCodec
                 : throw new InvalidDataException("IR reference outside table");
             int parameters = IrBinary.Count(reader);
             budget.Charge(parameters, 16, "parameters");
-            for (int i = 0; i < parameters; i++) function.Params.Add(At(registers, reader.ReadInt32()));
+            for (int i = 0; i < parameters; i++)
+            {
+                VReg parameter = At(registers, reader.ReadInt32());
+                parameter.Number = IrBinary.Flag(reader);
+                function.Params.Add(parameter);
+            }
             if (IrBinary.Flag(reader))
             {
                 budget.Charge(1, 128, "async frame");
@@ -162,8 +190,8 @@ public static class IrFunctionCodec
                 string sizeSymbol = IrBinary.Text(reader, budget) ?? throw new InvalidDataException("Async frame without a size symbol");
                 bool lowered = IrBinary.Flag(reader);
                 ImmOperand? suspendResult = IrBinary.Flag(reader) ? new ImmOperand(reader.ReadInt64(), (IrType)reader.ReadByte()) : null;
-                bool mayMove = version >= 7 && IrBinary.Flag(reader);
-                string? stackSymbol = version >= 7 ? IrBinary.Text(reader, budget) : null;
+                bool mayMove = IrBinary.Flag(reader);
+                string? stackSymbol = IrBinary.Text(reader, budget);
                 function.Async = new AsyncFrame
                 {
                     StateMachine = machine, StateOffset = stateOffset, FieldsStart = fieldsStart,
@@ -187,7 +215,17 @@ public static class IrFunctionCodec
             int blockCount = IrBinary.Count(reader);
             budget.Charge(blockCount, 160, "blocks");
             IrBlock[] blocks = new IrBlock[blockCount];
-            for (int i = 0; i < blockCount; i++) { blocks[i] = function.NewBlock(); blocks[i].IsLandingPad = IrBinary.Flag(reader); }
+            for (int i = 0; i < blockCount; i++)
+            {
+                blocks[i] = function.NewBlock();
+                blocks[i].IsLandingPad = IrBinary.Flag(reader);
+                if (blocks[i].RegionLoop = IrBinary.Flag(reader))
+                {
+                    long lap = reader.ReadInt64();
+                    if (lap < 0) throw new InvalidDataException("Invalid IR loop region size");
+                    blocks[i].RegionLoopBytes = lap;
+                }
+            }
             foreach (IrBlock block in blocks)
             {
                 int instructions = IrBinary.Count(reader);
@@ -202,6 +240,12 @@ public static class IrFunctionCodec
                         Size = reader.ReadInt32(), Signed = IrBinary.Flag(reader), Offset = reader.ReadInt64(),
                         Callee = IrBinary.Text(reader, budget), DispatchType = IrBinary.Text(reader, budget), Field = IrBinary.Text(reader, budget), Line = reader.ReadInt32(),
                     };
+                    byte marks = reader.ReadByte();
+                    if ((marks & ~(NumberMark | RegionSiteMark | FamilyMark)) != 0) throw new InvalidDataException("Invalid IR instruction marks");
+                    instruction.Number = (marks & NumberMark) != 0;
+                    instruction.RegionSite = (marks & RegionSiteMark) != 0;
+                    if ((marks & FamilyMark) != 0)
+                        instruction.Family = IrBinary.Text(reader, budget) ?? throw new InvalidDataException("Invalid IR instruction field");
                     int operands = IrBinary.Count(reader);
                     budget.Charge(operands, 64, "operands");
                     for (int operand = 0; operand < operands; operand++)
@@ -219,7 +263,7 @@ public static class IrFunctionCodec
                     }
                     int targets = IrBinary.Count(reader);
                     budget.Charge(targets, 16, "block references");
-                    for (int target = 0; target < targets; target++) instruction.Targets.Add(At(blocks, reader.ReadInt32()));
+                    for (int target = 0; target < targets; target++) instruction.WritableTargets.Add(At(blocks, reader.ReadInt32()));
                     int otherwise = reader.ReadInt32();
                     if (otherwise < -1) throw new InvalidDataException("Invalid IR default target");
                     if (otherwise >= 0) instruction.Default = At(blocks, otherwise);

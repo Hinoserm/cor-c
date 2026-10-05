@@ -1,0 +1,62 @@
+// test: region_int_parameter_to_thrower_across_units
+// units: tests/language/support/1265_region_int_parameter_to_thrower_units.cor
+// expect-exit: 0
+// expect-output:
+// left 336604 picked 756 names 7460
+// short 20964 messages 78660 last short 1 of #301
+//
+// Check.Take hands a plain integer to Check.Short, which throws with the
+// number in its message; beside it go real objects -- the item, the list a
+// picked copy is added to. The analysis must treat the integer as a value,
+// not a place: nothing it "points to" may be merged with the item or the
+// list, and the message and exception Short makes must outlive both Short's
+// and Order's boundaries, since Run catches them and reads the message
+// after later regions and collections. A correctness test: counts, picked
+// copies and every caught message are checked.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Order(Item[] stock, int k, List<Item> picked)
+    {
+        Item item = stock[k % stock.Length];
+        int wanted = 1 + k % 7;
+        List<Item> local = new();
+        int left = Check.Take(item, wanted, local);
+        picked.Add(local[0]);
+        return left;
+    }
+
+    // Not Main itself: what the entry calls is never a boundary.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Run()
+    {
+        Item[] stock = { new("bolt", 900), new("nut", 1200), new("washer", 600), new("pin", 300) };
+        List<Item> picked = new();
+        List<Exception> failures = new();
+        long left = 0;
+        for (int k = 0; k < 6000; k++)
+        {
+            try { left += Order(stock, k, picked); }
+            catch (InvalidOperationException e) { failures.Add(e); }
+            if (k % 1000 == 999) GC.Collect();
+        }
+        long names = 0, missing = 0, messages = 0;
+        foreach (Item p in picked) names += p.Name.Length + p.Count;
+        foreach (Exception e in failures)
+        {
+            messages += e.Message.Length;
+            string m = e.Message;
+            missing += int.Parse(m.Substring(6, m.IndexOf(' ', 6) - 6));
+        }
+        Console.WriteLine("left " + left + " picked " + picked.Count + " names " + names);
+        Console.WriteLine("short " + missing + " messages " + messages + " last " + failures[failures.Count - 1].Message);
+        return 0;
+    }
+
+    static int Main() => Run();
+}

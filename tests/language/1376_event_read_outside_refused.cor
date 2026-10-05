@@ -1,0 +1,24 @@
+// test: event read outside refused
+// expect-compile-error: can only appear on the left hand side of += or -=
+// Outside the type that declares it, a field-like event cannot even be read:
+// its handlers are the declaring type's own (CS0070). Taking `s.Fired` into
+// a local from another class is refused.
+
+using System;
+
+class Source
+{
+    public event Action? Fired;
+}
+
+static class P
+{
+    static int Main()
+    {
+        Source s = new Source();
+        s.Fired += () => Console.WriteLine("fired");
+        Action? held = s.Fired;
+        held?.Invoke();
+        return 0;
+    }
+}

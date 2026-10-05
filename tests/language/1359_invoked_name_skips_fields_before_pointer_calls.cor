@@ -1,0 +1,32 @@
+// test: invoked_name_skips_fields_before_pointer_calls
+// expect-exit: 0
+// expect-output:
+// 4
+//
+// A CALLED NAME PASSES OVER A FIELD THAT HOLDS NO POINTER. The binder asks
+// whether a call goes through a function-pointer field before anything else,
+// and asked by checking the name -- before the call had marked the name as
+// invoked -- so any field of that name answered. `Fields(path)` in a static
+// method of a nested class with a table called Fields was refused with C#'s
+// CS0120 instead of calling the outer class's method; the compiler's own
+// RegionEscape.Summary does this.
+
+using System;
+using System.Collections.Generic;
+static class P
+{
+    private static int Fields(int[] path) => path.Length;
+    sealed class Summary
+    {
+        public Dictionary<long, int>? Fields;
+        private static int[] Anywhere(int[] path)
+        {
+            int g = 2;
+            if (g <= 0 || Fields(path[..g]) == 0) return path;
+            return [1];
+        }
+        public static int Go(int[] p) => Anywhere(p).Length + Fields(p);
+        static bool Below(int[] path) => Fields(path) > 0;
+    }
+    static int Main() { Console.WriteLine(Summary.Go(new[] { 1, 2, 3 })); return 0; }
+}

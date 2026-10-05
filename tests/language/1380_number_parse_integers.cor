@@ -1,0 +1,85 @@
+// test: number_parse_integers
+// expect-exit: 0
+// expect-output:
+// ints 42 0 7 2147483647 -2147483648 5 1000 -12 -12 1 1000 255 -1 -128 0 5 5
+// fails OverflowException FormatException FormatException OverflowException OverflowException FormatException OverflowException OverflowException FormatException FormatException FormatException OverflowException
+// Value was either too large or too small for an Int32.
+// Value was either too large or too small for an unsigned byte.
+// Value was either too large or too small for a UInt64.
+// The input string '12x' was not in a correct format.
+// Value cannot be null. (Parameter 's')
+// tries True 5 False 0 False False True -9223372036854775808 True 18446744073709551615
+// styles ArgumentException ArgumentException
+// An undefined NumberStyles value is being used. (Parameter 'style')
+// convert 12 0 255 FormatException
+// spans 42 True 7
+//
+// THE INTEGER READERS, as .NET's System.Number reads text: white space and
+// signs by the style, NULs after the end, group separators, parentheses, a
+// trailing sign, a point or an exponent that leaves a whole number, hex and
+// binary bit patterns, the currency symbol; overflow reported only once the
+// text is found well formed, and a fraction an overflow, not a format
+// error. The messages are .NET's. Every line is what .NET prints.
+
+using System;
+using System.Globalization;
+
+public static class Program
+{
+    private static string Try(Func<long> f)
+    {
+        try { return f().ToString(); }
+        catch (Exception e) { return e.GetType().Name; }
+    }
+
+    private static string Message(Func<long> f)
+    {
+        try { return f().ToString(); }
+        catch (Exception e) { return e.Message; }
+    }
+
+    public static int Main()
+    {
+        Console.WriteLine("ints " + string.Join(" ",
+            Try(() => int.Parse(" 42 ")), Try(() => int.Parse("-0")), Try(() => int.Parse("+7")),
+            Try(() => int.Parse("2147483647")), Try(() => int.Parse("-2147483648")), Try(() => int.Parse("5\0\0")),
+            Try(() => int.Parse("1,000", NumberStyles.AllowThousands)), Try(() => int.Parse("(12)", NumberStyles.AllowParentheses)),
+            Try(() => int.Parse("12-", NumberStyles.AllowTrailingSign)), Try(() => int.Parse("1.0", NumberStyles.Float)),
+            Try(() => int.Parse("1e3", NumberStyles.Float)), Try(() => int.Parse("FF", NumberStyles.HexNumber)),
+            Try(() => int.Parse("FFFFFFFF", NumberStyles.HexNumber)), Try(() => sbyte.Parse("80", NumberStyles.HexNumber)),
+            Try(() => byte.Parse("-0")), Try(() => int.Parse("101", NumberStyles.BinaryNumber)),
+            Try(() => int.Parse(" ¤5 ", NumberStyles.Currency, CultureInfo.InvariantCulture))));
+
+        Console.WriteLine("fails " + string.Join(" ",
+            Try(() => int.Parse("2147483648")), Try(() => int.Parse("99999999999x")), Try(() => int.Parse("- 5")),
+            Try(() => int.Parse("1.5", NumberStyles.Float)), Try(() => int.Parse("100000000", NumberStyles.HexNumber)),
+            Try(() => int.Parse("0x10", NumberStyles.HexNumber)), Try(() => byte.Parse("-1")), Try(() => short.Parse("32768")),
+            Try(() => int.Parse(" 5", NumberStyles.None)), Try(() => int.Parse("1 000")), Try(() => int.Parse("")),
+            Try(() => int.Parse("99999999999 "))));
+
+        Console.WriteLine(Message(() => int.Parse("2147483648")));
+        Console.WriteLine(Message(() => byte.Parse("300")));
+        Console.WriteLine(Message(() => (long)ulong.Parse("18446744073709551616")));
+        Console.WriteLine(Message(() => int.Parse("12x")));
+        Console.WriteLine(Message(() => int.Parse((string)null!)));
+
+        bool a = int.TryParse(" 5 ", out int five);
+        bool b = uint.TryParse("-1", out uint none);
+        bool c = int.TryParse((string?)null, out _);
+        bool d = int.TryParse("", out _);
+        bool e = long.TryParse("-9223372036854775808", out long least);
+        bool f = ulong.TryParse("18446744073709551615", out ulong most);
+        Console.WriteLine("tries " + a + " " + five + " " + b + " " + none + " " + c + " " + d + " " + e + " " + least + " " + f + " " + most);
+
+        Console.WriteLine("styles " + Try(() => int.Parse("1", NumberStyles.AllowHexSpecifier | NumberStyles.AllowLeadingSign))
+            + " " + Try(() => int.Parse("1", (NumberStyles)4096)));
+        Console.WriteLine(Message(() => int.Parse("1", (NumberStyles)4096)));
+
+        Console.WriteLine("convert " + Convert.ToInt32(" 12 ") + " " + Convert.ToInt32((string?)null) + " " + Convert.ToByte("255")
+            + " " + Try(() => Convert.ToInt32("1.5")));
+
+        bool g = int.TryParse("7".AsSpan(), out int seven);
+        Console.WriteLine("spans " + int.Parse("x42".AsSpan(1)) + " " + g + " " + seven);
+        return 0;
+    }
+}

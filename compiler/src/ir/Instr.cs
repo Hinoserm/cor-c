@@ -45,6 +45,29 @@ public sealed class Instr
     public string? Field { get; set; }
 
     /// <summary>
+    /// Load: the word read is a field's, an element's or a cell's of a
+    /// number type, never an address (Lowering.NeverAddress). MemCopy: the
+    /// bytes moved are a string's characters or a byte array's bytes
+    /// (Sys.Copy, Sys.CopyNoOverlap), never an address. Call, CallIndirect:
+    /// what it answers is of a number type, as its method declares it,
+    /// never an address, whatever the callee hands back. Store: the word
+    /// written is the handler chain's, a frame's or a landing's address,
+    /// never a reference (Lowering.ChainWrite). Left unset it says
+    /// nothing, so a pass making a load or a copy of its own need not know.
+    /// </summary>
+    public bool Number { get; set; }
+
+    /// <summary>
+    /// Load or Store of a class's field at its offset from the start of an
+    /// object of that class: which field, as one name for every
+    /// specialisation of a generic class (Lowering.FieldFamily) -- what
+    /// region inference keeps apart from every other field written at the
+    /// same offset (RegionConstraint.Family). Left unset it says nothing:
+    /// a raw read or write, a struct's field, an element, a copy.
+    /// </summary>
+    public string? Family { get; set; }
+
+    /// <summary>
     /// An allocator call the link chose to make in the innermost open region
     /// (Lto.RegionSolver; RegionPointsTo.MarkSites): the late passes' copies
     /// of it are chosen too.
@@ -78,7 +101,15 @@ public sealed class Instr
     public bool ReturnsFreshStruct => Op is Opcode.Call or Opcode.CallIndirect && Field == FreshStruct;
 
     /// <summary>Jump, Branch, Switch, LabelAddr: where. Phi: the predecessor each operand comes from.</summary>
-    public List<Block> Targets { get; } = new();
+    // TO READ: one shared empty list for the instructions that have none --
+    // all but the branches, and a list each was a hundred and seventy
+    // thousand of them live through a unit. Never written through: every
+    // writer goes by WritableTargets, which makes the list on first use (the
+    // compiler found them all when this was briefly read-only).
+    public List<Block> Targets => _targets ?? NoTargets;
+    public List<Block> WritableTargets => _targets ??= new();
+    private List<Block>? _targets;
+    private static readonly List<Block> NoTargets = new();
 
     /// <summary>Switch: where an out-of-range index goes.</summary>
     public Block? Default { get; set; }
@@ -106,6 +137,11 @@ public sealed class Instr
         if (Op is Opcode.Load or Opcode.Store)
         {
             sb.Append(Signed ? ".s" : ".u").Append(Size);
+        }
+        // What the analyses read of it: a number, never an address (Number).
+        if (Number)
+        {
+            sb.Append(".num");
         }
         if (Callee is not null)
         {

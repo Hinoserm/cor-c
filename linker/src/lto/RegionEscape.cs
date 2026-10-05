@@ -1,0 +1,5343 @@
+using System.Runtime.InteropServices;
+namespace Corsac.Lang.Lto;
+
+/// <summary>
+/// WHICH OBJECTS OUTLIVE EACH CALL, found from the bottom of the calls up:
+/// the escape answers region inference stands on (RegionSolver's judge), for
+/// a program of any size.
+///
+/// A function is solved by itself, Andersen's inclusion over its own nodes,
+/// with locations an object and a byte offset into it (or any offset), so a
+/// field's address and an element's stay what they are. Its objects are its
+/// allocation sites and frame slots, the unknown object, and PLACES: what a
+/// parameter points to, and what is reached from that by a field and then
+/// another (deeper than that, one object for all of it). A load of a place
+/// finds the place one field further on, besides whatever was written there.
+///
+/// What the function leaves the world -- what it writes into places and the
+/// unknown object, and what it hands back, with the objects it made that
+/// they reach -- is its SUMMARY: those objects and the cells between them.
+/// A caller applies it at each call: a place is what the caller reaches by
+/// the same fields from the argument, an object the callee made is one made
+/// at that call (so two lists the caller fills are two lists still), and the
+/// writes are writes.
+///
+/// A CYCLE OF CALLS IS SOLVED AS ONE: its members' nodes in one graph, a
+/// call between them its arguments into the callee's parameters and the
+/// callee's return into its result, the way a function's own nodes are --
+/// no round after round of summaries. What each member's parameters come to
+/// hold there, and its result, and the unknown object, reach the objects
+/// that outlive it; its summary for calls from outside the cycle is what it
+/// does to its own places.
+///
+/// A function's objects that its summary reaches outlive its return; every
+/// other object made beneath it is dead by then. Nothing here gives up for
+/// the program: past a bound, objects are merged, a node holds the unknown
+/// object, or a function is not followed and everything made beneath it is
+/// everyone's -- each only ever answering more outliving.
+/// </summary>
+internal sealed class RegionEscape
+{
+    // A field further than this is any offset: no field lies that far into
+    // an object, and an address walked further is walking an array.
+    private const int FarthestField = 4096;
+    public const int Any = -1;
+    // How many fields a place follows from its parameter before every deeper
+    // object is one (Deep): a list, its array, and the elements in it. An
+    // element read after them (any offset) is one field more: a list a
+    // parameter holds -- an enumerator's, a struct's `this` -- is a field
+    // further from it, and its array's elements are still kept apart from
+    // all they reach. (Below the deep place instead, a foreach over a list
+    // of nodes was handed every object of the tree for its loop variable.)
+    private const int PlaceDepth = 2;
+    // The most objects a summary keeps that the function made: past it the
+    // rest are one object with all their origins.
+    private const int MostFresh = 32;
+    // The most places a summary keeps: past it the deepest are the deep place.
+    private const int MostPlaces = 32;
+    // The most cells a summary keeps: past it, every place below a
+    // parameter is its deep place and every object made is one.
+    private const int MostCells = 128;
+    // The fields of each parameter the shape past even the coarse one keeps
+    // apart (Summary.Everything), each with all below it.
+    private const int MostFieldsKept = 4;
+    // A member of a cycle's parameters are numbered past every member before
+    // it: its place in the cycle times this, plus the parameter.
+    private const int ParamStride = 1 << 12;
+    // A CONSTANT IN A SUMMARY: a made object of no origins whose parameter
+    // is this. Applied, it is the caller's own constant -- one object for
+    // every constant, never written, what is read from it a constant again --
+    // not a fresh object of its own: as one, a List's empty array became a
+    // place every Add stored into, and a virtual call that ran any target on
+    // it, as it must on a constant, leaked what those stores put there.
+    private const int ConstantParam = -2;
+
+    private readonly IReadOnlyList<RegionFunction> _functions;
+    // Per function, per call: the functions it may run, each body once -- a
+    // copy as the body it copies (Bodies).
+    private readonly int[]?[][] _targets;
+    private readonly string?[][] _keys;
+    private readonly int[] _siteBase;
+    private readonly bool[] _wanted;
+    private readonly bool[] _rooted;
+    private readonly Summary?[] _summaries;
+
+    /// <summary>Counts for a report: locations carried, summaries applied, functions not followed, the largest cycle.</summary>
+    public long Work, Applied, Unfollowed, LargestCycle;
+
+    /// <summary>
+    /// The components whose answer is unification past the inclusion bound,
+    /// as the rounds left them. Counted from each component's state, not as
+    /// solves happen: a later round solves only what changed (Again), and a
+    /// count reset for it lost every fallback it did not solve again.
+    /// </summary>
+    public long Fallbacks => _components.Count(c => c.Length > 0 && c[0] < _how.Length && _how[c[0]] == How.PastBound);
+
+    /// <summary>
+    /// THE LINK'S POOL OF INCLUSION WORK, in locations offered to nodes: a
+    /// component past its own bound (Graph._mostCarried) goes on with grants
+    /// from it, up to InclusionCap each, while it lasts -- a function that
+    /// carries much cheaply, a few thousand objects saturating, finishes by
+    /// inclusion rather than unification. What a component that finishes
+    /// did not use goes back. Counted in work done, in the order solved, so
+    /// one link answers alike every time (--region-report +pool=M, +cap=M:
+    /// millions).
+    /// </summary>
+    public long InclusionPool = 400_000_000, InclusionCap = 40_000_000;
+    /// <summary>
+    /// PAST THIS MANY LOCATIONS OFFERED, A COMPONENT IS NOT FOLLOWED, however
+    /// little it carries. The budget above is asked only once a component
+    /// carries past its own bound; the compiler's binder cycle of 78 carried
+    /// a tenth of that and offered 1.36 billion locations over seventeen
+    /// minutes of the link, then was unified all the same. No component that
+    /// inclusion finished offered more than 49 million.
+    /// </summary>
+    public long OfferedCap = 200_000_000;
+    /// <summary>
+    /// THE POOL EACH ROUND STARTS WITH (+pool): filled again at every round's
+    /// start, so a re-solve in a late round has what the first round had,
+    /// and is not starved by what round 1 spent on other components. The
+    /// same rounds draw the same grants, so a link still answers alike.
+    /// </summary>
+    public long InclusionPerRound = 400_000_000;
+    /// <summary>For a report: what the pool gave, and to how many components.</summary>
+    public long PoolDrawn;
+    public int PoolComponents;
+
+    /// <param name="functions">The functions the image keeps.</param>
+    /// <param name="targets">Per function, per call: the functions it may run, or null for a call nobody follows.</param>
+    /// <param name="keys">Per function, per call: a virtual call's symbol (its targets are its overrides), or null.</param>
+    /// <param name="siteBase">Per function: the number of its first site among every function's.</param>
+    /// <param name="wanted">Per function: whether what outlives it is asked for.</param>
+    /// <param name="rooted">Per function: called from where nobody follows, with anything (the entry, code outside the IR, an address taken).</param>
+    public RegionEscape(IReadOnlyList<RegionFunction> functions, int[]?[][] targets, string?[][] keys, int[] siteBase, int sites, bool[] wanted, bool[] rooted)
+    {
+        _functions = functions; _keys = keys; _siteBase = siteBase;
+        _wanted = (bool[])wanted.Clone(); _rooted = (bool[])rooted.Clone();
+        Escaping = new int[]?[functions.Count];
+        Global = new bool[sites];
+        LoopHeld = new (int[], int[])[]?[functions.Count];
+        _summaries = new Summary?[functions.Count];
+        _changedAt = new long[functions.Count];
+        _body = Bodies(functions, targets);
+        // Each call's targets as bodies, one array for every call of the same targets.
+        _targets = new int[]?[functions.Count][];
+        Dictionary<int[], int[]> canonical = new(TargetsComparer.Instance);
+        for (int f = 0; f < functions.Count; f++)
+        {
+            _targets[f] = new int[]?[targets[f].Length];
+            for (int k = 0; k < targets[f].Length; k++)
+            {
+                if (targets[f][k] is not { } those) continue;
+                if (!canonical.TryGetValue(those, out int[]? once)) canonical[those] = once = AsBodies(those);
+                _targets[f][k] = once;
+            }
+        }
+        _siteCopies = new int[]?[sites];
+        for (int f = 0; f < functions.Count; f++)
+        {
+            int b = _body[f];
+            if (b == f) continue;
+            Copies++;
+            // A body is called from where nobody follows, and asked about,
+            // wherever any of its copies is.
+            _rooted[b] |= _rooted[f];
+            _wanted[b] |= _wanted[f];
+            if (!_copiesOf.TryGetValue(b, out List<int>? copies)) _copiesOf[b] = copies = new() { b };
+            copies.Add(f);
+            for (int k = 0; k < functions[f].Sites.Length; k++)
+            {
+                int site = siteBase[b] + k;
+                int[]? had = _siteCopies[site];
+                int[] more = new int[(had?.Length ?? 0) + 1];
+                had?.CopyTo(more, 0);
+                more[^1] = siteBase[f] + k;
+                _siteCopies[site] = more;
+            }
+        }
+    }
+
+    // ---- one body, solved once ----------------------------------------------
+    //
+    // THE SAME BODY IN SEVERAL UNITS -- an iterator's MoveNext, its type named
+    // by a hash of its body, made in every unit that runs it; a lambda over
+    // shared code; a generic method specialised in each unit that uses it; a
+    // box's stub; a key helper -- is a function of each unit, and every copy
+    // a target of every call that may run any (RegionSolver.ResolveOverride
+    // for a local one; for a global, every unit's definition, which only the
+    // final link coalesces). Solved copy by copy, each cost what the first
+    // did: the same iterator's MoveNext, past its bound, half a second in
+    // each of five units, every round. So each body is solved once, as its
+    // first copy in link order, and every call of a copy is a call of that
+    // one (_targets).
+    //
+    // TWO FUNCTIONS ARE ONE BODY when they are the same function of
+    // different units -- the same name -- and say the same to the engine:
+    // parameters, nodes, slots, number parameters, every constraint, every
+    // call's callee, result and arguments, every site's descriptor and words,
+    // every loop's live, invariant and kept, whether their symbols are
+    // constants (SameBody); AND each of their calls runs the same bodies: a
+    // callee resolved in its own unit may be another unit's other function
+    // of the same name. That is found as a partition refined until it holds,
+    // first by what they say, then again and again by the bodies each call
+    // runs (Bodies). Two functions of one body then answer alike for any
+    // caller -- by induction on the solve, each applies the same summaries
+    // to the same constraints -- so the body's summary is each copy's.
+    //
+    // A COPY'S ANSWERS ARE ITS BODY'S, read at the same ordinals: a copy's
+    // site k is global when its body's is (Mark), outlives the copy when its
+    // body's outlives the body (BitsOf: a body's site's bit is its copies'
+    // too), and what a copy's loop holds is its body's (Close). The body is
+    // called wherever any copy is: from where nobody follows when any copy
+    // is, and asked about when any copy is. So what any copy's caller does
+    // with what a copy makes, every copy's sites answer -- the union of
+    // their callers', as one function called from all of them would: the
+    // final link keeps one copy of a global, and a local copy is a target of
+    // every call that may run any. What a virtual call in the body runs on
+    // an object is what it runs in any copy, each resolved in its own unit
+    // (RunsOn).
+    //
+    // Symbols' names, sites' lines and what only the judge reads (how often
+    // each runs, region sizes, what must run) are not compared: the engine
+    // reads none of them.
+
+    // Per function: the first function of its body.
+    private readonly int[] _body;
+    // Per body of more than one copy: every copy, itself first.
+    private readonly Dictionary<int, List<int>> _copiesOf = new();
+    // Per site of a body: the same site of each of its other copies.
+    private readonly int[]?[] _siteCopies;
+    /// <summary>For a report: functions solved as another copy of their body.</summary>
+    public int Copies;
+
+    private static int[] Bodies(IReadOnlyList<RegionFunction> functions, int[]?[][] targets)
+    {
+        int n = functions.Count;
+        int[] cls = new int[n];
+        // By what they say: grouped by name, then compared.
+        Dictionary<string, List<int>> byName = new(StringComparer.Ordinal);
+        List<int> firstOf = new();
+        for (int f = 0; f < n; f++)
+        {
+            if (!byName.TryGetValue(functions[f].Name, out List<int>? classes)) byName[functions[f].Name] = classes = new();
+            int found = -1;
+            foreach (int c in classes) if (SameBody(functions[firstOf[c]], functions[f])) { found = c; break; }
+            if (found < 0) { found = firstOf.Count; firstOf.Add(f); classes.Add(found); }
+            cls[f] = found;
+        }
+        int count = firstOf.Count;
+        // By the bodies each call runs, until no class splits: each round's
+        // classes split the last's (its class is the first word of each
+        // signature), so the count only grows, and the same count is the end.
+        while (true)
+        {
+            Dictionary<int[], int> sets = new(TargetsComparer.Instance), ofTargets = new(TargetsComparer.Instance);
+            int[] last = cls;
+            int SetOf(int[] those)
+            {
+                if (ofTargets.TryGetValue(those, out int id)) return id;
+                int[] mapped = those.Select(t => last[t]).Distinct().Order().ToArray();
+                if (!sets.TryGetValue(mapped, out id)) sets[mapped] = id = sets.Count;
+                return ofTargets[those] = id;
+            }
+            Dictionary<int[], int> signatures = new(TargetsComparer.Instance);
+            int[] refined = new int[n];
+            for (int f = 0; f < n; f++)
+            {
+                int[]?[] calls = targets[f];
+                int[] signature = new int[1 + calls.Length];
+                signature[0] = last[f];
+                for (int k = 0; k < calls.Length; k++) signature[1 + k] = calls[k] is { } those ? SetOf(those) : -1;
+                if (!signatures.TryGetValue(signature, out int c)) signatures[signature] = c = signatures.Count;
+                refined[f] = c;
+            }
+            cls = refined;
+            if (signatures.Count == count) break;
+            count = signatures.Count;
+        }
+        int[] body = new int[n];
+        Dictionary<int, int> first = new();
+        for (int f = 0; f < n; f++)
+        {
+            if (!first.TryGetValue(cls[f], out int b)) first[cls[f]] = b = f;
+            body[f] = b;
+        }
+        return body;
+    }
+
+    // Whether two functions say the same to the engine (Bodies), but for the calls' targets.
+    private static bool SameBody(RegionFunction a, RegionFunction b)
+    {
+        if (a.Name != b.Name || a.Parameters != b.Parameters || a.Nodes != b.Nodes || a.Slots != b.Slots || a.Instance != b.Instance
+            || a.ConstantsKnown != b.ConstantsKnown || !a.NumberParams.AsSpan().SequenceEqual(b.NumberParams)
+            || !a.Families.AsSpan().SequenceEqual(b.Families)
+            || a.Constraints.Count != b.Constraints.Count || a.Calls.Count != b.Calls.Count || a.Sites.Length != b.Sites.Length || a.Loops.Count != b.Loops.Count)
+            return false;
+        for (int i = 0; i < a.Constraints.Count; i++) if (a.Constraints[i] != b.Constraints[i]) return false;
+        for (int i = 0; i < a.Calls.Count; i++)
+        {
+            RegionCall x = a.Calls[i], y = b.Calls[i];
+            if (x.Callee != y.Callee || x.Dest != y.Dest || !x.Arguments.AsSpan().SequenceEqual(y.Arguments)) return false;
+        }
+        for (int i = 0; i < a.Sites.Length; i++)
+        {
+            RegionSite x = a.Sites[i], y = b.Sites[i];
+            if (x.Rewritable != y.Rewritable || x.Table != y.Table || x.At != y.At || x.Words != y.Words) return false;
+        }
+        for (int i = 0; i < a.Loops.Count; i++)
+        {
+            RegionLoopShape x = a.Loops[i], y = b.Loops[i];
+            if (!x.Live.AsSpan().SequenceEqual(y.Live) || !x.Invariant.AsSpan().SequenceEqual(y.Invariant) || !x.KeptSlots.AsSpan().SequenceEqual(y.KeptSlots)) return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// What a virtual call of body f runs on an object of a site, as bodies:
+    /// what it runs in any copy, each resolved in its own unit (TargetsOn);
+    /// null when in some copy any target may run.
+    /// </summary>
+    private int[]? RunsOn(int f, int k, int site)
+    {
+        if (!_copiesOf.TryGetValue(f, out List<int>? copies)) return TargetsOn!(f, k, site) is { } alone ? AsBodies(alone) : null;
+        SortedSet<int> all = new();
+        foreach (int copy in copies)
+        {
+            if (TargetsOn!(copy, k, site) is not { } runs) return null;
+            foreach (int t in runs) all.Add(_body[t]);
+        }
+        return all.ToArray();
+    }
+
+    // Functions as their bodies, sorted, each once.
+    private int[] AsBodies(int[] functions)
+    {
+        bool same = true;
+        foreach (int t in functions) if (_body[t] != t) { same = false; break; }
+        return same ? functions : functions.Select(t => _body[t]).Distinct().Order().ToArray();
+    }
+
+    // A NUMBER HANDED TO A CALL holds no address: an argument every target
+    // takes as a parameter of a number type (RegionFunction.NumberParams)
+    // is nothing the call is handed. Where nobody can say who is called, it
+    // is still handed on.
+    private bool NumberArgument(int[]? targets, int a)
+        => targets is { Length: > 0 } && targets.All(t => _functions[t].IsNumber(a));
+
+    // THE FIELD A TYPED LOAD OR STORE NAMES (RegionConstraint.Family), one
+    // number for each name however many units name it: a function's own
+    // index into its Families, or -1 for none, as a number every function
+    // shares.
+    private readonly Dictionary<string, int> _familyIds = new(StringComparer.Ordinal);
+
+    private int FamilyOf(RegionFunction f, int local)
+    {
+        if (local < 0 || local >= f.Families.Length) return -1;
+        string name = f.Families[local];
+        if (!_familyIds.TryGetValue(name, out int id)) _familyIds[name] = id = _familyIds.Count;
+        return id;
+    }
+
+    // ---- where an object came from ----------------------------------------
+    //
+    // AN OBJECT'S ORIGINS, not its sites: a site of its own (Leaf), or an
+    // object of a callee's summary it was made from at a call (Ref: the
+    // summary's holder and the object's place in it). A summary's object
+    // keeps its own origins once, wherever it is applied, so what a call
+    // made is one reference however many sites are beneath it; the sites an
+    // origin may be are found by following origins down (SitesOf). Carried
+    // as sets of sites, the summaries of the compiler's own link held
+    // nineteen million of them, most the same ones again.
+
+    private static int Leaf(int site) => -site - 1;
+    private static int Ref(int holder, int index)
+    {
+        if (index >= 1 << IndexBits || holder >= 1 << (30 - IndexBits)) throw new InvalidOperationException("region escape: an object past what an origin can name");
+        return holder << IndexBits | index;
+    }
+    private const int IndexBits = 10;
+
+    // Per holder: each of its summary's objects' origins (null for a place).
+    // A HOLDER IS NEVER RENAMED: once registered, its objects' origins stay
+    // what they were, so a Ref anything still holds -- a summary, an answer,
+    // what is global -- means what it meant when it was made. A summary solved
+    // again comes out under a new holder unless it is the same as before.
+    private readonly List<int[]?[]?> _holders = new();
+    // What is global, and what roots hand back, while one component is
+    // answered: each component's own (_globalOf, _rootedOf), so one solved
+    // again takes back what it said before. Gathered at the end (Close).
+    private HashSet<int> _globalRefs = new();
+    // For a report: what only the rule for functions called from where nobody follows made global.
+    private HashSet<int> _rootedRefs = new();
+    public int GlobalByUnknown, GlobalByRoots;
+
+    /// <summary>A summary's objects named for what is made from them: under its holder.</summary>
+    private void Register(Summary s, int holder)
+    {
+        s.Holder = holder;
+        while (_holders.Count <= holder) _holders.Add(null);
+        int[]?[] origins = new int[]?[s.Objects.Count];
+        for (int k = 0; k < s.Objects.Count; k++) if (s.Objects[k].Kind == Kind.Made) origins[k] = s.Objects[k].Origins;
+        _holders[holder] = origins;
+        // A holder registered again (a stand-in's) may differ in length.
+        _holderFirst = null;
+        if (_bitsByOrigins.Count > 0) _bitsByOrigins.Clear();
+    }
+
+    private int NewHolder() => Math.Max(_holders.Count, _functions.Count);
+
+    private int[]? OriginsOf(int r)
+    {
+        if (r < 0 || (r >> IndexBits) >= _holders.Count || _holders[r >> IndexBits] is not { } h) return null;
+        int k = r & ((1 << IndexBits) - 1);
+        return k < h.Length ? h[k] : null;
+    }
+
+    /// <summary>Per function asked about: the origins of the objects made beneath it that outlive its return (sorted).</summary>
+    public readonly int[]?[] Escaping;
+    /// <summary>Per site: an object of it is reached from the unknown object, or outlives a call nobody follows.</summary>
+    public readonly bool[] Global;
+    /// <summary>Per function, per loop: the origins what is live where a lap ends reaches, and what the loop keeps reaches.</summary>
+    public readonly (int[] LapLive, int[] Kept)[]?[] LoopHeld;
+
+    // Per function asked about: its escaping sites as one bit a site, shared
+    // by every function whose escaping origins are the same -- a cycle's
+    // members' often are. A question is then one load.
+    private ulong[]?[]? _escapingBits;
+    private readonly Dictionary<int[], ulong[]> _bitsByOrigins = new(TargetsComparer.Instance);
+
+    /// <summary>Whether an object of `site` made beneath function `f` may outlive its return.</summary>
+    public bool Escapes(int f, int site)
+    {
+        if (EscapingBits(f) is not { } bits) return true;
+        return (bits[site >> 6] >> (site & 63) & 1) != 0;
+    }
+
+    /// <summary>The sites whose objects made beneath function `f` may outlive its return, one bit a site; null when every one may.</summary>
+    public ulong[]? EscapingBits(int f)
+    {
+        int[]? escaping = Escaping[f];
+        if (escaping is null) return null;
+        return (_escapingBits ??= new ulong[]?[Escaping.Length])[f] ??= BitsOf(escaping);
+    }
+
+    /// <summary>The sites some origins may be, one bit a site.</summary>
+    public ulong[] BitsOf(int[] origins)
+    {
+        if (_bitsByOrigins.TryGetValue(origins, out ulong[]? known)) return known;
+        ulong[] bits = new ulong[(Global.Length + 63) >> 6];
+        // Asked only once every function is solved, when the holders are
+        // all there: each holder's objects numbered from its first
+        // (_holderFirst), an object seen when its mark is the walk's.
+        if (_holderFirst is null || _holderFirst.Length != _holders.Count + 1)
+        {
+            _holderFirst = new int[_holders.Count + 1];
+            for (int h = 0; h < _holders.Count; h++) _holderFirst[h + 1] = _holderFirst[h] + (_holders[h]?.Length ?? 0);
+            _seenMark = new int[_holderFirst[^1]];
+        }
+        int stamp = ++_seenStamp;
+        _next.Clear();
+        void Visit(int r)
+        {
+            if (r < 0)
+            {
+                int site = -r - 1;
+                bits[site >> 6] |= 1UL << (site & 63);
+                // A body's site is each of its copies' (Bodies).
+                if (_siteCopies[site] is { } copies) foreach (int copy in copies) bits[copy >> 6] |= 1UL << (copy & 63);
+                return;
+            }
+            int h = r >> IndexBits, k = r & ((1 << IndexBits) - 1);
+            if (h >= _holders.Count || _holders[h] is not { } objects || k >= objects.Length || objects[k] is null) return;
+            int at = _holderFirst[h] + k;
+            if (_seenMark![at] == stamp) return;
+            _seenMark[at] = stamp;
+            _next.Push(r);
+        }
+        foreach (int r in origins) Visit(r);
+        while (_next.TryPop(out int r))
+            foreach (int c in OriginsOf(r)!) Visit(c);
+        return _bitsByOrigins[origins] = bits;
+    }
+
+    private int[]? _holderFirst, _seenMark;
+    private int _seenStamp;
+    private readonly Stack<int> _next = new();
+
+    /// <summary>
+    /// For the tests: a function's summary as it stands -- each object as
+    /// its kind, parameter and path ("Place 0 [8]", "Deep -1 []", a guard
+    /// "g", the deep step "deep"), its cells and its result, and whether it
+    /// was made coarse -- or null for none, or the unknown call's.
+    /// </summary>
+    internal (string[] Objects, (int From, int Offset, int To, int ToOffset)[] Cells, (int To, int ToOffset)[] Result, bool Coarse)? SummaryOf(int f)
+    {
+        if (_summaries[f] is not { IsUnknown: false } s) return null;
+        static string Step(int step) => StepText(step, guardIds: false);
+        return (s.Objects.Select(o => o.Kind + " " + o.Param + " [" + string.Join(",", o.Path.Select(Step)) + "]").ToArray(),
+            s.Cells.ToArray(), s.Result.ToArray(), s.MadeCoarse);
+    }
+
+    /// <summary>For the tests: the field each of a function's summary cells names (SummaryOf's order), null for any.</summary>
+    internal string?[]? CellFamiliesOf(int f)
+    {
+        if (_summaries[f] is not { IsUnknown: false } s) return null;
+        Dictionary<int, string> named = _familyIds.ToDictionary(x => x.Value, x => x.Key);
+        string?[] names = new string?[s.Cells.Count];
+        for (int k = 0; k < names.Length; k++) names[k] = named.GetValueOrDefault(s.FamilyOf(s.Cells[k]));
+        return names;
+    }
+
+    /// <summary>
+    /// For a report: where an origin comes from -- a site, or an object of
+    /// whose summary (a function's, or a merged or stand-in one), what kind
+    /// of object it is there, and so on down, `depth` steps.
+    /// </summary>
+    private string Lineage(int r, int depth)
+    {
+        if (r < 0) return "site " + (-r - 1);
+        int h = r >> IndexBits, k = r & ((1 << IndexBits) - 1);
+        string holder = h < _functions.Count ? _functions[h].Name : "merged or stand-in summary " + h;
+        string kind = h < _functions.Count && _summaries[h] is { IsUnknown: false } s && k < s.Objects.Count ? s.Objects[k].Kind.ToString() : "object";
+        int[]? below = OriginsOf(r);
+        if (below is null) return $"{kind} {k} of {holder} (unregistered)";
+        if (below.Length == 0) return $"{kind} {k} of {holder}, of no origin (a constant or a frame slot)";
+        return $"{kind} {k} of {holder}" + (depth <= 0 ? "" : " < " + string.Join(" | ", below.Take(3).Select(x => Lineage(x, depth - 1))));
+    }
+
+    /// <summary>The sites the given origins may be.</summary>
+    public int[] SitesOf(int[] origins)
+    {
+        HashSet<int> seen = new(), sites = new();
+        Stack<int> next = new();
+        foreach (int r in origins) if (seen.Add(r)) next.Push(r);
+        while (next.TryPop(out int r))
+        {
+            if (r < 0) { sites.Add(-r - 1); continue; }
+            // Read by the component being solved: solved again if it changes (Again).
+            if (_reading is not null && !_readingAll && _reading.Add(r >> IndexBits) && _reading.Count > MostRead) _readingAll = true;
+            if (OriginsOf(r) is { } below) foreach (int c in below) if (seen.Add(c)) next.Push(c);
+        }
+        return sites.Order().ToArray();
+    }
+
+    // After every function: what is global, down to sites -- what the unknown
+    // object reaches, and what functions called from where nobody follows hand back.
+    /// <summary>Whether a word of a site's objects, at a byte offset (Any: some word), is never read as a reference (RegionSolver.HoldsNoReference); null for no such knowledge.</summary>
+    public Func<int, int, bool>? NoReference;
+
+    /// <summary>A site's number named as the reports name it: its function and ordinal (a diagnostic).</summary>
+    public string SiteName(int site)
+    {
+        int at = 0;
+        foreach (RegionFunction function in _functions)
+        {
+            if (site < at + function.Sites.Length) return function.Name + " site " + (site - at) + " line " + function.Sites[site - at].Line;
+            at += function.Sites.Length;
+        }
+        return "site " + site;
+    }
+
+    /// <summary>A diagnostic only, never for an image: leave out what roots hand back.</summary>
+    public bool NoRoots;
+    /// <summary>A diagnostic: the sites to explain the global reach of.</summary>
+    public Func<int, bool>? Why;
+    public Func<int, bool>? WhyFunction;
+    /// <summary>A diagnostic (+whyall): every constraint and call of a function asked of with +why.</summary>
+    public bool WhyAll;
+    /// <summary>A report (+cyclemembers): a slow cycle's members and the calls that join them.</summary>
+    public bool CycleMembers;
+
+    private void Close()
+    {
+        _globalRefs = new();
+        _rootedRefs = new();
+        foreach (int[]? each in _globalOf) if (each is not null) _globalRefs.UnionWith(each);
+        foreach (int[]? each in _rootedOf) if (each is not null) _rootedRefs.UnionWith(each);
+        Mark(_globalRefs);
+        GlobalByUnknown = Global.Count(g => g);
+        if (!NoRoots) Mark(_rootedRefs);
+        GlobalByRoots = Global.Count(g => g) - GlobalByUnknown;
+        // Each copy answered as its body (Bodies).
+        for (int f = 0; f < _functions.Count; f++)
+        {
+            int b = _body[f];
+            if (b == f) continue;
+            Escaping[f] = Escaping[b];
+            LoopHeld[f] = LoopHeld[b];
+            _summaries[f] = _summaries[b];
+        }
+        if (Copies > 0) Progress?.Invoke($"escape graphs: {_functions.Count} functions, {_functions.Count - Copies} bodies: {Copies} solved as another copy of their body, {_copiesOf.Count} bodies of more than one");
+    }
+
+    private void Mark(IEnumerable<int> refs)
+    {
+        Stack<int> next = new();
+        HashSet<int> seen = new();
+        foreach (int r in refs) if (seen.Add(r)) next.Push(r);
+        while (next.TryPop(out int r))
+        {
+            if (r < 0)
+            {
+                Global[-r - 1] = true;
+                if (_siteCopies[-r - 1] is { } copies) foreach (int copy in copies) Global[copy] = true;
+                continue;
+            }
+            if (OriginsOf(r) is { } below) foreach (int c in below) if (seen.Add(c)) next.Push(c);
+        }
+    }
+
+    // ---- what a virtual call runs on an object, and guarded places ---------
+    //
+    // A VIRTUAL CALL RUNS ONE OVERRIDE ON EACH OBJECT: the one its
+    // descriptor holds at the call's slot. On an object whose site is known,
+    // that one's summary is applied, and no other's (Graph.Received). On a
+    // place, whose object nobody here knows, each override's summary is
+    // applied to the place GUARDED by it: the objects there that run that
+    // override. A guard is a step of a place's path, as a field is; a caller
+    // reaching the place by the same path keeps, at that step, only the
+    // objects a guard lets through -- those of a site whose descriptor runs
+    // the override, and any of no known descriptor. (Merged, every
+    // override's effects fell on every object: the field a Name keeps its
+    // string in, leaked by Name.Emit, is where an Add keeps its left
+    // operand, and an Assign's whole tree leaked with its target's name.)
+
+    /// <summary>Per function, per call, per site: the targets a virtual call runs on an object of the site; null for any of them (RegionSolver).</summary>
+    public Func<int, int, int, int[]?>? TargetsOn;
+
+    // A path's steps: a field (an offset, or Any), a guard (-2 - its id),
+    // or the deep step -- every object below, by one field or more.
+    private const int DeepStep = int.MinValue;
+    private static bool IsField(int step) => step >= Any;
+
+    // A FIELD STEP NAMING ITS FIELD (RegionConstraint.Family, the engine's
+    // number for it): the offset in the low StepBits bits, the field's
+    // number plus one above them -- one int still, and still a field step
+    // (>= Any). A step naming none is its offset alone, or Any. A place
+    // below a typed step is what that one field holds; below an untyped
+    // one, whatever is at the offset. Applied at a caller, a typed step is
+    // a load naming the field, which reads that field's words, the words
+    // written naming none, and any offset's (Graph.Loaded); an untyped one
+    // reads every field at its offset.
+    private const int StepBits = 13;            // FarthestField (4096) below 1 << StepBits
+    private const int MostStepFamily = (1 << (31 - StepBits)) - 2;
+    private static int TypedStep(int offset, int family)
+        => family < 0 || offset < 0 || offset > FarthestField || family > MostStepFamily ? offset : offset | ((family + 1) << StepBits);
+    private static int StepOffset(int step) => step < 0 ? step : step & ((1 << StepBits) - 1);
+    private static int StepFamily(int step) => step < 0 ? -1 : (step >> StepBits) - 1;
+
+    /// <summary>A path step for a report: an offset, "8:f3" for a field named, "deep", a guard.</summary>
+    private static string StepText(int step, bool guardIds = true)
+        => step == DeepStep ? "deep" : IsGuard(step) ? (guardIds ? "g" + GuardOf(step) : "g")
+            : StepFamily(step) >= 0 ? StepOffset(step) + ":f" + StepFamily(step) : step.ToString();
+    private static bool IsGuard(int step) => step < Any && step != DeepStep;
+    private static int GuardStep(int guard) => -2 - guard;
+    private static int GuardOf(int step) => -2 - step;
+    private static readonly int[] DeepBelow = { DeepStep };
+
+    private static int Fields(int[] path)
+    {
+        int n = 0;
+        foreach (int step in path) if (IsField(step)) n++;
+        return n;
+    }
+
+    /// <summary>A deep place's path with its deep step: one made without is everything below the path it names.</summary>
+    private static int[] DeepPath(int[] path) => KindOf(path) == Kind.Deep ? path : [.. path, DeepStep];
+
+    /// <summary>A place's kind by its path: deep when it ends in the deep step and guards after it.</summary>
+    private static Kind KindOf(int[] path)
+    {
+        int d = Array.LastIndexOf(path, DeepStep);
+        if (d < 0) return Kind.Place;
+        for (int i = d + 1; i < path.Length; i++) if (IsField(path[i])) return Kind.Place;
+        return Kind.Deep;
+    }
+
+    /// <summary>
+    /// A path one field further, kept to so many: past PlaceDepth fields,
+    /// everything below the first PlaceDepth is the deep place; a field of
+    /// the deep place is the deep place. A GUARD BEGINS THE COUNT AGAIN:
+    /// what the objects of a class there hold is kept apart, PlaceDepth
+    /// fields of it, before a deep place of its own -- a node's type, and
+    /// the type that holds, not all the tree below the node. (A path has
+    /// one guard, so it is at most twice as long.)
+    /// </summary>
+    private static int[] WithField(int[] path, int offset)
+    {
+        int g = Array.FindLastIndex(path, IsGuard);
+        int fields = 0;
+        for (int i = g + 1; i < path.Length; i++)
+        {
+            if (path[i] == DeepStep) return path;
+            fields++;
+        }
+        return fields > PlaceDepth || fields == PlaceDepth && offset != Any ? [.. path, DeepStep] : [.. path, offset];
+    }
+
+    /// <summary>
+    /// A place made coarse, KEEPING ITS GUARD: the guard's objects anywhere
+    /// below the parameter where the path took fields to them, and all below
+    /// them where it went on. Each covers what it was; a guard left out made
+    /// a name's string, leaked deep in a tree, the whole tree below the
+    /// parameter, once a summary went past its bounds.
+    /// </summary>
+    private static int[] Coarsened(int[] path)
+    {
+        bool below = Fields(path) > 0 || Array.IndexOf(path, DeepStep) >= 0;
+        int g = Array.FindIndex(path, IsGuard);
+        if (g < 0) return below ? DeepBelow : Array.Empty<int>();
+        List<int> kept = new();
+        if (g > 0) kept.Add(DeepStep);
+        kept.Add(path[g]);
+        for (int i = g + 1; i < path.Length; i++) if (!IsGuard(path[i])) { kept.Add(DeepStep); break; }
+        return kept.ToArray();
+    }
+
+    /// <summary>
+    /// A PLACE MADE COARSE BY ITS FIRST FIELD (Summary.Coarse): a field of
+    /// its parameter the place that field is, and everything below that
+    /// field one deep place of the field's own -- so a leak through p.f no
+    /// longer covers p.g. A path through any offset first, or no field, is
+    /// everything below the parameter, and a guarded one Coarsened's.
+    /// Each covers what it was: a place below p.f is below p.f.
+    /// </summary>
+    private static int[] CoarsenedByField(int[] path)
+    {
+        if (path.Length == 0 || Array.FindIndex(path, IsGuard) >= 0) return Coarsened(path);
+        int first = path[0];
+        if (first < 0) return DeepBelow;                    // any offset, or the deep step itself
+        return path.Length == 1 ? path : [first, DeepStep];
+    }
+
+    /// <summary>
+    /// A path guarded at its end: two guards running are both at once. ONE
+    /// GUARD A PATH, the last: a guard further up is left out (and what it
+    /// kept apart below a deep step is the deep place again). A caller's
+    /// filter at the last guard already drops every object of another
+    /// class, whatever the path took to it; kept, each guard of a recursion
+    /// was another place at each level, and a cycle's receivers ran past
+    /// what a node holds.
+    /// </summary>
+    private int[] WithGuard(int[] path, int guard)
+    {
+        if (path.Length > 0 && IsGuard(path[^1]))
+        {
+            int had = GuardOf(path[^1]);
+            return had == guard ? path : [.. path[..^1], GuardStep(Both(had, guard))];
+        }
+        return path.Any(IsGuard) ? [.. Stripped(path), GuardStep(guard)] : [.. path, GuardStep(guard)];
+    }
+
+    /// <summary>A path's guards left out: its fields again from the parameter, what is below the first deep step that deep place.</summary>
+    private static int[] Stripped(int[] path)
+    {
+        if (!path.Any(IsGuard)) return path;
+        int[] kept = Array.Empty<int>();
+        foreach (int step in path)
+        {
+            if (step == DeepStep) return Array.IndexOf(kept, DeepStep) >= 0 ? kept : [.. kept, DeepStep];
+            if (IsField(step)) kept = WithField(kept, step);
+        }
+        return kept;
+    }
+
+    // A guard: what must hold of an object's site, each a virtual call
+    // (named by its symbol and unit, through one call of it) that runs the
+    // target on it.
+    private readonly List<(int F, int K, int Target)[]> _guards = new();
+    private readonly Dictionary<string, int> _guardIds = new(StringComparer.Ordinal);
+    private readonly Dictionary<(int, int), bool> _sitePasses = new();
+
+    private int Guard(int f, int k, int target) => Intern(new[] { (f, k, target) });
+
+    private int Both(int a, int b) => Intern(_guards[a].Concat(_guards[b]));
+
+    private int Intern(IEnumerable<(int F, int K, int Target)> conditions)
+    {
+        SortedDictionary<string, (int, int, int)> each = new(StringComparer.Ordinal);
+        foreach (var c in conditions) each.TryAdd(_keys[c.F][c.K] + "#" + c.Target, c);
+        string key = string.Join("|", each.Keys);
+        if (_guardIds.TryGetValue(key, out int id)) return id;
+        _guards.Add(each.Values.ToArray());
+        return _guardIds[key] = _guards.Count - 1;
+    }
+
+    /// <summary>Whether an object of a site may be among what a guard lets through: every call of it runs its target there, or nobody knows what it runs.</summary>
+    private bool SitePasses(int site, int guard)
+    {
+        if (_sitePasses.TryGetValue((site, guard), out bool known)) return known;
+        bool passes = true;
+        foreach (var (f, k, target) in _guards[guard])
+            if (RunsOn(f, k, site) is { } runs && (target >= 0 ? Array.BinarySearch(runs, target) < 0 : !runs.Any(_targetSets[-1 - target].Contains)))
+            { passes = false; break; }
+        return _sitePasses[(site, guard)] = passes;
+    }
+
+    // A GUARD'S TARGET MAY BE A SET: a target below zero is -1 less the set's
+    // number, and an object passes it if its class runs any of the set
+    // (Graph.Deferred, past MostDeferred targets apart). Numbered as they
+    // are first asked for, by what they hold, so a link answers alike.
+    private readonly List<HashSet<int>> _targetSets = new();
+    private readonly Dictionary<int[], int> _targetSetIds = new(TargetsComparer.Instance);
+
+    private int TargetSet(int[] targets)
+    {
+        if (_targetSetIds.TryGetValue(targets, out int id)) return id;
+        _targetSets.Add(new HashSet<int>(targets));
+        return _targetSetIds[targets] = -1 - (_targetSets.Count - 1);
+    }
+
+    // ---- the order: callees first, a cycle together -----------------------
+
+    /// <summary>Progress for a report (null: none).</summary>
+    public Action<string>? Progress;
+
+    /// <summary>For a report: the largest cycle with virtual calls of more than `most` targets left out, and the calls left out by targets.</summary>
+    public void ReportCycles(int most)
+    {
+        int count = _functions.Count;
+        int[] index = new int[count], low = new int[count];
+        bool[] onStack = new bool[count];
+        Array.Fill(index, -1);
+        int next = 0, largest = 0;
+        Stack<int> stack = new();
+        Dictionary<string, int> wide = new(StringComparer.Ordinal);
+        for (int f = 0; f < count; f++)
+            for (int k = 0; k < _targets[f].Length; k++)
+                if (_targets[f][k] is { } t && t.Length > most && _keys[f][k] is { } key) wide[key.Split('@')[0] + " (" + t.Length + ")"] = wide.GetValueOrDefault(key.Split('@')[0] + " (" + t.Length + ")") + 1;
+        IEnumerable<int> Edges(int v)
+        {
+            for (int k = 0; k < _targets[v].Length; k++)
+                if (_targets[v][k] is { } t && t.Length <= most) foreach (int w in t) yield return w;
+        }
+        Stack<(int Node, IEnumerator<int> Edges)> walk = new();
+        for (int start = 0; start < count; start++)
+        {
+            if (index[start] >= 0) continue;
+            index[start] = low[start] = next++;
+            stack.Push(start); onStack[start] = true;
+            walk.Push((start, Edges(start).GetEnumerator()));
+            while (walk.Count > 0)
+            {
+                var (v, e) = walk.Peek();
+                if (e.MoveNext())
+                {
+                    int w = e.Current;
+                    if (index[w] < 0) { index[w] = low[w] = next++; stack.Push(w); onStack[w] = true; walk.Push((w, Edges(w).GetEnumerator())); }
+                    else if (onStack[w]) low[v] = Math.Min(low[v], index[w]);
+                    continue;
+                }
+                walk.Pop();
+                if (low[v] == index[v])
+                {
+                    int size = 0, w;
+                    do { w = stack.Pop(); onStack[w] = false; size++; } while (w != v);
+                    largest = Math.Max(largest, size);
+                }
+                if (walk.Count > 0) { int parent = walk.Peek().Node; low[parent] = Math.Min(low[parent], low[v]); }
+            }
+        }
+        Progress?.Invoke($"escape graphs: without virtual calls of more than {most} targets the largest cycle is {largest}; {wide.Count} such slots");
+        foreach (var (key, calls) in wide.OrderByDescending(x => x.Value).Take(15)) Progress?.Invoke($"escape graphs:   {calls} calls of {key}");
+    }
+
+    /// <summary>
+    /// Virtual calls of more targets than this are assumed, not followed in
+    /// order (WIDE CALLS, below); 0 follows every call (--region-report
+    /// +wide=N). SIXTEEN BY DEFAULT: past that, a call's overrides are
+    /// Equals, GetHashCode, ToString, an iterator's MoveNext, a visitor's
+    /// Accept -- each joining all of them and all that calls them into one
+    /// cycle, thirteen thousand of the compiler's functions, which only
+    /// unification (Unified) can take and coarsely. A program's own calls
+    /// of a handful of overrides stay edges of the order, solved exactly;
+    /// rounds after the first solve again only what a grown stand-in
+    /// changed (Again), so the rounds cost a fraction of the first.
+    /// </summary>
+    public int WideTargets = 16;
+
+    /// <summary>
+    /// A diagnostic and a trade: every stand-in made from the first round
+    /// with every site its targets reach (as WidenAfter makes one that still
+    /// grows), so only its bits are left to grow.
+    /// </summary>
+    public bool WidenFirst;
+
+    // ---- memory, for a report ---------------------------------------------
+    //
+    // Under --region-report (MemReport): the managed heap after each slow
+    // solve and each round, and what it grew by; +memtop=N (MemTop) the N
+    // components whose solves grew it most each round; at the end, the
+    // sizes of the tables that live for the whole solve (ReportTables).
+    // None of it is asked for otherwise: a heap reading is a call, a table's
+    // size a walk.
+    public bool MemReport;
+    public int MemTop;
+    /// <summary>Blobs every graph made, for a report.</summary>
+    public long TotalBlobs;
+    private readonly List<(long Grew, string What)> _memGrowth = new();
+
+    private static string Megabytes(long bytes) => (bytes >= 0 ? "+" : "") + (bytes >> 20) + " MB";
+
+    // A component's solve and what the heap did over it, for +memtop.
+    private void NoteGrowth(long before, List<int> component, string how, string describe)
+    {
+        if (MemTop <= 0) return;
+        long grew = GC.GetTotalMemory(false) - before;
+        _memGrowth.Add((grew, $"{_functions[component[0]].Name} ({component.Count}, {how}): {Megabytes(grew)}; {describe}"));
+    }
+
+    private void ReportMemTop(int round)
+    {
+        if (MemTop <= 0 || Progress is null) { _memGrowth.Clear(); return; }
+        Progress($"escape graphs: round {round}: the {Math.Min(MemTop, _memGrowth.Count)} solves the heap grew most over, of {_memGrowth.Count}");
+        foreach (var (_, what) in _memGrowth.OrderByDescending(x => x.Grew).Take(MemTop)) Progress($"escape graphs:   {what}");
+        _memGrowth.Clear();
+    }
+
+    // The tables the whole solve keeps, by size.
+    private void ReportTables()
+    {
+        if (!MemReport || Progress is null) return;
+        long holders = 0, holderObjects = 0;
+        foreach (int[]?[]? h in _holders) if (h is not null) { holders++; holderObjects += h.Length; }
+        long summaries = 0, objects = 0, cells = 0, results = 0, typed = 0;
+        foreach (Summary? x in _summaries)
+        {
+            if (x is null || x.IsUnknown) continue;
+            summaries++; objects += x.Objects.Count; cells += x.Cells.Count; results += x.Result.Count;
+            typed += (x.Fields?.Count ?? 0) + (x.CellFamilies?.Count ?? 0);
+        }
+        long read = 0, applied = 0;
+        foreach (int[]? r in _sitesReadOf) read += r?.Length ?? 0;
+        foreach (Assumed[] a in _appliedOf) applied += a.Length;
+        long standInSites = 0;
+        if (_assumed is not null) foreach (Assumed a in _assumed.Values) standInSites += a.Sites.Length + a.HeldSites.Length;
+        Progress($"escape graphs: tables: {holders} holders ({holderObjects} objects); {summaries} summaries ({objects} objects, {cells} cells, {results} results, {typed} field marks); "
+            + $"{_assumed?.Count ?? 0} stand-ins ({standInSites} sites), {_standIns.Count} built; {_merged.Count} merged summaries; "
+            + $"{_bitsByOrigins.Count} origin bit sets; {_components.Count} components ({read} sites read, {applied} stand-ins applied); "
+            + $"{_globalRefs.Count} global, {_rootedRefs.Count} rooted origins; {TotalBlobs} blobs made; heap {GC.GetTotalMemory(false) >> 20} MB");
+    }
+
+    public void Run()
+    {
+        if (WideTargets > 0)
+        {
+            _assumed = new(TargetsComparer.Instance);
+            for (int round = 1; ; round++)
+            {
+                long began = System.Diagnostics.Stopwatch.GetTimestamp();
+                long roundHeap = MemReport ? GC.GetTotalMemory(false) : 0;
+                GrewShape = GrewOrigins = MadeStandIns = AgainForCallee = AgainForStandIn = AgainForSites = StraightToUnified = 0;
+                InclusionPool = InclusionPerRound;
+                int solved = round == 1 ? Order() : Again();
+                // What a round let go of in large arrays -- sites, origins, a
+                // graph's sets -- compacted at the next full collection, not
+                // left as holes the next round's arrays do not fit.
+                System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+                // NOTHING TO SOLVE AGAIN: every component was solved last with
+                // the summaries, stand-ins and sites it reads as they stand,
+                // and the Check after those solves grew nothing.
+                if (round > 1 && solved == 0)
+                {
+                    Progress?.Invoke($"escape graphs: round {round}: nothing to solve again, {System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds:F0} ms");
+                    ReportMemTop(round);
+                    break;
+                }
+                int grew = Check(round >= WidenAfter);
+                Progress?.Invoke($"escape graphs: round {round}: {_assumed.Count} wide calls assumed ({MadeStandIns} made this round), {grew} grew at its end; "
+                    + $"grown in shape {GrewShape}, in sites only {GrewOrigins} (as solved and at the end); "
+                    + $"{solved} of {_components.Count} components solved"
+                    + (round == 1 ? "" : $" ({AgainForCallee} for a callee's summary, {AgainForStandIn} for a stand-in, {AgainForSites} for sites they read)")
+                    + $", {StraightToUnified} straight to unification, largest cycle {LargestCycle}, {Work} carried, {System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds:F0} ms"
+                    + (MemReport ? $", heap {GC.GetTotalMemory(false) >> 20} MB ({Megabytes(GC.GetTotalMemory(false) - roundHeap)} this round)" : ""));
+                ReportMemTop(round);
+                if (ReportStandIns) DescribeStandIns();
+                if (round == MostRounds)
+                {
+                    // Still growing: every call followed in order after all.
+                    Progress?.Invoke($"escape graphs: wide calls still growing after {round} rounds: every call followed");
+                    Reset();
+                    _assumed = null;
+                    InclusionPool = InclusionPerRound;
+                    Order();
+                    break;
+                }
+            }
+        }
+        else { InclusionPool = InclusionPerRound; long heap = MemReport ? GC.GetTotalMemory(false) : 0; Order(); ReportMemTop(1); if (MemReport) Progress?.Invoke($"escape graphs: solved in order, heap {GC.GetTotalMemory(false) >> 20} MB ({Megabytes(GC.GetTotalMemory(false) - heap)})"); }
+        Close();
+        ReportTables();
+    }
+
+    /// <summary>For a report, per round: stand-ins grown in shape or in their sites alone, made, and why components were solved again.</summary>
+    public long GrewShape, GrewOrigins, MadeStandIns, AgainForCallee, AgainForStandIn, AgainForSites, StraightToUnified;
+
+    // ---- wide calls -------------------------------------------------------
+    //
+    // A VIRTUAL CALL OF MANY TARGETS -- Equals, GetHashCode, ToString, an
+    // iterator's MoveNext, each with hundreds of overrides -- joins every
+    // override and all that calls it into one cycle: on the compiler's own
+    // link, thirteen thousand functions, solved together and coarsely. So a
+    // wide call is not an edge of the order: each set of targets is assumed
+    // a summary (a stand-in) and every function solved with it. The targets'
+    // own summaries are asked whether the stand-in covers them all; where it
+    // does not, it grows to cover them, and whatever applied it is solved
+    // again. What every stand-in covers is a fixed point above the least
+    // one, so the answers are sound: by induction on how deep calls go, each
+    // call does no more than its stand-in says.
+    //
+    // A stand-in is a shape of a few objects -- the unknown object, each
+    // argument's own object and all below it, and every object its targets
+    // may make (the sites, as leaves) -- with which of them may hold which
+    // and be returned: a bit each, and the unknown call's bit. Shapes only
+    // grow and are finite, so the rounds end; past WidenAfter, a stand-in
+    // that grew takes every site its targets reach at once, and only its
+    // bits are left to grow.
+    //
+    // A STAND-IN GROWS AS SOON AS IT IS SEEN SHORT, not only at a round's
+    // end: made, it covers at once every target solved already, and each
+    // target's summary, published with a new shape, grows every stand-in it
+    // is among (Cover). What applies it after that in the same round has
+    // it grown; only what applied it before is solved again. (Made empty,
+    // and grown only between rounds, every stand-in a round made -- each of
+    // a receiver's class's targets (NarrowedStandIn), made as the first
+    // solve to see such a receiver asks -- cost every caller of its call one
+    // more round.)
+    //
+    // ITS MADE OBJECT IS ALWAYS ITS FIRST BUT THE UNKNOWN ONE, and its holder
+    // is its own for good: what any applier made of it is Ref(holder, 1)
+    // whatever it grows to, so a summary built on it comes out the same when
+    // only the stand-in's sites grew (the sites are the holder's, read at
+    // the end), and nothing above it is solved again for that. A grown shape
+    // is registered again under the same holder; the one object a Ref names
+    // in it is still the made one.
+
+    private const int MostRounds = 8;
+    private const int WidenAfter = 3;
+
+    // A stand-in's objects, by class: the unknown object, what its targets
+    // make, every argument past the first ParamClasses and all they reach
+    // (Deep -1), for each of the first ParamClasses parameters its own
+    // object (Place) and all below it (Deep), and -- last -- what its
+    // targets make that the unknown object reaches in their own summaries
+    // (HeldClass). Which class may hold which is a bit a pair, which may be
+    // returned a bit a class, and the unknown call one more.
+    //
+    // WHAT A TARGET MAKES IS TWO CLASSES, NOT ONE. One, a set of targets
+    // one of which throws (an exception the unknown object holds) or caches
+    // what it made in a static said that the unknown object holds every
+    // object any of them makes: every string a ToString hands back, every
+    // enumerator a GetEnumerator does, every object stored into an
+    // argument -- and past WidenAfter, every site beneath every target --
+    // was global wherever the call was. The unknown object holding a made
+    // object of a target is held-class now, and the rest stay apart:
+    // returned, stored into an argument, or kept by nothing. Each object is
+    // still in one class and each cell between two classes, so a shape is
+    // as sound as it was; only the made objects no target leaks are no
+    // longer the unknown object's for another target's sake.
+    private const int ParamClasses = 6;
+    private const int HeldClass = 3 + 2 * ParamClasses;
+    private const int Classes = HeldClass + 1;
+    private const int ResultBits = Classes * Classes;
+    private const int UnknownBit = ResultBits + Classes;
+    private const int ShapeWords = (UnknownBit + 64) / 64;
+    // A stand-in's made objects, in every shape it takes: what its targets
+    // make, and what of that the unknown object reaches (HeldClass).
+    private const int StandInMade = 1;
+    private const int StandInHeld = 2;
+    // The order Build lays a stand-in's classes out in: the two made ones
+    // first, at StandInMade and StandInHeld, then the rest.
+    private static readonly int[] BuildOrder = new[] { 1, HeldClass }.Concat(Enumerable.Range(2, HeldClass - 2)).ToArray();
+
+    private static bool Has(ulong[] bits, int bit) => (bits[bit >> 6] >> (bit & 63) & 1) != 0;
+    private static void Set(ulong[] bits, int bit) => bits[bit >> 6] |= 1UL << (bit & 63);
+
+    private sealed class Assumed
+    {
+        public readonly int[] Targets;
+        public readonly ulong[] Bits = new ulong[ShapeWords];
+        public int[] Sites = Array.Empty<int>();
+        /// <summary>The sites of what its targets make that the unknown object reaches (HeldClass).</summary>
+        public int[] HeldSites = Array.Empty<int>();
+        public bool Widened;
+        // Its holder, its own for good (-1 until first built), and the tick
+        // its shape last grew at (Again).
+        public int Holder = -1;
+        public long ChangedAt;
+
+        public Assumed(int[] targets) { Targets = targets; }
+
+        public Summary Build()
+        {
+            if (Has(Bits, UnknownBit)) return Summary.Unknown;
+            Summary s = new();
+            int[] index = new int[Classes];
+            Array.Fill(index, -1);
+            index[0] = 0;
+            bool Uses(int cls)
+            {
+                for (int x = 0; x < Classes; x++)
+                    if (Has(Bits, x * Classes + cls) || Has(Bits, cls * Classes + x)) return true;
+                return Has(Bits, ResultBits + cls);
+            }
+            // THE TWO MADE CLASSES ALWAYS, FIRST: what its targets make at
+            // StandInMade, what the unknown object reaches of it at
+            // StandInHeld -- what a Ref names, whatever the shape grows to
+            // (rounds keep a stand-in's holder) -- then the rest it uses.
+            foreach (int cls in BuildOrder)
+            {
+                if (cls != 1 && cls != HeldClass && !Uses(cls)) continue;
+                index[cls] = s.Objects.Count;
+                s.Objects.Add(cls switch
+                {
+                    1 => (Kind.Made, -1, Array.Empty<int>(), Sites.Select(Leaf).Order().ToArray()),
+                    HeldClass => (Kind.Made, -1, Array.Empty<int>(), HeldSites.Select(Leaf).Order().ToArray()),
+                    2 => (Kind.Deep, -1, Array.Empty<int>(), Array.Empty<int>()),
+                    _ => (cls - 3) % 2 == 0 ? (Kind.Place, (cls - 3) / 2, Array.Empty<int>(), Array.Empty<int>()) : (Kind.Deep, (cls - 3) / 2, DeepBelow, Array.Empty<int>()),
+                });
+            }
+            for (int x = 0; x < Classes; x++)
+            {
+                if (index[x] < 0) continue;
+                for (int y = 0; y < Classes; y++)
+                    if (index[y] >= 0 && Has(Bits, x * Classes + y)) s.Cells.Add((index[x], Any, index[y], Any));
+                if (Has(Bits, ResultBits + x)) s.Result.Add((index[x], Any));
+            }
+            s.Cells.Sort(); s.Result.Sort();
+            return s;
+        }
+    }
+
+    /// <summary>A diagnostic: each round's stand-ins, by how much they hold.</summary>
+    public bool ReportStandIns;
+
+    private void DescribeStandIns()
+    {
+        string Name(int cls) => cls switch { 0 => "U", 1 => "M", 2 => "A*", HeldClass => "Mu", _ => ((cls - 3) % 2 == 0 ? "P" : "D") + (cls - 3) / 2 };
+        int unknown = _assumed!.Values.Count(a => Has(a.Bits, UnknownBit));
+        int holding = _assumed.Values.Count(a => !Has(a.Bits, UnknownBit) && Enumerable.Range(2, HeldClass - 2).Any(y => Has(a.Bits, y)));
+        int past = 0, unified = 0;
+        for (int f = 0; f < _how.Length; f++) { if (_how[f] == How.PastBound) past++; else if (_how[f] == How.Unified) unified++; }
+        Progress?.Invoke($"escape graphs: stand-ins: {unknown} of {_assumed.Count} the unknown call, {holding} more with the unknown object holding an argument; "
+            + $"{past} functions unified past their bound, {unified} in large cycles");
+        foreach (var (targets, a) in _assumed.OrderByDescending(x => x.Value.Bits.Sum(w => System.Numerics.BitOperations.PopCount(w))).Take(40))
+        {
+            List<string> held = new();
+            for (int x = 0; x < Classes; x++)
+                for (int y = 0; y < Classes; y++)
+                    if (Has(a.Bits, x * Classes + y)) held.Add(Name(x) + ">" + Name(y));
+            for (int x = 0; x < Classes; x++) if (Has(a.Bits, ResultBits + x)) held.Add("ret " + Name(x));
+            if (Has(a.Bits, UnknownBit))
+            {
+                string[] why = targets.Where(t => _summaries[t] is null or { IsUnknown: true }).Take(4).Select(t => _functions[t].Name).ToArray();
+                held.Add("UNKNOWN by " + string.Join(", ", why));
+            }
+            // WHO MAKES THE UNKNOWN OBJECT HOLD AN ARGUMENT: the targets
+            // whose own summaries say so, how many, and how each was found
+            // -- by inclusion, unified as a large cycle or past its bound,
+            // made coarse past a summary's bounds.
+            bool LeaksArgument(ulong[] bits)
+            {
+                for (int y = 2; y < HeldClass; y++) if (Has(bits, y)) return true;
+                return false;
+            }
+            if (LeaksArgument(a.Bits))
+            {
+                List<int> leaking = targets.Where(t => _summaries[t] is { IsUnknown: false } s && LeaksArgument(ShapeBits(s))).ToList();
+                string Tag(int t) => (t < _how.Length ? _how[t] : How.None) switch { How.Unified => "unified", How.PastBound => "past bound", How.Inclusion => "inclusion", _ => "?" }
+                    + (_summaries[t]!.MadeCoarse ? ", coarse" : "");
+                held.Add($"U>arg by {leaking.Count}: " + string.Join(", ", leaking.Take(4).Select(t => _functions[t].Name + " (" + Tag(t) + ")")));
+            }
+            Progress?.Invoke($"escape graphs:   {targets.Length} targets ({_functions[targets[0]].Name}): {a.Sites.Length} sites, {a.HeldSites.Length} held; " + string.Join(" ", held));
+        }
+    }
+
+    private Dictionary<int[], Assumed>? _assumed;
+    // Per function: the stand-ins it is a target of, to grow as its summary does (Cover).
+    private readonly Dictionary<int, List<Assumed>> _standInsOf = new();
+
+    // For a report: how each function's summary was found.
+    private enum How : byte { None, Inclusion, Unified, PastBound }
+    private How[] _how = Array.Empty<How>();
+    private readonly Dictionary<int[], Summary> _standIns = new(TargetsComparer.Instance);
+
+    private bool IsWide(int[] targets) => _assumed is not null && targets.Length > WideTargets;
+
+    /// <summary>
+    /// Whether a target's summary, as it stands, has the unknown object hold
+    /// one of its arguments or what is below one, or is the unknown call's:
+    /// what a wide call on a place keeps apart (Graph.Deferred). Not solved
+    /// yet, it is not: the stand-in it is applied with grows to cover it,
+    /// and whatever applied that is solved again, and splits it then.
+    /// </summary>
+    private bool LeaksArgument(int t)
+    {
+        if (_summaries[t] is not { } s) return false;
+        if (s.IsUnknown) return true;
+        ulong[] bits = ShapeBits(s);
+        for (int y = 2; y < HeldClass; y++) if (Has(bits, y)) return true;
+        return false;
+    }
+
+    /// <summary>The stand-in of some of a wide call's targets, those that run on a receiver of a known class.</summary>
+    private Summary NarrowedStandIn(int f, int[] targets) => StandIn(targets);
+
+    /// <summary>
+    /// The summary a wide call is assumed to have, as it stands: noted as
+    /// applied by the component being solved (Again), and made, the first
+    /// time, covering every target solved already.
+    /// </summary>
+    private Summary StandIn(int[] targets)
+    {
+        if (!_assumed!.TryGetValue(targets, out Assumed? a))
+        {
+            _assumed[targets] = a = new Assumed(targets);
+            MadeStandIns++;
+            if (WidenFirst) { a.Widened = true; a.Sites = Beneath(targets).Order().ToArray(); }
+            // Covering what is solved already: nothing has applied it yet,
+            // so none of that is growth anything is solved again for.
+            long shapes = GrewShape, origins = GrewOrigins;
+            foreach (int t in targets)
+            {
+                if (!_standInsOf.TryGetValue(t, out List<Assumed>? those)) _standInsOf[t] = those = new();
+                those.Add(a);
+                if (_summaries[t] is { } solved) Cover(a, solved, false);
+            }
+            GrewShape = shapes; GrewOrigins = origins;
+            a.ChangedAt = 0;
+        }
+        _applying?.Add(a);
+        if (_standIns.TryGetValue(targets, out Summary? known)) return known;
+        return Built(a);
+    }
+
+    // A stand-in built as it stands, under its own holder.
+    private Summary Built(Assumed a)
+    {
+        Summary s = a.Build();
+        if (!s.IsUnknown)
+        {
+            if (a.Holder < 0) a.Holder = NewHolder();
+            Register(s, a.Holder);
+        }
+        return _standIns[a.Targets] = s;
+    }
+
+    /// <summary>
+    /// A STAND-IN GROWN TO COVER ONE TARGET'S SUMMARY: its bits and its
+    /// sites. A new bit is a new shape -- whatever applied it is solved
+    /// again (ChangedAt) -- and new sites alone are its holder's, read by
+    /// what asks their classes (OriginsAt). Rebuilt at once, so what is
+    /// applied next and what is read at the end are the grown one. Whether
+    /// it grew.
+    /// </summary>
+    private bool Cover(Assumed a, Summary summary, bool widen)
+    {
+        if (Has(a.Bits, UnknownBit)) return false;
+        (ulong[] bits, int[] sites, int[] heldSites) = ShapeOf(summary);
+        bool shape = false;
+        for (int w = 0; w < ShapeWords; w++) if ((bits[w] & ~a.Bits[w]) != 0) shape = true;
+        // Whether `of` has a site `had` lacks: both sorted, one walk.
+        static bool Beyond(int[] of, int[] had)
+        {
+            int i = 0;
+            foreach (int site in of)
+            {
+                while (i < had.Length && had[i] < site) i++;
+                if (i >= had.Length || had[i] != site) return true;
+            }
+            return false;
+        }
+        bool more = Beyond(sites, a.Sites);
+        bool moreHeld = Beyond(heldSites, a.HeldSites);
+        bool widening = widen && !a.Widened;
+        if (!shape && !more && !moreHeld && !widening) return false;
+        for (int w = 0; w < ShapeWords; w++) a.Bits[w] |= bits[w];
+        if (more || widening)
+        {
+            SortedSet<int> all = new(a.Sites);
+            all.UnionWith(sites);
+            // Widened, every site beneath its targets is taken at once as
+            // what they make, not as what the unknown object holds: those it
+            // holds still grow a site at a time, and are finitely many.
+            if (widening)
+            {
+                a.Widened = true;
+                all.UnionWith(Beneath(a.Targets));
+            }
+            int had = a.Sites.Length;
+            a.Sites = all.ToArray();
+            more = a.Sites.Length > had;
+        }
+        if (moreHeld)
+        {
+            SortedSet<int> all = new(a.HeldSites);
+            all.UnionWith(heldSites);
+            a.HeldSites = all.ToArray();
+            more = true;
+        }
+        if (shape) { a.ChangedAt = _tick; GrewShape++; }
+        else if (more) GrewOrigins++;
+        if (a.Holder >= 0 || _standIns.ContainsKey(a.Targets))
+        {
+            Built(a);
+            // Its sites, read through its holder by whatever asked them.
+            if (more && a.Holder >= 0) OriginsChanged(a.Holder);
+        }
+        return shape || more;
+    }
+
+    // A summary as a stand-in's shape: which classes hold which, and the
+    // sites its made objects may be, apart for what the unknown object
+    // reaches (HeldClass) -- the sites as the holders say now.
+    private (ulong[] Bits, int[] Sites, int[] HeldSites) Shape(Summary s, bool withSites = true)
+    {
+        ulong[] bits = new ulong[ShapeWords];
+        if (s.IsUnknown) { Set(bits, UnknownBit); return (bits, Array.Empty<int>(), Array.Empty<int>()); }
+        HashSet<int> leaked = s.Leaked();
+        int Class(int k)
+        {
+            var o = s.Objects[k];
+            if (o.Kind == Kind.Unknown) return 0;
+            if (o.Kind == Kind.Made) return leaked.Contains(k) && o.Param != ConstantParam ? HeldClass : 1;
+            if (o.Param < 0 || o.Param >= ParamClasses) return 2;
+            // (A place guarded at its parameter is still that object.)
+            return 3 + 2 * o.Param + (o.Kind == Kind.Place && Fields(o.Path) == 0 && Array.IndexOf(o.Path, DeepStep) < 0 ? 0 : 1);
+        }
+        foreach (var c in s.Cells) Set(bits, Class(c.From) * Classes + Class(c.To));
+        foreach (var r in s.Result) Set(bits, ResultBits + Class(r.To));
+        if (!withSites) return (bits, Array.Empty<int>(), Array.Empty<int>());
+        List<int> origins = new(), heldOrigins = new();
+        for (int k = 0; k < s.Objects.Count; k++)
+            if (s.Objects[k].Kind == Kind.Made) (Class(k) == HeldClass ? heldOrigins : origins).AddRange(s.Objects[k].Origins);
+        if (origins.Count == 0 && heldOrigins.Count == 0) return (bits, Array.Empty<int>(), Array.Empty<int>());
+        // Not what the component being solved reads: a stand-in's sites
+        // are its holder's, and that is what an applier reads.
+        HashSet<int>? reading = _reading;
+        _reading = null;
+        int[] sites = origins.Count == 0 ? Array.Empty<int>() : SitesOf(origins.ToArray());
+        int[] heldSites = heldOrigins.Count == 0 ? Array.Empty<int>() : SitesOf(heldOrigins.ToArray());
+        _reading = reading;
+        return (bits, sites, heldSites);
+    }
+
+    // BY THE SUMMARY ITSELF, while no holder's origins changed in place since
+    // (OriginsAt): one a round kept (Publish) keeps its shape, and its sites
+    // while nothing beneath them moved.
+    private (ulong[] Bits, int[] Sites, int[] HeldSites) ShapeOf(Summary s)
+    {
+        Shaped known = ShapedOf(s);
+        if (known.Bits is not null && known.Sites is not null && known.At > _lastOriginsChange) return (known.Bits, known.Sites, known.HeldSites!);
+        var shape = Shape(s);
+        known.Bits = shape.Bits; known.Sites = shape.Sites; known.HeldSites = shape.HeldSites; known.At = _tick;
+        return shape;
+    }
+
+    /// <summary>
+    /// A summary's classes alone (Shape without its sites), for whatever asks
+    /// only what it does with its arguments (LeaksArgument): no holder is
+    /// walked, and the answer never changes for the summary, so it is kept
+    /// for good. (Asked through ShapeOf of every target of every deferred
+    /// call, each target's sites were resolved -- tens of thousands of them,
+    /// each walk a set and an array, afresh whenever any holder's origins
+    /// changed in place -- and kept for every summary ever made.)
+    /// </summary>
+    private ulong[] ShapeBits(Summary s)
+    {
+        Shaped known = ShapedOf(s);
+        return known.Bits ??= Shape(s, withSites: false).Bits;
+    }
+
+    // A summary's shape, kept on the summary (Summary.Shape), made for this
+    // run of the engine: one kept from before a Reset is made again.
+    private Shaped ShapedOf(Summary s)
+    {
+        if (s.Shape is { } known && known.Generation == _shapeGeneration) return known;
+        return s.Shape = new Shaped { Generation = _shapeGeneration };
+    }
+
+    // A summary's shape, kept with it: its classes for good, its sites while
+    // no holder's origins changed since (At). Held by the summary itself
+    // (Summary.Shape), so one replaced, and every array worked out of it,
+    // goes with it -- what a weak table keyed by the summary did, with no
+    // table: corc's collector has no weak references.
+    internal sealed class Shaped
+    {
+        public long Generation;
+        public ulong[]? Bits;
+        public int[]? Sites, HeldSites;
+        public long At;
+    }
+
+    /// <summary>
+    /// Grows every stand-in its targets' summaries are not covered by: how
+    /// many grew. Again while a pass grew some stand-in's sites in place: a
+    /// target that applied it makes those sites too, and the stand-ins it is
+    /// among read that from its holders, as they are now.
+    /// </summary>
+    private int Check(bool widen)
+    {
+        HashSet<Assumed> grown = new(ReferenceEqualityComparer.Instance);
+        for (int pass = 0; ; pass++)
+        {
+            // Past every solve: what grows here is newer than all of them.
+            long began = ++_tick;
+            foreach (Assumed a in _assumed!.Values)
+            {
+                bool more = false;
+                foreach (int t in a.Targets) more |= Cover(a, _summaries[t] ?? _noSummary, false);
+                // Widened once grown, as WidenAfter has it.
+                if (more && widen) Cover(a, _noShape, true);
+                if (more) grown.Add(a);
+            }
+            if (_lastOriginsChange < began || pass >= MostRounds) break;
+        }
+        return grown.Count;
+    }
+
+    // Bumped by Reset: every summary's Shape made before is made again.
+    private long _shapeGeneration;
+    private static readonly Summary _noSummary = Summary.Unknown;
+    // A summary of no effect: what widens a stand-in without growing it otherwise.
+    private static readonly Summary _noShape = new();
+
+    // Every site in the targets and every function they may call.
+    private IEnumerable<int> Beneath(int[] targets)
+    {
+        HashSet<int> seen = new(targets);
+        Stack<int> next = new(targets);
+        while (next.TryPop(out int f))
+        {
+            for (int site = 0; site < _functions[f].Sites.Length; site++) yield return _siteBase[f] + site;
+            foreach (int[]? those in _targets[f])
+                if (those is not null) foreach (int g in those) if (seen.Add(g)) next.Push(g);
+        }
+    }
+
+    /// <summary>Everything solved, forgotten: every call to be followed in order from nothing.</summary>
+    private void Reset()
+    {
+        Array.Clear(_summaries);
+        Array.Clear(_how);
+        Array.Clear(Escaping);
+        Array.Clear(LoopHeld);
+        Array.Clear(_changedAt);
+        _holders.Clear();
+        _globalRefs.Clear();
+        _rootedRefs.Clear();
+        _merged.Clear();
+        _standIns.Clear();
+        _standInsOf.Clear();
+        _escapingBits = null;
+        _holderFirst = null;
+        _bitsByOrigins.Clear();
+        _components.Clear(); _globalOf.Clear(); _rootedOf.Clear(); _shapeGeneration++;
+        _solvedAt.Clear(); _appliedOf.Clear(); _sitesReadOf.Clear();
+        _originsAt.Clear();
+        _componentOf = null; _callees = null;
+        Work = Applied = Unfollowed = LargestCycle = 0;
+    }
+
+    // ---- solving again: only what changed what a component read -----------
+    //
+    // THE COMPONENTS, IN THE ORDER THE FIRST ROUND SOLVED THEM: a wide call is
+    // no edge of the order, so the order is the same every round. A later
+    // round solves a component again only if, since it was solved last (a
+    // tick: each solve is one, and each change is stamped with the tick it
+    // was made in):
+    //  - a callee outside it, called not as a wide call, came out with a
+    //    summary of another shape (ChangedAt);
+    //  - a stand-in it applied grew in shape (Assumed.ChangedAt);
+    //  - a holder it read sites through -- a virtual call's targets on an
+    //    object, a guard, a word never read as a reference, each asked of
+    //    an object's sites (SitesOf) -- had its origins changed in place
+    //    (OriginsAt).
+    // Callers come after their callees, so one pass reaches every change
+    // made below; one made above what was solved before it -- a stand-in
+    // grown by a target solved after its applier -- is the next round's.
+    //
+    // A SUMMARY THAT CHANGED ONLY IN ITS MADE OBJECTS' ORIGINS is updated in
+    // place (Publish): same holder, same objects, the new origins. What any
+    // caller made of it is Ref(holder, k), so a caller solved again would
+    // come out the same, but for what it asked of those objects' sites --
+    // and those that asked are solved again. Every answer is read from the
+    // holders at the end (Close, BitsOf), so what a component not solved
+    // again answered is the final summaries' answer, as a round solving
+    // everything gives. (A new holder for every summary that changed made
+    // every Ref to it new, so every caller's summary came out different,
+    // and every caller's caller was solved again: half the components a
+    // round, for a few sites.)
+    //
+    // WHAT ELSE A SOLVE READS does not change between rounds: what a virtual
+    // call runs on an object of a site (TargetsOn) is the descriptors' and
+    // the targets', and a guard is interned once for good (Intern), so a path
+    // that names one names it in every round and a summary kept (SameAs)
+    // still means what it says. A call watched at its receiver (Received)
+    // applies merged summaries of some of its targets outside the component
+    // (Group): each of them is one of the call's targets, so among the
+    // callees whose change solves the component again; and stand-ins of
+    // some of a wide call's (NarrowedStandIn), noted as applied.
+    private readonly List<int[]> _components = new();
+    // (Kept as arrays: a set a component, for all of them at once, was a
+    // set's buckets and entries for every origin each made global.)
+    private readonly List<int[]?> _globalOf = new(), _rootedOf = new();
+    // Per component: the tick it was solved at, the stand-ins it applied, the
+    // holders it read sites through (null: more than MostRead, so any).
+    private readonly List<long> _solvedAt = new();
+    private readonly List<Assumed[]> _appliedOf = new();
+    private readonly List<int[]?> _sitesReadOf = new();
+    // Per function: the tick its summary last changed shape at. Per holder:
+    // the tick its origins last changed in place at, and the latest of those.
+    private readonly long[] _changedAt;
+    private readonly Dictionary<int, long> _originsAt = new();
+    private long _lastOriginsChange = -1;
+    private long _tick;
+    // While a component is solved: what it applies and reads.
+    private HashSet<Assumed>? _applying;
+    private HashSet<int>? _reading;
+    // Past this many holders read, a component is solved again on any change
+    // of origins in place: its set stops growing (_readingAll).
+    private const int MostRead = 1024;
+    private bool _readingAll;
+    private int[]? _componentOf;
+    private int[][]? _callees;
+
+    private int Again()
+    {
+        Work = Applied = Unfollowed = 0;
+        _escapingBits = null;
+        int count = _functions.Count;
+        if (_componentOf is null || _callees is null)
+        {
+            _componentOf = new int[count];
+            for (int c = 0; c < _components.Count; c++) foreach (int f in _components[c]) _componentOf[f] = c;
+            _callees = new int[_components.Count][];
+            for (int c = 0; c < _components.Count; c++)
+            {
+                HashSet<int> callees = new();
+                foreach (int f in _components[c])
+                    foreach (int[]? targets in _targets[f])
+                    {
+                        if (targets is null || IsWide(targets)) continue;
+                        foreach (int t in targets) if (_componentOf[t] != c) callees.Add(t);
+                    }
+                _callees[c] = callees.ToArray();
+            }
+        }
+        int solved = 0;
+        for (int c = 0; c < _components.Count; c++)
+        {
+            long at = _solvedAt[c];
+            bool again = false;
+            foreach (int t in _callees[c]) if (_changedAt[t] > at) { again = true; AgainForCallee++; break; }
+            if (!again)
+                foreach (Assumed a in _appliedOf[c]) if (a.ChangedAt > at) { again = true; AgainForStandIn++; break; }
+            if (!again && _lastOriginsChange > at)
+            {
+                if (_sitesReadOf[c] is not { } read) { again = true; AgainForSites++; }
+                else foreach (int h in read) if (_originsAt.TryGetValue(h, out long changed) && changed > at) { again = true; AgainForSites++; break; }
+            }
+            if (!again) continue;
+            solved++;
+            SolveComponent(c);
+        }
+        return solved;
+    }
+
+    /// <summary>Component c solved (again): its answers replace what it answered before.</summary>
+    private void SolveComponent(int c)
+    {
+        int[] members = _components[c];
+        foreach (int f in members) { Escaping[f] = null; LoopHeld[f] = null; }
+        HashSet<int> global = _globalRefs, rooted = _rootedRefs;
+        _globalRefs = new(); _rootedRefs = new();
+        // Solved at one tick; whatever it changes, at the next: a change it
+        // makes to what it read itself -- a stand-in it applied, grown by its
+        // own member's summary -- is newer than its solve.
+        long start = ++_tick;
+        _tick++;
+        _applying = new(); _reading = new(); _readingAll = false;
+        Solve(new List<int>(members));
+        _solvedAt[c] = start;
+        _appliedOf[c] = _applying.Count == 0 ? Array.Empty<Assumed>() : _applying.ToArray();
+        _sitesReadOf[c] = _readingAll ? null : _reading.ToArray();
+        _applying = null; _reading = null;
+        _globalOf[c] = _globalRefs.Count == 0 ? Array.Empty<int>() : _globalRefs.ToArray();
+        _rootedOf[c] = _rootedRefs.Count == 0 ? Array.Empty<int>() : _rootedRefs.ToArray();
+        _globalRefs = global; _rootedRefs = rooted;
+    }
+
+    /// <summary>
+    /// Member f's summary, solved: the one it had if this is the same (its
+    /// holder, and every Ref to it, still good); the one it had with these
+    /// origins if only its made objects' origins differ (in place, under the
+    /// same holder: Again); else this under a holder of its own -- f itself
+    /// the first time, a new one after -- grown into every stand-in it is a
+    /// target of.
+    /// </summary>
+    private void Publish(int f, Summary s)
+    {
+        // For a report (+why=Name): the summary each function asked about
+        // gives its callers, and what of it the unknown object holds.
+        if (Why is not null && WhyFunction?.Invoke(f) == true && Progress is { } say)
+        {
+            static string Step(int step) => StepText(step);
+            string Of(int k) => s.Objects[k].Kind + " " + s.Objects[k].Param + " [" + string.Join(",", s.Objects[k].Path.Select(Step)) + "]";
+            say(s.IsUnknown ? $"escape graphs why: summary of {_functions[f].Name}: the unknown call's"
+                : $"escape graphs why: summary of {_functions[f].Name}: {s.Objects.Count} objects, {s.Cells.Count} cells, {s.Result.Count} results{(s.MadeCoarse ? ", made coarse" : "")}; "
+                  + "the unknown object holds " + string.Join("; ", s.Cells.Where(c => c.From == 0 && c.To != 0).Select(c => Of(c.To)).Distinct()));
+        }
+        Summary? before = _summaries[f];
+        if (before is not null && before.SameAs(s)) return;
+        if (before is { IsUnknown: false, Holder: >= 0 } && before.SameShapeAs(s))
+        {
+            int[]?[] origins = _holders[before.Holder]!;
+            for (int k = 0; k < before.Objects.Count; k++)
+            {
+                var o = before.Objects[k];
+                if (o.Kind != Kind.Made) continue;
+                before.Objects[k] = (o.Kind, o.Param, o.Path, s.Objects[k].Origins);
+                origins[k] = s.Objects[k].Origins;
+            }
+            OriginsChanged(before.Holder);
+            // Its sites as a target: each stand-in it is among takes them.
+            if (_assumed is not null && _standInsOf.TryGetValue(f, out List<Assumed>? among))
+                foreach (Assumed a in among) Cover(a, before, false);
+            return;
+        }
+        int holder = before is null && (_holders.Count <= f || _holders[f] is null) ? f : NewHolder();
+        s.Compact();
+        Register(_summaries[f] = s, holder);
+        _changedAt[f] = _tick;
+        if (_assumed is not null && _standInsOf.TryGetValue(f, out List<Assumed>? those))
+            foreach (Assumed a in those) Cover(a, s, false);
+    }
+
+    // A holder's origins changed where they were: stamped, and what was
+    // worked out from every holder's forgotten.
+    private void OriginsChanged(int holder)
+    {
+        _originsAt[holder] = _tick;
+        _lastOriginsChange = _tick;
+        _holderFirst = null;
+        _escapingBits = null;
+        if (_bitsByOrigins.Count > 0) _bitsByOrigins.Clear();
+    }
+
+    // Callees first, a cycle together; a wide call is no edge. Each component
+    // is kept, in the order solved, for the rounds after (Again).
+    private int Order()
+    {
+        int count = _functions.Count;
+        int[] index = new int[count], low = new int[count];
+        bool[] onStack = new bool[count];
+        Array.Fill(index, -1);
+        int next = 0;
+        Stack<int> stack = new();
+        Stack<(int Node, int Call, int Target)> walk = new();
+        for (int start = 0; start < count; start++)
+        {
+            // A copy is solved as its body (Bodies): nothing calls it.
+            if (index[start] >= 0 || _body[start] != start) continue;
+            index[start] = low[start] = next++;
+            stack.Push(start); onStack[start] = true;
+            walk.Push((start, 0, 0));
+            while (walk.Count > 0)
+            {
+                (int v, int call, int target) = walk.Pop();
+                bool descended = false;
+                int[]?[] calls = _targets[v];
+                while (call < calls.Length)
+                {
+                    int[]? those = calls[call];
+                    if (those is null || target >= those.Length || IsWide(those)) { call++; target = 0; continue; }
+                    int w = those[target++];
+                    if (index[w] < 0)
+                    {
+                        walk.Push((v, call, target));
+                        index[w] = low[w] = next++;
+                        stack.Push(w); onStack[w] = true;
+                        walk.Push((w, 0, 0));
+                        descended = true;
+                        break;
+                    }
+                    if (onStack[w]) low[v] = Math.Min(low[v], index[w]);
+                }
+                if (descended) continue;
+                if (low[v] == index[v])
+                {
+                    List<int> component = new();
+                    int w;
+                    do { w = stack.Pop(); onStack[w] = false; component.Add(w); } while (w != v);
+                    _components.Add(component.ToArray()); _globalOf.Add(null); _rootedOf.Add(null);
+                    _solvedAt.Add(0); _appliedOf.Add(Array.Empty<Assumed>()); _sitesReadOf.Add(Array.Empty<int>());
+                    SolveComponent(_components.Count - 1);
+                }
+                if (walk.Count > 0) { int parent = walk.Peek().Node; low[parent] = Math.Min(low[parent], low[v]); }
+            }
+        }
+        _componentOf = null; _callees = null;
+        return _components.Count;
+    }
+
+    // A cycle this large, or with this many nodes, is solved by unification (Unified).
+    private const int LargeCycle = 300;
+    private const long LargeNodes = 100_000;
+
+    private void Solve(List<int> component)
+    {
+        if (_how.Length != _functions.Count) _how = new How[_functions.Count];
+        LargestCycle = Math.Max(LargestCycle, component.Count);
+        long began = Progress is null ? 0 : System.Diagnostics.Stopwatch.GetTimestamp();
+        long heapBefore = MemReport ? GC.GetTotalMemory(false) : 0;
+        string Heap() => MemReport ? $", heap {GC.GetTotalMemory(false) >> 20} MB ({Megabytes(GC.GetTotalMemory(false) - heapBefore)})" : $", heap {GC.GetTotalMemory(false) >> 20} MB";
+        long nodes = 0;
+        foreach (int f in component) nodes += _functions[f].Nodes;
+        if (component.Count > LargeCycle || nodes > LargeNodes)
+        {
+            Unified u = new Unified(this, component.ToArray()).Solved();
+            for (int m = 0; m < component.Count; m++) Publish(component[m], u.Summarise(m));
+            for (int m = 0; m < component.Count; m++) { u.Answer(m); _how[component[m]] = How.Unified; }
+            Progress?.Invoke($"escape graphs: cycle of {component.Count} ({_functions[component[0]].Name}) unified in {System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds:F0} ms: "
+                + u.Describe() + Heap());
+            NoteGrowth(heapBefore, component, "unified", u.Describe());
+            return;
+        }
+        // PAST ITS BOUND LAST ROUND, past it again: what it reads only grows
+        // from round to round, so inclusion would carry as much and more
+        // before it gave up -- half a second, often, for each of a few dozen
+        // components a round. Unified at once.
+        bool pastBefore = component.All(f => _how[f] == How.PastBound);
+        Graph? g = pastBefore ? null : new Graph(this, component.ToArray()).Solved();
+        if (g is null) StraightToUnified++;
+        if (g is null || g.Overflowed)
+        {
+            // PAST ITS BOUND BY INCLUSION, solved by unification: coarser,
+            // and still each object's own, where giving up made every site
+            // in it global and its summary the unknown call's.
+            Unified u = new Unified(this, component.ToArray()).Solved();
+            for (int m = 0; m < component.Count; m++) Publish(component[m], u.Summarise(m));
+            for (int m = 0; m < component.Count; m++) { u.Answer(m); _how[component[m]] = How.PastBound; }
+            if (g is not null && Progress is not null && System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds > 300)
+                Progress($"escape graphs: {_functions[component[0]].Name} ({component.Count}) past its bound by inclusion, unified in {System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds:F0} ms: " + g.Describe() + Heap());
+            NoteGrowth(heapBefore, component, "past its bound", g?.Describe() ?? u.Describe());
+            return;
+        }
+        for (int m = 0; m < component.Count; m++) Publish(component[m], g.Summarise(m));
+        for (int m = 0; m < component.Count; m++) { g.Answer(m); _how[component[m]] = How.Inclusion; }
+        if (Progress is not null && (component.Count > 50 || System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds > 300))
+        {
+            Progress($"escape graphs: cycle of {component.Count} ({_functions[component[0]].Name}) in {System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds:F0} ms: "
+                + g.Describe() + Heap());
+            // A diagnostic (+cyclemembers): who is in a slow cycle, and by which calls.
+            if (CycleMembers && System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds > 300)
+                foreach (int f in component)
+                {
+                    HashSet<int> inside = new(component);
+                    IEnumerable<string> into = Enumerable.Range(0, _targets[f].Length)
+                        .Where(k => _targets[f][k] is { } t && t.Any(inside.Contains))
+                        .Select(k => (_keys[f][k] ?? "?") + " -> " + _targets[f][k]!.Length);
+                    Progress($"escape graphs: cycle member {_functions[f].Name}: {_functions[f].Constraints.Count} constraints, {_functions[f].Calls.Count} calls; into the cycle: {string.Join("; ", into)}");
+                }
+        }
+        NoteGrowth(heapBefore, component, "inclusion", g.Describe());
+    }
+
+    // One merged summary for each set of targets, whatever call asks.
+    private sealed class TargetsComparer : IEqualityComparer<int[]>
+    {
+        public static readonly TargetsComparer Instance = new();
+        public bool Equals(int[]? a, int[]? b) => a!.AsSpan().SequenceEqual(b);
+        public int GetHashCode(int[] a)
+        {
+            HashCode h = new();
+            foreach (int x in a) h.Add(x);
+            return h.ToHashCode();
+        }
+    }
+    private readonly Dictionary<int[], (Summary Merged, int[] From)> _merged = new(TargetsComparer.Instance);
+
+    /// <summary>
+    /// The one summary for a set of targets solved before: any of them may
+    /// run. Kept while every target's summary is the one it was made from
+    /// (by holder): a round that changed one makes it again, under a new holder.
+    /// </summary>
+    private Summary MergedFor(int[] targets)
+    {
+        if (targets.Length == 1) return _summaries[targets[0]] ?? Summary.Unknown;
+        int[] from = new int[targets.Length];
+        for (int k = 0; k < targets.Length; k++) from[k] = _summaries[targets[k]] is { } s ? s.Holder : -2;
+        if (_merged.TryGetValue(targets, out var done) && done.From.AsSpan().SequenceEqual(from)) return done.Merged;
+        Summary merged = Summary.Merge(targets.Select(t => _summaries[t] ?? Summary.Unknown));
+        merged.Compact();
+        if (!merged.IsUnknown) Register(merged, NewHolder());
+        _merged[targets] = (merged, from);
+        return merged;
+    }
+
+    // ---- a summary --------------------------------------------------------
+
+    private enum Kind : byte { Unknown, Place, Deep, Made }
+
+    /// <summary>
+    /// What a call leaves the world. Its objects: the unknown object (0),
+    /// places -- a parameter and the fields followed from it, or the deep
+    /// place past those (parameter -1: past every parameter) -- and objects
+    /// it made, each with its origins. Its cells: an object, an offset, and
+    /// the locations written there. Its result: locations.
+    /// </summary>
+    private sealed class Summary
+    {
+        public readonly List<(Kind Kind, int Param, int[] Path, int[] Origins)> Objects = new() { (Kind.Unknown, -1, Array.Empty<int>(), Array.Empty<int>()) };
+        public readonly List<(int From, int Offset, int To, int ToOffset)> Cells = new();
+        public readonly List<(int To, int ToOffset)> Result = new();
+        /// <summary>The unknown call's summary: every argument escapes, the result is the unknown object.</summary>
+        public bool IsUnknown;
+        /// <summary>Its shape as a stand-in reads it (ShapedOf), kept with it and gone with it.</summary>
+        internal Shaped? Shape;
+        /// <summary>Whose objects these are, for an object made from one (Ref): a function, or a merged summary registered as one; -1 for none.</summary>
+        public int Holder = -1;
+        /// <summary>For a report: past its bounds, made coarse (Coarse, Everything).</summary>
+        public bool MadeCoarse;
+        /// <summary>
+        /// THE FIELD A CELL WAS WRITTEN AS (RegionConstraint.Family, the
+        /// engine's number for it), where every write of it named that one
+        /// field: a cell absent, or -1, may be any field at its offset. Only
+        /// a summary by field states them (Unified.ByField); whatever else
+        /// makes a summary leaves them out, which is only less precise.
+        /// </summary>
+        public Dictionary<(int, int, int, int), int>? CellFamilies;
+
+        /// <summary>Cell `cell` written as field `family` (-1: any): kept only while every write of it names that one.</summary>
+        public void NoteFamily((int, int, int, int) cell, int family)
+        {
+            CellFamilies ??= new();
+            if (!CellFamilies.TryGetValue(cell, out int had)) CellFamilies[cell] = family;
+            else if (had != family) CellFamilies[cell] = -1;
+        }
+
+        /// <summary>
+        /// The field a cell was written as, -1 for any: its own (a summary by
+        /// field, where one word may hold two fields' cells), else its word's
+        /// (Fields, where every cell of the word named one field).
+        /// </summary>
+        public int FamilyOf((int, int, int, int) cell)
+            => CellFamilies is not null && CellFamilies.TryGetValue(cell, out int f) && f >= 0 ? f : FieldAt(cell.Item1, cell.Item2);
+
+        // Whether two summaries' cells name the same fields.
+        private bool SameFamilies(Summary other)
+        {
+            foreach (var cell in Cells) if (FamilyOf(cell) != other.FamilyOf(cell)) return false;
+            return true;
+        }
+
+        /// <summary>
+        /// THE FIELD EACH WORD WAS WRITTEN AS (RegionConstraint.Family, as the
+        /// engine numbers it), by an object and an offset of it: a word every
+        /// cell of which a write naming one field put there, from the object's
+        /// start. A caller applying the summary writes it as that field, so
+        /// what a callee writes into its parameters is kept apart by field
+        /// there as a write of the caller's own is (Aliased). -2 where the
+        /// cells were written two ways or untyped, and nothing for most words:
+        /// both untyped. Never at any offset.
+        /// </summary>
+        public Dictionary<long, int>? Fields;
+
+        private static long WordKey(int from, int offset) => ((long)from << 32) | (uint)offset;
+
+        /// <summary>The field a word was written as; -1 for none.</summary>
+        public int FieldAt(int from, int offset)
+            => offset != Any && Fields is not null && Fields.TryGetValue(WordKey(from, offset), out int f) && f >= 0 ? f : -1;
+
+        /// <summary>A cell into a word, written as `family` (-1: untyped): the word typed only while every cell of it agrees.</summary>
+        public void NoteField(int from, int offset, int family)
+        {
+            if (offset == Any) return;
+            long key = WordKey(from, offset);
+            int v = family >= 0 ? family : -2;
+            Fields ??= new();
+            if (!Fields.TryGetValue(key, out int had)) Fields[key] = v;
+            else if (had != v) Fields[key] = -2;
+        }
+
+        // Whether two summaries type the same words the same way.
+        private bool SameFields(Summary other)
+        {
+            int Typed(Summary x) => x.Fields?.Values.Count(v => v >= 0) ?? 0;
+            if (Typed(this) != Typed(other)) return false;
+            if (Fields is null) return true;
+            foreach (var (key, v) in Fields)
+                if (v >= 0 && (other.Fields is null || !other.Fields.TryGetValue(key, out int w) || w != v)) return false;
+            return true;
+        }
+
+        // The words of `source`'s cells, as this summary's objects `map` makes
+        // them, at the offsets they keep (-1 for a word made any offset).
+        private void CarryFields(Summary source, int[] map, Func<int, int, int> offsetOf)
+        {
+            if (source.Fields is null) return;
+            foreach (var c in source.Cells)
+            {
+                int at = offsetOf(map[c.From], c.Offset);
+                if (at != Any) NoteField(map[c.From], at, source.FieldAt(c.From, c.Offset));
+            }
+        }
+
+        /// <summary>
+        /// Kept for good: the words and cells named no field left out (absent
+        /// is none, FieldAt and FamilyOf), and the maps let go where none is
+        /// left. While a summary is built, -1 and -2 hold a word or a cell
+        /// written two ways; once published nothing is added to it.
+        /// </summary>
+        public void Compact()
+        {
+            if (CellFamilies is not null)
+            {
+                foreach (var key in CellFamilies.Where(x => x.Value < 0).Select(x => x.Key).ToArray()) CellFamilies.Remove(key);
+                if (CellFamilies.Count == 0) CellFamilies = null; else CellFamilies.TrimExcess();
+            }
+            if (Fields is not null)
+            {
+                foreach (long key in Fields.Where(x => x.Value < 0).Select(x => x.Key).ToArray()) Fields.Remove(key);
+                if (Fields.Count == 0) Fields = null; else Fields.TrimExcess();
+            }
+        }
+
+        public static Summary Unknown => new() { IsUnknown = true };
+
+        /// <summary>Whether two summaries say the same, object by object, origins and all.</summary>
+        public bool SameAs(Summary other)
+        {
+            if (IsUnknown || other.IsUnknown) return IsUnknown == other.IsUnknown;
+            if (Objects.Count != other.Objects.Count || Cells.Count != other.Cells.Count || Result.Count != other.Result.Count) return false;
+            for (int k = 0; k < Objects.Count; k++)
+            {
+                var a = Objects[k];
+                var b = other.Objects[k];
+                if (a.Kind != b.Kind || a.Param != b.Param || !a.Path.AsSpan().SequenceEqual(b.Path) || !a.Origins.AsSpan().SequenceEqual(b.Origins)) return false;
+            }
+            for (int k = 0; k < Cells.Count; k++) if (Cells[k] != other.Cells[k]) return false;
+            for (int k = 0; k < Result.Count; k++) if (Result[k] != other.Result[k]) return false;
+            return SameFields(other) && SameFamilies(other);
+        }
+
+        /// <summary>Whether two summaries say the same but for their made objects' origins (Publish: then updated in place).</summary>
+        public bool SameShapeAs(Summary other)
+        {
+            if (IsUnknown || other.IsUnknown) return IsUnknown == other.IsUnknown;
+            if (Objects.Count != other.Objects.Count || Cells.Count != other.Cells.Count || Result.Count != other.Result.Count) return false;
+            for (int k = 0; k < Objects.Count; k++)
+            {
+                var a = Objects[k];
+                var b = other.Objects[k];
+                if (a.Kind != b.Kind || a.Param != b.Param || !a.Path.AsSpan().SequenceEqual(b.Path)) return false;
+                if (a.Kind != Kind.Made && !a.Origins.AsSpan().SequenceEqual(b.Origins)) return false;
+            }
+            for (int k = 0; k < Cells.Count; k++) if (Cells[k] != other.Cells[k]) return false;
+            for (int k = 0; k < Result.Count; k++) if (Result[k] != other.Result[k]) return false;
+            return MadeCoarse == other.MadeCoarse && SameFields(other) && SameFamilies(other);
+        }
+
+        /// <summary>Every summary's effects at once: what any of a virtual call's overrides may do.</summary>
+        public static Summary Merge(IEnumerable<Summary> each)
+        {
+            Summary merged = new();
+            Dictionary<(Kind, int, string), int> places = new();
+            List<Summary> all = each as List<Summary> ?? each.ToList();
+            // Fields only where some summary types a word: then every cell
+            // into a word counts, untyped ones too.
+            bool typed = all.Any(x => x.Fields is not null);
+            foreach (Summary s in all)
+            {
+                if (s.IsUnknown) return Unknown;
+                int[] map = new int[s.Objects.Count];
+                for (int k = 0; k < s.Objects.Count; k++)
+                {
+                    var o = s.Objects[k];
+                    if (o.Kind == Kind.Unknown) { map[k] = 0; continue; }
+                    if (o.Kind is Kind.Place or Kind.Deep)
+                    {
+                        var key = (o.Kind, o.Param, string.Join(",", o.Path));
+                        if (!places.TryGetValue(key, out int at)) { at = merged.Objects.Count; merged.Objects.Add(o); places[key] = at; }
+                        map[k] = at;
+                        continue;
+                    }
+                    map[k] = merged.Objects.Count;
+                    merged.Objects.Add(s.Holder >= 0 ? (o.Kind, o.Param, o.Path, new[] { Ref(s.Holder, k) }) : o);
+                }
+                foreach (var c in s.Cells)
+                {
+                    merged.Cells.Add((map[c.From], c.Offset, map[c.To], c.ToOffset));
+                    // Each word as every summary wrote it: typed where they agree.
+                    if (typed) merged.NoteField(map[c.From], c.Offset, s.FieldAt(c.From, c.Offset));
+                }
+                foreach (var r in s.Result) merged.Result.Add((map[r.To], r.ToOffset));
+            }
+            merged.Cells.Sort(); merged.Result.Sort();
+            Dedupe(merged.Cells); Dedupe(merged.Result);
+            return merged.Bounded();
+        }
+
+        public static void Dedupe<T>(List<T> sorted) where T : IEquatable<T>
+        {
+            int w = 0;
+            for (int r = 0; r < sorted.Count; r++)
+                if (w == 0 || !sorted[r].Equals(sorted[w - 1])) sorted[w++] = sorted[r];
+            sorted.RemoveRange(w, sorted.Count - w);
+            // A summary is kept for good: not at the size it was gathered at.
+            sorted.TrimExcess();
+        }
+
+        /// <summary>
+        /// The objects the unknown object reaches in this summary, through
+        /// its cells: what is everyone's whatever calls it. (0 among them.)
+        /// </summary>
+        public HashSet<int> Leaked()
+        {
+            HashSet<int> leaked = new() { 0 };
+            Stack<int> next = new();
+            next.Push(0);
+            while (next.TryPop(out int o))
+                foreach (var c in Cells) if (c.From == o && leaked.Add(c.To)) next.Push(c.To);
+            return leaked;
+        }
+
+        /// <summary>
+        /// THE COARSEST SUMMARY BUT THE UNKNOWN CALL'S: each parameter's own
+        /// object, each field of it its own object and all below that field
+        /// one deep place (CoarsenedByField), everything made one object --
+        /// two, what the unknown object reaches apart -- every cell at any
+        /// offset. (Everything below a parameter one deep place, a leak
+        /// through one field of it let every field go.)
+        /// </summary>
+        public Summary Coarse()
+        {
+            Summary b = new();
+            int[] map = new int[Objects.Count];
+            Dictionary<(Kind, int, string), int> kept = new();
+            int Keep(Kind kind, int param, int[] path, int[] origins)
+            {
+                var key = (kind, param, string.Join(",", path));
+                if (kept.TryGetValue(key, out int at)) return at;
+                at = b.Objects.Count;
+                b.Objects.Add((kind, param, path, origins));
+                return kept[key] = at;
+            }
+            // A made object: its key's path tells the two apart; the object
+            // itself has none.
+            int KeepMade(int[] key, int[] origins)
+            {
+                int at = Keep(Kind.Made, -1, key, origins);
+                b.Objects[at] = (Kind.Made, -1, Array.Empty<int>(), origins);
+                return at;
+            }
+            int KeepPlace(int param, int[] path)
+            {
+                if (param < 0) return Keep(Kind.Deep, param, DeepBelow, Array.Empty<int>());
+                int[] coarse = CoarsenedByField(path);
+                return Keep(KindOf(coarse), param, coarse, Array.Empty<int>());
+            }
+            // EVERYTHING MADE TWO OBJECTS, not one: what the unknown object
+            // reaches, and the rest. One, an exception a call throws made
+            // every object it hands back or stores into an argument the
+            // unknown object's too, and every site of it global.
+            HashSet<int> leaked = Leaked();
+            List<int> heldAll = new(), freeAll = new();
+            for (int k = 0; k < Objects.Count; k++)
+                if (Objects[k] is { Kind: Kind.Made } made && made.Param != ConstantParam) (leaked.Contains(k) ? heldAll : freeAll).AddRange(made.Origins);
+            heldAll.Sort(); freeAll.Sort();
+            int[] heldOrigins = heldAll.Distinct().ToArray(), freeOrigins = freeAll.Distinct().ToArray();
+            // Kept apart by a path no made object has.
+            int[] heldKey = { DeepStep, DeepStep };
+            for (int k = 0; k < Objects.Count; k++)
+            {
+                var o = Objects[k];
+                // A parameter's own object stays a place; what is below it is
+                // its deep place, or the objects of a guard's class below it
+                // (Coarsened).
+                map[k] = o.Kind switch
+                {
+                    Kind.Unknown => 0,
+                    Kind.Place or Kind.Deep => KeepPlace(o.Param, o.Path),
+                    Kind.Made when o.Param == ConstantParam => Keep(Kind.Made, ConstantParam, Array.Empty<int>(), Array.Empty<int>()),
+                    _ => leaked.Contains(k) ? KeepMade(heldKey, heldOrigins) : KeepMade(Array.Empty<int>(), freeOrigins),
+                };
+            }
+            // Merged objects are pointed into anywhere: their parts' offsets differ.
+            foreach (var c in Cells) b.Cells.Add((map[c.From], Any, map[c.To], b.Objects[map[c.To]].Kind == Kind.Place ? c.ToOffset : Any));
+            foreach (var r in Result) b.Result.Add((map[r.To], b.Objects[map[r.To]].Kind == Kind.Place ? r.ToOffset : Any));
+            b.Cells.Sort(); b.Result.Sort();
+            Dedupe(b.Cells); Dedupe(b.Result);
+            b.MadeCoarse = true;
+            return b.Cells.Count > MostCells ? b.Everything() : b;
+        }
+
+        /// <summary>
+        /// THE SHAPE PAST EVEN THE COARSE ONE: each parameter's own object,
+        /// its first few fields each with a deep place below (MostFieldsKept),
+        /// one deep place below it, the deep place past every parameter, what
+        /// was made in two -- what the unknown object reaches, and the rest
+        /// -- a constant, and the unknown object: what a coarse summary dense
+        /// with cells, each object to every other, came to anyway, at a few
+        /// cells a call. Each holds what one of the objects merged into it
+        /// held of one merged into the other: a merge, so no less than the
+        /// summary said. It held every pair once, and the unknown object
+        /// every argument wherever a cell touched it at all: a ToString that
+        /// read a static, or an argument handed a literal, leaked every
+        /// argument of every call of it -- and, through a wide call's
+        /// stand-in, of every override's call. Then every argument was one
+        /// object, and one argument leaked was all of them.
+        /// </summary>
+        public Summary Everything()
+        {
+            Summary e = new();
+            // STILL TWO MADE OBJECTS AND EACH PARAMETER ITS OWN (as Coarse):
+            // what the unknown object reaches made one, the rest another; each
+            // parameter its own object and one deep place below it, and the
+            // deep place past every parameter where there was one. Merging
+            // two objects is everything either was, so this is only ever
+            // more than the summary said. All one, one argument leaked or
+            // one object thrown made every argument, and every object handed
+            // back, everyone's -- and through a wide call's stand-in, at
+            // every call of every override.
+            HashSet<int> leaked = Leaked();
+            List<int> heldOrigins = new(), freeOrigins = new();
+            bool Fresh(int k) => Objects[k].Kind == Kind.Made && Objects[k].Param != ConstantParam;
+            for (int k = 0; k < Objects.Count; k++)
+                if (Fresh(k)) (leaked.Contains(k) ? heldOrigins : freeOrigins).AddRange(Objects[k].Origins);
+            int held = -1, free = -1, constant = -1;
+            bool anyHeld = false, anyFree = false;
+            for (int k = 0; k < Objects.Count; k++) if (Fresh(k)) { if (leaked.Contains(k)) anyHeld = true; else anyFree = true; }
+            // A constant stays the constant: it makes nothing escape.
+            if (Objects.Any(o => o.Kind == Kind.Made && o.Param == ConstantParam)) { constant = e.Objects.Count; e.Objects.Add((Kind.Made, ConstantParam, Array.Empty<int>(), Array.Empty<int>())); }
+            if (anyHeld) { held = e.Objects.Count; e.Objects.Add((Kind.Made, -1, Array.Empty<int>(), heldOrigins.Distinct().Order().ToArray())); }
+            if (anyFree) { free = e.Objects.Count; e.Objects.Add((Kind.Made, -1, Array.Empty<int>(), freeOrigins.Distinct().Order().ToArray())); }
+            Dictionary<int, int> paramPlace = new();
+            int PlaceOf(int param)
+            {
+                int key = param >= 0 ? param : -1;
+                if (paramPlace.TryGetValue(key, out int at)) return at;
+                at = e.Objects.Count;
+                e.Objects.Add(key < 0 ? (Kind.Deep, -1, Array.Empty<int>(), Array.Empty<int>()) : (Kind.Place, key, Array.Empty<int>(), Array.Empty<int>()));
+                return paramPlace[key] = at;
+            }
+            Dictionary<int, int> deepOf = new();
+            int DeepOf(int param)
+            {
+                int key = param >= 0 ? param : -1;
+                if (key < 0) return PlaceOf(-1);
+                if (deepOf.TryGetValue(key, out int at)) return at;
+                at = e.Objects.Count;
+                e.Objects.Add((Kind.Deep, key, DeepBelow, Array.Empty<int>()));
+                return deepOf[key] = at;
+            }
+            // AND THE FIRST FEW FIELDS OF EACH PARAMETER APART, each its own
+            // object and one deep place below it (CoarsenedByField), as many
+            // as MostFieldsKept a parameter, the first the summary names: a
+            // leak through one of them is not every field's. The rest, and
+            // what a guard or any offset leads to, are the parameter's deep
+            // place, which covers them all.
+            Dictionary<int, List<int>> firsts = new();
+            foreach (var o in Objects)
+            {
+                if (o.Kind is not (Kind.Place or Kind.Deep) || o.Param < 0 || o.Path.Length == 0 || o.Path[0] < 0 || o.Path.Any(IsGuard)) continue;
+                if (!firsts.TryGetValue(o.Param, out List<int>? kept)) firsts[o.Param] = kept = new();
+                if (!kept.Contains(o.Path[0]) && kept.Count < MostFieldsKept) kept.Add(o.Path[0]);
+            }
+            Dictionary<(int, int, bool), int> fieldOf = new();
+            int FieldOf(int param, int field, bool below)
+            {
+                if (fieldOf.TryGetValue((param, field, below), out int at)) return at;
+                at = e.Objects.Count;
+                e.Objects.Add(below ? (Kind.Deep, param, new[] { field, DeepStep }, Array.Empty<int>()) : (Kind.Place, param, new[] { field }, Array.Empty<int>()));
+                return fieldOf[(param, field, below)] = at;
+            }
+            int Merged(int k)
+            {
+                var o = Objects[k];
+                if (o.Kind == Kind.Unknown) return 0;
+                if (o.Kind == Kind.Made) return o.Param == ConstantParam ? constant : leaked.Contains(k) ? held : free;
+                if (o.Param < 0) return PlaceOf(-1);
+                // (A place guarded at its parameter is still that object.)
+                if (o.Kind == Kind.Place && Fields(o.Path) == 0 && Array.IndexOf(o.Path, DeepStep) < 0) return PlaceOf(o.Param);
+                if (o.Path.Length > 0 && o.Path[0] >= 0 && !o.Path.Any(IsGuard) && firsts.TryGetValue(o.Param, out List<int>? fields) && fields.Contains(o.Path[0]))
+                    return FieldOf(o.Param, o.Path[0], o.Path.Length > 1);
+                return DeepOf(o.Param);
+            }
+            foreach (var c in Cells)
+            {
+                int from = Merged(c.From), to = Merged(c.To);
+                if (from >= 0 && to >= 0 && !(from == 0 && to == 0)) e.Cells.Add((from, Any, to, Any));
+            }
+            foreach (var r in Result) if (Merged(r.To) is int to and >= 0) e.Result.Add((to, Any));
+            e.Cells.Sort(); e.Result.Sort();
+            Dedupe(e.Cells); Dedupe(e.Result);
+            e.MadeCoarse = true;
+            return e;
+        }
+
+        /// <summary>
+        /// PAST THE BOUNDS, FEWER OBJECTS: the made objects past MostFresh are
+        /// one, and a place past MostPlaces is its parameter's deep place;
+        /// past MostCells, the coarse summary. Merging two objects is
+        /// everything either was, and every cell of both: only ever more
+        /// outlives.
+        /// </summary>
+        public Summary Bounded()
+        {
+            int made = 0, placed = 0;
+            foreach (var o in Objects) { if (o.Kind == Kind.Made) made++; else if (o.Kind == Kind.Place) placed++; }
+            if (made <= MostFresh && placed <= MostPlaces && Cells.Count <= MostCells) return this;
+            if (Objects.Any(o => o.Kind is Kind.Place or Kind.Deep && o.Path.Any(IsGuard)))
+            {
+                Summary loose = Loosened();
+                if (loose.Objects.Count < Objects.Count) return loose.Bounded();
+            }
+            if (Cells.Count <= MostCells && Objects.Count <= 512) return Fewer(MostFresh, placed);
+            // PAST THE CELLS, FIRST EVERY OBJECT MADE ONE: what a list's
+            // grown arrays and a node's instructions held of each place, each
+            // of them apart, was most of an emitter's cells; its places, and
+            // the guards on them, are kept.
+            Summary one = Fewer(0, placed);
+            if (one.Cells.Count <= MostCells && one.Objects.Count <= 512) return one;
+            // Then every parameter of no guard all one deep place below it:
+            // what is kept apart is only what tells classes apart.
+            one = Fewer(0, placed, unguarded: true);
+            return one.Cells.Count <= MostCells && one.Objects.Count <= 512 ? one : Coarse();
+        }
+
+        /// <summary>
+        /// PAST THE BOUNDS, GUARDS ONLY WHERE WHAT LEAKS IS: a guarded place
+        /// the unknown object does not reach is the place unguarded -- what
+        /// is written into it written into an object of any class there,
+        /// what is read from it read from one. A place leaked keeps its
+        /// guard, which keeps a tree from leaking with a name in it, but not
+        /// where the class was: below a field of its parameter, any object
+        /// of the class anywhere below it, and what the path takes from
+        /// there. (Each node's Bind writing its type, guarded once for each
+        /// class, was four places at each place a node may be; and each
+        /// place a node may be leaked the name of each class of node.)
+        /// </summary>
+        private Summary Loosened()
+        {
+            HashSet<int> leaked = new() { 0 };
+            Stack<int> next = new();
+            next.Push(0);
+            while (next.TryPop(out int o))
+                foreach (var c in Cells) if (c.From == o && leaked.Add(c.To)) next.Push(c.To);
+            Summary b = new();
+            int[] map = new int[Objects.Count];
+            Dictionary<(Kind, int, string), int> places = new();
+            for (int k = 0; k < Objects.Count; k++)
+            {
+                var o = Objects[k];
+                if (k == 0) { map[k] = 0; continue; }
+                if (o.Kind is Kind.Place or Kind.Deep && o.Param >= 0)
+                {
+                    int[] path = leaked.Contains(k) ? Anywhere(o.Path) : Stripped(o.Path);
+                    Kind kind = KindOf(path);
+                    var key = (kind, o.Param, string.Join(",", path));
+                    if (!places.TryGetValue(key, out int at)) { at = b.Objects.Count; b.Objects.Add((kind, o.Param, path, o.Origins)); places[key] = at; }
+                    map[k] = at;
+                    continue;
+                }
+                map[k] = b.Objects.Count;
+                b.Objects.Add(o);
+            }
+            foreach (var c in Cells) b.Cells.Add((map[c.From], c.Offset, map[c.To], c.ToOffset));
+            foreach (var r in Result) b.Result.Add((map[r.To], r.ToOffset));
+            // Offsets kept: each word's field kept, where every word mapped to it agrees.
+            b.CarryFields(this, map, (_, offset) => offset);
+            b.Cells.Sort(); b.Result.Sort();
+            Dedupe(b.Cells); Dedupe(b.Result);
+            return b;
+        }
+
+        private static int[] Anywhere(int[] path)
+        {
+            int g = Array.FindIndex(path, IsGuard);
+            if (g <= 0 || Fields(path[..g]) == 0 && Array.IndexOf(path, DeepStep, 0, g) < 0) return path;
+            int[] rest = path[g..];
+            return Array.IndexOf(rest, DeepStep) >= 0 && Array.IndexOf(rest, DeepStep) != Array.LastIndexOf(rest, DeepStep) ? path : [DeepStep, .. rest];
+        }
+
+        // The made objects past `keep` one; a place past MostPlaces its parameter's deep place.
+        private Summary Fewer(int keep, int placed, bool unguarded = false)
+        {
+            Summary b = new();
+            int[] map = new int[Objects.Count];
+            int blob = -1;
+            // A place below its parameter made coarse (Coarsened): the deep
+            // place, or the objects of its guard's class below.
+            Dictionary<(int, string), int> deep = new();
+            int Deep(int param, int[] path)
+            {
+                int[] coarse = Coarsened(path);
+                var key = (param, string.Join(",", coarse));
+                if (deep.TryGetValue(key, out int d)) return d;
+                d = b.Objects.Count;
+                b.Objects.Add((KindOf(coarse), param, coarse, Array.Empty<int>()));
+                return deep[key] = d;
+            }
+            // PAST MostPlaces, A PARAMETER AT A TIME: its places below a
+            // field of a field are its deep place, until the rest are few
+            // enough -- those of no guard first, which lose no class kept
+            // apart, the most places first; then, before a guarded one's,
+            // every place below a field of theirs; then the guarded ones'.
+            // (All at once, a dictionary's insides made a tree's guarded
+            // places one deep place, the whole tree.)
+            static bool Further(int[] path) => Fields(path) >= PlaceDepth || Array.IndexOf(path, DeepStep) >= 0;
+            static bool Below(int[] path) => Fields(path) > 0 || Array.IndexOf(path, DeepStep) >= 0;
+            HashSet<int> collapsed = new(), whole = new(), guarded = new();
+            Dictionary<int, int> further = new(), below = new();
+            foreach (var o in Objects)
+            {
+                if (o.Kind is not (Kind.Place or Kind.Deep) || o.Param < 0) continue;
+                if (o.Path.Any(IsGuard)) guarded.Add(o.Param);
+                if (o.Kind == Kind.Place && Further(o.Path)) further[o.Param] = further.GetValueOrDefault(o.Param) + 1;
+                if (o.Kind == Kind.Place && Below(o.Path)) below[o.Param] = below.GetValueOrDefault(o.Param) + 1;
+            }
+            int left = placed;
+            foreach (var (param, count) in further.Where(x => !guarded.Contains(x.Key)).OrderByDescending(x => x.Value).ThenBy(x => x.Key))
+            {
+                if (left <= MostPlaces) break;
+                collapsed.Add(param);
+                left -= count;
+            }
+            foreach (var (param, count) in below.Where(x => !guarded.Contains(x.Key)).OrderByDescending(x => x.Value).ThenBy(x => x.Key))
+            {
+                if (!unguarded && (left <= MostPlaces || guarded.Count == 0)) break;
+                whole.Add(param);
+                left -= count - further.GetValueOrDefault(param);
+            }
+            foreach (var (param, count) in further.Where(x => guarded.Contains(x.Key)).OrderByDescending(x => x.Value).ThenBy(x => x.Key))
+            {
+                if (left <= MostPlaces) break;
+                collapsed.Add(param);
+                left -= count;
+            }
+            // THE MADE OBJECTS PAST `keep`, TWO: those the unknown object
+            // reaches, and the rest. One, a row a sheet's maker hands back
+            // merged with an exception it may throw was everyone's, and
+            // every object below it.
+            HashSet<int> leaked = Leaked();
+            int heldBlob = -1;
+            List<int> blobOrigins = new(), heldOrigins = new();
+            int keptMade = 0;
+            for (int k = 0; k < Objects.Count; k++)
+            {
+                var o = Objects[k];
+                if (o.Kind == Kind.Unknown) { map[k] = 0; continue; }
+                if (o.Kind == Kind.Made && o.Param == ConstantParam) { map[k] = b.Objects.Count; b.Objects.Add(o); continue; }
+                if (o.Kind == Kind.Made && ++keptMade > keep - 1)
+                {
+                    if (leaked.Contains(k))
+                    {
+                        if (heldBlob < 0) { heldBlob = b.Objects.Count; b.Objects.Add((Kind.Made, -1, Array.Empty<int>(), Array.Empty<int>())); }
+                        heldOrigins.AddRange(o.Origins);
+                        map[k] = heldBlob;
+                        continue;
+                    }
+                    if (blob < 0) { blob = b.Objects.Count; b.Objects.Add((Kind.Made, -1, Array.Empty<int>(), Array.Empty<int>())); }
+                    blobOrigins.AddRange(o.Origins);
+                    map[k] = blob;
+                    continue;
+                }
+                if (o.Kind is Kind.Place or Kind.Deep && whole.Contains(o.Param) && (Fields(o.Path) > 0 || Array.IndexOf(o.Path, DeepStep) >= 0)) { map[k] = Deep(o.Param, o.Path); continue; }
+                if (o.Kind == Kind.Place && collapsed.Contains(o.Param) && Further(o.Path)) { map[k] = Deep(o.Param, o.Path); continue; }
+                if (o.Kind == Kind.Deep && collapsed.Contains(o.Param) && Fields(o.Path) > 1) { map[k] = Deep(o.Param, o.Path); continue; }
+                map[k] = b.Objects.Count;
+                b.Objects.Add(o);
+            }
+            if (blob >= 0)
+            {
+                blobOrigins.Sort();
+                b.Objects[blob] = (Kind.Made, -1, Array.Empty<int>(), blobOrigins.Distinct().ToArray());
+            }
+            if (heldBlob >= 0)
+            {
+                heldOrigins.Sort();
+                b.Objects[heldBlob] = (Kind.Made, -1, Array.Empty<int>(), heldOrigins.Distinct().ToArray());
+            }
+            bool Merged(int at) => at == blob || at == heldBlob || b.Objects[at].Kind == Kind.Deep;
+            // A merged object's cells are at any offset: its parts' fields differ.
+            foreach (var c in Cells)
+            {
+                int from = map[c.From], to = map[c.To];
+                b.Cells.Add((from, Merged(from) ? Any : c.Offset, to, Merged(to) ? Any : c.ToOffset));
+            }
+            foreach (var r in Result) b.Result.Add((map[r.To], Merged(map[r.To]) ? Any : r.ToOffset));
+            // A word kept where it was keeps its field; one made any offset none.
+            b.CarryFields(this, map, (from, offset) => Merged(from) ? Any : offset);
+            b.Cells.Sort(); b.Result.Sort();
+            Dedupe(b.Cells); Dedupe(b.Result);
+            return b;
+        }
+    }
+
+    // ---- one function's solve, or one cycle's -----------------------------
+
+    // A copy's shift that is an index scaled into an address: anywhere in
+    // each object, and never the unknown object (RegionSolver.AddShifted).
+    private const int IndexShift = int.MinValue + 1;
+    private const int AnyShift = int.MinValue;
+
+    /// <summary>
+    /// The nodes, objects and cells of one function, or of every member of a
+    /// cycle, solved: Andersen's inclusion with a worklist, over locations
+    /// numbered as they are named. A cell holds what was written into it;
+    /// what a place holds of the place one field on, and the unknown object
+    /// of itself, a load adds as it reads.
+    /// </summary>
+    /// <summary>
+    /// A NODE'S LOCATIONS, in the order they came -- the order HashSet&lt;int&gt;
+    /// walked them in, nothing ever being removed, which every answer and
+    /// every edge made later follows -- without its entry per member, chain,
+    /// or copy to walk it. Up to Small members a scan of the list; past it,
+    /// an open-addressed table of each location plus one beside the list.
+    /// </summary>
+    private sealed class LocSet
+    {
+        private const int Small = 8;
+        public int[] Items = new int[4];
+        public int Count;
+        private int[]? _table;
+        private int _shift;
+
+        public bool Add(int loc)
+        {
+            if (_table is null)
+            {
+                int[] items = Items;
+                for (int i = 0; i < Count; i++) if (items[i] == loc) return false;
+                Append(loc);
+                if (Count > Small) Rehash(5);
+                return true;
+            }
+            int[] table = _table;
+            int mask = table.Length - 1;
+            int at = Slot(loc, _shift);
+            while (true)
+            {
+                int held = table[at];
+                if (held == 0) break;
+                if (held == loc + 1) return false;
+                at = (at + 1) & mask;
+            }
+            table[at] = loc + 1;
+            Append(loc);
+            if (Count * 2 > table.Length) Rehash(32 - _shift + 1);
+            return true;
+        }
+
+        private static int Slot(int loc, int shift) => (int)(((uint)loc * 0x9E3779B1u) >> shift);
+
+        private void Append(int loc)
+        {
+            if (Count == Items.Length) Array.Resize(ref Items, Count * 2);
+            Items[Count++] = loc;
+        }
+
+        private void Rehash(int bits)
+        {
+            int[] table = new int[1 << bits];
+            int mask = table.Length - 1;
+            _shift = 32 - bits;
+            for (int i = 0; i < Count; i++)
+            {
+                int at = Slot(Items[i], _shift);
+                while (table[at] != 0) at = (at + 1) & mask;
+                table[at] = Items[i] + 1;
+            }
+            _table = table;
+        }
+
+        public Enumerator GetEnumerator() => new(this);
+
+        public struct Enumerator
+        {
+            private readonly LocSet _set;
+            private int _at;
+            public Enumerator(LocSet set) { _set = set; _at = -1; }
+            public bool MoveNext() => ++_at < _set.Count;
+            public int Current => _set.Items[_at];
+        }
+    }
+
+    private sealed class Graph
+    {
+        private readonly RegionEscape _owner;
+        private readonly int[] _members;
+        private readonly HashSet<int> _memberSet;
+        private readonly Dictionary<int, int> _memberOf = new();
+        private readonly int[] _base;
+
+        // Objects: what each is, its origins, its cells by offset.
+        private readonly List<Kind> _kind = new();
+        private readonly List<int> _param = new();
+        private readonly List<int[]> _path = new();
+        private readonly List<int[]> _origins = new();
+        private readonly List<Dictionary<int, int>> _cells = new();
+        private readonly Dictionary<(int, string), int> _places = new();
+        private readonly Dictionary<(int, int), int> _siteObjects = new(), _slotObjects = new();
+        // Per object: the nodes a load at any offset of it reads into.
+        private readonly List<HashSet<int>?> _allReaders = new();
+        // Per object: what may be in it at any offset without being written
+        // into it here (Aliased) -- what is written into places, the unknown
+        // object -- read by every load of it, and never followed for what it
+        // reaches or summarised: all of it is outside already.
+
+        // Locations: an object and an offset (Any).
+        private readonly Dictionary<long, int> _locations = new();
+        private readonly List<int> _locObject = new(), _locOffset = new();
+        // Per location, what its object is (LocClass), so adding one to a
+        // node reads one byte rather than the object and then its kind.
+        private readonly List<byte> _locClass = new();
+        private const byte MadeClass = 1, PlaceClass = 2, UnknownClass = 4;
+
+        // Nodes: the members' own, then those calls and cells add.
+        private readonly List<LocSet?> _pts = new();
+        private readonly List<List<(int To, int Shift)>?> _copies = new();
+        // Each with the field's family a typed access names (RegionConstraint.Family,
+        // as the owner numbers it; -1 for none).
+        private readonly List<List<(int Dest, int Offset, int Family)>?> _loads = new();
+        private readonly List<List<(int Value, int Offset, int Family)>?> _stores = new();
+        private readonly List<List<int>?> _readsAll = new();
+        // What each node has gained since it was last carried on, in the
+        // order it came: a buffer taken from _spareDeltas and given back once
+        // carried, its length beside it. A new list a node a wave, grown as it
+        // filled, was a tenth of the solve in copying and the collector.
+        private readonly List<int[]?> _deltaBuf = new();
+        private readonly List<int> _deltaLen = new();
+        private readonly Stack<int[]> _spareDeltas = new();
+        // THE NODES WITH SOMETHING TO CARRY, in wave order: by each node's
+        // place in the copy graph as it last stood (Collapse), sources first,
+        // so a node is carried once after what feeds it rather than once for
+        // each of its feeders. A node made since is carried after those.
+        private readonly PriorityQueue<int, int> _work = new();
+        private readonly List<int> _wave = new();
+        // NODES ON ONE CYCLE OF COPIES ARE ONE NODE (Collapse): each node's
+        // representative, by union-find. What a node holds, and its edges,
+        // are its representative's; every edge and every addition is made to
+        // the representative.
+        private readonly List<int> _parent = new();
+        private long _copyEdges, _edgesAtCollapse, _loadEdgeCount, _storeEdgeCount;
+        // Each copy edge once (CopyEdge): a second of the same carries
+        // nothing the first has not, wherever it falls in the list.
+        private readonly HashSet<long> _plainCopies = new();
+        private readonly HashSet<(int, int, int)> _shiftedCopies = new();
+        // Each load, store, whole-object read and guard's filter edge once,
+        // by its node as it was when added (LoadEdge, StoreEdge, LoadAllEdge,
+        // FilterEdge), as copies are.
+        private readonly HashSet<(int, int, int, int)> _loadEdges = new(), _storeEdges = new();
+        private readonly HashSet<long> _readAllEdges = new();
+        private readonly HashSet<(int, int, int)> _filterEdges = new();
+        // A guard's filter: what of a node's locations a guard lets through.
+        private readonly List<List<(int To, int Guard)>?> _filters = new();
+        // The virtual calls a node is the receiver of (Received).
+        private readonly List<List<VCall>?> _vcalls = new();
+
+        // PAST THIS MUCH WORK A FUNCTION, OR A CYCLE, IS NOT FOLLOWED: its
+        // summary is the unknown call's, and everything made beneath it is
+        // everyone's. A cycle's bound grows with it.
+        private readonly long _mostCarried;
+        private readonly int _mostNodes;
+        private long _carried;
+        // PAST ITS OWN BOUND, MORE FROM THE LINK'S: a component past
+        // _mostCarried goes on while the link-wide pool of work lasts
+        // (InclusionPool), in grants, up to InclusionCap of its own -- work
+        // counted as what costs time, each location offered to a node
+        // (_adds), not the locations a node carries on, which a node with a
+        // hundred edges and one with one count alike. Every count is of
+        // work done in the order the link solves, so the same link gives
+        // the same answers: a time budget would not.
+        private long _adds, _mostAdds = long.MaxValue, _drawn;
+        // WHAT AN EDGE OFFERS AS IT IS MADE: each location already held where
+        // a load, store or whole-object read is added, walked once. Merging a
+        // cycle remakes every edge of its members on the one kept, and each
+        // walks that node's whole set -- the binder's cycle of 78 spent most
+        // of the link there, in no count the budget asked. Counted apart, so
+        // the budget of every component it never troubled is as it was, and
+        // held to OfferedCap with what is offered to nodes.
+        private long _edgeWork;
+        private bool OverWorked => _adds + _edgeWork > _owner.OfferedCap;
+
+        // More work granted from the link's pool: false when it is spent, or
+        // this component has had its InclusionCap.
+        private bool MoreWork()
+        {
+            if (_mostAdds == long.MaxValue) { _mostAdds = _adds; _owner.PoolComponents++; }
+            long cap = _owner.InclusionCap;
+            if (_drawn >= cap || _owner.InclusionPool <= 0) return false;
+            // Each grant as big as all before it: few draws for a big one.
+            long grant = Math.Min(Math.Min(_owner.InclusionPool, Math.Max(_drawn, InclusionGrant)), cap - _drawn);
+            _owner.InclusionPool -= grant;
+            _owner.PoolDrawn += grant;
+            _drawn += grant;
+            _mostAdds += grant;
+            return true;
+        }
+
+        private const long InclusionGrant = 1 << 20;
+        private readonly bool _big;
+        public bool Overflowed;
+
+        public Graph(RegionEscape owner, int[] members)
+        {
+            _owner = owner; _members = members; _memberSet = new(members);
+            _base = new int[members.Length];
+            long nodes = 0;
+            foreach (int f in members) nodes += owner._functions[f].Nodes;
+            _mostCarried = 150_000 + 20 * nodes;
+            _mostNodes = (int)Math.Min(int.MaxValue, 400_000 + 30 * nodes);
+            _big = members.Length > 1000;
+            NewObject(Kind.Unknown, -1, Array.Empty<int>(), Array.Empty<int>());     // 0: the unknown object
+            for (int m = 0; m < members.Length; m++)
+            {
+                _memberOf[members[m]] = m;
+                _base[m] = _pts.Count;
+                RegionFunction f = owner._functions[members[m]];
+                for (int n = 0; n < f.Nodes; n++) NewNode();
+            }
+        }
+
+        private RegionFunction Function(int m) => _owner._functions[_members[m]];
+        private int Node(int m, int n) => _base[m] + n;
+        private int Ret(int m) => _base[m] + Function(m).Parameters;
+
+        private int NewObject(Kind kind, int param, int[] path, int[] origins)
+        {
+            _kind.Add(kind); _param.Add(param); _path.Add(path); _origins.Add(origins); _cells.Add(new()); _allReaders.Add(null);
+            return _kind.Count - 1;
+        }
+
+        private int NewNode()
+        {
+            _pts.Add(null); _copies.Add(null); _loads.Add(null); _stores.Add(null); _readsAll.Add(null); _deltaBuf.Add(null); _deltaLen.Add(0);
+            _parent.Add(_pts.Count - 1); _wave.Add(int.MaxValue);
+            _filters.Add(null); _vcalls.Add(null);
+            _madeHeld.Add(0); _nodeFlags.Add(0);
+            if (_pts.Count > _mostNodes) Overflowed = true;
+            return _pts.Count - 1;
+        }
+
+        private int Location(int o, int offset)
+        {
+            if (o == 0 || offset < 0 || offset > FarthestField) offset = Any;
+            long key = ((long)o << 16) | (uint)(offset & 0xFFFF);
+            if (_locations.TryGetValue(key, out int known)) return known;
+            int made = _locObject.Count;
+            _locations[key] = made;
+            _locObject.Add(o); _locOffset.Add(offset);
+            _locClass.Add(o == 0 ? UnknownClass : _kind[o] switch { Kind.Made => MadeClass, Kind.Place or Kind.Deep => PlaceClass, _ => (byte)0 });
+            return made;
+        }
+
+        // A CONSTANT'S ADDRESS (RegionConstants), one object for every
+        // constant: made of no site, never written, and what is read from it
+        // is a constant again. It holds nothing, as the region engines need
+        // it to; but it is SOMETHING, so a virtual call whose receiver may be
+        // a literal or a descriptor still runs, any of its targets on it
+        // (Received: an object of no known site) -- an empty receiver is a
+        // call that never runs, and the call's other arguments were never
+        // handed over. A summary keeps it as a made object of no origins.
+        private int _constantLoc = -1;
+        private int Constant => _constantLoc >= 0 ? _constantLoc
+            : _constantLoc = Location(NewObject(Kind.Made, -1, Array.Empty<int>(), Array.Empty<int>()), 0);
+        private bool IsConstant(int o) => _constantLoc >= 0 && _locObject[_constantLoc] == o;
+
+        // The unknown object's location, named once and then remembered.
+        private int _unknownLoc = -1;
+        private int Unknown => _unknownLoc >= 0 ? _unknownLoc : _unknownLoc = Location(0, Any);
+
+        /// <summary>A location moved along a copy, or -1 when the copy drops it.</summary>
+        private int Shift(int loc, int shift)
+        {
+            if (shift == 0) return loc;
+            int o = _locObject[loc], at = _locOffset[loc];
+            if (o == 0) return shift == IndexShift ? -1 : loc;
+            if (shift is AnyShift or IndexShift || at == Any || at != 0 || shift > FarthestField || shift < -FarthestField) return Location(o, Any);
+            return Location(o, shift);
+        }
+
+        /// <summary>The place a parameter (member m's k: m times ParamStride plus k) reaches by `path`, or its deep place past PlaceDepth fields.</summary>
+        // Past PlaceDepth fields, the deep place of the first PlaceDepth: what
+        // is below a field of a field, not everything below the parameter --
+        // a string kept in a node's field and leaked, all of the node's
+        // subtree with it.
+        // (The path comes kept so already: WithField, WithGuard.)
+        private int Place(int param, int[] path)
+        {
+            string key = string.Join(",", path);
+            if (_places.TryGetValue((param, key), out int known)) return known;
+            int o = NewObject(KindOf(path), param, path, Array.Empty<int>());
+            _places[(param, key)] = o;
+            return o;
+        }
+
+        // What a load of an object at `offset` finds there besides what was
+        // written: the place one field on, the deep place itself, the unknown
+        // object itself.
+        private int Implicit(int o, int offset, int family = -1)
+        {
+            switch (_kind[o])
+            {
+                case Kind.Unknown: return Unknown;
+                // A load naming its field finds the place below that field.
+                case Kind.Place or Kind.Deep: return Location(Place(_param[o], WithField(_path[o], TypedStep(offset, family))), 0);
+                default: return -1;
+            }
+        }
+
+        /// <summary>The node of an object's cell at an offset, made on first use.</summary>
+        private int Cell(int o, int offset)
+        {
+            if (o == 0) offset = Any;
+            if (_cells[o].TryGetValue(offset, out int node)) return node;
+            node = NewNode();
+            _cells[o][offset] = node;
+            if (o == 0) _unknownCell = node;
+            // A field's word: read by every load at its offset naming none (FieldsAt).
+            if (StepFamily(offset) >= 0 && _offsetReaders.TryGetValue(Pair(o, StepOffset(offset)), out List<int>? atReaders))
+                foreach (int r in atReaders.ToArray()) CopyEdge(node, r, 0);
+            // A blob's member's: what is written here is in the blob (Join),
+            // linked from Propagate's loop (Link), never from inside this.
+            if (_blobsOf.ContainsKey(o)) _cellJoins.Enqueue((node, o));
+            // Read by every load of the whole object. (A write at any offset
+            // is read by a load at a fixed one as it loads: Loaded.)
+            if (_allReaders[o] is { } readers) foreach (int r in readers) CopyEdge(node, r, 0);
+            return node;
+        }
+
+        // PAST THIS MANY LOCATIONS A NODE HOLDS THE UNKNOWN OBJECT, and what it
+        // held goes there: they escape (RegionSolver's MostHeld). The node
+        // the unknown object's own writes gather in is never cut short:
+        // nothing is read out of it.
+        private const int MostHeld = 256;
+        private int _saturatedCount;
+        private int _unknownCell = -1;
+        // What Aliased feeds loads (what is written into places): all of it is
+        // outside already, and cut short it would put every one of those
+        // writes where nobody follows.
+
+
+        // PLACES ARE NOT WHAT FILLS A NODE: there are only so many, and
+        // sent where nobody follows they are arguments escaping at every
+        // call. A node counts the objects made it holds against MostHeld;
+        // past it, those go to the unknown object and the places stay, up to
+        // a bound of their own.
+        private const int MostPlacesHeld = 512;
+        // Per node: the made objects it holds, and its flags (Saturated,
+        // PlacesDumped, NeverSaturated), where a hash lookup a location was
+        // most of what adding one cost.
+        private readonly List<int> _madeHeld = new();
+        private readonly List<byte> _nodeFlags = new();
+        private const byte Saturated = 1, PlacesDumped = 2, NeverSaturated = 4;
+
+        private void Add(int node, int loc)
+        {
+            if (loc < 0) return;
+            _adds++;
+            node = Find(node);
+            byte kind = _locClass[loc];
+            byte flags = _nodeFlags[node];
+            if ((flags & Saturated) != 0)
+            {
+                if ((kind & MadeClass) != 0)
+                {
+                    // A MADE OBJECT PAST THE BOUND JOINS THE NODE'S BLOB
+                    // (BlobOf), which the node holds for all of them: not the
+                    // unknown object, which made every one of them global.
+                    // A constant is held as any location: what a load of it
+                    // finds is a constant again, nothing in its cells.
+                    int o = _locObject[loc];
+                    if (!IsConstant(o) && !(_blobOfNode.TryGetValue(node, out int own) && own == o))
+                    {
+                        Join(o, BlobOf(node));
+                        return;
+                    }
+                }
+                else if ((kind & PlaceClass) != 0 && (flags & PlacesDumped) != 0)
+                {
+                    // Into the unknown object's cell, which is never cut short.
+                    Add(UnknownCell(), loc);
+                    return;
+                }
+            }
+            LocSet pts = _pts[node] ??= new();
+            if (!pts.Add(loc)) return;
+            Delta(node, loc);
+            if (node == _unknownCell || (flags & NeverSaturated) != 0) return;
+            int made = (kind & MadeClass) != 0 ? ++CollectionsMarshal.AsSpan(_madeHeld)[node] : _madeHeld[node];
+            if ((flags & Saturated) == 0 && made > MostHeld)
+            {
+                // What it held when it filled stays: each is its own, and
+                // was carried on as it came. What comes after joins its blob.
+                _nodeFlags[node] |= Saturated; _saturatedCount++;
+                BlobOf(node);
+            }
+            if (pts.Count - made > MostPlacesHeld && (_nodeFlags[node] & PlacesDumped) == 0)
+            {
+                if ((_nodeFlags[node] & Saturated) == 0) _saturatedCount++;
+                _nodeFlags[node] |= Saturated | PlacesDumped;
+                int sink = UnknownCell();
+                // The places it held, and the unknown object for those to come.
+                for (int i = 0, n = pts.Count; i < n; i++) { int held = pts.Items[i]; if ((_locClass[held] & PlaceClass) != 0) Add(sink, held); }
+                if (pts.Add(Unknown)) Delta(node, Unknown);
+            }
+        }
+
+        // ---- a saturated node's blob ------------------------------------------
+        //
+        // A NODE PAST MostHeld MADE OBJECTS holds one more, its BLOB, for every
+        // made object that comes to it after: each joins the blob (Join), and
+        // the node carries the blob's one location on, not theirs. The blob
+        // is everything its members are, both ways: whatever is written into
+        // a member, at any offset, is in the blob's cell, and whatever is
+        // written into the blob is in each member's cell at any offset, which
+        // every load of the member reads (Loaded). So a load through the node
+        // finds what any member holds, and a store through it reaches every
+        // member, as through each member's own location. What a member is
+        // reached by -- a place, the unknown object -- its blob is too, for
+        // the loads of it (Placed, ReachedByUnknown); and whatever reaches
+        // the blob reaches every member (Reached). A blob has no sites of
+        // its own: a virtual call on it may run any target, a guard lets it
+        // through, and no word of it is known to hold no reference. A
+        // summary makes a blob and its members one object (Summarise).
+        //
+        // (Saturated into the unknown object, every one of them was global
+        // -- on the compiler's own link, most of what a few hundred
+        // functions made, past MostHeld in a node that never left them.)
+        private readonly Dictionary<int, int> _blobOfNode = new();
+        private readonly Dictionary<int, List<int>> _membersOf = new(), _blobsOf = new();
+        private readonly HashSet<long> _joined = new();
+        private int _blobs;
+
+        // The blob a saturated node holds, made and held on first use.
+        private int BlobOf(int node)
+        {
+            if (_blobOfNode.TryGetValue(node, out int blob)) return blob;
+            blob = NewObject(Kind.Made, -1, Array.Empty<int>(), Array.Empty<int>());
+            _blobOfNode[node] = blob;
+            _membersOf[blob] = new();
+            _blobs++;
+            _owner.TotalBlobs++;
+            int loc = Location(blob, Any);
+            LocSet pts = _pts[node] ??= new();
+            if (pts.Add(loc)) { Delta(node, loc); CollectionsMarshal.AsSpan(_madeHeld)[node]++; }
+            return blob;
+        }
+
+        // OBJECT o ONE OF BLOB'S MEMBERS, once: noted now, its cells and the
+        // blob's linked from Propagate's loop (Link). Join is reached from
+        // inside Add, and linking there -- each copy edge carrying at once
+        // what its source holds, which may saturate a node and join again --
+        // went as deep as the joins chained, past the stack on the
+        // compiler's own link. A member that is itself a blob, and one that
+        // holds this blob, are joined as any other: the cycle is edges, and
+        // every walk over members keeps what it has seen.
+        private void Join(int o, int blob)
+        {
+            if (o == blob || !_joined.Add(Pair(o, blob))) return;
+            _membersOf[blob].Add(o);
+            // A cell of the member made later is joined as it is made (Cell).
+            (_blobsOf.TryGetValue(o, out List<int>? blobs) ? blobs : _blobsOf[o] = new()).Add(blob);
+            _joins.Enqueue((o, blob));
+            // What a call on it may run has grown: dispatched again (Redispatch).
+            _pendingBlobs.Add(blob);
+        }
+
+        // Joins and members' new cells, to be linked (Link).
+        private readonly Queue<(int O, int Blob)> _joins = new();
+        private readonly Queue<(int Cell, int O)> _cellJoins = new();
+
+        /// <summary>
+        /// THE JOINS NOTED SINCE, LINKED, from Propagate's loop: each member's
+        /// cells into the blob's, the blob's into the member's at any offset,
+        /// and what reaches either -- a place, the unknown object -- the
+        /// other's for loads. Each edge is added once (CopyEdge). What this
+        /// adds may join again; that is queued, and linked in this same loop
+        /// until nothing is left, so no join is ever linked inside another.
+        /// </summary>
+        private void Link()
+        {
+            while (!Overflowed)
+            {
+                // Linking is work as carrying is, and counted against the
+                // same budget: joins that chained without end held the
+                // compiler's own link in one component, never back in
+                // Propagate where the budget was asked.
+                if (OverWorked || _mostAdds != long.MaxValue && _adds > _mostAdds && !MoreWork()) { Overflowed = true; return; }
+                if (_joins.TryDequeue(out var join))
+                {
+                    int into = Cell(join.Blob, Any);
+                    // THE MEMBER'S CELL AT ANY OFFSET IS THE BLOB'S CELL: each
+                    // holds the other (the blob every member's cells, the
+                    // member at any offset everything in the blob), so the
+                    // two are one set, and are made one node. Copied both
+                    // ways instead, an object in many blobs was carried into
+                    // and out of each, and blobs sharing a member grew alike
+                    // one location at a time; one node, they are the same
+                    // set once. Nothing is less precise: the sets were equal.
+                    Unite(into, Cell(join.O, Any));
+                    foreach (int cell in _cells[join.O].Values.ToArray()) CopyEdge(cell, into, 0);
+                    if (_placedMade.Contains(join.O)) Placed(join.Blob);
+                    else if (_placedMade.Contains(join.Blob)) Placed(join.O);
+                    if (_unknownMade.Contains(join.O)) ReachedByUnknown(join.Blob);
+                    else if (_unknownMade.Contains(join.Blob)) ReachedByUnknown(join.O);
+                    continue;
+                }
+                if (_cellJoins.TryDequeue(out var made))
+                {
+                    if (_blobsOf.TryGetValue(made.O, out List<int>? blobs))
+                        foreach (int blob in blobs.ToArray()) CopyEdge(made.Cell, Cell(blob, Any), 0);
+                    continue;
+                }
+                break;
+            }
+        }
+
+        private void Delta(int node, int loc)
+        {
+            int[]? buffer = _deltaBuf[node];
+            int length = _deltaLen[node];
+            if (buffer is null)
+            {
+                buffer = _spareDeltas.TryPop(out int[]? spare) ? spare : new int[16];
+                _deltaBuf[node] = buffer;
+            }
+            else if (length == buffer.Length)
+            {
+                int[] bigger = new int[length * 2];
+                Array.Copy(buffer, bigger, length);
+                _spareDeltas.Push(buffer);
+                _deltaBuf[node] = buffer = bigger;
+            }
+            buffer[length] = loc;
+            _deltaLen[node] = length + 1;
+            if (length == 0) _work.Enqueue(node, _wave[node]);
+        }
+
+        private int UnknownCell()
+        {
+            if (_unknownCell < 0) _unknownCell = Cell(0, Any);
+            return _unknownCell;
+        }
+
+        // What a node holds now is carried along a new edge at once (each
+        // walk over what it held when the edge was made: a set only grows,
+        // at its end). An edge already there is not listed again -- carrying
+        // a node's gains along it twice adds nothing the first did not -- but
+        // what the node holds is still carried now, as it was when every
+        // edge was listed: what it has gained and not yet carried arrives
+        // where it goes in the same order.
+        // AN EDGE ALREADY THERE CARRIES NOTHING NOW: all its source held was
+        // carried along it when it was made, or is in the source's delta,
+        // which goes along every edge it has when the source's turn comes. A
+        // merge of a cycle (Merge) moves each member's edges to the node
+        // kept, most of them its own already; carried again, every location
+        // the kept node held went along every one of them at every collapse
+        // -- on raw-memory code, a node of hundreds of offsets into a few
+        // objects and edges by the hundred, each location offered to a node
+        // twenty-five thousand times (Gc.OpenRecord: 23 million offered for
+        // 920 locations).
+        private void CopyEdge(int from, int to, int shift)
+        {
+            from = Find(from); to = Find(to);
+            if (from == to && shift == 0) return;
+            bool fresh = shift == 0 ? _plainCopies.Add(((long)from << 32) | (uint)to) : _shiftedCopies.Add((from, to, shift));
+            if (!fresh) return;
+            (_copies[from] ??= new()).Add((to, shift)); _copyEdges++;
+            if (_pts[from] is not { } pts) return;
+            if (shift == 0) for (int i = 0, n = pts.Count; i < n; i++) Add(to, pts.Items[i]);
+            else for (int i = 0, n = pts.Count; i < n; i++) Add(to, Shift(pts.Items[i], shift));
+        }
+
+        private void LoadEdge(int dest, int address, int offset, int family = -1)
+        {
+            address = Find(address);
+            if (!_loadEdges.Add((address, Find(dest), offset, family))) return;
+            (_loads[address] ??= new()).Add((dest, offset, family));
+            _loadEdgeCount++;
+            if (_pts[address] is { } pts)
+            {
+                _edgeWork += pts.Count;
+                for (int i = 0, n = pts.Count; i < n; i++) Loaded(pts.Items[i], dest, offset, family);
+            }
+        }
+
+        private void StoreEdge(int address, int offset, int value, int family = -1)
+        {
+            address = Find(address);
+            if (!_storeEdges.Add((address, Find(value), offset, family))) return;
+            (_stores[address] ??= new()).Add((value, offset, family));
+            _storeEdgeCount++;
+            if (_pts[address] is { } pts)
+            {
+                _edgeWork += pts.Count;
+                for (int i = 0, n = pts.Count; i < n; i++) Stored(pts.Items[i], value, offset, family);
+            }
+        }
+
+        // Every cell of what `address` points to, into `dest`.
+        private void LoadAllEdge(int dest, int address)
+        {
+            address = Find(address);
+            if (!_readAllEdges.Add(Pair(address, Find(dest)))) return;
+            (_readsAll[address] ??= new()).Add(dest);
+            if (_pts[address] is { } pts) for (int i = 0, n = pts.Count; i < n; i++) LoadedAll(pts.Items[i], dest);
+        }
+
+        /// <summary>A node's representative (union-find, halving the path as it goes).</summary>
+        private int Find(int node)
+        {
+            Span<int> parent = CollectionsMarshal.AsSpan(_parent);
+            while (parent[node] != node)
+            {
+                parent[node] = parent[parent[node]];
+                node = parent[node];
+            }
+            return node;
+        }
+
+        /// <summary>What a node holds: its representative's set.</summary>
+        private LocSet? Pts(int node) => _pts[Find(node)];
+
+        // A pair of nodes (or an object and a word) as one key. Kept by the
+        // nodes as they were named, never their representatives: a load's
+        // first reading of a cell does more than add the edge (Loaded), and
+        // two cells one node are still two objects' cells.
+        private static long Pair(int a, int b) => ((long)a << 32) | (uint)b;
+
+        private void FilterEdge(int from, int to, int guard)
+        {
+            from = Find(from);
+            if (!_filterEdges.Add((from, Find(to), guard))) return;
+            (_filters[from] ??= new()).Add((to, guard));
+            if (_pts[from] is { } pts) for (int i = 0, n = pts.Count; i < n; i++) Add(to, Filtered(pts.Items[i], guard));
+        }
+        /// <summary>
+        /// A location through a guard: an object made of no site the guard
+        /// lets through is dropped; a place is the place guarded, the caller's
+        /// to filter in turn; anything else -- the unknown object, an address
+        /// into an object, an object of no known site -- goes through as it is.
+        /// </summary>
+        private int Filtered(int loc, int guard)
+        {
+            int o = _locObject[loc];
+            if (_kind[o] == Kind.Made && _locOffset[loc] is 0 or Any) return Passes(o, guard) ? loc : -1;
+            if (_locOffset[loc] != 0) return loc;
+            switch (_kind[o])
+            {
+                case Kind.Place or Kind.Deep: return Location(Place(_param[o], _owner.WithGuard(_path[o], guard)), 0);
+                default: return loc;
+            }
+        }
+
+        private readonly Dictionary<(int, int), bool> _passes = new();
+
+        private bool Passes(int o, int guard)
+        {
+            if (_passes.TryGetValue((o, guard), out bool known)) return known;
+            int[] sites = SitesOfObject(o);
+            bool passes = sites.Length == 0;
+            foreach (int site in sites) if (_owner.SitePasses(site, guard)) { passes = true; break; }
+            return _passes[(o, guard)] = passes;
+        }
+
+        private readonly Dictionary<int, int[]> _objectSites = new();
+
+        private int[] SitesOfObject(int o)
+        {
+            if (_objectSites.TryGetValue(o, out int[]? known)) return known;
+            return _objectSites[o] = _origins[o].Length == 0 ? Array.Empty<int>() : _owner.SitesOf(_origins[o]);
+        }
+
+        private static int Offset(int at, int offset) => at == Any || offset == Any ? Any : at + offset <= FarthestField ? at + offset : Any;
+
+        private readonly HashSet<long> _loadedFrom = new();
+
+        // AN OBJECT'S WORD, BY FIELD: a store naming its field, from the
+        // object's start, writes that field's word of the offset (a cell
+        // keyed TypedStep(offset, field)); any other store, the offset's
+        // untyped word. A load naming a field reads its field's word, the
+        // untyped word and the any-offset word; one naming none reads every
+        // field's word at the offset, now and as they are made (FieldsAt).
+        // Sound for a type-safe program, as typed aliasing is (Aliased): a
+        // word at an offset of an object is one field, so a store naming F
+        // and a load naming G never meet in one object.
+        private void Loaded(int loc, int dest, int offset, int family = -1)
+        {
+            int o = _locObject[loc];
+            if (IsConstant(o)) { Add(dest, Constant); return; }
+            int at = Offset(_locOffset[loc], offset);
+            if (at == Any) { LoadedAll(loc, dest); return; }
+            // A word never read as a reference holds a number: the unknown object at most.
+            if (NoReference(o, at)) { Add(dest, Unknown); return; }
+            // Typed only from the object's start: at an address into it, the
+            // field named is not where the offset says.
+            int named = _locOffset[loc] == 0 ? Named(o, at, family) : -1;
+            int own = Cell(o, TypedStep(at, named));
+            if (!_loadedFrom.Add(Pair(own, dest))) return;
+            CopyEdge(own, dest, 0);
+            if (StepFamily(TypedStep(at, named)) >= 0)
+            {
+                // What was written naming no field may be this one.
+                int word = Cell(o, at);
+                if (_loadedFrom.Add(Pair(word, dest))) CopyEdge(word, dest, 0);
+            }
+            else FieldsAt(o, at, dest);
+            // What was written at an offset nobody knew may be here too.
+            int any = Cell(o, Any);
+            if (_loadedFrom.Add(Pair(any, dest))) CopyEdge(any, dest, 0);
+            Aliasing(o, dest, at, named);
+            Add(dest, Implicit(o, at, named));
+        }
+
+        // Per object and offset: the loads naming no field there, which read
+        // every field's word at it, those made later too (Cell).
+        private readonly Dictionary<long, List<int>> _offsetReaders = new();
+
+        // A load naming no field at `at` of object o: every field's word there.
+        // THE MOST FIELDS ONE OBJECT KEEPS APART AT ONE OFFSET. A place of an
+        // interface's or a base's type, a blob, a merged made object is
+        // read and written as many fields at one offset; each a word of its
+        // own, each a place below it, and each read by every load naming
+        // none there, they multiplied the graph by the fields a type has.
+        // Past this, a field named at the offset is the offset's untyped
+        // word (Named): read by every load at it, as before typed words.
+        private const int MostFieldsAt = 4;
+        private readonly Dictionary<long, int> _fieldsAt = new();
+
+        // The field an access at `at` of object o is kept apart as: its own
+        // where it has a word already or there is room for one; else none.
+        private int Named(int o, int at, int family)
+        {
+            if (family < 0 || at == Any || o == 0) return -1;
+            int step = TypedStep(at, family);
+            if (StepFamily(step) < 0) return -1;
+            if (_cells[o].ContainsKey(step)) return family;
+            long key = Pair(o, at);
+            int had = _fieldsAt.GetValueOrDefault(key);
+            if (had >= MostFieldsAt) return -1;
+            _fieldsAt[key] = had + 1;
+            return family;
+        }
+
+        private void FieldsAt(int o, int at, int dest)
+        {
+            long key = Pair(o, at);
+            if (!_offsetReaders.TryGetValue(key, out List<int>? readers)) _offsetReaders[key] = readers = new();
+            readers.Add(dest);
+            foreach (var (step, node) in _cells[o].ToArray())
+                if (StepFamily(step) >= 0 && StepOffset(step) == at && _loadedFrom.Add(Pair(node, dest))) CopyEdge(node, dest, 0);
+        }
+
+        private void LoadedAll(int loc, int dest)
+        {
+            int o = _locObject[loc];
+            if (o == 0) { Add(dest, Unknown); return; }
+            if (IsConstant(o)) { Add(dest, Constant); return; }
+            if (NoReference(o, Any)) { Add(dest, Unknown); return; }
+            HashSet<int> readers = _allReaders[o] ??= new();
+            if (!readers.Add(dest)) return;
+            Cell(o, Any);
+            foreach (int node in _cells[o].Values.ToArray()) CopyEdge(node, dest, 0);
+            Aliasing(o, dest, Any, -1);
+            Add(dest, Implicit(o, Any));
+        }
+
+        // WHAT MAY BE IN AN OBJECT WITHOUT A WRITE HERE (Aliased): for one a
+        // place reaches, what is written into places -- one node for all of
+        // them, read by each load of such an object -- and for one the
+        // unknown object reaches, the unknown object. Each object's loads
+        // are kept, for an object that joins later. (A node of its own for
+        // each object, each fed all that is written into places, carried a
+        // hundred million locations on the compiler's own link.)
+        private readonly HashSet<int> _placedMade = new(), _unknownMade = new();
+        private readonly Dictionary<int, List<(int Dest, int At, int Family)>> _loadsOf = new();
+        private readonly HashSet<long> _fedFrom = new();
+        private int _written = -1;
+
+        // WHAT IS WRITTEN INTO PLACES, BY FIELD (RegionConstraint.Family): a
+        // place's word that every write named one field of a class -- an
+        // object of that class, at its start, at that field's offset -- is
+        // written into its own node for that field, read only by loads that
+        // name the same field or name none (at any offset, through an
+        // address into an object, by the runtime's raw reads). Every other
+        // word, untyped or written two ways, is _written, read by every
+        // load. Two words at one offset of one object are one field, so a
+        // load naming another field never reads what this one was written:
+        // in a type-safe program they are never the same object. (One node
+        // for all of them, an instruction's field read back from a type
+        // symbol's: every graph a function was handed, one.)
+        private readonly Dictionary<long, int> _typedWritten = new();
+        private readonly List<int> _wideReaders = new();
+        // Whether any write into a place named a field: else a summary types no word.
+        private bool _anyTyped;
+
+        private int WrittenNode()
+        {
+            if (_written < 0) { _written = NewNode(); _nodeFlags[_written] |= NeverSaturated; }
+            return _written;
+        }
+
+        private int TypedWritten(int at, int family)
+        {
+            long key = Pair(at, family);
+            if (_typedWritten.TryGetValue(key, out int node)) return node;
+            node = NewNode();
+            _nodeFlags[node] |= NeverSaturated;
+            _typedWritten[key] = node;
+            foreach (int reader in _wideReaders) Feed(node, reader);
+            return node;
+        }
+
+        private void Feed(int from, int dest)
+        {
+            if (_fedFrom.Add(Pair(from, dest))) CopyEdge(from, dest, 0);
+        }
+
+        // A load of an object a place reaches: what is written into places
+        // that it may read (above).
+        private void FeedAliased(int dest, int at, int family)
+        {
+            Feed(WrittenNode(), dest);
+            if (family >= 0 && at != Any) { Feed(TypedWritten(at, family), dest); return; }
+            if (_wideReaders.Contains(dest)) return;
+            _wideReaders.Add(dest);
+            foreach (int node in _typedWritten.Values.ToArray()) Feed(node, dest);
+        }
+
+        private void Aliasing(int o, int dest, int at, int family)
+        {
+            if (_kind[o] != Kind.Made) return;
+            (_loadsOf.TryGetValue(o, out var loads) ? loads : _loadsOf[o] = new()).Add((dest, at, family));
+            if (_placedMade.Contains(o)) FeedAliased(dest, at, family);
+            if (_unknownMade.Contains(o)) Add(dest, Unknown);
+        }
+
+        private void Placed(int start)
+        {
+            // A member's blob is read as the member is, and a blob's members
+            // as it is: walked, not recursed, over however long a chain.
+            // Each load is fed what its field was written (FeedAliased).
+            Stack<int> next = new();
+            next.Push(start);
+            while (next.TryPop(out int o))
+            {
+                if (!_placedMade.Add(o)) continue;
+                if (_loadsOf.TryGetValue(o, out var loads))
+                    foreach (var (dest, at, family) in loads.ToArray()) FeedAliased(dest, at, family);
+                if (_blobsOf.TryGetValue(o, out List<int>? blobs)) foreach (int blob in blobs) next.Push(blob);
+                if (_membersOf.TryGetValue(o, out List<int>? members)) foreach (int member in members) next.Push(member);
+            }
+        }
+
+        private void ReachedByUnknown(int start)
+        {
+            Stack<int> next = new();
+            next.Push(start);
+            while (next.TryPop(out int o))
+            {
+                if (!_unknownMade.Add(o)) continue;
+                if (_loadsOf.TryGetValue(o, out var loads)) foreach (var load in loads.ToArray()) Add(load.Dest, Unknown);
+                if (_blobsOf.TryGetValue(o, out List<int>? blobs)) foreach (int blob in blobs) next.Push(blob);
+                if (_membersOf.TryGetValue(o, out List<int>? members)) foreach (int member in members) next.Push(member);
+            }
+        }
+
+        private readonly HashSet<long> _storedInto = new();
+
+        private void Stored(int loc, int value, int offset, int family = -1)
+        {
+            int o = _locObject[loc];
+            int at = Offset(_locOffset[loc], offset);
+            // A number kept where no reference is, or a constant, which is
+            // never written: nothing anyone reaches.
+            if (NoReference(o, at) || IsConstant(o)) return;
+            // Its field's word, named from the object's start; else the
+            // offset's untyped word (Loaded).
+            int named = at != Any && _locOffset[loc] == 0 ? Named(o, at, family) : -1;
+            int cell = Cell(o, TypedStep(at, named));
+            if (StepFamily(TypedStep(at, named)) >= 0 && _kind[o] is Kind.Place or Kind.Deep) _anyTyped = true;
+            if (_storedInto.Add(Pair(value, cell))) CopyEdge(value, cell, 0);
+        }
+
+        // Per object and word: never read as a reference (every site it may be says so).
+        private readonly Dictionary<long, bool> _noReference = new();
+
+        private bool NoReference(int o, int at)
+        {
+            if (_kind[o] != Kind.Made || _origins[o].Length == 0 || _owner.NoReference is not { } rule) return false;
+            if (_noReference.TryGetValue(Pair(o, at), out bool known)) return known;
+            bool none = true;
+            foreach (int r in _origins[o])
+            {
+                int[] sites = r < 0 ? new[] { -r - 1 } : _owner.SitesOf(new[] { r });
+                if (sites.Length == 0 || sites.Any(site => !rule(site, at))) { none = false; break; }
+            }
+            return _noReference[Pair(o, at)] = none;
+        }
+
+        // ---- building --------------------------------------------------------
+
+        public Graph Solved()
+        {
+            for (int m = 0; m < _members.Length; m++)
+            {
+                RegionFunction f = Function(m);
+                // A parameter of a number type points to no place.
+                for (int k = 0; k < f.Parameters; k++)
+                    if (!f.IsNumber(k)) Add(Node(m, k), Location(Place(m * ParamStride + k, Array.Empty<int>()), 0));
+                foreach (RegionConstraint c in f.Constraints)
+                {
+                    int a = Node(m, c.A);
+                    switch (c.Kind)
+                    {
+                        case RegionConstraintKind.Site: Add(a, Location(SiteObject(m, c.B), 0)); break;
+                        case RegionConstraintKind.Slot: Add(a, Location(SlotObject(m, c.B), 0)); break;
+                        case RegionConstraintKind.Unknown: Add(a, Unknown); break;
+                        // A constant's address holds nothing to follow (RegionConstants);
+                        // a symbol the link did not judge is the unknown object.
+                        case RegionConstraintKind.Symbol: Add(a, f.ConstantsKnown ? Constant : Unknown); break;
+                        case RegionConstraintKind.Copy: CopyEdge(Node(m, c.B), a, CopyShift(c.C)); break;
+                        case RegionConstraintKind.Load: LoadEdge(a, Node(m, c.B), Plain(c.C), _owner.FamilyOf(f, c.Family)); break;
+                        case RegionConstraintKind.Store: StoreEdge(a, Plain(c.C), Node(m, c.B), _owner.FamilyOf(f, c.Family)); break;
+                        case RegionConstraintKind.MemCopy:
+                        {
+                            int through = NewNode();
+                            LoadAllEdge(through, Node(m, c.B));
+                            StoreEdge(a, Any, through);
+                            break;
+                        }
+                        case RegionConstraintKind.Leak: Leak(a); break;
+                    }
+                }
+                for (int k = 0; k < f.Calls.Count && !Overflowed; k++) Call(m, k, f.Calls[k]);
+                if (Overflowed) { GiveBack(); return this; }
+            }
+            Propagate();
+            if (!Overflowed) Aliased();
+            GiveBack();
+            return this;
+        }
+
+        // WHAT IT WAS GRANTED AND DID NOT USE goes back to the pool, whether
+        // it finished or ran past its bound another way (too many nodes):
+        // a component is charged only the work it did.
+        private void GiveBack()
+        {
+            if (_drawn <= 0 || _mostAdds <= _adds) return;
+            long back = Math.Min(_mostAdds - _adds, _drawn);
+            _owner.InclusionPool += back;
+            _owner.PoolDrawn -= back;
+            _drawn -= back;
+            _mostAdds -= back;
+        }
+
+        private static int Plain(long offset) => offset < 0 || offset > FarthestField ? Any : (int)offset;
+
+        private static int CopyShift(long c) =>
+            RegionConstraint.IsIndex(c) ? IndexShift
+            : c == RegionConstraint.Any || RegionConstraint.IsMovedBy(c) || c > FarthestField || c < -FarthestField ? AnyShift
+            : (int)c;
+
+        private int SiteObject(int m, int ordinal)
+        {
+            if (_siteObjects.TryGetValue((m, ordinal), out int o)) return o;
+            return _siteObjects[(m, ordinal)] = NewObject(Kind.Made, -1, Array.Empty<int>(), new[] { Leaf(_owner._siteBase[_members[m]] + ordinal) });
+        }
+
+        private int SlotObject(int m, int slot)
+        {
+            if (_slotObjects.TryGetValue((m, slot), out int o)) return o;
+            return _slotObjects[(m, slot)] = NewObject(Kind.Made, -1, Array.Empty<int>(), Array.Empty<int>());
+        }
+
+        // What a node holds goes where nobody follows: into the unknown object.
+        private void Leak(int node) => CopyEdge(node, UnknownCell(), 0);
+
+        // Per set of targets in this cycle: the nodes a call of them hands its
+        // arguments to and takes its result from.
+        private readonly Dictionary<int[], (int[] Args, int Ret)> _dispatch = new(TargetsComparer.Instance);
+
+        private void Call(int m, int k, RegionCall call)
+        {
+            int f = _members[m];
+            int[]? targets = _owner._targets[f][k];
+            int[] args = new int[call.Arguments.Length];
+            for (int a = 0; a < args.Length; a++) args[a] = call.Arguments[a] < 0 || _owner.NumberArgument(targets, a) ? -1 : Node(m, call.Arguments[a]);
+            int dest = call.Dest < 0 ? -1 : Node(m, call.Dest);
+            if (targets is null) { UnknownCall(args, dest); return; }
+            if (targets.Length == 0) return;                       // no object of the type exists
+            if (_owner.IsWide(targets))
+            {
+                // A WIDE CALL WATCHED AT ITS RECEIVER, too: an object of a
+                // known class runs only its class's overrides, and is handed
+                // the stand-in of those alone (Received). The whole call's
+                // stand-in is every target's at once -- an iterator walked
+                // through IEnumerator<T>.MoveNext took on what any of some
+                // two thousand MoveNexts does with `this`, and one that lets
+                // its machine go let every machine go, with all it held.
+                if (_owner._keys[f][k] is not null && _owner.TargetsOn is not null && args.Length > 0 && args[0] >= 0)
+                {
+                    VCall wide = new() { F = f, K = k, Args = args, Dest = dest, Inside = Array.Empty<int>(), Outside = targets, Callee = call.Callee, Wide = true };
+                    int at = Find(args[0]);
+                    (_vcalls[at] ??= new()).Add(wide);
+                    if (_pts[at] is { } held) for (int i = 0, n = held.Count; i < n; i++) Received(wide, held.Items[i]);
+                    return;
+                }
+                Summary standIn = _owner.StandIn(targets);
+                Explain(f, "(wide, a stand-in) " + call.Callee, targets, standIn);
+                Apply(args, dest, standIn);
+                return;
+            }
+            int[] inside = targets.Where(_memberSet.Contains).ToArray();
+            int[] outside = inside.Length == 0 ? targets : targets.Where(t => !_memberSet.Contains(t)).ToArray();
+            // A VIRTUAL CALL OF MORE THAN ONE TARGET ON A RECEIVER: each
+            // location of it to the overrides that run on it (Received).
+            bool watched = _owner._keys[f][k] is not null && _owner.TargetsOn is not null && targets.Length > 1 && args.Length > 0 && args[0] >= 0;
+            if (inside.Length > 0)
+            {
+                // WITHIN THE CYCLE: into the callees' own nodes, through one
+                // pair a set of targets however many calls make it.
+                if (!_dispatch.TryGetValue(inside, out var through))
+                {
+                    int most = inside.Max(t => _owner._functions[t].Parameters);
+                    int[] p = new int[most];
+                    for (int j = 0; j < most; j++) p[j] = NewNode();
+                    int r = NewNode();
+                    foreach (int t in inside)
+                    {
+                        int tm = _memberOf[t];
+                        for (int j = 0; j < _owner._functions[t].Parameters; j++) CopyEdge(p[j], Node(tm, j), 0);
+                        CopyEdge(Ret(tm), r, 0);
+                    }
+                    through = (p, r);
+                    _dispatch[inside] = through;
+                }
+                for (int j = watched ? 1 : 0; j < args.Length && j < through.Args.Length; j++) if (args[j] >= 0) CopyEdge(args[j], through.Args[j], 0);
+                // A parameter this call passes nothing for: whatever its word holds.
+                for (int j = args.Length; j < through.Args.Length; j++) Add(through.Args[j], Unknown);
+                if (dest >= 0) CopyEdge(through.Ret, dest, 0);
+            }
+            if (watched)
+            {
+                VCall v = new() { F = f, K = k, Args = args, Dest = dest, Inside = inside, Outside = outside, Callee = call.Callee };
+                int receiver = Find(args[0]);
+                (_vcalls[receiver] ??= new()).Add(v);
+                if (_pts[receiver] is { } pts) for (int i = 0, n = pts.Count; i < n; i++) Received(v, pts.Items[i]);
+                return;
+            }
+            if (outside.Length > 0)
+            {
+                Summary applied = _owner.MergedFor(outside);
+                Explain(f, call.Callee, outside, applied);
+                Apply(args, dest, applied);
+            }
+        }
+
+        private void UnknownCall(int[] args, int dest)
+        {
+            foreach (int a in args) if (a >= 0) Leak(a);
+            if (dest >= 0) Add(dest, Unknown);
+        }
+
+        // A virtual call watched at its receiver: per set of targets outside
+        // the cycle, the receiver node their summary was applied with.
+        private sealed class VCall
+        {
+            public int F, K, Dest;
+            public int[] Args = null!, Inside = null!, Outside = null!;
+            public string? Callee;
+            /// <summary>A wide call's: its targets assumed, by stand-ins (WideGroup), never followed in order.</summary>
+            public bool Wide;
+            public readonly Dictionary<int[], int> Groups = new(TargetsComparer.Instance);
+            public readonly Dictionary<int, int[]?> Classes = new();
+            /// <summary>A wide call's targets kept apart on places (Deferred): each one's receiver node.</summary>
+            public readonly Dictionary<int, int> Deferred = new();
+            public bool? SplitOutside;
+            /// <summary>Its targets that leak an argument (LeaksArgument), once asked, however many (Dispatch, Deferred).</summary>
+            public int[]? Leaky;
+            public bool LeakyAsked;
+            /// <summary>Past MostDeferred leaky targets: their receiver node, all of them applied together (DeferredSet).</summary>
+            public int LeakySet = -1;
+        }
+
+        // The most sets of targets a call applies apart, past which a set is
+        // all of them merged; and the most targets a place is guarded for,
+        // one by one.
+        private const int MostGroups = 8;
+        private const int MostGuarded = 8;
+        private const int MostGuardedCycle = 16;
+
+        /// <summary>
+        /// A LOCATION THE RECEIVER MAY BE, to the overrides that run on it.
+        /// An object made at sites whose descriptors are known runs theirs,
+        /// and their summaries alone are applied to it, it alone their
+        /// `this`. A place runs, for each override, that override on the
+        /// objects there of a class that runs it: the place guarded by it.
+        /// Anything else -- the unknown object, an address into an object, a
+        /// place of a call of too many targets -- may run any of them.
+        /// Within the cycle, the same: a member's `this` is handed only what
+        /// it may run on.
+        /// </summary>
+        private void Received(VCall v, int loc)
+        {
+            int o = _locObject[loc];
+            // A call on a blob, noted to be dispatched again as members join.
+            if (_membersOf.ContainsKey(o) && _blobCallsSeen.Add((v, loc)))
+                (_blobCalls.TryGetValue(o, out List<(VCall, int)>? calls) ? calls : _blobCalls[o] = new()).Add((v, loc));
+            // (A receiver is an object's start: anywhere in a made object,
+            // it is that object.)
+            bool whole = _locOffset[loc] == 0;
+            if (v.Wide)
+            {
+                // An object of known sites: the stand-in of the overrides its
+                // classes run (none: the call never runs on it). Anything
+                // else: the whole call's stand-in.
+                int[]? narrow = (whole || _locOffset[loc] == Any) && _kind[o] == Kind.Made ? ClassTargets(v, o) : null;
+                if (narrow is { Length: 0 }) return;
+                // A PLACE: the call deferred to whoever binds it, for the
+                // targets that would let it go (Deferred).
+                if (narrow is null && whole && _kind[o] is Kind.Place or Kind.Deep && Deferred(v, o, loc)) return;
+                if (narrow is null && _owner.Why is not null && _owner.Progress is { } tell && _owner.WhyFunction?.Invoke(v.F) == true)
+                    tell($"escape graphs why: in {_owner._functions[v.F].Name}: wide call {v.Callee} runs any of its {v.Outside.Length} targets on {Describe(o)} +{_locOffset[loc]}");
+                if (narrow is not null) Dispatch(v, narrow, loc);
+                else Add(WideGroup(v, v.Outside), loc);
+                return;
+            }
+            if ((whole || _locOffset[loc] == Any) && _kind[o] == Kind.Made && ClassTargets(v, o) is { } runs)
+            {
+                List<int> outside = new();
+                foreach (int g in runs)
+                    if (_memberSet.Contains(g)) Receives(g, loc);
+                    else outside.Add(g);
+                if (outside.Count > 0) Dispatch(v, outside.ToArray(), loc);
+                return;
+            }
+            // Of more targets than are guarded one by one, all outside the
+            // cycle: deferred for those that leak (Deferred), as a wide call's.
+            if (whole && _kind[o] is Kind.Place or Kind.Deep && v.Inside.Length == 0 && v.Outside.Length > MostGuarded && Deferred(v, o, loc)) return;
+            if (whole && _kind[o] is Kind.Place or Kind.Deep && v.Inside.Length + v.Outside.Length <= MostGuarded)
+            {
+                // Apart only where it may tell: the targets outside when
+                // their summaries do anything to what the receiver is or
+                // reaches, the members of a small cycle. (Each place apart
+                // in each of a large cycle's calls carried its solve past
+                // its bound.)
+                v.SplitOutside ??= v.Outside.Length > 1 && _owner.MergedFor(v.Outside).Objects.Any(x => x.Kind is Kind.Place or Kind.Deep && x.Param == 0);
+                bool inside = _members.Length <= MostGuardedCycle;
+                foreach (int g in v.Inside) Receives(g, inside ? Guarded(o, v, g) : loc);
+                if (v.SplitOutside == true) foreach (int g in v.Outside) Add(Group(v, new[] { g }), Guarded(o, v, g));
+                else if (v.Outside.Length > 0) Add(Group(v, v.Outside), loc);
+                return;
+            }
+            if (_owner.Why is not null && _owner.Progress is { } say && _owner.WhyFunction?.Invoke(v.F) == true)
+                say($"escape graphs why: in {_owner._functions[v.F].Name}: call {v.Callee} runs any of its {v.Inside.Length + v.Outside.Length} targets on {Describe(o)} +{_locOffset[loc]}"
+                    + (_kind[o] == Kind.Made ? " (sites " + string.Join(",", SitesOfObject(o).Take(8)) + "; made from " + string.Join(", ", _origins[o].Take(3).Select(r => _owner.Lineage(r, 4))) + ")" : ""));
+            foreach (int g in v.Inside) Receives(g, loc);
+            if (v.Outside.Length > 0) Add(Group(v, v.Outside), loc);
+        }
+
+        /// <summary>
+        /// WHAT A CALL RUNS ON A BLOB (BlobOf): what it runs on any of its
+        /// members, each by its own sites (ClassTargets), a member blob by
+        /// its members in turn; null -- every target -- when any member is
+        /// of no known class. A blob's members only grow, and each join
+        /// dispatches every call on it again (Redispatch), so what it runs
+        /// grows with them: a call is applied to it for every member it has
+        /// come to hold. With none yet, nothing runs on it.
+        /// </summary>
+        private int[]? BlobTargets(VCall v, int blob)
+        {
+            SortedSet<int> runs = new();
+            HashSet<int> seen = new() { blob };
+            Stack<int> next = new();
+            next.Push(blob);
+            while (next.TryPop(out int b))
+                foreach (int member in _membersOf[b])
+                {
+                    if (!seen.Add(member)) continue;
+                    if (_membersOf.ContainsKey(member)) { next.Push(member); continue; }
+                    if (_kind[member] != Kind.Made || ClassTargets(v, member) is not { } those) return null;
+                    runs.UnionWith(those);
+                }
+            return runs.ToArray();
+        }
+
+        // The calls received on each blob's location, and the blobs a member
+        // joined since they were last dispatched.
+        private readonly Dictionary<int, List<(VCall, int)>> _blobCalls = new();
+        private readonly HashSet<(VCall, int)> _blobCallsSeen = new();
+        private readonly HashSet<int> _pendingBlobs = new();
+
+        /// <summary>
+        /// Every call on a blob a member joined, and on each blob that holds
+        /// it as a member in turn, dispatched again for what it runs now:
+        /// what it was dispatched to stays (more applied, never less). Run
+        /// from Propagate's loop, not inside the Add a join comes from.
+        /// </summary>
+        private void Redispatch()
+        {
+            int[] joined = _pendingBlobs.ToArray();
+            _pendingBlobs.Clear();
+            HashSet<int> seen = new();
+            Stack<int> next = new(joined);
+            while (next.TryPop(out int b))
+            {
+                if (!seen.Add(b)) continue;
+                if (_blobCalls.TryGetValue(b, out List<(VCall, int)>? calls))
+                    foreach (var (v, loc) in calls.ToArray())
+                    {
+                        v.Classes.Remove(b);
+                        Received(v, loc);
+                    }
+                if (_blobsOf.TryGetValue(b, out List<int>? outer)) foreach (int c in outer) next.Push(c);
+            }
+        }
+
+        /// <summary>
+        /// AN OBJECT OF KNOWN CLASSES, the targets outside the cycle its
+        /// sites' classes run (`targets`): their summaries applied to it, in
+        /// a group of their own (Group, WideGroup) -- while the call has room
+        /// for one. PAST MostGroups sets, the rest were all merged into the
+        /// whole call, and one override among them that leaks its receiver
+        /// (or an argument) took every object handed past the eighth set: the
+        /// elements of a list of many classes, each loaded and called on.
+        /// Now, full, the call keeps apart the targets that leak
+        /// (LeaksArgument), as on a place (Deferred): an object whose classes
+        /// run any of the others goes to one group of all of those that do
+        /// not leak, applied at once -- more targets than it runs, none that
+        /// leaks -- and to the group of each leaky target it runs, that
+        /// target alone. Every target it runs is applied to it, so this is
+        /// sound; only what it runs leaks it. With more leaky targets than
+        /// MostDeferred, all of them in one group (DeferredSet) for an object
+        /// that runs any of them. (A target not solved yet
+        /// does not leak: what applied it, wide, is solved again when its
+        /// stand-in grows, and whatever is not wide was solved first.)
+        /// </summary>
+        private void Dispatch(VCall v, int[] targets, int loc)
+        {
+            bool full = v.Groups.Count >= MostGroups && !v.Groups.ContainsKey(targets) && !TargetsComparer.Instance.Equals(targets, v.Outside);
+            if (!full)
+            {
+                Add(v.Wide ? WideGroup(v, targets) : Group(v, targets), loc);
+                return;
+            }
+            int[] apart = LeakyOf(v);
+            // PAST MostDeferred LEAKY TARGETS, those together: an object that
+            // runs any of them is handed them all at once, one that runs none
+            // only the rest (more than one by one, far less than the whole call).
+            bool together = apart.Length > MostDeferred;
+            bool quiet = false;
+            foreach (int t in targets)
+            {
+                if (Array.BinarySearch(apart, t) < 0) quiet = true;
+                else Add(together ? DeferredSet(v, apart) : DeferredGroup(v, t), loc);
+            }
+            if (!quiet) return;
+            int[] rest = apart.Length == 0 ? v.Outside : v.Outside.Except(apart).ToArray();
+            Add(v.Wide ? WideGroup(v, rest, apart: true) : Group(v, rest, apart: true), loc);
+        }
+
+        /// <summary>
+        /// A CALL ON A PLACE, DEFERRED FOR THE TARGETS THAT LEAK -- a wide
+        /// call's, or one of more targets than are guarded one by one, all
+        /// outside the cycle: of
+        /// the call's targets, those whose own summary has the unknown object
+        /// hold an argument, or is the unknown call's (LeaksArgument), are
+        /// each applied to the place guarded by itself -- the caller's to
+        /// filter: an object of a known site there runs it only if its class
+        /// does, a place of the caller's is that place guarded in turn -- and
+        /// every other target's stand-in, at once, to the place as it is.
+        /// So an override that lets its receiver go makes global only the
+        /// receivers that may run it, where one among a thousand made every
+        /// receiver of the call everyone's (U>P0, U>D0 in its stand-in).
+        ///
+        /// SOUND: every target is applied, each to every receiver it may run
+        /// on -- the rest to every one, each leaky one to every object its
+        /// guard may let through, which is every object whose class runs it,
+        /// every object of no known site, and what a place of a caller's
+        /// binds to there, filtered again -- with a stand-in that the rounds
+        /// grow to cover it (StandIn) -- or, not wide, with its summary,
+        /// solved before (MergedFor) -- so a target whose summary was not
+        /// solved yet, or grew since, is covered where it is applied; and a
+        /// rest that grows to let its receiver go is solved again
+        /// (ChangedAt), when the target that made it grow is apart. Bounded:
+        /// no more than MostDeferred targets apart one by one -- past that,
+        /// all of them as one, guarded by "runs any of them" (TargetSet), one
+        /// guard more on the place, not one a target -- and a place whose
+        /// guard has been deferred through MostDeferredLevels calls already
+        /// takes the whole call as before, as does a call with nothing to
+        /// keep apart. Only the receiver is kept apart: what a leaky target does
+        /// to the other arguments is done as its stand-in says, at every
+        /// call, as before.
+        /// </summary>
+        private bool Deferred(VCall v, int o, int loc)
+        {
+            int[] path = _path[o];
+            if (path.Length > 0 && IsGuard(path[^1]) && _owner._guards[GuardOf(path[^1])].Length >= MostDeferredLevels) return false;
+            int[] leaky = LeakyOf(v);
+            if (leaky.Length == 0) return false;
+            int[] rest = v.Outside.Except(leaky).ToArray();
+            if (_owner.Why is not null && _owner.Progress is { } tell && _owner.WhyFunction?.Invoke(v.F) == true)
+                tell($"escape graphs why: in {_owner._functions[v.F].Name}: call {v.Callee} on {Describe(o)} deferred for {string.Join(", ", leaky.Take(8).Select(t => _owner._functions[t].Name))}{(leaky.Length > 8 ? " and " + (leaky.Length - 8) + " more" : "")}");
+            // PAST MostDeferred OF THEM, ONE GUARD FOR ALL: the leaky targets
+            // applied together to the place guarded by "runs any of them".
+            // The caller's objects of a class that runs none are not handed
+            // them; where once the whole call, a stand-in letting go every
+            // receiver, was applied to every one.
+            if (leaky.Length > MostDeferred) Add(DeferredSet(v, leaky), Guarded(o, v, _owner.TargetSet(leaky)));
+            else foreach (int t in leaky) Add(DeferredGroup(v, t), Guarded(o, v, t));
+            if (rest.Length > 0) Add(v.Wide ? WideGroup(v, rest, apart: true) : Group(v, rest, apart: true), loc);
+            return true;
+        }
+
+        /// <summary>A call's targets outside the cycle that leak an argument (LeaksArgument), in order, asked once.</summary>
+        private int[] LeakyOf(VCall v)
+        {
+            if (v.LeakyAsked) return v.Leaky!;
+            v.LeakyAsked = true;
+            List<int> leaky = new();
+            foreach (int t in v.Outside) if (_owner.LeaksArgument(t)) leaky.Add(t);
+            return v.Leaky = leaky.ToArray();
+        }
+
+        /// <summary>The receiver node of every leaky target of a call at once (past MostDeferred of them): their stand-in, or merged summary, applied to it on first use.</summary>
+        private int DeferredSet(VCall v, int[] leaky)
+        {
+            if (v.LeakySet >= 0) return v.LeakySet;
+            int recv = NewNode();
+            v.LeakySet = recv;
+            int[] args = (int[])v.Args.Clone();
+            args[0] = recv;
+            Summary applied = v.Wide ? _owner.NarrowedStandIn(v.F, leaky) : _owner.MergedFor(leaky);
+            Explain(v.F, "(deferred for its leaky targets' receivers) " + v.Callee, leaky, applied);
+            Apply(args, v.Dest, applied);
+            return recv;
+        }
+
+        // The most targets of a wide call kept apart on a place, and the
+        // most calls a place's guard is deferred through.
+        private const int MostDeferred = 8;
+        private const int MostDeferredLevels = 3;
+
+        /// <summary>The receiver node of one target of a wide call kept apart (Deferred): its own stand-in applied to it on first use.</summary>
+        private int DeferredGroup(VCall v, int target)
+        {
+            int[] one = { target };
+            if (v.Deferred.TryGetValue(target, out int recv)) return recv;
+            recv = NewNode();
+            v.Deferred[target] = recv;
+            int[] args = (int[])v.Args.Clone();
+            args[0] = recv;
+            // A wide call's target by its own stand-in, which the rounds grow;
+            // any other's by its summary, solved before.
+            Summary applied = v.Wide ? _owner.NarrowedStandIn(v.F, one) : _owner.MergedFor(one);
+            Explain(v.F, "(deferred for its own receivers) " + v.Callee, one, applied);
+            Apply(args, v.Dest, applied);
+            return recv;
+        }
+
+        private void Receives(int member, int loc)
+        {
+            if (_owner._functions[member].Parameters > 0) Add(Node(_memberOf[member], 0), loc);
+        }
+
+        private int Guarded(int place, VCall v, int target) =>
+            Location(Place(_param[place], _owner.WithGuard(_path[place], _owner.Guard(v.F, v.K, target))), 0);
+
+        /// <summary>The targets the call runs on an object, by its sites; null when any may run.</summary>
+        private int[]? ClassTargets(VCall v, int o)
+        {
+            if (v.Classes.TryGetValue(o, out int[]? known)) return known;
+            if (_membersOf.ContainsKey(o)) return v.Classes[o] = BlobTargets(v, o);
+            int[] sites = SitesOfObject(o);
+            SortedSet<int>? runs = sites.Length == 0 ? null : new();
+            foreach (int site in sites)
+            {
+                if (_owner.RunsOn(v.F, v.K, site) is not { } those) { runs = null; break; }
+                runs!.UnionWith(those);
+            }
+            return v.Classes[o] = runs?.ToArray();
+        }
+
+        /// <summary>The receiver node of a set of targets outside the cycle, their summary applied to it on first use.</summary>
+        private int Group(VCall v, int[] targets, bool apart = false)
+        {
+            if (v.Groups.TryGetValue(targets, out int recv)) return recv;
+            if (!apart && v.Groups.Count >= MostGroups && !TargetsComparer.Instance.Equals(targets, v.Outside)) return Group(v, v.Outside);
+            recv = NewNode();
+            v.Groups[targets] = recv;
+            int[] args = (int[])v.Args.Clone();
+            args[0] = recv;
+            Summary applied = _owner.MergedFor(targets);
+            Explain(v.F, v.Callee, targets, applied);
+            Apply(args, v.Dest, applied);
+            return recv;
+        }
+
+        /// <summary>
+        /// The receiver node of some of a wide call's targets, their stand-in
+        /// applied to it on first use: never their summaries, which a wide
+        /// call is solved without (Order), but what they are assumed to do,
+        /// checked and grown each round as the whole call's is (Check).
+        /// </summary>
+        private int WideGroup(VCall v, int[] targets, bool apart = false)
+        {
+            if (v.Groups.TryGetValue(targets, out int recv)) return recv;
+            // (The rest of a deferred call is always its own: the leaky
+            // targets are applied apart, and merged into the whole call they
+            // would be applied to every receiver again.)
+            if (!apart && v.Groups.Count >= MostGroups && !TargetsComparer.Instance.Equals(targets, v.Outside)) return WideGroup(v, v.Outside);
+            recv = NewNode();
+            v.Groups[targets] = recv;
+            int[] args = (int[])v.Args.Clone();
+            args[0] = recv;
+            bool whole = TargetsComparer.Instance.Equals(targets, v.Outside);
+            Summary applied = whole ? _owner.StandIn(targets) : _owner.NarrowedStandIn(v.F, targets);
+            Explain(v.F, (whole ? "(wide, a stand-in) " : "(wide, its class's stand-in) ") + v.Callee, targets, applied);
+            Apply(args, v.Dest, applied);
+            return recv;
+        }
+
+        // For a report: what a summary applied for a function asked about leaks.
+        private void Explain(int f, string? callee, int[] targets, Summary applied)
+        {
+            if (_owner.Why is null || _owner.Progress is null || _owner.WhyFunction?.Invoke(f) != true) return;
+            var leaks = applied.Cells.Where(c => c.From == 0).Select(c => applied.Objects[c.To]).Select(o => o.Kind + " " + o.Param + " [" + string.Join(",", o.Path.Select(Step)) + "]"
+                + (o.Kind == Kind.Made && o.Origins.Length > 0 ? " (sites " + string.Join(",", _owner.SitesOf(o.Origins).Take(8)) + ")" : ""));
+            if (applied.IsUnknown || leaks.Any())
+                _owner.Progress($"escape graphs why: in {_owner._functions[f].Name}: call {callee} ({targets.Length} targets{(targets.Length == 1 ? " " + _owner._functions[targets[0]].Name : "")}) {(applied.IsUnknown ? "is the unknown call" : "leaks " + string.Join("; ", leaks))}");
+        }
+
+        private static string Step(int step) => StepText(step);
+
+        /// <summary>
+        /// A CALLEE'S SUMMARY AT THIS CALL: its places the caller's own reach
+        /// from the arguments by the same fields, the objects it made made
+        /// here, its cells written, its result the call's.
+        /// </summary>
+        private void Apply(int[] args, int dest, Summary s)
+        {
+            _owner.Applied++;
+            if (s.IsUnknown) { UnknownCall(args, dest); return; }
+            int[] node = new int[s.Objects.Count];
+            Dictionary<(int, int), int> chains = new();
+            // A place's path from the argument: a field a load, a guard its
+            // filter, the deep step everything below.
+            int Chain(int at, int[] path)
+            {
+                foreach (int step in path)
+                {
+                    if (!chains.TryGetValue((at, step), out int next))
+                    {
+                        next = NewNode();
+                        if (step == DeepStep) { LoadAllEdge(next, at); LoadAllEdge(next, next); }
+                        else if (IsGuard(step)) FilterEdge(at, next, GuardOf(step));
+                        // A field naming its field, loaded as it.
+                        else LoadEdge(next, at, StepOffset(step), StepFamily(step));
+                        chains[(at, step)] = next;
+                    }
+                    at = next;
+                }
+                return at;
+            }
+            for (int k = 0; k < s.Objects.Count; k++)
+            {
+                var o = s.Objects[k];
+                int arg = o.Param >= 0 && o.Param < args.Length ? args[o.Param] : -1;
+                // A PARAMETER THE CALL PASSES NOTHING FOR is whatever its word
+                // holds: the unknown object, and what is written there
+                // escapes. (Nothing at all, a callee's writes through it
+                // were dropped.)
+                bool unpassed = o.Param >= args.Length;
+                switch (o.Kind)
+                {
+                    case Kind.Unknown:
+                        node[k] = NewNode(); Add(node[k], Unknown); break;
+                    case Kind.Place when unpassed:
+                    case Kind.Deep when unpassed:
+                        node[k] = NewNode(); Add(node[k], Unknown); break;
+                    case Kind.Place:
+                        node[k] = arg < 0 ? NewNode() : Chain(arg, o.Path);     // nothing passed that could hold an address: nothing
+                        break;
+                    case Kind.Deep when o.Param >= 0:
+                        // Everything below what the argument reaches by the
+                        // deep place's fields (its path's deep step).
+                        node[k] = arg < 0 ? NewNode() : Chain(arg, DeepPath(o.Path));
+                        break;
+                    case Kind.Deep:
+                    {
+                        // Past every parameter (-1): what every argument is and reaches.
+                        node[k] = NewNode();
+                        foreach (int a in args)
+                        {
+                            if (a < 0) continue;
+                            CopyEdge(a, node[k], 0);
+                            LoadAllEdge(node[k], a);
+                        }
+                        LoadAllEdge(node[k], node[k]);
+                        break;
+                    }
+                    case Kind.Made when o.Param == ConstantParam:
+                        node[k] = NewNode(); Add(node[k], Constant); break;
+                    case Kind.Made:
+                    {
+                        int made = NewObject(Kind.Made, -1, Array.Empty<int>(), s.Holder >= 0 ? new[] { Ref(s.Holder, k) } : o.Origins);
+                        node[k] = NewNode();
+                        Add(node[k], Location(made, 0));
+                        break;
+                    }
+                }
+            }
+            // One node a target moved by an offset, and one store a source
+            // cell gathering every value written there: a dense summary made
+            // a node and a store a cell, and a few calls of it ran a function
+            // past its bound.
+            Dictionary<(int, int), int> moved = new();
+            int At(int obj, int offset)
+            {
+                if (offset == 0) return node[obj];
+                if (moved.TryGetValue((obj, offset), out int known)) return known;
+                int made = NewNode();
+                CopyEdge(node[obj], made, offset == Any ? AnyShift : offset);
+                return moved[(obj, offset)] = made;
+            }
+            // (A cell naming the field it was written as -- its own, from a
+            // summary by field, or its word's, Summary.Fields -- is stored as
+            // that field: what is written into a place by it is read only by
+            // loads of it.)
+            Dictionary<(int, int, int), int> gathered = new();
+            foreach (var c in s.Cells)
+            {
+                // The field a cell was written as (CellFamilies: unification
+                // by field), else the one its word was (Fields: a summary of
+                // the inclusion solve), else none.
+                int family = s.FamilyOf(c);
+                if (family < 0) family = s.FieldAt(c.From, c.Offset);
+                if (!gathered.TryGetValue((c.From, c.Offset, family), out int into))
+                {
+                    into = NewNode();
+                    gathered[(c.From, c.Offset, family)] = into;
+                    StoreEdge(node[c.From], c.Offset, into, family);
+                }
+                CopyEdge(At(c.To, c.ToOffset), into, 0);
+            }
+            if (dest >= 0) foreach (var r in s.Result) CopyEdge(At(r.To, r.ToOffset), dest, 0);
+        }
+
+        // ---- solving ---------------------------------------------------------
+
+        private void Propagate()
+        {
+            if (_copyEdges > _edgesAtCollapse) Collapse();
+            while (true)
+            {
+                // Joins linked (Link), and calls on a blob a member joined
+                // dispatched again (Redispatch), before the next node.
+                if ((_joins.Count > 0 || _cellJoins.Count > 0) && !Overflowed) Link();
+                if (_pendingBlobs.Count > 0 && !Overflowed) Redispatch();
+                if (!_work.TryDequeue(out int n, out _))
+                {
+                    // A dispatch again may have joined more: linked before the end.
+                    if (!Overflowed && (_joins.Count > 0 || _cellJoins.Count > 0 || _pendingBlobs.Count > 0)) continue;
+                    break;
+                }
+                // Cycles closed by the edges loads and stores have added, once
+                // there are enough new ones to be worth a walk of the graph.
+                if (_copyEdges - _edgesAtCollapse > Math.Max(4096, _edgesAtCollapse >> 2))
+                {
+                    Collapse();
+                    if (Overflowed) return;
+                    if (_deltaBuf[n] is null) continue;
+                }
+                int[]? delta = _deltaBuf[n];
+                int count = _deltaLen[n];
+                if (delta is null || count == 0) continue;
+                // Taken from the node: what it gains while this is carried is
+                // a new delta, carried in its turn.
+                _deltaBuf[n] = null; _deltaLen[n] = 0;
+                _owner.Work += count;
+                if ((_carried += count) > _mostCarried && (_mostAdds == long.MaxValue || _adds > _mostAdds) && !MoreWork() || OverWorked || Overflowed) { Overflowed = true; return; }
+                if (_big && _owner.Progress is not null && (_carried & ~0xFFFFFL) != ((_carried - count) & ~0xFFFFFL))
+                    _owner.Progress($"escape graphs:   cycle solve: {Describe()}, heap {GC.GetTotalMemory(false) >> 20} MB");
+                // Edges are read afresh each time: one made while these are
+                // carried is carried along too, as a list walked by index was.
+                if (_copies[n] is { } copies)
+                    for (int e = 0; e < copies.Count; e++)
+                    {
+                        (int to, int shift) = copies[e];
+                        if (shift == 0) for (int k = 0; k < count; k++) Add(to, delta[k]);
+                        else for (int k = 0; k < count; k++) Add(to, Shift(delta[k], shift));
+                    }
+                if (_loads[n] is { } loads)
+                    for (int e = 0; e < loads.Count; e++)
+                    {
+                        (int dest, int offset, int family) = loads[e];
+                        for (int k = 0; k < count; k++) Loaded(delta[k], dest, offset, family);
+                    }
+                if (_stores[n] is { } stores)
+                    for (int e = 0; e < stores.Count; e++)
+                    {
+                        (int value, int offset, int family) = stores[e];
+                        for (int k = 0; k < count; k++) Stored(delta[k], value, offset, family);
+                    }
+                if (_readsAll[n] is { } all)
+                    for (int e = 0; e < all.Count; e++)
+                    {
+                        int dest = all[e];
+                        for (int k = 0; k < count; k++) LoadedAll(delta[k], dest);
+                    }
+                // Through a guard, and to a virtual call's overrides by what
+                // the receiver may be (Received).
+                if (_filters[n] is { } filters)
+                    for (int e = 0; e < filters.Count; e++)
+                    {
+                        (int to, int guard) = filters[e];
+                        for (int k = 0; k < count; k++) Add(to, Filtered(delta[k], guard));
+                    }
+                if (_vcalls[n] is { } vcalls)
+                    for (int e = 0; e < vcalls.Count; e++)
+                    {
+                        VCall v = vcalls[e];
+                        for (int k = 0; k < count; k++) Received(v, delta[k]);
+                    }
+                _spareDeltas.Push(delta);
+            }
+        }
+
+        /// <summary>
+        /// CYCLES OF COPIES COLLAPSED, and the wave order found. Nodes that copy
+        /// into each other round a cycle (shift 0) hold the same at the end,
+        /// so they are made one: Tarjan's components over the copy edges as
+        /// they stand, each merged into the member holding most. What would
+        /// be carried round the cycle once a member is carried once. Not the
+        /// unknown object's cell nor a node never cut short, whose own rules
+        /// (Add) a merge would lend to others or take from them. A merged
+        /// node holds the union of what its members would: at most it fills
+        /// past MostHeld where one alone would not, and sends what it holds
+        /// to the unknown object -- more outlives, never less.
+        /// The components come out sinks first; numbered back from there,
+        /// each node's wave is its place, sources first.
+        /// </summary>
+        private void Collapse()
+        {
+            _edgesAtCollapse = _copyEdges;
+            int count = _pts.Count;
+            int[] index = new int[count], low = new int[count], finished = new int[count];
+            Array.Fill(index, -1);
+            bool[] onStack = new bool[count];
+            int[] stack = new int[count], frameNode = new int[count], frameEdge = new int[count];
+            int sp = 0, next = 0, done = 0;
+            List<int[]> cycles = new();
+            List<int> members = new();
+            bool Collapsible(int n) => _parent[n] == n && n != _unknownCell && (_nodeFlags[n] & NeverSaturated) == 0;
+            for (int root = 0; root < count; root++)
+            {
+                if (index[root] >= 0 || !Collapsible(root) || _copies[root] is null) continue;
+                int fp = 0;
+                frameNode[0] = root; frameEdge[0] = 0;
+                index[root] = low[root] = next++; stack[sp++] = root; onStack[root] = true;
+                while (fp >= 0)
+                {
+                    int v = frameNode[fp];
+                    List<(int To, int Shift)>? edges = _copies[v];
+                    bool deeper = false;
+                    while (edges is not null && frameEdge[fp] < edges.Count)
+                    {
+                        (int to, int shift) = edges[frameEdge[fp]++];
+                        if (shift != 0) continue;
+                        int w = Find(to);
+                        if (w == v || !Collapsible(w)) continue;
+                        if (index[w] < 0)
+                        {
+                            index[w] = low[w] = next++; stack[sp++] = w; onStack[w] = true;
+                            fp++; frameNode[fp] = w; frameEdge[fp] = 0;
+                            deeper = true;
+                            break;
+                        }
+                        if (onStack[w] && index[w] < low[v]) low[v] = index[w];
+                    }
+                    if (deeper) continue;
+                    if (low[v] == index[v])
+                    {
+                        members.Clear();
+                        int w;
+                        done++;
+                        do { w = stack[--sp]; onStack[w] = false; finished[w] = done; members.Add(w); } while (w != v);
+                        if (members.Count > 1) cycles.Add(members.ToArray());
+                    }
+                    fp--;
+                    if (fp >= 0 && low[v] < low[frameNode[fp]]) low[frameNode[fp]] = low[v];
+                }
+            }
+            for (int n = 0; n < count; n++) _wave[n] = finished[n] > 0 ? done - finished[n] : int.MaxValue;
+            foreach (int[] cycle in cycles)
+            {
+                int keep = cycle[0];
+                foreach (int n in cycle) if ((_pts[n]?.Count ?? 0) > (_pts[keep]?.Count ?? 0)) keep = n;
+                Merge(keep, cycle);
+                if (Overflowed) return;
+            }
+        }
+
+        /// <summary>
+        /// Two nodes that hold the same set made one (Merge), the larger kept;
+        /// a node Merge may not take -- the unknown object's cell, a node
+        /// never cut short -- is joined both ways by copies instead.
+        /// </summary>
+        private void Unite(int a, int b)
+        {
+            a = Find(a); b = Find(b);
+            if (a == b) return;
+            bool Mergeable(int n) => n != _unknownCell && (_nodeFlags[n] & NeverSaturated) == 0;
+            if (!Mergeable(a) || !Mergeable(b)) { CopyEdge(a, b, 0); CopyEdge(b, a, 0); return; }
+            // UNION BY SIZE, counting what Merge moves: the node with less is
+            // taken into the one with more. A blob's cell is the hub every
+            // member's loads and stores go through; kept by what it held
+            // alone, it was moved into each new member in turn, all its edges
+            // each time, and one component held the self-link for minutes.
+            int keep = Size(b) > Size(a) ? b : a;
+            Merge(keep, new[] { a, b });
+        }
+
+        // What Merge carries when a node is taken into another.
+        private long Size(int n)
+            => (long)(_pts[n]?.Count ?? 0) + (_copies[n]?.Count ?? 0) + (_loads[n]?.Count ?? 0) + (_stores[n]?.Count ?? 0)
+               + (_readsAll[n]?.Count ?? 0) + (_filters[n]?.Count ?? 0) + (_vcalls[n]?.Count ?? 0);
+
+        /// <summary>
+        /// The members of a cycle made `keep`: each one's edges become keep's,
+        /// carrying what keep holds along them as a new edge does, and what
+        /// each held is added to keep, carried along every edge it now has.
+        /// What a member had gained and not yet carried is in what it held.
+        /// </summary>
+        private void Merge(int keep, int[] cycle)
+        {
+            foreach (int n in cycle) if (n != keep) _parent[n] = keep;
+            foreach (int n in cycle)
+            {
+                if (n == keep) continue;
+                if (OverWorked) { Overflowed = true; return; }
+                if (_deltaBuf[n] is { } pending) { _spareDeltas.Push(pending); _deltaBuf[n] = null; _deltaLen[n] = 0; }
+                if (_copies[n] is { } copies) { _copies[n] = null; foreach ((int to, int shift) in copies) CopyEdge(keep, to, shift); }
+                // Asked at every edge: one member's loads, each over the kept
+                // node's whole set, ran past the cap many times over before
+                // the next member was reached.
+                if (_loads[n] is { } loads)
+                {
+                    _loads[n] = null;
+                    foreach ((int dest, int offset, int family) in loads)
+                    {
+                        if (OverWorked) { Overflowed = true; return; }
+                        LoadEdge(dest, keep, offset, family);
+                    }
+                }
+                if (_stores[n] is { } stores)
+                {
+                    _stores[n] = null;
+                    foreach ((int value, int offset, int family) in stores)
+                    {
+                        if (OverWorked) { Overflowed = true; return; }
+                        StoreEdge(keep, offset, value, family);
+                    }
+                }
+                if (_readsAll[n] is { } all) { _readsAll[n] = null; foreach (int dest in all) LoadAllEdge(dest, keep); }
+                // A guard's filter and a call's receiver are edges as a copy
+                // is: what keep holds goes along them now, and what the
+                // member held below.
+                if (_filters[n] is { } filters) { _filters[n] = null; foreach ((int to, int guard) in filters) FilterEdge(keep, to, guard); }
+                if (_vcalls[n] is { } vcalls)
+                {
+                    _vcalls[n] = null;
+                    List<VCall> into = _vcalls[keep] ??= new();
+                    foreach (VCall v in vcalls)
+                    {
+                        // A call keep is the receiver of already has had all keep holds.
+                        if (into.Contains(v)) continue;
+                        into.Add(v);
+                        if (_pts[keep] is { } had) for (int i = 0, c = had.Count; i < c; i++) Received(v, had.Items[i]);
+                    }
+                }
+                if (_pts[n] is { } held)
+                {
+                    _pts[n] = null;
+                    for (int i = 0; i < held.Count; i++) Add(keep, held.Items[i]);
+                }
+            }
+        }
+
+        /// <summary>
+        /// WHAT IS OUTSIDE MAY BE WRITTEN THROUGH ANY WAY OUTSIDE. An object
+        /// made here that a place reaches is the caller's to reach by other
+        /// ways too -- another parameter that is the same object, a parent
+        /// pointer -- so it holds, at any offset, whatever was written into
+        /// any place; and one the unknown object reaches holds the unknown
+        /// object, which anybody may have written there. Until nothing more
+        /// joins. Nothing else can be in it: it was made during this call,
+        /// and every write of this call is a write here, into it or into a
+        /// place. (Some object outside the call in each, mapped by a caller
+        /// to every argument and all it reaches, put every argument in what
+        /// the call made: an emitter's instructions held the syntax tree,
+        /// and the tree outlived the module handed back.)
+        /// </summary>
+        private void Aliased()
+        {
+            HashSet<long> feeding = new();
+            while (!Overflowed)
+            {
+                bool more = false;
+                List<int> start = new();
+                for (int o = 1; o < _kind.Count; o++) if (_kind[o] is Kind.Place or Kind.Deep && Written(o)) start.Add(o);
+                foreach (int o in Reached(start))
+                {
+                    if (_kind[o] != Kind.Made || _placedMade.Contains(o)) continue;
+                    WrittenNode();
+                    more = true;
+                    Placed(o);
+                }
+                // Each place's word into what is written into places: its
+                // field's node where every write into it named one, the
+                // untyped node otherwise -- again where a later write made it
+                // two ways (the node it fed already keeps what it fed).
+                if (_written >= 0)
+                    for (int o = 1; o < _kind.Count; o++)
+                        if (_kind[o] is Kind.Place or Kind.Deep)
+                            foreach (var (step, node) in _cells[o].ToArray())
+                            {
+                                int family = StepFamily(step), offset = StepOffset(step);
+                                int into = family >= 0 ? TypedWritten(offset, family) : _written;
+                                if (feeding.Add(Pair(node, into))) { CopyEdge(node, into, 0); more = true; }
+                            }
+                foreach (int o in Reached(new[] { 0 }))
+                {
+                    if (o == 0 || _kind[o] != Kind.Made || _unknownMade.Contains(o)) continue;
+                    more = true;
+                    ReachedByUnknown(o);
+                }
+                if (!more) break;
+                Propagate();
+            }
+        }
+
+        // ---- answers ---------------------------------------------------------
+
+        // The objects reached from `start` through what their cells hold; not
+        // past an object `skipped` says to stop at.
+        private HashSet<int> Reached(IEnumerable<int> start, Func<int, bool>? skipped = null)
+        {
+            HashSet<int> seen = new();
+            Stack<int> next = new();
+            foreach (int o in start) if (seen.Add(o)) next.Push(o);
+            while (next.TryPop(out int o))
+            {
+                if (skipped is not null && skipped(o)) continue;
+                foreach (int node in _cells[o].Values)
+                    if (Pts(node) is { } pts)
+                        foreach (int loc in pts)
+                            if (seen.Add(_locObject[loc])) next.Push(_locObject[loc]);
+                // What reaches a blob reaches every one of its members.
+                if (_membersOf.TryGetValue(o, out List<int>? members))
+                    foreach (int member in members) if (seen.Add(member)) next.Push(member);
+            }
+            return seen;
+        }
+
+        private bool Written(int o)
+        {
+            foreach (int node in _cells[o].Values) if (Pts(node) is { Count: > 0 }) return true;
+            return false;
+        }
+
+        // Whether object o is a place of member m (or past every parameter), or another member's.
+        private bool PlaceOf(int o, int m) => _kind[o] is Kind.Place or Kind.Deep && (_param[o] < 0 || _param[o] / ParamStride == m);
+        private bool ForeignPlace(int o, int m) => _kind[o] is Kind.Place or Kind.Deep && _param[o] >= 0 && _param[o] / ParamStride != m;
+
+        private int Rank(int o) => _kind[o] switch { Kind.Place => 1, Kind.Deep => 2, _ => 3 };
+
+        private int Compare(int a, int b)
+        {
+            int ka = Rank(a), kb = Rank(b);
+            if (ka != kb) return ka.CompareTo(kb);
+            if (_kind[a] != Kind.Made)
+            {
+                if (_param[a] != _param[b]) return _param[a].CompareTo(_param[b]);
+                int la = _path[a].Length, lb = _path[b].Length;
+                if (la != lb) return la.CompareTo(lb);
+                for (int k = 0; k < la; k++) if (_path[a][k] != _path[b][k]) return _path[a][k].CompareTo(_path[b][k]);
+                return 0;
+            }
+            return a.CompareTo(b);
+        }
+
+        /// <summary>
+        /// MEMBER m's SUMMARY, for calls from outside the cycle: what it
+        /// leaves its own places and the unknown object, and its result, with
+        /// the objects they reach -- not what other members' calls of it
+        /// handed it, which no call from outside does.
+        /// </summary>
+        public Summary Summarise(int m)
+        {
+            if (Overflowed) return Summary.Unknown;
+            List<int> start = new() { 0 };
+            for (int o = 1; o < _kind.Count; o++) if (PlaceOf(o, m) && Written(o)) start.Add(o);
+            if (Pts(Ret(m)) is { } result) foreach (int loc in result) start.Add(_locObject[loc]);
+            HashSet<int> outside = Reached(start, o => ForeignPlace(o, m));
+            outside.RemoveWhere(o => ForeignPlace(o, m));
+            // WHAT THE UNKNOWN OBJECT REACHES IS EVERYONE'S, whatever holds
+            // it: the objects made among it are one, and every one of it is
+            // a cell of the unknown object's -- what it holds in turn is
+            // reached anyway, and a load of it finds the unknown object.
+            // (Kept apart, the exceptions a list's Add and a dictionary's
+            // indexer may throw made a node's Emit a hundred cells past the
+            // bound, and its coarse summary leaked the whole tree below it.)
+            HashSet<int> leaked = Reached(new[] { 0 }, o => ForeignPlace(o, m));
+            leaked.IntersectWith(outside);
+            // A place leaked below another leaked place is reached from it:
+            // only what else holds it, or hands it back, keeps it.
+            HashSet<int> held = new();
+            foreach (int o in outside)
+                if (!leaked.Contains(o))
+                    foreach (int node in _cells[o].Values)
+                        if (Pts(node) is { } pts) foreach (int loc in pts) held.Add(_locObject[loc]);
+            if (Pts(Ret(m)) is { } handed) foreach (int loc in handed) held.Add(_locObject[loc]);
+            HashSet<(int, string)> leakedPlaces = new();
+            foreach (int o in leaked) if (_kind[o] is Kind.Place or Kind.Deep) leakedPlaces.Add((_param[o], string.Join(",", _path[o])));
+            bool Below(int o)
+            {
+                if (_kind[o] is not (Kind.Place or Kind.Deep) || held.Contains(o)) return false;
+                int[] path = _path[o];
+                for (int n = 0; n < path.Length; n++) if (leakedPlaces.Contains((_param[o], string.Join(",", path[..n])))) return true;
+                return false;
+            }
+            List<int> order = outside.Where(o => o != 0 && !(leaked.Contains(o) && Below(o))).ToList();
+            order.Sort(Compare);
+            Summary s = new();
+            Dictionary<int, int> index = new() { [0] = 0 };
+            int blob = -1;
+            List<int> blobOrigins = new();
+            // A SATURATED NODE'S BLOB AND ITS MEMBERS ARE ONE OBJECT here
+            // (BlobOf): in this graph each is its own, joined to the blob by
+            // its cells, and a caller writing into one through what it was
+            // handed must find it in the others. Every one of them leaked
+            // if any is.
+            Dictionary<int, int> group = new();
+            int Root(int o) { while (group[o] != o) o = group[o]; return o; }
+            foreach (var (b, members) in _membersOf)
+            {
+                if (!outside.Contains(b)) continue;
+                group.TryAdd(b, b);
+                foreach (int member in members)
+                {
+                    if (IsConstant(member) || !outside.Contains(member)) continue;
+                    group.TryAdd(member, member);
+                    int x = Root(b), y = Root(member);
+                    if (x != y) group[y] = x;
+                }
+            }
+            HashSet<int> leakedGroups = new();
+            foreach (int o in group.Keys) if (leaked.Contains(o)) leakedGroups.Add(Root(o));
+            Dictionary<int, int> groupIndex = new();
+            Dictionary<int, List<int>> groupOrigins = new();
+            foreach (int o in order)
+            {
+                bool grouped = group.ContainsKey(o);
+                if (_kind[o] == Kind.Made && !IsConstant(o) && (grouped ? leakedGroups.Contains(Root(o)) : leaked.Contains(o)))
+                {
+                    if (blob < 0) { blob = s.Objects.Count; s.Objects.Add((Kind.Made, -1, Array.Empty<int>(), Array.Empty<int>())); }
+                    index[o] = blob;
+                    blobOrigins.AddRange(_origins[o]);
+                    continue;
+                }
+                if (grouped)
+                {
+                    int r = Root(o);
+                    if (!groupIndex.TryGetValue(r, out int at))
+                    {
+                        groupIndex[r] = at = s.Objects.Count;
+                        s.Objects.Add((Kind.Made, -1, Array.Empty<int>(), Array.Empty<int>()));
+                        groupOrigins[at] = new();
+                    }
+                    index[o] = at;
+                    groupOrigins[at].AddRange(_origins[o]);
+                    continue;
+                }
+                index[o] = s.Objects.Count;
+                int param = _kind[o] is Kind.Place or Kind.Deep && _param[o] >= 0 ? _param[o] - m * ParamStride
+                    : IsConstant(o) ? ConstantParam : _param[o];
+                s.Objects.Add((_kind[o], param, _path[o], _origins[o]));
+            }
+            if (blob >= 0) { blobOrigins.Sort(); s.Objects[blob] = (Kind.Made, -1, Array.Empty<int>(), blobOrigins.Distinct().ToArray()); }
+            foreach (var (at, origins) in groupOrigins) { origins.Sort(); s.Objects[at] = (Kind.Made, -1, Array.Empty<int>(), origins.Distinct().ToArray()); }
+            // Objects made one: every offset of them is any.
+            bool Merged(int k) => k == blob || groupOrigins.ContainsKey(k);
+            Summary cellFamilies = new();
+            bool typedCells = false;
+            foreach (int o in outside)
+                foreach (var (step, node) in _cells[o])
+                    if (Pts(node) is { } pts)
+                        foreach (int loc in pts)
+                        {
+                            int to = _locObject[loc];
+                            if (!index.TryGetValue(to, out int t)) continue;   // another member's place
+                            bool fromLeaked = leaked.Contains(o);
+                            if (to == 0 && fromLeaked) continue;
+                            int offset = StepOffset(step), family = StepFamily(step);
+                            var cell = (fromLeaked ? 0 : index[o], fromLeaked || Merged(index[o]) ? Any : offset, t, Merged(t) ? Any : _locOffset[loc]);
+                            s.Cells.Add(cell);
+                            if (fromLeaked || Merged(index[o]) || offset == Any) continue;
+                            // A place's word, as every write into it named it (Stored).
+                            if (_kind[o] is Kind.Place or Kind.Deep && _anyTyped) s.NoteField(index[o], offset, family);
+                            // And each cell as the field it was written as: two
+                            // fields at one word stay apart at the caller. (Every
+                            // cell noted, untyped ones too, so one written both
+                            // ways names none; kept only if any names one.)
+                            cellFamilies.NoteFamily(cell, family);
+                            typedCells |= family >= 0;
+                        }
+            if (typedCells) s.CellFamilies = cellFamilies.CellFamilies;
+            if (Pts(Ret(m)) is { } back)
+                foreach (int loc in back)
+                    if (index.TryGetValue(_locObject[loc], out int t)) s.Result.Add((t, Merged(t) ? Any : _locOffset[loc]));
+            s.Cells.Sort(); s.Result.Sort();
+            Summary.Dedupe(s.Cells); Summary.Dedupe(s.Result);
+            return s.Bounded();
+        }
+
+        /// <summary>Member m's answers: what outlives it, what is global, what its loops hold.</summary>
+        public void Answer(int m)
+        {
+            int f = _members[m];
+            RegionFunction function = Function(m);
+            if (Overflowed)
+            {
+                // NOT FOLLOWED: its own sites and every object its callees'
+                // summaries make are everyone's; nothing is asked of it.
+                _owner.Unfollowed++;
+                for (int site = 0; site < function.Sites.Length; site++) _owner._globalRefs.Add(Leaf(_owner._siteBase[f] + site));
+                for (int k = 0; k < function.Calls.Count; k++)
+                {
+                    if (_owner._targets[f][k] is not { } targets) continue;
+                    if (_owner.IsWide(targets))
+                    {
+                        if (_owner.StandIn(targets) is { Holder: >= 0 } standIn)
+                            for (int i = 0; i < standIn.Objects.Count; i++) if (standIn.Objects[i].Kind == Kind.Made) _owner._globalRefs.Add(Ref(standIn.Holder, i));
+                        continue;
+                    }
+                    foreach (int g in targets)
+                        if (!_memberSet.Contains(g) && _owner._summaries[g] is { Holder: >= 0 } s)
+                            for (int i = 0; i < s.Objects.Count; i++) if (s.Objects[i].Kind == Kind.Made) _owner._globalRefs.Add(Ref(s.Holder, i));
+                }
+                return;
+            }
+            if (m == 0) foreach (int o in Reached(new[] { 0 })) _owner._globalRefs.UnionWith(_origins[o]);
+            if (m == 0 && _owner.Why is { } why)
+            {
+                // For a report: which sites of this graph the unknown object reaches, and by what.
+                HashSet<int> seen = new() { 0 };
+                Queue<(int O, int From)> next = new();
+                next.Enqueue((0, -1));
+                while (next.TryDequeue(out var at))
+                    foreach (var (offset, node) in _cells[at.O])
+                        if (Pts(node) is { } pts)
+                            foreach (int loc in pts)
+                            {
+                                int to = _locObject[loc];
+                                if (!seen.Add(to)) continue;
+                                next.Enqueue((to, at.O));
+                                foreach (int site in _owner.SitesOf(_origins[to]))
+                                    if (why(site)) _owner.Progress?.Invoke($"escape graphs why: in {_owner._functions[f].Name}{(_members.Length > 1 ? " (cycle of " + _members.Length + ")" : "")}: site {site} reached from {(at.O == 0 ? "the unknown object" : Describe(at.O))} +{StepText(offset)} as {Describe(to)}, saturated {_saturatedCount}");
+                            }
+            }
+            bool rooted = _owner._rooted[f];
+            if (_owner._wanted[f] || rooted)
+            {
+                // WHAT OUTLIVES IT: what its parameters come to hold, whoever
+                // handed it, what it hands back, the unknown object, and every
+                // place anything was written into -- a place one field below
+                // a parameter is no cell of the parameter's, but a load's
+                // finding: written, it is outside as the parameter is. (Left
+                // out, a writer's grown buffer, put into the packet it holds,
+                // was dead by the writer's return and freed with its region.)
+                List<int> start = new() { 0 };
+                for (int k = 0; k <= function.Parameters; k++)
+                    if (Pts(Node(m, k)) is { } held) foreach (int loc in held) start.Add(_locObject[loc]);
+                for (int o = 1; o < _kind.Count; o++) if (_kind[o] is Kind.Place or Kind.Deep && Written(o)) start.Add(o);
+                SortedSet<int> escaping = new();
+                foreach (int o in Reached(start)) escaping.UnionWith(_origins[o]);
+                // CALLED WITH ANYTHING, from where nobody follows: what it
+                // hands back and writes into what it was handed is everyone's.
+                if (rooted) _owner._rootedRefs.UnionWith(escaping);
+                if (_owner._wanted[f]) _owner.Escaping[f] = escaping.ToArray();
+                if (_owner.Why is { } asked && _owner.WhyFunction?.Invoke(f) == true) WhyOutlives(m, asked);
+            }
+            // A diagnostic (+why on the function): what it hands the unknown
+            // object -- each Leak, an Unknown, a call nobody can name -- and
+            // what writes each node handed.
+            if (_owner.WhyFunction?.Invoke(f) == true)
+            {
+                string Writers(int node) => string.Join("; ", function.Constraints.Where(c => c.A == node).Select(c => c.Kind + " " + c.B + " " + c.C));
+                if (_owner.Why is not null && _owner.WhyAll)
+                    _owner.Progress?.Invoke($"escape graphs why: {_owner._functions[f].Name}: constraints {string.Join("; ", function.Constraints.Select(c => c.Kind + " " + c.A + " " + c.B + " " + c.C))}; calls {string.Join("; ", function.Calls.Select(c => (c.Callee ?? "?") + " -> " + c.Dest + " (" + string.Join(",", c.Arguments) + ")"))}");
+                foreach (RegionConstraint c in function.Constraints)
+                    if (c.Kind is RegionConstraintKind.Leak)
+                        _owner.Progress?.Invoke($"escape graphs why: {_owner._functions[f].Name}: node {c.A} leaked; written by {Writers(c.A)}");
+                for (int k = 0; k < function.Calls.Count; k++)
+                    if (function.Calls[k].Callee is null)
+                        _owner.Progress?.Invoke($"escape graphs why: {_owner._functions[f].Name}: call {k} names nothing, handed {string.Join(",", function.Calls[k].Arguments)}");
+            }
+            if (function.Loops.Count > 0)
+            {
+                var held = new (int[], int[])[function.Loops.Count];
+                for (int l = 0; l < held.Length; l++)
+                {
+                    RegionLoopShape loop = function.Loops[l];
+                    held[l] = (OriginsHeld(m, loop.Live, Enumerable.Range(0, function.Slots)), OriginsHeld(m, loop.Invariant, loop.KeptSlots));
+                    // A diagnostic (+why on the function): the sites live where
+                    // a lap ends, through the registers and through the slots apart.
+                    if (_owner.WhyFunction?.Invoke(f) == true)
+                    {
+                        foreach (int node in loop.Live)
+                            if (OriginsHeld(m, new[] { node }, Array.Empty<int>()) is { Length: > 0 } byNode)
+                                _owner.Progress?.Invoke($"escape graphs why: {_owner._functions[f].Name} loop at block {loop.Header}: node {node} live where a lap ends holds {string.Join(", ", _owner.SitesOf(byNode).Select(_owner.SiteName))}; written by {string.Join("; ", function.Constraints.Where(c => c.A == node).Select(c => c.Kind + " " + c.B + " " + c.C))}");
+                        for (int slot = 0; slot < function.Slots; slot++)
+                            if (OriginsHeld(m, Array.Empty<int>(), new[] { slot }) is { Length: > 0 } bySlot)
+                                _owner.Progress?.Invoke($"escape graphs why: {_owner._functions[f].Name} loop at block {loop.Header}: slot {slot} holds {string.Join(", ", _owner.SitesOf(bySlot).Select(_owner.SiteName))}");
+                    }
+                }
+                _owner.LoopHeld[f] = held;
+            }
+        }
+
+        /// <summary>
+        /// For a report (+why=Name): how each site asked about outlives member
+        /// m -- from which of what outlives it (a parameter, its result, the
+        /// unknown object, a place written), by which cells, to the object it
+        /// is among. The first path found, breadth first: the shortest.
+        /// </summary>
+        private void WhyOutlives(int m, Func<int, bool> asked)
+        {
+            if (_owner.Progress is not { } say) return;
+            int f = _members[m];
+            Dictionary<int, (int From, int Offset)> parent = new();
+            Dictionary<int, string> root = new();
+            Queue<int> next = new();
+            void Root(int o, string why)
+            {
+                if (root.ContainsKey(o) || parent.ContainsKey(o)) return;
+                root[o] = why;
+                next.Enqueue(o);
+            }
+            Root(0, "the unknown object");
+            RegionFunction function = Function(m);
+            for (int k = 0; k <= function.Parameters; k++)
+                if (Pts(Node(m, k)) is { } held)
+                    foreach (int loc in held) Root(_locObject[loc], k < function.Parameters ? "parameter " + k : "its result");
+            for (int o = 1; o < _kind.Count; o++) if (_kind[o] is Kind.Place or Kind.Deep && Written(o)) Root(o, "a place written, " + Describe(o));
+            int told = 0;
+            while (next.TryDequeue(out int o) && told < 40)
+            {
+                foreach (int site in _owner.SitesOf(_origins[o]))
+                {
+                    if (!asked(site) || told >= 40) continue;
+                    told++;
+                    List<string> path = new();
+                    for (int at = o; parent.TryGetValue(at, out var up); at = up.From) path.Add("+" + StepText(up.Offset) + " " + Describe(at));
+                    int start = o;
+                    while (parent.TryGetValue(start, out var up)) start = up.From;
+                    path.Reverse();
+                    say($"escape graphs why: site {site} outlives {_owner._functions[f].Name}: from {root[start]}" + (path.Count == 0 ? "" : " by " + string.Join(" > ", path)));
+                }
+                foreach (var (offset, node) in _cells[o])
+                    if (Pts(node) is { } pts)
+                        foreach (int loc in pts)
+                        {
+                            int to = _locObject[loc];
+                            if (root.ContainsKey(to) || parent.ContainsKey(to)) continue;
+                            parent[to] = (o, offset);
+                            next.Enqueue(to);
+                        }
+            }
+        }
+
+        private int[] OriginsHeld(int m, int[] nodes, IEnumerable<int> slots)
+        {
+            List<int> start = new();
+            foreach (int n in nodes) if (n < Function(m).Nodes && Pts(Node(m, n)) is { } pts) foreach (int loc in pts) start.Add(_locObject[loc]);
+            foreach (int slot in slots) if (_slotObjects.TryGetValue((m, slot), out int o)) start.Add(o);
+            start.RemoveAll(o => o == 0);
+            SortedSet<int> origins = new();
+            foreach (int o in Reached(start)) origins.UnionWith(_origins[o]);
+            return origins.ToArray();
+        }
+
+        public string Describe()
+        {
+            long cells = 0;
+            foreach (Dictionary<int, int> c in _cells) cells += c.Count;
+            return $"{_kind.Count} objects, {_locObject.Count} locations, {_pts.Count} nodes, {cells} cells, {_copyEdges + _loadEdgeCount + _storeEdgeCount} edges ({_copyEdges} copies, {_loadEdgeCount} loads, {_storeEdgeCount} stores), "
+                + $"{_carried} carried, {_adds} offered, {_drawn} from the pool, {_saturatedCount} saturated, {_blobs} blobs{(Overflowed ? ", NOT FOLLOWED" : "")}";
+        }
+
+        private string Describe(int o) => _kind[o] switch
+        {
+            Kind.Place => $"place {_param[o]} [{string.Join(",", _path[o].Select(Step))}]",
+            Kind.Deep => $"deep place {_param[o]} below [{string.Join(",", _path[o].Select(Step))}]",
+            Kind.Unknown => "the unknown object",
+            _ when IsConstant(o) => "the constant (an address no one writes)",
+            _ when _origins[o].Length == 0 && SlotOf(o) is { } held => $"frame slot {held.Slot} of {_owner._functions[_members[held.M]].Name}",
+            _ => $"made object (origins {string.Join(",", _origins[o].Take(4))})",
+        };
+
+        // For a report: which member's frame slot an object of no origin is, if it is one.
+        private (int M, int Slot)? SlotOf(int o)
+        {
+            foreach (var ((m, slot), held) in _slotObjects) if (held == o) return (m, slot);
+            return null;
+        }
+    }
+
+    // ---- a large cycle, by unification ------------------------------------
+
+    /// <summary>
+    /// A LARGE CYCLE BY UNIFICATION (Steensgaard's, by field): every node
+    /// points to one class of objects, and a class holds at each offset one
+    /// class -- two things that may be in one place are one class from then
+    /// on. Linear in what the cycle states, where inclusion over a cycle of
+    /// thirteen thousand of the compiler's functions held a million nodes and
+    /// gigabytes. Coarser: what the members hand one another is one class.
+    /// Calls out of the cycle apply their summaries as the inclusion solve
+    /// does; each member's summary for calls into the cycle is its classes
+    /// as they are, field by field (ByField) -- what one field of an
+    /// argument holds leaks or not apart from what another does -- and
+    /// coarse past its bounds.
+    /// </summary>
+    private sealed class Unified
+    {
+        private readonly RegionEscape _owner;
+        private readonly int[] _members;
+        private readonly HashSet<int> _memberSet;
+        private readonly Dictionary<int, int> _memberOf = new();
+        private readonly int[] _base;
+
+        // Classes: union-find, size, fields by offset and family (FieldKey;
+        // Any once collapsed), origins, and the one class of the unknown object.
+        private readonly List<int> _parent = new(), _size = new();
+        private readonly List<Dictionary<long, int>?> _fields = new();
+        private readonly List<bool> _collapsed = new();
+        private readonly List<List<int>?> _originsOf = new();
+        private readonly int _global;
+        // Per node: the class it points to (-1: none yet).
+        private readonly List<int> _pointee = new();
+        private readonly Queue<(int, int)> _pending = new();
+        private long _unions;
+
+        public Unified(RegionEscape owner, int[] members)
+        {
+            _owner = owner; _members = members; _memberSet = new(members);
+            _base = new int[members.Length];
+            _global = NewClass();
+            _collapsed[_global] = true;
+            _fields[_global] = new() { [FieldKey(Any, -1)] = _global };
+            for (int m = 0; m < members.Length; m++)
+            {
+                _memberOf[members[m]] = m;
+                _base[m] = _pointee.Count;
+                for (int n = 0; n < owner._functions[members[m]].Nodes; n++) _pointee.Add(-1);
+            }
+        }
+
+        private RegionFunction Function(int m) => _owner._functions[_members[m]];
+        private int Node(int m, int n) => _base[m] + n;
+
+        private int NewClass()
+        {
+            _parent.Add(_parent.Count); _size.Add(1); _fields.Add(null); _collapsed.Add(false); _originsOf.Add(null);
+            return _parent.Count - 1;
+        }
+
+        private int NewNode() { _pointee.Add(-1); return _pointee.Count - 1; }
+
+        private int Find(int c)
+        {
+            int root = c;
+            while (_parent[root] != root) root = _parent[root];
+            while (_parent[c] != root) { int next = _parent[c]; _parent[c] = root; c = next; }
+            return root;
+        }
+
+        private int Pointee(int n)
+        {
+            if (_pointee[n] < 0) _pointee[n] = NewClass();
+            return Find(_pointee[n]);
+        }
+
+        // ONE FIELD CLASS FOR EACH FIELD AT AN OFFSET, where every access of
+        // the offset names its field (RegionConstraint.Family): a class is
+        // most often a merge of objects of unrelated types, after
+        // unification, and an instruction's field at 8 and a symbol's field
+        // at 8 are not one place. An access naming no field -- an address
+        // into an object, an element, a copy, a callee's place below a field
+        // -- may be any field at the offset: its field class is all of them,
+        // and from then on the offset is one field class again ("mixed",
+        // FieldKey(offset, -1)), whatever names the later ones give.
+        //
+        // SOUND FOR A TYPE-SAFE PROGRAM, as typed aliasing is (Graph.Stored):
+        // a word at an offset of an object is one field, the object's class
+        // laying its own fields after all its bases' at offsets of their own;
+        // so a store naming field F and a load naming field G at the same
+        // offset of one class never meet in one object, and what F's field
+        // class holds is all F's stores put there. A class's offsets are
+        // offsets from an object's start: anything that moves a pointer into
+        // an object -- a copy by an offset, an index, a summary's cell into
+        // a place below a field's start -- collapses the class (Copy,
+        // _indexed, Apply), and every family of it with it.
+        private const int MostFieldsAtUnified = 4;
+
+        private static long FieldKey(int offset, int family) => ((long)offset << 32) | (uint)family;
+        private static int KeyOffset(long key) => (int)(key >> 32);
+        private static int KeyFamily(long key) => (int)key;
+
+        private int Field(int c, int offset, int family = -1)
+        {
+            c = Find(c);
+            if (offset == Any && !_collapsed[c]) Collapse(c);
+            c = Find(c);
+            Dictionary<long, int> fields = _fields[c] ??= new();
+            if (_collapsed[c]) return Get(fields, FieldKey(Any, -1));
+            long mixed = FieldKey(offset, -1);
+            if (family >= 0)
+            {
+                // Mixed already: the one field class of the offset.
+                if (fields.TryGetValue(mixed, out int all)) return Find(all);
+                long typed = FieldKey(offset, family);
+                if (fields.TryGetValue(typed, out int own)) return Find(own);
+                // Past MostFieldsAt fields at the offset, the offset is one
+                // field again (Graph.Named, for the same reason).
+                int at = 0;
+                foreach (long key in fields.Keys) if (KeyOffset(key) == offset && KeyFamily(key) >= 0) at++;
+                if (at >= MostFieldsAtUnified) return Field(c, offset, -1);
+                return Get(fields, typed);
+            }
+            // Naming none: every field at the offset joins one.
+            List<long>? named = null;
+            foreach (long key in fields.Keys) if (KeyOffset(key) == offset && KeyFamily(key) >= 0) (named ??= new()).Add(key);
+            int one = Get(fields, mixed);
+            if (named is null) return one;
+            foreach (long key in named) { _pending.Enqueue((one, fields[key])); fields.Remove(key); }
+            Drain();
+            return Find(one);
+        }
+
+        // The field class under a key, made on first use.
+        private int Get(Dictionary<long, int> fields, long key)
+        {
+            if (fields.TryGetValue(key, out int t)) return Find(t);
+            t = NewClass();
+            fields[key] = t;
+            return t;
+        }
+
+        // Every field one: what was at each offset, unified.
+        private void Collapse(int c)
+        {
+            c = Find(c);
+            if (_collapsed[c]) return;
+            _collapsed[c] = true;
+            Dictionary<long, int>? fields = _fields[c];
+            int any = -1;
+            if (fields is not null)
+                foreach (int t in fields.Values) { if (any < 0) any = t; else _pending.Enqueue((any, t)); }
+            _fields[c] = new() { [FieldKey(Any, -1)] = any < 0 ? NewClass() : any };
+            Drain();
+        }
+
+        private void Unify(int a, int b)
+        {
+            _pending.Enqueue((a, b));
+            Drain();
+        }
+
+        private void Drain()
+        {
+            while (_pending.TryDequeue(out var pair))
+            {
+                int a = Find(pair.Item1), b = Find(pair.Item2);
+                if (a == b) continue;
+                _unions++;
+                // The unknown object's class swallows: it holds itself everywhere.
+                if (b == _global || a != _global && _size[a] < _size[b]) (a, b) = (b, a);
+                _parent[b] = a;
+                _size[a] += _size[b];
+                if (_originsOf[b] is { } moved) (_originsOf[a] ??= new()).AddRange(moved);
+                _originsOf[b] = null;
+                Dictionary<long, int>? fa = _fields[a], fb = _fields[b];
+                _fields[b] = null;
+                if (_collapsed[a] || _collapsed[b])
+                {
+                    bool was = _collapsed[a];
+                    _collapsed[a] = true;
+                    List<int> all = new();
+                    if (fa is not null) all.AddRange(fa.Values);
+                    if (fb is not null) all.AddRange(fb.Values);
+                    if (a == _global) { foreach (int t in all) _pending.Enqueue((_global, t)); _fields[a] = new() { [FieldKey(Any, -1)] = _global }; continue; }
+                    int any = all.Count > 0 ? all[0] : NewClass();
+                    foreach (int t in all) if (t != any) _pending.Enqueue((any, t));
+                    _fields[a] = new() { [FieldKey(Any, -1)] = any };
+                    continue;
+                }
+                if (fb is null) continue;
+                if (fa is null) { _fields[a] = fb; continue; }
+                foreach (var (key, t) in fb)
+                    if (fa.TryGetValue(key, out int u)) _pending.Enqueue((u, t));
+                    else fa[key] = t;
+                // An offset mixed in either is mixed in both: its named
+                // fields join its one (Field). So is one the merge gives more
+                // than MostFieldsAtUnified fields.
+                Dictionary<int, int>? counts = null;
+                foreach (long key in fa.Keys)
+                    if (KeyFamily(key) >= 0) { counts ??= new(); counts[KeyOffset(key)] = counts.GetValueOrDefault(KeyOffset(key)) + 1; }
+                if (counts is not null)
+                    foreach (var (offset, many) in counts)
+                        if (many > MostFieldsAtUnified && !fa.ContainsKey(FieldKey(offset, -1))) fa[FieldKey(offset, -1)] = NewClass();
+                List<long>? named = null;
+                foreach (long key in fa.Keys)
+                    if (KeyFamily(key) >= 0 && fa.ContainsKey(FieldKey(KeyOffset(key), -1))) (named ??= new()).Add(key);
+                if (named is not null)
+                    foreach (long key in named) { _pending.Enqueue((fa[FieldKey(KeyOffset(key), -1)], fa[key])); fa.Remove(key); }
+            }
+        }
+
+        private int Fresh(int origin) => FreshAll(new[] { origin });
+
+        private int FreshAll(int[] origins)
+        {
+            int c = NewClass();
+            _originsOf[c] = new(origins);
+            return c;
+        }
+
+        // A frame slot: one class, whoever holds its address.
+        private readonly Dictionary<(int, int), int> _slots = new();
+        private int SlotClass(int m, int slot)
+        {
+            if (!_slots.TryGetValue((m, slot), out int c)) _slots[(m, slot)] = c = NewClass();
+            return Find(c);
+        }
+
+        // ---- building --------------------------------------------------------
+
+        private readonly Dictionary<int[], (int[] Args, int Ret)> _dispatch = new(TargetsComparer.Instance);
+
+        public Unified Solved()
+        {
+            for (int m = 0; m < _members.Length; m++)
+            {
+                RegionFunction f = Function(m);
+                foreach (RegionConstraint c in f.Constraints)
+                {
+                    int a = Node(m, c.A);
+                    switch (c.Kind)
+                    {
+                        case RegionConstraintKind.Site: Unify(Pointee(a), Fresh(Leaf(_owner._siteBase[_members[m]] + c.B))); break;
+                        case RegionConstraintKind.Slot: Unify(Pointee(a), SlotClass(m, c.B)); break;
+                        case RegionConstraintKind.Unknown: Unify(Pointee(a), _global); break;
+                        // A constant joins nothing: storing it makes nothing escape.
+                        case RegionConstraintKind.Symbol: if (!Function(m).ConstantsKnown) Unify(Pointee(a), _global); break;
+                        case RegionConstraintKind.Copy:
+                        {
+                            int b = Node(m, c.B);
+                            if (RegionConstraint.IsIndex(c.C)) { _indexed.Add((a, b)); break; }
+                            Unify(Pointee(a), Pointee(b));
+                            if (c.C != 0) Collapse(Pointee(a));
+                            break;
+                        }
+                        case RegionConstraintKind.Load: Unify(Pointee(a), Field(Pointee(Node(m, c.B)), Plain(c.C), _owner.FamilyOf(f, c.Family))); break;
+                        case RegionConstraintKind.Store: Unify(Field(Pointee(a), Plain(c.C), _owner.FamilyOf(f, c.Family)), Pointee(Node(m, c.B))); break;
+                        case RegionConstraintKind.MemCopy:
+                        {
+                            int x = Pointee(a), y = Pointee(Node(m, c.B));
+                            Collapse(x); Collapse(y);
+                            Unify(Field(x, Any), Field(y, Any));
+                            break;
+                        }
+                        case RegionConstraintKind.Leak: Unify(Pointee(a), _global); break;
+                    }
+                }
+                for (int k = 0; k < f.Calls.Count; k++) Call(m, k, f.Calls[k]);
+            }
+            // An index scaled into an address: anywhere in the object, never the unknown object.
+            foreach (var (a, b) in _indexed)
+                if (Pointee(b) != _global) { Unify(Pointee(a), Pointee(b)); Collapse(Pointee(a)); }
+            return this;
+        }
+
+        private readonly List<(int, int)> _indexed = new();
+
+        private static int Plain(long offset) => offset < 0 || offset > FarthestField ? Any : (int)offset;
+
+        private void Call(int m, int k, RegionCall call)
+        {
+            int f = _members[m];
+            int[]? targets = _owner._targets[f][k];
+            int[] args = new int[call.Arguments.Length];
+            for (int a = 0; a < args.Length; a++) args[a] = call.Arguments[a] < 0 || _owner.NumberArgument(targets, a) ? -1 : Node(m, call.Arguments[a]);
+            int dest = call.Dest < 0 ? -1 : Node(m, call.Dest);
+            if (targets is null) { UnknownCall(args, dest); return; }
+            if (targets.Length == 0) return;
+            if (_owner.IsWide(targets)) { Apply(args, dest, _owner.StandIn(targets)); return; }
+            int[] inside = targets.Where(_memberSet.Contains).ToArray();
+            int[] outside = inside.Length == 0 ? targets : targets.Where(t => !_memberSet.Contains(t)).ToArray();
+            if (inside.Length > 0)
+            {
+                if (!_dispatch.TryGetValue(inside, out var through))
+                {
+                    int most = inside.Max(t => _owner._functions[t].Parameters);
+                    int[] p = new int[most];
+                    for (int j = 0; j < most; j++) p[j] = NewNode();
+                    int r = NewNode();
+                    foreach (int t in inside)
+                    {
+                        int tm = _memberOf[t];
+                        for (int j = 0; j < _owner._functions[t].Parameters; j++) Unify(Pointee(p[j]), Pointee(Node(tm, j)));
+                        Unify(Pointee(r), Pointee(Node(tm, _owner._functions[t].Parameters)));
+                    }
+                    through = (p, r);
+                    _dispatch[inside] = through;
+                }
+                for (int j = 0; j < args.Length && j < through.Args.Length; j++) if (args[j] >= 0) Unify(Pointee(args[j]), Pointee(through.Args[j]));
+                for (int j = args.Length; j < through.Args.Length; j++) Unify(Pointee(through.Args[j]), _global);
+                if (dest >= 0) Unify(Pointee(dest), Pointee(through.Ret));
+            }
+            if (outside.Length > 0) Apply(args, dest, _owner.MergedFor(outside));
+        }
+
+        // A place's path from an argument's class: a field its field, the
+        // deep step one class below that holds itself, a guard nothing --
+        // one class has every object of every class there.
+        private int Walk(int c, int[] path)
+        {
+            foreach (int step in path)
+            {
+                if (IsGuard(step)) continue;
+                if (step != DeepStep) { c = Field(c, StepOffset(step), StepFamily(step)); continue; }
+                int d = NewClass();
+                Collapse(d);
+                Unify(Field(d, Any), d);
+                Unify(Field(c, Any), d);
+                c = Find(d);
+            }
+            return c;
+        }
+
+        private void UnknownCall(int[] args, int dest)
+        {
+            foreach (int a in args) if (a >= 0) Unify(Pointee(a), _global);
+            if (dest >= 0) Unify(Pointee(dest), _global);
+        }
+
+        private void Apply(int[] args, int dest, Summary s)
+        {
+            _owner.Applied++;
+            if (s.IsUnknown) { UnknownCall(args, dest); return; }
+            int[] cls = new int[s.Objects.Count];
+            for (int k = 0; k < s.Objects.Count; k++)
+            {
+                var o = s.Objects[k];
+                int arg = o.Param >= 0 && o.Param < args.Length ? args[o.Param] : -1;
+                switch (o.Kind)
+                {
+                    case Kind.Unknown: cls[k] = _global; break;
+                    // A parameter the call passes nothing for: whatever its word holds.
+                    case Kind.Place or Kind.Deep when o.Param >= args.Length: cls[k] = _global; break;
+                    case Kind.Place:
+                        cls[k] = arg < 0 ? NewClass() : Walk(Pointee(arg), o.Path);
+                        break;
+                    case Kind.Deep when o.Param >= 0:
+                        cls[k] = arg < 0 ? NewClass() : Walk(Pointee(arg), DeepPath(o.Path));
+                        break;
+                    case Kind.Deep:
+                    {
+                        // EVERYTHING, ONE CLASS that holds itself: past every
+                        // parameter, every argument and all it reaches, for good.
+                        int d = NewClass();
+                        Collapse(d);
+                        Unify(Field(d, Any), d);
+                        foreach (int a in args) if (a >= 0) Unify(Pointee(a), d);
+                        cls[k] = Find(d);
+                        break;
+                    }
+                    // A constant: a class of no origin, as a constant's address binds to nothing.
+                    case Kind.Made when o.Param == ConstantParam:
+                        cls[k] = NewClass();
+                        break;
+                    case Kind.Made:
+                        cls[k] = s.Holder >= 0 ? Fresh(Ref(s.Holder, k)) : FreshAll(o.Origins);
+                        break;
+                }
+            }
+            foreach (var c in s.Cells)
+            {
+                int to = cls[c.To];
+                if (c.ToOffset != 0) Collapse(to);
+                // A cell every write of which named one field, that field's class.
+                Unify(Field(cls[c.From], c.Offset, s.FamilyOf(c)), to);
+            }
+            if (dest >= 0)
+                foreach (var r in s.Result)
+                {
+                    if (r.ToOffset != 0) Collapse(cls[r.To]);
+                    Unify(Pointee(dest), cls[r.To]);
+                }
+        }
+
+        // ---- answers ---------------------------------------------------------
+
+        // ---- answers ---------------------------------------------------------
+
+        // The classes every member's parameters and results point to: the only
+        // places a reach is asked from, and what a reach is asked to find.
+        private HashSet<int>? _roots;
+        private HashSet<int>? _globalClasses;
+        private readonly Dictionary<int, (int[] All, int[] Local, HashSet<int> Roots, bool Global)> _rootInfo = new();
+        private readonly Dictionary<string, int[]> _shared = new(StringComparer.Ordinal);
+
+        private void Prepare()
+        {
+            if (_roots is not null) return;
+            _globalClasses = Reached(new[] { _global });
+            _roots = new();
+            for (int m = 0; m < _members.Length; m++)
+                for (int k = 0; k <= Function(m).Parameters; k++)
+                    if (_pointee[Node(m, k)] >= 0) _roots.Add(Pointee(Node(m, k)));
+        }
+
+        /// <summary>What a root class reaches, once: its origins (and those past the unknown object's), the roots it reaches, whether it reaches the unknown object.</summary>
+        private (int[] All, int[] Local, HashSet<int> Roots, bool Global) Info(int c)
+        {
+            Prepare();
+            c = Find(c);
+            if (_rootInfo.TryGetValue(c, out var known)) return known;
+            SortedSet<int> all = new(), local = new();
+            HashSet<int> roots = new();
+            bool global = false;
+            foreach (int r in Reached(new[] { c }))
+            {
+                if (r == Find(_global)) global = true;
+                if (_roots!.Contains(r)) roots.Add(r);
+                if (_originsOf[r] is not { } origins) continue;
+                all.UnionWith(origins);
+                if (!_globalClasses!.Contains(r)) local.UnionWith(origins);
+            }
+            return _rootInfo[c] = (Share(all), Share(local), roots, global);
+        }
+
+        // One array for every member whose answer is the same.
+        private int[] Share(IEnumerable<int> sorted)
+        {
+            int[] a = sorted as int[] ?? sorted.ToArray();
+            if (a.Length == 0) return Array.Empty<int>();
+            string key = a.Length + ":" + a[0] + ":" + a[^1] + ":" + HashOf(a);
+            if (_shared.TryGetValue(key, out int[]? known) && known.AsSpan().SequenceEqual(a)) return known;
+            return _shared[key] = a;
+        }
+
+        private static int HashOf(int[] a)
+        {
+            HashCode h = new();
+            foreach (int x in a) h.Add(x);
+            return h.ToHashCode();
+        }
+
+        private int[] MergeSorted(IEnumerable<int[]> arrays)
+        {
+            List<int[]> list = arrays.Where(x => x.Length > 0).Distinct().ToList();
+            if (list.Count == 0) return Array.Empty<int>();
+            if (list.Count == 1) return list[0];
+            SortedSet<int> all = new();
+            foreach (int[] a in list) all.UnionWith(a);
+            return Share(all.ToArray());
+        }
+
+        private HashSet<int> Reached(IEnumerable<int> start)
+        {
+            HashSet<int> seen = new();
+            Stack<int> next = new();
+            foreach (int c in start) { int r = Find(c); if (seen.Add(r)) next.Push(r); }
+            while (next.TryPop(out int c))
+                if (_fields[c] is { } fields)
+                    foreach (int t in fields.Values) { int r = Find(t); if (seen.Add(r)) next.Push(r); }
+            return seen;
+        }
+
+        /// <summary>
+        /// A MEMBER'S SUMMARY, field by field where unification kept them
+        /// apart (ByField), else as coarse as unification once was
+        /// (Coarsest).
+        ///
+        /// THE COARSE ONE: every argument and all it reaches one object, the
+        /// objects made beneath it another, each may hold the other and
+        /// itself, and the unknown object when any argument reaches it. One
+        /// closure a call, where a cell from each parameter to each other's
+        /// deep place made a call into the cycle cost the square of its
+        /// arguments' reach.
+        ///
+        /// WHAT THE RESULT REACHES IS NOT THE ARGUMENTS': a member handing
+        /// back a literal or a static's object -- a ToString -- reaches the
+        /// unknown object by its result alone, and that once made the
+        /// unknown object hold every argument, so that every argument of
+        /// every call of it escaped. Only what the arguments reach decides
+        /// whether the unknown object may hold them: a class of the caller's
+        /// that the result reaches and the unknown object holds is one the
+        /// arguments reach too, or the caller never had it.
+        /// </summary>
+        public Summary Summarise(int m) => ByField(m) ?? Coarsest(m);
+
+        // How many classes one member's summary walks, and how many objects it
+        // states, before it is the coarse one: a member of a cycle of
+        // thousands each walking all it reaches was the square of the cycle.
+        private const int MostWalked = 4096, MostStated = 512;
+
+        /// <summary>
+        /// A MEMBER'S SUMMARY BY FIELD: each argument's class, and what its
+        /// fields hold, field by field, a place below that argument by the
+        /// fields taken to it (WithField: past PlaceDepth, the deep place);
+        /// a class holding objects made in the cycle a made object; and the
+        /// unknown object's class the unknown object. A cell for every field
+        /// of each such class to each class there -- at Any where the class
+        /// was collapsed, pointing anywhere into one that was -- and the
+        /// unknown object holding everything its class has: an argument
+        /// below one field that leaks leaks, and what another field holds
+        /// does not. What is below an object that leaks leaks with it, and
+        /// is not followed. A class that holds nothing -- no object made, no
+        /// place, read where nothing was written -- is nothing to the caller.
+        /// Null past MostWalked or MostStated: the coarse summary (Coarsest).
+        /// </summary>
+        private Summary? ByField(int m)
+        {
+            Prepare();
+            RegionFunction f = Function(m);
+            int n = f.Parameters;
+            int global = Find(_global);
+            Summary s = new();
+            Dictionary<int, List<int>> reps = new();
+            Dictionary<(Kind, int, string), int> placed = new();
+            Queue<(int Class, int Object)> next = new();
+            int walked = 0;
+
+            int Place(int k, int[] path)
+            {
+                Kind kind = KindOf(path);
+                var key = (kind, k, string.Join(",", path));
+                if (placed.TryGetValue(key, out int at)) return at;
+                at = s.Objects.Count;
+                s.Objects.Add((kind, k, path, Array.Empty<int>()));
+                return placed[key] = at;
+            }
+            void Add(int c, int o)
+            {
+                List<int> list = reps.TryGetValue(c, out List<int>? known) ? known : reps[c] = new();
+                if (list.Contains(o)) return;
+                list.Add(o);
+                next.Enqueue((c, o));
+            }
+            // A class first met: the unknown object, or the objects made in it.
+            void Meet(int c)
+            {
+                if (reps.ContainsKey(c)) return;
+                walked++;
+                if (c == global) { Add(c, 0); return; }
+                reps[c] = new();
+                if (_originsOf[c] is { Count: > 0 } origins)
+                {
+                    int made = s.Objects.Count;
+                    s.Objects.Add((Kind.Made, -1, Array.Empty<int>(), origins.Distinct().Order().ToArray()));
+                    Add(c, made);
+                }
+            }
+
+            for (int k = 0; k < n; k++)
+            {
+                // A parameter of a number type is handed no address.
+                if (_pointee[Node(m, k)] < 0 || f.IsNumber(k)) continue;
+                int c = Pointee(Node(m, k));
+                Meet(c);
+                Add(c, Place(k, Array.Empty<int>()));
+            }
+            int result = _pointee[Node(m, n)] >= 0 ? Pointee(Node(m, n)) : -1;
+            if (result >= 0) Meet(result);
+            while (next.TryDequeue(out var item))
+            {
+                if (walked > MostWalked || s.Objects.Count > MostStated) return null;
+                (int c, int o) = item;
+                if (c == global || _fields[c] is not { } fields) continue;
+                var obj = s.Objects[o];
+                foreach (var (key, held) in fields)
+                {
+                    int t = Find(held);
+                    Meet(t);
+                    // (A place below a field is by its offset: every field
+                    // named at it is one place to the caller.)
+                    if (obj.Kind is Kind.Place or Kind.Deep && obj.Param >= 0) Add(t, Place(obj.Param, WithField(obj.Path, TypedStep(KeyOffset(key), KeyFamily(key)))));
+                }
+            }
+            if (walked > MostWalked || s.Objects.Count > MostStated) return null;
+
+            foreach (var (c, list) in reps)
+            {
+                if (list.Count == 0 || c == global || _fields[c] is not { } fields) continue;
+                foreach (var (key, held) in fields)
+                {
+                    int t = Find(held);
+                    if (!reps.TryGetValue(t, out List<int>? to) || to.Count == 0) continue;
+                    int at = _collapsed[t] ? Any : 0;
+                    int offset = KeyOffset(key);
+                    foreach (int r in list)
+                        foreach (int u in to)
+                            if (!(r == 0 && u == 0))
+                            {
+                                // Each cell with the field it was written as: the
+                                // caller keeps it apart from others at the offset.
+                                s.Cells.Add((r, offset, u, at));
+                                s.NoteFamily((r, offset, u, at), KeyFamily(key));
+                            }
+                }
+            }
+            // What the unknown object's class holds, it holds: those escape.
+            if (reps.TryGetValue(global, out List<int>? leaked))
+                foreach (int u in leaked) if (u != 0) s.Cells.Add((0, Any, u, Any));
+            if (result >= 0 && reps.TryGetValue(result, out List<int>? back))
+                foreach (int u in back) s.Result.Add((u, _collapsed[result] ? Any : 0));
+            s.Cells.Sort(); s.Result.Sort();
+            Summary.Dedupe(s.Cells); Summary.Dedupe(s.Result);
+            return s.Bounded();
+        }
+
+        /// <summary>The coarse summary (Summarise), past ByField's bounds.</summary>
+        private Summary Coarsest(int m)
+        {
+            Prepare();
+            RegionFunction f = Function(m);
+            int n = f.Parameters;
+            Summary s = new();
+            var info = new (int[] All, int[] Local, HashSet<int> Roots, bool Global)[n + 1];
+            bool any = false, argsGlobal = false, resultGlobal = false;
+            for (int k = 0; k <= n; k++)
+            {
+                // A parameter of a number type is handed no address.
+                int own = _pointee[Node(m, k)] < 0 || f.IsNumber(k) ? -1 : Pointee(Node(m, k));
+                info[k] = own < 0 ? (Array.Empty<int>(), Array.Empty<int>(), new HashSet<int>(), false) : Info(own);
+                if (own >= 0 && k < n) any = true;
+                bool global = own >= 0 && (info[k].Global || _globalClasses!.Contains(own));
+                if (k < n) argsGlobal |= global; else resultGlobal = global;
+            }
+            int all = -1;
+            if (any) { all = s.Objects.Count; s.Objects.Add((Kind.Deep, -1, Array.Empty<int>(), Array.Empty<int>())); }
+            int[] origins = MergeSorted(info.Select(x => x.Local));
+            int blob = -1;
+            if (origins.Length > 0) { blob = s.Objects.Count; s.Objects.Add((Kind.Made, -1, Array.Empty<int>(), origins)); }
+            foreach (int from in new[] { all, blob })
+            {
+                if (from < 0) continue;
+                if (all >= 0) s.Cells.Add((from, Any, all, Any));
+                if (blob >= 0) s.Cells.Add((from, Any, blob, Any));
+                // What was made may be reached from the result alone.
+                if (argsGlobal || from == blob && resultGlobal) s.Cells.Add((from, Any, 0, Any));
+            }
+            if (argsGlobal && all >= 0) s.Cells.Add((0, Any, all, Any));
+            if (_pointee[Node(m, n)] >= 0)
+            {
+                if (all >= 0) s.Result.Add((all, Any));
+                if (blob >= 0) s.Result.Add((blob, Any));
+                if (resultGlobal || argsGlobal) s.Result.Add((0, Any));
+            }
+            s.Cells.Sort(); s.Result.Sort();
+            Summary.Dedupe(s.Cells); Summary.Dedupe(s.Result);
+            s.MadeCoarse = true;
+            return s;
+        }
+
+        public void Answer(int m)
+        {
+            Prepare();
+            int f = _members[m];
+            RegionFunction function = Function(m);
+            if (m == 0)
+            {
+                _owner._globalRefs.UnionWith(Info(_global).All);
+                _owner.Progress?.Invoke($"escape graphs: unified global class reaches {Info(_global).All.Length} origins ({_owner.SitesOf(Info(_global).All).Length} sites); {_globalClasses!.Count} of {_parent.Count} classes");
+            }
+            bool rooted = _owner._rooted[f];
+            if (_owner._wanted[f] || rooted)
+            {
+                List<int[]> parts = new() { Info(_global).All };
+                for (int k = 0; k <= function.Parameters; k++) if (_pointee[Node(m, k)] >= 0) parts.Add(Info(Pointee(Node(m, k))).All);
+                int[] escaping = MergeSorted(parts);
+                if (rooted) _owner._rootedRefs.UnionWith(escaping);
+                if (_owner._wanted[f]) _owner.Escaping[f] = escaping;
+            }
+            // A diagnostic (+why on the function): what it hands the unknown
+            // object -- each Leak, an Unknown, a call nobody can name -- and
+            // what writes each node handed.
+            if (_owner.WhyFunction?.Invoke(f) == true)
+            {
+                string Writers(int node) => string.Join("; ", function.Constraints.Where(c => c.A == node).Select(c => c.Kind + " " + c.B + " " + c.C));
+                if (_owner.Why is not null && _owner.WhyAll)
+                    _owner.Progress?.Invoke($"escape graphs why: {_owner._functions[f].Name}: constraints {string.Join("; ", function.Constraints.Select(c => c.Kind + " " + c.A + " " + c.B + " " + c.C))}; calls {string.Join("; ", function.Calls.Select(c => (c.Callee ?? "?") + " -> " + c.Dest + " (" + string.Join(",", c.Arguments) + ")"))}");
+                foreach (RegionConstraint c in function.Constraints)
+                    if (c.Kind is RegionConstraintKind.Leak)
+                        _owner.Progress?.Invoke($"escape graphs why: {_owner._functions[f].Name}: node {c.A} leaked; written by {Writers(c.A)}");
+                for (int k = 0; k < function.Calls.Count; k++)
+                    if (function.Calls[k].Callee is null)
+                        _owner.Progress?.Invoke($"escape graphs why: {_owner._functions[f].Name}: call {k} names nothing, handed {string.Join(",", function.Calls[k].Arguments)}");
+            }
+            if (function.Loops.Count > 0)
+            {
+                var held = new (int[], int[])[function.Loops.Count];
+                for (int l = 0; l < held.Length; l++)
+                {
+                    RegionLoopShape loop = function.Loops[l];
+                    held[l] = (Held(m, loop.Live, Enumerable.Range(0, function.Slots)), Held(m, loop.Invariant, loop.KeptSlots));
+                }
+                _owner.LoopHeld[f] = held;
+            }
+        }
+
+        private int[] Held(int m, int[] nodes, IEnumerable<int> slots)
+        {
+            List<int> start = new();
+            foreach (int n in nodes) if (n < Function(m).Nodes && _pointee[Node(m, n)] >= 0) start.Add(Pointee(Node(m, n)));
+            foreach (int slot in slots) if (_slots.TryGetValue((m, slot), out int c)) start.Add(Find(c));
+            SortedSet<int> origins = new();
+            foreach (int r in Reached(start))
+                if (!_globalClasses!.Contains(r) && _originsOf[r] is { } o) origins.UnionWith(o);
+            return origins.ToArray();
+        }
+
+        public string Describe() => $"{_parent.Count} classes, {_pointee.Count} nodes, {_unions} unions";
+    }
+}

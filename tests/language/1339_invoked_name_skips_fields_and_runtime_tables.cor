@@ -1,0 +1,126 @@
+// test: invoked_name_skips_fields_and_runtime_tables
+// expect-exit: 0
+// expect-output:
+// outer method 3 3 4
+// delegate field 8
+// table 2 one True False dup True
+// made 7 7 kept 1
+// removed True False 0
+// walked 2
+// gc False CompactOnce Interactive refused
+// trimmed 10 1136 True
+// set trimmed 10 1045
+// trim refused True True
+//
+// What the compiler's own region engine asks of the language and the
+// library, each as .NET answers it:
+//
+// A NAME CALLED FINDS WHAT CAN BE CALLED. C# looks an invoked name up among
+// the members that can be invoked: a nested class with a field `Fields` (a
+// table, no delegate) calls the outer class's method `Fields(int[])`, from
+// an instance method and from a static one; a property `Count` gives way to
+// the outer static method `Count(int)`; a field that IS a delegate is
+// invoked itself.
+//
+// ConditionalWeakTable by its keys' identity, two equal keys apart: Add
+// (refusing a key held already), TryAdd, AddOrUpdate, TryGetValue, GetValue
+// with a maker (called once), Remove, a walk. GCSettings answering as a
+// workstation collector does. Dictionary's and HashSet's TrimExcess: what
+// they hold kept, a capacity below the count refused.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime;
+using System.Runtime.CompilerServices;
+
+class Outer
+{
+    static int Fields(int[] path) => path.Length;
+    static int Count(int x) => x + 1;
+
+    public class Inner
+    {
+        public Dictionary<long, int>? Fields;
+        public int Count => 5;
+        public Func<int, int> Twice = x => 2 * x;
+
+        public int A(int[] p) => Fields(p);
+        public static int B(int[] p) => Fields(p);
+        public int C() => Count(3);
+        public int D() => Twice(4);
+    }
+}
+
+sealed class Key
+{
+    public readonly string Name;
+    public Key(string name) { Name = name; }
+    public override bool Equals(object? o) => o is Key k && k.Name == Name;
+    public override int GetHashCode() => Name.GetHashCode();
+}
+
+sealed class Box
+{
+    public int N;
+    public Box(int n) { N = n; }
+}
+
+static class P
+{
+    static int Main()
+    {
+        Outer.Inner inner = new();
+        Console.WriteLine("outer method " + inner.A(new[] { 1, 2, 3 }) + " " + Outer.Inner.B(new[] { 7, 8, 9 }) + " " + inner.C());
+        Console.WriteLine("delegate field " + inner.D());
+
+        ConditionalWeakTable<Key, Box> table = new();
+        Key a = new("k"), b = new("k");
+        table.Add(a, new Box(1));
+        bool added = table.TryAdd(b, new Box(2));
+        bool again = table.TryAdd(a, new Box(3));
+        string dup;
+        try { table.Add(a, new Box(4)); dup = "no"; } catch (ArgumentException) { dup = "dup"; }
+        table.AddOrUpdate(b, new Box(2));
+        Console.WriteLine("table " + (table.TryGetValue(b, out Box? got) ? got!.N : -1) + " " + (table.TryGetValue(a, out Box? first) && first!.N == 1 ? "one" : "?")
+            + " " + added + " " + again + " " + dup + " " + (table.TryGetValue(new Key("k"), out _) == false));
+        int calls = 0;
+        Key c = new("c");
+        Box made = table.GetValue(c, k => { calls++; return new Box(7); });
+        Box kept = table.GetValue(c, k => { calls++; return new Box(8); });
+        Console.WriteLine("made " + made.N + " " + kept.N + " kept " + calls);
+        bool removed = table.Remove(c);
+        Console.WriteLine("removed " + removed + " " + table.Remove(c) + " " + (table.TryGetValue(c, out _) ? 1 : 0));
+        int walked = 0;
+        foreach (KeyValuePair<Key, Box> entry in table) walked++;
+        Console.WriteLine("walked " + walked);
+
+        string refused;
+        try { GCSettings.LatencyMode = GCLatencyMode.NoGCRegion; refused = "set"; } catch (ArgumentOutOfRangeException) { refused = "refused"; }
+        GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
+        Console.WriteLine("gc " + GCSettings.IsServerGC + " " + GCSettings.LargeObjectHeapCompactionMode + " " + GCSettings.LatencyMode + " " + refused);
+
+        Dictionary<int, int> numbers = new();
+        for (int i = 0; i < 100; i++) numbers[i] = i * 2;
+        for (int i = 10; i < 100; i++) numbers.Remove(i);
+        numbers.TrimExcess();
+        numbers[1000] = 1;
+        int sum = 0;
+        foreach (KeyValuePair<int, int> pair in numbers) sum += pair.Key + pair.Value;
+        Console.WriteLine("trimmed " + (numbers.Count - 1) + " " + sum + " " + (numbers.TryGetValue(9, out int nine) && nine == 18));
+
+        HashSet<int> set = new();
+        for (int i = 0; i < 100; i++) set.Add(i);
+        for (int i = 10; i < 100; i++) set.Remove(i);
+        set.TrimExcess();
+        set.Add(1000);
+        int total = 0;
+        foreach (int x in set) total += x;
+        Console.WriteLine("set trimmed " + (set.Count - 1) + " " + total);
+
+        bool refusedDictionary = false, refusedSet = false;
+        try { numbers.TrimExcess(1); } catch (ArgumentOutOfRangeException) { refusedDictionary = true; }
+        try { set.TrimExcess(1); } catch (ArgumentOutOfRangeException) { refusedSet = true; }
+        Console.WriteLine("trim refused " + refusedDictionary + " " + refusedSet);
+        return 0;
+    }
+}

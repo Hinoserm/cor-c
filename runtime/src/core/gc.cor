@@ -112,6 +112,12 @@ static class Gc
     // scanned word by word. Not a multiple of eight, as KindLeaf is not.
     const long KindObject = 0x4F424A54;
 
+    // AND KindFreed FOR A REGION'S BLOCK GIVEN BACK BELOW THE TOP of its
+    // region (RegionFree): dead, its bytes kept until the pointer comes back
+    // down over it. Never scanned, never copied (ScanRegion, CopyRegion). Not
+    // a multiple of eight either.
+    const long KindFreed = 0x46524545;
+
     // THE DESCRIPTOR, as the compiler lays it (Lowering.cs, DescName...):
     // twelve words before the vtable an object's first word points at.
     const long DescWords = 12;
@@ -2213,57 +2219,200 @@ static class Gc
     // proved dead by the time it returns (the compiler's RegionPointsTo):
     // those are bumped out of the thread's own arena and given back together,
     // the bump pointer set back and the bytes zeroed, when it returns. Regions
-    // nest; each is the stretch of the arena above where it began. Blocks in
+    // nest; each is the stretch of the arena past where it began. Blocks in
     // the arena are laid out as the heap's are, header, kind and footer, so
     // that the collector reads them: the arena's live part is scanned with
     // the thread's stack, for what heap objects they hold, and never swept.
     // A free of a block in it does nothing; the region's end gives it back.
     // Nothing on the heap holds one (the proof), and the collector takes no
     // pointer into the arena for a block of its own (ExactBlock: not a chunk).
+    //
+    // THE ARENA IS AS BIG AS WHAT IS IN IT. Nothing is set aside for it: a
+    // thread that never opens a region has none, and the first region it
+    // opens maps one chunk, the size of what it first needs rounded to a
+    // page. The arena grows by another chunk whenever the innermost region's
+    // next block does not fit -- as big as the block, or as the chunks before
+    // it together if that is bigger, so that an arena of gigabytes is a few
+    // dozen chunks and never more than twice what its regions hold. A
+    // region's end hands back every chunk past the one it began in but the
+    // next, kept as the spare: a loop whose laps cross a chunk's end maps
+    // nothing per lap.
+    //
+    // A REGION THE COMPILER SIZED needs no more than it said. Where the link
+    // proved how many bytes a boundary's region holds at most in one call --
+    // or a loop's in one lap -- RegionEnter and RegionLoop are handed that
+    // count (0 where nothing was proved): the region is laid down where the
+    // whole of it fits, in the chunk being filled if it has the room, else
+    // in a chunk mapped for exactly that many bytes, rounded to the page,
+    // or in the spare if that is big enough. Only regions of a size nobody
+    // proved grow by the doubling rule above.
+    //
+    // A CHUNK IS NAMED BY ITS END, where its trailer is: its first byte, the
+    // chunks before and after it (0 for none), and how far it was filled
+    // when the arena moved on past it (its first byte, for the spare). The
+    // first chunk's trailer also holds the lowest first byte and the highest
+    // end of all of them, which every free asks before it walks the chunks.
+    // Tls.RegionBase is the first chunk, Tls.RegionEnd the one being filled
+    // and Tls.RegionAt the bump pointer in it. Places in the arena are
+    // ordered chunk by chunk, and by address within one.
 
-    /// Bytes given back by regions' ends, and allocations that found the
-    /// innermost region full (made on the heap: a bigger arena would take them).
+    /// Bytes given back by regions' ends, and allocations a region could not
+    /// take because the system had no memory to grow the arena by (made on
+    /// the heap instead).
     public static long RegionFreedBytes;
     public static long RegionMisses;
+    /// Blocks given back before their region's end, from its top
+    /// (RegionFree): the bump pointer taken back over them, and their bytes
+    /// -- not counted again in RegionFreedBytes when the region ends.
+    public static long RegionTopFrees;
+    public static long RegionTopFreedBytes;
+    /// Arrays grown where they were, at their region's top (RegionGrow),
+    /// where a new one would have been made and the old left behind.
+    public static long RegionGrownInPlace;
+    // THE ARENA'S LAYOUT AS RUNTIME'S FAST PATHS LAY BLOCKS AND RECORDS
+    // DOWN (Runtime.AllocRegion, RegionEnter, RegionLeave), which the link
+    // inlines at every site, boundary and leave: the same constants as the
+    // long ways here, named for them.
+    public const long BlockHeaderBytes = HeaderBytes;
+    public const long BlockFooterBytes = FooterBytes;
+    public const long BlockKindAt = KindAt;
+    public const long BlockRounding = Overhead + 7;
+    public const long BlockSizeMask = SizeMask;
+    public const long SmallestBlock = Smallest;
+    public const long MostRequest = MaxRequest;
+    public const long RegionRecordBytes = RecordBytes;
+    public const long RecordFrameAt = HeaderBytes + WordSize.Bytes;
+    public const long RecordLoopMark = LoopMark;
+
     /// Blocks made in regions: each given back when its region ends, as a
     /// free would have given it back (what Frees counts for the heap).
+    /// Counted in each thread's block as they are made, and added here
+    /// where a region or a lap ends and as the thread ends
+    /// (CountRegionBlocks): one word every thread wrote at every block was
+    /// a cache line passed between processors.
     public static long RegionBlocks;
-    // Asked of the platform once; no initialiser, which would give Gc a
-    // static constructor that runs before any thread has a block.
-    static long _regionSlice;
-    static bool _regionAsked;
+    /// Regions opened with the size the link proved for them.
+    public static long RegionsSized;
+
+    // ---- what the arenas take of the system (SayStats) ---------------------
+    //
+    // "IF IT'S 21 KB, THEN IT'S 21 KB": what the regions map against what
+    // they fill, process-wide, so that a program's regions can be held to
+    // taking what they need and no more. Counted only where the arena maps,
+    // moves on, cuts back or hands back -- never on a bump allocation: plain
+    // adds as the collector's other counters are, and an atomic add and a
+    // compare-and-swap for the two that are summed over threads and peaked.
+
+    /// Bytes mapped for arenas now, over every thread, and the most at once.
+    public static long ArenaMappedNow;
+    public static long ArenaMappedPeak;
+    /// Bytes the arenas held filled, over every thread, as each last measured
+    /// its own (ArenaMeasure), and the most at once. Measured where a region
+    /// ends or a lap is cut, where the arena moves on to another chunk, and
+    /// before a block is given back from the top -- the moments its fill
+    /// stops rising -- and only while the stats are asked for.
+    public static long ArenaUsedNow;
+    public static long ArenaUsedPeak;
+    /// Chunks mapped and handed back, and the bytes asked of the system in all.
+    public static long ArenaChunksMapped;
+    public static long ArenaChunksUnmapped;
+    public static long ArenaAskedBytes;
+    /// Times the arena moved on into the spare a region's end kept, mapping nothing.
+    public static long ArenaSparesReused;
+    /// Sized room asked (Room: a sized region's, a sized loop's lap): found in
+    /// the chunk being filled, or in another -- the spare, or one mapped for
+    /// exactly that many bytes.
+    public static long SizedRoomHere;
+    public static long SizedRoomElsewhere;
 
     // A record's block: header, the two words, footer, rounded as blocks are.
     const long RecordBytes = (Overhead + 2 * WordSize.Bytes + 7) & SizeMask;
 
+    // A chunk's trailer: first byte, before, after, filled to, and in the
+    // first chunk's only, the lowest first byte and highest end, and how far
+    // the arena was filled when last measured (ArenaMeasure).
+    const long TrailerBytes = 7 * WordSize.Bytes;
+    // The first chunk's trailer word holding how many bytes this thread's
+    // arena was filled to when it was last measured (ArenaMeasure).
+    const long TrailerMeasured = 6;
+    // What a chunk's size is rounded to: the page the system maps.
+    const long ChunkPage = 4096;
+
+    static long ChunkStart(long chunk) => Sys.Peek(chunk);
+    static long ChunkAfter(long chunk) => Sys.Peek(chunk + 2 * WordSize.Bytes);
+
+    // How far `chunk` is filled: the bump pointer, for the one being filled.
+    static long ChunkTop(long tb, long chunk)
+    {
+        return chunk == Sys.Peek(tb + Tls.RegionEnd) ? Sys.Peek(tb + Tls.RegionAt) : Sys.Peek(chunk + 3 * WordSize.Bytes);
+    }
+
     // EACH REGION BEGINS WITH ITS RECORD, a leaf block of two words: the
     // region it is inside (0 for none) and the frame of the call that opened
-    // it. A throw that leaves that call runs no RegionLeave; the next region
+    // it, its low bit set for a loop's region (LoopMark: a frame pointer is
+    // a word apart from the next, so the bit is never the frame's own). A
+    // throw that leaves that call runs no RegionLeave; the next region
     // opened or allocation made from a frame above it finds the frame gone
     // and closes it then (PopStale), and an outer region's own leave sets the
     // arena back below anything opened inside it.
 
+    // The frame word's mark of a loop's region (RegionLoop).
+    const long LoopMark = 1;
+
+    // The frame a record names, without its mark.
+    static long OpenerFrame(long record) => Sys.Peek(record + HeaderBytes + WordSize.Bytes) & ~LoopMark;
+
     /// Opens a region for the call whose frame is `frame`: what RegionLeave
-    /// is handed back, -1 when there is none (no arena, or no room in it).
-    public static long RegionEnter(long frame)
+    /// is handed back, -1 when there is none (no regions on this platform, or
+    /// no memory to grow the arena by). `bytes` is the most the region holds
+    /// besides its record, as the link proved it; 0 when it is not known.
+    public static long RegionEnter(long frame, long bytes)
+    {
+        return Enter(frame, bytes, 0);
+    }
+
+    // RegionEnter, the record's frame word marked with `mark`: LoopMark for
+    // the first region a thread opens being a loop's.
+    static long Enter(long frame, long bytes, long mark)
     {
         long tb = Sys.ThreadBlock();
         if (tb == 0) return -1;
         if (Sys.Peek(tb + Tls.RegionBase) == 0)
         {
-            if (!_regionAsked) { _regionSlice = Platform.RegionBytes() & -8; _regionAsked = true; }
-            if (_regionSlice <= 0) return -1;
-            long arena = Platform.Map(_regionSlice);
-            if (arena == 0) { _regionSlice = 0; return -1; }
-            CommitCards(arena, _regionSlice);
-            Sys.Poke(tb + Tls.RegionAt, arena);
-            Sys.Poke(tb + Tls.RegionEnd, arena + _regionSlice);
-            Sys.Poke(tb + Tls.RegionBase, arena);
+            // A continuation's run with an arena of its own (Tls.TaskArena)
+            // has one where the platform gives its blocks none.
+            if (!Platform.Regions() && Sys.Peek(tb + Tls.TaskArena) == 0) return -1;
+            long chunk = MapChunk(tb, RecordBytes + (bytes > 0 ? bytes : 0), bytes > 0);
+            if (chunk == 0) return -1;
+            Sys.Poke(tb + Tls.RegionAt, ChunkStart(chunk));
+            Sys.Poke(tb + Tls.RegionEnd, chunk);
+            Sys.Poke(tb + Tls.RegionBase, chunk);
         }
         // Every region opened at or below this frame is one a throw has left:
         // two live calls never share a frame.
         PopStale(tb, frame, true);
-        return OpenRecord(tb, frame);
+        // The record and all the region holds, together where they fit.
+        // Without the memory for that, it grows as an unsized one does.
+        if (bytes > 0)
+        {
+            Room(tb, RecordBytes + bytes);
+            RegionsSized = RegionsSized + 1;
+        }
+        return OpenRecord(tb, frame | mark);
+    }
+
+    // Room for `need` bytes at the arena's pointer: the chunk being filled,
+    // or the spare, or a chunk mapped for exactly them. False when the system
+    // has no memory to give.
+    static bool Room(long tb, long need)
+    {
+        if (Sys.Peek(tb + Tls.RegionAt) + need <= Sys.Peek(tb + Tls.RegionEnd))
+        {
+            SizedRoomHere = SizedRoomHere + 1;
+            return true;
+        }
+        SizedRoomElsewhere = SizedRoomElsewhere + 1;
+        return NextChunk(tb, need, true);
     }
 
     /// A LOOP'S REGION, at the top of every lap of a loop whose laps each
@@ -2274,35 +2423,50 @@ static class Gc
     /// bytes zeroed -- with any region still open inside it. Opened inside
     /// a region of the same frame, the function's own, and never closing
     /// it: two regions of one frame are one call's.
-    public static long RegionLoop(long record, long frame)
+    /// `bytes` is the most one lap makes in it, as the link proved it; 0
+    /// when it is not known. A lap whose bytes do not fit after the record
+    /// goes on in the spare, which the next lap's cut keeps.
+    public static long RegionLoop(long record, long frame, long bytes)
     {
         long tb = Sys.ThreadBlock();
         if (tb == 0) return -1;
-        long end = Sys.Peek(tb + Tls.RegionAt);
-        if (record >= 0 && record < end && Sys.Peek(record + HeaderBytes + WordSize.Bytes) == frame)
+        CountRegionBlocks(tb);
+        if (record >= 0)
         {
-            long start = record + RecordBytes;
-            // The pointer first, as RegionLeave sets it.
-            Sys.Poke(tb + Tls.RegionAt, start);
-            Sys.Poke(tb + Tls.RegionOpen, record);
-            if (end > start)
+            long chunk = ChunkOf(tb, record);
+            if (Filled(tb, chunk, record) && OpenerFrame(record) == frame)
             {
-                Sys.MemorySet(start, 0, end - start);
-                RegionFreedBytes = RegionFreedBytes + (end - start);
-                FreedBytes = FreedBytes + (end - start);
+                long freed = Cut(tb, chunk, record + RecordBytes);
+                Sys.Poke(tb + Tls.RegionOpen, record);
+                RegionFreedBytes = RegionFreedBytes + freed;
+                FreedBytes = FreedBytes + freed;
+                // Without the memory for the lap, it grows as an unsized
+                // region does (AllocRegion).
+                if (bytes > 0) Room(tb, bytes);
+                return record;
             }
-            return record;
         }
-        if (Sys.Peek(tb + Tls.RegionBase) == 0) return RegionEnter(frame);
-        PopStale(tb, frame, false);
-        return OpenRecord(tb, frame);
+        long opened = Sys.Peek(tb + Tls.RegionBase) == 0 ? Enter(frame, 0, LoopMark) : OpenLooped(tb, frame);
+        if (opened >= 0 && bytes > 0) Room(tb, bytes);
+        return opened;
     }
 
-    // A region's record laid down at the arena's pointer: -1 when it does not fit.
+    static long OpenLooped(long tb, long frame)
+    {
+        PopStale(tb, frame, false);
+        return OpenRecord(tb, frame | LoopMark);
+    }
+
+    // A region's record laid down at the arena's pointer, the arena grown
+    // when it does not fit: -1 when the system has no memory for it.
     static long OpenRecord(long tb, long frame)
     {
         long record = Sys.Peek(tb + Tls.RegionAt);
-        if (record + RecordBytes > Sys.Peek(tb + Tls.RegionEnd)) return -1;
+        if (record + RecordBytes > Sys.Peek(tb + Tls.RegionEnd))
+        {
+            if (!NextChunk(tb, RecordBytes, false)) return -1;
+            record = Sys.Peek(tb + Tls.RegionAt);
+        }
         Stamp(record, RecordBytes, 0);
         Sys.Poke(record + KindAt, KindLeaf);
         Sys.Poke(record + HeaderBytes, Sys.Peek(tb + Tls.RegionOpen));
@@ -2317,17 +2481,197 @@ static class Gc
     public static void RegionLeave(long record)
     {
         long tb = Sys.ThreadBlock();
-        if (record < 0 || tb == 0) return;
-        long end = Sys.Peek(tb + Tls.RegionAt);
-        if (record >= end) return;
-        // The pointer first: a scan that lands in the middle reads no further
-        // than the region's start, never the bytes being cleared.
-        Sys.Poke(tb + Tls.RegionAt, record);
-        Sys.Poke(tb + Tls.RegionOpen, Sys.Peek(record + HeaderBytes));
-        Sys.MemorySet(record, 0, end - record);
+        // No arena, or one handed back as the thread ends: nothing to give.
+        if (record < 0 || tb == 0 || Sys.Peek(tb + Tls.RegionBase) == 0) return;
+        CountRegionBlocks(tb);
+        long chunk = ChunkOf(tb, record);
+        if (!Filled(tb, chunk, record)) return;
+        long outer = Sys.Peek(record + HeaderBytes);
+        long freed = Cut(tb, chunk, record);
+        Sys.Poke(tb + Tls.RegionOpen, outer);
         // The record is the region's own, not anything the program made.
-        RegionFreedBytes = RegionFreedBytes + (end - record - RecordBytes);
-        FreedBytes = FreedBytes + (end - record - RecordBytes);
+        RegionFreedBytes = RegionFreedBytes + (freed - RecordBytes);
+        FreedBytes = FreedBytes + (freed - RecordBytes);
+    }
+
+    // THE ARENA SET BACK to `to`, a place in `chunk` no further than how far
+    // it is filled: everything past it zeroed, as a fresh chunk is, and the
+    // chunks past `chunk` handed back to the system, but the next, kept as
+    // the spare. The bytes given back.
+    static long Cut(long tb, long chunk, long to)
+    {
+        // As full as it gets before this cut: measured first.
+        ArenaMeasure(tb);
+        long freed = CutBack(tb, chunk, to);
+        ArenaMeasure(tb);
+        return freed;
+    }
+
+    static long CutBack(long tb, long chunk, long to)
+    {
+        long w = WordSize.Bytes;
+        long last = Sys.Peek(tb + Tls.RegionEnd);
+        long at = Sys.Peek(tb + Tls.RegionAt);
+        long top = chunk == last ? at : Sys.Peek(chunk + 3 * w);
+        // The pointer first: a scan that lands in the middle reads no further
+        // than `to`, never the bytes being cleared.
+        Sys.Poke(tb + Tls.RegionAt, to);
+        Sys.Poke(tb + Tls.RegionEnd, chunk);
+        long freed = top - to;
+        if (top > to) Sys.MemorySet(to, 0, top - to);
+        if (chunk != last)
+        {
+            long spare = ChunkAfter(chunk);
+            long c = spare;
+            while (c != 0)
+            {
+                long filled = (c == last ? at : Sys.Peek(c + 3 * w)) - ChunkStart(c);
+                freed = freed + filled;
+                if (c == spare && filled > 0) Sys.MemorySet(ChunkStart(c), 0, filled);
+                if (c == last) break;
+                c = ChunkAfter(c);
+            }
+            Sys.Poke(spare + 3 * w, ChunkStart(spare));
+            DropChunks(tb, spare);
+        }
+        return freed;
+    }
+
+    // The innermost region's next `need` bytes do not fit in the chunk being
+    // filled: on into the spare, if they fit there, or a chunk mapped for
+    // them -- for exactly them when `exact`, a region the compiler sized.
+    // False when the system has no memory to give.
+    static bool NextChunk(long tb, long need, bool exact)
+    {
+        long last = Sys.Peek(tb + Tls.RegionEnd);
+        long next = ChunkAfter(last);
+        if (next != 0 && next - ChunkStart(next) < need)
+        {
+            DropChunks(tb, last);
+            next = 0;
+        }
+        if (next == 0) next = MapChunk(tb, need, exact);
+        else ArenaSparesReused = ArenaSparesReused + 1;
+        if (next == 0) return false;
+        // How far the chunk left behind is filled, before it stops being the
+        // one the bump pointer is in.
+        Sys.Poke(last + 3 * WordSize.Bytes, Sys.Peek(tb + Tls.RegionAt));
+        // As full as the chunk left behind will get: measured as it is left.
+        ArenaMeasure(tb);
+        Sys.Poke(tb + Tls.RegionAt, ChunkStart(next));
+        Sys.Poke(tb + Tls.RegionEnd, next);
+        return true;
+    }
+
+    // A chunk mapped after the one being filled, with room for `need` bytes
+    // and -- unless `exact` -- as big as the chunks up to it together: 0
+    // when the system has no memory to give.
+    static long MapChunk(long tb, long need, bool exact)
+    {
+        long w = WordSize.Bytes;
+        long first = Sys.Peek(tb + Tls.RegionBase);
+        long last = Sys.Peek(tb + Tls.RegionEnd);
+        long bytes = need + TrailerBytes;
+        long held = 0;
+        long c = exact ? 0 : first;
+        while (c != 0)
+        {
+            held = held + (c + TrailerBytes - ChunkStart(c));
+            if (c == last) break;
+            c = ChunkAfter(c);
+        }
+        if (held > bytes) bytes = held;
+        bytes = (bytes + ChunkPage - 1) & -ChunkPage;
+        long start = Platform.Map(bytes);
+        if (start == 0) return 0;
+        // Stores into its blocks mark cards: theirs committed now.
+        CommitCards(start, bytes);
+        ArenaMapped(bytes);
+        long chunk = start + bytes - TrailerBytes;
+        Sys.Poke(chunk, start);
+        Sys.Poke(chunk + w, last);
+        Sys.Poke(chunk + 2 * w, 0);
+        Sys.Poke(chunk + 3 * w, start);
+        if (last != 0) Sys.Poke(last + 2 * w, chunk);
+        long head = first != 0 ? first : chunk;
+        if (first == 0 || start < Sys.Peek(head + 4 * w)) Sys.Poke(head + 4 * w, start);
+        if (first == 0 || chunk > Sys.Peek(head + 5 * w)) Sys.Poke(head + 5 * w, chunk);
+        return chunk;
+    }
+
+    // Every chunk past `keep` handed back to the system, and the first
+    // chunk's bounds taken again over those left.
+    static void DropChunks(long tb, long keep)
+    {
+        long w = WordSize.Bytes;
+        long c = ChunkAfter(keep);
+        if (c == 0) return;
+        Sys.Poke(keep + 2 * w, 0);
+        while (c != 0)
+        {
+            long after = ChunkAfter(c);
+            long start = ChunkStart(c);
+            ArenaUnmapped(c + TrailerBytes - start);
+            Platform.Unmap(start, c + TrailerBytes - start);
+            c = after;
+        }
+        long first = Sys.Peek(tb + Tls.RegionBase);
+        long low = ChunkStart(first);
+        long high = first;
+        c = ChunkAfter(first);
+        while (c != 0)
+        {
+            if (ChunkStart(c) < low) low = ChunkStart(c);
+            if (c > high) high = c;
+            c = ChunkAfter(c);
+        }
+        Sys.Poke(first + 4 * w, low);
+        Sys.Poke(first + 5 * w, high);
+    }
+
+    // The chunk of this thread's arena `at` is in, the spare's too; 0 for none.
+    static long ChunkOf(long tb, long at)
+    {
+        long first = Sys.Peek(tb + Tls.RegionBase);
+        if (first == 0 || at < Sys.Peek(first + 4 * WordSize.Bytes) || at >= Sys.Peek(first + 5 * WordSize.Bytes)) return 0;
+        // The one being filled first: nearly every question is about it.
+        long c = Sys.Peek(tb + Tls.RegionEnd);
+        if (at >= ChunkStart(c) && at < c) return c;
+        c = first;
+        while (c != 0)
+        {
+            if (at >= ChunkStart(c) && at < c) return c;
+            c = ChunkAfter(c);
+        }
+        return 0;
+    }
+
+    // Whether `at`, in `chunk`, is in a region still open: below how far the
+    // chunk is filled (the spare is filled to its first byte).
+    static bool Filled(long tb, long chunk, long at)
+    {
+        return chunk != 0 && at < ChunkTop(tb, chunk);
+    }
+
+    // Whether `owner` is in the innermost region, the one `open` begins.
+    static bool InInnermost(long tb, long open, long owner)
+    {
+        long last = Sys.Peek(tb + Tls.RegionEnd);
+        // Both in the chunk being filled, as nearly always.
+        if (open >= ChunkStart(last) && open < last) return owner >= open && owner < Sys.Peek(tb + Tls.RegionAt);
+        long held = ChunkOf(tb, owner);
+        if (!Filled(tb, held, owner)) return false;
+        long begun = ChunkOf(tb, open);
+        if (held == begun) return owner >= open;
+        // In a chunk after the one the region began in.
+        long c = ChunkAfter(begun);
+        while (c != 0)
+        {
+            if (c == held) return true;
+            if (c == last) break;
+            c = ChunkAfter(c);
+        }
+        return false;
     }
 
     /// A catch in the frame `frame`: the regions a throw it caught left open,
@@ -2344,7 +2688,7 @@ static class Gc
     static void PopStale(long tb, long frame, bool at)
     {
         long open = Sys.Peek(tb + Tls.RegionOpen);
-        while (open != 0 && Below(Sys.Peek(open + HeaderBytes + WordSize.Bytes), frame, at))
+        while (open != 0 && Below(OpenerFrame(open), frame, at))
         {
             RegionLeave(open);
             open = Sys.Peek(tb + Tls.RegionOpen);
@@ -2357,38 +2701,248 @@ static class Gc
         return a < b || at && a == b;
     }
 
+    // How many frames OnStackWithin walks up to the innermost region's
+    // opener before it gives up (and the block goes on the heap).
+    const long FrameWalk = 64;
+
+    // WHETHER `owner` IS ON THIS THREAD'S STACK IN A FRAME THAT RETURNS NO
+    // LATER THAN THE INNERMOST REGION ENDS, the one `open` begins: storage
+    // made for it in that region is then dead when it is, as storage beside
+    // an owner in the region is. The link's lifetime pass puts a collection
+    // that never leaves its call in the call's frame, and its storage, made
+    // beside it, went to the heap.
+    //
+    // Every prologue is `push ebp; mov ebp, esp`, so the frame pointers are a
+    // chain of callers, each higher on the stack than the one it called (the
+    // stack grows down). The walk up it from this frame must meet the
+    // opener's frame exactly: that proves the opener is a live call on this
+    // stack, above everything between, and the stack between this frame's
+    // pointer and the opener's frame is that call's and its callees' --
+    // nothing of the heap's or the arena's lies inside it.
+    //
+    // A FUNCTION'S REGION (RegionEnter) ends as its opener returns, so an
+    // owner below the opener's frame pointer -- in the opener's own locals
+    // or a frame it called, deeper -- and at or above the stack pointer, so
+    // in a call still running, returns no later. (A boundary is never
+    // inlined, so the frame is its call's alone: RegionPointsTo.Open.)
+    //
+    // A LOOP'S REGION (RegionLoop) ends at the end of a lap, while its frame
+    // lives on: an owner in that frame may outlive the lap, and does not
+    // qualify. One in a frame the loop's function called does: that call
+    // returns before the lap it runs in ends. So the owner must be below the
+    // frame pointer of the opener's callee on this chain -- the callee's
+    // locals and deeper -- and with no callee (the allocation made in the
+    // opener's own frame, inlined there) nothing qualifies.
+    static bool OnStackWithin(long open, long owner)
+    {
+        long mask = WordSize.AddressMask;
+        long word = Sys.Peek(open + HeaderBytes + WordSize.Bytes);
+        long opener = word & ~LoopMark & mask;
+        long at = owner & mask;
+        if (at < (Sys.Stack() & mask) || at >= opener) return false;
+        long callee = 0;
+        long fp = Sys.FramePointer() & mask;
+        for (long k = 0; k < FrameWalk && fp != 0 && fp < opener; k++)
+        {
+            long next = Sys.Peek(fp) & mask;
+            if (next <= fp) return false;
+            callee = fp;
+            fp = next;
+        }
+        if (fp != opener) return false;
+        if ((word & LoopMark) == 0) return true;
+        return callee != 0 && at < callee;
+    }
+
+    /// What this thread counted in its block (Tls.RegionCount), added to RegionBlocks.
+    public static void CountRegionBlocks(long tb)
+    {
+        long counted = Sys.Peek(tb + Tls.RegionCount);
+        if (counted == 0) return;
+        Sys.Poke(tb + Tls.RegionCount, 0);
+        RegionBlocks = RegionBlocks + counted;
+    }
+
     /// A block in the innermost open region -- when `owner` is 0, or is
-    /// itself in that region -- or on the heap. `frame` is the allocating
-    /// function's: a region opened below it is one a throw has left.
+    /// itself in that region, or is on this thread's stack in a frame that
+    /// returns no later than that region ends (OnStackWithin) -- or on the
+    /// heap. `frame` is the allocating function's: a region opened below it
+    /// is one a throw has left.
     public static nint AllocRegion(nint bytes, nint kind, long owner, long frame)
     {
         nint tb = (nint)Sys.ThreadBlock();
         long open = tb == 0 ? 0 : Sys.Peek(tb + Tls.RegionOpen);
-        if (open != 0 && Below(Sys.Peek(open + HeaderBytes + WordSize.Bytes), frame, false))
+        if (open != 0 && Below(OpenerFrame(open), frame, false))
         {
             PopStale(tb, frame, false);
             open = Sys.Peek(tb + Tls.RegionOpen);
         }
-        long at = open == 0 ? 0 : Sys.Peek(tb + Tls.RegionAt);
-        // Beside an object on the heap, or in an outer region: on the heap.
-        if (open == 0 || bytes < 0 || bytes > (nint)MaxRequest || owner != 0 && (owner < open || owner >= at))
+        // Beside an object on the heap, in an outer region, or in a frame
+        // that outlives the region: on the heap.
+        if (open == 0 || bytes < 0 || bytes > (nint)MaxRequest
+            || owner != 0 && !InInnermost(tb, open, owner) && !OnStackWithin(open, owner))
         {
             return AllocWord(bytes, kind);
         }
+        long at = Sys.Peek(tb + Tls.RegionAt);
         long need = ((long)bytes + Overhead + 7) & SizeMask;
         if (need < Smallest) need = Smallest;
         if (at + need > Sys.Peek(tb + Tls.RegionEnd))
         {
-            RegionMisses = RegionMisses + 1;
-            return AllocWord(bytes, kind);
+            if (!NextChunk(tb, need, false))
+            {
+                RegionMisses = RegionMisses + 1;
+                return AllocWord(bytes, kind);
+            }
+            at = Sys.Peek(tb + Tls.RegionAt);
         }
         Stamp(at, need, 0);
         Sys.Poke(at + KindAt, kind);
         // The block laid down before the pointer passes it: a scan sees it
         // whole or not at all.
         Sys.Poke(tb + Tls.RegionAt, at + need);
-        RegionBlocks = RegionBlocks + 1;
+        Sys.Poke(tb + Tls.RegionCount, Sys.Peek(tb + Tls.RegionCount) + 1);
         return (nint)(at + HeaderBytes);
+    }
+
+    /// <summary>
+    /// A REGION'S BLOCK GIVEN BACK BEFORE ITS REGION ENDS, by a free that
+    /// proved it dead: where it ends exactly at the innermost region's bump
+    /// pointer, in the chunk being filled and past the region's record, the
+    /// pointer comes back down over it and its bytes are zeroed, so the next
+    /// allocation takes them -- and on down over every block under it given
+    /// back already. Anywhere else in that stretch it is marked given back
+    /// (KindFreed), for the pointer to come down over later; elsewhere it
+    /// waits for its region's end, as every region block did. A List grown
+    /// in a region, freed with its arrays, leaves nothing behind: each array
+    /// it outgrew was given back as it grew (OutgrownStorage.Release, an
+    /// owned field's old value), marked below the one that replaced it.
+    ///
+    /// ONLY FOR A BLOCK READ FROM A FIELD OF AN OBJECT STILL ALIVE (FreeHeld):
+    /// such a pointer is the block itself. One kept in a register may name
+    /// memory a loop's lap has given back and the next lap has made again --
+    /// Runtime.Free and FreeReplaced do nothing for a region's block.
+    ///
+    /// The thread's own, never stopped part-way in a way the collector can
+    /// see: the pointer moves down before the bytes are cleared, so a scan
+    /// of the stopped thread reads no further than the blocks still live,
+    /// and a block's mark is one word, which ScanRegion reads before or
+    /// after but never half.
+    /// </summary>
+    public static void RegionFree(long at)
+    {
+        long tb = Sys.ThreadBlock();
+        if (tb == 0 || at == 0) return;
+        long open = Sys.Peek(tb + Tls.RegionOpen);
+        if (open == 0) return;
+        long last = Sys.Peek(tb + Tls.RegionEnd);
+        long top = Sys.Peek(tb + Tls.RegionAt);
+        long start = ChunkStart(last);
+        // The innermost region's part of the chunk being filled: past its
+        // record, or the whole chunk when it began in one before.
+        long floor = open >= start && open < last ? open + RecordBytes : start;
+        long block = at - HeaderBytes;
+        if (block < floor || block >= top) return;
+        long word = Sys.Peek(block);
+        long size = word & SizeMask;
+        if (size < Smallest || block + size > top || Sys.Peek(block + size - FooterBytes) != word) return;
+        if (Sys.Peek(block + KindAt) == KindFreed) return;
+        if (block + size != top)
+        {
+            Sys.Poke(block + KindAt, KindFreed);
+            return;
+        }
+        // As full as it gets before the pointer comes down: measured first.
+        ArenaMeasure(tb);
+        long freed = 0;
+        while (true)
+        {
+            Sys.Poke(tb + Tls.RegionAt, block);
+            Sys.MemorySet(block, 0, size);
+            freed = freed + size;
+            RegionTopFrees = RegionTopFrees + 1;
+            if (block - floor < Smallest) break;
+            // The block below, by its footer: on down while it is one given back.
+            long below = Sys.Peek(block - FooterBytes);
+            long under = below & SizeMask;
+            long prev = block - under;
+            if (under < Smallest || prev < floor || Sys.Peek(prev) != below || Sys.Peek(prev + KindAt) != KindFreed) break;
+            block = prev;
+            size = under;
+        }
+        RegionTopFreedBytes = RegionTopFreedBytes + freed;
+        FreedBytes = FreedBytes + freed;
+    }
+
+    /// <summary>
+    /// AN ARRAY GROWN WHERE IT IS, to `length` elements, when it is the block
+    /// at the innermost region's top in the chunk being filled and the chunk
+    /// has the room: the bump pointer goes on past the new end, the block's
+    /// size and its count follow, and the new elements are the zeroed bytes
+    /// the arena keeps past its pointer. False otherwise -- anywhere else, on
+    /// the heap -- and nothing is changed.
+    ///
+    /// ONLY FOR AN ARRAY HELD BY ITS COLLECTION'S OWN STORAGE FIELD AND
+    /// NOTHING ELSE (List's items, never lent; a builder's buffer, a string
+    /// no one else is ever handed): every reader reads its length again
+    /// through that field, and none holds the old one.
+    ///
+    /// A stopped thread's arena reads whole after every step: the pointer
+    /// moves first, so a scan meets the block at its old size and then the
+    /// zeroed bytes after it, which end the chunk's walk; the new footer is
+    /// written past the old end, the old footer -- now inside the elements --
+    /// cleared, then the header, and the count last, so a scan never reads
+    /// more elements than the block holds, nor a word that is not one.
+    /// </summary>
+    public static bool RegionGrow(long at, long length)
+    {
+        long tb = Sys.ThreadBlock();
+        if (tb == 0 || at == 0 || length <= 0 || length > 0x7FFFFFFF) return false;
+        long open = Sys.Peek(tb + Tls.RegionOpen);
+        if (open == 0) return false;
+        long w = WordSize.Bytes;
+        long last = Sys.Peek(tb + Tls.RegionEnd);
+        long top = Sys.Peek(tb + Tls.RegionAt);
+        long start = ChunkStart(last);
+        long floor = open >= start && open < last ? open + RecordBytes : start;
+        long block = at - HeaderBytes;
+        if (block < floor || block >= top) return false;
+        long word = Sys.Peek(block);
+        long size = word & SizeMask;
+        if (size < Smallest || block + size != top || Sys.Peek(block + size - FooterBytes) != word || (word & ~SizeMask) != 0) return false;
+        long kind = Sys.Peek(block + KindAt);
+        if (kind != KindObject && kind != KindLeaf) return false;
+        // An array, or a string's characters, by its descriptor.
+        long vt = Sys.Peek(at) & WordSize.AddressMask;
+        if (vt == 0) return false;
+        long desc = vt - DescWords * w;
+        if ((Sys.Peek(desc + DescSelfWord * w) & WordSize.AddressMask) != desc) return false;
+        long flags = Sys.Peek(desc + DescFlagsWord * w);
+        if ((flags & SequenceFlag) == 0) return false;
+        long stride = Sys.Peek(desc + DescSizeWord * w);
+        long payload = Sys.Peek(desc + DescPayloadWord * w);
+        long count = Sys.Peek(at + ArrayCountAt) & 0x7FFFFFFF;
+        if (stride <= 0 || length <= count) return false;
+        long need = (payload + length * stride + Overhead + 7) & SizeMask;
+        if (need <= size || block + need > last) return false;
+        // The pointer first, then the footer past the old end, the old footer
+        // cleared, the header, and the count last.
+        Sys.Poke(tb + Tls.RegionAt, block + need);
+        Sys.Poke(block + need - FooterBytes, need);
+        Sys.Poke(block + size - FooterBytes, 0);
+        Sys.Poke(block, need);
+        Sys.PokeWord(at + ArrayCountAt, (Sys.PeekWord(at + ArrayCountAt) & 0x80000000) | length);
+        RegionGrownInPlace = RegionGrownInPlace + 1;
+        return true;
+    }
+
+    /// Whether the block of a region's `at` is an object -- the only kind
+    /// with a type to read and fields it may own. A captured variable's cell
+    /// or a frame's spilled words are scanned blocks of no type, an array
+    /// of numbers a leaf.
+    public static bool RegionObject(long at)
+    {
+        return Sys.Peek(at - HeaderBytes + KindAt) == KindObject;
     }
 
     /// Whether `at` is in the calling thread's arena.
@@ -2401,35 +2955,105 @@ static class Gc
     /// A thread's arena given back as the thread ends.
     public static void ReleaseRegion(long tb)
     {
-        long arena = tb == 0 ? 0 : Sys.Peek(tb + Tls.RegionBase);
-        if (arena == 0) return;
-        long end = Sys.Peek(tb + Tls.RegionEnd);
+        if (tb != 0) CountRegionBlocks(tb);
+        long c = tb == 0 ? 0 : Sys.Peek(tb + Tls.RegionBase);
+        if (c == 0) return;
+        // What it last said it held filled, no longer held.
+        long measured = Sys.Peek(c + TrailerMeasured * WordSize.Bytes);
+        if (measured != 0) Sys.AtomicAdd(Sys.AddressOf(ref ArenaUsedNow), -measured);
         Sys.Poke(tb + Tls.RegionBase, 0);
         Sys.Poke(tb + Tls.RegionAt, 0);
         Sys.Poke(tb + Tls.RegionOpen, 0);
         Sys.Poke(tb + Tls.RegionEnd, 0);
-        Platform.Unmap(arena, end - arena);
+        while (c != 0)
+        {
+            long after = ChunkAfter(c);
+            long start = ChunkStart(c);
+            ArenaUnmapped(c + TrailerBytes - start);
+            Platform.Unmap(start, c + TrailerBytes - start);
+            c = after;
+        }
+    }
+
+    // A chunk of `bytes` mapped for an arena: counted, and the peak raised.
+    static void ArenaMapped(long bytes)
+    {
+        ArenaChunksMapped = ArenaChunksMapped + 1;
+        ArenaAskedBytes = ArenaAskedBytes + bytes;
+        Sys.AtomicAdd(Sys.AddressOf(ref ArenaMappedNow), bytes);
+        RaisePeak(Sys.AddressOf(ref ArenaMappedPeak), ArenaMappedNow);
+    }
+
+    // A chunk of `bytes` handed back to the system.
+    static void ArenaUnmapped(long bytes)
+    {
+        ArenaChunksUnmapped = ArenaChunksUnmapped + 1;
+        Sys.AtomicAdd(Sys.AddressOf(ref ArenaMappedNow), -bytes);
+    }
+
+    // HOW FULL THIS THREAD'S ARENA IS NOW, chunk by chunk to the one being
+    // filled, put in place of what it last said in the process-wide sum,
+    // and the peak raised. Only while the stats are asked for: a region's
+    // end walks its chunks, a handful, for nothing otherwise.
+    static void ArenaMeasure(long tb)
+    {
+        if (!(StatsAsked || CountingCollected)) return;
+        long first = Sys.Peek(tb + Tls.RegionBase);
+        if (first == 0) return;
+        long last = Sys.Peek(tb + Tls.RegionEnd);
+        long filled = 0;
+        long c = first;
+        while (c != 0)
+        {
+            filled = filled + (ChunkTop(tb, c) - ChunkStart(c));
+            if (c == last) break;
+            c = ChunkAfter(c);
+        }
+        long at = first + TrailerMeasured * WordSize.Bytes;
+        long had = Sys.Peek(at);
+        if (filled == had) return;
+        Sys.Poke(at, filled);
+        Sys.AtomicAdd(Sys.AddressOf(ref ArenaUsedNow), filled - had);
+        if (filled > had) RaisePeak(Sys.AddressOf(ref ArenaUsedPeak), ArenaUsedNow);
+    }
+
+    // The word at `at` made `value` if that is more: a compare-and-swap, so
+    // two threads raising it at once keep the larger.
+    static void RaisePeak(long at, long value)
+    {
+        while (true)
+        {
+            long had = Sys.Peek(at);
+            if (value <= had) return;
+            if (Sys.Cas(at, had, value) == had) return;
+        }
     }
 
     /// Whether `at` is in this thread's arena.
     static bool InRegion(long tb, long at)
     {
-        long arena = Sys.Peek(tb + Tls.RegionBase);
-        return arena != 0 && at >= arena && at < Sys.Peek(tb + Tls.RegionEnd);
+        return ChunkOf(tb, at) != 0;
     }
 
     /// The arena's live blocks marked from, as a stack's words are.
     public static void ScanRegion(long tb)
     {
-        long p = Sys.Peek(tb + Tls.RegionBase);
-        if (p == 0) return;
-        long end = Sys.Peek(tb + Tls.RegionAt);
-        while (p < end)
+        long c = Sys.Peek(tb + Tls.RegionBase);
+        long last = Sys.Peek(tb + Tls.RegionEnd);
+        while (c != 0)
         {
-            long size = Sys.Peek(p) & SizeMask;
-            if (size < Smallest || p + size > end) break;
-            ScanBlock(p, size);
-            p = p + size;
+            long p = ChunkStart(c);
+            long end = ChunkTop(tb, c);
+            while (p < end)
+            {
+                long size = Sys.Peek(p) & SizeMask;
+                if (size < Smallest || p + size > end) break;
+                // A block given back below the top holds nothing live (RegionFree).
+                if (Sys.Peek(p + KindAt) != KindFreed) ScanBlock(p, size);
+                p = p + size;
+            }
+            if (c == last) break;
+            c = ChunkAfter(c);
         }
     }
 
@@ -2437,10 +3061,17 @@ static class Gc
     /// (CopyRegion) writes.
     public static long RegionWords(long tb)
     {
-        long p = Sys.Peek(tb + Tls.RegionBase);
-        if (p == 0) return 0;
-        long end = Sys.Peek(tb + Tls.RegionAt);
-        return end > p ? (end - p) / WordSize.Bytes : 0;
+        long c = Sys.Peek(tb + Tls.RegionBase);
+        long last = Sys.Peek(tb + Tls.RegionEnd);
+        long words = 0;
+        while (c != 0)
+        {
+            long filled = ChunkTop(tb, c) - ChunkStart(c);
+            if (filled > 0) words = words + filled / WordSize.Bytes;
+            if (c == last) break;
+            c = ChunkAfter(c);
+        }
+        return words;
     }
 
     /// THE ARENA AS IT IS, written to `copy` for STAMP's snapshot
@@ -2452,51 +3083,54 @@ static class Gc
     /// the arena: the newcomer is kept, never traced, and what it holds is
     /// swept. The payloads of every block but a leaf, read as a stack's
     /// words are; past a header that does not read as a block (never, while
-    /// the thread is stopped or is the one copying) the rest whole, which is
-    /// never wrong. Answers how many words it wrote.
+    /// the thread is stopped or is the one copying) the rest of its chunk
+    /// whole, which is never wrong. Answers how many words it wrote.
     ///
     /// ONLY THE WORDS THAT COULD MARK SOMETHING: not a null, and not an
     /// address in the arena itself, which is no heap block and marks
     /// nothing. An arena a loop has filled -- a thread's body making objects
-    /// until it is told to stop, every one dead at its return -- is four
+    /// until it is told to stop, every one dead at its return -- is
     /// megabytes of such words, written into fresh pages at every cycle and
     /// read again; three threads' arenas were most of a small heap's run.
     public static long CopyRegion(long tb, long copy)
     {
         long w = WordSize.Bytes;
-        long p = Sys.Peek(tb + Tls.RegionBase);
-        if (p == 0) return 0;
-        long arena = p;
-        long limit = Sys.Peek(tb + Tls.RegionEnd);
-        long end = Sys.Peek(tb + Tls.RegionAt);
+        long c = Sys.Peek(tb + Tls.RegionBase);
+        long last = Sys.Peek(tb + Tls.RegionEnd);
         long n = 0;
-        while (p < end)
+        while (c != 0)
         {
-            long size = Sys.Peek(p) & SizeMask;
-            long from = p + HeaderBytes;
-            long to = p + size - FooterBytes;
-            if (size < Smallest || p + size > end)
+            long p = ChunkStart(c);
+            long end = ChunkTop(tb, c);
+            while (p < end)
             {
-                from = p;
-                to = end;
-                size = end - p;
-            }
-            else if (Sys.Peek(p + KindAt) == KindLeaf)
-            {
-                from = to;
-            }
-            while (from < to)
-            {
-                long word = Sys.Peek(from);
-                long address = word & WordSize.AddressMask;
-                if (word != 0 && (address < arena || address >= limit))
+                long size = Sys.Peek(p) & SizeMask;
+                long from = p + HeaderBytes;
+                long to = p + size - FooterBytes;
+                if (size < Smallest || p + size > end)
                 {
-                    Sys.Poke(copy + n * w, word);
-                    n = n + 1;
+                    from = p;
+                    to = end;
+                    size = end - p;
                 }
-                from = from + w;
+                else if (Sys.Peek(p + KindAt) == KindLeaf || Sys.Peek(p + KindAt) == KindFreed)
+                {
+                    from = to;
+                }
+                while (from < to)
+                {
+                    long word = Sys.Peek(from);
+                    if (word != 0 && !InRegion(tb, word & WordSize.AddressMask))
+                    {
+                        Sys.Poke(copy + n * w, word);
+                        n = n + 1;
+                    }
+                    from = from + w;
+                }
+                p = p + size;
             }
-            p = p + size;
+            if (c == last) break;
+            c = ChunkAfter(c);
         }
         return n;
     }
@@ -4940,7 +5574,11 @@ static class Gc
         SayNumber("gc: cards taken ", TakenCards);
         SayNumber("gc: card words ", YoungCardWords);
         SayNumber("gc: old card words ", OldCardWords);
-        SayNumber("gc: allocated MB ", (_allocatedTotal + _since) / 1048576);
+        // The pressure counter's total is what went out and did not come back
+        // by hand: a byte freed by the program is taken off it again. What was
+        // handed out, all of it, is that and the program's frees together.
+        SayNumber("gc: allocated MB ", (_allocatedTotal + _since + FreedBytes) / 1048576);
+        SayNumber("gc: allocated net of the program's frees MB ", (_allocatedTotal + _since) / 1048576);
         // WHAT THE COMPILER GAVE BACK ITSELF, of all the heap handed out: the
         // share of memory the program managed without the collector. (What
         // escape analysis kept in frames never reaches the heap at all.)
@@ -4949,8 +5587,29 @@ static class Gc
         SayNumber("gc: frees dropped while marking ", FreesDroppedMarking);
         SayNumber("gc: frees dropped otherwise ", FreesDropped);
         SayNumber("gc: freed by the collector MB ", CollectedBytes / 1048576);
-        SayNumber("gc: given back by regions MB ", RegionFreedBytes / 1048576);
-        SayNumber("gc: allocations a full region sent to the heap ", RegionMisses);
+        // Everything regions gave back: at their ends, and from their tops
+        // before (RegionTopFreedBytes, also given alone below).
+        SayNumber("gc: given back by regions MB ", (RegionFreedBytes + RegionTopFreedBytes) / 1048576);
+        SayNumber("gc: region allocations the system had no memory for ", RegionMisses);
+        // WHAT THE ARENAS TOOK OF THE SYSTEM against what they held: the
+        // regions take what they need and no more.
+        SayNumber("gc: arena peak mapped bytes ", ArenaMappedPeak);
+        SayNumber("gc: arena peak used bytes ", ArenaUsedPeak);
+        SayNumber("gc: arena mapped per used at peak percent ", ArenaUsedPeak > 0 ? ArenaMappedPeak * 100 / ArenaUsedPeak : 0);
+        SayNumber("gc: arena mapped now bytes ", ArenaMappedNow);
+        SayNumber("gc: arena bytes asked of the system ", ArenaAskedBytes);
+        SayNumber("gc: arena chunks mapped ", ArenaChunksMapped);
+        SayNumber("gc: arena chunks unmapped ", ArenaChunksUnmapped);
+        SayNumber("gc: arena spares reused ", ArenaSparesReused);
+        long sayingThread = Sys.ThreadBlock();
+        if (sayingThread != 0) CountRegionBlocks(sayingThread);
+        SayNumber("gc: region blocks ", RegionBlocks);
+        SayNumber("gc: sized regions ", RegionsSized);
+        SayNumber("gc: sized room in the chunk ", SizedRoomHere);
+        SayNumber("gc: sized room in another chunk ", SizedRoomElsewhere);
+        SayNumber("gc: grown in place ", RegionGrownInPlace);
+        SayNumber("gc: region top frees ", RegionTopFrees);
+        SayNumber("gc: region top freed bytes ", RegionTopFreedBytes);
         // WHO GAVE BACK WHAT WAS GIVEN BACK: the program's frees against the
         // collector's sweeps -- by the bytes each actually reclaimed.
         long given = FreedBytes + CollectedBytes;
@@ -5299,11 +5958,14 @@ static class Gc
     }
 
     /// Under a control group's memory limit the heap is capped as .NET caps
-    /// it in a container: three quarters of the limit, and never below 20 MB
-    /// -- the rest is the program's code, stacks and the collector's own
+    /// it in a container, three quarters of the limit -- or, at 512 MB and
+    /// below, all but an eighth and at least 32 MB -- and never below 20 MB:
+    /// the rest is the program's code, stacks and the collector's own
     /// tables. The cap paces the collector and is the total GC.GetGCMemoryInfo
     /// reports, which is what the build sizes its parallel work by.
     const long ContainerFloor = 20971520;
+    const long SmallMachine = 536870912;
+    const long SmallReserve = 33554432;
 
     /// The heap's ceiling for the address space this process has.
     static void SetCeiling()
@@ -5344,7 +6006,15 @@ static class Gc
             long limit = Platform.MemoryLimit();
             if (limit != 0)
             {
-                long cap = limit / 4 * 3;
+                // ON A SMALL MACHINE, what the program needs beside its heap:
+                // its code, stacks and the collector's tables came to 16 MB
+                // when a compile was stopped at the cap, and a quarter of 256
+                // MB held 64 back for them -- the heap the compile needed
+                // was there and refused. An eighth, and never less than 32
+                // MB, below 512 MB; past that a quarter, as .NET's container
+                // cap, which is what the build sizes its parallel work by.
+                long reserve = limit / 8 > SmallReserve ? limit / 8 : SmallReserve;
+                long cap = limit <= SmallMachine ? limit - reserve : limit / 4 * 3;
                 HeapChunks.SetLimit(cap > ContainerFloor ? cap : ContainerFloor);
             }
         }
@@ -6513,6 +7183,19 @@ static class Gc
     static long _nurseryFixed;      // CORSAC_GC_NURSERY, or 0
     static long _censusAt;
 
+    /// The census asked for after start (AppContext.SetSwitch("Corsac.GC.Census", true):
+    /// corc's --gc-census): every whole collection counts what it found live, as the
+    /// environment's CORSAC_GC_CENSUS=1 does from the first.
+    public static void AskCensus()
+    {
+        _censusAsked = true;
+        _census = true;
+    }
+
+    // Asked by the program (AskCensus); every collection asks the platform
+    // afresh as well, and must not take back what the program asked for.
+    static bool _censusAsked;
+
     static void StartCensus()
     {
         if (_censusAt == 0)
@@ -7007,10 +7690,44 @@ static class Gc
         {
             return false;
         }
+        // ONE OF THIS THREAD'S OWN PAGES, as Free asks: its page, its record
+        // and its blocks' headers are this thread's while it owns the page,
+        // so they are read with no lock. Every free of an object a compiler
+        // made took the heap lock twice, here and in Free.
+        if (tb != 0 && Runtime.Marking == 0 && !_sweeping && !_collecting && OwnPageBlock(tb, block) is long bytes and > 0)
+        {
+            return Described(block, at);
+        }
         GcLock.Enter();
         bool live = ValidAllocated(at) != 0 && Described(block, at);
         GcLock.Exit();
         return live;
+    }
+
+    /// The bytes of the block at `block` when it lies in one of this
+    /// thread's own pages and its header reads as an allocated block of the
+    /// page's class there; 0 otherwise. Nothing is read at the block until it
+    /// is known to lie in such a page.
+    static long OwnPageBlock(long tb, long block)
+    {
+        long cache = Sys.Peek(tb + Tls.Classes);
+        if (cache == 0 || _classSize == 0) return 0;
+        for (long c = 0; c < Classes; c = c + 1)
+        {
+            long page = Sys.Peek(cache + c * (2 * WordSize.Bytes));
+            if (page == 0 || block < HeapChunks.First(page) || block >= HeapChunks.End(page)) continue;
+            if (HeapChunks.Owner(page) != tb) return 0;
+            long bytes = Sys.Peek(_classSize + c * WordSize.Bytes);
+            long head = Sys.Peek(block);
+            if ((head & SizeMask) == bytes && (head & FlagFree) == 0 && block + bytes <= HeapChunks.End(page)
+                && (int)(block - HeapChunks.First(page)) % (int)bytes == 0
+                && Sys.Peek(block + bytes - FooterBytes) == head)
+            {
+                return bytes;
+            }
+            return 0;
+        }
+        return 0;
     }
 
     /// A block made as an object whose first word names a real descriptor.
@@ -8321,7 +9038,7 @@ static class Gc
         }
         // Asked afresh at every collection: a program may be told to take
         // the census after it started (Platform.CensusWanted).
-        _census = Platform.GcCensus();
+        _census = _censusAsked || Platform.GcCensus();
         _deadCensus = _census && Platform.GcDeadCensus();
         _thresholdCap = Platform.GcThreshold();
         long clock = PauseClock;
@@ -10153,6 +10870,31 @@ static class HeapChunks
     // side.
     static long _index;
     static long _indexBase;
+    // THE CHUNK OF EVERY 4 KB OF THE LOW FOUR GIGABYTES, one word each (Of):
+    // a free's chunk found by one read where a binary search over the index
+    // took most of what a compiler's fifty million frees cost the thread
+    // making them. Mapped once, where a mapping costs only the pages touched
+    // (Platform.MapsCommitLazily): a page of the table covers a megabyte or
+    // more of heap. 0 where there is none; the index answers then, and
+    // above four gigabytes.
+    static long _slots;
+    static bool _slotsTried;
+    const long SlotShift = 12;
+    const long SlotSpan = 0x100000000;
+
+    // Chunk `chunk`'s mapped range, every 4 KB of it below four gigabytes, set to `value`.
+    static void SlotsSet(long chunk, long value)
+    {
+        if (!_slotsTried)
+        {
+            _slotsTried = true;
+            if (Platform.MapsCommitLazily) _slots = Platform.Map((SlotSpan >> SlotShift) * WordSize.Bytes);
+        }
+        if (_slots == 0) return;
+        long end = Sys.Peek(chunk + ChunkLimit);
+        for (long at = chunk & ~((1L << (int)SlotShift) - 1); at < end && at < SlotSpan; at = at + (1L << (int)SlotShift))
+            Sys.Poke(_slots + (at >> (int)SlotShift) * WordSize.Bytes, value);
+    }
     static long _indexCount;
     static long _indexCapacity;
     static bool _indexFailed;
@@ -10542,6 +11284,7 @@ static class HeapChunks
     /// the index lies between them, so the entries around them move once.
     static void IndexAddRun(long first, long n, long step)
     {
+        for (long k = 0; k < n; k++) SlotsSet(first + k * step, first + k * step);
         if (_indexFailed) return;
         long front = _index == 0 ? 0 : (_index - _indexBase) / WordSize.Bytes;
         long back = _indexCapacity - front - _indexCount;
@@ -10600,6 +11343,7 @@ static class HeapChunks
 
     static void IndexRemove(long chunk)
     {
+        SlotsSet(chunk, 0);
         if (_indexFailed || _indexCount == 0) return;
         long at = IndexLowerBound(chunk);
         if (at == _indexCount || Sys.Peek(_index + at * WordSize.Bytes) != chunk) return;
@@ -10991,6 +11735,17 @@ static class HeapChunks
         if (memo != 0 && at >= memo + ChunkBytes && at < Sys.Peek(memo + ChunkEnd))
         {
             return memo;
+        }
+
+        if (_slots != 0 && at < SlotSpan)
+        {
+            long slot = Sys.Peek(_slots + (at >> (int)SlotShift) * WordSize.Bytes);
+            if (slot != 0 && at >= slot + ChunkBytes && at < Sys.Peek(slot + ChunkEnd))
+            {
+                _memo = slot;
+                return slot;
+            }
+            return 0;
         }
 
         if (!_indexFailed)

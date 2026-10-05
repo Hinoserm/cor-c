@@ -1,0 +1,80 @@
+// test: priority_queue_members
+// expect-exit: 0
+// expect-output:
+// heap f0,b1,c3,d2,e1,a3,g2 7 7
+// more f0,b1,c3,d2,e1,a3,g2,h1,i1 14
+// drain f0,i1,h1,b1,e1,g2,d2,c3,a3
+// remove True y2 5 w1,x5,z8,u7,v2 False
+// capacity 8 16 5 w1,v2,x5,u7,z8
+// modified Collection was modified after the enumerator was instantiated.
+// empty Queue empty. 0
+//
+// PriorityQueue AS .NET'S: EnqueueRange into an empty queue heapified at
+// once, into a full one enqueued in turn; UnorderedItems in the heap's own
+// order; Remove filling the hole from the end; Capacity, EnsureCapacity and
+// TrimExcess growing and cutting by .NET's rule; an enumeration refused once
+// the queue changes. Equal priorities leave in .NET's order. Every line is
+// what .NET prints.
+
+using System;
+using System.Collections.Generic;
+
+public static class Program
+{
+    private static string Items(PriorityQueue<string, int> q)
+    {
+        List<string> made = new();
+        foreach ((string Element, int Priority) item in q.UnorderedItems) made.Add(item.Element + item.Priority);
+        return string.Join(",", made);
+    }
+
+    public static int Main()
+    {
+        PriorityQueue<string, int> q = new();
+        q.EnqueueRange(new List<(string, int)> { ("a", 3), ("b", 1), ("c", 3), ("d", 2), ("e", 1), ("f", 0), ("g", 2) });
+        Console.WriteLine("heap " + Items(q) + " " + q.Count + " " + q.Capacity);
+        q.EnqueueRange(new List<string> { "h", "i" }, 1);
+        Console.WriteLine("more " + Items(q) + " " + q.Capacity);
+        List<string> drained = new();
+        while (q.TryDequeue(out string? element, out int priority)) drained.Add(element + priority);
+        Console.WriteLine("drain " + string.Join(",", drained));
+
+        PriorityQueue<string, int> r = new();
+        r.Enqueue("x", 5);
+        r.Enqueue("y", 2);
+        r.Enqueue("z", 8);
+        r.Enqueue("w", 1);
+        r.Enqueue("v", 2);
+        r.Enqueue("u", 7);
+        bool removed = r.Remove("y", out string removedElement, out int removedPriority);
+        bool missing = r.Remove("nope", out _, out _);
+        Console.WriteLine("remove " + removed + " " + removedElement + removedPriority + " " + r.Count + " " + Items(r) + " " + missing);
+        int before = r.Capacity;
+        int ensured = r.EnsureCapacity(10);
+        r.TrimExcess();
+        int trimmed = r.Capacity;
+        List<string> order = new();
+        while (r.Count > 0) order.Add(DequeueText(r));
+        Console.WriteLine("capacity " + before + " " + ensured + " " + trimmed + " " + string.Join(",", order));
+
+        PriorityQueue<string, int> m = new();
+        m.Enqueue("p", 1);
+        m.Enqueue("q", 2);
+        try
+        {
+            foreach ((string Element, int Priority) item in m.UnorderedItems) m.Enqueue("r", 3);
+        }
+        catch (InvalidOperationException e) { Console.WriteLine("modified " + e.Message); }
+
+        PriorityQueue<string, int> empty = new();
+        try { empty.Dequeue(); }
+        catch (InvalidOperationException e) { Console.WriteLine("empty " + e.Message + " " + empty.Count); }
+        return 0;
+    }
+
+    private static string DequeueText(PriorityQueue<string, int> q)
+    {
+        q.TryDequeue(out string? element, out int priority);
+        return element + priority;
+    }
+}

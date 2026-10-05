@@ -87,17 +87,17 @@ static class P
     // collector's.
     static long regionBefore;
     static string Freed(long before, long least)
-        => Gc.Frees - before >= least || Gc.RegionFreedBytes - regionBefore >= least * 12 ? "True" : "False " + (Gc.Frees - before);
+        => Gc.Frees - before >= least || (Gc.RegionFreedBytes + Gc.RegionTopFreedBytes) - regionBefore >= least * 12 ? "True" : "False " + (Gc.Frees - before);
 
     static void Main()
     {
-        long before = Gc.Frees; regionBefore = Gc.RegionFreedBytes;
+        long before = Gc.Frees; regionBefore = (Gc.RegionFreedBytes + Gc.RegionTopFreedBytes);
         long sum = 0;
         for (int r = 0; r < 1000; r++) sum += Once();
         // The list and its array, each round.
         Console.WriteLine("lazy " + sum + " " + Freed(before, 2000));
 
-        before = Gc.Frees; regionBefore = Gc.RegionFreedBytes;
+        before = Gc.Frees; regionBefore = (Gc.RegionFreedBytes + Gc.RegionTopFreedBytes);
         sum = 0;
         for (int r = 0; r < 1000; r++) sum += Looped();
         Console.WriteLine("looped " + sum + " " + Freed(before, 4000));

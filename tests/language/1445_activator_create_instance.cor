@@ -1,0 +1,65 @@
+// test: activator_create_instance
+// expect-exit: 0
+// expect-output:
+// made Thing #1
+// held 41 same True
+// fresh 0
+// interface: Cannot dynamically create an instance of type 'IShape'. Reason: Cannot create an instance of an interface.
+// abstract: Cannot dynamically create an instance of type 'Shape'. Reason: Cannot create an abstract class.
+// arguments: Cannot dynamically create an instance of type 'Sized'. Reason: No parameterless constructor defined.
+// zero 0
+//
+// Activator.CreateInstance<T>() with no constraint on T: `new T()` of the
+// T each copy knows, or .NET's MissingMethodException where T has no public
+// parameterless constructor. ConditionalWeakTable.GetOrCreateValue makes
+// its values so -- its TValue constructed by its own members, the class is
+// copied per type argument (TypeParam.Made).
+
+using System;
+using System.Runtime.CompilerServices;
+
+class Thing
+{
+    static int _made;
+    public readonly int Number = ++_made;
+}
+
+class Box
+{
+    public int Value;
+}
+
+interface IShape { }
+abstract class Shape { }
+class Sized { public Sized(int n) { } }
+
+static class Factory<T>
+{
+    public static T Make() => Activator.CreateInstance<T>();
+}
+
+static class P
+{
+    static void Try<T>(string what)
+    {
+        try { Activator.CreateInstance<T>(); Console.WriteLine(what + ": made"); }
+        catch (MissingMethodException e) { Console.WriteLine(what + ": " + e.Message); }
+    }
+
+    static int Main()
+    {
+        Console.WriteLine("made Thing #" + Activator.CreateInstance<Thing>().Number);
+
+        ConditionalWeakTable<string, Box> table = new();
+        string key = "k";
+        table.GetOrCreateValue(key).Value = 41;
+        Console.WriteLine("held " + table.GetOrCreateValue(key).Value + " same " + ReferenceEquals(table.GetOrCreateValue(key), table.GetOrCreateValue(key)));
+        Console.WriteLine("fresh " + table.GetOrCreateValue("other").Value);
+
+        Try<IShape>("interface");
+        Try<Shape>("abstract");
+        Try<Sized>("arguments");
+        Console.WriteLine("zero " + Factory<int>.Make());
+        return 0;
+    }
+}

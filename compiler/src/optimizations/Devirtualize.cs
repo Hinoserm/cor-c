@@ -145,7 +145,10 @@ public sealed class Devirtualize : IModulePass
                     continue;
                 }
                 if (Symbol(i.Operands[0]) is not { Offset: 0 } target || !target.Name.StartsWith("m_", StringComparison.Ordinal)) continue;
-                Instr call = new() { Op = Opcode.Call, Dest = i.Dest, Line = i.Line, Callee = target.Name };
+                // A struct made for the call is made for it whoever answers
+                // it (FreshStruct); a delegate's Invoke is a slot's call no
+                // more, and a direct call needs no declaring type.
+                Instr call = new() { Op = Opcode.Call, Dest = i.Dest, Line = i.Line, Callee = target.Name, Field = Fresh(i) };
                 for (int a = 1; a < i.Operands.Count; a++) call.Operands.Add(i.Operands[a]);
                 b.Instrs[k] = call;
                 Resolved++;
@@ -253,7 +256,7 @@ public sealed class Devirtualize : IModulePass
                 }
                 Instr Direct(string target, VReg? into)
                 {
-                    Instr call = new() { Op = Opcode.Call, Dest = into, Line = i.Line, Callee = target };
+                    Instr call = new() { Op = Opcode.Call, Dest = into, Line = i.Line, Callee = target, Field = Fresh(i) };
                     for (int a = 1; a < i.Operands.Count; a++) call.Operands.Add(i.Operands[a]);
                     return call;
                 }
@@ -279,16 +282,16 @@ public sealed class Devirtualize : IModulePass
                     VReg? got = i.Dest is null ? null : f.NewReg(i.Dest.Type, i.Dest.Name);
                     each.Instrs.Add(Direct(cases[c].Target, got));
                     if (got is not null) each.Instrs.Add(new Instr { Op = Opcode.Copy, Dest = i.Dest, Operands = { new RegOperand(got) }, Line = i.Line });
-                    each.Instrs.Add(new Instr { Op = Opcode.Jump, Targets = { after }, Line = i.Line });
+                    each.Instrs.Add(new Instr { Op = Opcode.Jump, WritableTargets = { after }, Line = i.Line });
                     if (c == cases.Count - 1)
                     {
-                        test.Instrs.Add(new Instr { Op = Opcode.Jump, Targets = { each }, Line = i.Line });
+                        test.Instrs.Add(new Instr { Op = Opcode.Jump, WritableTargets = { each }, Line = i.Line });
                         break;
                     }
                     Block next = f.NewBlock("devirt");
                     VReg same = f.NewReg(IrType.I32, "isType");
                     test.Instrs.Add(new Instr { Op = Opcode.Eq, Dest = same, Operands = { new RegOperand(vt.Reg), new SymOperand(cases[c].Vtable.Name, cases[c].Vtable.Offset) }, Line = i.Line });
-                    test.Instrs.Add(new Instr { Op = Opcode.Branch, Operands = { new RegOperand(same) }, Targets = { each, next }, Line = i.Line });
+                    test.Instrs.Add(new Instr { Op = Opcode.Branch, Operands = { new RegOperand(same) }, WritableTargets = { each, next }, Line = i.Line });
                     test = next;
                 }
                 break;   // the block was split; the rest of it is `after`, met later
@@ -459,6 +462,11 @@ public sealed class Devirtualize : IModulePass
         bool Shadow(string name, DataItem item)
             => name.StartsWith("t_", StringComparison.Ordinal) && !item.Relocs.Any(rel => rel.Offset == 5 * word && rel.Symbol == name);
     }
+
+    // What a direct call made of `i` keeps of its Field: a struct made for
+    // it alone (Instr.FreshStruct). Escape reads a delegate's Invoke mark on
+    // any call, and a direct one is not through a slot.
+    private static string? Fresh(Instr i) => i.Field == Instr.FreshStruct ? Instr.FreshStruct : null;
 
     // The backend's own names write no field -- except the store sequences
     // (CardMarks.FuseStores), each of which IS a field's store: a fresh

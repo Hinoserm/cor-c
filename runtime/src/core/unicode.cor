@@ -551,6 +551,9 @@ static class UnicodeCase
     public static int Upper(int c)
     {
         if (c < 0x80) return c >= 97 && c <= 122 ? c - 32 : c;
+        // THE DOTLESS I KEEPS ITS CASE, invariantly, as .NET's has it: its I
+        // is Turkish, and the invariant mapping is no culture's.
+        if (c == 0x131) return c;
         return Map(UpperRuns, c);
     }
 

@@ -1,0 +1,56 @@
+// test: key_through_interface_holds_boxed_value
+// expect-exit: 0
+// expect-output:
+// True True 2
+// True False
+// True True True False
+// -1 True
+//
+// A KEY TYPED AS AN INTERFACE MAY HOLD A BOXED STRUCT, A BOXED NUMBER OR A
+// STRING. The key questions are asked of the key's static type, so an
+// interface the program declares is asked through its own descriptor: a
+// boxed struct lists the interfaces it implements, and it must still be
+// asked (equal by its fields). An interface a number or a string implements
+// -- IComparable here -- is not narrowed at all: a boxed int, an enum and a
+// string answer it too, by their own descriptors.
+
+using System;
+using System.Collections.Generic;
+
+interface IKey { int Id { get; } }
+
+struct SKey : IKey
+{
+    public int Id { get; set; }
+    public SKey(int id) { Id = id; }
+}
+
+class CKey : IKey
+{
+    public int Id { get; }
+    public CKey(int id) { Id = id; }
+    public override bool Equals(object? o) => o is CKey c && c.Id == Id;
+    public override int GetHashCode() => Id;
+}
+
+class P
+{
+    static int Main()
+    {
+        Dictionary<(IKey, int), string> d = new();
+        IKey a = new SKey(5), b = new SKey(5);
+        d[(a, 1)] = "s";
+        IKey c1 = new CKey(7), c2 = new CKey(7);
+        d[(c1, 2)] = "c";
+        Console.WriteLine(d.ContainsKey((b, 1)) + " " + d.ContainsKey((c2, 2)) + " " + d.Count);
+        Console.WriteLine(object.Equals(a, b) + " " + EqualityComparer<IKey>.Default.Equals(a, new SKey(6)));
+
+        IComparable x = 5, y = 5;
+        IComparable s1 = "ab", s2 = new string(new[] { 'a', 'b' });
+        var held = new HashSet<(IComparable, int)> { (s1, 0), (x, 0) };
+        Console.WriteLine(object.Equals(x, y) + " " + object.Equals(s1, s2) + " " + held.Contains((s2, 0)) + " " + held.Contains(((IComparable)6, 0)));
+        IComparable seven = 7;
+        Console.WriteLine(Comparer<IComparable>.Default.Compare(x, seven) + " " + (Comparer<IComparable>.Default.Compare(s1, "ac") < 0));
+        return 0;
+    }
+}

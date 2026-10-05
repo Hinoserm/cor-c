@@ -1,0 +1,36 @@
+// The other unit of 1323_region_fields_of_unrelated_classes_apart_across_units:
+// two unrelated classes whose first fields share an offset, and a helper
+// that writes one's and reads the other's.
+using System.Runtime.CompilerServices;
+
+namespace TypedUnits;
+
+public sealed class Instr
+{
+    public object? Value;
+    public int Line;
+}
+
+public sealed class Sym
+{
+    public string Name = "";
+    public Sym? Cache;
+}
+
+public static class Fill
+{
+    public static string? Last;
+
+    // Writes a new array into `into`'s Value, a new Sym into `table`'s
+    // Cache, and keeps for good the Name of that Sym -- read at the same
+    // offset as Value, of an object a parameter reaches.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int Note(Instr into, Sym table, int k)
+    {
+        Sym made = new Sym();
+        table.Cache = made;
+        into.Value = new int[k * 64];
+        Last = made.Name;
+        return k;
+    }
+}

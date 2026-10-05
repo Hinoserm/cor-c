@@ -160,7 +160,7 @@ public sealed partial class Lowering
         {
             _m.NativeLibraries.Add("libc.so.6");
             VReg? location = _e.Call(NativeCall.Of("__errno_location"), IrTypes.Word);
-            errno = _e.Load(IrType.I32, new RegOperand(location!), 0);
+            errno = Numbered(_e, _e.Load(IrType.I32, new RegOperand(location!), 0));
         }
 
         if (import.Transition && RequireRuntime(at, "LeaveNative", 0, "a call into C") is MethodSymbol leave)
@@ -271,8 +271,8 @@ public sealed partial class Lowering
             _e.Call(CallLabel(back), IrType.Void);
         }
         int w = _t.WordSize;
-        VReg chain = _e.Load(IrTypes.Word, ThreadBlockNow(), TlsHandler / 4 * w);
-        _e.Store(new RegOperand(ThreadBlockNow()), new ImmOperand(0, IrTypes.Word), TlsHandler / 4 * w);
+        VReg chain = ChainRead(ThreadBlockNow(), TlsHandler / 4 * w);
+        ChainWrite(ThreadBlockNow(), new ImmOperand(0, IrTypes.Word), TlsHandler / 4 * w);
         return chain;
     }
 
@@ -280,7 +280,7 @@ public sealed partial class Lowering
     private void LeaveToC(Node at, VReg chain)
     {
         int w = _t.WordSize;
-        _e.Store(new RegOperand(ThreadBlockNow()), new RegOperand(chain), TlsHandler / 4 * w);
+        ChainWrite(ThreadBlockNow(), new RegOperand(chain), TlsHandler / 4 * w);
         if (RequireRuntime(at, "EnterNative", 0, "a method C calls") is MethodSymbol enter)
         {
             _e.Call(CallLabel(enter), IrType.Void);

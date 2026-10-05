@@ -24,6 +24,9 @@ public sealed class Block
     /// </summary>
     public bool RegionLoop { get; set; }
 
+    /// <summary>With RegionLoop: the most one lap makes in the loop's region, as the link proved it (RegionFacts.LoopBytes); 0 when it could not.</summary>
+    public long RegionLoopBytes { get; set; }
+
     /// <summary>
     /// This block's position in its function, as the control-flow graph last
     /// saw it. Owned by <see cref="Opt.Cfg"/>, which is a snapshot of one

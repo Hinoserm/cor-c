@@ -15,4 +15,10 @@ public sealed class ParamSymbol
     /// </summary>
     public bool ReadOnly { get; init; }
     public bool IsParams { get; init; }
+
+    /// <summary>A captured variable's cell, handed to a generic local function (ParamSym.Cell).</summary>
+    public bool Cell { get; init; }
+
+    /// <summary>One of a generic local function's captured variables (MethodDecl.Captures).</summary>
+    public bool CapturedVariable { get; init; }
 }

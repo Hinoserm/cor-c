@@ -38,6 +38,17 @@ public sealed class Parser
     private List<string> _enclosingParams = new();
     private bool _templateMethod;
     private bool SkipImplementation => _declarationsOnly && !(_includeTemplateBodies && (_templateDepth > 0 || _templateMethod));
+
+    /// <summary>
+    /// Whether members written here from text (a delegate's multicast and its
+    /// Combine and Remove, a record's equality) are read without their
+    /// bodies: as this parser reads the declaration they belong to -- a
+    /// generic one's kept where template bodies are -- not merely because
+    /// it reads declarations. A generic delegate's CombineImpl, read without
+    /// its body in a unit that took the library as declarations, came out of
+    /// that unit empty, answering whatever its result register held.
+    /// </summary>
+    private bool SkipWritten(bool generic) => _declarationsOnly && !(_includeTemplateBodies && (_templateDepth > 0 || _templateMethod || generic));
     /// <summary>Source ranges omitted by declaration-only parsing; end is exclusive.</summary>
     public List<(int From, int To, bool Block)> OmittedBodies { get; } = new();
     private int _i;
@@ -136,7 +147,7 @@ public sealed class Parser
             return ParseExpr();
         }
 
-        if (!At(Tok.KwOut) && !At(Tok.KwRef))
+        if (!At(Tok.KwOut) && !At(Tok.KwRef) || StartsRefLambda())
         {
             return ParseExpr();
         }
@@ -542,13 +553,13 @@ public sealed class Parser
         CallExpr pad = Library("String", width < 0 ? "PadRight" : "PadLeft", at);
 
         pad.Args.Add(Text(value, at));
-        pad.ArgNames.Add(null);
+        pad.WritableArgNames.Add(null);
         pad.Args.Add(new LiteralExpr
         {
             Kind = Lit.Int, Text = Math.Abs(width).ToString(), IntValue = Math.Abs(width),
             Line = at.Line, Col = at.Col,
         });
-        pad.ArgNames.Add(null);
+        pad.WritableArgNames.Add(null);
         return pad;
     }
 
@@ -568,7 +579,7 @@ public sealed class Parser
             FormatHole = true, Line = at.Line, Col = at.Col,
         };
         call.Args.Add(new LiteralExpr { Kind = Lit.Str, Text = format, Line = at.Line, Col = at.Col });
-        call.ArgNames.Add(null);
+        call.WritableArgNames.Add(null);
         return call;
     }
 
@@ -1409,9 +1420,34 @@ public sealed class Parser
     private TypeDecl ParseTypeDecl()
     {
         int saved = _templateDepth;
-        try { return ParseTypeDeclCore(); }
-        finally { _templateDepth = saved; }
+        HashSet<string>? outer = _createdParams;
+        _createdParams = null;
+        try
+        {
+            TypeDecl d = ParseTypeDeclCore();
+            if (_createdParams is not null)
+            {
+                foreach (TypeParam p in d.TypeParams)
+                {
+                    p.Made |= _createdParams.Contains(p.Name);
+                }
+            }
+            return d;
+        }
+        finally
+        {
+            _templateDepth = saved;
+            if (outer is not null && _createdParams is not null) outer.UnionWith(_createdParams);
+            _createdParams = outer ?? _createdParams;
+        }
     }
+
+    /// <summary>
+    /// The type names written as `CreateInstance<T>`'s argument in the type
+    /// being parsed, its nested types' included: a type parameter among them
+    /// is constructed by its declaration (TypeParam.Made).
+    /// </summary>
+    private HashSet<string>? _createdParams;
 
     private TypeDecl ParseTypeDeclCore()
     {
@@ -1534,15 +1570,15 @@ public sealed class Parser
                         {
                             if (At(Tok.Ident) && Ahead().Kind == Tok.Colon)
                             {
-                                decl.BaseArgNames.Add(_t[_i++].Text);
+                                decl.WritableBaseArgNames.Add(_t[_i++].Text);
                                 _i++;
                             }
                             else
                             {
-                                decl.BaseArgNames.Add(null);
+                                decl.WritableBaseArgNames.Add(null);
                             }
                             int argumentAt = ArgumentStart();
-                            decl.BaseArgs.Add(ParseArg());
+                            decl.WritableBaseArgs.Add(ParseArg());
                             if (Source is not null) { _spans.Add(argumentAt); _spans.Add(End(_i - 1)); }
                         }
                         while (Take(Tok.Comma));
@@ -1593,7 +1629,7 @@ public sealed class Parser
                 Expr? value = Take(Tok.Assign) ? ParseExpr() : null;
                 EnumMember declared = new() { Name = member, Value = value, Line = m.Line, Col = m.Col };
 
-                declared.Attributes.AddRange(on);
+                declared.WritableAttributes.AddRange(on);
                 decl.EnumMembers.Add(declared);
 
                 if (!Take(Tok.Comma))
@@ -1675,7 +1711,15 @@ public sealed class Parser
 
     private TypeDecl ParseDelegateDeclaration(Token start, Mods mods)
     {
-        int firstToken = _i;
+        // `delegate ref int D(...)` RETURNS A VARIABLE, as a method written so
+        // does: its Invoke carries Mods.RefReturn, and so does every lambda's
+        // made for it (Binder.CheckLambda).
+        Mods byReference = Mods.None;
+        if (Take(Tok.KwRef))
+        {
+            byReference = Mods.RefReturn;
+            if (Take(Tok.KwReadonly)) byReference |= Mods.RefReadonlyReturn;
+        }
         TypeRef returns = ParseTypeRef();
         string name = Expect(Tok.Ident, "a delegate name").Text;
         TypeDecl declaration = new()
@@ -1694,77 +1738,135 @@ public sealed class Parser
         }
         MethodDecl invoke = new()
         {
-            Name = "Invoke", Returns = returns, Mods = Mods.Public | Mods.Abstract,
+            Name = "Invoke", Returns = returns, Mods = Mods.Public | Mods.Abstract | byReference,
             File = _file, Scope = _fileScope, Namespace = _namespace, Line = start.Line, Col = start.Col,
         };
         ParseParams(invoke.Params); ParseConstraints(declaration.TypeParams);
         declaration.Members.Add(invoke);
         declaration.SourceTo = Expect(Tok.Semi, "';' after delegate declaration").Pos + 1;
-        TypeDecl? multicast = Multicast(declaration, firstToken, _i - 1);
+        TypeDecl? multicast = Multicast(declaration, invoke);
         if (multicast is not null)
         {
             _nested.Add(multicast);
 
-            // A GENERIC DELEGATE COMBINES THROUGH ITSELF. The binder cannot
-            // name `D__Multicast<int>` for `+=` on a `D<int>`: specialisations
-            // are made from what the source names, before binding. The
-            // delegate's own copy is made because the program names it, and
-            // these two statics carry the multicast's name into that copy.
-            if (declaration.TypeParams.Count > 0)
+            // EVERY PARAMETER, the outer type's first: a delegate nested in
+            // a generic type is that type's parameters' and its own
+            // (Box<T>.Make is Box.Make<T>), and so is its multicast. Named by
+            // its own alone, the multicast here was the open template, a
+            // Combine no unit made.
+            string own = string.Join(", ", declaration.TypeParams.Select(tp => tp.Name));
+            string args = own.Length == 0 ? "" : "<" + own + ">";
+            string self = name + args;
+            string helper = name + "__Multicast" + args;
+            System.Text.StringBuilder forward = new();
+
+            // A SINGLE DELEGATE COMBINES THROUGH ITS TYPE: `a += b` and
+            // Delegate.Combine(a, b) ask a.CombineImpl(b) (__Delegates,
+            // Delegate.Combine), and a closure is a class the compiler made for
+            // one lambda, which knows nothing of multicasts. These two are the
+            // delegate type's own answers -- explicit implementations of
+            // Delegate's, written into the interface -- and the binder gives
+            // every closure of the type them (Binder.DelegateMembers). The
+            // multicast class answers both itself. That the two delegates are
+            // of one type Delegate.Combine has already seen.
+            // `follow` IS this type: Delegate.Combine and Remove have seen
+            // both of one (Runtime.SameDelegateType), so it is taken as it is
+            // (Sys.As). A cast tested it here, where a generic delegate's T is
+            // a shared copy's word, against the canonical type -- an
+            // Action<string>'s closure is no Action<__canon> -- and refused it.
+            forward.Append("System.Delegate? System.Delegate.CombineImpl(System.Delegate follow) { return ")
+                   .Append(helper).Append(".Combine(this, Sys.As<").Append(self).Append(">(follow)); }\n");
+            forward.Append("System.Delegate? System.Delegate.RemoveImpl(System.Delegate value) { return ")
+                   .Append(helper).Append(".Remove(this, Sys.As<").Append(self).Append(">(value)); }\n");
+
+            Parser sub = new(Lexer.Tokenize("interface __Forward { " + forward.ToString() + " }", _file), _file, SkipWritten(declaration.TypeParams.Count > 0), _includeTemplateBodies);
+            CompilationUnit wrapped = sub.ParseUnit();
+            List<MemberDecl> statics = wrapped.Types[0].Members;
+            foreach (MemberDecl member in statics)
             {
-                string own = string.Join(", ", declaration.TypeParams.Skip(declaration.OuterParams).Select(tp => tp.Name));
-                string args = own.Length == 0 ? "" : "<" + own + ">";
-                string self = name + args;
-                string helper = name + "__Multicast" + args;
-                string forward =
-                    "public static " + self + "? Combine(" + self + "? a, " + self + "? b) { return " + helper + ".Combine(a, b); }\n"
-                  + "public static " + self + "? Remove(" + self + "? a, " + self + "? b) { return " + helper + ".Remove(a, b); }\n";
-                Parser sub = new(Lexer.Tokenize("interface __Forward { " + forward + " }", _file), _file, _declarationsOnly);
-                CompilationUnit wrapped = sub.ParseUnit();
-                List<MemberDecl> statics = wrapped.Types[0].Members;
-                foreach (MemberDecl member in statics)
-                {
-                    member.File = _file;
-                }
-                Adopt(statics);
-                declaration.Members.AddRange(statics);
+                member.File = _file;
             }
+            Adopt(statics);
+            declaration.Members.AddRange(statics);
         }
         return declaration;
+    }
+
+    /// <summary>
+    /// A type as source text that names it again, for the classes written
+    /// here from text: TypeRef's own spelling, with the pointer stars it
+    /// leaves out. Null for what that text cannot say -- a function pointer,
+    /// or a nullable written inside an array's element -- and the delegate
+    /// is then left without its multicast, as it was before any of this.
+    /// </summary>
+    private static string? Spelt(TypeRef type)
+    {
+        if (type.IsFunctionPointer || type.InnerNullable > 0)
+        {
+            return null;
+        }
+        foreach (TypeRef argument in type.Args)
+        {
+            if (Spelt(argument) is null) return null;
+        }
+        if (type.PointerDepth > 0)
+        {
+            if (type.ArrayRank > 0 || type.Nullable) return null;
+            return type.ToString() + new string('*', type.PointerDepth);
+        }
+        return type.ToString();
     }
 
     /// <summary>
     /// The multicast form of a delegate, synthesised beside it: a class that
     /// implements the delegate's interface by invoking a list of them in
     /// order, with Combine and Remove for += and -=. Built from source text
-    /// and parsed, because the declaration's own tokens already spell the
-    /// return type and parameters and reassembling them is simpler and less
-    /// fragile than building the tree by hand.
+    /// and parsed, because the rules are easier to read as C# than as a tree
+    /// built by hand; the text is made from the declaration as parsed -- its
+    /// Invoke's return type and parameters -- so a parameter whose type has a
+    /// comma in it, a tuple returned, or a default value cannot unsettle it.
+    ///
+    /// AS .NET's MulticastDelegate DOES IT, all of it:
+    ///
+    /// - Invoke runs every target in order and answers what the LAST one
+    ///   answers. An exception from one stops the rest, as any call's does.
+    ///   An out or ref parameter is passed to each in turn -- the same
+    ///   variable, so the caller sees what the last target left in it.
+    /// - Combine flattens: a multicast of multicasts is one list.
+    /// - Remove takes out the LAST contiguous run of the removed delegate's
+    ///   targets -- one target, or a whole multicast out of the middle of
+    ///   another -- and hands back the delegate it was given when the run is
+    ///   not there; what is left of one target is that target, and of none,
+    ///   null. Targets compare by their own Equals: the same method on the
+    ///   same target (Runtime.DelegateEquals, Runtime.GroupEquals).
+    /// - Equals and GetHashCode: equal to a multicast of the same type with
+    ///   equal targets in the same order; GetInvocationList the targets.
     /// </summary>
-    private TypeDecl? Multicast(TypeDecl delegateDecl, int firstToken, int semicolon)
+    private TypeDecl? Multicast(TypeDecl delegateDecl, MethodDecl invoke)
     {
-        System.Text.StringBuilder head = new();
-        for (int k = firstToken; k < semicolon; k++)
+        string? returns = invoke.Returns is null ? null : Spelt(invoke.Returns);
+        if (returns is null)
         {
-            string text = _t[k].Text;
-            if (head.Length > 0 && text != "(" && text != ")" && text != "," && text != "?" && text != "[" && text != "]"
-                && head[^1] != '(' && head[^1] != '[') head.Append(' ');
-            head.Append(text);
+            return null;
         }
-        string decl = head.ToString();
-        if (decl.Contains(" ref ") || decl.Contains(" out ") || decl.Contains("(ref ") || decl.Contains("(out ")) return null;
-        int open = decl.IndexOf('(');
-        if (open < 0) return null;
-        // THE BRACKET THAT CLOSES THE PARAMETERS, not the last one: a
-        // `where T : new()` constraint after them has one of its own.
-        int close = -1;
-        for (int k = open, depth = 0; k < decl.Length; k++)
+
+        List<string> parameters = new();
+        List<string> names = new();
+        foreach (Param p in invoke.Params)
         {
-            if (decl[k] == '(') depth++;
-            else if (decl[k] == ')' && --depth == 0) { close = k; break; }
+            if (Spelt(p.Type) is not string spelt)
+            {
+                return null;
+            }
+            // HOW IT IS DECLARED and how it is passed on: `in` is passed as a
+            // value is, the address taken for it (ParseParams); ref and out
+            // are passed as they came, so every target writes the caller's
+            // variable.
+            string how = p.IsOut ? "out " : p.IsReadOnlyRef ? "in " : p.IsRef ? "ref " : p.IsParams ? "params " : "";
+            parameters.Add(how + spelt + " " + p.Name);
+            names.Add((p.IsOut ? "out " : p.IsRef && !p.IsReadOnlyRef ? "ref " : "") + p.Name);
         }
-        if (close < open) return null;
-        string before = decl[..open].Trim();
+
         string name = delegateDecl.Name;
         // A GENERIC DELEGATE HAS A GENERIC MULTICAST: `EventHandler<TEventArgs>`
         // is combined by `EventHandler__Multicast<TEventArgs>`, specialised
@@ -1774,73 +1876,91 @@ public sealed class Parser
         List<TypeParam> own = delegateDecl.TypeParams.Skip(delegateDecl.OuterParams).ToList();
         string typeParams = own.Count == 0 ? ""
             : "<" + string.Join(", ", own.Select(tp => tp.Name)) + ">";
-        if (typeParams.Length > 0)
-        {
-            int angle = before.LastIndexOf('<');
-            if (angle < 0) return null;
-            before = before[..angle].TrimEnd();
-        }
-        if (!before.EndsWith(name)) return null;
-        string returns = before[..^name.Length].Trim();
-        string parameters = decl[(open + 1)..close].Trim();
-        List<string> names = new();
-        if (parameters.Length > 0)
-        {
-            foreach (string piece in parameters.Split(','))
-            {
-                string p = piece.Trim();
-                int space = p.LastIndexOf(' ');
-                if (space < 0) return null;
-                names.Add(p[(space + 1)..]);
-            }
-        }
-        bool isVoid = returns == "void";
         string args = string.Join(", ", names);
+        string signature = string.Join(", ", parameters);
         string ctor = name + "__Multicast";
         string m = ctor + typeParams;
-        name = name + typeParams;
+        string d = name + typeParams;
         System.Text.StringBuilder src = new();
         if (!string.IsNullOrEmpty(_namespace)) src.Append("namespace ").Append(_namespace).Append(";\n");
-        src.Append("public sealed class ").Append(m).Append(" : ").Append(name).Append("\n{\n");
-        src.Append("    public ").Append(name).Append("[] Items;\n");
-        src.Append("    public ").Append(ctor).Append("(").Append(name).Append("[] items) { Items = items; }\n");
-        src.Append("    public ").Append(returns).Append(" Invoke(").Append(parameters).Append(")\n    {\n");
-        if (isVoid)
-            src.Append("        for (int i = 0; i < Items.Length; i++) Items[i].Invoke(").Append(args).Append(");\n");
+        src.Append("public sealed class ").Append(m).Append(" : ").Append(d).Append(", System.IMulticastDelegate\n{\n");
+        src.Append("    public ").Append(d).Append("[] Items;\n");
+        src.Append("    public ").Append(ctor).Append("(").Append(d).Append("[] items) { Items = items; }\n");
+
+        // THE FIRST TARGET OUTSIDE THE LOOP, for a result and for an out
+        // parameter alike: a multicast always has at least two (only
+        // Combine and Remove make one), the first answer starts what is
+        // returned -- `default` would be null for a non-nullable class, which
+        // the declared return type does not allow -- and an out parameter is
+        // then written before the method can return.
+        // A delegate that returns by reference answers, combined, the
+        // variable its last target does -- C#'s rule for any result -- and
+        // its Invoke returns it as the delegate's does.
+        string refKind = (invoke.Mods & Mods.RefReadonlyReturn) != 0 ? "ref readonly "
+                       : (invoke.Mods & Mods.RefReturn) != 0 ? "ref " : "";
+        src.Append("    public ").Append(refKind).Append(returns).Append(" Invoke(").Append(signature).Append(")\n    {\n");
+        // Its locals are named as no parameter is: a delegate's own `i` or
+        // `last` would otherwise be declared twice in the one method.
+        if (returns == "void")
+        {
+            src.Append("        Items[0].Invoke(").Append(args).Append(");\n");
+            src.Append("        for (int __i = 1; __i < Items.Length; __i++) Items[__i].Invoke(").Append(args).Append(");\n");
+        }
+        else if (refKind.Length > 0)
+        {
+            src.Append("        for (int __i = 0; __i < Items.Length - 1; __i++) Items[__i].Invoke(").Append(args).Append(");\n");
+            src.Append("        return ref Items[Items.Length - 1].Invoke(").Append(args).Append(");\n");
+        }
         else
         {
-            // The last target's answer. A multicast delegate always has at
-            // least two (only Combine makes one), so the first answer starts
-            // it: `default` would be null for a non-nullable class, which the
-            // declared return type does not allow.
-            src.Append("        ").Append(returns).Append(" last = Items[0].Invoke(").Append(args).Append(");\n");
-            src.Append("        for (int i = 1; i < Items.Length; i++) last = Items[i].Invoke(").Append(args).Append(");\n");
-            src.Append("        return last;\n");
+            src.Append("        ").Append(returns).Append(" __last = Items[0].Invoke(").Append(args).Append(");\n");
+            src.Append("        for (int __i = 1; __i < Items.Length; __i++) __last = Items[__i].Invoke(").Append(args).Append(");\n");
+            src.Append("        return __last;\n");
         }
         src.Append("    }\n");
-        src.Append("    public static ").Append(name).Append("? Combine(").Append(name).Append("? a, ").Append(name).Append("? b)\n    {\n");
+
+        src.Append("    public static ").Append(d).Append("? Combine(").Append(d).Append("? a, ").Append(d).Append("? b)\n    {\n");
         src.Append("        if (a == null) return b;\n        if (b == null) return a;\n");
-        src.Append("        ").Append(name).Append("[] x = a is ").Append(m).Append(" ma ? ma.Items : new ").Append(name).Append("[] { a };\n");
-        src.Append("        ").Append(name).Append("[] y = b is ").Append(m).Append(" mb ? mb.Items : new ").Append(name).Append("[] { b };\n");
-        src.Append("        ").Append(name).Append("[] all = new ").Append(name).Append("[x.Length + y.Length];\n");
+        src.Append("        ").Append(d).Append("[] x = a is ").Append(m).Append(" ma ? ma.Items : new ").Append(d).Append("[] { a };\n");
+        src.Append("        ").Append(d).Append("[] y = b is ").Append(m).Append(" mb ? mb.Items : new ").Append(d).Append("[] { b };\n");
+        src.Append("        ").Append(d).Append("[] all = new ").Append(d).Append("[x.Length + y.Length];\n");
         src.Append("        for (int i = 0; i < x.Length; i++) all[i] = x[i];\n");
         src.Append("        for (int i = 0; i < y.Length; i++) all[x.Length + i] = y[i];\n");
         src.Append("        return new ").Append(m).Append("(all);\n    }\n");
-        src.Append("    public static ").Append(name).Append("? Remove(").Append(name).Append("? a, ").Append(name).Append("? b)\n    {\n");
-        src.Append("        if (a == null || b == null) return a;\n");
-        src.Append("        if (a is ").Append(m).Append(" ma)\n        {\n");
-        src.Append("            int at = -1;\n");
-        src.Append("            for (int i = ma.Items.Length - 1; i >= 0; i--) { if (Runtime.SameClosure(ma.Items[i], b)) { at = i; break; } }\n");
-        src.Append("            if (at < 0) return a;\n");
-        src.Append("            if (ma.Items.Length == 1) return null;\n");
-        src.Append("            if (ma.Items.Length == 2) return ma.Items[1 - at];\n");
-        src.Append("            ").Append(name).Append("[] rest = new ").Append(name).Append("[ma.Items.Length - 1];\n");
-        src.Append("            int k = 0;\n");
-        src.Append("            for (int i = 0; i < ma.Items.Length; i++) { if (i != at) { rest[k] = ma.Items[i]; k++; } }\n");
+
+        src.Append("    public static ").Append(d).Append("? Remove(").Append(d).Append("? a, ").Append(d).Append("? b)\n    {\n");
+        src.Append("        if (a == null) return null;\n        if (b == null) return a;\n");
+        src.Append("        ").Append(d).Append("[] have = a is ").Append(m).Append(" ma ? ma.Items : new ").Append(d).Append("[] { a };\n");
+        src.Append("        ").Append(d).Append("[] take = b is ").Append(m).Append(" mb ? mb.Items : new ").Append(d).Append("[] { b };\n");
+        src.Append("        for (int at = have.Length - take.Length; at >= 0; at--)\n        {\n");
+        src.Append("            bool found = true;\n");
+        src.Append("            for (int k = 0; k < take.Length; k++) { if (!((object)have[at + k]).Equals(take[k])) { found = false; break; } }\n");
+        src.Append("            if (!found) continue;\n");
+        src.Append("            int left = have.Length - take.Length;\n");
+        src.Append("            if (left == 0) return null;\n");
+        src.Append("            if (left == 1) return have[at == 0 ? have.Length - 1 : 0];\n");
+        src.Append("            ").Append(d).Append("[] rest = new ").Append(d).Append("[left];\n");
+        src.Append("            for (int i = 0; i < at; i++) rest[i] = have[i];\n");
+        src.Append("            for (int i = at + take.Length; i < have.Length; i++) rest[i - take.Length] = have[i];\n");
         src.Append("            return new ").Append(m).Append("(rest);\n        }\n");
-        src.Append("        return Runtime.SameClosure(a, b) ? null : a;\n    }\n}\n");
+        src.Append("        return a;\n    }\n");
+
+        src.Append("    public System.Delegate[] GetInvocationList()\n    {\n");
+        src.Append("        System.Delegate[] list = new System.Delegate[Items.Length];\n");
+        src.Append("        for (int i = 0; i < Items.Length; i++) list[i] = Items[i];\n");
+        src.Append("        return list;\n    }\n");
+        // Taken as the type, not tested (Sys.As): Delegate.Combine and Remove
+        // have seen both of one, and this class's code is shared by every
+        // reference argument, where a cast tests the canonical type.
+        src.Append("    public System.Delegate? CombineImpl(System.Delegate follow) { return Combine(this, Sys.As<").Append(d).Append(">(follow)); }\n");
+        src.Append("    public System.Delegate? RemoveImpl(System.Delegate value) { return Remove(this, Sys.As<").Append(d).Append(">(value)); }\n");
+        src.Append("    public int InvocationCount() { return Items.Length; }\n");
+        src.Append("    public object InvocationAt(int index) { return Items[index]; }\n");
+        src.Append("    public override bool Equals(object? obj) { return __Delegates.Equal(this, obj); }\n");
+        src.Append("    public override int GetHashCode() { return __Delegates.Hash(this); }\n");
+        src.Append("}\n");
         string generated = src.ToString();
-        Parser sub = new(Lexer.Tokenize(generated, _file), _file, _declarationsOnly) { Source = generated };
+        Parser sub = new(Lexer.Tokenize(generated, _file), _file, SkipWritten(delegateDecl.TypeParams.Count > 0), _includeTemplateBodies) { Source = generated };
         CompilationUnit unit = sub.ParseUnit();
         if (unit.Types.Count != 1) return null;
         TypeDecl made = unit.Types[0];
@@ -1851,6 +1971,22 @@ public sealed class Parser
         made.SourceTo = delegateDecl.SourceTo;
         made.File = _file;
         made.Scope = _fileScope;
+        // A DELEGATE WRITTEN INSIDE A GENERIC TYPE has that type's parameters
+        // (`class Box<T> { public delegate T Make(); }`), and so does its
+        // multicast: nested beside it, with the same outer parameters first,
+        // so that FinishFamily writes both names with them wherever the
+        // family names either -- `Box<T>.Make__Multicast` holding
+        // `Box<T>.Make`s and answering a T.
+        if (delegateDecl.OuterParams > 0)
+        {
+            made.Outer = delegateDecl.Outer;
+            for (int k = delegateDecl.OuterParams - 1; k >= 0; k--)
+            {
+                TypeParam outer = delegateDecl.TypeParams[k];
+                made.WritableTypeParams.Insert(0, new TypeParam { Name = outer.Name, Line = outer.Line, Col = outer.Col });
+            }
+            made.OuterParams = delegateDecl.OuterParams;
+        }
         Adopt(made.Members);
         return made;
     }
@@ -1907,7 +2043,7 @@ public sealed class Parser
         {
             chain = new CtorInit { IsThis = false, Spans = decl.BaseSpans, Source = decl.BaseSource, Line = start.Line, Col = start.Col };
             chain.Args.AddRange(decl.BaseArgs);
-            chain.ArgNames.AddRange(decl.BaseArgNames);
+            chain.WritableArgNames.AddRange(decl.BaseArgNames);
         }
 
         MethodDecl ctor = new()
@@ -1989,16 +2125,25 @@ public sealed class Parser
                 src.Append("        if (GetType() != other.GetType()) return false;\n");
             }
             src.Append("        return true");
+            // EqualityComparer<P>.Default.Equals, as the comparer's own body
+            // asks it (DefaultEqualityComparer), written out for P: through the
+            // comparer, every record's Equals ran its one shared copy, whose
+            // key question is asked of any object at all -- every Equals in
+            // the program a callee of every record's. Here P is known, and
+            // the question is asked of a P (Lowering.KeyEqualsStub).
             foreach (Param p in positional)
-                src.Append("\n            && EqualityComparer<").Append(p.Type).Append(">.Default.Equals(this.").Append(p.Name).Append(", other.").Append(p.Name).Append(")");
+                src.Append("\n            && (Sys.IsObject(this.").Append(p.Name).Append(") ? Sys.KeyEquals(this.").Append(p.Name).Append(", other.").Append(p.Name)
+                   .Append(") : Sys.EqualValues(this.").Append(p.Name).Append(", other.").Append(p.Name).Append("))");
             src.Append(";\n    }\n");
             src.Append("    public override bool Equals(object? obj) { return obj is ").Append(self).Append(" other && Equals(other); }\n");
         }
         if (!decl.Members.Exists(m => m.Name == "GetHashCode"))
         {
             src.Append("    public override int GetHashCode()\n    {\n        int hash = 0;\n");
+            // And EqualityComparer<P>.Default.GetHashCode, written out as Equals is.
             foreach (Param p in positional)
-                src.Append("        hash = unchecked(hash * -1521134295 + EqualityComparer<").Append(p.Type).Append(">.Default.GetHashCode(this.").Append(p.Name).Append("));\n");
+                src.Append("        hash = unchecked(hash * -1521134295 + (Sys.IsObject(this.").Append(p.Name).Append(") ? Sys.KeyHash(this.").Append(p.Name)
+                   .Append(") : (int)Sys.HashValue(this.").Append(p.Name).Append(")));\n");
             src.Append("        return hash;\n    }\n");
         }
         if (!decl.Members.Exists(m => m.Name is "op_Equality" or "op_Inequality"))
@@ -2014,7 +2159,7 @@ public sealed class Parser
         }
         src.Append("}\n");
         string generated = src.ToString();
-        Parser sub = new(Lexer.Tokenize(generated, _file), _file, _declarationsOnly) { Source = generated };
+        Parser sub = new(Lexer.Tokenize(generated, _file), _file, SkipWritten(decl.TypeParams.Count > 0), _includeTemplateBodies) { Source = generated };
         CompilationUnit unit = sub.ParseUnit();
         if (unit.Types.Count != 1) return;
         Adopt(unit.Types[0].Members);
@@ -2178,12 +2323,12 @@ public sealed class Parser
                 // and ParseTypeRef met `class` and stopped -- so ordinary C#
                 // carrying any of them did not parse at all.
                 //
-                // They are read and dropped, all but `struct`. This compiler
-                // makes a COPY of a generic per type argument, so what a
-                // constraint rules out is ruled out by that copy failing to
-                // compile, on the line that depended on it rather than on the
-                // declaration; there is nothing here for a constraint to be
-                // checked against.
+                // They are read and dropped, all but `struct`, `new()` and
+                // `unmanaged`. This compiler makes a COPY of a generic per
+                // type argument, so what any other constraint rules out is
+                // ruled out by that copy failing to compile, on the line that
+                // depended on it rather than on the declaration; there is
+                // nothing here for one to be checked against.
                 //
                 // `struct` IS KEPT because it changes what `T?` means: over a
                 // struct-constrained T it is Nullable<T>, a real cell, where
@@ -2200,21 +2345,29 @@ public sealed class Parser
                     continue;
                 }
 
+                // `new()` IS KEPT: it is what lets `new T()` be written over
+                // T, and what a type argument without a public parameterless
+                // constructor is refused by (TypeParam.New).
                 if (At(Tok.KwNew))
                 {
                     _i++;
                     Expect(Tok.LParen, "'(' after 'new' in a constraint");
                     Expect(Tok.RParen, "')' to close 'new()' in a constraint");
+                    target.New = true;
                     continue;
                 }
 
                 if (At(Tok.Ident) && Cur.Text is "notnull" or "unmanaged")
                 {
+                    if (Cur.Text == "unmanaged")
+                    {
+                        target.Unmanaged = true;
+                    }
                     _i++;
                     continue;
                 }
 
-                target.Constraints.Add(ParseTypeRef());
+                target.WritableConstraints.Add(ParseTypeRef());
             }
             while (Take(Tok.Comma));
         }
@@ -2290,12 +2443,12 @@ public sealed class Parser
                     {
                         if (At(Tok.Ident) && Ahead().Kind == Tok.Colon)
                         {
-                            chain.ArgNames.Add(_t[_i++].Text);
+                            chain.WritableArgNames.Add(_t[_i++].Text);
                             _i++;
                         }
                         else
                         {
-                            chain.ArgNames.Add(null);
+                            chain.WritableArgNames.Add(null);
                         }
                         int argumentAt = ArgumentStart();
                         chain.Args.Add(ParseArg());
@@ -2337,7 +2490,7 @@ public sealed class Parser
             {
                 throw Error("a conversion operator takes one operand");
             }
-            conversion.WritableAttributes.AddRange(attributes);
+            if (attributes.Count > 0) conversion.WritableAttributes.AddRange(attributes);
             return FinishMethod(conversion);
         }
 
@@ -2516,7 +2669,7 @@ public sealed class Parser
             };
             // `[DoesNotReturn]` and the rest, which the checker reads off the
             // declaration (Binder.NeverReturns).
-            m.WritableAttributes.AddRange(attributes);
+            if (attributes.Count > 0) m.WritableAttributes.AddRange(attributes);
             if (At(Tok.Lt)) ParseTypeParams(m.WritableTypeParams);
             ParseParams(m.Params);
             ParseConstraints(m.TypeParams);
@@ -2544,7 +2697,7 @@ public sealed class Parser
                 DeclaredInit = value, Line = also.Line, Col = also.Col,
             };
 
-            more.WritableAttributes.AddRange(attributes);
+            if (attributes.Count > 0) more.WritableAttributes.AddRange(attributes);
             rest.Add(more);
         }
 
@@ -2556,9 +2709,69 @@ public sealed class Parser
             DeclaredInit = init, Line = start.Line, Col = start.Col,
         };
 
-        first.WritableAttributes.AddRange(attributes);
+        if (attributes.Count > 0) first.WritableAttributes.AddRange(attributes);
         first.More.AddRange(rest);
+
+        // AN EVENT IS ITS add AND remove ACCESSORS, as C# compiles one, and a
+        // field-like event has them too: they combine into its field. Through
+        // them an event an interface declares is implemented by a class's
+        // field-like event (or by accessors written out), and reached through
+        // the interface (Binder.EventAccessorCall). An interface's event, or
+        // an abstract one, is the two accessors and nothing else: there is no
+        // field to hold handlers.
+        if (isEvent)
+        {
+            bool accessorsOnly = (_inInterface && !mods.HasFlag(Mods.Static)) || mods.HasFlag(Mods.Abstract);
+            MethodDecl? firstAdd = null;
+            List<FieldDecl> named = new() { first };
+            named.AddRange(rest);
+            foreach (FieldDecl declared in named)
+            {
+                MethodDecl add = FieldEventAccessor(true, declared.Name, type, mods, declared, accessorsOnly);
+                MethodDecl remove = FieldEventAccessor(false, declared.Name, type, mods, declared, accessorsOnly);
+                if (accessorsOnly && firstAdd is null) firstAdd = add;
+                else _hoisted.Add(add);
+                _hoisted.Add(remove);
+            }
+            if (accessorsOnly)
+            {
+                return firstAdd!;
+            }
+        }
         return first;
+    }
+
+    /// <summary>
+    /// One accessor of an event declared without them: `add_Name(T value)`
+    /// combining `value` into the field (`Name += value`), or `remove_Name`
+    /// taking it out. Without a body where the event has no field.
+    /// </summary>
+    private MethodDecl FieldEventAccessor(bool add, string name, TypeRef type, Mods mods, Node at, bool abstractOnly)
+    {
+        Block? body = null;
+        if (!abstractOnly)
+        {
+            body = new Block { Line = at.Line, Col = at.Col };
+            body.Statements.Add(new ExprStmt
+            {
+                Expr = new AssignExpr
+                {
+                    Target = new NameExpr { Name = name, Line = at.Line, Col = at.Col },
+                    Op = add ? BinOp.Add : BinOp.Sub,
+                    Value = new NameExpr { Name = "value", Line = at.Line, Col = at.Col },
+                    Line = at.Line, Col = at.Col,
+                },
+                Line = at.Line, Col = at.Col,
+            });
+        }
+        MethodDecl accessor = new()
+        {
+            Name = (add ? "add_" : "remove_") + name, Mods = mods,
+            Returns = new TypeRef { Name = "void", Line = at.Line, Col = at.Col },
+            Body = body, Line = at.Line, Col = at.Col,
+        };
+        accessor.Params.Add(new Param { Name = "value", Type = type, Line = at.Line, Col = at.Col });
+        return accessor;
     }
 
     /// <summary>
@@ -2829,9 +3042,18 @@ public sealed class Parser
     {
         bool saved = _templateMethod;
         _templateMethod = m.TypeParams.Count > 0;
+        // Its generic local functions are hoisted out of it (MethodDecl.HoistedIn).
+        _hoistParents.Push(m.HoistKey);
         try { return FinishMethodCore(m, init); }
-        finally { _templateMethod = saved; }
+        finally
+        {
+            _templateMethod = saved;
+            _hoistParents.Pop();
+        }
     }
+
+    /// <summary>The methods whose bodies are being read, innermost on top, by their HoistKey.</summary>
+    private readonly Stack<string> _hoistParents = new();
 
     private MethodDecl FinishMethodCore(MethodDecl m, CtorInit? init)
     {
@@ -3676,9 +3898,26 @@ public sealed class Parser
     {
         Token at = Expect(Tok.LBrace, "'{'");
         Block block = new() { Line = at.Line, Col = at.Col };
+        int hoistedFrom = _hoisted.Count;
         _blocks.Push(block);
         try { return ParseBlockBody(block); }
-        finally { _blocks.Pop(); }
+        finally
+        {
+            _blocks.Pop();
+
+            // THE GENERIC LOCAL FUNCTIONS OF THIS BLOCK ARE SEEN FROM EVERY
+            // ONE HOISTED OUT OF IT: itself, to call itself, its siblings
+            // before and after it, and those nested deeper. Each is a member
+            // of the type and is checked as one, where no block is open to
+            // name them, so it carries the names (MethodDecl.LocalGenerics).
+            if (block.GenericLocals.Count > 0)
+            {
+                for (int k = hoistedFrom; k < _hoisted.Count; k++)
+                {
+                    _hoisted[k].WritableLocalGenerics.AddRange(block.GenericLocals);
+                }
+            }
+        }
     }
 
     /// <summary>The blocks being read, innermost on top: where a generic local function is declared.</summary>
@@ -3761,6 +4000,9 @@ public sealed class Parser
 
         UsingDeclStmt marker = (UsingDeclStmt)block.Statements[at];
         Block result = new() { Line = block.Line, Col = block.Col };
+        // The block's generic local functions are the new block's: dropped,
+        // a block with a `using` declaration in it could not call one.
+        if (block.GenericLocals.Count > 0) result.WritableGenericLocals.AddRange(block.GenericLocals);
 
         for (int i = 0; i < at; i++)
         {
@@ -4252,9 +4494,19 @@ public sealed class Parser
             // may name, which the binder enforces for every local function
             // already by giving it no enclosing scope it should not have; the
             // word therefore adds no meaning here and is stepped over.
-            case Tok.KwStatic when StartsLocalFunctionAfterStatic():
-                _i++;
-                return ParseLocalFunction(Cur);
+            // `static`, `async`, both: a local function's modifiers. `async`
+            // makes it an async method of its own, as C# has it; `static`
+            // adds no meaning here and is stepped over.
+            case Tok.KwStatic or Tok.Ident when LocalFunctionModifiers() is int modifiers and > 0:
+            {
+                bool isAsync = false;
+                for (int k = 0; k < modifiers; k++)
+                {
+                    isAsync |= _t[_i].Kind == Tok.Ident;
+                    _i++;
+                }
+                return ParseLocalFunction(Cur, isAsync);
+            }
 
             case Tok.KwSwitch:
                 return ParseSwitch();
@@ -4306,6 +4558,13 @@ public sealed class Parser
         {
             Token armAt = Cur;
             int armStart = _i;
+
+            // THE ARM'S OWN ARROW IS NEVER A LAMBDA'S, whatever comes before
+            // it: `Point(0, 0) =>` and `nameof(X) =>` are a pattern and a
+            // constant, not a lambda with its result written (C# 10). Roslyn
+            // reads an arm's head as a pattern, which has no lambda in it.
+            int armWas = _armArrow;
+            _armArrow = ArmArrow();
             Expr? value = null;
             TypeRef? type = null;
             string? binding = null;
@@ -4545,6 +4804,7 @@ public sealed class Parser
                         };
             }
 
+            _armArrow = armWas;
             Expect(Tok.FatArrow, "'=>' after the pattern");
 
             SwitchArm arm = new()
@@ -4602,7 +4862,7 @@ public sealed class Parser
                 Operand = new SubjectExpr { Line = at.Line, Col = at.Col },
                 Line = at.Line, Col = at.Col,
             });
-            thrown.ArgNames.Add(null);
+            thrown.WritableArgNames.Add(null);
             sw.Arms.Add(new SwitchArm
             {
                 Discard = true, Fallback = true,
@@ -4710,6 +4970,244 @@ public sealed class Parser
         return -1;
     }
 
+    /// <summary>The name C#'s synthesised delegate of a shape is declared under (AnonymousDelegates).</summary>
+    public static string AnonymousDelegateName(string shape) => "__AnonymousDelegate_" + shape;
+
+    /// <summary>
+    /// THE DELEGATE C# SYNTHESISES for a lambda's or a method group's natural
+    /// type where no Func or Action can say it (C# 10): a parameter passed by
+    /// reference, a result returned by one, more than sixteen parameters.
+    /// Declared once a unit, by its SHAPE -- a letter a parameter, v by
+    /// value, r ref, o out, i in, then the result: V nothing, R a value, F
+    /// by reference, G by ref readonly -- and generic over the parameters'
+    /// types and the result, so one declaration serves every signature of
+    /// that shape (Binder.NaturalTypes asks for it; the driver adds it).
+    /// </summary>
+    public static List<TypeDecl> AnonymousDelegates(string shape)
+    {
+        int split = shape.LastIndexOf('_');
+        string modes = shape[..split];
+        char result = shape[split + 1];
+        System.Text.StringBuilder text = new("internal delegate ");
+        text.Append(result switch { 'V' => "void", 'F' => "ref TR", 'G' => "ref readonly TR", _ => "TR" });
+        text.Append(' ').Append(AnonymousDelegateName(shape));
+        List<string> typeParams = Enumerable.Range(0, modes.Length).Select(k => "T" + k).ToList();
+        if (result != 'V') typeParams.Add("TR");
+        if (typeParams.Count > 0) text.Append('<').Append(string.Join(", ", typeParams)).Append('>');
+        text.Append('(');
+        for (int k = 0; k < modes.Length; k++)
+        {
+            if (k > 0) text.Append(", ");
+            text.Append(modes[k] switch { 'r' => "ref ", 'o' => "out ", 'i' => "in ", _ => "" }).Append('T').Append(k).Append(" a").Append(k);
+        }
+        text.Append(");");
+        string source = text.ToString();
+        Parser sub = new(Lexer.Tokenize(source, "<anonymous delegate>"), "<anonymous delegate>") { Source = source };
+        CompilationUnit made = sub.ParseUnit();
+        foreach (TypeDecl declared in made.Types)
+        {
+            // This unit's alone, as a local function's delegate is.
+            declared.LocalOnly = true;
+        }
+        return made.Types;
+    }
+
+    /// <summary>
+    /// A lambda with its result written in front, `[ref [readonly]] T
+    /// (params) => body`, the cursor on the first word of the result.
+    /// </summary>
+    private LambdaExpr TypedLambda(Token at)
+    {
+        Mods returnMods = Mods.None;
+        if (Take(Tok.KwRef))
+        {
+            returnMods = Mods.RefReturn;
+            if (Take(Tok.KwReadonly)) returnMods |= Mods.RefReadonlyReturn;
+        }
+        TypeRef returns = ParseTypeRef();
+        LambdaExpr inner = (LambdaExpr)ParseUnary();
+        LambdaExpr made = new()
+        {
+            Body = inner.Body, BlockBody = inner.BlockBody, Async = inner.Async, TypesWritten = inner.TypesWritten,
+            Returns = returns, ReturnMods = returnMods,
+            Line = at.Line, Col = at.Col,
+        };
+        made.Params.AddRange(inner.Params);
+        made.WritableAttributes.AddRange(inner.Attributes);
+        return made;
+    }
+
+    /// <summary>
+    /// Whether `ref` here begins a LAMBDA WITH ITS RESULT WRITTEN, `ref int
+    /// (int[] a) => ref a[0]` or `ref readonly T (...) => ...` (C# 10): a
+    /// type, then a bracket that the arrow follows. Anywhere else `ref` is a
+    /// variable's, and `ref a[0]` and `ref F(x)` are not types and brackets
+    /// with an arrow after.
+    /// </summary>
+    private bool StartsRefLambda()
+    {
+        if (!At(Tok.KwRef)) return false;
+        int j = _i + 1;
+        if (j < _t.Count && _t[j].Kind == Tok.KwReadonly) j++;
+        return TypedLambdaAt(j);
+    }
+
+    /// <summary>
+    /// Whether a LAMBDA WITH ITS RESULT WRITTEN starts here: `int (int x) =>
+    /// x`, `List<int> (string s) => ...`, `(int, int) (int x) => (x, x)` (C#
+    /// 10). A type, then a bracketed parameter list the arrow follows.
+    ///
+    /// AS ROSLYN HAS IT, in an expression and nowhere else. `Point(1, 2) =>`
+    /// in a switch arm is a positional pattern and the arm's arrow, never a
+    /// lambda: Roslyn reads an arm's pattern with its pattern parser, which
+    /// has no lambdas in it, and here the pattern forms are taken before an
+    /// arm falls back to an expression (TypeThenParen), and the arm's own
+    /// arrow is never a lambda's (_armArrow, IsLambdaHeadAt).
+    /// </summary>
+    private bool StartsTypedLambda() => TypedLambdaAt(_i);
+
+    private bool TypedLambdaAt(int j)
+    {
+        int end = TypeEndAt(j);
+        return end > j && end < _t.Count && _t[end].Kind == Tok.LParen && IsLambdaHeadAt(end)
+            && !(_t[end - 1].Kind == Tok.Question && ColonAhead(end));
+    }
+
+    /// <summary>
+    /// `b ? () => A(1) : null`: a type ending in `?` before a lambda's head
+    /// reads as a nullable result, `int? (x) => ...` -- or as a conditional,
+    /// whose `:` then follows at the same depth before the expression ends.
+    /// That `:` makes it the conditional, as Roslyn reads it.
+    /// </summary>
+    private bool ColonAhead(int from)
+    {
+        int depth = 0, inner = 0;
+        for (int k = from; k < _t.Count; k++)
+        {
+            switch (_t[k].Kind)
+            {
+                case Tok.LParen or Tok.LBracket or Tok.LBrace: depth++; break;
+                case Tok.RParen or Tok.RBracket or Tok.RBrace: if (--depth < 0) return false; break;
+                case Tok.Semi or Tok.End: return false;
+                case Tok.Comma when depth == 0: return false;
+                // A conditional inside the lambda's body takes its own `:`.
+                case Tok.Question when depth == 0: inner++; break;
+                case Tok.Colon when depth == 0: if (inner == 0) return true; inner--; break;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Where a type written from token <paramref name="j"/> ends, by its
+    /// shape alone and consuming nothing: a dotted name with its type
+    /// arguments, or a tuple of two or more, then `?`, `[]` and `*`. -1 when
+    /// no type starts there.
+    /// </summary>
+    private int TypeEndAt(int j)
+    {
+        if (j >= _t.Count) return -1;
+        if (_t[j].Kind == Tok.LParen)
+        {
+            int depth = 0, commas = 0;
+            for (; j < _t.Count; j++)
+            {
+                Tok k = _t[j].Kind;
+                if (k == Tok.LParen) depth++;
+                else if (k == Tok.RParen) { if (--depth == 0) { j++; break; } }
+                else if (k == Tok.Comma && depth == 1) commas++;
+                else if (k is Tok.End or Tok.Semi or Tok.LBrace or Tok.FatArrow) return -1;
+            }
+            if (depth != 0 || commas == 0) return -1;
+        }
+        else
+        {
+            if (_t[j].Kind != Tok.Ident) return -1;
+            j++;
+            while (j + 1 < _t.Count && _t[j].Kind == Tok.Dot && _t[j + 1].Kind == Tok.Ident) j += 2;
+            if (j < _t.Count && _t[j].Kind == Tok.Lt)
+            {
+                int depth = 0;
+                for (; j < _t.Count; j++)
+                {
+                    Tok k = _t[j].Kind;
+                    if (k == Tok.Lt) depth++;
+                    else if (k == Tok.Gt) depth--;
+                    else if (k == Tok.Shr) depth -= 2;
+                    else if (k == Tok.UShr) depth -= 3;
+                    else if (k is not (Tok.Ident or Tok.Comma or Tok.Dot or Tok.Question or Tok.LBracket or Tok.RBracket
+                             or Tok.LParen or Tok.RParen))
+                    {
+                        return -1;
+                    }
+                    if (depth <= 0) { j++; break; }
+                }
+                if (depth != 0) return -1;
+            }
+        }
+        while (j < _t.Count)
+        {
+            if (_t[j].Kind is Tok.Question or Tok.Star) { j++; continue; }
+            if (_t[j].Kind == Tok.LBracket)
+            {
+                int k = j + 1;
+                while (k < _t.Count && _t[k].Kind == Tok.Comma) k++;
+                if (k < _t.Count && _t[k].Kind == Tok.RBracket) { j = k + 1; continue; }
+            }
+            break;
+        }
+        return j;
+    }
+
+    /// <summary>
+    /// Whether attributes here belong to a LAMBDA, `[Pure] (int x) => x` or
+    /// `[A] x => x` (C# 10): bracketed groups, then a lambda's head. A
+    /// collection expression is brackets with no arrow after the head that
+    /// would follow.
+    /// </summary>
+    private bool StartsAttributedLambda()
+    {
+        int j = _i;
+        while (j < _t.Count && _t[j].Kind == Tok.LBracket)
+        {
+            int depth = 0;
+            for (; j < _t.Count; j++)
+            {
+                if (_t[j].Kind == Tok.LBracket) depth++;
+                else if (_t[j].Kind == Tok.RBracket) { if (--depth == 0) { j++; break; } }
+                else if (_t[j].Kind is Tok.End or Tok.Semi) return false;
+            }
+            if (depth != 0) return false;
+        }
+        if (j >= _t.Count) return false;
+        if (_t[j].Kind == Tok.Ident && _t[j].Text == "async") j++;
+        if (j + 1 < _t.Count && _t[j].Kind == Tok.Ident && _t[j + 1].Kind == Tok.FatArrow && j + 1 != _armArrow) return true;
+        if (_t[j].Kind == Tok.LParen && IsLambdaHeadAt(j)) return true;
+        if (_t[j].Kind == Tok.KwRef)
+        {
+            j++;
+            if (j < _t.Count && _t[j].Kind == Tok.KwReadonly) j++;
+        }
+        return TypedLambdaAt(j);
+    }
+
+    /// <summary>
+    /// Reads attribute groups written on a lambda or one of its parameters,
+    /// into <paramref name="into"/> when given, without disturbing the ones
+    /// the member being read collected (SkipAttributes keeps only the last).
+    /// </summary>
+    private void SkipLambdaAttributes(List<AttributeRef>? into)
+    {
+        List<string> names = new(_attributes);
+        List<AttributeRef> parts = new(_attributeParts);
+        SkipAttributes();
+        into?.AddRange(CapturedAttributes());
+        _attributes.Clear();
+        _attributes.AddRange(names);
+        _attributeParts.Clear();
+        _attributeParts.AddRange(parts);
+    }
+
     private bool IsLambdaHeadAt(int from)
     {
         int depth = 0;
@@ -4746,15 +5244,20 @@ public sealed class Parser
     /// so the binder fills these in from the wanted type and nothing before
     /// the binder could.
     /// </summary>
-    private LambdaExpr Finish(LambdaExpr made, List<string> names, List<Tok>? modifiers = null)
+    private LambdaExpr Finish(LambdaExpr made, List<string> names, List<Tok>? modifiers = null, List<TypeRef?>? types = null)
     {
         // A block lambda's `return default;` waits for the binder, which knows
         // what the lambda is converted to; the method's return type is not it.
         TypeRef? savedReturns = _returns;
         _returns = null;
+        // `=> ref a[0]`: the body of a lambda that returns by reference is
+        // the variable it answers (ParseRefValue).
+        // EVERY TYPE WRITTEN, or none: C# allows no mixture, and only the
+        // first gives the lambda a natural type.
+        bool typed = types is { Count: > 0 } && types.All(t => t is not null);
         LambdaExpr done = At(Tok.LBrace)
-            ? new LambdaExpr { BlockBody = ParseBlock(), Line = made.Line, Col = made.Col, Async = made.Async }
-            : new LambdaExpr { Body = ParseExpr(), Line = made.Line, Col = made.Col, Async = made.Async };
+            ? new LambdaExpr { BlockBody = ParseBlock(), Line = made.Line, Col = made.Col, Async = made.Async, TypesWritten = typed }
+            : new LambdaExpr { Body = At(Tok.KwRef) ? ParseRefValue() : ParseExpr(), Line = made.Line, Col = made.Col, Async = made.Async, TypesWritten = typed };
         _returns = savedReturns;
 
         for (int k = 0; k < names.Count; k++)
@@ -4763,8 +5266,10 @@ public sealed class Parser
             done.Params.Add(new Param
             {
                 Name = names[k],
-                Type = new TypeRef { Name = "", Line = made.Line, Col = made.Col },
-                IsRef = modifier == Tok.KwRef, IsOut = modifier == Tok.KwOut, IsReadOnlyRef = modifier == Tok.KwIn,
+                Type = typed ? types![k]! : new TypeRef { Name = "", Line = made.Line, Col = made.Col },
+                // `in` is passed by address, read only, as a method's is
+                // (ParseParams): a ref the body may not assign to.
+                IsRef = modifier is Tok.KwRef or Tok.KwIn, IsOut = modifier == Tok.KwOut, IsReadOnlyRef = modifier == Tok.KwIn,
                 Line = made.Line, Col = made.Col,
             });
         }
@@ -5219,25 +5724,43 @@ public sealed class Parser
     /// decision needs the name AND the bracket -- one token is not enough, the
     /// same reason the declaration below is tried and fallen back from.
     /// </summary>
-    /// <summary>Whether `static` here is a local function's modifier.</summary>
-    private bool StartsLocalFunctionAfterStatic()
+    /// <summary>
+    /// How many words here -- `static`, `async`, in either order -- are a
+    /// local function's modifiers, or 0 when what follows them is no local
+    /// function (an `async` lambda, a name that is only called async).
+    /// </summary>
+    private int LocalFunctionModifiers()
     {
+        int j = _i;
+        while (j < _t.Count && (_t[j].Kind == Tok.KwStatic || _t[j].Kind == Tok.Ident && _t[j].Text == "async"))
+        {
+            j++;
+        }
+        if (j == _i) return 0;
         int was = _i;
-
-        _i++;
+        _i = j;
         bool yes = StartsLocalFunction();
         _i = was;
-        return yes;
+        return yes ? j - was : 0;
     }
 
     private bool StartsLocalFunction()
     {
-        if (!At(Tok.KwVoid) && !At(Tok.Ident) && !At(Tok.LParen))
+        // `ref int At(int[] xs, int i) => ref xs[i];` RETURNS A VARIABLE. The
+        // word in front is the return's, as a method's is; `ref int x = ref
+        // y;`, the ref local, has `=` where this has its bracket, which is
+        // what tells the two apart below.
+        int j = _i;
+        if (_t[j].Kind == Tok.KwRef)
+        {
+            j++;
+            if (j < _t.Count && _t[j].Kind == Tok.KwReadonly) j++;
+            if (j >= _t.Count || _t[j].Kind is not (Tok.Ident or Tok.LParen)) return false;
+        }
+        else if (!At(Tok.KwVoid) && !At(Tok.Ident) && !At(Tok.LParen))
         {
             return false;
         }
-
-        int j = _i;
 
         // Step over the return type: a name, possibly dotted and generic, a
         // tuple in brackets, or the keyword void.
@@ -5339,32 +5862,38 @@ public sealed class Parser
     /// which is exactly how C# spells them, so the type a user could write by
     /// hand is the type this builds.
     /// </summary>
-    private Stmt ParseGenericLocalFunction(Token at, TypeRef? returns, string name)
+    private Stmt ParseGenericLocalFunction(Token at, TypeRef? returns, string name, Mods byReference)
     {
         if (_blocks.Count == 0) throw Error("a generic local function must be declared in a block");
         MethodDecl m = new()
         {
             Name = name + "$" + _memberName + "$" + _hoistSerial++,
             Returns = returns ?? VoidType(),
-            Mods = _memberStatic ? Mods.Static | Mods.Private : Mods.Private,
+            Mods = (_memberStatic ? Mods.Static | Mods.Private : Mods.Private) | byReference,
             Line = at.Line, Col = at.Col, Body = null,
+            HoistedName = name,
         };
+        string? parent = _hoistParents.Count > 0 ? _hoistParents.Peek() : null;
         if (At(Tok.Lt)) ParseTypeParams(m.WritableTypeParams);
         ParseParams(m.Params);
         ParseConstraints(m.TypeParams);
         MethodDecl finished = FinishMethod(m);
-        _blocks.Peek().GenericLocals.Add((name, finished.Name));
+        finished.HoistedName = name;
+        finished.HoistedIn = parent;
+        _blocks.Peek().WritableGenericLocals.Add((name, finished.Name));
         _hoisted.Add(finished);
         return new Block { Line = at.Line, Col = at.Col };
     }
 
     /// <summary>
     /// The delegate a local function's signature needs when Func and Action
-    /// cannot say it: a parameter passed by ref, out or in, or more than eight.
+    /// cannot say it: a parameter passed by ref, out or in, more than eight,
+    /// or a result returned by reference (<paramref name="byReference"/>,
+    /// Mods.RefReturn on its Invoke, as `delegate ref int D(...)` has it).
     /// Declared nested in the type being read, under a name no source can
     /// write, with that type's own type parameters as a nested type has them.
     /// </summary>
-    private TypeRef LocalFunctionDelegate(Token at, string name, TypeRef? returns, List<Param> parameters)
+    private TypeRef LocalFunctionDelegate(Token at, string name, TypeRef? returns, List<Param> parameters, Mods byReference)
     {
         string delegateName = "LocalFunction$" + name + "$" + _hoistSerial++;
         TypeDecl declaration = new()
@@ -5384,7 +5913,7 @@ public sealed class Parser
         MethodDecl invoke = new()
         {
             Name = "Invoke", Returns = returns ?? new TypeRef { Name = "void", Line = at.Line, Col = at.Col },
-            Mods = Mods.Public | Mods.Abstract,
+            Mods = Mods.Public | Mods.Abstract | byReference,
             File = _file, Scope = _fileScope, Namespace = _namespace, Line = at.Line, Col = at.Col,
         };
         foreach (Param p in parameters)
@@ -5400,9 +5929,20 @@ public sealed class Parser
         return new TypeRef { Name = delegateName, Line = at.Line, Col = at.Col };
     }
 
-    private Stmt ParseLocalFunction(Token at)
+    private Stmt ParseLocalFunction(Token at, bool isAsync = false)
     {
-        TypeRef? returns = Take(Tok.KwVoid)
+        // `ref int At(...)` and `ref readonly int At(...)` RETURN A VARIABLE,
+        // as a method written so does (Mods.RefReturn): the generic one is
+        // such a method, and the delegate the others are has an Invoke that
+        // says so.
+        Mods byReference = Mods.None;
+        if (Take(Tok.KwRef))
+        {
+            byReference = Mods.RefReturn;
+            if (Take(Tok.KwReadonly)) byReference |= Mods.RefReadonlyReturn;
+        }
+
+        TypeRef? returns = byReference == Mods.None && Take(Tok.KwVoid)
                          ? null
                          : ParseTypeRef();
 
@@ -5414,7 +5954,7 @@ public sealed class Parser
         // functions are, cannot be generic.
         if (At(Tok.Lt))
         {
-            return ParseGenericLocalFunction(at, returns, name);
+            return ParseGenericLocalFunction(at, returns, name, byReference | (isAsync ? Mods.Async : Mods.None));
         }
 
         // THE SAME PARAMETER LIST A METHOD HAS: attributes (caller
@@ -5422,7 +5962,7 @@ public sealed class Parser
         LambdaExpr made = new() { BlockBody = null!, Line = at.Line, Col = at.Col };
         ParseParams(made.Params);
         List<TypeRef> takes = made.Params.Select(p => p.Type).ToList();
-        bool byReference = made.Params.Any(p => p.IsRef || p.IsOut);
+        bool passedByReference = made.Params.Any(p => p.IsRef || p.IsOut);
 
         // EXPRESSION-BODIED, which is how the short ones are written:
         // `long Twice(long n) => n * 2;` -- and that form DOES end with a
@@ -5431,7 +5971,9 @@ public sealed class Parser
 
         if (Take(Tok.FatArrow))
         {
-            lam = new LambdaExpr { Body = ParseExpr(), Line = at.Line, Col = at.Col };
+            // `=> ref xs[i]`: the body of one that returns by reference is
+            // the variable it answers (ParseRefValue).
+            lam = new LambdaExpr { Body = At(Tok.KwRef) ? ParseRefValue() : ParseExpr(), Async = isAsync, Line = at.Line, Col = at.Col };
             Expect(Tok.Semi, "';' after the expression body");
         }
         else
@@ -5439,20 +5981,21 @@ public sealed class Parser
             // ITS OWN BODY, as a method's is: a local function may be an
             // iterator of its own, and its `yield`s are not its enclosing
             // method's.
-            lam = new LambdaExpr { BlockBody = ReadBodyBlock(returns, at.Line, at.Col), Line = at.Line, Col = at.Col };
+            lam = new LambdaExpr { BlockBody = ReadBodyBlock(returns, at.Line, at.Col), Async = isAsync, Line = at.Line, Col = at.Col };
         }
 
         lam.Params.AddRange(made.Params);
 
         // Action for no result, Func with the result last -- C#'s own spelling
-        // -- when one fits: nothing passed by reference, and no more than the
-        // eight parameters those carry. Otherwise the local function's type is
-        // a delegate of its exact signature, as C# gives it one, declared
-        // beside the type it is written in.
+        // -- when one fits: nothing passed by reference, the result not
+        // returned by reference, and no more than the eight parameters those
+        // carry. Otherwise the local function's type is a delegate of its
+        // exact signature, as C# gives it one, declared beside the type it is
+        // written in.
         TypeRef shape;
-        if (byReference || takes.Count > 8)
+        if (passedByReference || byReference != Mods.None || takes.Count > 8)
         {
-            shape = LocalFunctionDelegate(at, name, returns, made.Params);
+            shape = LocalFunctionDelegate(at, name, returns, made.Params, byReference);
         }
         else
         {
@@ -5706,7 +6249,7 @@ public sealed class Parser
         // as a constant: the copy that learned better was not the copy that
         // ran. That is the third time in this parser -- the `is` dispatch was
         // duplicated too.
-        if (StartsValuePattern() && !At(Tok.LBrace))
+        if (StartsValuePattern() && !At(Tok.LBrace) && !TupleArrayTypeAhead())
         {
             return ParseOnePattern(subject, at);
         }
@@ -6151,9 +6694,28 @@ public sealed class Parser
         return j;
     }
 
+    /// <summary>
+    /// `(int, int[])[]` at the cursor: brackets in a tuple's shape and an
+    /// array's after them, a type -- tested as one, not grouped as a pattern.
+    /// </summary>
+    private bool TupleArrayTypeAhead()
+    {
+        if (!At(Tok.LParen)) return false;
+        int depth = 0;
+        bool comma = false;
+        for (int j = _i; j < _t.Count; j++)
+        {
+            if (_t[j].Kind == Tok.LParen) depth++;
+            else if (_t[j].Kind == Tok.RParen && --depth == 0) return comma && j + 1 < _t.Count && _t[j + 1].Kind == Tok.LBracket;
+            else if (_t[j].Kind == Tok.Comma && depth == 1) comma = true;
+        }
+        return false;
+    }
+
     private bool PositionalPatternAhead()
     {
         int depth = 0;
+        bool comma = false;
 
         for (int j = _i; j < _t.Count; j++)
         {
@@ -6164,11 +6726,14 @@ public sealed class Parser
             else if (_t[j].Kind == Tok.RParen)
             {
                 depth--;
-                if (depth == 0) { return false; }
+                // A TUPLE TYPE'S ARRAY, `o is (int, int[])[]`: brackets after
+                // the group make it a type, which no positional pattern is
+                // ever followed by.
+                if (depth == 0) { return comma && !(j + 1 < _t.Count && _t[j + 1].Kind == Tok.LBracket); }
             }
             else if (_t[j].Kind == Tok.Comma && depth == 1)
             {
-                return true;
+                comma = true;
             }
         }
         return false;
@@ -6672,6 +7237,9 @@ public sealed class Parser
     private Expr ParseRefValue()
     {
         Token at = Cur;
+        // Unless what follows is a LAMBDA THAT RETURNS BY REFERENCE, `return
+        // ref int (int[] a) => ref a[0];`, whose `ref` is its own.
+        if (StartsRefLambda()) return ParseConditional();
         Expect(Tok.KwRef, "'ref' and the variable referred to");
         return new RefArgExpr { Target = ParseConditional(), Line = at.Line, Col = at.Col };
     }
@@ -7222,6 +7790,19 @@ public sealed class Parser
             // parenthesised expression, and a cast. What settles it is the
             // arrow, which is why this scans ahead for one rather than
             // committing and backing out.
+            // `static x => ...`, `static (a, b) => ...`, `static async ...`: a
+            // lambda that captures nothing, by its own promise -- nothing to
+            // do but read past the word, as a capture would be refused by
+            // C# before it ever reached here.
+            case Tok.KwStatic
+                when Ahead().Kind == Tok.Ident && _t[_i + 2].Kind == Tok.FatArrow && _i + 2 != _armArrow
+                  || Ahead().Kind == Tok.LParen && IsLambdaHeadAt(_i + 1)
+                  || Ahead().Kind == Tok.Ident && Ahead().Text == "async":
+            {
+                _i++;
+                return ParseUnary();
+            }
+
             // `async x => ...` and `async (a, b) => ...`: the word is a
             // modifier here and nowhere else in an expression.
             case Tok.Ident when Cur.Text == "async"
@@ -7232,12 +7813,20 @@ public sealed class Parser
                 LambdaExpr inner = (LambdaExpr)ParseUnary();
                 LambdaExpr made = new()
                 {
-                    Body = inner.Body, BlockBody = inner.BlockBody, Async = true,
+                    Body = inner.Body, BlockBody = inner.BlockBody, Async = true, TypesWritten = inner.TypesWritten,
+                    Returns = inner.Returns, ReturnMods = inner.ReturnMods,
                     Line = at.Line, Col = at.Col,
                 };
+                made.WritableAttributes.AddRange(inner.Attributes);
                 made.Params.AddRange(inner.Params);
                 return made;
             }
+
+            // A LAMBDA WITH ITS RESULT WRITTEN: `ref int (int[] a) => ref
+            // a[0]` (C# 10). The lambda is read as any other, and keeps what
+            // it said it returns for the binder to hold the delegate to.
+            case Tok.KwRef when StartsRefLambda():
+                return TypedLambda(at);
 
             case Tok.Ident when Ahead().Kind == Tok.FatArrow && _i + 1 != _armArrow:
             {
@@ -7247,32 +7836,56 @@ public sealed class Parser
                 return Finish(new LambdaExpr { Line = at.Line, Col = at.Col }, one);
             }
 
+            // A LAMBDA WITH ITS RESULT WRITTEN, `int (int x) => x` (C# 10;
+            // StartsTypedLambda says how it is told from a call). Read as any
+            // lambda, keeping the result for the binder to hold the delegate
+            // to and to give the lambda its natural type by.
+            case Tok.Ident when StartsTypedLambda():
+                return TypedLambda(at);
+
+            // `[A] (int x) => x`: a lambda's attributes, kept on it.
+            case Tok.LBracket when StartsAttributedLambda():
+            {
+                List<AttributeRef> attributes = new();
+                SkipLambdaAttributes(attributes);
+                LambdaExpr inner = (LambdaExpr)ParseUnary();
+                inner.WritableAttributes.InsertRange(0, attributes);
+                return inner;
+            }
+
             case Tok.LParen when IsLambdaHead():
             {
                 _i++;
 
                 List<string> names = new();
                 List<Tok> modifiers = new();
+                List<TypeRef?> types = new();
 
                 while (!At(Tok.RParen))
                 {
+                    // `([NotNull] string s) => ...`: a parameter's attributes
+                    // (C# 10), read past -- nothing here reads them.
+                    if (At(Tok.LBracket)) SkipLambdaAttributes(null);
+
                     // `(string s, out int v) => ...`: the word says how the
                     // argument is passed, and the delegate's Invoke must say
                     // the same (C# 12.19.2). Kept for the binder.
                     Tok modifier = At(Tok.KwRef) || At(Tok.KwOut) || At(Tok.KwIn) ? _t[_i++].Kind : Tok.End;
 
-                    // `(int a, List<string> b) => ...` is legal C# and says
-                    // nothing this does not already know -- the types come
-                    // from what the lambda is being passed to -- so a type
-                    // before the name is read and dropped: anything that is
-                    // not a lone name ending the parameter.
+                    // `(int a, List<string> b) => ...`: a type before the name
+                    // is kept. Where the lambda converts to a delegate the
+                    // delegate says the types anyway; where nothing does --
+                    // `var f = (int a) => a + 1;` -- they are what its natural
+                    // type is made of (C# 10).
+                    TypeRef? written = null;
                     if (!(At(Tok.Ident) && Ahead().Kind is Tok.Comma or Tok.RParen))
                     {
-                        ParseTypeRef();
+                        written = ParseTypeRef();
                     }
 
                     names.Add(Expect(Tok.Ident, "a lambda parameter name").Text);
                     modifiers.Add(modifier);
+                    types.Add(written);
 
                     if (!Take(Tok.Comma))
                     {
@@ -7282,8 +7895,12 @@ public sealed class Parser
 
                 Expect(Tok.RParen, "')' after the lambda parameters");
                 Expect(Tok.FatArrow, "'=>' after the lambda parameters");
-                return Finish(new LambdaExpr { Line = at.Line, Col = at.Col }, names, modifiers);
+                return Finish(new LambdaExpr { Line = at.Line, Col = at.Col }, names, modifiers, types);
             }
+
+            // `(int, int) (int x) => (x, x)`: the written result a tuple.
+            case Tok.LParen when StartsTypedLambda():
+                return TypedLambda(at);
 
             case Tok.LParen:
             {
@@ -7384,7 +8001,11 @@ public sealed class Parser
 
                     if (TryParseTypeArgs(out List<TypeRef> args))
                     {
-                        m.TypeArgs.AddRange(args);
+                        m.WritableTypeArgs.AddRange(args);
+                        if (name == "CreateInstance" && args is [{ Args.Count: 0, ArrayRank: 0, PointerDepth: 0 } made])
+                        {
+                            (_createdParams ??= new(StringComparer.Ordinal)).Add(made.Name);
+                        }
                     }
                     else
                     {
@@ -7421,12 +8042,12 @@ public sealed class Parser
                         // name at the very start of an argument.
                         if (At(Tok.Ident) && Ahead().Kind == Tok.Colon)
                         {
-                            call.ArgNames.Add(_t[_i++].Text);
+                            call.WritableArgNames.Add(_t[_i++].Text);
                             _i++;
                         }
                         else
                         {
-                            call.ArgNames.Add(null);
+                            call.WritableArgNames.Add(null);
                         }
 
                         int argumentAt = ArgumentStart();
@@ -7587,7 +8208,7 @@ public sealed class Parser
                     Line = at.Line, Col = at.Col,
                 };
                 span.Args.Add(bytes);
-                span.ArgNames.Add(null);
+                span.WritableArgNames.Add(null);
                 return span;
             }
 
@@ -7799,12 +8420,12 @@ public sealed class Parser
                         {
                             if (At(Tok.Ident) && Ahead().Kind == Tok.Colon)
                             {
-                                n.ArgNames.Add(_t[_i++].Text);
+                                n.WritableArgNames.Add(_t[_i++].Text);
                                 _i++;
                             }
                             else
                             {
-                                n.ArgNames.Add(null);
+                                n.WritableArgNames.Add(null);
                             }
                             int argumentAt = ArgumentStart();
                             n.Args.Add(ParseArg());
@@ -7987,7 +8608,7 @@ public sealed class Parser
 
                     if (TryParseTypeArgs(out List<TypeRef> args))
                     {
-                        name.TypeArgs.AddRange(args);
+                        name.WritableTypeArgs.AddRange(args);
                     }
                     else
                     {
@@ -8050,9 +8671,9 @@ internal static class MethodDeclExtensions
     /// <summary>Copies the list-valued parts a record-style rebuild would drop.</summary>
     public static MethodDecl CopyListsFrom(this MethodDecl to, MethodDecl from)
     {
-        to.WritableTypeParams.AddRange(from.TypeParams);
+        if (from.TypeParams.Count > 0) to.WritableTypeParams.AddRange(from.TypeParams);
         to.Params.AddRange(from.Params);
-        to.WritableAttributes.AddRange(from.Attributes);
+        if (from.Attributes.Count > 0) to.WritableAttributes.AddRange(from.Attributes);
         return to;
     }
 }

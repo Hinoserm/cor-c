@@ -1,0 +1,64 @@
+// The other unit of 1271_region_storage_grown_beside_its_owner_across_units:
+// a boundary that makes Lists and Dictionaries, grows each many times, and
+// reads every one back after a collection, handing out only a number; and a
+// List held in a static that the boundary grows too.
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public static class Storage
+{
+    // On the heap, and grown from inside the boundary: its arrays must be
+    // the heap's too, whatever region is open when it grows.
+    private static readonly List<long> s_kept = new();
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long Fill(int n, int seed)
+    {
+        List<long> numbers = new();
+        List<string> names = new();
+        Dictionary<int, long> squares = new();
+        Dictionary<string, int> index = new();
+        for (int i = 0; i < n; i++)
+        {
+            numbers.Add(seed + i);
+            names.Add("n" + i);
+            squares[i] = (long)i * i;
+            index["k" + i] = i;
+        }
+        // Removed places make the table grow its list of vacancies.
+        for (int i = 0; i < n; i += 3) index.Remove("k" + i);
+        s_kept.Add(seed);
+        GC.Collect();
+
+        long sum = 0;
+        foreach (long v in numbers) sum += v;
+        long chars = 0;
+        for (int i = 0; i < names.Count; i++)
+        {
+            if (names[i] != "n" + i) return -1;
+            chars += names[i].Length;
+        }
+        long squared = 0;
+        for (int i = 0; i < n; i++)
+        {
+            if (!squares.TryGetValue(i, out long s) || s != (long)i * i) return -2;
+            squared += s;
+        }
+        long indexed = 0;
+        foreach (KeyValuePair<string, int> pair in index)
+        {
+            if (pair.Key != "k" + pair.Value || pair.Value % 3 == 0) return -3;
+            indexed += pair.Value;
+        }
+        if (index.Count != n - (n + 2) / 3 || numbers.Count != n || squares.Count != n) return -4;
+        return sum + chars + squared + indexed;
+    }
+
+    public static long Kept()
+    {
+        long total = 0;
+        foreach (long v in s_kept) total += v;
+        return total + s_kept.Count;
+    }
+}

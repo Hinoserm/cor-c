@@ -81,7 +81,7 @@ public sealed partial class Binder
                 NewExpr packed = new() { Type = each, Elements = call.Args.Skip(fixedCount).ToList(), Line = call.Line, Col = call.Col };
                 call.Args.RemoveRange(fixedCount, call.Args.Count - fixedCount);
                 call.Args.Add(packed);
-                if (call.ArgNames.Count > call.Args.Count) call.ArgNames.RemoveRange(call.Args.Count, call.ArgNames.Count - call.Args.Count);
+                if (call.ArgNames.Count > call.Args.Count) call.WritableArgNames.RemoveRange(call.Args.Count, call.ArgNames.Count - call.Args.Count);
             }
         }
         if (!named && call.Args.Count == lambda.Params.Count) return;
@@ -113,7 +113,7 @@ public sealed partial class Binder
             order.Add(n);
         }
         call.Args.Clear(); call.Args.AddRange(placed!);
-        call.ArgNames.Clear();
-        if (named) { call.LocalArgumentOrder.Clear(); call.LocalArgumentOrder.AddRange(order); }
+        call.WritableArgNames.Clear();
+        if (named) { call.WritableLocalArgumentOrder.Clear(); call.WritableLocalArgumentOrder.AddRange(order); }
     }
 }

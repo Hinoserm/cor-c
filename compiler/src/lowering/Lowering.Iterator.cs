@@ -110,7 +110,9 @@ public sealed partial class Lowering
         int at = IterFirstParamField;
         for (int i = 0; i < m.Params.Count; i++)
         {
-            if (m.Params[i].ByRef)
+            // A captured variable's cell (ParamSymbol.Cell) is an object the
+            // machine may hold, and every enumerator it makes shares.
+            if (m.Params[i].ByRef && !m.Params[i].Cell)
             {
                 Error(decl, $"'{m.Name}': an iterator cannot take a ref, out or in parameter");
             }
@@ -174,12 +176,12 @@ public sealed partial class Lowering
         List<VReg> args = new();
         foreach (ParamSymbol p in m.Params)
         {
-            VReg r = _f.NewReg(IrTypes.Of(p.Type), p.Name);
+            VReg r = _f.NewReg(p.ByRef ? IrTypes.Word : IrTypes.Of(p.Type), p.Name);
             _f.Params.Add(r);
             args.Add(r);
         }
 
-        VReg machine = AllocateDynamic(decl, _e.Load(IrTypes.Word, new SymOperand(it.SizeSymbol)));
+        VReg machine = AllocateDynamic(decl, Numbered(_e, _e.Load(IrTypes.Word, new SymOperand(it.SizeSymbol))));
         _e.Store(R(machine), VtableOf(it.Machine), 0, _t.WordSize);
         _e.Store(R(machine), Imm(it.Enumerable ? -2 : 0, IrType.I32), IterStateField, 4);
         if (self is not null)
@@ -237,13 +239,13 @@ public sealed partial class Lowering
                     // original arguments whenever it is asked again.
                     Block fresh = f.NewBlock("fresh");
                     Block itself = f.NewBlock("itself");
-                    VReg state = e.Load(IrType.I32, self, IterStateField);
+                    VReg state = Numbered(e, e.Load(IrType.I32, self, IterStateField));
                     e.Branch(e.Binary(Opcode.Eq, state, -2), itself, fresh);
                     e.SetBlock(itself);
                     e.Store(R(self), Imm(0, IrType.I32), IterStateField, 4);
                     e.Ret(R(self));
                     e.SetBlock(fresh);
-                    VReg copy = AllocateDynamic(it.Decl, e.Load(IrTypes.Word, new SymOperand(it.SizeSymbol)));
+                    VReg copy = AllocateDynamic(it.Decl, Numbered(e, e.Load(IrTypes.Word, new SymOperand(it.SizeSymbol))));
                     e.Store(R(copy), VtableOf(it.Machine), 0, _t.WordSize);
                     e.Store(R(copy), R(e.Load(IrTypes.Word, self, IterReceiverField)), IterReceiverField, _t.WordSize);
                     foreach (int offset in it.ParamOffsets)
@@ -294,7 +296,7 @@ public sealed partial class Lowering
                     // simply finished.
                     Block resume = f.NewBlock("stopbody");
                     Block done = f.NewBlock("finished");
-                    VReg state = e.Load(IrType.I32, self, IterStateField);
+                    VReg state = Numbered(e, e.Load(IrType.I32, self, IterStateField));
                     e.Branch(e.Binary(Opcode.GtS, state, 0), resume, done);
                     e.SetBlock(resume);
                     e.Store(R(self), Imm(1, IrType.I32), IterDisposingField, 4);
@@ -357,7 +359,7 @@ public sealed partial class Lowering
         // not yet enumerated -- answers false.
         Block start = _f.NewBlock("start");
         Block nothing = _f.NewBlock("nothing");
-        _e.Branch(_e.Binary(Opcode.Eq, _e.Load(IrType.I32, machine, IterStateField), 0), start, nothing);
+        _e.Branch(_e.Binary(Opcode.Eq, Numbered(_e, _e.Load(IrType.I32, machine, IterStateField)), 0), start, nothing);
         _e.SetBlock(nothing);
         _e.Ret(Imm(0, IrType.I32));
         _e.SetBlock(start);
@@ -373,8 +375,8 @@ public sealed partial class Lowering
         for (int i = 0; i < m.Params.Count; i++)
         {
             ParamSymbol p = m.Params[i];
-            IrType type = IrTypes.Of(p.Type);
-            _params[i] = _e.Load(type, machine, it.ParamOffsets[i], type.Bytes());
+            IrType type = p.ByRef ? IrTypes.Word : IrTypes.Of(p.Type);
+            _params[i] = Numbered(_e, _e.Load(type, machine, it.ParamOffsets[i], type.Bytes()), !p.ByRef && NeverAddress(p.Type));
         }
 
         ScanAddressTaken(decl.Body!);
@@ -474,8 +476,8 @@ public sealed partial class Lowering
         if (_openHandlers.Count > 0)
         {
             VReg outermost = _e.SlotAddress(_openHandlers[0].Record);
-            VReg before = _e.Load(IrTypes.Word, outermost, HandlerPrev / 4 * w);
-            _e.Store(ThreadBlockNow(), before, TlsHandler / 4 * w);
+            VReg before = ChainRead(outermost, HandlerPrev / 4 * w);
+            ChainWrite(ThreadBlockNow(), R(before), TlsHandler / 4 * w);
         }
 
         int point = _yieldPoints++;
@@ -485,15 +487,15 @@ public sealed partial class Lowering
         foreach ((FrameSlot record, AstBlock? _) in _openHandlers)
         {
             VReg addr = _e.SlotAddress(record);
-            VReg head = _e.Load(IrTypes.Word, ThreadBlockNow(), TlsHandler / 4 * w);
-            _e.Store(addr, head, HandlerPrev / 4 * w);
+            VReg head = ChainRead(ThreadBlockNow(), TlsHandler / 4 * w);
+            ChainWrite(addr, R(head), HandlerPrev / 4 * w);
             VReg sp = _e.Reg(IrTypes.Word, "sp");
             _e.Emit(Opcode.StackPointer, sp);
-            _e.Store(addr, sp, HandlerSp / 4 * w);
+            ChainWrite(addr, R(sp), HandlerSp / 4 * w);
             VReg fp = _e.Reg(IrTypes.Word, "fp");
             _e.Emit(Opcode.FramePointer, fp);
-            _e.Store(addr, fp, HandlerFp / 4 * w);
-            _e.Store(ThreadBlockNow(), addr, TlsHandler / 4 * w);
+            ChainWrite(addr, R(fp), HandlerFp / 4 * w);
+            ChainWrite(ThreadBlockNow(), R(addr), TlsHandler / 4 * w);
         }
 
         _e.Store(R(machine), Imm(-1, IrType.I32), IterStateField, 4);
@@ -501,7 +503,7 @@ public sealed partial class Lowering
         {
             Block stopping = _f.NewBlock("stopping");
             Block running = _f.NewBlock("running");
-            _e.Branch(_e.Load(IrType.I32, machine, IterDisposingField), stopping, running);
+            _e.Branch(Numbered(_e, _e.Load(IrType.I32, machine, IterDisposingField)), stopping, running);
             _e.SetBlock(stopping);
             _e.Call(CallLabel(stop), IrType.Void);
             _e.Jump(running);

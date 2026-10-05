@@ -10,6 +10,23 @@ public sealed class DeclarationIndex : IDisposable
     internal const int MaxKeyBytes = 4096;
     internal const int MaxPayloadBytes = 1024 * 1024;
     internal static readonly UTF8Encoding Utf8 = new(false, true);
+
+    // THE PROCESS'S ONE COPY of a string the index hands out again and again
+    // -- declaration keys, paths, namespaces, usings, symbols -- so a
+    // project compile keeps each once rather than once per decoding. Bounded:
+    // past its size a string is handed back as it came.
+    private static readonly Dictionary<string, string> SharedStrings = new(StringComparer.Ordinal);
+    private const int MostShared = 1 << 17;
+
+    internal static string Shared(string value)
+    {
+        lock (SharedStrings)
+        {
+            if (SharedStrings.TryGetValue(value, out string? had)) return had;
+            if (SharedStrings.Count < MostShared) SharedStrings[value] = value;
+            return value;
+        }
+    }
     private readonly FileStream stream;
     private readonly BinaryReader reader;
     private readonly long table;
@@ -119,10 +136,16 @@ public sealed class DeclarationIndex : IDisposable
         lock (gate)
         {
             long low = 0, high = Count;
+            int depth = 0;
             while (low < high)
             {
                 long middle = low + (high - low) / 2;
-                string found = KeyAt(middle);
+                // THE TOP OF THE SEARCH IS KEPT, the rest read and let go: every
+                // key any search had probed was kept, and a project compile's
+                // lookups between them touched most of the index -- seventy
+                // thousand keys, a fifth of the strings live through a unit.
+                // The first levels are what every search passes through.
+                string found = KeyAt(middle, keep: depth++ < KeptLevels);
                 if (StringComparer.Ordinal.Compare(found, key) < 0) low = middle + 1;
                 else high = middle;
             }
@@ -133,7 +156,7 @@ public sealed class DeclarationIndex : IDisposable
             DeclarationRecord record;
             lock (gate)
             {
-                string at = KeyAt(i);
+                string at = KeyAt(i, keep: false);
                 if (prefix ? !at.StartsWith(key, StringComparison.Ordinal) : at != key) yield break;
                 record = Read(i, payload: true);
             }
@@ -146,9 +169,10 @@ public sealed class DeclarationIndex : IDisposable
     /// binary search asked for one, and each was an object for the collector.
     /// Checked when first read (Read), and kept from then on.
     /// </summary>
-    private string KeyAt(long number) => keys[number] ?? Read(number, payload: false).Key;
+    private string KeyAt(long number, bool keep) => keys[number] ?? Read(number, payload: false, keep).Key;
+    private const int KeptLevels = 12;
 
-    private DeclarationRecord Read(long number, bool payload)
+    private DeclarationRecord Read(long number, bool payload, bool keep = true)
     {
         long start = offsets[number], end = offsets[number + 1];
         if (start < HeaderSize || end < start || end > table || end - start < 72)
@@ -167,7 +191,7 @@ public sealed class DeclarationIndex : IDisposable
             if (!SHA256.HashData(keyBytes).SequenceEqual(keyDigest)) throw new InvalidDataException("Declaration key checksum mismatch");
             key = Utf8.GetString(keyBytes);
             if (key.IndexOf('\0') >= 0) throw new InvalidDataException("NUL in declaration key");
-            keys[number] = key;
+            if (keep) keys[number] = key = Shared(key);
         }
         if (!payload) return new DeclarationRecord(key, Array.Empty<byte>());
         byte[] bytes = ReadBytes(reader, size);

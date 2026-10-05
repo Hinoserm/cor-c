@@ -1,0 +1,53 @@
+// test: region_storage_grown_beside_its_owner_across_units
+// units: tests/language/support/1271_region_storage_beside_units.cor
+// regions: taken
+// expect-exit: 0
+// expect-output:
+// first 333669557
+// last 333868557
+// total 66753811400
+// kept 20100
+//
+// The other unit's Storage.Fill is a boundary: the Lists and Dictionaries it
+// makes die when it returns, so they can be made in its region. Their arrays
+// are made later, as each grows, inside the collections' own methods, and
+// stored into fields the collection owns and frees itself as it replaces
+// them: those go beside their owner (AllocNear), in the region when the
+// collection is in it, on the heap when it is not. Each collection grows many
+// times, is read back whole after a collection, and is dropped at the
+// return; the same boundary runs two hundred times over the same region
+// memory. A List held in a static grows inside the boundary too, and its
+// arrays must stay the heap's: one placed in the region would be overwritten
+// by the next call, and the static's sum would come out wrong.
+
+using System;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    // Not Main itself: what the entry calls is never a boundary.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Run()
+    {
+        long first = 0, last = 0, total = 0;
+        for (int call = 0; call < 200; call++)
+        {
+            long r = Storage.Fill(1000, call);
+            if (r < 0)
+            {
+                Console.WriteLine("bad " + call + " " + r);
+                return 1;
+            }
+            if (call == 0) first = r;
+            last = r;
+            total += r;
+        }
+        Console.WriteLine("first " + first);
+        Console.WriteLine("last " + last);
+        Console.WriteLine("total " + total);
+        Console.WriteLine("kept " + Storage.Kept());
+        return 0;
+    }
+
+    static int Main() => Run();
+}

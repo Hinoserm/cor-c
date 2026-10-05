@@ -1,0 +1,45 @@
+// test: generic local function outer type parameters
+// expect-exit: 0
+// expect-output:
+// outer 7/a/1 7/2.5/3 4 | s/a/1 s/2.5/3 4
+//
+// A GENERIC LOCAL FUNCTION IN A GENERIC METHOD, and one in that, capture
+// variables whose types are the type parameters around them: U of the
+// method, T of the function. Each copy of the method has its own copy of
+// the function, and each copy of that its own of the one inside, as Roslyn
+// hands a local function the type parameters of the methods around it.
+//
+// Every line is what .NET prints.
+
+using System;
+using System.Collections.Generic;
+
+public static class Program
+{
+    static string Outer<U>(U seed)
+    {
+        U kept = seed;
+        List<U> log = new();
+        string Pair<T>(T other)
+        {
+            log.Add(kept);
+            T again = other;
+            string Inner<V>(V third)
+            {
+                log.Add(seed);
+                return kept + "/" + again + "/" + third;
+            }
+            return Inner(log.Count);
+        }
+        string first = Pair("a");
+        kept = seed;
+        string second = Pair(2.5);
+        return first + " " + second + " " + log.Count;
+    }
+
+    public static int Main()
+    {
+        Console.WriteLine("outer " + Outer(7) + " | " + Outer("s"));
+        return 0;
+    }
+}

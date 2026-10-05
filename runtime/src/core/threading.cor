@@ -3386,12 +3386,11 @@ static class ThreadPool
 // the scheduler's frame and returns to it, so every region it opened is
 // closed or left behind by the time it returns -- nothing of a run lives in
 // its arena after it (the compiler proves a region's objects dead by its
-// call's return, and a suspended method's frame is gone). So the block's
-// own arena for continuations (Tls.TaskArena, Platform.TaskArenaBytes) is
-// put in for the run and given back cleared after it: what a flow made in
-// regions is released when its run ends, and the next run of any flow on
-// that block -- that processor -- starts with it empty. The block's own
-// region words (a kernel processor's: none) are put back.
+// call's return, and a suspended method's frame is gone). So each run has an
+// arena of its own (Tls.TaskArena, Platform.TaskArenaBytes), begun empty and
+// mapped as its regions need, and given back whole as it ends: what a flow
+// made in regions is released when its run ends. The block's own region
+// words (a kernel processor's: none) are put back.
 //
 // NOTHING IS CAPTURED where the platform flows nothing (Platform.ContextHook
 // 0: Linux, a loader, a boot test): no allocation, no word moved. Where it
@@ -3484,26 +3483,18 @@ sealed class AsyncContext
         Sys.Poke(block + Tls.ThreadStatics, saved.HeldStatics ? Sys.Word(context.Statics) : 0);
         if (saved.Running == 0 && Platform.TaskArenaBytes > 0)
         {
-            long arena = Sys.Peek(block + Tls.TaskArena);
-            if (arena == 0)
-            {
-                arena = Platform.Map(Platform.TaskArenaBytes);
-                Sys.Poke(block + Tls.TaskArena, arena);
-                // Stores into its blocks mark cards: theirs committed now.
-                if (arena != 0) Gc.CommitCards(arena, Platform.TaskArenaBytes);
-            }
-            if (arena != 0)
-            {
-                saved.Arena = true;
-                saved.RegionBase = Sys.Peek(block + Tls.RegionBase);
-                saved.RegionAt = Sys.Peek(block + Tls.RegionAt);
-                saved.RegionEnd = Sys.Peek(block + Tls.RegionEnd);
-                saved.RegionOpen = Sys.Peek(block + Tls.RegionOpen);
-                Sys.Poke(block + Tls.RegionBase, arena);
-                Sys.Poke(block + Tls.RegionAt, arena);
-                Sys.Poke(block + Tls.RegionEnd, arena + Platform.TaskArenaBytes);
-                Sys.Poke(block + Tls.RegionOpen, 0);
-            }
+            // The block's region words put aside, and the run's arena begun
+            // empty: its first region maps it, as big as the region needs.
+            saved.Arena = true;
+            saved.RegionBase = Sys.Peek(block + Tls.RegionBase);
+            saved.RegionAt = Sys.Peek(block + Tls.RegionAt);
+            saved.RegionEnd = Sys.Peek(block + Tls.RegionEnd);
+            saved.RegionOpen = Sys.Peek(block + Tls.RegionOpen);
+            Sys.Poke(block + Tls.RegionBase, 0);
+            Sys.Poke(block + Tls.RegionAt, 0);
+            Sys.Poke(block + Tls.RegionEnd, 0);
+            Sys.Poke(block + Tls.RegionOpen, 0);
+            Sys.Poke(block + Tls.TaskArena, 1);
         }
         Sys.Poke(block + Tls.AsyncContext, Sys.Word(context));
         return saved;
@@ -3531,13 +3522,10 @@ sealed class AsyncContext
             }
             if (saved.Arena)
             {
-                // The pointer first, as RegionLeave sets it: a scan of the
-                // block reads no further than the arena's start.
-                long arena = Sys.Peek(block + Tls.RegionBase);
-                long used = Sys.Peek(block + Tls.RegionAt) - arena;
-                Sys.Poke(block + Tls.RegionAt, arena);
-                Sys.Poke(block + Tls.RegionOpen, 0);
-                if (used > 0) Sys.MemorySet(arena, 0, used);
+                // The run's arena given back whole (every region it opened
+                // is closed or left behind by now), then the block's own.
+                Gc.ReleaseRegion(block);
+                Sys.Poke(block + Tls.TaskArena, 0);
                 Sys.Poke(block + Tls.RegionBase, saved.RegionBase);
                 Sys.Poke(block + Tls.RegionAt, saved.RegionAt);
                 Sys.Poke(block + Tls.RegionEnd, saved.RegionEnd);

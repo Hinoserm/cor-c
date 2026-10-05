@@ -407,8 +407,9 @@ static class Platform
     /// allocation, which is when the collector starts and reads it.
     public static bool MapsCommitLazily;
 
-    /// The region arena each thread maps at its first region, in bytes, or
-    /// 0 for none (RegionBytes). Set before any thread opens a region.
+    /// Nonzero: every thread has a region arena, mapped chunk by chunk as
+    /// its regions need (Regions); 0 for none. Set before any thread opens
+    /// a region.
     public static long RegionArenaBytes;
 
     // ---- THE ASYNC SCHEDULER'S CONTRACT, for a kernel that runs it --------------
@@ -440,10 +441,10 @@ static class Platform
     /// loop. 0: nobody to tell.
     public static long CompletedHook;
 
-    /// The region arena each thread block runs continuations with
-    /// (AsyncContext; Tls.TaskArena), in bytes: mapped at the first run on
-    /// the block, cleared after every run. 0: continuations run with the
-    /// block's own arena words, whatever they are.
+    /// Nonzero: each continuation's run on a thread block has a region
+    /// arena of its own (AsyncContext; Tls.TaskArena), mapped chunk by chunk
+    /// as its regions need and given back as the run ends. 0: continuations
+    /// run with the block's own arena words, whatever they are.
     public static long TaskArenaBytes;
 
     public static bool VerifyGenerations()
@@ -481,10 +482,11 @@ static class Platform
     /// processor's, and the tasks that park and resume on any processor
     /// would share it. Regions wait for the task switch to carry the arena's
     /// words with the task. An image whose every thread has a block of its
-    /// own -- a ring-1 kernel's -- names an arena (RegionArenaBytes).
-    public static long RegionBytes()
+    /// own -- a ring-1 kernel's -- turns them on (RegionArenaBytes); each
+    /// arena is then mapped chunk by chunk as its regions need.
+    public static bool Regions()
     {
-        return RegionArenaBytes;
+        return RegionArenaBytes > 0;
     }
 
     public static long HeapLimit()

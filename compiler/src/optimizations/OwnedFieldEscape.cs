@@ -7,7 +7,7 @@ internal sealed class OwnedFieldEscape
 {
     private readonly Dictionary<string, Function> _functions;
     private readonly Dictionary<string, bool[]> _summaries;
-    private readonly Dictionary<(string, int, string), bool> _memo = new();
+    private readonly Dictionary<(string, int, string, string?), bool> _memo = new();
     internal readonly record struct Field(long Offset, int Width);
     /// <summary>The instruction the last refused read stopped at (--trace-escape).</summary>
     [ThreadStatic] internal static Instr? LastRefusal;
@@ -19,6 +19,12 @@ internal sealed class OwnedFieldEscape
         public HashSet<VReg> Aliases { get; } = new();
         public HashSet<Instr> Stores { get; } = new();
         public List<(Owner Parent, Field Field)> Parents { get; } = new();
+        /// <summary>
+        /// A closure the compiler wrote: the descriptor it is stamped with and
+        /// where its table begins (Escape.ClosureStamp). Its Invoke, called
+        /// through a delegate it is handed as, is then a body to read.
+        /// </summary>
+        public (string Name, long Offset)? Stamp { get; set; }
     }
     /// <summary>
     /// A function this pass was not handed, looked up by name when a read
@@ -89,37 +95,97 @@ internal sealed class OwnedFieldEscape
 
     internal static Dictionary<VReg, long> Addresses(Function f, IEnumerable<VReg> roots)
     {
-        Defs defs = new(f);
-        Dictionary<VReg, long> result = roots.Distinct().ToDictionary(r => r, _ => 0L);
-        bool changed;
-        do
+        AddressScan scan = ReferenceEquals(_cacheFor, f) ? _cached ??= new AddressScan(f) : new AddressScan(f);
+        return scan.Find(roots);
+    }
+
+    // ONE SCAN OF A FUNCTION WHILE NOTHING CHANGES IT (Escape.PromoteIn):
+    // every allocation, every owner of it and every attempt asked for the
+    // addresses of something, and each scanned the whole function again --
+    // a library compiled as one unit sat ten minutes there. The function
+    // marked by Cache is scanned once and the scan kept until Changed says
+    // the function was written; any other is scanned for the one question.
+    [ThreadStatic] private static Function? _cacheFor;
+    [ThreadStatic] private static AddressScan? _cached;
+    internal static void Cache(Function f) { _cacheFor = f; _cached = null; }
+    internal static void Changed() => _cached = null;
+    internal static void Uncache() { _cacheFor = null; _cached = null; }
+
+    private sealed class AddressScan
+    {
+        private readonly Function _f;
+        private readonly Defs _defs;
+        // THE STEPS AN ADDRESS CAN TAKE: every single write that copies,
+        // widens or moves a register by a constant, by the register it reads.
+        // The copies into registers written more than once wait for
+        // JoinedAliases, which has nothing to do unless one reads an address.
+        private readonly List<Instr> _steps = new();
+        private readonly bool _joins;
+        private Dictionary<VReg, List<Instr>>? _writes;
+
+        public AddressScan(Function f)
         {
-            changed = false;
+            _f = f;
+            _defs = new(f, buildCfg: false);
             foreach (var b in f.Blocks)
-            foreach (Instr i in b.Instrs)
-            {
-                if (i.Dest is null || !defs.IsSingle(i.Dest) || result.ContainsKey(i.Dest)
-                    || i.Operands.Count == 0 || i.Operands[0] is not RegOperand r
-                    || !result.TryGetValue(r.Reg, out long offset)) continue;
-                if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32)
-                { result[i.Dest] = offset; changed = true; }
-                else if (i.Op is Opcode.Add or Opcode.Sub && i.Operands.Count == 2
-                    && i.Operands[1] is ImmOperand amount)
+                foreach (Instr i in b.Instrs)
                 {
-                    long next;
-                    try { next = i.Op == Opcode.Add ? checked(offset + amount.Value) : checked(offset - amount.Value); }
+                    if (i.Dest is not { } d || i.Operands.Count == 0 || i.Operands[0] is not RegOperand) continue;
+                    if (!_defs.IsSingle(d)) { _joins |= i.Op == Opcode.Copy; continue; }
+                    if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32
+                        || i.Op is Opcode.Add or Opcode.Sub && i.Operands.Count == 2 && i.Operands[1] is ImmOperand)
+                        _steps.Add(i);
+                }
+            _steps.Sort(BySource);
+        }
+
+        public Dictionary<VReg, long> Find(IEnumerable<VReg> roots)
+        {
+            Dictionary<VReg, long> result = roots.Distinct().ToDictionary(r => r, _ => 0L);
+            Follow(_steps, result, result.Keys.ToList());
+            if (_joins) JoinedAliases(_f, _defs, result, _steps, _writes ??= MultiWrites(_f, _defs));
+            return result;
+        }
+    }
+
+    private static readonly Comparison<Instr> BySource = (x, y) => Source(x).CompareTo(Source(y));
+    private static int Source(Instr i) => ((RegOperand)i.Operands[0]).Reg.Id;
+
+    /// <summary>
+    /// Every step whose operand is an address makes its register one too, at
+    /// the operand's offset moved by the step's constant: from each address
+    /// newly known (`from`), the steps that read it, found in `steps` sorted
+    /// by the register they read. Swept to a fixed point instead, a chain
+    /// listed against its order took a sweep a link -- a whole library's
+    /// unit sat minutes in it.
+    /// </summary>
+    private static void Follow(List<Instr> steps, Dictionary<VReg, long> result, List<VReg> from)
+    {
+        Queue<VReg> next = new(from);
+        while (next.TryDequeue(out VReg? at))
+        {
+            long offset0 = result[at];
+            int lo = 0, hi = steps.Count;
+            while (lo < hi) { int mid = (lo + hi) >> 1; if (Source(steps[mid]) < at.Id) lo = mid + 1; else hi = mid; }
+            for (int k = lo; k < steps.Count && Source(steps[k]) == at.Id; k++)
+            {
+                Instr i = steps[k];
+                if (result.ContainsKey(i.Dest!)) continue;
+                long offset = offset0;
+                if (i.Op is Opcode.Add or Opcode.Sub)
+                {
+                    long amount = ((ImmOperand)i.Operands[1]).Value;
+                    try { offset = i.Op == Opcode.Add ? checked(offset + amount) : checked(offset - amount); }
                     catch (OverflowException) { continue; }
                     // Do not confuse machine-address wraparound with a far
                     // disjoint field. Unknown/large address arithmetic makes
                     // Reads reject the receiver rather than hiding a capture.
-                    if (next < -1048576 || next > 1048576) continue;
-                    result[i.Dest] = next;
-                    changed = true;
+                    if (offset < -1048576 || offset > 1048576) continue;
                 }
+                result[i.Dest!] = offset;
+                next.Enqueue(i.Dest!);
             }
-        } while (changed);
-        JoinedAliases(f, defs, result);
-        return result;
+        }
     }
 
     /// <summary>
@@ -130,12 +196,11 @@ internal sealed class OwnedFieldEscape
     /// another of the group, all at one offset; to a fixed point, since each
     /// waits on the other.
     /// </summary>
-    private static void JoinedAliases(Function f, Defs defs, Dictionary<VReg, long> result)
+    private static void JoinedAliases(Function f, Defs defs, Dictionary<VReg, long> result, List<Instr> steps,
+        Dictionary<VReg, List<Instr>> writes)
     {
-        Dictionary<VReg, List<Instr>>? writes = null;
         while (true)
         {
-            writes ??= MultiWrites(f, defs);
             HashSet<VReg> group = new();
             foreach ((VReg r, List<Instr> all) in writes)
                 if (!result.ContainsKey(r) && all.All(w => w is { Op: Opcode.Copy, Operands: [ImmOperand { Value: 0 } or RegOperand] }))
@@ -161,21 +226,7 @@ internal sealed class OwnedFieldEscape
             if (group.Count == 0 || offset is null || !agree) return;
             foreach (VReg r in group) result[r] = offset.Value;
             // Whatever follows from them, as the single writes do.
-            bool more;
-            do
-            {
-                more = false;
-                foreach (var b in f.Blocks)
-                foreach (Instr i in b.Instrs)
-                {
-                    if (i.Dest is null || !defs.IsSingle(i.Dest) || result.ContainsKey(i.Dest)
-                        || i.Operands.Count == 0 || i.Operands[0] is not RegOperand r || !result.TryGetValue(r.Reg, out long off)) continue;
-                    if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) { result[i.Dest] = off; more = true; }
-                    else if (i.Op is Opcode.Add or Opcode.Sub && i.Operands.Count == 2 && i.Operands[1] is ImmOperand amount
-                             && Math.Abs(amount.Value) < 1048576)
-                    { result[i.Dest] = i.Op == Opcode.Add ? off + amount.Value : off - amount.Value; more = true; }
-                }
-            } while (more);
+            Follow(steps, result, group.ToList());
         }
     }
 
@@ -196,7 +247,7 @@ internal sealed class OwnedFieldEscape
     internal bool ReadsOwner(Function f, Owner owner, IReadOnlyList<Field> path, HashSet<VReg> loaded)
     {
         if (path.Count > 4) return false;
-        if (!Reads(f, Addresses(f, owner.Aliases), path, loaded, owner.Stores)) return false;
+        if (!Reads(f, Addresses(f, owner.Aliases), path, loaded, owner.Stores, owner.Stamp)) return false;
         foreach (var parent in owner.Parents)
         {
             List<Field> throughParent = new() { parent.Field };
@@ -208,12 +259,12 @@ internal sealed class OwnedFieldEscape
 
     /// <summary>Collect leaf references along a field path, including direct callee traversals.</summary>
     private bool Reads(Function f, Dictionary<VReg, long> addresses, IReadOnlyList<Field> path, HashSet<VReg> loaded,
-        HashSet<Instr>? receiverStores = null)
+        HashSet<Instr>? receiverStores = null, (string Name, long Offset)? stamp = null)
     {
         if (path.Count == 0 || path.Count > 4) return false;
         long field = path[0].Offset;
         int width = path[0].Width;
-        Defs defs = new(f);
+        Defs defs = new(f, buildCfg: false);
         // COPIES OF THE OWNER'S BYTES, whole field and all: a struct that holds
         // the reference -- a foreach's enumerator, returned by value and copied
         // into the frame slot the loop walks -- is the owner again wherever it
@@ -287,8 +338,26 @@ internal sealed class OwnedFieldEscape
                         }
                         LastRefusal = null;
                         // The innermost refusal is the one worth naming (--trace-escape).
-                        if (!Safe(callee, a, relativePath)) { LastRefusal ??= i; return false; }
+                        // The owner itself, not a place inside it, keeps its stamp.
+                        if (!Safe(callee, a, relativePath, offset == 0 ? stamp : null)) { LastRefusal ??= i; return false; }
                     }
+                continue;
+            }
+            // A CLOSURE'S OWN INVOKE: the delegate it was handed as called with
+            // it as the receiver, and nothing else of the owner handed over.
+            // The method is the one its stamp's table holds at the slot the
+            // call reads -- the lambda's body, which reads the field as its
+            // `this`'s -- and the field is safe where that body keeps nothing
+            // it reads there. Any other indirect call is refused below.
+            if (i.Op == Opcode.CallIndirect && i.Field == Instr.DelegateInvoke && stamp is { } closure
+                && Invoked(defs, i, addresses, closure) is string body && TryFunction(body, out Function? lambda) && lambda is not null)
+            {
+                for (int a = 2; a < i.Operands.Count; a++)
+                    if (i.Operands[a] is RegOperand passed && addresses.ContainsKey(passed.Reg)
+                        || i.Operands[a] is SlotOperand passedSlot && slots.ContainsKey(passedSlot.Slot))
+                    { LastRefusal = i; return false; }
+                LastRefusal = null;
+                if (!Safe(lambda, 0, path, closure)) { LastRefusal ??= i; return false; }
                 continue;
             }
             if (i.Op == Opcode.MemSet && i.Operands[0] is RegOperand target && addresses.ContainsKey(target.Reg)
@@ -406,16 +475,34 @@ internal sealed class OwnedFieldEscape
         return readsField && intoOwner && into == from && field >= from && field + width <= from + length;
     }
 
-    private bool Safe(Function f, int parameter, IReadOnlyList<Field> path)
+    /// <summary>
+    /// The method a delegate's Invoke reaches on the owner `stamp` names:
+    /// the call's method read from the table the receiver's first word
+    /// points at, at a constant slot, the receiver the owner itself (offset
+    /// 0). Null for any other shape.
+    /// </summary>
+    private static string? Invoked(Defs defs, Instr call, Dictionary<VReg, long> addresses, (string Name, long Offset) stamp)
     {
-        var key = (f.Name, parameter, string.Join(";", path.Select(p => p.Offset + ":" + p.Width)));
+        if (call.Operands.Count < 2 || call.Operands[0] is not RegOperand { Reg: var method }
+            || call.Operands[1] is not RegOperand { Reg: var receiver } || !addresses.TryGetValue(receiver, out long at) || at != 0
+            || !defs.IsSingle(method) || defs.Site(method) is not { } slotSite
+            || slotSite.Block.Instrs[slotSite.Index] is not { Op: Opcode.Load, Operands: [RegOperand { Reg: var table }] } slotLoad
+            || !defs.IsSingle(table) || defs.Site(table) is not { } tableSite
+            || tableSite.Block.Instrs[tableSite.Index] is not { Op: Opcode.Load, Offset: 0, Operands: [RegOperand { Reg: var self }] }
+            || !addresses.TryGetValue(self, out long selfAt) || selfAt != 0) return null;
+        return Escape.StampMethod(stamp.Name, stamp.Offset + slotLoad.Offset);
+    }
+
+    private bool Safe(Function f, int parameter, IReadOnlyList<Field> path, (string Name, long Offset)? stamp = null)
+    {
+        var key = (f.Name, parameter, string.Join(";", path.Select(p => p.Offset + ":" + p.Width)), stamp is { } named ? named.Name + "+" + named.Offset : null);
         if (_memo.TryGetValue(key, out bool answer)) return answer;
         // Cycles and an excessive query graph remain pessimistic.
         if (_memo.Count >= 1024 || parameter >= f.Params.Count || f.Async is not null) return false;
         _memo[key] = false;
         HashSet<VReg> loaded = new();
         var addresses = Addresses(f, f.Params[parameter]);
-        bool safe = Reads(f, addresses, path, loaded);
+        bool safe = Reads(f, addresses, path, loaded, null, stamp);
         if (safe && Escape.Analyse(f, loaded, _summaries, null) is { Escapes: true } lost) { safe = false; LastRefusal = lost.Why; }
         _memo[key] = safe;
         return safe;

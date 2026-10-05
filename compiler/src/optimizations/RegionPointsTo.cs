@@ -394,6 +394,7 @@ public sealed class RegionPointsTo : IModulePass
                 if (headers.Contains(header))
                 {
                     f.Blocks[header].RegionLoop = true;
+                    f.Blocks[header].RegionLoopBytes = facts.LoopBytes.GetValueOrDefault((f.Name, header));
                     f.NoInlining = true;
                     marked++;
                 }
@@ -441,9 +442,9 @@ public sealed class RegionPointsTo : IModulePass
                     if (i.RegionSite && i.Op == Opcode.Call && IsRewritable(i.Callee)) sites++;
         foreach (Function f in m.Functions)
         {
-            List<int> headers = MarkedLoops(f);
-            if (facts.Boundaries.Contains(f.Name)) { Open(f, headers.Count > 0); opened++; }
-            if (headers.Count > 0) { OpenLoops(f, headers); loops += headers.Count; }
+            List<int> headers = MarkedLoops(f, out Dictionary<int, long> lapBytes);
+            if (facts.Boundaries.Contains(f.Name)) { Open(f, headers.Count > 0, facts.BoundaryBytes.GetValueOrDefault(f.Name)); opened++; }
+            if (headers.Count > 0) { OpenLoops(f, headers, lapBytes); loops += headers.Count; }
         }
         if (sites > 0 || opened > 0 || loops > 0) CatchUp(m);
         if ((sites > 0 || opened > 0 || loops > 0) && report)
@@ -454,19 +455,25 @@ public sealed class RegionPointsTo : IModulePass
     /// The loops of a function the link marked (MarkLoops) that still head a
     /// loop, by their place in its blocks now -- none where the late passes
     /// brought a landing pad or a label's address in, as the link's own
-    /// judgement would have given none (RegionSummary).
+    /// judgement would have given none (RegionSummary). With each, the most
+    /// one lap makes in it (Block.RegionLoopBytes).
     /// </summary>
-    private static List<int> MarkedLoops(Function f)
+    private static List<int> MarkedLoops(Function f, out Dictionary<int, long> lapBytes)
     {
         List<int> headers = new();
+        lapBytes = new();
         if (!f.Blocks.Any(b => b.RegionLoop)) return headers;
         if (f.Async is null && f.Blocks.Count <= LoopBlocks && !f.Blocks.Any(b => b.IsLandingPad || b.Instrs.Any(i => i.Op == Opcode.LabelAddr)))
         {
             Cfg cfg = new(f);
             foreach ((Block header, _, _) in NaturalLoops(f, cfg))
-                if (header.RegionLoop && !cfg.IsRoot(header)) headers.Add(header.Order);
+                if (header.RegionLoop && !cfg.IsRoot(header))
+                {
+                    headers.Add(header.Order);
+                    lapBytes[header.Order] = header.RegionLoopBytes;
+                }
         }
-        foreach (Block b in f.Blocks) b.RegionLoop = false;
+        foreach (Block b in f.Blocks) { b.RegionLoop = false; b.RegionLoopBytes = 0; }
         return headers;
     }
 
@@ -486,7 +493,10 @@ public sealed class RegionPointsTo : IModulePass
                 VReg frame = f.NewReg(IrTypes.Word, "allocframe");
                 b.Instrs.Insert(k, new Instr { Op = Opcode.FramePointer, Dest = frame, Line = i.Line });
                 k++;
-                b.Instrs[k] = Retarget(f, i, InRegion, frame);
+                List<Instr> retargeted = Retarget(f, i, InRegion, frame);
+                b.Instrs.RemoveAt(k);
+                b.Instrs.InsertRange(k, retargeted);
+                k += retargeted.Count - 1;
                 sites++;
             }
         // And the pads of what the link brought in and inlined since the
@@ -494,6 +504,156 @@ public sealed class RegionPointsTo : IModulePass
         // regions it caught out of too.
         CatchUp(f);
         return sites;
+    }
+
+    /// <summary>
+    /// STORAGE MADE BESIDE ITS OWNER. A collection made in a region grows
+    /// inside its own methods, whose allocations no boundary proves anything
+    /// of: every array a List or a Dictionary grew into was the heap's, and
+    /// the collector's when the region ended. But an array stored into a
+    /// field the link found owns what it holds (OwnedFieldFacts) -- every
+    /// object stored there made for it and kept nowhere else, every read of
+    /// it going nowhere and dead before anything could replace it -- is
+    /// reachable through that field alone, so it is dead whenever the object
+    /// holding the field is. Made beside that object (AllocNear), it is in
+    /// the object's region when that is the innermost one open, and on the
+    /// heap otherwise: given back with the region, at the latest, with the
+    /// object it belongs to.
+    ///
+    /// Only fields the collection frees itself as it replaces them (SelfFreed,
+    /// Escape's self-replacing frees): their old values are given back by
+    /// the collection's own free, as an owned field's old value
+    /// (Runtime.FreeOwnedReplaced) -- in a region at once where it is the
+    /// top (Gc.RegionFree), else with its region, and dead either way, every
+    /// read of an owned field being dead before the store that replaces it;
+    /// no other free is ever handed one. The owner is found here, on the IR as it is
+    /// now, not as the link saw it -- the body may have been inlined anywhere
+    /// since: the allocation's value, through copies, is stored only into such
+    /// fields, all of one object, held by a register written once (or a
+    /// parameter never written) whose value is there before the allocation is
+    /// made. Anything else stays where it was, on the heap.
+    ///
+    /// A CONSTRUCTOR'S FIRST ARRAYS are the same: a Dictionary's keys and
+    /// values, a List's items for a capacity, made as the collection is,
+    /// stored into the same fields its growth replaces them in. The owner is
+    /// `this`, a parameter never written, there before anything the
+    /// constructor makes; or, inlined, the object just made. One under
+    /// construction in a frame, or a struct's storage, is in no region, and
+    /// AllocNear makes its arrays the heap's. The allocation is followed
+    /// through a join with constants too (`capacity == 0 ? empty : new
+    /// T[capacity]`), whose every store is held to the same rule.
+    /// </summary>
+    public static int MakeStorageBeside(Function f, Corsac.Lang.Lto.OwnedFieldFacts owned)
+    {
+        if (owned.SelfFreed.Count == 0) return 0;
+        List<(Block, Instr)> made = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Op == Opcode.Call && IsRewritable(i.Callee) && i.Dest is not null) made.Add((b, i));
+        if (made.Count == 0) return 0;
+        Dictionary<VReg, Instr> defs = new();
+        HashSet<VReg> many = new(), written = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Dest is { } d)
+                {
+                    written.Add(d);
+                    if (!defs.TryAdd(d, i)) many.Add(d);
+                }
+        // Every write of a register written more than once: a join.
+        Dictionary<VReg, List<Instr>> joins = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Dest is { } d && many.Contains(d)) (joins.TryGetValue(d, out List<Instr>? list) ? list : joins[d] = new()).Add(i);
+        foreach (VReg r in many) defs.Remove(r);
+        // What a register holds the object of, through copies: one written
+        // once, or a parameter never written.
+        VReg? Root(VReg r)
+        {
+            for (int hop = 0; hop < 8; hop++)
+            {
+                if (f.Params.Contains(r)) return written.Contains(r) ? null : r;
+                if (!defs.TryGetValue(r, out Instr? d)) return null;
+                if (d.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && d.Operands is [RegOperand from]) { r = from.Reg; continue; }
+                return r;
+            }
+            return null;
+        }
+        Cfg? cfg = null;
+        int beside = 0;
+        foreach ((Block home, Instr alloc) in made)
+        {
+            if (!defs.ContainsKey(alloc.Dest!)) continue;
+            // The registers that hold what it made: its own, and copies of it --
+            // and A JOIN OF IT WITH CONSTANTS, `capacity == 0 ? empty : new
+            // T[capacity]`, written more than once, each time a copy of one of
+            // these or a constant (an immediate, a symbol's address): what it
+            // holds besides the allocation is nothing anyone's storage, and
+            // where it is stored is held to the same rule below.
+            HashSet<VReg> names = new() { alloc.Dest! };
+            for (bool grew = true; grew;)
+            {
+                grew = false;
+                foreach (Block b in f.Blocks)
+                    foreach (Instr i in b.Instrs)
+                        if (i.Dest is { } d && !names.Contains(d) && defs.ContainsKey(d) && i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32
+                            && i.Operands is [RegOperand { Reg: var from }] && names.Contains(from))
+                        { names.Add(d); grew = true; }
+                foreach (var (joined, writes) in joins)
+                {
+                    if (names.Contains(joined)) continue;
+                    bool fromIt = false, only = true;
+                    foreach (Instr w in writes)
+                    {
+                        if (w.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.Phi)) { only = false; break; }
+                        foreach (Operand o in w.Operands)
+                        {
+                            if (o is RegOperand { Reg: var from } && names.Contains(from)) fromIt = true;
+                            else if (o is not (ImmOperand or SymOperand)) { only = false; break; }
+                        }
+                        if (!only) break;
+                    }
+                    if (only && fromIt) { names.Add(joined); grew = true; }
+                }
+            }
+            VReg? owner = null;
+            bool ok = true;
+            foreach (Block b in f.Blocks)
+            {
+                foreach (Instr i in b.Instrs)
+                {
+                    bool storesIt = i.Op == Opcode.Store && i.Operands.Count >= 2 && i.Operands[1] is RegOperand { Reg: var value } && names.Contains(value)
+                        || i.Op is Opcode.MemCopy or Opcode.AtomicSwap or Opcode.AtomicCas && i.Operands.Skip(1).Any(o => o is RegOperand { Reg: var r } && names.Contains(r));
+                    if (!storesIt) continue;
+                    if (i.Op != Opcode.Store || i.Field is not string field || !owned.SelfFreed.Contains(field)
+                        || !owned.Fields.TryGetValue(field, out long offset) || offset != i.Offset
+                        || i.Operands[0] is not RegOperand { Reg: var into } || Root(into) is not VReg root
+                        || owner is not null && owner != root) { ok = false; break; }
+                    owner = root;
+                }
+                if (!ok) break;
+            }
+            if (!ok || owner is null) continue;
+            // The owner there before the allocation, on every way to it.
+            if (!f.Params.Contains(owner))
+            {
+                Instr def = defs[owner];
+                Block? at = f.Blocks.FirstOrDefault(b => b.Instrs.Contains(def));
+                if (at is null) continue;
+                if (ReferenceEquals(at, home))
+                {
+                    if (home.Instrs.IndexOf(def) >= home.Instrs.IndexOf(alloc)) continue;
+                }
+                else if (!(cfg ??= new Cfg(f)).Dominates(at, home)) continue;
+            }
+            int k = home.Instrs.IndexOf(alloc);
+            home.Instrs.RemoveAt(k);
+            home.Instrs.InsertRange(k, Beside(f, alloc, owner));
+            beside++;
+        }
+        // As MakeSitesInRegion: a catch closes the regions it caught out of.
+        if (beside > 0) CatchUp(f);
+        return beside;
     }
 
     // ---- applying -------------------------------------------------------------
@@ -603,7 +763,7 @@ public sealed class RegionPointsTo : IModulePass
         List<Function> originals = _m.Functions.ToList();
         foreach (Version v in versions)
         {
-            var body = CloneBody(v.F, v.F.Name + "$region$" + made.Count);
+            var body = CloneBody(v.F, v.F.Name + "$region$" + made.Count, _m.KeepCalls);
             made[v] = body;
             _m.Functions.Add(body.Body);
         }
@@ -796,8 +956,13 @@ public sealed class RegionPointsTo : IModulePass
         return first.Values.ToList();
     }
 
-    /// <summary>A function's body copied whole under another name, and which copied instruction each of its own became.</summary>
-    private (Function Body, Dictionary<Instr, Instr> From) CloneBody(Function f, string name)
+    /// <summary>
+    /// A function's body copied whole under another name, and which copied
+    /// instruction each of its own became: every mark with it -- a site the
+    /// link chose, a loop's region -- and a call kept (`keep`) kept in the
+    /// copy too.
+    /// </summary>
+    public static (Function Body, Dictionary<Instr, Instr> From) CloneBody(Function f, string name, HashSet<Instr> keep)
     {
         Function made = new(name, f.Returns)
         {
@@ -810,11 +975,14 @@ public sealed class RegionPointsTo : IModulePass
         Dictionary<Instr, Instr> from = new(ReferenceEqualityComparer.Instance);
         VReg Reg(VReg r) => regs.TryGetValue(r, out VReg? m) ? m : regs[r] = made.NewReg(r.Type, r.Name);
         foreach (VReg p in f.Params) made.Params.Add(Reg(p));
+        foreach (VReg p in f.Params) regs[p].Number = p.Number;
         foreach (FrameSlot s in f.Slots) slots[s] = made.NewSlot(s.Bytes, s.Align, s.Name);
         foreach (Block b in f.Blocks)
         {
             Block copy = made.NewBlock(b.Label + "$");
             copy.IsLandingPad = b.IsLandingPad;
+            copy.RegionLoop = b.RegionLoop;
+            copy.RegionLoopBytes = b.RegionLoopBytes;
             blocks[b] = copy;
         }
         foreach (Block b in f.Blocks)
@@ -823,13 +991,14 @@ public sealed class RegionPointsTo : IModulePass
                 Instr c = new()
                 {
                     Op = i.Op, Dest = i.Dest is null ? null : Reg(i.Dest), Size = i.Size, Signed = i.Signed, Offset = i.Offset,
-                    Callee = i.Callee, DispatchType = i.DispatchType, Field = i.Field, Line = i.Line,
+                    Callee = i.Callee, DispatchType = i.DispatchType, Field = i.Field, Number = i.Number, Family = i.Family, Line = i.Line,
+                    RegionSite = i.RegionSite,
                     Default = i.Default is null ? null : blocks[i.Default],
                 };
                 foreach (Operand o in i.Operands)
                     c.Operands.Add(o switch { RegOperand r => new RegOperand(Reg(r.Reg)), SlotOperand s => new SlotOperand(slots[s.Slot]), _ => o });
-                foreach (Block t in i.Targets) c.Targets.Add(blocks[t]);
-                if (_m.KeepCalls.Contains(i)) _m.KeepCalls.Add(c);
+                foreach (Block t in i.Targets) c.WritableTargets.Add(blocks[t]);
+                if (keep.Contains(i)) keep.Add(c);
                 blocks[b].Instrs.Add(c);
                 from[i] = c;
             }
@@ -851,7 +1020,10 @@ public sealed class RegionPointsTo : IModulePass
                     VReg frame = f.NewReg(IrTypes.Word, "allocframe");
                     b.Instrs.Insert(k, new Instr { Op = Opcode.FramePointer, Dest = frame, Line = i.Line });
                     k++;
-                    b.Instrs[k] = Retarget(f, i, h, frame);
+                    List<Instr> retargeted = Retarget(f, i, h, frame);
+                    b.Instrs.RemoveAt(k);
+                    b.Instrs.InsertRange(k, retargeted);
+                    k += retargeted.Count - 1;
                 }
                 else if (callee(i) is { } to)
                 {
@@ -963,31 +1135,74 @@ public sealed class RegionPointsTo : IModulePass
     {
         VReg frame = f.NewReg(IrTypes.Word, "allocframe");
         long kind = alloc.Callee == Opt.Escape.LeafAllocator ? LeafKind : alloc.Callee == Opt.Escape.ObjectAllocator ? ObjectKind : 0;
-        Instr made = new() { Op = Opcode.Call, Callee = Near, Dest = alloc.Dest, Line = alloc.Line };
-        made.Operands.Add(alloc.Operands[0]);
-        made.Operands.Add(new ImmOperand(kind, IrTypes.Word));
-        made.Operands.Add(new RegOperand(owner));
-        made.Operands.Add(new RegOperand(frame));
-        return new[] { new Instr { Op = Opcode.FramePointer, Dest = frame, Line = alloc.Line }, made };
+        List<Instr> made = new() { new Instr { Op = Opcode.FramePointer, Dest = frame, Line = alloc.Line } };
+        Instr call = new() { Op = Opcode.Call, Callee = Near, Dest = alloc.Dest, Line = alloc.Line };
+        call.Operands.Add(AsWord(f, made, alloc.Operands[0], alloc.Line));
+        call.Operands.Add(new ImmOperand(kind, IrTypes.Word));
+        call.Operands.Add(AsWord(f, made, new RegOperand(owner), alloc.Line));
+        call.Operands.Add(new RegOperand(frame));
+        made.Add(Checked(call));
+        return made.ToArray();
     }
 
-    private static Instr Retarget(Function f, Instr alloc, string helper, VReg frame)
+    /// <summary>
+    /// An allocation made a region helper's call: the conversions its
+    /// operands need, then the call (Checked).
+    /// </summary>
+    private static List<Instr> Retarget(Function f, Instr alloc, string helper, VReg frame)
     {
-        Operand bytes = alloc.Operands[0];
         long kind = alloc.Callee == Opt.Escape.LeafAllocator ? LeafKind : alloc.Callee == Opt.Escape.ObjectAllocator ? ObjectKind : 0;
-        Instr made = new() { Op = Opcode.Call, Callee = helper, Dest = alloc.Dest, Line = alloc.Line };
-        made.Operands.Add(bytes);
-        made.Operands.Add(new ImmOperand(kind, IrTypes.Word));
-        if (helper == Near) made.Operands.Add(new RegOperand(f.Params[0]));
-        made.Operands.Add(new RegOperand(frame));
+        List<Instr> made = new();
+        Instr call = new() { Op = Opcode.Call, Callee = helper, Dest = alloc.Dest, Line = alloc.Line };
+        call.Operands.Add(AsWord(f, made, alloc.Operands[0], alloc.Line));
+        call.Operands.Add(new ImmOperand(kind, IrTypes.Word));
+        if (helper == Near) call.Operands.Add(AsWord(f, made, new RegOperand(f.Params[0]), alloc.Line));
+        call.Operands.Add(new RegOperand(frame));
+        made.Add(Checked(call));
         return made;
+    }
+
+    /// <summary>
+    /// AN OPERAND AS THE MACHINE WORD the region helpers take, every one of
+    /// them a word (nint): a register of another width converted first, the
+    /// conversion added to `before`. The owner MakeStorageBeside finds is
+    /// the register its value came from, through copies and narrowings -- on
+    /// a 32-bit target a long the word was cut from, which the backend pushed
+    /// as two words: AllocNear took five for its four, the frame where the
+    /// owner's high half was.
+    /// </summary>
+    private static Operand AsWord(Function f, List<Instr> before, Operand o, int line)
+    {
+        if (o is ImmOperand imm) return imm.Type == IrTypes.Word ? imm : new ImmOperand(imm.Value, IrTypes.Word);
+        if (o is not RegOperand { Reg: var r } || r.Type == IrTypes.Word) return o;
+        VReg word = f.NewReg(IrTypes.Word);
+        before.Add(new Instr { Op = r.Type == IrType.I64 ? Opcode.Trunc64 : Opcode.ZExt32, Dest = word, Operands = { new RegOperand(r) }, Line = line });
+        return new RegOperand(word);
+    }
+
+    /// <summary>
+    /// A region helper's call as the runtime declares it: exactly its
+    /// parameters (AllocRegion three, AllocNear four), each a word. Anything
+    /// else is this pass's mistake, and the call would read its arguments
+    /// out of the wrong stack slots.
+    /// </summary>
+    private static Instr Checked(Instr call)
+    {
+        int arity = call.Callee == Near ? 4 : call.Callee == InRegion ? 3 : -1;
+        if (arity >= 0 && call.Operands.Count != arity)
+            throw new InvalidOperationException($"region pass: {call.Callee} made with {call.Operands.Count} operands, not {arity}");
+        foreach (Operand o in call.Operands)
+            if (o is RegOperand { Reg: var r } && r.Type != IrTypes.Word || o is ImmOperand imm && imm.Type != IrTypes.Word)
+                throw new InvalidOperationException($"region pass: {call.Callee} handed an operand of {o.Type}, not a word");
+        return call;
     }
 
     // The region opened where the call first needs it, given back on every
     // return; a throw is the runtime's to notice (Gc.PopStale). On entry
     // where the function has loop regions too (OpenLoops): opened later, at
-    // the same frame, it would close the loop's.
-    private static void Open(Function f, bool onEntry)
+    // the same frame, it would close the loop's. `bytes` is the most the
+    // region holds in one call, as the link proved it (0: not known).
+    private static void Open(Function f, bool onEntry, long bytes = 0)
     {
         // Never inlined: the record names the boundary's own frame, and a
         // caller's would outlive a throw the caller catches.
@@ -999,7 +1214,7 @@ public sealed class RegionPointsTo : IModulePass
         Instr[] open =
         {
             new Instr { Op = Opcode.FramePointer, Dest = frame, Line = f.Line },
-            new Instr { Op = Opcode.Call, Callee = Enter, Dest = handle, Operands = { new RegOperand(frame) }, Line = f.Line },
+            new Instr { Op = Opcode.Call, Callee = Enter, Dest = handle, Operands = { new RegOperand(frame), new ImmOperand(bytes, IrTypes.Word) }, Line = f.Line },
         };
         at.Instrs.InsertRange(k0, open);
         // Opened further in: a return that never passed there hands RegionLeave
@@ -1013,6 +1228,48 @@ public sealed class RegionPointsTo : IModulePass
                     b.Instrs.Insert(k, new Instr { Op = Opcode.Call, Callee = Leave, Operands = { new RegOperand(handle) }, Line = b.Instrs[k].Line });
                     k++;
                 }
+    }
+
+    /// <summary>
+    /// A BOUNDARY'S LEAVE AFTER WHAT ITS RETURN GIVES BACK. Open puts
+    /// RegionLeave just before each return; the link's lifetime pass runs
+    /// again after it (Escape.RunAtLink) and puts its own frees just before
+    /// each return too -- after the leave: a collection it placed in the
+    /// frame gives back its storage and elements, an owned variable or field
+    /// what it holds. Storage made beside a frame owner is the region's
+    /// (Gc.OnStackWithin), so those frees read, and gave back, memory the
+    /// leave had cut -- zeroed, or a chunk handed back to the system, where
+    /// a collection that owns its elements read them from an unmapped page.
+    /// So each leave goes back to just before its return, past what was put
+    /// after it, unless something there allocates: what that makes would
+    /// then be cut with the region, and the leave stays where it was.
+    /// </summary>
+    public static int LeaveLast(Function f)
+    {
+        int moved = 0;
+        foreach (Block b in f.Blocks)
+        {
+            if (b.Terminator is not { Op: Opcode.Ret }) continue;
+            int ret = b.Instrs.Count - 1;
+            // EVERY LEAVE, in the order they were: a function's own and each
+            // loop's a return inside it passes (OpenLoops), the frees behind
+            // all of them. Only the ones past the block's last allocation
+            // move; one before it stays, and what was made after it is cut
+            // with its region as before.
+            int last = -1;
+            for (int k = 0; k < ret; k++)
+                if (IsSiteCall(b.Instrs[k]) || b.Instrs[k].Op == Opcode.Call && b.Instrs[k].Callee is InRegion or Near or Enter) last = k;
+            List<Instr> leaves = new();
+            for (int k = last + 1; k < ret; k++)
+                if (b.Instrs[k] is { Op: Opcode.Call, Callee: Leave } leave) leaves.Add(leave);
+            if (leaves.Count == 0) continue;
+            List<Instr> rest = b.Instrs.GetRange(last + 1, ret - last - 1).Where(i => !leaves.Contains(i)).ToList();
+            if (rest.Count == 0) continue;
+            b.Instrs.RemoveRange(last + 1, ret - last - 1);
+            b.Instrs.InsertRange(last + 1, rest.Concat(leaves));
+            moved += leaves.Count;
+        }
+        return moved;
     }
 
     // Past this many blocks the region is opened on entry: the dominators
@@ -1196,6 +1453,22 @@ public sealed class RegionPointsTo : IModulePass
         if (natural.Count == 0) return found;
         Liveness liveness = new(cfg);
         (HashSet<FrameSlot> aliased, Func<Instr, IEnumerable<FrameSlot>> writes) = SlotUses(f);
+        // THE BLOCKS A RETURN IS REACHED FROM (RegionSummary's `returns`); the
+        // rest only throw. A lap that leaves for one of those goes on to no
+        // code after the loop: what it keeps, it keeps through the calls it
+        // makes there, which the escape answers follow. Counted as a lap's
+        // end, a failed cast's path -- the object handed to InvalidCastTo --
+        // made every array a lap read live where the lap ended, and the loop's
+        // region refused it (1323). Only where nothing is caught here: a
+        // handler is joined to no call that unwinds to it.
+        bool[] returns = new bool[f.Blocks.Count];
+        bool caughtHere = cfg.Roots.Any(root => root != f.Entry);
+        Stack<Block> towards = new();
+        foreach (Block b in f.Blocks)
+            if (caughtHere || b.Terminator is { Op: Opcode.Ret }) { returns[b.Order] = true; towards.Push(b); }
+        while (towards.TryPop(out Block? b))
+            foreach (Block p in cfg.Preds(b))
+                if (!returns[p.Order]) { returns[p.Order] = true; towards.Push(p); }
         foreach ((Block header, HashSet<Block> body, List<Block> latches) in natural)
         {
             if (cfg.IsRoot(header)) continue;
@@ -1214,7 +1487,7 @@ public sealed class RegionPointsTo : IModulePass
                 // A lap ends going round again, or out: what is live into
                 // where it goes, and what that block's joins take from here.
                 foreach (Block s in cfg.Succs(b))
-                    if (s == header || !body.Contains(s))
+                    if (s == header || !body.Contains(s) && returns[s.Order])
                     {
                         foreach (VReg r in liveness.LiveIn(s)) live.Add(r);
                         foreach (Instr phi in s.Instrs)
@@ -1530,9 +1803,10 @@ public sealed class RegionPointsTo : IModulePass
     /// back what the lap before made in it after -- and RegionLeave on every
     /// edge out of the loop and before every return, each handle -1 wherever
     /// its loop is not running, which RegionLeave does nothing with. The
-    /// function is never inlined: the record names its own frame.
+    /// function is never inlined: the record names its own frame. Each lap
+    /// is handed the most it makes, by header (`lapBytes`; 0: not known).
     /// </summary>
-    private static void OpenLoops(Function f, List<int> headers)
+    private static void OpenLoops(Function f, List<int> headers, IReadOnlyDictionary<int, long>? lapBytes = null)
     {
         Cfg cfg = new(f);
         var loops = NaturalLoops(f, cfg).Where(l => headers.Contains(l.Header.Order) && !cfg.IsRoot(l.Header)).ToList();
@@ -1546,10 +1820,11 @@ public sealed class RegionPointsTo : IModulePass
         {
             VReg handle = f.NewReg(IrTypes.Word, "loopregion");
             handles.Add(handle);
+            long bytes = lapBytes?.GetValueOrDefault(header.Order) ?? 0;
             int line = header.Instrs.Count > 0 ? header.Instrs[0].Line : f.Line;
             onEntry.Add(new Instr { Op = Opcode.Copy, Dest = handle, Operands = { new ImmOperand(-1, IrTypes.Word) }, Line = f.Line });
             (tops.TryGetValue(header, out List<Instr>? t) ? t : tops[header] = new()).Add(
-                new Instr { Op = Opcode.Call, Callee = LoopTop, Dest = handle, Operands = { new RegOperand(handle), new RegOperand(frame) }, Line = line });
+                new Instr { Op = Opcode.Call, Callee = LoopTop, Dest = handle, Operands = { new RegOperand(handle), new RegOperand(frame), new ImmOperand(bytes, IrTypes.Word) }, Line = line });
             HashSet<Block> outs = new(ReferenceEqualityComparer.Instance);
             foreach (Block b in body)
                 foreach (Block s in cfg.Succs(b))
@@ -1895,8 +2170,11 @@ public sealed class RegionPointsTo : IModulePass
     /// those in the machine too, since no liveness reaches a pad).
     /// </summary>
     private List<VReg> SavedAcrossSuspensions(Function f, AsyncFrame frame)
+        => _saved.TryGetValue(f, out List<VReg>? known) ? known : _saved[f] = Saved(f, frame);
+
+    /// <summary>SavedAcrossSuspensions, found afresh: the unit's summary for the link asks it too (RegionSummary).</summary>
+    internal static List<VReg> Saved(Function f, AsyncFrame frame)
     {
-        if (_saved.TryGetValue(f, out List<VReg>? known)) return known;
         Dictionary<int, VReg> registers = new();
         foreach (VReg p in f.Params) registers[p.Id] = p;
         foreach (Block b in f.Blocks)
@@ -1919,7 +2197,7 @@ public sealed class RegionPointsTo : IModulePass
             }
         }
         saved.Remove(frame.StateMachine);
-        return _saved[f] = saved.ToList();
+        return saved.ToList();
     }
 
     private void Edge(int from, int to, long shift)
@@ -2155,6 +2433,8 @@ public sealed class RegionPointsTo : IModulePass
             }
 
             case Opcode.MemCopy:
+                // Characters or bytes (Instr.Number) move no address.
+                if (i.Number) return;
                 MemCopy(Base(copy, i.Operands[0]), Base(copy, i.Operands[1]),
                     i.Operands.Count > 2 && i.Operands[2] is ImmOperand n ? n.Value : Any);
                 return;
@@ -2367,10 +2647,41 @@ public sealed class RegionPointsTo : IModulePass
         Unknown(copy, i, 0);
     }
 
+    /// <summary>Runtime.InvalidCastTo(object, string): a failed cast's throw.</summary>
+    internal const string FailedCast = "m_Runtime_InvalidCastTo_2_V$Any_V$String";
+
+    /// <summary>
+    /// The runtime's type checks made with types known only at run time: a
+    /// reference stored into an array of a shared generic (ArrayStoreCheck),
+    /// `x is T[]` (ArrayOf), and a shared copy's tests (DescribedAs,
+    /// ShapedAs). Each reads descriptors and answers yes or no, or throws
+    /// what it makes; none keeps what it is handed (Escape.KeepsNothing).
+    /// </summary>
+    private static readonly string[] TypeChecks =
+    {
+        "m_Runtime_ArrayStoreCheck_2_V$I64_V$I64",
+        "m_Runtime_ArrayOf_2_V$I64_V$I64",
+        "m_Runtime_DescribedAs_2_V$I64_V$I64",
+        "m_Runtime_ShapedAs_7_V$I64_V$I64_V$I64_V$I64_V$I64_V$I64_V$I64",
+    };
+
     // The collector's notes and the runtime's frees keep no pointer.
     internal static bool Harmless(string callee) =>
         Opt.Escape.IsCollectorNote(callee) || callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive
         || callee.StartsWith("m_Runtime_Free", StringComparison.Ordinal)
+        // NOR DOES A FAILED CAST'S THROW (Escape.KeepsNothing): its exception
+        // names the object's type, reads nothing else of it, and keeps none
+        // of it; what it makes it throws. Followed as a call, it is a member
+        // of the runtime's cycle of exceptions, traces and symbol lookups, and
+        // unified there its parameter is one class with everything every
+        // cast in that cycle hands it, the unknown object among them: every
+        // object any boundary cast -- `(Leaf)r.Child` -- went to the heap.
+        || callee == FailedCast
+        // NOR THE RUNTIME'S TYPE CHECKS (TypeChecks), for the same reason:
+        // the store check every List of a reference type makes as it adds,
+        // followed into the same cycle, handed every Row a sheet's list held
+        // and every array it grew into to the unknown object (1290).
+        || Array.IndexOf(TypeChecks, callee) >= 0
         || callee.StartsWith("m_Runtime_Card", StringComparison.Ordinal)
         || callee.StartsWith("m_Runtime_WriteBarrier", StringComparison.Ordinal);
 
@@ -2797,6 +3108,12 @@ public sealed class RegionPointsTo : IModulePass
             if (_delta[into] is not { } delta) { _delta[into] = delta = new(); _work.Enqueue(into); }
             else _owedTwice.Add(into);
             delta.AddRange(owed);
+            // A cycle of k nodes merges into one node k times, and each time
+            // it is owed nearly all the set it has grown to: k copies of the
+            // set before the node is next solved. Past the set's own size the
+            // owed list is made distinct here, so it never holds more than
+            // twice what the node holds (1323 asked for a list of 192 MB).
+            if (delta.Count > 2 * _pts[into].Count + 64) _delta[into] = Distinct(delta);
         }
         if (_edges[from] is { } edges)
             foreach (var edge in edges)

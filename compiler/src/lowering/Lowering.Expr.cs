@@ -89,7 +89,30 @@ public sealed partial class Lowering
     private static TypeSymbol? TupleShapeOf(Type t)
         => t is { Nullable: false, IsPointer: false, IsArray: false, Symbol: { Kind: TypeKind.Struct } shape } && IsTupleShape(shape) ? shape : null;
 
-    private VReg EvalAs(Expr e, ParamSymbol p) => EvalAs(e, p.Type, p.ByRef, p.ReadOnly);
+    private VReg EvalAs(Expr e, ParamSymbol p) => p.Cell ? CellOf(e) : EvalAs(e, p.Type, p.ByRef, p.ReadOnly);
+
+    /// <summary>
+    /// THE CELL A CAPTURED VARIABLE LIVES IN, handed to a generic local
+    /// function that captured it (ParamSymbol.Cell): a boxed local's or
+    /// parameter's, a closure's field over one, or the cell the function was
+    /// itself handed. Every such variable is a cell (Binder.PassCaptures).
+    /// </summary>
+    private VReg CellOf(Expr e)
+    {
+        Expr target = e is RefArgExpr reference ? reference.Target : e;
+        if (target is NameExpr n && _b.Resolved.TryGetValue(n, out Sym? sym))
+        {
+            if (sym is ParamSym { Cell: true } handed)
+            {
+                return _params[handed.Index];
+            }
+            if (PlaceOfSym(sym, n) is MemPlace { Address: RegOperand cell, Offset: 0, Inline: false })
+            {
+                return cell.Reg;
+            }
+        }
+        return Fail(e, "a variable a generic local function captured is not in a cell");
+    }
 
     private VReg EvalAs(Expr e, Type target, bool byRef = false, bool readOnly = false)
     {
@@ -775,7 +798,11 @@ public sealed partial class Lowering
                 if ((from.IsReference || from.Prim == Prim.Any) && to.IsReference && to.Symbol is TypeSymbol wanted
                     && !(from.Symbol is not null && from.Symbol.DerivesFrom(wanted)))
                 {
-                    return CheckedCast(cast, v, wanted);
+                    // In a shared copy, to what the type is for the object at hand.
+                    // In a shared method copy, to the interface over what its
+                    // type arguments are at this call.
+                    if (ShapeOf(cast) is { } castShape) return ShapeCheckedCast(castShape, v, to);
+                    return cast.CanonSlot >= 0 ? CanonCheckedCast(cast, v, to) : CheckedCast(cast, v, wanted);
                 }
 
                 // `(byte[])o` ASKS, as any downcast does: C# throws
@@ -784,7 +811,8 @@ public sealed partial class Lowering
                 // indexed as bytes.
                 if (to.IsArray && (from.Prim == Prim.Any || from.Symbol is { Kind: TypeKind.Interface }))
                 {
-                    return CheckedArrayCast(cast, v, to);
+                    // In a shared copy, to the array of what the type is for the object at hand.
+                    return cast.CanonSlot >= 0 ? CanonCheckedCast(cast, v, to) : CheckedArrayCast(cast, v, to);
                 }
                 if (_checkedDepth > 0) CheckedNarrow(cast, v, from, to);
                 return Convert(cast, v, from, to);
@@ -831,8 +859,51 @@ public sealed partial class Lowering
             // AN ENUM'S OR A STRUCT'S TYPE IS ITS BOX'S, as a primitive's is:
             // what GetType() on one reads is the box, and typeof has to be
             // that same descriptor for the two to compare equal.
+            // typeof(ICollection<T>) in a shared copy: the context's entry, or
+            // where it holds none the type as the shared copy names it.
+            case TypeOfExpr { CanonSlot: >= 0, Type.Args.Count: > 0 } constructedType:
+            {
+                VReg typeofEntry = CanonTypeEntry(constructedType);
+                VReg typeofResult = _f.NewReg(IrTypes.Word, "typeofc");
+                Block typeofNamed = _f.NewBlock("typeofnamed");
+                Block typeofEnd = _f.NewBlock("typeofend");
+                _e.CopyTo(typeofResult, R(typeofEntry));
+                _e.Branch(typeofEntry, typeofEnd, typeofNamed);
+                _e.SetBlock(typeofNamed);
+                _e.CopyTo(typeofResult, R(_b.TypeOfs.TryGetValue(constructedType, out TypeSymbol? typeofSymbol)
+                    ? _e.Address(DescriptorOf(typeofSymbol))
+                    : _b.ArrayTypeOfs.TryGetValue(constructedType, out Type? typeofElement)
+                        ? _e.Address(SequenceDescriptor(ElementKey(typeofElement), ElementStride(typeofElement), isString: false, elementType: typeofElement))
+                        : _e.Const(0, IrTypes.Word)));
+                _e.Jump(typeofEnd);
+                _e.SetBlock(typeofEnd);
+                return typeofResult;
+            }
+
             case TypeOfExpr { CanonSlot: >= 0 } canonType:
                 return CanonEntry(canonType);
+
+            // A TYPE ARGUMENT ONLY RUN TIME KNOWS (BindResult.RunTimeTypeOfs):
+            // the descriptor run time finds for it, and object's where it
+            // finds none -- a copy called with nothing to hand it.
+            case TypeOfExpr to when _b.RunTimeTypeOfs.TryGetValue(to, out Type? runTime):
+            {
+                Operand found = RunTimeDescriptor(runTime, statics: false);
+                if (found is ImmOperand)
+                {
+                    return _e.Address(ObjectDescriptor());
+                }
+                VReg runTimeResult = _f.NewReg(IrTypes.Word, "typeofrt");
+                Block runTimeObject = _f.NewBlock("typeofobject");
+                Block runTimeEnd = _f.NewBlock("typeofrtend");
+                _e.CopyTo(runTimeResult, found);
+                _e.Branch(found, runTimeEnd, runTimeObject);
+                _e.SetBlock(runTimeObject);
+                _e.CopyTo(runTimeResult, R(_e.Address(ObjectDescriptor())));
+                _e.Jump(runTimeEnd);
+                _e.SetBlock(runTimeEnd);
+                return runTimeResult;
+            }
 
             case TypeOfExpr to when _b.TypeOfs.TryGetValue(to, out TypeSymbol? named):
                 return _e.Address(named.Kind is TypeKind.Enum or TypeKind.Struct
@@ -889,10 +960,28 @@ public sealed partial class Lowering
             case IsExpr isx:
                 return EmitIs(isx);
 
+            case AsExpr shapedAs when ShapeOf(shapedAs) is { } asShape && HeldByReference(_b.TypeOf(shapedAs.Operand)):
+            {
+                VReg v = Eval(shapedAs.Operand);
+                VReg test = ShapeTest(asShape, v, NamedTest(v, _b.TypeOf(shapedAs)));
+                VReg result = _f.NewReg(IrTypes.Word, "asshape");
+                Block yes = _f.NewBlock("asshyes");
+                Block end = _f.NewBlock("asshend");
+                _e.CopyTo(result, Imm(0, IrTypes.Word));
+                _e.Branch(test, yes, end);
+                _e.SetBlock(yes);
+                _e.CopyTo(result, R(v));
+                _e.Jump(end);
+                _e.SetBlock(end);
+                return result;
+            }
+
             case AsExpr { CanonSlot: >= 0 } canonAs when HeldByReference(_b.TypeOf(canonAs.Operand)):
             {
                 VReg v = Eval(canonAs.Operand);
-                VReg test = DescribedTest(v, CanonEntry(canonAs));
+                VReg test = canonAs.Type.Args.Count > 0
+                    ? CanonTest(canonAs, v, NamedTest(v, _b.TypeOf(canonAs)))
+                    : DescribedTest(v, CanonEntry(canonAs));
                 VReg result = _f.NewReg(IrTypes.Word, "ascanon");
                 Block yes = _f.NewBlock("ascyes");
                 Block end = _f.NewBlock("ascend");
@@ -1064,7 +1153,7 @@ public sealed partial class Lowering
         // a box's descriptor a value type's, an interface's its own.
         if (target.Prim == Prim.Type && m.Name is "IsValueType" or "IsEnum" or "IsInterface" or "IsPrimitive" or "IsArray" or "IsClass")
         {
-            VReg flags = _e.Load(IrType.I32, obj, DescFlags * _t.WordSize, 4, false);
+            VReg flags = Numbered(_e, _e.Load(IrType.I32, obj, DescFlags * _t.WordSize, 4, false));
             int bits = m.Name switch
             {
                 "IsValueType" => TypeFlagValue, "IsEnum" => TypeFlagEnum, "IsInterface" => TypeFlagInterface,
@@ -1076,7 +1165,7 @@ public sealed partial class Lowering
             return m.Name == "IsClass" ? _e.Binary(Opcode.Eq, R(masked), Imm(0, IrType.I32), IrType.I32) : masked;
         }
         if (m.Name == "Length")
-            return target.IsArray ? _e.Unary(Opcode.ArrayLength, R(obj), IrType.I32) : _e.Load(IrType.I32, obj, _t.ArrayCountOffset);
+            return target.IsArray ? _e.Unary(Opcode.ArrayLength, R(obj), IrType.I32) : CountOf(_e, obj);
         if (m.Name == "LongLength")
             return _e.Unary(Opcode.SExt32, R(_e.Unary(Opcode.ArrayLength, R(obj), IrType.I32)), IrType.I64);
         VReg full = _e.Load(IrTypes.Word, obj, DescName * _t.WordSize);
@@ -1244,7 +1333,7 @@ public sealed partial class Lowering
     private TypeSymbol StructOf(Type t) => _b.StructOf(t);
 
     /// <summary>Whether a Nullable&lt;T&gt; has a value: its first byte, hasValue.</summary>
-    private VReg HasValue(VReg nullable) => _e.Load(IrType.I32, nullable, 0, 1, false);
+    private VReg HasValue(VReg nullable) => Numbered(_e, _e.Load(IrType.I32, nullable, 0, 1, false));
 
     /// <summary>Where a Nullable&lt;T&gt;'s value is, after hasValue at T's alignment.</summary>
     private MemPlace NullableValuePlace(VReg nullable, Type type)
@@ -1649,6 +1738,13 @@ public sealed partial class Lowering
             {
                 value = parameterCell;
             }
+            // A GENERIC LOCAL FUNCTION'S CAPTURED VARIABLE arrives as the
+            // address of the enclosing method's cell (ParamSym.Cell), which
+            // is the cell: handed on as it is, the lambda shares it.
+            else if (from is ParamSym { Cell: true } cellParameter)
+            {
+                value = _params[cellParameter.Index];
+            }
             else
             {
                 Place? p = PlaceOfSym(from, lam);
@@ -1745,6 +1841,7 @@ public sealed partial class Lowering
                     // Tagged as every other store to the field is: the field
                     // proof must see what a `with` puts there.
                     if (TagsField(field)) _e.Block.Instrs[^1].Field = FieldKey(field);
+                    _e.Block.Instrs[^1].Family = FieldFamily(field, field.Offset);
                 }
             }
         }
@@ -1783,7 +1880,7 @@ public sealed partial class Lowering
         _e.Branch(obj, some, end);
         _e.SetBlock(some);
         VReg vt = _e.Load(IrTypes.Word, obj, 0);
-        VReg flags = _e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize);
+        VReg flags = Numbered(_e, _e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize));
         VReg bit = _e.Binary(Opcode.And, flags, 2);
         _e.CopyTo(result, R(_e.Binary(Opcode.Ne, R(bit), Imm(0, IrType.I32), IrType.I32)));
         _e.Jump(end);
@@ -1819,6 +1916,19 @@ public sealed partial class Lowering
             || t.IsArray;
     }
 
+    /// <summary>
+    /// Whether a type tested in a shared copy names object where a type
+    /// parameter stood: there object is the copy's word, any reference --
+    /// not System.Object -- and by variance every List would be an
+    /// IReadOnlyList<U> of it. Such a test is exact, as before variance: the
+    /// test that knows U at this call is the shape's (ShapeTest).
+    /// </summary>
+    private bool StandInArguments(TypeSymbol want)
+    {
+        bool shared = _typeArgs is not null || _method?.Owner is TypeSymbol owner && (SharedCopy(owner) || CanonicalCopy(owner));
+        return shared && want.TemplateArgTypes.Any(a => a.Prim == Prim.Any && a.Symbol is null || a.Symbol is TypeSymbol named && "t_" + TypeKey(named) == ObjectDispatch);
+    }
+
     private VReg TypeTest(VReg obj, TypeSymbol want)
     {
         VReg result = _f.NewReg(IrType.I32, "is");
@@ -1835,16 +1945,43 @@ public sealed partial class Lowering
 
         if (want.Kind == TypeKind.Interface)
         {
+            // A BOXED NUMBER, ENUM OR A STRING IS ITS SYSTEM INTERFACES
+            // (BoxedFaces), asked of its descriptor here: a box of int is
+            // one table in every unit, which lists no specialisation only
+            // some units make.
+            if (BoxedFaceTest(desc, want) is VReg boxedFace)
+            {
+                Block scan = _f.NewBlock("tscan0");
+                _e.Branch(boxedFace, yes, scan);
+                _e.SetBlock(scan);
+            }
             // Scan the zero-terminated interface array.
             VReg wanted = _e.Address(InterfaceDescriptor(want));
             VReg cursor = _f.NewReg(IrTypes.Word, "ifc");
             _e.CopyTo(cursor, R(_e.Load(IrTypes.Word, desc, DescInterfaces * w)));
             Block loop = _f.NewBlock("tscan");
             Block more = _f.NewBlock("tmore");
+            // A VARIANT INTERFACE OR DELEGATE the object's class does not
+            // name may still be one it is, by variance: a Func<string> is a
+            // Func<object>. Asked of the runtime once the list is through
+            // (Runtime.DescribedAs, which reads the variance the descriptors
+            // carry); any other interface is its exact self or nothing.
+            Block exhausted = no;
+            if (VarianceRecord(want) is not null && !StandInArguments(want) && RuntimeMethod("DescribedAs", 2) is MethodSymbol described)
+            {
+                exhausted = _f.NewBlock("tvariant");
+                Block savedBlock = _e.Block;
+                _e.SetBlock(exhausted);
+                Require(described);
+                VReg answer = _e.Call(CallLabel(described), IrTypes.Of(described.Returns),
+                    R(AsParam(desc, described.Params[0].Type)), R(AsParam(wanted, described.Params[1].Type)))!;
+                _e.Branch(answer.Type == IrType.I32 ? answer : _e.Unary(Opcode.Trunc64, R(answer), IrType.I32), yes, no);
+                _e.SetBlock(savedBlock);
+            }
             _e.Jump(loop);
             _e.SetBlock(loop);
             VReg entry = _e.Load(IrTypes.Word, cursor, 0);
-            _e.Branch(entry, more, no);
+            _e.Branch(entry, more, exhausted);
             _e.SetBlock(more);
             Block advance = _f.NewBlock("tnext");
             _e.Branch(_e.Binary(Opcode.Eq, entry, wanted), yes, advance);
@@ -1854,7 +1991,7 @@ public sealed partial class Lowering
         }
         else
         {
-            VReg depth = _e.Load(IrType.I32, desc, DescDepth * w);
+            VReg depth = Numbered(_e, _e.Load(IrType.I32, desc, DescDepth * w));
             Block deep = _f.NewBlock("tdeep");
             _e.Branch(_e.Binary(Opcode.GeS, depth, want.Depth), deep, no);
             _e.SetBlock(deep);
@@ -1872,6 +2009,43 @@ public sealed partial class Lowering
         _e.Jump(end);
         _e.SetBlock(end);
         return result;
+    }
+
+    /// <summary>
+    /// Whether an object, by its descriptor, is a box of a number, bool, char
+    /// or enum, or a string, that implements a system interface
+    /// (BoxedFaces): nonzero when it is; null when the interface is none of
+    /// them.
+    /// </summary>
+    private VReg? BoxedFaceTest(VReg desc, TypeSymbol want)
+    {
+        Type? argument = want.TemplateArgTypes.Count == 1 ? want.TemplateArgTypes[0] : null;
+        BoxedFaces.Face face = BoxedFaces.Of(want, argument);
+        if (face == BoxedFaces.Face.None) return null;
+        int w = _t.WordSize;
+        VReg Is(string descriptor) => _e.Binary(Opcode.Eq, R(desc), R(_e.Address(descriptor)), IrType.I32);
+        VReg flags = Numbered(_e, _e.Load(IrType.I32, desc, DescFlags * w));
+        VReg Flagged(int flag) => _e.Binary(Opcode.Ne, R(_e.Binary(Opcode.And, flags, flag)), new ImmOperand(0, IrType.I32), IrType.I32);
+        switch (face)
+        {
+            case BoxedFaces.Face.Comparable:
+                return _e.Binary(Opcode.Or, Flagged(TypeFlagPrimitive | TypeFlagEnum), Is(StringDescriptor()));
+            case BoxedFaces.Face.Formattable:
+            {
+                VReg number = _e.Binary(Opcode.And, Flagged(TypeFlagPrimitive),
+                    _e.Binary(Opcode.Ne, R(desc), R(_e.Address(BoxDescriptor(Type.Bool))), IrType.I32));
+                return _e.Binary(Opcode.Or, Flagged(TypeFlagEnum), number);
+            }
+            default:
+                if (argument is null) return null;
+                if (argument.Prim == Prim.String && !argument.IsArray) return Is(StringDescriptor());
+                if (argument.Symbol is null && !argument.IsArray && !argument.IsNullableValue && !argument.IsPointer
+                    && BoxedFaces.IsPrimitive(argument.Prim))
+                {
+                    return Is(BoxDescriptor(argument));
+                }
+                return null;
+        }
     }
 
     /// <summary>
@@ -1974,8 +2148,8 @@ public sealed partial class Lowering
             Block other = _f.NewBlock("arrcov");
             _e.Branch(result, end, other);
             _e.SetBlock(other);
-            VReg flags = _e.Load(IrTypes.Word, vt, DescFlags * w - _t.DescriptorBytes);
-            VReg gc = _e.Load(IrTypes.Word, vt, DescGcFlags * w - _t.DescriptorBytes);
+            VReg flags = Numbered(_e, _e.Load(IrTypes.Word, vt, DescFlags * w - _t.DescriptorBytes));
+            VReg gc = Numbered(_e, _e.Load(IrTypes.Word, vt, DescGcFlags * w - _t.DescriptorBytes));
             VReg sequence = _e.Binary(Opcode.Eq, R(flags), Imm(1, IrTypes.Word), IrType.I32);
             VReg refs = _e.Binary(Opcode.And, gc, GcElementsAreReferences);
             VReg anyRefs = _e.Binary(Opcode.Ne, R(refs), Imm(0, IrTypes.Word), IrType.I32);
@@ -2144,7 +2318,7 @@ public sealed partial class Lowering
         VReg vt = _e.Load(IrTypes.Word, obj, 0);
         VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes);
         VReg table = _e.Load(IrTypes.Word, context, (long)self.Depth * w);
-        VReg count = _e.Load(IrTypes.Word, table, 0);
+        VReg count = Numbered(_e, _e.Load(IrTypes.Word, table, 0));
         VReg result = _f.NewReg(IrTypes.Word, "madevt");
         Block read = _f.NewBlock("maderead");
         Block own = _f.NewBlock("madeown");
@@ -2163,6 +2337,236 @@ public sealed partial class Lowering
         _e.SetBlock(done);
         return result;
     }
+
+    /// <summary>
+    /// A CONSTRUCTED TYPE OVER A SHARED COPY'S PARAMETERS, asked of an object
+    /// (Monomorphiser.CanonTested): the descriptor its type context holds for
+    /// that type -- ICollection of KernelModule, for a List of KernelModule --
+    /// or, where it holds none, the type as the shared copy names it, over
+    /// __canon. Either answers: an object the shared copy's own code made,
+    /// of no known argument, lists the __canon form, as it always did.
+    /// </summary>
+    private VReg CanonTest<T>(T at, VReg obj, Func<VReg>? named) where T : Node, ICanonSlot
+    {
+        VReg entry = CanonTypeEntry(at);
+        VReg result = _f.NewReg(IrType.I32, "iscanon");
+        Block described = _f.NewBlock("iscdesc");
+        Block namedBlock = _f.NewBlock("iscnamed");
+        Block end = _f.NewBlock("iscend");
+        _e.CopyTo(result, Imm(0, IrType.I32));
+        _e.Branch(entry, described, namedBlock);
+        _e.SetBlock(described);
+        VReg found = DescribedTest(obj, entry);
+        _e.CopyTo(result, R(found));
+        _e.Branch(found, end, namedBlock);
+        _e.SetBlock(namedBlock);
+        if (named is not null) _e.CopyTo(result, R(named()));
+        _e.Jump(end);
+        _e.SetBlock(end);
+        return result;
+    }
+
+    /// <summary>The entry the type context holds for a constructed type (CanonTest), 0 where its table has none.</summary>
+    private VReg CanonTypeEntry<T>(T at) where T : Node, ICanonSlot
+    {
+        int w = _t.WordSize;
+        TypeSymbol self = _b.TypeOf(at.CanonSelf!).Symbol ?? throw new InvalidOperationException("a shared copy's `this` has no class");
+        VReg obj = Eval(at.CanonSelf!);
+        VReg vt = _e.Load(IrTypes.Word, obj, 0);
+        VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes);
+        VReg table = _e.Load(IrTypes.Word, context, (long)self.Depth * w);
+        VReg count = Numbered(_e, _e.Load(IrTypes.Word, table, 0));
+        VReg result = _f.NewReg(IrTypes.Word, "canonty");
+        Block read = _f.NewBlock("canontyread");
+        Block end = _f.NewBlock("canontyend");
+        _e.CopyTo(result, Imm(0, IrTypes.Word));
+        _e.Branch(_e.Binary(Opcode.LtU, Imm(at.CanonSlot, IrTypes.Word), R(count), IrType.I32), read, end);
+        _e.SetBlock(read);
+        _e.CopyTo(result, R(_e.Load(IrTypes.Word, table, (long)(at.CanonSlot + 1) * w)));
+        _e.Jump(end);
+        _e.SetBlock(end);
+        return result;
+    }
+
+    /// <summary>A shared copy's cast to a constructed type over its parameters: null passes, anything else must be that type (CanonTest).</summary>
+    private VReg CanonCheckedCast(CastExpr at, VReg obj, Type want)
+    {
+        Block check = _f.NewBlock("ccastck");
+        Block ok = _f.NewBlock("ccastok");
+        Block bad = _f.NewBlock("ccastbad");
+        _e.Branch(obj, check, ok);
+        _e.SetBlock(check);
+        _e.Branch(CanonTest(at, obj, NamedTest(obj, want)), ok, bad);
+        _e.SetBlock(bad);
+        CastFailed(obj, want);
+        _e.SetBlock(ok);
+        return obj;
+    }
+
+    /// <summary>
+    /// WHAT A CALL OF A SHARED METHOD COPY HANDS IT (Monomorphiser.CopyName):
+    /// for each of its type parameters, the descriptor of what the caller
+    /// bound it to where only run time knows that (CallExpr.HiddenTypeArgs)
+    /// -- read from the caller's `this`'s type context, or passed on from
+    /// the caller's own hidden arguments -- and 0 for the rest. A type
+    /// argument the caller knows was put in the copy's body, which never
+    /// reads its hidden argument.
+    /// </summary>
+    private List<Operand> HiddenTypeArguments(CallExpr call, int count)
+    {
+        List<Operand> args = new(count);
+        int[]? given = call.HiddenTypeArgs;
+        for (int i = 0; i < count; i++)
+        {
+            args.Add(given is not null && i < given.Length ? RunTimeDescriptor(Type.CanonAny(given[i]), statics: false) : Imm(0, IrTypes.Word));
+        }
+        return args;
+    }
+
+    /// <summary>
+    /// A TYPE'S DESCRIPTOR WHERE RUN TIME MAY BE ASKED FOR IT (Type.CanonParam):
+    /// a shared method copy's hidden argument; a shared class copy's type
+    /// argument, from its `this`'s type context (TypeContext), where this
+    /// function is that class's own instance code; with `statics`, any
+    /// other type an interface's identity record could name, as
+    /// ArgumentDescriptor names it. 0 for what none of these answer.
+    /// </summary>
+    private Operand RunTimeDescriptor(Type t, bool statics)
+    {
+        if (t.CanonParam <= -2)
+        {
+            int k = -2 - t.CanonParam;
+            return _typeArgs is not null && k < _typeArgs.Length ? R(_typeArgs[k]) : Imm(0, IrTypes.Word);
+        }
+        if (t.CanonParam >= 0)
+        {
+            if (_this is null || _method is not { Static: false } running || !SharedCopy(running.Owner))
+            {
+                return Imm(0, IrTypes.Word);
+            }
+            int w = _t.WordSize;
+            VReg vt = _e.Load(IrTypes.Word, _this, 0);
+            VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes);
+            VReg table = _e.Load(IrTypes.Word, context, (long)running.Owner.Depth * w);
+            return R(_e.Load(IrTypes.Word, table, (long)(2 * t.CanonParam + 1) * w));
+        }
+        return statics && ShapeDescriptor(t) is string named ? R(_e.Address(named)) : Imm(0, IrTypes.Word);
+    }
+
+    /// <summary>
+    /// The descriptor that is a type argument's identity in an interface's
+    /// identity record (ShapeRecord), or null for one that has none: a
+    /// reference's as a shared copy's type context names it
+    /// (ArgumentDescriptor, ShapeIdentifiable), a number's, a bool's, a
+    /// char's or an enum's its box's -- one per type, every unit's copy one
+    /// table -- and nothing for a struct, a pointer, a Nullable, an array or
+    /// a type parameter.
+    /// </summary>
+    private string? ShapeDescriptor(Type t)
+    {
+        if (ShapeIdentifiable(t)) return ArgumentDescriptor(t);
+        if (t.IsError || t.ParamName is not null || t.IsPointer || t.IsArray || t.IsNullableValue || t.Function is not null) return null;
+        // Not a struct: its box's table would bring the struct's own members
+        // into every program that names an interface over it.
+        bool value = t.Symbol is null
+            ? t.IsNumeric || t.Prim is Prim.Bool or Prim.Char
+            : t.Symbol.Kind is TypeKind.Enum;
+        return value ? BoxDescriptor(t) : null;
+    }
+
+    /// <summary>
+    /// Whether a type argument has a descriptor that is its identity, for an
+    /// interface's identity record (InterfaceDescriptor): a class, an
+    /// interface, a string or object -- what a shared copy's type argument
+    /// can be. Not a value type, whose ArgumentDescriptor is object's; not an
+    /// array, nor anything made over a shared copy's own word.
+    /// </summary>
+    private static bool ShapeIdentifiable(Type t)
+        => !t.IsError && t.ParamName is null && !t.IsPointer && !t.IsArray && !t.IsNullableValue
+        && (t.Symbol is null ? t.Prim is Prim.String or Prim.Any
+            : t.Symbol.Kind is TypeKind.Class or TypeKind.Interface && !MentionsCanon(t));
+
+    /// <summary>
+    /// A SHARED METHOD COPY'S TEST OF A GENERIC INTERFACE OVER ITS OWN TYPE
+    /// PARAMETERS (BindResult.Shapes): whether the object implements the
+    /// interface of that family over the descriptors its type arguments have
+    /// at this call (Runtime.ShapedAs) -- IList of string, for a list of
+    /// strings handed to a copy whose U is string -- or else the copy's own
+    /// answer, as it names the interface over object: what a caller that
+    /// could not say what U is gets, as every call did before.
+    /// </summary>
+    private VReg ShapeTest(CanonShape shape, VReg obj, Func<VReg>? named)
+    {
+        VReg result = _f.NewReg(IrType.I32, "isshape");
+        _e.CopyTo(result, Imm(0, IrType.I32));
+        Block namedBlock = _f.NewBlock("isshnamed");
+        Block end = _f.NewBlock("isshend");
+        if (CanonShape.FamilyOf(shape.Interface) is long family
+            && RuntimeMethod("ShapedAs", 3 + CanonShape.MostArguments) is MethodSymbol shaped)
+        {
+            Require(shaped);
+            Block some = _f.NewBlock("isshsome");
+            _e.Branch(obj, some, end);
+            _e.SetBlock(some);
+            // IComparable<X> and IEquatable<X> of a string, which its table
+            // does not name (BoxedFaces): the runtime answers it by X.
+            long faceOf = BoxedFaces.Of(shape.Interface, Type.String) is BoxedFaces.Face.ComparableOf or BoxedFaces.Face.EquatableOf
+                ? FaceOfShape : 0;
+            List<VReg> words = new()
+            {
+                obj,
+                _e.Const(family, IrTypes.Word),
+                _e.Const(shape.Args.Count | faceOf, IrTypes.Word),
+            };
+            for (int i = 0; i < CanonShape.MostArguments; i++)
+            {
+                Operand a = i < shape.Args.Count ? RunTimeDescriptor(shape.Args[i], statics: true) : Imm(0, IrTypes.Word);
+                words.Add(a is RegOperand held ? held.Reg : _e.Const(((ImmOperand)a).Value, IrTypes.Word));
+            }
+            Operand[] args = new Operand[words.Count];
+            for (int i = 0; i < words.Count; i++) args[i] = R(AsParam(words[i], shaped.Params[i].Type));
+            VReg answer = _e.Call(CallLabel(shaped), IrTypes.Of(shaped.Returns), args)!;
+            _e.CopyTo(result, R(answer.Type == IrType.I32 ? answer : _e.Unary(Opcode.Trunc64, R(answer), IrType.I32)));
+            _e.Branch(result, end, namedBlock);
+        }
+        else
+        {
+            _e.Jump(namedBlock);
+        }
+        _e.SetBlock(namedBlock);
+        if (named is not null) _e.CopyTo(result, R(named()));
+        _e.Jump(end);
+        _e.SetBlock(end);
+        return result;
+    }
+
+    /// <summary>Runtime.ShapedAs's flag, beside the argument count: the family is IComparable`1 or IEquatable`1.</summary>
+    private const long FaceOfShape = 256;
+
+    /// <summary>The shape a test or cast asks, in a shared method copy that has its hidden arguments (ShapeTest), or null.</summary>
+    private CanonShape? ShapeOf(Node node)
+        => _typeArgs is not null && _b.Shapes.TryGetValue(node, out CanonShape? shape) ? shape : null;
+
+    /// <summary>A shared method copy's cast to a generic interface over its type parameters: null passes, anything else must be one (ShapeTest).</summary>
+    private VReg ShapeCheckedCast(CanonShape shape, VReg obj, Type want)
+    {
+        Block check = _f.NewBlock("scastck");
+        Block ok = _f.NewBlock("scastok");
+        Block bad = _f.NewBlock("scastbad");
+        _e.Branch(obj, check, ok);
+        _e.SetBlock(check);
+        _e.Branch(ShapeTest(shape, obj, NamedTest(obj, want)), ok, bad);
+        _e.SetBlock(bad);
+        CastFailed(obj, want);
+        _e.SetBlock(ok);
+        return obj;
+    }
+
+    /// <summary>The shared copy's own test of a type, as it names it: an array's (ArrayTest), or a class's or an interface's (TypeTest).</summary>
+    private Func<VReg>? NamedTest(VReg obj, Type? want)
+        => want is null ? null
+         : want.IsArray ? () => ArrayTest(obj, want)
+         : want.Symbol is TypeSymbol named ? () => TypeTest(obj, named) : null;
 
     /// <summary>Whether a value is an object's address: a reference type, or object -- which a shared copy's T is.</summary>
     private static bool HeldByReference(Type t) => t.IsReference || t.Prim == Prim.Any && t.Symbol is null && !t.IsNullableValue;
@@ -2189,6 +2593,34 @@ public sealed partial class Lowering
 
     private VReg EmitIs(IsExpr isx)
     {
+        // `x is IList<U>` IN A SHARED METHOD COPY: of what U is at this call
+        // (ShapeTest), bound as the type it is written.
+        if (ShapeOf(isx) is { } isShape && HeldByReference(_b.TypeOf(isx.Operand)))
+        {
+            Type written = new() { Prim = Prim.Void, Symbol = isShape.Interface };
+            VReg subject = Eval(isx.Operand);
+            VReg shapeFound = ShapeTest(isShape, subject, NamedTest(subject, written));
+            if (_b.PatternSlot.TryGetValue(isx, out int shapeBound))
+            {
+                BindPattern(isx, shapeBound, written, subject);
+            }
+            return shapeFound;
+        }
+        // `x is ICollection<T>` IN A SHARED COPY: of what that type is for
+        // the object at hand (CanonTest), bound as the type it is written.
+        if (isx.CanonSlot >= 0 && isx.Type.Args.Count > 0 && HeldByReference(_b.TypeOf(isx.Operand)))
+        {
+            Type? written = _b.TestedArrays.TryGetValue(isx, out Type? array0) ? array0
+                          : _b.TestedTypes.TryGetValue(isx, out TypeSymbol? tested0) ? new Type { Prim = Prim.Void, Symbol = tested0 }
+                          : _b.Types.TryGetValue(isx.Type.Name, out TypeSymbol? named0) ? new Type { Prim = Prim.Void, Symbol = named0 } : null;
+            VReg subject = Eval(isx.Operand);
+            VReg canonFound = CanonTest(isx, subject, NamedTest(subject, written));
+            if (_b.PatternSlot.TryGetValue(isx, out int boundTo))
+            {
+                BindPattern(isx, boundTo, written ?? Type.Any, subject);
+            }
+            return canonFound;
+        }
         // `x is T` IN A SHARED COPY: of what T is for the object at hand.
         if (isx.CanonSlot >= 0 && HeldByReference(_b.TypeOf(isx.Operand)))
         {
@@ -2378,9 +2810,9 @@ public sealed partial class Lowering
         else
         {
             BindPattern(at, held, boxed,
-                        _e.Load(BoxSlot(boxed), obj, _t.ObjectHeaderBytes,
+                        Numbered(_e, _e.Load(BoxSlot(boxed), obj, _t.ObjectHeaderBytes,
                                 Math.Max(1, boxed.Size),
-                                !boxed.IsUnsigned && boxed.Prim != Prim.Bool));
+                                !boxed.IsUnsigned && boxed.Prim != Prim.Bool), NeverAddress(boxed)));
         }
         _e.Jump(after);
         _e.SetBlock(after);
@@ -2423,6 +2855,19 @@ public sealed partial class Lowering
                 VReg matched = BoxPattern(arm, subject, boxed,
                                           _b.ArmSlot.TryGetValue(arm, out int into) ? into : null);
                 _e.Branch(matched, body, next);
+            }
+            else if (arm.Type is { Args.Count: > 0 } && arm.CanonSlot >= 0 && _b.ArmTests.Contains(arm))
+            {
+                // `ICollection<T> c =>` in a shared copy: of what that type is
+                // for the object at hand (CanonTest).
+                Type? armWritten = _b.TestedArrays.TryGetValue(arm, out Type? armArray) ? armArray
+                                 : _b.TestedTypes.TryGetValue(arm, out TypeSymbol? armType) ? new Type { Prim = Prim.Void, Symbol = armType } : null;
+                VReg armMatched = CanonTest(arm, subject, NamedTest(subject, armWritten));
+                if (_b.ArmSlot.TryGetValue(arm, out int canonBound))
+                {
+                    BindPattern(arm, canonBound, armWritten ?? Type.Any, subject);
+                }
+                _e.Branch(armMatched, body, next);
             }
             else if (arm.Type is not null && _b.ArmTests.Contains(arm)
                      && _b.TestedArrays.TryGetValue(arm, out Type? array))
@@ -3061,7 +3506,7 @@ public sealed partial class Lowering
 
         if (target is MemberExpr me && _b.Resolved.TryGetValue(me, out Sym? ms) && ms is FieldSym fs)
         {
-            Place p = fs.Field.Static ? PlaceOfField(fs.Field, null, at) : PlaceOfField(fs.Field, Eval(me.Target), at);
+            Place p = fs.Field.Static ? PlaceOfField(fs.Field, null, at) : PlaceOfField(fs.Field, FieldBase(fs.Field, me.Target), at);
             return AddressOfPlace(p, at);
         }
 
@@ -3137,9 +3582,14 @@ public sealed partial class Lowering
     /// </summary>
     private VReg StructReference(Expr target, Type type, bool fresh = false)
     {
-        if (target is NameExpr n && _b.Resolved.TryGetValue(n, out Sym? s) && s is ParamSym { ByRef: true } passed)
+        // A struct's cell (ParamSym.Cell) holds the struct; that is read below.
+        if (target is NameExpr n && _b.Resolved.TryGetValue(n, out Sym? s) && s is ParamSym { ByRef: true, Cell: false } passed)
         {
             return _params[passed.Index];
+        }
+        if (InlineFieldAddress(target) is { } inLine)
+        {
+            return inLine;
         }
         Place? place = PlaceOf(target);
         if (place is null)
@@ -3180,6 +3630,42 @@ public sealed partial class Lowering
         _e.Jump(done);
         _e.SetBlock(done);
         return result;
+    }
+
+    /// <summary>
+    /// THE ADDRESS OF A FIELD OF NULL THROWS, as .NET's ldflda does: `ref
+    /// c.f`, and a call of a struct's method on one held in line in `c`
+    /// (`c.s.M()`), throw NullReferenceException where they are written
+    /// when `c` is null, whatever is done with the address after. Taking
+    /// the address reads nothing, so the object's first word is read for
+    /// the fault (Runtime.NullFault), as a call on null reads it -- not on
+    /// `this`, never null, nor on a struct's storage. A field read or
+    /// written faults by itself and is not asked.
+    /// </summary>
+    private VReg FieldBase(FieldSymbol f, Expr target)
+    {
+        VReg obj = f.Owner.Kind == TypeKind.Struct ? InlineFieldAddress(target) ?? Eval(target) : Eval(target);
+        if (f.Owner.Kind == TypeKind.Class && !ReferenceEquals(obj, _this))
+        {
+            _e.Load(IrTypes.Word, obj, 0);
+        }
+        return obj;
+    }
+
+    /// <summary>
+    /// The address of a struct held in line in an object (FieldSymbol.Inline),
+    /// with its object's null fault (FieldBase); null for any other
+    /// expression -- and for one in a `?.` chain, which never throws, or a
+    /// member of a Nullable, which EmitMember reads its own way.
+    /// </summary>
+    private VReg? InlineFieldAddress(Expr e)
+    {
+        if (e is not MemberExpr me || me.NullConditional || InConditionalChain(me.Target) || _b.TypeOf(me.Target).IsNullableValue
+            || !_b.Resolved.TryGetValue(me, out Sym? sym) || sym is not FieldSym { Field: { Inline: true, Static: false } field })
+        {
+            return null;
+        }
+        return LoadPlace(PlaceOfField(field, FieldBase(field, me.Target), me));
     }
 
     private VReg AddressOfPlace(Place p, Node at)
@@ -4133,7 +4619,7 @@ public sealed partial class Lowering
         if (type.Prim == Prim.Any || type.ParamName is not null
             || type.Symbol is { Kind: TypeKind.Class or TypeKind.Interface })
         {
-            return ObjectString(v);
+            return ObjectString(v, NarrowKey(type));
         }
 
         // A NULLABLE VALUE IS ITS VALUE, OR NOTHING AT ALL. `"n " + n` for an
@@ -4265,35 +4751,50 @@ public sealed partial class Lowering
         return result;
     }
 
-    /// <summary>What an object's ToString says, through the shared slot; null renders as "".</summary>
-    private VReg ObjectString(VReg obj)
+    /// <summary>
+    /// What an object's ToString says, through the shared slot; null renders
+    /// as "". `narrow` is the type the object is known to be, when it is
+    /// (NarrowSymbol): the call names its descriptor rather than object's,
+    /// so the ToStrings that can answer are that type's and its subclasses'
+    /// rather than every one in the program -- and a sealed class's is
+    /// called directly. A class is never a string, so is not asked whether
+    /// it is one.
+    /// </summary>
+    private VReg ObjectString(VReg obj, TypeSymbol? narrow = null)
     {
+        narrow = NarrowSymbol(narrow);
         VReg result = _f.NewReg(IrTypes.Word, "ts");
         Block some = _f.NewBlock("tssome");
         Block none = _f.NewBlock("tsnone");
-        Block text = _f.NewBlock("tstext");
         Block call = _f.NewBlock("tscall");
         Block end = _f.NewBlock("tsend");
         _e.Branch(obj, some, none);
         _e.SetBlock(some);
         VReg vt = _e.Load(IrTypes.Word, obj, 0);
 
-        // A STRING HELD AS AN OBJECT IS ITS OWN ToString, which is what .NET
-        // says and what this has to say too: a string has no vtable at all --
-        // its first word points at the descriptor every string shares, and
-        // the slot behind that is somebody else's data. Reading it and calling
-        // through it is how `object b = "hi"; "b " + b` crashed.
-        VReg flags = _e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize);
-        _e.Branch(_e.Binary(Opcode.And, flags, 2), text, call);
-        _e.SetBlock(text);
-        _e.CopyTo(result, R(obj));
-        _e.Jump(end);
+        if (narrow is { Kind: TypeKind.Class })
+        {
+            _e.Jump(call);
+        }
+        else
+        {
+            // A STRING HELD AS AN OBJECT IS ITS OWN ToString, which is what .NET
+            // says and what this has to say too: a string has no vtable at all --
+            // its first word points at the descriptor every string shares, and
+            // the slot behind that is somebody else's data. Reading it and calling
+            // through it is how `object b = "hi"; "b " + b` crashed.
+            Block text = _f.NewBlock("tstext");
+            VReg flags = Numbered(_e, _e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize));
+            _e.Branch(_e.Binary(Opcode.And, flags, 2), text, call);
+            _e.SetBlock(text);
+            _e.CopyTo(result, R(obj));
+            _e.Jump(end);
+        }
 
         _e.SetBlock(call);
-        VReg fn = _e.Load(IrTypes.Word, vt, (long)_b.ToStringSlot * _t.WordSize);
-        VReg said = _e.CallIndirect(R(fn), IrTypes.Word, new Operand[] { R(obj) })!;
-        // Declared on object: every type's ToString slot (Escape.IndirectTargets).
-        _e.Block.Instrs[^1].DispatchType = ObjectDispatch;
+        // Declared on object: every type's ToString slot (Escape.IndirectTargets),
+        // unless the type it is narrowed to says whose.
+        VReg said = AskSlot(_e, obj, vt, _b.ToStringSlot, narrow, IrTypes.Word, R(obj));
         _e.CopyTo(result, R(said));
         _e.Jump(end);
         _e.SetBlock(none);

@@ -4,7 +4,14 @@ namespace Corsac.Lang.Lto;
 
 /// <summary>
 /// REGIONS OVER EVERY UNIT: RegionPointsTo for a separately compiled closed
-/// image, answered from the units' RegionHints alone -- never their IR.
+/// image, answered from the units' RegionHints alone -- never their IR
+/// (docs/REGIONS.md).
+///
+/// TWO ENGINES ANSWER WHAT OUTLIVES A CALL (--region-engine). The default,
+/// escape, solves each function, and each cycle of calls together, from the
+/// bottom of the calls up (RegionEscape), and the judge below asks its
+/// answers. The other, andersen, is what follows: one inclusion solve over
+/// the whole image.
 ///
 /// Andersen's inclusion analysis, field-sensitive -- a location is an object
 /// and a byte offset into it, or any offset -- with RegionPointsTo's one
@@ -30,7 +37,7 @@ namespace Corsac.Lang.Lto;
 /// the unknown object instead, and what it held escapes.
 ///
 /// Then the boundaries, chosen as RegionPointsTo.Nearest chooses them: for
-/// each allocation, the nearest caller -- not the entry, not recursive, not
+/// each allocation, the nearest caller -- not the entry, not
 /// a type's initialiser or an async body -- whose return it is proved not to
 /// outlive. A site is made in a region only if, in every copy that makes it,
 /// every boundary that can be the innermost open above it -- the first on
@@ -70,7 +77,10 @@ public static class RegionSolver
     /// </summary>
     public static RegionFacts?[]? Solve(IReadOnlyList<RegionHints> units, Dictionary<string, string[]> virtuals,
         Func<string, long, string?> methodAt, string entry, IReadOnlySet<string> foreign, string? report, Func<int, string, bool>? live = null,
-        Func<string, long, long?, bool>? noReference = null, bool loops = false)
+        Func<string, long, long?, bool>? noReference = null, bool loops = false, Func<string, string, bool?>? isA = null,
+        Func<string, IReadOnlyCollection<long>?>? slotsOf = null,
+        (Func<string, string, bool?> MayBeThis, Func<string, bool?> MadeOutside)? receivers = null,
+        IReadOnlyList<(string Table, long At)>? dataObjects = null, Func<string, IReadOnlyList<string>>? methodsOf = null)
     {
         // CONTEXTS AS FAR AS THE BUDGET GOES: two objects deep, then one, then none
         // at all -- every function one copy, coarser but far smaller.
@@ -81,13 +91,20 @@ public static class RegionSolver
         // a minute each for nothing, and the third, in a heap the first two
         // had broken up, ran a 32-bit process out of room. The answer kept is
         // still the deepest that fits; the coarse one is kept, not made again.
-        Solver coarse = new(units, virtuals, methodAt, entry, foreign, report, live, 0, noReference) { LoopRegions = loops };
+        if (!Switches.AndersenRegions)
+        {
+            Solver graphs = new(units, virtuals, methodAt, entry, foreign, report, live, 0, noReference) { LoopRegions = loops, Graphs = true, IsA = isA, SlotsOf = slotsOf, Receivers = receivers, DataObjects = dataObjects, MethodsOf = methodsOf };
+            if (graphs.Run() is { } found) return found;
+            Console.Error.WriteLine("regions: nothing made a region");
+            return null;
+        }
+        Solver coarse = new(units, virtuals, methodAt, entry, foreign, report, live, 0, noReference) { LoopRegions = loops, SlotsOf = slotsOf };
         RegionFacts?[]? coarseFacts = coarse.Run();
         if (coarseFacts is not null || !coarse.TooBig)
         {
             foreach (int depth in new[] { 2, 1 })
             {
-                Solver solver = new(units, virtuals, methodAt, entry, foreign, report, live, depth, noReference) { LoopRegions = loops };
+                Solver solver = new(units, virtuals, methodAt, entry, foreign, report, live, depth, noReference) { LoopRegions = loops, SlotsOf = slotsOf };
                 if (solver.Run() is { } facts) return facts;
                 if (!solver.TooBig) { coarseFacts = null; break; }
             }
@@ -294,10 +311,17 @@ public static class RegionSolver
         public bool TooBig { get; private set; }
         /// <summary>Loops may be given regions of their own (Runtime.RegionLoop is in the image).</summary>
         public bool LoopRegions { get; init; }
+        /// <summary>Escape found function by function (RegionEscape), one copy a function, rather than by solving the whole program at once.</summary>
+        public bool Graphs { get; init; }
+        private RegionEscape? _escape;
+        // Per object of a site: the site's number among every function's (Graphs).
+        private readonly List<int> _siteNumber = new();
 
         private readonly IReadOnlyList<RegionHints> _units;
         private readonly Dictionary<string, string[]> _virtuals;
         private readonly Func<string, long, string?> _methodAt;
+        /// <summary>Whether objects of a descriptor are of a type (VirtualTargets.IsA); null for no such knowledge.</summary>
+        public Func<string, string, bool?>? IsA { get; init; }
         private readonly string _entry;
         private readonly IReadOnlySet<string> _foreign;
         private readonly string[]? _report;
@@ -309,8 +333,10 @@ public static class RegionSolver
         private readonly List<int> _unitOf = new();
         private readonly Dictionary<string, List<int>> _globals = new(StringComparer.Ordinal);
         private readonly List<Dictionary<string, int>> _locals = new();
-        // Every global function any unit summarised, kept by the image or not.
+        // Every function any unit summarised, global or local, kept by the image or not.
         private readonly HashSet<string> _summarised = new(StringComparer.Ordinal);
+        // Every unit's local functions the image keeps, by name (ResolveOverride).
+        private readonly Dictionary<string, List<int>> _localsByName = new(StringComparer.Ordinal);
 
         // Copies: a function in a context (-1: none).
         private readonly List<int> _copyFunction = new();
@@ -398,7 +424,7 @@ public static class RegionSolver
                 _locals.Add(locals);
                 foreach (RegionFunction f in _units[u].Functions)
                 {
-                    if (f.Global) _summarised.Add(f.Name);
+                    _summarised.Add(f.Name);
                     // What the image does not keep is never called: a call
                     // of it from what it keeps is a call of something unknown.
                     if (_live is not null && !_live(u, f.Name)) continue;
@@ -407,7 +433,11 @@ public static class RegionSolver
                     _unitOf.Add(u);
                     _named.Add(new());
                     if (f.Global) (_globals.TryGetValue(f.Name, out List<int>? list) ? list : _globals[f.Name] = new()).Add(function);
-                    else locals[f.Name] = function;
+                    else
+                    {
+                        locals[f.Name] = function;
+                        (_localsByName.TryGetValue(f.Name, out List<int>? same) ? same : _localsByName[f.Name] = new()).Add(function);
+                    }
                 }
             }
             _copiesOf = new List<int>?[_functions.Count];
@@ -421,18 +451,51 @@ public static class RegionSolver
         /// <summary>The solve has outgrown its budget, inside a step: it stops, and nothing is made in a region.</summary>
         private sealed class OverBudget : Exception { }
 
-        public RegionFacts?[]? Run()
+        public RegionFacts?[]? Run() => Graphs ? Budgeted(GraphSteps) : OnDeepStack(() => Budgeted(Steps));
+
+        // Met anywhere -- a step's watchers adding without end, a copy made
+        // while binding or rooting -- the budget is giving up, never an
+        // unhandled exception.
+        private RegionFacts?[]? Budgeted(Func<RegionFacts?[]?> steps)
         {
-            // Met anywhere -- a step's watchers adding without end, a copy made
-            // while binding or rooting -- the budget is giving up, never an
-            // unhandled exception.
-            try { return Steps(); }
+            try { return steps(); }
             catch (OverBudget)
             {
                 _over = true;
                 return GiveUp("too much to hold");
             }
         }
+
+        /// <summary>
+        /// THE INCLUSION SOLVE (Steps) ON A STACK OF ITS OWN. A copy made
+        /// (CopyOf) is built at once -- its constraints, then its calls -- and
+        /// a call it makes of a function with no copy yet makes that one, and
+        /// so on down: a receiver already bound (Watch, Received) the same.
+        /// The depth is the depth of the call graph's first walk, thousands
+        /// of frames on the compiler's own link, and the self-hosted
+        /// compiler's threads have a few megabytes. A worklist would build
+        /// the copies in another order, and the order is the answer here: a
+        /// node saturates (MostHeld) with what came to it first. So the same
+        /// recursion runs where it has room, and answers alike.
+        /// </summary>
+        private static RegionFacts?[]? OnDeepStack(Func<RegionFacts?[]?> solve)
+        {
+            RegionFacts?[]? result = null;
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo? failed = null;
+            Thread worker = new(() =>
+            {
+                try { result = solve(); }
+                catch (Exception error) { failed = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error); }
+            }, DeepStack) { IsBackground = true, Name = "regions-inclusion" };
+            worker.Start();
+            worker.Join();
+            failed?.Throw();
+            return result;
+        }
+
+        // Room for tens of thousands of frames, and no more address space than a
+        // 32-bit process can spare.
+        private const int DeepStack = 64 * 1024 * 1024;
 
         private RegionFacts?[]? Steps()
         {
@@ -448,7 +511,7 @@ public static class RegionSolver
                 if (_functions[f].Name == _entry || _foreign.Contains(_functions[f].Name)) started.Add(f);
             if (started.Count == 0) return GiveUp("no entry " + _entry);
             for (int u = 0; u < _units.Count; u++)
-                foreach (string name in _units[u].AddressTaken)
+                foreach (string name in Addressed(u))
                     if (Resolve(u, name) is { } targets) addressed.UnionWith(targets);
             // The entry and what code outside the IR names run as they are
             // written, in the copy every followed call runs: the program
@@ -488,11 +551,457 @@ public static class RegionSolver
             return Judge();
         }
 
+        /// <summary>
+        /// THE SAME QUESTIONS ANSWERED FUNCTION BY FUNCTION (RegionEscape):
+        /// every function one copy, called by every call that may run it,
+        /// each site one object; what outlives a call is what the function's
+        /// summary reaches. The judge then asks as it asks of a solve.
+        /// </summary>
+        private RegionFacts?[]? GraphSteps()
+        {
+            NewObject(-1, -1, -1, 0);                               // Global
+            _siteNumber.Add(-1);
+            int count = _functions.Count;
+            for (int f = 0; f < count; f++)
+            {
+                int copy = _copyFunction.Count;
+                _copyIds[Key(f, -1)] = copy;
+                _copyFunction.Add(f); _copyContext.Add(-1); _copyBase.Add(0); _copyCollapsed.Add(false);
+                (_copiesOf[f] ??= new()).Add(copy);
+                _callees.Add(new()); _callers.Add(new());
+            }
+            int[] siteBase = new int[count];
+            int sites = 0;
+            for (int f = 0; f < count; f++)
+            {
+                siteBase[f] = sites;
+                for (int s = 0; s < _functions[f].Sites.Length; s++)
+                {
+                    SiteObject(f, s, -1, f);
+                    _siteNumber.Add(sites + s);
+                }
+                sites += _functions[f].Sites.Length;
+            }
+            int[]?[][] targets = new int[]?[count][];
+            string?[][] keys = new string?[count][];
+            for (int f = 0; f < count; f++)
+            {
+                RegionFunction function = _functions[f];
+                int u = _unitOf[f];
+                targets[f] = new int[]?[function.Calls.Count];
+                keys[f] = new string?[function.Calls.Count];
+                for (int k = 0; k < function.Calls.Count; k++)
+                {
+                    RegionCall call = function.Calls[k];
+                    int[]? those = GraphTargets(f, call, out bool isVirtual);
+                    targets[f][k] = those;
+                    if (isVirtual && those is { Length: > 0 }) keys[f][k] = call.Callee + "@" + u;
+                }
+            }
+            // CALLED FROM WHERE NOBODY FOLLOWS, with anything: the entry,
+            // what code outside the IR names, every function whose address
+            // is taken.
+            bool[] rooted = new bool[count];
+            bool anyStart = false;
+            for (int f = 0; f < count; f++)
+                if (_functions[f].Name == _entry || _foreign.Contains(_functions[f].Name)) { rooted[f] = true; anyStart = true; }
+            if (!anyStart) return GiveUp("no entry " + _entry);
+            for (int u = 0; u < _units.Count; u++)
+                foreach (string name in Addressed(u))
+                    if (Resolve(u, name) is { } those) foreach (int f in those) rooted[f] = true;
+            // A ROOT CALLED ONLY BLIND, AS A METHOD A DESCRIPTOR HOLDS: its
+            // `this` an object of a type that holds it, for RegionTypes. Not
+            // the entry, nor what code outside the IR names, nor a function
+            // whose address the program takes as a value: those may be
+            // handed anything.
+            bool[] typedThis = new bool[count];
+            if (Receivers is { } receivers)
+            {
+                for (int f = 0; f < count; f++)
+                    typedThis[f] = rooted[f] && _functions[f].Instance && _functions[f].Parameters > 0
+                        && receivers.MadeOutside(_functions[f].Name) is not null;
+                for (int f = 0; f < count; f++)
+                    if (_functions[f].Name == _entry || _foreign.Contains(_functions[f].Name)) typedThis[f] = false;
+                for (int u = 0; u < _units.Count; u++)
+                    foreach (string name in _units[u].AddressTaken)
+                        if (Resolve(u, name) is { } those) foreach (int f in those) typedThis[f] = false;
+            }
+            bool[]? reached = MethodsOf is { } methodsOf && Receivers is { } receiving && _report?.Contains("+reachoff") != true
+                ? Reachable(targets, keys, rooted, methodsOf, receiving.MadeOutside) : null;
+            // ONLY WHAT EACH RECEIVER'S TYPES RUN (RegionTypes): a virtual
+            // call's targets narrowed before the graphs and the judge's
+            // callers are built from them (+typesoff: every override).
+            // Every call's targets before, for what a site's own stamp runs (TargetsOnSite).
+            int[]?[][] unpruned = targets.Select(calls => (int[]?[])calls.Clone()).ToArray();
+            if (_report?.Contains("+typesoff") != true)
+            {
+                RegionTypes types = new(_functions, targets, keys, rooted, (f, k, table, at) => RunsOn(f, k, targets[f][k]!, table, at))
+                {
+                    TypedThis = typedThis,
+                    Receives = Receivers is { } held ? (f, table, at) => held.MayBeThis(_functions[f].Name, table) != false : null,
+                    ThisMadeOutside = Receivers is { } stamped ? f => stamped.MadeOutside(_functions[f].Name) != false : null,
+                    DataObjects = DataObjects,
+                    Reached = reached,
+                    Progress = _report is null ? null : Log,
+                    // A diagnostic (+typesbudget=M): the solve's budget, in millions of values carried.
+                    Budget = _report?.FirstOrDefault(w => w.StartsWith("+typesbudget=", StringComparison.Ordinal)) is { } budgetOf && long.TryParse(budgetOf[13..], out long millions) ? millions * 1_000_000 : -1,
+                    Explain = _report?.FirstOrDefault(w => w.StartsWith("+typeswhy=", StringComparison.Ordinal)) is { } typesWhy
+                        ? f => _functions[f].Name.Contains(typesWhy[10..], StringComparison.Ordinal) : null,
+                };
+                bool pruned = types.Prune();
+                foreach (string line in types.Explained) Log("receiver types why: " + line);
+                if (_report?.FirstOrDefault(w => w.StartsWith("+typesunknown=", StringComparison.Ordinal)) is { } unknownOf && unknownOf.LastIndexOf(':') is int colon and > 0)
+                    Log("receiver types unknown: " + types.WhyUnknown(unknownOf[14..colon], int.Parse(unknownOf[(colon + 1)..])));
+                if (_report?.FirstOrDefault(w => w.StartsWith("+typesescape=", StringComparison.Ordinal)) is { } escapeOf)
+                    Log("receiver types escape: " + types.WhyEscaped(escapeOf[13..]));
+                Log(pruned
+                    ? $"receiver types: {types.Objects} objects, {types.Instances} instances, {types.Steps} carried; {types.Narrowed} of {types.Calls} virtual calls narrowed, {types.Unknown} left every target, targets {types.Before} -> {types.After}, {_clock.ElapsedMilliseconds} ms"
+                    : $"receiver types: gave up past its budget ({types.Steps} carried, {types.Instances} instances), every target kept, {_clock.ElapsedMilliseconds} ms");
+            }
+            for (int f = 0; f < count; f++)
+                for (int k = 0; k < targets[f].Length; k++)
+                    if (targets[f][k] is { } those) foreach (int g in those) { Beneath(f, g); _named[f].Add(g); }
+            bool[] wanted = new bool[count];
+            for (int f = 0; f < count; f++) wanted[f] = _functions[f].MayBeBoundary || _functions[f].Loops.Count > 0;
+            int[] siteFunction = new int[sites];
+            for (int f = 0; f < count; f++) for (int k = 0; k < _functions[f].Sites.Length; k++) siteFunction[siteBase[f] + k] = f;
+            _escape = new RegionEscape(_functions, targets, keys, siteBase, sites, wanted, rooted)
+            {
+                Progress = _report is null ? null : Log, NoRoots = _report?.Contains("+noroots") == true,
+                NoReference = _report?.Contains("+norefoff") == true ? null : (site, at) => SiteHoldsNoReference(siteFunction[site], site - siteBase[siteFunction[site]], at),
+                TargetsOn = _report?.Contains("+classoff") == true ? null : TargetsOnSite(targets, unpruned, keys, siteFunction, siteBase),
+            };
+            if (_report?.FirstOrDefault(w => w.StartsWith("+why=", StringComparison.Ordinal)) is { } whyOf)
+            {
+                // Several functions at once, by parts of their names split by '|':
+                // a link is long, and one question per link was slow going.
+                string[] names = whyOf[5..].Split('|', StringSplitOptions.RemoveEmptyEntries);
+                bool Named(int f) => names.Any(n => _functions[f].Name.Contains(n, StringComparison.Ordinal));
+                HashSet<int> explain = new();
+                for (int f = 0; f < count; f++)
+                    if (Named(f))
+                        for (int k = 0; k < _functions[f].Sites.Length; k++) explain.Add(siteBase[f] + k);
+                _escape.Why = explain.Contains;
+                _escape.WhyFunction = Named;
+            }
+            // A diagnostic: wide calls past another count of targets than the
+            // default sixteen (+wide=0: every call followed in order).
+            if (_report?.FirstOrDefault(w => w.StartsWith("+wide=", StringComparison.Ordinal)) is { } wideOf && int.TryParse(wideOf[6..], out int wide))
+                _escape.WideTargets = wide;
+            // The link's pool of inclusion work past each component's own bound, and each one's most of it (millions).
+            if (_report?.FirstOrDefault(w => w.StartsWith("+pool=", StringComparison.Ordinal)) is { } poolOf && long.TryParse(poolOf[6..], out long pool))
+                _escape.InclusionPerRound = pool * 1_000_000;
+            if (_report?.FirstOrDefault(w => w.StartsWith("+cap=", StringComparison.Ordinal)) is { } capOf && long.TryParse(capOf[5..], out long cap))
+                _escape.InclusionCap = cap * 1_000_000;
+            _escape.ReportStandIns = _report?.Contains("+standins") == true;
+            // Memory, for a report: the heap at each slow solve and round, and
+            // with +memtop=N the N solves it grew most over each round.
+            _escape.WhyAll = _report?.Contains("+whyall") == true;
+            _escape.CycleMembers = _report?.Contains("+cyclemembers") == true;
+            _escape.MemReport = _report is not null;
+            if (_report?.FirstOrDefault(w => w.StartsWith("+memtop=", StringComparison.Ordinal)) is { } memTop && int.TryParse(memTop[8..], out int top))
+                _escape.MemTop = top;
+            // A trade: stand-ins with every site their targets reach from the first round.
+            _escape.WidenFirst = _report?.Contains("+widefirst") == true;
+            if (_report is not null && _report.Contains("+cycles")) foreach (int most in new[] { 256, 64, 16, 4 }) _escape.ReportCycles(most);
+            _escape.Run();
+            Log($"escape graphs: {count} functions, {sites} sites, {_escape.Applied} summaries applied, largest cycle {_escape.LargestCycle}, "
+                + $"{_escape.Unfollowed} not followed, {_escape.Fallbacks} unified past their bound, {_escape.PoolComponents} past it given {_escape.PoolDrawn} more from the pool ({_escape.InclusionPool} left of the last round's), {_escape.Work} carried, global {_escape.GlobalByUnknown} by the unknown object + {_escape.GlobalByRoots} by roots, {_clock.ElapsedMilliseconds} ms");
+            return Judge();
+        }
+
+        /// <summary>
+        /// WHAT A VIRTUAL CALL RUNS ON AN OBJECT OF A SITE, for the escape
+        /// graphs (RegionEscape.TargetsOn): the method the site's descriptor
+        /// holds at the call's slot, as Received finds it, among the call's
+        /// targets; null for a site of no descriptor, or a method that is
+        /// none of them -- any of them may run. A stamp is written once, by
+        /// the site, and only read after, so an object of the site runs that
+        /// method and no other. NONE (empty) for a descriptor not of the
+        /// call's type: its targets are what every object of the type runs
+        /// there, and nothing else is ever its receiver -- a list or a token
+        /// a coarse enumerator handed a foreach over nodes is no node.
+        /// AMONG THE CALL'S OWN TARGETS, narrowed or not (RegionTypes): what
+        /// the stamp runs is found once a symbol, among every target the
+        /// symbol has (<paramref name="unpruned"/>, alike for every call of
+        /// it in a unit), and kept to those this call has; a method this
+        /// call no longer has is any of them.
+        /// </summary>
+        private Func<int, int, int, int[]?> TargetsOnSite(int[]?[][] targets, int[]?[][] unpruned, string?[][] keys, int[] siteFunction, int[] siteBase)
+        {
+            Dictionary<(string, string, long), int[]?> known = new();
+            return (f, k, site) =>
+            {
+                if (keys[f][k] is not { } key || targets[f][k] is not { } those || unpruned[f][k] is not { } every) return null;
+                int g = siteFunction[site];
+                if (_functions[g].Sites[site - siteBase[g]] is not { Table: { } table } s) return null;
+                if (!known.TryGetValue((key, table, s.At), out int[]? runs)) known[(key, table, s.At)] = runs = RunsOn(f, k, every, table, s.At);
+                if (runs is null || runs.Length == 0 || ReferenceEquals(those, every)) return runs;
+                int[] kept = runs.Where(x => Array.BinarySearch(those, x) >= 0).ToArray();
+                return kept.Length > 0 ? kept : null;
+            };
+        }
+
+        /// <summary>
+        /// What virtual call k of function f runs on an object stamped with
+        /// <paramref name="table"/>, its method table <paramref name="at"/>
+        /// bytes in, among <paramref name="those"/> (sorted): nothing for a
+        /// descriptor not of the call's type, the method the descriptor holds
+        /// at the slot where it is one of them, null where it cannot say.
+        /// </summary>
+        /// <summary>
+        /// ONLY THE TYPES REACHABLE CODE MAKES (rapid type analysis): from the
+        /// roots, the functions calls reach, the descriptors their sites stamp,
+        /// and of a virtual call's overrides only those a made descriptor
+        /// holds -- or no descriptor holds, or a type made outside the IR may
+        /// run. Each virtual call is left those. The link's own list of made
+        /// types names every descriptor any code stamps: a delegate type's
+        /// multicast, made in its CombineImpl, which a vtable keeps and no
+        /// program that never combines a delegate calls, was made for every
+        /// Func the compiler has -- three hundred of them -- and every delegate
+        /// call ran every multicast's Invoke, which calls every delegate's.
+        /// </summary>
+        private bool[] Reachable(int[]?[][] targets, string?[][] keys, bool[] rooted, Func<string, IReadOnlyList<string>> methodsOf,
+            Func<string, bool?> madeOutside)
+        {
+            int count = _functions.Count;
+            bool[] reached = new bool[count];
+            Queue<int> next = new();
+            void Reach(int g) { if (!reached[g]) { reached[g] = true; next.Enqueue(g); } }
+            HashSet<string> made = new(StringComparer.Ordinal), allowed = new(StringComparer.Ordinal);
+            Dictionary<string, List<int>> waiting = new(StringComparer.Ordinal);
+            bool Allowed(int g)
+            {
+                string name = _functions[g].Name;
+                if (allowed.Contains(name)) return true;
+                if (madeOutside(name) != false) { allowed.Add(name); return true; }
+                return false;
+            }
+            void Make(string table)
+            {
+                if (!made.Add(table)) return;
+                foreach (string method in methodsOf(table))
+                    if (allowed.Add(method) && waiting.Remove(method, out List<int>? those))
+                        foreach (int g in those) Reach(g);
+            }
+            if (DataObjects is { } laid) foreach (var (table, _) in laid) Make(table);
+            for (int f = 0; f < count; f++) if (rooted[f]) Reach(f);
+            while (next.TryDequeue(out int f))
+            {
+                RegionFunction function = _functions[f];
+                foreach (RegionSite site in function.Sites) if (site.Table is { } table) Make(table);
+                for (int k = 0; k < function.Calls.Count; k++)
+                {
+                    if (targets[f][k] is not { } those) continue;
+                    bool virtualCall = keys[f][k] is not null;
+                    foreach (int g in those)
+                    {
+                        if (!virtualCall || Allowed(g)) { Reach(g); continue; }
+                        string name = _functions[g].Name;
+                        (waiting.TryGetValue(name, out List<int>? list) ? list : waiting[name] = new()).Add(g);
+                    }
+                }
+            }
+            int calls = 0, narrowed = 0, before = 0, after = 0, unreached = 0;
+            for (int f = 0; f < count; f++)
+            {
+                if (!reached[f]) { unreached++; continue; }
+                for (int k = 0; k < targets[f].Length; k++)
+                {
+                    if (keys[f][k] is null || targets[f][k] is not { } those) continue;
+                    int[] kept = those.Where(g => reached[g] && Allowed(g)).ToArray();
+                    calls++; before += those.Length; after += kept.Length;
+                    if (kept.Length < those.Length) { narrowed++; targets[f][k] = kept; }
+                }
+            }
+            if (_report is not null)
+                Log($"reachable types: {made.Count} descriptors made by reachable code, {count - unreached} of {count} functions reached; {narrowed} of {calls} virtual calls narrowed, targets {before} -> {after}, {_clock.ElapsedMilliseconds} ms");
+            return reached;
+        }
+
+        private int[]? RunsOn(int f, int k, int[] those, string table, long at)
+        {
+            string callee = _functions[f].Calls[k].Callee!;
+            int plus = callee.LastIndexOf('+');
+            if (plus > VirtualTargets.Prefix.Length && IsA?.Invoke(table, callee[VirtualTargets.Prefix.Length..plus]) == false) return Array.Empty<int>();
+            if (SlotOf(callee) is long slot && _methodAt(table, at + slot) is { } method
+                && _virtuals.TryGetValue(callee, out string[]? overrides) && overrides.Contains(method, StringComparer.Ordinal)
+                && ResolveOverride(_unitOf[f], method) is { } resolved)
+            {
+                int[] among = resolved.Where(x => Array.BinarySearch(those, x) >= 0).Order().ToArray();
+                if (among.Length > 0) return among;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// WHAT A CALL NOBODY CAN NAME MAY RUN, of unit u's addresses taken:
+        /// every one it names as a value -- and those only its descriptors'
+        /// method slots name, when anything may call one of them blind. A
+        /// virtual call the link follows reaches its overrides with its own
+        /// arguments; anything else reaches a method only by reading it out of
+        /// a descriptor and calling it as no virtual call (a unit says so,
+        /// RegionHints.CallsThroughMethods), or by a virtual call the link
+        /// cannot resolve. (The runtime reads a descriptor's own words, at
+        /// its start, never a method to keep as a value.) Taken for one that
+        /// may be, a virtual method was called with anything: what each
+        /// override made and wrote into its object -- an iterator's item, a
+        /// node's emitted instruction -- was everyone's, and no region took it.
+        /// Rooted so, a function is rooted as a body too: any copy of a body
+        /// rooted roots it (RegionEscape's bodies).
+        ///
+        /// ONLY THE METHODS HELD AT A SLOT SUCH A CALL READS: a function that
+        /// calls a method it read out of a descriptor says where in the
+        /// method table it read it (RegionFunction.BlindSlots), and a method
+        /// that only descriptors name is reached so only if some descriptor
+        /// holds it at one of those offsets (SlotsOf). Every method, where a
+        /// virtual call is unresolved, a read's offset is not known, a unit
+        /// says it calls one blind but no function of it does (hints older
+        /// than the mark), or the link cannot say where methods are held.
+        /// Rooted for a blind call that reads one slot, every MoveNext,
+        /// Current, Dispose and closure Invoke was called with anything, and
+        /// all each made and stored into its object was everyone's.
+        /// </summary>
+        private IEnumerable<string> Addressed(int u)
+        {
+            Blindness();
+            if (_report is not null && !_saidBlind)
+            {
+                _saidBlind = true;
+                if (_methodsBlind!.Value)
+                    Log("methods are called blind: " + (_units.Any(unit => unit.CallsThroughMethods) ? "a unit calls a method it read from a descriptor" : "a virtual call is unresolved")
+                        + (_blindAll ? ", at any slot" : ", at slots " + string.Join(",", _blindSlots!.Order())) + (_blindBy is null ? "" : " (" + _blindBy + ")"));
+                ReportBlind();
+            }
+            return _methodsBlind!.Value ? _units[u].AddressTaken.Concat(_units[u].MethodsTaken.Where(CalledBlind)) : _units[u].AddressTaken;
+        }
+
+        /// <summary>What a method a descriptor holds may run on, and whether an object of its type is made outside the IR (VirtualTargets.Receivers); null: a root's `this` may be anything.</summary>
+        public (Func<string, string, bool?> MayBeThis, Func<string, bool?> MadeOutside)? Receivers { get; init; }
+        /// <summary>The objects laid down in data, by the place an Unknown constraint's C names one past (RegionConstants.DataObject).</summary>
+        public IReadOnlyList<(string Table, long At)>? DataObjects { get; init; }
+        /// <summary>The methods a descriptor holds at its slots (VirtualTargets.MethodsOf), for the types reachable code makes.</summary>
+        public Func<string, IReadOnlyList<string>>? MethodsOf { get; init; }
+
+        /// <summary>Where each method is held in a method table (VirtualTargets.SlotsOf); null: every method may be called blind.</summary>
+        public Func<string, IReadOnlyCollection<long>?>? SlotsOf { get; init; }
+
+        private bool? _methodsBlind;
+        private bool _saidBlind;
+        // The slots methods are read at to be called blind; every one (_blindAll).
+        private HashSet<long>? _blindSlots;
+        private bool _blindAll;
+        // The function whose blind call reads no slot the link can say, for the report.
+        private string? _blindBy;
+
+        private void Blindness()
+        {
+            if (_methodsBlind is not null) return;
+            bool through = _units.Any(unit => unit.CallsThroughMethods);
+            bool unresolved = AnyUnresolvedVirtual();
+            _methodsBlind = through || unresolved;
+            _blindAll = unresolved || SlotsOf is null;
+            if (_blindAll || !through) return;
+            _blindSlots = new();
+            foreach (RegionHints unit in _units)
+            {
+                if (!unit.CallsThroughMethods) continue;
+                bool said = false;
+                foreach (RegionFunction function in unit.Functions)
+                {
+                    if (!function.CallsThroughMethod) continue;
+                    said = true;
+                    if (function.BlindSlots.Length == 0 || function.BlindSlots.Contains(RegionConstraint.Any)) { _blindAll = true; _blindBy = function.Name; return; }
+                    _blindSlots.UnionWith(function.BlindSlots);
+                    _blindBy = _blindBy is null ? function.Name : _blindBy.Length < 400 ? _blindBy + ", " + function.Name : _blindBy;
+                }
+                if (!said) { _blindAll = true; _blindBy = "a unit whose functions say none"; return; }
+            }
+        }
+
+        // Whether a method only descriptors name may be called blind.
+        private bool CalledBlind(string method)
+            => _blindAll || SlotsOf!(method) is not { } slots || slots.Any(_blindSlots!.Contains);
+
+        // Whether some virtual call's targets the link cannot say (GraphTargets' rule).
+        private bool AnyUnresolvedVirtual() => Unresolved(stopAtFirst: true).Count > 0;
+
+        /// <summary>
+        /// THE VIRTUAL CALLS THE LINK CANNOT SAY THE TARGETS OF, by name: one
+        /// no descriptor answers for as code (VirtualTargets.Targets: a slot
+        /// holding what is not a function here), or an override the image
+        /// keeps no summary of. Each with why, how many calls, and the first
+        /// function making one. Any one of them roots every method a
+        /// descriptor names (Addressed).
+        /// </summary>
+        private SortedDictionary<string, (string Why, int Calls, string First)> Unresolved(bool stopAtFirst)
+        {
+            SortedDictionary<string, (string Why, int Calls, string First)> found = new(StringComparer.Ordinal);
+            for (int f = 0; f < _functions.Count; f++)
+            {
+                int u = _unitOf[f];
+                foreach (RegionCall call in _functions[f].Calls)
+                {
+                    if (call.Callee is not { } name || !name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal)) continue;
+                    string? why = null;
+                    if (!_virtuals.TryGetValue(name, out string[]? targets)) why = "a slot holds what is not code here";
+                    else
+                        foreach (string target in targets)
+                            if (ResolveOverride(u, target) is null && !_summarised.Contains(target)) { why = "no summary of " + target; break; }
+                    if (why is null) continue;
+                    found[name] = found.TryGetValue(name, out var had) ? (had.Why, had.Calls + 1, had.First) : (why, 1, _functions[f].Name);
+                    if (stopAtFirst) return found;
+                }
+            }
+            return found;
+        }
+
+        // For a report: every virtual call left unresolved, and every function
+        // that calls a method it read from a descriptor (RegionFunction.CallsThroughMethod).
+        private void ReportBlind()
+        {
+            var unresolved = Unresolved(stopAtFirst: false);
+            Log($"unresolved virtual calls: {unresolved.Count}");
+            foreach (var (name, (why, calls, first)) in unresolved)
+                Log($"unresolved virtual call {name}: {why}; {calls} call(s), first in {first}");
+            List<string> blind = new();
+            for (int f = 0; f < _functions.Count; f++) if (_functions[f].CallsThroughMethod) blind.Add(_functions[f].Name);
+            Log($"functions calling a method read from a descriptor: {blind.Count}"
+                + (_units.Any(unit => unit.CallsThroughMethods) && blind.Count == 0 ? " (named by no function: hints before the per-function mark)" : ""));
+            foreach (string name in blind.Order(StringComparer.Ordinal)) Log("calls a method read from a descriptor: " + name);
+        }
+
+        /// <summary>The functions a call may run, as Call finds them; null when one is nothing summarised.</summary>
+        private int[]? GraphTargets(int f, RegionCall call, out bool isVirtual)
+        {
+            isVirtual = false;
+            int u = _unitOf[f];
+            if (call.Callee is not { } name) { ReportUnknown(f, call, null); return null; }
+            if (name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal))
+            {
+                isVirtual = true;
+                bool known = _virtuals.TryGetValue(name, out string[]? found);
+                HashSet<int> reached = new();
+                string? missing = null;
+                foreach (string target in found ?? Array.Empty<string>())
+                    if (ResolveOverride(u, target) is { } those) reached.UnionWith(those);
+                    else if (!_summarised.Contains(target)) { known = false; missing ??= target; }
+                if (!known) { ReportUnknown(f, call, found is null ? "no targets" : "no summary of " + missing); return null; }
+                return reached.Order().ToArray();
+            }
+            if (Resolve(u, name) is not { } direct) { ReportUnknown(f, call, "not summarised"); return null; }
+            return direct.ToArray();
+        }
+
+        // Escape graphs answer each question with a search of a sorted array:
+        // the judge may ask ten times as many.
+        private long Budget => _escape is null ? JudgeBudget : 10 * JudgeBudget;
+
         private RegionFacts?[]? GiveUp(string why)
         {
-            TooBig = _over || _walked > JudgeBudget;
+            TooBig = _over || _walked > Budget;
             Log($"gave up ({why}) with contexts {_maxDepth} deep at {_parent.Count} nodes, {_copyFunction.Count} copies, {_locationObject.Count} locations, {_held} held");
-            if (_report is not null) Largest();
+            if (_report is not null && _escape is null) Largest();
             return null;
         }
 
@@ -605,7 +1114,8 @@ public static class RegionSolver
                 {
                     case RegionConstraintKind.Site: Add(a, Location(SiteObject(f, c.B, context, copy), 0)); break;
                     case RegionConstraintKind.Slot: Add(a, Location(SlotObject(copy, c.B), 0)); break;
-                    case RegionConstraintKind.Unknown: Add(a, GlobalLocation); break;
+                    // A constant too: an instance call is bound by what its receiver holds.
+                    case RegionConstraintKind.Unknown or RegionConstraintKind.Symbol: Add(a, GlobalLocation); break;
                     case RegionConstraintKind.Copy: Edge(Node(copy, c.B), a, c.C); break;
                     case RegionConstraintKind.Load: Load(a, Node(copy, c.B), c.C); break;
                     case RegionConstraintKind.Store: Store(a, c.C, Node(copy, c.B)); break;
@@ -801,6 +1311,17 @@ public static class RegionSolver
         }
 
         private readonly Dictionary<(string, long, long?), bool> _noReferenceWords = new();
+
+        // The same of a site, by function and ordinal (Any: some word) -- escape graphs' question.
+        private bool SiteHoldsNoReference(int f, int ordinal, int offset)
+        {
+            RegionSite site = _functions[f].Sites[ordinal];
+            if (site.Words == RegionWords.Leaf) return true;
+            if (site.Words != RegionWords.Described || site.Table is not { } table || _noReferenceAt is null) return false;
+            long? at = offset < 0 ? null : offset;
+            if (_noReferenceWords.TryGetValue((table, site.At, at), out bool known)) return known;
+            return _noReferenceWords[(table, site.At, at)] = _noReferenceAt(table, site.At, at);
+        }
 
         private void Watch(Watcher w, int loc, int cell)
         {
@@ -1049,6 +1570,21 @@ public static class RegionSolver
             return _globals.TryGetValue(name, out List<int>? defined) ? defined : null;
         }
 
+        /// <summary>
+        /// THE FUNCTIONS AN OVERRIDE NAMES, wherever they are: a descriptor
+        /// is any unit's, and the method it holds may be local to that unit
+        /// -- an iterator's MoveNext, its type named by a hash of its body, so
+        /// every unit that makes the same one has its own copy. Each such
+        /// copy is reached, which is everything one could be. Resolved only
+        /// in the calling unit, every interface call that might reach an
+        /// iterator made in another unit -- a foreach over an IEnumerable,
+        /// most of LINQ -- was a call of nothing summarised: the unknown
+        /// object was handed what it was given, and the compiler's own link
+        /// held too much to solve.
+        /// </summary>
+        private List<int>? ResolveOverride(int u, string name)
+            => Resolve(u, name) ?? _localsByName.GetValueOrDefault(name);
+
         private void Call(int copy, RegionCall call)
         {
             int u = _unitOf[_copyFunction[copy]];
@@ -1059,10 +1595,11 @@ public static class RegionSolver
                 bool known = _virtuals.TryGetValue(name, out string[]? found);
                 // An override the image does not keep is a type nothing makes:
                 // it is never run. One no unit summarised is code nobody follows.
+                string? missing = null;
                 foreach (string target in found ?? Array.Empty<string>())
-                    if (Resolve(u, target) is not null) overrides.Add(target);
-                    else if (!_summarised.Contains(target)) known = false;
-                if (!known) { Unknown(copy, call); return; }
+                    if (ResolveOverride(u, target) is not null) overrides.Add(target);
+                    else if (!_summarised.Contains(target)) { known = false; missing ??= target; }
+                if (!known) { Unknown(copy, call, found is null ? "no targets" : "no summary of " + missing); return; }
                 if (overrides.Count == 0) return;            // no object of the type exists
                 int self = call.Arguments.Length > 0 ? call.Arguments[0] : -1;
                 Binding binding = new() { Copy = copy, Call = call, Overrides = overrides.ToArray() };
@@ -1070,7 +1607,7 @@ public static class RegionSolver
                 Watch(binding, Node(copy, self));
                 return;
             }
-            if (Resolve(u, name) is not { } targets) { Unknown(copy, call); return; }
+            if (Resolve(u, name) is not { } targets) { Unknown(copy, call, "not summarised"); return; }
             List<int> instance = new();
             foreach (int g in targets)
             {
@@ -1120,7 +1657,7 @@ public static class RegionSolver
                 && SlotOf(binding.Call.Callee!) is long slot && _methodAt(table, site.At + slot) is { } method
                 && binding.Overrides!.Contains(method, StringComparer.Ordinal))
             {
-                foreach (int g in Resolve(_unitOf[caller], method)!)
+                foreach (int g in ResolveOverride(_unitOf[caller], method)!)
                 {
                     _named[caller].Add(g);
                     Handed(binding, CopyOf(g, o, binding.Copy), loc);
@@ -1128,7 +1665,7 @@ public static class RegionSolver
                 return;
             }
             foreach (string target in binding.Overrides!)
-                foreach (int g in Resolve(_unitOf[caller], target)!)
+                foreach (int g in ResolveOverride(_unitOf[caller], target)!)
                 {
                     _named[caller].Add(g);
                     Handed(binding, CopyOf(g, o == Global ? Unseen : -1, binding.Copy), loc);
@@ -1147,7 +1684,7 @@ public static class RegionSolver
         {
             int u = _unitOf[_copyFunction[binding.Copy]];
             foreach (string target in binding.Overrides!)
-                foreach (int g in Resolve(u, target)!)
+                foreach (int g in ResolveOverride(u, target)!)
                 {
                     _named[_copyFunction[binding.Copy]].Add(g);
                     To(binding.Copy, binding.Call, CopyOf(g, -1, binding.Copy));
@@ -1168,25 +1705,31 @@ public static class RegionSolver
 
         // The call made: its arguments the callee copy's parameters -- its
         // receiver too, unless each location of it is handed over alone
-        // (Received) -- and its return the call's result.
+        // (Received) -- and its return the call's result. A parameter of a
+        // number type (RegionFunction.NumberParams) is handed no address.
         private void To(int caller, RegionCall call, int callee, bool receiver = true)
         {
             Beneath(caller, callee);
             RegionFunction g = _functions[_copyFunction[callee]];
             for (int k = receiver ? 0 : 1; k < call.Arguments.Length && k < g.Parameters; k++)
-                if (call.Arguments[k] >= 0) Edge(Node(caller, call.Arguments[k]), Node(callee, k), 0);
+                if (call.Arguments[k] >= 0 && !g.IsNumber(k)) Edge(Node(caller, call.Arguments[k]), Node(callee, k), 0);
             if (call.Dest >= 0) Edge(Node(callee, g.Parameters), Node(caller, call.Dest), 0);
         }
 
-        private void Unknown(int copy, RegionCall call)
+        private void Unknown(int copy, RegionCall call, string? why = null)
         {
-            if (_report is not null && _reportedUnknown.Add(call.Callee ?? "an address"))
-                Log("unknown call in " + _functions[_copyFunction[copy]].Name + " of " + (call.Callee ?? "an address"));
+            ReportUnknown(_copyFunction[copy], call, why);
             foreach (int a in call.Arguments) if (a >= 0) Leak(Node(copy, a));
             if (call.Dest >= 0) Add(Node(copy, call.Dest), GlobalLocation);
         }
 
         private readonly HashSet<string> _reportedUnknown = new(StringComparer.Ordinal);
+
+        private void ReportUnknown(int f, RegionCall call, string? why)
+        {
+            if (_report is not null && _reportedUnknown.Add(call.Callee ?? "an address"))
+                Log("unknown call in " + _functions[f].Name + " of " + (call.Callee ?? "an address") + (why is null ? "" : " (" + why + ")"));
+        }
 
         // ---- solving ----------------------------------------------------------
 
@@ -1400,7 +1943,27 @@ public static class RegionSolver
         private const long OutlivingBudget = 8_000_000;
         private long _outlivingHeld;
 
-        private bool Outlives(int o, int c) => _globalReach.Contains(o) || Outliving(c).Contains(o);
+        private bool Outlives(int o, int c) => Outlives(o, c, EscapingBits(c));
+
+        // THE JUDGE ASKS HUNDREDS OF MILLIONS OF TIMES whether an object
+        // outlives a copy, most of them of one copy for object after object:
+        // the copy's answers fetched once (EscapingBits), each question is a
+        // load or two -- an object reached from the unknown object (_isGlobal),
+        // else, from escape graphs, the site's bit among those the function's
+        // summary reaches (null: every one), else Outliving's set.
+        private bool[] _isGlobal = Array.Empty<bool>();
+        // Per object: its site's number among every function's, -1 for one that is no site.
+        private int[] _siteOf = Array.Empty<int>();
+
+        private ulong[]? EscapingBits(int c) => _escape?.EscapingBits(_copyFunction[c]);
+
+        private bool Outlives(int o, int c, ulong[]? bits)
+        {
+            if (_isGlobal[o]) return true;
+            if (_escape is null) return Outliving(c).Contains(o);
+            int site = _siteOf[o];
+            return site < 0 || bits is null || (bits[site >> 6] >> (site & 63) & 1) != 0;
+        }
 
         private bool IsSite(int o) => o > Global && _objectSite[o] >= 0;
 
@@ -1409,8 +1972,34 @@ public static class RegionSolver
 
         private RegionFacts?[]? Judge()
         {
+            // +reachouter offers outer boundaries, and is judged as +judgebytes
+            // judges: an outer boundary credited by the sites' bytes, and
+            // charged only for what a boundary above would take.
+            _reachOuter = _report?.Contains("+reachouter") == true;
+            // BY BYTES, an inner boundary credited with what it takes beneath an
+            // outer one too: counted by sites, and not at all beneath another,
+            // the inner one lost to the outer, whose region holds the same
+            // objects longer -- Work's rows went to Run's region and were
+            // given back only when every round was done (1200, 1290, 1298,
+            // 1316, 1319, 1323). +judgecount weighs the old way, for an A/B.
+            _judgeBytes = _reachOuter || _report?.Contains("+judgecount") != true;
             _globalReach = new();
-            Reach(new[] { Global }, _globalReach, null);
+            if (_escape is not null)
+            {
+                _globalReach.Add(Global);
+                for (int o = 1; o < _objectFunction.Count; o++)
+                    if (IsSite(o) && _escape.Global[_siteNumber[o]]) _globalReach.Add(o);
+            }
+            else Reach(new[] { Global }, _globalReach, null);
+            _isGlobal = new bool[_objectFunction.Count];
+            foreach (int o in _globalReach) _isGlobal[o] = true;
+            _siteOf = new int[_objectFunction.Count];
+            for (int o = 0; o < _siteOf.Length; o++) _siteOf[o] = _escape is not null && IsSite(o) ? _siteNumber[o] : -1;
+            // The calls between copies as arrays, each in its set's own order:
+            // walked again and again, the order things are found in kept.
+            _calleesOf = new int[_callees.Count][];
+            _callersOf = new int[_callers.Count][];
+            for (int c = 0; c < _callees.Count; c++) { _calleesOf[c] = _callees[c].ToArray(); _callersOf[c] = _callers[c].ToArray(); }
             // WHAT CODE NOBODY FOLLOWS MAKES AND KEEPS is never taken. A copy
             // a root reaches may run beneath a call this cannot see, inside a
             // region opened above that call and above no copy of it here: an
@@ -1425,7 +2014,7 @@ public static class RegionSolver
             for (int o = 1; o < _objectFunction.Count; o++)
                 if (IsSite(o) && _globalReach.Contains(o) && _objectMakers[o].Any(unseen.Contains))
                     _unseenKept.Add((_objectFunction[o], _objectSite[o]));
-            bool[] recursive = Recursive(), beforeBlock = BeforeThreadBlock();
+            bool[] beforeBlock = BeforeThreadBlock();
             // Nor what the entry calls itself -- Main, the runtime's start --
             // as RegionPointsTo.EntryCalls: Main never (its summary says it
             // may not be one), the rest only while the entry calls Main, not
@@ -1433,7 +2022,14 @@ public static class RegionSolver
             HashSet<int> started = new();
             for (int f = 0; f < _functions.Count; f++)
                 if (_functions[f].Name == _entry && _named[f].Any(g => _functions[g].Main)) started.UnionWith(_named[f]);
-            bool MayBeBoundary(int f) => _functions[f].MayBeBoundary && !recursive[f] && !beforeBlock[f] && !started.Contains(f) && _functions[f].Name != _entry;
+            // A FUNCTION ON A CYCLE MAY BE ONE: each activation opens its own
+            // region, and what outlives a call of it is what outlives any one
+            // (the escape answers do not tell activations apart), so the
+            // innermost region where an object is made -- the first boundary
+            // on the way up, which NearestAbove finds stopping at boundaries
+            // -- is proved as any. Refused, the compiler's own code, nearly
+            // all of it on one cycle of virtual calls, had no boundary at all.
+            bool MayBeBoundary(int f) => _functions[f].MayBeBoundary && !beforeBlock[f] && !started.Contains(f) && _functions[f].Name != _entry;
 
             // Each site's objects, by function and ordinal.
             Dictionary<(int, int), List<int>> bySite = new();
@@ -1449,6 +2045,8 @@ public static class RegionSolver
                 foreach (int o in objects)
                     foreach (int maker in _objectMakers[o])
                         (madeBy.TryGetValue(maker, out List<int>? list) ? list : madeBy[maker] = new()).Add(o);
+            _madeAt = new List<int>?[_copyFunction.Count];
+            foreach ((int maker, List<int> objects) in madeBy) _madeAt[maker] = objects;
 
             // THE NEAREST CALL EACH OBJECT DIES IN (RegionPointsTo.Nearest):
             // from each copy that makes it up through its callers, nearest
@@ -1472,9 +2070,16 @@ public static class RegionSolver
                     foreach (int caller in _callers[c].Order())
                         if (depth.TryAdd(caller, depth[c] + 1)) next.Enqueue(caller);
                 }
-                if (_walked > JudgeBudget) return GiveUp("too much to judge");
+                if (_walked > Budget) return GiveUp("too much to judge");
             }
-            if (_report is not null) foreach (int f in chosen) Log("boundary chosen " + _functions[f].Name);
+            if (_report is not null) Log($"judge: nearest walk {_walked} walked, {chosen.Count} chosen, {_clock.ElapsedMilliseconds} ms");
+            // What the nearest walk chose, kept: +reachouter's more candidates
+            // cost Evaluate more, and past its budget the judge goes back to
+            // these rather than give every region up.
+            SortedSet<int>? nearestOnly = _reachOuter ? new(chosen) : null;
+            if (_reachOuter) OfferOuter(chosen, madeBy, MayBeBoundary);
+            long walkedBefore = _walked;
+            if (_report is not null && _escape is null) foreach (int f in chosen) Log("boundary chosen " + _functions[f].Name);
             // With no boundary at all a loop may still be given a region: Main's.
             if (chosen.Count == 0 && !LoopRegions)
             {
@@ -1490,23 +2095,41 @@ public static class RegionSolver
             Verdict final = null!;
             for (int round = 0; ; round++)
             {
-                if (Evaluate(chosen, bySite, madeBy) is not { } verdict) return GiveUp("too much to judge");
+                Verdict? evaluated = Evaluate(chosen, bySite, madeBy);
+                if (evaluated is null && nearestOnly is not null && chosen.Count > nearestOnly.Count)
+                {
+                    Log($"judge: reachouter's candidates past the judge's budget; the nearest walk's {nearestOnly.Count} judged instead");
+                    chosen = nearestOnly;
+                    nearestOnly = null;
+                    _walked = walkedBefore;
+                    round = -1;
+                    continue;
+                }
+                if (evaluated is not { } verdict) return GiveUp("too much to judge");
+                if (_report is not null) Log($"judge: round {round}, {_walked} walked, {chosen.Count} chosen, {verdict.Taken.Count} taken, {_clock.ElapsedMilliseconds} ms");
                 taken = verdict.Taken;
                 final = verdict;
                 if (round == 3) break;
-                List<int> dropped = chosen.Where(f => verdict.Loss.GetValueOrDefault(f) > verdict.Gain.GetValueOrDefault(f)).ToList();
+                List<int> dropped = _judgeBytes
+                    ? chosen.Where(f => verdict.LossBytes.GetValueOrDefault(f) > verdict.GainBytes.GetValueOrDefault(f)).ToList()
+                    : chosen.Where(f => verdict.Loss.GetValueOrDefault(f) > verdict.Gain.GetValueOrDefault(f)).ToList();
                 if (dropped.Count == 0) break;
                 foreach (int f in dropped)
                 {
                     chosen.Remove(f);
-                    if (_report is not null) Log("boundary dropped " + _functions[f].Name + ": keeps " + verdict.Loss[f] + " sites out, takes " + verdict.Gain.GetValueOrDefault(f));
+                    if (_report is not null)
+                        Log("boundary dropped " + _functions[f].Name + ": keeps " + verdict.Loss.GetValueOrDefault(f) + " sites out, takes " + verdict.Gain.GetValueOrDefault(f)
+                            + (_judgeBytes ? $" ({verdict.LossBytes.GetValueOrDefault(f)} bytes out, {verdict.GainBytes.GetValueOrDefault(f)} taken)" : ""));
                 }
             }
 
             // THE LOOPS GIVEN A REGION OF THEIR OWN (RegionPointsTo's "loops"),
             // over the boundaries left, and the sites taken with them.
-            List<LoopRegion> loops = LoopRegions ? SelectLoops(final, madeBy, beforeBlock) : new();
+            List<LoopRegion> loops = LoopRegions ? SelectLoops(final, beforeBlock) : new();
+            if (_report is not null) Log($"judge: loops selected {loops.Count}, {_loopWalked} walked, {_clock.ElapsedMilliseconds} ms");
             if (loops.Count > 0) taken = TakenWithLoops(loops, final, bySite, madeBy);
+            if (_report is not null) Log($"judge: taken with loops, {_walked} walked, {_clock.ElapsedMilliseconds} ms");
+            taken = WithoutPiledUp(taken, loops);
             if (chosen.Count == 0 && loops.Count == 0)
             {
                 Log("no boundary found");
@@ -1526,20 +2149,162 @@ public static class RegionSolver
             foreach (int f in opened) For(f).Boundaries.Add(_functions[f].Name);
             foreach ((int f, int site) in taken) For(f).Sites.Add((_functions[f].Name, site));
             foreach (LoopRegion loop in loops) For(loop.Function).Loops.Add((_functions[loop.Function].Name, loop.Shape.Header));
+            Sizes(opened, loops, taken, For);
             if (_report is not null) Report(chosen, opened, taken, madeBy);
+            // --region-report +sites: every site's verdict, for weighing against where the bytes go.
+            if (_report is not null && _report.Contains("+sites"))
+                foreach (((int f, int site), List<int> objects) in bySite)
+                {
+                    string verdict = taken.Contains((f, site)) ? "taken"
+                        : _unseenKept.Contains((f, site)) ? "unseen"
+                        : objects.Any(_globalReach.Contains) ? "global"
+                        : objects.FirstOrDefault(o => _refusedBy[o] >= 0) is int r && _refusedBy[r] >= 0 ? "refused-by " + _functions[_copyFunction[_refusedBy[r]]].Name
+                        : objects.Any(o => final.Above[o] != -1) ? "loop-refused" : "no-boundary";
+                    Console.Error.WriteLine("regions-site " + _functions[f].Name + " " + site + " " + verdict + " line " + _functions[f].Sites[site].Line + " " + (_functions[f].Sites[site].Table ?? "-"));
+                }
             Log($"{opened.Count} boundaries, {loops.Count} loops, {taken.Count} sites in the innermost region, of {bySite.Count}; judged by {_clock.ElapsedMilliseconds} ms, {_walked} walked");
             return facts;
+        }
+
+        // The drop rule by bytes (SiteWeight, TakenAbove); --region-report +judgecount: by sites, as before.
+        private bool _judgeBytes;
+        // --region-report +reachouter: candidacy's A/B (OfferOuter).
+        private bool _reachOuter;
+
+        // How far up OfferOuter looks: a compiler's pass is some six to
+        // twelve calls above what its helpers allocate (driver, the pass's
+        // Run, a visitor, a rule, a builder, the collection), and the
+        // nearest walk's eight stopped short of it. Sixteen covers that with
+        // room, and every level is walked once a making copy, under its own
+        // budget.
+        private const int OuterReach = 16;
+        // What a function must take to be offered: 1 KB a call, estimated
+        // (SiteWeight). A region's opening and closing are two calls and a
+        // 32-byte record; a kilobyte is some thirty small objects the
+        // collector no longer sweeps one by one, well past what the calls
+        // cost, while an outer function holding only a stray object or two
+        // is left alone. The judge weighs every one offered again
+        // (+judgebytes), so the threshold only bounds how many it weighs.
+        private const long OuterShare = 1024;
+        // The walking OfferOuter may do: one judge's budget, counted apart
+        // from the judge's own (whose Budget gives every region up). Past
+        // it, what is offered so far stands and the judge goes on.
+        private const long OuterBudget = JudgeBudget;
+
+        /// <summary>
+        /// OUTER BOUNDARIES OFFERED (+reachouter): from each copy that makes
+        /// objects, every function up to OuterReach calls above it that may be
+        /// a boundary and whose return an object does not outlive is credited
+        /// with the object's bytes (SiteWeight); one credited with OuterShare
+        /// or more is a candidate too, beside the nearest the walk found.
+        /// Evaluate decides between them, in bytes. The nearest walk settles an
+        /// object at the first function that does not outlive it, so an outer
+        /// function -- a pass's Run, over leaves that kill their own
+        /// temporaries -- was a candidate only for objects nothing below it
+        /// settled.
+        /// </summary>
+        private void OfferOuter(SortedSet<int> chosen, Dictionary<int, List<int>> madeBy, Func<int, bool> mayBeBoundary)
+        {
+            long walked = 0;
+            Dictionary<int, long> credit = new();
+            bool stopped = false;
+            foreach ((int made, List<int> objects) in madeBy.OrderBy(pair => pair.Key))
+            {
+                List<int> open = objects.Where(o => !_globalReach.Contains(o)).ToList();
+                if (open.Count == 0) continue;
+                long[] weight = open.Select(o => SiteWeight(_objectFunction[o], _objectSite[o])).ToArray();
+                Dictionary<int, int> depth = new() { [made] = 0 };
+                Queue<int> next = new();
+                next.Enqueue(made);
+                HashSet<int> creditedHere = new();
+                while (next.TryDequeue(out int c))
+                {
+                    walked++;
+                    int f = _copyFunction[c];
+                    if (mayBeBoundary(f) && creditedHere.Add(f))
+                    {
+                        long sum = 0;
+                        for (int k = 0; k < open.Count; k++)
+                        {
+                            walked++;
+                            if (!Outlives(open[k], c)) sum += weight[k];
+                        }
+                        if (sum > 0) credit[f] = Math.Min(long.MaxValue / 2, credit.GetValueOrDefault(f) + sum);
+                    }
+                    if (depth[c] >= OuterReach) continue;
+                    foreach (int caller in _callers[c].Order())
+                        if (depth.TryAdd(caller, depth[c] + 1)) next.Enqueue(caller);
+                }
+                if (walked > OuterBudget) { stopped = true; break; }
+            }
+            int offered = 0;
+            foreach ((int f, long bytes) in credit)
+                if (bytes >= OuterShare && chosen.Add(f)) offered++;
+            if (_report is not null)
+                Log($"judge: reachouter offered {offered} more, {credit.Count} credited, {walked} walked{(stopped ? ", past its budget" : "")}, {_clock.ElapsedMilliseconds} ms");
+        }
+
+        // What a site costs a call, estimated: its block's bytes (the sizes
+        // hints; 32 where not a constant) times how often it runs in its
+        // function, the product of its loops' trip counts (16 a loop of no
+        // known count), capped. A pass's Run over thousands of instructions
+        // weighs what it makes in its loops, where a leaf's one array weighs
+        // one array.
+        private long SiteWeight(int f, int site)
+        {
+            const long Cap = 1L << 30;
+            RegionFunction function = _functions[f];
+            long bytes = function.BytesOf(site) is long b and > 0 ? b : 32;
+            long times = 1;
+            int loop = function.LoopOfSite(site);
+            if (loop == RegionFunction.Throwing) return bytes;
+            if (loop == RegionFunction.Unbounded) times = 16;
+            for (int l = loop, steps = 0; l >= 0 && l < function.Repeats.Length && steps < 16; l = function.Repeats[l].Parent, steps++)
+            {
+                long trip = function.Repeats[l].Trip;
+                times = Math.Min(Cap, times * (trip > 0 ? Math.Min(trip, 4096) : 16));
+            }
+            return Math.Min(Cap, bytes * times);
+        }
+
+        // Whether a boundary above the copy that refused each object --
+        // the first on each way up past it -- would take the object: what
+        // Loss charges a boundary for is what it keeps out of a region that
+        // would hold it. The rule before charged every refusal beneath any
+        // other boundary, though that one refused the same objects: a pass's
+        // Run beneath its driver was charged for every IR object it kept,
+        // which outlives the driver too.
+        private bool TakenAbove(List<int> objects)
+        {
+            foreach (int o in objects)
+            {
+                int b = _refusedBy[o];
+                if (b < 0) continue;
+                bool takes = false;
+                foreach (int p in _callersOf[b])
+                {
+                    foreach (int g in _isBoundary[p] ? Alone(p) : _nearest[_component[p]])
+                        if (_copyFunction[g] != _copyFunction[b] && !Outlives(o, g, EscapingBits(g))) { takes = true; break; }
+                    if (takes) break;
+                }
+                if (!takes) return false;
+            }
+            return true;
         }
 
         private sealed class Verdict
         {
             public readonly HashSet<(int, int)> Taken = new();
-            /// <summary>Per object: the boundary above it, and the one refusing it (-2: more than one).</summary>
-            public Dictionary<int, int> Above = null!, Refuser = null!;
+            /// <summary>Per object: whether its site is taken.</summary>
+            public bool[] TakenObject = null!;
+            /// <summary>Per object: the boundary above it, and the one refusing it (-1: none, -2: more than one).</summary>
+            public int[] Above = null!, Refuser = null!;
             /// <summary>Per boundary: the sites it alone refuses that another boundary is above.</summary>
             public readonly Dictionary<int, int> Loss = new();
             /// <summary>Per boundary: the sites taken that only it is above.</summary>
             public readonly Dictionary<int, int> Gain = new();
+            /// <summary>+judgebytes: Loss and Gain as estimated bytes a call (SiteWeight), Loss only where a boundary above would take the site.</summary>
+            public readonly Dictionary<int, long> LossBytes = new(), GainBytes = new();
         }
 
         /// <summary>
@@ -1557,52 +2322,94 @@ public static class RegionSolver
         {
             NearestAbove(chosen);
             // Per object: the boundary above it and the one refusing it, -1
-            // for none and -2 for more than one.
-            Dictionary<int, int> above = new(), refuser = new();
-            static void Note(Dictionary<int, int> into, int o, int f)
+            // for none and -2 for more than one; and whether another boundary
+            // is above that one.
+            int objectCount = _objectFunction.Count;
+            int[] above = new int[objectCount], refuser = new int[objectCount];
+            Array.Fill(above, -1);
+            Array.Fill(refuser, -1);
+            bool[] outer = new bool[objectCount];
+            static void Note(int[] into, int o, int f)
             {
-                if (!into.TryGetValue(o, out int was)) into[o] = f;
+                int was = into[o];
+                if (was == -1) into[o] = f;
                 else if (was != f) into[o] = -2;
             }
-            _refusedBy.Clear();
-            HashSet<int> outer = new();
+            if (_refusedBy.Length != objectCount) _refusedBy = new int[objectCount];
+            Array.Fill(_refusedBy, -1);
+            _refusedOrder.Clear();
+            // Per boundary copy, asked once a round: 1 when another
+            // function's boundary is above it, 0 when none is, -1 unknown.
+            sbyte[] hasOuter = new sbyte[_copyFunction.Count];
+            Array.Fill(hasOuter, (sbyte)-1);
             foreach ((int c, List<int> made) in madeBy)
             {
-                foreach (int b in Above(c))
+                // What every boundary above the copy notes of each object it
+                // makes, noted once for all of them: the boundary above it
+                // (one function's, or -2 for more than one), and whether
+                // another boundary is above that one -- open around it too,
+                // for what it leaves, as every boundary above an object was
+                // noted when every one was judged.
+                int[] boundaries = Above(c);
+                int noted = -1;
+                bool beneathOuter = false;
+                foreach (int b in boundaries)
                 {
                     int f = _copyFunction[b];
+                    noted = noted == -1 || noted == f ? f : -2;
+                    if (hasOuter[b] < 0) hasOuter[b] = (sbyte)(BeneathAnother(b) ? 1 : 0);
+                    beneathOuter |= hasOuter[b] > 0;
+                }
+                if (noted != -1)
                     foreach (int o in made)
                     {
-                        _walked++;
-                        Note(above, o, f);
-                        // Another boundary above this one: open around it
-                        // too, for what it leaves -- as every boundary above
-                        // an object was noted when every one was judged.
-                        if (Above(b, beyond: true).Length > 0) outer.Add(o);
-                        if (Outlives(o, b))
+                        int was = above[o];
+                        above[o] = was == -1 ? noted : was == noted ? was : -2;
+                        if (beneathOuter) outer[o] = true;
+                    }
+                foreach (int b in boundaries)
+                {
+                    int f = _copyFunction[b];
+                    ulong[]? bits = EscapingBits(b);
+                    _walked += made.Count;
+                    foreach (int o in made)
+                        if (Outlives(o, b, bits))
                         {
                             Note(refuser, o, f);
-                            _refusedBy.TryAdd(o, b);
+                            if (_refusedBy[o] == -1) { _refusedBy[o] = b; _refusedOrder.Add(o); }
                         }
-                    }
                 }
-                if (_walked > JudgeBudget) return null;
+                if (_walked > Budget) return null;
             }
+            // WHAT WOULD ONLY PILE UP, with the boundaries this round has: no
+            // Gain for the boundary whose region it would pile in, and no
+            // Loss either -- refused, it goes to the heap, where it goes anyway.
+            HashSet<(int, int)> reachable = new();
+            foreach (((int, int) key, List<int> objects) in bySite)
+                if (objects.Any(o => above[o] != -1)) reachable.Add(key);
+            HashSet<(int, int)> piled = PiledSites(reachable, new List<LoopRegion>(), out _, freshNear: true);
             // A site is taken when none of its objects is refused and one is
             // beneath some boundary.
-            Verdict verdict = new() { Above = above, Refuser = refuser };
+            Verdict verdict = new() { Above = above, Refuser = refuser, TakenObject = new bool[objectCount] };
             foreach (((int, int) key, List<int> objects) in bySite)
             {
-                bool anywhere = objects.Any(above.ContainsKey);
+                bool anywhere = false, refused = false;
+                foreach (int o in objects) { anywhere |= above[o] != -1; refused |= refuser[o] != -1; }
                 if (!anywhere || _unseenKept.Contains(key)) continue;
-                if (!objects.Any(refuser.ContainsKey))
+                bool piles = piled.Contains(key);
+                if (!refused)
                 {
                     verdict.Taken.Add(key);
+                    foreach (int o in objects) verdict.TakenObject[o] = true;
                     // Taken only for the one boundary above all of it.
                     int only = -1;
                     foreach (int o in objects)
-                        if (above.TryGetValue(o, out int f)) only = (only == -1 || only == f) && !outer.Contains(o) ? f : -2;
-                    if (only >= 0) verdict.Gain[only] = verdict.Gain.GetValueOrDefault(only) + 1;
+                        if (above[o] is int f and not -1) only = (only == -1 || only == f) && (_judgeBytes || !outer[o]) ? f : -2;
+                    if (only >= 0 && !piles)
+                    {
+                        verdict.Gain[only] = verdict.Gain.GetValueOrDefault(only) + 1;
+                        verdict.GainBytes[only] = verdict.GainBytes.GetValueOrDefault(only) + SiteWeight(key.Item1, key.Item2);
+                    }
                     continue;
                 }
                 // Refused by one boundary alone, with another above it too.
@@ -1610,10 +2417,13 @@ public static class RegionSolver
                 bool other = false;
                 foreach (int o in objects)
                 {
-                    if (refuser.TryGetValue(o, out int r)) sole = sole == -1 || sole == r ? r : -2;
-                    if (outer.Contains(o) || above.TryGetValue(o, out int a) && (a == -2 || refuser.GetValueOrDefault(o, -1) != a)) other = true;
+                    if (refuser[o] is int r and not -1) sole = sole == -1 || sole == r ? r : -2;
+                    if (outer[o] || above[o] is int a and not -1 && (a == -2 || refuser[o] != a)) other = true;
                 }
+                if (piles) continue;
                 if (sole >= 0 && other) verdict.Loss[sole] = verdict.Loss.GetValueOrDefault(sole) + 1;
+                if (_judgeBytes && sole >= 0 && other && TakenAbove(objects))
+                    verdict.LossBytes[sole] = verdict.LossBytes.GetValueOrDefault(sole) + SiteWeight(key.Item1, key.Item2);
             }
             return verdict;
         }
@@ -1623,9 +2433,36 @@ public static class RegionSolver
         private bool[] _isBoundary = Array.Empty<bool>();
         private int[] _component = Array.Empty<int>();
         private int[][] _nearest = Array.Empty<int[]>();
+        // Per copy: its callees and callers, in their sets' order; a copy alone, asked of again and again.
+        private int[][] _calleesOf = Array.Empty<int[]>(), _callersOf = Array.Empty<int[]>();
+        private int[]?[] _alone = Array.Empty<int[]?>();
+        // Per copy: the objects it makes that a region may take (Judge's madeBy).
+        private List<int>?[] _madeAt = Array.Empty<List<int>?>();
 
-        /// <summary>The boundary copies a region can be opened in innermost when copy `c` runs: itself, if it is one (unless `beyond`), else the first on each way up.</summary>
-        private int[] Above(int c, bool beyond = false) => _isBoundary[c] && !beyond ? new[] { c } : _nearest[_component[c]];
+        private int[] Alone(int c)
+        {
+            if (_alone.Length != _copyFunction.Count) _alone = new int[]?[_copyFunction.Count];
+            return _alone[c] ??= new[] { c };
+        }
+
+        /// <summary>The boundary copies a region can be opened in innermost when copy `c` runs: itself, if it is one, else the first on each way up.</summary>
+        private int[] Above(int c) => _isBoundary[c] ? Alone(c) : _nearest[_component[c]];
+
+        // Per component: the one function whose boundary copies are innermost
+        // above it, -1 for none, -2 for more than one.
+        private int[] _nearestFunction = Array.Empty<int>();
+
+        /// <summary>Whether another function's boundary is innermost above a call of boundary copy `b`: on one of its callers, that caller if it is one, else the first above it.</summary>
+        private bool BeneathAnother(int b)
+        {
+            int f = _copyFunction[b];
+            foreach (int p in _callersOf[b])
+            {
+                int g = _isBoundary[p] ? _copyFunction[p] : _nearestFunction[_component[p]];
+                if (g != -1 && g != f) return true;
+            }
+            return false;
+        }
 
         /// <summary>
         /// THE FIRST BOUNDARY ON EACH WAY UP, for every copy at once: over the
@@ -1653,7 +2490,7 @@ public static class RegionSolver
                 if (index[start] >= 0) continue;
                 index[start] = low[start] = next++;
                 stack.Push(start); onStack[start] = true;
-                calls.Push((start, _callees[start].ToArray(), 0));
+                calls.Push((start, _calleesOf[start], 0));
                 while (calls.Count > 0)
                 {
                     (int v, int[] callees, int at) = calls.Pop();
@@ -1661,12 +2498,14 @@ public static class RegionSolver
                     while (at < callees.Length)
                     {
                         int w = callees[at++];
+                        // Up stops at a boundary: each is a component of its own.
+                        if (_isBoundary[w]) continue;
                         if (index[w] < 0)
                         {
                             calls.Push((v, callees, at));
                             index[w] = low[w] = next++;
                             stack.Push(w); onStack[w] = true;
-                            calls.Push((w, _callees[w].ToArray(), 0));
+                            calls.Push((w, _calleesOf[w], 0));
                             descended = true;
                             break;
                         }
@@ -1685,25 +2524,42 @@ public static class RegionSolver
             }
             // Found callees first: the last found is called by none found before it.
             _nearest = new int[components.Count][];
-            HashSet<int> union = new();
+            _nearestFunction = new int[components.Count];
+            // The union of several callers': a copy in it when its mark is the component's.
+            int[] mark = new int[count];
+            List<int> union = new();
             for (int k = components.Count - 1; k >= 0; k--)
             {
+                // A boundary's own component: what is above it is
+                // BeneathAnother's to say, over callers whose components may
+                // come after it.
+                if (components[k].Count == 1 && _isBoundary[components[k][0]]) { _nearest[k] = Array.Empty<int>(); _nearestFunction[k] = -1; continue; }
                 union.Clear();
                 int[]? only = null;
                 bool many = false;
                 foreach (int m in components[k])
-                    foreach (int p in _callers[m])
+                    foreach (int p in _callersOf[m])
                     {
                         if (_component[p] == k) continue;
                         _walked++;
-                        int[] from = _isBoundary[p] ? new[] { p } : _nearest[_component[p]];
+                        int[] from = _isBoundary[p] ? Alone(p) : _nearest[_component[p]];
                         if (from.Length == 0) continue;
                         if (only is null && !many) { only = from; continue; }
                         if (ReferenceEquals(only, from)) continue;
-                        if (!many) { union.UnionWith(only!); many = true; }
-                        union.UnionWith(from);
+                        if (!many)
+                        {
+                            foreach (int x in only!) if (mark[x] != k + 1) { mark[x] = k + 1; union.Add(x); }
+                            many = true;
+                        }
+                        foreach (int x in from) if (mark[x] != k + 1) { mark[x] = k + 1; union.Add(x); }
                     }
-                _nearest[k] = many ? union.Order().ToArray() : only ?? Array.Empty<int>();
+                int[] nearest = _nearest[k] = many ? union.ToArray() : only ?? Array.Empty<int>();
+                if (many) Array.Sort(nearest);
+                int function = -1;
+                foreach (int x in nearest)
+                    if (function == -1 || function == _copyFunction[x]) function = _copyFunction[x];
+                    else { function = -2; break; }
+                _nearestFunction[k] = function;
             }
         }
 
@@ -1729,6 +2585,13 @@ public static class RegionSolver
         /// thread's first method, which run with no block or the parent's.
         /// A region is opened in the block, so none of these is a boundary:
         /// 214_linq's link opened one in SetThreadBlock and died there.
+        ///
+        /// AND WHAT RUNS AS IT ENDS: the function that hands the thread's arena
+        /// back (RuntimeAbi.ReleaseRegion) and every caller of it -- a
+        /// thread's body, which calls Runtime.EndThread before it returns.
+        /// Its region's leave would come after the arena it was opened in was
+        /// gone: Thread.Body made a boundary faulted in RegionLeave in every
+        /// thread test.
         /// </summary>
         private bool[] BeforeThreadBlock()
         {
@@ -1738,62 +2601,12 @@ public static class RegionSolver
                 foreach (int g in _named[f]) (callers[g] ??= new()).Add(f);
             Stack<int> next = new();
             for (int f = 0; f < _functions.Count; f++)
-                if (_functions[f].Name == RuntimeAbi.SetThreadBlock) { before[f] = true; next.Push(f); }
+                if (_functions[f].Name is RuntimeAbi.SetThreadBlock or RuntimeAbi.ReleaseRegion) { before[f] = true; next.Push(f); }
             while (next.TryPop(out int g))
                 if (callers[g] is { } list)
                     foreach (int f in list)
                         if (!before[f]) { before[f] = true; next.Push(f); }
             return before;
-        }
-
-        // Each function on a cycle of named calls, itself included (Tarjan, iterative).
-        private bool[] Recursive()
-        {
-            int count = _functions.Count;
-            bool[] recursive = new bool[count];
-            int[] index = new int[count], low = new int[count];
-            bool[] onStack = new bool[count];
-            for (int n = 0; n < count; n++) index[n] = -1;
-            int next = 0;
-            Stack<int> stack = new();
-            Stack<(int Node, int[] Callees, int At)> calls = new();
-            for (int start = 0; start < count; start++)
-            {
-                if (index[start] >= 0) continue;
-                index[start] = low[start] = next++;
-                stack.Push(start); onStack[start] = true;
-                calls.Push((start, _named[start].ToArray(), 0));
-                while (calls.Count > 0)
-                {
-                    (int v, int[] callees, int at) = calls.Pop();
-                    bool descended = false;
-                    while (at < callees.Length)
-                    {
-                        int w = callees[at++];
-                        if (w == v) { recursive[v] = true; continue; }
-                        if (index[w] < 0)
-                        {
-                            calls.Push((v, callees, at));
-                            index[w] = low[w] = next++;
-                            stack.Push(w); onStack[w] = true;
-                            calls.Push((w, _named[w].ToArray(), 0));
-                            descended = true;
-                            break;
-                        }
-                        if (onStack[w]) low[v] = Math.Min(low[v], index[w]);
-                    }
-                    if (descended) continue;
-                    if (low[v] == index[v])
-                    {
-                        List<int> component = new();
-                        int w;
-                        do { w = stack.Pop(); onStack[w] = false; component.Add(w); } while (w != v);
-                        if (component.Count > 1) foreach (int c in component) recursive[c] = true;
-                    }
-                    if (calls.Count > 0) { int parent = calls.Peek().Node; low[parent] = Math.Min(low[parent], low[v]); }
-                }
-            }
-            return recursive;
         }
 
         // ---- loops ------------------------------------------------------------
@@ -1816,16 +2629,22 @@ public static class RegionSolver
         // label's address (RegionSummary). A loop is given a region where, in
         // every copy of its function, no site taken by the boundaries is
         // refused for it -- but what a lap makes and carries into the next
-        // only through what the loop itself writes, which goes to the heap
-        // -- and where every lap that goes round makes, in some copy, with
-        // no boundary between, something the region takes; a loop that makes
-        // something only on a path seldom taken pays for no call at the top
-        // of every lap. Then a site is taken when, besides what the
-        // boundaries ask, no loop above any of its objects -- one in whose
-        // body it is, or whose calls reach the copy that makes it -- finds it
-        // live where a lap ends: whichever region is innermost when it is
-        // made, it is dead by that region's end. And a loop with nothing taken
-        // beneath it is given no region after all.
+        // only through what the loop itself writes, which goes to the heap,
+        // and what a lap makes, with no boundary between the loop and its
+        // maker, that is live where a lap ends: the boundary taking it is the
+        // copy's own or one above, so it too goes to the heap, where fewer
+        // sites go there than every lap makes for the loop's region that no
+        // boundary takes. What a
+        // boundary inside the lap takes is never sent there; a loop that
+        // would refuse it gets no region. And where every lap that goes round
+        // makes, in some copy, with no boundary between, something the region
+        // takes; a loop that makes something only on a path seldom taken
+        // pays for no call at the top of every lap. Then a site is taken
+        // when, besides what the boundaries ask, no loop above any of its
+        // objects -- one in whose body it is, or whose calls reach the copy
+        // that makes it -- finds it live where a lap ends: whichever region
+        // is innermost when it is made, it is dead by that region's end. And
+        // a loop with nothing taken beneath it is given no region after all.
 
         /// <summary>The most copies and objects walked choosing loops: past it, the loops left get no region.</summary>
         private const long LoopBudget = 50_000_000;
@@ -1837,9 +2656,13 @@ public static class RegionSolver
         /// A loop given a region, in each copy of its function: the copies its
         /// calls reach (All), and what is reached from what is live where a
         /// lap ends and from the copy's frame slots, past the unknown object
-        /// (LapLive). What outlives the copy (Outlives) outlives a lap too.
+        /// (LapLive, one bit an object). What outlives the copy (Outlives)
+        /// outlives a lap too.
         /// </summary>
-        private sealed record LoopRegion(int Function, RegionLoopShape Shape, List<(int Copy, HashSet<int> All, HashSet<int> LapLive)> Copies);
+        private sealed record LoopRegion(int Function, RegionLoopShape Shape, List<(int Copy, int[] All, ulong[] LapLive)> Copies);
+
+        private static bool Has(ulong[] set, int x) => (set[x >> 6] >> (x & 63) & 1) != 0;
+        private ulong[] NoObjects() => new ulong[(_objectFunction.Count + 63) >> 6];
 
         // The functions a call by name, or a virtual call's symbol, in unit `u` may run.
         private readonly Dictionary<(int, string), HashSet<int>> _callFunctions = new();
@@ -1850,51 +2673,247 @@ public static class RegionSolver
             HashSet<int> functions = new();
             IEnumerable<string> names = name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal)
                 ? _virtuals.GetValueOrDefault(name) ?? Array.Empty<string>() : new[] { name };
+            bool virtualCall = names is string[] && name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal);
             foreach (string target in names)
-                if (Resolve(u, target) is { } targets) functions.UnionWith(targets);
+                if ((virtualCall ? ResolveOverride(u, target) : Resolve(u, target)) is { } targets) functions.UnionWith(targets);
             return _callFunctions[(u, name)] = functions;
         }
 
+        // Per copy, per call: Targets, found once.
+        private int[]?[]?[] _targetsOf = Array.Empty<int[]?[]?>();
+
         /// <summary>
         /// The copies call `k` of copy `c` may reach: those `c` calls that are
-        /// copies of a function the call names. Never fewer than it reaches;
-        /// a call nobody can name reaches what code nobody follows calls,
-        /// whose objects a region may take are dead by its return.
+        /// copies of a function the call names, in the order `c` calls them.
+        /// Never fewer than it reaches; a call nobody can name reaches what
+        /// code nobody follows calls, whose objects a region may take are
+        /// dead by its return.
         /// </summary>
-        private IEnumerable<int> Targets(int c, int k)
+        private int[] Targets(int c, int k)
         {
+            if (_targetsOf.Length != _copyFunction.Count) _targetsOf = new int[]?[]?[_copyFunction.Count];
             int f = _copyFunction[c];
-            if (_functions[f].Calls[k].Callee is not { } name) yield break;
-            HashSet<int> functions = CallFunctions(_unitOf[f], name);
-            if (functions.Count == 0) yield break;
-            foreach (int t in _callees[c])
-                if (functions.Contains(_copyFunction[t])) yield return t;
+            int[]?[] known = _targetsOf[c] ??= new int[]?[_functions[f].Calls.Count];
+            if (known[k] is { } found) return found;
+            List<int> targets = new();
+            if (_functions[f].Calls[k].Callee is { } name && CallFunctions(_unitOf[f], name) is { Count: > 0 } functions)
+                foreach (int t in _calleesOf[c])
+                    if (functions.Contains(_copyFunction[t])) targets.Add(t);
+            return known[k] = targets.Count == 0 ? Array.Empty<int>() : targets.ToArray();
         }
 
-        /// <summary>The copies a loop's calls in copy `c` reach (All), and those reached through no boundary copy (Near): where what is made is made in the loop's region.</summary>
-        private (HashSet<int> All, HashSet<int> Near) Reached(int c, int[] calls)
+        /// <summary>
+        /// THE COPIES A CALL REACHES, a component at a time: the components
+        /// of the calls between copies (Tarjan's), each one's closure -- its
+        /// own copies and every one its callees' components reach -- found
+        /// once, when first asked, and kept: a small one as its copies, a
+        /// large one a bit a copy. Copies `excluded` are never entered (a
+        /// walk through no boundary). A loop's calls into the compiler's own
+        /// cycle of thirteen thousand functions walked a million calls each,
+        /// for thousands of loops; the cycle is one component here, its
+        /// closure found once.
+        /// </summary>
+        private sealed class CallClosures
         {
-            HashSet<int> all = new(), near = new();
-            Stack<int> next = new(), nearNext = new();
+            private const int Small = 256;
+            private readonly int[][] _callees;
+            private readonly bool[]? _excluded;
+            private readonly int[] _component;
+            private readonly List<int[]> _members = new();
+            private readonly int[]?[] _list;
+            private readonly ulong[]?[] _bits;
+            private readonly ulong[] _scratch;
+            private readonly int[] _seen;
+            private int _stamp;
+
+            public int Words { get; }
+
+            public CallClosures(int[][] callees, bool[]? excluded)
+            {
+                _callees = callees;
+                _excluded = excluded;
+                int count = callees.Length;
+                Words = (count + 63) >> 6;
+                _scratch = new ulong[Words];
+                _component = new int[count];
+                int[] index = new int[count], low = new int[count];
+                bool[] onStack = new bool[count];
+                Array.Fill(index, -1);
+                int next = 0;
+                Stack<int> stack = new();
+                Stack<(int Node, int At)> calls = new();
+                for (int start = 0; start < count; start++)
+                {
+                    if (index[start] >= 0 || Excluded(start)) continue;
+                    index[start] = low[start] = next++;
+                    stack.Push(start); onStack[start] = true;
+                    calls.Push((start, 0));
+                    while (calls.Count > 0)
+                    {
+                        (int v, int at) = calls.Pop();
+                        bool descended = false;
+                        int[] out_ = callees[v];
+                        while (at < out_.Length)
+                        {
+                            int w = out_[at++];
+                            if (Excluded(w)) continue;
+                            if (index[w] < 0)
+                            {
+                                calls.Push((v, at));
+                                index[w] = low[w] = next++;
+                                stack.Push(w); onStack[w] = true;
+                                calls.Push((w, 0));
+                                descended = true;
+                                break;
+                            }
+                            if (onStack[w]) low[v] = Math.Min(low[v], index[w]);
+                        }
+                        if (descended) continue;
+                        if (low[v] == index[v])
+                        {
+                            List<int> component = new();
+                            int w;
+                            do { w = stack.Pop(); onStack[w] = false; component.Add(w); _component[w] = _members.Count; } while (w != v);
+                            _members.Add(component.ToArray());
+                        }
+                        if (calls.Count > 0) { int parent = calls.Peek().Node; low[parent] = Math.Min(low[parent], low[v]); }
+                    }
+                }
+                _list = new int[]?[_members.Count];
+                _bits = new ulong[]?[_members.Count];
+                _seen = new int[_members.Count];
+            }
+
+            private bool Excluded(int c) => _excluded is not null && _excluded[c];
+
+            /// <summary>Adds the copies a call of copy `c` may reach, itself among them, to `into`, a bit a copy.</summary>
+            public void AddReached(int c, ulong[] into)
+            {
+                int k = _component[c];
+                Close(k);
+                if (_bits[k] is { } bits) for (int w = 0; w < bits.Length; w++) into[w] |= bits[w];
+                else foreach (int x in _list[k]!) into[x >> 6] |= 1UL << (x & 63);
+            }
+
+            // Finds the closure of component `top` and of every one beneath it
+            // not found yet, callees first: Tarjan's numbering already puts a
+            // component after every one it reaches.
+            private void Close(int top)
+            {
+                if (_list[top] is not null || _bits[top] is not null) return;
+                Stack<int> pending = new();
+                pending.Push(top);
+                List<int> order = new();
+                int stamp = ++_stamp;
+                _seen[top] = stamp;
+                while (pending.TryPop(out int k))
+                {
+                    order.Add(k);
+                    foreach (int m in _members[k])
+                        foreach (int w in _callees[m])
+                        {
+                            if (Excluded(w)) continue;
+                            int s = _component[w];
+                            if (_seen[s] != stamp && _list[s] is null && _bits[s] is null) { _seen[s] = stamp; pending.Push(s); }
+                        }
+                }
+                order.Sort();
+                foreach (int k in order)
+                {
+                    Array.Clear(_scratch);
+                    int stampK = ++_stamp;
+                    foreach (int m in _members[k])
+                    {
+                        _scratch[m >> 6] |= 1UL << (m & 63);
+                        foreach (int w in _callees[m])
+                        {
+                            if (Excluded(w)) continue;
+                            int s = _component[w];
+                            if (s == k || _seen[s] == stampK) continue;
+                            _seen[s] = stampK;
+                            if (_bits[s] is { } bits) for (int i = 0; i < bits.Length; i++) _scratch[i] |= bits[i];
+                            else foreach (int x in _list[s]!) _scratch[x >> 6] |= 1UL << (x & 63);
+                        }
+                    }
+                    int count = 0;
+                    foreach (ulong word in _scratch) count += System.Numerics.BitOperations.PopCount(word);
+                    if (count >= Small) { _bits[k] = (ulong[])_scratch.Clone(); continue; }
+                    int[] list = new int[count];
+                    int at = 0;
+                    for (int w = 0; w < _scratch.Length; w++)
+                        for (ulong word = _scratch[w]; word != 0; word &= word - 1)
+                            list[at++] = w << 6 | System.Numerics.BitOperations.TrailingZeroCount(word);
+                    _list[k] = list;
+                }
+            }
+        }
+
+        // The copies the calls reach (All), and those reached through no
+        // boundary copy (Near), found once for every loop (SelectLoops).
+        private CallClosures _allClosures = null!, _nearClosures = null!;
+        private ulong[] _allBits = Array.Empty<ulong>(), _nearBits = Array.Empty<ulong>();
+
+        /// <summary>The copies a loop's calls in copy `c` reach, into `into`, a bit a copy: All, or with `near`, those reached through no boundary copy, Near -- where what is made is made in the loop's region.</summary>
+        private void Reached(int c, int[] calls, bool near, ulong[] into)
+        {
+            Array.Clear(into);
             foreach (int k in calls)
                 foreach (int t in Targets(c, k))
-                {
-                    if (all.Add(t)) next.Push(t);
-                    if (!_isBoundary[t] && near.Add(t)) nearNext.Push(t);
-                }
-            while (next.TryPop(out int k))
-            {
-                _loopWalked++;
-                foreach (int callee in _callees[k]) if (all.Add(callee)) next.Push(callee);
-            }
-            while (nearNext.TryPop(out int k))
-                foreach (int callee in _callees[k])
-                    if (!_isBoundary[callee] && near.Add(callee)) nearNext.Push(callee);
-            return (all, near);
+                    if (!near) _allClosures.AddReached(t, into);
+                    else if (!_isBoundary[t]) _nearClosures.AddReached(t, into);
         }
 
-        /// <summary>What the nodes and frame slots given hold reaches in copy `c`, past what the unknown object reaches.</summary>
-        private HashSet<int> HeldBy(int c, int[] nodes, IEnumerable<int> slots)
+        // The walk of FirstUnsound: a copy is found when its mark is the stamp of the walk.
+        private int[] _allMark = Array.Empty<int>(), _walkStack = Array.Empty<int>();
+        private int _walkStamp;
+
+        /// <summary>
+        /// The objects made beneath a loop's calls in copy `c` looked at, in
+        /// the order a walk down the calls finds their copies (the order
+        /// SelectLoops always asked in, and counts by), up to the first
+        /// `unsound` (`found`); -1 for none.
+        /// </summary>
+        private long FirstUnsound(int c, int[] calls, Func<int, bool> unsound, out int found)
+        {
+            int count = _copyFunction.Count;
+            if (_allMark.Length != count) { _allMark = new int[count]; _walkStack = new int[count]; _walkStamp = 0; }
+            int stamp = ++_walkStamp;
+            int[] mark = _allMark, stack = _walkStack;
+            long looked = 0;
+            int top = 0;
+            found = -1;
+            // Found: its objects looked at, then it is walked from.
+            bool Found(int a, ref long looked, ref int found)
+            {
+                if (a == c || _madeAt[a] is not { } made) return false;
+                foreach (int o in made)
+                {
+                    looked++;
+                    if (unsound(o)) { found = o; return true; }
+                }
+                return false;
+            }
+            foreach (int k in calls)
+                foreach (int t in Targets(c, k))
+                    if (mark[t] != stamp)
+                    {
+                        mark[t] = stamp;
+                        if (Found(t, ref looked, ref found)) return looked;
+                        stack[top++] = t;
+                    }
+            while (top > 0)
+                foreach (int callee in _calleesOf[stack[--top]])
+                    if (mark[callee] != stamp)
+                    {
+                        mark[callee] = stamp;
+                        if (Found(callee, ref looked, ref found)) return looked;
+                        stack[top++] = callee;
+                    }
+            return looked;
+        }
+
+        /// <summary>What the nodes and frame slots given hold reaches in copy `c`, past what the unknown object reaches, one bit an object.</summary>
+        private ulong[] HeldBy(int c, int[] nodes, IEnumerable<int> slots)
         {
             List<int> start = new();
             foreach (int n in nodes) start.AddRange(ObjectsHeld(Node(c, n)));
@@ -1903,29 +2922,76 @@ public static class RegionSolver
             HashSet<int> reached = new();
             Reach(start, reached, _globalReach);
             _loopWalked += reached.Count;
-            return reached;
+            ulong[] held = NoObjects();
+            foreach (int o in reached) held[o >> 6] |= 1UL << (o & 63);
+            return held;
         }
 
         private (int, int) SiteOf(int o) => (_objectFunction[o], _objectSite[o]);
+
+        // The objects of the sites escape graphs found held, past the global ones, one bit an object.
+        private ulong[] GraphHeld(int[]? sites)
+        {
+            ulong[] held = NoObjects();
+            if (sites is null) return held;
+            ulong[] bits = _escape!.BitsOf(sites);
+            for (int w = 0; w < bits.Length; w++)
+                for (ulong word = bits[w]; word != 0; word &= word - 1)
+                {
+                    int o = ObjectOfSite(w << 6 | System.Numerics.BitOperations.TrailingZeroCount(word));
+                    if (o > Global && !_isGlobal[o]) held[o >> 6] |= 1UL << (o & 63);
+                }
+            return held;
+        }
+
+        private int[]? _siteObjectOf;
+        private int ObjectOfSite(int site)
+        {
+            if (_siteObjectOf is null)
+            {
+                _siteObjectOf = new int[_escape!.Global.Length];
+                for (int o = 1; o < _siteNumber.Count; o++) if (_siteNumber[o] >= 0) _siteObjectOf[_siteNumber[o]] = o;
+            }
+            return _siteObjectOf[site];
+        }
+
+        // AlwaysMakes' copies seen: a copy is seen when its mark is the stamp of the search.
+        private int[] _alwaysSeen = Array.Empty<int>();
+        private int _alwaysStamp;
 
         /// <summary>
         /// Whether one of `calls` of copy `c` always makes something `takes`
         /// (RegionPointsTo.AlwaysMakes): a site its callee makes on every way
         /// to a return, or a call it makes on every way there, through no
-        /// boundary copy.
+        /// boundary copy. `stamp` marks the copies the search has seen. Given
+        /// `into`, every such site is gathered there rather than the first
+        /// found answering.
         /// </summary>
-        private bool AlwaysMakes(int c, int[] calls, Dictionary<int, List<int>> madeBy, Func<int, bool> takes, HashSet<int> seen, int depth)
+        private bool AlwaysMakes(int c, int[] calls, Func<int, bool> takes, int stamp, int depth, HashSet<(int, int)>? into = null)
         {
             if (depth > AlwaysDepth) return false;
+            bool found = false;
             foreach (int k in calls)
                 foreach (int t in Targets(c, k))
                 {
-                    if (_isBoundary[t] || !seen.Add(t)) continue;
+                    if (_isBoundary[t] || _alwaysSeen[t] == stamp) continue;
+                    _alwaysSeen[t] = stamp;
                     RegionFunction g = _functions[_copyFunction[t]];
-                    if (madeBy.TryGetValue(t, out List<int>? made) && made.Any(o => Array.BinarySearch(g.MustSites, _objectSite[o]) >= 0 && takes(o))) return true;
-                    if (AlwaysMakes(t, g.MustCalls, madeBy, takes, seen, depth + 1)) return true;
+                    if (_madeAt[t] is { } made)
+                        foreach (int o in made)
+                        {
+                            if (Array.BinarySearch(g.MustSites, _objectSite[o]) < 0 || !takes(o)) continue;
+                            if (into is null) return true;
+                            into.Add(SiteOf(o));
+                            found = true;
+                        }
+                    if (AlwaysMakes(t, g.MustCalls, takes, stamp, depth + 1, into))
+                    {
+                        if (into is null) return true;
+                        found = true;
+                    }
                 }
-            return false;
+            return found;
         }
 
         /// <summary>
@@ -1933,67 +2999,197 @@ public static class RegionSolver
         /// take (`verdict`, whose NearestAbove is the boundaries' state): in
         /// every copy, sound -- nothing taken that is made beneath the loop,
         /// in its body or in a copy its calls reach, live where a lap ends,
-        /// but what a lap carries only through what the loop writes -- and in
-        /// some copy, worth a call at the top of every lap.
+        /// but what a lap carries only through what the loop writes, and what
+        /// a lap makes through no boundary, which TakenWithLoops sends to the
+        /// heap -- in some copy, worth a call at the top of every lap, and
+        /// sending fewer sites to the heap than every lap makes for it that
+        /// no boundary takes.
+        ///
+        /// Thousands of loops reach the compiler's cycle of thirteen thousand
+        /// functions, each walking all of it: every set here is a mark or a
+        /// bit, and what a lap makes (lapMade) is asked of an object's makers
+        /// rather than gathered.
         /// </summary>
-        private List<LoopRegion> SelectLoops(Verdict verdict, Dictionary<int, List<int>> madeBy, bool[] beforeBlock)
+        private List<LoopRegion> SelectLoops(Verdict verdict, bool[] beforeBlock)
         {
             List<LoopRegion> chosen = new();
+            // A DIAGNOSTIC: --region-report +loopold weighs a loop as before
+            // 04cbd6b, what it sends to the heap against every site its laps
+            // make that it takes, whether a boundary takes it already or not.
+            bool loopOld = _report?.Contains("+loopold") == true;
+            if (_alwaysSeen.Length != _copyFunction.Count) _alwaysSeen = new int[_copyFunction.Count];
+            _allClosures = new CallClosures(_calleesOf, null);
+            _nearClosures = new CallClosures(_calleesOf, _isBoundary);
+            _allBits = new ulong[_allClosures.Words];
+            _nearBits = new ulong[_allClosures.Words];
             for (int f = 0; f < _functions.Count && _loopWalked < LoopBudget; f++)
             {
                 RegionFunction function = _functions[f];
                 if (function.Loops.Count == 0 || _copiesOf[f] is not { } copies || function.Name == _entry || beforeBlock[f]) continue;
-                foreach (RegionLoopShape loop in function.Loops)
+                // A function escape graphs did not follow has nothing said of its loops.
+                if (_escape is not null && _escape.LoopHeld[f] is null) continue;
+                for (int loopIndex = 0; loopIndex < function.Loops.Count; loopIndex++)
                 {
+                    RegionLoopShape loop = function.Loops[loopIndex];
                     if (_loopWalked >= LoopBudget) break;
-                    List<(int, HashSet<int>, HashSet<int>)> instances = new();
+                    List<(int, int[], ulong[])> instances = new();
                     bool sound = true, worth = false;
-                    string? why = null;
+                    int unsoundBy = -1;
+                    // TO THE HEAP INSTEAD: a site the boundaries take that is
+                    // live where a lap ends, made with no boundary between the
+                    // loop and its maker -- the boundary taking it is this
+                    // copy's own or one above it. TakenWithLoops refuses it
+                    // wherever the loop keeps its region, so it is made on the
+                    // heap; weighed against what every lap makes that the
+                    // loop's region takes. A lap that only sometimes makes
+                    // something for it -- a list grown now and then -- gives
+                    // no reason to lose a site made on every one. And the
+                    // loop must take more than it sends away, counting only
+                    // what no boundary takes: a site a boundary takes already
+                    // is only given back sooner by the loop, where one sent to
+                    // the heap costs an allocation every lap and is left to
+                    // the collector. A loop whose every lap makes only what a
+                    // boundary takes anyway sends nothing to the heap or gets
+                    // no region: Make's lap in 1290 sent the row a boundary
+                    // took to the heap for the number's text, which that
+                    // boundary took too.
+                    HashSet<(int, int)> forced = new(), gained = new();
+                    List<(int Copy, List<int>? Own, Func<int, bool> Takes)> weigh = new();
                     foreach (int c in copies)
                     {
-                        (HashSet<int> all, HashSet<int> near) = Reached(c, loop.Calls);
-                        HashSet<int> lapLive = HeldBy(c, loop.Live, Enumerable.Range(0, function.Slots));
-                        HashSet<int> kept = HeldBy(c, loop.Invariant, loop.KeptSlots);
-                        bool Lap(int o) => lapLive.Contains(o) || Outlives(o, c);
+                        ulong[] all = _allBits;
+                        Reached(c, loop.Calls, false, all);
+                        int allCount = 0;
+                        foreach (ulong word in all) allCount += System.Numerics.BitOperations.PopCount(word);
+                        _loopWalked += allCount;
+                        ulong[] lapLive = _escape is not null ? GraphHeld(_escape.LoopHeld[f]?[loopIndex].LapLive)
+                            : HeldBy(c, loop.Live, Enumerable.Range(0, function.Slots));
+                        ulong[] kept = _escape is not null ? GraphHeld(_escape.LoopHeld[f]?[loopIndex].Kept)
+                            : HeldBy(c, loop.Invariant, loop.KeptSlots);
+                        ulong[]? escaping = EscapingBits(c);
+                        bool Lap(int o) => Has(lapLive, o) || Outlives(o, c, escaping);
                         bool InBody(int o) => Array.BinarySearch(loop.Sites, _objectSite[o]) >= 0;
-                        madeBy.TryGetValue(c, out List<int>? own);
+                        List<int>? own = _madeAt[c];
+                        // Near is wanted only for what may be carried: found when first asked.
+                        bool nearFound = false;
+                        bool InNear(int x)
+                        {
+                            if (!nearFound) { Reached(c, loop.Calls, true, _nearBits); nearFound = true; }
+                            return Has(_nearBits, x);
+                        }
                         // Made in a lap, in the region the loop runs in: by the
                         // sites in its body, and in the copies its calls reach
-                        // through no boundary.
-                        HashSet<int> lapMade = new();
-                        if (own is not null) foreach (int o in own) if (near.Contains(c) || InBody(o)) lapMade.Add(o);
-                        foreach (int k in near) if (k != c && madeBy.TryGetValue(k, out List<int>? made)) lapMade.UnionWith(made);
+                        // through no boundary -- by one of its makers.
+                        bool LapMade(int o)
+                        {
+                            foreach (int maker in _objectMakers[o])
+                                if (maker == c ? InBody(o) || InNear(c) : InNear(maker)) return true;
+                            return false;
+                        }
                         // CARRIED AND DROPPED: live where a lap ends only through
                         // what the loop itself writes. Refused by the region, it
-                        // goes to the heap, as RegionPointsTo sends it.
-                        bool Carried(int o) => lapMade.Contains(o) && lapLive.Contains(o) && !kept.Contains(o) && !Outlives(o, c);
-                        // Beneath it: the body's own sites, and every copy its calls reach.
-                        IEnumerable<int> under = (own ?? new List<int>()).Where(o => all.Contains(c) || InBody(o))
-                            .Concat(all.Where(a => a != c).SelectMany(a => madeBy.GetValueOrDefault(a) ?? new List<int>()));
-                        foreach (int o in under)
+                        // goes to the heap, as RegionPointsTo sends it. What is
+                        // left live where a lap ends of what the boundaries take
+                        // goes there too when a lap made it (forced, above); made
+                        // beneath a boundary inside the lap, sending it to the
+                        // heap would take from that boundary, and the loop gets
+                        // no region (Unsound).
+                        bool Live(int o)
                         {
-                            _loopWalked++;
-                            if (verdict.Taken.Contains(SiteOf(o)) && Lap(o) && !Carried(o))
+                            if (!verdict.TakenObject[o]) return false;
+                            bool live = Has(lapLive, o), outlives = Outlives(o, c, escaping);
+                            if (!live && !outlives) return false;
+                            bool carried = live && !outlives && !Has(kept, o) && LapMade(o);
+                            return !carried;
+                        }
+                        bool Unsound(int o) => Live(o) && !LapMade(o);
+                        // Beneath it: the body's own sites, and every copy its
+                        // calls reach. Every one is looked at, and counted, in
+                        // the order a walk down the calls finds it, up to the
+                        // first that refuses the loop: a loop found sound is
+                        // looked at in any order, one found not is looked at
+                        // again in that order (FirstUnsound) to count the same.
+                        // What a sound copy sends to the heap is the whole of
+                        // what it looked at, in whatever order.
+                        List<(int, int)> sent = new();
+                        void Look(int o)
+                        {
+                            if (Live(o))
                             {
-                                sound = false;
-                                why = DescribeObject(o) + " is live where a lap ends";
-                                break;
+                                if (LapMade(o)) sent.Add(SiteOf(o));
+                                else unsoundBy = o;
                             }
                         }
-                        if (!sound) break;
-                        instances.Add((c, all, lapLive));
+                        if (own is not null)
+                            foreach (int o in own)
+                                if (Has(all, c) || InBody(o))
+                                {
+                                    _loopWalked++;
+                                    Look(o);
+                                    if (unsoundBy >= 0) break;
+                                }
+                        if (unsoundBy < 0)
+                        {
+                            long looked = 0;
+                            for (int w = 0; w < all.Length && unsoundBy < 0; w++)
+                                for (ulong word = all[w]; word != 0 && unsoundBy < 0; word &= word - 1)
+                                {
+                                    int a = w << 6 | System.Numerics.BitOperations.TrailingZeroCount(word);
+                                    if (a == c || _madeAt[a] is not { } made) continue;
+                                    foreach (int o in made)
+                                    {
+                                        Look(o);
+                                        if (unsoundBy >= 0) break;
+                                    }
+                                    looked += made.Count;
+                                }
+                            if (unsoundBy >= 0) looked = FirstUnsound(c, loop.Calls, Unsound, out unsoundBy);
+                            _loopWalked += looked;
+                        }
+                        if (unsoundBy >= 0) { sound = false; break; }
+                        forced.UnionWith(sent);
+                        int[] reached = new int[allCount];
+                        int at = 0;
+                        for (int w = 0; w < all.Length; w++)
+                            for (ulong word = all[w]; word != 0; word &= word - 1)
+                                reached[at++] = w << 6 | System.Numerics.BitOperations.TrailingZeroCount(word);
+                        instances.Add((c, reached, lapLive));
+                        bool Takes(int o) => verdict.Refuser[o] == -1 && !Lap(o);
+                        weigh.Add((c, own, Takes));
                         if (worth) continue;
-                        bool Takes(int o) => !verdict.Refuser.ContainsKey(o) && !Lap(o);
-                        worth = own is not null && own.Any(o => Array.BinarySearch(loop.AlwaysSites, _objectSite[o]) >= 0 && Takes(o))
-                            || AlwaysMakes(c, loop.AlwaysCalls, madeBy, Takes, new HashSet<int>(), 0);
+                        if (own is not null)
+                            foreach (int o in own)
+                                if (Array.BinarySearch(loop.AlwaysSites, _objectSite[o]) >= 0 && Takes(o)) { worth = true; break; }
+                        worth = worth || AlwaysMakes(c, loop.AlwaysCalls, Takes, ++_alwaysStamp, 0);
                     }
+                    // Only where something goes to the heap: what every lap
+                    // makes that no boundary takes, gathered in full.
+                    if (sound && worth && forced.Count > 0)
+                        foreach ((int c, List<int>? own, Func<int, bool> takes) in weigh)
+                        {
+                            // (+loopold: as before 04cbd6b, every site a lap
+                            // makes that the loop takes, a boundary's too --
+                            // an A/B of what the rule costs in loops and in
+                            // what regions give back.)
+                            bool TakesAlone(int o) => takes(o) && (loopOld || !verdict.TakenObject[o]);
+                            if (own is not null)
+                                foreach (int o in own)
+                                    if (Array.BinarySearch(loop.AlwaysSites, _objectSite[o]) >= 0 && TakesAlone(o)) gained.Add(SiteOf(o));
+                            AlwaysMakes(c, loop.AlwaysCalls, TakesAlone, ++_alwaysStamp, 0, gained);
+                        }
+                    gained.ExceptWith(forced);
+                    bool weighed = forced.Count == 0 || forced.Count < gained.Count;
                     bool reported = _report is not null && _report.Any(w => function.Name.Contains(w, StringComparison.Ordinal));
-                    if (sound && worth)
+                    if (sound && worth && weighed)
                     {
                         chosen.Add(new LoopRegion(f, loop, instances));
-                        if (reported) Log($"loop region {function.Name} at block {loop.Header}");
+                        if (reported) Log($"loop region {function.Name} at block {loop.Header}" + (forced.Count > 0
+                            ? $", {forced.Count} sites to the heap ({string.Join(", ", forced.Select(DescribeSite))}) for {gained.Count} every lap makes ({string.Join(", ", gained.Select(DescribeSite))})" : ""));
                     }
-                    else if (reported) Log($"no loop region {function.Name} at block {loop.Header}: " + (sound ? "no lap always makes what it would take" : why));
+                    else if (reported)
+                        Log($"no loop region {function.Name} at block {loop.Header}: " + (!sound ? DescribeObject(unsoundBy) + " is live where a lap ends"
+                            : !worth ? "no lap always makes what it would take"
+                            : $"sends {forced.Count} sites to the heap, every lap makes {gained.Count} it takes that no boundary does"));
                 }
             }
             if (_loopWalked >= LoopBudget) Log("loops: past the budget, the loops left get no region");
@@ -2012,43 +3208,57 @@ public static class RegionSolver
             while (true)
             {
                 // Per copy: the loops whose calls reach it, and those in its own body.
-                Dictionary<int, List<(int Loop, int Instance)>> over = new(), hosted = new();
+                List<(int Loop, int Instance)>?[] over = new List<(int, int)>?[_copyFunction.Count], hosted = new List<(int, int)>?[_copyFunction.Count];
                 for (int l = 0; l < loops.Count; l++)
                     for (int i = 0; i < loops[l].Copies.Count; i++)
                     {
-                        (int c, HashSet<int> all, _) = loops[l].Copies[i];
-                        foreach (int a in all) (over.TryGetValue(a, out var list) ? list : over[a] = new()).Add((l, i));
-                        (hosted.TryGetValue(c, out var mine) ? mine : hosted[c] = new()).Add((l, i));
+                        (int c, int[] all, _) = loops[l].Copies[i];
+                        foreach (int a in all) (over[a] ??= new()).Add((l, i));
+                        (hosted[c] ??= new()).Add((l, i));
                     }
-                HashSet<int> under = new(), refused = new();
-                Dictionary<int, List<int>> beneath = new();
+                bool[] under = new bool[_objectFunction.Count], refused = new bool[_objectFunction.Count];
+                List<int>?[] beneath = new List<int>?[loops.Count];
                 foreach ((int m, List<int> made) in madeBy)
                 {
-                    over.TryGetValue(m, out var reaching);
-                    hosted.TryGetValue(m, out var own);
+                    List<(int Loop, int Instance)>? reaching = over[m], own = hosted[m];
                     if (reaching is null && own is null) continue;
                     foreach (int o in made)
                     {
-                        IEnumerable<(int Loop, int Instance)> above = (reaching ?? new()).Concat((own ?? new())
-                            .Where(x => Array.BinarySearch(loops[x.Loop].Shape.Sites, _objectSite[o]) >= 0));
-                        foreach ((int l, int i) in above)
-                        {
-                            _walked++;
-                            (int c, _, HashSet<int> lapLive) = loops[l].Copies[i];
-                            under.Add(o);
-                            (beneath.TryGetValue(l, out List<int>? list) ? list : beneath[l] = new()).Add(o);
-                            if (lapLive.Contains(o) || Outlives(o, c)) refused.Add(o);
-                        }
+                        if (reaching is not null) foreach ((int l, int i) in reaching) Beneath(o, l, i);
+                        if (own is not null)
+                            foreach ((int l, int i) in own)
+                                if (Array.BinarySearch(loops[l].Shape.Sites, _objectSite[o]) >= 0) Beneath(o, l, i);
+                    }
+                }
+                void Beneath(int o, int l, int i)
+                {
+                    _walked++;
+                    (int c, _, ulong[] lapLive) = loops[l].Copies[i];
+                    under[o] = true;
+                    (beneath[l] ??= new()).Add(o);
+                    if (Has(lapLive, o) || Outlives(o, c))
+                    {
+                        // --region-report +looprefusals: each object a loop region refuses, and why.
+                        if (!refused[o] && _report is not null && _report.Contains("+looprefusals"))
+                            Log($"loop {_functions[loops[l].Function].Name} at block {loops[l].Shape.Header} refuses {DescribeObject(o)}: "
+                                + (Has(lapLive, o) ? "live where a lap ends" : "outlives the call"));
+                        refused[o] = true;
                     }
                 }
                 HashSet<(int, int)> taken = new();
                 foreach (((int, int) key, List<int> objects) in bySite)
-                    if (objects.Any(o => verdict.Above.ContainsKey(o) || under.Contains(o)) && !_unseenKept.Contains(key)
-                        && !objects.Any(o => verdict.Refuser.ContainsKey(o) || refused.Contains(o)))
-                        taken.Add(key);
+                {
+                    bool anywhere = false, refusedAny = false;
+                    foreach (int o in objects)
+                    {
+                        anywhere |= verdict.Above[o] != -1 || under[o];
+                        refusedAny |= verdict.Refuser[o] != -1 || refused[o];
+                    }
+                    if (anywhere && !_unseenKept.Contains(key) && !refusedAny) taken.Add(key);
+                }
                 int before = loops.Count;
                 for (int l = loops.Count - 1; l >= 0; l--)
-                    if (!beneath.TryGetValue(l, out List<int>? objects) || !objects.Any(o => taken.Contains(SiteOf(o))))
+                    if (beneath[l] is not { } objects || !objects.Any(o => taken.Contains(SiteOf(o))))
                     {
                         if (_report is not null && _report.Any(w => _functions[loops[l].Function].Name.Contains(w, StringComparison.Ordinal)))
                             Log($"loop region dropped {_functions[loops[l].Function].Name} at block {loops[l].Shape.Header}: nothing taken beneath it");
@@ -2058,19 +3268,343 @@ public static class RegionSolver
             }
         }
 
+        // ---- what a region would pile up -----------------------------------------
+        //
+        // A REGION GIVES BACK WHAT IT HOLDS ONLY WHEN IT ENDS: an object dead
+        // long before is held to the end, where the collector would have taken
+        // it at the next collection. One object or a few is nothing; the
+        // objects of a loop's laps are as many as the laps. A site whose
+        // objects die in the lap that made them, beneath a loop that has no
+        // region of its own (or none beneath it that takes them), and whose
+        // laps are not bounded, piles one more into the region every lap: a
+        // pass over ten thousand instructions held ten thousand laps of
+        // garbage until the pass returned. Such a site goes to the heap. What a
+        // lap carries on, or what outlives the call, is held as long by the
+        // collector, and stays in the region.
+        //
+        // Measured on the compiler's own build (two units): peak live heap 434
+        // MB with regions empty, 2410 MB with 27099 sites taken, 762 MB of
+        // arena in use at the peak.
+
+        private HashSet<(int, int)> WithoutPiledUp(HashSet<(int, int)> taken, List<LoopRegion> loops)
+        {
+            HashSet<(int, int)> piled = PiledSites(taken, loops, out long looked, freshNear: false);
+            HashSet<(int, int)> kept = new(taken);
+            kept.ExceptWith(piled);
+            if (_report is not null)
+            {
+                Log($"judge: {taken.Count - kept.Count} sites would pile up in a region lap after lap, to the heap; {looked} looked at, {_clock.ElapsedMilliseconds} ms");
+                if (_report.Contains("+piled"))
+                    foreach ((int f, int site) in taken.Except(kept)) Log("piled " + DescribeSite((f, site)));
+            }
+            return kept;
+        }
+
+        /// <summary>
+        /// The sites of `among` that would pile up lap after lap in the
+        /// region a loop runs in, with these loop regions and the boundaries
+        /// as they stand (_isBoundary): asked by every round of the judge,
+        /// so a boundary is weighed without what it would only pile up --
+        /// Shelf.Make, credited with its loop's temporaries, refused what
+        /// Work's region would have taken and gave back nothing (1316).
+        /// `freshNear`: the calls' closures made again for the boundaries
+        /// now chosen.
+        /// </summary>
+        private HashSet<(int, int)> PiledSites(HashSet<(int, int)> taken, List<LoopRegion> loops, out long looked, bool freshNear)
+        {
+            // The loop regions, by function and header, and the objects beneath each instance.
+            Dictionary<int, List<LoopRegion>> regionsIn = new();
+            foreach (LoopRegion loop in loops) (regionsIn.TryGetValue(loop.Function, out var l) ? l : regionsIn[loop.Function] = new()).Add(loop);
+            HashSet<int> piled = new();
+            if (_nearClosures is null || freshNear) _nearClosures = new CallClosures(_calleesOf, _isBoundary);
+            ulong[] near = new ulong[_nearClosures.Words];
+            looked = 0;
+            for (int f = 0; f < _functions.Count; f++)
+            {
+                RegionFunction function = _functions[f];
+                if (function.Loops.Count == 0 || _copiesOf[f] is not { } copies) continue;
+                for (int loopIndex = 0; loopIndex < function.Loops.Count; loopIndex++)
+                {
+                    RegionLoopShape loop = function.Loops[loopIndex];
+                    // Its own region gives each lap's dead back.
+                    if (regionsIn.TryGetValue(f, out var own) && own.Any(r => r.Shape.Header == loop.Header)) continue;
+                    // Laps bounded: a lap's worth times a known count, no more.
+                    int repeat = Array.FindIndex(function.Repeats, r => r.Header == loop.Header);
+                    if (repeat >= 0 && function.Repeats[repeat].Trip > 0) continue;
+                    // The loop regions nested in this loop, in this function.
+                    List<LoopRegion> inner = own?.Where(r => Nested(function, r.Shape.Header, loop.Header)).ToList() ?? new();
+                    foreach (int c in copies)
+                    {
+                        ulong[] lapLive = _escape is not null
+                            ? GraphHeld(_escape.LoopHeld[f]?[loopIndex].LapLive)
+                            : HeldBy(c, loop.Live, Enumerable.Range(0, function.Slots));
+                        ulong[]? escaping = EscapingBits(c);
+                        // Dead in the lap that made it: not live where a lap
+                        // ends, and not outliving the call. An object the
+                        // escape graphs never followed is held as live.
+                        bool DiesInLap(int o) => !Has(lapLive, o) && !Outlives(o, c, escaping);
+                        bool InnerRegion(int o) => inner.Any(r => Array.BinarySearch(r.Shape.Sites, _objectSite[o]) >= 0);
+                        if (_madeAt[c] is { } made)
+                            foreach (int o in made)
+                            {
+                                looked++;
+                                if (Array.BinarySearch(loop.Sites, _objectSite[o]) < 0 || !taken.Contains(SiteOf(o))) continue;
+                                if (InnerRegion(o) || !DiesInLap(o)) continue;
+                                piled.Add(o);
+                            }
+                        // Made beneath the lap's calls through no boundary: in
+                        // the region the loop runs in -- unless a loop region of
+                        // a copy beneath takes it (TakenWithLoops), cut each of
+                        // that loop's laps.
+                        Reached(c, loop.Calls, true, near);
+                        for (int w = 0; w < near.Length; w++)
+                            for (ulong word = near[w]; word != 0; word &= word - 1)
+                            {
+                                int a = w << 6 | System.Numerics.BitOperations.TrailingZeroCount(word);
+                                if (a == c || _madeAt[a] is not { } beneath) continue;
+                                bool cutBeneath = regionsIn.ContainsKey(_copyFunction[a]);
+                                foreach (int o in beneath)
+                                {
+                                    looked++;
+                                    if (!taken.Contains(SiteOf(o)) || !DiesInLap(o)) continue;
+                                    if (cutBeneath && regionsIn[_copyFunction[a]].Any(r => Array.BinarySearch(r.Shape.Sites, _objectSite[o]) >= 0)) continue;
+                                    piled.Add(o);
+                                }
+                            }
+                    }
+                }
+            }
+            HashSet<(int, int)> sites = new();
+            foreach (int o in piled) sites.Add(SiteOf(o));
+            return sites;
+        }
+
+        // Whether loop `inner` (by header) is inside loop `outer` in `function`, by the loops' parents.
+        private static bool Nested(RegionFunction function, int inner, int outer)
+        {
+            int at = Array.FindIndex(function.Repeats, r => r.Header == inner);
+            if (at < 0) return false;
+            for (int l = function.Repeats[at].Parent; l >= 0; l = function.Repeats[l].Parent)
+                if (function.Repeats[l].Header == outer) return true;
+            return false;
+        }
+
+        // ---- what a region holds -----------------------------------------------
+        //
+        // THE BYTES A REGION NEEDS, where they can be proved: for a boundary
+        // opened, the most its region holds in one call; for a loop given a
+        // region, the most one lap makes in it -- handed to RegionEnter and
+        // RegionLoop, which lay the region down where all of it fits rather
+        // than growing the arena by guesses (Gc, "regions").
+        //
+        // What a scope holds -- a function's call, or a lap of one of its
+        // loop regions -- is what stays in the region until it ends, OWN,
+        // and above it at most one region opened inside at a time, PEAK: a
+        // boundary called, or an inner loop's region -- its record and a lap
+        // -- each given back before the next opens. Own is every site taken
+        // there -- its block's bytes times how often it runs in the scope
+        // (RegionFunction.Repeats) -- and the own of every function called
+        // there that is no boundary, times how often the call runs (the most
+        // of its targets'). A call is weighed only where what it reaches can
+        // make something in a region (Contributes), and nothing that runs
+        // only on the way to a throw (RegionFunction.Throwing): past its size
+        // a region grows as an unsized one does. Nothing is proved where a
+        // taken site's size is not a constant, where a site or a call that
+        // makes something runs in a loop of laps not bounded, in a call
+        // nobody can name, or in recursion.
+
+        // Past this, a region is not sized.
+        private const long MostRegionBytes = 1L << 40;
+
+        private void Sizes(List<int> opened, List<LoopRegion> loops, HashSet<(int, int)> taken, Func<int, RegionFacts> facts)
+        {
+            if (opened.Count == 0 && loops.Count == 0) return;
+            int count = _functions.Count;
+            int word = _units.Count > 0 ? _units[0].WordSize : 4;
+            long record = RegionLayout.Record(word);
+            // WHAT ONE WORD CAN SAY: the size is handed to RegionEnter and
+            // RegionLoop as an immediate of the target's word, and on i386 a
+            // proof past 2^31 bytes came out a different number -- a region
+            // laid down for a few bytes, or one asking the system for gigabytes.
+            // Past a gigabyte of a 32-bit address space, a region is unsized.
+            long mostSized = word >= 8 ? MostRegionBytes : 1L << 30;
+            bool[] boundary = new bool[count];
+            foreach (int f in opened) boundary[f] = true;
+            Dictionary<int, List<int>> loopHeaders = new();
+            foreach (LoopRegion loop in loops) (loopHeaders.TryGetValue(loop.Function, out var l) ? l : loopHeaders[loop.Function] = new()).Add(loop.Shape.Header);
+            HashSet<int>? Targets(int f, int k) => _functions[f].Calls[k].Callee is { } name ? CallFunctions(_unitOf[f], name) : null;
+
+            // WHAT CAN MAKE SOMETHING IN A REGION: a taken site, a loop region
+            // or a boundary of its own, a call nobody can name, or a call of
+            // what can.
+            bool[] contributes = new bool[count];
+            List<int>[] callers = new List<int>[count];
+            Stack<int> next = new();
+            for (int f = 0; f < count; f++)
+            {
+                RegionFunction function = _functions[f];
+                bool own = boundary[f] || loopHeaders.ContainsKey(f);
+                for (int site = 0; site < function.Sites.Length && !own; site++) own = taken.Contains((f, site));
+                for (int k = 0; k < function.Calls.Count; k++)
+                {
+                    if (Targets(f, k) is not { } called) { own = true; continue; }
+                    foreach (int t in called) (callers[t] ??= new()).Add(f);
+                }
+                if (own) { contributes[f] = true; next.Push(f); }
+            }
+            while (next.TryPop(out int t))
+                if (callers[t] is { } list)
+                    foreach (int f in list)
+                        if (!contributes[f]) { contributes[f] = true; next.Push(f); }
+
+            Dictionary<int, (long Own, long Peak)?> calls = new();
+            Dictionary<int, long?> bounds = new();
+            HashSet<int> running = new();
+
+            // How often what is in loop `at` runs each time scope `scope` (a
+            // loop, or -1 for the call) runs: null when not known.
+            static long? Times(RegionFunction function, int at, int scope)
+            {
+                long times = 1;
+                for (int l = at; l != scope; l = function.Repeats[l].Parent)
+                {
+                    if (l < 0) return null;
+                    long trip = function.Repeats[l].Trip;
+                    if (trip <= 0 || times > MostRegionBytes / trip) return null;
+                    times *= trip;
+                }
+                return times;
+            }
+
+            // The loop region an item in loop `at` is made in: the innermost
+            // loop holding it that has one, -1 for the call's own; Unbounded
+            // where that is not known.
+            int RegionOf(RegionFunction function, HashSet<int> regions, int at)
+            {
+                if (at == RegionFunction.Unbounded) return RegionFunction.Unbounded;
+                for (int l = at; l >= 0; l = function.Repeats[l].Parent)
+                    if (regions.Contains(l)) return l;
+                return -1;
+            }
+
+            static long? Sum(long? a, long? b) => a is long x && b is long y && x + y <= MostRegionBytes ? x + y : null;
+
+            (long Own, long Peak)? Scope(int f, int scope)
+            {
+                RegionFunction function = _functions[f];
+                // Its loop regions, as loops of Repeats: each must be found.
+                HashSet<int> regions = new();
+                if (loopHeaders.TryGetValue(f, out List<int>? headers))
+                    foreach (int header in headers)
+                    {
+                        int at = Array.FindIndex(function.Repeats, r => r.Header == header);
+                        if (at < 0) return null;
+                        regions.Add(at);
+                    }
+                long? own = 0;
+                long peak = 0;
+                for (int site = 0; site < function.Sites.Length; site++)
+                {
+                    if (!taken.Contains((f, site))) continue;
+                    int at = function.LoopOfSite(site);
+                    if (at == RegionFunction.Throwing) continue;
+                    int region = RegionOf(function, regions, at);
+                    if (region != scope && region != RegionFunction.Unbounded) continue;
+                    if (region == RegionFunction.Unbounded || function.BytesOf(site) <= 0 || Times(function, at, scope) is not long times
+                        || function.BytesOf(site) > MostRegionBytes / times) return null;
+                    own = Sum(own, function.BytesOf(site) * times);
+                }
+                foreach (int inner in regions)
+                {
+                    if (RegionOf(function, regions, function.Repeats[inner].Parent) != scope) continue;
+                    if (Scope(f, inner) is not (long lapOwn, long lapPeak)) return null;
+                    peak = Math.Max(peak, record + lapOwn + lapPeak);
+                }
+                for (int k = 0; k < function.Calls.Count; k++)
+                {
+                    int at = function.LoopOfCall(k);
+                    if (at == RegionFunction.Throwing) continue;
+                    int region = RegionOf(function, regions, at);
+                    if (region != scope && region != RegionFunction.Unbounded) continue;
+                    if (Targets(f, k) is not { } called) return null;
+                    long most = 0;
+                    foreach (int t in called)
+                    {
+                        if (!contributes[t]) continue;
+                        if (region == RegionFunction.Unbounded) return null;
+                        if (boundary[t])
+                        {
+                            if (Bound(t) is not long b) return null;
+                            peak = Math.Max(peak, record + b);
+                            continue;
+                        }
+                        if (Call(t) is not (long calledOwn, long calledPeak)) return null;
+                        most = Math.Max(most, calledOwn);
+                        peak = Math.Max(peak, calledPeak);
+                    }
+                    if (most == 0) continue;
+                    if (Times(function, at, scope) is not long times || most > MostRegionBytes / times) return null;
+                    own = Sum(own, most * times);
+                }
+                return own is long o && o + peak <= MostRegionBytes ? (o, peak) : null;
+            }
+
+            // A call of a function that is no boundary: what it leaves in the
+            // region it runs in. Recursion is not sized.
+            (long Own, long Peak)? Call(int f)
+            {
+                if (calls.TryGetValue(f, out var known)) return known;
+                if (!running.Add(f)) return null;
+                var held = Scope(f, -1);
+                running.Remove(f);
+                return calls[f] = held;
+            }
+
+            // A boundary's region: the most it holds in one call, its record apart.
+            long? Bound(int f)
+            {
+                if (bounds.TryGetValue(f, out long? known)) return known;
+                if (!running.Add(f)) return null;
+                long? bound = Scope(f, -1) is (long o, long p) ? o + p : null;
+                running.Remove(f);
+                return bounds[f] = bound;
+            }
+
+            bool Reported(int f) => _report is not null && _report.Any(w => _functions[f].Name.Contains(w, StringComparison.Ordinal));
+            int sized = 0;
+            foreach (int f in opened)
+            {
+                long? bound = Bound(f);
+                if (bound is long b && b > 0 && b <= mostSized) { facts(f).BoundaryBytes[_functions[f].Name] = b; sized++; }
+                if (Reported(f)) Log($"region of {_functions[f].Name}: " + (bound is long n ? n + " bytes" : "not sized"));
+            }
+            foreach (LoopRegion loop in loops)
+            {
+                RegionFunction function = _functions[loop.Function];
+                int at = Array.FindIndex(function.Repeats, r => r.Header == loop.Shape.Header);
+                long? lap = null;
+                if (at >= 0 && !running.Contains(loop.Function)) { running.Add(loop.Function); lap = Scope(loop.Function, at) is (long o, long p) ? o + p : null; running.Remove(loop.Function); }
+                if (lap is long b && b > 0 && b <= mostSized) { facts(loop.Function).LoopBytes[(function.Name, loop.Shape.Header)] = b; sized++; }
+                if (Reported(loop.Function)) Log($"loop region of {function.Name} at block {loop.Shape.Header}: " + (lap is long n ? n + " bytes a lap" : "not sized"));
+            }
+            if (_report is not null) Log($"sizes: {sized} of {opened.Count + loops.Count} regions sized");
+        }
+
         // ---- reporting --------------------------------------------------------
 
-        // Which boundary copy found each refused object outliving it, for a report.
-        private readonly Dictionary<int, int> _refusedBy = new();
+        // Which boundary copy found each refused object outliving it (-1:
+        // none), for a report; and the objects so found, in the order found.
+        private int[] _refusedBy = Array.Empty<int>();
+        private readonly List<int> _refusedOrder = new();
 
         private void Report(SortedSet<int> chosen, List<int> opened, HashSet<(int, int)> taken, Dictionary<int, List<int>> madeBy)
         {
             // A key not taken though this object is local: which of its
             // objects some boundary refused, and which boundary.
             Dictionary<(int, int), string> why = new();
-            foreach ((int o, int b) in _refusedBy)
+            foreach (int o in _refusedOrder)
                 why.TryAdd((_objectFunction[o], _objectSite[o]), (_objectContext[o] >= 0 ? "context " + _objectContext[o] : "no context")
-                    + " outlives " + _functions[_copyFunction[b]].Name + " context " + _copyContext[b]);
+                    + " outlives " + _functions[_copyFunction[_refusedBy[o]]].Name + " context " + _copyContext[_refusedBy[o]]);
             for (int b = 0; b < _copyFunction.Count; b++)
             {
                 int f = _copyFunction[b];
@@ -2105,6 +3639,7 @@ public static class RegionSolver
         private string WhyOutlives(int o)
         {
             if (!_globalReach.Contains(o)) return "kept by what the boundary is handed or hands back";
+            if (_escape is not null) return "reached from the unknown object, or kept by a call nobody follows";
             if (_escapeParent is null)
             {
                 _escapeParent = new() { [Global] = -1 };
@@ -2167,6 +3702,13 @@ public static class RegionSolver
                         + (node - _copyBase[c] == f.Parameters ? " (its return)" : node - _copyBase[c] < f.Parameters ? " (a parameter)" : "") : "a node";
                 }
             return "a node";
+        }
+
+        private string DescribeSite((int Function, int Site) key)
+        {
+            RegionFunction f = _functions[key.Function];
+            RegionSite s = f.Sites[key.Site];
+            return f.Name + " line " + s.Line + " " + (s.Table ?? "block");
         }
 
         private string DescribeObject(int o)

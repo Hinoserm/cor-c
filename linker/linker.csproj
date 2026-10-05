@@ -10,4 +10,8 @@
   <ItemGroup>
     <Compile Include="src/**/*.cs" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- The engine tests (tests/RegionEscapeTests.cs) build its inputs and read its answers directly. -->
+    <InternalsVisibleTo Include="ElfTests" />
+  </ItemGroup>
 </Project>

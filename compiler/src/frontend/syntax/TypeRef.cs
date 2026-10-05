@@ -64,7 +64,10 @@ public sealed class TypeRef : Node
     public List<TypeRef> Arguments
     {
         get => _arguments ??= new();
-        init => _arguments = ReferenceEquals(value, NoArguments) ? null : value;
+        // An empty list given is none: every copy of a type was made from
+        // its original's arguments (`Args.ToList()`, a Select of them), and
+        // half a million empty lists sat in a compile's live heap.
+        init => _arguments = value is null || value.Count == 0 ? null : value;
     }
     // Use-site arguments retained after Args is folded into a specialization
     // name. These annotations do not request another runtime specialization.
@@ -114,6 +117,18 @@ public sealed class TypeRef : Node
     /// Args, with an empty string where an element was not named.
     /// </summary>
     public List<string>? TupleNames { get; set; }
+
+    /// <summary>
+    /// WHICH SHARED TYPE ARGUMENT THIS MACHINE WORD STANDS FOR (Type.CanonParam):
+    /// -1 for none; k for a shared class copy's parameter k, written `__canon`
+    /// (Monomorphiser.Canonicalise); -2 - k for a shared method copy's type
+    /// parameter k, written `object` (Monomorphiser.CopyName). It resolves to
+    /// the same object it always did, carrying where it came from, so that a
+    /// generic method called with it knows where its caller finds the type
+    /// argument at run time. Not part of the spelling: two references
+    /// differing only here name one type.
+    /// </summary>
+    public int CanonIndex { get; set; } = -1;
 
     public override string ToString()
     {

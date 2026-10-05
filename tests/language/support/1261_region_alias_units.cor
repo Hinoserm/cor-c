@@ -1,0 +1,41 @@
+// The other unit of 1261_region_alias_through_parameters_across_units: a
+// node with three links and a parent, and a wiring step that reaches the
+// same node through two names.
+using System.Runtime.CompilerServices;
+
+public sealed class Node
+{
+    public Node? F, G, H, Parent;
+    public int V;
+    public string Name;
+
+    public Node(int v, string name) { V = v; Name = name; }
+}
+
+public static class Wire
+{
+    // a.F = L; then through b, which is a: b.F.G = N, so L.G = N; then
+    // L.G.H = K, so N.H = K. All three fresh nodes end up under a.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void Link(Node a, Node b, int seed)
+    {
+        Node l = new(seed, "L" + seed);
+        a.F = l;
+        Node n = new(seed * 2, "N" + seed);
+        b.F!.G = n;
+        Node k = new(seed * 3, "K" + seed);
+        l.G!.H = k;
+    }
+
+    // The same through a parent pointer: child.Parent is a.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void LinkUp(Node a, Node child, int seed)
+    {
+        Node l = new(seed, "L" + seed);
+        a.F = l;
+        Node n = new(seed * 2, "N" + seed);
+        child.Parent!.F!.G = n;
+        Node k = new(seed * 3, "K" + seed);
+        l.G!.H = k;
+    }
+}

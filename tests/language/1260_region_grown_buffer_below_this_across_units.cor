@@ -1,0 +1,63 @@
+// test: region_grown_buffer_below_this_across_units
+// units: tests/language/support/1260_region_grown_buffer_units.cor
+// expect-exit: 0
+// expect-output:
+// 64 packets 3072 bytes sum 9984
+// latest 48 bytes sum 246
+//
+// The other unit's PacketWriter.Write grows the buffer of the packet it
+// holds (`_packet.Data = grown`): the new buffer is reached from `this` one
+// field down, an implicit place below the receiver rather than the receiver
+// itself. Fill's writer dies when Fill returns, but the packet is the
+// caller's, and so is every buffer stored into it. Placing the grown buffer
+// in Write's region or in Fill's -- as if only `this` itself escaped --
+// frees it under the packet, and the next region's bytes show through when
+// the kept packets are summed. Sixty-four packets are kept at a time, and
+// garbage is made and collected between the fills.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Fill(Packet packet, int seed)
+    {
+        PacketWriter writer = new(packet);
+        int[] values = new int[12];
+        for (int i = 0; i < values.Length; i++) values[i] = seed + i;
+        foreach (int v in values) writer.Write(v);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Scribble(int k)
+    {
+        byte[] junk = new byte[48];
+        for (int i = 0; i < junk.Length; i++) junk[i] = 0xEE;
+        return junk[k % 48];
+    }
+
+    // Not Main itself: what the entry calls is never a boundary.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Run()
+    {
+        Packet[] kept = new Packet[64];
+        int scribbled = 0;
+        for (int k = 0; k < 20000; k++)
+        {
+            Packet packet = new(2);
+            Fill(packet, k & 15);
+            scribbled += Scribble(k);
+            kept[k % 64] = packet;
+            if (k % 1000 == 999) GC.Collect();
+        }
+        int bytes = 0, sum = 0;
+        foreach (Packet p in kept) { bytes += p.Count; sum += p.Sum(); }
+        Console.WriteLine(kept.Length + " packets " + bytes + " bytes sum " + sum);
+        Console.WriteLine("latest " + kept[19999 % 64].Count + " bytes sum " + kept[19999 % 64].Sum());
+        return scribbled == 20000 * 0xEE ? 0 : 1;
+    }
+
+    static int Main() => Run();
+}

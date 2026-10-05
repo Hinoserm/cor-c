@@ -1,0 +1,40 @@
+// The other unit of 1266_region_size_check_message_across_units: an array
+// size check, as Array's own, that throws only when the size overflows,
+// keeping what it was asked for in the exception it throws.
+using System;
+
+public sealed class Request
+{
+    public readonly int Count;
+    public readonly int Each;
+    public readonly string What;
+
+    public Request(int count, int each, string what) { Count = count; Each = each; What = what; }
+
+    public string Describe() => What + "[" + Count + " x " + Each + "]";
+}
+
+public sealed class SizeException : OverflowException
+{
+    public readonly Request Asked;
+
+    public SizeException(Request asked) : base("too big: " + asked.Describe()) { Asked = asked; }
+}
+
+public static class Sizes
+{
+    // The request reaches the heap only on this path: in the exception's
+    // field and, as text, in its message.
+    public static int ArraySize(Request r)
+    {
+        long n = (long)r.Count * r.Each;
+        if (n > 1 << 20) throw new SizeException(r);
+        return (int)n;
+    }
+
+    public static int[] Make(int count, int each, string what)
+    {
+        Request r = new(count, each, what);
+        return new int[ArraySize(r)];
+    }
+}

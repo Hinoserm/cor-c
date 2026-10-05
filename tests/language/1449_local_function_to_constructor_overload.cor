@@ -1,0 +1,26 @@
+// test: local function to constructor overload
+// expect-exit: 0
+// expect-output:
+// 10
+//
+// A local function handed to an overloaded constructor converts to the
+// delegate the overload takes, as a method group does: Thread(ThreadStart,
+// int), not its natural Action, which no overload takes.
+
+using System;
+using System.Threading;
+
+static class P
+{
+    static int Main()
+    {
+        int seen = 0;
+        int step = 5;
+        void Work() { seen = step * 2; }
+        Thread th = new Thread(Work, 256 * 1024) { IsBackground = true, Name = "w" };
+        th.Start();
+        th.Join();
+        Console.WriteLine(seen);
+        return 0;
+    }
+}

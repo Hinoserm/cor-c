@@ -1,0 +1,45 @@
+// test: region_list_grown_in_place_across_units
+// units: tests/language/support/1304_region_list_grown_units.cor
+// regions: taken
+// expect-exit: 0
+// expect-output:
+// 12561537776
+// grown in place True
+//
+// AN ARRAY AT ITS REGION'S TOP GROWS WHERE IT IS (Runtime.GrowInPlace): a
+// list made beneath a boundary, Add after Add with nothing made between,
+// finds its array the region's top at every growth, and the arena's pointer
+// goes on past the array's new end -- no copy, and no outgrown array left
+// behind for the region's end. A builder's buffer the same. Every value is
+// summed after collections, while the boundaries open and close.
+//
+// Per call: the sum of i ^ seed for i below 5000, its count 5000, the text's
+// length 6000 and its last character 'b' (98); over seeds 0..999.
+
+using System;
+
+static class P
+{
+    // Not Main itself: what the entry calls is never a boundary.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static long Run()
+    {
+        long total = 0;
+        long grown = Gc.RegionGrownInPlace;
+        for (int seed = 0; seed < 1000; seed++)
+        {
+            total += Work.Build(seed);
+            if (seed % 100 == 99) GC.Collect();
+        }
+        GC.Collect();
+        Console.WriteLine(total);
+        Console.WriteLine("grown in place " + (Gc.RegionGrownInPlace - grown > 0));
+        return total;
+    }
+
+    static int Main()
+    {
+        Run();
+        return 0;
+    }
+}

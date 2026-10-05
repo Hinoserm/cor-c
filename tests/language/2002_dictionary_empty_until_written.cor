@@ -1,0 +1,44 @@
+// test: dictionary empty until written
+// expect-exit: 0
+// expect-output:
+// False False False 0 0
+// caught
+// 0 True 1
+// 3 2
+// 1 True
+// 0 False 5
+//
+// A table makes nothing until something goes in, as .NET's makes nothing:
+// every lookup, Remove, Clear and walk of an empty one answers as for an
+// empty table, a missing key still throws, and the capacity and comparer
+// constructors only say how the first write sizes and compares.
+
+using System;
+using System.Collections.Generic;
+
+static class P
+{
+    static int Main()
+    {
+        Dictionary<string, int> d = new();
+        int walked = 0;
+        foreach (KeyValuePair<string, int> pair in d) walked++;
+        Console.WriteLine(d.ContainsKey("a") + " " + d.TryGetValue("a", out int v) + " " + d.Remove("a") + " " + v + " " + walked);
+        try { int x = d["a"]; Console.WriteLine(x); } catch (KeyNotFoundException) { Console.WriteLine("caught"); }
+        d.Clear();
+        Console.WriteLine(d.Count + " " + d.TryAdd("a", 1) + " " + d["a"]);
+        Dictionary<int, int> big = new(1000);
+        big[1] = 1; big[2] = 2; big[3] = 3; big.Remove(2);
+        Console.WriteLine((big.Count + 1) + " " + big.Count);
+        Dictionary<string, int> folded = new(StringComparer.OrdinalIgnoreCase);
+        folded["Key"] = 1;
+        Console.WriteLine(folded.Count + " " + folded.ContainsKey("KEY"));
+        Dictionary<string, int> again = new();
+        again.Clear();
+        int sum = 0;
+        foreach (int value in again.Values) sum += value;
+        again["five"] = 5;
+        Console.WriteLine(sum + " " + again.ContainsValue(4) + " " + again["five"]);
+        return 0;
+    }
+}

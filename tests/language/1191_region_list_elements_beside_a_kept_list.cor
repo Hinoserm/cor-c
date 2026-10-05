@@ -75,7 +75,7 @@ static class P
 {
     // GIVEN BACK BY THE PROGRAM, in bytes: one free at a time (some 16 bytes
     // each at the least) or a region at once -- neither is the collector's.
-    static long Given() => Gc.Frees * 16 + Gc.RegionFreedBytes;
+    static long Given() => Gc.Frees * 16 + (Gc.RegionFreedBytes + Gc.RegionTopFreedBytes);
 
     static void Main()
     {

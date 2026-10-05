@@ -68,9 +68,16 @@ public sealed partial class Lowering
     /// </summary>
     private static IrType ReturnIr(MethodSymbol m) => m.RefReturn ? IrTypes.Word : IrTypes.Of(m.Returns);
 
-    /// <summary>The method a call returns a variable of, or null (ReturnIr).</summary>
+    /// <summary>
+    /// The method a call returns a variable of, or null (ReturnIr). A
+    /// delegate's call -- a ref-returning local function's -- is its Invoke's,
+    /// and EmitCall calls that through the interface slot, answering the
+    /// address the closure's Invoke returned.
+    /// </summary>
     private MethodSymbol? RefCallee(CallExpr call)
-        => _b.Calls.TryGetValue(call, out MethodSymbol? m) && m.RefReturn && !_b.Invocations.ContainsKey(call) ? m : null;
+        => _b.Invocations.TryGetValue(call, out MethodSymbol? invoke)
+           ? invoke.RefReturn ? invoke : null
+           : _b.Calls.TryGetValue(call, out MethodSymbol? m) && m.RefReturn ? m : null;
 
     /// <summary>
     /// The variable a ref-returning call answers: the call made, and its
@@ -86,6 +93,21 @@ public sealed partial class Lowering
         Require(m);
         VReg? buffer = Buffered(m) ? ResultBuffer(_decl ?? (Node)new MethodDecl { Name = m.Name, Line = 0, Col = 0 }, m.Returns) : null;
         if (buffer is not null) args = new List<Operand>(args) { R(buffer) };
+        // A SHARED METHOD COPY'S HIDDEN TYPE ARGUMENTS, after the buffer as
+        // its parameters have them (EmitMethod): what the call found for
+        // them (EmitCall), and 0 -- the copy over object's answers -- from
+        // any call that found nothing.
+        int hidden = Monomorphiser.SharedMethodCopy(m.Name);
+        if (hidden > 0)
+        {
+            List<Operand>? given = _pendingTypeArgs is { } pending && ReferenceEquals(pending.Method, m) ? pending.Args : null;
+            _pendingTypeArgs = null;
+            args = new List<Operand>(args);
+            for (int i = 0; i < hidden; i++)
+            {
+                args.Add(given is not null && i < given.Count ? given[i] : Imm(0, IrTypes.Word));
+            }
+        }
         // THE PROGRAM'S OWN SOURCE CALLING INTO THE COLLECTOR -- asking its
         // heap where a block is, collecting -- means it has one, whatever its
         // allocations need (Escape). Reading a counter (a getter) does not.
@@ -119,6 +141,27 @@ public sealed partial class Lowering
     /// </summary>
     private VReg? CallMethod(MethodSymbol m, VReg? receiver, List<Operand> args, bool viaBase = false, TypeSymbol? through = null)
     {
+        VReg? answered = CallMethodCore(m, receiver, args, viaBase, through);
+        // WHAT IT ANSWERS IS A NUMBER where its declared result is one
+        // (NeverAddress), whatever any override's summary hands back: an
+        // int on a 32-bit target is a word, as an address is, and a box's
+        // GetHashCode() reached through every override's carried 1316's
+        // items out of Work in the sum it answered (Instr.Number).
+        if (answered is not null && !m.RefReturn && NeverAddress(m.Returns))
+        {
+            for (int k = _e.Block.Instrs.Count - 1; k >= 0; k--)
+            {
+                Instr made = _e.Block.Instrs[k];
+                if (made.Dest != answered) continue;
+                if (made.Op is Opcode.Call or Opcode.CallIndirect) made.Number = true;
+                break;
+            }
+        }
+        return answered;
+    }
+
+    private VReg? CallMethodCore(MethodSymbol m, VReg? receiver, List<Operand> args, bool viaBase, TypeSymbol? through)
+    {
         IrType returns = ReturnIr(m);
 
         // EVERY CALL INTO A TYPE TOUCHES IT (Lowering.StaticInit), whichever
@@ -141,8 +184,12 @@ public sealed partial class Lowering
                 // ObjectString recognizes strings, whose descriptor has no
                 // callable vtable. Unlike concatenation, an explicit instance
                 // call on null must still fault: retain the original read.
+                // Narrowed to what the receiver is known to be: the type the
+                // call was made through, when it is one with this ToString,
+                // else the class that declared the one called.
                 _e.Load(IrTypes.Word, receiver, 0);
-                return ObjectString(receiver);
+                return ObjectString(receiver, through is not null && (through.Kind == TypeKind.Interface || Derives(through, m.Owner)) ? through
+                    : m.Owner.Name == "object" ? null : m.Owner);
             }
             VReg vt = _e.Load(IrTypes.Word, receiver, 0);
             VReg fn = _e.Load(IrTypes.Word, vt, (long)m.VtableSlot * _t.WordSize);
@@ -154,12 +201,16 @@ public sealed partial class Lowering
             // enumerator, not every IDisposable in the program -- a
             // TextWriter's Dispose among the targets let every foreach's
             // sequence go (Escape.IndirectTargets reads this).
-            _e.Block.Instrs[^1].DispatchType = DescriptorOf(through is not null && through != m.Owner && Derives(through, m.Owner) ? through : m.Owner);
+            _e.Block.Instrs[^1].DispatchType = DispatchName(through is not null && through != m.Owner && Derives(through, m.Owner) ? through : m.Owner);
             if (buffer is not null) MarkBuffer(buffer, m.Returns);
             // Whatever implementation answers, a struct it returns other than
             // through a buffer is a copy made for this caller.
             if (!Buffered(m) && !m.RefReturn && IsStructValue(m.Returns)) _e.Block.Instrs[^1].Field = Instr.FreshStruct;
-            else if (m.Name == "Invoke" && m.Owner.Kind == TypeKind.Interface) _e.Block.Instrs[^1].Field = Instr.DelegateInvoke;
+            // NOT ONE THAT RETURNS BY REFERENCE: what it answers is an address
+            // its closure's captures may reach -- an element of an array it
+            // holds -- so the closure is not merely run by the call, and the
+            // escape pass asks the overrides instead (Escape, DelegateInvoke).
+            else if (m.Name == "Invoke" && m.Owner.Kind == TypeKind.Interface && !m.RefReturn) _e.Block.Instrs[^1].Field = Instr.DelegateInvoke;
             return called;
         }
 
@@ -277,7 +328,11 @@ public sealed partial class Lowering
             // asked of a's OWN Equals, through its slot. `Equals(Element,
             // other.Element)` is how a type compares what it is made of, and
             // answered by reference two equal types were different types.
-            return _e.Call(KeyEqualsStub(), IrType.I32, R(a), R(b))!;
+            // Asked of a's own Equals, so a's static type bounds who answers --
+            // when a was not boxed to be handed here (KeyEqualsStub).
+            Type first = _b.TypeOf(call.Args[0]);
+            bool reference = first.Prim == Prim.String || first.IsArray || first.Symbol is { Kind: TypeKind.Class or TypeKind.Interface };
+            return _e.Call(KeyEqualsStub(reference && !first.IsNullableValue ? first : null), IrType.I32, R(a), R(b))!;
         }
 
         // Calling a value is calling its Invoke through the interface slot.
@@ -348,7 +403,9 @@ public sealed partial class Lowering
                 switch (call.Target)
                 {
                     case MemberExpr m:
-                        receiver = BoxedForObject(target, m.Target, Eval(m.Target));
+                        // A struct held in line in an object: its address,
+                        // with the object's null fault (FieldAddress).
+                        receiver = BoxedForObject(target, m.Target, InlineFieldAddress(m.Target) ?? Eval(m.Target));
                         break;
                     case NameExpr:
                         receiver = _this;
@@ -396,6 +453,9 @@ public sealed partial class Lowering
         }
 
         TypeSymbol? through = call.Target is MemberExpr { Target: var throughExpr } && _b.TypeOf(throughExpr) is { IsArray: false, PointerDepth: 0, Symbol: TypeSymbol { Kind: TypeKind.Class or TypeKind.Interface } st } ? st : null;
+        // Read after the arguments, which may make calls of their own.
+        int hiddenCount = Monomorphiser.SharedMethodCopy(target.Name);
+        _pendingTypeArgs = hiddenCount > 0 ? (target, HiddenTypeArguments(call, hiddenCount)) : null;
         VReg? result = CallMethod(target, receiver, args, viaBase, through);
         return result ?? _e.Const(0, IrTypes.Word);
     }

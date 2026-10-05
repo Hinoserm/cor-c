@@ -28,6 +28,18 @@ public sealed class OwnedFieldFacts
     public Dictionary<string, string> Elements { get; } = new(StringComparer.Ordinal);
     /// <summary>The parameters, by function, a collection handed to one of those fields goes through: the field each stores it into.</summary>
     public Dictionary<(string Callee, int Argument), string> ElementCallees { get; } = new();
+    /// <summary>
+    /// The owned fields a collection frees the value of itself as it replaces
+    /// it (Opt.Escape, EscapeSelfFrees): no call is watched for replacing one.
+    /// </summary>
+    public HashSet<string> SelfFreed { get; } = new(StringComparer.Ordinal);
+    /// <summary>
+    /// Whether the image opens regions: then what is stored into a self-freed
+    /// field is made beside the object stored into (Runtime.AllocNear,
+    /// Opt.RegionPointsTo.MakeStorageBeside) -- in its region when it is in
+    /// the innermost one open, on the heap otherwise.
+    /// </summary>
+    public bool Beside { get; set; }
     /// <summary>The fields some unit kept the reads of from the inliner for that rule: where not proved, its calls are the inliner's again.</summary>
     public HashSet<string> ElementKept { get; } = new(StringComparer.Ordinal);
 
@@ -183,7 +195,7 @@ public static class OwnedFieldSolver
 
         // THE FIELDS, each as every unit found it.
         SortedDictionary<string, long> offsets = new(StringComparer.Ordinal);
-        HashSet<string> refused = new(StringComparer.Ordinal), stored = new(StringComparer.Ordinal);
+        HashSet<string> refused = new(StringComparer.Ordinal), stored = new(StringComparer.Ordinal), selfFreed = new(StringComparer.Ordinal);
         void Refuse(string field, string why) { if (refused.Add(field)) report?.Invoke(field + " refused: " + why); }
         Dictionary<string, HashSet<string>> danger = new(StringComparer.Ordinal);
         Dictionary<string, SortedSet<string>> kinds = new(StringComparer.Ordinal), assumed = new(StringComparer.Ordinal);
@@ -193,6 +205,7 @@ public static class OwnedFieldSolver
                 if (offsets.TryGetValue(field, out long known) && known != record.Offset) Refuse(field, "units disagree on its offset");
                 offsets[field] = record.Offset;
                 if (record.Stored) stored.Add(field);
+                if (record.SelfFreed) selfFreed.Add(field);
                 if (record.Refused) Refuse(field, "a unit refused it");
                 else if (!solver.Holds(record.Needs)) Refuse(field, "needs " + Describe(record.Needs));
                 else if (record.Sinks.FirstOrDefault(sink => !sinks.Contains(sink)) is { Callee: not null } lost)
@@ -267,6 +280,7 @@ public static class OwnedFieldSolver
             if (MayWrite(field, danger[field])) { report?.Invoke(field + " refused: a read is live across a call that may store into it"); continue; }
             facts.Fields[field] = offset;
             if (stored.Contains(field)) facts.Mapped.Add(field);
+            if (selfFreed.Contains(field)) facts.SelfFreed.Add(field);
         }
         foreach ((string function, SortedSet<string> fields) in borrows)
             if (fields.Any(facts.Fields.ContainsKey)) facts.Borrowers.Add(function);

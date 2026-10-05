@@ -861,6 +861,89 @@ public sealed partial class Binder
     /// <summary>Whether this symbol is a template rather than something real.</summary>
     private static bool IsTemplate(TypeSymbol t) => t.Decl?.TypeParams.Count > 0;
 
+    /// <summary>Specialisations whose `new()` arguments have been checked (CS0310): once each.</summary>
+    private readonly HashSet<string> _constraintsChecked = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// WHETHER A TYPE ARGUMENT MEETS `new()` (C# 15.2.5): a value type, or a
+    /// class neither abstract nor static with a public constructor of no
+    /// parameters -- the one C# gives a class that declares none counts.
+    /// Not an interface, a delegate, an array, a pointer or string. A type
+    /// parameter, or a shared copy's word, is its own declaration's to
+    /// answer for, and passes here.
+    /// </summary>
+    private static bool HasPublicParameterless(Type a)
+    {
+        if (a.IsError || a.ParamName is not null || a.CanonParam != -1)
+        {
+            return true;
+        }
+        if (a.IsArray || a.IsPointer || a.Function is not null)
+        {
+            return false;
+        }
+        if (a.IsNullableValue)
+        {
+            return true;
+        }
+        if (a.Symbol is not TypeSymbol s)
+        {
+            return a.Prim != Prim.String && a.Prim != Prim.Type;
+        }
+        if (s.Kind is TypeKind.Struct or TypeKind.Enum)
+        {
+            return true;
+        }
+        if (s.Kind != TypeKind.Class || s.Decl is { IsDelegate: true } || s.Decl is { } d && (d.Mods & (Mods.Abstract | Mods.Static)) != 0)
+        {
+            return false;
+        }
+        List<MethodSymbol> ctors = s.Methods.Where(m => m.IsCtor && !m.Static).ToList();
+        return ctors.Count == 0 || ctors.Any(m => m.Params.Count == 0 && (m.Decl is null || m.Decl.Mods.HasFlag(Mods.Public)));
+    }
+
+    /// <summary>
+    /// What `Activator.CreateInstance<T>()` is over the T written: `new T()`
+    /// where T has a public parameterless constructor (a value type its
+    /// zero), else CannotCreate with .NET's reason. Null to call the method
+    /// as written: a T still a type parameter, in a template never run.
+    /// A T only run time knows is refused, as `new T()` over one is
+    /// (Monomorphiser.ParameterMade).
+    /// </summary>
+    private Expr? ActivatorMade(CallExpr c, TypeRef written)
+    {
+        Type t = Resolve(written, _thisType);
+        if (t.IsError || t.ParamName is not null)
+        {
+            return null;
+        }
+        if (t.CanonParam != -1)
+        {
+            Error(c, $"Activator.CreateInstance<{written.Name}>() over a type argument only run time knows: give the parameter it comes from the new() constraint");
+            return null;
+        }
+        if (HasPublicParameterless(t))
+        {
+            return new NewExpr { Type = written, Line = c.Line, Col = c.Col };
+        }
+        string reason = t.Symbol is TypeSymbol { Kind: TypeKind.Interface } ? "Cannot create an instance of an interface."
+                      : t.Symbol is TypeSymbol { Decl: { } d } && (d.Mods & Mods.Abstract) != 0 ? "Cannot create an abstract class."
+                      : "No parameterless constructor defined.";
+        MemberExpr refused = new()
+        {
+            Target = new NameExpr { Name = "Activator", Line = c.Line, Col = c.Col },
+            Name = "CannotCreate", Line = c.Line, Col = c.Col,
+        };
+        refused.WritableTypeArgs.Add(written);
+        CallExpr call = new() { Target = refused, Line = c.Line, Col = c.Col };
+        call.Args.Add(new LiteralExpr { Kind = Lit.Str, Text = reason, Line = c.Line, Col = c.Col });
+        return call;
+    }
+
+    /// <summary>C#'s refusal of a type argument that does not meet `new()` (CS0310).</summary>
+    private static string NotConstructible(Type a, string parameter, string generic)
+        => $"CS0310: '{a}' must be a non-abstract type with a public parameterless constructor in order to use it as parameter '{parameter}' in the generic type or method '{generic}'";
+
     /// <summary>The type parameters of the method signature being declared.</summary>
     private List<TypeParam>? _signature;
 
@@ -1340,7 +1423,7 @@ public sealed partial class Binder
             }
             case NameExpr local when Lookup(local.Name) is ConstSym { Text: null } named:
                 return IsReal(named.Type) ? BitConverter.Int64BitsToDouble(named.Value) : named.Value;
-            case NameExpr n when owner != null && FindConstant(owner, n.Name) is { } here:
+            case NameExpr n when owner != null && FindConstantOutward(owner, n.Name) is { } here:
                 return IsReal(here.Type) ? BitConverter.Int64BitsToDouble(here.Value) : here.Value;
             case MemberExpr m when ConstantOwner(m.Target) is { } named && FindConstant(named, m.Name) is { } there:
                 return IsReal(there.Type) ? BitConverter.Int64BitsToDouble(there.Value) : there.Value;
@@ -1378,7 +1461,7 @@ public sealed partial class Binder
         // "2";` is as ordinary inside a method as it is on a class.
         NameExpr local when Lookup(local.Name) is ConstSym { Text: not null } named => named.Text,
 
-        NameExpr name => FindText(owner, name.Name),
+        NameExpr name => owner is null ? null : FindTextOutward(owner, name.Name),
         MemberExpr member when ConstantOwner(member.Target) is { } named => FindText(named, member.Name),
         BinaryExpr { Op: BinOp.Add } add => JoinedText(add, owner),
         _ => null,
@@ -1425,7 +1508,7 @@ public sealed partial class Binder
             case NameExpr local when Lookup(local.Name) is ConstSym { Text: null } named:
                 return IsReal(named.Type) ? null : named.Value;
 
-            case NameExpr n when owner != null && FindConstant(owner, n.Name) is { } here:
+            case NameExpr n when owner != null && FindConstantOutward(owner, n.Name) is { } here:
                 return IsReal(here.Type) ? null : here.Value;
 
             case MemberExpr { Target: NameExpr keyword } m
@@ -1488,7 +1571,7 @@ public sealed partial class Binder
             foreach (Expr a in args)
             {
                 call.Args.Add(a);
-                call.ArgNames.Add(null);
+                call.WritableArgNames.Add(null);
             }
             return call;
         }
@@ -1506,9 +1589,9 @@ public sealed partial class Binder
                 Line = line, Col = col,
             };
             sub.Args.Add(ix.Target);
-            sub.ArgNames.Add(null);
+            sub.WritableArgNames.Add(null);
             sub.Args.Add(ix.Args[0]);
-            sub.ArgNames.Add(null);
+            sub.WritableArgNames.Add(null);
             return sub;
         }
 
@@ -1665,6 +1748,32 @@ public sealed partial class Binder
                 return text;
             }
             if (_constantDeclarations.ContainsKey((t, name))) return null;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// A const by the name an initialiser writes: on the type or its bases,
+    /// then outwards through the types it is nested in, as any unqualified
+    /// name resolves. A nested class's `const long OuterBudget = JudgeBudget;`
+    /// naming its outer class's const was refused as no constant expression,
+    /// and corc stopped compiling its own region solver (test 1321).
+    /// </summary>
+    private (long Value, Type Type)? FindConstantOutward(TypeSymbol owner, string name)
+    {
+        for (TypeSymbol? t = owner; t != null; t = Outer(t))
+        {
+            if (FindConstant(t, name) is { } found) return found;
+        }
+        return null;
+    }
+
+    /// <summary>A TEXT const by the name an initialiser writes, outwards as FindConstantOutward.</summary>
+    private string? FindTextOutward(TypeSymbol owner, string name)
+    {
+        for (TypeSymbol? t = owner; t != null; t = Outer(t))
+        {
+            if (FindText(t, name) is { } found) return found;
         }
         return null;
     }
@@ -2126,6 +2235,7 @@ public sealed partial class Binder
 
         Number(families);
         Assign(true);
+        foreach (var (family, slot) in shared) _r.InterfaceFamilySlots[family] = slot;
         // The table this unit numbered over, for diffing the two sides of a
         // link that stops with a layout conflict: a family present on one
         // side only moves every slot after it. Pass --dump-families.
@@ -2243,11 +2353,35 @@ public sealed partial class Binder
                 foreach (TypeRef each in made.Decl!.CanonMade!)
                 {
                     Type resolved = Resolve(each, made);
-                    made.CanonMadeTypes.Add(Unresolved(resolved) ? null : resolved.Symbol);
+                    // An array of one (Monomorphiser.CanonTested) by its element:
+                    // lowering makes the array's descriptor of it.
+                    made.CanonMadeTypes.Add(Unresolved(resolved) ? null
+                        : resolved.IsArray ? resolved.Element is { Symbol: { } element } inner && !inner.IsArray ? element : null
+                        : resolved.Symbol);
                 }
             }
         }
         finally { _quiet--; _namingOnly = false; }
+
+        // `where T : new()` OF A GENERIC TYPE, against each specialisation's
+        // arguments (CS0310), once the arguments are known. Said where the
+        // template is: the copy has no use site of its own.
+        foreach (TypeSymbol made in _r.Types.Values.Where(t => t.Decl is { Specialised: true, TemplateParams: { } }).ToList())
+        {
+            List<TypeParam> ps = made.Decl!.TemplateParams!;
+            if (made.TemplateArgTypes.Count != ps.Count || !_constraintsChecked.Add(made.Name))
+            {
+                continue;
+            }
+            for (int i = 0; i < ps.Count; i++)
+            {
+                if (ps[i].New && !HasPublicParameterless(made.TemplateArgTypes[i]))
+                {
+                    Error(made.Decl, NotConstructible(made.TemplateArgTypes[i], ps[i].Name,
+                        made.Decl.Template + "<" + string.Join(", ", ps.Select(p => p.Name)) + ">"));
+                }
+            }
+        }
 
         // The tuple shapes met so far take ValueTuple's interfaces now that
         // those have slots; any made from here on take them as they are made.
@@ -2320,6 +2454,8 @@ public sealed partial class Binder
             }
         }
         _bodyWork.Clear();
+        // Any generic local function a body outside a method declared.
+        SettleGenericCaptures();
         _declarationBatch.ThrowIfAny();
     }
 
@@ -2620,7 +2756,7 @@ public sealed partial class Binder
         };
 
         made.Args.AddRange(nw.Args);
-        made.ArgNames.AddRange(nw.ArgNames);
+        made.WritableArgNames.AddRange(nw.ArgNames);
         made.Elements = nw.Elements;
         made.Inits.AddRange(nw.Inits);
         made.Adds.AddRange(nw.Adds);
@@ -2806,6 +2942,19 @@ public sealed partial class Binder
             }
         }
 
+        // EVERY DELEGATE TYPE IS A Delegate, as every .NET delegate type
+        // derives from System.Delegate: the runtime declares it (an interface
+        // with GetInvocationList and the statics Combine, Remove and
+        // RemoveAll), and nothing writes it in a delegate's declaration, so it
+        // is put in here. An Action converts to a Delegate, an array of
+        // Delegates holds one, and its members are found on any delegate
+        // (MethodsOn). A program with no runtime has no Delegate, and its
+        // delegates are what they were.
+        if (d.IsDelegate && DelegateRoot() is { } root && !ReferenceEquals(root, sym) && !sym.Interfaces.Contains(root))
+        {
+            sym.Interfaces.Add(root);
+        }
+
         if (d.Kind == TypeKind.Enum)
         {
             // C# spells it either way, and `[Flags]` is what everybody writes.
@@ -2893,6 +3042,7 @@ public sealed partial class Binder
                         Name = f.Name, Type = Resolve(f.Type, sym), Owner = sym,
                         Static = f.Mods.HasFlag(Mods.Static),
                         Volatile = f.Mods.HasFlag(Mods.Volatile),
+                        IsEvent = f.IsEvent,
                         ThreadStatic = f.Mods.HasFlag(Mods.Static) && IsThreadStatic(f),
                         Required = f.Mods.HasFlag(Mods.Required),
                         Initialised = f.DeclaredInit is not null || f.Init is not null,
@@ -3133,15 +3283,22 @@ public sealed partial class Binder
                     };
                     if (md.TypeParams.Count > 0) AddNames(ms.WritableTypeParamNames, md.TypeParams);
 
-                    foreach (Param p in md.Params)
+                    for (int pi = 0; pi < md.Params.Count; pi++)
                     {
+                        Param p = md.Params[pi];
+                        Type resolved = Resolve(p.Type, sym);
                         ms.Params.Add(new ParamSymbol
                         {
                             Name = p.Name,
-                            Type = Resolve(p.Type, sym),
+                            Type = resolved,
                             ByRef = p.IsRef || p.IsOut,
                             ReadOnly = p.IsReadOnlyRef,
                             IsParams = p.IsParams,
+                            // A generic local function's captured variable,
+                            // by the address of its cell (ParamSym.Cell), a
+                            // struct's too: the cell holds the struct.
+                            Cell = pi < md.Captures,
+                            CapturedVariable = pi < md.Captures,
                         });
                     }
 
@@ -3729,9 +3886,11 @@ public sealed partial class Binder
     /// lambda made an iterator and a closure every time a type with arguments
     /// was resolved, and the binder resolves them by the hundred thousand.
     /// </summary>
-    private Type[] ResolveAll(List<TypeRef> refs, TypeSymbol? context)
+    private IReadOnlyList<Type> ResolveAll(List<TypeRef> refs, TypeSymbol? context)
     {
-        if (refs.Count == 0) return Array.Empty<Type>();
+        // None: the one shared empty list, not the empty array, which became
+        // a view of its own at every Args it was given to -- 137 thousand.
+        if (refs.Count == 0) return Type.NoArgs;
         Type[] made = new Type[refs.Count];
         for (int i = 0; i < made.Length; i++) made[i] = Resolve(refs[i], context);
         return made;
@@ -3862,7 +4021,9 @@ public sealed partial class Binder
             case "double": return Type.F64;
             case "char":   return Type.Char;
             case "string": return Type.String;
-            case "object": return Type.Any;
+            // A SHARED METHOD COPY'S TYPE ARGUMENT is object, carrying which
+            // of its type parameters it is (TypeRef.CanonIndex).
+            case "object": return Type.CanonAny(r.CanonIndex);
 
             // C#'S `dynamic`: object, with its operations bound when the
             // program runs (Type.Dynamic; Binder.Dynamic.cs).
@@ -3901,7 +4062,10 @@ public sealed partial class Binder
             // (somebody's list of objects) at a glance.
             //
             // See Monomorphiser.CanonName and TypeDecl.Canon.
-            case Monomorphiser.CanonName: return Type.Any;
+            //
+            // And which of the copy's parameters it is, where the copy was
+            // written so (TypeRef.CanonIndex, Type.CanonParam).
+            case Monomorphiser.CanonName: return Type.CanonAny(r.CanonIndex);
 
             // A TYPE, AS A VALUE -- what typeof(T) and GetType() produce.
             //
@@ -3990,6 +4154,26 @@ public sealed partial class Binder
             {
                 Prim = system.Kind == TypeKind.Enum ? system.EnumUnderlying : Prim.Void,
                 Symbol = system,
+                Args = ResolveAll(r.Args, context),
+            };
+        }
+
+        // `System.X` FOR ONE OF THE LIBRARY'S GLOBAL TYPES, which are System's:
+        // the library's, whatever the program's own namespace calls X. A
+        // program may declare a `Delegate` of its own beside its delegates,
+        // and `System.Delegate` -- which the multicast class the parser writes
+        // for each of them names (Parser.Multicast) -- is still the runtime's.
+        // Read by its last part from where it was written, it was the
+        // program's.
+        if (r.Name == LibraryHome + "." + bare
+            && _r.Types.TryGetValue(r.Args.Count > 0 ? Arity(bare, r.Args.Count) : bare, out TypeSymbol? systemGlobal)
+            && systemGlobal.Decl is { } systemDecl && systemDecl.Outer is null
+            && (systemDecl.Namespace.Length == 0 || systemDecl.Namespace == LibraryHome))
+        {
+            return new Type
+            {
+                Prim = systemGlobal.Kind == TypeKind.Enum ? systemGlobal.EnumUnderlying : Prim.Void,
+                Symbol = systemGlobal,
                 Args = ResolveAll(r.Args, context),
             };
         }
@@ -4127,7 +4311,18 @@ public sealed partial class Binder
             {
                 Declare(md.Params[i], _method.Params[i].Name,
                         new ParamSym(i, _method.Params[i].Type, _method.Params[i].Name,
-                                     _method.Params[i].ByRef, _method.Params[i].ReadOnly));
+                                     _method.Params[i].ByRef, _method.Params[i].ReadOnly)
+                        {
+                            Cell = _method.Params[i].Cell, CapturedVariable = _method.Params[i].CapturedVariable,
+                        });
+            }
+
+            // A HOISTED GENERIC LOCAL FUNCTION calls itself and the others it
+            // could see where it was written by the names written there.
+            HashSet<string> visible = new(StringComparer.Ordinal);
+            foreach ((string name, string method) in md.LocalGenerics)
+            {
+                if (visible.Add(name)) DeclareGenericLocal(md, name, method);
             }
 
             // A constructor's chained call runs before its body, so its
@@ -4146,7 +4341,7 @@ public sealed partial class Binder
                     Spans = md.Init.Spans, Source = md.Init.Source, Line = md.Init.Line, Col = md.Init.Col,
                 };
                 chained.Args.AddRange(md.Init.Args);
-                chained.ArgNames.AddRange(md.Init.ArgNames);
+                chained.WritableArgNames.AddRange(md.Init.ArgNames);
 
                 Type? outerChain = _wanted;
                 _wanted = null;
@@ -4165,18 +4360,19 @@ public sealed partial class Binder
 
                 md.Init.Args.Clear();
                 md.Init.Args.AddRange(chained.Args);
-                md.Init.ArgNames.Clear();
+                md.Init.WritableArgNames.Clear();
                 // A later round finds the names already consumed and makes
                 // no order; the first round's stands.
                 if (chained.ArgumentOrder.Count != 0)
                 {
-                    md.Init.ArgumentOrder.Clear();
-                    md.Init.ArgumentOrder.AddRange(chained.ArgumentOrder);
+                    md.Init.WritableArgumentOrder.Clear();
+                    md.Init.WritableArgumentOrder.AddRange(chained.ArgumentOrder);
                 }
             }
 
             CheckBlock(md.Body);
             PopScope();
+            SettleGenericCaptures();
             SettleCapturedCells();
             _r.FrameSize[md] = _maxSlot;
             NoteBoundBody(_method, md);
@@ -4226,6 +4422,11 @@ public sealed partial class Binder
 
     private void Declare(Node at, string name, Sym sym)
     {
+        // A generic local function being probed is told what it declares
+        // itself: never a variable it captures through a call
+        // (SettleGenericCaptures).
+        foreach (GenericCaptures owner in _probeOwners) owner.OwnNames.Add(name);
+
         // `(_, _) => ...`: a lambda naming more than one parameter `_` has
         // discards for all of them, as C# 9 has it. The first holds the name;
         // the rest bind nothing.
@@ -4265,9 +4466,12 @@ public sealed partial class Binder
         return slot;
     }
 
-    private Sym? Lookup(string name)
+    private Sym? Lookup(string name) => LookupFrom(name, _scopes.Count - 1);
+
+    /// <summary>A name, looked for from scope <paramref name="top"/> outwards (LookupCaptured).</summary>
+    private Sym? LookupFrom(string name, int top)
     {
-        for (int i = _scopes.Count - 1; i >= 0; i--)
+        for (int i = top; i >= 0; i--)
         {
             if (_scopes[i].TryGetValue(name, out Sym? s))
             {
@@ -4328,8 +4532,7 @@ public sealed partial class Binder
         // method's group, as a method of the type is reached by its own.
         foreach ((string name, string method) in b.GenericLocals)
         {
-            List<MethodSymbol>? methods = _thisType?.FindMethods(method);
-            if (methods is { Count: > 0 }) Declare(b, name, new MethodGroupSym(methods));
+            DeclareGenericLocal(b, name, method);
         }
 
         DeclareLocalFunctions(b);
@@ -4340,6 +4543,10 @@ public sealed partial class Binder
             CheckStmt(s);
         }
         if (labels) _labels.RemoveAt(_labels.Count - 1);
+
+        // WHAT THIS BLOCK'S GENERIC LOCAL FUNCTIONS CAPTURE, found while every
+        // variable they may name is still in scope (Binder.GenericCaptures).
+        if (b.GenericLocals.Count > 0) DiscoverGenericCaptures(b);
         PopScope();
     }
 
@@ -4408,6 +4615,31 @@ public sealed partial class Binder
             if (labels.TryGetValue(name, out LabeledStmt? found)) return found;
         }
         return null;
+    }
+
+    /// <summary>
+    /// AN EMBEDDED STATEMENT IS A SCOPE OF ITS OWN, braces or not: the then
+    /// and else of an if, the body of a while, do, for or foreach. What an
+    /// expression in it declares -- a pattern's name, an `out var` -- is
+    /// that statement's alone, as if it were written in braces (C# 7.3's
+    /// rules for expression variables): `if (a) return f(x) is { } runs ?
+    /// runs : null;` and a later `if (g() is not { } runs) return;` in a
+    /// block beside it are two names, not one declared twice. What an if's
+    /// or a while's CONDITION declares is not inside the embedded statement:
+    /// an if's belongs to the scope the if is in, and is seen after it
+    /// (`if (!int.TryParse(s, out int n)) return; Use(n);`), and a loop's to
+    /// the loop. A block is a scope already.
+    /// </summary>
+    private void CheckEmbedded(Stmt s)
+    {
+        if (s is Block)
+        {
+            CheckStmt(s);
+            return;
+        }
+        PushScope();
+        CheckStmt(s);
+        PopScope();
     }
 
     private void CheckStmt(Stmt s)
@@ -4496,11 +4728,24 @@ public sealed partial class Binder
                         Error(d, "'var' needs an initialiser to infer from");
                         type = Type.Error;
                     }
+                    // A LAMBDA'S NATURAL TYPE (C# 10), and once worked out,
+                    // whatever the initialiser: it is spelt on the declaration
+                    // (Binder.NaturalTypes).
+                    else if (d.Init is LambdaExpr || d.Init.NaturalType is not null)
+                    {
+                        type = NaturalDelegate(d, null);
+                    }
                     else
                     {
                         type = CheckExpr(d.Init);
 
-                        if (type.Prim == Prim.NullLiteral)
+                        // A METHOD GROUP'S, when it is one method.
+                        if (type.IsVoid && _r.Resolved.TryGetValue(d.Init, out Sym? group)
+                            && group is MethodGroupSym or CapturedMethodGroupSym)
+                        {
+                            type = NaturalDelegate(d, group);
+                        }
+                        else if (type.Prim == Prim.NullLiteral)
                         {
                             Error(d, "'var' cannot infer a type from null; write the type explicitly");
                             type = Type.Error;
@@ -4611,7 +4856,7 @@ public sealed partial class Binder
                 // what a branch proved is only true inside it.
                 List<Sym> inThen = Assume(i.Cond, true);
 
-                CheckStmt(i.Then);
+                CheckEmbedded(i.Then);
                 HashSet<LocalSym> afterThen = new(_assigned, ReferenceEqualityComparer.Instance);
                 Forget(inThen);
 
@@ -4622,7 +4867,7 @@ public sealed partial class Binder
 
                 if (i.Else != null)
                 {
-                    CheckStmt(i.Else);
+                    CheckEmbedded(i.Else);
                 }
                 HashSet<LocalSym> afterElse = new(_assigned, ReferenceEqualityComparer.Instance);
 
@@ -4681,7 +4926,7 @@ public sealed partial class Binder
                 List<Sym> inLoop = Assume(w.Cond, true);
 
                 EnterBreakable();
-                CheckStmt(w.Body);
+                CheckEmbedded(w.Body);
                 HashSet<LocalSym>? whileBroke = LeaveBreakable();
                 Forget(inLoop);
                 PopScope();
@@ -4691,9 +4936,13 @@ public sealed partial class Binder
 
             case DoStmt dd:
                 EnterBreakable();
-                CheckStmt(dd.Body);
+                CheckEmbedded(dd.Body);
                 LeaveBreakable();
+                // What the condition declares is the do statement's alone:
+                // nothing after the loop sees it.
+                PushScope();
                 CheckCondition(dd.Cond);
+                PopScope();
                 break;
 
             case ForStmt f:
@@ -4724,7 +4973,7 @@ public sealed partial class Binder
                 // body, and `t.Interfaces` two lines in was reported as a read
                 // through something that may be null.
                 EnterBreakable();
-                CheckStmt(f.Body);
+                CheckEmbedded(f.Body);
                 HashSet<LocalSym>? forBroke = LeaveBreakable();
 
                 foreach (Expr step in f.Step)
@@ -4842,7 +5091,7 @@ public sealed partial class Binder
                 // it makes it a cell, and the lowering stores into the cell.
                 _r.PatternSym[fe] = iteration;
                 EnterBreakable();
-                CheckStmt(fe.Body);
+                CheckEmbedded(fe.Body);
                 LeaveBreakable();
                 PopScope();
                 break;
@@ -5284,6 +5533,17 @@ public sealed partial class Binder
         {
             to = Type.Any.AsNullable();
         }
+        // A METHOD GROUP CONVERTED TO OBJECT is its natural type (C# 10):
+        // converted to that delegate, which is the object.
+        if (NaturalTarget(to) && at is Expr groupSource && !_r.Rewrites.ContainsKey(groupSource)
+            && _r.Resolved.TryGetValue(groupSource, out Sym? objectGroup) && objectGroup is MethodGroupSym or CapturedMethodGroupSym)
+        {
+            if (NaturalTypeOf(groupSource, objectGroup, "this method group") is Type natural)
+            {
+                CheckAssignable(from, natural, at, what);
+            }
+            return;
+        }
 
         // Method groups have the same contextual delegate conversion in
         // assignments and returns as in arguments -- static ones, `this`'s,
@@ -5641,7 +5901,7 @@ public sealed partial class Binder
     /// </summary>
     private bool Fits(Type had, Type want, Expr? written)
         => had.IsError || (!NullableIntoValue(had, want) && (Convertible(had, want) || Variant(had, want)))
-        || (written is not null && MethodGroupFits(written, want))
+        || (written is not null && (MethodGroupFits(written, want) || LocalFunctionConverts(written, want)))
         || IntegerConstantFits(written, had, want)
         || TupleLiteralFits(written, want);
 
@@ -6073,11 +6333,78 @@ public sealed partial class Binder
             return true;
         }
 
+        // A NUMBER, A BOOL, A CHAR OR AN ENUM BOXED, AND A STRING AS IT IS,
+        // IS EACH SYSTEM INTERFACE .NET DECLARES IT TO IMPLEMENT (BoxedFaces):
+        // `IComparable x = 5;`, `IEquatable<int> e = 3;`, `IComparable s =
+        // "a";` -- implicit, as C#'s boxing and reference conversions are.
+        if (!to.IsArray && to.AsNonNullable().Symbol is { Kind: TypeKind.Interface } face
+            && BoxedFaces.Implements(from, face, FaceArgument(to.AsNonNullable(), face)))
+        {
+            return true;
+        }
+
+        // AND ONE TYPE SPELT TWO WAYS THERE: a template with its arguments --
+        // `IEnumerator<(object, object)>`, what a member answers with the copy's
+        // type parameters bound as the words they are -- and the copy made of
+        // it, `IEnumerator$ValueTuple___canon___canon`, which a local declared
+        // with those parameters is. The same routine and layout, named as the
+        // monomorphiser names it with every word `__canon`, at any depth: a
+        // PriorityQueue built from (element, priority) pairs met it in a foreach.
+        if (InCanonicalCopy && (SameCanonical(from, to) || SameCanonical(to, from)))
+        {
+            return true;
+        }
+
         if (from.Symbol != null && to.Symbol != null)
         {
             return from.Symbol.DerivesFrom(to.Symbol);
         }
         return false;
+    }
+
+    /// <summary>The type argument a one-argument specialisation of an interface was made with, or null.</summary>
+    private Type? FaceArgument(Type to, TypeSymbol face)
+    {
+        if (face.TemplateArgTypes.Count == 1) return face.TemplateArgTypes[0];
+        if (to.Args.Count == 1) return to.Args[0];
+        return face.Decl is { Template: not null, TemplateArgs.Count: 1 } made ? Resolve(made.TemplateArgs[0], _thisType) : null;
+    }
+
+    /// <summary>
+    /// Whether `spelt`, a template with its arguments, names the copy `made`
+    /// is, inside a canonical copy: its name as Monomorphiser.MangledName
+    /// gives it with every reference argument -- object, or __canon -- the
+    /// canonical word, in tuples and nested arguments too.
+    /// </summary>
+    private static bool SameCanonical(Type spelt, Type made)
+    {
+        if (spelt.Args.Count == 0 || made.Args.Count > 0 || spelt.Symbol is not TypeSymbol template || made.Symbol is not TypeSymbol copy
+            || spelt.IsArray || made.IsArray || spelt.PointerDepth != 0 || made.PointerDepth != 0)
+        {
+            return false;
+        }
+        List<TypeRef> args = new(spelt.Args.Count);
+        foreach (Type a in spelt.Args)
+        {
+            if (RefOf(a) is not TypeRef r) return false;
+            args.Add(AsCanonical(r));
+        }
+        string name = template.Decl?.Outer is string outer ? outer + "." + template.Name : template.Name;
+        return Monomorphiser.MangledName(name, args) == copy.Name;
+
+        static TypeRef AsCanonical(TypeRef r)
+        {
+            if (r.ArrayRank == 0 && r.PointerDepth == 0 && r.Args.Count == 0 && r.Name is "object" or "Object" or "System.Object" or Monomorphiser.CanonName)
+            {
+                return new TypeRef { Name = Monomorphiser.CanonName, Line = r.Line, Col = r.Col };
+            }
+            if (r.Args.Count == 0) return r;
+            return new TypeRef
+            {
+                Name = r.Name, ArrayRank = r.ArrayRank, PointerDepth = r.PointerDepth,
+                Arguments = r.Args.Select(AsCanonical).ToList(), Line = r.Line, Col = r.Col,
+            };
+        }
     }
 
     /// <summary>
@@ -6330,6 +6657,13 @@ public sealed partial class Binder
     /// </summary>
     private Type CheckLambda(LambdaExpr lam, Type wanted)
     {
+        // CONVERTED TO OBJECT, a lambda is its natural type (C# 10), and that
+        // delegate is the object (Binder.NaturalTypes).
+        if (NaturalTarget(wanted))
+        {
+            return NaturalTypeOf(lam, null, "this lambda") is Type natural ? CheckLambda(lam, natural) : Type.Error;
+        }
+
         TypeSymbol? face = wanted.Symbol;
 
         // NOT YET, IF WHAT IT HAS TO BE IS STILL OPEN.
@@ -6357,6 +6691,41 @@ public sealed partial class Binder
                 ? $"there is nothing here for a lambda to be; '{wanted}' is not a type with an 'Invoke'"
                 : $"'{face.Name}' has no 'Invoke' taking {lam.Params.Count} argument(s)");
             return Type.Error;
+        }
+
+        // A RESULT WRITTEN IN FRONT, `ref int (int[] a) => ref a[0]` (C# 10),
+        // is the delegate's exactly: its type, and whether and how it is
+        // returned by reference.
+        if (lam.Returns is not null)
+        {
+            bool byReference = (lam.ReturnMods & Mods.RefReturn) != 0;
+            bool readOnly = (lam.ReturnMods & Mods.RefReadonlyReturn) != 0;
+            static string How(bool reference, bool readOnlyReference)
+                => reference ? readOnlyReference ? "by 'ref readonly'" : "by 'ref'" : "by value";
+            Type written = Resolve(lam.Returns, _thisType);
+            Type delegated = ContextualMemberResult(wanted, invoke);
+            if (byReference != invoke.RefReturn || readOnly != invoke.RefReturnReadOnly)
+            {
+                Error(lam, $"the lambda returns {How(byReference, readOnly)}, and '{face!.Name}' returns {How(invoke.RefReturn, invoke.RefReturnReadOnly)}");
+            }
+            else if (!written.IsError && !delegated.IsError
+                     && !MethodSignatures.SameType(written.AsNonNullable(), delegated.AsNonNullable()))
+            {
+                Error(lam, $"the lambda returns '{written}', and '{face!.Name}' returns '{delegated}'");
+            }
+        }
+
+        // PARAMETER TYPES WRITTEN ARE THE DELEGATE'S EXACTLY (CS1678): `(long
+        // x) => ...` is no Func<int, int>, however an int would convert.
+        if (lam.TypesWritten)
+        {
+            for (int i = 0; i < lam.Params.Count && i < invoke.Params.Count; i++)
+            {
+                if (WrittenParameterMismatch(lam, i, wanted, invoke) is (Type written, Type delegated))
+                {
+                    Error(lam, $"parameter {i + 1} of the lambda is declared '{written}', and the delegate's is '{delegated}'");
+                }
+            }
         }
 
         // ---- pass one: which of the enclosing locals does it read? ----------
@@ -6410,13 +6779,30 @@ public sealed partial class Binder
                 // lambdas deep in an instance method, the middle one never
                 // took what only the innermost read, and the innermost found
                 // nothing to read it from.
-                if (Lookup(name) is LocalSym or ParamSym
-                    || _thisType is { } enclosing && enclosing.Name.StartsWith("Lambda$", StringComparison.Ordinal)
-                       && (enclosing.FindField(name) ?? enclosing.FindField("<" + name + ">")) is not null)
+                // A local or parameter is written down by Lookup itself, and
+                // only when it is the enclosing code's: one of the outer
+                // lambda's own is no capture of it, and a generic local
+                // function probed around this one (ProbeGenericLocal) would
+                // take it for a parameter it does not have.
+                if (Lookup(name) is LocalSym or ParamSym)
+                {
+                    continue;
+                }
+                if (_thisType is { } enclosing && enclosing.Name.StartsWith("Lambda$", StringComparison.Ordinal)
+                    && (enclosing.FindField(name) ?? enclosing.FindField("<" + name + ">")) is not null)
                 {
                     outerCaptured[name] = held;
                 }
             }
+        }
+
+        // WHILE A GENERIC LOCAL FUNCTION IS PROBED for what it captures
+        // (ProbeGenericLocal), a lambda inside it is wanted for the same and
+        // nothing more: what it read is passed up above, and no class is
+        // made of a body that is never compiled.
+        if (_probing > 0)
+        {
+            return wanted;
         }
 
         // ---- the class ------------------------------------------------------
@@ -6452,8 +6838,20 @@ public sealed partial class Binder
         // A method group already turned into a closure in this type is that
         // closure again, when nothing but the plain `this` could be captured;
         // a nested capture would need a different source for the same field.
+        // NOR IN A STATIC METHOD WHEN IT CAPTURED `this`: made first in one of
+        // the type's instance methods, it holds a `$this` field a static one
+        // has nothing to fill from, and lowering it there read a `this` that
+        // was not -- the compiler failed compiling its own escape engine, an
+        // outer type's static method group passed from a nested type's
+        // instance method and then from its static one (test 1309).
+        // The static methods' own is named apart, and shared among them.
+        if (!bound && lam.GroupIdentity is not null && _method is { Static: true }
+            && _groupClosures.TryGetValue(name2, out ClosureInfo? holdsThis) && holdsThis.Captures.Count > 0)
+        {
+            name2 += "$Static";
+        }
         if (!bound && lam.GroupIdentity is not null && _groupClosures.TryGetValue(name2, out ClosureInfo? sharedClosure)
-            && (_method is { Static: true } || (_capturedThisType is null && _thisType is not null)))
+            && (_method is { Static: true } ? sharedClosure.Captures.Count == 0 : _capturedThisType is null && _thisType is not null))
         {
             _r.Closures[lam] = sharedClosure;
             return wanted;
@@ -6573,7 +6971,13 @@ public sealed partial class Binder
         Type closureReturns = ContextualMemberResult(wanted, invoke);
         MethodDecl body = new()
         {
-            Name = "Invoke", Mods = Mods.Public, Returns = new TypeRef { Name = "" },
+            // RETURNED BY REFERENCE AS THE DELEGATE SAYS: for `delegate ref
+            // int D(...)`, and a ref-returning local function's delegate
+            // (Parser.LocalFunctionDelegate), the body answers a variable --
+            // `=> ref a[i]`, `return ref a[i];` -- and its Invoke the address.
+            Name = "Invoke", Returns = new TypeRef { Name = "" },
+            Mods = Mods.Public | (invoke.RefReturn ? Mods.RefReturn : Mods.None)
+                 | (invoke.RefReturnReadOnly ? Mods.RefReadonlyReturn : Mods.None),
             // An async expression lambda returns what its TASK holds, so
             // `async () => await Work()` of a Func<Task> is a statement.
             Body = lam.BlockBody ?? Wrap(lam.Body!, lam.Async ? AsyncBodyType(closureReturns) : closureReturns),
@@ -6616,6 +7020,13 @@ public sealed partial class Binder
         static string Passing(string how) => how.Length == 0 ? "by value" : "with '" + how + "'";
 
         closure.Methods.Add(run);
+        // WHAT IT IS AS A DELEGATE: the members every delegate has
+        // (DelegateMembers), and -- a method group's -- the method it calls,
+        // by which its delegates are equal to those another class made of
+        // the same method (TypeSymbol.DelegateGroup).
+        if (face is not null) DelegateMembers(closure, face);
+        if (lam.GroupIdentity is string group) closure.DelegateGroup = group.Split('$')[0];
+        else if (lam.LocalGroup is string local) closure.DelegateGroup = local;
         ImplementDefaults(closure);
         RegisterType(name2, closure);
         _r.Methods[body] = run;
@@ -6693,6 +7104,27 @@ public sealed partial class Binder
         {
             Declare(lam, name, constant);
         }
+        // AND THE GENERIC LOCAL FUNCTIONS IN SCOPE WHERE IT WAS WRITTEN: they
+        // are methods of the type, called from in here through the `this`
+        // the closure holds when they are instance methods.
+        Dictionary<string, Sym> generics = new(StringComparer.Ordinal);
+        foreach (LocalScope scope in wasScopes)
+        {
+            foreach ((string name, Sym named) in scope)
+            {
+                if (_genericLocalSyms.Contains(named)) generics[name] = named;
+            }
+        }
+        foreach ((string name, Sym named) in generics)
+        {
+            if (constants.ContainsKey(name)) continue;
+            List<MethodSymbol> methods = named is CapturedMethodGroupSym held ? held.Methods : ((MethodGroupSym)named).Methods;
+            Sym again = thisField is not null && methods.Any(m => !m.Static)
+                ? new CapturedMethodGroupSym(thisField, methods)
+                : new MethodGroupSym(methods);
+            _genericLocalSyms.Add(again);
+            Declare(lam, name, again);
+        }
         PushScope(functionBoundary: true);
 
         for (int i = 0; i < lam.Params.Count; i++)
@@ -6705,7 +7137,7 @@ public sealed partial class Binder
                     new ParamSym(i, run.Params[i].Type, lam.Params[i].Name, run.Params[i].ByRef, run.Params[i].ReadOnly));
         }
 
-        Look(lam, closureReturns);
+        Look(lam, closureReturns, final: true);
         _r.FrameSize[body] = _nextSlot;
         PopScope();
         PopScope();
@@ -6732,11 +7164,43 @@ public sealed partial class Binder
         return wanted;
     }
 
-    /// <summary>Checks a lambda's body, whichever of the two shapes it is.</summary>
-    private void Look(LambdaExpr lam, Type returns)
+    /// <summary>
+    /// A lambda's written parameter type that is not the delegate's (CS1678),
+    /// with the delegate's, or null when they are the same or the delegate's
+    /// is not settled yet (a type parameter still open). Nullable annotations
+    /// on references are no difference, as they are only a warning in C#.
+    /// </summary>
+    private (Type Written, Type Delegated)? WrittenParameterMismatch(LambdaExpr lam, int i, Type delegateType, MethodSymbol invoke)
+    {
+        if (!lam.TypesWritten || i >= lam.Params.Count || i >= invoke.Params.Count) return null;
+        Type delegated = ContextualParameterType(delegateType, invoke, i);
+        if (delegated.IsError || Open(delegated) || Unmade(delegated)) return null;
+        _quiet++;
+        Type written = Resolve(lam.Params[i].Type, _thisType);
+        _quiet--;
+        if (written.IsError) return null;
+        return MethodSignatures.SameType(written.AsNonNullable(), delegated.AsNonNullable()) ? null : (written, delegated);
+
+        static bool Open(Type t)
+            => t.ParamName is not null || t.Args.Any(Open) || t.Element is Type e && Open(e);
+    }
+
+    /// <summary>
+    /// Checks a lambda's body, whichever of the two shapes it is.
+    /// <paramref name="final"/> when it is checked as its closure's own
+    /// Invoke (<see cref="_method"/>), rather than for what it captures.
+    /// </summary>
+    private void Look(LambdaExpr lam, Type returns, bool final = false)
     {
         if (lam.BlockBody != null)
         {
+            // ITS GENERIC LOCAL FUNCTIONS TOO, as CheckBlock declares a
+            // block's: a lambda's body is that block, read here statement by
+            // statement, and `T Mark<T>(T v)` inside one was never named.
+            foreach ((string name, string method) in lam.BlockBody.GenericLocals)
+            {
+                DeclareGenericLocal(lam.BlockBody, name, method);
+            }
             DeclareLocalFunctions(lam.BlockBody);
             bool labels = PushLabels(lam.BlockBody);
             foreach (Stmt s in lam.BlockBody.Statements)
@@ -6744,6 +7208,18 @@ public sealed partial class Binder
                 CheckStmt(s);
             }
             if (labels) _labels.RemoveAt(_labels.Count - 1);
+            if (lam.BlockBody.GenericLocals.Count > 0) DiscoverGenericCaptures(lam.BlockBody);
+            return;
+        }
+
+        // `=> ref a[0]`, OR ANY BODY OF ONE THAT RETURNS BY REFERENCE, is
+        // `return ref a[0];` and is checked as that is (CheckRefReturn): a
+        // variable, of the delegate's type exactly, that outlives the call.
+        // The wrapped return the closure's Invoke is lowered from (Wrap) is
+        // this same expression.
+        if (final && (lam.Body is RefArgExpr { IsOut: false, Name: null } || _method is { RefReturn: true }))
+        {
+            CheckRefReturn(new ReturnStmt { Value = lam.Body, Line = lam.Body!.Line, Col = lam.Body.Col });
             return;
         }
 
@@ -6796,7 +7272,7 @@ public sealed partial class Binder
     {
         if (c.ArgNames.Count == 0 || c.ArgNames.All(n => n is null))
         {
-            c.ArgNames.Clear();
+            c.WritableArgNames.Clear();
             return;
         }
 
@@ -6861,7 +7337,10 @@ public sealed partial class Binder
                         // Names are put in order before the receiver of an
                         // extension joins the arguments: written argument k
                         // is span pair k + 1.
-                        placed[i] = CallerValue(spare, m.Decl.Params, CallLine(c), k => from[k] < 0 ? null : SpanText(c.Spans, c.Source, from[k] + 1))
+                        // The variables a generic local function captured
+                        // come first and were never written (Hidden).
+                        int hidden = Hidden(c, m);
+                        placed[i] = CallerValue(spare, m.Decl.Params, CallLine(c), k => from[k] < hidden ? null : SpanText(c.Spans, c.Source, from[k] - hidden + 1))
                                     ?? Written(m, spare);
                         filled++;
                     }
@@ -6903,13 +7382,13 @@ public sealed partial class Binder
             (MethodSymbol _, Expr?[] chosen, int _) = fitting.OrderBy(f => f.Filled).First();
             c.Args.Clear();
             c.Args.AddRange(chosen!);
-            c.ArgNames.Clear();
+            c.WritableArgNames.Clear();
             return;
         }
 
         Error(c, $"no overload of '{group.Methods[0].Name}' takes arguments named "
                 + string.Join(", ", c.ArgNames.Where(n => n != null).Select(n => $"'{n}'")));
-        c.ArgNames.Clear();
+        c.WritableArgNames.Clear();
     }
 
     /// <summary>
@@ -7036,6 +7515,17 @@ public sealed partial class Binder
         // from the first: R cannot be worked out until T is.
         for (int i = 0; i < m.Params.Count && i < written.Count; i++)
         {
+            // A METHOD GROUP'S OUTPUT TYPE IS ITS METHOD'S RETURN (C#
+            // 12.6.3.7): `names.Select(table.Add)` is a Select to what Add
+            // answers. Read from the method, not from a lambda standing in for
+            // the group: one bound to a receiver calls through the closure's
+            // target field, which nothing outside the closure can name.
+            if (written[i] is not LambdaExpr && GroupReturns(written[i], Close(m.Params[i].Type, bound)) is Type answered)
+            {
+                Type gives = Substitute(Invoked(m.Params[i].Type)?.Returns ?? Type.Error, Applied(m.Params[i].Type));
+                if (!Unify(m, gives, answered, bound)) return false;
+                continue;
+            }
             LambdaExpr? lam = written[i] as LambdaExpr
                            ?? MethodGroupLambda(written[i], Close(m.Params[i].Type, bound));
 
@@ -7106,6 +7596,146 @@ public sealed partial class Binder
     /// so it waits for the overload as a lambda does and is checked after.
     /// </summary>
     /// <summary>
+    /// `a + b` OR `a - b` OVER A DELEGATE, as a call: __Delegates.Combine or
+    /// __Delegates.Remove, which are .NET's Delegate.Combine and Remove typed
+    /// as the delegate (the runtime's, generic over it). Built as ordinary
+    /// syntax, to be bound like anything the program could have written;
+    /// `+=` and `-=` remember it for lowering, which stores its result back
+    /// into the same place, and the binary operators become it. The right
+    /// side is an argument, so a lambda or a method group there becomes the
+    /// delegate the left side is, as C# target-types it.
+    ///
+    /// NOT the multicast class the parser writes beside the delegate, by its
+    /// name: the name of a generic delegate's, or one nested in a generic
+    /// type, is not something a call written here can spell, and a delegate
+    /// held as one of another type by variance must be refused as .NET's
+    /// Delegate.Combine refuses it. Delegate.Combine asks the delegate itself,
+    /// whose type knows its multicast (Parser.ParseDelegateDeclaration).
+    /// </summary>
+    private static CallExpr DelegateCombination(bool add, Expr left, Expr right, Node at, Type delegateType)
+    {
+        MemberExpr helper = new()
+        {
+            Target = new NameExpr { Name = DelegatesHelper, Line = at.Line, Col = at.Col },
+            Name = add ? "Combine" : "Remove", Line = at.Line, Col = at.Col,
+        };
+        // THE DELEGATE NAMED, not inferred: a lambda or a method group on the
+        // right has no type for inference to read until it is converted, and
+        // the left side's is the one C# converts it to.
+        // Named as maybe null: either side of `+=` may be, and Combine's T?
+        // parameters with T named bare were taken as not.
+        if (RefOf(delegateType.AsNullable()) is TypeRef spelt) helper.WritableTypeArgs.Add(spelt);
+        CallExpr made = new() { Target = helper, Line = at.Line, Col = at.Col };
+        made.Args.Add(left);
+        made.Args.Add(right);
+        made.WritableArgNames.Add(null);
+        made.WritableArgNames.Add(null);
+        return made;
+    }
+
+    /// <summary>The runtime's class of what delegate operators become, under a name no program writes.</summary>
+    private const string DelegatesHelper = "__Delegates";
+
+    /// <summary>
+    /// The runtime's Delegate, which every delegate type has for its base
+    /// (DeclareMembersIn): the library's, moved into System when a program
+    /// took its name. Null in a program compiled without the runtime.
+    /// </summary>
+    private TypeSymbol? DelegateRoot()
+    {
+        if (_r.Types.TryGetValue(LibraryHome + ".Delegate", out TypeSymbol? moved)
+            && moved.Decl is { MovedToSystem: true } && moved.Kind == TypeKind.Interface)
+        {
+            return moved;
+        }
+        return _r.Types.TryGetValue("Delegate", out TypeSymbol? plain)
+               && plain.Kind == TypeKind.Interface && plain.Decl is { IsDelegate: false } ? plain : null;
+    }
+
+    /// <summary>
+    /// Whether a value of this type is a delegate: of a delegate type, or of
+    /// Delegate itself. Two of them compare as delegates (CheckBinary).
+    /// </summary>
+    private bool IsDelegateValue(Type t)
+        => !t.IsError && !t.IsArray && !t.IsNullableValue && t.PointerDepth == 0
+        && t.Symbol is { Kind: TypeKind.Interface } face
+        && (face.Decl?.IsDelegate == true || ReferenceEquals(face, DelegateRoot()));
+
+    /// <summary>
+    /// THE MEMBERS EVERY DELEGATE HAS, given to a closure the compiler made of
+    /// a lambda or a method group. A closure is a class written here
+    /// (CheckLambda) with one method, Invoke, in the delegate's slot; the
+    /// runtime's Delegate, which its delegate type extends, has members of
+    /// its own with bodies -- GetInvocationList, and CombineImpl and
+    /// RemoveImpl, which each delegate type answers for itself with explicit
+    /// implementations written into its interface (Parser.
+    /// ParseDelegateDeclaration). A class the program declares has those
+    /// found for it as it is laid out (AssignSlots); a closure never is, so
+    /// they are found here by the same rule: the most specific explicit
+    /// implementation among the interfaces it has, else the member's own body.
+    /// </summary>
+    private static void DelegateMembers(TypeSymbol closure, TypeSymbol face)
+    {
+        if (IsTemplate(face))
+        {
+            return;
+        }
+        foreach (TypeSymbol iface in Extended(face))
+        {
+            if (ReferenceEquals(iface, face))
+            {
+                continue;
+            }
+            string ifaceName = ExplicitName(iface);
+            foreach (MethodSymbol want in iface.Methods)
+            {
+                if (want.Static || want.VtableSlot < 0 || want.TypeParams.Count > 0 || want.ExplicitInterface is not null)
+                {
+                    continue;
+                }
+                MethodSymbol? impl = Extended(face)
+                    .Select(f => f.Methods.FirstOrDefault(m => m.ExplicitMember == want.Name && m.ExplicitInterface == ifaceName
+                                                            && m.Decl?.Body is not null && MethodSignatures.Implements(m, want)))
+                    .FirstOrDefault(found => found is not null)
+                    ?? (want.Decl?.Body is not null ? want : null);
+                if (impl is not null)
+                {
+                    closure.InterfaceImplementations[want.VtableSlot] = impl;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// A FIELD-LIKE EVENT USED FROM OUTSIDE THE TYPE THAT DECLARES IT, which
+    /// C# allows only on the left of += and -= (CS0070): outside, an event
+    /// is something to subscribe to, and raising it, reading it or assigning
+    /// it is the declaring type's business. Inside that type -- its nested
+    /// types and the closures written in it included -- it is the field it
+    /// looks like. The target of a += or -= is let through (_eventOperands).
+    /// A derived type is outside, as in C#: it raises a base's event through
+    /// a method the base gives it.
+    /// </summary>
+    private void EventFromOutside(Expr e, FieldSymbol field)
+    {
+        if (_eventOperands.Contains(e))
+        {
+            return;
+        }
+        string owner = field.Owner.Key;
+        string? here = _thisType?.Key;
+        if (here is not null && (here == owner || here.StartsWith(owner + ".", StringComparison.Ordinal)))
+        {
+            return;
+        }
+        Error(e, $"the event '{field.Owner.Name}.{field.Name}' can only appear on the left hand side of += or -= "
+                 + $"(except when used from within the type '{field.Owner.Name}')");
+    }
+
+    /// <summary>The targets of the += and -= checked so far: an event there is subscribed to, not used.</summary>
+    private readonly HashSet<Expr> _eventOperands = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
     /// The call an event's accessor makes of `+=` or `-=`, or null when the
     /// target is not an event with accessors: a name whose type has an
     /// add_ method of it and no field or property of the name itself (a
@@ -7146,7 +7776,7 @@ public sealed partial class Binder
         }
 
         if (owner is null || owner.FindField(name) is not null || owner.FindMethods("get_" + name).Count > 0
-            || owner.FindMethods(prefix + name).Count == 0)
+            || MethodsOn(owner, prefix + name).Count == 0)
         {
             return null;
         }
@@ -7179,6 +7809,40 @@ public sealed partial class Binder
         _ => false,
     };
 
+    /// <summary>
+    /// AN INDEX WHOSE TYPE THE INDEXER DECIDES -- `d[(null, "x")]` on a
+    /// Dictionary keyed by a tuple of a class and a string -- checked as the
+    /// parameter it is passed as, when every indexer taking that many has
+    /// the same one there: C# converts the literal to the key's tuple type,
+    /// element by element, as it does an argument of a method. Checked with
+    /// nothing wanted, its null element had no type and the access was
+    /// refused.
+    /// </summary>
+    private List<Type> CheckIndexArgs(Type target, List<Expr> args, IEnumerable<MethodSymbol> indexers)
+    {
+        List<MethodSymbol> taking = indexers.Where(m => m.Params.Count == args.Count).ToList();
+        List<Type> index = new();
+        for (int i = 0; i < args.Count; i++)
+        {
+            Type? want = null;
+            if (HoldsLambda(args[i]) && taking.Count > 0)
+            {
+                List<Type> wants = taking.Select(m => ThroughUnmade(target, m, m.Params[i].Type)).Distinct().ToList();
+                if (wants.Count == 1) want = wants[0];
+            }
+            if (want is null)
+            {
+                index.Add(CheckExpr(args[i]));
+                continue;
+            }
+            Type? outer = _wanted;
+            _wanted = want;
+            try { index.Add(CheckExpr(args[i])); }
+            finally { _wanted = outer; }
+        }
+        return index;
+    }
+
     /// <summary>An expression with no type until something waiting for it gives it one.</summary>
     private static bool Typeless(Expr e)
         => e is LambdaExpr or LiteralExpr { Kind: Lit.Null } or DefaultExpr { Type.Name.Length: 0 }
@@ -7199,6 +7863,39 @@ public sealed partial class Binder
     /// calls. The original syntax node is retained as the call target so normal
     /// overload resolution still chooses the actual method.
     /// </summary>
+    /// <summary>
+    /// What a method group answers converted to `wanted`: the return type of
+    /// its one non-generic method of the delegate's arity; null for a group
+    /// with none or more than one such, or anything else.
+    /// </summary>
+    private Type? GroupReturns(Expr source, Type wanted)
+    {
+        if (!_r.Resolved.TryGetValue(source, out Sym? sym)) return null;
+        IReadOnlyList<MethodSymbol>? candidates = sym switch
+        {
+            MethodGroupSym mg => mg.Methods,
+            CapturedMethodGroupSym cg => cg.Methods,
+            _ => null,
+        };
+        if (candidates is null || Invoked(wanted) is not { } invoke) return null;
+        // Each of the delegate's parameters, as far as it is known, converts
+        // to the method's: Select's (T, int) overload is no GetFullPath(string,
+        // string).
+        Dictionary<string, Type> applied = Applied(wanted);
+        bool Accepts(MethodSymbol c)
+        {
+            for (int k = 0; k < c.Params.Count; k++)
+            {
+                Type given = Substitute(invoke.Params[k].Type, applied);
+                if (given.ParamName is null && !given.IsError && !Convertible(given, c.Params[k].Type)) return false;
+            }
+            return true;
+        }
+        List<MethodSymbol> fits = candidates.Where(c => c.Params.Count == invoke.Params.Count && c.TypeParams.Count == 0 && Accepts(c)).ToList();
+        if (fits.Count != 1 || fits[0].Returns.IsVoid) return null;
+        return fits[0].Returns;
+    }
+
     private LambdaExpr? MethodGroupLambda(Expr source, Type wanted, bool localFunctions = false)
     {
         if (!_r.Resolved.TryGetValue(source, out Sym? sym))
@@ -7231,19 +7928,24 @@ public sealed partial class Binder
                 Target = new NameExpr { Name = BoundTargetField, Line = source.Line, Col = source.Col },
                 Name = member.Name, Line = source.Line, Col = source.Col,
             };
-            onTarget.TypeArgs.AddRange(member.TypeArgs);
+            onTarget.WritableTypeArgs.AddRange(member.TypeArgs);
             callTarget = onTarget;
         }
 
         CallExpr call = new() { Target = callTarget, Line = source.Line, Col = source.Col };
-        LambdaExpr made = new() { Body = call, Line = source.Line, Col = source.Col };
+        // A DELEGATE THAT RETURNS BY REFERENCE hands on the variable the
+        // method answers: `=> ref Method(...)`.
+        LambdaExpr made = new() { Body = Answer(invoke, call), Line = source.Line, Col = source.Col };
         // Which method the group means here is the one whose arity the
         // delegate's Invoke has; its identity names the closure class, so a
         // second conversion of the same method anywhere in the type is the
         // same class and the two compare equal, as C# requires of delegates.
         IReadOnlyList<MethodSymbol> candidates = sym is MethodGroupSym mg ? mg.Methods : ((CapturedMethodGroupSym)sym).Methods;
         MethodSymbol? chosen = candidates.FirstOrDefault(m => m.Params.Count == invoke.Params.Count);
-        if (chosen is not null) made.GroupIdentity = ClosureIdentity.Of(chosen) + (receiver is null ? "" : "$bound");
+        // Not a generic local function's: its closure holds the variables
+        // that one captured where it was converted, which are no other's.
+        if (chosen is not null && candidates.All(m => m.Decl is not MethodDecl { HoistedName: not null }))
+            made.GroupIdentity = ClosureIdentity.Of(chosen) + (receiver is null ? "" : "$bound");
         if (receiver is not null) _boundTargets[made] = receiver;
 
         for (int i = 0; i < invoke.Params.Count; i++)
@@ -7272,6 +7974,13 @@ public sealed partial class Binder
     }
 
     /// <summary>
+    /// What a delegate made of a method group answers: the call, or for an
+    /// Invoke that returns by reference, the variable the call answers.
+    /// </summary>
+    private static Expr Answer(MethodSymbol invoke, CallExpr call)
+        => invoke.RefReturn ? new RefArgExpr { Target = call, Line = call.Line, Col = call.Col } : call;
+
+    /// <summary>
     /// Whether a local function's name, written where a delegate of ANOTHER
     /// type is wanted, converts to it: a local function is a method group
     /// (C# 10.8), and `values.RemoveAll(Big)` over `bool Big(long v)` is a
@@ -7295,7 +8004,8 @@ public sealed partial class Binder
             && mine.Params.Count == theirs.Params.Count
             && mine.Params.Zip(theirs.Params).All(pair => MethodSignatures.SameType(pair.First.Type, pair.Second.Type)
                                                         && pair.First.ByRef == pair.Second.ByRef)
-            && MethodSignatures.SameType(mine.Returns, theirs.Returns);
+            && MethodSignatures.SameType(mine.Returns, theirs.Returns)
+            && mine.RefReturn == theirs.RefReturn && mine.RefReturnReadOnly == theirs.RefReturnReadOnly;
     }
 
     /// <summary>
@@ -7307,7 +8017,15 @@ public sealed partial class Binder
         MethodSymbol invoke = wanted.Symbol!.FindMethods("Invoke").First();
         CallExpr call = new() { Target = new NameExpr { Name = source.Name, Line = source.Line, Col = source.Col },
                                 Line = source.Line, Col = source.Col };
-        LambdaExpr made = new() { Body = call, Line = source.Line, Col = source.Col };
+        LambdaExpr made = new() { Body = Answer(invoke, call), Line = source.Line, Col = source.Col };
+        // WHICH LOCAL FUNCTION, wherever it is converted: the closure of every
+        // conversion holds the local function's own cell, so two made over
+        // one run of its scope are the same method on the same target.
+        if (_r.Resolved.TryGetValue(source, out Sym? named) && LocalFunctionDeclaration(named) is { } declared)
+        {
+            made.LocalGroup = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes("local$" + declared.File + ":" + declared.Line + ":" + declared.Col + ":" + source.Name)));
+        }
         for (int i = 0; i < invoke.Params.Count; i++)
         {
             string name = "$arg" + i;
@@ -8699,10 +9417,10 @@ public sealed partial class Binder
                 Target = new NameExpr { Name = "SZArrayHelper", Line = at.Line, Col = at.Col },
                 Name = "Of", Line = at.Line, Col = at.Col,
             };
-            maker.TypeArgs.Add(listRef);
+            maker.WritableTypeArgs.Add(listRef);
             CallExpr helper = new() { Target = maker, Line = at.Line, Col = at.Col, File = at.File };
             helper.Args.Add(at);
-            helper.ArgNames.Add(null);
+            helper.WritableArgNames.Add(null);
             _r.Rewrites[at] = helper;
             CheckExpr(helper);
             return true;
@@ -9436,9 +10154,12 @@ public sealed partial class Binder
             // came first: `Many(dog, animal)` is Many<Animal>, and
             // `Pick("s", o)` over an object is Pick<object> -- `object` reaching
             // a string only as a machine word, which is no conversion to C#.
+            // Through VARIANCE too, as C#'s inference has it: a Func<string>
+            // and a Func<object> make T the Func<object> the other converts
+            // to.
             if (got.IsError || already.IsError) return true;
-            if ((got.Prim != Prim.Any || already.Prim == Prim.Any) && Convertible(got, already)) return true;
-            if ((already.Prim != Prim.Any || got.Prim == Prim.Any) && Convertible(already, got))
+            if ((got.Prim != Prim.Any || already.Prim == Prim.Any) && (Convertible(got, already) || Variant(got, already))) return true;
+            if ((already.Prim != Prim.Any || got.Prim == Prim.Any) && (Convertible(already, got) || Variant(already, got)))
             {
                 bound[name] = got;
                 return true;
@@ -10033,8 +10754,8 @@ public sealed partial class Binder
                 },
                 Name = method, Line = at.Line, Col = at.Col,
             };
-            if (into is not null) step.TypeArgs.Add(into);
-            step.TypeArgs.Add(elementRef);
+            if (into is not null) step.WritableTypeArgs.Add(into);
+            step.WritableTypeArgs.Add(elementRef);
             return step;
         }
 
@@ -10495,6 +11216,18 @@ public sealed partial class Binder
     /// <summary>The member a call is checking as its callee, for CheckMember.</summary>
     private MemberExpr? _callee;
 
+    // THE NAME BEING CALLED, while CheckCall checks its target: C# looks a
+    // name up for an invocation among the members that can be invoked
+    // (§12.8.10.2, "if the member is invoked"), passing over a field or a
+    // property that is no delegate to the method further out. `Fields(path)`
+    // in a nested class with a field Fields calls the outer class's method.
+    private NameExpr? _invokedName;
+
+    /// <summary>Whether `n` is being called and a member of type `t` could not be: no delegate.</summary>
+    private bool NotInvocable(NameExpr n, Type t)
+        => ReferenceEquals(n, _invokedName) && !t.IsError
+           && !(t.AsNonNullable().Symbol is TypeSymbol held && held.FindMethods("Invoke").Any());
+
     /// <summary>Nullable&lt;T&gt; methods CheckMember found being called, with the cell's type.</summary>
     private readonly Dictionary<MemberExpr, Type> _cellMethods = new(ReferenceEqualityComparer.Instance);
 
@@ -10617,6 +11350,28 @@ public sealed partial class Binder
         return n;
     }
 
+    /// <summary>
+    /// Whether a bare name is a const where it is written: on this type or a
+    /// base, or OUTWARDS through the types it is nested in, as an unqualified
+    /// name resolves. A switch arm asked only this type, so in a nested class
+    /// `HeldClass => ...` naming the outer class's const read as a type
+    /// pattern -- 'HeldClass' is not a known type -- and corc stopped
+    /// compiling its own escape engine (test 1317).
+    /// </summary>
+    private bool NamesConstant(string name)
+    {
+        if (FindConstant(_thisType, name) is not null || FindText(_thisType, name) is not null) return true;
+        for (string? outerKey = Enclosing((_thisType ?? _lexicalType ?? _scope)?.Key ?? ""); outerKey is not null; outerKey = Enclosing(outerKey))
+        {
+            if (_r.Types.TryGetValue(outerKey, out TypeSymbol? outer)
+                && (FindConstant(outer, name) is not null || FindText(outer, name) is not null))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /// <summary>The type this one is written inside, if any.</summary>
     private TypeSymbol? Outer(TypeSymbol t)
         => Enclosing(t.Key) is { } key && _r.Types.TryGetValue(key, out TypeSymbol? outer) ? outer : null;
@@ -10625,11 +11380,29 @@ public sealed partial class Binder
     {
         Type t = CheckExprCore(e);
         _r.ExprType[e] = t;
+        // An event, read from outside the type that declares it, is refused
+        // here, wherever the read is: a call of it, a ?.Invoke, an assignment
+        // to it, or a plain read (EventFromOutside).
+        if (e is MemberExpr or NameExpr && _r.Resolved.TryGetValue(e, out Sym? read))
+        {
+            FieldSymbol? field = read switch
+            {
+                FieldSym f => f.Field,
+                CapturedFieldSym f => f.Field,
+                _ => null,
+            };
+            if (field is { IsEvent: true })
+            {
+                EventFromOutside(e, field);
+            }
+        }
         return t;
     }
 
     private Type CheckExprCore(Expr e)
     {
+        // Something may suspend in this unit (CheckAsyncSafety): an await, or an async lambda's body.
+        if (e is AwaitExpr or LambdaExpr { Async: true }) _mayAwait = true;
         switch (e)
         {
             // A TUPLE, WRITTEN OUT. Its type is its elements' types, which is
@@ -10872,6 +11645,10 @@ public sealed partial class Binder
             case LambdaExpr lam when _wanted is { Symbol: not null } wantedType:
                 return CheckLambda(lam, wantedType);
 
+            // Wanted as an object, it is its natural type (C# 10).
+            case LambdaExpr lam when _wanted is { } objectWanted && NaturalTarget(objectWanted):
+                return CheckLambda(lam, objectWanted);
+
             case LambdaExpr lam:
                 Error(lam, "a lambda here has nothing to tell it what type it is");
                 return Type.Error;
@@ -10971,9 +11748,12 @@ public sealed partial class Binder
                 // array therefore suppresses its annotated element as well as
                 // the array reference, allowing the common `filled!` idiom
                 // after every slot has been proven populated.
+                // NOT a nullable VALUE element: `int?[]` holds Nullable<int>
+                // cells, a type of their own, and `a!` of an `int?[]?` is an
+                // `int?[]` (Span<int?> refused its own array without this).
                 if (suppressed.IsArray && suppressed.Element is Type element)
                 {
-                    return Type.ArrayOf(element.AsNonNullable(), suppressed.ArrayRank);
+                    return Type.ArrayOf(element.IsNullableValue ? element : element.AsNonNullable(), suppressed.ArrayRank);
                 }
                 // `x!` OF A NULLABLE VALUE TYPE IS STILL A `T?`, as in C#: the
                 // operator changes the null state of a reference and nothing
@@ -11248,9 +12028,9 @@ public sealed partial class Binder
                     Line = end.Line, Col = end.Col,
                 };
                 index.Args.Add(end.Offset);
-                index.ArgNames.Add(null);
+                index.WritableArgNames.Add(null);
                 index.Args.Add(new LiteralExpr { Kind = Lit.Bool, Text = "true", IntValue = 1, Line = end.Line, Col = end.Col });
-                index.ArgNames.Add(null);
+                index.WritableArgNames.Add(null);
                 _r.Rewrites[end] = index;
                 return CheckExpr(index);
             }
@@ -11268,9 +12048,9 @@ public sealed partial class Binder
                     Line = range.Line, Col = range.Col,
                 };
                 made.Args.Add(Bound(range.From, "Start"));
-                made.ArgNames.Add(null);
+                made.WritableArgNames.Add(null);
                 made.Args.Add(Bound(range.To, "End"));
-                made.ArgNames.Add(null);
+                made.WritableArgNames.Add(null);
                 _r.Rewrites[range] = made;
                 return CheckExpr(made);
             }
@@ -11310,7 +12090,7 @@ public sealed partial class Binder
                     && Reachable(target.Symbol, "get_Item")
                              .Any(m => m.Params.Count == ix.Args.Count))
                 {
-                    List<Type> index = ix.Args.Select(CheckExpr).ToList();
+                    List<Type> index = CheckIndexArgs(target, ix.Args, Reachable(target.Symbol, "get_Item"));
                     MethodSymbol? getter = IndexerFor(
                         Reachable(target.Symbol, "get_Item"), index, ix.Args.Count);
 
@@ -11455,6 +12235,18 @@ public sealed partial class Binder
                 Type type = nw.Type.Name.Length == 0
                           ? (_wanted is { IsNullableValue: true } lifted ? lifted.Underlying : _wanted ?? Type.Error)
                           : Resolve(nw.Type, _thisType);
+
+                // `new int()`, `new E()`: ZERO, as a value type's parameterless
+                // constructor makes it -- written so, or a copy's `new T()`
+                // over a number, a bool, a char or an enum.
+                if (nw.Type.Name.Length != 0 && nw.Elements is null && nw.ArraySize is null && nw.Utf8Bytes is null && !nw.Collection
+                    && nw.Args.Count == 0 && nw.Body.IsEmpty && !type.IsArray && !type.IsPointer && !type.IsNullableValue
+                    && (type.Symbol is null ? type.IsNumeric || type.Prim is Prim.Bool or Prim.Char : type.Symbol.Kind == TypeKind.Enum))
+                {
+                    DefaultExpr zero = new() { Type = nw.Type, Line = nw.Line, Col = nw.Col };
+                    _r.Rewrites[nw] = zero;
+                    return CheckExpr(zero);
+                }
 
                 if (nw.Elements is { } written)
                 {
@@ -11814,6 +12606,14 @@ public sealed partial class Binder
                     return Type.Void;
                 }
 
+                // A FIELD-LIKE EVENT on the left of += or -= is subscribed to,
+                // which anyone may do (EventFromOutside): the target is read
+                // here and again as Combine's argument, and both are let by.
+                if (a.Op is BinOp.Add or BinOp.Sub)
+                {
+                    _eventOperands.Add(a.Target);
+                }
+
                 if (a.Op is null && a.Target is NameExpr { Name: "_" })
                 {
                     Type discarded = CheckExpr(a.Value);
@@ -12135,32 +12935,7 @@ public sealed partial class Binder
                     if (a.Op is BinOp.Add or BinOp.Sub && target.Symbol?.Decl is { IsDelegate: true } delegateDecl)
                     {
                         ok = true;
-                        // A GENERIC DELEGATE'S COPY COMBINES THROUGH ITS OWN
-                        // STATICS (Parser.ParseDelegateDeclaration): the copy
-                        // `EventHandler$int` exists, and its Combine names the
-                        // multicast copy made with it. Any other delegate
-                        // through the multicast written beside it.
-                        bool generic = delegateDecl.Template is not null
-                            && target.Symbol!.FindMethods("Combine").Any(m => m.Static);
-                        string holder = generic ? delegateDecl.Name : delegateDecl.Name + "__Multicast";
-                        Expr qualified = new NameExpr { Name = holder, Line = a.Line, Col = a.Col };
-                        if (!string.IsNullOrEmpty(delegateDecl.Namespace))
-                        {
-                            string[] parts = delegateDecl.Namespace.Split('.');
-                            Expr chain = new NameExpr { Name = parts[0], Line = a.Line, Col = a.Col };
-                            for (int i = 1; i < parts.Length; i++)
-                                chain = new MemberExpr { Target = chain, Name = parts[i], Line = a.Line, Col = a.Col };
-                            qualified = new MemberExpr { Target = chain, Name = holder, Line = a.Line, Col = a.Col };
-                        }
-                        CallExpr synthesised = new()
-                        {
-                            Target = new MemberExpr { Target = qualified, Name = a.Op is BinOp.Add ? "Combine" : "Remove", Line = a.Line, Col = a.Col },
-                            Line = a.Line, Col = a.Col,
-                        };
-                        synthesised.Args.Add(a.Target);
-                        synthesised.Args.Add(a.Value);
-                        synthesised.ArgNames.Add(null);
-                        synthesised.ArgNames.Add(null);
+                        CallExpr synthesised = DelegateCombination(a.Op is BinOp.Add, a.Target, a.Value, a, target);
                         CheckExpr(synthesised);
                         _r.DelegateCompounds[a] = synthesised;
                     }
@@ -12366,8 +13141,31 @@ public sealed partial class Binder
 
             case CastExpr cast:
             {
+                // A LAMBDA OR A METHOD GROUP CAST TO A DELEGATE is converted to
+                // it (C# 12.9.7): `(Action)(() => { })` says what the lambda
+                // is, which nothing else around it may. Checked as wanted by
+                // the type, and then converted as an assignment converts it.
+                if (cast.Operand is LambdaExpr || IsFunctionSource(cast.Operand))
+                {
+                    Type target = Resolve(cast.Type, _thisType);
+                    Type? outerWanted = _wanted;
+                    _wanted = target;
+                    Type converted = CheckExpr(cast.Operand);
+                    _wanted = outerWanted;
+                    if (!converted.IsError && !target.IsError) CheckAssignable(converted, target, cast.Operand, "cast");
+                    NoteShape(cast, target);
+                    return target;
+                }
                 Type operand = CheckExpr(cast.Operand);
+                if (cast.CanonSelf is { } castSelf) CheckExpr(castSelf);
                 Type wanted = Resolve(cast.Type, _thisType);
+                NoteShape(cast, wanted);
+                // A method group, known as one only now that it is checked.
+                if (IsFunctionSource(cast.Operand) && !wanted.IsError)
+                {
+                    CheckAssignable(operand, wanted, cast.Operand, "cast");
+                    return wanted;
+                }
 
                 // A DYNAMIC VALUE CAST: the binder's explicit conversion.
                 if (LateCast(cast, operand, wanted) is Type lateCast)
@@ -12507,6 +13305,7 @@ public sealed partial class Binder
 
                 foreach (SwitchArm arm in sx.Arms)
                 {
+                    if (arm.CanonSelf is { } armSelf) CheckExpr(armSelf);
                     // A TYPE PATTERN NAMES WHAT IT MATCHED, exactly as `is`
                     // does, and the name belongs to the ARM rather than to the
                     // whole switch -- two arms may both call it `n` and mean
@@ -12523,8 +13322,7 @@ public sealed partial class Binder
                     if (arm.Type is { Args.Count: 0, ArrayRank: 0, Nullable: false } bare
                         && arm.Binding is null
                         && !IsTypeName(bare.Name)
-                        && (FindConstant(_thisType, bare.Name) is not null || FindText(_thisType, bare.Name) is not null
-                            || Lookup(bare.Name) is ConstSym))
+                        && (NamesConstant(bare.Name) || Lookup(bare.Name) is ConstSym))
                     {
                         arm.Value = new NameExpr { Name = bare.Name, Line = bare.Line, Col = bare.Col };
                         arm.Type = null;
@@ -12838,6 +13636,16 @@ public sealed partial class Binder
                 // instantiation is being compiled.
                 Type named = Resolve(to.Type, _thisType);
 
+                // A TYPE ARGUMENT ONLY RUN TIME KNOWS (Type.CanonParam): a
+                // shared method copy's, handed in as a hidden argument, or a
+                // shared class copy's where no mark reads it (ICanonSlot) --
+                // what it is for this call, and object where nothing says.
+                if (named is { CanonParam: not -1, Prim: Prim.Any, Symbol: null, ArrayRank: 0, PointerDepth: 0 })
+                {
+                    _r.RunTimeTypeOfs[to] = named;
+                    return Type.TypeHandle;
+                }
+
                 // A PRIMITIVE HAS A DESCRIPTOR TOO. It has no vtable to put
                 // one in front of, but a descriptor is what a type's IDENTITY
                 // is here -- two of them compare by address -- and `typeof(int)`
@@ -13040,6 +13848,7 @@ public sealed partial class Binder
                 if (tested.Symbol is { } testedSymbol)
                 {
                     _r.TestedTypes[isx] = testedSymbol;
+                    NoteShape(isx, tested);
                 }
                 else if (tested.IsArray)
                 {
@@ -13165,6 +13974,7 @@ public sealed partial class Binder
                 if (type.Symbol is { } asSymbol)
                 {
                     _r.TestedTypes[asx] = asSymbol;
+                    NoteShape(asx, type);
                 }
                 else if (type.IsArray)
                 {
@@ -13405,7 +14215,9 @@ public sealed partial class Binder
 
     /// <summary>A closure field over this holds its cell, not its value.</summary>
     private static bool CellSource(Sym? from)
-        => from is LocalSym { Boxed: true } || from is FieldSym { Field.Boxed: true } || from is ParamSym { Boxed: true };
+        => from is LocalSym { Boxed: true } || from is FieldSym { Field.Boxed: true } || from is ParamSym { Boxed: true }
+        // A generic local function's captured variable is the cell itself.
+        || from is ParamSym { Cell: true };
 
     // The closure fields made holding a copy, and what they copied: a
     // parameter written AFTER the lambda that captured it, or by a lambda
@@ -14123,7 +14935,26 @@ public sealed partial class Binder
             return new Type { Prim = Prim.Void, Symbol = globalType };
         }
 
-        Sym? sym = Lookup(n.Name);
+        // A generic local function's captured variable, handed to it at a
+        // call: the one it saw, whatever is called the same here.
+        Sym? sym = n.CaptureOf is string function ? LookupCaptured(n.Name, function) : Lookup(n.Name);
+        // A VARIABLE HANDED TO A GENERIC LOCAL FUNCTION IS A CELL, made one
+        // where the hidden argument naming it is bound: the pass that binds a
+        // lambda's body for its closure makes its locals afresh, and the call
+        // there is not always where PassCaptures saw it.
+        if (n.CaptureOf is not null)
+        {
+            switch (sym)
+            {
+                case LocalSym { IsRef: false } local:
+                    local.Boxed = true;
+                    if (_declOf.TryGetValue(local, out LocalDecl? where)) _r.BoxedLocals.Add(where);
+                    break;
+                case ParamSym { ByRef: false } parameter:
+                    parameter.ForcedCell = true;
+                    break;
+            }
+        }
 
         if (sym != null)
         {
@@ -14157,8 +14988,9 @@ public sealed partial class Binder
                 // a constant pattern.
                 ConstSym k => k.Type,
                 // A generic local function's name: its method group, called
-                // as any method of the type is.
-                MethodGroupSym => Type.Void,
+                // as any method of the type is -- through the `this` a
+                // closure holds, from inside one (DeclareGenericLocal).
+                MethodGroupSym or CapturedMethodGroupSym => Type.Void,
                 _ => Type.Error,
             };
 
@@ -14205,6 +15037,7 @@ public sealed partial class Binder
             }
 
             FieldSymbol? f = _thisType.FindField(n.Name) ?? _thisType.FindField("<" + n.Name + ">");
+            if (f is not null && NotInvocable(n, f.Type)) f = null;
 
             // NO INSTANCE IN A STATIC METHOD (C#'s CS0120). A static method
             // naming one of its class's instance fields has no object to read
@@ -14266,6 +15099,7 @@ public sealed partial class Binder
             }
 
             MethodSymbol? getter = Members(_thisType, "get_" + n.Name).FirstOrDefault();
+            if (getter is not null && NotInvocable(n, getter.Returns)) getter = null;
 
             if (getter is { Static: false } && InStaticContext)
             {
@@ -14317,7 +15151,7 @@ public sealed partial class Binder
 
             FieldSymbol? staticField = _lexicalType.FindField(n.Name)
                                       ?? _lexicalType.FindField("<" + n.Name + ">");
-            if (staticField is { Static: true })
+            if (staticField is { Static: true } && !NotInvocable(n, staticField.Type))
             {
                 _r.Resolved[n] = new FieldSym(staticField);
                 return staticField.Type;
@@ -14356,7 +15190,7 @@ public sealed partial class Binder
 
             MethodSymbol? staticGetter = _lexicalType.FindMethods("get_" + n.Name)
                                                      .FirstOrDefault(m => m.Static);
-            if (staticGetter is not null)
+            if (staticGetter is not null && !NotInvocable(n, staticGetter.Returns))
             {
                 _r.Resolved[n] = new PropertyGetSym(staticGetter);
                 return staticGetter.Returns;
@@ -14384,7 +15218,7 @@ public sealed partial class Binder
         {
             FieldSymbol? outerField = _capturedThisType.FindField(n.Name)
                                    ?? _capturedThisType.FindField("<" + n.Name + ">");
-            if (outerField is not null)
+            if (outerField is not null && !NotInvocable(n, outerField.Type))
             {
                 _r.Resolved[n] = new CapturedFieldSym(_capturedThisField, outerField);
                 return outerField.Type;
@@ -14398,7 +15232,7 @@ public sealed partial class Binder
             }
 
             MethodSymbol? outerGetter = _capturedThisType.FindMethods("get_" + n.Name).FirstOrDefault();
-            if (outerGetter is not null)
+            if (outerGetter is not null && !NotInvocable(n, outerGetter.Returns))
             {
                 _r.Resolved[n] = new CapturedPropertyGetSym(_capturedThisField, outerGetter);
                 return outerGetter.Returns;
@@ -14452,7 +15286,7 @@ public sealed partial class Binder
 
             FieldSymbol? outerStatic = outer.FindField(n.Name)
                                     ?? outer.FindField("<" + n.Name + ">");
-            if (outerStatic is { Static: true })
+            if (outerStatic is { Static: true } && !NotInvocable(n, outerStatic.Type))
             {
                 _r.Resolved[n] = new FieldSym(outerStatic);
                 return outerStatic.Type;
@@ -14468,7 +15302,7 @@ public sealed partial class Binder
 
             MethodSymbol? outerStaticGetter = outer.FindMethods("get_" + n.Name)
                                                    .FirstOrDefault(m => m.Static);
-            if (outerStaticGetter is not null)
+            if (outerStaticGetter is not null && !NotInvocable(n, outerStaticGetter.Returns))
             {
                 _r.Resolved[n] = new PropertyGetSym(outerStaticGetter);
                 return outerStaticGetter.Returns;
@@ -15287,8 +16121,45 @@ public sealed partial class Binder
             return Type.Void;
         }
 
+        // AN EVENT WITH NO FIELD -- an interface's, an abstract one, or one
+        // written with its own add and remove -- is its two accessors and
+        // nothing that can be read or raised (C#'s CS0079); += and -= reach
+        // the accessors before any of this (EventAccessorCall).
+        if (MethodsOn(owner, "add_" + m.Name).Count > 0 && MethodsOn(owner, "remove_" + m.Name).Count > 0)
+        {
+            Error(m, $"the event '{owner.Name}.{m.Name}' can only appear on the left hand side of += or -=");
+            return Type.Error;
+        }
+
         Error(m, $"'{owner.Name}' has no member '{m.Name}'");
         return Type.Error;
+    }
+
+    /// <summary>
+    /// Whether the code being checked can see member `m` as C# lets it: a
+    /// public or internal one anywhere; a private one -- written so, or by
+    /// default in a class or struct -- only inside its own type or a type
+    /// nested in it; a protected one there or in a type derived from it.
+    /// </summary>
+    private bool Visible(MethodSymbol m)
+    {
+        if (m.Decl is not MethodDecl d || m.Owner is not TypeSymbol owner || owner.Kind == TypeKind.Interface) return true;
+        Mods mods = d.Mods;
+        if ((mods & (Mods.Public | Mods.Internal)) != 0) return true;
+        TypeSymbol? here = _thisType is not null && IsClosure(_thisType) ? _capturedThisType ?? _lexicalType : _thisType;
+        if (here is null) return true;
+        if (Inside(here, owner)) return true;
+        return (mods & Mods.Protected) != 0 && here.DerivesFrom(owner);
+
+        // Within: the type itself, or one written inside it, however deep.
+        bool Inside(TypeSymbol t, TypeSymbol of)
+        {
+            if (ReferenceEquals(t, of)) return true;
+            string ofPath = of.Decl is { Outer: string o } ? o + "." + of.Decl.Name : of.Decl?.Name ?? of.Name;
+            for (string? at = t.Decl?.Outer; at is not null; at = at.Contains('.') ? at[..at.LastIndexOf('.')] : null)
+                if (at == ofPath || at.EndsWith("." + ofPath, StringComparison.Ordinal)) return true;
+            return false;
+        }
     }
 
     /// <summary>
@@ -15303,6 +16174,13 @@ public sealed partial class Binder
     {
         List<MethodSymbol> methods = except is null ? constructed.Methods
             : constructed.Methods.Where(m => !ReferenceEquals(m.Decl, except)).ToList();
+        // ONLY THE CONSTRUCTORS THIS CODE CAN SEE are candidates (C#
+        // 12.6.4.2): Thread's own `Thread(Action body, int slot)` took
+        // `new Thread(() => ..., 64 * 1024 * 1024)` from a program, a slot
+        // number for a stack size. Where none can be seen the set stands, for
+        // library code that has always reached what it should not.
+        List<MethodSymbol> visible = methods.Where(m => !m.IsCtor || Visible(m)).ToList();
+        if (visible.Any(m => m.IsCtor)) methods = visible;
         NormalizeConstructorArguments(nw, methods, constructorArgs);
         // A `params` CONSTRUCTOR HAS TWO FORMS, exactly as a
         // `params` method does: an array supplied in the final
@@ -15514,6 +16392,10 @@ public sealed partial class Binder
         => spans is null || source is null || pair < 0 || 2 * pair + 1 >= spans.Length || spans[2 * pair] < 0
             ? null : source[spans[2 * pair]..spans[2 * pair + 1]];
 
+    /// <summary>How many arguments in front of a call are a generic local function's captured variables (PassCaptures).</summary>
+    private static int Hidden(CallExpr c, MethodSymbol m)
+        => c.CapturesPassed && m.Decl is MethodDecl { Captures: > 0 } d ? d.Captures : 0;
+
     /// <summary>The line [CallerLineNumber] gives a call: where the method's name is.</summary>
     private static int CallLine(CallExpr c) => c.Target is NameExpr or MemberExpr ? c.Target.Line : c.Line;
 
@@ -15534,7 +16416,7 @@ public sealed partial class Binder
         string? named = c.ArgNames.Count > 0 ? c.ArgNames[0] : null;
         if (c.Args.Count != wanted || m.TypeArgs.Count > 0
             || (named is not null && named != (m.Name == "Equals" ? "other" : "defaultValue"))) return null;
-        c.ArgNames.Clear();
+        c.WritableArgNames.Clear();
         if (!on.IsNullableValue || RefOf(on.Underlying) is not TypeRef inner) return null;
 
         int line = m.Line, col = m.Col;
@@ -15620,7 +16502,7 @@ public sealed partial class Binder
                 FormatHole = true, Line = line, Col = col,
             };
             inner.Args.AddRange(c.Args);
-            inner.ArgNames.Add(null);
+            inner.WritableArgNames.Add(null);
             return new PatternExpr
             {
                 Subject = hole.Target,
@@ -15691,11 +16573,16 @@ public sealed partial class Binder
         switch (target)
         {
             case NameExpr name when Lookup(name.Name) is not null:
-            case NameExpr field when _thisType?.FindField(field.Name) is not null && _thisType.FindMethods(field.Name).Count == 0:
+            // A FIELD ONLY WHEN IT HOLDS A POINTER: checking any other field
+            // named like the call here bound the name before CheckCall had
+            // marked it invoked, so `Fields(path)` in a nested class with a
+            // table called Fields was refused instead of reaching the outer
+            // class's method (C# passes over what cannot be invoked).
+            case NameExpr field when _thisType?.FindField(field.Name) is { Type.Function: not null } && _thisType.FindMethods(field.Name).Count == 0:
             case CastExpr:
                 return CheckExpr(target).Function;
             case MemberExpr member when member.Target is not null && ConstantOwner(member.Target) is TypeSymbol owner
-                && owner.FindField(member.Name) is not null && owner.FindMethods(member.Name).Count == 0:
+                && owner.FindField(member.Name) is { Type.Function: not null } && owner.FindMethods(member.Name).Count == 0:
                 return CheckExpr(target).Function;
             default:
                 return null;
@@ -15738,6 +16625,18 @@ public sealed partial class Binder
             return pointer.Returns;
         }
 
+        // Activator.CreateInstance<T>() IS `new T()` of the T the copy knows
+        // (stdlib Activator): its constructor called directly, which every
+        // analysis sees, or CannotCreate's throw where T has none to call.
+        if (c.Args.Count == 0 && c.Target is MemberExpr { Name: "CreateInstance", TypeArgs: [TypeRef madeRef], Target: NameExpr { Name: "Activator", TypeArgs.Count: 0 } }
+            && Lookup("Activator") is null && FindType("Activator", out TypeSymbol? activator)
+            && activator?.FindMethods("CannotCreate").Count > 0
+            && ActivatorMade(c, madeRef) is Expr activated)
+        {
+            _r.Rewrites[c] = activated;
+            return CheckExpr(activated);
+        }
+
         // `GetType()` WRITTEN BARE inside a class is this object's, as C#
         // reads every inherited member of object: the call is `this.GetType()`.
         // Only when nothing in scope is called GetType.
@@ -15777,7 +16676,7 @@ public sealed partial class Binder
                 Line = conditionalTarget.Line,
                 Col = conditionalTarget.Col,
             };
-            safeTarget.TypeArgs.AddRange(conditionalTarget.TypeArgs);
+            safeTarget.WritableTypeArgs.AddRange(conditionalTarget.TypeArgs);
 
             CallExpr safeCall = new()
             {
@@ -15786,7 +16685,7 @@ public sealed partial class Binder
                 Col = c.Col,
             };
             safeCall.Args.AddRange(c.Args);
-            safeCall.ArgNames.AddRange(c.ArgNames);
+            safeCall.WritableArgNames.AddRange(c.ArgNames);
             safeCall.Spans = c.Spans;
             safeCall.Source = c.Source;
 
@@ -15840,7 +16739,7 @@ public sealed partial class Binder
                 Line = c.Line, Col = c.Col,
             };
             boxed.Args.AddRange(c.Args);
-            boxed.ArgNames.AddRange(c.ArgNames);
+            boxed.WritableArgNames.AddRange(c.ArgNames);
             _r.Rewrites[c] = boxed;
             return CheckExpr(boxed);
         }
@@ -15872,7 +16771,7 @@ public sealed partial class Binder
             {
                 Type = new TypeRef { Name = underlying, Line = c.Line, Col = c.Col }, Operand = c.Args[0], Line = c.Line, Col = c.Col,
             });
-            numbers.ArgNames.AddRange(c.ArgNames);
+            numbers.WritableArgNames.AddRange(c.ArgNames);
             _r.Rewrites[c] = numbers;
             return CheckExpr(numbers);
         }
@@ -16009,6 +16908,21 @@ public sealed partial class Binder
                 localTarget = new FieldSym(capturedLocal);
             if (localTarget is not null && LocalFunctionDeclaration(localTarget) is { } localFunction)
                 CompleteLocalArguments(c, localFunction);
+            // A GENERIC LOCAL FUNCTION BY ITS TEMPLATE, however its name is
+            // reached: inside a lambda or another local function it is the
+            // closure's group (CapturedMethodGroupSym), not the symbol its
+            // block declared, and its calls there took no captures.
+            // A ROUND LATER THE CALL NAMES THE COPY made for it, which no
+            // scope declares: it is a method of the type the function was
+            // hoisted into, this one or, inside a closure, the one it captured.
+            if (localTarget is null && localName.Name.Contains('$'))
+            {
+                List<MethodSymbol> copies = _thisType?.FindMethods(localName.Name) ?? new();
+                if (copies.Count == 0 && _capturedThisType is not null) copies = _capturedThisType.FindMethods(localName.Name);
+                if (copies.Count > 0) localTarget = new MethodGroupSym(copies);
+            }
+            if (localTarget is not null && GenericLocalTemplate(localTarget) is MethodDecl hoisted)
+                PassCaptures(c, hoisted, hoisted.HoistedName ?? localName.Name);
         }
 
         // NAMED ARGUMENTS ARE PUT IN ORDER BEFORE ANYTHING ELSE HAPPENS.
@@ -16032,9 +16946,12 @@ public sealed partial class Binder
         if (c.ArgNames.Any(n => n != null))
         {
             MemberExpr? outerNamedCallee = _callee;
+            NameExpr? outerNamedInvoked = _invokedName;
             _callee = c.Target as MemberExpr;
+            _invokedName = c.Target as NameExpr;
             CheckExpr(c.Target);
             _callee = outerNamedCallee;
+            _invokedName = outerNamedInvoked;
             Reorder(c);
         }
 
@@ -16089,9 +17006,12 @@ public sealed partial class Binder
         _wanted = outerTarget;
 
         MemberExpr? outerCallee = _callee;
+        NameExpr? outerInvoked = _invokedName;
         _callee = c.Target as MemberExpr;
+        _invokedName = c.Target as NameExpr;
         Type targetType = CheckExpr(c.Target);
         _callee = outerCallee;
+        _invokedName = outerInvoked;
         if (movedReceiver is not null)
         {
             args[0] = _r.TypeOf(movedReceiver);
@@ -16423,7 +17343,7 @@ public sealed partial class Binder
             // better served by a string than by an object.
             foreach (MethodSymbol m in group.Methods)
             {
-                if (m.TypeParams.Count == 0
+                if (!c.ParamsPacked && m.TypeParams.Count == 0
                     && m.Params.Count > 0
                     && m.Params[^1].IsParams
                     && m.Params[^1].Type.IsArray
@@ -16449,7 +17369,7 @@ public sealed partial class Binder
             Type? expandedElement = expandedParams?.Params[^1].Type.Element;
             foreach (MethodSymbol m in group.Methods)
             {
-                if (m.TypeParams.Count == 0 || m.Params.Count == 0 || !m.Params[^1].IsParams
+                if (c.ParamsPacked || m.TypeParams.Count == 0 || m.Params.Count == 0 || !m.Params[^1].IsParams
                     || m.Params[^1].Type is not { IsArray: true, Element: Type open }
                     || args.Count < m.Params.Count - 1
                     || !InferExpanded(m, open, out Dictionary<string, Type> got))
@@ -16520,6 +17440,7 @@ public sealed partial class Binder
 
                 c.Args.RemoveRange(fixedCount, c.Args.Count - fixedCount);
                 c.Args.Add(packed);
+                c.ParamsPacked = true;
                 args.RemoveRange(fixedCount, args.Count - fixedCount);
                 args.Add(CheckExpr(packed));
             }
@@ -16583,12 +17504,16 @@ public sealed partial class Binder
             if (shorter != null)
             {
                 int writtenCount = args.Count;
+                int hidden = Hidden(c, shorter);
                 for (int i = args.Count; i < shorter.Params.Count; i++)
                 {
                     // Argument k is span pair k + 1, or k once an extension's
-                    // receiver has become argument 0 (pair 0 is the receiver).
+                    // receiver has become argument 0 (pair 0 is the receiver),
+                    // counted after the variables a generic local function
+                    // captured, which come first and were never written.
                     Expr fallback = CallerValue(shorter.Decl!.Params[i], shorter.Decl.Params, CallLine(c),
-                                        k => k >= writtenCount ? null : SpanText(c.Spans, c.Source, c.ReceiverAdded ? k : k + 1))
+                                        k => k >= writtenCount || k < hidden ? null
+                                           : SpanText(c.Spans, c.Source, (c.ReceiverAdded ? k : k + 1) - hidden))
                                     ?? Written(shorter, shorter.Decl.Params[i]);
 
                     c.Args.Add(fallback);
@@ -16655,8 +17580,21 @@ public sealed partial class Binder
                 List<MethodSymbol> invokes = m.Params[i].Type.Symbol?.FindMethods("Invoke")
                                           ?? new List<MethodSymbol>();
 
-                if (c.Args[i] is LambdaExpr lam
-                    && !invokes.Any(v => v.Params.Count == lam.Params.Count))
+                // AND BY THE TYPES IT WROTE, when it wrote them: `(string s)
+                // => ...` is no Func<int, ...> (C# 7.5.3.1 -- an explicitly
+                // typed lambda is applicable only where they are the same).
+                // (Not where the parameter is a type parameter: what it is,
+                // inference says, and `__Delegates.Combine<T>(T? a, T? b)`
+                // with a lambda on the right refused every lambda of all.)
+                // (Nor where it takes object or Delegate and the lambda wrote
+                // its types: it goes as its natural type, C# 10's Func or
+                // Action -- `Describe((int y) => y * 10)` over Describe(object).)
+                if (c.Args[i] is LambdaExpr lam && m.Params[i].Type.ParamName is null
+                    && !(lam.TypesWritten && (NaturalTarget(m.Params[i].Type) || ReferenceEquals(m.Params[i].Type.Symbol, DelegateRoot())))
+                    && !invokes.Any(v => v.Params.Count == lam.Params.Count
+                                      && (!lam.TypesWritten
+                                          || Enumerable.Range(0, lam.Params.Count)
+                                                       .All(k => WrittenParameterMismatch(lam, k, m.Params[i].Type, v) is null))))
                 {
                     return false;
                 }
@@ -16680,7 +17618,7 @@ public sealed partial class Binder
                 // Sort(IComparer<T>) -- an interface, whose Compare matched
                 // nothing because nothing was asked of it -- left the group
                 // unconverted, and it reached the code generator as a name.
-                if (c.Args[i] is not LambdaExpr && invokes.Count == 0 && m.Params[i].Type.Prim != Prim.Any
+                if (c.Args[i] is not LambdaExpr && invokes.Count == 0 && m.Params[i].Type.Prim != Prim.Any && m.Params[i].Type.ParamName is null
                     && _r.Resolved.TryGetValue(c.Args[i], out Sym? groupOnly)
                     && Grouped(groupOnly) is { Count: > 0 })
                 {
@@ -16691,6 +17629,14 @@ public sealed partial class Binder
         }
 
         byArity = byArity.Where(Fits).ToList();
+
+        // ONLY WHAT THIS CODE CAN SEE, as for a constructor (Visible): a
+        // private overload of another type is no candidate where a visible
+        // one fits.
+        if (byArity.Count > 1 && byArity.Any(Visible) && !byArity.All(Visible))
+        {
+            byArity = byArity.Where(Visible).ToList();
+        }
 
         if (byArity.Count == 0)
         {
@@ -17193,6 +18139,7 @@ public sealed partial class Binder
         if (best.TypeParams.Count > 0 && bound != null && best.Decl is { } generic)
         {
             List<TypeRef> spelt = new();
+            List<Type> given = new();
 
             foreach (string p in best.TypeParams)
             {
@@ -17203,7 +18150,53 @@ public sealed partial class Binder
                 }
 
                 spelt.Add(spell);
+                given.Add(was);
             }
+
+            // `where T : new()` OF THE METHOD, against what T was given or
+            // worked out to be (CS0310).
+            if (spelt.Count == best.TypeParams.Count)
+            {
+                for (int i = 0; i < given.Count && i < generic.TypeParams.Count; i++)
+                {
+                    if (generic.TypeParams[i].New && !HasPublicParameterless(given[i]))
+                    {
+                        Error(c, NotConstructible(given[i], generic.TypeParams[i].Name,
+                            best.Name + "<" + string.Join(", ", generic.TypeParams.Select(p => p.Name)) + ">"));
+                    }
+                }
+            }
+
+            // A TYPE ARGUMENT ONLY RUN TIME KNOWS: a shared copy's T, or a
+            // shared method copy's own, handed on (Type.CanonParam). The
+            // call reaches the shared method copy (Monomorphiser.CopyName),
+            // which is given each such argument's descriptor as a hidden
+            // argument (Lowering.HiddenTypeArguments), so that its tests of
+            // an interface over it ask the object at hand. Not a generic
+            // virtual method, whose copies are reached by a dispatch that
+            // passes nothing more, and not an iterator or an async method,
+            // whose bodies run in a state machine the hidden arguments do not
+            // reach: those stay the copy over object, as every call was.
+            int[]? hidden = null;
+            if (spelt.Count == best.TypeParams.Count && !best.GenericVirtual && !best.Async
+                && generic.Body is not { Iterator: true })
+            {
+                for (int i = 0; i < spelt.Count; i++)
+                {
+                    if (given[i] is { CanonParam: not -1, Prim: Prim.Any, Symbol: null, ArrayRank: 0, PointerDepth: 0 })
+                    {
+                        spelt[i].CanonIndex = -2 - i;
+                        if (hidden is null)
+                        {
+                            hidden = new int[spelt.Count];
+                            for (int unset = 0; unset < hidden.Length; unset++) hidden[unset] = -1;
+                        }
+                        hidden[i] = given[i].CanonParam;
+                    }
+                }
+            }
+            // On the call, for the round that binds it to the copy (CallExpr.HiddenTypeArgs).
+            c.HiddenTypeArgs = hidden;
 
             // A GENERIC VIRTUAL METHOD IS DISPATCHED ON THE RECEIVER, except
             // through `base.`, which names one implementation and is an
@@ -17222,8 +18215,7 @@ public sealed partial class Binder
                     member = declaring.Members.IndexOf(generic);
                 }
 
-                string wanted = Monomorphiser.MethodName(generic.Name, spelt)
-                              + "$" + member;
+                string wanted = Monomorphiser.CopyName(generic.Name, spelt, member);
                 MethodSymbol? existing = best.Owner.Methods
                     .FirstOrDefault(m => m.Name == wanted);
 
@@ -17314,6 +18306,28 @@ public sealed partial class Binder
         }
 
         return answer;
+    }
+
+    /// <summary>
+    /// A shared method copy's test or cast to a generic interface over its
+    /// own type parameters (ICanonShape, Monomorphiser.Shaped): the family
+    /// and the arguments, resolved, for the lowering to ask the object
+    /// (BindResult.Shapes). Only an interface made from a template, with as
+    /// many arguments as were written, and no more than a record holds.
+    /// </summary>
+    private void NoteShape<T>(T node, Type tested) where T : Expr, ICanonShape
+    {
+        if (node.ShapeArgs is not { Count: > 0 } written || tested.IsArray || tested.IsPointer
+            || tested.Symbol is not { Kind: TypeKind.Interface } face
+            || face.Decl is not { Specialised: true, Template: not null } decl
+            || decl.TemplateArgs.Count != written.Count || written.Count > CanonShape.MostArguments)
+        {
+            _r.Shapes.Remove(node);
+            return;
+        }
+        List<Type> args = new(written.Count);
+        foreach (TypeRef a in written) args.Add(Resolve(a, _thisType));
+        _r.Shapes[node] = new CanonShape { Interface = face, Args = args };
     }
 
     /// <summary>
@@ -17637,9 +18651,9 @@ public sealed partial class Binder
             Line = b.Line, Col = b.Col,
         };
         call.Args.Add(Value(1, leftMay));
-        call.ArgNames.Add(null);
+        call.WritableArgNames.Add(null);
         call.Args.Add(Value(0, rightMay));
-        call.ArgNames.Add(null);
+        call.WritableArgNames.Add(null);
 
         bool eq = b.Op == BinOp.Eq;
         Expr test;
@@ -17704,7 +18718,7 @@ public sealed partial class Binder
                 Line = u.Line, Col = u.Col,
             };
             call.Args.Add(on);
-            call.ArgNames.Add(null);
+            call.WritableArgNames.Add(null);
             return call;
         }
 
@@ -17888,6 +18902,21 @@ public sealed partial class Binder
 
         Type l = CheckExpr(b.Left);
 
+        // A LAMBDA ADDED TO OR TAKEN FROM A DELEGATE is that delegate's type,
+        // as C# target-types it by the left operand: `d + (x => x * 2)`. It
+        // has no type of its own to be checked with first, so the operation
+        // is the call it becomes (DelegateCombination), whose argument is
+        // wanted as the delegate.
+        if (b.Op is BinOp.Add or BinOp.Sub && !l.IsError && !l.IsArray && !l.IsNullableValue
+            && l.Symbol is { Decl.IsDelegate: true } && (b.Right is LambdaExpr || HoldsLambda(b.Right)))
+        {
+            CallExpr withLambda = DelegateCombination(b.Op == BinOp.Add, b.Left, b.Right, b, l);
+            _r.Rewrites[b] = withLambda;
+            Type lambdaMade = CheckExpr(withLambda);
+            // The left's delegate type: the helper answers Delegate, the one value it is.
+            return lambdaMade.IsError ? lambdaMade : b.Op == BinOp.Add ? l.AsNonNullable() : l.AsNullable();
+        }
+
         // WHAT THE LEFT SIDE IS, IS WHAT THE RIGHT SIDE HAS TO BE. `isDefined
         // ?? (_ => false)` is a lambda with nothing else to tell it its type,
         // and C# target-types the right operand of `??` from the left -- which
@@ -17915,6 +18944,26 @@ public sealed partial class Binder
         }
 
         AdoptUnsignedConstant(b.Left, ref l, b.Right, ref r);
+
+        // `a + b` AND `a - b` OVER TWO DELEGATES OF ONE TYPE are C#'s too, not
+        // only their compound forms: Delegate.Combine and Delegate.Remove,
+        // typed as the delegate (DelegateCombination). The sum of anything
+        // with a delegate that is there is there; a difference may be nothing.
+        // A method group on the right becomes the left's delegate, as C#
+        // target-types it.
+        if (b.Op is BinOp.Add or BinOp.Sub && !l.IsArray && !l.IsNullableValue
+            && l.Symbol is { Decl.IsDelegate: true } combined
+            && (r.Prim == Prim.NullLiteral || IsFunctionSource(b.Right)
+                || !r.IsArray && !r.IsNullableValue && ReferenceEquals(r.Symbol, combined)
+                || IsDelegateValue(r) && Variant(r, l.AsNonNullable())))
+        {
+            CallExpr call = DelegateCombination(b.Op == BinOp.Add, b.Left, b.Right, b, l);
+            _r.Rewrites[b] = call;
+            Type made = CheckExpr(call);
+            if (made.IsError) return made;
+            return b.Op == BinOp.Add && (!l.Nullable || !r.Nullable && r.Prim != Prim.NullLiteral)
+                ? l.AsNonNullable() : l.AsNullable();
+        }
 
         // AN OPERATOR THE TYPE DECLARED ITSELF. `later - earlier` on two
         // DateTimes, `span1 + span2`, `a < b` on a Version: C# resolves these
@@ -18121,6 +19170,35 @@ public sealed partial class Binder
                         Error(b, $"'{other}' is a value type and can never be null");
                     }
                     return Type.Bool;
+                }
+
+                // TWO DELEGATES ARE EQUAL BY WHAT THEY CALL, not by being one
+                // object: C# gives every delegate type `==` and `!=`, and
+                // .NET's answer them as Delegate.Equals does -- the same method
+                // on the same target, and for a multicast the same targets in
+                // the same order. Two lambdas are two methods and never equal;
+                // one method group converted twice is one method and is.
+                // `d == null` is a reference test as ever, above.
+                if (IsDelegateValue(l) && IsDelegateValue(r))
+                {
+                    CallExpr same = new()
+                    {
+                        Target = new MemberExpr
+                        {
+                            Target = new NameExpr { Name = DelegatesHelper, Line = b.Line, Col = b.Col, File = b.File },
+                            Name = "Same", Line = b.Line, Col = b.Col, File = b.File,
+                        },
+                        Line = b.Line, Col = b.Col, File = b.File,
+                    };
+                    same.Args.Add(b.Left);
+                    same.Args.Add(b.Right);
+                    same.WritableArgNames.Add(null);
+                    same.WritableArgNames.Add(null);
+                    Expr compared = b.Op == BinOp.Eq
+                                  ? same
+                                  : new UnaryExpr { Op = UnOp.Not, Operand = same, Line = b.Line, Col = b.Col, File = b.File };
+                    _r.Rewrites[b] = compared;
+                    return CheckExpr(compared);
                 }
 
                 if (l.IsNumeric && r.IsNumeric)

@@ -1,0 +1,23 @@
+// test: event invoke outside refused
+// expect-compile-error: can only appear on the left hand side of += or -=
+// A field-like event is raised by the type that declares it and by nothing
+// else: from outside, C# allows only += and -= on it (CS0070). Raising it
+// from another class is refused.
+
+using System;
+
+class Source
+{
+    public event Action? Fired;
+}
+
+static class P
+{
+    static int Main()
+    {
+        Source s = new Source();
+        s.Fired += () => Console.WriteLine("fired");
+        s.Fired?.Invoke();
+        return 0;
+    }
+}

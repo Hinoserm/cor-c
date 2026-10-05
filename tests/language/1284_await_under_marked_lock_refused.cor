@@ -1,5 +1,5 @@
 // test: await under a lock marked [NoAwaitWhileHeld] refused
-// expect-compile-error: cannot await while 'TableGate' (its Enter) is held
+// expect-compile-error: cannot await while 'TableGate' (its TryEnter) is held
 // A lock of the program's own is marked to be one; a type deriving from it
 // is one too, and a TryEnter that answered true holds it in its branch.
 

@@ -1,0 +1,36 @@
+// test: thread_max_stack_size
+// expect-exit: 0
+// expect-output:
+// deep 200000
+// small 200
+// refused ArgumentOutOfRangeException
+//
+// new Thread(start, maxStackSize): the thread's stack is the size asked
+// for, as .NET's is. A recursion two hundred thousand calls deep runs on a
+// 64 MB stack (the link's inclusion solve runs so, RegionSolver.OnDeepStack);
+// a size below the least a thread can run on is that least; a negative one
+// is refused.
+
+using System;
+using System.Threading;
+
+static class P
+{
+    static int Depth(int n) => n == 0 ? 0 : 1 + Depth(n - 1);
+
+    static int Main()
+    {
+        int deep = 0, small = 0;
+        Thread big = new(() => { deep = Depth(200000); }, 64 * 1024 * 1024);
+        big.Start();
+        big.Join();
+        Console.WriteLine("deep " + deep);
+        Thread tiny = new(() => { small = Depth(200); }, 1);
+        tiny.Start();
+        tiny.Join();
+        Console.WriteLine("small " + small);
+        try { new Thread(() => { }, -1); }
+        catch (ArgumentOutOfRangeException e) { Console.WriteLine("refused " + e.GetType().Name); }
+        return 0;
+    }
+}

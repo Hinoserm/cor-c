@@ -1,0 +1,49 @@
+// test: program_delegate_type_name
+// expect-exit: 0
+// expect-output:
+// mine program
+// ping 12
+// list 2 True
+// equal True
+//
+// A PROGRAM MAY DECLARE ITS OWN `Delegate` beside its delegates: in its
+// namespace the name is its own type, as C# has it, and System.Delegate is
+// still the library's -- the base of every delegate, what GetInvocationList
+// answers, and what the multicast class written for each delegate type
+// names. Ping combines, lists and compares as any delegate does.
+
+using System;
+
+namespace App;
+
+class Delegate
+{
+    public string Name = "program";
+}
+
+delegate void Ping(int n);
+
+static class P
+{
+    static string log = "";
+    static void One(int n) { log += n; }
+
+    static int Main()
+    {
+        Delegate mine = new Delegate();
+        Console.WriteLine("mine " + mine.Name);
+
+        Ping p = One;
+        p += n => log += n + 1;
+        p(1);
+        Console.WriteLine("ping " + log);
+
+        System.Delegate[] list = p.GetInvocationList();
+        Console.WriteLine("list " + list.Length + " " + (list[0] is Ping));
+
+        Ping again = One;
+        Ping alone = One;
+        Console.WriteLine("equal " + (again == alone));
+        return 0;
+    }
+}

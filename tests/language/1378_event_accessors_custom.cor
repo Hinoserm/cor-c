@@ -1,0 +1,68 @@
+// test: event_accessors_custom
+// expect-exit: 0
+// expect-output:
+// accessors 3 1 11
+// relay 1
+//
+// AN EVENT WITH ITS OWN add AND remove, as C# writes one: `+=` and `-=` from
+// outside call them, with the handler as `value`. Alarm keeps its handlers in
+// a delegate field of its own and counts the calls: three adds, one remove,
+// and the remove takes out the LAST `one` -- one + ten is left, 11. Relay
+// combines through Delegate.Combine and Delegate.Remove, as .NET's own
+// accessor events are written: h, h, less h, raised once.
+
+using System;
+
+class Alarm
+{
+    Action? _handlers;
+    public int Adds;
+    public int Removes;
+
+    public event Action Rang
+    {
+        add { _handlers += value; Adds++; }
+        remove { _handlers -= value; Removes++; }
+    }
+
+    public void Ring() { _handlers?.Invoke(); }
+}
+
+class Relay
+{
+    EventHandler? _handler;
+
+    public event EventHandler Fired
+    {
+        add => _handler = (EventHandler?)Delegate.Combine(_handler, value);
+        remove => _handler = (EventHandler?)Delegate.Remove(_handler, value);
+    }
+
+    public void Fire() { _handler?.Invoke(this, EventArgs.Empty); }
+}
+
+static class P
+{
+    static int Main()
+    {
+        Alarm alarm = new Alarm();
+        int rang = 0;
+        Action one = () => rang++;
+        alarm.Rang += one;
+        alarm.Rang += () => rang += 10;
+        alarm.Rang += one;
+        alarm.Rang -= one;
+        alarm.Ring();
+        Console.WriteLine("accessors " + alarm.Adds + " " + alarm.Removes + " " + rang);
+
+        Relay relay = new Relay();
+        int fired = 0;
+        EventHandler h = (sender, e) => fired++;
+        relay.Fired += h;
+        relay.Fired += h;
+        relay.Fired -= h;
+        relay.Fire();
+        Console.WriteLine("relay " + fired);
+        return 0;
+    }
+}

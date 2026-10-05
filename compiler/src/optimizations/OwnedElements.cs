@@ -437,9 +437,11 @@ internal static class OwnedElements
     /// What a known call does with its operands: the adder's value operand,
     /// the out-slot operand, whether it answers an element, whether it makes
     /// an enumerator of the collection (a foreach) or a view of it (a
-    /// Dictionary's Values or Keys, walked by one).
+    /// Dictionary's Values or Keys, walked by one), and whether a constructor
+    /// fills it with what another holds (Copies: a known call, whose
+    /// collection owns no element it was made with).
     /// </summary>
-    internal readonly record struct Role(bool Known, int Adds = -1, int OutSlot = -1, bool Reads = false, bool Enumerates = false, bool Views = false);
+    internal readonly record struct Role(bool Known, int Adds = -1, int OutSlot = -1, bool Reads = false, bool Enumerates = false, bool Views = false, bool Copies = false);
 
     /// <summary>
     /// The types declared inside List and Dictionary, whose names begin with
@@ -471,8 +473,12 @@ internal static class OwnedElements
             // the source holds, objects made elsewhere and still held there:
             // freeing them with the copy freed a kernel's module records out
             // from under the list they were copied from. Only a constructor
-            // given nothing but a capacity or a comparer makes it empty.
-            return new(!CopiesElements(callee));
+            // given nothing but a capacity or a comparer makes it empty --
+            // or one of numbers, whose copy shares no object (ValueElements).
+            // Known all the same, as the collection's own call: only its
+            // elements are not its own (Uses refuses them).
+            return new(true, Copies: CopiesElements(callee)
+                && !ValueElements(callee[2..callee.IndexOf("_" + kind + "$", prefix.Length, StringComparison.Ordinal)]));
         Match match = Method.Match(callee);
         if (!match.Success || match.Groups[1].Value != kind) return new(false);
         string name = match.Groups[2].Value;
@@ -510,6 +516,22 @@ internal static class OwnedElements
     }
 
     private static readonly Regex Parameter = new(@"_((?:T|A)\$[^_]*)", RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// Whether a collection type's elements -- a List's, a Dictionary's
+    /// values, the last of its arguments in "List$long" or
+    /// "Dictionary$string$int" -- are numbers: a copy of such a collection
+    /// shares no object with its source, and gives back nothing it was not
+    /// made with (OwnedElements.Release frees only objects). A reference
+    /// element is "__canon" or a class's name, a struct's its own name: each
+    /// left to CopiesElements.
+    /// </summary>
+    internal static bool ValueElements(string owner)
+    {
+        string last = owner[(owner.LastIndexOf('$') + 1)..];
+        return last is "bool" or "byte" or "sbyte" or "short" or "ushort" or "int" or "uint" or "long" or "ulong"
+            or "char" or "float" or "double" or "nint" or "nuint";
+    }
 
     /// <summary>The collection kind of an allocation, from the vtable stored into it, or null.</summary>
     internal static string? KindOf(Function f, Instr alloc, HashSet<VReg> container)
@@ -610,6 +632,7 @@ internal static class OwnedElements
                         if (i.Callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive) continue;
                         Role role = RoleOf(kind, i.Callee);
                         if (!role.Known) { Say(f, $"unknown call: {i.Callee}"); return null; }
+                        if (role.Copies) { Say(f, $"made as a copy of another's elements: {i.Callee}"); return null; }
                         calls.Add((b, i, role));
                         if (role.Enumerates && Walker(f, defs, kind, i, calls) is null) { Say(f, $"enumerator not followed: {i}"); return null; }
                         if (role.Views && View(f, defs, i, calls) is null) { Say(f, $"view not followed: {i}"); return null; }
@@ -2809,7 +2832,9 @@ public sealed partial class Escape
                         }
                         // An index of any list's own call.
                         OwnedElements.Role role = OwnedElements.RoleOf("List", callee);
-                        if (role.Known && k != role.Adds) continue;
+                        // Not a copying constructor's source: the copy holds what
+                        // the value holds, which is no add and no known use.
+                        if (role.Known && !role.Copies && k != role.Adds) continue;
                     }
                     return null;
                 }

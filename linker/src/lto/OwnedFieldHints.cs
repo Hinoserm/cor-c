@@ -152,7 +152,7 @@ public sealed class OwnedFieldHints
         writer.Write(Fields.Count);
         foreach ((string field, OwnedFieldRecord record) in Fields)
         {
-            writer.Write(index[field]); writer.Write(record.Offset); writer.Write(record.Refused); writer.Write(record.Stored);
+            writer.Write(index[field]); writer.Write(record.Offset); writer.Write(record.Refused); writer.Write(record.Stored); writer.Write(record.SelfFreed);
             Needs(record.Needs); Pairs(record.Sinks); Names(record.Danger, record.Danger.Count);
             Names(record.Kinds, record.Kinds.Count); Names(record.Assumes, record.Assumes.Count);
             writer.Write(record.ElementsRefused); writer.Write(record.ElementArrays); Needs(record.ElementNeeds);
@@ -235,7 +235,7 @@ public sealed class OwnedFieldHints
         for (int i = Count(32); i > 0; i--)
         {
             string field = Name();
-            OwnedFieldRecord record = new() { Offset = reader.ReadInt64(), Refused = reader.ReadBoolean(), Stored = reader.ReadBoolean() };
+            OwnedFieldRecord record = new() { Offset = reader.ReadInt64(), Refused = reader.ReadBoolean(), Stored = reader.ReadBoolean(), SelfFreed = reader.ReadBoolean() };
             record.Needs.Add(Needs()); Pairs(record.Sinks); NameSet(record.Danger); NameSet(record.Kinds); NameSet(record.Assumes);
             record.ElementsRefused = reader.ReadBoolean(); record.ElementArrays = reader.ReadBoolean();
             record.ElementNeeds.Add(Needs()); NameSet(record.ElementDanger); NameSet(record.ElementDangerFields);
@@ -310,6 +310,12 @@ public sealed class OwnedFieldRecord
     public bool Refused { get; set; }
     /// <summary>Stored into here.</summary>
     public bool Stored { get; set; }
+    /// <summary>
+    /// Some store here is a self-replacing free's (Opt.Escape, EscapeSelfFrees):
+    /// a collection frees the value it replaces itself, so no call is watched
+    /// for replacing it.
+    /// </summary>
+    public bool SelfFreed { get; set; }
     /// <summary>What its stores and reads need of other units' functions.</summary>
     public LifetimeCondition Needs { get; } = new();
     /// <summary>Parameters it is stored from, which every caller must hand over.</summary>

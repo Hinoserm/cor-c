@@ -81,7 +81,7 @@ public sealed class StaticInitGuards : IPass
             }
             if (!covered) continue;
             Instr branch = g.Block.Instrs[^1];
-            g.Block.Instrs[^1] = new Instr { Op = Opcode.Jump, Targets = { g.Done }, Line = branch.Line };
+            g.Block.Instrs[^1] = new Instr { Op = Opcode.Jump, WritableTargets = { g.Done }, Line = branch.Line };
             // Chained coverage stays sound with this guard gone: its join
             // still has the one entry it had from the guard's block, and
             // the guard that covered this one covers that block too.

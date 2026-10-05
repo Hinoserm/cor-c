@@ -30,7 +30,10 @@ public sealed class CommonTailMerge : IPass
                 if (--budget < 0) return;
                 int count = 0, limit = Math.Min(32, Math.Min(block.Instrs.Count, other.Instrs.Count));
                 while (count < limit && Same(block.Instrs[^(count + 1)], other.Instrs[^(count + 1)])) count++;
-                if (count == block.Instrs.Count && count == other.Instrs.Count)
+                // A block the link gave a loop region is merged only into one
+                // given the same: the one kept is the one the mark is read on.
+                if (count == block.Instrs.Count && count == other.Instrs.Count
+                    && block.RegionLoop == other.RegionLoop && block.RegionLoopBytes == other.RegionLoopBytes)
                 {
                     Redirect(function, block, other);
                     function.Blocks.Remove(block);
@@ -44,8 +47,8 @@ public sealed class CommonTailMerge : IPass
                 tail.Instrs.AddRange(block.Instrs.Skip(block.Instrs.Count - count));
                 block.Instrs.RemoveRange(block.Instrs.Count - count, count);
                 other.Instrs.RemoveRange(other.Instrs.Count - count, count);
-                block.Instrs.Add(new Instr { Op = Opcode.Jump, Line = end.Line, Targets = { tail } });
-                other.Instrs.Add(new Instr { Op = Opcode.Jump, Line = end.Line, Targets = { tail } });
+                block.Instrs.Add(new Instr { Op = Opcode.Jump, Line = end.Line, WritableTargets = { tail } });
+                other.Instrs.Add(new Instr { Op = Opcode.Jump, Line = end.Line, WritableTargets = { tail } });
                 merged = true;
                 break;
             }
@@ -59,6 +62,11 @@ public sealed class CommonTailMerge : IPass
             || a.Size != b.Size || a.Signed != b.Signed || a.Offset != b.Offset
             || a.Default != b.Default || a.Operands.Count != b.Operands.Count
             || a.Targets.Count != b.Targets.Count) return false;
+        // AND MARKED ALIKE: the tail kept is one block's, and the other's
+        // marks go with it -- an allocation the link chose for a region
+        // shared with one it did not, a number's load with an address's.
+        if (a.Number != b.Number || a.Family != b.Family || a.Field != b.Field
+            || a.RegionSite != b.RegionSite || a.DispatchType != b.DispatchType) return false;
         for (int k = 0; k < a.Targets.Count; k++) if (a.Targets[k] != b.Targets[k]) return false;
         for (int k = 0; k < a.Operands.Count; k++)
         {
@@ -82,7 +90,7 @@ public sealed class CommonTailMerge : IPass
         foreach (Instr instruction in function.Blocks.SelectMany(b => b.Instrs))
         {
             for (int k = 0; k < instruction.Targets.Count; k++)
-                if (instruction.Targets[k] == from) instruction.Targets[k] = to;
+                if (instruction.Targets[k] == from) instruction.WritableTargets[k] = to;
             if (instruction.Default == from) instruction.Default = to;
         }
     }

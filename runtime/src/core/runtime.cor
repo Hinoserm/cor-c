@@ -225,8 +225,9 @@ static class Tls
     /// where only this thread writes it.
     public const long ClassBytes = 37 * WordSize.Bytes;
 
-    /// This thread's region arena (Gc, "regions"): mapped on first use, its
-    /// bump pointer, its end, and where the innermost open region began (0
+    /// This thread's region arena (Gc, "regions"): its first chunk (0 until
+    /// the thread first opens a region), the bump pointer, the end of the
+    /// chunk being filled, and where the innermost open region began (0
     /// when none is open). A region is a call the compiler proved every
     /// object made for it dead by its return; they are made here and given
     /// back together when it returns.
@@ -240,15 +241,20 @@ static class Tls
     /// before its first touch of one. Where the thread finds them, not what
     /// keeps them: that is ThreadStatics' list, a static the collector reads.
     public const long ThreadStatics = 42 * WordSize.Bytes;
+    /// Blocks this thread made in regions since it last told Gc.RegionBlocks
+    /// (Runtime.AllocRegion): counted here, without a word every thread
+    /// writes, and added in where a region ends (Gc.CountRegionBlocks).
+    public const long RegionCount = 43 * WordSize.Bytes;
     /// The AsyncContext a continuation running on this block runs in (its
     /// object's word, 0 outside every continuation): what a continuation
     /// registered here captures. A word of the block's, so each processor
     /// of a kernel -- each block -- has its own (AsyncContext).
-    public const long AsyncContext = 43 * WordSize.Bytes;
-    /// The region arena continuations run with on this block, mapped at
-    /// the first of them, or 0 (AsyncContext, Platform.TaskArenaBytes).
-    public const long TaskArena = 44 * WordSize.Bytes;
-    public const long Bytes = 45 * WordSize.Bytes;
+    public const long AsyncContext = 44 * WordSize.Bytes;
+    /// 1 while a continuation's run on this block has a region arena of its
+    /// own (AsyncContext, Platform.TaskArenaBytes), mapped as its regions
+    /// need and given back as the run ends; 0 otherwise.
+    public const long TaskArena = 45 * WordSize.Bytes;
+    public const long Bytes = 46 * WordSize.Bytes;
 }
 
 /// WHERE THE ALLOCATIONS COME FROM (CORSAC_ALLOC_SAMPLE=1): every sixteenth
@@ -277,7 +283,16 @@ static class AllocSamples
     /// (gui.allocsample=1), after the collector started without it.
     public static void Start()
     {
-        if (_table != 0 || !Platform.AllocSample()) return;
+        if (!Platform.AllocSample()) return;
+        Begin();
+    }
+
+    /// Sampling from now on, however asked: the environment at start, or
+    /// AppContext.SetSwitch("Corsac.GC.AllocSample", true) -- corc's
+    /// --alloc-sample. Once.
+    public static void Begin()
+    {
+        if (_table != 0) return;
         _table = Platform.Map(Slots * Words * WordSize.Bytes);
         if (_table == 0) return;
         // WHICH WERE FREED takes twelve megabytes more, past what a small
@@ -480,6 +495,143 @@ interface IOwnsStorage
     void FreeStorage();
 }
 
+/// .NET's System.Delegate: WHAT EVERY DELEGATE IS. A delegate type here is an
+/// interface with an Invoke (Parser.ParseDelegateDeclaration), and the binder
+/// gives each one this as its base (Binder.DeclareMembersIn), as every .NET
+/// delegate type derives from Delegate -- so an Action is a Delegate, an
+/// array of Delegates holds any of them, and the members below are every
+/// delegate's.
+///
+/// A delegate is one of two things. A closure the compiler made of a lambda
+/// or a method group, which is one target and answers these members with the
+/// bodies written here and the two its delegate type writes (CombineImpl and
+/// RemoveImpl: only the type knows the multicast class it combines into); the
+/// binder fills a closure's slots with them (Binder.DelegateMembers). Or that
+/// multicast class, written beside every delegate type (Parser.Multicast),
+/// which holds the targets in order and answers all of them itself.
+///
+/// Method and Target are not here: they answer a MethodInfo and the object a
+/// closure was made over, and there is no reflection to make the one, nor a
+/// target .NET would name in a closure that captured locals.
+interface Delegate
+{
+    /// The targets a call runs, in the order it runs them: for a single
+    /// delegate, itself alone.
+    public Delegate[] GetInvocationList() { return new Delegate[] { this }; }
+
+    /// This delegate followed by `follow`, which is a delegate of the same
+    /// type -- Delegate.Combine's work once neither side is null and the two
+    /// are seen to be of one type (Runtime.SameDelegateType). Each
+    /// delegate type answers it for its own closures, the one place that can
+    /// name the multicast class to make.
+    public Delegate? CombineImpl(Delegate follow) { throw new NotSupportedException("Delegates of this type cannot be combined."); }
+
+    /// This delegate without the last run of `value`'s targets in it, or null
+    /// when that leaves nothing -- Delegate.Remove's work. A single delegate
+    /// is removed only by one equal to it, as its own Equals says (a method
+    /// group's closure answers for its method, Runtime.GroupEquals).
+    public Delegate? RemoveImpl(Delegate value) { return ((object)this).Equals(value) ? null : this; }
+
+    /// .NET's Delegate.Combine: the two run one after the other, either
+    /// alone when the other is null. Delegates of two types do not combine
+    /// (ArgumentException), as .NET's do not.
+    public static Delegate? Combine(Delegate? a, Delegate? b)
+    {
+        if (a == null) return b;
+        if (b == null) return a;
+        if (!Runtime.SameDelegateType(a, b)) throw new ArgumentException("Delegates must be of the same type.");
+        return a.CombineImpl(b);
+    }
+
+    /// Every one of them combined, in order; null for none.
+    public static Delegate? Combine(params Delegate?[]? delegates)
+    {
+        if (delegates == null || delegates.Length == 0) return null;
+        Delegate? all = delegates[0];
+        for (int i = 1; i < delegates.Length; i++) all = Combine(all, delegates[i]);
+        return all;
+    }
+
+    /// .NET's Delegate.Remove: `source` without the LAST contiguous run of
+    /// `value`'s targets -- a multicast removes a multicast out of the middle
+    /// of another -- and `source` itself when there is none.
+    public static Delegate? Remove(Delegate? source, Delegate? value)
+    {
+        if (source == null) return null;
+        if (value == null) return source;
+        if (!Runtime.SameDelegateType(source, value)) throw new ArgumentException("Delegates must be of the same type.");
+        return source.RemoveImpl(value);
+    }
+
+    /// .NET's Delegate.RemoveAll: Remove until nothing more comes out. Remove
+    /// hands back the very delegate it was given when it removes nothing.
+    public static Delegate? RemoveAll(Delegate? source, Delegate? value)
+    {
+        Delegate? before;
+        do
+        {
+            before = source;
+            source = Remove(source, value);
+        }
+        while (Sys.Word(before) != Sys.Word(source));
+        return before;
+    }
+}
+
+/// WHAT THE COMPILER WRITES WHERE A PROGRAM USES DELEGATES, under a name no
+/// program declares: `a += b` and `a + b` are Combine, `a -= b` and `a - b`
+/// Remove, `a == b` Same (Binder.DelegateCombination, Binder.CheckBinary),
+/// and the multicast class the parser writes beside each delegate type
+/// (Parser.Multicast) compares and hashes through Equal and Hash. Reached
+/// by a name of its own, because these are written into the program's own
+/// namespaces, where a type of the program's may be called Runtime or
+/// Delegate.
+///
+/// Combine and Remove are generic over the delegate's type, so the call is
+/// typed as the delegate it combines -- an Action stays an Action -- without
+/// naming the multicast class a generic or nested delegate type has: the
+/// work goes through Delegate, whose CombineImpl and RemoveImpl each type
+/// answers for itself, and which refuses two delegates of different types.
+static class __Delegates
+{
+    // AS A DELEGATE, not as T: the binder types the call as the operator's
+    // own delegate type (Binder.DelegateCombination), and a cast to T here
+    // was a test against the shared copy's T -- `Func<__canon, __canon>`,
+    // which a Func<int, int> is not -- or, for a multicast made in shared
+    // code, against arguments it never had. Combine and Remove of one type
+    // answer that type (Delegate.Combine refuses two), so nothing is tested.
+    public static Delegate? Combine<T>(T? a, T? b) where T : class
+    {
+        if (a == null) return (Delegate?)(object?)b;
+        if (b == null) return (Delegate?)(object?)a;
+        return Delegate.Combine((Delegate)(object)a, (Delegate)(object)b);
+    }
+
+    public static Delegate? Remove<T>(T? a, T? b) where T : class
+    {
+        if (a == null) return null;
+        if (b == null) return (Delegate?)(object?)a;
+        return Delegate.Remove((Delegate)(object)a, (Delegate)(object)b);
+    }
+
+    public static bool Same(object? a, object? b) { return Runtime.SameDelegate(a, b); }
+
+    public static bool Equal(object? a, object? b) { return Runtime.DelegateEquals(a, b); }
+
+    public static int Hash(object self) { return Runtime.DelegateHash(self, 0); }
+}
+
+/// A delegate made of several, as the runtime sees one: the multicast class
+/// the parser writes beside every delegate type answers it, and nothing else
+/// does -- which is how the runtime's equality (Runtime.DelegateEquals) tells a
+/// multicast from a single closure without asking a delegate type it cannot
+/// name.
+interface IMulticastDelegate
+{
+    int InvocationCount();
+    object InvocationAt(int index);
+}
+
 interface IOwnsElements : IOwnsStorage
 {
     void FreeOwnedElements();
@@ -559,6 +711,136 @@ static class Runtime
             if (Sys.Peek(pa + at) != Sys.Peek(pb + at)) return false;
         }
         return true;
+    }
+
+    /// DELEGATE EQUALITY AS .NET HAS IT (Delegate.Equals, and the `==` C#
+    /// gives every delegate type, which the binder turns into this): the same
+    /// method on the same target. A multicast is equal to another of the same
+    /// type whose targets are equal one by one and in order, and never to a
+    /// single delegate. What a lambda's closure answers through its Equals
+    /// slot (Lowering.DelegateEqualsStub), and what the multicast class the
+    /// parser writes answers through its own.
+    public static bool DelegateEquals(object? a, object? b)
+    {
+        if (Sys.Word(a) == Sys.Word(b)) return true;
+        if (a == null || b == null) return false;
+        IMulticastDelegate? many = a as IMulticastDelegate;
+        IMulticastDelegate? others = b as IMulticastDelegate;
+        if (many == null || others == null) return many == null && others == null && SameClosure(a, b);
+        if (Sys.Peek(Sys.Word(a)) != Sys.Peek(Sys.Word(b))) return false;
+        int count = many.InvocationCount();
+        if (count != others.InvocationCount()) return false;
+        // EACH TARGET ASKED ITS OWN QUESTION, through its Equals slot: a
+        // method group's closure is equal to another class's closure of the
+        // same method (GroupEquals), which no comparison of the two layouts
+        // can see.
+        for (int i = 0; i < count; i++)
+        {
+            if (!many.InvocationAt(i).Equals(others.InvocationAt(i))) return false;
+        }
+        return true;
+    }
+
+    /// `a == b` OVER TWO DELEGATES, as C# gives every delegate type the
+    /// operator (Binder.CheckBinary): .NET's Delegate.op_Equality, the same
+    /// reference or both there and equal by the right one's own Equals.
+    public static bool SameDelegate(object? a, object? b)
+    {
+        if (Sys.Word(a) == Sys.Word(b)) return true;
+        if (a == null || b == null) return false;
+        return b.Equals(a);
+    }
+
+    /// WHETHER TWO DELEGATES ARE OF ONE TYPE, which .NET's Delegate.Combine
+    /// and Delegate.Remove require of their arguments (ArgumentException
+    /// otherwise). Not whether the one converts to the other: a Func<string>
+    /// held as a Func<object> is still a Func<string> -- variance converts no
+    /// object -- and combined with a Func<object> it is refused, as in .NET. A
+    /// delegate's type is the one delegate interface its class implements, a
+    /// closure's or a multicast's, marked as one in its descriptor's flags
+    /// (Lowering.TypeFlagDelegate).
+    ///
+    /// A MULTICAST BY ITS TARGETS: one made in a generic delegate's shared
+    /// code (Delegate.CombineImpl) is of that code's canonical type --
+    /// Action<__canon> for an Action<string> -- while what it combines are
+    /// of the type itself, as is every delegate it was made from.
+    public static bool SameDelegateType(object a, object b)
+    {
+        return DelegateTypeOf(Sys.Word(Targeted(a))) == DelegateTypeOf(Sys.Word(Targeted(b)));
+    }
+
+    static object Targeted(object d)
+    {
+        while (d is IMulticastDelegate many && many.InvocationCount() > 0) d = many.InvocationAt(0);
+        return d;
+    }
+
+    static long DelegateTypeOf(long obj)
+    {
+        long w = WordSize.Bytes;
+        long desc = (Sys.Peek(obj) & WordSize.AddressMask) - 12 * w;
+        long faces = Sys.Peek(desc + 4 * w) & WordSize.AddressMask;
+        if (faces != 0)
+        {
+            for (long at = faces; ; at = at + w)
+            {
+                long face = Sys.Peek(at) & WordSize.AddressMask;
+                if (face == 0) break;
+                if ((Sys.Peek(face + 6 * w) & DelegateFlag) != 0) return face;
+            }
+        }
+        return desc;
+    }
+
+    /// The flag a delegate type's descriptor carries (Lowering.TypeFlagDelegate).
+    const long DelegateFlag = 512;
+
+    /// A METHOD GROUP'S DELEGATE, compared: equal to any other delegate made
+    /// from the same method on the same target, whichever class made it. The
+    /// compiler names a method group's closure by the type that converted it
+    /// as well as by the method, so `Handlers.Run` turned into an Action in
+    /// one class and in another are two closure classes -- and .NET calls the
+    /// two delegates equal, which is what `-=` from somewhere else needs.
+    /// Every closure of the one method has the same routine in its Equals
+    /// slot (Lowering.GroupEqualsStub, named by the method), `slot` bytes past
+    /// its vtable: that routine is the method's identity, and the target is
+    /// the closure's one word, or nothing for a static method.
+    public static bool GroupEquals(object? a, object? b, int slot)
+    {
+        if (DelegateEquals(a, b)) return true;
+        if (a == null || b == null) return false;
+        long va = Sys.Peek(Sys.Word(a));
+        long vb = Sys.Peek(Sys.Word(b));
+        // A string or an array has no slots to read; its flags say so.
+        if ((Sys.Peek(vb - 12 * WordSize.Bytes + 6 * WordSize.Bytes) & 1) != 0) return false;
+        if (Sys.Peek(va + slot) != Sys.Peek(vb + slot)) return false;
+        long size = Sys.Peek(va - 12 * WordSize.Bytes + WordSize.Bytes);
+        if (size != Sys.Peek(vb - 12 * WordSize.Bytes + WordSize.Bytes)) return false;
+        long pa = Sys.Word(a);
+        long pb = Sys.Word(b);
+        for (long at = 2 * WordSize.Bytes; at + WordSize.Bytes <= size; at += WordSize.Bytes)
+        {
+            if (Sys.Peek(pa + at) != Sys.Peek(pb + at)) return false;
+        }
+        return true;
+    }
+
+    /// The hash that goes with DelegateEquals and GroupEquals: equal
+    /// delegates hash alike. A multicast combines its targets' own hashes, a
+    /// method group's closure hashes its method's identity (`identity`, the
+    /// address of the routine GroupEquals compares), and any other closure
+    /// its class -- which is what a lambda written once is.
+    public static int DelegateHash(object self, long identity)
+    {
+        if (self is IMulticastDelegate many)
+        {
+            int hash = 0;
+            int count = many.InvocationCount();
+            for (int i = 0; i < count; i++) hash = unchecked(hash * 33 + many.InvocationAt(i).GetHashCode());
+            return hash;
+        }
+        long word = identity != 0 ? identity : Sys.Peek(Sys.Word(self));
+        return (int)((word & WordSize.AddressMask) >> 3);
     }
 
     // State is a naturally aligned static word: 0 unclaimed, 1 completed,
@@ -847,10 +1129,38 @@ static class Runtime
     /// REGIONS: a call the compiler proved leaves dead, at its return, every
     /// object certain allocations make for it opens one on entry and gives
     /// it back on every way out. What it hands RegionLeave is what this
-    /// returned. See Gc, "regions".
-    public static nint RegionEnter(nint frame)
+    /// returned. `bytes` is the most the region holds in one call, as the
+    /// link proved it, 0 when it could not. See Gc, "regions".
+    ///
+    /// THE FAST PATH, which the link inlines into every boundary (Lto's
+    /// UnitBackend, after the region passes): an arena already, no size
+    /// proved, no region at or below this frame left by a throw to close,
+    /// and room for the record where the arena is -- the record laid down
+    /// as Gc.OpenRecord lays it, then the pointer and the open region. Any
+    /// other case is Gc.RegionEnter's.
+    public static nint RegionEnter(nint frame, nint bytes)
     {
-        return (nint)Gc.RegionEnter((long)(nuint)frame);
+        nint tb = (nint)Sys.ThreadBlock();
+        if (bytes == 0 && tb != 0 && Sys.Peek(tb + (nint)Tls.RegionBase) != 0)
+        {
+            nint open = (nint)Sys.Peek(tb + (nint)Tls.RegionOpen);
+            nint record = (nint)Sys.Peek(tb + (nint)Tls.RegionAt);
+            nuint mask = (nuint)WordSize.AddressMask;
+            nint end = record + (nint)Gc.RegionRecordBytes;
+            if ((open == 0 || ((nuint)Sys.Peek(open + (nint)Gc.RecordFrameAt) & ~(nuint)Gc.RecordLoopMark & mask) > ((nuint)frame & mask))
+                && (nuint)end <= (nuint)Sys.Peek(tb + (nint)Tls.RegionEnd))
+            {
+                Sys.Poke(record, (nint)Gc.RegionRecordBytes);
+                Sys.Poke(end - (nint)Gc.BlockFooterBytes, (nint)Gc.RegionRecordBytes);
+                Sys.Poke(record + (nint)Gc.BlockKindAt, (nint)Gc.LeafKind);
+                Sys.Poke(record + (nint)Gc.BlockHeaderBytes, open);
+                Sys.Poke(record + (nint)Gc.RecordFrameAt, frame);
+                Sys.Poke(tb + (nint)Tls.RegionAt, end);
+                Sys.Poke(tb + (nint)Tls.RegionOpen, record);
+                return record;
+            }
+        }
+        return (nint)Gc.RegionEnter((long)(nuint)frame, (long)bytes);
     }
 
     /// A catch's own frame: every region opened by a frame below it -- a
@@ -863,13 +1173,45 @@ static class Runtime
     /// A loop's region at the top of a lap: opened on the first (`record`
     /// -1), what the last lap made in it given back on every other. What it
     /// answers is the next lap's `record`, and RegionLeave's on the way out.
-    public static nint RegionLoop(nint record, nint frame)
+    /// `bytes` is the most one lap makes in it, 0 when nobody proved it.
+    public static nint RegionLoop(nint record, nint frame, nint bytes)
     {
-        return (nint)Gc.RegionLoop(record == -1 ? -1 : (long)(nuint)record, (long)(nuint)frame);
+        return (nint)Gc.RegionLoop(record == -1 ? -1 : (long)(nuint)record, (long)(nuint)frame, (long)bytes);
     }
 
+    /// THE FAST PATH, inlined at every leave as RegionEnter is: a region
+    /// that began in the chunk being filled, below the pointer -- nothing
+    /// past that chunk to hand back -- with the stats not asked for (the
+    /// long way measures the arena as it is cut). The thread's blocks
+    /// counted, the pointer set back first, the bytes cleared, the record
+    /// popped: what Gc.RegionLeave does there. Any other case is its.
     public static void RegionLeave(nint outer)
     {
+        nint tb = (nint)Sys.ThreadBlock();
+        if (outer != -1 && tb != 0 && !Gc.StatsAsked && !Gc.CountingCollected)
+        {
+            nint last = (nint)Sys.Peek(tb + (nint)Tls.RegionEnd);
+            // The arena handed back already (Gc.ReleaseRegion): nothing left to give.
+            if (last == 0) return;
+            nint at = (nint)Sys.Peek(tb + (nint)Tls.RegionAt);
+            if ((nuint)outer >= (nuint)Sys.Peek(last) && (nuint)outer < (nuint)at)
+            {
+                nint counted = (nint)Sys.Peek(tb + (nint)Tls.RegionCount);
+                if (counted != 0)
+                {
+                    Sys.Poke(tb + (nint)Tls.RegionCount, 0);
+                    Gc.RegionBlocks = Gc.RegionBlocks + counted;
+                }
+                nint parent = (nint)Sys.Peek(outer + (nint)Gc.BlockHeaderBytes);
+                Sys.Poke(tb + (nint)Tls.RegionAt, outer);
+                nint freed = at - outer;
+                Sys.MemorySet(outer, 0, freed);
+                Sys.Poke(tb + (nint)Tls.RegionOpen, parent);
+                Gc.RegionFreedBytes = Gc.RegionFreedBytes + (freed - (nint)Gc.RegionRecordBytes);
+                Gc.FreedBytes = Gc.FreedBytes + (freed - (nint)Gc.RegionRecordBytes);
+                return;
+            }
+        }
         Gc.RegionLeave(outer == -1 ? -1 : (long)(nuint)outer);
     }
 
@@ -878,7 +1220,56 @@ static class Runtime
     /// it is full. `kind` is Gc's: 0, LeafKind or ObjectKind.
     /// `frame` is the allocating function's own: a region opened beneath it
     /// that a throw has left is closed first (Gc.PopStale).
+    ///
+    /// THE FAST PATH, kept to a few instructions so the link inlines it at
+    /// every site (Lto's UnitBackend, after the region passes), as AllocWord
+    /// is at each `new`; a constant size folds its rounding there. A region
+    /// open, opened by a frame no deeper than ours -- one a throw has not
+    /// left -- and room for the block in the chunk being filled: header,
+    /// footer and kind written, then the pointer, as Gc.AllocRegion lays a
+    /// block (a scan of a stopped thread sees it whole or not at all), and
+    /// counted in the thread's block (Tls.RegionCount, added to
+    /// Gc.RegionBlocks where a region ends). Anything else -- no thread
+    /// block yet, no region, a stale one to close, a chunk to grow into, a
+    /// sampled allocation -- the long way (AllocRegionSlow).
     public static long AllocRegion(nint bytes, nint kind, nint frame)
+    {
+        nint tb = (nint)Sys.ThreadBlock();
+        nint open = tb == 0 || AllocHook != 0 ? 0 : (nint)Sys.Peek(tb + (nint)Tls.RegionOpen);
+        if (open != 0 && (nuint)bytes <= (nuint)Gc.MostRequest)
+        {
+            nuint mask = (nuint)WordSize.AddressMask;
+            nuint opener = (nuint)Sys.Peek(open + (nint)Gc.RecordFrameAt) & ~(nuint)Gc.RecordLoopMark & mask;
+            if (opener >= ((nuint)frame & mask))
+            {
+                nint at = (nint)Sys.Peek(tb + (nint)Tls.RegionAt);
+                nint need = (bytes + (nint)Gc.BlockRounding) & (nint)Gc.BlockSizeMask;
+                if (need < (nint)Gc.SmallestBlock) need = (nint)Gc.SmallestBlock;
+                // ROOM COUNTED, NOT AN END COMPARED: on i386 a request near
+                // MostRequest added to an arena high in the address space
+                // wraps, and a wrapped end below the chunk's passed the test
+                // and the block's footer was written far below it. The slow
+                // path's sums are longs.
+                nint end = (nint)Sys.Peek(tb + (nint)Tls.RegionEnd);
+                nint next = at + need;
+                if ((nuint)at <= (nuint)end && (nuint)need <= (nuint)(end - at))
+                {
+                    Sys.Poke(at, need);
+                    Sys.Poke(next - (nint)Gc.BlockFooterBytes, need);
+                    Sys.Poke(at + (nint)Gc.BlockKindAt, kind);
+                    Sys.Poke(tb + (nint)Tls.RegionAt, next);
+                    nint counted = tb + (nint)Tls.RegionCount;
+                    Sys.Poke(counted, (nint)Sys.Peek(counted) + 1);
+                    return (long)(nuint)(at + (nint)Gc.BlockHeaderBytes);
+                }
+            }
+        }
+        return AllocRegionSlow(bytes, kind, frame);
+    }
+
+    /// The long way of AllocRegion: Gc.AllocRegion, and the sampler.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long AllocRegionSlow(nint bytes, nint kind, nint frame)
     {
         long at = (long)(nuint)Gc.AllocRegion(bytes, kind, 0, (long)(nuint)frame);
         if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes | (SampleKind(kind) << 40), at);
@@ -888,8 +1279,10 @@ static class Runtime
     // The sampler's kind of a block: 1 scanned word by word, 2 a leaf, 3 an object.
     static long SampleKind(nint kind) => kind == (nint)Gc.LeafKind ? 2 : kind == (nint)Gc.ObjectKind ? 3 : 1;
 
-    /// Storage made for `owner` and dead when it is: in owner's region when
-    /// owner is in the innermost open one, on the heap otherwise.
+    /// Storage made for `owner` and dead when it is: in the innermost open
+    /// region when owner is in it, or on this thread's stack in a frame that
+    /// returns no later than that region ends (a collection the lifetime pass
+    /// put in a boundary's frame; Gc.OnStackWithin); on the heap otherwise.
     public static long AllocNear(nint bytes, nint kind, nint owner, nint frame)
     {
         long at = (long)(nuint)Gc.AllocRegion(bytes, kind, owner == 0 ? -1 : (long)(nuint)owner, (long)(nuint)frame);
@@ -1266,7 +1659,10 @@ static class Runtime
             // Cleared first: the object's owned-field map (FreeOwnedFields)
             // may name the same field, and must find it empty.
             Sys.Poke(at + offset, 0);
-            if (CollectorLinked() && Gc.VerifyingFieldFrees)
+            // The checked mode poisons and keeps a heap block: a region's
+            // goes with its region, as FreeHeld sends it, and is no block of
+            // the heap's to mark freed -- a cell of no type among them.
+            if (CollectorLinked() && Gc.VerifyingFieldFrees && !Gc.InOwnRegion(held))
             {
                 Gc.FreeFieldChecked(held);
                 return;
@@ -1311,15 +1707,37 @@ static class Runtime
     /// only it leads there: its owned fields and storage go now. Read from a
     /// field of an object still alive, it is no region memory a loop's lap
     /// has given back already, as a pointer kept in a register might be.
+    /// Only an object has fields it owns: a captured variable's cell, made in
+    /// the region and owned by its closure's frame, holds a word and no
+    /// type, and read as an object it took what that word points at for a
+    /// type -- the self-hosted compiler's crash once its regions stopped
+    /// filling up and sending such cells to the heap.
     static void FreeHeld(long held)
     {
         if (Gc.IgnoredFrees != 'p' && Gc.InOwnRegion(held))
         {
-            FreeOwnedFields(held);
-            FreeStorageOf(held);
+            if (Gc.RegionObject(held))
+            {
+                FreeOwnedFields(held);
+                FreeStorageOf(held);
+            }
+            // AND THE BLOCK ITSELF, where it is the region's top (Gc.RegionFree):
+            // read from a field, it is the block, not memory a lap gave back.
+            Gc.RegionFree(held);
             return;
         }
         Free((nint)held);
+    }
+
+    /// An array its collection's own storage field alone holds, grown to
+    /// `length` elements where it is when it is its region's top (Gc.RegionGrow):
+    /// true when it was, and the collection keeps it; false, and it makes a
+    /// new one as it always has. Keeps no pointer (EscapeFields.IsCollectorNote).
+    public static bool GrowInPlace(nint array, nint length)
+    {
+        long at = (long)(nuint)array;
+        if (at == 0 || !Gc.InOwnRegion(at)) return false;
+        return Gc.RegionGrow(at, (long)length);
     }
 
     // THE FIELD FREES, LOGGED (CORSAC_FREE_LOG). A ring of the last entries,
@@ -1555,6 +1973,14 @@ static class Runtime
     }
 
     /// The value of a tag in a dynamic array, or zero.
+    // A CALL, NOT INLINED: what it answers is a word of an image's dynamic
+    // section, and inlined, its loads -- a word read out of what another
+    // word read points to -- were what a method read out of a descriptor
+    // looks like. Every image's initialiser called through one made the link
+    // take every method a descriptor names as called with anything
+    // (RegionSummary.MethodRead, RegionSolver.Addressed), and no region in
+    // any program took what a virtual method made.
+    [MethodImpl(MethodImplOptions.NoInlining)]
     static long Tag(long dynamic, long want)
     {
         long at = dynamic;
@@ -3010,6 +3436,14 @@ static class Runtime
         throw new InvalidOperationException("Nullable object must have a value.");
     }
 
+    /// A boxed number, an enum or a string compared through IComparable with
+    /// something of another type: .NET's CompareTo(object) refuses it so,
+    /// in the message the compiler wrote for the type.
+    public static void CompareToRefused(string message)
+    {
+        throw new ArgumentException(message);
+    }
+
     /// A boxed tuple compared with a box of another type: ValueTuple's
     /// CompareTo(object) refuses it so.
     public static void ArgumentFailure()
@@ -3031,6 +3465,15 @@ static class Runtime
     const long DescInterfacesWord = 4;
     const long DescFlagsWordHere = 6;
     const long DescElementWord = 10;
+
+    // DescFlags of a type (Lowering): a string's, a box's, and an
+    // interface's boxed face (Lowering.BoxedFaceFlags).
+    const long TypeStringFlag = 2;
+    const long TypeEnumFlag = 8;
+    const long TypePrimitiveFlag = 32;
+    const long FaceComparableFlag = 64;
+    const long FaceFormattableFlag = 128;
+    const long FaceOfFlag = 256;
 
     /// The store of `value` into `array`: refused with ArrayTypeMismatchException
     /// unless the value is of the array's element type or derives from it.
@@ -3106,6 +3549,30 @@ static class Runtime
                 if (face == want) return true;
             }
         }
+        // A BOX OR A STRING IS ITS SYSTEM INTERFACES (BoxedFaces), which its
+        // table names none of, so that every unit's copy of it is one table:
+        // the interface's own descriptor says which face it is.
+        long wantFlags = Sys.Peek(want + DescFlagsWordHere * w);
+        if ((wantFlags & (FaceComparableFlag | FaceFormattableFlag | FaceOfFlag)) != 0 && BoxedFace(desc, want, wantFlags))
+        {
+            return true;
+        }
+        // A VARIANT INTERFACE OR DELEGATE: one of the same template whose
+        // arguments vary as the template declares (VariantFits) -- the
+        // type itself, when it is an interface, or any it implements.
+        if (VarianceOf(want) != 0)
+        {
+            if (VariantFits(desc, want)) return true;
+            if (faces != 0)
+            {
+                for (long at = faces; ; at = at + w)
+                {
+                    long face = Sys.Peek(at) & WordSize.AddressMask;
+                    if (face == 0) break;
+                    if (VariantFits(face, want)) return true;
+                }
+            }
+        }
         // Two arrays of references: covariance, element by element.
         if ((Sys.Peek(desc + DescFlagsWordHere * w) & 3) == 1 && (Sys.Peek(want + DescFlagsWordHere * w) & 3) == 1)
         {
@@ -3114,6 +3581,164 @@ static class Runtime
             return had != 0 && wanted != 0 && DescribedAs(had, wanted);
         }
         return false;
+    }
+
+    /// Whether a box's or a string's descriptor answers an interface of a
+    /// boxed face (Lowering.BoxedFaceFlags), as BoxedFaces.Implements does:
+    /// IComparable a number, a bool, a char, an enum or a string;
+    /// IFormattable a number or an enum, not a bool (the box the
+    /// interface's word 10 names); IComparable<X> and IEquatable<X> only X's
+    /// own, the descriptor its word 10 names.
+    static bool BoxedFace(long desc, long want, long wantFlags)
+    {
+        long w = WordSize.Bytes;
+        long flags = Sys.Peek(desc + DescFlagsWordHere * w);
+        long named = Sys.Peek(want + DescElementWord * w) & WordSize.AddressMask;
+        if ((wantFlags & FaceOfFlag) != 0)
+        {
+            return named != 0 && named == desc && FaceOverItself(desc);
+        }
+        if ((wantFlags & FaceComparableFlag) != 0)
+        {
+            return (flags & (TypePrimitiveFlag | TypeEnumFlag)) != 0 || (flags & 3) == (1 | TypeStringFlag);
+        }
+        if ((wantFlags & FaceFormattableFlag) != 0)
+        {
+            return (flags & TypeEnumFlag) != 0 || (flags & TypePrimitiveFlag) != 0 && desc != named;
+        }
+        return false;
+    }
+
+    /// Whether a descriptor is one that is IComparable<X> and IEquatable<X>
+    /// over itself without its table naming them (BoxedFaces): the string's,
+    /// or the box of a number, a bool or a char -- not an enum's box, nor a
+    /// class's. Every route asks it alike: an interface's word 10 for
+    /// DescribedAs (BoxedFace), X's own descriptor for a shared copy's
+    /// ShapedAs, and the box itself for the test Lowering makes inline
+    /// (BoxedFaceTest).
+    static bool FaceOverItself(long desc)
+    {
+        long flags = Sys.Peek(desc + DescFlagsWordHere * WordSize.Bytes);
+        return (flags & 3) == (1 | TypeStringFlag) || (flags & TypePrimitiveFlag) != 0;
+    }
+
+    // An interface's identity record (Lowering.ShapeRecord), named by its
+    // descriptor's word 8: its family, its argument count, its arguments'
+    // descriptors.
+    const long DescShapeWord = 8;
+    const long ShapeCountMask = 255;
+    const long ShapeFaceOf = 256;
+
+    /// Whether an object implements the generic interface of `family`
+    /// (CanonShape.FamilyOf) over these type arguments' descriptors -- the
+    /// test a shared method copy makes of `x is IList<U>` when only the call
+    /// knew what U is (Lowering.ShapeTest). `shape` is the argument count,
+    /// with ShapeFaceOf for IComparable<X> and IEquatable<X>, which a string
+    /// and a box of a number, a bool or a char implement over themselves
+    /// without their tables naming them (BoxedFace).
+    /// False when any argument is 0, which no caller could say: the copy's
+    /// own test answers then.
+    public static bool ShapedAs(long obj, long family, long shape, long a0, long a1, long a2, long a3)
+    {
+        if (obj == 0)
+        {
+            return false;
+        }
+        long count = shape & ShapeCountMask;
+        if (count < 1 || count > 4 || a0 == 0 || count > 1 && a1 == 0 || count > 2 && a2 == 0 || count > 3 && a3 == 0)
+        {
+            return false;
+        }
+        long w = WordSize.Bytes;
+        long mask = WordSize.AddressMask;
+        long desc = (Sys.Peek(obj) & mask) - DescWordsHere * w;
+        long faces = Sys.Peek(desc + DescInterfacesWord * w) & mask;
+        if (faces != 0)
+        {
+            for (long at = faces; ; at = at + w)
+            {
+                long face = Sys.Peek(at) & mask;
+                if (face == 0) break;
+                long record = Sys.Peek(face + DescShapeWord * w) & mask;
+                if (record != 0 && (Sys.Peek(record) & mask) == (family & mask)
+                    && (Sys.Peek(record + w) & mask) == count
+                    && (Sys.Peek(record + 2 * w) & mask) == (a0 & mask)
+                    && (count < 2 || (Sys.Peek(record + 3 * w) & mask) == (a1 & mask))
+                    && (count < 3 || (Sys.Peek(record + 4 * w) & mask) == (a2 & mask))
+                    && (count < 4 || (Sys.Peek(record + 5 * w) & mask) == (a3 & mask)))
+                {
+                    return true;
+                }
+            }
+        }
+        // A string is IComparable<string> and IEquatable<string>, a boxed int
+        // IComparable<int> and IEquatable<int>, which their tables do not list
+        // (BoxedFaces): X's descriptor is the object's own, as an interface's
+        // word 10 names it for DescribedAs. Only the string answered here,
+        // and a box asked of its own number from a shared copy said no.
+        if ((shape & ShapeFaceOf) != 0 && count == 1 && (a0 & mask) == desc && FaceOverItself(desc))
+        {
+            return true;
+        }
+        return false;
+    }
+
+    /// THE DECLARED VARIANCE OF A CONSTRUCTED INTERFACE OR DELEGATE TYPE,
+    /// which its descriptor carries (Lowering.VarianceRecord) when its
+    /// template declares any `in` or `out`: word 11 of an interface's
+    /// descriptor, nothing for any other kind. The record is the template's
+    /// identity, the count of arguments, and for each argument its variance
+    /// (1 out, 2 in) with 4 added for a reference type, and the argument's
+    /// descriptor -- 1 standing for object.
+    const long DescRecordWord = 11;
+    const long InterfaceFlag = 16;
+
+    static long VarianceOf(long desc)
+    {
+        long w = WordSize.Bytes;
+        if ((Sys.Peek(desc + DescFlagsWordHere * w) & InterfaceFlag) == 0) return 0;
+        return Sys.Peek(desc + DescRecordWord * w) & WordSize.AddressMask;
+    }
+
+    /// Whether the interface `face` converts to `want` by variance, as C#
+    /// says (18.2.3.3): the same template, each argument the same type or,
+    /// where the template declares it `out`, a reference type converting to
+    /// the wanted one, and where `in`, one the wanted converts to. An
+    /// IEnumerable<string> is an IEnumerable<object>, a Func<string> a
+    /// Func<object>, an Action<object> an Action<string>; a Func<int> is no
+    /// Func<object>, a value type being no reference.
+    static bool VariantFits(long face, long want)
+    {
+        long had = VarianceOf(face);
+        long wanted = VarianceOf(want);
+        if (had == 0 || wanted == 0) return false;
+        long w = WordSize.Bytes;
+        if ((Sys.Peek(had) & WordSize.AddressMask) != (Sys.Peek(wanted) & WordSize.AddressMask)) return false;
+        long count = Sys.Peek(had + w);
+        if (count != Sys.Peek(wanted + w)) return false;
+        for (long i = 0; i < count; i++)
+        {
+            long at = (2 + 2 * i) * w;
+            long kind = Sys.Peek(wanted + at);
+            long mine = Sys.Peek(had + at + w) & WordSize.AddressMask;
+            long theirs = Sys.Peek(wanted + at + w) & WordSize.AddressMask;
+            if (mine == theirs) continue;
+            if ((kind & 4) == 0 || (Sys.Peek(had + at) & 4) == 0) return false;
+            long how = kind & 3;
+            if (how == 1)
+            {
+                if (theirs != 1 && (mine == 1 || !DescribedAs(mine, theirs))) return false;
+            }
+            else if (how == 2)
+            {
+                if (mine != 1 && (theirs == 1 || !DescribedAs(theirs, mine))) return false;
+            }
+            else
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     // ---- iterators (Lowering.Iterator) -----------------------------------

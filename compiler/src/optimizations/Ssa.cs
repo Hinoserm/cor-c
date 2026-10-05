@@ -79,7 +79,7 @@ public sealed class Ssa : IPass
                     foreach (Block p in cfg.Preds(y))
                     {
                         phi.Operands.Add(new RegOperand(v));
-                        phi.Targets.Add(p);
+                        phi.WritableTargets.Add(p);
                     }
                     if (!phis.TryGetValue(y, out List<Instr>? list))
                     {

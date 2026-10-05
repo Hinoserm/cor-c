@@ -1,0 +1,46 @@
+// test: region_iterator_locals_across_units
+// units: tests/language/support/1298_region_iterator_units.cor
+// regions: taken
+// expect-exit: 0
+// expect-output:
+// 14400000
+// items in regions True
+//
+// Sum walks the other unit's `yield return` iterator and lets every item go,
+// and the iterator with them, when it returns: a boundary. What the
+// iterator's body holds across a yield -- its scratch array and list -- is
+// kept in its state machine (AsyncTransform stores the registers live after
+// a resumption into it), so it dies with the machine, and the items it
+// yields die with Sum. Leaked as everything an iterator's body touched was,
+// none of it could be made in Sum's region. Collections run while the
+// iterator is suspended, with its scratch held only by the machine.
+
+using System;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Sum(int seed, bool collect)
+    {
+        long total = 0;
+        int i = 0;
+        foreach (Item it in Source.Items(64, seed))
+        {
+            total += it.Value + it.Label.Length;
+            if (collect && i % 16 == 15) GC.Collect();
+            i++;
+        }
+        return total;
+    }
+
+    static void Main()
+    {
+        long total = 0;
+        long before = Gc.RegionBlocks;
+        for (int k = 0; k < 3000; k++) total += Sum(k % 8, k % 64 == 0);
+        long blocks = Gc.RegionBlocks - before;
+        Console.WriteLine(total);
+        Console.WriteLine("items in regions " + (blocks >= 3000L * 64));
+    }
+}

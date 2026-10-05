@@ -1,0 +1,55 @@
+// test: region_iterator_yields_apart_from_its_source_across_units
+// units: tests/language/support/1319_walk_units.cor
+// regions: taken
+// expect-exit: 0
+// expect-output:
+// total 6111000 tree 2016
+// given back True
+//
+// AN ITERATOR'S MACHINE KEEPS ITS LOCALS AT FIELDS OF THEIR OWN for region
+// inference (RegionSummary): what it holds across a yield -- the pending
+// nodes, the node at hand, the pair it yields -- each at a field of the
+// machine past its declared ones, not at any offset. At any offset, every
+// load of the machine read all of them: its source (the tree it was
+// handed, which outlives the walk) and what it made were one, the pairs
+// stored where the tree's nodes are, and a unified solve collapsed the
+// machine with all it reached. Work walks a tree Run made and keeps, and
+// what the walk makes -- the machine, its pending list, every pair -- is
+// given back at Work's return; the tree is read whole after collections.
+//
+// Per round, each of the tree's 63 values v gives 3v + round % 3: 6048 +
+// 63 * (round % 3), over rounds 1..1000; the tree's values sum to 2016.
+
+using System;
+using System.Runtime.CompilerServices;
+using WalkUnits;
+
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Work(Node root, int round)
+    {
+        long total = 0;
+        foreach (Pair p in Walk.Pairs(root)) total += p.A + p.B + round % 3;
+        return total;
+    }
+
+    // Not Main itself: what the entry calls is never a boundary.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Run()
+    {
+        Node root = Node.Build(1, 63)!;
+        long total = 0, before = Gc.RegionFreedBytes + Gc.RegionTopFreedBytes;
+        for (int round = 1; round <= 1000; round++)
+        {
+            total += Work(root, round);
+            if (round % 250 == 0) GC.Collect();
+        }
+        GC.Collect();
+        Console.WriteLine("total " + total + " tree " + Walk.Total(root));
+        Console.WriteLine("given back " + (Gc.RegionFreedBytes + Gc.RegionTopFreedBytes - before >= 500000L));
+        return 0;
+    }
+
+    static int Main() => Run();
+}

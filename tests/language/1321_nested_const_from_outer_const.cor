@@ -1,0 +1,37 @@
+// test: nested_const_from_outer_const
+// expect-exit: 0
+// expect-output:
+// 200000000 2000 3 ab-c 1.5
+//
+// A CONST IN A NESTED CLASS BUILT FROM ITS OUTER CLASS'S, as any unqualified
+// name resolves outwards: a number, an expression over one, a text and a
+// real. The nested const was refused as no constant expression, and corc
+// stopped compiling its own region solver, whose Solver class sets its
+// budget from the solver's.
+
+using System;
+
+class Outer
+{
+    public const long Budget = 200_000_000;
+    private const int Step = 1000;
+    private const string Name = "ab";
+    private const double Half = 0.5;
+
+    public sealed class Inner
+    {
+        private const long Copy = Budget;
+        private const int Twice = Step * 2;
+        private const int Small = (Step / 500) + 1;
+        private const string Label = Name + "-c";
+        private const double More = Half + 1.0;
+
+        public static string Show() => Copy + " " + Twice + " " + Small + " " + Label + " " + More;
+    }
+
+    static int Main()
+    {
+        Console.WriteLine(Inner.Show());
+        return 0;
+    }
+}

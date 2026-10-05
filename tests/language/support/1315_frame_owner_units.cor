@@ -1,0 +1,28 @@
+// The other unit of 1315_region_storage_beside_a_frame_owner_across_units: a
+// boundary whose List and Dictionary never leave it -- the lifetime pass's
+// to put in its frame -- grown many times, with a scratch array its region
+// takes, everything read back after a collection.
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public static class Frames
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long Fill(int round)
+    {
+        List<int> list = new();
+        for (int k = 0; k < 1000; k++) list.Add(k * 3 + round);
+        Dictionary<int, int> map = new();
+        for (int k = 0; k < 300; k++) map[k] = k + round;
+        int[] scratch = new int[round % 7 + 8];
+        for (int k = 0; k < scratch.Length; k++) scratch[k] = k;
+        GC.Collect();
+
+        long sum = 0;
+        foreach (int x in list) sum += x;
+        for (int k = 0; k < 300; k++) sum += map[k];
+        foreach (int x in scratch) sum += x;
+        return sum + list.Count + map.Count;
+    }
+}

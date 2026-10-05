@@ -1,0 +1,74 @@
+// test: delegate_remove_last
+// expect-exit: 0
+// expect-output:
+// start ABAC
+// last A gone ABC
+// two gone A
+// absent A
+// empty True
+// lambda L
+// written again x
+// plus AB
+// minus B
+// minus none True
+//
+// `-=` TAKES OUT THE LAST MATCH, as .NET's Delegate.Remove does: A B A C less
+// A is A B C, not B A C. Removing what is not there changes nothing, and
+// removing the last target leaves null. A lambda is removed by the same
+// delegate, never by the same text written again (a second lambda is another
+// method). The binary `+` and `-` are the same operations as `+=` and `-=`:
+// `both - a` is B alone, and B less B is null.
+
+using System;
+
+static class P
+{
+    static string log = "";
+    static void A() { log += "A"; }
+    static void B() { log += "B"; }
+    static void C() { log += "C"; }
+
+    static void Run(string label, Action? d)
+    {
+        log = "";
+        d?.Invoke();
+        Console.WriteLine(label + " " + log);
+    }
+
+    static int Main()
+    {
+        Action? d = A;
+        d += B;
+        d += A;
+        d += C;
+        Run("start", d);
+        d -= A;
+        Run("last A gone", d);
+        d -= C;
+        d -= B;
+        Run("two gone", d);
+        d -= B;
+        Run("absent", d);
+        d -= A;
+        Console.WriteLine("empty " + (d == null));
+
+        Action la = () => log += "L";
+        Action? twice = la;
+        twice += la;
+        twice -= la;
+        Run("lambda", twice);
+
+        Action? again = () => log += "x";
+        again -= () => log += "x";
+        Run("written again", again);
+
+        Action a = A;
+        Action b = B;
+        Action both = a + b;
+        Run("plus", both);
+        Action? left = both - a;
+        Run("minus", left);
+        Console.WriteLine("minus none " + ((left - b) == null));
+        return 0;
+    }
+}

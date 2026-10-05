@@ -1,0 +1,53 @@
+// test: region_unified_fields_apart_across_units
+// units: tests/language/support/1305_ring_units.cor
+// expect-exit: 0
+// expect-output:
+// total 1002890 last x999 in regions True
+//
+// A cycle of more than three hundred functions is solved by unification
+// (RegionEscape.Unified), and its members' summaries were once as coarse as
+// it was: every argument and all it reached one object, which the unknown
+// object held as soon as any argument reached it. Ring's last member stores
+// the string Work hands it into one field of Work's holder and into a
+// static, and Work's local into another field of the holder: the string
+// leaks, and the local and the holder do not. Read field by field
+// (Unified.ByField), the local is still made in Work's region, a block of
+// it every call (Gc.RegionBlocks), and everything is read back after
+// collections. (The holder, which nothing the link's lifetime rules cannot
+// follow keeps, goes to Work's frame instead: only the local, kept in it by
+// the ring, is the region's to take.)
+
+using System;
+using System.Runtime.CompilerServices;
+using RingUnits;
+
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Work(int i)
+    {
+        Holder h = new Holder();
+        Local mine = new Local(i);
+        string leak = "x" + i;
+        int r = Ring.R0(h, leak, mine, 1);
+        return r + h.Mine!.V + ((string)h.Kept!).Length;
+    }
+
+    // Not Main itself: what the entry calls is never a boundary.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Run()
+    {
+        long total = 0, before = Gc.RegionBlocks;
+        for (int i = 0; i < 1000; i++)
+        {
+            total += Work(i);
+            if (i % 250 == 249) GC.Collect();
+        }
+        long blocks = Gc.RegionBlocks - before;
+        GC.Collect();
+        Console.WriteLine("total " + total + " last " + (string)Ring.Sink! + " in regions " + (blocks >= 1000));
+        return 0;
+    }
+
+    static int Main() => Run();
+}

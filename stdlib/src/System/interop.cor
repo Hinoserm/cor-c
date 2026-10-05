@@ -573,3 +573,34 @@ static class MarshalHeap
     // 0 not yet asked, 1 the C library's, 2 our own pages.
     public static int heapKind;
 }
+
+namespace System.Runtime.CompilerServices
+{
+    /// A box whose value can be read and replaced without knowing its type,
+    /// as .NET's IStrongBox: what a holder of some StrongBox<T> reaches the
+    /// value through.
+    public interface IStrongBox
+    {
+        object? Value { get; set; }
+    }
+
+    /// ONE VALUE IN A CLASS, as .NET's StrongBox<T>: a reference to hand
+    /// round where a value type would be copied, or the value a
+    /// ConditionalWeakTable keeps for its key. Value is a public field, as
+    /// .NET declares it, so it can be passed by reference.
+    public class StrongBox<T> : IStrongBox
+    {
+        public T Value;
+
+        /// An empty box, holding default(T).
+        public StrongBox() { Value = default!; }
+
+        public StrongBox(T value) { Value = value; }
+
+        object? IStrongBox.Value
+        {
+            get { return Value; }
+            set { Value = (T)value!; }
+        }
+    }
+}

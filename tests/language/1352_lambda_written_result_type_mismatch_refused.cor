@@ -1,0 +1,16 @@
+// test: lambda written result type mismatch refused
+// expect-compile-error: the lambda returns 'long'
+// A lambda's result written in front (C# 10) is the delegate's exactly: a
+// long is no int, however the value would convert (CS8934).
+
+using System;
+
+public static class Program
+{
+    public static int Main()
+    {
+        Func<int, int> f = long (int x) => x;
+        Console.WriteLine(f(1));
+        return 0;
+    }
+}

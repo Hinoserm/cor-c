@@ -1,0 +1,69 @@
+// test: lambda natural types
+// expect-exit: 0
+// expect-output:
+// hello world
+// natural 2 a2 42 1.5 yesno 42 10
+// written 5000000000 12 null
+// arms origin x3 far
+//
+// C# 10'S LAMBDA FEATURES. A lambda with its parameters' types written has
+// a NATURAL TYPE, a Func or an Action, so `var` takes it: from the body's
+// type, the best common type of a block's returns, or a result written in
+// front of it; and so does a method group of one method. A result written
+// in front holds where a delegate is wanted too, and attributes go on a
+// lambda and its parameters. `Point(0, 0) =>` in a switch arm is still a
+// positional pattern, never a lambda with its result written.
+//
+// Every line is what .NET prints.
+
+using System;
+using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
+
+record Point(int X, int Y);
+
+public static class Program
+{
+    static int Twice(int x) => x * 2;
+
+    static void Hello(string who) => Console.WriteLine("hello " + who);
+
+    static string Where(Point p) => p switch
+    {
+        Point(0, 0) => "origin",
+        Point(var x, 0) => "x" + x,
+        _ => "far",
+    };
+
+    public static int Main()
+    {
+        var inc = (int x) => x + 1;
+        var join = (string a, int b) => a + b;
+        var none = () => { };
+        var answer = () => 42;
+        var half = double (int x) => x / 2.0;
+        var pick = (bool flag) =>
+        {
+            if (flag)
+            {
+                return "yes";
+            }
+            return "no";
+        };
+        var twice = Twice;
+        var hello = Hello;
+        none();
+        hello("world");
+        Func<int, int> sameType = inc;
+        Console.WriteLine("natural " + inc(1) + " " + join("a", 2) + " " + answer() + " " + half(3) + " "
+                          + pick(true) + pick(false) + " " + twice(21) + " " + sameType(9));
+
+        Func<int, long> widen = long (int x) => x * 1000000000L;
+        var tagged = [MethodImpl(MethodImplOptions.NoInlining)] (int x) => x * 3;
+        Func<string?, string> show = ([AllowNull] string? s) => s ?? "null";
+        Console.WriteLine("written " + widen(5) + " " + tagged(4) + " " + show(null));
+
+        Console.WriteLine("arms " + Where(new Point(0, 0)) + " " + Where(new Point(3, 0)) + " " + Where(new Point(1, 1)));
+        return 0;
+    }
+}

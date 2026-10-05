@@ -1,0 +1,36 @@
+// test: select over instance method group
+// expect-exit: 0
+// expect-output:
+// 7 10
+// 6
+// 3
+//
+// A method group's output type is its method's return (C# 12.6.3.7):
+// Select(table.Add) selects what Add answers, a group bound to a receiver
+// as much as a static one.
+
+using System;
+using System.Linq;
+
+sealed class Table
+{
+    uint _next = 7;
+    public uint Add(string s) { uint at = _next; _next += (uint)s.Length + 1; return at; }
+}
+
+static class P
+{
+    static int Twice(int x) => x * 2;
+
+    static int Main()
+    {
+        Table t = new();
+        uint[] at = new[] { "ab", "cde" }.Select(t.Add).ToArray();
+        Console.WriteLine(at[0] + " " + at[1]);
+        int[] d = new[] { 1, 2, 3 }.Select(Twice).ToArray();
+        Console.WriteLine(d[2]);
+        string[] words = { "a", "bb", "ccc" };
+        Console.WriteLine(words.Select(w => w).Select(string.IsNullOrEmpty).Count(b => !b));
+        return 0;
+    }
+}

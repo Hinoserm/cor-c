@@ -1,0 +1,40 @@
+// test: narrow_keys_across_units
+// units: tests/language/support/1289_narrow_keys_units.cor
+// expect-exit: 0
+// expect-output:
+// one two none none
+// 9
+// [T4w] [K5]
+//
+// THE ROUTINES NARROWED TO A CLASS (`__key_equals$Key` and its kin) made in
+// two units -- the one that declares the class and keys a table by it, and
+// this one, which keys its own -- are one routine, and ask through the slot
+// whatever subclass either unit wrote: a Tagged declared here is equal, and
+// written, by its own overrides in the other unit's table.
+
+using System;
+using System.Collections.Generic;
+using KeyUnits;
+
+class Tagged : Key
+{
+    public string Tag;
+    public Tagged(int id, string tag) : base(id) { Tag = tag; }
+    public override bool Equals(object? o) => o is Tagged t && t.Id == Id && t.Tag == Tag;
+    public override int GetHashCode() => Id * 7;
+    public override string ToString() => "T" + Id + Tag;
+}
+
+class P
+{
+    static int Main()
+    {
+        Registry.Put(new Key(1), 0, "one");
+        Registry.Put(new Tagged(2, "x"), 0, "two");
+        Console.WriteLine(Registry.Get(new Key(1), 0) + " " + Registry.Get(new Tagged(2, "x"), 0) + " " + Registry.Get(new Tagged(2, "y"), 0) + " " + Registry.Get(new Key(2), 0));
+        var local = new Dictionary<(Key, int), int> { [(new Tagged(3, "z"), 1)] = 9 };
+        Console.WriteLine(local[(new Tagged(3, "z"), 1)]);
+        Console.WriteLine(Registry.Show(new Tagged(4, "w")) + " " + Registry.Show(new Key(5)));
+        return 0;
+    }
+}

@@ -707,7 +707,7 @@ class MemoryStream : Stream, IOwnsStorage
     /// the stream made it and never lent it.
     public void FreeStorage()
     {
-        if (_expandable && !_lent && _bytes != null) Runtime.Free((nint)Sys.Word(_bytes));
+        if (_expandable && !_lent && _bytes != null) Runtime.FreeOwnedReplaced((nint)Sys.Word(_bytes), 0);
         _bytes = null!;
     }
     /// Where the stream's first byte is in _bytes, and how much of it the
@@ -756,7 +756,7 @@ class MemoryStream : Stream, IOwnsStorage
             _bytes = bigger;
             _origin = 0;
             _capacity = length;
-            if (!_lent) Runtime.Free((nint)Sys.Word(outgrown));
+            if (!_lent) Runtime.FreeOwnedReplaced((nint)Sys.Word(outgrown), 0);
         }
         if (length > _length) Array.Clear(_bytes, _origin + _length, length - _length);
         _length = length;
@@ -850,13 +850,24 @@ class MemoryStream : Stream, IOwnsStorage
             {
                 size = size * 2;
             }
-            byte[] bigger = new byte[size];
-            Array.Copy(_bytes, 0, bigger, 0, _length);
-            byte[] outgrown = _bytes;
-            _bytes = bigger;
-            _capacity = size;
-            // Outgrown: given back unless GetBuffer lent it out.
-            if (!_lent) Runtime.Free((nint)Sys.Word(outgrown));
+            // An array the stream made and never lent grows where it is at
+            // its region's top (Runtime.GrowInPlace): the bytes past the old
+            // end are zero, as a new array's are. A lent one stays the size
+            // its holder saw, as .NET's does.
+            if (!_lent && Runtime.GrowInPlace((nint)Sys.Word(_bytes), size))
+            {
+                _capacity = size;
+            }
+            else
+            {
+                byte[] bigger = new byte[size];
+                Array.Copy(_bytes, 0, bigger, 0, _length);
+                byte[] outgrown = _bytes;
+                _bytes = bigger;
+                _capacity = size;
+                // Outgrown: given back unless GetBuffer lent it out.
+                if (!_lent) Runtime.FreeOwnedReplaced((nint)Sys.Word(outgrown), 0);
+            }
         }
         // Bytes between the old end and a position seeked past it are zero.
         if (_position > _length) Array.Clear(_bytes, _origin + _length, _position - _length);

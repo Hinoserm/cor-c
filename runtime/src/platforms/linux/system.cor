@@ -191,12 +191,11 @@ static class Platform
     /// whatever the pacing says -- for measuring what a nursery's size costs.
     public static long GcNursery() => EnvironmentNumber("CORSAC_GC_NURSERY=");
 
-    /// Each thread's region arena (Gc, "regions"): four megabytes of address
-    /// space, mapped when the thread first opens a region and touched only
-    /// as far as regions reach.
-    public static long RegionBytes()
+    /// Whether threads have region arenas (Gc, "regions"): here they do,
+    /// each mapped chunk by chunk as its regions fill it.
+    public static bool Regions()
     {
-        return 4L * 1024 * 1024;
+        return true;
     }
 
     /// CORSAC_HEAP_LIMIT=<bytes>: the heap's hard limit, as a container's

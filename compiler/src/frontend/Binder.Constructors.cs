@@ -71,11 +71,11 @@ public sealed partial class Binder
         }
         expression.Args.Clear();
         expression.Args.AddRange(ordered!);
-        expression.ArgNames.Clear();
+        expression.WritableArgNames.Clear();
         if (named)
         {
-            expression.ArgumentOrder.Clear();
-            expression.ArgumentOrder.AddRange(evaluation);
+            expression.WritableArgumentOrder.Clear();
+            expression.WritableArgumentOrder.AddRange(evaluation);
         }
         types.Clear();
         types.AddRange(orderedTypes);

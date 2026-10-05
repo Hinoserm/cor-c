@@ -1,0 +1,60 @@
+// test: region_size_check_message_across_units
+// units: tests/language/support/1266_region_size_check_units.cor
+// expect-exit: 0
+// expect-output:
+// made 4000 cells 16900000
+// caught 1000 asked 71500 text 28000
+// too big: grid5[1000005 x 64]
+//
+// Sizes.Make builds a Request and checks it with ArraySize, which throws a
+// SizeException holding the request -- in a field, and described in the
+// message -- only when the size overflows. On the usual path the request
+// dies with Build's region; on the overflow path it is reachable only from
+// the thrown exception, which Run catches far above Build's boundary and
+// keeps in a list. An analysis that misses the exception's way out (the
+// throw, or the field set in the exception's constructor) leaves the
+// request and the message text in Build's region, and every caught
+// exception reads them back after later regions and collections.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Build(int k)
+    {
+        int count = k % 5 == 0 ? 1000000 + k % 10 : 16 + k % 100;
+        int[] grid = Sizes.Make(count, 64, "grid" + k % 10);
+        grid[grid.Length - 1] = k;
+        return grid.Length + grid[grid.Length - 1] % 3;
+    }
+
+    // Not Main itself: what the entry calls is never a boundary.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Run()
+    {
+        List<SizeException> caught = new();
+        long cells = 0;
+        int made = 0;
+        for (int k = 0; k < 5000; k++)
+        {
+            try { cells += Build(k); made++; }
+            catch (SizeException e) { caught.Add(e); }
+            if (k % 500 == 499) GC.Collect();
+        }
+        long asked = 0, text = 0;
+        foreach (SizeException e in caught)
+        {
+            asked += e.Asked.Count - 1000000 + e.Asked.Each + e.Asked.What.Length;
+            text += e.Message.Length;
+        }
+        Console.WriteLine("made " + made + " cells " + cells);
+        Console.WriteLine("caught " + caught.Count + " asked " + asked + " text " + text);
+        Console.WriteLine(caught[caught.Count - 1].Message);
+        return 0;
+    }
+
+    static int Main() => Run();
+}

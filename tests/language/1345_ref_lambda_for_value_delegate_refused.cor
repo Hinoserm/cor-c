@@ -1,0 +1,19 @@
+// test: ref lambda for value delegate refused
+// expect-compile-error: only a lambda or local function that returns by reference can 'return ref'
+// A delegate that returns a value takes no lambda answering a variable:
+// `=> ref xs[0]` is a by-reference return, and C# refuses it where the
+// delegate returns by value (CS8149).
+
+using System;
+
+delegate int Plain(int[] xs);
+
+public static class Program
+{
+    public static int Main()
+    {
+        Plain first = xs => ref xs[0];
+        Console.WriteLine(first(new int[] { 7 }));
+        return 0;
+    }
+}

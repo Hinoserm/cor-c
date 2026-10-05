@@ -44,23 +44,197 @@ public sealed partial class Lowering
         return name;
     }
 
+    // ---- the key questions, by the type they are asked of ---------------------------
+    //
+    // ONE ROUTINE FOR EVERY KEY OF EVERY TYPE named object's Equals, and so
+    // every Equals in the program, at every table: a Dictionary<Symbol, X>
+    // asked whether two Symbols are equal reached, for all the escape graphs
+    // and the link could tell, a Token's Equals and a Tuple's and all eleven
+    // hundred others -- which call KeyEquals on their own fields, and so the
+    // compiler's call graph was one cycle of thirteen thousand functions.
+    //
+    // The key's static type says what can answer: a T is a T or something
+    // derived from it, and its Equals is one of theirs. So each question has
+    // a routine per type, `__key_equals$T`, whose call through the slot names
+    // T's descriptor (DispatchType) rather than object's; a string's and an
+    // array's need no call at all; a sealed class's is a direct call. What is
+    // only known to be an object -- a generic's shared copy, a boxed value --
+    // goes through the shared one (`__key_equals`), as before.
+    //
+    // Not narrowed, because the static type does not bound what answers:
+    // - an interface a boxed number could be held as (PrimitiveMayImplement):
+    //   a boxed int's descriptor lists no interfaces, so IComparable's
+    //   implementers never include the box that answers;
+    // - a shared copy's class: what canonical code makes is stamped with the
+    //   canonical copy's descriptor, not this one's (SharedCopy);
+    // - object, and the classes a boxed value, a string or an array is held
+    //   as -- ValueType, Enum, Array, String, Delegate.
+
+    /// <summary>The type a key question may be narrowed to: a class or an interface the static type bounds what answers by; null for the shared routine.</summary>
+    private static TypeSymbol? NarrowKey(Type? t)
+        => t is { IsArray: false, IsPointer: false, ParamName: null, IsNullableValue: false, IsError: false, Symbol: TypeSymbol s }
+           && t.Prim is not (Prim.Any or Prim.String or Prim.NullLiteral) ? NarrowSymbol(s) : null;
+
+    /// <summary><see cref="NarrowKey"/> for a type symbol: the class or interface itself, or null when what holds one may be something it does not bound.</summary>
+    private static TypeSymbol? NarrowSymbol(TypeSymbol? s)
+    {
+        if (s is null || s.Kind is not (TypeKind.Class or TypeKind.Interface) || s.Decl is null || s.Decl.IsDelegate || SharedCopy(s))
+        {
+            return null;
+        }
+        if (s.Name is "object" or "Object" or "ValueType" or "Enum" or "Array" or "String" or "Delegate" or "MulticastDelegate")
+        {
+            return null;
+        }
+        return s.Kind == TypeKind.Interface && PrimitiveMayImplement(s) ? null : s;
+    }
+
+    /// <summary>
+    /// Whether a boxed number, enum or bool could be held as this interface:
+    /// any the system library declares -- IComparable, IEquatable,
+    /// IFormattable, IConvertible and the rest are .NET's numbers' own, and a
+    /// box's descriptor lists none of them -- and any of their names wherever
+    /// declared.
+    /// </summary>
+    private static bool PrimitiveMayImplement(TypeSymbol s)
+    {
+        if (SystemType(s) || IsLibrary(s) || s.Decl is not TypeDecl d
+            || d.Namespace == "System" || d.Namespace.StartsWith("System.", StringComparison.Ordinal))
+        {
+            return true;
+        }
+        string bare = d.Template ?? s.Name;
+        bare = bare[(bare.LastIndexOf('.') + 1)..];
+        int cut = bare.IndexOfAny(new[] { '$', '<', '`' });
+        if (cut >= 0) bare = bare[..cut];
+        return bare is "IComparable" or "IEquatable" or "IFormattable" or "ISpanFormattable" or "IUtf8SpanFormattable" or "IConvertible";
+    }
+
+    /// <summary>
+    /// A narrowed routine's function: exported and shared between units like
+    /// any other key routine, except for a type only its own unit has --
+    /// another unit may have one of the same name.
+    /// </summary>
+    private static Function KeyFunction(string name, TypeSymbol? of)
+    {
+        bool local = of?.Decl?.LocalOnly == true;
+        return new Function(name, IrType.I32) { Coalescible = !local, Exported = !local };
+    }
+
+    /// <summary>What fills slot `slot` of a class's vtable when `filled` is the method its chain puts there (ClassDescriptor).</summary>
+    private string? SlotTarget(TypeSymbol t, int slot, MethodSymbol? filled)
+    {
+        // object's own members are symbols with no body (the binder's
+        // Rooted): a slot that still holds one -- `new object()`, or a
+        // class that overrides none of them -- gets the stub below, as a
+        // slot nobody filled does.
+        if (OwnSlotMethod(filled) is MethodSymbol m)
+        {
+            Require(m);
+            return CallLabel(m);
+        }
+        if (t.Kind != TypeKind.Class)
+        {
+            return null;
+        }
+        // A closure's are its delegate's: the same method on the same target
+        // is equal, whichever closure class made it (DelegateEqualsStub).
+        if (slot == _b.EqualsSlot) return (DelegateClosure(t) ? DelegateEqualsStub(t) : null) ?? EqualsGuard(t) ?? ObjectEqualsStub();
+        if (slot == _b.HashSlot) return (DelegateClosure(t) ? DelegateHashStub(t) : null) ?? ObjectHashStub();
+        if (slot == _b.CompareSlot) return OwnCompare(t) ?? ObjectCompareStub();
+        if (slot == _b.ToStringSlot) return ObjectToStringStub();
+        return null;      // abstract: calling it is a null call, which traps
+    }
+
+    /// <summary>A method a vtable slot holds, unless it is one of object's own (which has no body: the slot gets a stub).</summary>
+    private static MethodSymbol? OwnSlotMethod(MethodSymbol? filled)
+        => filled is { } m && !(m.Decl is null && m.Owner?.Name == "object" && m.Owner.Kind == TypeKind.Class) ? m : null;
+
+    /// <summary>
+    /// A SEALED CLASS'S SLOT IS KNOWN, and called directly: the method it or
+    /// its nearest ancestor puts there, or object's own hash or text. Only
+    /// what every unit decides alike from the declarations alone -- a routine
+    /// made in two units is one routine only when the two made it the same
+    /// (DefinitionSemantics), and another unit's class comes without its
+    /// bodies, which the stubs for Equals and CompareTo look at (EqualsGuard,
+    /// OwnCompare): those, and any other type, are asked through the slot.
+    /// </summary>
+    private string? SealedTarget(TypeSymbol? t, int slot)
+    {
+        if (t is not { Kind: TypeKind.Class, Decl: TypeDecl d } || !d.Mods.HasFlag(Mods.Sealed) || t.Structural || SharedCopy(t))
+        {
+            return null;
+        }
+        MethodSymbol? filled = null;
+        bool found = false;
+        for (TypeSymbol? s = t; s is not null && !found; s = s.Base)
+        {
+            if (s.Methods.FirstOrDefault(x => x.VtableSlot == slot) is MethodSymbol own)
+            {
+                (filled, found) = (own, true);
+            }
+            else if (s.InterfaceImplementations.TryGetValue(slot, out MethodSymbol? implementation))
+            {
+                (filled, found) = (implementation, true);
+            }
+        }
+        if (filled is { Abstract: true })
+        {
+            return null;
+        }
+        if (OwnSlotMethod(filled) is MethodSymbol m)
+        {
+            Require(m);
+            return CallLabel(m);
+        }
+        if (DelegateClosure(t) && (slot == _b.HashSlot || slot == _b.EqualsSlot)) return null;
+        return slot == _b.HashSlot ? ObjectHashStub() : slot == _b.ToStringSlot ? ObjectToStringStub() : null;
+    }
+
+    /// <summary>
+    /// Asks the object `a` through slot `slot` -- directly when the class is
+    /// sealed, through the slot naming the type it is narrowed to otherwise,
+    /// and object's when it is not narrowed.
+    /// </summary>
+    private VReg AskSlot(Builder e, VReg a, VReg vt, int slot, TypeSymbol? narrow, IrType returns, params Operand[] args)
+    {
+        if (SealedTarget(narrow, slot) is string direct)
+        {
+            return e.Call(direct, returns, args)!;
+        }
+        VReg fn = e.Load(IrTypes.Word, vt, (long)slot * _t.WordSize);
+        VReg answered = e.CallIndirect(R(fn), returns, args)!;
+        e.Block.Instrs[^1].DispatchType = narrow is null ? ObjectDispatch : DescriptorOf(narrow);
+        return answered;
+    }
+
     /// <summary>
     /// object.Equals(a, b), as .NET defines it: the same reference, or neither
     /// of them null and a's own Equals says so. A string and an array have no
     /// slots to ask through: two strings compare as text, and anything else
-    /// without slots is only ever itself.
+    /// without slots is only ever itself. `of` is a's static type, when it is
+    /// known: the routine for it (see the section's head).
     /// </summary>
-    private string KeyEqualsStub()
+    private string KeyEqualsStub(Type? of = null)
     {
-        const string name = "__key_equals";
+        if (of is { Prim: Prim.String, IsArray: false, IsPointer: false })
+        {
+            return StringKeyEquals();
+        }
+        if (of is { IsArray: true, IsPointer: false })
+        {
+            return ArrayKeyEquals();
+        }
+        TypeSymbol? narrow = NarrowKey(of);
+        string name = narrow is null ? "__key_equals" : "__key_equals$" + TypeKey(narrow);
 
-        if (_hasKeyEquals)
+        if (narrow is null ? _hasKeyEquals : !_structHelpers.Add(name))
         {
             return name;
         }
+        _hasKeyEquals |= narrow is null;
 
-        _hasKeyEquals = true;
-        Function f = new(name, IrType.I32) { Coalescible = true };
+        Function f = KeyFunction(name, narrow);
         VReg a = f.NewReg(IrTypes.Word, "a");
         VReg b = f.NewReg(IrTypes.Word, "b");
 
@@ -71,9 +245,6 @@ public sealed partial class Lowering
         Block differ = f.NewBlock("kediffer");
         Block first = f.NewBlock("kefirst");
         Block both = f.NewBlock("keboth");
-        Block flat = f.NewBlock("keflat");
-        Block text = f.NewBlock("ketext");
-        Block texts = f.NewBlock("ketexts");
         Block ask = f.NewBlock("keask");
         Block no = f.NewBlock("keno");
 
@@ -85,15 +256,45 @@ public sealed partial class Lowering
         e.SetBlock(both);
 
         VReg vt = e.Load(IrTypes.Word, a, 0);
-        VReg flags = e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize);
 
-        e.Branch(e.Binary(Opcode.And, flags, 1), flat, ask);
-        e.SetBlock(flat);
-        e.Branch(e.Binary(Opcode.And, flags, 2), text, no);
-        e.SetBlock(text);
+        // A class is never a string, an array or a box: nothing to tell apart
+        // before asking. What an interface holds may be any of them.
+        if (narrow is { Kind: TypeKind.Class })
+        {
+            e.Jump(ask);
+        }
+        else
+        {
+            Block flat = f.NewBlock("keflat");
+            Block text = f.NewBlock("ketext");
+            Block texts = f.NewBlock("ketexts");
+            VReg flags = Numbered(e, e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize));
 
+            e.Branch(e.Binary(Opcode.And, flags, 1), flat, ask);
+            e.SetBlock(flat);
+            e.Branch(e.Binary(Opcode.And, flags, 2), text, no);
+            e.SetBlock(text);
+            TextsEqual(e, a, b, texts, no);
+        }
+
+        e.SetBlock(ask);
+        e.Ret(new RegOperand(AskSlot(e, a, vt, _b.EqualsSlot, narrow, IrType.I32, R(a), R(b))));
+        e.SetBlock(yes);
+        e.Ret(new ImmOperand(1, IrType.I32));
+        e.SetBlock(no);
+        e.Ret(new ImmOperand(0, IrType.I32));
+        _m.Functions.Add(f);
+        return name;
+    }
+
+    /// <summary>
+    /// From a block where `a` is known to be a string and `b` an object: the
+    /// answer, 1 when `b` is a string of the same text.
+    /// </summary>
+    private void TextsEqual(Builder e, VReg a, VReg b, Block texts, Block no)
+    {
         VReg other = e.Load(IrTypes.Word, b, 0);
-        VReg otherFlags = e.Load(IrType.I32, other, -_t.DescriptorBytes + DescFlags * _t.WordSize);
+        VReg otherFlags = Numbered(e, e.Load(IrType.I32, other, -_t.DescriptorBytes + DescFlags * _t.WordSize));
 
         e.Branch(e.Binary(Opcode.And, otherFlags, 2), texts, no);
         e.SetBlock(texts);
@@ -115,15 +316,42 @@ public sealed partial class Lowering
         {
             e.Ret(new ImmOperand(0, IrType.I32));
         }
+    }
 
-        e.SetBlock(ask);
-        VReg fn = e.Load(IrTypes.Word, vt, (long)_b.EqualsSlot * _t.WordSize);
+    /// <summary>
+    /// `__key_equals$$string`: a string asked, as the shared routine asks one --
+    /// the same reference, or neither null and the other a string of the
+    /// same text (object.Equals(s, o) may hand anything as the other).
+    /// </summary>
+    private string StringKeyEquals()
+    {
+        const string name = "__key_equals$$string";
 
-        VReg answered = e.CallIndirect(R(fn), IrType.I32, new Operand[] { R(a), R(b) })!;
+        if (!_structHelpers.Add(name))
+        {
+            return name;
+        }
+        Function f = KeyFunction(name, null);
+        VReg a = f.NewReg(IrTypes.Word, "a");
+        VReg b = f.NewReg(IrTypes.Word, "b");
 
-        e.Block.Instrs[^1].DispatchType = ObjectDispatch;
+        f.Params.Add(a);
+        f.Params.Add(b);
+        Builder e = new(f, f.NewBlock("entry"));
+        Block yes = f.NewBlock("skyes");
+        Block differ = f.NewBlock("skdiffer");
+        Block first = f.NewBlock("skfirst");
+        Block both = f.NewBlock("skboth");
+        Block texts = f.NewBlock("sktexts");
+        Block no = f.NewBlock("skno");
 
-        e.Ret(new RegOperand(answered));
+        e.Branch(e.Binary(Opcode.Eq, a, b), yes, differ);
+        e.SetBlock(differ);
+        e.Branch(a, first, no);
+        e.SetBlock(first);
+        e.Branch(b, both, no);
+        e.SetBlock(both);
+        TextsEqual(e, a, b, texts, no);
         e.SetBlock(yes);
         e.Ret(new ImmOperand(1, IrType.I32));
         e.SetBlock(no);
@@ -132,53 +360,89 @@ public sealed partial class Lowering
         return name;
     }
 
+    /// <summary>`__key_equals$$array`: an array is only ever itself, as the shared routine finds.</summary>
+    private string ArrayKeyEquals()
+    {
+        const string name = "__key_equals$$array";
+
+        if (_structHelpers.Add(name))
+        {
+            Function f = KeyFunction(name, null);
+            VReg a = f.NewReg(IrTypes.Word, "a");
+            VReg b = f.NewReg(IrTypes.Word, "b");
+
+            f.Params.Add(a);
+            f.Params.Add(b);
+            Builder e = new(f, f.NewBlock("entry"));
+            e.Ret(new RegOperand(e.Binary(Opcode.Eq, a, b)));
+            _m.Functions.Add(f);
+        }
+        return name;
+    }
+
     /// <summary>
     /// The hash that goes with <see cref="KeyEqualsStub"/>: nothing for null,
     /// the text's for a string, the object's own GetHashCode through its slot,
-    /// and for anything without slots the word it is.
+    /// and for anything without slots the word it is. `of` as KeyEqualsStub's.
     /// </summary>
-    private string KeyHashStub()
+    private string KeyHashStub(Type? of = null)
     {
-        const string name = "__key_hash";
+        bool text = of is { Prim: Prim.String, IsArray: false, IsPointer: false };
+        bool array = of is { IsArray: true, IsPointer: false };
+        TypeSymbol? narrow = text || array ? null : NarrowKey(of);
+        string name = text ? "__key_hash$$string" : array ? "__key_hash$$array" : narrow is null ? "__key_hash" : "__key_hash$" + TypeKey(narrow);
 
-        if (_hasKeyHash)
+        if (text || array || narrow is not null ? !_structHelpers.Add(name) : _hasKeyHash)
         {
             return name;
         }
+        _hasKeyHash |= !text && !array && narrow is null;
 
-        _hasKeyHash = true;
-        Function f = new(name, IrType.I32) { Coalescible = true };
+        Function f = KeyFunction(name, narrow);
         VReg a = f.NewReg(IrTypes.Word, "a");
 
         f.Params.Add(a);
         Builder e = new(f, f.NewBlock("entry"));
         Block some = f.NewBlock("khsome");
-        Block flat = f.NewBlock("khflat");
-        Block text = f.NewBlock("khtext");
         Block word = f.NewBlock("khword");
-        Block ask = f.NewBlock("khask");
         Block none = f.NewBlock("khnone");
 
         e.Branch(a, some, none);
         e.SetBlock(some);
 
-        VReg vt = e.Load(IrTypes.Word, a, 0);
-        VReg flags = e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize);
-
-        e.Branch(e.Binary(Opcode.And, flags, 1), flat, ask);
-        e.SetBlock(flat);
-        e.Branch(e.Binary(Opcode.And, flags, 2), text, word);
-        e.SetBlock(text);
-
-        MethodSymbol? hash = StringRoutine("KeyHash", 1);
-
-        if (hash is not null)
+        if (text)
         {
-            e.Ret(new RegOperand(e.Call(CallLabel(hash), IrTypes.Of(hash.Returns), R(a))!));
+            TextHash(e, a, word);
+        }
+        else if (array)
+        {
+            e.Jump(word);
         }
         else
         {
-            e.Jump(word);
+            Block ask = f.NewBlock("khask");
+            VReg vt = e.Load(IrTypes.Word, a, 0);
+
+            // A class is never a string, an array or a box (KeyEqualsStub).
+            if (narrow is { Kind: TypeKind.Class })
+            {
+                e.Jump(ask);
+            }
+            else
+            {
+                Block flat = f.NewBlock("khflat");
+                Block texts = f.NewBlock("khtext");
+                VReg flags = Numbered(e, e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize));
+
+                e.Branch(e.Binary(Opcode.And, flags, 1), flat, ask);
+                e.SetBlock(flat);
+                e.Branch(e.Binary(Opcode.And, flags, 2), texts, word);
+                e.SetBlock(texts);
+                TextHash(e, a, word);
+            }
+
+            e.SetBlock(ask);
+            e.Ret(new RegOperand(AskSlot(e, a, vt, _b.HashSlot, narrow, IrType.I32, R(a))));
         }
 
         // IDENTITY, AS object.GetHashCode ANSWERS IT (ObjectHashStub): the
@@ -189,19 +453,25 @@ public sealed partial class Lowering
         // an escape. A shifted address is a number.
         e.SetBlock(word);
         e.Ret(new RegOperand(e.Binary(Opcode.ShrU, IrTypes.Word == IrType.I64 ? e.Unary(Opcode.Trunc64, a) : a, 3)));
-
-        e.SetBlock(ask);
-        VReg fn = e.Load(IrTypes.Word, vt, (long)_b.HashSlot * _t.WordSize);
-
-        VReg answered = e.CallIndirect(R(fn), IrType.I32, new Operand[] { R(a) })!;
-
-        e.Block.Instrs[^1].DispatchType = ObjectDispatch;
-
-        e.Ret(new RegOperand(answered));
         e.SetBlock(none);
         e.Ret(new ImmOperand(0, IrType.I32));
         _m.Functions.Add(f);
         return name;
+    }
+
+    /// <summary>A string's hash, from a block where `a` is known to be one; the word's (`word`) where the library has none.</summary>
+    private void TextHash(Builder e, VReg a, Block word)
+    {
+        MethodSymbol? hash = StringRoutine("KeyHash", 1);
+
+        if (hash is not null)
+        {
+            e.Ret(new RegOperand(e.Call(CallLabel(hash), IrTypes.Of(hash.Returns), R(a))!));
+        }
+        else
+        {
+            e.Jump(word);
+        }
     }
 
     /// <summary>A static routine of the library's String, if the library compiled has it.</summary>
@@ -306,7 +576,7 @@ public sealed partial class Lowering
         if (CouldBeObject(field.Type) || field.Type.IsNullableValue)
         {
             VReg x = _e.Load(IrTypes.Word, a, field.Offset), y = _e.Load(IrTypes.Word, b, field.Offset);
-            return _e.Call(KeyEqualsStub(), IrType.I32, R(x), R(y))!;
+            return _e.Call(KeyEqualsStub(field.Type), IrType.I32, R(x), R(y))!;
         }
         // A FLOAT AS ITS OWN Equals: every NaN equal to every other, and
         // each zero to the other -- what EqualityComparer<double>.Default,
@@ -365,12 +635,12 @@ public sealed partial class Lowering
                 }
                 else if (CouldBeObject(field.Type) || field.Type.IsNullableValue)
                 {
-                    v = _e.Call(KeyHashStub(), IrType.I32, R(_e.Load(IrTypes.Word, a, field.Offset)))!;
+                    v = _e.Call(KeyHashStub(field.Type), IrType.I32, R(_e.Load(IrTypes.Word, a, field.Offset)))!;
                 }
                 else if (field.Type.Prim is Prim.F32 or Prim.F64)
                 {
                     bool wide = field.Type.Prim == Prim.F64;
-                    v = FloatHash(_f, _e, _e.Load(wide ? IrType.I64 : IrType.I32, a, field.Offset, wide ? 8 : 4, false), wide);
+                    v = FloatHash(_f, _e, Numbered(_e, _e.Load(wide ? IrType.I64 : IrType.I32, a, field.Offset, wide ? 8 : 4, false)), wide);
                 }
                 else
                 {
@@ -500,6 +770,112 @@ public sealed partial class Lowering
 
         _f = savedF;
         _e = savedE;
+        _m.Functions.Add(f);
+        return label;
+    }
+
+    // ---- delegates ----------------------------------------------------------------
+    //
+    // A DELEGATE IS EQUAL TO ANOTHER OF THE SAME METHOD ON THE SAME TARGET,
+    // which is .NET's Delegate.Equals and what `-=` finds the delegate to take
+    // out by. A closure the checker writes for a lambda or a method group is a
+    // class with fields and an Invoke and nothing else, so what its Equals and
+    // GetHashCode slots hold is written here: the runtime's comparison
+    // (Runtime.DelegateEquals, Runtime.GroupEquals, Runtime.DelegateHash).
+
+    /// <summary>A closure the checker made of a lambda or a method group, as a delegate.</summary>
+    private static bool DelegateClosure(TypeSymbol t)
+        => t.Decl?.LocalOnly == true && t.Name.StartsWith("Lambda$", StringComparison.Ordinal)
+        && t.Interfaces.Any(face => face.Decl?.IsDelegate == true);
+
+    /// <summary>
+    /// A LAMBDA THAT HOLDS A COPY OF A PARAMETER is a delegate of one call's
+    /// worth of that parameter. .NET hoists a captured parameter into a
+    /// display object made when the method is entered, and the delegate's
+    /// target is that object: a lambda made in two calls of the method is
+    /// two targets, and the two are not equal whatever the values. A captured
+    /// local is a cell here, one per scope entered, and its address says the
+    /// same of it; a parameter nothing writes is copied into the closure
+    /// instead (Binder.SettleCapturedCells), and the copy says nothing of
+    /// which call made it -- so such a closure is equal only to itself, and
+    /// hashes as itself.
+    /// </summary>
+    private static bool CapturesByValue(TypeSymbol t)
+        => t.DelegateGroup is null
+        && t.Fields.Any(f => !f.Static && !f.Boxed && f.Name != "$this" && f.Name != "$target");
+
+    /// <summary>
+    /// What a delegate closure's Equals slot holds. A lambda's: equal to a
+    /// closure of the same class holding the same words (the same lambda over
+    /// the same captures), Runtime.DelegateEquals. A method group's: one
+    /// routine for each METHOD, `__group_equals$` and its identity, shared by
+    /// every closure of that method whichever class converted it -- one class
+    /// per converting type, and per unit -- so that the routine's address in
+    /// the slot is the method's identity, which Runtime.GroupEquals compares
+    /// along with the target. Null without the runtime's routines.
+    /// </summary>
+    private string? DelegateEqualsStub(TypeSymbol t)
+    {
+        if (CapturesByValue(t))
+        {
+            return null;
+        }
+        bool group = t.DelegateGroup is not null;
+        MethodSymbol? same = group ? RuntimeMethod("GroupEquals", 3) : RuntimeMethod("DelegateEquals", 2);
+        if (same is null)
+        {
+            return null;
+        }
+        string label = group ? "__group_equals$" + t.DelegateGroup : "__delegate_equals";
+        if (!_structHelpers.Add(label))
+        {
+            return label;
+        }
+        Require(same);
+        Function f = new(label, IrType.I32) { Coalescible = true };
+        VReg self = f.NewReg(IrTypes.Word, "this");
+        VReg other = f.NewReg(IrTypes.Word, "other");
+        f.Params.Add(self);
+        f.Params.Add(other);
+        Builder e = new(f, f.NewBlock("entry"));
+        VReg said = group
+            ? e.Call(CallLabel(same), IrType.I32, R(self), R(other), new ImmOperand((long)_b.EqualsSlot * _t.WordSize, IrType.I32))!
+            : e.Call(CallLabel(same), IrType.I32, R(self), R(other))!;
+        e.Ret(new RegOperand(said));
+        _m.Functions.Add(f);
+        return label;
+    }
+
+    /// <summary>
+    /// What a delegate closure's GetHashCode slot holds: Runtime.DelegateHash
+    /// of it, told -- for a method group's -- the address of its method's
+    /// Equals routine (DelegateEqualsStub), so that equal delegates of two
+    /// classes hash alike. Null without the runtime's routine.
+    /// </summary>
+    private string? DelegateHashStub(TypeSymbol t)
+    {
+        if (CapturesByValue(t))
+        {
+            return null;
+        }
+        MethodSymbol? hash = RuntimeMethod("DelegateHash", 2);
+        string? identity = t.DelegateGroup is null ? null : DelegateEqualsStub(t);
+        if (hash is null || (t.DelegateGroup is not null && identity is null))
+        {
+            return null;
+        }
+        string label = identity is null ? "__delegate_hash" : "__group_hash$" + t.DelegateGroup;
+        if (!_structHelpers.Add(label))
+        {
+            return label;
+        }
+        Require(hash);
+        Function f = new(label, IrType.I32) { Coalescible = true };
+        VReg self = f.NewReg(IrTypes.Word, "this");
+        f.Params.Add(self);
+        Builder e = new(f, f.NewBlock("entry"));
+        Operand which = identity is null ? (Operand)new ImmOperand(0, IrType.I64) : R(WordAddress(e, identity));
+        e.Ret(new RegOperand(e.Call(CallLabel(hash), IrType.I32, R(self), which)!));
         _m.Functions.Add(f);
         return label;
     }
@@ -659,19 +1035,22 @@ public sealed partial class Lowering
     /// <summary>
     /// The default order of two keys, as .NET's default comparer has it: null
     /// before anything, strings as text, and otherwise the first one's own
-    /// CompareTo through the shared slot.
+    /// CompareTo through the shared slot. `of` as KeyEqualsStub's.
     /// </summary>
-    private string KeyCompareStub()
+    private string KeyCompareStub(Type? of = null)
     {
-        const string name = "__key_compare";
+        bool text = of is { Prim: Prim.String, IsArray: false, IsPointer: false };
+        bool array = of is { IsArray: true, IsPointer: false };
+        TypeSymbol? narrow = text || array ? null : NarrowKey(of);
+        string name = text ? "__key_compare$$string" : array ? "__key_compare$$array" : narrow is null ? "__key_compare" : "__key_compare$" + TypeKey(narrow);
 
-        if (_hasKeyCompare)
+        if (text || array || narrow is not null ? !_structHelpers.Add(name) : _hasKeyCompare)
         {
             return name;
         }
+        _hasKeyCompare |= !text && !array && narrow is null;
 
-        _hasKeyCompare = true;
-        Function f = new(name, IrType.I32) { Coalescible = true };
+        Function f = KeyFunction(name, narrow);
         VReg a = f.NewReg(IrTypes.Word, "a");
         VReg b = f.NewReg(IrTypes.Word, "b");
 
@@ -682,10 +1061,7 @@ public sealed partial class Lowering
         Block differ = f.NewBlock("kcdiffer");
         Block first = f.NewBlock("kcfirst");
         Block both = f.NewBlock("kcboth");
-        Block flat = f.NewBlock("kcflat");
-        Block text = f.NewBlock("kctext");
         Block word = f.NewBlock("kcword");
-        Block ask = f.NewBlock("kcask");
         Block less = f.NewBlock("kcless");
         Block more = f.NewBlock("kcmore");
 
@@ -696,14 +1072,56 @@ public sealed partial class Lowering
         e.Branch(b, both, more);
         e.SetBlock(both);
 
-        VReg vt = e.Load(IrTypes.Word, a, 0);
-        VReg flags = e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize);
+        if (text)
+        {
+            TextOrder(e, a, b, word);
+        }
+        else if (array)
+        {
+            e.Jump(word);
+        }
+        else
+        {
+            Block ask = f.NewBlock("kcask");
+            VReg vt = e.Load(IrTypes.Word, a, 0);
 
-        e.Branch(e.Binary(Opcode.And, flags, 1), flat, ask);
-        e.SetBlock(flat);
-        e.Branch(e.Binary(Opcode.And, flags, 2), text, word);
-        e.SetBlock(text);
+            // A class is never a string, an array or a box (KeyEqualsStub).
+            if (narrow is { Kind: TypeKind.Class })
+            {
+                e.Jump(ask);
+            }
+            else
+            {
+                Block flat = f.NewBlock("kcflat");
+                Block texts = f.NewBlock("kctext");
+                VReg flags = Numbered(e, e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize));
 
+                e.Branch(e.Binary(Opcode.And, flags, 1), flat, ask);
+                e.SetBlock(flat);
+                e.Branch(e.Binary(Opcode.And, flags, 2), texts, word);
+                e.SetBlock(texts);
+                TextOrder(e, a, b, word);
+            }
+
+            e.SetBlock(ask);
+            e.Ret(new RegOperand(AskSlot(e, a, vt, _b.CompareSlot, narrow, IrType.I32, R(a), R(b))));
+        }
+
+        e.SetBlock(word);
+        EmitOrder(f, e, a, b, unsigned: true);
+        e.SetBlock(same);
+        e.Ret(new ImmOperand(0, IrType.I32));
+        e.SetBlock(less);
+        e.Ret(new ImmOperand(-1, IrType.I32));
+        e.SetBlock(more);
+        e.Ret(new ImmOperand(1, IrType.I32));
+        _m.Functions.Add(f);
+        return name;
+    }
+
+    /// <summary>Two strings' order, from a block where `a` is known to be one; by their words (`word`) where the library has no Compare.</summary>
+    private void TextOrder(Builder e, VReg a, VReg b, Block word)
+    {
         MethodSymbol? compare = StringRoutine(Prelude.CompareMethod, 2);
 
         if (compare is not null)
@@ -714,26 +1132,6 @@ public sealed partial class Lowering
         {
             e.Jump(word);
         }
-
-        e.SetBlock(word);
-        EmitOrder(f, e, a, b, unsigned: true);
-
-        e.SetBlock(ask);
-        VReg fn = e.Load(IrTypes.Word, vt, (long)_b.CompareSlot * _t.WordSize);
-
-        VReg answered = e.CallIndirect(R(fn), IrType.I32, new Operand[] { R(a), R(b) })!;
-
-        e.Block.Instrs[^1].DispatchType = ObjectDispatch;
-
-        e.Ret(new RegOperand(answered));
-        e.SetBlock(same);
-        e.Ret(new ImmOperand(0, IrType.I32));
-        e.SetBlock(less);
-        e.Ret(new ImmOperand(-1, IrType.I32));
-        e.SetBlock(more);
-        e.Ret(new ImmOperand(1, IrType.I32));
-        _m.Functions.Add(f);
-        return name;
     }
 
     /// <summary>
@@ -786,7 +1184,7 @@ public sealed partial class Lowering
         Block done = _f.NewBlock("orddone");
         if (CouldBeObject(of))
         {
-            _e.CopyTo(order, R(_e.Call(KeyCompareStub(), IrType.I32, R(x), R(y))!));
+            _e.CopyTo(order, R(_e.Call(KeyCompareStub(of), IrType.I32, R(x), R(y))!));
         }
         else if (of.IsNullableValue)
         {
@@ -853,7 +1251,7 @@ public sealed partial class Lowering
             // details, but equal boxed values must always share one.
             bool wide = BoxSlot(of) == IrType.F64;
             IrType bitsType = wide ? IrType.I64 : IrType.I32;
-            VReg bits = e.Load(bitsType, self, _t.ObjectHeaderBytes, wide ? 8 : 4, false);
+            VReg bits = Numbered(e, e.Load(bitsType, self, _t.ObjectHeaderBytes, wide ? 8 : 4, false));
             VReg magnitude = e.Binary(Opcode.And, R(bits),
                 new ImmOperand(wide ? long.MaxValue : int.MaxValue, bitsType), bitsType);
             Block zero = f.NewBlock("hashzero"), nonzero = f.NewBlock("hashnonzero");
@@ -884,7 +1282,7 @@ public sealed partial class Lowering
             _m.Functions.Add(f);
             return label;
         }
-        e.Ret(new RegOperand(e.Load(IrType.I32, self, _t.ObjectHeaderBytes, Math.Min(4, Math.Max(1, of.Size)), false)));
+        e.Ret(new RegOperand(Numbered(e, e.Load(IrType.I32, self, _t.ObjectHeaderBytes, Math.Min(4, Math.Max(1, of.Size)), false), NeverAddress(of))));
         _m.Functions.Add(f);
         return label;
     }

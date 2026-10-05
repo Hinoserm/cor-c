@@ -1,0 +1,63 @@
+// Region allocation: a boundary that makes many small objects, all dead by
+// its return, so the link makes them in its region (Runtime.AllocRegion's
+// fast path, inlined there by the link) and gives them back at once (RegionLeave's).
+// Every timed result is checked outside timing; region-blocks says how many
+// were made in a region, which is 0 where the link took none.
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Runtime.CompilerServices;
+
+class Cell { public long Value; public Cell? Next; }
+
+static class Program
+{
+    // A boundary: sixty-four cells linked into a list and a List holding
+    // them, all dead by its return.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Round(int round)
+    {
+        List<Cell> held = new();
+        Cell? first = null;
+        for (int i = 0; i < 64; i++)
+        {
+            Cell c = new Cell { Value = (i + round) & 255, Next = first };
+            first = c;
+            held.Add(c);
+        }
+        long sum = 0;
+        for (Cell? c = first; c != null; c = c.Next) sum += c.Value;
+        return sum + held.Count - 64;
+    }
+
+    static long Expected(int rounds)
+    {
+        long sum = 0;
+        for (int r = 0; r < rounds; r++)
+            for (int i = 0; i < 64; i++) sum += (i + r) & 255;
+        return sum;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Run(int rounds)
+    {
+        long sum = 0;
+        for (int r = 0; r < rounds; r++) sum += Round(r);
+        return sum;
+    }
+
+    static int Main()
+    {
+        string[] args = System.Environment.GetCommandLineArgs();
+        int rounds = args.Length > 1 ? int.Parse(args[1]) : 200000;
+        if (rounds <= 0 || rounds > 10000000) return 2;
+        long blocks = Gc.RegionBlocks, freed = Gc.RegionFreedBytes;
+        long start = Stopwatch.GetTimestamp();
+        long result = Run(rounds);
+        long end = Stopwatch.GetTimestamp();
+        bool okay = result == Expected(rounds);
+        System.Console.WriteLine("region-rounds,iterations=" + rounds + ",ticks=" + (end - start)
+            + ",frequency=" + Stopwatch.Frequency + ",region-blocks=" + (Gc.RegionBlocks - blocks)
+            + ",region-freed-bytes=" + (Gc.RegionFreedBytes - freed) + ",checksum=" + result + ",valid=" + okay);
+        return okay ? 0 : 1;
+    }
+}

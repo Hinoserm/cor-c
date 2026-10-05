@@ -150,7 +150,9 @@ public sealed partial class Lowering
         int at = FirstParamField;
         for (int i = 0; i < m.Params.Count; i++)
         {
-            if (m.Params[i].ByRef)
+            // A captured variable's cell (ParamSymbol.Cell) is an object the
+            // machine may hold; any other reference is into a frame.
+            if (m.Params[i].ByRef && !m.Params[i].Cell)
             {
                 Error(decl, $"'{m.Name}': an async method cannot take a ref or out parameter");
             }
@@ -263,7 +265,7 @@ public sealed partial class Lowering
         List<VReg> args = new();
         foreach (ParamSymbol p in m.Params)
         {
-            VReg r = _f.NewReg(IrTypes.Of(p.Type), p.Name);
+            VReg r = _f.NewReg(p.ByRef ? IrTypes.Word : IrTypes.Of(p.Type), p.Name);
             _f.Params.Add(r);
             args.Add(r);
         }
@@ -271,7 +273,7 @@ public sealed partial class Lowering
         // The machine's size is decided after optimisation, when the
         // transform knows what has to survive a suspension, so it is read
         // from data the transform fills in rather than written here.
-        VReg size = _e.Load(IrTypes.Word, new SymOperand(am.SizeSymbol));
+        VReg size = Numbered(_e, _e.Load(IrTypes.Word, new SymOperand(am.SizeSymbol)));
         VReg machine = AllocateDynamic(decl, size);
         _e.Store(R(machine), VtableOf(am.StateMachine), 0, _t.WordSize);
 
@@ -542,8 +544,8 @@ public sealed partial class Lowering
         for (int i = 0; i < m.Params.Count; i++)
         {
             ParamSymbol p = m.Params[i];
-            IrType it = IrTypes.Of(p.Type);
-            _params[i] = _e.Load(it, machine, am.ParamOffsets[i], it.Bytes());
+            IrType it = p.ByRef ? IrTypes.Word : IrTypes.Of(p.Type);
+            _params[i] = Numbered(_e, _e.Load(it, machine, am.ParamOffsets[i], it.Bytes()), !p.ByRef && NeverAddress(p.Type));
         }
 
         ScanAddressTaken(decl.Body!);
@@ -742,8 +744,8 @@ public sealed partial class Lowering
             // The handlers this invocation linked name its stack frame, which
             // is about to go away: unlink them all at once.
             VReg outermost = _e.SlotAddress(_openHandlers[0].Record);
-            VReg before = _e.Load(IrTypes.Word, outermost, HandlerPrev / 4 * w);
-            _e.Store(ThreadBlockNow(), before, TlsHandler / 4 * w);
+            VReg before = ChainRead(outermost, HandlerPrev / 4 * w);
+            ChainWrite(ThreadBlockNow(), R(before), TlsHandler / 4 * w);
         }
 
         // The markers carry an index so the transform can pair them even
@@ -765,15 +767,15 @@ public sealed partial class Lowering
         foreach ((FrameSlot record, AstBlock? _) in _openHandlers)
         {
             VReg addr = _e.SlotAddress(record);
-            VReg head = _e.Load(IrTypes.Word, ThreadBlockNow(), TlsHandler / 4 * w);
-            _e.Store(addr, head, HandlerPrev / 4 * w);
+            VReg head = ChainRead(ThreadBlockNow(), TlsHandler / 4 * w);
+            ChainWrite(addr, R(head), HandlerPrev / 4 * w);
             VReg sp = _e.Reg(IrTypes.Word, "sp");
             _e.Emit(Opcode.StackPointer, sp);
-            _e.Store(addr, sp, HandlerSp / 4 * w);
+            ChainWrite(addr, R(sp), HandlerSp / 4 * w);
             VReg fp = _e.Reg(IrTypes.Word, "fp");
             _e.Emit(Opcode.FramePointer, fp);
-            _e.Store(addr, fp, HandlerFp / 4 * w);
-            _e.Store(ThreadBlockNow(), addr, TlsHandler / 4 * w);
+            ChainWrite(addr, R(fp), HandlerFp / 4 * w);
+            ChainWrite(ThreadBlockNow(), R(addr), TlsHandler / 4 * w);
         }
         _e.Jump(cont);
 

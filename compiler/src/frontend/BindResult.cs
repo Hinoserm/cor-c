@@ -49,6 +49,14 @@ public sealed partial class BindResult
     public int CompareSlot { get; set; }
 
     /// <summary>
+    /// Every interface family's slots, by template, arity and member: what a
+    /// box's table fills for an interface no specialisation of which this
+    /// unit made -- IEquatable&lt;int&gt;'s Equals on a boxed int -- since the
+    /// family's slot is the same in every unit whatever it instantiates.
+    /// </summary>
+    public Dictionary<(string Template, int Arity, int Member), int> InterfaceFamilySlots { get; } = new();
+
+    /// <summary>
     /// Expressions whose value has to be put in a Nullable&lt;T&gt; cell.
     ///
     /// A T written where a T? is wanted -- `int? n = 5;`, `f(3)` against an
@@ -241,6 +249,14 @@ public sealed partial class BindResult
     /// </summary>
     public Dictionary<Node, Type> TestedArrays { get; } = new(ReferenceEqualityComparer.Instance);
 
+    /// <summary>
+    /// A TEST OR CAST TO A GENERIC INTERFACE OVER A SHARED METHOD COPY'S OWN
+    /// TYPE PARAMETERS (ICanonShape): the interface's family and its
+    /// arguments as resolved, a CanonParam of -2 - k standing for hidden
+    /// argument k. Asked of the object at run time (Runtime.ShapedAs).
+    /// </summary>
+    public Dictionary<Node, CanonShape> Shapes { get; } = new(ReferenceEqualityComparer.Instance);
+
     public Dictionary<SwitchArm, int> ArmSlot { get; } = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>
@@ -347,6 +363,9 @@ public sealed partial class BindResult
     /// one descriptor, so `typeof(byte[]) == typeof(byte[])` holds.</summary>
     public Dictionary<TypeOfExpr, Type> ArrayTypeOfs { get; } = new(ReferenceEqualityComparer.Instance);
 
+    /// <summary>`typeof(T)` of a type argument only run time knows (Type.CanonParam): its descriptor as run time finds it (Lowering.RunTimeDescriptor).</summary>
+    public Dictionary<TypeOfExpr, Type> RunTimeTypeOfs { get; } = new(ReferenceEqualityComparer.Instance);
+
     /// <summary>The calls that are GetType(), which is not a declared method.</summary>
     public HashSet<CallExpr> GetTypes { get; } = new(ReferenceEqualityComparer.Instance);
 
@@ -371,6 +390,22 @@ public sealed partial class BindResult
     /// beside their templates the way Wanted's are, without renaming a call.
     /// </summary>
     public List<(TypeDecl Owner, MethodDecl Template, List<TypeRef> Args, string Name)> WantedOverrides { get; } = new();
+
+    /// <summary>
+    /// A type the checker spelt into the source that no expansion has made
+    /// yet -- a lambda's natural type, `Func<int, int>` for `var f = (int x)
+    /// => x + 1;` where nothing else names it (LocalDecl.NaturalType). The
+    /// unit goes round once more so the monomorphiser makes it, as it would
+    /// for a copy that named it.
+    /// </summary>
+    public bool Reexpand { get; set; }
+
+    /// <summary>
+    /// The shapes of the delegates C# synthesises that a natural type here
+    /// needs and the unit does not declare yet (Parser.AnonymousDelegates):
+    /// the driver adds them, and the round goes again.
+    /// </summary>
+    public HashSet<string> AnonymousDelegates { get; } = new(StringComparer.Ordinal);
 
     /// <summary>`&Method`: the static method whose address this is, as a function pointer.</summary>
     public Dictionary<UnaryExpr, MethodSymbol> MethodAddresses { get; } = new(ReferenceEqualityComparer.Instance);
@@ -545,6 +580,7 @@ public sealed partial class BindResult
         BoxPatterns.Clear();
         StringTests.Clear();
         TestedTypes.Clear();
+        Shapes.Clear();
         TestedArrays.Clear();
         ArmSlot.Clear();
         PatternSym.Clear();
@@ -568,6 +604,7 @@ public sealed partial class BindResult
         TypeOfs.Clear();
         PrimitiveTypeOfs.Clear();
         ArrayTypeOfs.Clear();
+        RunTimeTypeOfs.Clear();
         GetTypes.Clear();
         Invocations.Clear();
         GenericDispatches.Clear();
@@ -607,6 +644,51 @@ public sealed class StaticArray
     public List<double> Reals { get; } = new();
     public List<string?> Strings { get; } = new();
     public int Count => Element == "string" ? Strings.Count : Element is "float" or "double" ? Reals.Count : Integers.Count;
+}
+
+/// <summary>
+/// A generic interface tested or cast to in a shared method copy, over one
+/// or more of the copy's own type parameters (BindResult.Shapes): the
+/// interface as the copy names it -- over object, the static answer -- and
+/// its type arguments, each resolved, the copy's hidden argument k where its
+/// CanonParam is -2 - k.
+/// </summary>
+public sealed class CanonShape
+{
+    public required TypeSymbol Interface { get; init; }
+    public required List<Type> Args { get; init; }
+
+    /// <summary>The most type arguments an interface's identity record holds and Runtime.ShapedAs is given.</summary>
+    public const int MostArguments = 4;
+
+    /// <summary>
+    /// WHICH GENERIC INTERFACE A SPECIALISED ONE IS MADE FROM, as a number
+    /// every unit computes alike: the template's path and arity, hashed
+    /// (FNV-1a) to the word. IList of string and IList of Node share it, and
+    /// nothing else does but by a collision a matching argument list would
+    /// also have to share. Null for an interface that was not made from a
+    /// template.
+    /// </summary>
+    public static long? FamilyOf(TypeSymbol face)
+    {
+        if (face.Decl is not { Specialised: true, Template: string template } decl || decl.TemplateArgs.Count == 0)
+        {
+            return null;
+        }
+        string key = template + "`" + decl.TemplateArgs.Count;
+        ulong hash = 14695981039346656037UL;
+        foreach (char c in key)
+        {
+            hash ^= c;
+            hash *= 1099511628211UL;
+        }
+        // Folded to 31 bits, a positive number every target's word holds and
+        // every instruction takes as an immediate; a collision would also
+        // need the arguments to match to answer wrongly.
+        long family = (long)((hash ^ (hash >> 32)) & 0x7fffffffUL);
+        // Zero is no family (a record's absence), so never a family's number.
+        return family == 0 ? 1 : family;
+    }
 }
 
 /// <summary>Where a generic virtual call may land. See BindResult.GenericDispatches.</summary>

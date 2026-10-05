@@ -1,0 +1,19 @@
+// test: delegate value variance refused
+// expect-compile-error: cannot convert
+// Variance is for reference type arguments only: a Func<int> answers an int,
+// which is not a reference to an object -- it would have to be boxed, and a
+// conversion of the delegate boxes nothing. C# refuses it (CS0029), and so
+// does this.
+
+using System;
+
+static class P
+{
+    static int Main()
+    {
+        Func<int> number = () => 5;
+        Func<object> boxed = number;
+        Console.WriteLine(boxed());
+        return 0;
+    }
+}

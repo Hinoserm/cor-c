@@ -480,6 +480,8 @@ static class AppContext
         // The collector's own: read as the process ends, from a flag of its
         // own, so a program that sets no switch carries none of this.
         if (switchName == "Corsac.GC.Stats") Gc.StatsAsked = isEnabled;
+        if (switchName == "Corsac.GC.AllocSample" && isEnabled) AllocSamples.Begin();
+        if (switchName == "Corsac.GC.Census" && isEnabled) Gc.AskCensus();
     }
 
     public static bool TryGetSwitch(string switchName, out bool isEnabled)
@@ -509,7 +511,8 @@ static class AppContext
 
             string? directory = Path.GetDirectoryName(self);
 
-            return directory == null ? (cwd == null ? "/" : cwd)
+            // A bare name has an empty directory part: the current one.
+            return string.IsNullOrEmpty(directory) ? (cwd == null ? "/" : cwd)
                                      : (directory.EndsWith("/") ? directory : directory + "/");
         }
     }

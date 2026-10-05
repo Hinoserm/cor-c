@@ -8,6 +8,10 @@
 #   tests/lang/run.sh --target=x86-64   every test compiled for long mode
 #   tests/lang/run.sh --opt-size  exercise size-oriented compilation
 #   tests/lang/run.sh --experimental-batch  exercise the staged optimizer group
+#   tests/lang/run.sh --through-link [--region-engine escape|andersen]
+#                                every test compiled to an object and linked
+#                                (corc link --closed): through the link-time
+#                                optimiser and its region solver
 #
 # Each test is compiled to a native Linux executable together with the
 # standard and system libraries, run with a timeout, and its stdout and exit
@@ -34,9 +38,35 @@ verbose=0
 filter=""
 compiler_flags=()
 passthrough=()
+# THROUGH THE LINK (--through-link): each test compiled to an object and
+# linked as the whole program, so the link-time optimiser and its region
+# solver -- the engine --region-engine names, or the default -- decide what
+# the compile alone decides otherwise. Only "// units:" tests reach the link
+# in an ordinary run.
+through_link=0
+link_flags=()
+engine_next=0
 
 for arg in "$@"; do
+    if [ "$engine_next" = 1 ]; then
+        engine_next=0
+        link_flags+=("--region-engine" "$arg")
+        passthrough+=("$arg")
+        continue
+    fi
     case "$arg" in
+        --through-link)
+            through_link=1
+            passthrough+=("$arg")
+            ;;
+        --region-engine)
+            engine_next=1
+            passthrough+=("$arg")
+            ;;
+        --region-engine=*)
+            link_flags+=("--region-engine" "${arg#--region-engine=}")
+            passthrough+=("$arg")
+            ;;
         -v|--verbose)
             verbose=1
             passthrough+=("$arg")
@@ -131,6 +161,20 @@ if [ ! -e "$root/.run-snapshot" ]; then
     fi
 fi
 
+if [ "$engine_next" = 1 ]; then
+    echo "--region-engine needs an engine: escape or andersen" >&2
+    exit 2
+fi
+if [ "${#link_flags[@]}" -gt 0 ] && [ "$through_link" != 1 ]; then
+    echo "--region-engine is a choice of the link: give --through-link with it" >&2
+    exit 2
+fi
+# The link says what it decided about regions (its summary line), for the
+# "// regions:" header to be checked against.
+if [ "$through_link" = 1 ]; then
+    link_flags+=("--region-report" "+none")
+fi
+
 for lib in $libs; do
     if [ ! -f "$(lib_path "$lib")" ]; then
         echo "library source $lib not found (set CORC_LIBS to override)" >&2
@@ -138,9 +182,19 @@ for lib in $libs; do
     fi
 done
 
+# A TEST OUTLIVES ITS RUNNER when the runner is killed: timeout cannot pass
+# on a SIGKILL, and with --foreground the test is not in a group of its own.
+# Two such tests spun for hours on output files deleted under them, holding
+# the space of a full /tmp. So each test also gets a limit of processor time
+# -- what it could use on every processor for twice its timeout -- and of
+# output, that ends it with nobody left to.
 if command -v timeout >/dev/null 2>&1; then
     run_with_timeout() {
-        timeout --foreground -k 2 "$timeout_s" "$@"
+        (
+            ulimit -t $(( (timeout_s * 2 + 10) * $(nproc 2>/dev/null || echo 4) )) 2>/dev/null
+            ulimit -f 1048576 2>/dev/null
+            exec timeout --foreground -k 2 "$timeout_s" "$@"
+        )
     }
 else
     run_with_timeout() {
@@ -297,7 +351,17 @@ for f in "${tests[@]}"; do
             && $CORC compile -Wno-error "${compiler_flags[@]}" $own_flags --lib --assembly Units $unit_sources --obj -o "$work/$name.units.o" \
             && $CORC compile -Wno-error "${compiler_flags[@]}" $own_flags --nostdlib $refs --decl-index "$work/$name.idx" --assembly Units \
                 $extra "$f" --obj -o "$work/$name.o" \
-            && $CORC link --closed "$work/$name.o" "$work/$name.units.o" -o "$exe"
+            && $CORC link --closed "${link_flags[@]}" "$work/$name.o" "$work/$name.units.o" -o "$exe"
+        } >"$work/$name.compile" 2>&1
+        cc_status=$?
+    elif [ "$through_link" = 1 ]; then
+        # The same compile as below, to an object carrying the link's hints
+        # and the IR the link regenerates it from, then the whole program
+        # linked: the link-time optimiser and its regions decide.
+        # shellcheck disable=SC2086
+        {
+            $CORC compile -Wno-error "${compiler_flags[@]}" $own_flags $lib_paths $extra "$f" --obj -o "$work/$name.o" \
+            && $CORC link --closed "${link_flags[@]}" "$work/$name.o" -o "$exe"
         } >"$work/$name.compile" 2>&1
         cc_status=$?
     else
@@ -352,6 +416,29 @@ for f in "${tests[@]}"; do
         failed=$((failed + 1))
         failed_names="$failed_names $name"
         continue
+    fi
+
+    # WHAT THE LINK'S REGIONS TOOK, through the link only: "// regions:
+    # taken" wants sites made in a region (the link's summary, "regions: N
+    # boundaries, L loops, S sites in the innermost region"), "// regions:
+    # none" wants none. A test whose output cannot tell regions from the
+    # heap says so here.
+    want_regions="$(header_value "$f" regions)"
+    if [ "$through_link" = 1 ] && [ -n "$want_regions" ]; then
+        summary="$(grep -o 'regions: [0-9]* boundaries, [0-9]* loops, [0-9]* sites' "$work/$name.compile" | tail -1)"
+        sites="$(printf '%s' "$summary" | sed -n 's/.* loops, \([0-9]*\) sites$/\1/p')"
+        regions_miss=""
+        case "$want_regions" in
+            taken) [ -n "$sites" ] && [ "$sites" -gt 0 ] || regions_miss="expected sites taken into a region, the link said: ${summary:-nothing}" ;;
+            none) [ -z "$sites" ] || [ "$sites" -eq 0 ] || regions_miss="expected no site taken into a region, the link said: $summary" ;;
+            *) regions_miss="unknown // regions: $want_regions (taken or none)" ;;
+        esac
+        if [ -n "$regions_miss" ]; then
+            echo "FAIL $name ($regions_miss)"
+            failed=$((failed + 1))
+            failed_names="$failed_names $name"
+            continue
+        fi
     fi
 
     # "// args: WORDS" are the command line the program is run with.

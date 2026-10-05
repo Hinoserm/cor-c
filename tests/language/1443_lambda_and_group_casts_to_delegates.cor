@@ -1,0 +1,21 @@
+// test: lambda_and_group_casts_to_delegates
+// expect-exit: 0
+// expect-output:
+// lambda
+// 8 5
+//
+// A LAMBDA OR A METHOD GROUP CAST TO A DELEGATE TYPE is converted to it
+// (C# 12.9.7): the cast is what says which delegate it is.
+
+using System;
+static class P {
+    static int Twice(int x) => x * 2;
+    static int Main() {
+        Action a = (Action)(() => Console.WriteLine("lambda"));
+        a();
+        var f = (Func<int, int>)Twice;
+        object o = (Func<int, int>)(x => x + 1);
+        Console.WriteLine(f(4) + " " + ((Func<int, int>)o)(4));
+        return 0;
+    }
+}

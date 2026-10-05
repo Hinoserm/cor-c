@@ -390,8 +390,7 @@ public sealed partial class Binder
     private Type? LateLogical(BinaryExpr b)
     {
         if (!_usesDynamic) return null;
-        Type l = Peek(b.Left), r = Peek(b.Right);
-        if (!l.Dynamic && !r.Dynamic) return null;
+        if (!DynamicOperand(b.Left) && !DynamicOperand(b.Right)) return null;
         bool and = b.Op == BinOp.AndAlso;
         PatternExpr made = new()
         {
@@ -409,6 +408,17 @@ public sealed partial class Binder
         CheckExpr(made);
         return Type.DynamicAny;
     }
+
+    /// <summary>
+    /// Whether an operand of `&&` or `||` is dynamic. A chain of them is
+    /// dynamic only when one of its own operands is, so the chain is answered
+    /// from its leaves: peeking the whole left side at every link checked
+    /// `a && b && c && ...` twice per link, exponential in its length.
+    /// </summary>
+    private bool DynamicOperand(Expr e)
+        => e is BinaryExpr { Op: BinOp.AndAlso or BinOp.OrElse } chain
+            ? DynamicOperand(chain.Left) || DynamicOperand(chain.Right)
+            : Peek(e).Dynamic;
 
     /// <summary>
     /// A one-operand operator on a dynamic operand (the UnaryExpr case, once
@@ -978,14 +988,14 @@ public sealed partial class Binder
             case NameExpr bare:
             {
                 NameExpr again = new() { Name = bare.Name, Line = at.Line, Col = at.Col };
-                again.TypeArgs.AddRange(bare.TypeArgs);
+                again.WritableTypeArgs.AddRange(bare.TypeArgs);
                 callee = again;
                 break;
             }
             case MemberExpr member:
             {
                 MemberExpr again = new() { Target = typeQualified ? member.Target : heldReceiver(), Name = member.Name, Line = at.Line, Col = at.Col };
-                again.TypeArgs.AddRange(member.TypeArgs);
+                again.WritableTypeArgs.AddRange(member.TypeArgs);
                 callee = again;
                 break;
             }
@@ -1020,13 +1030,13 @@ public sealed partial class Binder
                     if (!map.Contains(k)) items.Add(Passed(k, element));
                 }
                 call.Args.Add(LateArray(RefOf(element)!, items, at));
-                call.ArgNames.Add(null);
+                call.WritableArgNames.Add(null);
                 continue;
             }
             if (i == -1)
             {
                 call.Args.Add(Written(m, m.Decl!.Params[p + first]));
-                call.ArgNames.Add(null);
+                call.WritableArgNames.Add(null);
                 continue;
             }
             if (written[i] is RefArgExpr ra)
@@ -1043,7 +1053,7 @@ public sealed partial class Binder
                         : LateOperand(ra.Target);
                 before.Add(new LocalDecl { Type = tempType, Name = temp, Init = initial, Line = at.Line, Col = at.Col });
                 call.Args.Add(new RefArgExpr { Target = new NameExpr { Name = temp, Line = at.Line, Col = at.Col }, IsOut = ra.IsOut, Line = at.Line, Col = at.Col });
-                call.ArgNames.Add(null);
+                call.WritableArgNames.Add(null);
                 Type variable = _r.TypeOf(ra.Target);
                 Expr back = new NameExpr { Name = temp, Line = at.Line, Col = at.Col };
                 if (!variable.IsError && !variable.Dynamic && RefOf(variable) is TypeRef variableType) back = new CastExpr { Type = variableType, Operand = back, Line = at.Line, Col = at.Col };
@@ -1055,7 +1065,7 @@ public sealed partial class Binder
                 continue;
             }
             call.Args.Add(Passed(i, want));
-            call.ArgNames.Add(null);
+            call.WritableArgNames.Add(null);
         }
 
         bool returns = !m.Returns.IsVoid;

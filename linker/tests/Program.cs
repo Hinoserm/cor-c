@@ -21,6 +21,17 @@ public static partial class Program
 
     public static int Main(string[] args)
     {
+        // --escape: the region hints and the escape engine alone, no tools
+        // needed (RegionTests, RegionEscapeTests).
+        bool escapeOnly = args.Contains("--escape");
+        args = args.Where(a => a != "--escape").ToArray();
+        if (escapeOnly)
+        {
+            Try("link-time region hints", () => { RegionTests.Run(); Check(true, "region hints"); });
+            EscapeEngine();
+            Console.WriteLine($"{_passes} passed, {_failures} failed");
+            return _failures == 0 ? 0 : 1;
+        }
         // Beside the test program, in the build output, unless told
         // otherwise: never the machine's temporary directory, which on a
         // build host is a small tmpfs other jobs fill and share.
@@ -42,6 +53,7 @@ public static partial class Program
         Try("closed-image IR retention", () => { IrReachabilityTests.Run(); Check(true, "IR retention graph"); });
         Try("link-time lifetime hints", () => { LifetimeTests.Run(); Check(true, "lifetime hints"); });
         Try("link-time region hints", () => { RegionTests.Run(); Check(true, "region hints"); });
+        EscapeEngine();
         Try("image-wide managed metadata", () => { ManagedDirectoryTests.Run(); Check(true, "unit metadata directory"); });
         Try("linked with gcc object", LinkWithGcc);
         Try("shared object structure", SharedObjectStructure);
@@ -622,6 +634,13 @@ public static partial class Program
     }
 
     // ---- Harness ---------------------------------------------------------
+
+    /// <summary>The escape engine's tests, one behaviour each (RegionEscapeTests).</summary>
+    private static void EscapeEngine()
+    {
+        foreach (var (name, test) in RegionEscapeTests.All)
+            Try("escape engine: " + name, () => { test(); Check(true, name); });
+    }
 
     private static void Try(string name, Action test)
     {

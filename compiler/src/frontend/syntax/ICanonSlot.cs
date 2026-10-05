@@ -15,3 +15,16 @@ public interface ICanonSlot
     int CanonSlot { get; set; }
     Expr? CanonSelf { get; set; }
 }
+
+/// <summary>
+/// A TEST OR A CAST TO A GENERIC INTERFACE IN A SHARED METHOD COPY, over the
+/// copy's own type parameters that only run time knows (Monomorphiser.Shaped):
+/// the interface's arguments as the copy writes them, each such parameter
+/// object marked with its place (TypeRef.CanonIndex). The binder resolves them
+/// (BindResult.Shapes) and the lowering asks the object for the interface of
+/// that family over those arguments' descriptors (Runtime.ShapedAs).
+/// </summary>
+public interface ICanonShape
+{
+    List<TypeRef>? ShapeArgs { get; set; }
+}

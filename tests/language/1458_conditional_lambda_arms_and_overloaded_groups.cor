@@ -1,0 +1,37 @@
+// test: conditional lambda arms and overloaded groups
+// expect-exit: 0
+// expect-output:
+// 3 5 True
+// 2
+// 3
+//
+// `b ? () => A(v) : null` is a conditional whose arm is a lambda, not a
+// lambda with a written nullable result -- that `:` says so, as Roslyn
+// reads it -- while `int? () => 3` is the lambda. And a method group
+// with overloads of two arities, handed to Select, infers from the one
+// whose parameters the delegate's convert to: Path.GetFullPath(string),
+// never Select's (T, int) form over GetFullPath(string, string).
+
+using System;
+using System.IO;
+using System.Linq;
+
+static class P
+{
+    static int A(int x) => x + 1;
+
+    static Func<int>? Pick(object? want, bool arr, int v)
+        => want is null ? null
+         : arr ? () => A(v)
+         : want is string named ? () => named.Length : null;
+
+    static int Main()
+    {
+        Console.WriteLine(Pick("abc", false, 1)!() + " " + Pick("x", true, 4)!() + " " + (Pick(null, true, 1) == null));
+        string[] full = new[] { "x", "y" }.Select(Path.GetFullPath).ToArray();
+        Console.WriteLine(full.Length);
+        Func<int?> f = int? () => 3;
+        Console.WriteLine(f());
+        return 0;
+    }
+}

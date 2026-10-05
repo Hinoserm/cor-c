@@ -1,4 +1,5 @@
 // test: region_arena_overflow
+// regions: taken
 // timeout: 60
 // expect-exit: 0
 // expect-output:
@@ -16,13 +17,14 @@
 // r5 c5000 c5319 bad 0
 // bare 5 64545340
 //
-// More made beneath one region boundary than a thread's region arena holds
-// (four megabytes by default; this makes about ten): once it is full, what
-// the boundary makes goes to the heap, and a boundary opened inside it while
-// it is full has no region of its own. Everything must still read back whole
-// after collections -- the arrays made in the arena, those that spilled to
-// the heap, the strings handed out to the caller -- and the arena must be
-// usable again for the next round once the boundary has returned.
+// About ten megabytes made beneath one region boundary, with boundaries
+// opened inside it as it grows: the thread's arena starts at a page and
+// grows chunk by chunk under it, the region and those inside it spanning
+// chunks, a list's storage grown beside its owner in an earlier chunk.
+// Everything must still read back whole after collections -- the arrays
+// made in the arena, the strings handed out to the caller -- and the arena
+// must be usable again for the next round once the boundary has returned
+// and handed its chunks back.
 
 using System;
 using System.Collections.Generic;
@@ -125,7 +127,7 @@ public static class Program
             raw.Add(r);
             if (i % 64 == 63) GC.Collect();
         }
-        // The arena is full now: this boundary opens no region of its own.
+        // Opened past the chunks the boundary above filled.
         long s = RgnSmall(round, 7);
         GC.Collect();
         foreach (Seeded c in seeded) s += c.Data[2047] + c.Seed;

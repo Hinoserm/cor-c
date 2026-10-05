@@ -25,12 +25,40 @@ public sealed class RegionHints
     public const string SectionName = ".corsac.regions";
     public const int MaximumBytes = 64 * 1024 * 1024;
     private const uint Magic = 0x47455243; // "CREG"
-    private const int Version = 4;
+    // 6: a function's number parameters (NumberParams) and how often each
+    // of its sites and calls runs, with the unit's word size (Repeats).
+    // 7: the symbols whose addresses its code takes (Symbols), after its
+    // sites, and the Symbol constraint naming them.
+    // 8: an async or iterator body states its state machine's stores
+    // (what its registers and slots hold across a suspension), rather
+    // than leaking every one: the same bytes, another meaning.
+    // 9: the field a load or a store names (RegionConstraint.Family), by the
+    // function's Families, after its symbols; each Load and Store states it.
+    // 10: the functions only a descriptor's method slots name (MethodsTaken),
+    // apart from every other address taken, and whether the unit calls a
+    // method it read from a descriptor as no named call (CallsThroughMethods),
+    // after the addresses taken.
+    // 11: the slots each such function reads its method at (BlindSlots),
+    // after its families, so the link calls blind only the methods some
+    // descriptor holds at one of them.
+    private const int Version = 11;
     private static readonly UTF8Encoding Utf8 = new(false, true);
 
     public List<RegionFunction> Functions { get; } = new();
-    /// <summary>Every symbol the unit names as a value, in code or in data: the functions among them may be called by anything.</summary>
+    /// <summary>The bytes of the unit's target's word, which the arena's blocks are laid out by (RegionLayout).</summary>
+    public int WordSize { get; set; } = 4;
+    /// <summary>Every symbol the unit names as a value, in code or in data, but in a descriptor's method slots: the functions among them may be called by anything.</summary>
     public SortedSet<string> AddressTaken { get; } = new(StringComparer.Ordinal);
+    /// <summary>
+    /// The functions the unit's descriptors name in their method slots
+    /// (Target.DescriptorBytes on): reached by a virtual call, which the link
+    /// follows to them, and by anything else only through a method read out
+    /// of a descriptor and called as no virtual call is (CallsThroughMethods),
+    /// or a virtual call the link cannot resolve.
+    /// </summary>
+    public SortedSet<string> MethodsTaken { get; } = new(StringComparer.Ordinal);
+    /// <summary>Whether some function of the unit calls a method read out of a descriptor by a call that names no virtual target (RegionSummary).</summary>
+    public bool CallsThroughMethods { get; set; }
 
     public void Attach(ObjectFile obj)
     {
@@ -53,11 +81,14 @@ public sealed class RegionHints
         // Every name once, in ordinal order: the same hints are the same bytes.
         SortedSet<string> names = new(StringComparer.Ordinal);
         names.UnionWith(AddressTaken);
+        names.UnionWith(MethodsTaken);
         foreach (RegionFunction function in Functions)
         {
             names.Add(function.Name);
             foreach (RegionCall call in function.Calls) if (call.Callee is not null) names.Add(call.Callee);
             foreach (RegionSite site in function.Sites) if (site.Table is not null) names.Add(site.Table);
+            names.UnionWith(function.Symbols);
+            names.UnionWith(function.Families);
         }
         Dictionary<string, int> index = new(StringComparer.Ordinal);
         foreach (string name in names) index.Add(name, index.Count);
@@ -71,6 +102,7 @@ public sealed class RegionHints
             writer.Write((byte)bits);
         }
         writer.Write(Magic); writer.Write(Version); writer.Write(0); // length, filled below
+        Var(WordSize);
         Var(names.Count);
         foreach (string name in names)
         {
@@ -80,20 +112,39 @@ public sealed class RegionHints
         }
         Var(AddressTaken.Count);
         foreach (string name in AddressTaken) Var(index[name]);
+        Var(MethodsTaken.Count);
+        foreach (string name in MethodsTaken) Var(index[name]);
+        writer.Write((byte)(CallsThroughMethods ? 1 : 0));
         Var(Functions.Count);
         foreach (RegionFunction function in Functions)
         {
             Var(index[function.Name]);
-            writer.Write((byte)((function.Global ? 1 : 0) | (function.MayBeBoundary ? 2 : 0) | (function.Instance ? 4 : 0) | (function.Main ? 8 : 0)));
+            writer.Write((byte)((function.Global ? 1 : 0) | (function.MayBeBoundary ? 2 : 0) | (function.Instance ? 4 : 0) | (function.Main ? 8 : 0)
+                | (function.CallsThroughMethod ? 16 : 0)));
             Var(function.Parameters); Var(function.Nodes); Var(function.Slots);
+            Var(function.NumberParams.Length);
+            foreach (int k in function.NumberParams) Var(k);
             Var(function.Sites.Length);
             foreach (RegionSite site in function.Sites)
             {
                 writer.Write((byte)((site.Rewritable ? 1 : 0) | (int)site.Words << 1)); Var(site.Line);
                 Var(site.Table is null ? -1 : index[site.Table]); Var(site.At);
             }
+            Var(function.Symbols.Length);
+            foreach (string symbol in function.Symbols) Var(index[symbol]);
+            Var(function.Families.Length);
+            foreach (string family in function.Families) Var(index[family]);
+            if (function.CallsThroughMethod)
+            {
+                Var(function.BlindSlots.Length);
+                foreach (long slot in function.BlindSlots) Var(slot);
+            }
             Var(function.Constraints.Count);
-            foreach (RegionConstraint c in function.Constraints) { writer.Write((byte)c.Kind); Var(c.A); Var(c.B); Var(c.C); }
+            foreach (RegionConstraint c in function.Constraints)
+            {
+                writer.Write((byte)c.Kind); Var(c.A); Var(c.B); Var(c.C);
+                if (c.Kind is RegionConstraintKind.Load or RegionConstraintKind.Store) Var(c.Family);
+            }
             Var(function.Calls.Count);
             foreach (RegionCall call in function.Calls)
             {
@@ -115,6 +166,11 @@ public sealed class RegionHints
                 Ints(loop.Sites); Ints(loop.Calls); Ints(loop.AlwaysSites); Ints(loop.AlwaysCalls);
                 Ints(loop.Live); Ints(loop.Invariant); Ints(loop.KeptSlots);
             }
+            // How often each site and call runs in one call of the function.
+            Var(function.Repeats.Length);
+            foreach (RegionRepeat repeat in function.Repeats) { Var(repeat.Header); Var(repeat.Parent); Var(repeat.Trip); }
+            for (int s = 0; s < function.Sites.Length; s++) { Var(function.BytesOf(s)); Var(function.LoopOfSite(s)); }
+            for (int k = 0; k < function.Calls.Count; k++) Var(function.LoopOfCall(k));
         }
         writer.Flush();
         byte[] result = stream.ToArray();
@@ -156,6 +212,8 @@ public sealed class RegionHints
                 if (count < 0 || count > bytes.Length - stream.Position) throw new ElfFormatException("Invalid region hint count");
                 return count;
             }
+            int wordSize = Int();
+            if (wordSize is not (4 or 8)) throw new ElfFormatException("Invalid region hint word size");
             string[] names = new string[Count()];
             for (int i = 0; i < names.Length; i++)
             {
@@ -172,8 +230,12 @@ public sealed class RegionHints
                 if (at < 0 || at >= names.Length) throw new ElfFormatException("Invalid region hint name index");
                 return names[at];
             }
-            RegionHints hints = new();
+            RegionHints hints = new() { WordSize = wordSize };
             for (int i = Count(); i > 0; i--) hints.AddressTaken.Add(Name());
+            for (int i = Count(); i > 0; i--) hints.MethodsTaken.Add(Name());
+            byte calls = reader.ReadByte();
+            if (calls > 1) throw new ElfFormatException("Invalid region hint flags");
+            hints.CallsThroughMethods = calls == 1;
             for (int i = Count(); i > 0; i--)
             {
                 string name = Name();
@@ -181,6 +243,11 @@ public sealed class RegionHints
                 int parameters = Int(), nodes = Int(), slots = Int();
                 if (parameters < 0 || nodes <= parameters || nodes > RegionFunction.NodeLimit || slots < 0 || slots > RegionFunction.NodeLimit)
                     throw new ElfFormatException("Invalid region hint function");
+                // Each a parameter, in order, once.
+                int[] numbers = new int[Count()];
+                for (int k = 0; k < numbers.Length; k++)
+                    if ((numbers[k] = Int()) < 0 || numbers[k] >= parameters || k > 0 && numbers[k] <= numbers[k - 1])
+                        throw new ElfFormatException("Invalid region hint function");
                 RegionSite[] sites = new RegionSite[Count()];
                 for (int s = 0; s < sites.Length; s++)
                 {
@@ -190,16 +257,37 @@ public sealed class RegionHints
                     if (bits > 5 || table < -1 || table >= names.Length) throw new ElfFormatException("Invalid region hint stamp");
                     sites[s] = new RegionSite((bits & 1) != 0, line, table < 0 ? null : names[table], at, (RegionWords)(bits >> 1));
                 }
-                RegionFunction function = new(name, (flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0, parameters, nodes, slots, sites) { Main = (flags & 8) != 0 };
+                string[] symbols = new string[Count()];
+                for (int s = 0; s < symbols.Length; s++) symbols[s] = Name();
+                string[] families = new string[Count()];
+                for (int s = 0; s < families.Length; s++) families[s] = Name();
+                // In order, each once; Any (every slot) first where it is one.
+                long[] blindSlots = Array.Empty<long>();
+                if ((flags & 16) != 0)
+                {
+                    blindSlots = new long[Count()];
+                    for (int k = 0; k < blindSlots.Length; k++)
+                        if ((blindSlots[k] = Var()) < 0 && blindSlots[k] != RegionConstraint.Any || k > 0 && blindSlots[k] <= blindSlots[k - 1])
+                            throw new ElfFormatException("Invalid region hint function");
+                }
+                RegionFunction function = new(name, (flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0, parameters, nodes, slots, sites)
+                    { Main = (flags & 8) != 0, CallsThroughMethod = (flags & 16) != 0, NumberParams = numbers, Symbols = symbols, Families = families, BlindSlots = blindSlots };
                 bool Node(int n) => n >= 0 && n < nodes;
                 for (int k = Count(); k > 0; k--)
                 {
                     RegionConstraint c = new((RegionConstraintKind)reader.ReadByte(), Int(), Int(), Var());
+                    if (c.Kind is RegionConstraintKind.Load or RegionConstraintKind.Store)
+                    {
+                        int family = Int();
+                        if (family < -1 || family >= families.Length) throw new ElfFormatException("Invalid region hint constraint");
+                        c = c with { Family = family };
+                    }
                     bool valid = c.Kind switch
                     {
                         RegionConstraintKind.Site => Node(c.A) && c.B >= 0 && c.B < sites.Length,
                         RegionConstraintKind.Slot => Node(c.A) && c.B >= 0 && c.B < slots,
                         RegionConstraintKind.Unknown or RegionConstraintKind.Leak => Node(c.A),
+                        RegionConstraintKind.Symbol => Node(c.A) && c.B >= 0 && c.B < symbols.Length,
                         RegionConstraintKind.Copy or RegionConstraintKind.Load or RegionConstraintKind.Store or RegionConstraintKind.MemCopy => Node(c.A) && Node(c.B),
                         _ => false,
                     };
@@ -233,6 +321,23 @@ public sealed class RegionHints
                     function.Loops.Add(new RegionLoopShape(header, Ints(sites.Length), Ints(function.Calls.Count), Ints(sites.Length), Ints(function.Calls.Count),
                         Ints(nodes), Ints(nodes), Ints(slots)));
                 }
+                // Each loop's parent before it; each site and call in one of them, or none, or past knowing.
+                RegionRepeat[] repeats = new RegionRepeat[Count()];
+                for (int k = 0; k < repeats.Length; k++)
+                {
+                    RegionRepeat r = new(Int(), Int(), Var());
+                    if (r.Header < 0 || r.Parent < -1 || r.Parent >= k || r.Trip < 0) throw new ElfFormatException("Invalid region hint repeat");
+                    repeats[k] = r;
+                }
+                bool InLoop(int at) => at >= RegionFunction.Throwing && at < repeats.Length;
+                long[] siteBytes = new long[sites.Length];
+                int[] siteLoops = new int[sites.Length];
+                for (int s = 0; s < sites.Length; s++)
+                    if ((siteBytes[s] = Var()) < 0 || !InLoop(siteLoops[s] = Int())) throw new ElfFormatException("Invalid region hint repeat");
+                int[] callLoops = new int[function.Calls.Count];
+                for (int k = 0; k < callLoops.Length; k++)
+                    if (!InLoop(callLoops[k] = Int())) throw new ElfFormatException("Invalid region hint repeat");
+                function.Repeats = repeats; function.SiteBytes = siteBytes; function.SiteLoops = siteLoops; function.CallLoops = callLoops;
                 hints.Functions.Add(function);
             }
             if (stream.Position != bytes.Length) throw new ElfFormatException("Trailing region hint data");
@@ -267,9 +372,28 @@ public sealed class RegionFunction
     public bool Instance { get; }
     /// <summary>The program's Main (Module.Main): never a boundary, and what the entry calls besides it is the entry's setup.</summary>
     public bool Main { get; init; }
+    /// <summary>Calls a method it read out of a descriptor by a call naming no virtual target (RegionHints.CallsThroughMethods), for a report.</summary>
+    public bool CallsThroughMethod { get; init; }
+    /// <summary>
+    /// WHERE IN A METHOD TABLE SUCH A CALL READS ITS METHOD: the offsets from
+    /// where an object's first word points, in order, each once
+    /// (RegionConstraint.Any, first: some offset nobody can say). Only a
+    /// method some descriptor holds at one of them is called so
+    /// (RegionSolver.Addressed); a function that is no such caller reads none.
+    /// </summary>
+    public long[] BlindSlots { get; init; } = Array.Empty<long>();
     public int Parameters { get; }
     public int Nodes { get; }
     public int Slots { get; }
+    /// <summary>
+    /// Its parameters of a number type, in order: an int, a char, a double,
+    /// an enum held in thirty-two bits (RegionSummary). What a caller hands
+    /// one is never an address, so nothing it holds is handed on. A long, a
+    /// nint, a pointer, a struct or a type parameter may be one, and is not
+    /// named here.
+    /// </summary>
+    public int[] NumberParams { get; init; } = Array.Empty<int>();
+    public bool IsNumber(int k) => NumberParams.Length > 0 && Array.BinarySearch(NumberParams, k) >= 0;
     /// <summary>Its allocator calls, by ordinal (RegionPointsTo.MarkSites).</summary>
     public RegionSite[] Sites { get; }
     public List<RegionConstraint> Constraints { get; } = new();
@@ -279,6 +403,53 @@ public sealed class RegionFunction
     public int[] MustSites { get; set; } = Array.Empty<int>();
     /// <summary>Its loops that may be given a region: none in an async or iterator body, a type's initialiser, or a function with a landing pad or a label's address.</summary>
     public List<RegionLoopShape> Loops { get; } = new();
+
+    /// <summary>
+    /// HOW OFTEN EACH SITE AND CALL RUNS in one call of the function
+    /// (RegionSummary.Repeats): its natural loops, each with the loop it is
+    /// in (an earlier one, -1 for none) and the most laps it makes each time
+    /// it is entered (0: not known); and per site and per call, the innermost
+    /// loop it is in, -1 for none, Unbounded where nothing bounds how often
+    /// it runs (a cycle that is no natural loop, a handler's way back), and
+    /// Throwing where it runs only on the way to a throw.
+    /// </summary>
+    public RegionRepeat[] Repeats { get; set; } = Array.Empty<RegionRepeat>();
+    /// <summary>Per site: the bytes its block takes in the arena (RegionLayout.Block), 0 when its size is not a constant.</summary>
+    public long[] SiteBytes { get; set; } = Array.Empty<long>();
+    public int[] SiteLoops { get; set; } = Array.Empty<int>();
+    public int[] CallLoops { get; set; } = Array.Empty<int>();
+    public const int Unbounded = -2, Throwing = -3;
+    public long BytesOf(int site) => site < SiteBytes.Length ? SiteBytes[site] : 0;
+    public int LoopOfSite(int site) => site < SiteLoops.Length ? SiteLoops[site] : Unbounded;
+    public int LoopOfCall(int call) => call < CallLoops.Length ? CallLoops[call] : Unbounded;
+    /// <summary>The symbols whose addresses its code takes, named by its Symbol constraints.</summary>
+    public string[] Symbols { get; init; } = Array.Empty<string>();
+    /// <summary>The fields its typed loads and stores name (RegionConstraint.Family).</summary>
+    public string[] Families { get; set; } = Array.Empty<string>();
+    /// <summary>Whether the link has made every Symbol constraint left one of a constant (RegionConstants): never written into the hints.</summary>
+    public bool ConstantsKnown { get; set; }
+}
+
+/// <summary>A natural loop of a function, for how often what is in it runs: its header's place, the loop it is in (-1: none), the most laps it makes a time it is entered (0: not known).</summary>
+public readonly record struct RegionRepeat(int Header, int Parent, long Trip);
+
+/// <summary>
+/// THE ARENA'S BLOCKS, as Gc lays them out ("regions"): a header of two
+/// words and a footer of one round every block, its size rounded to eight
+/// and never below four words; a region's record is a block of two words.
+/// What the link sizes a region by (RegionSolver.Sizes) and the runtime
+/// lays it down by must agree, or a region sized too small grows as an
+/// unsized one does.
+/// </summary>
+public static class RegionLayout
+{
+    public static long Block(long payload, int wordSize)
+    {
+        long need = (payload + 3L * wordSize + 7) & -8L;
+        return Math.Max(need, 4L * wordSize);
+    }
+
+    public static long Record(int wordSize) => Block(2L * wordSize, wordSize);
 }
 
 /// <summary>
@@ -330,10 +501,28 @@ public enum RegionConstraintKind : byte
     MemCopy,
     /// <summary>What A holds goes where nobody follows it (a throw).</summary>
     Leak,
+    /// <summary>
+    /// A holds the address of the function's symbol B (RegionFunction.Symbols):
+    /// the unknown object, unless the link finds it a constant. The link
+    /// makes each one that is not Unknown (RegionConstants); one left names
+    /// a constant, where RegionFunction.ConstantsKnown says so.
+    /// </summary>
+    Symbol,
 }
 
-/// <summary>One constraint over a function's nodes.</summary>
-public readonly record struct RegionConstraint(RegionConstraintKind Kind, int A, int B, long C)
+/// <summary>
+/// One constraint over a function's nodes. A Load or a Store may name the
+/// field it reads or writes (Family, an index into RegionFunction.Families;
+/// -1 for none): a field of a class, read or written at its offset from the
+/// start of an object of that class, as C# compiles a field access -- never
+/// a struct's field, an element, a raw read or write of memory (Sys.Peek
+/// and Poke, a pointer), or a copy. Two accesses naming different fields at
+/// one offset are never of one object in a type-safe program (a class's
+/// fields lie after all its bases' at offsets of their own), which the
+/// escape engine's aliasing of what places are written relies on
+/// (RegionEscape.Aliased).
+/// </summary>
+public readonly record struct RegionConstraint(RegionConstraintKind Kind, int A, int B, long C, int Family = -1)
 {
     /// <summary>A copy's shift, or a copy's count, when it is no constant.</summary>
     public const long Any = long.MinValue;
@@ -370,13 +559,17 @@ public sealed record RegionCall(string? Callee, int Dest, int[] Arguments);
 /// open a region on entry, the allocation sites -- by function and ordinal
 /// -- to make in the innermost open region (Runtime.AllocRegion), and the
 /// loops -- by function and their header's place in its blocks -- whose laps
-/// each get a region (Runtime.RegionLoop).
+/// each get a region (Runtime.RegionLoop). With a boundary or a loop, where
+/// the link proved it, the most bytes its region holds in one call or one
+/// lap (RegionSolver.Sizes); one not named is not known.
 /// </summary>
 public sealed class RegionFacts
 {
     public SortedSet<string> Boundaries { get; } = new(StringComparer.Ordinal);
     public SortedSet<(string Function, int Ordinal)> Sites { get; } = new(SiteOrder.Instance);
     public SortedSet<(string Function, int Header)> Loops { get; } = new(SiteOrder.Instance);
+    public SortedDictionary<string, long> BoundaryBytes { get; } = new(StringComparer.Ordinal);
+    public SortedDictionary<(string Function, int Header), long> LoopBytes { get; } = new(SiteOrder.Instance);
     public bool IsEmpty => Boundaries.Count == 0 && Sites.Count == 0 && Loops.Count == 0;
 
     public sealed class SiteOrder : IComparer<(string Function, int Ordinal)>

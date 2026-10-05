@@ -1,4 +1,5 @@
 // test: a region boundary in one unit over allocations made in another
+// regions: taken
 // units: tests/language/support/970_region_units.cor
 // expect-exit: 0
 // expect-output:

@@ -1,0 +1,39 @@
+// test: tostring_through_an_interface
+// expect-exit: 0
+// expect-output:
+// sq tri
+// sq tri <>
+// 4 3
+//
+// ToString OF A VALUE HELD AS AN INTERFACE the program declares: narrowed to
+// that interface's implementers, which include a boxed struct -- its box lists
+// the interfaces the struct implements -- and a null joins as nothing.
+
+using System;
+
+interface IShape { int Area(); }
+
+class Sq : IShape
+{
+    public int Area() => 4;
+    public override string ToString() => "sq";
+}
+
+struct Tri : IShape
+{
+    public int Area() => 3;
+    public override string ToString() => "tri";
+}
+
+class P
+{
+    static int Main()
+    {
+        IShape[] all = { new Sq(), new Tri() };
+        Console.WriteLine(all[0].ToString() + " " + all[1].ToString());
+        IShape? none = null;
+        Console.WriteLine($"{all[0]} {all[1]} <{none}>");
+        Console.WriteLine(all[0].Area() + " " + all[1].Area());
+        return 0;
+    }
+}

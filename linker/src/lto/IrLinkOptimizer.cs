@@ -8,8 +8,8 @@ public static class IrLinkOptimizer
 {
     public static int Run(List<(string Name, ObjectFile Object)> inputs, Func<IUnitBackend> backend,
         bool enabled = true, int importBytes = 1024 * 1024, int bodyLimit = 32, string? closedImageEntry = null, bool parallelBackends = false,
-        string? regionReport = null, bool openTypes = false, string? reachableFrom = null, IEnumerable<string>? keep = null,
-        bool moduleOfKernel = false)
+        string? regionReport = null, bool madeOnly = false, bool openTypes = false, string? reachableFrom = null,
+        IEnumerable<string>? keep = null, bool moduleOfKernel = false)
     {
         if (importBytes < 0 || bodyLimit < 0) throw new ArgumentOutOfRangeException(nameof(importBytes));
         TargetContract.Validate(inputs); ManagedLayoutContract.Validate(inputs);
@@ -40,6 +40,23 @@ public static class IrLinkOptimizer
         // Every unit's lifetime summaries, solved together (LifetimeSolver).
         // Virtual calls, each by the overrides the whole image holds for it
         // (VirtualTargets), from the descriptors in the objects themselves.
+        // What code outside the IR names: it may call any of it, with anything.
+        SortedSet<string> foreign = new(StringComparer.Ordinal);
+        foreach (var input in inputs)
+            if (!archives.ContainsKey(input.Object))
+                foreach (Section section in input.Object.Sections) foreach (Relocation reloc in section.Relocs) foreign.Add(reloc.Symbol);
+        // ONLY THE TYPES THE IMAGE MAKES (VirtualTargets.Made): a virtual
+        // call's targets on a type nothing stamps an object with run on no
+        // object, and drop out of every answer the link gives by dispatch --
+        // the lifetimes' merges, the owned fields' callers and borrowers,
+        // the regions' calls and the judge's callers. Only where nothing
+        // outside makes objects: a closed image (the caller says it is not
+        // a shared object, links no shared library and exports nothing),
+        // whose foreign code names what it calls ("*" for anything) -- and
+        // not under --no-rta.
+        VirtualTargets.Made? made = enabled && madeOnly && !openTypes && closedImageEntry is not null && !foreign.Contains("*")
+            ? VirtualTargets.MadeIn(inputs, archives.Values) : null;
+        VirtualTargets.Made? lifetimeMade = made?.Again();
         // NOT WHERE THE TYPES ARE OPEN: a kernel linked with exports has
         // modules that derive from its classes and override what it calls, so
         // the image's own overrides are not every one a call can reach, and
@@ -47,8 +64,9 @@ public static class IrLinkOptimizer
         Dictionary<string, string[]> virtuals = enabled && hints.Count > 0 && !openTypes
             ? VirtualTargets.Resolve(inputs, hintOrder.SelectMany(unit => unit.Named()).Select(named => named.Callee)
                 .Concat(hintOrder.SelectMany(unit => unit.Owned?.VirtualNames() ?? Enumerable.Empty<string>()))
-                .Where(name => name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal)))
+                .Where(name => name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal)), lifetimeMade)
             : new(StringComparer.Ordinal);
+        if (regionReport is not null) Console.Error.WriteLine("lifetimes: rta " + (lifetimeMade is null ? "off" : lifetimeMade.Summary()));
         LifetimeSolver? lifetimes = enabled && hints.Count > 0 ? new LifetimeSolver(hintOrder, virtuals) : null;
         if (virtuals.Count > 0) Console.Error.WriteLine("LTO virtual calls resolved: " + virtuals.Count);
         LinkTimings.Phase("virtual targets and lifetime solve");
@@ -142,16 +160,26 @@ public static class IrLinkOptimizer
                 return RegionHints.Read(sections[0].Content());
             }
             List<RegionHints> regionUnits = regionOrder.Select(ReadRegions).ToList();
-            Dictionary<string, string[]> regionVirtuals = VirtualTargets.Resolve(inputs, RegionSolver.VirtualNames(regionUnits));
-            // What code outside the IR names: it may call any of it, with anything.
-            SortedSet<string> foreign = new(StringComparer.Ordinal);
-            foreach (var input in inputs)
-                if (!archives.ContainsKey(input.Object))
-                    foreach (Section section in input.Object.Sections) foreach (Relocation reloc in section.Relocs) foreign.Add(reloc.Symbol);
+            // Each symbol's address a constant or the unknown object, from every object's data.
+            List<(string Table, long At)> dataObjects = new();
+            int constants = RegionConstants.Resolve(regionUnits, regionOrder, inputs.Select(input => input.Object), dataObjects);
+            if (regionReport is not null) Console.Error.WriteLine("regions: " + constants + " symbol addresses constants");
+            VirtualTargets.Made? regionMade = made?.Again();
+            Dictionary<string, string[]> regionVirtuals = VirtualTargets.Resolve(inputs, RegionSolver.VirtualNames(regionUnits), regionMade);
+            if (regionReport is not null)
+            {
+                Console.Error.WriteLine("regions: rta " + (regionMade is null ? "off" : regionMade.Summary()));
+                // --region-report +rta: which types nothing makes a call reached.
+                if (regionMade is not null && regionReport.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Contains("+rta"))
+                    foreach (string type in regionMade.Dropped.Union(lifetimeMade?.Dropped ?? Enumerable.Empty<string>()).Order(StringComparer.Ordinal))
+                        Console.Error.WriteLine("regions: rta never made " + type);
+            }
             RegionFacts?[]? solved = RegionSolver.Solve(regionUnits, regionVirtuals, (table, offset) => VirtualTargets.MethodAt(inputs, table, offset),
                 closedImageEntry!, foreign, regionReport,
                 (u, name) => reachability?.GetValueOrDefault(regionOrder[u]) is not { } kept || kept.Contains("F:" + name),
-                (table, at, offset) => VirtualTargets.HoldsNoReference(inputs, table, at, offset), loopRegionsPossible);
+                (table, at, offset) => VirtualTargets.HoldsNoReference(inputs, table, at, offset), loopRegionsPossible,
+                (table, type) => VirtualTargets.IsA(inputs, table, type), VirtualTargets.SlotsOf(inputs),
+                VirtualTargets.Receivers(inputs, archives.Keys.ToHashSet()), dataObjects, VirtualTargets.MethodsOf(inputs));
             if (solved is not null)
             {
                 regionFacts = new();
@@ -159,6 +187,14 @@ public static class IrLinkOptimizer
                     if (solved[u] is { IsEmpty: false } unitFacts) regionFacts[regionOrder[u]] = unitFacts;
             }
         }
+
+        // STORAGE BESIDE ITS OWNER: where some boundary or loop opens a region,
+        // what a collection grows into, stored into a field it frees itself as
+        // it replaces it, is made beside the collection (AllocNear) -- in the
+        // collection's region when that is the innermost one open. Nowhere a
+        // region opens, it would only ever be the heap's, by a longer way.
+        if (ownedFields is { SelfFreed.Count: > 0 } && regionFacts is { Count: > 0 } && owners.ContainsKey(RuntimeAbi.AllocNear))
+            ownedFields.Beside = true;
 
         // WHAT THE SOLVE HELD, given back before the units are regenerated:
         // its graph over every unit -- most of a gigabyte for the compiler's

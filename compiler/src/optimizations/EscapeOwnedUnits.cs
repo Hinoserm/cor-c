@@ -406,12 +406,17 @@ public sealed partial class Escape
         foreach (Function f in m.Functions)
         {
             Dictionary<VReg, Instr>? defs = null;
+            SelfFrees? freesItself = null;
             foreach (Block b in f.Blocks)
                 for (int at = 0; at < b.Instrs.Count; at++)
                 {
                     Instr st = b.Instrs[at];
                     if (st.Op != Opcode.Store || st.Field is null || st.Operands.Count < 2 || st.Operands[0] is SymOperand
                         || !decided.Fields.ContainsKey(st.Field)) continue;
+                    // NOT WHERE THE FUNCTION FREES THE FIELD'S VALUE ITSELF
+                    // (EscapeSelfFrees), as OwnedFields has it.
+                    freesItself ??= SelfFreesOf(f, _inserted, pair: false);
+                    if (freesItself.FreedFields.Contains(st.Field)) continue;
                     defs ??= SingleDefs(f);
                     // ONLY IN AN OBJECT NO OTHER THREAD CAN SEE, as OwnedFields
                     // decides it: one this function made and that never escapes
@@ -436,13 +441,14 @@ public sealed partial class Escape
                 }
         }
 
-        // What calls replace in this function's own objects (FreeReplacedAcrossCalls).
+        // What calls replace in this function's own objects (FreeReplacedAcrossCalls):
+        // not a field some collection frees itself as it replaces it.
         {
             Dictionary<string, List<long>> byOwner = new(StringComparer.Ordinal);
             foreach ((string field, long offset) in decided.Fields)
             {
                 int split = field.IndexOf("::", StringComparison.Ordinal);
-                if (split <= 0) continue;
+                if (split <= 0 || decided.SelfFreed.Contains(field)) continue;
                 string owner = "t_" + field[..split];
                 if (!byOwner.TryGetValue(owner, out List<long>? list)) byOwner[owner] = list = new();
                 if (!list.Contains(offset)) list.Add(offset);
@@ -564,6 +570,17 @@ public sealed partial class Escape
         Dictionary<Function, Dictionary<VReg, Instr>> defsOf = new();
         Dictionary<VReg, Instr> Defs(Function f) => defsOf.TryGetValue(f, out var d) ? d : defsOf[f] = SingleDefs(f);
         Dictionary<Function, RegisterWrites> writesOf = new();
+        // A COLLECTION'S OWN FREES OF THE STORAGE IT REPLACES (EscapeSelfFrees),
+        // as OwnedFields finds them; the link learns which fields are freed so.
+        Dictionary<Function, SelfFrees> selfOf = new();
+        foreach (Function f in m.Functions)
+        {
+            SelfFrees found = SelfFreesOf(f, _inserted);
+            if (!ReferenceEquals(found, SelfFrees.None)) selfOf[f] = found;
+        }
+        SelfFrees SelfOf(Function f) => selfOf.GetValueOrDefault(f) ?? SelfFrees.None;
+        Dictionary<Function, HashSet<VReg>> writtenOf = new();
+        HashSet<VReg> WrittenIn(Function f) => writtenOf.TryGetValue(f, out HashSet<VReg>? known) ? known : writtenOf[f] = Written(f);
 
         // A call's result made for its caller: an allocation, a fresh function
         // of this unit, or -- if the link finds it fresh -- another unit's.
@@ -592,6 +609,7 @@ public sealed partial class Escape
                     {
                         stores.Add((f, b, i));
                         Record(i.Field, i.Offset).Stored = true;
+                        if (SelfOf(f).Stores.Contains(i)) Record(i.Field, i.Offset).SelfFreed = true;
                         if (i.Operands[0] is not RegOperand baseReg) record.Writes.Add(i.Field);
                         else if (OriginOf(Defs(f), baseReg.Reg) is { Op: Opcode.Call } made && IsAllocator(made.Callee)) { }
                         else if (f.Params.Count > 0 && baseReg.Reg == f.Params[0]) record.InitWrites.Add(i.Field);
@@ -859,8 +877,10 @@ public sealed partial class Escape
             }
             HashSet<VReg>? back = f.Name == m.Entry ? null : Returned(f);
             Needs needs = new(this);
+            // A self-replacing free of what was read takes it over (EscapeSelfFrees).
+            SelfFrees mine = SelfOf(f);
             Flow flow = Analyse(f, new[] { value }, summaries, ld, ld.Op == Opcode.Store ? new HashSet<Instr>(ReferenceEqualityComparer.Instance) { ld } : null,
-                returnable: back is { Count: > 0 } ? back : null, needs: needs, exact: exact);
+                returnable: back is { Count: > 0 } ? back : null, needs: needs, exact: exact, consumers: mine.Frees.Count > 0 ? mine.Frees : null);
             if (flow.Escapes) { why = $"read escapes via {flow.Why?.Op} {flow.Why?.Callee}"; return null; }
             ReadJudgement judged = new() { HandedBack = back is not null && flow.Derived.Overlaps(back) };
             judged.Needs.Add(needs.Condition);
@@ -885,14 +905,20 @@ public sealed partial class Escape
                     }
                     else if (i.Op == Opcode.Call)
                     {
-                        if (IsFreeCall(i.Callee) && !FreesOwnMaking(x, k) || IsCatchEnd(i.Callee) || i.Callee == OwnedReplacedFreer
-                            || i.Callee == AsyncFrame.Suspend)
+                        // Nor a self-replacing free of the same object's other
+                        // field, nor a free of an element of the value read
+                        // (EscapeSelfFrees): neither gives back, or writes
+                        // into, anything the value read is or is inside.
+                        if (IsFreeCall(i.Callee) && (FreesOtherField(f, Defs(f), WrittenIn(f), mine, i, ld) || FreesElementOf(Defs(f), i, inside))) continue;
+                        if (IsFreeCall(i.Callee) && !FreesOwnMaking(x, k)
+                            || IsCatchEnd(i.Callee) || i.Callee == OwnedReplacedFreer || i.Callee == AsyncFrame.Suspend)
                         { why = $"read live across {i.Op} {i.Callee}"; return null; }
                         if (i.Callee is not null && !NeverWritesFields(i.Callee)) judged.Danger.Add(i.Callee);
                     }
-                    // Not a field this unit refused: no store into it frees anything.
+                    // Not a field this unit refused: no store into it frees
+                    // anything; nor a self-replacing free's store.
                     else if (i.Op == Opcode.Store && i.Field is not null && !(hints.Fields.TryGetValue(i.Field, out OwnedFieldRecord? into) && into.Refused)
-                        && !StoreIntoRead(i, inside) && !FirstOf(f).Fills(x, k)) judged.DangerFields.Add(i.Field);
+                        && !StoreIntoRead(i, inside) && !FirstOf(f).Fills(x, k) && !mine.Stores.Contains(i)) judged.DangerFields.Add(i.Field);
                 }
             }
             if (judged.Danger.Count > OwnedFieldHints.Limit || judged.DangerFields.Count > OwnedFieldHints.Limit) { why = "read live across too much"; return null; }

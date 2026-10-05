@@ -204,8 +204,19 @@ public sealed class UnitBackend : IUnitBackend
             // And the functions the whole program found fresh: inlined first,
             // their results would be branches and no longer calls the rules
             // can recognise.
-            string[] allocators = facts is null ? Array.Empty<string>()
-                : facts.Fresh.Append(Escape.Allocator).Append(Escape.LeafAllocator).Append(Escape.ObjectAllocator).Order(StringComparer.Ordinal).ToArray();
+            // AND AN ARRAY GROWN WHERE IT IS (Runtime.GrowInPlace) a call through
+            // every inliner here, as the unit's own inliners keep it: the
+            // lifetime rules (Escape.IsCollectorNote) and the region passes
+            // after them (MakeSitesInRegion, MakeStorageBeside) know it by
+            // name as a call that keeps nothing. Its body inlined by the
+            // link's inliner -- which, unlike the unit's, pinned nothing but
+            // the allocators -- handed List's storage to Gc.RegionGrow before
+            // RunAtLink saw it, as the unit's inliner did before 0847b27.
+            // No inliner runs after those passes here, so it stays a call.
+            string[] growers = { Corsac.Lang.Lto.RuntimeAbi.GrowInPlace };
+            string[] allocators = facts is null ? growers
+                : facts.Fresh.Append(Escape.Allocator).Append(Escape.LeafAllocator).Append(Escape.ObjectAllocator)
+                    .Concat(growers).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
             new Inline { SmallBody = 40, GrowthLimit = 1024, ConstantBranchBody = 160, FreshOwnerBody = 0, Keep = allocators }.Run(local);
             cleanup.Run(local);
             // WHAT THE LINK'S INLINING PUT IN SIGHT, made direct: a consumer
@@ -232,7 +243,9 @@ public sealed class UnitBackend : IUnitBackend
                     taken = 0;
                 }
                 Interlocked.Add(ref _lifetimes, taken);
-                new Inline { SmallBody = 40, GrowthLimit = 1024, ConstantBranchBody = 160, FreshOwnerBody = 0 }.Run(local);
+                // Its frees before the boundary's leave (RegionPointsTo.LeaveLast).
+                RegionPointsTo.LeaveLast(function);
+                new Inline { SmallBody = 40, GrowthLimit = 1024, ConstantBranchBody = 160, FreshOwnerBody = 0, Keep = growers }.Run(local);
                 cleanup.Run(local);
                 // AND AGAIN OVER WHAT THAT INLINED: an imported body is the IR
                 // its unit archived before its own lifetime pass, so a block
@@ -250,7 +263,8 @@ public sealed class UnitBackend : IUnitBackend
                 if (more > 0)
                 {
                     Interlocked.Add(ref _lifetimes, more);
-                    new Inline { SmallBody = 40, GrowthLimit = 1024, ConstantBranchBody = 160, FreshOwnerBody = 0 }.Run(local);
+                    RegionPointsTo.LeaveLast(function);
+                    new Inline { SmallBody = 40, GrowthLimit = 1024, ConstantBranchBody = 160, FreshOwnerBody = 0, Keep = growers }.Run(local);
                     cleanup.Run(local);
                 }
             }
@@ -259,6 +273,22 @@ public sealed class UnitBackend : IUnitBackend
             // in the frame or freed where it dies was never the region's.
             // And those of the bodies brought in that it inlined.
             if (module.RegionFacts is not null || importedSites) RegionPointsTo.MakeSitesInRegion(function);
+            // And what is grown into a field the object frees itself, made
+            // beside that object (RegionPointsTo.MakeStorageBeside).
+            if (facts?.OwnedFields is { Beside: true } beside) RegionPointsTo.MakeStorageBeside(function, beside);
+            // AND THE REGION HELPERS' FAST PATHS PUT IN PLACE (Runtime.AllocRegion,
+            // RegionEnter, RegionLeave), as AllocWord's is at every `new`: the
+            // passes above made the calls, after every inliner here, so they
+            // stayed calls. One more inliner, over this function and those
+            // three bodies alone -- every other decision as it was, and
+            // GrowInPlace and the passes' other helpers calls still, being no
+            // body it is given. A site's frame is the FramePointer the site
+            // computed before the call, its caller's own, and a leave stays
+            // where LeaveLast put it, after the frees: inlining puts the body
+            // where the call was. The body allocates nothing (its long way is
+            // a call, AllocRegionSlow), so nothing in it is a site. A constant
+            // size folds the rounding (cleanup's ConstantFold).
+            if (module.RegionFacts is not null || importedSites) InlineRegionHelpers(function, local, Callee, cleanup);
             // Written out last here too: the link's lifetime pass saw them as
             // notes to the collector (CardMarks).
             new CardMarks().Run(local);
@@ -327,6 +357,31 @@ public sealed class UnitBackend : IUnitBackend
             sites.Attach(result);
         }
         return result;
+    }
+
+    /// <summary>
+    /// THE REGION HELPERS' FAST PATHS IN PLACE (Runtime.AllocRegion,
+    /// RegionEnter, RegionLeave): their bodies, as the unit that defines
+    /// them archived them or the link handed them over (callee), inlined
+    /// into `function` by an inliner given nothing else -- so nothing else
+    /// it calls changes -- and the cleanup run over what came in. A helper
+    /// whose body is not to be had stays a call.
+    /// </summary>
+    private static void InlineRegionHelpers(Function function, Module local, Func<string, Function?> callee, Pipeline cleanup)
+    {
+        string[] helpers = { RuntimeAbi.AllocRegion, RuntimeAbi.RegionEnter, RuntimeAbi.RegionLeave };
+        SortedSet<string> called = new(StringComparer.Ordinal);
+        foreach (Corsac.Lang.Ir.Block b in function.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Op == Opcode.Call && i.Callee is string name && Array.IndexOf(helpers, name) >= 0) called.Add(name);
+        if (called.Count == 0) return;
+        Module tail = new(local.Name) { Entry = function.Name, PreserveExports = true, NeedsHeap = local.NeedsHeap };
+        tail.Functions.Add(function);
+        foreach (string name in called)
+            if (callee(name) is Function body && body.Name == name && !ReferenceEquals(body, function)) tail.Functions.Add(body);
+        if (tail.Functions.Count == 1) return;
+        new Inline { SmallBody = 200, GrowthLimit = 1 << 20, ConstantBranchBody = 200, FreshOwnerBody = 0 }.Run(tail);
+        cleanup.Run(tail);
     }
 
     /// <summary>Whether a body touches, other than by storing into it, a field the link proved elements are owned through.</summary>

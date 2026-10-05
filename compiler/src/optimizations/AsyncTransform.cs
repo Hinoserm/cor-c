@@ -481,11 +481,12 @@ public static class AsyncTransform
             dispatch.Instrs.Add(new Instr
             {
                 Op = Opcode.Load, Dest = current, Size = 4, Offset = frame.StateOffset, Signed = true,
-                Operands = { new RegOperand(machine) },
+                // The state is a number, never an address (Instr.Number).
+                Operands = { new RegOperand(machine) }, Number = true,
             });
             Instr sw = new() { Op = Opcode.Switch, Operands = { new RegOperand(current) }, Default = originalEntry };
-            sw.Targets.Add(originalEntry);
-            sw.Targets.AddRange(resumptions);
+            sw.WritableTargets.Add(originalEntry);
+            sw.WritableTargets.AddRange(resumptions);
             dispatch.Instrs.Add(sw);
         }
 

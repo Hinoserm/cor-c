@@ -1,0 +1,70 @@
+// test: delegate_invocation_list
+// expect-exit: 0
+// expect-output:
+// count 3
+// each ABC
+// copy ABC
+// single 1 True
+// is delegate True True
+// sum 6
+// typed 2
+//
+// GetInvocationList, as .NET's: the targets in the order they run, each a
+// Delegate to be cast back to its type and called alone. The array is a copy
+// -- writing into it changes nothing the delegate does. A single delegate's
+// list is itself alone. Every delegate is a Delegate (an Action, a Func), so
+// one can be held as one. A Func's targets each answer their own result:
+// 1 + 2 + 3. A program's own delegate type has the list too.
+
+using System;
+
+delegate int Pick(int a, int b);
+
+static class P
+{
+    static string log = "";
+    static void A() { log += "A"; }
+    static void B() { log += "B"; }
+    static void C() { log += "C"; }
+
+    static int Main()
+    {
+        Action? d = A;
+        d += B;
+        d += C;
+        Delegate[] list = d!.GetInvocationList();
+        Console.WriteLine("count " + list.Length);
+        foreach (Delegate one in list)
+        {
+            Action act = (Action)one;
+            act();
+        }
+        Console.WriteLine("each " + log);
+
+        list[0] = list[1];
+        log = "";
+        d?.Invoke();
+        Console.WriteLine("copy " + log);
+
+        Action single = A;
+        Delegate[] alone = single.GetInvocationList();
+        Console.WriteLine("single " + alone.Length + " " + (alone[0] == (Delegate)single));
+        Console.WriteLine("is delegate " + (single is Delegate) + " " + (list[2] is Action));
+
+        Func<int>? f = () => 1;
+        f += () => 2;
+        f += () => 3;
+        int total = 0;
+        foreach (Delegate one in f!.GetInvocationList())
+        {
+            Func<int> g = (Func<int>)one;
+            total += g();
+        }
+        Console.WriteLine("sum " + total);
+
+        Pick? pick = (a, b) => a;
+        pick += (a, b) => b;
+        Console.WriteLine("typed " + pick!.GetInvocationList().Length);
+        return 0;
+    }
+}

@@ -93,6 +93,20 @@ public sealed partial class Lowering
     /// <summary>The caller's buffer this method writes its struct result to (Buffered), or null.</summary>
     private VReg? _resultBuffer;
 
+    /// <summary>
+    /// A SHARED METHOD COPY'S HIDDEN ARGUMENTS (Monomorphiser.CopyName): the
+    /// descriptor of each of its type arguments, as its caller found it, 0
+    /// where the caller could not. After the declared parameters and the
+    /// result buffer, one word each, numbers to every analysis -- a
+    /// descriptor is read-only data, never an object a region or the
+    /// collector need follow. Null in every other function, a lambda's
+    /// included, whose tests then answer as the copy over object.
+    /// </summary>
+    private VReg[]? _typeArgs;
+
+    /// <summary>The hidden arguments the next direct call of this method passes (EmitCall, CallDirect).</summary>
+    private (MethodSymbol Method, List<Operand> Args)? _pendingTypeArgs;
+
     /// <summary>Struct values known to be blocks of the heap, which a store into the heap may keep as they are.</summary>
     private readonly HashSet<VReg> _heapStructs = new();
 
@@ -124,6 +138,8 @@ public sealed partial class Lowering
         _returnBlock = null;
         _returnValue = null;
         _resultBuffer = null;
+        _typeArgs = null;
+        _pendingTypeArgs = null;
         _heapStructs.Clear();
         _returnType = null;
         _boundsFail = null;
@@ -193,6 +209,7 @@ public sealed partial class Lowering
         {
             ParamSymbol p = m.Params[i];
             _params[i] = _f.NewReg(p.ByRef ? IrTypes.Word : IrTypes.Of(p.Type), p.Name);
+            _params[i].Number = !p.ByRef && NeverAddress(p.Type);
             _f.Params.Add(_params[i]);
         }
 
@@ -200,6 +217,19 @@ public sealed partial class Lowering
         {
             _resultBuffer = _f.NewReg(IrTypes.Word, "retbuf");
             _f.Params.Add(_resultBuffer);
+        }
+
+        // A SHARED METHOD COPY'S TYPE ARGUMENTS, last (CallDirect passes them).
+        int hidden = Monomorphiser.SharedMethodCopy(m.Name);
+        if (hidden > 0)
+        {
+            _typeArgs = new VReg[hidden];
+            for (int i = 0; i < hidden; i++)
+            {
+                _typeArgs[i] = _f.NewReg(IrTypes.Word, "targ" + i);
+                _typeArgs[i].Number = true;
+                _f.Params.Add(_typeArgs[i]);
+            }
         }
 
         ScanAddressTaken(decl.Body!);
@@ -757,6 +787,25 @@ public sealed partial class Lowering
     /// <summary>A field's name as the IR carries it on the loads and stores of it (Instr.Field).</summary>
     private static string FieldKey(FieldSymbol f) => TypeKey(f.Owner) + "::" + f.Name;
 
+    /// <summary>
+    /// WHICH FIELD A LOAD OR STORE IS, for region inference (Instr.Family):
+    /// an instance field of a class, accessed at its own offset from the
+    /// object's start -- as C# compiles `o.f`, the object of the class or of
+    /// one derived from it. Named by its declaring class and its name; a
+    /// specialisation of a generic class by its template and arity, so the
+    /// shared copy's code and a copy's own name one field one way. Null for
+    /// a static, a struct's field (held in a local, an array or a class:
+    /// reached through an address into something), and an access at any
+    /// other offset: what region inference cannot know the class of.
+    /// </summary>
+    private static string? FieldFamily(FieldSymbol f, long offset)
+    {
+        if (f.Static || f.Owner.Kind != TypeKind.Class || f.Inline || f.Offset <= 0 || offset != f.Offset) return null;
+        TypeSymbol owner = f.Owner;
+        string declaring = owner.Decl is { Specialised: true, Template: string template } d ? template + "`" + d.TemplateArgs.Count : TypeKey(owner);
+        return declaring + "::" + f.Name;
+    }
+
     /// <summary>Whether a field's loads and stores carry it (Instr.Field): a reference, held by a class or statically.</summary>
     private bool TagsField(FieldSymbol f) => HoldsReference(f.Type) && (f.Static || f.Owner.Kind == TypeKind.Class);
 
@@ -783,6 +832,8 @@ public sealed partial class Lowering
                 IrType it = IrTypes.Of(m.Type);
                 VReg v = _e.Load(it, m.Address, m.Offset, LoadSize(m.Type), !m.Type.IsUnsigned && m.Type.Prim != Prim.Bool);
                 if (m.Field is FieldSymbol read && TagsField(read)) _e.Block.Instrs[^1].Field = FieldKey(read);
+                if (m.Field is FieldSymbol readFamily && m.Address is RegOperand) _e.Block.Instrs[^1].Family = FieldFamily(readFamily, m.Offset);
+                if (NeverAddress(m.Type)) _e.Block.Instrs[^1].Number = true;
                 if (m.Volatile)
                 {
                     _e.Emit(Opcode.Fence, null);
@@ -866,6 +917,7 @@ public sealed partial class Lowering
                 CardMarkAhead(m, value);
                 _e.Store(m.Address, new RegOperand(value), m.Offset, LoadSize(m.Type));
                 if (m.Field is FieldSymbol written && TagsField(written)) _e.Block.Instrs[^1].Field = FieldKey(written);
+                if (m.Field is FieldSymbol writtenFamily && m.Address is RegOperand) _e.Block.Instrs[^1].Family = FieldFamily(writtenFamily, m.Offset);
                 CardMark(m, value);
                 break;
         }
@@ -920,7 +972,7 @@ public sealed partial class Lowering
 
         Block report = _f.NewBlock("barrier");
         Block store = _f.NewBlock("stored");
-        VReg marking = _e.Load(IrType.I32, new SymOperand(StaticSymbol(flag)), 0, 4);
+        VReg marking = Numbered(_e, _e.Load(IrType.I32, new SymOperand(StaticSymbol(flag)), 0, 4));
         _e.Branch(marking, report, store);
 
         _e.SetBlock(report);
@@ -1069,6 +1121,7 @@ public sealed partial class Lowering
         CardMarkAhead(new MemPlace(R(block), offset, type), value);
         _e.Store(R(block), R(value), offset, LoadSize(type));
         if (field is not null && TagsField(field)) _e.Block.Instrs[^1].Field = FieldKey(field);
+        if (field is not null) _e.Block.Instrs[^1].Family = FieldFamily(field, offset);
         CardMark(new MemPlace(R(block), offset, type), value);
     }
 
@@ -1116,6 +1169,57 @@ public sealed partial class Lowering
     private bool MayHoldReference(Type t)
         => LoadSize(t) == _t.WordSize && !t.IsPointer
         && (HoldsReference(t) || t.ParamName is not null || t.Prim is Prim.Any);
+
+    /// <summary>
+    /// A NUMBER THAT IS NEVER AN ADDRESS, for region inference (VReg.Number,
+    /// Instr.Number): on a 32-bit target a pointer and an int are both I32,
+    /// and an int handed to a callee that throws, or widened to a long, read
+    /// as an address that escapes. Bool, char, the integers of thirty-two
+    /// bits or fewer, float, double, and an enum held in one of those. Not a
+    /// long or a nint -- the runtime keeps addresses in both -- nor a
+    /// pointer, a reference, an array, a nullable's cell, a struct or a type
+    /// parameter. An address is never cast to an int here; the runtime goes
+    /// through nint.
+    /// </summary>
+    private static bool NeverAddress(Type t)
+    {
+        if (t.IsPointer || t.IsArray || t.IsReference || t.IsNullableValue || t.ParamName is not null || t.Function is not null) return false;
+        if (t.IsEnumValue) return t.Symbol!.EnumUnderlying is not (Prim.I64 or Prim.U64 or Prim.NInt or Prim.NUInt);
+        return t.Symbol is null && t.Prim is Prim.Bool or Prim.Char or Prim.I8 or Prim.I16 or Prim.I32
+            or Prim.U8 or Prim.U16 or Prim.U32 or Prim.F32 or Prim.F64;
+    }
+
+    /// <summary>
+    /// THE COUNT A STRING OR A SEQUENCE KEEPS in its header, read: a number,
+    /// never an address (Instr.Number), as a field of int is. Unmarked, a
+    /// string's Length on a 32-bit target was a word read out of the string
+    /// for region inference -- whatever its summary said the string's words
+    /// held -- and a sum of lengths handed back from a boundary carried
+    /// objects to its caller: 1290's Work answered Sum(s) plus a row's
+    /// name's Length, and its rows, merged with the strings in Sheet.Make's
+    /// summary, were the unknown object's in Run when the total was printed.
+    /// </summary>
+    private VReg CountOf(Builder e, VReg of)
+        => Numbered(e, e.Load(IrType.I32, of, _t.ArrayCountOffset));
+
+    /// <summary>
+    /// A LOAD JUST MADE, MARKED A NUMBER (Instr.Number) where `number` says
+    /// it is never an address: a type's flags, depth or entry count read
+    /// from its descriptor; a Nullable's has-value byte; a box's value of a
+    /// number type (NeverAddress); a float's bits; a string's characters; an
+    /// iterator's state or a view's cursor; a machine's size; errno. Region
+    /// inference takes an unmarked word read out of an object for whatever
+    /// that object's words hold -- on a 32-bit target an int and an address
+    /// are one word -- and a number made from one carried objects wherever
+    /// it went (1290's string Length). Only `read`, the load the builder
+    /// made last, is marked.
+    /// </summary>
+    private static VReg Numbered(Builder e, VReg read, bool number = true)
+    {
+        Instr last = e.Block.Instrs[^1];
+        if (number && last.Op == Opcode.Load && ReferenceEquals(last.Dest, read)) last.Number = true;
+        return read;
+    }
 
     /// <summary>How many bytes a value of a type occupies in memory.</summary>
     private int LoadSize(Type t) => Math.Max(1, t.Size);
@@ -1226,8 +1330,10 @@ public sealed partial class Lowering
                 {
                     // A struct by reference is the address of its bytes
                     // (StructReference): read as that address, written by a
-                    // copy into it, as a struct held in line is.
-                    return new MemPlace(new RegOperand(_params[p.Index]), 0, p.Type, false, IsStructValue(p.Type));
+                    // copy into it, as a struct held in line is. A captured
+                    // variable's cell (ParamSym.Cell) holds the struct as a
+                    // boxed local's does.
+                    return new MemPlace(new RegOperand(_params[p.Index]), 0, p.Type, false, IsStructValue(p.Type) && !p.Cell);
                 }
                 if (_paramCells.TryGetValue(p.Index, out VReg? paramCell))
                 {
@@ -1413,7 +1519,7 @@ public sealed partial class Lowering
 
     private void BoundsCheck(VReg array, VReg index, Node at, bool managedArray)
     {
-        VReg count = managedArray ? _e.Unary(Opcode.ArrayLength, R(array), IrType.I32) : _e.Load(IrType.I32, array, _t.ArrayCountOffset);
+        VReg count = managedArray ? _e.Unary(Opcode.ArrayLength, R(array), IrType.I32) : CountOf(_e, array);
         VReg ok = _e.Binary(Opcode.LtU, index, count);
         Block good = _f.NewBlock("inbounds");
         _e.Branch(ok, good, BoundsFail());

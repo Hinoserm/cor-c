@@ -362,6 +362,13 @@ public static class Gir
             Expr(p.Default);
         }
 
+        /// <summary>
+        /// A type parameter's special constraints, a bit each: `struct`,
+        /// `new()`, `unmanaged`, and constructed by its declaration (ReadParam).
+        /// </summary>
+        private static byte ParamKinds(TypeParam p)
+            => (byte)((p.Struct ? 1 : 0) | (p.New ? 2 : 0) | (p.Unmanaged ? 4 : 0) | (p.Made ? 8 : 0));
+
         public void Decl(TypeDecl d)
         {
             U8((byte)d.Kind);
@@ -373,7 +380,7 @@ public static class Gir
             foreach (TypeParam p in d.TypeParams)
             {
                 Str(p.Name);
-                U8(p.Struct ? (byte)1 : (byte)0);
+                U8(ParamKinds(p));
                 I32(p.Constraints.Count);
 
                 // THE CONSTRAINTS TRAVEL WITH IT, so a consumer can check its
@@ -452,7 +459,7 @@ public static class Gir
                     foreach (TypeParam p in d.TypeParams)
                     {
                         Str(p.Name);
-                        U8(p.Struct ? (byte)1 : (byte)0);
+                        U8(ParamKinds(p));
                     }
 
                     I32(d.Params.Count);
@@ -482,6 +489,14 @@ public static class Gir
                         foreach (string? name in d.Init.ArgNames) Str(name ?? "");
                         Texts(d.Init.Spans, d.Init.Source);
                     }
+
+                    // A hoisted generic local function: its written name, the
+                    // names it calls by, and its captured parameters.
+                    Str(d.HoistedName ?? "");
+                    I32(d.LocalGenerics.Count);
+                    foreach ((string written, string member) in d.LocalGenerics) { Str(written); Str(member); }
+                    I32(d.Captures);
+                    Str(d.HoistedIn ?? "");
                     break;
 
                 case PropertyDecl p2:
@@ -957,6 +972,10 @@ public static class Gir
 
                     Expr(la.Body);
                     Stmt(la.BlockBody);
+                    // A result written in front (`ref int (...) => ...`).
+                    Type(la.Returns);
+                    I32((int)la.ReturnMods);
+                    Bool(la.TypesWritten);
                     break;
 
                 case SwitchExpr se:
@@ -1090,6 +1109,14 @@ public static class Gir
         }
 
         public bool Bool() => U8() != 0;
+
+        /// <summary>A type parameter's name and its special constraints (ParamKinds).</summary>
+        public TypeParam ReadParam()
+        {
+            string name = Str();
+            byte kinds = U8();
+            return new TypeParam { Name = name, Struct = (kinds & 1) != 0, New = (kinds & 2) != 0, Unmanaged = (kinds & 4) != 0, Made = (kinds & 8) != 0 };
+        }
 
         public int I32()
         {
@@ -1231,12 +1258,12 @@ public static class Gir
 
             for (int i = 0; i < typeParams; i++)
             {
-                TypeParam p = new() { Name = Str(), Struct = Bool() };
+                TypeParam p = ReadParam();
                 int constraints = Count();
 
                 for (int c = 0; c < constraints; c++)
                 {
-                    p.Constraints.Add(Type());
+                    p.WritableConstraints.Add(Type());
                 }
                 d.WritableTypeParams.Add(p);
             }
@@ -1310,7 +1337,7 @@ public static class Gir
 
                     for (int i = 0; i < tp; i++)
                     {
-                        typeParams.Add(new TypeParam { Name = Str(), Struct = Bool() });
+                        typeParams.Add(ReadParam());
                     }
 
                     List<Param> ps = new();
@@ -1338,7 +1365,7 @@ public static class Gir
                         for (int i = 0; i < names; i++)
                         {
                             string argName = Str();
-                            init.ArgNames.Add(argName.Length == 0 ? null : argName);
+                            init.WritableArgNames.Add(argName.Length == 0 ? null : argName);
                         }
                         (init.Spans, init.Source) = Texts();
                     }
@@ -1351,10 +1378,18 @@ public static class Gir
                         ExplicitInterface = explicitInterface.Length == 0 ? null : explicitInterface,
                     };
 
-                    d.WritableTypeParams.AddRange(typeParams);
+                    if (typeParams.Count > 0) d.WritableTypeParams.AddRange(typeParams);
 
-                    d.WritableAttributes.AddRange(attributes);
+                    if (attributes.Count > 0) d.WritableAttributes.AddRange(attributes);
                     d.Params.AddRange(ps);
+
+                    string hoisted = Str();
+                    d.HoistedName = hoisted.Length == 0 ? null : hoisted;
+                    int generics = Count();
+                    for (int i = 0; i < generics; i++) { string written = Str(); d.WritableLocalGenerics.Add((written, Str())); }
+                    d.Captures = I32();
+                    string hoistedIn = Str();
+                    d.HoistedIn = hoistedIn.Length == 0 ? null : hoistedIn;
                     return d;
                 }
 
@@ -1407,7 +1442,7 @@ public static class Gir
                     if (arithmetic > 2) throw new InvalidDataException("invalid block arithmetic context");
                     Block b = new() { ArithmeticContext = arithmetic, Iterator = Bool() };
                     int locals = Count();
-                    for (int i = 0; i < locals; i++) { string name = Str(); b.GenericLocals.Add((name, Str())); }
+                    for (int i = 0; i < locals; i++) { string name = Str(); b.WritableGenericLocals.Add((name, Str())); }
                     int n = Count();
 
                     for (int i = 0; i < n; i++)
@@ -1698,7 +1733,7 @@ public static class Gir
 
                     for (int i = 0; i < args; i++)
                     {
-                        n.TypeArgs.Add(Type());
+                        n.WritableTypeArgs.Add(Type());
                     }
                     return n;
                 }
@@ -1725,7 +1760,7 @@ public static class Gir
 
                     for (int i = 0; i < args; i++)
                     {
-                        m.TypeArgs.Add(Type());
+                        m.WritableTypeArgs.Add(Type());
                     }
                     return m;
                 }
@@ -1740,7 +1775,7 @@ public static class Gir
                     {
                         string n = Str();
 
-                        c.ArgNames.Add(n.Length == 0 ? null : n);
+                        c.WritableArgNames.Add(n.Length == 0 ? null : n);
                     }
 
                     int args = Count();
@@ -1800,7 +1835,7 @@ public static class Gir
                         for (int i = 0; i < count; i++) elements.Add(Need());
                     }
                     NewExpr nw = new() { Type = type, ArraySize = size, Elements = elements, Collection = Bool(), Spans = spans, Source = source };
-                    nw.ArgNames.AddRange(argNames);
+                    nw.WritableArgNames.AddRange(argNames);
                     nw.Args.AddRange(argList);
 
                     ReadBody(nw.Body);
@@ -1889,7 +1924,10 @@ public static class Gir
                     }
 
                     Expr? body = Expr();
-                    LambdaExpr la = new() { Async = async, Body = body, BlockBody = Stmt() as Block };
+                    Block? blockBody = Stmt() as Block;
+                    TypeRef? returns = TypeOrNull();
+                    Mods returnMods = (Mods)I32();
+                    LambdaExpr la = new() { Async = async, Body = body, BlockBody = blockBody, Returns = returns, ReturnMods = returnMods, TypesWritten = Bool() };
 
                     la.Params.AddRange(ps);
                     return la;

@@ -134,9 +134,10 @@ static class Program
         _shelved = s.Get(3);
     }
 
-    static string Measure(long before, long frees, int n, int each)
+    // Given back by the program: freed one by one, or with a region.
+    static string Measure(long before, long frees, long region, int n, int each)
     {
-        bool given = Gc.Frees - frees >= (long)n * each;
+        bool given = Gc.Frees - frees >= (long)n * each || Gc.RegionFreedBytes + Gc.RegionTopFreedBytes - region >= (long)n * each * 16;
         Gc.Collect();
         long left = (Gc.CollectedBytes - before) / n;
         return given && left <= 32 ? "True" : "False " + left;
@@ -146,16 +147,16 @@ static class Program
     {
         const int N = 20000;
         Gc.Collect();
-        long taken = Gc.CollectedBytes, frees = Gc.Frees;
+        long taken = Gc.CollectedBytes, frees = Gc.Frees, region = Gc.RegionFreedBytes + Gc.RegionTopFreedBytes;
         long total = 0;
         for (int k = 0; k < N; k++) total += Group(40);
-        Console.WriteLine("group " + total + " " + Measure(taken, frees, N, 5));
+        Console.WriteLine("group " + total + " " + Measure(taken, frees, region, N, 5));
 
         Gc.Collect();
-        taken = Gc.CollectedBytes; frees = Gc.Frees;
+        taken = Gc.CollectedBytes; frees = Gc.Frees; region = Gc.RegionFreedBytes + Gc.RegionTopFreedBytes;
         total = 0;
         for (int k = 0; k < N; k++) total += Indexed(6);
-        Console.WriteLine("indexed " + total + " " + Measure(taken, frees, N, 4));
+        Console.WriteLine("indexed " + total + " " + Measure(taken, frees, region, N, 4));
 
         Keep();
         Churn(); Gc.Collect(); Churn();

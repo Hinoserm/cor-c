@@ -1,0 +1,59 @@
+// test: canon_generic_method_interface_tests_across_units
+// units: tests/language/support/1311_shape_units.cor
+// expect-exit: 0
+// expect-output:
+// rack list: collection 3, list 3
+// rack set: collection 2, no list
+// rack other: not a collection, no list
+// rack handed: handed collection 3, list 3
+// bin list: collection 3, list 3
+// bin other: not a collection, no list
+// bin handed: handed collection 2, no list
+//
+// 1310 across two units. The other unit's generic class (Rack) calls its
+// generic methods with its T, which this unit instantiates with its own
+// Item: the shared method copy is handed Item's descriptor, which only this
+// unit makes, and the interfaces a List of Item lists carry their identity
+// records from here. And this unit's generic class (Bin) calls the other
+// unit's generic method with its T, whose shared copy is made here. Each
+// answer is .NET's.
+
+using System;
+using System.Collections.Generic;
+using ShapeUnits;
+
+class Item
+{
+    public readonly int N;
+    public Item(int n) { N = n; }
+}
+
+class Other { }
+
+class Bin<T>
+{
+    public object? Held;
+
+    public string Kind() => Probe.Kind<T>(Held);
+
+    public string Handed() => Probe.Handed<T>(Held!);
+}
+
+static class P
+{
+    static int Main()
+    {
+        List<Item> list = new() { new Item(1), new Item(2), new Item(3) };
+        HashSet<Item> set = new() { new Item(4), new Item(5) };
+
+        Console.WriteLine("rack list: " + new Rack<Item> { Held = list }.Kind());
+        Console.WriteLine("rack set: " + new Rack<Item> { Held = set }.Kind());
+        Console.WriteLine("rack other: " + new Rack<Other> { Held = list }.Kind());
+        Console.WriteLine("rack handed: " + new Rack<Item> { Held = list }.Handed());
+
+        Console.WriteLine("bin list: " + new Bin<Item> { Held = list }.Kind());
+        Console.WriteLine("bin other: " + new Bin<Other> { Held = list }.Kind());
+        Console.WriteLine("bin handed: " + new Bin<Item> { Held = set }.Handed());
+        return 0;
+    }
+}

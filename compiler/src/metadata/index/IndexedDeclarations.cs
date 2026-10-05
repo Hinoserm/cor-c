@@ -9,16 +9,18 @@ public sealed class IndexedDeclarations : IDisposable
     private readonly HashSet<string> owned;
     private readonly HashSet<string> loaded = new(StringComparer.Ordinal);
     private readonly HashSet<string> implementations = new(StringComparer.Ordinal);
-    private readonly HashSet<string> queries = new(StringComparer.Ordinal);
+    // WHAT THIS UNIT ASKED THE INDEX, by kind and name: spelled out as the
+    // index spells a query ("B:" and this assembly's identity before the
+    // name) only when the receipt is written. Kept spelled, every name the
+    // binder resolved carried the identity again -- ninety thousand strings.
+    private readonly HashSet<(char Kind, string Name)> queries = new();
     private readonly HashSet<string> resolvedExtensions = new(StringComparer.Ordinal);
     private readonly HashSet<string> resolvedOverrides = new(StringComparer.Ordinal);
     /// <summary>
-    /// What each binding name the binder required came to, and the two query
-    /// prefixes, spelled once: the binder asks for the same names thousands of
-    /// times a unit, and each ask built both queries afresh.
+    /// What each binding name the binder required came to: the binder asks
+    /// for the same names thousands of times a unit.
     /// </summary>
     private readonly Dictionary<string, string?> required = new(StringComparer.Ordinal);
-    private readonly string bindingPrefix, solePrefix;
     public long PayloadLoads => catalog.PayloadLoads;
     public SyntaxTokenCache Tokens { get; }
     public int Passes { get; set; }
@@ -48,9 +50,7 @@ public sealed class IndexedDeclarations : IDisposable
         // Interface slots are reserved over the project's compact family
         // table, even for declarations this unit never demand-loads. Adding
         // an earlier family can move every later slot: it is an ABI input.
-        queries.Add("I:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n");
-        bindingPrefix = "B:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n";
-        solePrefix = "S:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n";
+        queries.Add(('I', ""));
         owned = ownedFiles.Select(Path.GetFullPath).ToHashSet(StringComparer.Ordinal);
     }
 
@@ -67,9 +67,7 @@ public sealed class IndexedDeclarations : IDisposable
         assembly = session.Assembly;
         Interfaces = session.Interfaces;
         LibraryInterfaces = session.LibraryInterfaces;
-        queries.Add("I:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n");
-        bindingPrefix = "B:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n";
-        solePrefix = "S:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n";
+        queries.Add(('I', ""));
         owned = ownedFiles.Select(Path.GetFullPath).ToHashSet(StringComparer.Ordinal);
     }
 
@@ -77,9 +75,9 @@ public sealed class IndexedDeclarations : IDisposable
     {
         if (!required.TryGetValue(bindingName, out string? key))
         {
-            string query = bindingPrefix + bindingName;
-            queries.Add(query);
-            key = catalog.BindingKeyOf(query, bindingName) ?? Sole(bindingName);
+            // A monomorphised name ('$') is in no index, so it is no dependency.
+            if (!bindingName.Contains('$')) queries.Add(('B', bindingName));
+            key = catalog.BindingKey(assembly, bindingName) ?? Sole(bindingName);
             required[bindingName] = key;
         }
         if (key is not null && !loaded.Contains(key)) throw new DeclarationDemand(key);
@@ -100,9 +98,8 @@ public sealed class IndexedDeclarations : IDisposable
     {
         if (name.Length == 0 || name.Contains('.') || name.Contains('`')) return null;
         // Only what the binder asks is a dependency; a prefetch is a guess.
-        string query = solePrefix + name;
-        if (asked) queries.Add(query);
-        return catalog.SoleKeyOf(query);
+        if (asked) queries.Add(('S', name));
+        return catalog.SoleKey(assembly, name);
     }
 
     public void Include(string key)
@@ -110,7 +107,32 @@ public sealed class IndexedDeclarations : IDisposable
         if (loaded.Contains(key)) throw new InvalidDataException("Declaration discovery made no progress: " + key);
         using DeclarationLease lease = catalog.AcquireKey(key) ?? throw new InvalidDataException("Missing requested declaration: " + key);
         loaded.Add(key);
+        // AND ITS FAMILY: the types nested in it, and when it is nested itself
+        // those nested beside it. A body that uses a type uses what is nested
+        // in it as often as not, and each one found by the binder threw the
+        // whole pass away again: compiling Lowering.cs demanded Linker, then
+        // Linker+Definition, then Linker+Layout, three passes discarded --
+        // a quarter of the unit's time and allocation.
+        LoadFamily(key);
     }
+
+    private void LoadFamily(string key)
+    {
+        foreach (string nested in Family(key)) Load(nested);
+    }
+
+    // The types nested in this one's outermost type, the first time it is asked.
+    private List<string> Family(string key)
+    {
+        string outer = key;
+        int plus = outer.IndexOf('+', outer.IndexOf('\n') + 1);
+        if (plus > 0) outer = outer[..plus];
+        return families.Add(outer) ? catalog.KeysWithPrefix(outer + "+") : NoKeys;
+    }
+
+    private static readonly List<string> NoKeys = new();
+
+    private readonly HashSet<string> families = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Loads a declaration this unit has decided it needs, saying whether that
@@ -260,7 +282,7 @@ public sealed class IndexedDeclarations : IDisposable
     public void RequireExtensions(string space, string method)
     {
         string query = space + "\n" + method;
-        queries.Add("E:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + query);
+        queries.Add(('E', query));
         if (resolvedExtensions.Contains(query)) return;
         foreach (string key in catalog.ExtensionKeys(assembly, space, method))
             if (!loaded.Contains(key)) throw new DeclarationDemand(key);
@@ -275,7 +297,7 @@ public sealed class IndexedDeclarations : IDisposable
     public void RequireOverrides(string method, int arity)
     {
         string query = method + "`" + arity;
-        queries.Add("G:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + query);
+        queries.Add(('G', query));
         if (resolvedOverrides.Contains(query)) return;
         DeclarationBatch missing = new();
         foreach (string key in catalog.OverrideKeys(assembly, query))
@@ -292,7 +314,7 @@ public sealed class IndexedDeclarations : IDisposable
         foreach (string name in new[] { "Runtime", "String", "Boolean", "Byte", "SByte", "Int16", "UInt16",
             "Int32", "UInt32", "Int64", "UInt64", "Single", "Double", "Char" })
         {
-            queries.Add("B:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + name);
+            queries.Add(('B', name));
             string? key = catalog.BindingKey(assembly, name);
             if (key is not null && !loaded.Contains(key)) Include(key);
         }
@@ -307,7 +329,7 @@ public sealed class IndexedDeclarations : IDisposable
         foreach (TypeDecl type in unit.Types.Where(type => type.Mods.HasFlag(Mods.Partial)))
         {
             string name = Binder.TypeKey(type);
-            queries.Add("B:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + name);
+            queries.Add(('B', name));
             string? key = catalog.BindingKey(assembly, name) ?? Sole(name);
             if (key is not null) Load(key);
         }
@@ -356,6 +378,11 @@ public sealed class IndexedDeclarations : IDisposable
         {
             string key = pending.Dequeue();
             if (!visited.Add(key)) continue;
+            // ITS NESTED TYPES WITH IT, closed over like everything else: a
+            // type read for a signature had its Enumerator or its Kind found by
+            // the binder a pass later, each pass thrown away whole.
+            foreach (string nested in Family(key))
+                if (Load(nested)) pending.Enqueue(nested);
             // Parsed headers own their syntax. Keeping their serialized source
             // records pinned as well prevents eviction without helping binding.
             using DeclarationLease lease = catalog.AcquireKey(key)
@@ -416,6 +443,15 @@ public sealed class IndexedDeclarations : IDisposable
                 root.Scope = source.Scope;
                 root.File = displayFile;
                 root.SourcePath = source.Path;
+                // WHERE IT IS IN ITS FILE, not in the slice it was parsed from:
+                // the front end orders a partial type's parts by path and then
+                // by this before merging them (Frontend.MergePartialTypes), and
+                // every part cut out of one file began at 0 -- Escape's four
+                // parts in OwnedElements.cs merged in no fixed order, their
+                // fields at other offsets than the unit compiling that file
+                // gave them, and the link refused the two layouts.
+                root.SourceFrom = source.From;
+                root.SourceTo = source.To;
                 root.Elsewhere = true;
                 root.SignatureOnly = true;
                 foreach (MemberDecl member in root.Members)
@@ -469,5 +505,10 @@ public sealed class IndexedDeclarations : IDisposable
         if (session is null) { Tokens.Clear(); catalog.Dispose(); }
     }
 
-    public void WriteDependencies(string path) => UnitDependencies.Write(path, catalog, loaded, implementations, queries);
+    public void WriteDependencies(string path)
+    {
+        string identity = SourceIndexBuilder.AssemblyIdentity(assembly);
+        UnitDependencies.Write(path, catalog, loaded, implementations,
+            queries.Select(asked => asked.Kind + ":" + identity + "\n" + asked.Name));
+    }
 }

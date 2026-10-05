@@ -1,0 +1,55 @@
+// test: delegate_equality_scopes
+// expect-exit: 0
+// expect-output:
+// iterations False
+// one scope True
+// calls False True
+// local function True 6
+//
+// A DELEGATE'S TARGET IS THE ENVIRONMENT IT CLOSES OVER, as .NET's is (the
+// display object holding the captured variables): the same lambda made in
+// two runs of a loop body, each with its own `k`, is two targets and not
+// equal, though k holds 5 both times; made twice within one run of the scope
+// whose variable it captures, it is equal. A lambda over a parameter, made in
+// two calls of the method, is two -- .NET hoists the parameter into a display
+// object made at each call -- and is equal only to itself. A local function
+// converted twice over the same environment is the same method on the same
+// target, and equal (6 is 2 times 3).
+
+using System;
+using System.Collections.Generic;
+
+static class P
+{
+    static Func<int> Capture(int n) => () => n;
+
+    static int Main()
+    {
+        List<Action> perIteration = new List<Action>();
+        for (int i = 0; i < 2; i++)
+        {
+            int k = 5;
+            perIteration.Add(() => Console.Write(k));
+        }
+        Console.WriteLine("iterations " + (perIteration[0] == perIteration[1]));
+
+        int shared = 7;
+        Action[] two = new Action[2];
+        for (int j = 0; j < 2; j++)
+        {
+            two[j] = () => Console.Write(shared);
+        }
+        Console.WriteLine("one scope " + (two[0] == two[1]));
+
+        Func<int> c1 = Capture(1);
+        Func<int> c2 = Capture(1);
+        Console.WriteLine("calls " + (c1 == c2) + " " + (c1 == c1));
+
+        int factor = 3;
+        int Times(int x) => x * factor;
+        Converter<int, int> t1 = Times;
+        Converter<int, int> t2 = Times;
+        Console.WriteLine("local function " + (t1 == t2) + " " + t1(2));
+        return 0;
+    }
+}

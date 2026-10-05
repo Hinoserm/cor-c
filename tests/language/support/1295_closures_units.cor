@@ -1,0 +1,40 @@
+// The other unit of 1295_closures_in_frame_across_units: functions that
+// call the delegate they are handed and keep nothing, and one that keeps it.
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+namespace ClosureUnits;
+
+public static class Seq
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int CountWhere(List<int> xs, Func<int, bool> keep)
+    {
+        int n = 0;
+        for (int i = 0; i < xs.Count; i++) if (keep(xs[i])) n++;
+        return n;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void Each(List<int> xs, Action<int> act)
+    {
+        for (int i = 0; i < xs.Count; i++) act(xs[i]);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int IndexWhere(List<int> xs, Func<int, bool> keep)
+    {
+        for (int i = 0; i < xs.Count; i++) if (keep(xs[i])) return i;
+        return -1;
+    }
+
+    // Keeps what it is handed, for Recall to call later.
+    static Func<int, bool>? _kept;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void Remember(Func<int, bool> keep) { _kept = keep; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static bool Recall(int x) => _kept!(x);
+}

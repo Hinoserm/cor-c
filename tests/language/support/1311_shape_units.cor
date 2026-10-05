@@ -1,0 +1,32 @@
+// The other unit of 1311_canon_generic_method_interface_tests_across_units:
+// generic methods that test interfaces over their own type parameter, and a
+// generic class whose shared code calls them with its T.
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+namespace ShapeUnits;
+
+public static class Probe
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static string Kind<U>(object? o)
+    {
+        string a = o is ICollection<U> c ? "collection " + c.Count : "not a collection";
+        IReadOnlyList<U>? list = o as IReadOnlyList<U>;
+        string b = list is null ? "no list" : "list " + list.Count;
+        return a + ", " + b;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static string Handed<U>(object o) => "handed " + Kind<U>(o);
+}
+
+public class Rack<T>
+{
+    public object? Held;
+
+    public string Kind() => Probe.Kind<T>(Held);
+
+    public string Handed() => Probe.Handed<T>(Held!);
+}

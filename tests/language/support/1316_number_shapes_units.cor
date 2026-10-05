@@ -1,0 +1,60 @@
+// The other unit of 1316_region_numbers_from_headers_across_units: a shelf of
+// items, and a measure of it made only of numbers read out of the items'
+// headers and values.
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+namespace NumberShapes;
+
+public sealed class Item
+{
+    public readonly string Name;
+    public readonly object Boxed;
+    public readonly int? Maybe;
+    public readonly char[] Letters;
+
+    public Item(string name, int boxed, int? maybe)
+    {
+        Name = name;
+        Boxed = boxed;
+        Maybe = maybe;
+        Letters = name.ToCharArray();
+    }
+}
+
+public sealed class Shelf
+{
+    public readonly List<Item> Items = new List<Item>();
+
+    public static Shelf Make(int n, int round)
+    {
+        Shelf s = new Shelf();
+        for (int k = 0; k < n; k++)
+            s.Items.Add(new Item("r" + (round % 7).ToString() + "-" + k.ToString(), k + round, k % 3 == 0 ? null : k));
+        return s;
+    }
+}
+
+public static class Measure
+{
+    // Every term a number read out of an item: a string's count, an array's
+    // length, a character, a type test and the int in a box, a Nullable's
+    // has-value byte and its value, a box's hash.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long Of(Shelf s)
+    {
+        long total = 0;
+        for (int k = 0; k < s.Items.Count; k++)
+        {
+            Item it = s.Items[k];
+            total += it.Name.Length;
+            total += it.Letters.Length;
+            total += it.Name[0];
+            total += it.Boxed is int v ? v : 0;
+            total += it.Maybe.HasValue ? it.Maybe.Value : -1;
+            total += it.Boxed.GetHashCode() & 7;
+        }
+        return total;
+    }
+}

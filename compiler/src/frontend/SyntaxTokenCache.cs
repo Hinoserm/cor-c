@@ -1,79 +1,33 @@
 namespace Corsac.Lang;
 
-/// <summary>Bounded immutable lexical snapshots; every parser gets a private copy-on-write token view.</summary>
+/// <summary>
+/// Where declarations and sources are parsed: lexed to an immutable snapshot
+/// that the parser reads copy-on-write.
+///
+/// IT KEEPS NOTHING. It held each text's snapshot for a second asking that
+/// never came: hits=0 over a whole self-build and over every declaration
+/// pass of one. Kept, every token the lexer made was reachable from a
+/// long-lived table, so the collector had to find all of them and region
+/// inference called every one global. Hits and Misses still count the
+/// parses for the build's report.
+/// </summary>
 public sealed class SyntaxTokenCache
 {
-    private sealed class Entry
-    {
-        public readonly Token[] Tokens;
-        public readonly long Bytes;
-        public long Used;
-        public Entry(Token[] tokens, long bytes, long used) { Tokens = tokens; Bytes = bytes; Used = used; }
-    }
-    private readonly Dictionary<(string Text, string File, string Symbols), Entry> entries = new();
-    private readonly long budget;
-    private long bytes, clock;
-    private readonly object gate = new();
-    public long Hits { get; private set; }
-    public long Misses { get; private set; }
-    public long ResidentBytes { get { lock (gate) return bytes; } }
-    public SyntaxTokenCache(long budgetBytes = 8 * 1024 * 1024)
-    { if (budgetBytes < 0) throw new ArgumentOutOfRangeException(nameof(budgetBytes)); budget = budgetBytes; }
+    private long misses;
+    public long Hits => 0;
+    public long Misses => Interlocked.Read(ref misses);
+    public long ResidentBytes => 0;
+
+    public SyntaxTokenCache(long budgetBytes = 0)
+    { if (budgetBytes < 0) throw new ArgumentOutOfRangeException(nameof(budgetBytes)); }
 
     public CompilationUnit Parse(string text, string file, IReadOnlyCollection<string>? symbols = null,
         bool declarationsOnly = false, bool includeTemplateBodies = false)
     {
-        var key = (text, file, symbols is null || symbols.Count == 0 ? ""
-            : string.Join("\n", symbols.Distinct().Order(StringComparer.Ordinal)));
-        Token[]? snapshot = null;
-        lock (gate)
-        {
-            if (entries.TryGetValue(key, out Entry? entry))
-            {
-                Hits++;
-                entry.Used = ++clock;
-                snapshot = entry.Tokens;
-            }
-            else
-            {
-                Misses++;
-            }
-        }
-        List<Token>? tokens = null;
-        if (snapshot is null)
-        {
-            // Lexing and parsing do not hold the cache gate. Future project
-            // workers can share immutable snapshots without serializing work.
-            tokens = Lexer.Tokenize(text, file, 1, 1, symbols);
-            lock (gate)
-            {
-                if (entries.TryGetValue(key, out Entry? raced))
-                { raced.Used = ++clock; snapshot = raced.Tokens; }
-                else if (Size(text, file, key.Item3, tokens) is long size && size <= budget)
-                {
-                    while (bytes + size > budget && entries.Count != 0)
-                    {
-                        var oldest = entries.MinBy(pair => pair.Value.Used);
-                        bytes -= oldest.Value.Bytes; entries.Remove(oldest.Key);
-                    }
-                    snapshot = tokens.ToArray();
-                    entries.Add(key, new Entry(snapshot, size, ++clock)); bytes += size;
-                }
-            }
-        }
-        // Most parses allocate no token copy. Generic >> speculation gets a
-        // private copy lazily; no mutable token list or AST crosses workers.
-        return snapshot is null ? new Parser(tokens!, file, declarationsOnly, includeTemplateBodies) { Source = text }.ParseUnit()
-            : new Parser(snapshot, file, declarationsOnly, includeTemplateBodies) { Source = text }.ParseUnit();
+        Interlocked.Increment(ref misses);
+        Token[] snapshot = Lexer.Tokenize(text, file, 1, 1, symbols).ToArray();
+        return new Parser(snapshot, file, declarationsOnly, includeTemplateBodies) { Source = text }.ParseUnit();
     }
 
-    /// <summary>Conservative accounting: the source and key strings, and every token with its text.</summary>
-    private static long Size(string text, string file, string symbols, List<Token> tokens)
-    {
-        long size = 256L + text.Length * 2L + file.Length * 2L + symbols.Length * 2L;
-        foreach (Token token in tokens) size += 48L + token.Text.Length * 2L;
-        return size;
-    }
-
-    public void Clear() { lock (gate) { entries.Clear(); bytes = 0; } }
+    public void Clear() { }
 }
