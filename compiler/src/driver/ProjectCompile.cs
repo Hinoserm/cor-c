@@ -76,9 +76,18 @@ public static class ProjectCompile
             common.Add(args[i]);
         }
 
-        long declBudget = Switches.DeclBudget >= 0 ? Switches.DeclBudget : 32L * 1024 * 1024;
+        // THE SESSION'S CACHES BY THE MEMORY THERE IS: 32 MB of decoded
+        // declarations and 16 MB of library text were sized for a machine
+        // with a gigabyte, and on a 256 MB one they were a quarter of what a
+        // unit could keep live. A thirty-second and a sixty-fourth of what
+        // the heap may have, no more than those and no less than a few
+        // megabytes; the flags still say otherwise when given.
+        long room = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
+        long Share(long divisor, long most, long least)
+            => room <= 0 ? most : Math.Clamp(room / divisor, least, most);
+        long declBudget = Switches.DeclBudget >= 0 ? Switches.DeclBudget : Share(32, 32L * 1024 * 1024, 4L * 1024 * 1024);
         long tokBudget = Switches.TokenBudget >= 0 ? Switches.TokenBudget : 0;
-        long srcBudget = Switches.SourceBudget >= 0 ? Switches.SourceBudget : 16L * 1024 * 1024;
+        long srcBudget = Switches.SourceBudget >= 0 ? Switches.SourceBudget : Share(64, 16L * 1024 * 1024, 2L * 1024 * 1024);
         // A MODULE'S UNITS share its own index, made on the kernel's
         // (--module-index, Driver.Compile): the session reads both through it.
         string sessionIndex = Driver.Value(args, "--module-index") ?? index;

@@ -115,24 +115,36 @@ internal sealed class OwnedFieldEscape
                     || i.Op is Opcode.Add or Opcode.Sub && i.Operands.Count == 2 && i.Operands[1] is ImmOperand)
                     steps.Add(i);
             }
-        Follow(steps, result);
+        steps.Sort(BySource);
+        Follow(steps, result, result.Keys.ToList());
         if (joins) JoinedAliases(f, defs, result, steps);
         return result;
     }
 
+    private static readonly Comparison<Instr> BySource = (x, y) => Source(x).CompareTo(Source(y));
+    private static int Source(Instr i) => ((RegOperand)i.Operands[0]).Reg.Id;
+
     /// <summary>
     /// Every step whose operand is an address makes its register one too, at
-    /// the operand's offset moved by the step's constant; to a fixed point.
+    /// the operand's offset moved by the step's constant: from each address
+    /// newly known (`from`), the steps that read it, found in `steps` sorted
+    /// by the register they read. Swept to a fixed point instead, a chain
+    /// listed against its order took a sweep a link -- a whole library's
+    /// unit sat minutes in it.
     /// </summary>
-    private static void Follow(List<Instr> steps, Dictionary<VReg, long> result)
+    private static void Follow(List<Instr> steps, Dictionary<VReg, long> result, List<VReg> from)
     {
-        bool more = true;
-        while (more)
+        Queue<VReg> next = new(from);
+        while (next.TryDequeue(out VReg? at))
         {
-            more = false;
-            foreach (Instr i in steps)
+            long offset0 = result[at];
+            int lo = 0, hi = steps.Count;
+            while (lo < hi) { int mid = (lo + hi) >> 1; if (Source(steps[mid]) < at.Id) lo = mid + 1; else hi = mid; }
+            for (int k = lo; k < steps.Count && Source(steps[k]) == at.Id; k++)
             {
-                if (result.ContainsKey(i.Dest!) || !result.TryGetValue(((RegOperand)i.Operands[0]).Reg, out long offset)) continue;
+                Instr i = steps[k];
+                if (result.ContainsKey(i.Dest!)) continue;
+                long offset = offset0;
                 if (i.Op is Opcode.Add or Opcode.Sub)
                 {
                     long amount = ((ImmOperand)i.Operands[1]).Value;
@@ -144,7 +156,7 @@ internal sealed class OwnedFieldEscape
                     if (offset < -1048576 || offset > 1048576) continue;
                 }
                 result[i.Dest!] = offset;
-                more = true;
+                next.Enqueue(i.Dest!);
             }
         }
     }
@@ -188,7 +200,7 @@ internal sealed class OwnedFieldEscape
             if (group.Count == 0 || offset is null || !agree) return;
             foreach (VReg r in group) result[r] = offset.Value;
             // Whatever follows from them, as the single writes do.
-            Follow(steps, result);
+            Follow(steps, result, group.ToList());
         }
     }
 

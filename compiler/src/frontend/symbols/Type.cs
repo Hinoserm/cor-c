@@ -23,7 +23,12 @@ public sealed class Type : IEquatable<Type>
     public Type? Element { get; init; }
     public int ArrayRank { get; init; }
     /// <summary>Type arguments of a constructed generic.</summary>
-    public IReadOnlyList<Type> Args { get; init; } = Array.Empty<Type>();
+    // ONE EMPTY LIST FOR EVERY TYPE WITHOUT ARGUMENTS: an array read as
+    // IReadOnlyList is wrapped in a view where it is converted, so the
+    // default spelt here made a view for every Type -- 120 thousand of them
+    // live in a unit -- all around the same empty array.
+    public IReadOnlyList<Type> Args { get; init; } = NoArgs;
+    private static readonly IReadOnlyList<Type> NoArgs = Array.Empty<Type>();
     public IReadOnlyList<Type>? UseArgs { get; init; }
     /// <summary>Set when this is a type parameter rather than a concrete type.</summary>
     public string? ParamName { get; init; }
