@@ -71,9 +71,10 @@ public sealed partial class Escape : IModulePass
     {
         // The frees this run inserted are known to the analyses through a
         // thread's static (_inserted); left set, it kept the last unit's IR
-        // alive for as long as the thread lived.
+        // alive for as long as the thread lived. The flow graphs Reaches
+        // built (_reachGraphs) hold their functions, so they go too.
         try { RunCore(m); }
-        finally { _inserted = null; _indirect = null; _held = null; _fieldsOf = null; _heldStamps = null; _copies = null; _typeItems = null; _typedFieldsOf = null; _stampItems = null; }
+        finally { _reachGraphs = null; _inserted = null; _indirect = null; _held = null; _fieldsOf = null; _heldStamps = null; _copies = null; _typeItems = null; _typedFieldsOf = null; _stampItems = null; }
     }
 
     private void RunCore(Module m)

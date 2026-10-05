@@ -5582,7 +5582,11 @@ static class Gc
         SayNumber("gc: cards taken ", TakenCards);
         SayNumber("gc: card words ", YoungCardWords);
         SayNumber("gc: old card words ", OldCardWords);
-        SayNumber("gc: allocated MB ", (_allocatedTotal + _since) / 1048576);
+        // The pressure counter's total is what went out and did not come back
+        // by hand: a byte freed by the program is taken off it again. What was
+        // handed out, all of it, is that and the program's frees together.
+        SayNumber("gc: allocated MB ", (_allocatedTotal + _since + FreedBytes) / 1048576);
+        SayNumber("gc: allocated net of the program's frees MB ", (_allocatedTotal + _since) / 1048576);
         // WHAT THE COMPILER GAVE BACK ITSELF, of all the heap handed out: the
         // share of memory the program managed without the collector. (What
         // escape analysis kept in frames never reaches the heap at all.)

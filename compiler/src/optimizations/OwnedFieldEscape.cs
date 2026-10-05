@@ -95,46 +95,58 @@ internal sealed class OwnedFieldEscape
 
     internal static Dictionary<VReg, long> Addresses(Function f, IEnumerable<VReg> roots)
     {
-        Defs defs = new(f);
+        Defs defs = new(f, buildCfg: false);
         Dictionary<VReg, long> result = roots.Distinct().ToDictionary(r => r, _ => 0L);
-        // FROM EACH ADDRESS TO WHAT IS MADE OF IT, once: the instructions a
-        // register is the first operand of, by that register. Every
-        // register followed has one write, so its offset is the one its
-        // operand gives whichever way it is reached -- the same answer the
-        // whole function rescanned to a fixed point gave, at the cost of one
-        // walk; rescanned, it was a twentieth of compiling the compiler.
-        Dictionary<VReg, List<Instr>> users = new();
+        // THE STEPS AN ADDRESS CAN TAKE, gathered once: every single write
+        // that copies, widens or moves a register by a constant. Followed to
+        // a fixed point over that list alone -- the whole function rescanned
+        // each round was a twentieth of compiling the compiler, and a list of
+        // users for every register made the collector a tenth of its work.
+        // The copies into registers written more than once wait for
+        // JoinedAliases, which has nothing to do unless one reads an address.
+        List<Instr> steps = new();
+        bool joins = false;
         foreach (var b in f.Blocks)
             foreach (Instr i in b.Instrs)
-                if (i.Dest is not null && i.Operands.Count > 0 && i.Operands[0] is RegOperand { Reg: var from }
-                    && (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32
-                        || i.Op is Opcode.Add or Opcode.Sub && i.Operands.Count == 2 && i.Operands[1] is ImmOperand))
-                    (users.TryGetValue(from, out List<Instr>? list) ? list : users[from] = new()).Add(i);
-        Queue<VReg> next = new(result.Keys);
-        while (next.TryDequeue(out VReg? at))
-        {
-            if (!users.TryGetValue(at, out List<Instr>? made)) continue;
-            long offset = result[at];
-            foreach (Instr i in made)
             {
-                if (!defs.IsSingle(i.Dest!) || result.ContainsKey(i.Dest!)) continue;
-                long nextOffset = offset;
+                if (i.Dest is not { } d || i.Operands.Count == 0 || i.Operands[0] is not RegOperand) continue;
+                if (!defs.IsSingle(d)) { joins |= i.Op == Opcode.Copy; continue; }
+                if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32
+                    || i.Op is Opcode.Add or Opcode.Sub && i.Operands.Count == 2 && i.Operands[1] is ImmOperand)
+                    steps.Add(i);
+            }
+        Follow(steps, result);
+        if (joins) JoinedAliases(f, defs, result, steps);
+        return result;
+    }
+
+    /// <summary>
+    /// Every step whose operand is an address makes its register one too, at
+    /// the operand's offset moved by the step's constant; to a fixed point.
+    /// </summary>
+    private static void Follow(List<Instr> steps, Dictionary<VReg, long> result)
+    {
+        bool more = true;
+        while (more)
+        {
+            more = false;
+            foreach (Instr i in steps)
+            {
+                if (result.ContainsKey(i.Dest!) || !result.TryGetValue(((RegOperand)i.Operands[0]).Reg, out long offset)) continue;
                 if (i.Op is Opcode.Add or Opcode.Sub)
                 {
                     long amount = ((ImmOperand)i.Operands[1]).Value;
-                    try { nextOffset = i.Op == Opcode.Add ? checked(offset + amount) : checked(offset - amount); }
+                    try { offset = i.Op == Opcode.Add ? checked(offset + amount) : checked(offset - amount); }
                     catch (OverflowException) { continue; }
                     // Do not confuse machine-address wraparound with a far
                     // disjoint field. Unknown/large address arithmetic makes
                     // Reads reject the receiver rather than hiding a capture.
-                    if (nextOffset < -1048576 || nextOffset > 1048576) continue;
+                    if (offset < -1048576 || offset > 1048576) continue;
                 }
-                result[i.Dest!] = nextOffset;
-                next.Enqueue(i.Dest!);
+                result[i.Dest!] = offset;
+                more = true;
             }
         }
-        JoinedAliases(f, defs, result);
-        return result;
     }
 
     /// <summary>
@@ -145,7 +157,7 @@ internal sealed class OwnedFieldEscape
     /// another of the group, all at one offset; to a fixed point, since each
     /// waits on the other.
     /// </summary>
-    private static void JoinedAliases(Function f, Defs defs, Dictionary<VReg, long> result)
+    private static void JoinedAliases(Function f, Defs defs, Dictionary<VReg, long> result, List<Instr> steps)
     {
         Dictionary<VReg, List<Instr>>? writes = null;
         while (true)
@@ -176,21 +188,7 @@ internal sealed class OwnedFieldEscape
             if (group.Count == 0 || offset is null || !agree) return;
             foreach (VReg r in group) result[r] = offset.Value;
             // Whatever follows from them, as the single writes do.
-            bool more;
-            do
-            {
-                more = false;
-                foreach (var b in f.Blocks)
-                foreach (Instr i in b.Instrs)
-                {
-                    if (i.Dest is null || !defs.IsSingle(i.Dest) || result.ContainsKey(i.Dest)
-                        || i.Operands.Count == 0 || i.Operands[0] is not RegOperand r || !result.TryGetValue(r.Reg, out long off)) continue;
-                    if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) { result[i.Dest] = off; more = true; }
-                    else if (i.Op is Opcode.Add or Opcode.Sub && i.Operands.Count == 2 && i.Operands[1] is ImmOperand amount
-                             && Math.Abs(amount.Value) < 1048576)
-                    { result[i.Dest] = i.Op == Opcode.Add ? off + amount.Value : off - amount.Value; more = true; }
-                }
-            } while (more);
+            Follow(steps, result);
         }
     }
 
@@ -228,7 +226,7 @@ internal sealed class OwnedFieldEscape
         if (path.Count == 0 || path.Count > 4) return false;
         long field = path[0].Offset;
         int width = path[0].Width;
-        Defs defs = new(f);
+        Defs defs = new(f, buildCfg: false);
         // COPIES OF THE OWNER'S BYTES, whole field and all: a struct that holds
         // the reference -- a foreach's enumerator, returned by value and copied
         // into the frame slot the loop walks -- is the owner again wherever it
