@@ -1846,6 +1846,19 @@ public sealed partial class Lowering
             || t.IsArray;
     }
 
+    /// <summary>
+    /// Whether a type tested in a shared copy names object where a type
+    /// parameter stood: there object is the copy's word, any reference --
+    /// not System.Object -- and by variance every List would be an
+    /// IReadOnlyList<U> of it. Such a test is exact, as before variance: the
+    /// test that knows U at this call is the shape's (ShapeTest).
+    /// </summary>
+    private bool StandInArguments(TypeSymbol want)
+    {
+        bool shared = _typeArgs is not null || _method?.Owner is TypeSymbol owner && (SharedCopy(owner) || CanonicalCopy(owner));
+        return shared && want.TemplateArgTypes.Any(a => a.Prim == Prim.Any && a.Symbol is null || a.Symbol is TypeSymbol named && "t_" + TypeKey(named) == ObjectDispatch);
+    }
+
     private VReg TypeTest(VReg obj, TypeSymbol want)
     {
         VReg result = _f.NewReg(IrType.I32, "is");
@@ -1884,7 +1897,7 @@ public sealed partial class Lowering
             // (Runtime.DescribedAs, which reads the variance the descriptors
             // carry); any other interface is its exact self or nothing.
             Block exhausted = no;
-            if (VarianceRecord(want) is not null && RuntimeMethod("DescribedAs", 2) is MethodSymbol described)
+            if (VarianceRecord(want) is not null && !StandInArguments(want) && RuntimeMethod("DescribedAs", 2) is MethodSymbol described)
             {
                 exhausted = _f.NewBlock("tvariant");
                 Block savedBlock = _e.Block;

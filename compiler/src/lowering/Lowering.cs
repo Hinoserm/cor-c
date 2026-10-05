@@ -2249,7 +2249,7 @@ public sealed partial class Lowering
         // whatever U was.
         if (t.Decl is not { Template: string template } made || made.TemplateArgs.Count == 0
             || t.TemplateArgTypes.Count != made.TemplateArgs.Count
-            || CanonicalCopy(t) || made.Canon is not null || t.Name.Contains(Monomorphiser.CanonName, StringComparison.Ordinal))
+            || CanonicalCopy(t) || t.Name.Contains(Monomorphiser.CanonName, StringComparison.Ordinal))
         {
             return null;
         }
