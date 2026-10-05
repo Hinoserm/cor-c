@@ -3643,19 +3643,9 @@ static class Gc
         {
             return 0;
         }
+        // The rest of the batch is made a page at a time as it is asked
+        // for (HeapChunks.TakeFresh), never pooled untouched.
         PagesTaken = PagesTaken + n;
-        for (long k = n - 1; k >= 1; k--)
-        {
-            long page = first + k * HeapChunks.PageBytes;
-            // A class, any class, so that the sweep knows it for a page
-            // (and passes it by, pooled) rather than an empty mixed chunk.
-            HeapChunks.SetPageClass(page, 1);
-            HeapChunks.SetPooled(page, true);
-            HeapChunks.SetYoung(page, false);
-            HeapChunks.SetPageNext(page, _pool);
-            _pool = page;
-            _poolBytes = _poolBytes + HeapChunks.PageBytes;
-        }
         return first;
     }
 
@@ -3775,7 +3765,9 @@ static class Gc
             page = PopPool(c);
             if (page == 0)
             {
-                page = TakeBatch();
+                page = HeapChunks.TakeFresh();
+                if (page != 0) PagesTaken = PagesTaken + 1;
+                else page = TakeBatch();
                 if (page == 0)
                 {
                     return false;
@@ -10834,10 +10826,29 @@ static class HeapChunks
     /// a few hundred bytes of it.
     public const long PageBytes = 32768;
 
-    // What a chunk is normally: a megabyte, so the operating system is asked
-    // rarely and the chunk list stays short for the collector to walk. A
-    // single allocation larger than that gets a chunk of its own size.
-    const long ChunkAsk = 1048576;
+    // WHAT A CHUNK IS NORMALLY: a sixteenth of the heap as it stands,
+    // between 64 KiB and a megabyte (ChunkAsk). A large heap -- a compiler's
+    // -- still asks the operating system rarely and keeps its chunk list
+    // short; a small one grows and gives back in small steps. A megabyte
+    // always kept a megabyte for a few live blocks: a 32 MB machine's GUI
+    // kernel held its heap at three times what was live. A single
+    // allocation larger gets a chunk of its own size.
+    const long ChunkLeast = 65536, ChunkMost = 1048576;
+
+    static long ChunkAsk()
+    {
+        // NOT PAST AN EIGHTH OF A COLLECTION'S ALLOWANCE where the platform
+        // sets one from the machine (a kernel's ThresholdCap, Mem.Total /
+        // 32): 128 KiB on a 32 MB machine, a megabyte from 256 MB up. A
+        // program with no such cap -- a compiler -- keeps the megabyte.
+        long most = ChunkMost;
+        long cap = Platform.GcThreshold();
+        if (cap > 0) most = (cap / 8 + 4095) & -4096;
+        if (most < ChunkLeast) most = ChunkLeast;
+        if (most > ChunkMost) most = ChunkMost;
+        long ask = (_heapBytes / 16 + 4095) & -4096;
+        return ask < ChunkLeast ? ChunkLeast : ask > most ? most : ask;
+    }
 
     static long _chunks;        // newest chunk first
     static long _floor;         // lowest block address in any chunk
@@ -11501,15 +11512,13 @@ static class HeapChunks
         return chunk + PageBytes - PageTableBytes();
     }
 
-    /// A new size-class page, zeroed, its start table inside it; or zero
-    /// when the cap, the ceiling or the operating system refuses. The heap
-    /// lock is held. Not yet formatted for a class (Gc.FormatPage).
-    /// Up to `want` new size-class pages in one mapping, laid end to end,
-    /// each a chunk of its own and empty (its end is its first block), the
-    /// run entered in the index at once; answers the lowest, the others at
-    /// PageBytes steps above it, and how many through `taken`. Zero when the
-    /// cap, the ceiling or the operating system refuses even one. The heap
-    /// lock is held.
+    /// Up to `want` new size-class pages in one mapping, laid end to end:
+    /// the highest made now -- a chunk of its own, empty (its end is its
+    /// first block), its start table inside it, indexed -- and answered,
+    /// one through `taken`; the others made one at a time as they are asked
+    /// for (TakeFresh). Zero when the cap, the ceiling or the operating
+    /// system refuses even one. Not yet formatted for a class
+    /// (Gc.FormatPage). The heap lock is held.
     public static long TakePages(long want, long taken)
     {
         Sys.Poke(taken, 0);
@@ -11538,32 +11547,62 @@ static class HeapChunks
             return 0;
         }
         Maps = Maps + 1;
-        for (long k = 0; k < n; k++)
-        {
-            long page = raw + k * PageBytes;
-            Sys.Poke(page + ChunkNext, _chunks);
-            Sys.Poke(page + ChunkPrevious, 0);
-            if (_chunks != 0) Sys.Poke(_chunks + ChunkPrevious, page);
-            Sys.Poke(page + ChunkEnd, page + ChunkBytes);
-            Sys.Poke(page + ChunkLimit, page + PageBytes);
-            Sys.Poke(page + ChunkFlags, ChunkYoung);
-            Sys.Poke(page + ChunkAnchors, PageBlockLimit(page));
-            _chunks = page;
-        }
-        _heapBytes = _heapBytes + n * PageBytes;
         Gc.CommitCards(raw, n * PageBytes);
         CheckNew(raw, n * PageBytes);
-        IndexAddRun(raw, n, PageBytes);
-        if (_floor == 0 || raw + ChunkBytes < _floor)
+        // ONE PAGE MADE NOW, THE REST AS THEY ARE ASKED FOR (TakeFresh). A
+        // page's header is a write, and on an operating system that gives
+        // memory on first touch the batch's thirty-two headers took its
+        // megabyte at once -- the GUI kernel's heap held fifteen of them
+        // with two and a half live. Mapped and counted as one, the batch
+        // is taken from the top down: each page made after is below every
+        // chunk indexed (mappings come top down), an insert at the index's
+        // front, and no lookup ever reads a page not yet made.
+        long top = raw + (n - 1) * PageBytes;
+        MakePage(top);
+        _freshLow = raw;
+        _freshNext = top;
+        Sys.Poke(taken, 1);
+        return top;
+    }
+
+    // THE BATCH'S PAGES NOT YET MADE: [_freshLow, _freshNext), mapped and
+    // untouched, given out from the top down.
+    static long _freshLow, _freshNext;
+
+    /// A page of the last batch not yet given out, made now -- its header
+    /// written, listed, indexed -- or zero when the batch is used up. The
+    /// heap lock is held.
+    public static long TakeFresh()
+    {
+        if (_freshNext <= _freshLow) return 0;
+        long page = _freshNext - PageBytes;
+        _freshNext = page;
+        MakePage(page);
+        return page;
+    }
+
+    /// A size-class page's header written, the page listed and indexed and
+    /// counted: an empty chunk of its own (its end is its first block).
+    static void MakePage(long page)
+    {
+        Sys.Poke(page + ChunkNext, _chunks);
+        Sys.Poke(page + ChunkPrevious, 0);
+        if (_chunks != 0) Sys.Poke(_chunks + ChunkPrevious, page);
+        Sys.Poke(page + ChunkEnd, page + ChunkBytes);
+        Sys.Poke(page + ChunkLimit, page + PageBytes);
+        Sys.Poke(page + ChunkFlags, ChunkYoung);
+        Sys.Poke(page + ChunkAnchors, PageBlockLimit(page));
+        _chunks = page;
+        _heapBytes = _heapBytes + PageBytes;
+        IndexAdd(page);
+        if (_floor == 0 || page + ChunkBytes < _floor)
         {
-            _floor = raw + ChunkBytes;
+            _floor = page + ChunkBytes;
         }
-        if (raw + n * PageBytes > _ceiling)
+        if (page + PageBytes > _ceiling)
         {
-            _ceiling = raw + n * PageBytes;
+            _ceiling = page + PageBytes;
         }
-        Sys.Poke(taken, n);
-        return raw;
     }
 
     /// Whether anything was allocated in the chunk since the last collection.
@@ -11646,7 +11685,7 @@ static class HeapChunks
 
         _heapBytes = _heapBytes - size;
         Releases = Releases + 1;
-        if (size != ChunkAsk) BigReleases = BigReleases + 1;
+        if (size > ChunkMost) BigReleases = BigReleases + 1;
         long anchors = Sys.Peek(chunk + ChunkAnchors);
         // A PAGE'S START TABLE IS INSIDE IT, and goes with it.
         if (anchors != 0 && (anchors < chunk || anchors >= chunk + size))
@@ -11759,7 +11798,8 @@ static class HeapChunks
     public static long Take(long need, bool dedicated = false)
     {
         long minimum = (need + ChunkBytes + 4095) & -4096;
-        long ask = dedicated || minimum > ChunkAsk ? minimum : ChunkAsk;
+        long usual = ChunkAsk();
+        long ask = dedicated || minimum > usual ? minimum : usual;
 
         // THE CEILING IS WHERE GROWTH WAITS FOR A COLLECTION (Gc.GrowthWaits):
         // refused here, the allocator collects first and asks again.
