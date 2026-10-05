@@ -416,6 +416,15 @@ public sealed class IndexedDeclarations : IDisposable
                 root.Scope = source.Scope;
                 root.File = displayFile;
                 root.SourcePath = source.Path;
+                // WHERE IT IS IN ITS FILE, not in the slice it was parsed from:
+                // the front end orders a partial type's parts by path and then
+                // by this before merging them (Frontend.MergePartialTypes), and
+                // every part cut out of one file began at 0 -- Escape's four
+                // parts in OwnedElements.cs merged in no fixed order, their
+                // fields at other offsets than the unit compiling that file
+                // gave them, and the link refused the two layouts.
+                root.SourceFrom = source.From;
+                root.SourceTo = source.To;
                 root.Elsewhere = true;
                 root.SignatureOnly = true;
                 foreach (MemberDecl member in root.Members)

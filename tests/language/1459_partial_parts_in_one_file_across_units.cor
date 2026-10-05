@@ -1,0 +1,25 @@
+// test: partial parts in one file across units
+// units: tests/language/support/1459_partial_units.cor
+// expect-exit: 0
+// expect-output:
+// 1 2 3 True holder 6
+//
+// A partial class in three parts of one file, used from another unit: the
+// parts are merged in their file's order wherever the class is read -- as
+// source in its own unit, as indexed declarations in this one -- so both
+// lay its fields out alike and the link takes the one layout. Read from
+// the index, every part of one file began at offset 0 and merged in no
+// fixed order.
+
+using System;
+using PartialUnits;
+
+static class P
+{
+    static int Main()
+    {
+        Holder h = new();
+        Console.WriteLine(h.First + " " + h.Second + " " + h.Third + " " + h.Flag + " " + h.Name + " " + h.Sum());
+        return 0;
+    }
+}
