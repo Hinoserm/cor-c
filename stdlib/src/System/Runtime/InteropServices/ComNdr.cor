@@ -138,10 +138,13 @@ namespace System.Runtime.InteropServices
         /// inline at the top level, after the enclosing array or structure
         /// when inside one. (Also an interface's own wire's, ComOle.cor's:
         /// STGMEDIUM, CLIPFORMAT, HWND.)
-        public void User(Action body)
+        /// A wire_marshal type's marker in place, its body deferred and
+        /// aligned as its FC_USER_MARSHAL says: 4 for a BSTR or SAFEARRAY,
+        /// 8 for a VARIANT.
+        public void User(Action body, int align = 8)
         {
             Long(UserMarker);
-            Defer(() => { Align(8); body(); });
+            Defer(() => { Align(align); body(); });
         }
 
         /// BSTR_UserMarshal's body.
@@ -156,7 +159,7 @@ namespace System.Runtime.InteropServices
             for (int i = 0; i < chars; i++) { _b[_n++] = (byte)s![i]; _b[_n++] = (byte)(s[i] >> 8); }
         }
 
-        public void Bstr(string? s) { User(() => BstrBody(s)); }
+        public void Bstr(string? s) { User(() => BstrBody(s), 4); }
 
         /// A [string] wchar_t*: conformant and varying, its terminator counted.
         public void WideString(string s)
@@ -295,7 +298,7 @@ namespace System.Runtime.InteropServices
             return 0;
         }
 
-        public void SafeArray(object? a) { User(() => { Long(a == null ? 0 : 1); SafeArrayBody(a); }); }
+        public void SafeArray(object? a) { User(() => { Long(a == null ? 0 : 1); SafeArrayBody(a); }, 4); }
 
         /// The SAFEARRAY a .NET array is, after its pointer: one dimension
         /// from 0, its cells in their wire forms.
@@ -466,11 +469,18 @@ namespace System.Runtime.InteropServices
             foreach (Action a in mine) a();
         }
 
+        /// ORPCTHIS read past, and the LOCALTHIS (dwFlags, dwClientThread)
+        /// ole32's channel puts after it on a call it flags ORPCF_LOCAL.
         public void OrpcThis()
         {
-            Short(); Short(); Long(); Long(); Guid();
+            Short(); Short();
+            long flags = Long();
+            Long(); Guid();
             if (Long() != 0) SkipExtensions();
+            if ((flags & OrpcfLocal) != 0) { Long(); Long(); }
         }
+
+        public const int OrpcfLocal = 1;
 
         public void OrpcThat()
         {
@@ -497,11 +507,11 @@ namespace System.Runtime.InteropServices
             }
         }
 
-        public void User(Action body)
+        public void User(Action body, int align = 8)
         {
             long marker = Long();
             if (marker == 0) { body(); return; }
-            Defer(() => { Align(8); body(); });
+            Defer(() => { Align(align); body(); });
         }
 
         public string? BstrBody()
@@ -526,7 +536,7 @@ namespace System.Runtime.InteropServices
         public string? Bstr()
         {
             string? s = null;
-            User(() => { s = BstrBody(); });
+            User(() => { s = BstrBody(); }, 4);
             return s;
         }
 
@@ -646,7 +656,7 @@ namespace System.Runtime.InteropServices
             {
                 Align(4);
                 if (Long() != 0) a = SafeArrayBody();
-            });
+            }, 4);
             return a;
         }
 
