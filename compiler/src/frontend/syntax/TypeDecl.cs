@@ -236,4 +236,11 @@ public sealed class TypeDecl : Node
     public string? Template { get; set; }
 
     public List<TypeRef> TemplateArgs { get; } = new();
+
+    /// <summary>
+    /// The template's type parameters, which a specialisation has none of:
+    /// what its type arguments are checked against (`new()`, CS0310).
+    /// Null for a declaration made elsewhere, read from a header.
+    /// </summary>
+    public List<TypeParam>? TemplateParams { get; set; }
 }

@@ -162,6 +162,7 @@ public sealed class Monomorphiser
         {
             m.Settled(args[i]);
             map[template.TypeParams[i].Name] = args[i];
+            m._paramInfo[template.TypeParams[i].Name] = template.TypeParams[i];
             if (template.TypeParams[i].Struct) m._structParams.Add(template.TypeParams[i].Name);
         }
 
@@ -709,10 +710,12 @@ public sealed class Monomorphiser
             Dictionary<string, TypeRef> map = new(StringComparer.Ordinal);
 
             _structParams.Clear();
+            _paramInfo.Clear();
             for (int i = 0; i < job.Template.TypeParams.Count && i < job.Args.Count; i++)
             {
                 Settled(job.Args[i]);
                 map[job.Template.TypeParams[i].Name] = job.Args[i];
+                _paramInfo[job.Template.TypeParams[i].Name] = job.Template.TypeParams[i];
                 if (job.Template.TypeParams[i].Struct) _structParams.Add(job.Template.TypeParams[i].Name);
             }
 
@@ -762,6 +765,7 @@ public sealed class Monomorphiser
             // declared over `List<T>` works out that T is Node by asking.
             made.Template = TemplatePath(job.Template);
             made.TemplateArgs.AddRange(job.Args);
+            made.TemplateParams = job.Template.TypeParams;
 
             // WHAT ITS SHARED CODE MAKES, for this copy's arguments (TypeDecl.CanonMade):
             // the canonical copy's list, made before any copy sharing it.
@@ -806,9 +810,18 @@ public sealed class Monomorphiser
     /// when a parameter is `where T : struct`, which no machine word can be
     /// -- that copy made its `T?` an `object?` with no HasValue, and a unit
     /// owning `Box<T> where T : struct` could not compile.
+    ///
+    /// NOR WHEN ONE IS `new()` (or `unmanaged`), or constructed by
+    /// Activator.CreateInstance (TypeParam.Made): `new T()` in a copy of its
+    /// own is `new` of what T is, a constructor called directly and known
+    /// to every analysis, where a shared copy would have to find one at run
+    /// time through a word every type's descriptor carried -- every public
+    /// parameterless constructor in the program kept for it. A generic
+    /// METHOD is copied per argument already; shared code cannot hand a
+    /// `new()` parameter a word, its own parameter being `new()` too.
     /// </summary>
     private static bool Shareable(TypeDecl template)
-        => !template.TypeParams.Any(p => p.Struct) && !HasStaticState(template);
+        => !template.TypeParams.Any(p => p.Struct || p.New || p.Unmanaged || p.Made) && !HasStaticState(template);
 
     /// <summary>
     /// A GENERIC TYPE'S STATICS ARE EACH INSTANTIATION'S OWN in C#: EmptyArray
@@ -891,6 +904,80 @@ public sealed class Monomorphiser
             }
         }
         return null;
+    }
+
+    /// <summary>The type parameters of the template being copied, by name: what each is constrained to (`new()`).</summary>
+    private readonly Dictionary<string, TypeParam> _paramInfo = new(StringComparer.Ordinal);
+
+    /// <summary>The same, for the type parameters of the generic method being copied (_methodParams).</summary>
+    private readonly Dictionary<string, TypeParam> _methodParamInfo = new(StringComparer.Ordinal);
+
+    /// <summary>Where `new T()` has been refused already: a template is copied once per argument, and said once.</summary>
+    private readonly HashSet<(int Line, int Col)> _refusedNew = new();
+
+    /// <summary>
+    /// `new T()`, T A TYPE PARAMETER of the template or the method being
+    /// copied (C# 12.8.17.2). Refused without `new()`, `struct` or
+    /// `unmanaged` on T (CS0304), and with arguments (CS0417). Over a
+    /// type argument the copy knows, it is `new` of that type, as written,
+    /// with the parameter put in, which is the substitution every `new`
+    /// gets. Over one only run time knows -- a shared method copy's
+    /// (TypeRef.CanonIndex), or the machine word itself -- it is refused:
+    /// the copies are arranged so that never happens. The `new` is
+    /// rewritten as any other.
+    /// </summary>
+    private void ParameterMade(NewExpr nw, Dictionary<string, TypeRef> map)
+    {
+        TypeRef written = nw.Type;
+        if (nw.ArraySize is not null || nw.Elements is not null || nw.Utf8Bytes is not null || nw.Collection
+            || written.Name.Length == 0 || written.Args.Count != 0 || written.ArrayRank != 0 || written.PointerDepth != 0)
+        {
+            return;
+        }
+        bool classParam = map.ContainsKey(written.Name) && _paramInfo.ContainsKey(written.Name);
+        TypeParam? param = classParam ? _paramInfo[written.Name]
+                         : _methodParams.Contains(written.Name) ? _methodParamInfo.GetValueOrDefault(written.Name) : null;
+        if (param is null)
+        {
+            return;
+        }
+        if (!param.Constructible)
+        {
+            if (_refusedNew.Add((nw.Line, nw.Col)))
+            {
+                _errors.Add(new CompileError(_file, nw.Line, nw.Col,
+                    $"CS0304: Cannot create an instance of the variable type '{written.Name}' because it does not have the new() constraint"));
+            }
+            return;
+        }
+        if (nw.Args.Count != 0)
+        {
+            if (_refusedNew.Add((nw.Line, nw.Col)))
+            {
+                _errors.Add(new CompileError(_file, nw.Line, nw.Col,
+                    $"CS0417: '{written.Name}': cannot provide arguments when creating an instance of a variable type"));
+            }
+            return;
+        }
+        // A method's own parameter in its template, not yet bound: its copy decides.
+        if (!map.TryGetValue(written.Name, out TypeRef? bound) || !nw.Body.IsEmpty)
+        {
+            return;
+        }
+        if (bound.Name != CanonName && bound.CanonIndex == -1)
+        {
+            return;
+        }
+        // NEVER A WORD: a class constructing its parameter is copied per
+        // argument (Shareable), and a method's copy is made per argument
+        // unless shared code hands it one only run time knows -- which a
+        // parameter that is not `new()` itself cannot be handed (CS0310).
+        if (_refusedNew.Add((nw.Line, nw.Col)))
+        {
+            _errors.Add(new CompileError(_file, nw.Line, nw.Col,
+                $"'new {written.Name}()' over a type argument only run time knows: give the parameter it comes from the new() constraint"));
+        }
+        return;
     }
 
     /// <summary>The type parameters of the canonical class copy being made, by name: their places (ICanonSlot).</summary>
@@ -1836,6 +1923,7 @@ public sealed class Monomorphiser
             CanonMade = d.CanonMade,
             Specialised = d.Specialised,
             Template = d.Template,
+            TemplateParams = d.TemplateParams,
 
             // AND WHERE IT WAS WRITTEN. A nested type's copy is still nested,
             // and losing that makes `Outer.Inner` stop resolving the moment the
@@ -1988,6 +2076,7 @@ public sealed class Monomorphiser
                 foreach (TypeParam tp in md.TypeParams)
                 {
                     _methodParams.Add(tp.Name);
+                    _methodParamInfo[tp.Name] = tp;
                 }
 
                 MethodDecl made = new()
@@ -2032,6 +2121,7 @@ public sealed class Monomorphiser
                 foreach (TypeParam tp in md.TypeParams)
                 {
                     _methodParams.Remove(tp.Name);
+                    _methodParamInfo.Remove(tp.Name);
                 }
 
                 // WHOSE CODE IT IS SURVIVES THE CLONE. A consumer's own copy
@@ -2649,6 +2739,7 @@ public sealed class Monomorphiser
 
             case NewExpr nw:
             {
+                ParameterMade(nw, map);
                 NewExpr made = new()
                 {
                     Type = Sub(nw.Type, map),

@@ -1340,9 +1340,34 @@ public sealed class Parser
     private TypeDecl ParseTypeDecl()
     {
         int saved = _templateDepth;
-        try { return ParseTypeDeclCore(); }
-        finally { _templateDepth = saved; }
+        HashSet<string>? outer = _createdParams;
+        _createdParams = null;
+        try
+        {
+            TypeDecl d = ParseTypeDeclCore();
+            if (_createdParams is not null)
+            {
+                foreach (TypeParam p in d.TypeParams)
+                {
+                    p.Made |= _createdParams.Contains(p.Name);
+                }
+            }
+            return d;
+        }
+        finally
+        {
+            _templateDepth = saved;
+            if (outer is not null && _createdParams is not null) outer.UnionWith(_createdParams);
+            _createdParams = outer ?? _createdParams;
+        }
     }
+
+    /// <summary>
+    /// The type names written as `CreateInstance<T>`'s argument in the type
+    /// being parsed, its nested types' included: a type parameter among them
+    /// is constructed by its declaration (TypeParam.Made).
+    /// </summary>
+    private HashSet<string>? _createdParams;
 
     private TypeDecl ParseTypeDeclCore()
     {
@@ -2218,12 +2243,12 @@ public sealed class Parser
                 // and ParseTypeRef met `class` and stopped -- so ordinary C#
                 // carrying any of them did not parse at all.
                 //
-                // They are read and dropped, all but `struct`. This compiler
-                // makes a COPY of a generic per type argument, so what a
-                // constraint rules out is ruled out by that copy failing to
-                // compile, on the line that depended on it rather than on the
-                // declaration; there is nothing here for a constraint to be
-                // checked against.
+                // They are read and dropped, all but `struct`, `new()` and
+                // `unmanaged`. This compiler makes a COPY of a generic per
+                // type argument, so what any other constraint rules out is
+                // ruled out by that copy failing to compile, on the line that
+                // depended on it rather than on the declaration; there is
+                // nothing here for one to be checked against.
                 //
                 // `struct` IS KEPT because it changes what `T?` means: over a
                 // struct-constrained T it is Nullable<T>, a real cell, where
@@ -2240,16 +2265,24 @@ public sealed class Parser
                     continue;
                 }
 
+                // `new()` IS KEPT: it is what lets `new T()` be written over
+                // T, and what a type argument without a public parameterless
+                // constructor is refused by (TypeParam.New).
                 if (At(Tok.KwNew))
                 {
                     _i++;
                     Expect(Tok.LParen, "'(' after 'new' in a constraint");
                     Expect(Tok.RParen, "')' to close 'new()' in a constraint");
+                    target.New = true;
                     continue;
                 }
 
                 if (At(Tok.Ident) && Cur.Text is "notnull" or "unmanaged")
                 {
+                    if (Cur.Text == "unmanaged")
+                    {
+                        target.Unmanaged = true;
+                    }
                     _i++;
                     continue;
                 }
@@ -7859,6 +7892,10 @@ public sealed class Parser
                     if (TryParseTypeArgs(out List<TypeRef> args))
                     {
                         m.TypeArgs.AddRange(args);
+                        if (name == "CreateInstance" && args is [{ Args.Count: 0, ArrayRank: 0, PointerDepth: 0 } made])
+                        {
+                            (_createdParams ??= new(StringComparer.Ordinal)).Add(made.Name);
+                        }
                     }
                     else
                     {

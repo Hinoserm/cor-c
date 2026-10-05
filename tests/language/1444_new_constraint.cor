@@ -1,0 +1,86 @@
+// test: new_constraint
+// expect-exit: 0
+// expect-output:
+// widget 1 widget 2
+// pool 3 made, first #1
+// zero 0 False 0
+// counter 7
+// fresh 2 lists, distinct True
+// gadget default
+//
+// `where T : new()` (C# 15.2.5): `new T()` over T, in a generic class and a
+// generic method, a value type's being its zero. A class whose parameter is
+// `new()` is copied per type argument (Monomorphiser.Shareable): each copy's
+// `new T()` calls what T's constructor is, directly.
+
+using System;
+using System.Collections.Generic;
+
+class Widget
+{
+    static int _made;
+    public readonly int Number;
+    public Widget() { Number = ++_made; }
+    public override string ToString() => "widget " + Number;
+}
+
+// No constructor written: the one C# gives it counts.
+class Gadget
+{
+    public string Name = "default";
+}
+
+sealed class Pool<T> where T : class, new()
+{
+    private readonly List<T> _items = new();
+    public T Take()
+    {
+        T item = new T();
+        _items.Add(item);
+        return item;
+    }
+    public int Count => _items.Count;
+    public T First => _items[0];
+}
+
+struct Counter
+{
+    public int Value;
+}
+
+static class Make
+{
+    public static T One<T>() where T : new() => new T();
+
+    // Handed on: a `new()` parameter given to another.
+    public static List<T> Many<T>(int n) where T : new()
+    {
+        List<T> made = new();
+        for (int i = 0; i < n; i++) made.Add(One<T>());
+        return made;
+    }
+}
+
+static class P
+{
+    static int Main()
+    {
+        Console.WriteLine(Make.One<Widget>() + " " + Make.One<Widget>());
+
+        Pool<Widget> pool = new();
+        pool.Take(); pool.Take(); pool.Take();
+        Console.WriteLine("pool " + pool.Count + " made, first #" + (pool.First.Number - 2));
+
+        Console.WriteLine("zero " + Make.One<int>() + " " + Make.One<bool>() + " " + Make.One<Counter>().Value);
+
+        Counter c = Make.One<Counter>();
+        c.Value = 7;
+        Console.WriteLine("counter " + c.Value);
+
+        List<List<int>> lists = Make.Many<List<int>>(2);
+        Console.WriteLine("fresh " + lists.Count + " lists, distinct " + !ReferenceEquals(lists[0], lists[1]));
+
+        Console.WriteLine("gadget " + new Pool<Gadget>().Take().Name);
+        return 0;
+    }
+}

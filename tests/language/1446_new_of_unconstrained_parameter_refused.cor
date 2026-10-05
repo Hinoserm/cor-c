@@ -1,0 +1,19 @@
+// test: new of unconstrained parameter refused
+// expect-compile-error: CS0304: Cannot create an instance of the variable type 'T' because it does not have the new() constraint
+// `new T()` needs `new()`, `struct` or `unmanaged` on T (C# 12.8.17.2).
+
+using System;
+
+static class Make
+{
+    public static T One<T>() => new T();
+}
+
+static class P
+{
+    static int Main()
+    {
+        Console.WriteLine(Make.One<object>());
+        return 0;
+    }
+}

@@ -1,0 +1,33 @@
+// The other unit of 1448_new_constraint_across_units: generics that
+// construct their type parameters, by `new()` and by Activator.
+using System;
+using System.Collections.Generic;
+
+namespace MakeUnits;
+
+public sealed class Pool<T> where T : class, new()
+{
+    private readonly List<T> _items = new();
+    public T Take() { T item = new T(); _items.Add(item); return item; }
+    public int Count => _items.Count;
+}
+
+/// No constraint: its members construct T by Activator, so it is copied per T.
+public sealed class Lazy2<T>
+{
+    private T? _value;
+    private bool _made;
+    public T Value
+    {
+        get
+        {
+            if (!_made) { _value = Activator.CreateInstance<T>(); _made = true; }
+            return _value!;
+        }
+    }
+}
+
+public static class Make
+{
+    public static T One<T>() where T : new() => new T();
+}

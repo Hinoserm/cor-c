@@ -13434,6 +13434,31 @@ class PlatformNotSupportedException : NotSupportedException
     public PlatformNotSupportedException(string? message, Exception? innerException) : base(message, innerException) { }
 }
 
+/// MAKING AN OBJECT OF A TYPE NAMED AS A TYPE ARGUMENT, CreateInstance<T>().
+/// Only the generic form: a program here does not make objects of a Type
+/// value it holds.
+///
+/// THE COMPILER WRITES EACH CALL AS `new T()` of the T it names (Binder),
+/// which every copy knows exactly -- a class whose members construct one of
+/// its type parameters this way is copied per type argument
+/// (TypeParam.Made). A T with no public parameterless constructor -- an
+/// abstract class, an interface, one whose constructors all take
+/// arguments -- compiles to CannotCreate and throws .NET's
+/// MissingMethodException when run, as .NET's does.
+public static class Activator
+{
+    public static T CreateInstance<T>()
+    {
+        throw new MissingMethodException("Cannot dynamically create an instance of type '" + typeof(T).FullName + "'. Reason: No parameterless constructor defined.");
+    }
+
+    /// What a call of CreateInstance<T> is over a T that cannot be made, and why.
+    internal static T CannotCreate<T>(string reason)
+    {
+        throw new MissingMethodException("Cannot dynamically create an instance of type '" + typeof(T).FullName + "'. Reason: " + reason);
+    }
+}
+
 /// A method that exists so that something compiles and has not been written.
 class NotImplementedException : SystemException
 {
@@ -17275,12 +17300,10 @@ namespace System.Runtime.CompilerServices
     /// all: such a cache belongs on the key itself, or a table that is
     /// replaced when its keys are.
     ///
-    /// Two departures, both for what this compiler cannot yet express:
-    /// GetValue takes a Func<TKey, TValue> where .NET takes its nested
+    /// One departure, for what this compiler cannot yet express: GetValue
+    /// takes a Func<TKey, TValue> where .NET takes its nested
     /// CreateValueCallback delegate -- a lambda or a method group binds to
-    /// either alike -- and there is no GetOrCreateValue, which builds a
-    /// TValue by its parameterless constructor with no constraint saying it
-    /// has one.
+    /// either alike.
     public sealed class ConditionalWeakTable<TKey, TValue> : IEnumerable<KeyValuePair<TKey, TValue>> where TKey : class where TValue : class?
     {
         private readonly Dictionary<object, TValue> _held = new Dictionary<object, TValue>(ReferenceEqualityComparer.Instance);
@@ -17325,6 +17348,17 @@ namespace System.Runtime.CompilerServices
             if (createValueCallback == null) { throw new ArgumentNullException("createValueCallback"); }
             if (_held.TryGetValue(key, out TValue? known)) { return known!; }
             TValue made = createValueCallback(key);
+            _held[key] = made;
+            return made;
+        }
+
+        /// The value held for the key, or a new TValue by its public
+        /// parameterless constructor, held from now on (Activator).
+        public TValue GetOrCreateValue(TKey key)
+        {
+            if (key == null) { throw new ArgumentNullException("key"); }
+            if (_held.TryGetValue(key, out TValue? known)) { return known!; }
+            TValue made = Activator.CreateInstance<TValue>();
             _held[key] = made;
             return made;
         }

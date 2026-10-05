@@ -362,6 +362,13 @@ public static class Gir
             Expr(p.Default);
         }
 
+        /// <summary>
+        /// A type parameter's special constraints, a bit each: `struct`,
+        /// `new()`, `unmanaged`, and constructed by its declaration (ReadParam).
+        /// </summary>
+        private static byte ParamKinds(TypeParam p)
+            => (byte)((p.Struct ? 1 : 0) | (p.New ? 2 : 0) | (p.Unmanaged ? 4 : 0) | (p.Made ? 8 : 0));
+
         public void Decl(TypeDecl d)
         {
             U8((byte)d.Kind);
@@ -373,7 +380,7 @@ public static class Gir
             foreach (TypeParam p in d.TypeParams)
             {
                 Str(p.Name);
-                U8(p.Struct ? (byte)1 : (byte)0);
+                U8(ParamKinds(p));
                 I32(p.Constraints.Count);
 
                 // THE CONSTRAINTS TRAVEL WITH IT, so a consumer can check its
@@ -452,7 +459,7 @@ public static class Gir
                     foreach (TypeParam p in d.TypeParams)
                     {
                         Str(p.Name);
-                        U8(p.Struct ? (byte)1 : (byte)0);
+                        U8(ParamKinds(p));
                     }
 
                     I32(d.Params.Count);
@@ -1103,6 +1110,14 @@ public static class Gir
 
         public bool Bool() => U8() != 0;
 
+        /// <summary>A type parameter's name and its special constraints (ParamKinds).</summary>
+        public TypeParam ReadParam()
+        {
+            string name = Str();
+            byte kinds = U8();
+            return new TypeParam { Name = name, Struct = (kinds & 1) != 0, New = (kinds & 2) != 0, Unmanaged = (kinds & 4) != 0, Made = (kinds & 8) != 0 };
+        }
+
         public int I32()
         {
             Need(4);
@@ -1243,7 +1258,7 @@ public static class Gir
 
             for (int i = 0; i < typeParams; i++)
             {
-                TypeParam p = new() { Name = Str(), Struct = Bool() };
+                TypeParam p = ReadParam();
                 int constraints = Count();
 
                 for (int c = 0; c < constraints; c++)
@@ -1322,7 +1337,7 @@ public static class Gir
 
                     for (int i = 0; i < tp; i++)
                     {
-                        typeParams.Add(new TypeParam { Name = Str(), Struct = Bool() });
+                        typeParams.Add(ReadParam());
                     }
 
                     List<Param> ps = new();
