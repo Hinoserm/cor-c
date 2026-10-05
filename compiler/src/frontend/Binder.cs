@@ -16998,11 +16998,11 @@ public sealed partial class Binder
                         Dictionary<string, Type> known = inferred ?? new();
                         Type ga = Close(Substitute(Invoked(generic.Params[i].Type)?.Returns ?? Type.Error, Applied(generic.Params[i].Type)), known);
                         Type gb = Substitute(Invoked(ordinary.Params[i].Type)?.Returns ?? Type.Error, Applied(ordinary.Params[i].Type));
-                        bool aVoid = ga.Prim == Prim.Void, bVoid = gb.Prim == Prim.Void;
+                        bool aVoid = ga.IsVoid, bVoid = gb.IsVoid;
                         if (!ga.IsError && !gb.IsError && aVoid != bVoid)
                         {
                             Type? made = Produces(generic, generic.Params[i].Type, lam, known);
-                            if (made is not null && !made.IsError && made.Prim != Prim.Void)
+                            if (made is not null && !made.IsError && !made.IsVoid)
                             {
                                 if (bVoid) better = true;
                                 else return false;
