@@ -1,4 +1,5 @@
 using System.Text;
+using System.IO;
 
 namespace Corsac.Lang;
 
@@ -112,7 +113,7 @@ public static class DynamicDeclarations
                 t.Members.Add(m);
             }
         }
-        if (unit.UsesDynamic) PrimitiveMembers(unit, scope, symbols, errors);
+        if (unit.UsesDynamic) LateUnit(unit, scope, symbols, errors);
     }
 
     static bool Eligible(TypeDecl t) => !t.FromLibrary && Shaped(t);
@@ -177,8 +178,9 @@ public static class DynamicDeclarations
 
     sealed record Storage(string Name, TypeRef Type, bool Readable, bool Writable);
 
-    static string Members(Scope scope, TypeDecl t, List<TypeDecl> chain, string modifier, bool inherits)
+    static string Members(Scope scope, TypeDecl t, List<TypeDecl> chain, string modifier, bool inherits, string me = "this", Func<TypeRef, bool>? spellable = null)
     {
+        spellable ??= _ => true;
         // Fields and properties by name, the most derived first; methods by
         // name with every overload, the most derived first; the indexers;
         // the operators and the conversions declared anywhere on the chain.
@@ -195,34 +197,35 @@ public static class DynamicDeclarations
             {
                 switch (m)
                 {
-                    case FieldDecl e when Visible(e) && e.IsEvent:
+                    case FieldDecl e when Visible(e) && e.IsEvent && spellable(e.Type):
                         foreach (FieldDecl one in new[] { e }.Concat(e.More))
                         {
                             if (stored.Add(one.Name)) events.Add((one.Name, e.Type));
                         }
                         break;
-                    case FieldDecl f when Visible(f) && !f.IsEvent && !f.Mods.HasFlag(Mods.Const):
+                    case FieldDecl f when Visible(f) && !f.IsEvent && !f.Mods.HasFlag(Mods.Const) && spellable(f.Type):
                         foreach (FieldDecl one in new[] { f }.Concat(f.More))
                         {
                             if (stored.Add(one.Name)) storage.Add(new Storage(one.Name, f.Type, true, !f.Mods.HasFlag(Mods.Readonly)));
                         }
                         break;
-                    case PropertyDecl p when Visible(p) && p.Params.Count == 0:
+                    case PropertyDecl p when Visible(p) && p.Params.Count == 0 && spellable(p.Type):
                         if (stored.Add(p.Name)) storage.Add(new Storage(p.Name, p.Type, p.Auto || p.Getter is not null, p.HasSetter));
                         break;
                     case PropertyDecl ix when (ix.Mods.HasFlag(Mods.Public) || ix.Mods.HasFlag(Mods.Internal)) && !ix.Mods.HasFlag(Mods.Static)
                                            && ix.ExplicitInterface is null && ix.Params.Count > 0
-                                           && ix.Params.All(prm => !prm.IsRef && !prm.IsOut && !prm.IsParams):
+                                           && ix.Params.All(prm => !prm.IsRef && !prm.IsOut && !prm.IsParams && spellable(prm.Type)) && spellable(ix.Type):
                         indexers.Add(ix);
                         break;
                     case MethodDecl op when op.Mods.HasFlag(Mods.Static) && op.Mods.HasFlag(Mods.Public) && op.Name.StartsWith("op_", StringComparison.Ordinal)
-                                         && op.Params.Count is 1 or 2 && op.TypeParams.Count == 0:
+                                         && op.Params.Count is 1 or 2 && op.TypeParams.Count == 0 && me == "this":
                         operators.Add(op);
                         break;
                     case MethodDecl md when Visible(md) && !md.IsCtor && md.TypeParams.Count == 0 && md.Name != at.Name
                                          && !md.Name.StartsWith("op_", StringComparison.Ordinal)
                                          && !md.Name.StartsWith("get_", StringComparison.Ordinal) && !md.Name.StartsWith("set_", StringComparison.Ordinal)
-                                         && !md.Name.StartsWith("add_", StringComparison.Ordinal) && !md.Name.StartsWith("remove_", StringComparison.Ordinal):
+                                         && !md.Name.StartsWith("add_", StringComparison.Ordinal) && !md.Name.StartsWith("remove_", StringComparison.Ordinal)
+                                         && md.Params.All(prm => spellable(prm.Type)):
                         if (!methods.TryGetValue(md.Name, out List<MethodDecl>? overloads)) { methods[md.Name] = overloads = new(); methodOrder.Add(md.Name); }
                         // An override is the method it overrides: called
                         // through `this`, it dispatches the same.
@@ -240,7 +243,7 @@ public static class DynamicDeclarations
         s.Append("    public ").Append(modifier).Append(" int __DynGet(string name, out object? result)\n    {\n");
         s.Append("        result = null;\n        switch (name)\n        {\n");
         foreach (Storage one in storage.Where(x => x.Readable))
-            s.Append("            case \"").Append(one.Name).Append("\": result = this.").Append(one.Name).Append("; return 0;\n");
+            s.Append("            case \"").Append(one.Name).Append("\": result = ").Append(me).Append('.').Append(one.Name).Append("; return 0;\n");
         foreach (string name in methodOrder.Where(n => !stored.Contains(n)))
             s.Append("            case \"").Append(name).Append("\": return 3;\n");
         s.Append("        }\n").Append(Fallback("__DynGet(name, out result)", "1")).Append("    }\n");
@@ -253,7 +256,7 @@ public static class DynamicDeclarations
             s.Append("            case \"").Append(one.Name).Append("\":\n");
             if (!one.Writable) { s.Append("                return 4;\n"); continue; }
             s.Append("                if (!(").Append(Fits(scope, t, one.Type, "value")).Append(")) return 2;\n");
-            s.Append("                this.").Append(one.Name).Append(" = ").Append(Converted(scope, t, one.Type, "value")).Append(";\n");
+            s.Append("                ").Append(me).Append('.').Append(one.Name).Append(" = ").Append(Converted(scope, t, one.Type, "value")).Append(";\n");
             s.Append("                return 0;\n");
         }
         s.Append("        }\n").Append(Fallback("__DynSet(name, value)", "1")).Append("    }\n");
@@ -268,7 +271,7 @@ public static class DynamicDeclarations
             s.Append("            case \"").Append(name).Append("\":\n            {\n");
             foreach (bool exact in new[] { true, false })
             {
-                foreach (MethodDecl md in overloads) CallCases(scope, t, s, md, exact);
+                foreach (MethodDecl md in overloads) CallCases(scope, t, s, md, exact, callee: me + "." + md.Name);
             }
             s.Append("                return 2;\n            }\n");
         }
@@ -283,7 +286,7 @@ public static class DynamicDeclarations
             {
                 s.Append("        if (__keys.Length == ").Append(ix.Params.Count);
                 for (int k = 0; k < ix.Params.Count; k++) s.Append(" && ").Append(Test(scope, t, ix.Params[k].Type, "__keys[" + k + "]", exact));
-                s.Append(") { result = this[").Append(string.Join(", ", Enumerable.Range(0, ix.Params.Count).Select(k => Converted(scope, t, ix.Params[k].Type, "__keys[" + k + "]")))).Append("]; return 0; }\n");
+                s.Append(") { result = ").Append(me).Append('[').Append(string.Join(", ", Enumerable.Range(0, ix.Params.Count).Select(k => Converted(scope, t, ix.Params[k].Type, "__keys[" + k + "]")))).Append("]; return 0; }\n");
             }
         }
         s.Append(indexers.Count > 0 ? "        return 2;\n" : inherits ? "        return base.__DynGetIndex(keys, out result);\n" : "        return 1;\n");
@@ -297,7 +300,7 @@ public static class DynamicDeclarations
                 s.Append("        if (__keys.Length == ").Append(ix.Params.Count);
                 for (int k = 0; k < ix.Params.Count; k++) s.Append(" && ").Append(Test(scope, t, ix.Params[k].Type, "__keys[" + k + "]", exact));
                 s.Append(" && ").Append(Fits(scope, t, ix.Type, "value"));
-                s.Append(") { this[").Append(string.Join(", ", Enumerable.Range(0, ix.Params.Count).Select(k => Converted(scope, t, ix.Params[k].Type, "__keys[" + k + "]"))))
+                s.Append(") { ").Append(me).Append('[').Append(string.Join(", ", Enumerable.Range(0, ix.Params.Count).Select(k => Converted(scope, t, ix.Params[k].Type, "__keys[" + k + "]"))))
                  .Append("] = ").Append(Converted(scope, t, ix.Type, "value")).Append("; return 0; }\n");
             }
         }
@@ -325,7 +328,7 @@ public static class DynamicDeclarations
             string to = Plain(conversion.Returns!);
             s.Append("        if (target == typeof(").Append(to).Append(")) { ");
             if (conversion.Name == "op_Explicit") s.Append("if (!explicitly) return 2; ");
-            s.Append("result = (").Append(to).Append(")this; return 0; }\n");
+            s.Append("result = (").Append(to).Append(')').Append(me).Append("; return 0; }\n");
         }
         s.Append(Fallback("__DynConvert(target, explicitly, out result)", "1")).Append("    }\n");
 
@@ -337,7 +340,7 @@ public static class DynamicDeclarations
             string p = Plain(type);
             s.Append("            case \"").Append(name).Append("\":\n");
             s.Append("                if (!(handler == null || handler is ").Append(p).Append(")) return 2;\n");
-            s.Append("                if (add) this.").Append(name).Append(" += (").Append(p).Append(")handler!; else this.").Append(name).Append(" -= (").Append(p).Append(")handler!;\n");
+            s.Append("                if (add) ").Append(me).Append('.').Append(name).Append(" += (").Append(p).Append(")handler!; else ").Append(me).Append('.').Append(name).Append(" -= (").Append(p).Append(")handler!;\n");
             s.Append("                return 0;\n");
         }
         s.Append("        }\n").Append(Fallback("__DynEvent(name, add, handler)", "1")).Append("    }\n");
@@ -528,14 +531,14 @@ public static class DynamicDeclarations
         "CompareTo", "Equals", "GetHashCode", "ToString", "TryFormat", "GetTypeCode",
     };
 
-    static void PrimitiveMembers(CompilationUnit unit, Scope scope, IReadOnlyCollection<string>? symbols, List<CompileError> errors)
+    /// <summary>The String, Int32 and the rest's dispatch: one static class in the library's scope (PrimitiveCall).</summary>
+    static string? PrimitiveText(CompilationUnit unit, Scope scope)
     {
-        TypeDecl? host = unit.Types.FirstOrDefault(t => t.Name == "LateBuiltIns" && t.FromLibrary);
-        if (host is null) return;
         StringBuilder s = new();
-        s.Append("class __Members\n{\n");
-        s.Append("    public static int PrimitiveCall(object self, string name, System.Dynamic.LateCall call, out object? result)\n    {\n");
+        s.Append("static class __LatePrimitives\n{\n");
+        s.Append("    public static int Call(object self, string name, System.Dynamic.LateCall call, out object? result)\n    {\n");
         s.Append("        result = null;\n");
+        bool any = false;
         foreach ((string keyword, string holder) in Primitives)
         {
             TypeDecl? statics = unit.Types.FirstOrDefault(t => t.Name == holder && t.FromLibrary && t.Outer is null && t.TypeParams.Count == 0
@@ -557,6 +560,7 @@ public static class DynamicDeclarations
                 all.Add(view);
             }
             if (methods.Count == 0) continue;
+            any = true;
             // Each its own name: an `is` pattern's variable is the enclosing block's.
             string own = "__self_" + keyword;
             s.Append("        if (self is ").Append(keyword).Append(' ').Append(own).Append(")\n        {\n            switch (name)\n            {\n");
@@ -565,23 +569,225 @@ public static class DynamicDeclarations
                 s.Append("            case \"").Append(name).Append("\":\n            {\n");
                 List<MethodDecl> ordered = overloads.OrderByDescending(o => o.Params.Sum(prm => Weight(scope, statics, prm.Type))).ToList();
                 foreach (bool exact in new[] { true, false })
-                    foreach (MethodDecl md in ordered) CallCases(scope, statics, s, md, exact, callee: holder + "." + name, self: own);
+                    foreach (MethodDecl md in ordered) CallCases(scope, statics, s, md, exact, callee: Qualified(statics) + "." + name, self: own);
                 s.Append("                return 2;\n            }\n");
             }
             s.Append("            }\n            return 1;\n        }\n");
         }
         s.Append("        return 1;\n    }\n}\n");
-        CompilationUnit late;
-        try { late = Parser.ParseText(s.ToString(), "<dynamic:primitives>", symbols); }
-        catch (CompileError e) { errors.Add(e); return; }
-        host.Members.RemoveAll(m => m is MethodDecl { Name: "PrimitiveCall" });
-        foreach (MemberDecl m in late.Types[0].Members)
+        return any ? s.ToString() : null;
+    }
+
+    /// <summary>A library type's name as any file can write it.</summary>
+    static string Qualified(TypeDecl t) => t.Namespace.Length == 0 ? t.Name : t.Namespace + "." + t.Name;
+
+    // ---- the library's classes, through adapters --------------------------------------------
+
+    /// <summary>
+    /// A LIBRARY CLASS a program that uses dynamic names is reached through
+    /// an adapter written here, never by changing the class: its layout is
+    /// the same in every unit that sees it, the library's own included, so
+    /// nothing a program does with dynamic reaches another's objects.
+    /// `__Late_List&lt;T&gt;` holds a List&lt;T&gt; and answers
+    /// IDynamicMembers through it (Members, with the held object as the
+    /// receiver); generic like the class, it is made for each List the
+    /// program names. One provider per unit (__LateUnit, System.Dynamic's
+    /// ILateMembers) finds the adapter for a target -- the more derived
+    /// class first -- and a primitive's members (__LatePrimitives), and is
+    /// registered when Main's type is first touched, or by a module
+    /// initializer in a unit without Main.
+    ///
+    /// Which classes: those the program's own sources name, a generic one
+    /// with the arguments written there (a name a generic of the program's
+    /// own takes as a parameter is not a type, and is left out). Members
+    /// whose types are a class's nested types are left out: the adapter
+    /// cannot spell them.
+    /// </summary>
+    static void LateUnit(CompilationUnit unit, Scope scope, IReadOnlyCollection<string>? symbols, List<CompileError> errors)
+    {
+        List<TypeDecl> own = unit.Types.Where(t => !t.FromLibrary && !t.Elsewhere).ToList();
+        HashSet<string> ownNames = new(own.Select(t => t.Name), StringComparer.Ordinal);
+        HashSet<string> typeParams = new(StringComparer.Ordinal);
+        foreach (TypeDecl t in own)
         {
-            m.Scope = host.Scope;
-            m.Namespace = host.Namespace;
-            m.File = host.File;
-            host.Members.Add(m);
+            foreach (TypeParam tp in t.TypeParams) typeParams.Add(tp.Name);
+            foreach (MethodDecl md in t.Members.OfType<MethodDecl>()) foreach (TypeParam tp in md.TypeParams) typeParams.Add(tp.Name);
         }
+        HashSet<string> nested = new(unit.Types.Where(t => t.Outer is not null).Select(t => t.Name), StringComparer.Ordinal);
+        HashSet<string> topLevel = new(unit.Types.Where(t => t.Outer is null).Select(t => t.Name), StringComparer.Ordinal);
+        bool Spellable(TypeRef r) => (!nested.Contains(r.Name) || topLevel.Contains(r.Name)) && r.Args.All(Spellable) && !r.IsFunctionPointer;
+
+        Dictionary<string, List<TypeDecl>> library = new(StringComparer.Ordinal);
+        foreach (TypeDecl t in unit.Types)
+        {
+            if (!t.FromLibrary || t.Outer is not null || t.LocalOnly || t.SignatureOnly || t.IsDelegate || t.Mods.HasFlag(Mods.Static)) continue;
+            if (t.Name.Contains('$') || t.Name.Contains('<') || t.Name.StartsWith("__", StringComparison.Ordinal) || ownNames.Contains(t.Name)) continue;
+            if (t.Kind != TypeKind.Class && !(t.Kind == TypeKind.Interface && FunctionShape(t))) continue;
+            if (!library.TryGetValue(t.Name, out List<TypeDecl>? list)) library[t.Name] = list = new();
+            list.Add(t);
+        }
+
+        // The names written: Name or Name<args>, in the program's own files.
+        HashSet<string> files = new(own.Select(t => t.SourcePath).OfType<string>(), StringComparer.Ordinal);
+        List<(TypeDecl Template, string Args)> wanted = new();
+        HashSet<string> seen = new(StringComparer.Ordinal);
+        foreach (string path in files)
+        {
+            string text;
+            try { text = File.ReadAllText(path); } catch (IOException) { continue; }
+            for (int i = 0; i < text.Length; i++)
+            {
+                if (!char.IsLetter(text[i]) && text[i] != '_' || i > 0 && (char.IsLetterOrDigit(text[i - 1]) || text[i - 1] == '_' || text[i - 1] == '.' && !QualifiedBefore(text, i))) continue;
+                int j = i;
+                while (j < text.Length && (char.IsLetterOrDigit(text[j]) || text[j] == '_')) j++;
+                string name = text[i..j];
+                if (!library.TryGetValue(name, out List<TypeDecl>? decls)) { i = j - 1; continue; }
+                int k = j;
+                while (k < text.Length && text[k] == ' ') k++;
+                string args = "";
+                if (k < text.Length && text[k] == '<')
+                {
+                    int depth = 0, end = k;
+                    for (; end < text.Length; end++)
+                    {
+                        if (text[end] == '<') depth++;
+                        else if (text[end] == '>' && --depth == 0) break;
+                        else if (text[end] is ';' or '{' or '}' or '=') { end = -1; break; }
+                    }
+                    if (end > k && end < text.Length) args = text[(k + 1)..end].Trim();
+                }
+                i = j - 1;
+                int arity = args.Length == 0 ? 0 : Arity(args);
+                TypeDecl? template = decls.FirstOrDefault(d => d.TypeParams.Count == arity);
+                if (template is null) continue;
+                if (arity > 0 && Words(args).Any(w => typeParams.Contains(w))) continue;
+                string key = Qualified(template) + "<" + args + ">";
+                if (seen.Add(key)) wanted.Add((template, args));
+            }
+        }
+
+        // The adapters, one for each class named, in the library's scope.
+        Dictionary<TypeDecl, string> adapters = new();
+        foreach (TypeDecl t in wanted.Select(w => w.Template).Distinct())
+        {
+            List<TypeDecl> chain = new() { t };
+            chain.AddRange(Ancestors(scope, t).TakeWhile(a => a.TypeParams.Count == 0));
+            string self = Qualified(t) + (t.TypeParams.Count == 0 ? "" : "<" + string.Join(", ", t.TypeParams.Select(tp => tp.Name)) + ">");
+            string name = "__Late_" + t.Name;
+            string generic = t.TypeParams.Count == 0 ? "" : "<" + string.Join(", ", t.TypeParams.Select(tp => tp.Name)) + ">";
+            string body = Members(scope, t, chain, "", false, me: "__t", spellable: Spellable);
+            body = body[(body.IndexOf('{') + 1)..];
+            string text = "sealed class " + name + generic + " : " + Face + "\n{\n    readonly " + self + " __t;\n    public " + name + "(" + self + " t) { __t = t; }\n" + body;
+            if (Adopt(unit, text, "<dynamic:" + t.Name + ">", t.Namespace, t.Scope, t.File, symbols, errors) is not null)
+                adapters[t] = (t.Namespace.Length == 0 ? "" : t.Namespace + ".") + name;
+        }
+
+        TypeDecl? stringHolder = unit.Types.FirstOrDefault(t => t.Name == "String" && t.FromLibrary && t.Mods.HasFlag(Mods.Static) && t.Outer is null);
+        string? primitives = stringHolder is null ? null : PrimitiveText(unit, scope);
+        string? primitiveName = null;
+        if (primitives is not null && Adopt(unit, primitives, "<dynamic:primitives>", stringHolder!.Namespace, stringHolder.Scope, stringHolder.File, symbols, errors) is not null)
+            primitiveName = (stringHolder.Namespace.Length == 0 ? "" : stringHolder.Namespace + ".") + "__LatePrimitives";
+
+        // The provider, in the scope of the program's Main (or its first type).
+        TypeDecl? main = own.FirstOrDefault(t => t.Members.OfType<MethodDecl>().Any(m => m.Name == "Main" && m.Mods.HasFlag(Mods.Static)));
+        TypeDecl? home = main ?? own.FirstOrDefault(t => t.Outer is null);
+        if (home is null) return;
+        StringBuilder s = new();
+        s.Append("sealed class __LateUnit : System.Dynamic.ILateMembers\n{\n");
+        if (main is null) s.Append("    [System.Runtime.CompilerServices.ModuleInitializer]\n    internal static void __Register() { System.DynamicRuntime.Register(new __LateUnit()); }\n");
+        s.Append("    static System.Dynamic.IDynamicMembers? Of(object? target)\n    {\n");
+        int n = 0;
+        // The more derived first: a class before any it derives from.
+        foreach ((TypeDecl t, string args) in wanted.Where(w => adapters.ContainsKey(w.Template))
+                     .OrderByDescending(w => Ancestors(scope, w.Template).Count()))
+        {
+            string closed = Qualified(t) + (args.Length == 0 ? "" : "<" + args + ">");
+            string adapter = adapters[t] + (args.Length == 0 ? "" : "<" + args + ">");
+            s.Append("        if (target is ").Append(closed).Append(" __a").Append(n).Append(") return new ").Append(adapter).Append("(__a").Append(n).Append(");\n");
+            n++;
+        }
+        s.Append("        return null;\n    }\n");
+        s.Append("    public int Get(object target, string name, out object? result) { result = null; System.Dynamic.IDynamicMembers? m = Of(target); return m == null ? 1 : m.__DynGet(name, out result); }\n");
+        s.Append("    public int Set(object target, string name, object? value) { System.Dynamic.IDynamicMembers? m = Of(target); return m == null ? 1 : m.__DynSet(name, value); }\n");
+        s.Append("    public int Call(object target, string name, System.Dynamic.LateCall call, out object? result)\n    {\n        result = null;\n");
+        s.Append("        System.Dynamic.IDynamicMembers? m = Of(target);\n        if (m != null) return m.__DynCall(name, call, out result);\n");
+        s.Append(primitiveName is null ? "        return 1;\n" : "        return " + primitiveName + ".Call(target, name, call, out result);\n");
+        s.Append("    }\n");
+        s.Append("    public int GetIndex(object target, System.Dynamic.LateCall keys, out object? result) { result = null; System.Dynamic.IDynamicMembers? m = Of(target); return m == null ? 1 : m.__DynGetIndex(keys, out result); }\n");
+        s.Append("    public int SetIndex(object target, System.Dynamic.LateCall keys, object? value) { System.Dynamic.IDynamicMembers? m = Of(target); return m == null ? 1 : m.__DynSetIndex(keys, value); }\n");
+        s.Append("    public int Operator(int op, object? left, object? right, out object? result) { result = null; return 1; }\n");
+        s.Append("    public int Convert(object value, System.Type target, bool explicitly, out object? result) { result = null; return 1; }\n");
+        s.Append("    public int Event(object target, string name, bool add, object? handler) { System.Dynamic.IDynamicMembers? m = Of(target); return m == null ? 1 : m.__DynEvent(name, add, handler); }\n");
+        s.Append("    public string? Static(object target, string name) { return null; }\n");
+        s.Append("}\n");
+        if (Adopt(unit, s.ToString(), "<dynamic:unit>", home.Namespace, home.Scope, home.File, symbols, errors) is null || main is null) return;
+
+        // Registered as Main's type is first touched: before Main runs.
+        CompilationUnit hook;
+        try { hook = Parser.ParseText("class __Members\n{\n    static readonly bool __lateUnit = System.DynamicRuntime.Registered(new " + (home.Namespace.Length == 0 ? "" : home.Namespace + ".") + "__LateUnit());\n}\n", "<dynamic:register>", symbols); }
+        catch (CompileError e) { errors.Add(e); return; }
+        foreach (MemberDecl m in hook.Types[0].Members)
+        {
+            m.Scope = main.Scope;
+            m.Namespace = main.Namespace;
+            m.File = main.File;
+            main.Members.Add(m);
+        }
+    }
+
+    /// <summary>Whether a `.` before position i ends a namespace written before a library name (System.Text.StringBuilder).</summary>
+    static bool QualifiedBefore(string text, int i)
+    {
+        int j = i - 2;
+        while (j >= 0 && (char.IsLetterOrDigit(text[j]) || text[j] == '_' || text[j] == '.')) j--;
+        string before = text[(j + 1)..(i - 1)];
+        return before.Length > 0 && char.IsUpper(before[0]) && before.Split('.').All(part => part.Length > 0 && char.IsUpper(part[0]));
+    }
+
+    /// <summary>How many type arguments a written list holds, at its own depth.</summary>
+    static int Arity(string args)
+    {
+        int depth = 0, count = 1;
+        foreach (char c in args)
+        {
+            if (c is '<' or '(' or '[') depth++;
+            else if (c is '>' or ')' or ']') depth--;
+            else if (c == ',' && depth == 0) count++;
+        }
+        return count;
+    }
+
+    static IEnumerable<string> Words(string text)
+    {
+        for (int i = 0; i < text.Length; i++)
+        {
+            if (!char.IsLetter(text[i]) && text[i] != '_') continue;
+            int j = i;
+            while (j < text.Length && (char.IsLetterOrDigit(text[j]) || text[j] == '_')) j++;
+            yield return text[i..j];
+            i = j;
+        }
+    }
+
+    /// <summary>A written type made one of the unit's, in the scope given -- the library's for an adapter, the program's for its provider.</summary>
+    static TypeDecl? Adopt(CompilationUnit unit, string text, string file, string ns, FileScope? fileScope, string? at,
+                           IReadOnlyCollection<string>? symbols, List<CompileError> errors)
+    {
+        CompilationUnit late;
+        try { late = Parser.ParseText(text, file, symbols); }
+        catch (CompileError e) { errors.Add(e); return null; }
+        TypeDecl made = late.Types[0];
+        made.Namespace = ns;
+        made.Scope = fileScope;
+        made.File = at ?? file;
+        foreach (MemberDecl m in made.Members)
+        {
+            m.Scope = fileScope;
+            m.Namespace = ns;
+            m.File = made.File;
+        }
+        unit.Types.Add(made);
+        return made;
     }
 
     // ---- operators ---------------------------------------------------------------------

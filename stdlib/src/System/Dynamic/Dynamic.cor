@@ -10,11 +10,13 @@
 //   PROPERTYGET for a call, DISPATCH_PROPERTYPUT(REF) for a write,
 //   DISPID_VALUE for an index, by-reference arguments written back);
 //   a class's or struct's own members (System.Dynamic.IDynamicMembers),
-//   which the compiler writes into each of a program's own types that uses
-//   `dynamic`, and into the library's [LateBound] ones (DynamicDeclarations);
-//   a primitive's (LateBuiltIns: string's String statics, a number's
-//   CompareTo and the rest), written the same way;
-//   any provider registered (System.Dynamic.ILateMembers, Register);
+//   which the compiler writes into each of a program's own types when it
+//   uses `dynamic`, and into the library's [LateBound] ones (DynamicDeclarations);
+//   the program's provider (System.Dynamic.ILateMembers), one for each
+//   unit that writes `dynamic`, registered as its Main's type is touched:
+//   the library classes the unit names, each through an adapter, and a
+//   primitive's members (string's String statics, a number's CompareTo and
+//   the rest);
 //   an array's Length and elements, a string's Length and chars, and the
 //   four members every object has.
 //
@@ -313,17 +315,6 @@ namespace System
     /// The compiler's dynamic binder (Binder.Dynamic.cs names each of these).
     /// Not for programs to call: what they write is `dynamic`.
     /// </summary>
-    /// <summary>
-    /// A primitive's own members bound late -- a string's, a number's: the
-    /// library's String, Int32 and the rest, whose statics take the value
-    /// first. The compiler writes this body in a program that uses dynamic
-    /// (DynamicDeclarations.PrimitiveMembers); this one says no such member.
-    /// </summary>
-    static class LateBuiltIns
-    {
-        public static int PrimitiveCall(object self, string name, LateCall call, out object? result) { result = null; return 1; }
-    }
-
     public static class DynamicRuntime
     {
         const int Done = 0, NoMember = 1, NoFit = 2, MethodGroup = 3, ReadOnly = 4, StaticMember = 5, Ambiguous = 6;
@@ -334,6 +325,10 @@ namespace System
         static readonly object _gate = new object();
 
         /// A unit's provider, from its [ModuleInitializer] (DynamicProvider).
+        /// Register, as a static field's initialiser: a unit's provider, made
+        /// as the type holding its Main is first touched (DynamicDeclarations).
+        public static bool Registered(ILateMembers provider) { Register(provider); return true; }
+
         public static void Register(ILateMembers provider)
         {
             lock (_gate) { _providers.Add(provider); }
@@ -499,7 +494,7 @@ namespace System
             }
             int said = NoMember;
             if (target is IDynamicMembers members) said = members.__DynCall(name, call, out result);
-            else said = LateBuiltIns.PrimitiveCall(target!, name, call, out result);
+            else result = null;
             if (said == NoMember)
             {
                 foreach (ILateMembers p in Providers())
@@ -535,6 +530,13 @@ namespace System
             object? result;
             if (target is DynamicObject dynamicObject && dynamicObject.TryInvoke(new LateInvoke(call), call.Args, out result)) return result;
             if (target is ILateInvocable callable) return callable.__LateInvoke(call);
+            // A delegate type the program names, through its adapter's Invoke.
+            foreach (ILateMembers p in Providers())
+            {
+                int said = p.Call(target!, "Invoke", call, out result);
+                if (said == Done) return result;
+                if (said == NoFit || said == Ambiguous) throw BadCall(target, "Invoke", call, said);
+            }
             if (target is __ComObject)
                 return System.Runtime.InteropServices.ComDispatch.Invoke(target!, 0, "", System.Runtime.InteropServices.ComDispatch.Method, call.Args, 0);
             throw new RuntimeBinderException("Cannot invoke a non-delegate type '" + TypeName(target) + "'");
