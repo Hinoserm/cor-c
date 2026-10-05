@@ -108,6 +108,9 @@ public sealed class RegionTypes
 
     /// <summary>For a report: the virtual calls, those narrowed, the targets before and after, those left every target for an unknown receiver, and the abstract objects.</summary>
     public int Calls, Narrowed, Before, After, Unknown, Objects;
+    /// <summary>For a report: the functions whose calls left every target are explained (Explained).</summary>
+    public Func<int, bool>? Explain { get; init; }
+    public List<string> Explained { get; } = new();
     /// <summary>Whether it gave up for its budget.</summary>
     public bool GaveUp;
 
@@ -174,6 +177,25 @@ public sealed class RegionTypes
         return _objects.Count - 1;
     }
 
+    // A closed static's storage: one untyped object a symbol, in no function.
+    private readonly Dictionary<int, int> _staticObjects = new();
+    private int Static(int index) => _staticObjects.TryGetValue(index, out int o) ? o : _staticObjects[index] = NewObject(null, 0);
+
+    /// <summary>The objects laid down in data (RegionConstants.DataObject), by the place an Unknown constraint's C names one past.</summary>
+    public IReadOnlyList<(string Table, long At)>? DataObjects { get; init; }
+
+    // An object laid down in data: of its descriptor's type, an object of its
+    // own, and what its words hold -- laid down before the program ran -- the
+    // unknown object as well as whatever the program stores there.
+    private readonly Dictionary<int, int> _dataObjectsMade = new();
+    private int DataObject(int index)
+    {
+        if (_dataObjectsMade.TryGetValue(index, out int o)) return o;
+        o = _dataObjectsMade[index] = NewObject(DataObjects![index].Table, DataObjects[index].At);
+        Add(Cell(o, AnyOffset), Top);
+        return o;
+    }
+
     private int Typed(string table, long at) => _typed.TryGetValue((table, at), out int o) ? o : _typed[(table, at)] = NewObject(table, at);
     private int Untyped(int f) => _untyped[f] >= 0 ? _untyped[f] : _untyped[f] = NewObject(null, 0);
     // An allocation of no known stamp: of its function's own, apart from its frame slots.
@@ -206,9 +228,15 @@ public sealed class RegionTypes
         foreach (int cell in _cellsOf[o]!.ToArray()) Edge(cell, to);
     }
 
+    // For a report (Explain): where each node first got the unknown object.
+    private readonly Dictionary<int, (int From, string? Why)> _topFrom = new();
+    private int _source = -1;
+    private string? _sourceWhy;
+
     private void Add(int node, int value)
     {
         if (!(_pts[node] ??= new()).Add(value)) return;
+        if (value == Top && Explain is not null) _topFrom.TryAdd(node, (_source, _sourceWhy));
         if (++_steps > Budget) throw new OverBudget();
         List<int> delta = _delta[node] ??= new();
         if (delta.Count == 0) _work.Enqueue(node);
@@ -222,25 +250,25 @@ public sealed class RegionTypes
     {
         if (from == to) return;
         (UsesOf(from).Succ ??= new()).Add(to);
-        if (_pts[from] is { } held) foreach (int v in held.ToArray()) Add(to, v);
+        if (_pts[from] is { } held) { int was = _source; _source = from; foreach (int v in held.ToArray()) Add(to, v); _source = was; }
     }
 
     private void MovedEdge(int from, int to)
     {
         (UsesOf(from).Moved ??= new()).Add(to);
-        if (_pts[from] is { } held) foreach (int v in held.ToArray()) Add(to, Moved(v));
+        if (_pts[from] is { } held) { int was = _source; _source = from; foreach (int v in held.ToArray()) Add(to, Moved(v)); _source = was; }
     }
 
     private void Load(int to, int address, int offset)
     {
         (UsesOf(address).Loads ??= new()).Add((to, offset));
-        if (_pts[address] is { } held) foreach (int v in held.ToArray()) Loaded(to, v, offset);
+        if (_pts[address] is { } held) { int was = _source; _source = address; foreach (int v in held.ToArray()) Loaded(to, v, offset); _source = was; }
     }
 
     private void Store(int address, int value, int offset)
     {
         (UsesOf(address).Stores ??= new()).Add((value, offset));
-        if (_pts[address] is { } held) foreach (int v in held.ToArray()) Stored(v, value, offset);
+        if (_pts[address] is { } held) { int was = _source; _source = address; foreach (int v in held.ToArray()) Stored(v, value, offset); _source = was; }
     }
 
     private void Loaded(int to, int value, int offset)
@@ -255,21 +283,93 @@ public sealed class RegionTypes
     private void Stored(int value, int stored, int offset)
     {
         // A constant is read-only; what goes into the unknown object goes where nobody follows.
-        if (value == Top) Edge(stored, _sink);
+        if (value == Top) ToSink(stored, "stored into the unknown object by " + _storedBy.GetValueOrDefault(stored, "?"));
         else if (value != Constant) Edge(stored, Cell(ObjectOf(value), Into(value) ? AnyOffset : offset));
+    }
+
+    // For a report (Explain): each node that goes where nobody follows, and why.
+    private readonly List<(int Node, string Why)> _sinkFrom = new();
+    private readonly Dictionary<int, string> _storedBy = new();
+
+    private void ToSink(int node, string why)
+    {
+        if (Explain is not null) _sinkFrom.Add((node, why));
+        Edge(node, _sink);
+    }
+
+    // A node, for a report: a function's own, or an object's cell.
+    private Dictionary<int, (int O, int Offset)>? _cellNames;
+    private string NodeName(int node)
+    {
+        for (int f = _base.Length - 1; f >= 0; f--)
+            if (node >= _base[f] && node < _base[f] + _functions[f].Nodes) return _functions[f].Name + " node " + (node - _base[f]);
+        _cellNames ??= _cells.ToDictionary(pair => pair.Value, pair => ((int)(pair.Key >> 32), (int)(uint)pair.Key));
+        if (_cellNames.TryGetValue(node, out var cell)) return (_objects[cell.O].Table ?? (cell.O == 0 ? "unknown" : "untyped")) + " cell " + cell.Offset;
+        return node == _sink ? "where nobody follows" : "node " + node;
+    }
+
+    /// <summary>For a report: how the unknown object came to a function's node, back to where it began.</summary>
+    public string WhyUnknown(string function, int local)
+    {
+        int f = -1;
+        for (int g = 0; g < _functions.Count; g++) if (_functions[g].Name.Contains(function, StringComparison.Ordinal)) { f = g; break; }
+        if (f < 0) return function + ": no such function";
+        // A negative local: call -local - 1's receiver.
+        if (local < 0) local = _functions[f].Calls[-local - 1].Arguments[0];
+        int node = Node(f, local);
+        List<string> chain = new() { NodeName(node) };
+        HashSet<int> seen = new() { node };
+        while (_topFrom.TryGetValue(node, out var came))
+        {
+            if (came.From < 0) { chain.Add(came.Why ?? "?"); break; }
+            if (!seen.Add(came.From)) { chain.Add("(a cycle)"); break; }
+            node = came.From;
+            chain.Add(NodeName(node));
+            if (chain.Count > 60) break;
+        }
+        return string.Join(" <- ", chain);
+    }
+
+    /// <summary>For a report: why an object of a descriptor reaches the unknown, through what holds it.</summary>
+    public string WhyEscaped(string table)
+    {
+        int start = -1;
+        for (int o = 2; o < _objects.Count; o++) if (_objects[o].Table == table) { start = o; break; }
+        if (start < 0 || !_escaped.Contains(start)) return table + ": does not reach the unknown";
+        bool Holds(HashSet<int>? held, int o) => held is not null && (held.Contains(o << 1) || held.Contains(o << 1 | 1));
+        Dictionary<int, int> from = new() { [start] = -1 };
+        Queue<int> next = new();
+        next.Enqueue(start);
+        while (next.TryDequeue(out int at))
+        {
+            foreach (var (node, why) in _sinkFrom)
+                if (Holds(_pts[node], at))
+                {
+                    List<string> chain = new();
+                    for (int o = at; o != start && o >= 0; o = from[o]) chain.Add("held by " + (_objects[o].Table ?? "an untyped object"));
+                    chain.Reverse();
+                    chain.Add(why);
+                    return table + ": " + string.Join(" <- ", chain);
+                }
+            foreach (int p in _escaped)
+                if (!from.ContainsKey(p) && _cellsOf[p] is { } cells && cells.Any(cell => Holds(_pts[cell], at))) { from[p] = at; next.Enqueue(p); }
+        }
+        return table + ": no labelled cause";
     }
 
     private void Escape(int value)
     {
         int o = ObjectOf(value);
         if (o <= 1 || !_escaped.Add(o)) return;
+        _source = -1; _sourceWhy = "the object reaches the unknown";
         Add(Cell(o, AnyOffset), Top);
         AllCells(o, _sink);
     }
 
     private void Nobody(int f, RegionCall call)
     {
-        foreach (int a in call.Arguments) if (Has(f, a)) Edge(Node(f, a), _sink);
+        foreach (int a in call.Arguments) if (Has(f, a)) ToSink(Node(f, a), _functions[f].Name + " hands it to a call nobody names (" + (call.Callee ?? "an address") + ")");
+        _source = -1; _sourceWhy = _functions[f].Name + " calls nobody (" + (call.Callee ?? "an address") + ")";
         if (Has(f, call.Dest)) Add(Node(f, call.Dest), Top);
     }
 
@@ -281,30 +381,67 @@ public sealed class RegionTypes
         if (Has(f, call.Dest) && callee.Parameters < callee.Nodes) Edge(Node(g, callee.Parameters), Node(f, call.Dest));
     }
 
-    private void BindAll(int c)
+    // For a report (Explain): what first gave each call every target.
+    private readonly Dictionary<int, string> _fullBy = new();
+
+    // A virtual call's target bound but for its receiver: the other
+    // arguments and the result. `this` is handed each value the receiver
+    // holds that runs the target (Received).
+    private void BindRest(int f, RegionCall call, int g)
+    {
+        RegionFunction callee = _functions[g];
+        for (int k = 1; k < call.Arguments.Length && k < callee.Parameters; k++)
+            if (Has(f, call.Arguments[k])) Edge(Node(f, call.Arguments[k]), Node(g, k));
+        if (Has(f, call.Dest) && callee.Parameters < callee.Nodes) Edge(Node(g, callee.Parameters), Node(f, call.Dest));
+    }
+
+    private void BindAll(int c, string? why = null)
     {
         if (_full[c]) return;
         _full[c] = true;
+        if (Explain is not null && why is not null) _fullBy[c] = why;
         var (f, k) = _calls[c];
-        foreach (int g in _targets[f][k]!) if (_bound[c].Add(g)) Bind(f, _functions[f].Calls[k], g);
+        foreach (int g in _targets[f][k]!) if (_bound[c].Add(g)) BindRest(f, _functions[f].Calls[k], g);
     }
 
-    // A value the receiver may be: an address into an object is a call on it.
+    // A VALUE THE RECEIVER MAY BE goes to the `this` of the targets it runs,
+    // and to no other: handed the whole receiver, a method that answers its
+    // `this` (String.ToString) gave back every object any call of its slot
+    // was made on -- an iterator a concatenation called ToString on was a
+    // string, and through a root that answers one, the unknown object's,
+    // its every delegate call run on every delegate. The unknown object, a
+    // constant, an untyped object, or one whose descriptor may run any,
+    // goes to every target. An address into an object is a call on it.
     private void Received(int c, int value)
     {
-        if (_full[c]) return;
         var (f, k) = _calls[c];
+        RegionCall call = _functions[f].Calls[k];
         int o = ObjectOf(value);
-        if (o <= 1 || _objects[o].Table is not { } table) { BindAll(c); return; }
-        if (!_dispatched.TryGetValue((f, k, o), out int[]? runs)) _dispatched[(f, k, o)] = runs = _dispatch(f, k, table, _objects[o].At);
-        if (runs is null) { BindAll(c); return; }
-        foreach (int g in runs) if (_bound[c].Add(g)) Bind(f, _functions[f].Calls[k], g);
+        int[]? runs = null;
+        string? every = null;
+        if (o <= 1 || _objects[o].Table is not { } table) every = o == 0 ? "the unknown object" : o == 1 ? "a constant" : "an untyped object";
+        else
+        {
+            if (!_dispatched.TryGetValue((f, k, o), out runs)) _dispatched[(f, k, o)] = runs = _dispatch(f, k, table, _objects[o].At);
+            if (runs is null) every = "an object of " + table + " that runs any";
+        }
+        if (every is not null)
+        {
+            BindAll(c, every);
+            runs = _targets[f][k]!;
+        }
+        foreach (int g in runs!)
+        {
+            if (_bound[c].Add(g)) BindRest(f, call, g);
+            if (_functions[g].Parameters > 0 && Has(g, 0)) Add(Node(g, 0), value);
+        }
     }
 
     private void Settle()
     {
         while (_work.TryDequeue(out int n))
         {
+            _source = n; _sourceWhy = null;
             List<int> delta = _delta[n]!;
             _delta[n] = null;
             foreach (int v in delta)
@@ -339,7 +476,13 @@ public sealed class RegionTypes
             var (f, k) = _calls[c];
             int[] those = _targets[f][k]!;
             Calls++; Before += those.Length;
-            if (_full[c]) { After += those.Length; Unknown++; continue; }
+            if (_full[c])
+            {
+                After += those.Length; Unknown++;
+                if (Explain is { } explain && explain(f))
+                    Explained.Add($"{_functions[f].Name} call {k} ({_keys[f][k]}): every target, for {_fullBy.GetValueOrDefault(c, "a receiver nothing reaches")}{(_rooted[f] ? (TypedThis?[f] == true ? "; a typed root" : "; a root") : "")}; this holds {string.Join(", ", (_pts[Node(f, 0)] ?? new()).Take(6).Select(v => ObjectOf(v) <= 1 ? (ObjectOf(v) == 0 ? "unknown" : "constant") : _objects[ObjectOf(v)].Table ?? "untyped"))}");
+                continue;
+            }
             int[] kept = those.Where(_bound[c].Contains).ToArray();
             After += kept.Length;
             if (kept.Length < those.Length) Narrowed++;
@@ -365,7 +508,11 @@ public sealed class RegionTypes
                         Add(a, (site.Table is { } table ? Typed(table, site.At) : site.Words == RegionWords.Leaf ? Untyped(f) : UntypedMade(f)) << 1);
                         break;
                     case RegionConstraintKind.Slot: Add(a, Untyped(f) << 1); break;
-                    case RegionConstraintKind.Unknown: Add(a, Top); break;
+                    // A closed static (RegionConstants.ClosedStatic, one past
+                    // it in B): an object of its own, holding what is stored.
+                    case RegionConstraintKind.Unknown when c.B > 0: Add(a, Static(c.B - 1) << 1); break;
+                    case RegionConstraintKind.Unknown when c.C > 0 && DataObjects is { } laid && c.C <= laid.Count: Add(a, DataObject((int)c.C - 1) << 1); break;
+                    case RegionConstraintKind.Unknown: _source = -1; _sourceWhy = _functions[f].Name + " says unknown"; Add(a, Top); break;
                     // A symbol left after RegionConstants is a constant; one
                     // it never judged may be anything.
                     case RegionConstraintKind.Symbol: Add(a, function.ConstantsKnown ? Constant : Top); break;
@@ -376,7 +523,11 @@ public sealed class RegionTypes
                         if (c.C == 0) Edge(Node(f, c.B), a); else MovedEdge(Node(f, c.B), a);
                         break;
                     case RegionConstraintKind.Load: if (Has(f, c.B)) Load(a, Node(f, c.B), Plain(c.C)); break;
-                    case RegionConstraintKind.Store: if (Has(f, c.B)) Store(a, Node(f, c.B), Plain(c.C)); break;
+                    case RegionConstraintKind.Store:
+                        if (!Has(f, c.B)) break;
+                        if (Explain is not null) _storedBy.TryAdd(Node(f, c.B), _functions[f].Name + " node " + c.B + " at " + c.C + " through node " + c.A);
+                        Store(a, Node(f, c.B), Plain(c.C));
+                        break;
                     // Every word of one, at any offset of the other.
                     case RegionConstraintKind.MemCopy:
                         if (!Has(f, c.B)) break;
@@ -384,15 +535,16 @@ public sealed class RegionTypes
                         Load(through, Node(f, c.B), AnyOffset);
                         Store(a, through, AnyOffset);
                         break;
-                    case RegionConstraintKind.Leak: Edge(a, _sink); break;
+                    case RegionConstraintKind.Leak: ToSink(a, _functions[f].Name + " leaks it"); break;
                 }
             }
             if (_rooted[f])
             {
                 bool typed = TypedThis?[f] == true && Receives is not null && function.Instance && function.Parameters > 0;
+                _source = -1; _sourceWhy = _functions[f].Name + " is a root";
                 for (int p = typed ? 1 : 0; p < function.Parameters && p < function.Nodes; p++) Add(Node(f, p), Top);
                 if (typed) typedRoots.Add(f);
-                if (function.Parameters < function.Nodes) Edge(Node(f, function.Parameters), _sink);
+                if (function.Parameters < function.Nodes) ToSink(Node(f, function.Parameters), _functions[f].Name + ", a root, returns it");
             }
             for (int k = 0; k < function.Calls.Count; k++)
             {
@@ -404,7 +556,7 @@ public sealed class RegionTypes
                 if (call.Arguments.Length == 0 || !Has(f, call.Arguments[0])) { BindAll(c); continue; }
                 int receiver = Node(f, call.Arguments[0]);
                 (UsesOf(receiver).Receives ??= new()).Add(c);
-                if (_pts[receiver] is { } held) foreach (int o in held.ToArray()) Received(c, o);
+                if (_pts[receiver] is { } held) { _source = receiver; foreach (int o in held.ToArray()) Received(c, o); }
             }
         }
         // Every object exists now (a site's or a slot's constraint makes it):
@@ -416,6 +568,7 @@ public sealed class RegionTypes
                 if (_objects[o].Table is { } table ? Receives!(f, table, _objects[o].At) : _untypedMade.Contains(o)) Add(self, o << 1);
             // An object of such a type laid down in data -- a constant one
             // among them -- or made by code with no IR: the unknown object.
+            _source = -1; _sourceWhy = _functions[f].Name + " has a this made outside";
             if (ThisMadeOutside?.Invoke(f) != false) Add(self, Top);
         }
         Settle();

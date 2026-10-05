@@ -33,9 +33,10 @@ internal static class RegionConstants
     /// Each function's Symbol constraints made Unknown where the symbol is
     /// not a constant; those left name constants (RegionFunction.ConstantsKnown).
     /// </summary>
-    public static int Resolve(IReadOnlyList<RegionHints> units, IReadOnlyList<ObjectFile> unitObjects, IEnumerable<ObjectFile> all)
+    public static int Resolve(IReadOnlyList<RegionHints> units, IReadOnlyList<ObjectFile> unitObjects, IEnumerable<ObjectFile> all,
+        List<(string Table, long At)>? dataObjects = null)
     {
-        Classifier classes = new(all);
+        Classifier classes = new(all, unitObjects);
         int constants = 0;
         for (int u = 0; u < units.Count; u++)
             foreach (RegionFunction function in units[u].Functions)
@@ -51,7 +52,17 @@ internal static class RegionConstants
                     if (c.Kind == RegionConstraintKind.Symbol)
                     {
                         if (constant[c.B]) constants++;
-                        else c = new RegionConstraint(RegionConstraintKind.Unknown, c.A, 0, 0);
+                        // A CLOSED STATIC keeps its name, one past it in B, for the
+                        // receiver types alone (RegionTypes): it holds what IR
+                        // code stores into it and nothing else. Every engine
+                        // that follows objects takes it for the unknown object,
+                        // which reads no B.
+                        // AN OBJECT LAID DOWN IN DATA -- a closure capturing
+                        // nothing, made once -- keeps its descriptor, one past
+                        // its place in dataObjects in C, for them too: a call
+                        // on it runs what its type runs.
+                        else c = new RegionConstraint(RegionConstraintKind.Unknown, c.A, classes.ClosedStatic(unitObjects[u], function.Symbols[c.B]) + 1,
+                            dataObjects is null ? 0 : classes.DataObject(unitObjects[u], function.Symbols[c.B], dataObjects) + 1);
                     }
                     list[w++] = c;
                 }
@@ -73,10 +84,19 @@ internal static class RegionConstants
         // Per section: its relocations in offset order, found once.
         private readonly Dictionary<Section, Relocation[]> _relocs = new(ReferenceEqualityComparer.Instance);
 
-        public Classifier(IEnumerable<ObjectFile> all)
+        // Symbols named by code or data outside the units' IR.
+        private readonly HashSet<string> _foreignNamed = new(StringComparer.Ordinal);
+        private readonly HashSet<ObjectFile> _units = new(ReferenceEqualityComparer.Instance);
+        private readonly Dictionary<Symbol, int> _statics = new(ReferenceEqualityComparer.Instance);
+        private int _closed;
+
+        public Classifier(IEnumerable<ObjectFile> all, IEnumerable<ObjectFile> units)
         {
+            _units.UnionWith(units);
             foreach (ObjectFile obj in all)
             {
+                if (!_units.Contains(obj))
+                    foreach (Section section in obj.Sections) foreach (Relocation r in section.Relocs) _foreignNamed.Add(r.Symbol);
                 Dictionary<string, Symbol> own = new(StringComparer.Ordinal);
                 foreach (Symbol s in obj.Symbols)
                 {
@@ -99,6 +119,47 @@ internal static class RegionConstants
         {
             if (_own.TryGetValue(obj, out var own) && own.TryGetValue(name, out Symbol? mine)) return new[] { mine };
             return _globals.TryGetValue(name, out var list) ? list.Select(d => d.Symbol) : Array.Empty<Symbol>();
+        }
+
+        /// <summary>
+        /// A static's storage nothing but the units' IR can write -- one
+        /// definition, in a unit's writable data, holding no relocation (no
+        /// pointer laid down before the program runs), named by no code or
+        /// data outside the units -- numbered over the image; -1 for any
+        /// other symbol.
+        /// </summary>
+        public int ClosedStatic(ObjectFile obj, string name)
+        {
+            Symbol[] meant = Meant(obj, name).ToArray();
+            if (meant.Length != 1 || _foreignNamed.Contains(name)) return -1;
+            Symbol s = meant[0];
+            if (_statics.TryGetValue(s, out int known)) return known;
+            bool closed = s.Section is { } section && section.Kind is SectionKind.Data or SectionKind.Uninitialised
+                && s.Size > 0 && _units.Contains(_objectOf[s]) && !Within(s).Any();
+            return _statics[s] = closed ? _closed++ : -1;
+        }
+
+        private readonly Dictionary<Symbol, int> _dataObjects = new(ReferenceEqualityComparer.Instance);
+
+        /// <summary>
+        /// An object laid down in data: one definition whose first word is a
+        /// relocation naming a type descriptor ("t_"), as a site's stamp
+        /// names it (RegionSummary.Stamp); its place in `into`, or -1.
+        /// </summary>
+        public int DataObject(ObjectFile obj, string name, List<(string Table, long At)> into)
+        {
+            Symbol[] meant = Meant(obj, name).ToArray();
+            if (meant.Length != 1) return -1;
+            Symbol s = meant[0];
+            if (_dataObjects.TryGetValue(s, out int known)) return known;
+            int found = -1;
+            if (s.Section is { } section && section.Kind is SectionKind.Data or SectionKind.ReadOnlyData && s.Size > 0)
+                foreach (Relocation r in Within(s))
+                {
+                    if (r.Offset == s.Offset && r.Symbol.StartsWith("t_", StringComparison.Ordinal)) { found = into.Count; into.Add((r.Symbol, r.Addend)); }
+                    break;
+                }
+            return _dataObjects[s] = found;
         }
 
         public bool IsConstant(ObjectFile obj, string name)

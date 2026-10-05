@@ -161,7 +161,8 @@ public static class IrLinkOptimizer
             }
             List<RegionHints> regionUnits = regionOrder.Select(ReadRegions).ToList();
             // Each symbol's address a constant or the unknown object, from every object's data.
-            int constants = RegionConstants.Resolve(regionUnits, regionOrder, inputs.Select(input => input.Object));
+            List<(string Table, long At)> dataObjects = new();
+            int constants = RegionConstants.Resolve(regionUnits, regionOrder, inputs.Select(input => input.Object), dataObjects);
             if (regionReport is not null) Console.Error.WriteLine("regions: " + constants + " symbol addresses constants");
             VirtualTargets.Made? regionMade = made?.Again();
             Dictionary<string, string[]> regionVirtuals = VirtualTargets.Resolve(inputs, RegionSolver.VirtualNames(regionUnits), regionMade);
@@ -178,7 +179,7 @@ public static class IrLinkOptimizer
                 (u, name) => reachability?.GetValueOrDefault(regionOrder[u]) is not { } kept || kept.Contains("F:" + name),
                 (table, at, offset) => VirtualTargets.HoldsNoReference(inputs, table, at, offset), loopRegionsPossible,
                 (table, type) => VirtualTargets.IsA(inputs, table, type), VirtualTargets.SlotsOf(inputs),
-                VirtualTargets.Receivers(inputs, archives.Keys.ToHashSet()));
+                VirtualTargets.Receivers(inputs, archives.Keys.ToHashSet()), dataObjects);
             if (solved is not null)
             {
                 regionFacts = new();

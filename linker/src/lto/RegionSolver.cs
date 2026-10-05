@@ -79,7 +79,8 @@ public static class RegionSolver
         Func<string, long, string?> methodAt, string entry, IReadOnlySet<string> foreign, string? report, Func<int, string, bool>? live = null,
         Func<string, long, long?, bool>? noReference = null, bool loops = false, Func<string, string, bool?>? isA = null,
         Func<string, IReadOnlyCollection<long>?>? slotsOf = null,
-        (Func<string, string, bool?> MayBeThis, Func<string, bool?> MadeOutside)? receivers = null)
+        (Func<string, string, bool?> MayBeThis, Func<string, bool?> MadeOutside)? receivers = null,
+        IReadOnlyList<(string Table, long At)>? dataObjects = null)
     {
         // CONTEXTS AS FAR AS THE BUDGET GOES: two objects deep, then one, then none
         // at all -- every function one copy, coarser but far smaller.
@@ -92,7 +93,7 @@ public static class RegionSolver
         // still the deepest that fits; the coarse one is kept, not made again.
         if (!Switches.AndersenRegions)
         {
-            Solver graphs = new(units, virtuals, methodAt, entry, foreign, report, live, 0, noReference) { LoopRegions = loops, Graphs = true, IsA = isA, SlotsOf = slotsOf, Receivers = receivers };
+            Solver graphs = new(units, virtuals, methodAt, entry, foreign, report, live, 0, noReference) { LoopRegions = loops, Graphs = true, IsA = isA, SlotsOf = slotsOf, Receivers = receivers, DataObjects = dataObjects };
             if (graphs.Run() is { } found) return found;
             Console.Error.WriteLine("regions: nothing made a region");
             return null;
@@ -637,8 +638,16 @@ public static class RegionSolver
                     TypedThis = typedThis,
                     Receives = Receivers is { } held ? (f, table, at) => held.MayBeThis(_functions[f].Name, table) != false : null,
                     ThisMadeOutside = Receivers is { } stamped ? f => stamped.MadeOutside(_functions[f].Name) != false : null,
+                    DataObjects = DataObjects,
+                    Explain = _report?.FirstOrDefault(w => w.StartsWith("+typeswhy=", StringComparison.Ordinal)) is { } typesWhy
+                        ? f => _functions[f].Name.Contains(typesWhy[10..], StringComparison.Ordinal) : null,
                 };
                 bool pruned = types.Prune();
+                foreach (string line in types.Explained) Log("receiver types why: " + line);
+                if (_report?.FirstOrDefault(w => w.StartsWith("+typesunknown=", StringComparison.Ordinal)) is { } unknownOf && unknownOf.LastIndexOf(':') is int colon and > 0)
+                    Log("receiver types unknown: " + types.WhyUnknown(unknownOf[14..colon], int.Parse(unknownOf[(colon + 1)..])));
+                if (_report?.FirstOrDefault(w => w.StartsWith("+typesescape=", StringComparison.Ordinal)) is { } escapeOf)
+                    Log("receiver types escape: " + types.WhyEscaped(escapeOf[13..]));
                 Log(pruned
                     ? $"receiver types: {types.Objects} objects; {types.Narrowed} of {types.Calls} virtual calls narrowed, {types.Unknown} left every target, targets {types.Before} -> {types.After}, {_clock.ElapsedMilliseconds} ms"
                     : $"receiver types: gave up past its budget, every target kept, {_clock.ElapsedMilliseconds} ms");
@@ -679,6 +688,7 @@ public static class RegionSolver
             // Memory, for a report: the heap at each slow solve and round, and
             // with +memtop=N the N solves it grew most over each round.
             _escape.WhyAll = _report?.Contains("+whyall") == true;
+            _escape.CycleMembers = _report?.Contains("+cyclemembers") == true;
             _escape.MemReport = _report is not null;
             if (_report?.FirstOrDefault(w => w.StartsWith("+memtop=", StringComparison.Ordinal)) is { } memTop && int.TryParse(memTop[8..], out int top))
                 _escape.MemTop = top;
@@ -789,6 +799,8 @@ public static class RegionSolver
 
         /// <summary>What a method a descriptor holds may run on, and whether an object of its type is made outside the IR (VirtualTargets.Receivers); null: a root's `this` may be anything.</summary>
         public (Func<string, string, bool?> MayBeThis, Func<string, bool?> MadeOutside)? Receivers { get; init; }
+        /// <summary>The objects laid down in data, by the place an Unknown constraint's C names one past (RegionConstants.DataObject).</summary>
+        public IReadOnlyList<(string Table, long At)>? DataObjects { get; init; }
 
         /// <summary>Where each method is held in a method table (VirtualTargets.SlotsOf); null: every method may be called blind.</summary>
         public Func<string, IReadOnlyCollection<long>?>? SlotsOf { get; init; }

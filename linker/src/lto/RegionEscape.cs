@@ -556,6 +556,8 @@ internal sealed class RegionEscape
     public Func<int, bool>? WhyFunction;
     /// <summary>A diagnostic (+whyall): every constraint and call of a function asked of with +why.</summary>
     public bool WhyAll;
+    /// <summary>A report (+cyclemembers): a slow cycle's members and the calls that join them.</summary>
+    public bool CycleMembers;
 
     private void Close()
     {
@@ -1736,8 +1738,20 @@ internal sealed class RegionEscape
         for (int m = 0; m < component.Count; m++) Publish(component[m], g.Summarise(m));
         for (int m = 0; m < component.Count; m++) { g.Answer(m); _how[component[m]] = How.Inclusion; }
         if (Progress is not null && (component.Count > 50 || System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds > 300))
+        {
             Progress($"escape graphs: cycle of {component.Count} ({_functions[component[0]].Name}) in {System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds:F0} ms: "
                 + g.Describe() + Heap());
+            // A diagnostic (+cyclemembers): who is in a slow cycle, and by which calls.
+            if (CycleMembers && System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds > 300)
+                foreach (int f in component)
+                {
+                    HashSet<int> inside = new(component);
+                    IEnumerable<string> into = Enumerable.Range(0, _targets[f].Length)
+                        .Where(k => _targets[f][k] is { } t && t.Any(inside.Contains))
+                        .Select(k => (_keys[f][k] ?? "?") + " -> " + _targets[f][k]!.Length);
+                    Progress($"escape graphs: cycle member {_functions[f].Name}: {_functions[f].Constraints.Count} constraints, {_functions[f].Calls.Count} calls; into the cycle: {string.Join("; ", into)}");
+                }
+        }
         NoteGrowth(heapBefore, component, "inclusion", g.Describe());
     }
 
