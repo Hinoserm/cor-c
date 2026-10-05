@@ -10,6 +10,23 @@ public sealed class DeclarationIndex : IDisposable
     internal const int MaxKeyBytes = 4096;
     internal const int MaxPayloadBytes = 1024 * 1024;
     internal static readonly UTF8Encoding Utf8 = new(false, true);
+
+    // THE PROCESS'S ONE COPY of a string the index hands out again and again
+    // -- declaration keys, paths, namespaces, usings, symbols -- so a
+    // project compile keeps each once rather than once per decoding. Bounded:
+    // past its size a string is handed back as it came.
+    private static readonly Dictionary<string, string> SharedStrings = new(StringComparer.Ordinal);
+    private const int MostShared = 1 << 17;
+
+    internal static string Shared(string value)
+    {
+        lock (SharedStrings)
+        {
+            if (SharedStrings.TryGetValue(value, out string? had)) return had;
+            if (SharedStrings.Count < MostShared) SharedStrings[value] = value;
+            return value;
+        }
+    }
     private readonly FileStream stream;
     private readonly BinaryReader reader;
     private readonly long table;
@@ -165,7 +182,7 @@ public sealed class DeclarationIndex : IDisposable
         if (key is null)
         {
             if (!SHA256.HashData(keyBytes).SequenceEqual(keyDigest)) throw new InvalidDataException("Declaration key checksum mismatch");
-            key = Utf8.GetString(keyBytes);
+            key = Shared(Utf8.GetString(keyBytes));
             if (key.IndexOf('\0') >= 0) throw new InvalidDataException("NUL in declaration key");
             keys[number] = key;
         }

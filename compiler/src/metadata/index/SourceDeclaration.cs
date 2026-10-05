@@ -80,22 +80,26 @@ public sealed class SourceDeclaration
             return count;
         }
         string String() => DeclarationIndex.Utf8.GetString(DeclarationIndex.ReadBytes(reader, Count()));
+        string Shared() => DeclarationIndex.Shared(String());
         try
         {
             if (reader.ReadUInt32() != 0x43454443 || reader.ReadUInt32() != 2)
                 throw new InvalidDataException("Unsupported source declaration");
-            string path = String(), text = String(), ns = String(), outer = String();
+            // ONE COPY OF WHAT DECLARATIONS SHARE: a file's path, its namespace,
+            // its usings and the project's symbols were decoded afresh for every
+            // declaration, and tens of thousands of copies of each sat live.
+            string path = Shared(), text = String(), ns = Shared(), outer = Shared();
             int from = reader.ReadInt32(), to = reader.ReadInt32(), line = reader.ReadInt32(), column = reader.ReadInt32();
             if (from < 0 || to < from || line < 1 || column < 1) throw new InvalidDataException("Invalid source declaration location");
             byte[] sourceHash = DeclarationIndex.ReadBytes(reader, 32), declarationHash = DeclarationIndex.ReadBytes(reader, 32);
             FileScope scope = new();
             int count = Count();
-            for (int i = 0; i < count; i++) scope.Imports.Add((String(), String()));
+            for (int i = 0; i < count; i++) scope.Imports.Add((Shared(), Shared()));
             count = Count();
-            for (int i = 0; i < count; i++) scope.Aliases.Add((String(), String(), String()));
+            for (int i = 0; i < count; i++) scope.Aliases.Add((Shared(), Shared(), Shared()));
             count = Count();
-            List<string> symbols = new();
-            for (int i = 0; i < count; i++) symbols.Add(String());
+            List<string> symbols = new(count);
+            for (int i = 0; i < count; i++) symbols.Add(Shared());
             if (stream.Position != stream.Length) throw new InvalidDataException("Trailing source declaration data");
             return new SourceDeclaration { Key = record.Key, Path = path, Text = text, Namespace = ns, Outer = outer,
                 From = from, To = to, Line = line, Column = column, Scope = scope,

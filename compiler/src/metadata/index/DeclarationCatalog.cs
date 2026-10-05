@@ -175,7 +175,7 @@ public sealed class DeclarationCatalog : IDisposable
         {
             if (disposed) throw new ObjectDisposedException(nameof(DeclarationCatalog));
             return index.Find("E:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + space + "\n" + method)
-                .Select(record => DeclarationIndex.Utf8.GetString(record.Payload))
+                .Select(record => DeclarationIndex.Shared(DeclarationIndex.Utf8.GetString(record.Payload)))
                 .Distinct(StringComparer.Ordinal).ToArray();
         }
     }
@@ -187,7 +187,7 @@ public sealed class DeclarationCatalog : IDisposable
         {
             if (disposed) throw new ObjectDisposedException(nameof(DeclarationCatalog));
             return index.Find("G:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + method)
-                .Select(record => DeclarationIndex.Utf8.GetString(record.Payload))
+                .Select(record => DeclarationIndex.Shared(DeclarationIndex.Utf8.GetString(record.Payload)))
                 .Distinct(StringComparer.Ordinal).ToArray();
         }
     }
@@ -243,7 +243,7 @@ public sealed class DeclarationCatalog : IDisposable
             if (disposed) throw new ObjectDisposedException(nameof(DeclarationCatalog));
             foreach (DeclarationRecord record in index.Find(query))
             {
-                string found = DeclarationIndex.Utf8.GetString(record.Payload);
+                string found = DeclarationIndex.Shared(DeclarationIndex.Utf8.GetString(record.Payload));
                 if (result is not null && result != found)
                 {
                     if (kind == 'B') throw new InvalidDataException("Ambiguous indexed type identity: " + name);
