@@ -5069,7 +5069,33 @@ public sealed class Parser
     private bool TypedLambdaAt(int j)
     {
         int end = TypeEndAt(j);
-        return end > j && end < _t.Count && _t[end].Kind == Tok.LParen && IsLambdaHeadAt(end);
+        return end > j && end < _t.Count && _t[end].Kind == Tok.LParen && IsLambdaHeadAt(end)
+            && !(_t[end - 1].Kind == Tok.Question && ColonAhead(end));
+    }
+
+    /// <summary>
+    /// `b ? () => A(1) : null`: a type ending in `?` before a lambda's head
+    /// reads as a nullable result, `int? (x) => ...` -- or as a conditional,
+    /// whose `:` then follows at the same depth before the expression ends.
+    /// That `:` makes it the conditional, as Roslyn reads it.
+    /// </summary>
+    private bool ColonAhead(int from)
+    {
+        int depth = 0, inner = 0;
+        for (int k = from; k < _t.Count; k++)
+        {
+            switch (_t[k].Kind)
+            {
+                case Tok.LParen or Tok.LBracket or Tok.LBrace: depth++; break;
+                case Tok.RParen or Tok.RBracket or Tok.RBrace: if (--depth < 0) return false; break;
+                case Tok.Semi or Tok.End: return false;
+                case Tok.Comma when depth == 0: return false;
+                // A conditional inside the lambda's body takes its own `:`.
+                case Tok.Question when depth == 0: inner++; break;
+                case Tok.Colon when depth == 0: if (inner == 0) return true; inner--; break;
+            }
+        }
+        return false;
     }
 
     /// <summary>

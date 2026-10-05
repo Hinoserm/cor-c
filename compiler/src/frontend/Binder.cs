@@ -7862,7 +7862,20 @@ public sealed partial class Binder
             _ => null,
         };
         if (candidates is null || Invoked(wanted) is not { } invoke) return null;
-        List<MethodSymbol> fits = candidates.Where(c => c.Params.Count == invoke.Params.Count && c.TypeParams.Count == 0).ToList();
+        // Each of the delegate's parameters, as far as it is known, converts
+        // to the method's: Select's (T, int) overload is no GetFullPath(string,
+        // string).
+        Dictionary<string, Type> applied = Applied(wanted);
+        bool Accepts(MethodSymbol c)
+        {
+            for (int k = 0; k < c.Params.Count; k++)
+            {
+                Type given = Substitute(invoke.Params[k].Type, applied);
+                if (given.ParamName is null && !given.IsError && !Convertible(given, c.Params[k].Type)) return false;
+            }
+            return true;
+        }
+        List<MethodSymbol> fits = candidates.Where(c => c.Params.Count == invoke.Params.Count && c.TypeParams.Count == 0 && Accepts(c)).ToList();
         if (fits.Count != 1 || fits[0].Returns.IsVoid) return null;
         return fits[0].Returns;
     }
