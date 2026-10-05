@@ -5885,7 +5885,7 @@ public sealed partial class Binder
     /// </summary>
     private bool Fits(Type had, Type want, Expr? written)
         => had.IsError || (!NullableIntoValue(had, want) && (Convertible(had, want) || Variant(had, want)))
-        || (written is not null && MethodGroupFits(written, want))
+        || (written is not null && (MethodGroupFits(written, want) || LocalFunctionConverts(written, want)))
         || IntegerConstantFits(written, had, want)
         || TupleLiteralFits(written, want);
 
@@ -7499,6 +7499,17 @@ public sealed partial class Binder
         // from the first: R cannot be worked out until T is.
         for (int i = 0; i < m.Params.Count && i < written.Count; i++)
         {
+            // A METHOD GROUP'S OUTPUT TYPE IS ITS METHOD'S RETURN (C#
+            // 12.6.3.7): `names.Select(table.Add)` is a Select to what Add
+            // answers. Read from the method, not from a lambda standing in for
+            // the group: one bound to a receiver calls through the closure's
+            // target field, which nothing outside the closure can name.
+            if (written[i] is not LambdaExpr && GroupReturns(written[i], Close(m.Params[i].Type, bound)) is Type answered)
+            {
+                Type gives = Substitute(Invoked(m.Params[i].Type)?.Returns ?? Type.Error, Applied(m.Params[i].Type));
+                if (!Unify(m, gives, answered, bound)) return false;
+                continue;
+            }
             LambdaExpr? lam = written[i] as LambdaExpr
                            ?? MethodGroupLambda(written[i], Close(m.Params[i].Type, bound));
 
@@ -7836,6 +7847,26 @@ public sealed partial class Binder
     /// calls. The original syntax node is retained as the call target so normal
     /// overload resolution still chooses the actual method.
     /// </summary>
+    /// <summary>
+    /// What a method group answers converted to `wanted`: the return type of
+    /// its one non-generic method of the delegate's arity; null for a group
+    /// with none or more than one such, or anything else.
+    /// </summary>
+    private Type? GroupReturns(Expr source, Type wanted)
+    {
+        if (!_r.Resolved.TryGetValue(source, out Sym? sym)) return null;
+        IReadOnlyList<MethodSymbol>? candidates = sym switch
+        {
+            MethodGroupSym mg => mg.Methods,
+            CapturedMethodGroupSym cg => cg.Methods,
+            _ => null,
+        };
+        if (candidates is null || Invoked(wanted) is not { } invoke) return null;
+        List<MethodSymbol> fits = candidates.Where(c => c.Params.Count == invoke.Params.Count && c.TypeParams.Count == 0).ToList();
+        if (fits.Count != 1 || fits[0].Returns.IsVoid) return null;
+        return fits[0].Returns;
+    }
+
     private LambdaExpr? MethodGroupLambda(Expr source, Type wanted, bool localFunctions = false)
     {
         if (!_r.Resolved.TryGetValue(source, out Sym? sym))
