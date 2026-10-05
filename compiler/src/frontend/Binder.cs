@@ -11399,6 +11399,8 @@ public sealed partial class Binder
 
     private Type CheckExprCore(Expr e)
     {
+        // Something may suspend in this unit (CheckAsyncSafety): an await, or an async lambda's body.
+        if (e is AwaitExpr or LambdaExpr { Async: true }) _mayAwait = true;
         switch (e)
         {
             // A TUPLE, WRITTEN OUT. Its type is its elements' types, which is

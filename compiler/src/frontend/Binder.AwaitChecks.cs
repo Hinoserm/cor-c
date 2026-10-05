@@ -139,12 +139,21 @@ public sealed partial class Binder
     }
 
     /// <summary>The unit-wide checks: locks held across an await, and interrupt handlers.</summary>
+    /// <summary>Whether this unit bound an await or an async lambda (CheckExprCore): what CheckAsyncSafety has anything to find with.</summary>
+    private bool _mayAwait;
+
     private void CheckAsyncSafety()
     {
         if (_boundBodies.Count == 0)
         {
             return;
         }
+        // NO LOCK CAN BE HELD ACROSS AN AWAIT THAT IS NOT THERE: the scan of
+        // every body for awaits, calls and locks, the locks' summaries and the
+        // check across awaits only where this unit bound an await, an async
+        // lambda or an async method. Walked anyway, every body of every unit
+        // was a sixth of every byte compiling the compiler took.
+        bool mayHoldAcross = _mayAwait || _boundBodies.Any(b => b.Item1.Async);
         string inWas = _in;
         MemberDecl? memberWas = _member;
         try
@@ -153,7 +162,7 @@ public sealed partial class Binder
             // whether any of that is a lock's own method.
             Dictionary<MethodSymbol, BodyFacts> facts = new(ReferenceEqualityComparer.Instance);
             Dictionary<MethodSymbol, List<MethodSymbol>> callers = new(ReferenceEqualityComparer.Instance);
-            foreach ((MethodSymbol m, MethodDecl d) in _boundBodies)
+            foreach ((MethodSymbol m, MethodDecl d) in mayHoldAcross ? _boundBodies : new List<(MethodSymbol, MethodDecl)>())
             {
                 BodyFacts found = new();
                 foreach (Node n in SafetyNodes(d.Body!, intoLambdas: true))
@@ -190,7 +199,7 @@ public sealed partial class Binder
             HashSet<MethodSymbol> queued = new(ReferenceEqualityComparer.Instance);
             foreach ((MethodSymbol m, MethodDecl unused) in _boundBodies)
             {
-                if (facts[m].TakesLocks && Summarised(m) && queued.Add(m)) work.Add(m);
+                if (facts.TryGetValue(m, out BodyFacts? taking) && taking.TakesLocks && Summarised(m) && queued.Add(m)) work.Add(m);
             }
             int steps = 0;
             while (work.Count > 0 && steps++ < 20000)
@@ -220,7 +229,7 @@ public sealed partial class Binder
 
             foreach ((MethodSymbol m, MethodDecl d) in _boundBodies)
             {
-                if (!facts[m].Awaits)
+                if (!facts.TryGetValue(m, out BodyFacts? awaiting) || !awaiting.Awaits)
                 {
                     continue;
                 }
@@ -1168,11 +1177,11 @@ public sealed partial class Binder
             {
                 continue;
             }
-            List<Node> children = new(SafetyChildren(n, rewritten));
-            for (int i = children.Count - 1; i >= 0; i--)
-            {
-                stack.Add(children[i]);
-            }
+            // One buffer for every node's children, reversed onto the stack:
+            // a list of its own for each node was most of what the walk cost.
+            int below = stack.Count;
+            foreach (Node child in SafetyChildren(n, rewritten)) stack.Add(child);
+            stack.Reverse(below, stack.Count - below);
         }
     }
 

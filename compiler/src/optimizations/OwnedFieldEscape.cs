@@ -97,33 +97,42 @@ internal sealed class OwnedFieldEscape
     {
         Defs defs = new(f);
         Dictionary<VReg, long> result = roots.Distinct().ToDictionary(r => r, _ => 0L);
-        bool changed;
-        do
-        {
-            changed = false;
-            foreach (var b in f.Blocks)
+        // FROM EACH ADDRESS TO WHAT IS MADE OF IT, once: the instructions a
+        // register is the first operand of, by that register. Every
+        // register followed has one write, so its offset is the one its
+        // operand gives whichever way it is reached -- the same answer the
+        // whole function rescanned to a fixed point gave, at the cost of one
+        // walk; rescanned, it was a twentieth of compiling the compiler.
+        Dictionary<VReg, List<Instr>> users = new();
+        foreach (var b in f.Blocks)
             foreach (Instr i in b.Instrs)
+                if (i.Dest is not null && i.Operands.Count > 0 && i.Operands[0] is RegOperand { Reg: var from }
+                    && (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32
+                        || i.Op is Opcode.Add or Opcode.Sub && i.Operands.Count == 2 && i.Operands[1] is ImmOperand))
+                    (users.TryGetValue(from, out List<Instr>? list) ? list : users[from] = new()).Add(i);
+        Queue<VReg> next = new(result.Keys);
+        while (next.TryDequeue(out VReg? at))
+        {
+            if (!users.TryGetValue(at, out List<Instr>? made)) continue;
+            long offset = result[at];
+            foreach (Instr i in made)
             {
-                if (i.Dest is null || !defs.IsSingle(i.Dest) || result.ContainsKey(i.Dest)
-                    || i.Operands.Count == 0 || i.Operands[0] is not RegOperand r
-                    || !result.TryGetValue(r.Reg, out long offset)) continue;
-                if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32)
-                { result[i.Dest] = offset; changed = true; }
-                else if (i.Op is Opcode.Add or Opcode.Sub && i.Operands.Count == 2
-                    && i.Operands[1] is ImmOperand amount)
+                if (!defs.IsSingle(i.Dest!) || result.ContainsKey(i.Dest!)) continue;
+                long nextOffset = offset;
+                if (i.Op is Opcode.Add or Opcode.Sub)
                 {
-                    long next;
-                    try { next = i.Op == Opcode.Add ? checked(offset + amount.Value) : checked(offset - amount.Value); }
+                    long amount = ((ImmOperand)i.Operands[1]).Value;
+                    try { nextOffset = i.Op == Opcode.Add ? checked(offset + amount) : checked(offset - amount); }
                     catch (OverflowException) { continue; }
                     // Do not confuse machine-address wraparound with a far
                     // disjoint field. Unknown/large address arithmetic makes
                     // Reads reject the receiver rather than hiding a capture.
-                    if (next < -1048576 || next > 1048576) continue;
-                    result[i.Dest] = next;
-                    changed = true;
+                    if (nextOffset < -1048576 || nextOffset > 1048576) continue;
                 }
+                result[i.Dest!] = nextOffset;
+                next.Enqueue(i.Dest!);
             }
-        } while (changed);
+        }
         JoinedAliases(f, defs, result);
         return result;
     }
