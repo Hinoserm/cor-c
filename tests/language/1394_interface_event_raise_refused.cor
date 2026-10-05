@@ -1,0 +1,28 @@
+// test: interface event raise refused
+// expect-compile-error: can only appear on the left hand side of += or -=
+// An event an interface declares is its add and remove accessors and nothing
+// else: there is no field behind it to read or raise, through the interface
+// or anywhere. C# refuses `n.Changed?.Invoke()` (CS0079), and so does this.
+
+using System;
+
+interface INotify
+{
+    event Action? Changed;
+}
+
+class Source : INotify
+{
+    public event Action? Changed;
+}
+
+static class P
+{
+    static int Main()
+    {
+        INotify n = new Source();
+        n.Changed += () => Console.WriteLine("changed");
+        n.Changed?.Invoke();
+        return 0;
+    }
+}

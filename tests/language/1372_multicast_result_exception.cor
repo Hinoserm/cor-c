@@ -1,0 +1,50 @@
+// test: multicast_result_exception
+// expect-exit: 0
+// expect-output:
+// last 3
+// caught stop 1
+// each gets xb
+// all run 20 2
+//
+// A MULTICAST Func ANSWERS WHAT ITS LAST TARGET ANSWERS, every target having
+// run with the same arguments: 1, 2, 3 answer 3; "x" + "a" is thrown away
+// and "x" + "b" kept. An exception from one target stops the rest, as .NET's
+// multicast does -- the third never runs, so `ran` is 1. Every target runs
+// once: the counter is 2 and the answer the second's, 2 * 10.
+
+using System;
+
+static class P
+{
+    static int Main()
+    {
+        Func<int> f = () => 1;
+        f += () => 2;
+        f += () => 3;
+        Console.WriteLine("last " + f());
+
+        int ran = 0;
+        Action chain = () => ran++;
+        chain += () => { throw new InvalidOperationException("stop"); };
+        chain += () => ran += 100;
+        try
+        {
+            chain();
+            Console.WriteLine("not stopped " + ran);
+        }
+        catch (InvalidOperationException e)
+        {
+            Console.WriteLine("caught " + e.Message + " " + ran);
+        }
+
+        Func<string, string> g = s => s + "a";
+        g += s => s + "b";
+        Console.WriteLine("each gets " + g("x"));
+
+        int calls = 0;
+        Func<int> counted = () => ++calls;
+        counted += () => ++calls * 10;
+        Console.WriteLine("all run " + counted() + " " + calls);
+        return 0;
+    }
+}

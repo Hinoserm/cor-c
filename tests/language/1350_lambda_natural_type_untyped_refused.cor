@@ -1,0 +1,16 @@
+// test: lambda natural type untyped refused
+// expect-compile-error: the delegate type could not be inferred for 'f'
+// A lambda whose parameters' types are not written has no natural type:
+// nothing says what x is, so `var` has nothing to take (CS8917).
+
+using System;
+
+public static class Program
+{
+    public static int Main()
+    {
+        var f = x => x;
+        Console.WriteLine(f(1));
+        return 0;
+    }
+}

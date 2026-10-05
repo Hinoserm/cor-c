@@ -115,6 +115,39 @@ public sealed class Monomorphiser
     /// specialisations included: a `T?` over one of them stays the value
     /// type (Sub's rule for an unconstrained T), which this copy cannot tell
     /// from the arguments' names alone.</param>
+    /// <summary>
+    /// A hoisted generic local function carried into a copy of the method it
+    /// was written in (Frontend.RehostLocals): the copy's type arguments put
+    /// in for its type parameters, the function's own type parameters kept.
+    /// </summary>
+    public static MethodDecl Rehost(MethodDecl local, IReadOnlyList<TypeParam> outer, IReadOnlyList<TypeRef> args,
+                                    string name, IEnumerable<string>? valueTypes = null)
+    {
+        Monomorphiser m = new("<rehost>");
+        if (valueTypes is not null)
+        {
+            m._byValue.UnionWith(valueTypes);
+        }
+        Dictionary<string, TypeRef> map = new(StringComparer.Ordinal);
+        for (int i = 0; i < outer.Count && i < args.Count; i++)
+        {
+            m.Settled(args[i]);
+            map[outer[i].Name] = args[i];
+            if (outer[i].Struct) m._structParams.Add(outer[i].Name);
+        }
+        MethodDecl made = (MethodDecl)m.RewriteMember(local, map, local.Name);
+        made.Name = name;
+        // A TYPE PARAMETER IT CARRIED FOR WHAT IS AROUND IT (CarriedTypeParams)
+        // is put in here with the rest: the copy's captures are of the type
+        // itself, and a parameter left over is one no call could infer.
+        if (local.CarriedTypeParams.Count > 0)
+        {
+            made.WritableTypeParams.RemoveAll(tp => map.ContainsKey(tp.Name) && local.CarriedTypeParams.Contains(tp.Name));
+            made.CarriedTypeParams = local.CarriedTypeParams.Where(n => !map.ContainsKey(n)).ToList();
+        }
+        return made;
+    }
+
     public static MethodDecl Specialise(MethodDecl template, IReadOnlyList<TypeRef> args, string name,
                                         IEnumerable<string>? valueTypes = null)
     {
@@ -1901,7 +1934,7 @@ public sealed class Monomorphiser
             {
                 FieldDecl copy = new()
                 {
-                    Name = f.Name, Mods = f.Mods, Type = Sub(f.Type, map),
+                    Name = f.Name, Mods = f.Mods, Type = Sub(f.Type, map), IsEvent = f.IsEvent,
                     Init = f.Init is null ? null : Rewrite(f.Init, map),
                     DeclaredInit = f.DeclaredInit is null ? null : Rewrite(f.DeclaredInit, map),
                     StaticData = f.StaticData,
@@ -2010,6 +2043,16 @@ public sealed class Monomorphiser
                 made.Fresh = md.Fresh;
                 made.File = md.File;
                 made.TemplateIndex = md.TemplateIndex;
+
+                // A HOISTED GENERIC LOCAL FUNCTION stays one: its written
+                // name, the names it calls by, and how many of its parameters
+                // are the variables it captured.
+                made.HoistedName = md.HoistedName;
+                made.CarriedTypeParams = md.CarriedTypeParams;
+                made.LocalGenerics.AddRange(md.LocalGenerics);
+                made.Captures = md.Captures;
+                made.HoistedIn = md.HoistedIn;
+                foreach ((string written, string now) in md.Rehosted) made.Rehosted[written] = now;
 
                 return made;
             }
@@ -2339,6 +2382,17 @@ public sealed class Monomorphiser
         {
             made.File = e.File;
         }
+
+        // The natural type the checker spelt, substituted -- and so made,
+        // which is what it was spelt for.
+        if (e.NaturalType is not null && !ReferenceEquals(made, e))
+        {
+            made.NaturalType = Sub(e.NaturalType, map);
+        }
+        if (e is NameExpr { CaptureOf: not null } captured && made is NameExpr copied)
+        {
+            copied.CaptureOf = captured.CaptureOf;
+        }
         return made;
     }
 
@@ -2456,6 +2510,8 @@ public sealed class Monomorphiser
                 // arguments. The checker runs more than once now, and a copy
                 // that forgot would have the receiver put in twice.
                 made.ReceiverAdded = c.ReceiverAdded;
+                made.ParamsPacked = c.ParamsPacked;
+                made.CapturesPassed = c.CapturesPassed;
                 return made;
             }
 
@@ -2558,7 +2614,10 @@ public sealed class Monomorphiser
                     Body = lambda.Body is null ? null : Rewrite(lambda.Body, map),
                     BlockBody = lambda.BlockBody is null ? null : (Block)Rewrite(lambda.BlockBody, map),
                     Async = lambda.Async, Line = lambda.Line, Col = lambda.Col,
+                    Returns = lambda.Returns is null ? null : Sub(lambda.Returns, map), ReturnMods = lambda.ReturnMods,
+                    TypesWritten = lambda.TypesWritten,
                 };
+                made.Attributes.AddRange(lambda.Attributes);
                 foreach (Param p in lambda.Params)
                 {
                     made.Params.Add(new Param

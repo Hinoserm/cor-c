@@ -1,0 +1,37 @@
+// test: csharp_string_apis
+// expect-exit: 0
+// expect-output:
+// strings True True 5 8 World Hello, There hello, world a|b||c 3
+// strings2 14 14 True True True True aXbc abef 007 False True True True 3.14|   42|FF a "q" b <x1 3
+//
+// THE STRING AND CHARACTER APIS the sources use, format specifiers in an
+// interpolated string, a raw string literal, a StringBuilder.
+//
+// Split out of the canary of the C# the compiler's own sources use: one
+// family a test, so a form the compiler cannot build yet fails only its own.
+// Every line is what .NET prints.
+
+using System;
+using System.Text;
+
+public static class Program
+{
+    private static void Say(params object?[] parts) => Console.WriteLine(string.Join(" ", parts));
+
+    public static int Main()
+    {
+        string text = "  Hello, World  ";
+        string trimmed = text.Trim();
+        Say("strings", trimmed.StartsWith("Hello", StringComparison.Ordinal), trimmed.EndsWith("ld", StringComparison.Ordinal), trimmed.IndexOf(','),
+            trimmed.LastIndexOf('o'), trimmed.Substring(7), trimmed.Replace("World", "There"), trimmed.ToLowerInvariant(),
+            string.Join("|", "a,b,,c".Split(',')), "a,b,,c".Split(',', StringSplitOptions.RemoveEmptyEntries).Length);
+        string formatted = $"{3.14159:F2}|{42,5}|{255:X2}";
+        string raw = """a "q" b""";
+        StringBuilder sb = new();
+        sb.Append('x').Append(1).Insert(0, "<");
+        Say("strings2", text.TrimStart().Length, text.TrimEnd().Length, string.IsNullOrEmpty(""), string.IsNullOrWhiteSpace("  "),
+            string.CompareOrdinal("a", "b") < 0, "abc".Contains('b'), "abc".Insert(1, "X"), "abcdef".Remove(2, 2), "7".PadLeft(3, '0'),
+            char.IsLetterOrDigit('_'), char.IsDigit('5'), char.IsLetter('x'), char.IsWhiteSpace('\t'), formatted, raw, sb.ToString(), sb.Length);
+        return 0;
+    }
+}

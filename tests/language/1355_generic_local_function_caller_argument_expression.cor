@@ -1,0 +1,29 @@
+// test: generic local function caller argument expression
+// expect-exit: 0
+// expect-output:
+// a * 3=6 "q"=q 2
+//
+// [CallerArgumentExpression] on a generic local function that captures is
+// the text of the argument written, not of a variable the function was
+// handed because it captured it.
+//
+// Every line is what .NET prints.
+
+using System;
+using System.Runtime.CompilerServices;
+
+public static class Program
+{
+    public static int Main()
+    {
+        int seen = 0;
+        string Show<T>(T value, [CallerArgumentExpression("value")] string text = "")
+        {
+            seen++;
+            return text + "=" + value;
+        }
+        int a = 2;
+        Console.WriteLine(Show(a * 3) + " " + Show("q") + " " + seen);
+        return 0;
+    }
+}

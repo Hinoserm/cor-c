@@ -1,0 +1,148 @@
+// test: generic local function captures
+// expect-exit: 0
+// expect-output:
+// basic 22 22 ttt 1
+// instance a5 2 102
+// lambda-call 8 1 110
+// recursive w 13 w:1,w:2
+// converted 7 q 1 106
+// in-lambda 12/2 2
+//
+// A GENERIC LOCAL FUNCTION CAPTURES as any local function does: the
+// enclosing method's locals and parameters, and `this`, by reference -- one
+// variable, whoever writes it. Shared with a non-generic local function and
+// a lambda, written after a call and seen by the next one, captured again by
+// a lambda inside it, by a recursive call, through a conversion to a
+// delegate (inferred and explicit), from a lambda in an instance method,
+// and declared inside a lambda, capturing both the lambda's local and the
+// method's.
+//
+// Every line is what .NET prints.
+
+using System;
+using System.Collections.Generic;
+
+class Counter
+{
+    int _total = 100;
+
+    public string Run()
+    {
+        int calls = 0;
+        T Track<T>(T value)
+        {
+            calls++;
+            _total++;
+            return value;
+        }
+        string s = Track("a");
+        int n = Track(5);
+        return s + n + " " + calls + " " + _total;
+    }
+
+    public string FromLambda()
+    {
+        int seen = 0;
+        T Keep<T>(T v)
+        {
+            seen++;
+            _total += 10;
+            return v;
+        }
+        Func<int, int> twice = x => Keep(x) * 2;
+        int r = twice(4);
+        return r + " " + seen + " " + _total;
+    }
+}
+
+public static class Program
+{
+    static string Basic(int start)
+    {
+        int count = 0;
+        string log = "";
+        void Note(string s) { log += s; }
+        T Twice<T>(T value)
+        {
+            count += start;
+            Note("t");
+            return value;
+        }
+        Func<int> peek = () => count;
+        Twice(1);
+        Twice("x");
+        count++;
+        start = 1;
+        Twice(2.5);
+        return count + " " + peek() + " " + log + " " + start;
+    }
+
+    static string Recursive()
+    {
+        int depth = 0;
+        List<string> seen = new();
+        T Walk<T>(T value, int n)
+        {
+            depth++;
+            if (n == 0)
+            {
+                return value;
+            }
+            Action record = () => seen.Add(value + ":" + depth);
+            record();
+            return Walk(value, n - 1);
+        }
+        string r = Walk("w", 2);
+        Action bump = () => depth += 10;
+        bump();
+        return r + " " + depth + " " + string.Join(",", seen);
+    }
+
+    static string Converted()
+    {
+        int offset = 3;
+        T Same<T>(T v)
+        {
+            offset++;
+            return v;
+        }
+        Func<int, int> f = Same;
+        Func<string, string> g = Same<string>;
+        int a = f(7);
+        string b = g("q");
+        offset += 100;
+        int c = f(1);
+        return a + " " + b + " " + c + " " + offset;
+    }
+
+    static string InLambda()
+    {
+        int hits = 0;
+        Func<int, string> run = n =>
+        {
+            int local = n * 2;
+            T Mark<T>(T v)
+            {
+                hits++;
+                local++;
+                return v;
+            }
+            Mark(1);
+            Mark("s");
+            return local + "/" + hits;
+        };
+        string first = run(5);
+        return first + " " + hits;
+    }
+
+    public static int Main()
+    {
+        Console.WriteLine("basic " + Basic(10));
+        Console.WriteLine("instance " + new Counter().Run());
+        Console.WriteLine("lambda-call " + new Counter().FromLambda());
+        Console.WriteLine("recursive " + Recursive());
+        Console.WriteLine("converted " + Converted());
+        Console.WriteLine("in-lambda " + InLambda());
+        return 0;
+    }
+}

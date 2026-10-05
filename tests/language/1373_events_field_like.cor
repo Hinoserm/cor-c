@@ -1,0 +1,87 @@
+// test: events_field_like
+// expect-exit: 0
+// expect-output:
+// both one;[one];
+// removed [two];
+// inside [inner];[late];
+// cleared True
+// static 2
+// generic 303
+//
+// A FIELD-LIKE EVENT, as C# has it: from outside the type that declares it,
+// `+=` and `-=` subscribe and unsubscribe -- a method group removed by
+// converting it again -- and inside the type, its nested types and the
+// lambdas written there included, it is the delegate field it looks like:
+// raised, compared with null, cleared. A static event and a generic class's
+// event alike.
+
+using System;
+
+class Source
+{
+    public event Action<string>? Said;
+    public static event Action? Ticked;
+
+    public void Say(string s) => Said?.Invoke(s);
+    public static void Tick() { if (Ticked != null) Ticked(); }
+    public bool Quiet => Said == null;
+    public void Clear() { Said = null; }
+    public void Later(string s)
+    {
+        Action a = () => Said?.Invoke(s);
+        a();
+    }
+
+    public class Inner
+    {
+        public static void Poke(Source s) { s.Said?.Invoke("inner"); }
+    }
+}
+
+class Box<T>
+{
+    public event Action<T>? Got;
+    public void Put(T v) { Got?.Invoke(v); }
+}
+
+static class P
+{
+    static string heard = "";
+    static void Hear(string s) { heard += s + ";"; }
+
+    static int Main()
+    {
+        Source src = new Source();
+        src.Said += Hear;
+        src.Said += s => heard += "[" + s + "];";
+        src.Say("one");
+        Console.WriteLine("both " + heard);
+
+        heard = "";
+        src.Said -= Hear;
+        src.Say("two");
+        Console.WriteLine("removed " + heard);
+
+        heard = "";
+        Source.Inner.Poke(src);
+        src.Later("late");
+        Console.WriteLine("inside " + heard);
+
+        src.Clear();
+        Console.WriteLine("cleared " + src.Quiet);
+
+        int ticks = 0;
+        Source.Ticked += () => ticks++;
+        Source.Tick();
+        Source.Tick();
+        Console.WriteLine("static " + ticks);
+
+        Box<int> box = new Box<int>();
+        int sum = 0;
+        box.Got += v => sum += v;
+        box.Got += v => sum += v * 100;
+        box.Put(3);
+        Console.WriteLine("generic " + sum);
+        return 0;
+    }
+}

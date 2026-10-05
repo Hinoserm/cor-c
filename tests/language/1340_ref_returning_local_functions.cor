@@ -1,0 +1,134 @@
+// test: ref returning local functions
+// expect-exit: 0
+// expect-output:
+// basic 11,105,99,42 99 105
+// block 1,105,7,42
+// static -1
+// captured 0,0,3,6,8,0
+// readonly 1 77
+// generic z 3
+// struct 9 4 5 copy 100
+// instance 5 50
+// recursive 2
+//
+// A LOCAL FUNCTION THAT RETURNS BY REFERENCE answers a variable, and its call
+// is one, exactly as a ref-returning method's is: assigned, incremented,
+// compound-assigned, taken by a ref local, passed on by `ref`, and read as a
+// value. Expression- and block-bodied, static, capturing the enclosing
+// method's locals (an element of a captured array is the array's, which
+// outlives the call), `ref readonly`, generic, a struct element written in
+// place while a value copy of it stays apart, one capturing `this` handing
+// back the object's own field, and one calling itself.
+//
+// The canary's `ref int At(int[] xs, int i) => ref xs[i]; At(arr, 2) = 99;`
+// is the first line. Every line is what .NET prints.
+
+using System;
+
+struct Point
+{
+    public int X;
+    public int Y;
+}
+
+class Counter
+{
+    int _hits;
+    readonly int[] _slots = new int[3];
+
+    public string Run()
+    {
+        ref int Hits() => ref _hits;
+        ref int Slot(int i)
+        {
+            return ref _slots[i];
+        }
+        Hits() = 4;
+        Hits()++;
+        Slot(2) = Hits() * 10;
+        return _hits + " " + _slots[2];
+    }
+}
+
+public static class Program
+{
+    static void Bump(ref int value) => value += 100;
+
+    public static int Main()
+    {
+        int[] arr = { 10, 20, 30, 40 };
+        ref int At(int[] xs, int i) => ref xs[i];
+        At(arr, 2) = 99;
+        ref int r = ref At(arr, 1);
+        r = 5;
+        At(arr, 0)++;
+        At(arr, 3) += 2;
+        Bump(ref At(arr, 1));
+        int read = At(arr, 2);
+        Console.WriteLine("basic " + string.Join(",", arr) + " " + read + " " + r);
+
+        ref int Find(int[] xs, int value)
+        {
+            for (int i = 0; i < xs.Length; i++)
+            {
+                if (xs[i] == value)
+                {
+                    return ref xs[i];
+                }
+            }
+            return ref xs[0];
+        }
+        Find(arr, 99) = 7;
+        Find(arr, 1234) = 1;
+        Console.WriteLine("block " + string.Join(",", arr));
+
+        static ref int Last(int[] xs) => ref xs[xs.Length - 1];
+        Last(arr) = -1;
+        Console.WriteLine("static " + arr[3]);
+
+        int[] grid = new int[6];
+        int width = 3;
+        ref int Cell(int x, int y) => ref grid[y * width + x];
+        Cell(1, 1) = 8;
+        Cell(2, 0) = 3;
+        ref int corner = ref Cell(0, 1);
+        corner = 6;
+        Console.WriteLine("captured " + string.Join(",", grid));
+
+        ref readonly int Peek(int[] xs) => ref xs[0];
+        int seen = Peek(arr);
+        ref readonly int view = ref Peek(arr);
+        arr[0] = 77;
+        Console.WriteLine("readonly " + seen + " " + view);
+
+        ref T Slot<T>(T[] xs, int i) => ref xs[i];
+        string[] words = { "a", "b" };
+        Slot(words, 1) = "z";
+        Slot(arr, 1) = 3;
+        Console.WriteLine("generic " + words[1] + " " + arr[1]);
+
+        Point[] points = new Point[2];
+        ref Point P(int i) => ref points[i];
+        P(1).X = 4;
+        P(1).Y += 5;
+        ref Point first = ref P(0);
+        first.Y = 9;
+        Point copy = P(1);
+        copy.X = 100;
+        Console.WriteLine("struct " + points[0].Y + " " + points[1].X + " " + points[1].Y + " copy " + copy.X);
+
+        Console.WriteLine("instance " + new Counter().Run());
+
+        ref int Deepest(int[] xs, int i)
+        {
+            if (i == xs.Length - 1)
+            {
+                return ref xs[i];
+            }
+            return ref Deepest(xs, i + 1);
+        }
+        Deepest(arr, 0) = 2;
+        Console.WriteLine("recursive " + arr[3]);
+        return 0;
+    }
+}

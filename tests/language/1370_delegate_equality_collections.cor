@@ -1,0 +1,49 @@
+// test: delegate_equality_collections
+// expect-exit: 0
+// expect-output:
+// contains True
+// index 0
+// removed True 1
+// key click False
+// set 1
+//
+// A DELEGATE IS FOUND IN A COLLECTION BY AN EQUAL ONE, as .NET's are:
+// List<T>, Dictionary<K, V> and HashSet<T> ask EqualityComparer<T>.Default,
+// which asks the delegate's own Equals and GetHashCode -- the same method on
+// the same target. `b1.Click` converted again is found; another button's
+// Click is not; a static method converted twice is one entry.
+
+using System;
+using System.Collections.Generic;
+
+class Button
+{
+    public int Clicks;
+    public void Click() { Clicks++; }
+}
+
+static class P
+{
+    static void Ping() { }
+
+    static int Main()
+    {
+        Button b1 = new Button();
+        List<Action> handlers = new List<Action>();
+        handlers.Add(b1.Click);
+        handlers.Add(() => { });
+        Console.WriteLine("contains " + handlers.Contains(b1.Click));
+        Console.WriteLine("index " + handlers.IndexOf(b1.Click));
+        Console.WriteLine("removed " + handlers.Remove(b1.Click) + " " + handlers.Count);
+
+        Dictionary<Action, string> names = new Dictionary<Action, string>();
+        names[b1.Click] = "click";
+        Console.WriteLine("key " + names[b1.Click] + " " + names.ContainsKey(new Button().Click));
+
+        HashSet<Action> seen = new HashSet<Action>();
+        seen.Add(Ping);
+        seen.Add(Ping);
+        Console.WriteLine("set " + seen.Count);
+        return 0;
+    }
+}

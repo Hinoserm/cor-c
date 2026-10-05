@@ -51,6 +51,9 @@ public sealed partial class Lowering
 
         switch (name)
         {
+            // The word as it is: no test, no conversion (Sys.As).
+            case "As":
+                return Arg(call, target, 0);
             case "Rethrow":
                 Rethrow(Arg(call, target, 0), call);
                 return Void();

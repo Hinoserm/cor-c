@@ -94,7 +94,9 @@ public sealed partial class Lowering
         int at = FirstParamField;
         for (int i = 0; i < m.Params.Count; i++)
         {
-            if (m.Params[i].ByRef)
+            // A captured variable's cell (ParamSymbol.Cell) is an object the
+            // machine may hold; any other reference is into a frame.
+            if (m.Params[i].ByRef && !m.Params[i].Cell)
             {
                 Error(decl, $"'{m.Name}': an async method cannot take a ref or out parameter");
             }
@@ -143,7 +145,7 @@ public sealed partial class Lowering
         List<VReg> args = new();
         foreach (ParamSymbol p in m.Params)
         {
-            VReg r = _f.NewReg(IrTypes.Of(p.Type), p.Name);
+            VReg r = _f.NewReg(p.ByRef ? IrTypes.Word : IrTypes.Of(p.Type), p.Name);
             _f.Params.Add(r);
             args.Add(r);
         }
@@ -250,7 +252,7 @@ public sealed partial class Lowering
         for (int i = 0; i < m.Params.Count; i++)
         {
             ParamSymbol p = m.Params[i];
-            IrType it = IrTypes.Of(p.Type);
+            IrType it = p.ByRef ? IrTypes.Word : IrTypes.Of(p.Type);
             _params[i] = Numbered(_e, _e.Load(it, machine, am.ParamOffsets[i], it.Bytes()), !p.ByRef && NeverAddress(p.Type));
         }
 

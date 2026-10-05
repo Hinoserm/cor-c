@@ -1,0 +1,71 @@
+// test: delegate_remove_sublist
+// expect-exit: 0
+// expect-output:
+// whole ABCABC
+// last run ABCC
+// not contiguous ABC
+// middle A
+// front C
+// compound ABCA
+// same left True
+// whole gone True
+// bigger True
+// single minus multi True
+//
+// REMOVING A MULTICAST FROM A MULTICAST takes out the LAST contiguous run of
+// its targets, as .NET's Delegate.Remove does: ABCABC less AB is ABCC (the
+// second AB, at index 3, goes). A run that is not contiguous -- AC in ABC --
+// is not there, and nothing changes. What is left of one target is that
+// target itself, equal to it; of none, null. A longer delegate is never in a
+// shorter one, nor a multicast in a single delegate: the delegate comes back
+// unchanged, the same one.
+
+using System;
+
+static class P
+{
+    static string log = "";
+    static void A() { log += "A"; }
+    static void B() { log += "B"; }
+    static void C() { log += "C"; }
+
+    static void Run(string label, Action? d)
+    {
+        log = "";
+        d?.Invoke();
+        Console.WriteLine(label + " " + log);
+    }
+
+    static int Main()
+    {
+        Action onlyA = A;
+        Action? abc = A;
+        abc += B;
+        abc += C;
+        Action? ab = A;
+        ab += B;
+        Action? bc = B;
+        bc += C;
+        Action? ac = A;
+        ac += C;
+        Action? all = abc;
+        all += abc;
+        Run("whole", all);
+        Run("last run", all - ab);
+        Run("not contiguous", abc - ac);
+        Run("middle", abc - bc);
+        Run("front", abc - ab);
+
+        Action? chain = abc;
+        chain += abc;
+        chain -= bc;
+        Run("compound", chain);
+
+        Console.WriteLine("same left " + ((abc - bc) == onlyA));
+        Console.WriteLine("whole gone " + ((abc - abc) == null));
+        Console.WriteLine("bigger " + ((object?)(ab - abc) == (object?)ab));
+        Action? single = A;
+        Console.WriteLine("single minus multi " + ((object?)(single - ab) == (object?)single));
+        return 0;
+    }
+}

@@ -1,0 +1,27 @@
+// test: explicitly typed lambda chooses overload
+// expect-exit: 0
+// expect-output:
+// string s!
+// int 2
+//
+// A lambda that writes its parameters' types is applicable only to a
+// delegate whose parameters are those types, so it chooses among overloads
+// that differ in them (C# 12.6.4).
+//
+// Every line is what .NET prints.
+
+using System;
+
+public static class Program
+{
+    static string Pick(Func<int, string> f) => "int " + f(1);
+
+    static string Pick(Func<string, string> f) => "string " + f("s");
+
+    public static int Main()
+    {
+        Console.WriteLine(Pick((string s) => s + "!"));
+        Console.WriteLine(Pick((int n) => (n + 1).ToString()));
+        return 0;
+    }
+}

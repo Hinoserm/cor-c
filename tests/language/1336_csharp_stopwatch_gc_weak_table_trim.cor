@@ -1,0 +1,53 @@
+// test: csharp_stopwatch_gc_weak_table_trim
+// expect-exit: 0
+// expect-output:
+// runtime True 41 42 True True 1 1 1
+//
+// THE RUNTIME'S APIS the link uses: Stopwatch (GetTimestamp, StartNew,
+// Frequency, GetElapsedTime), the collector's (GetTotalMemory,
+// CollectionCount, allocated bytes, memory info, KeepAlive, GCSettings),
+// ConditionalWeakTable with StrongBox, and TrimExcess on a list, a set and a
+// dictionary made with a capacity.
+//
+// Split out of the canary of the C# the compiler's own sources use: one
+// family a test, so a form the compiler cannot build yet fails only its own.
+// Every line is what .NET prints.
+
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Runtime;
+using System.Runtime.CompilerServices;
+
+public static class Program
+{
+    private static void Say(params object?[] parts) => Console.WriteLine(string.Join(" ", parts));
+
+    public static int Main()
+    {
+        long started = Stopwatch.GetTimestamp();
+        Stopwatch watch = Stopwatch.StartNew();
+        TimeSpan elapsed = Stopwatch.GetElapsedTime(started);
+        bool timing = elapsed >= TimeSpan.Zero && Stopwatch.Frequency > 0 && watch.ElapsedMilliseconds >= 0;
+        ConditionalWeakTable<object, StrongBox<int>> table = new();
+        object key = new();
+        table.GetOrCreateValue(key).Value = 41;
+        table.TryGetValue(key, out StrongBox<int>? first);
+        int firstValue = first!.Value;
+        table.AddOrUpdate(key, new StrongBox<int>(42));
+        table.TryGetValue(key, out StrongBox<int>? second);
+        GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
+        bool compacting = GCSettings.LargeObjectHeapCompactionMode == GCLargeObjectHeapCompactionMode.CompactOnce;
+        bool collector = GC.GetTotalMemory(false) > 0 && GC.CollectionCount(0) >= 0 && GC.GetTotalAllocatedBytes() > 0
+            && GC.GetAllocatedBytesForCurrentThread() > 0 && GC.GetGCMemoryInfo().TotalAvailableMemoryBytes >= 0;
+        GC.KeepAlive(key);
+        List<int> roomy = new(100) { 1 };
+        roomy.TrimExcess();
+        HashSet<int> roomySet = new(50) { 1 };
+        roomySet.TrimExcess();
+        Dictionary<int, int> roomyDict = new(50) { [1] = 1 };
+        roomyDict.TrimExcess();
+        Say("runtime", timing, firstValue, second!.Value, compacting, collector, roomy.Capacity, roomySet.Count, roomyDict.Count);
+        return 0;
+    }
+}

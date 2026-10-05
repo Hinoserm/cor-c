@@ -1277,8 +1277,10 @@ public sealed partial class Lowering
                 {
                     // A struct by reference is the address of its bytes
                     // (StructReference): read as that address, written by a
-                    // copy into it, as a struct held in line is.
-                    return new MemPlace(new RegOperand(_params[p.Index]), 0, p.Type, false, IsStructValue(p.Type));
+                    // copy into it, as a struct held in line is. A captured
+                    // variable's cell (ParamSym.Cell) holds the struct as a
+                    // boxed local's does.
+                    return new MemPlace(new RegOperand(_params[p.Index]), 0, p.Type, false, IsStructValue(p.Type) && !p.Cell);
                 }
                 if (_paramCells.TryGetValue(p.Index, out VReg? paramCell))
                 {

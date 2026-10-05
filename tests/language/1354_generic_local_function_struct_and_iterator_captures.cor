@@ -1,0 +1,67 @@
+// test: generic local function struct and iterator captures
+// expect-exit: 0
+// expect-output:
+// struct 22 202 224
+// iterator i1,i2 2
+//
+// A STRUCT A GENERIC LOCAL FUNCTION CAPTURED is the one variable to every
+// lambda that sees it: inside the function, outside it, and the method
+// itself -- each write through a field is seen by all. And a generic local
+// function that is an iterator captures as any other does, the enumerator
+// writing the method's variable as it runs.
+//
+// Every line is what .NET prints.
+
+using System;
+using System.Collections.Generic;
+
+struct Point
+{
+    public int X;
+    public int Y;
+}
+
+public static class Program
+{
+    static string Structs()
+    {
+        Point p = new Point { X = 1, Y = 2 };
+        T Move<T>(T tag)
+        {
+            p.X += 10;
+            Action later = () => p.Y += 100;
+            later();
+            return tag;
+        }
+        Move("a");
+        Func<int> sum = () => p.X + p.Y;
+        p.X++;
+        Move(1);
+        return p.X + " " + p.Y + " " + sum();
+    }
+
+    static string Iterated()
+    {
+        int seen = 0;
+        IEnumerable<T> Twice<T>(T value)
+        {
+            seen++;
+            yield return value;
+            seen++;
+            yield return value;
+        }
+        List<string> got = new();
+        foreach (string s in Twice("i"))
+        {
+            got.Add(s + seen);
+        }
+        return string.Join(",", got) + " " + seen;
+    }
+
+    public static int Main()
+    {
+        Console.WriteLine("struct " + Structs());
+        Console.WriteLine("iterator " + Iterated());
+        return 0;
+    }
+}

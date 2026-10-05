@@ -1,0 +1,36 @@
+// test: async generic local function captures
+// expect-exit: 0
+// expect-output:
+// async x2 110
+//
+// AN ASYNC LOCAL FUNCTION, generic or not, captures as any local function
+// does: the state machine holds the variable's cell, and the method sees
+// what it wrote after each await.
+//
+// Every line is what .NET prints.
+
+using System;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static async Task Main()
+    {
+        int total = 0;
+        async Task<T> Later<T>(T value)
+        {
+            await Task.Yield();
+            total += 5;
+            return value;
+        }
+        async Task Bump()
+        {
+            await Task.Yield();
+            total += 100;
+        }
+        string a = await Later("x");
+        int b = await Later(2);
+        await Bump();
+        Console.WriteLine("async " + a + b + " " + total);
+    }
+}

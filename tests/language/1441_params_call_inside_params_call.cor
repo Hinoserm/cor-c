@@ -1,0 +1,34 @@
+// test: params_call_inside_params_call
+// expect-exit: 0
+// expect-output:
+// m 1 9 c
+// 9
+//
+// A GENERIC PARAMS CALL AS AN ARGUMENT OF ANOTHER PARAMS CALL. Packing
+// `Largest(3, 9, 4)`'s arguments into its params array rewrites the call;
+// the outer call packs it in turn and checks it again, and expanding a
+// second time took the packed int[] as the one element and asked for
+// Largest<int[]> ("'int[]' has no member 'CompareTo'"). A packed call is
+// the ordinary form from then on.
+
+using System;
+
+static class P
+{
+    static T Largest<T>(params T[] xs) where T : IComparable<T>
+    {
+        T best = xs[0];
+        foreach (T x in xs) if (x.CompareTo(best) > 0) best = x;
+        return best;
+    }
+
+    static void Say(string tag, params object?[] parts) => Console.WriteLine(tag + " " + string.Join(" ", parts));
+
+    static int Main()
+    {
+        Say("m", 1, Largest(3, 9, 4), Largest("a", "c", "b"));
+        object o = Largest(3, 9, 4);
+        Console.WriteLine(o);
+        return 0;
+    }
+}

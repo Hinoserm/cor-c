@@ -1,0 +1,58 @@
+// test: natural types object and synthesised
+// expect-exit: 0
+// expect-output:
+// object 2
+// group 10
+// func 40
+// synthesised 21 True5 70 3
+//
+// A LAMBDA OR A METHOD GROUP CONVERTED TO OBJECT is its natural type (C#
+// 10), a Func the object then is. And where no Func or Action can say the
+// natural type -- parameters by reference, out, a result returned by
+// reference, seventeen parameters -- C# synthesises a delegate of exactly
+// that signature, for a lambda and for a method group alike.
+//
+// Every line is what .NET prints.
+
+using System;
+
+public static class Program
+{
+    static int Twice(int x) => x * 2;
+
+    static bool TryHalf(int x, out int half)
+    {
+        half = x / 2;
+        return x % 2 == 0;
+    }
+
+    static void Describe(object o) => Console.WriteLine(o is Func<int, int> f ? "func " + f(4) : "other");
+
+    public static int Main()
+    {
+        object o = (int x) => x + 1;
+        Console.WriteLine(o is Func<int, int> inc ? "object " + inc(1) : "no");
+        object g = Twice;
+        Console.WriteLine(g is Func<int, int> twice ? "group " + twice(5) : "no");
+        Describe((int y) => y * 10);
+
+        var swap = (ref int a, ref int b) =>
+        {
+            int t = a;
+            a = b;
+            b = t;
+        };
+        int p = 1, q = 2;
+        swap(ref p, ref q);
+        var tryHalf = TryHalf;
+        bool even = tryHalf(10, out int half);
+        var refFirst = ref int (int[] xs) => ref xs[0];
+        int[] arr = { 7 };
+        refFirst(arr) = 70;
+        var many = (int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8, int a9,
+                    int a10, int a11, int a12, int a13, int a14, int a15, int a16, int a17) => a1 + a17;
+        int sum = many(1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2);
+        Console.WriteLine("synthesised " + p + q + " " + even + half + " " + arr[0] + " " + sum);
+        return 0;
+    }
+}

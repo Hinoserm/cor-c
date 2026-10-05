@@ -1,0 +1,19 @@
+// test: ref local function capture refused
+// expect-compile-error: cannot return a reference to 'total': it is a variable of the enclosing method
+// A variable a local function captures is a local of the method around it,
+// and C# returns no reference to one from the local function (CS8168): the
+// closure holding it is no promise it outlives the call.
+
+using System;
+
+public static class Program
+{
+    public static int Main()
+    {
+        int total = 3;
+        ref int Total() => ref total;
+        Total() = 4;
+        Console.WriteLine(total);
+        return 0;
+    }
+}

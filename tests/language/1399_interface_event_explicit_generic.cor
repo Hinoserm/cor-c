@@ -1,0 +1,45 @@
+// test: interface_event_explicit_generic
+// expect-exit: 0
+// expect-output:
+// raised 3 2
+// handlers 1
+//
+// A GENERIC INTERFACE'S EVENT, implemented by a generic class's field-like
+// event: `IFeed<int>.Arrived += ...` reaches Feed<int>'s add accessor, which
+// combines into its field; removing one of two equal handlers leaves one,
+// as -= does anywhere.
+
+using System;
+
+interface IFeed<T>
+{
+    event Action<T>? Arrived;
+}
+
+class Feed<T> : IFeed<T>
+{
+    public event Action<T>? Arrived;
+    public void Push(T value) { Arrived?.Invoke(value); }
+    public int Handlers() { return Arrived == null ? 0 : Arrived.GetInvocationList().Length; }
+}
+
+static class P
+{
+    static int total;
+    static int calls;
+    static void Count(int v) { total += v; calls++; }
+
+    static int Main()
+    {
+        Feed<int> feed = new Feed<int>();
+        IFeed<int> asInterface = feed;
+        asInterface.Arrived += Count;
+        asInterface.Arrived += Count;
+        feed.Push(1);
+        asInterface.Arrived -= Count;
+        feed.Push(1);
+        Console.WriteLine("raised " + total + " " + (calls - 1));
+        Console.WriteLine("handlers " + feed.Handlers());
+        return 0;
+    }
+}

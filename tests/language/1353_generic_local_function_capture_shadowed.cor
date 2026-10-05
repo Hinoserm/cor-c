@@ -1,0 +1,32 @@
+// test: generic local function capture shadowed
+// expect-exit: 0
+// expect-output:
+// shadow 10 6 21
+//
+// A CALL HANDS A GENERIC LOCAL FUNCTION THE VARIABLE IT CAPTURED, the one in
+// scope where the function was written -- not a lambda's parameter, or a
+// local function's, that has the same name where the call is (C# 8 lets
+// them shadow it). Both calls below write the method's x.
+//
+// Every line is what .NET prints.
+
+using System;
+
+public static class Program
+{
+    public static int Main()
+    {
+        int x = 1;
+        T Add<T>(T v)
+        {
+            x += 10;
+            return v;
+        }
+        Func<int, int> f = x => Add(x) + x;
+        int r = f(5);
+        int Inner(int x) => Add(x) * 2;
+        int s = Inner(3);
+        Console.WriteLine("shadow " + r + " " + s + " " + x);
+        return 0;
+    }
+}

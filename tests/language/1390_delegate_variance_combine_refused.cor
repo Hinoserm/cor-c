@@ -1,0 +1,54 @@
+// test: delegate_variance_combine_refused
+// expect-exit: 0
+// expect-output:
+// held fs
+// plus ArgumentException Delegates must be of the same type.
+// minus ArgumentException Delegates must be of the same type.
+// static ArgumentException Delegates must be of the same type.
+// binary ArgumentException Delegates must be of the same type.
+// same type fs fs
+//
+// DELEGATES THAT DIFFER ONLY THROUGH VARIANCE DO NOT COMBINE, as in .NET: a
+// Func<string> held as a Func<object> is still a Func<string> -- variance
+// converts no object -- and Delegate.Combine and Delegate.Remove, which `+=`,
+// `-=`, `+` and `-` are, require both delegates to be of one type, throwing
+// ArgumentException("Delegates must be of the same type.") otherwise. Two
+// Func<string>s held as Func<object>s are of one type and combine.
+
+using System;
+
+static class P
+{
+    static int Main()
+    {
+        Func<string> fs = () => "fs";
+        Func<object> held = fs;
+        Console.WriteLine("held " + held());
+        Func<object> other = () => "other";
+
+        try { held += other; Console.WriteLine("plus combined"); }
+        catch (ArgumentException e) { Console.WriteLine("plus ArgumentException " + e.Message); }
+
+        Func<object> twice = fs;
+        try { twice -= other; Console.WriteLine("minus removed"); }
+        catch (ArgumentException e) { Console.WriteLine("minus ArgumentException " + e.Message); }
+
+        try { Delegate.Combine(fs, other); Console.WriteLine("static combined"); }
+        catch (ArgumentException e) { Console.WriteLine("static ArgumentException " + e.Message); }
+
+        try { Func<object> both = other + fs; Console.WriteLine("binary combined " + both()); }
+        catch (ArgumentException e) { Console.WriteLine("binary ArgumentException " + e.Message); }
+
+        Func<object> first = fs;
+        Func<string> second = () => "fs";
+        first += second;
+        string all = "";
+        foreach (Delegate one in first.GetInvocationList())
+        {
+            Func<string> each = (Func<string>)one;
+            all += " " + each();
+        }
+        Console.WriteLine("same type" + all);
+        return 0;
+    }
+}

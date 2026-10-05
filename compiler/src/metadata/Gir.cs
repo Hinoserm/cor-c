@@ -482,6 +482,14 @@ public static class Gir
                         foreach (string? name in d.Init.ArgNames) Str(name ?? "");
                         Texts(d.Init.Spans, d.Init.Source);
                     }
+
+                    // A hoisted generic local function: its written name, the
+                    // names it calls by, and its captured parameters.
+                    Str(d.HoistedName ?? "");
+                    I32(d.LocalGenerics.Count);
+                    foreach ((string written, string member) in d.LocalGenerics) { Str(written); Str(member); }
+                    I32(d.Captures);
+                    Str(d.HoistedIn ?? "");
                     break;
 
                 case PropertyDecl p2:
@@ -957,6 +965,10 @@ public static class Gir
 
                     Expr(la.Body);
                     Stmt(la.BlockBody);
+                    // A result written in front (`ref int (...) => ...`).
+                    Type(la.Returns);
+                    I32((int)la.ReturnMods);
+                    Bool(la.TypesWritten);
                     break;
 
                 case SwitchExpr se:
@@ -1355,6 +1367,14 @@ public static class Gir
 
                     d.WritableAttributes.AddRange(attributes);
                     d.Params.AddRange(ps);
+
+                    string hoisted = Str();
+                    d.HoistedName = hoisted.Length == 0 ? null : hoisted;
+                    int generics = Count();
+                    for (int i = 0; i < generics; i++) { string written = Str(); d.LocalGenerics.Add((written, Str())); }
+                    d.Captures = I32();
+                    string hoistedIn = Str();
+                    d.HoistedIn = hoistedIn.Length == 0 ? null : hoistedIn;
                     return d;
                 }
 
@@ -1889,7 +1909,10 @@ public static class Gir
                     }
 
                     Expr? body = Expr();
-                    LambdaExpr la = new() { Async = async, Body = body, BlockBody = Stmt() as Block };
+                    Block? blockBody = Stmt() as Block;
+                    TypeRef? returns = TypeOrNull();
+                    Mods returnMods = (Mods)I32();
+                    LambdaExpr la = new() { Async = async, Body = body, BlockBody = blockBody, Returns = returns, ReturnMods = returnMods, TypesWritten = Bool() };
 
                     la.Params.AddRange(ps);
                     return la;

@@ -1,0 +1,18 @@
+// test: ref lambda written result mismatch refused
+// expect-compile-error: the lambda returns by 'ref', and 'Plain' returns by value
+// A lambda's result written in front (C# 10) is the delegate's exactly,
+// down to whether it is returned by reference (CS8934).
+
+using System;
+
+delegate int Plain(int[] xs);
+
+public static class Program
+{
+    public static int Main()
+    {
+        Plain first = ref int (int[] xs) => ref xs[0];
+        Console.WriteLine(first(new int[] { 7 }));
+        return 0;
+    }
+}

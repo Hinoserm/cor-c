@@ -1,0 +1,88 @@
+// test: variant_type_tests
+// expect-exit: 0
+// expect-output:
+// func True True False
+// action True False
+// as True True
+// cast hello
+// cast refused InvalidCastException
+// sequence True True False
+// comparer True False
+// nested True True
+// own True False
+// value False
+//
+// THE RUN-TIME TYPE TEST HONOURS DECLARED VARIANCE, for delegates and
+// interfaces alike, as .NET's does: an object whose class is a Func<string>
+// is a Func<object> (out) and not a Func<int>; an Action<object> is an
+// Action<string> (in) and not the other way round; a List<string> is an
+// IEnumerable<object> but not an IEnumerable<int>; a comparer of objects is
+// an IComparer<string>. `as` and casts answer the same. Arguments vary
+// through their own variance (a Func<List<string>> is a
+// Func<IEnumerable<object>>), a program's own variant interface varies as it
+// declares, and a value type argument never varies (a Func<int> is no
+// Func<object>).
+
+using System;
+using System.Collections.Generic;
+
+interface ISource<out T> { T Get(); }
+class Text : ISource<string> { public string Get() => "text"; }
+
+class ByLength : IComparer<object>
+{
+    public int Compare(object? a, object? b) => 0;
+}
+
+static class P
+{
+    static int Main()
+    {
+        Func<string> hello = () => "hello";
+        object f = hello;
+        Console.WriteLine("func " + (f is Func<object>) + " " + (f is Func<string>) + " " + (f is Func<int>));
+
+        Action<object> takesAny = o => { };
+        Action<string> takesText = s => { };
+        object act = takesAny;
+        object act2 = takesText;
+        Console.WriteLine("action " + (act is Action<string>) + " " + (act2 is Action<object>));
+
+        Func<object>? asFunc = f as Func<object>;
+        object strings = new List<string> { "a" };
+        IEnumerable<object>? asSeq = strings as IEnumerable<object>;
+        Console.WriteLine("as " + (asFunc != null) + " " + (asSeq != null));
+
+        Func<object> casted = (Func<object>)f;
+        Console.WriteLine("cast " + casted());
+        try
+        {
+            Func<int> wrong = (Func<int>)f;
+            Console.WriteLine("cast took " + wrong());
+        }
+        catch (InvalidCastException)
+        {
+            Console.WriteLine("cast refused InvalidCastException");
+        }
+
+        object list = new List<string> { "x" };
+        Console.WriteLine("sequence " + (list is IEnumerable<object>) + " " + (list is IReadOnlyList<object>) + " " + (list is IEnumerable<int>));
+
+        object comparer = new ByLength();
+        Console.WriteLine("comparer " + (comparer is IComparer<string>) + " " + (comparer is IComparer<int>));
+
+        Func<List<string>> makeList = () => new List<string>();
+        Func<IEnumerable<string>> makeSeq = () => new List<string>();
+        object nested = makeList;
+        object nestedSeq = makeSeq;
+        Console.WriteLine("nested " + (nested is Func<IEnumerable<object>>) + " " + (nestedSeq is Func<IEnumerable<object>>));
+
+        object source = new Text();
+        Console.WriteLine("own " + (source is ISource<object>) + " " + (source is ISource<int>));
+
+        Func<int> one = () => 1;
+        object number = one;
+        Console.WriteLine("value " + (number is Func<object>));
+        return 0;
+    }
+}

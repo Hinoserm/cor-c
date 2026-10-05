@@ -13,6 +13,15 @@ namespace Corsac.Lang;
 /// through, a reference to something read-only is only taken read-only, a ref
 /// local never reaches a lambda, and a reference never outlives the variable it
 /// names (RefEscapes).
+///
+/// A DELEGATE RETURNS BY REFERENCE TOO: `delegate ref int D(...)`, and the
+/// delegate a local function `ref int At(int[] xs, int i) => ref xs[i];` is
+/// made into (Parser.LocalFunctionDelegate), whose Invoke carries the same
+/// Mods.RefReturn a method does. A lambda converted to one is a closure whose
+/// Invoke returns the address (CheckLambda), and calling the delegate is a
+/// variable exactly as calling a ref-returning method is (RefCallee). Its
+/// body may not hand back a variable it captured: that is a local of the
+/// enclosing method, and C# reaches it no further (CapturedVariable).
 /// </summary>
 public sealed partial class Binder
 {
@@ -109,34 +118,86 @@ public sealed partial class Binder
     {
         if (_method is not { RefReturn: true } method)
         {
-            Error(r, "only a method that returns by reference can 'return ref'");
+            Error(r, _method is not null && IsClosure(_method.Owner)
+                ? "only a lambda or local function that returns by reference can 'return ref'"
+                : "only a method that returns by reference can 'return ref'");
             if (r.Value is not null) CheckExpr(r.Value);
             return;
         }
+        // A lambda's or local function's Invoke is named for what it is.
+        string name = IsClosure(method.Owner) ? "this function" : method.Name;
+        string spelt = IsClosure(method.Owner) ? name : $"'{name}'";
         if (method.Async)
         {
-            Error(r, $"'{method.Name}' is async, and an async method cannot return by reference");
+            Error(r, $"{spelt} is async, and an async method cannot return by reference");
         }
         if (r.Value is not RefArgExpr { IsOut: false, Name: null } reference)
         {
-            Error(r, $"'{method.Name}' returns by reference, so it returns 'ref' and a variable");
+            Error(r, $"{spelt} returns by reference, so it returns 'ref' and a variable");
             if (r.Value is not null) CheckExpr(r.Value);
             return;
         }
 
         Type referred = CheckReference(reference, method.RefReturnReadOnly);
-        RequireSameReferenceType(reference, referred, method.Returns, method.Name);
-        if (!referred.IsError && !RefEscapes(reference.Target))
+        RequireSameReferenceType(reference, referred, method.Returns, name);
+        if (referred.IsError || RefEscapes(reference.Target)) return;
+
+        // A VARIABLE A LAMBDA OR LOCAL FUNCTION CAPTURED is the enclosing
+        // method's local, and C# answers it as one (CS8168, CS8166): the
+        // closure holding it is no promise it outlives the call.
+        if (CapturedVariable(reference.Target) is string captured)
         {
-            Error(r, "cannot return a reference to this variable: it lives in this method, "
-                   + "and is gone when the method returns");
+            Error(r, $"cannot return a reference to '{captured}': it is a variable of the enclosing method, "
+                   + "captured, and a reference to it may not leave this function");
+            return;
         }
+        Error(r, "cannot return a reference to this variable: it lives in this method, "
+               + "and is gone when the method returns");
     }
 
-    /// <summary>The method a call returns a variable of (MethodSymbol.RefReturn), or null.</summary>
+    /// <summary>
+    /// The method a call returns a variable of (MethodSymbol.RefReturn), or
+    /// null. A delegate's call -- a local function's among them -- answers as
+    /// its Invoke does: `delegate ref int D(...)` returns a variable.
+    /// </summary>
     private MethodSymbol? RefCallee(CallExpr call)
-        => _r.Calls.TryGetValue(call, out MethodSymbol? method) && method.RefReturn
-           && !_r.Invocations.ContainsKey(call) ? method : null;
+        => _r.Invocations.TryGetValue(call, out MethodSymbol? invoke)
+           ? invoke.RefReturn ? invoke : null
+           : _r.Calls.TryGetValue(call, out MethodSymbol? method) && method.RefReturn ? method : null;
+
+    /// <summary>What a call is written as calling: a local function's or delegate's own name, not 'Invoke'.</summary>
+    private static string CalleeName(CallExpr call, MethodSymbol method)
+        => call.Target switch
+        {
+            NameExpr n => n.Name,
+            MemberExpr m => m.Name,
+            _ => method.Name,
+        };
+
+    /// <summary>A class the checker made for a lambda or a local function (CheckLambda).</summary>
+    private static bool IsClosure(TypeSymbol type) => type.Name.StartsWith("Lambda$", StringComparison.Ordinal);
+
+    /// <summary>
+    /// A closure's field holding a variable it captured from the method it
+    /// was written in -- not its `$this`, nor a bound method group's target.
+    /// </summary>
+    private static bool IsCapture(FieldSymbol field)
+        => IsClosure(field.Owner) && field.Name != "$this" && field.Name != BoundTargetField;
+
+    /// <summary>
+    /// The captured variable a reference names, through the fields of a
+    /// struct held in it, or null.
+    /// </summary>
+    private string? CapturedVariable(Expr target)
+        => target switch
+        {
+            NameExpr n when _r.Resolved.TryGetValue(n, out Sym? s) && s is FieldSym { Field: var f } && IsCapture(f) => n.Name,
+            NameExpr n when _r.Resolved.TryGetValue(n, out Sym? s) && s is ParamSym { CapturedVariable: true } => n.Name,
+            MemberExpr { Target: { } inner } m when m.Target is not ThisExpr
+                && _r.TypeOf(inner) is { Symbol.Kind: TypeKind.Struct, Nullable: false, IsArray: false, IsPointer: false }
+                => CapturedVariable(inner),
+            _ => null,
+        };
 
     /// <summary>The type of the variable a `ref` expression names, checked as one.</summary>
     private Type CheckReference(RefArgExpr reference, bool readOnly)
@@ -186,7 +247,7 @@ public sealed partial class Binder
                 return ReadOnlyVariable(inner);
 
             case CallExpr call when RefCallee(call) is { RefReturnReadOnly: true } method:
-                return $"'{method.Name}' returns a ref readonly variable";
+                return $"'{CalleeName(call, method)}' returns a ref readonly variable";
 
             default:
                 return null;
@@ -209,12 +270,24 @@ public sealed partial class Binder
                 {
                     LocalSym { IsRef: true } l => l.RefEscapes,
                     LocalSym => false,
+                    // A generic local function's captured variable is the
+                    // enclosing method's local, passed by reference only to
+                    // reach it (CapturedVariable).
+                    ParamSym { CapturedVariable: true } => false,
                     ParamSym p => p.ByRef,
+                    // A VARIABLE A CLOSURE CAPTURED is a local of the method
+                    // it was written in, and reaches no further than one
+                    // (CapturedVariable): a field of the closure's class only
+                    // in how it is kept.
+                    FieldSym f when IsCapture(f.Field) => false,
                     // A field named alone is this object's: on the heap for a
                     // class, a struct's own `this` -- a reference the caller
                     // lent, which C# does not let the struct hand back.
                     FieldSym f => f.Field.Static || f.Field.Owner.Kind != TypeKind.Struct,
-                    CapturedFieldSym => true,
+                    // The enclosing instance's field, read through the `this`
+                    // a lambda or local function holds: the object's, as
+                    // above.
+                    CapturedFieldSym c => c.Field.Static || c.Field.Owner.Kind != TypeKind.Struct,
                     _ => false,
                 };
 

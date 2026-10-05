@@ -1,0 +1,63 @@
+// test: delegate_generic_user
+// expect-exit: 0
+// expect-output:
+// notify a1b1c1
+// less middle a1c1
+// handler x1y1
+// wide 2
+// count 2
+// equal True False
+//
+// A PROGRAM'S OWN GENERIC DELEGATES combine, remove and compare as the
+// library's do: Notify<int> less its middle target, a run removed from the
+// middle of three; EventHandler<int> less the last of two equal targets. A
+// delegate the program declares with variance (Map<in A, out R>) converts
+// as declared, multicast and all, and the converted delegate is the same
+// one -- same targets, so equal; a different multicast is not.
+
+using System;
+
+delegate void Notify<T>(T value);
+delegate R Map<in A, out R>(A a);
+
+static class P
+{
+    static string log = "";
+
+    static int Main()
+    {
+        Notify<int> a = v => log += "a" + v;
+        Notify<int> b = v => log += "b" + v;
+        Notify<int> c = v => log += "c" + v;
+        Notify<int> all = a;
+        all += b;
+        all += c;
+        all(1);
+        Console.WriteLine("notify " + log);
+        log = "";
+        Notify<int>? less = all - b;
+        less?.Invoke(1);
+        Console.WriteLine("less middle " + log);
+
+        log = "";
+        EventHandler<int> x = (sender, v) => log += "x" + v;
+        EventHandler<int> y = (sender, v) => log += "y" + v;
+        EventHandler<int> h = x;
+        h += y;
+        h += y;
+        h -= y;
+        h(null, 1);
+        Console.WriteLine("handler " + log);
+
+        Map<object, string> one = o => "1";
+        Map<object, string> m = one;
+        m += o => "2";
+        Map<string, object> wide = m;
+        Console.WriteLine("wide " + wide("s"));
+        Console.WriteLine("count " + wide.GetInvocationList().Length);
+        Map<object, string> other = one;
+        other += o => "3";
+        Console.WriteLine("equal " + ((Delegate)wide == m) + " " + (m == other));
+        return 0;
+    }
+}

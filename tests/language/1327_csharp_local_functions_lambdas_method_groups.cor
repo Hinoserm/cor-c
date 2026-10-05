@@ -1,0 +1,44 @@
+// test: csharp_local_functions_lambdas_method_groups
+// expect-exit: 0
+// expect-output:
+// functions 5 42 49 16 -4 55
+//
+// LOCAL FUNCTIONS -- capturing, static, recursive -- A STATIC LAMBDA, and
+// method groups of a static local function, an instance method and a
+// static method.
+//
+// Split out of the canary of the C# the compiler's own sources use: one
+// family a test, so a form the compiler cannot build yet fails only its own.
+// Every line is what .NET prints.
+
+using System;
+
+public sealed class Accumulator
+{
+    private int _sum;
+    public int Add(int x) => _sum += x;
+    public static int Neg(int x) => -x;
+}
+
+public static class Program
+{
+    private static void Say(params object?[] parts) => Console.WriteLine(string.Join(" ", parts));
+
+    public static int Main()
+    {
+        int counter = 0;
+        int Bump(int by) { counter += by; return counter; }
+        static int SquareOf(int x) => x * x;
+        static int Fib(int n) => n < 2 ? n : Fib(n - 1) + Fib(n - 2);
+        Func<int, int> twice = static x => x * 2;
+        Func<int, int> sq = SquareOf;
+        Accumulator acc = new();
+        Func<int, int> addTo = acc.Add;
+        Func<int, int> neg = Accumulator.Neg;
+        Bump(2);
+        Bump(3);
+        int added = addTo(5) + addTo(6);
+        Say("functions", counter, twice(21), sq(7), added, neg(4), Fib(10));
+        return 0;
+    }
+}
