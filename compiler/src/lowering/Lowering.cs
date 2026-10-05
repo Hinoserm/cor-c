@@ -2127,7 +2127,7 @@ public sealed partial class Lowering
         bases.Remove(t);
         if (bases.Count > 0)
         {
-            foreach (TypeSymbol face in bases) InterfaceDescriptor(face);
+            foreach (TypeSymbol extended in bases) InterfaceDescriptor(extended);
             byte[] arr = new byte[(bases.Count + 1) * w];
             DataItem list = new("f_" + TypeKey(t), arr) { ReadOnly = true, Exported = false };
             for (int i = 0; i < bases.Count; i++) list.Relocs.Add(new DataReloc(i * w, InterfaceDescriptor(bases[i]), 0));
