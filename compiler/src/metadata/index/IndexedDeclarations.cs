@@ -107,7 +107,32 @@ public sealed class IndexedDeclarations : IDisposable
         if (loaded.Contains(key)) throw new InvalidDataException("Declaration discovery made no progress: " + key);
         using DeclarationLease lease = catalog.AcquireKey(key) ?? throw new InvalidDataException("Missing requested declaration: " + key);
         loaded.Add(key);
+        // AND ITS FAMILY: the types nested in it, and when it is nested itself
+        // those nested beside it. A body that uses a type uses what is nested
+        // in it as often as not, and each one found by the binder threw the
+        // whole pass away again: compiling Lowering.cs demanded Linker, then
+        // Linker+Definition, then Linker+Layout, three passes discarded --
+        // a quarter of the unit's time and allocation.
+        LoadFamily(key);
     }
+
+    private void LoadFamily(string key)
+    {
+        foreach (string nested in Family(key)) Load(nested);
+    }
+
+    // The types nested in this one's outermost type, the first time it is asked.
+    private List<string> Family(string key)
+    {
+        string outer = key;
+        int plus = outer.IndexOf('+', outer.IndexOf('\n') + 1);
+        if (plus > 0) outer = outer[..plus];
+        return families.Add(outer) ? catalog.KeysWithPrefix(outer + "+") : NoKeys;
+    }
+
+    private static readonly List<string> NoKeys = new();
+
+    private readonly HashSet<string> families = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Loads a declaration this unit has decided it needs, saying whether that
@@ -353,6 +378,11 @@ public sealed class IndexedDeclarations : IDisposable
         {
             string key = pending.Dequeue();
             if (!visited.Add(key)) continue;
+            // ITS NESTED TYPES WITH IT, closed over like everything else: a
+            // type read for a signature had its Enumerator or its Kind found by
+            // the binder a pass later, each pass thrown away whole.
+            foreach (string nested in Family(key))
+                if (Load(nested)) pending.Enqueue(nested);
             // Parsed headers own their syntax. Keeping their serialized source
             // records pinned as well prevents eviction without helping binding.
             using DeclarationLease lease = catalog.AcquireKey(key)

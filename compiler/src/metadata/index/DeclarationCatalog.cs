@@ -279,6 +279,19 @@ public sealed class DeclarationCatalog : IDisposable
         }
     }
 
+    /// <summary>The declaration keys that begin with this: a type's nested ones are its key and a '+'.</summary>
+    public List<string> KeysWithPrefix(string prefix)
+    {
+        lock (gate)
+        {
+            if (disposed) throw new ObjectDisposedException(nameof(DeclarationCatalog));
+            List<string> keys = new();
+            foreach (DeclarationRecord record in index.WithPrefix(prefix))
+                if (keys.Count == 0 || keys[^1] != record.Key) keys.Add(record.Key);
+            return keys;
+        }
+    }
+
     public DeclarationLease? AcquireKey(string key)
     {
         lock (gate)
