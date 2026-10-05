@@ -770,7 +770,7 @@ public static class RegionSolver
                 _saidBlind = true;
                 if (_methodsBlind!.Value)
                     Log("methods are called blind: " + (_units.Any(unit => unit.CallsThroughMethods) ? "a unit calls a method it read from a descriptor" : "a virtual call is unresolved")
-                        + (_blindAll ? ", at any slot" : ", at slots " + string.Join(",", _blindSlots!.Order())));
+                        + (_blindAll ? ", at any slot" + (_blindBy is null ? "" : " (" + _blindBy + ")") : ", at slots " + string.Join(",", _blindSlots!.Order())));
                 ReportBlind();
             }
             return _methodsBlind!.Value ? _units[u].AddressTaken.Concat(_units[u].MethodsTaken.Where(CalledBlind)) : _units[u].AddressTaken;
@@ -787,6 +787,8 @@ public static class RegionSolver
         // The slots methods are read at to be called blind; every one (_blindAll).
         private HashSet<long>? _blindSlots;
         private bool _blindAll;
+        // The function whose blind call reads no slot the link can say, for the report.
+        private string? _blindBy;
 
         private void Blindness()
         {
@@ -805,10 +807,10 @@ public static class RegionSolver
                 {
                     if (!function.CallsThroughMethod) continue;
                     said = true;
-                    if (function.BlindSlots.Length == 0 || function.BlindSlots.Contains(RegionConstraint.Any)) { _blindAll = true; return; }
+                    if (function.BlindSlots.Length == 0 || function.BlindSlots.Contains(RegionConstraint.Any)) { _blindAll = true; _blindBy = function.Name; return; }
                     _blindSlots.UnionWith(function.BlindSlots);
                 }
-                if (!said) { _blindAll = true; return; }
+                if (!said) { _blindAll = true; _blindBy = "a unit whose functions say none"; return; }
             }
         }
 
@@ -1869,7 +1871,13 @@ public static class RegionSolver
             // judges: an outer boundary credited by the sites' bytes, and
             // charged only for what a boundary above would take.
             _reachOuter = _report?.Contains("+reachouter") == true;
-            _judgeBytes = _reachOuter || _report?.Contains("+judgebytes") == true;
+            // BY BYTES, an inner boundary credited with what it takes beneath an
+            // outer one too: counted by sites, and not at all beneath another,
+            // the inner one lost to the outer, whose region holds the same
+            // objects longer -- Work's rows went to Run's region and were
+            // given back only when every round was done (1200, 1290, 1298,
+            // 1316, 1319, 1323). +judgecount weighs the old way, for an A/B.
+            _judgeBytes = _reachOuter || _report?.Contains("+judgecount") != true;
             _globalReach = new();
             if (_escape is not null)
             {
@@ -2053,7 +2061,7 @@ public static class RegionSolver
             return facts;
         }
 
-        // --region-report +judgebytes: the drop rule's A/B (SiteWeight, TakenAbove).
+        // The drop rule by bytes (SiteWeight, TakenAbove); --region-report +judgecount: by sites, as before.
         private bool _judgeBytes;
         // --region-report +reachouter: candidacy's A/B (OfferOuter).
         private bool _reachOuter;
@@ -2268,6 +2276,13 @@ public static class RegionSolver
                 }
                 if (_walked > Budget) return null;
             }
+            // WHAT WOULD ONLY PILE UP, with the boundaries this round has: no
+            // Gain for the boundary whose region it would pile in, and no
+            // Loss either -- refused, it goes to the heap, where it goes anyway.
+            HashSet<(int, int)> reachable = new();
+            foreach (((int, int) key, List<int> objects) in bySite)
+                if (objects.Any(o => above[o] != -1)) reachable.Add(key);
+            HashSet<(int, int)> piled = PiledSites(reachable, new List<LoopRegion>(), out _, freshNear: true);
             // A site is taken when none of its objects is refused and one is
             // beneath some boundary.
             Verdict verdict = new() { Above = above, Refuser = refuser, TakenObject = new bool[objectCount] };
@@ -2276,6 +2291,7 @@ public static class RegionSolver
                 bool anywhere = false, refused = false;
                 foreach (int o in objects) { anywhere |= above[o] != -1; refused |= refuser[o] != -1; }
                 if (!anywhere || _unseenKept.Contains(key)) continue;
+                bool piles = piled.Contains(key);
                 if (!refused)
                 {
                     verdict.Taken.Add(key);
@@ -2284,7 +2300,7 @@ public static class RegionSolver
                     int only = -1;
                     foreach (int o in objects)
                         if (above[o] is int f and not -1) only = (only == -1 || only == f) && (_judgeBytes || !outer[o]) ? f : -2;
-                    if (only >= 0)
+                    if (only >= 0 && !piles)
                     {
                         verdict.Gain[only] = verdict.Gain.GetValueOrDefault(only) + 1;
                         verdict.GainBytes[only] = verdict.GainBytes.GetValueOrDefault(only) + SiteWeight(key.Item1, key.Item2);
@@ -2299,6 +2315,7 @@ public static class RegionSolver
                     if (refuser[o] is int r and not -1) sole = sole == -1 || sole == r ? r : -2;
                     if (outer[o] || above[o] is int a and not -1 && (a == -2 || refuser[o] != a)) other = true;
                 }
+                if (piles) continue;
                 if (sole >= 0 && other) verdict.Loss[sole] = verdict.Loss.GetValueOrDefault(sole) + 1;
                 if (_judgeBytes && sole >= 0 && other && TakenAbove(objects))
                     verdict.LossBytes[sole] = verdict.LossBytes.GetValueOrDefault(sole) + SiteWeight(key.Item1, key.Item2);
@@ -3159,13 +3176,37 @@ public static class RegionSolver
 
         private HashSet<(int, int)> WithoutPiledUp(HashSet<(int, int)> taken, List<LoopRegion> loops)
         {
+            HashSet<(int, int)> piled = PiledSites(taken, loops, out long looked, freshNear: false);
+            HashSet<(int, int)> kept = new(taken);
+            kept.ExceptWith(piled);
+            if (_report is not null)
+            {
+                Log($"judge: {taken.Count - kept.Count} sites would pile up in a region lap after lap, to the heap; {looked} looked at, {_clock.ElapsedMilliseconds} ms");
+                if (_report.Contains("+piled"))
+                    foreach ((int f, int site) in taken.Except(kept)) Log("piled " + DescribeSite((f, site)));
+            }
+            return kept;
+        }
+
+        /// <summary>
+        /// The sites of `among` that would pile up lap after lap in the
+        /// region a loop runs in, with these loop regions and the boundaries
+        /// as they stand (_isBoundary): asked by every round of the judge,
+        /// so a boundary is weighed without what it would only pile up --
+        /// Shelf.Make, credited with its loop's temporaries, refused what
+        /// Work's region would have taken and gave back nothing (1316).
+        /// `freshNear`: the calls' closures made again for the boundaries
+        /// now chosen.
+        /// </summary>
+        private HashSet<(int, int)> PiledSites(HashSet<(int, int)> taken, List<LoopRegion> loops, out long looked, bool freshNear)
+        {
             // The loop regions, by function and header, and the objects beneath each instance.
             Dictionary<int, List<LoopRegion>> regionsIn = new();
             foreach (LoopRegion loop in loops) (regionsIn.TryGetValue(loop.Function, out var l) ? l : regionsIn[loop.Function] = new()).Add(loop);
             HashSet<int> piled = new();
-            ulong[] near = new ulong[_nearClosures?.Words ?? 0];
-            if (_nearClosures is null) { _nearClosures = new CallClosures(_calleesOf, _isBoundary); near = new ulong[_nearClosures.Words]; }
-            long looked = 0;
+            if (_nearClosures is null || freshNear) _nearClosures = new CallClosures(_calleesOf, _isBoundary);
+            ulong[] near = new ulong[_nearClosures.Words];
+            looked = 0;
             for (int f = 0; f < _functions.Count; f++)
             {
                 RegionFunction function = _functions[f];
@@ -3221,15 +3262,9 @@ public static class RegionSolver
                     }
                 }
             }
-            HashSet<(int, int)> kept = new(taken);
-            foreach (int o in piled) kept.Remove(SiteOf(o));
-            if (_report is not null)
-            {
-                Log($"judge: {taken.Count - kept.Count} sites would pile up in a region lap after lap, to the heap; {looked} looked at, {_clock.ElapsedMilliseconds} ms");
-                if (_report.Contains("+piled"))
-                    foreach ((int f, int site) in taken.Except(kept)) Log("piled " + DescribeSite((f, site)));
-            }
-            return kept;
+            HashSet<(int, int)> sites = new();
+            foreach (int o in piled) sites.Add(SiteOf(o));
+            return sites;
         }
 
         // Whether loop `inner` (by header) is inside loop `outer` in `function`, by the loops' parents.

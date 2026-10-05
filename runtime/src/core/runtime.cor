@@ -1858,6 +1858,14 @@ static class Runtime
     }
 
     /// The value of a tag in a dynamic array, or zero.
+    // A CALL, NOT INLINED: what it answers is a word of an image's dynamic
+    // section, and inlined, its loads -- a word read out of what another
+    // word read points to -- were what a method read out of a descriptor
+    // looks like. Every image's initialiser called through one made the link
+    // take every method a descriptor names as called with anything
+    // (RegionSummary.MethodRead, RegionSolver.Addressed), and no region in
+    // any program took what a virtual method made.
+    [MethodImpl(MethodImplOptions.NoInlining)]
     static long Tag(long dynamic, long want)
     {
         long at = dynamic;

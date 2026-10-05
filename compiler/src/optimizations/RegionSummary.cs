@@ -538,11 +538,27 @@ public static class RegionSummary
             foreach (Instr w in writes)
             {
                 if (w.Op == Opcode.Load && w.Offset == 0) return true;
-                if (w.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.Phi or Opcode.Add or Opcode.Sub or Opcode.And)
+                if (w.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.Phi)
                     foreach (Operand o in w.Operands) if (o is RegOperand { Reg: var from } && Table(from, depth + 1)) return true;
+                // MOVED BY A CONSTANT, as the summary says, and only so: a
+                // word added to by another word read from memory is no method
+                // table moved, and an image's initialisers -- each read at a
+                // base the image's first word gave plus an index -- were
+                // taken for methods read out of a descriptor, every method
+                // called with anything in every program (RegionSolver.Addressed).
+                if (w.Op is Opcode.Add or Opcode.Sub or Opcode.And && w.Operands.Count == 2)
+                {
+                    Operand a = w.Operands[0], b = w.Operands[1];
+                    if (a is RegOperand { Reg: var left } && Constant(b) && Table(left, depth + 1)) return true;
+                    if (w.Op == Opcode.Add && b is RegOperand { Reg: var right } && Constant(a) && Table(right, depth + 1)) return true;
+                }
             }
             return false;
         }
+
+        // Whether an operand is a constant: an immediate, or a register only a constant is written to.
+        private bool Constant(Operand o)
+            => o is ImmOperand || o is RegOperand { Reg: var r } && Defs().TryGetValue(r, out Instr? d) && d is { Op: Opcode.Copy, Operands: [ImmOperand] };
 
         // Each register written once, to its instruction; null where written more.
         private Dictionary<VReg, Instr?> Defs()
