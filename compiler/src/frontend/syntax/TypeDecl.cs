@@ -46,10 +46,20 @@ public sealed class TypeDecl : Node
     /// end up; kept here because they are written with the base and are read
     /// before that constructor exists.
     /// </summary>
-    public List<Expr> BaseArgs { get; } = new();
+    // To read: one shared empty list until written (WritableBaseArgs), never written through.
+    public List<Expr> BaseArgs => _baseArgs ?? NoBaseArgs;
+    /// <summary>To write: made on first use; almost every node has none.</summary>
+    public List<Expr> WritableBaseArgs => _baseArgs ??= new();
+    private List<Expr>? _baseArgs;
+    private static readonly List<Expr> NoBaseArgs = new();
 
     /// <summary>The names written before <see cref="BaseArgs"/>, as <see cref="CtorInit.ArgNames"/>.</summary>
-    public List<string?> BaseArgNames { get; } = new();
+    // To read: one shared empty list until written (WritableBaseArgNames), never written through.
+    public List<string?> BaseArgNames => _baseArgNames ?? NoBaseArgNames;
+    /// <summary>To write: made on first use; almost every node has none.</summary>
+    public List<string?> WritableBaseArgNames => _baseArgNames ??= new();
+    private List<string?>? _baseArgNames;
+    private static readonly List<string?> NoBaseArgNames = new();
 
     /// <summary>Where <see cref="BaseArgs"/> were written, as <see cref="CtorInit.Spans"/>.</summary>
     public int[]? BaseSpans { get; set; }
@@ -235,7 +245,12 @@ public sealed class TypeDecl : Node
     /// </summary>
     public string? Template { get; set; }
 
-    public List<TypeRef> TemplateArgs { get; } = new();
+    // To read: one shared empty list until written (WritableTemplateArgs), never written through.
+    public List<TypeRef> TemplateArgs => _templateArgs ?? NoTemplateArgs;
+    /// <summary>To write: made on first use; almost every node has none.</summary>
+    public List<TypeRef> WritableTemplateArgs => _templateArgs ??= new();
+    private List<TypeRef>? _templateArgs;
+    private static readonly List<TypeRef> NoTemplateArgs = new();
 
     /// <summary>
     /// The template's type parameters, which a specialisation has none of:

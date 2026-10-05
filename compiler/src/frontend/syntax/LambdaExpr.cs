@@ -40,5 +40,10 @@ public sealed class LambdaExpr : Expr
     /// `[A] (int x) => x`: the lambda's own attributes (C# 10), kept as
     /// written. Nothing here reads them; .NET shows them only to reflection.
     /// </summary>
-    public List<AttributeRef> Attributes { get; } = new();
+    // To read: one shared empty list until written (WritableAttributes), never written through.
+    public List<AttributeRef> Attributes => _attributes ?? NoAttributes;
+    /// <summary>To write: made on first use; almost every node has none.</summary>
+    public List<AttributeRef> WritableAttributes => _attributes ??= new();
+    private List<AttributeRef>? _attributes;
+    private static readonly List<AttributeRef> NoAttributes = new();
 }

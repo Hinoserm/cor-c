@@ -9,10 +9,20 @@ public sealed class CtorInit : Node
     public List<Expr> Args { get; } = new();
 
     /// <summary>As <see cref="CallExpr.ArgNames"/>: `: base(message: m)`.</summary>
-    public List<string?> ArgNames { get; } = new();
+    // To read: one shared empty list until written (WritableArgNames), never written through.
+    public List<string?> ArgNames => _argNames ?? NoArgNames;
+    /// <summary>To write: made on first use; almost every node has none.</summary>
+    public List<string?> WritableArgNames => _argNames ??= new();
+    private List<string?>? _argNames;
+    private static readonly List<string?> NoArgNames = new();
 
     /// <summary>Parameter slots in source evaluation order, once named arguments are put in order.</summary>
-    public List<int> ArgumentOrder { get; } = new();
+    // To read: one shared empty list until written (WritableArgumentOrder), never written through.
+    public List<int> ArgumentOrder => _argumentOrder ?? NoArgumentOrder;
+    /// <summary>To write: made on first use; almost every node has none.</summary>
+    public List<int> WritableArgumentOrder => _argumentOrder ??= new();
+    private List<int>? _argumentOrder;
+    private static readonly List<int> NoArgumentOrder = new();
 
     /// <summary>As <see cref="CallExpr.Spans"/>, with no receiver.</summary>
     public int[]? Spans { get; set; }

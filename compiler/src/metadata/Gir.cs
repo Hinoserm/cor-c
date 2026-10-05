@@ -1263,7 +1263,7 @@ public static class Gir
 
                 for (int c = 0; c < constraints; c++)
                 {
-                    p.Constraints.Add(Type());
+                    p.WritableConstraints.Add(Type());
                 }
                 d.WritableTypeParams.Add(p);
             }
@@ -1365,7 +1365,7 @@ public static class Gir
                         for (int i = 0; i < names; i++)
                         {
                             string argName = Str();
-                            init.ArgNames.Add(argName.Length == 0 ? null : argName);
+                            init.WritableArgNames.Add(argName.Length == 0 ? null : argName);
                         }
                         (init.Spans, init.Source) = Texts();
                     }
@@ -1378,9 +1378,9 @@ public static class Gir
                         ExplicitInterface = explicitInterface.Length == 0 ? null : explicitInterface,
                     };
 
-                    d.WritableTypeParams.AddRange(typeParams);
+                    if (typeParams.Count > 0) d.WritableTypeParams.AddRange(typeParams);
 
-                    d.WritableAttributes.AddRange(attributes);
+                    if (attributes.Count > 0) d.WritableAttributes.AddRange(attributes);
                     d.Params.AddRange(ps);
 
                     string hoisted = Str();
@@ -1733,7 +1733,7 @@ public static class Gir
 
                     for (int i = 0; i < args; i++)
                     {
-                        n.TypeArgs.Add(Type());
+                        n.WritableTypeArgs.Add(Type());
                     }
                     return n;
                 }
@@ -1760,7 +1760,7 @@ public static class Gir
 
                     for (int i = 0; i < args; i++)
                     {
-                        m.TypeArgs.Add(Type());
+                        m.WritableTypeArgs.Add(Type());
                     }
                     return m;
                 }
@@ -1775,7 +1775,7 @@ public static class Gir
                     {
                         string n = Str();
 
-                        c.ArgNames.Add(n.Length == 0 ? null : n);
+                        c.WritableArgNames.Add(n.Length == 0 ? null : n);
                     }
 
                     int args = Count();
@@ -1835,7 +1835,7 @@ public static class Gir
                         for (int i = 0; i < count; i++) elements.Add(Need());
                     }
                     NewExpr nw = new() { Type = type, ArraySize = size, Elements = elements, Collection = Bool(), Spans = spans, Source = source };
-                    nw.ArgNames.AddRange(argNames);
+                    nw.WritableArgNames.AddRange(argNames);
                     nw.Args.AddRange(argList);
 
                     ReadBody(nw.Body);

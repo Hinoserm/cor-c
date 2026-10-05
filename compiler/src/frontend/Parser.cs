@@ -553,13 +553,13 @@ public sealed class Parser
         CallExpr pad = Library("String", width < 0 ? "PadRight" : "PadLeft", at);
 
         pad.Args.Add(Text(value, at));
-        pad.ArgNames.Add(null);
+        pad.WritableArgNames.Add(null);
         pad.Args.Add(new LiteralExpr
         {
             Kind = Lit.Int, Text = Math.Abs(width).ToString(), IntValue = Math.Abs(width),
             Line = at.Line, Col = at.Col,
         });
-        pad.ArgNames.Add(null);
+        pad.WritableArgNames.Add(null);
         return pad;
     }
 
@@ -579,7 +579,7 @@ public sealed class Parser
             FormatHole = true, Line = at.Line, Col = at.Col,
         };
         call.Args.Add(new LiteralExpr { Kind = Lit.Str, Text = format, Line = at.Line, Col = at.Col });
-        call.ArgNames.Add(null);
+        call.WritableArgNames.Add(null);
         return call;
     }
 
@@ -1570,15 +1570,15 @@ public sealed class Parser
                         {
                             if (At(Tok.Ident) && Ahead().Kind == Tok.Colon)
                             {
-                                decl.BaseArgNames.Add(_t[_i++].Text);
+                                decl.WritableBaseArgNames.Add(_t[_i++].Text);
                                 _i++;
                             }
                             else
                             {
-                                decl.BaseArgNames.Add(null);
+                                decl.WritableBaseArgNames.Add(null);
                             }
                             int argumentAt = ArgumentStart();
-                            decl.BaseArgs.Add(ParseArg());
+                            decl.WritableBaseArgs.Add(ParseArg());
                             if (Source is not null) { _spans.Add(argumentAt); _spans.Add(End(_i - 1)); }
                         }
                         while (Take(Tok.Comma));
@@ -1629,7 +1629,7 @@ public sealed class Parser
                 Expr? value = Take(Tok.Assign) ? ParseExpr() : null;
                 EnumMember declared = new() { Name = member, Value = value, Line = m.Line, Col = m.Col };
 
-                declared.Attributes.AddRange(on);
+                declared.WritableAttributes.AddRange(on);
                 decl.EnumMembers.Add(declared);
 
                 if (!Take(Tok.Comma))
@@ -2043,7 +2043,7 @@ public sealed class Parser
         {
             chain = new CtorInit { IsThis = false, Spans = decl.BaseSpans, Source = decl.BaseSource, Line = start.Line, Col = start.Col };
             chain.Args.AddRange(decl.BaseArgs);
-            chain.ArgNames.AddRange(decl.BaseArgNames);
+            chain.WritableArgNames.AddRange(decl.BaseArgNames);
         }
 
         MethodDecl ctor = new()
@@ -2367,7 +2367,7 @@ public sealed class Parser
                     continue;
                 }
 
-                target.Constraints.Add(ParseTypeRef());
+                target.WritableConstraints.Add(ParseTypeRef());
             }
             while (Take(Tok.Comma));
         }
@@ -2443,12 +2443,12 @@ public sealed class Parser
                     {
                         if (At(Tok.Ident) && Ahead().Kind == Tok.Colon)
                         {
-                            chain.ArgNames.Add(_t[_i++].Text);
+                            chain.WritableArgNames.Add(_t[_i++].Text);
                             _i++;
                         }
                         else
                         {
-                            chain.ArgNames.Add(null);
+                            chain.WritableArgNames.Add(null);
                         }
                         int argumentAt = ArgumentStart();
                         chain.Args.Add(ParseArg());
@@ -2490,7 +2490,7 @@ public sealed class Parser
             {
                 throw Error("a conversion operator takes one operand");
             }
-            conversion.WritableAttributes.AddRange(attributes);
+            if (attributes.Count > 0) conversion.WritableAttributes.AddRange(attributes);
             return FinishMethod(conversion);
         }
 
@@ -2669,7 +2669,7 @@ public sealed class Parser
             };
             // `[DoesNotReturn]` and the rest, which the checker reads off the
             // declaration (Binder.NeverReturns).
-            m.WritableAttributes.AddRange(attributes);
+            if (attributes.Count > 0) m.WritableAttributes.AddRange(attributes);
             if (At(Tok.Lt)) ParseTypeParams(m.WritableTypeParams);
             ParseParams(m.Params);
             ParseConstraints(m.TypeParams);
@@ -2697,7 +2697,7 @@ public sealed class Parser
                 DeclaredInit = value, Line = also.Line, Col = also.Col,
             };
 
-            more.WritableAttributes.AddRange(attributes);
+            if (attributes.Count > 0) more.WritableAttributes.AddRange(attributes);
             rest.Add(more);
         }
 
@@ -2709,7 +2709,7 @@ public sealed class Parser
             DeclaredInit = init, Line = start.Line, Col = start.Col,
         };
 
-        first.WritableAttributes.AddRange(attributes);
+        if (attributes.Count > 0) first.WritableAttributes.AddRange(attributes);
         first.More.AddRange(rest);
 
         // AN EVENT IS ITS add AND remove ACCESSORS, as C# compiles one, and a
@@ -4862,7 +4862,7 @@ public sealed class Parser
                 Operand = new SubjectExpr { Line = at.Line, Col = at.Col },
                 Line = at.Line, Col = at.Col,
             });
-            thrown.ArgNames.Add(null);
+            thrown.WritableArgNames.Add(null);
             sw.Arms.Add(new SwitchArm
             {
                 Discard = true, Fallback = true,
@@ -5033,7 +5033,7 @@ public sealed class Parser
             Line = at.Line, Col = at.Col,
         };
         made.Params.AddRange(inner.Params);
-        made.Attributes.AddRange(inner.Attributes);
+        made.WritableAttributes.AddRange(inner.Attributes);
         return made;
     }
 
@@ -7817,7 +7817,7 @@ public sealed class Parser
                     Returns = inner.Returns, ReturnMods = inner.ReturnMods,
                     Line = at.Line, Col = at.Col,
                 };
-                made.Attributes.AddRange(inner.Attributes);
+                made.WritableAttributes.AddRange(inner.Attributes);
                 made.Params.AddRange(inner.Params);
                 return made;
             }
@@ -7849,7 +7849,7 @@ public sealed class Parser
                 List<AttributeRef> attributes = new();
                 SkipLambdaAttributes(attributes);
                 LambdaExpr inner = (LambdaExpr)ParseUnary();
-                inner.Attributes.InsertRange(0, attributes);
+                inner.WritableAttributes.InsertRange(0, attributes);
                 return inner;
             }
 
@@ -8001,7 +8001,7 @@ public sealed class Parser
 
                     if (TryParseTypeArgs(out List<TypeRef> args))
                     {
-                        m.TypeArgs.AddRange(args);
+                        m.WritableTypeArgs.AddRange(args);
                         if (name == "CreateInstance" && args is [{ Args.Count: 0, ArrayRank: 0, PointerDepth: 0 } made])
                         {
                             (_createdParams ??= new(StringComparer.Ordinal)).Add(made.Name);
@@ -8042,12 +8042,12 @@ public sealed class Parser
                         // name at the very start of an argument.
                         if (At(Tok.Ident) && Ahead().Kind == Tok.Colon)
                         {
-                            call.ArgNames.Add(_t[_i++].Text);
+                            call.WritableArgNames.Add(_t[_i++].Text);
                             _i++;
                         }
                         else
                         {
-                            call.ArgNames.Add(null);
+                            call.WritableArgNames.Add(null);
                         }
 
                         int argumentAt = ArgumentStart();
@@ -8208,7 +8208,7 @@ public sealed class Parser
                     Line = at.Line, Col = at.Col,
                 };
                 span.Args.Add(bytes);
-                span.ArgNames.Add(null);
+                span.WritableArgNames.Add(null);
                 return span;
             }
 
@@ -8420,12 +8420,12 @@ public sealed class Parser
                         {
                             if (At(Tok.Ident) && Ahead().Kind == Tok.Colon)
                             {
-                                n.ArgNames.Add(_t[_i++].Text);
+                                n.WritableArgNames.Add(_t[_i++].Text);
                                 _i++;
                             }
                             else
                             {
-                                n.ArgNames.Add(null);
+                                n.WritableArgNames.Add(null);
                             }
                             int argumentAt = ArgumentStart();
                             n.Args.Add(ParseArg());
@@ -8608,7 +8608,7 @@ public sealed class Parser
 
                     if (TryParseTypeArgs(out List<TypeRef> args))
                     {
-                        name.TypeArgs.AddRange(args);
+                        name.WritableTypeArgs.AddRange(args);
                     }
                     else
                     {
@@ -8671,9 +8671,9 @@ internal static class MethodDeclExtensions
     /// <summary>Copies the list-valued parts a record-style rebuild would drop.</summary>
     public static MethodDecl CopyListsFrom(this MethodDecl to, MethodDecl from)
     {
-        to.WritableTypeParams.AddRange(from.TypeParams);
+        if (from.TypeParams.Count > 0) to.WritableTypeParams.AddRange(from.TypeParams);
         to.Params.AddRange(from.Params);
-        to.WritableAttributes.AddRange(from.Attributes);
+        if (from.Attributes.Count > 0) to.WritableAttributes.AddRange(from.Attributes);
         return to;
     }
 }

@@ -206,7 +206,7 @@ public sealed class Monomorphiser
             Scope = made.Scope, Namespace = made.Namespace, OwnedImplementation = made.OwnedImplementation,
             AutoAccessor = made.AutoAccessor,
         };
-        plain.WritableAttributes.AddRange(made.Attributes);
+        if (made.Attributes.Count > 0) plain.WritableAttributes.AddRange(made.Attributes);
         plain.Params.AddRange(made.Params);
         return plain;
     }
@@ -765,7 +765,7 @@ public sealed class Monomorphiser
             // `List$Node` is `List` applied to `Node`, and a generic method
             // declared over `List<T>` works out that T is Node by asking.
             made.Template = TemplatePath(job.Template);
-            made.TemplateArgs.AddRange(job.Args);
+            made.WritableTemplateArgs.AddRange(job.Args);
             made.TemplateParams = job.Template.TypeParams;
 
             // WHAT ITS SHARED CODE MAKES, for this copy's arguments (TypeDecl.CanonMade):
@@ -1935,7 +1935,7 @@ public sealed class Monomorphiser
             Scope = d.Scope,
         };
 
-        made.TemplateArgs.AddRange(d.TemplateArgs);
+        made.WritableTemplateArgs.AddRange(d.TemplateArgs);
 
         foreach (TypeRef b in d.Bases)
         {
@@ -1949,7 +1949,7 @@ public sealed class Monomorphiser
         {
             EnumMember copy = new() { Name = em.Name, Value = em.Value, Line = em.Line, Col = em.Col };
 
-            copy.Attributes.AddRange(em.Attributes);
+            copy.WritableAttributes.AddRange(em.Attributes);
             made.EnumMembers.Add(copy);
         }
 
@@ -2031,7 +2031,7 @@ public sealed class Monomorphiser
                     Line = f.Line, Col = f.Col,
                 };
 
-                copy.WritableAttributes.AddRange(f.Attributes);
+                if (f.Attributes.Count > 0) copy.WritableAttributes.AddRange(f.Attributes);
                 return copy;
             }
 
@@ -2102,10 +2102,10 @@ public sealed class Monomorphiser
                 // dropping them makes the copy's signature name a type nothing
                 // declares, and every generic method in the image then reports
                 // that its own T is not a known type.
-                made.WritableTypeParams.AddRange(md.TypeParams);
+                if (md.TypeParams.Count > 0) made.WritableTypeParams.AddRange(md.TypeParams);
                 // And its attributes: [DoesNotReturn] is read off the
                 // declaration by the checker (Binder.NeverReturns).
-                made.WritableAttributes.AddRange(md.Attributes);
+                if (md.Attributes.Count > 0) made.WritableAttributes.AddRange(md.Attributes);
 
                 foreach (Param p in md.Params)
                 {
@@ -2162,8 +2162,8 @@ public sealed class Monomorphiser
         {
             made.Args.Add(Rewrite(a, map));
         }
-        made.ArgNames.AddRange(init.ArgNames);
-        made.ArgumentOrder.AddRange(init.ArgumentOrder);
+        made.WritableArgNames.AddRange(init.ArgNames);
+        made.WritableArgumentOrder.AddRange(init.ArgumentOrder);
         return made;
     }
 
@@ -2521,7 +2521,7 @@ public sealed class Monomorphiser
                 if (args.Any(MentionsMethodParameter))
                 {
                     NameExpr open = new() { Name = n.Name, Global = n.Global, Line = n.Line, Col = n.Col };
-                    open.TypeArgs.AddRange(args);
+                    open.WritableTypeArgs.AddRange(args);
                     return open;
                 }
                 // AND KEPT WITH ITS ARGUMENTS WHERE NO TEMPLATE IS HERE TO
@@ -2532,7 +2532,7 @@ public sealed class Monomorphiser
                 if (made == n.Name)
                 {
                     NameExpr kept = new() { Name = n.Name, Global = n.Global, Line = n.Line, Col = n.Col };
-                    kept.TypeArgs.AddRange(args);
+                    kept.WritableTypeArgs.AddRange(args);
                     return kept;
                 }
                 return new NameExpr { Name = made, Global = n.Global, Line = n.Line, Col = n.Col };
@@ -2555,7 +2555,7 @@ public sealed class Monomorphiser
                     Guarded = m.Guarded,
                     Line = m.Line, Col = m.Col,
                 };
-                SubInto(made.TypeArgs, m.TypeArgs, map);
+                if (m.TypeArgs.Count > 0) SubInto(made.WritableTypeArgs, m.TypeArgs, map);
                 return made;
             }
 
@@ -2568,7 +2568,7 @@ public sealed class Monomorphiser
                     // instantiation drops unknown names, which used to erase
                     // the only inference input of parameterless M<T>() calls.
                     NameExpr named = new() { Name = method.Name, Line = method.Line, Col = method.Col };
-                    SubInto(named.TypeArgs, method.TypeArgs, map);
+                    SubInto(named.WritableTypeArgs, method.TypeArgs, map);
                     target = named;
                 }
                 else target = Rewrite(c.Target, map);
@@ -2584,8 +2584,8 @@ public sealed class Monomorphiser
                 // in every specialisation -- which is right by accident when
                 // the named argument is the first one, and silently wrong the
                 // moment it is not.
-                made.ArgNames.AddRange(c.ArgNames);
-                made.LocalArgumentOrder.AddRange(c.LocalArgumentOrder);
+                made.WritableArgNames.AddRange(c.ArgNames);
+                made.WritableLocalArgumentOrder.AddRange(c.LocalArgumentOrder);
                 made.Spans = c.Spans;
                 made.Source = c.Source;
                 made.HiddenTypeArgs = c.HiddenTypeArgs;
@@ -2709,7 +2709,7 @@ public sealed class Monomorphiser
                     Returns = lambda.Returns is null ? null : Sub(lambda.Returns, map), ReturnMods = lambda.ReturnMods,
                     TypesWritten = lambda.TypesWritten,
                 };
-                made.Attributes.AddRange(lambda.Attributes);
+                made.WritableAttributes.AddRange(lambda.Attributes);
                 foreach (Param p in lambda.Params)
                 {
                     made.Params.Add(new Param
@@ -2760,10 +2760,10 @@ public sealed class Monomorphiser
                 {
                     made.Args.Add(Rewrite(a, map));
                 }
-                made.ArgNames.AddRange(nw.ArgNames);
+                made.WritableArgNames.AddRange(nw.ArgNames);
                 made.Spans = nw.Spans;
                 made.Source = nw.Source;
-                made.ArgumentOrder.AddRange(nw.ArgumentOrder);
+                made.WritableArgumentOrder.AddRange(nw.ArgumentOrder);
 
                 // AND THE ARRAY'S ELEMENTS. `new[] { a, b }` is the whole of
                 // the expression, not decoration on it, and a copy that lost

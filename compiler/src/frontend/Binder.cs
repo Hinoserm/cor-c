@@ -934,7 +934,7 @@ public sealed partial class Binder
             Target = new NameExpr { Name = "Activator", Line = c.Line, Col = c.Col },
             Name = "CannotCreate", Line = c.Line, Col = c.Col,
         };
-        refused.TypeArgs.Add(written);
+        refused.WritableTypeArgs.Add(written);
         CallExpr call = new() { Target = refused, Line = c.Line, Col = c.Col };
         call.Args.Add(new LiteralExpr { Kind = Lit.Str, Text = reason, Line = c.Line, Col = c.Col });
         return call;
@@ -1571,7 +1571,7 @@ public sealed partial class Binder
             foreach (Expr a in args)
             {
                 call.Args.Add(a);
-                call.ArgNames.Add(null);
+                call.WritableArgNames.Add(null);
             }
             return call;
         }
@@ -1589,9 +1589,9 @@ public sealed partial class Binder
                 Line = line, Col = col,
             };
             sub.Args.Add(ix.Target);
-            sub.ArgNames.Add(null);
+            sub.WritableArgNames.Add(null);
             sub.Args.Add(ix.Args[0]);
-            sub.ArgNames.Add(null);
+            sub.WritableArgNames.Add(null);
             return sub;
         }
 
@@ -2756,7 +2756,7 @@ public sealed partial class Binder
         };
 
         made.Args.AddRange(nw.Args);
-        made.ArgNames.AddRange(nw.ArgNames);
+        made.WritableArgNames.AddRange(nw.ArgNames);
         made.Elements = nw.Elements;
         made.Inits.AddRange(nw.Inits);
         made.Adds.AddRange(nw.Adds);
@@ -4339,7 +4339,7 @@ public sealed partial class Binder
                     Spans = md.Init.Spans, Source = md.Init.Source, Line = md.Init.Line, Col = md.Init.Col,
                 };
                 chained.Args.AddRange(md.Init.Args);
-                chained.ArgNames.AddRange(md.Init.ArgNames);
+                chained.WritableArgNames.AddRange(md.Init.ArgNames);
 
                 Type? outerChain = _wanted;
                 _wanted = null;
@@ -4358,13 +4358,13 @@ public sealed partial class Binder
 
                 md.Init.Args.Clear();
                 md.Init.Args.AddRange(chained.Args);
-                md.Init.ArgNames.Clear();
+                md.Init.WritableArgNames.Clear();
                 // A later round finds the names already consumed and makes
                 // no order; the first round's stands.
                 if (chained.ArgumentOrder.Count != 0)
                 {
-                    md.Init.ArgumentOrder.Clear();
-                    md.Init.ArgumentOrder.AddRange(chained.ArgumentOrder);
+                    md.Init.WritableArgumentOrder.Clear();
+                    md.Init.WritableArgumentOrder.AddRange(chained.ArgumentOrder);
                 }
             }
 
@@ -7270,7 +7270,7 @@ public sealed partial class Binder
     {
         if (c.ArgNames.Count == 0 || c.ArgNames.All(n => n is null))
         {
-            c.ArgNames.Clear();
+            c.WritableArgNames.Clear();
             return;
         }
 
@@ -7380,13 +7380,13 @@ public sealed partial class Binder
             (MethodSymbol _, Expr?[] chosen, int _) = fitting.OrderBy(f => f.Filled).First();
             c.Args.Clear();
             c.Args.AddRange(chosen!);
-            c.ArgNames.Clear();
+            c.WritableArgNames.Clear();
             return;
         }
 
         Error(c, $"no overload of '{group.Methods[0].Name}' takes arguments named "
                 + string.Join(", ", c.ArgNames.Where(n => n != null).Select(n => $"'{n}'")));
-        c.ArgNames.Clear();
+        c.WritableArgNames.Clear();
     }
 
     /// <summary>
@@ -7622,12 +7622,12 @@ public sealed partial class Binder
         // the left side's is the one C# converts it to.
         // Named as maybe null: either side of `+=` may be, and Combine's T?
         // parameters with T named bare were taken as not.
-        if (RefOf(delegateType.AsNullable()) is TypeRef spelt) helper.TypeArgs.Add(spelt);
+        if (RefOf(delegateType.AsNullable()) is TypeRef spelt) helper.WritableTypeArgs.Add(spelt);
         CallExpr made = new() { Target = helper, Line = at.Line, Col = at.Col };
         made.Args.Add(left);
         made.Args.Add(right);
-        made.ArgNames.Add(null);
-        made.ArgNames.Add(null);
+        made.WritableArgNames.Add(null);
+        made.WritableArgNames.Add(null);
         return made;
     }
 
@@ -7926,7 +7926,7 @@ public sealed partial class Binder
                 Target = new NameExpr { Name = BoundTargetField, Line = source.Line, Col = source.Col },
                 Name = member.Name, Line = source.Line, Col = source.Col,
             };
-            onTarget.TypeArgs.AddRange(member.TypeArgs);
+            onTarget.WritableTypeArgs.AddRange(member.TypeArgs);
             callTarget = onTarget;
         }
 
@@ -9415,10 +9415,10 @@ public sealed partial class Binder
                 Target = new NameExpr { Name = "SZArrayHelper", Line = at.Line, Col = at.Col },
                 Name = "Of", Line = at.Line, Col = at.Col,
             };
-            maker.TypeArgs.Add(listRef);
+            maker.WritableTypeArgs.Add(listRef);
             CallExpr helper = new() { Target = maker, Line = at.Line, Col = at.Col, File = at.File };
             helper.Args.Add(at);
-            helper.ArgNames.Add(null);
+            helper.WritableArgNames.Add(null);
             _r.Rewrites[at] = helper;
             CheckExpr(helper);
             return true;
@@ -10752,8 +10752,8 @@ public sealed partial class Binder
                 },
                 Name = method, Line = at.Line, Col = at.Col,
             };
-            if (into is not null) step.TypeArgs.Add(into);
-            step.TypeArgs.Add(elementRef);
+            if (into is not null) step.WritableTypeArgs.Add(into);
+            step.WritableTypeArgs.Add(elementRef);
             return step;
         }
 
@@ -12026,9 +12026,9 @@ public sealed partial class Binder
                     Line = end.Line, Col = end.Col,
                 };
                 index.Args.Add(end.Offset);
-                index.ArgNames.Add(null);
+                index.WritableArgNames.Add(null);
                 index.Args.Add(new LiteralExpr { Kind = Lit.Bool, Text = "true", IntValue = 1, Line = end.Line, Col = end.Col });
-                index.ArgNames.Add(null);
+                index.WritableArgNames.Add(null);
                 _r.Rewrites[end] = index;
                 return CheckExpr(index);
             }
@@ -12046,9 +12046,9 @@ public sealed partial class Binder
                     Line = range.Line, Col = range.Col,
                 };
                 made.Args.Add(Bound(range.From, "Start"));
-                made.ArgNames.Add(null);
+                made.WritableArgNames.Add(null);
                 made.Args.Add(Bound(range.To, "End"));
-                made.ArgNames.Add(null);
+                made.WritableArgNames.Add(null);
                 _r.Rewrites[range] = made;
                 return CheckExpr(made);
             }
@@ -16414,7 +16414,7 @@ public sealed partial class Binder
         string? named = c.ArgNames.Count > 0 ? c.ArgNames[0] : null;
         if (c.Args.Count != wanted || m.TypeArgs.Count > 0
             || (named is not null && named != (m.Name == "Equals" ? "other" : "defaultValue"))) return null;
-        c.ArgNames.Clear();
+        c.WritableArgNames.Clear();
         if (!on.IsNullableValue || RefOf(on.Underlying) is not TypeRef inner) return null;
 
         int line = m.Line, col = m.Col;
@@ -16500,7 +16500,7 @@ public sealed partial class Binder
                 FormatHole = true, Line = line, Col = col,
             };
             inner.Args.AddRange(c.Args);
-            inner.ArgNames.Add(null);
+            inner.WritableArgNames.Add(null);
             return new PatternExpr
             {
                 Subject = hole.Target,
@@ -16674,7 +16674,7 @@ public sealed partial class Binder
                 Line = conditionalTarget.Line,
                 Col = conditionalTarget.Col,
             };
-            safeTarget.TypeArgs.AddRange(conditionalTarget.TypeArgs);
+            safeTarget.WritableTypeArgs.AddRange(conditionalTarget.TypeArgs);
 
             CallExpr safeCall = new()
             {
@@ -16683,7 +16683,7 @@ public sealed partial class Binder
                 Col = c.Col,
             };
             safeCall.Args.AddRange(c.Args);
-            safeCall.ArgNames.AddRange(c.ArgNames);
+            safeCall.WritableArgNames.AddRange(c.ArgNames);
             safeCall.Spans = c.Spans;
             safeCall.Source = c.Source;
 
@@ -16737,7 +16737,7 @@ public sealed partial class Binder
                 Line = c.Line, Col = c.Col,
             };
             boxed.Args.AddRange(c.Args);
-            boxed.ArgNames.AddRange(c.ArgNames);
+            boxed.WritableArgNames.AddRange(c.ArgNames);
             _r.Rewrites[c] = boxed;
             return CheckExpr(boxed);
         }
@@ -16769,7 +16769,7 @@ public sealed partial class Binder
             {
                 Type = new TypeRef { Name = underlying, Line = c.Line, Col = c.Col }, Operand = c.Args[0], Line = c.Line, Col = c.Col,
             });
-            numbers.ArgNames.AddRange(c.ArgNames);
+            numbers.WritableArgNames.AddRange(c.ArgNames);
             _r.Rewrites[c] = numbers;
             return CheckExpr(numbers);
         }
@@ -18649,9 +18649,9 @@ public sealed partial class Binder
             Line = b.Line, Col = b.Col,
         };
         call.Args.Add(Value(1, leftMay));
-        call.ArgNames.Add(null);
+        call.WritableArgNames.Add(null);
         call.Args.Add(Value(0, rightMay));
-        call.ArgNames.Add(null);
+        call.WritableArgNames.Add(null);
 
         bool eq = b.Op == BinOp.Eq;
         Expr test;
@@ -18716,7 +18716,7 @@ public sealed partial class Binder
                 Line = u.Line, Col = u.Col,
             };
             call.Args.Add(on);
-            call.ArgNames.Add(null);
+            call.WritableArgNames.Add(null);
             return call;
         }
 
@@ -19190,8 +19190,8 @@ public sealed partial class Binder
                     };
                     same.Args.Add(b.Left);
                     same.Args.Add(b.Right);
-                    same.ArgNames.Add(null);
-                    same.ArgNames.Add(null);
+                    same.WritableArgNames.Add(null);
+                    same.WritableArgNames.Add(null);
                     Expr compared = b.Op == BinOp.Eq
                                   ? same
                                   : new UnaryExpr { Op = UnOp.Not, Operand = same, Line = b.Line, Col = b.Col, File = b.File };

@@ -146,7 +146,7 @@ public sealed partial class Binder
                     Line = c.Line, Col = c.Col,
                 });
             }
-            if (c.ArgNames.Count > 0) c.ArgNames.InsertRange(0, Enumerable.Repeat<string?>(null, template.Captures));
+            if (c.ArgNames.Count > 0) c.WritableArgNames.InsertRange(0, Enumerable.Repeat<string?>(null, template.Captures));
             c.CapturesPassed = true;
         }
 

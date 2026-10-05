@@ -1,0 +1,38 @@
+// test: hashset empty until written
+// expect-exit: 0
+// expect-output:
+// False False 0 0
+// True 1 True
+// 2 True False
+// 1 True
+// 0 False
+//
+// A set makes nothing until something goes in, as .NET's makes nothing:
+// Contains, Remove, Clear and a walk of an empty one answer as for an
+// empty set, and the capacity and comparer constructors only say how the
+// first Add sizes and compares.
+
+using System;
+using System.Collections.Generic;
+
+static class P
+{
+    static int Main()
+    {
+        HashSet<string> s = new();
+        int walked = 0;
+        foreach (string x in s) walked++;
+        s.Clear();
+        Console.WriteLine(s.Contains("a") + " " + s.Remove("a") + " " + s.Count + " " + walked);
+        Console.WriteLine(s.Add("a") + " " + s.Count + " " + s.Contains("a"));
+        HashSet<int> big = new(1000) { 1, 2, 3 };
+        big.Remove(2);
+        Console.WriteLine(big.Count + " " + big.Contains(3) + " " + big.Contains(2));
+        HashSet<string> folded = new(StringComparer.OrdinalIgnoreCase) { "Key" };
+        Console.WriteLine(folded.Count + " " + folded.Contains("KEY"));
+        HashSet<int> other = new();
+        other.UnionWith(new HashSet<int>());
+        Console.WriteLine(other.Count + " " + other.Overlaps(new[] { 1 }));
+        return 0;
+    }
+}

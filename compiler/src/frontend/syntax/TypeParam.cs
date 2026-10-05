@@ -45,5 +45,10 @@ public sealed class TypeParam : Node
     public bool Constructible => New || Struct || Unmanaged;
 
     /// <summary>Constraints as written: <c>where T : Component</c>.</summary>
-    public List<TypeRef> Constraints { get; } = new();
+    // To read: one shared empty list until written (WritableConstraints), never written through.
+    public List<TypeRef> Constraints => _constraints ?? NoConstraints;
+    /// <summary>To write: made on first use; almost every node has none.</summary>
+    public List<TypeRef> WritableConstraints => _constraints ??= new();
+    private List<TypeRef>? _constraints;
+    private static readonly List<TypeRef> NoConstraints = new();
 }

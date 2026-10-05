@@ -10,7 +10,12 @@ public sealed class NewExpr : Expr, ICanonSlot
 
     public required TypeRef Type { get; init; }
     public List<Expr> Args { get; } = new();
-    public List<string?> ArgNames { get; } = new();
+    // To read: one shared empty list until written (WritableArgNames), never written through.
+    public List<string?> ArgNames => _argNames ?? NoArgNames;
+    /// <summary>To write: made on first use; almost every node has none.</summary>
+    public List<string?> WritableArgNames => _argNames ??= new();
+    private List<string?>? _argNames;
+    private static readonly List<string?> NoArgNames = new();
 
     /// <summary>As <see cref="CallExpr.Spans"/>: -1, -1 for the receiver a constructor has not, then each argument.</summary>
     public int[]? Spans { get; set; }
@@ -18,7 +23,12 @@ public sealed class NewExpr : Expr, ICanonSlot
     /// <summary>The text <see cref="Spans"/> index.</summary>
     public string? Source { get; set; }
     /// <summary>Parameter slots in source evaluation order after named argument binding.</summary>
-    public List<int> ArgumentOrder { get; } = new();
+    // To read: one shared empty list until written (WritableArgumentOrder), never written through.
+    public List<int> ArgumentOrder => _argumentOrder ?? NoArgumentOrder;
+    /// <summary>To write: made on first use; almost every node has none.</summary>
+    public List<int> WritableArgumentOrder => _argumentOrder ??= new();
+    private List<int>? _argumentOrder;
+    private static readonly List<int> NoArgumentOrder = new();
     /// <summary>Set for <c>new int[n]</c>.</summary>
     public Expr? ArraySize { get; init; }
 

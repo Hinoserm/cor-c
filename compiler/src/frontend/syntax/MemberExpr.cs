@@ -24,7 +24,12 @@ public sealed class MemberExpr : Expr
     /// asked for changes.
     /// </summary>
     public required string Name { get; set; }
-    public List<TypeRef> TypeArgs { get; } = new();
+    // To read: one shared empty list until written (WritableTypeArgs), never written through.
+    public List<TypeRef> TypeArgs => _typeArgs ?? NoTypeArgs;
+    /// <summary>To write: made on first use; almost every node has none.</summary>
+    public List<TypeRef> WritableTypeArgs => _typeArgs ??= new();
+    private List<TypeRef>? _typeArgs;
+    private static readonly List<TypeRef> NoTypeArgs = new();
     /// <summary>True for <c>?.</c>, which short-circuits on null.</summary>
     public bool NullConditional { get; init; }
 

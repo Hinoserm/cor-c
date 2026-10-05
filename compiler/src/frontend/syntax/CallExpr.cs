@@ -12,7 +12,12 @@ public sealed class CallExpr : Expr
     public List<Expr> Args { get; } = new();
     // Parameter indices in source evaluation order for named local calls.
     // Retained across generic rewriting after ArgNames has been consumed.
-    public List<int> LocalArgumentOrder { get; } = new();
+    // To read: one shared empty list until written (WritableLocalArgumentOrder), never written through.
+    public List<int> LocalArgumentOrder => _localArgumentOrder ?? NoLocalArgumentOrder;
+    /// <summary>To write: made on first use; almost every node has none.</summary>
+    public List<int> WritableLocalArgumentOrder => _localArgumentOrder ??= new();
+    private List<int>? _localArgumentOrder;
+    private static readonly List<int> NoLocalArgumentOrder = new();
 
     /// <summary>
     /// The name written before each argument, or null where none was.
@@ -22,7 +27,12 @@ public sealed class CallExpr : Expr
     /// into parameter order and clears this, so nothing below it ever sees a
     /// call whose arguments are out of order.
     /// </summary>
-    public List<string?> ArgNames { get; } = new();
+    // To read: one shared empty list until written (WritableArgNames), never written through.
+    public List<string?> ArgNames => _argNames ?? NoArgNames;
+    /// <summary>To write: made on first use; almost every node has none.</summary>
+    public List<string?> WritableArgNames => _argNames ??= new();
+    private List<string?>? _argNames;
+    private static readonly List<string?> NoArgNames = new();
 
     /// <summary>
     /// Whether the receiver has already been moved into the argument list.

@@ -9,7 +9,12 @@ public sealed class NameExpr : Expr
     /// local, a parameter or a member of the enclosing types.</summary>
     public bool Global { get; set; }
     /// <summary>Explicit type arguments, as in <c>Foo&lt;int&gt;()</c>.</summary>
-    public List<TypeRef> TypeArgs { get; } = new();
+    // To read: one shared empty list until written (WritableTypeArgs), never written through.
+    public List<TypeRef> TypeArgs => _typeArgs ?? NoTypeArgs;
+    /// <summary>To write: made on first use; almost every node has none.</summary>
+    public List<TypeRef> WritableTypeArgs => _typeArgs ??= new();
+    private List<TypeRef>? _typeArgs;
+    private static readonly List<TypeRef> NoTypeArgs = new();
 
     /// <summary>
     /// A variable handed to a generic local function as one it captured
