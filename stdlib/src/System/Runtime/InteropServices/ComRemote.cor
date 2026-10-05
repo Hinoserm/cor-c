@@ -22,7 +22,7 @@
 // "nt-com", which carries the call to a Windows apartment over LRPC (kind
 // 3, the endpoint first) and does a Windows class's activation (kind 4).
 // A native exporter's endpoint is the name in its bindings
-// ("ncalrpc:[CORSAC.<pid>]"), which the NT kernel answers for a Windows
+// ("ncalrpc:[CORSAC<pid>]"), which the NT kernel answers for a Windows
 // client the same way (os/nt/comnative.cor): one endpoint name, both worlds.
 //
 // THE EXPORTER (ComExporter) serves this program's objects: IRemUnknown on
@@ -620,7 +620,7 @@ namespace System.Runtime.InteropServices
             r.Long(); r.Long(); r.Long();
             int scode = r.Int();
             string?[] texts = new string?[3];
-            for (int k = 0; k < 3; k++) if (markers[k] != 0) { r.Align(8); texts[k] = r.BstrBody(); }
+            for (int k = 0; k < 3; k++) if (markers[k] != 0) texts[k] = r.BstrBody();
             r.Long();                                               // puArgErr
             int count = r.Int();
             for (int k = 0; k < count; k++) r.Long();
@@ -925,7 +925,7 @@ namespace System.Runtime.InteropServices
     /// <summary>
     /// THIS PROGRAM'S OBJECTS SERVED TO OTHER PROCESSES: one object exporter
     /// (OXID) registered with the broker the first time an object is handed
-    /// out, reached at "com.CORSAC.&lt;pid&gt;", serving IRemUnknown, IDispatch,
+    /// out, reached at "com.CORSAC&lt;pid&gt;", serving IRemUnknown, IDispatch,
     /// IClassFactory and the compiler-made vtables of what it exports.
     /// </summary>
     public static class ComExporter
@@ -990,7 +990,7 @@ namespace System.Runtime.InteropServices
 
         /// The exporter registered and listening: the broker's OXID for it,
         /// its OXID_INFO (this thread, pid, IRemUnknown's IPID) and its
-        /// binding, "ncalrpc:[CORSAC.<pid>]".
+        /// binding, "ncalrpc:[CORSAC<pid>]".
         public static void Start()
         {
             lock (_lock)
@@ -998,7 +998,11 @@ namespace System.Runtime.InteropServices
                 if (_started) return;
                 long key = ComBroker.Key;
                 int pid = Os.Getpid();
-                _endpoint = "CORSAC." + pid;
+                // NO DOT IN IT: "ncalrpc:[CORSAC.124]" was refused by
+                // Windows' RPC runtime as an invalid string binding
+                // (0x800706A4), and a script's CreateObject of a native
+                // server failed there. Windows' own are OLE<hex>.
+                _endpoint = "CORSAC" + pid;
                 int fd = Os.Socket(1, 1 | 0x80000, 0);
                 if (fd < 0 || Os.Bind(fd, ComTransport.Address("com." + _endpoint)) < 0 || Os.Listen(fd, 16) < 0)
                     throw new COMException("The COM exporter could not listen at com." + _endpoint + ".", unchecked((int)0x80080005));
@@ -1007,13 +1011,20 @@ namespace System.Runtime.InteropServices
                 ComTransport.Put(info, 0, ComBroker.Thread);
                 ComTransport.Put(info, 4, pid);
                 ComTransport.Put(info, 8, 1);                       // RPC_C_AUTHN_LEVEL_NONE
-                info[12] = 5; info[14] = 7;                         // COM 5.7
+                // COM 5.6, Windows 2000's: a client calls with the version
+                // its server's OXID says, and ole32's ThreadInvoke refuses a
+                // minor version past its own (RPC_E_VERSION_MISMATCH).
+                info[12] = 5; info[14] = NdrWriter.ComMinorVersion;
                 Array.Copy(_remUnknown, 0, info, 16, 16);
                 // The DUALSTRINGARRAY as the broker keeps it: the security
-                // part's offset, then the words -- ncalrpc (0x10) and the
-                // endpoint, the end of the strings, then NTLM's binding.
-                List<int> words = new List<int> { 0x10 };
-                foreach (char c in _endpoint) words.Add(c);
+                // part's offset, then the words -- the string binding as
+                // Windows' own exporters register theirs, "ncalrpc:[OLE11]"
+                // as text, the end of the strings, then NTLM's binding. The
+                // tower form ([MS-DCOM] 2.2.19.3: 0x10, then the endpoint)
+                // reached ole32 as a string beginning with 0x10, and it
+                // refused it as an invalid string binding (0x800706A4).
+                List<int> words = new List<int>();
+                foreach (char c in "ncalrpc:[" + _endpoint + "]") words.Add(c);
                 words.Add(0);
                 words.Add(0);
                 int security = words.Count;
@@ -1094,7 +1105,13 @@ namespace System.Runtime.InteropServices
                     }
                 }
             }
-            catch (Exception) { status = RpcBadStub; ndr = new byte[0]; }
+            catch (Exception e)
+            {
+                // Said, since the caller sees only RPC_X_BAD_STUB_DATA.
+                Console.Error.WriteLine("com: a call to this process's objects failed: " + e.GetType().Name + ": " + e.Message);
+                status = RpcBadStub;
+                ndr = new byte[0];
+            }
             byte[] made = new byte[8 + ndr.Length];
             ComTransport.Put(made, 0, status);
             ComTransport.Put(made, 4, ndr.Length);
@@ -1524,9 +1541,9 @@ namespace System.Runtime.InteropServices
             w.Long(NdrWriter.UserMarker); w.Long(NdrWriter.UserMarker); w.Long(NdrWriter.UserMarker);
             w.Long(0); w.Long(0); w.Long(0);
             w.Long(scode);
-            w.Align(8); w.BstrBody(source);
-            w.Align(8); w.BstrBody(description);
-            w.Align(8); w.BstrBody(null);
+            w.BstrBody(source);
+            w.BstrBody(description);
+            w.BstrBody(null);
             w.Long(0);                                              // puArgErr
             w.Long(indices.Length);
             foreach (int i in indices) w.Long(NdrWriter.UserMarker);
