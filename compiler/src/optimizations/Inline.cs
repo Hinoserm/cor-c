@@ -751,7 +751,8 @@ public sealed class Inline : IParallelModulePass
                 {
                     if (call.Dest is not null && i.Operands.Count > 0)
                     {
-                        into.Instrs.Add(new Instr { Op = Opcode.Copy, Dest = call.Dest, Operands = { Op(i.Operands[0]) } });
+                        // A number the call answered (Instr.Number) stays one where its result is taken.
+                        into.Instrs.Add(new Instr { Op = Opcode.Copy, Dest = call.Dest, Operands = { Op(i.Operands[0]) }, Number = call.Number });
                     }
                     into.Instrs.Add(new Instr { Op = Opcode.Jump, Targets = { cont } });
                     continue;

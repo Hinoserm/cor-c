@@ -136,6 +136,27 @@ public sealed partial class Lowering
     /// </summary>
     private VReg? CallMethod(MethodSymbol m, VReg? receiver, List<Operand> args, bool viaBase = false, TypeSymbol? through = null)
     {
+        VReg? answered = CallMethodCore(m, receiver, args, viaBase, through);
+        // WHAT IT ANSWERS IS A NUMBER where its declared result is one
+        // (NeverAddress), whatever any override's summary hands back: an
+        // int on a 32-bit target is a word, as an address is, and a box's
+        // GetHashCode() reached through every override's carried 1316's
+        // items out of Work in the sum it answered (Instr.Number).
+        if (answered is not null && !m.RefReturn && NeverAddress(m.Returns))
+        {
+            for (int k = _e.Block.Instrs.Count - 1; k >= 0; k--)
+            {
+                Instr made = _e.Block.Instrs[k];
+                if (made.Dest != answered) continue;
+                if (made.Op is Opcode.Call or Opcode.CallIndirect) made.Number = true;
+                break;
+            }
+        }
+        return answered;
+    }
+
+    private VReg? CallMethodCore(MethodSymbol m, VReg? receiver, List<Operand> args, bool viaBase, TypeSymbol? through)
+    {
         IrType returns = ReturnIr(m);
 
         // EVERY CALL INTO A TYPE TOUCHES IT (Lowering.StaticInit), whichever

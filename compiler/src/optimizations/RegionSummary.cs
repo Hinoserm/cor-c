@@ -305,6 +305,9 @@ public static class RegionSummary
                 // left may still be the pointer.
                 case Opcode.Shl:
                     if (dest < 0) return;
+                    // A copy of a number a call answered (Instr.Number), as an
+                    // inlined call's result is taken: no address.
+                    if (i.Op == Opcode.Copy && i.Number) return;
                     foreach (Operand o in i.Operands) Copy(dest, Value(o), 0);
                     return;
 
@@ -394,7 +397,8 @@ public static class RegionSummary
                         MethodSlots(through, 0);
                     }
                     _callOf[i] = _calls.Count;
-                    _calls.Add(new(callee, dest, Arguments(i, 1)));
+                    // A number answered (Instr.Number) carries no address back.
+                    _calls.Add(new(callee, i.Number ? -1 : dest, Arguments(i, 1)));
                     return;
                 }
 
@@ -448,11 +452,12 @@ public static class RegionSummary
             if (Escape.IsIntrinsic(callee))
             {
                 foreach (int argument in Arguments(i, 0)) Leak(argument);
-                Copy(dest, Unknown(), 0);
+                if (!i.Number) Copy(dest, Unknown(), 0);
                 return;
             }
             _callOf[i] = _calls.Count;
-            _calls.Add(new(callee, dest, Arguments(i, 0)));
+            // A number answered (Instr.Number) carries no address back.
+            _calls.Add(new(callee, i.Number ? -1 : dest, Arguments(i, 0)));
         }
 
         /// <summary>Whether this function calls, by a call naming no virtual target, a method read out of a descriptor.</summary>
