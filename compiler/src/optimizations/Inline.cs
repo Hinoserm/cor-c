@@ -287,6 +287,10 @@ public sealed class Inline : IParallelModulePass
         // Reuse the analysis only until Expand mutates this caller.
         Defs? callerDefs = null;
         FreshValues? callerFresh = null;
+        // The caller's blocks that lie on a loop, found once until a call is
+        // expanded into it (LoopBlocks): a walk of the whole function for
+        // every call site weighed was minutes on a library's single unit.
+        HashSet<Block>? loopBlocks = null;
 
         while (changed)
         {
@@ -338,7 +342,7 @@ public sealed class Inline : IParallelModulePass
                     // every time round; anywhere else the body's whole size, or
                     // the image grew a tenth for nothing measurable.
                     int ordinaryCost = calleeSize;
-                    if (calleeSize > SmallBody && InLoop(caller, b))
+                    if (calleeSize > SmallBody && (loopBlocks ??= LoopBlocks(caller)).Contains(b))
                     {
                         ordinaryCost = HotSize(callee);
                     }
@@ -380,6 +384,7 @@ public sealed class Inline : IParallelModulePass
                     Expand(caller, b, i, call, callee, _keepCalls);
                     callerDefs = null;
                     callerFresh = null;
+                    loopBlocks = null;
                     size += calleeSize;
                     callers[callee.Name] = callers.GetValueOrDefault(callee.Name) - 1;
                     foreach (Instr inner in callee.Blocks.SelectMany(x => x.Instrs))
@@ -600,6 +605,67 @@ public sealed class Inline : IParallelModulePass
     }
 
     /// <summary>
+    /// Every block that can reach itself, which is to say inside a loop: those in a
+    /// strongly connected part of the graph of more than one block, or with
+    /// an edge to themselves. Tarjan's, without recursion.
+    /// </summary>
+    private static HashSet<Block> LoopBlocks(Function f)
+    {
+        HashSet<Block> inLoop = new(ReferenceEqualityComparer.Instance);
+        Dictionary<Block, int> index = new(ReferenceEqualityComparer.Instance), low = new(ReferenceEqualityComparer.Instance);
+        HashSet<Block> onStack = new(ReferenceEqualityComparer.Instance);
+        Stack<Block> stack = new();
+        Stack<(Block Block, int Next)> calls = new();
+        int counter = 0;
+        static Block? Successor(Block b, int k)
+        {
+            if (b.Terminator is not { } end) return null;
+            if (k < end.Targets.Count) return end.Targets[k];
+            return k == end.Targets.Count ? end.Default : null;
+        }
+        static int Successors(Block b) => b.Terminator is { } end ? end.Targets.Count + 1 : 0;
+        foreach (Block root in f.Blocks)
+        {
+            if (index.ContainsKey(root)) continue;
+            calls.Push((root, 0));
+            index[root] = low[root] = counter++;
+            stack.Push(root); onStack.Add(root);
+            while (calls.Count > 0)
+            {
+                (Block v, int k) = calls.Pop();
+                bool descended = false;
+                int count = Successors(v);
+                while (k < count)
+                {
+                    Block? w = Successor(v, k++);
+                    if (w is null) continue;
+                    if (ReferenceEquals(w, v)) inLoop.Add(v);
+                    if (!index.ContainsKey(w))
+                    {
+                        calls.Push((v, k));
+                        calls.Push((w, 0));
+                        index[w] = low[w] = counter++;
+                        stack.Push(w); onStack.Add(w);
+                        descended = true;
+                        break;
+                    }
+                    if (onStack.Contains(w)) low[v] = Math.Min(low[v], index[w]);
+                }
+                if (descended) continue;
+                if (low[v] == index[v])
+                {
+                    List<Block> part = new();
+                    Block w;
+                    do { w = stack.Pop(); onStack.Remove(w); part.Add(w); } while (!ReferenceEquals(w, v));
+                    if (part.Count > 1) foreach (Block member in part) inLoop.Add(member);
+                }
+                if (calls.Count > 0) { Block parent = calls.Peek().Block; low[parent] = Math.Min(low[parent], low[v]); }
+            }
+        }
+        return inLoop;
+    }
+
+    /// <summary>
     /// What a body costs where it runs, for the small-body test: its size
     /// without the collector's bookkeeping -- a store's barrier, which is a
     /// test of the marking flag and a call under it, and its card mark --
@@ -608,31 +674,6 @@ public sealed class Inline : IParallelModulePass
     /// runs once if ever. List's enumerator's MoveNext was 57 by count and
     /// 37 by this, and every foreach over a list called it.
     /// </summary>
-    /// <summary>Whether a block can reach itself: it is inside a loop.</summary>
-    private static bool InLoop(Function f, Block from)
-    {
-        HashSet<Block> seen = new(ReferenceEqualityComparer.Instance);
-        Stack<Block> work = new();
-        PushSuccessors(from, work);
-        while (work.Count > 0)
-        {
-            Block b = work.Pop();
-            if (ReferenceEquals(b, from)) return true;
-            if (!seen.Add(b)) continue;
-            PushSuccessors(b, work);
-        }
-        return false;
-
-        // Block.Successors without its iterator: one per block walked, on
-        // every call site the inliner weighed.
-        static void PushSuccessors(Block b, Stack<Block> work)
-        {
-            if (b.Terminator is not { } end) return;
-            foreach (Block t in end.Targets) work.Push(t);
-            if (end.Default is not null) work.Push(end.Default);
-        }
-    }
-
     private static int HotSize(Function f)
     {
         int n = 0;
