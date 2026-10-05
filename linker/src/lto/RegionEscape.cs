@@ -1603,10 +1603,13 @@ internal sealed class RegionEscape
         if (Why is not null && WhyFunction?.Invoke(f) == true && Progress is { } say)
         {
             static string Step(int step) => StepText(step);
-            string Of(int k) => s.Objects[k].Kind + " " + s.Objects[k].Param + " [" + string.Join(",", s.Objects[k].Path.Select(Step)) + "]";
+            string Of(int k) => "#" + k + " " + s.Objects[k].Kind + " " + s.Objects[k].Param + " [" + string.Join(",", s.Objects[k].Path.Select(Step)) + "]";
             say(s.IsUnknown ? $"escape graphs why: summary of {_functions[f].Name}: the unknown call's"
                 : $"escape graphs why: summary of {_functions[f].Name}: {s.Objects.Count} objects, {s.Cells.Count} cells, {s.Result.Count} results{(s.MadeCoarse ? ", made coarse" : "")}; "
-                  + "the unknown object holds " + string.Join("; ", s.Cells.Where(c => c.From == 0 && c.To != 0).Select(c => Of(c.To)).Distinct()));
+                  + "the unknown object holds " + string.Join("; ", s.Cells.Where(c => c.From == 0 && c.To != 0).Select(c => Of(c.To)).Distinct())
+                  // Every cell, with +whyall: what holds what, at which offset.
+                  + (WhyAll ? " | cells " + string.Join("; ", s.Cells.Select(c => Of(c.From) + " +" + Step(c.Offset) + " -> " + Of(c.To)))
+                      + " | result " + string.Join("; ", s.Result.Select(r => Of(r.To))) : ""));
         }
         Summary? before = _summaries[f];
         if (before is not null && before.SameAs(s)) return;
@@ -3825,8 +3828,21 @@ internal sealed class RegionEscape
         }
 
         // For a report: what a summary applied for a function asked about leaks.
+        // For a report (+why): which callee's summary each run of nodes was
+        // made for, by the node it began at.
+        private readonly List<(int Start, string Callee)> _appliedAt = new();
+        private string? _applying;
+
+        private string AppliedFor(int node)
+        {
+            string? at = null;
+            foreach (var (start, callee) in _appliedAt) { if (start > node) break; at = callee; }
+            return at ?? "?";
+        }
+
         private void Explain(int f, string? callee, int[] targets, Summary applied)
         {
+            _applying = callee + " (" + targets.Length + " targets" + (targets.Length >= 1 ? " " + _owner._functions[targets[0]].Name : "") + ")";
             if (_owner.Why is null || _owner.Progress is null || _owner.WhyFunction?.Invoke(f) != true) return;
             var leaks = applied.Cells.Where(c => c.From == 0).Select(c => applied.Objects[c.To]).Select(o => o.Kind + " " + o.Param + " [" + string.Join(",", o.Path.Select(Step)) + "]"
                 + (o.Kind == Kind.Made && o.Origins.Length > 0 ? " (sites " + string.Join(",", _owner.SitesOf(o.Origins).Take(8)) + ")" : ""));
@@ -3844,6 +3860,7 @@ internal sealed class RegionEscape
         private void Apply(int[] args, int dest, Summary s)
         {
             _owner.Applied++;
+            if (_owner.Why is not null) { _appliedAt.Add((_pts.Count, _applying ?? "(virtual or wide call)")); _applying = null; }
             if (s.IsUnknown) { UnknownCall(args, dest); return; }
             int[] node = new int[s.Objects.Count];
             Dictionary<(int, int), int> chains = new();
@@ -4472,6 +4489,60 @@ internal sealed class RegionEscape
                                 foreach (int site in _owner.SitesOf(_origins[to]))
                                     if (why(site)) _owner.Progress?.Invoke($"escape graphs why: in {_owner._functions[f].Name}{(_members.Length > 1 ? " (cycle of " + _members.Length + ")" : "")}: site {site} reached from {(at.O == 0 ? "the unknown object" : Describe(at.O))} +{StepText(offset)} as {Describe(to)}, saturated {_saturatedCount}");
                             }
+                // WHICH OF ITS OWN NODES MAY BE THE UNKNOWN OBJECT.
+                if (_owner.WhyFunction?.Invoke(_members[m]) == true)
+                {
+                    List<int> own = new();
+                    for (int n = 0; n < _owner._functions[f].Nodes; n++)
+                        if (Pts(Node(m, n)) is { } held)
+                            foreach (int loc in held) if (_locObject[loc] == 0) { own.Add(n); break; }
+                    _owner.Progress?.Invoke($"escape graphs why: in {_owner._functions[f].Name}: its nodes that may be the unknown object: {string.Join(",", own)}");
+                }
+                // AND WHAT WROTE THE UNKNOWN OBJECT INTO A MADE ONE: a store whose
+                // value may be the unknown object, through a node that may be
+                // an object made here or below.
+                if (_owner.WhyFunction?.Invoke(_members[m]) == true)
+                    for (int v = 0; v < _pts.Count; v++)
+                    {
+                        if (Pts(v) is not { } into || _stores[v] is not { } stores2) continue;
+                        bool made = false;
+                        foreach (int loc in into) if (_kind[_locObject[loc]] == Kind.Made && _locObject[loc] != 0) { made = true; break; }
+                        if (!made) continue;
+                        foreach (var st in stores2)
+                        {
+                            if (Pts(st.Value) is not { } values) continue;
+                            bool unknownValue = false;
+                            foreach (int loc in values) if (_locObject[loc] == 0) { unknownValue = true; break; }
+                            if (!unknownValue) continue;
+                            string Name(int n) => n - _base[m] >= 0 && n - _base[m] < _owner._functions[f].Nodes ? "node " + (n - _base[m]) : "made node " + n + " (applying " + AppliedFor(n) + ")";
+                            _owner.Progress?.Invoke($"escape graphs why: in {_owner._functions[f].Name}: the unknown object stored into a made object: through {Name(v)} +{st.Offset} the value {Name(st.Value)}");
+                        }
+                    }
+                // AND WHAT WROTE THERE: every node that may point to the unknown
+                // object and has stores through it, by the function's own node
+                // number where it is one (the constraints' numbering).
+                if (_owner.WhyFunction?.Invoke(_members[m]) == true)
+                    for (int v = 0; v < _pts.Count; v++)
+                    {
+                        if (Pts(v) is not { } held || _stores[v] is not { } stores) continue;
+                        bool unknown = false;
+                        foreach (int loc in held) if (_locObject[loc] == 0) { unknown = true; break; }
+                        if (!unknown) continue;
+                        int local = v - _base[m];
+                        string who = local >= 0 && local < _owner._functions[f].Nodes ? "node " + local : "made node " + v + " (applying " + AppliedFor(v) + ")";
+                        // Only a store whose value may be an object made at a site asked about.
+                        foreach (var st in stores)
+                        {
+                            if (Pts(st.Value) is not { } values) continue;
+                            List<int> asked = new();
+                            foreach (int loc in values)
+                                foreach (int site in _owner.SitesOf(_origins[_locObject[loc]]))
+                                    if (why(site)) asked.Add(site);
+                            if (asked.Count == 0) continue;
+                            string value = st.Value - _base[m] >= 0 && st.Value - _base[m] < _owner._functions[f].Nodes ? "node " + (st.Value - _base[m]) : "made node " + st.Value + " (applying " + AppliedFor(st.Value) + ")";
+                            _owner.Progress?.Invoke($"escape graphs why: in {_owner._functions[f].Name}: {who} may be the unknown object; stored through it +{st.Offset}: {value}, sites {string.Join(",", asked.Distinct().Take(6))}");
+                        }
+                    }
             }
             bool rooted = _owner._rooted[f];
             if (_owner._wanted[f] || rooted)
