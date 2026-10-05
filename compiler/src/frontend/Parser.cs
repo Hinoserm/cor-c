@@ -3914,7 +3914,7 @@ public sealed class Parser
             {
                 for (int k = hoistedFrom; k < _hoisted.Count; k++)
                 {
-                    _hoisted[k].LocalGenerics.AddRange(block.GenericLocals);
+                    _hoisted[k].WritableLocalGenerics.AddRange(block.GenericLocals);
                 }
             }
         }
@@ -4002,7 +4002,7 @@ public sealed class Parser
         Block result = new() { Line = block.Line, Col = block.Col };
         // The block's generic local functions are the new block's: dropped,
         // a block with a `using` declaration in it could not call one.
-        result.GenericLocals.AddRange(block.GenericLocals);
+        if (block.GenericLocals.Count > 0) result.WritableGenericLocals.AddRange(block.GenericLocals);
 
         for (int i = 0; i < at; i++)
         {
@@ -5880,7 +5880,7 @@ public sealed class Parser
         MethodDecl finished = FinishMethod(m);
         finished.HoistedName = name;
         finished.HoistedIn = parent;
-        _blocks.Peek().GenericLocals.Add((name, finished.Name));
+        _blocks.Peek().WritableGenericLocals.Add((name, finished.Name));
         _hoisted.Add(finished);
         return new Block { Line = at.Line, Col = at.Col };
     }

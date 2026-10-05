@@ -2141,10 +2141,10 @@ public sealed class Monomorphiser
                 // are the variables it captured.
                 made.HoistedName = md.HoistedName;
                 made.CarriedTypeParams = md.CarriedTypeParams;
-                made.LocalGenerics.AddRange(md.LocalGenerics);
+                if (md.LocalGenerics.Count > 0) made.WritableLocalGenerics.AddRange(md.LocalGenerics);
                 made.Captures = md.Captures;
                 made.HoistedIn = md.HoistedIn;
-                foreach ((string written, string now) in md.Rehosted) made.Rehosted[written] = now;
+                foreach ((string written, string now) in md.Rehosted) made.WritableRehosted[written] = now;
 
                 return made;
             }
@@ -2195,7 +2195,7 @@ public sealed class Monomorphiser
             case Block b:
             {
                 Block made = new() { Line = b.Line, Col = b.Col, ArithmeticContext = b.ArithmeticContext, Iterator = b.Iterator };
-                made.GenericLocals.AddRange(b.GenericLocals);
+                if (b.GenericLocals.Count > 0) made.WritableGenericLocals.AddRange(b.GenericLocals);
 
                 foreach (Stmt inner in b.Statements)
                 {

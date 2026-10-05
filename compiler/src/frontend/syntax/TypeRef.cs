@@ -64,7 +64,10 @@ public sealed class TypeRef : Node
     public List<TypeRef> Arguments
     {
         get => _arguments ??= new();
-        init => _arguments = ReferenceEquals(value, NoArguments) ? null : value;
+        // An empty list given is none: every copy of a type was made from
+        // its original's arguments (`Args.ToList()`, a Select of them), and
+        // half a million empty lists sat in a compile's live heap.
+        init => _arguments = value is null || value.Count == 0 ? null : value;
     }
     // Use-site arguments retained after Args is folded into a specialization
     // name. These annotations do not request another runtime specialization.

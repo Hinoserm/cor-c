@@ -699,7 +699,7 @@ public static class Frontend
             rehosted[was] = now;
         }
 
-        foreach (string written in rehosted.Keys) copy.Rehosted[written] = rehosted[written];
+        foreach (string written in rehosted.Keys) copy.WritableRehosted[written] = rehosted[written];
         foreach (Lang.MethodDecl m in carried)
         {
             Lang.MethodDecl made = Lang.Monomorphiser.Rehost(m, template.TypeParams, args, renamed[m.Name], values);
@@ -709,8 +709,8 @@ public static class Frontend
             made.LocalCopy = true;
             made.Fresh = true;
             made.HoistedIn = m.HoistedIn == template.HoistKey ? copy.HoistKey : renamed[m.HoistedIn!];
-            made.Rehosted.Clear();
-            foreach ((string written, string now) in rehosted) made.Rehosted[written] = now;
+            made.WritableRehosted.Clear();
+            foreach ((string written, string now) in rehosted) made.WritableRehosted[written] = now;
             owner.Members.Add(made);
         }
     }

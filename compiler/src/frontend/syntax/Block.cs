@@ -13,7 +13,11 @@ public sealed class Block : Stmt
     /// delegate cannot be generic, so C#'s generic local function is that
     /// method, visible under its own name throughout the block.
     /// </summary>
-    public List<(string Name, string Method)> GenericLocals { get; } = new();
+    public List<(string Name, string Method)> GenericLocals => _genericLocals ?? NoGenericLocals;
+    /// <summary>To write: made on first use; almost no block has any.</summary>
+    public List<(string Name, string Method)> WritableGenericLocals => _genericLocals ??= new();
+    private List<(string Name, string Method)>? _genericLocals;
+    private static readonly List<(string Name, string Method)> NoGenericLocals = new();
 
     /// <summary>
     /// The body of an iterator: it holds a `yield`, so the method, lambda or

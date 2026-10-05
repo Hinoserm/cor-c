@@ -1386,7 +1386,7 @@ public static class Gir
                     string hoisted = Str();
                     d.HoistedName = hoisted.Length == 0 ? null : hoisted;
                     int generics = Count();
-                    for (int i = 0; i < generics; i++) { string written = Str(); d.LocalGenerics.Add((written, Str())); }
+                    for (int i = 0; i < generics; i++) { string written = Str(); d.WritableLocalGenerics.Add((written, Str())); }
                     d.Captures = I32();
                     string hoistedIn = Str();
                     d.HoistedIn = hoistedIn.Length == 0 ? null : hoistedIn;
@@ -1442,7 +1442,7 @@ public static class Gir
                     if (arithmetic > 2) throw new InvalidDataException("invalid block arithmetic context");
                     Block b = new() { ArithmeticContext = arithmetic, Iterator = Bool() };
                     int locals = Count();
-                    for (int i = 0; i < locals; i++) { string name = Str(); b.GenericLocals.Add((name, Str())); }
+                    for (int i = 0; i < locals; i++) { string name = Str(); b.WritableGenericLocals.Add((name, Str())); }
                     int n = Count();
 
                     for (int i = 0; i < n; i++)

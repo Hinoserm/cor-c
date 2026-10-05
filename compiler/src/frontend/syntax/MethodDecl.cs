@@ -46,7 +46,10 @@ public sealed class MethodDecl : MemberDecl
     /// it took on as its own, its captures being of them (Binder.
     /// WriteCaptures): each inferred at a call from the variable handed in.
     /// </summary>
-    public List<string> CarriedTypeParams { get; set; } = new();
+    // Shared and empty for the many methods that carry none; only ever
+    // replaced whole (Binder.SettleGenericCaptures), never written through.
+    public List<string> CarriedTypeParams { get; set; } = NoNames;
+    private static readonly List<string> NoNames = new();
 
     /// <summary>
     /// The generic local functions a hoisted one can call by their written
@@ -54,7 +57,13 @@ public sealed class MethodDecl : MemberDecl
     /// (written name, member name) pairs, so its body, checked as a member of
     /// the type, sees them as C# lets it.
     /// </summary>
-    public List<(string Name, string Method)> LocalGenerics { get; } = new();
+    public List<(string Name, string Method)> LocalGenerics => _localGenerics ?? NoLocalGenerics;
+    /// <summary>To write: made on first use. Almost no method has any, and a
+    /// list, a table and two more lists each were a tenth of a compile's
+    /// live heap.</summary>
+    public List<(string Name, string Method)> WritableLocalGenerics => _localGenerics ??= new();
+    private List<(string Name, string Method)>? _localGenerics;
+    private static readonly List<(string Name, string Method)> NoLocalGenerics = new();
 
     /// <summary>
     /// How many of a hoisted generic local function's parameters, at the
@@ -78,7 +87,11 @@ public sealed class MethodDecl : MemberDecl
     /// it: which hoisted function each written block's name now means, by
     /// the name it was hoisted under (Binder.DeclareGenericLocal).
     /// </summary>
-    public Dictionary<string, string> Rehosted { get; } = new(StringComparer.Ordinal);
+    public Dictionary<string, string> Rehosted => _rehosted ?? NoRehosted;
+    /// <summary>To write: made on first use.</summary>
+    public Dictionary<string, string> WritableRehosted => _rehosted ??= new(StringComparer.Ordinal);
+    private Dictionary<string, string>? _rehosted;
+    private static readonly Dictionary<string, string> NoRehosted = new(StringComparer.Ordinal);
 
     /// <summary>What a hoisted function names its parent by: unique for a hoisted one, by place for a member.</summary>
     public string HoistKey => HoistedName is not null ? Name : Name + "@" + Line + ":" + Col;
