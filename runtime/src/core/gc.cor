@@ -5966,11 +5966,14 @@ static class Gc
     }
 
     /// Under a control group's memory limit the heap is capped as .NET caps
-    /// it in a container: three quarters of the limit, and never below 20 MB
-    /// -- the rest is the program's code, stacks and the collector's own
+    /// it in a container, three quarters of the limit -- or, at 512 MB and
+    /// below, all but an eighth and at least 32 MB -- and never below 20 MB:
+    /// the rest is the program's code, stacks and the collector's own
     /// tables. The cap paces the collector and is the total GC.GetGCMemoryInfo
     /// reports, which is what the build sizes its parallel work by.
     const long ContainerFloor = 20971520;
+    const long SmallMachine = 536870912;
+    const long SmallReserve = 33554432;
 
     /// The heap's ceiling for the address space this process has.
     static void SetCeiling()
@@ -6011,7 +6014,15 @@ static class Gc
             long limit = Platform.MemoryLimit();
             if (limit != 0)
             {
-                long cap = limit / 4 * 3;
+                // ON A SMALL MACHINE, what the program needs beside its heap:
+                // its code, stacks and the collector's tables came to 16 MB
+                // when a compile was stopped at the cap, and a quarter of 256
+                // MB held 64 back for them -- the heap the compile needed
+                // was there and refused. An eighth, and never less than 32
+                // MB, below 512 MB; past that a quarter, as .NET's container
+                // cap, which is what the build sizes its parallel work by.
+                long reserve = limit / 8 > SmallReserve ? limit / 8 : SmallReserve;
+                long cap = limit <= SmallMachine ? limit - reserve : limit / 4 * 3;
                 HeapChunks.SetLimit(cap > ContainerFloor ? cap : ContainerFloor);
             }
         }
