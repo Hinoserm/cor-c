@@ -1794,22 +1794,21 @@ namespace System.Reflection
     }
 }
 
-namespace System
+/// <summary>
+/// .NET's Activator, by a Type: COM classes made through the broker.
+/// The generic CreateInstance, which makes any type, is Core's.
+/// </summary>
+public static partial class Activator
 {
-    /// <summary>.NET's Activator: COM classes made through the broker; other types made as `new T()` makes them.</summary>
-    public static class Activator
+    public static object? CreateInstance(Type type)
     {
-        public static object? CreateInstance(Type type)
-        {
-            string? clsid = System.Runtime.InteropServices.ComClassTypes.ClsidOf(type);
-            if (clsid != null) return System.Runtime.InteropServices.ComActivation.CreateInstance(clsid, System.Runtime.InteropServices.ComMarshal.IidIUnknown);
-            throw new MissingMethodException("Cannot create an instance of " + type.FullName + " without reflection: use new, or Activator.CreateInstance<T>().");
-        }
-
-        public static object? CreateInstance(Type type, bool nonPublic) { return CreateInstance(type); }
-
-        public static T CreateInstance<T>() where T : new() { return new T(); }
+        string? clsid = System.Runtime.InteropServices.ComClassTypes.ClsidOf(type);
+        if (clsid != null) return System.Runtime.InteropServices.ComActivation.CreateInstance(clsid, System.Runtime.InteropServices.ComMarshal.IidIUnknown);
+        throw new MissingMethodException("Cannot create an instance of " + type.FullName + " without reflection: use new, or Activator.CreateInstance<T>().");
     }
+
+    public static object? CreateInstance(Type type, bool nonPublic) { return CreateInstance(type); }
+
 }
 
 /// <summary>

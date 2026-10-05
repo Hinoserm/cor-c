@@ -148,10 +148,10 @@ static class P
     {
         const int N = 20000;
         Gc.Collect();
-        long taken = Gc.CollectedBytes, frees = Gc.Frees;
+        long taken = Gc.CollectedBytes, frees = Gc.Frees, region = Gc.RegionFreedBytes + Gc.RegionTopFreedBytes;
         long total = 0;
         for (int k = 0; k < N; k++) total += Buckets(12);
-        bool given = Gc.Frees - frees >= N;
+        bool given = Gc.Frees - frees >= N || Gc.RegionFreedBytes + Gc.RegionTopFreedBytes - region >= N * 16;
         Gc.Collect();
         long left = (Gc.CollectedBytes - taken) / N;
         Console.WriteLine("buckets " + total + " " + (given && left <= 32 ? "True" : "False " + left));

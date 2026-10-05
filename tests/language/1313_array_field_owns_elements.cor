@@ -151,10 +151,10 @@ static class Program
     {
         const int N = 20000;
         Gc.Collect();
-        long taken = Gc.CollectedBytes, frees = Gc.Frees;
+        long taken = Gc.CollectedBytes, frees = Gc.Frees, region = Gc.RegionFreedBytes + Gc.RegionTopFreedBytes;
         long total = 0;
         for (int k = 0; k < N; k++) total += Allocate();
-        bool given = Gc.Frees - frees >= N * 16;
+        bool given = Gc.Frees - frees >= N * 16 || Gc.RegionFreedBytes + Gc.RegionTopFreedBytes - region >= N * 16 * 16;
         Gc.Collect();
         long left = (Gc.CollectedBytes - taken) / N;
         Console.WriteLine("allocator " + total + " " + (given && left <= 32 ? "True" : "False " + left));

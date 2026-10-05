@@ -4,6 +4,7 @@
 // 1
 // 2
 // 3
+//
 // C#'s rule: a loop whose condition is always true is left only by a break,
 // so what every break had assigned is assigned after it -- here through a
 // try/finally, and with a switch's own break in between that leaves the

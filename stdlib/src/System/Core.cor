@@ -13491,8 +13491,9 @@ class PlatformNotSupportedException : NotSupportedException
 /// (TypeParam.Made). A T with no public parameterless constructor -- an
 /// abstract class, an interface, one whose constructors all take
 /// arguments -- compiles to CannotCreate and throws .NET's
-/// MissingMethodException when run, as .NET's does.
-public static class Activator
+/// MissingMethodException when run, as .NET's does. CreateInstance by a
+/// Type is COM's (ComRemote).
+public static partial class Activator
 {
     public static T CreateInstance<T>()
     {
@@ -16175,26 +16176,137 @@ static class Math {
         return x - turns * Tau();
     }
 
-    // Minimax-style polynomial on the reduced range. Seven terms of the Taylor
-    // series is well past double precision for |x| <= pi.
-    public static double Sin(double x) {
-        double a = WrapAngle(x);
-        double sq = a * a;
-        double term = a;
-        double sum = a;
+    // SINE AND COSINE TO THE LAST BIT OR SO, as the C library's and .NET's
+    // are: the angle less the nearest multiple of pi/2, taken off in three
+    // parts so none of it is lost (Cody and Waite), then fdlibm's minimax
+    // polynomials on [-pi/4, pi/4]. Seven terms of the Taylor series over
+    // [-pi, pi], which this was, are good to about 2e-5 near pi/2: cos(pi/2)
+    // was -2.1e-5, and an arc of 90 degrees measured more than a quarter
+    // turn and was cut in two.
+    const double PiOver2Hi = 1.57079632673412561417e+00;
+    const double PiOver2Mid = 6.07710050630396597660e-11;
+    const double PiOver2Lo = 2.02226624879595063154e-21;
+    const double TwoOverPi = 6.36619772367581382433e-01;
 
-        term = 0.0 - term * sq / 6.0;             sum = sum + term;
-        term = 0.0 - term * sq / 20.0;            sum = sum + term;
-        term = 0.0 - term * sq / 42.0;            sum = sum + term;
-        term = 0.0 - term * sq / 72.0;            sum = sum + term;
-        term = 0.0 - term * sq / 110.0;           sum = sum + term;
-        term = 0.0 - term * sq / 156.0;           sum = sum + term;
-        return sum;
+    // x less n quarter turns, n the nearest, as a head and the tail the head
+    // lost (fdlibm's medium reduction); the quadrant (n mod 4) out. Hi and
+    // Mid have 33 bits each, so n times either is exact while n is below
+    // 2^20.
+    static double QuarterTurns(double x, out double tail, out int quadrant) {
+        double n = Math.Floor(x * TwoOverPi + 0.5);
+        quadrant = (int)((long)n & 3);
+        double r = x - n * PiOver2Hi;
+        double t = r;
+        double w = n * PiOver2Mid;
+        r = t - w;
+        w = n * PiOver2Lo - ((t - r) - w);
+        double head = r - w;
+        tail = (r - head) - w;
+        return head;
     }
 
-    public static double Cos(double x) { return Sin(x + Pi() / 2.0); }
+    static double SinKernel(double x, double y) {
+        double z = x * x;
+        double v = z * x;
+        double r = 8.33333333332248946124e-03 + z * (-1.98412698298579493134e-04 + z * (2.75573137070700676789e-06
+                 + z * (-2.50507602534068634195e-08 + z * 1.58969099521155010221e-10)));
+        return x - ((z * (0.5 * y - v * r) - y) - v * -1.66666666666666324348e-01);
+    }
 
-    public static double Tan(double x) { return Sin(x) / Cos(x); }
+    static double CosKernel(double x, double y) {
+        double z = x * x;
+        double r = z * (4.16666666666666019037e-02 + z * (-1.38888888888741095749e-03 + z * (2.48015872894767294178e-05
+                 + z * (-2.75573143513906633035e-07 + z * (2.08757232129817482790e-09 + z * -1.13596475577881948265e-11)))));
+        double hz = 0.5 * z;
+        double w = 1.0 - hz;
+        return w + (((1.0 - w) - hz) + (z * r - x * y));
+    }
+
+    // tan(x + y) for |x| <= pi/4, or -1/tan(x + y) when `inverse` (fdlibm's
+    // __kernel_tan): past 0.6744 by the identity at pi/4, which keeps the
+    // polynomial where it is accurate.
+    static double TanKernel(double x, double y, bool inverse) {
+        long bits = BitConverter.DoubleToInt64Bits(x);
+        int high = (int)(bits >> 32);
+        int size = high & 0x7fffffff;
+        if (size < 0x3e300000) {
+            if (!inverse) { return x; }
+            return -1.0 / x;
+        }
+        bool big = size >= 0x3FE59428;
+        if (big) {
+            if (high < 0) { x = -x; y = -y; }
+            double z0 = 7.85398163397448278999e-01 - x;
+            double w0 = 3.06161699786838301793e-17 - y;
+            x = z0 + w0;
+            y = 0.0;
+        }
+        double z = x * x;
+        double w = z * z;
+        double r = 1.33333333333201242699e-01 + w * (2.18694882948595424599e-02 + w * (3.59207910759131235356e-03
+                 + w * (5.88041240820264096874e-04 + w * (7.81794442939557092300e-05 + w * -1.85586374855275456654e-05))));
+        double v = z * (5.39682539762260521377e-02 + w * (8.86323982359930005737e-03 + w * (1.45620945432529025516e-03
+                 + w * (2.46463134818469906812e-04 + w * (7.14072491382608190305e-05 + w * 2.59073051863633712884e-05)))));
+        double s = z * x;
+        r = y + z * (s * (r + v) + y);
+        r = r + 3.33333333333334091986e-01 * s;
+        w = x + r;
+        if (big) {
+            double vv = inverse ? -1.0 : 1.0;
+            double sign = high < 0 ? -1.0 : 1.0;
+            return sign * (vv - 2.0 * (x - (w * w / (w + vv) - r)));
+        }
+        if (!inverse) { return w; }
+        // -1/(x + r), its low half kept.
+        double zh = BitConverter.Int64BitsToDouble(BitConverter.DoubleToInt64Bits(w) & unchecked((long)0xFFFFFFFF00000000));
+        double vl = r - (zh - x);
+        double a = -1.0 / w;
+        double th = BitConverter.Int64BitsToDouble(BitConverter.DoubleToInt64Bits(a) & unchecked((long)0xFFFFFFFF00000000));
+        double sl = 1.0 + th * zh;
+        return th + a * (sl + th * vl);
+    }
+
+    // |x| <= pi/4 by its high word, as fdlibm asks: pi/4's double itself is in.
+    static bool WithinQuarterPi(double x) {
+        return (int)((BitConverter.DoubleToInt64Bits(x) >> 32) & 0x7fffffff) <= 0x3fe921fb;
+    }
+
+    public static double Sin(double x) {
+        if (x != x || x - x != 0.0) { return 0.0 / 0.0; }
+        if (WithinQuarterPi(x)) { return SinKernel(x, 0.0); }
+        int quadrant;
+        double tail;
+        double a = QuarterTurns(x, out tail, out quadrant);
+        switch (quadrant) {
+            case 0: return SinKernel(a, tail);
+            case 1: return CosKernel(a, tail);
+            case 2: return 0.0 - SinKernel(a, tail);
+            default: return 0.0 - CosKernel(a, tail);
+        }
+    }
+
+    public static double Cos(double x) {
+        if (x != x || x - x != 0.0) { return 0.0 / 0.0; }
+        if (WithinQuarterPi(x)) { return CosKernel(x, 0.0); }
+        int quadrant;
+        double tail;
+        double a = QuarterTurns(x, out tail, out quadrant);
+        switch (quadrant) {
+            case 0: return CosKernel(a, tail);
+            case 1: return 0.0 - SinKernel(a, tail);
+            case 2: return 0.0 - CosKernel(a, tail);
+            default: return SinKernel(a, tail);
+        }
+    }
+
+    public static double Tan(double x) {
+        if (x != x || x - x != 0.0) { return 0.0 / 0.0; }
+        if (WithinQuarterPi(x)) { return TanKernel(x, 0.0, false); }
+        int quadrant;
+        double tail;
+        double a = QuarterTurns(x, out tail, out quadrant);
+        return TanKernel(a, tail, (quadrant & 1) != 0);
+    }
 
     public static double Pow(double x, int n) {
         // Exponentiation by squaring: log(n) multiplies instead of n.

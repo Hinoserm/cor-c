@@ -33,6 +33,16 @@ struct Guid {
         }
     }
 
+    /// A Guid written as text, in any form TryParse reads; anything else is
+    /// .NET's FormatException.
+    public Guid(string g) {
+        if (g == null) { throw new ArgumentNullException("g"); }
+        Guid parsed;
+        if (!TryParse(g, out parsed)) { throw new FormatException("Unrecognized Guid format."); }
+        low = parsed.Low;
+        high = parsed.High;
+    }
+
     public static Guid Empty => new Guid(new byte[16]);
 
     /// VERSION 4: sixteen random bytes with six bits spoken for -- four saying
