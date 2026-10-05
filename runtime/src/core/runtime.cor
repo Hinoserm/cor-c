@@ -1123,6 +1123,8 @@ static class Runtime
         if (outer != -1 && tb != 0 && !Gc.StatsAsked && !Gc.CountingCollected)
         {
             nint last = (nint)Sys.Peek(tb + (nint)Tls.RegionEnd);
+            // The arena handed back already (Gc.ReleaseRegion): nothing left to give.
+            if (last == 0) return;
             nint at = (nint)Sys.Peek(tb + (nint)Tls.RegionAt);
             if ((nuint)outer >= (nuint)Sys.Peek(last) && (nuint)outer < (nuint)at)
             {

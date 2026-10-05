@@ -2418,7 +2418,8 @@ static class Gc
     public static void RegionLeave(long record)
     {
         long tb = Sys.ThreadBlock();
-        if (record < 0 || tb == 0) return;
+        // No arena, or one handed back as the thread ends: nothing to give.
+        if (record < 0 || tb == 0 || Sys.Peek(tb + Tls.RegionBase) == 0) return;
         CountRegionBlocks(tb);
         long chunk = ChunkOf(tb, record);
         if (!Filled(tb, chunk, record)) return;

@@ -2463,6 +2463,13 @@ public static class RegionSolver
         /// thread's first method, which run with no block or the parent's.
         /// A region is opened in the block, so none of these is a boundary:
         /// 214_linq's link opened one in SetThreadBlock and died there.
+        ///
+        /// AND WHAT RUNS AS IT ENDS: the function that hands the thread's arena
+        /// back (RuntimeAbi.ReleaseRegion) and every caller of it -- a
+        /// thread's body, which calls Runtime.EndThread before it returns.
+        /// Its region's leave would come after the arena it was opened in was
+        /// gone: Thread.Body made a boundary faulted in RegionLeave in every
+        /// thread test.
         /// </summary>
         private bool[] BeforeThreadBlock()
         {
@@ -2472,7 +2479,7 @@ public static class RegionSolver
                 foreach (int g in _named[f]) (callers[g] ??= new()).Add(f);
             Stack<int> next = new();
             for (int f = 0; f < _functions.Count; f++)
-                if (_functions[f].Name == RuntimeAbi.SetThreadBlock) { before[f] = true; next.Push(f); }
+                if (_functions[f].Name is RuntimeAbi.SetThreadBlock or RuntimeAbi.ReleaseRegion) { before[f] = true; next.Push(f); }
             while (next.TryPop(out int g))
                 if (callers[g] is { } list)
                     foreach (int f in list)

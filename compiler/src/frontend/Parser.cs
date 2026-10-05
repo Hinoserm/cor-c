@@ -6106,7 +6106,7 @@ public sealed class Parser
         // as a constant: the copy that learned better was not the copy that
         // ran. That is the third time in this parser -- the `is` dispatch was
         // duplicated too.
-        if (StartsValuePattern() && !At(Tok.LBrace))
+        if (StartsValuePattern() && !At(Tok.LBrace) && !TupleArrayTypeAhead())
         {
             return ParseOnePattern(subject, at);
         }
@@ -6551,9 +6551,28 @@ public sealed class Parser
         return j;
     }
 
+    /// <summary>
+    /// `(int, int[])[]` at the cursor: brackets in a tuple's shape and an
+    /// array's after them, a type -- tested as one, not grouped as a pattern.
+    /// </summary>
+    private bool TupleArrayTypeAhead()
+    {
+        if (!At(Tok.LParen)) return false;
+        int depth = 0;
+        bool comma = false;
+        for (int j = _i; j < _t.Count; j++)
+        {
+            if (_t[j].Kind == Tok.LParen) depth++;
+            else if (_t[j].Kind == Tok.RParen && --depth == 0) return comma && j + 1 < _t.Count && _t[j + 1].Kind == Tok.LBracket;
+            else if (_t[j].Kind == Tok.Comma && depth == 1) comma = true;
+        }
+        return false;
+    }
+
     private bool PositionalPatternAhead()
     {
         int depth = 0;
+        bool comma = false;
 
         for (int j = _i; j < _t.Count; j++)
         {
@@ -6564,11 +6583,14 @@ public sealed class Parser
             else if (_t[j].Kind == Tok.RParen)
             {
                 depth--;
-                if (depth == 0) { return false; }
+                // A TUPLE TYPE'S ARRAY, `o is (int, int[])[]`: brackets after
+                // the group make it a type, which no positional pattern is
+                // ever followed by.
+                if (depth == 0) { return comma && !(j + 1 < _t.Count && _t[j + 1].Kind == Tok.LBracket); }
             }
             else if (_t[j].Kind == Tok.Comma && depth == 1)
             {
-                return true;
+                comma = true;
             }
         }
         return false;

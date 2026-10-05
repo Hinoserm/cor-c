@@ -2243,8 +2243,13 @@ public sealed partial class Lowering
     /// </summary>
     private string? VarianceRecord(TypeSymbol t)
     {
+        // NOT A SHARED COPY'S: its arguments are the copy's word, which names
+        // no type (object, as the copy binds it) -- recorded as object, every
+        // List<Item> was an IReadOnlyList<U> by covariance in shared code,
+        // whatever U was.
         if (t.Decl is not { Template: string template } made || made.TemplateArgs.Count == 0
-            || t.TemplateArgTypes.Count != made.TemplateArgs.Count)
+            || t.TemplateArgTypes.Count != made.TemplateArgs.Count
+            || CanonicalCopy(t) || made.Canon is not null || t.Name.Contains(Monomorphiser.CanonName, StringComparison.Ordinal))
         {
             return null;
         }
