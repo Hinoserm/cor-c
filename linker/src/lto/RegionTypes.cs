@@ -69,10 +69,20 @@ public sealed class RegionTypes
     private readonly bool[] _rooted;
     private readonly Func<int, int, string, long, int[]?> _dispatch;
 
-    // Nodes: each function's own, from its base; then cells, the sink, and the rest.
-    private readonly int[] _base;
-    private readonly List<HashSet<int>?> _pts = new();
-    private readonly List<List<int>?> _delta = new();
+    // NODES BY INSTANCE: each function's own copy (instance f is function f),
+    // and for an instance method of a shared generic copy -- List<__canon>'s
+    // Add, run for every List of references -- one more copy for each
+    // descriptor its `this` arrives with (InstanceFor), whose sites make
+    // objects of that copy's own. Context-insensitive over the one shared
+    // body, every List's elements were every other's: the compiler's own
+    // link carried String.Equals two thousand types and gave up.
+    private readonly List<int> _instBase = new(), _instF = new();
+    private readonly List<string?> _instCtx = new();
+    private readonly Dictionary<(int, string), int> _instOf = new();
+    private readonly int[] _instances;
+    private const int MostInstances = 256;
+    private readonly List<ValueSet?> _pts = new();
+    private readonly List<ValueSet?> _delta = new();
     // What else a node is, made only for the nodes that are anything more
     // than held: copied into others as it is, or as addresses into what it
     // holds (moved), an address loaded or stored through, a receiver.
@@ -93,21 +103,60 @@ public sealed class RegionTypes
     private readonly List<List<int>?> _cellsOf = new();
     private readonly List<HashSet<int>?> _allReaders = new();
     private readonly Dictionary<(string, long), int> _typed = new();
-    private readonly int[] _untyped, _untypedSites;
+    private readonly List<int> _untyped = new(), _untypedSites = new();
+    private readonly Dictionary<(string, long, int), int> _typedIn = new();
     private readonly HashSet<int> _escaped = new();
 
-    // Virtual calls: function, call, whether every target is bound, and those bound.
+    // Virtual calls, and direct calls into a shared copy's instance method
+    // (routed by what `this` is): instance, call, the one target of a direct
+    // call (-1 for a virtual one), whether every target is bound, the
+    // functions bound and the instances bound.
     private readonly List<(int F, int K)> _calls = new();
+    private readonly List<int> _routed = new();
+    private readonly List<HashSet<int>> _boundInst = new();
     private readonly List<bool> _full = new();
     private readonly List<HashSet<int>> _bound = new();
     private readonly Dictionary<(int, int, int), int[]?> _dispatched = new();
 
     private long _steps;
     /// <summary>Past this many values carried, the pass gives up and prunes nothing.</summary>
-    public long Budget { get; init; } = 2_000_000_000;
+    ///
+    /// SCALED TO THE PROGRAM: thirty values carried a node, between two and
+    /// twenty million. Context-insensitive over a shared generic copy, every
+    /// List's elements are every other's, and on the compiler's own link the
+    /// solve carried a hundred million values in six gigabytes, not done,
+    /// where a small program is settled in a few hundred thousand.
+    public long Budget { get; init; } = -1;
+    private long _budget;
+    /// <summary>For a report: the values carried.</summary>
+    public long Steps => _steps;
 
     /// <summary>For a report: the virtual calls, those narrowed, the targets before and after, those left every target for an unknown receiver, and the abstract objects.</summary>
     public int Calls, Narrowed, Before, After, Unknown, Objects;
+    /// <summary>For a report: the copies made of shared methods, for the descriptors their `this` arrived with.</summary>
+    public int Instances => _instBase.Count - _functions.Count;
+    /// <summary>For a report: a line every 50 million values carried, with the largest nodes.</summary>
+    public Action<string>? Progress { get; init; }
+
+    private void ReportProgress()
+    {
+        long held = 0;
+        List<(int Node, int Count)> largest = new();
+        for (int n = 0; n < _pts.Count; n++)
+            if (_pts[n] is { } set)
+            {
+                held += set.Count;
+                if (largest.Count < 8 || set.Count > largest[^1].Count)
+                {
+                    largest.Add((n, set.Count));
+                    largest.Sort((a, b) => b.Count.CompareTo(a.Count));
+                    if (largest.Count > 8) largest.RemoveAt(8);
+                }
+            }
+        Progress!($"receiver types: {_steps / 1_000_000}M carried, {_pts.Count} nodes, {_objects.Count} objects, {held} held, {_work.Count} queued, heap {GC.GetTotalMemory(false) >> 20} MB; largest "
+            + string.Join("; ", largest.Select(l => NodeName(l.Node) + " " + l.Count)));
+    }
+
     /// <summary>For a report: the functions whose calls left every target are explained (Explained).</summary>
     public Func<int, bool>? Explain { get; init; }
     public List<string> Explained { get; } = new();
@@ -147,17 +196,11 @@ public sealed class RegionTypes
         Func<int, int, string, long, int[]?> dispatch)
     {
         _functions = functions; _targets = targets; _keys = keys; _rooted = rooted; _dispatch = dispatch;
-        _base = new int[functions.Count];
-        int nodes = 0;
-        for (int f = 0; f < functions.Count; f++) { _base[f] = nodes; nodes += functions[f].Nodes; }
-        for (int n = 0; n < nodes; n++) NewNode();
+        _instances = new int[functions.Count];
+        for (int f = 0; f < functions.Count; f++) NewInstance(f, null);
         _sink = NewNode();
         NewObject(null, 0);         // the unknown object
         NewObject(null, 0);         // a constant
-        _untyped = new int[functions.Count];
-        Array.Fill(_untyped, -1);
-        _untypedSites = new int[functions.Count];
-        Array.Fill(_untypedSites, -1);
     }
 
     private int NewNode()
@@ -166,7 +209,35 @@ public sealed class RegionTypes
         return _pts.Count - 1;
     }
 
-    private int Node(int f, int n) => _base[f] + n;
+    private int Node(int i, int n) => _instBase[i] + n;
+
+    // A copy of function f's nodes, for `this` of descriptor ctx (null: the function's own).
+    private int NewInstance(int f, string? ctx)
+    {
+        int i = _instBase.Count;
+        _instBase.Add(_pts.Count); _instF.Add(f); _instCtx.Add(ctx);
+        _untyped.Add(-1); _untypedSites.Add(-1);
+        for (int n = 0; n < _functions[f].Nodes; n++) NewNode();
+        return i;
+    }
+
+    // Whether a function is an instance method of a shared generic copy, run for every type argument of references.
+    private bool Shared(int f) => _functions[f].Instance && _functions[f].Parameters > 0 && _functions[f].Name.Contains("$__canon", StringComparison.Ordinal);
+
+    // The instance of g a call runs on an object: for a shared copy's method
+    // and a typed object, the copy for its descriptor -- made, and its
+    // constraints stated, the first time -- past MostInstances the function's own.
+    private int InstanceFor(int g, int o)
+    {
+        if (!Shared(g) || o <= 1 || _objects[o].Table is not { } table) return g;
+        if (_instOf.TryGetValue((g, table), out int i)) return i;
+        if (_instances[g] >= MostInstances) return g;
+        _instances[g]++;
+        i = NewInstance(g, table);
+        _instOf[(g, table)] = i;
+        Instantiate(i);
+        return i;
+    }
     private Uses UsesOf(int node) => _uses[node] ??= new();
     private bool Has(int f, int n) => n >= 0 && n < _functions[f].Nodes;
 
@@ -197,12 +268,28 @@ public sealed class RegionTypes
     }
 
     private int Typed(string table, long at) => _typed.TryGetValue((table, at), out int o) ? o : _typed[(table, at)] = NewObject(table, at);
-    private int Untyped(int f) => _untyped[f] >= 0 ? _untyped[f] : _untyped[f] = NewObject(null, 0);
-    // An allocation of no known stamp: of its function's own, apart from its frame slots.
-    private int UntypedMade(int f)
+    // What a site makes in instance i: its descriptor's object, or in a copy
+    // for a `this` of its own, an object of that copy's (a List's array, made
+    // in Grow, is that List's).
+    private int TypedIn(string table, long at, int i)
     {
-        if (_untypedSites[f] >= 0) return _untypedSites[f];
-        int o = _untypedSites[f] = NewObject(null, 0);
+        if (_instCtx[i] is null) return Typed(table, at);
+        return _typedIn.TryGetValue((table, at, i), out int o) ? o : _typedIn[(table, at, i)] = NewObject(table, at);
+    }
+    // AN ARRAY BY ITS SITE: of its descriptor's type, an object of its own.
+    // One object a descriptor made every object[] in a program one array,
+    // every element stored in any of them read out of all -- a params
+    // array, Array.Copy's buffers, a List's storage.
+    private readonly Dictionary<(int, int), int> _arrays = new();
+    private int ArrayAt(string table, long at, int i, int site)
+        => _arrays.TryGetValue((i, site), out int o) ? o : _arrays[(i, site)] = NewObject(table, at);
+
+    private int Untyped(int i) => _untyped[i] >= 0 ? _untyped[i] : _untyped[i] = NewObject(null, 0);
+    // An allocation of no known stamp: of its instance's own, apart from its frame slots.
+    private int UntypedMade(int i)
+    {
+        if (_untypedSites[i] >= 0) return _untypedSites[i];
+        int o = _untypedSites[i] = NewObject(null, 0);
         _untypedMade.Add(o);
         return o;
     }
@@ -237,8 +324,9 @@ public sealed class RegionTypes
     {
         if (!(_pts[node] ??= new()).Add(value)) return;
         if (value == Top && Explain is not null) _topFrom.TryAdd(node, (_source, _sourceWhy));
-        if (++_steps > Budget) throw new OverBudget();
-        List<int> delta = _delta[node] ??= new();
+        if (++_steps > _budget) throw new OverBudget();
+        if (Progress is not null && _steps % 50_000_000 == 0) ReportProgress();
+        ValueSet delta = _delta[node] ??= new();
         if (delta.Count == 0) _work.Enqueue(node);
         delta.Add(value);
     }
@@ -301,8 +389,9 @@ public sealed class RegionTypes
     private Dictionary<int, (int O, int Offset)>? _cellNames;
     private string NodeName(int node)
     {
-        for (int f = _base.Length - 1; f >= 0; f--)
-            if (node >= _base[f] && node < _base[f] + _functions[f].Nodes) return _functions[f].Name + " node " + (node - _base[f]);
+        for (int i = 0; i < _instBase.Count; i++)
+            if (node >= _instBase[i] && node < _instBase[i] + _functions[_instF[i]].Nodes)
+                return _functions[_instF[i]].Name + (_instCtx[i] is { } ctx ? " [" + ctx + "]" : "") + " node " + (node - _instBase[i]);
         _cellNames ??= _cells.ToDictionary(pair => pair.Value, pair => ((int)(pair.Key >> 32), (int)(uint)pair.Key));
         if (_cellNames.TryGetValue(node, out var cell)) return (_objects[cell.O].Table ?? (cell.O == 0 ? "unknown" : "untyped")) + " cell " + cell.Offset;
         return node == _sink ? "where nobody follows" : "node " + node;
@@ -336,7 +425,7 @@ public sealed class RegionTypes
         int start = -1;
         for (int o = 2; o < _objects.Count; o++) if (_objects[o].Table == table) { start = o; break; }
         if (start < 0 || !_escaped.Contains(start)) return table + ": does not reach the unknown";
-        bool Holds(HashSet<int>? held, int o) => held is not null && (held.Contains(o << 1) || held.Contains(o << 1 | 1));
+        bool Holds(ValueSet? held, int o) => held is not null && (held.Contains(o << 1) || held.Contains(o << 1 | 1));
         Dictionary<int, int> from = new() { [start] = -1 };
         Queue<int> next = new();
         next.Enqueue(start);
@@ -366,33 +455,37 @@ public sealed class RegionTypes
         AllCells(o, _sink);
     }
 
-    private void Nobody(int f, RegionCall call)
+    private void Nobody(int i, RegionCall call)
     {
-        foreach (int a in call.Arguments) if (Has(f, a)) ToSink(Node(f, a), _functions[f].Name + " hands it to a call nobody names (" + (call.Callee ?? "an address") + ")");
+        int f = _instF[i];
+        foreach (int a in call.Arguments) if (Has(f, a)) ToSink(Node(i, a), _functions[f].Name + " hands it to a call nobody names (" + (call.Callee ?? "an address") + ")");
         _source = -1; _sourceWhy = _functions[f].Name + " calls nobody (" + (call.Callee ?? "an address") + ")";
-        if (Has(f, call.Dest)) Add(Node(f, call.Dest), Top);
+        if (Has(f, call.Dest)) Add(Node(i, call.Dest), Top);
     }
 
-    private void Bind(int f, RegionCall call, int g)
+    // A direct call from instance i bound to instance gi of its target, every argument.
+    private void Bind(int i, RegionCall call, int gi)
     {
-        RegionFunction callee = _functions[g];
+        int f = _instF[i];
+        RegionFunction callee = _functions[_instF[gi]];
         for (int k = 0; k < call.Arguments.Length && k < callee.Parameters; k++)
-            if (Has(f, call.Arguments[k])) Edge(Node(f, call.Arguments[k]), Node(g, k));
-        if (Has(f, call.Dest) && callee.Parameters < callee.Nodes) Edge(Node(g, callee.Parameters), Node(f, call.Dest));
+            if (Has(f, call.Arguments[k])) Edge(Node(i, call.Arguments[k]), Node(gi, k));
+        if (Has(f, call.Dest) && callee.Parameters < callee.Nodes) Edge(Node(gi, callee.Parameters), Node(i, call.Dest));
     }
 
     // For a report (Explain): what first gave each call every target.
     private readonly Dictionary<int, string> _fullBy = new();
 
-    // A virtual call's target bound but for its receiver: the other
+    // A call's target instance bound but for its receiver: the other
     // arguments and the result. `this` is handed each value the receiver
     // holds that runs the target (Received).
-    private void BindRest(int f, RegionCall call, int g)
+    private void BindRest(int i, RegionCall call, int gi)
     {
-        RegionFunction callee = _functions[g];
+        int f = _instF[i];
+        RegionFunction callee = _functions[_instF[gi]];
         for (int k = 1; k < call.Arguments.Length && k < callee.Parameters; k++)
-            if (Has(f, call.Arguments[k])) Edge(Node(f, call.Arguments[k]), Node(g, k));
-        if (Has(f, call.Dest) && callee.Parameters < callee.Nodes) Edge(Node(g, callee.Parameters), Node(f, call.Dest));
+            if (Has(f, call.Arguments[k])) Edge(Node(i, call.Arguments[k]), Node(gi, k));
+        if (Has(f, call.Dest) && callee.Parameters < callee.Nodes) Edge(Node(gi, callee.Parameters), Node(i, call.Dest));
     }
 
     private void BindAll(int c, string? why = null)
@@ -400,8 +493,14 @@ public sealed class RegionTypes
         if (_full[c]) return;
         _full[c] = true;
         if (Explain is not null && why is not null) _fullBy[c] = why;
-        var (f, k) = _calls[c];
-        foreach (int g in _targets[f][k]!) if (_bound[c].Add(g)) BindRest(f, _functions[f].Calls[k], g);
+        var (i, k) = _calls[c];
+        int f = _instF[i];
+        int[] targets = _routed[c] >= 0 ? new[] { _routed[c] } : _targets[f][k]!;
+        foreach (int g in targets)
+        {
+            _bound[c].Add(g);
+            if (_boundInst[c].Add(g)) BindRest(i, _functions[f].Calls[k], g);
+        }
     }
 
     // A VALUE THE RECEIVER MAY BE goes to the `this` of the targets it runs,
@@ -411,29 +510,38 @@ public sealed class RegionTypes
     // string, and through a root that answers one, the unknown object's,
     // its every delegate call run on every delegate. The unknown object, a
     // constant, an untyped object, or one whose descriptor may run any,
-    // goes to every target. An address into an object is a call on it.
+    // goes to every target. And to the INSTANCE of each target it runs: a
+    // shared copy's method, its copy for the object's descriptor
+    // (InstanceFor). An address into an object is a call on it.
     private void Received(int c, int value)
     {
-        var (f, k) = _calls[c];
+        var (i, k) = _calls[c];
+        int f = _instF[i];
         RegionCall call = _functions[f].Calls[k];
         int o = ObjectOf(value);
         int[]? runs = null;
-        string? every = null;
-        if (o <= 1 || _objects[o].Table is not { } table) every = o == 0 ? "the unknown object" : o == 1 ? "a constant" : "an untyped object";
+        if (_routed[c] >= 0) runs = new[] { _routed[c] };
         else
         {
-            if (!_dispatched.TryGetValue((f, k, o), out runs)) _dispatched[(f, k, o)] = runs = _dispatch(f, k, table, _objects[o].At);
-            if (runs is null) every = "an object of " + table + " that runs any";
-        }
-        if (every is not null)
-        {
-            BindAll(c, every);
-            runs = _targets[f][k]!;
+            string? every = null;
+            if (o <= 1 || _objects[o].Table is not { } table) every = o == 0 ? "the unknown object" : o == 1 ? "a constant" : "an untyped object";
+            else
+            {
+                if (!_dispatched.TryGetValue((f, k, o), out runs)) _dispatched[(f, k, o)] = runs = _dispatch(f, k, table, _objects[o].At);
+                if (runs is null) every = "an object of " + table + " that runs any";
+            }
+            if (every is not null)
+            {
+                BindAll(c, every);
+                runs = _targets[f][k]!;
+            }
         }
         foreach (int g in runs!)
         {
-            if (_bound[c].Add(g)) BindRest(f, call, g);
-            if (_functions[g].Parameters > 0 && Has(g, 0)) Add(Node(g, 0), value);
+            _bound[c].Add(g);
+            int gi = InstanceFor(g, o);
+            if (_boundInst[c].Add(gi)) BindRest(i, call, gi);
+            if (_functions[g].Parameters > 0 && Has(g, 0)) Add(Node(gi, 0), value);
         }
     }
 
@@ -442,7 +550,7 @@ public sealed class RegionTypes
         while (_work.TryDequeue(out int n))
         {
             _source = n; _sourceWhy = null;
-            List<int> delta = _delta[n]!;
+            int[] delta = _delta[n]!.ToArray();
             _delta[n] = null;
             foreach (int v in delta)
             {
@@ -468,22 +576,33 @@ public sealed class RegionTypes
     /// </summary>
     public bool Prune()
     {
+        _budget = Budget >= 0 ? Budget : Math.Clamp(30L * _pts.Count, 2_000_000, 20_000_000);
         try { Solve(); }
         catch (OverBudget) { GaveUp = true; return false; }
         Objects = _objects.Count;
+        // Each virtual call of each function, over every instance of it.
+        Dictionary<(int, int), (bool Full, HashSet<int> Bound, int First)> merged = new();
         for (int c = 0; c < _calls.Count; c++)
         {
-            var (f, k) = _calls[c];
+            if (_routed[c] >= 0) continue;
+            var (i, k) = _calls[c];
+            int f = _instF[i];
+            if (!merged.TryGetValue((f, k), out var m)) m = (false, new HashSet<int>(), c);
+            m.Bound.UnionWith(_bound[c]);
+            merged[(f, k)] = (m.Full || _full[c], m.Bound, m.First);
+        }
+        foreach (((int f, int k), (bool full, HashSet<int> bound, int first)) in merged)
+        {
             int[] those = _targets[f][k]!;
             Calls++; Before += those.Length;
-            if (_full[c])
+            if (full)
             {
                 After += those.Length; Unknown++;
                 if (Explain is { } explain && explain(f))
-                    Explained.Add($"{_functions[f].Name} call {k} ({_keys[f][k]}): every target, for {_fullBy.GetValueOrDefault(c, "a receiver nothing reaches")}{(_rooted[f] ? (TypedThis?[f] == true ? "; a typed root" : "; a root") : "")}; this holds {string.Join(", ", (_pts[Node(f, 0)] ?? new()).Take(6).Select(v => ObjectOf(v) <= 1 ? (ObjectOf(v) == 0 ? "unknown" : "constant") : _objects[ObjectOf(v)].Table ?? "untyped"))}");
+                    Explained.Add($"{_functions[f].Name} call {k} ({_keys[f][k]}): every target, for {_fullBy.GetValueOrDefault(first, "a receiver nothing reaches")}{(_rooted[f] ? (TypedThis?[f] == true ? "; a typed root" : "; a root") : "")}; this holds {string.Join(", ", (_pts[Node(f, 0)] ?? new ValueSet()).Take(6).Select(v => ObjectOf(v) <= 1 ? (ObjectOf(v) == 0 ? "unknown" : "constant") : _objects[ObjectOf(v)].Table ?? "untyped"))}");
                 continue;
             }
-            int[] kept = those.Where(_bound[c].Contains).ToArray();
+            int[] kept = those.Where(bound.Contains).ToArray();
             After += kept.Length;
             if (kept.Length < those.Length) Narrowed++;
             _targets[f][k] = kept;
@@ -491,77 +610,109 @@ public sealed class RegionTypes
         return true;
     }
 
-    private void Solve()
+    private readonly List<int> _typedRoots = new();
+
+    /// <summary>
+    /// Instance i's constraints and calls, stated: function f's own for its
+    /// own instance, the same over the instance's nodes for a copy run on a
+    /// `this` of one descriptor -- its sites making objects of its own, and
+    /// roots only in a function's own instance.
+    /// </summary>
+    private void Instantiate(int i)
     {
-        List<int> typedRoots = new();
-        for (int f = 0; f < _functions.Count; f++)
+        int f = _instF[i];
+        bool own = i == f;
+        RegionFunction function = _functions[f];
+        foreach (RegionConstraint c in function.Constraints)
         {
-            RegionFunction function = _functions[f];
-            foreach (RegionConstraint c in function.Constraints)
+            if (!Has(f, c.A)) continue;
+            int a = Node(i, c.A);
+            switch (c.Kind)
             {
-                if (!Has(f, c.A)) continue;
-                int a = Node(f, c.A);
-                switch (c.Kind)
-                {
-                    case RegionConstraintKind.Site:
-                        RegionSite site = c.B >= 0 && c.B < function.Sites.Length ? function.Sites[c.B] : default;
-                        Add(a, (site.Table is { } table ? Typed(table, site.At) : site.Words == RegionWords.Leaf ? Untyped(f) : UntypedMade(f)) << 1);
-                        break;
-                    case RegionConstraintKind.Slot: Add(a, Untyped(f) << 1); break;
-                    // A closed static (RegionConstants.ClosedStatic, one past
-                    // it in B): an object of its own, holding what is stored.
-                    case RegionConstraintKind.Unknown when c.B > 0: Add(a, Static(c.B - 1) << 1); break;
-                    case RegionConstraintKind.Unknown when c.C > 0 && DataObjects is { } laid && c.C <= laid.Count: Add(a, DataObject((int)c.C - 1) << 1); break;
-                    case RegionConstraintKind.Unknown: _source = -1; _sourceWhy = _functions[f].Name + " says unknown"; Add(a, Top); break;
-                    // A symbol left after RegionConstants is a constant; one
-                    // it never judged may be anything.
-                    case RegionConstraintKind.Symbol: Add(a, function.ConstantsKnown ? Constant : Top); break;
-                    // Moved by anything -- a shift, an index, an offset nobody
-                    // knows -- an address into what it held.
-                    case RegionConstraintKind.Copy:
-                        if (!Has(f, c.B)) break;
-                        if (c.C == 0) Edge(Node(f, c.B), a); else MovedEdge(Node(f, c.B), a);
-                        break;
-                    case RegionConstraintKind.Load: if (Has(f, c.B)) Load(a, Node(f, c.B), Plain(c.C)); break;
-                    case RegionConstraintKind.Store:
-                        if (!Has(f, c.B)) break;
-                        if (Explain is not null) _storedBy.TryAdd(Node(f, c.B), _functions[f].Name + " node " + c.B + " at " + c.C + " through node " + c.A);
-                        Store(a, Node(f, c.B), Plain(c.C));
-                        break;
-                    // Every word of one, at any offset of the other.
-                    case RegionConstraintKind.MemCopy:
-                        if (!Has(f, c.B)) break;
-                        int through = NewNode();
-                        Load(through, Node(f, c.B), AnyOffset);
-                        Store(a, through, AnyOffset);
-                        break;
-                    case RegionConstraintKind.Leak: ToSink(a, _functions[f].Name + " leaks it"); break;
-                }
-            }
-            if (_rooted[f])
-            {
-                bool typed = TypedThis?[f] == true && Receives is not null && function.Instance && function.Parameters > 0;
-                _source = -1; _sourceWhy = _functions[f].Name + " is a root";
-                for (int p = typed ? 1 : 0; p < function.Parameters && p < function.Nodes; p++) Add(Node(f, p), Top);
-                if (typed) typedRoots.Add(f);
-                if (function.Parameters < function.Nodes) ToSink(Node(f, function.Parameters), _functions[f].Name + ", a root, returns it");
-            }
-            for (int k = 0; k < function.Calls.Count; k++)
-            {
-                RegionCall call = function.Calls[k];
-                if (_targets[f][k] is not { } those) { Nobody(f, call); continue; }
-                if (_keys[f][k] is null) { foreach (int g in those) Bind(f, call, g); continue; }
-                int c = _calls.Count;
-                _calls.Add((f, k)); _full.Add(false); _bound.Add(new());
-                if (call.Arguments.Length == 0 || !Has(f, call.Arguments[0])) { BindAll(c); continue; }
-                int receiver = Node(f, call.Arguments[0]);
-                (UsesOf(receiver).Receives ??= new()).Add(c);
-                if (_pts[receiver] is { } held) { _source = receiver; foreach (int o in held.ToArray()) Received(c, o); }
+                case RegionConstraintKind.Site:
+                    RegionSite site = c.B >= 0 && c.B < function.Sites.Length ? function.Sites[c.B] : default;
+                    Add(a, (site.Table is { } table
+                        ? table.StartsWith("q_array", StringComparison.Ordinal) ? ArrayAt(table, site.At, i, c.B) : TypedIn(table, site.At, i)
+                        : site.Words == RegionWords.Leaf ? Untyped(i) : UntypedMade(i)) << 1);
+                    break;
+                case RegionConstraintKind.Slot: Add(a, Untyped(i) << 1); break;
+                // A closed static (RegionConstants.ClosedStatic, one past
+                // it in B): an object of its own, holding what is stored.
+                case RegionConstraintKind.Unknown when c.B > 0: Add(a, Static(c.B - 1) << 1); break;
+                case RegionConstraintKind.Unknown when c.C > 0 && DataObjects is { } laid && c.C <= laid.Count: Add(a, DataObject((int)c.C - 1) << 1); break;
+                case RegionConstraintKind.Unknown: _source = -1; _sourceWhy = function.Name + " says unknown"; Add(a, Top); break;
+                // A symbol left after RegionConstants is a constant; one
+                // it never judged may be anything.
+                case RegionConstraintKind.Symbol: Add(a, function.ConstantsKnown ? Constant : Top); break;
+                // Moved by anything -- a shift, an index, an offset nobody
+                // knows -- an address into what it held.
+                case RegionConstraintKind.Copy:
+                    if (!Has(f, c.B)) break;
+                    if (c.C == 0) Edge(Node(i, c.B), a); else MovedEdge(Node(i, c.B), a);
+                    break;
+                case RegionConstraintKind.Load: if (Has(f, c.B)) Load(a, Node(i, c.B), Plain(c.C)); break;
+                case RegionConstraintKind.Store:
+                    if (!Has(f, c.B)) break;
+                    if (Explain is not null) _storedBy.TryAdd(Node(i, c.B), function.Name + " node " + c.B + " at " + c.C + " through node " + c.A);
+                    Store(a, Node(i, c.B), Plain(c.C));
+                    break;
+                // Every word of one, at any offset of the other.
+                case RegionConstraintKind.MemCopy:
+                    if (!Has(f, c.B)) break;
+                    int through = NewNode();
+                    Load(through, Node(i, c.B), AnyOffset);
+                    Store(a, through, AnyOffset);
+                    break;
+                case RegionConstraintKind.Leak: ToSink(a, function.Name + " leaks it"); break;
             }
         }
+        if (own && _rooted[f])
+        {
+            bool typed = TypedThis?[f] == true && Receives is not null && function.Instance && function.Parameters > 0;
+            _source = -1; _sourceWhy = function.Name + " is a root";
+            for (int p = typed ? 1 : 0; p < function.Parameters && p < function.Nodes; p++) Add(Node(i, p), Top);
+            if (typed) _typedRoots.Add(f);
+            if (function.Parameters < function.Nodes) ToSink(Node(i, function.Parameters), function.Name + ", a root, returns it");
+        }
+        for (int k = 0; k < function.Calls.Count; k++)
+        {
+            RegionCall call = function.Calls[k];
+            if (_targets[f][k] is not { } those) { Nobody(i, call); continue; }
+            bool hasReceiver = call.Arguments.Length > 0 && Has(f, call.Arguments[0]);
+            if (_keys[f][k] is null)
+            {
+                foreach (int g in those)
+                {
+                    // A DIRECT CALL INTO A SHARED COPY'S METHOD, `this.Grow()`
+                    // inside List<__canon>.Add: routed by what `this` is, to
+                    // the copy for its descriptor, as a virtual call is.
+                    if (Shared(g) && hasReceiver) Watch(i, k, g, call);
+                    else Bind(i, call, g);
+                }
+                continue;
+            }
+            Watch(i, k, -1, call);
+        }
+    }
+
+    // A call whose receiver's values pick what runs (Received): a virtual
+    // one (routed -1), or a direct one into a shared copy's method (routed g).
+    private void Watch(int i, int k, int routed, RegionCall call)
+    {
+        int c = _calls.Count;
+        _calls.Add((i, k)); _routed.Add(routed); _full.Add(false); _bound.Add(new()); _boundInst.Add(new());
+        if (call.Arguments.Length == 0 || !Has(_instF[i], call.Arguments[0])) { BindAll(c); return; }
+        int receiver = Node(i, call.Arguments[0]);
+        (UsesOf(receiver).Receives ??= new()).Add(c);
+        if (_pts[receiver] is { } held) { _source = receiver; foreach (int o in held.ToArray()) Received(c, o); }
+    }
+
+    private void Solve()
+    {
+        for (int f = 0; f < _functions.Count; f++) Instantiate(f);
         // Every object exists now (a site's or a slot's constraint makes it):
         // each root called blind is handed those it may run on.
-        foreach (int f in typedRoots)
+        foreach (int f in _typedRoots)
         {
             int self = Node(f, 0);
             for (int o = 2; o < _objects.Count; o++)
@@ -581,13 +732,57 @@ public sealed class RegionTypes
             for (int c = 0; c < _calls.Count; c++)
             {
                 if (_full[c]) continue;
-                var (f, k) = _calls[c];
-                int r = _functions[f].Calls[k].Arguments[0];
-                if (_pts[Node(f, r)] is { Count: > 0 }) continue;
+                var (i, k) = _calls[c];
+                int r = _functions[_instF[i]].Calls[k].Arguments[0];
+                if (_pts[Node(i, r)] is { Count: > 0 }) continue;
                 BindAll(c);
                 more = true;
             }
             Settle();
         }
     }
+}
+
+/// <summary>
+/// WHAT A NODE HOLDS, as bits: value v at bit v, the words grown as far as
+/// the largest value held. A value is an object shifted left one with its
+/// address-into bit (RegionTypes.ObjectOf), so a whole program's few tens of
+/// thousands of objects are a few kilobytes at most, where a hash set of
+/// ints took some ninety bytes a value: the compiler's own link held fifty
+/// million of them in four and a half gigabytes, and was not a tenth done.
+/// </summary>
+internal sealed class ValueSet : IEnumerable<int>
+{
+    private ulong[] _words = Array.Empty<ulong>();
+    public int Count { get; private set; }
+
+    public bool Add(int value)
+    {
+        int word = value >> 6;
+        if (word >= _words.Length) Array.Resize(ref _words, Math.Max(word + 1, Math.Min(_words.Length * 2, word + 64)));
+        ulong bit = 1UL << (value & 63);
+        if ((_words[word] & bit) != 0) return false;
+        _words[word] |= bit;
+        Count++;
+        return true;
+    }
+
+    public bool Contains(int value)
+    {
+        int word = value >> 6;
+        return word < _words.Length && (_words[word] & 1UL << (value & 63)) != 0;
+    }
+
+    public int[] ToArray()
+    {
+        int[] values = new int[Count];
+        int at = 0;
+        for (int w = 0; w < _words.Length; w++)
+            for (ulong bits = _words[w]; bits != 0; bits &= bits - 1)
+                values[at++] = (w << 6) | System.Numerics.BitOperations.TrailingZeroCount(bits);
+        return values;
+    }
+
+    public IEnumerator<int> GetEnumerator() => ((IEnumerable<int>)ToArray()).GetEnumerator();
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
 }

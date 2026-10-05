@@ -932,6 +932,26 @@ class Thread
         }
     }
 
+    /// Join with a limit: true when the thread finished within
+    /// `millisecondsTimeout` (-1, Timeout.Infinite, waits as Join() does).
+    public bool Join(int millisecondsTimeout)
+    {
+        if (millisecondsTimeout == -1) { Join(); return true; }
+        if (millisecondsTimeout < -1) throw new ArgumentOutOfRangeException("millisecondsTimeout");
+        if (_id == 0) throw new ThreadStateException("Thread has not been started.");
+        long at = Atom.At(this, Atom.FirstWord);
+        long until = Clock.Now() + (long)millisecondsTimeout * 1000000;
+        while (Sys.PeekWord(at) == 0)
+        {
+            long left = until - Clock.Now();
+            if (left <= 0) return false;
+            Native.WaitFor(at, 0, left);
+        }
+        return true;
+    }
+
+    public bool Join(TimeSpan timeout) { return Join((int)timeout.TotalMilliseconds); }
+
     /// Stops this thread for `milliseconds`, leaving the processor to others.
     public static void Sleep(int milliseconds)
     {

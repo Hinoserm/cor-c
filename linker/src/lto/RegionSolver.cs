@@ -639,6 +639,9 @@ public static class RegionSolver
                     Receives = Receivers is { } held ? (f, table, at) => held.MayBeThis(_functions[f].Name, table) != false : null,
                     ThisMadeOutside = Receivers is { } stamped ? f => stamped.MadeOutside(_functions[f].Name) != false : null,
                     DataObjects = DataObjects,
+                    Progress = _report is null ? null : Log,
+                    // A diagnostic (+typesbudget=M): the solve's budget, in millions of values carried.
+                    Budget = _report?.FirstOrDefault(w => w.StartsWith("+typesbudget=", StringComparison.Ordinal)) is { } budgetOf && long.TryParse(budgetOf[13..], out long millions) ? millions * 1_000_000 : -1,
                     Explain = _report?.FirstOrDefault(w => w.StartsWith("+typeswhy=", StringComparison.Ordinal)) is { } typesWhy
                         ? f => _functions[f].Name.Contains(typesWhy[10..], StringComparison.Ordinal) : null,
                 };
@@ -649,8 +652,8 @@ public static class RegionSolver
                 if (_report?.FirstOrDefault(w => w.StartsWith("+typesescape=", StringComparison.Ordinal)) is { } escapeOf)
                     Log("receiver types escape: " + types.WhyEscaped(escapeOf[13..]));
                 Log(pruned
-                    ? $"receiver types: {types.Objects} objects; {types.Narrowed} of {types.Calls} virtual calls narrowed, {types.Unknown} left every target, targets {types.Before} -> {types.After}, {_clock.ElapsedMilliseconds} ms"
-                    : $"receiver types: gave up past its budget, every target kept, {_clock.ElapsedMilliseconds} ms");
+                    ? $"receiver types: {types.Objects} objects, {types.Instances} instances, {types.Steps} carried; {types.Narrowed} of {types.Calls} virtual calls narrowed, {types.Unknown} left every target, targets {types.Before} -> {types.After}, {_clock.ElapsedMilliseconds} ms"
+                    : $"receiver types: gave up past its budget ({types.Steps} carried, {types.Instances} instances), every target kept, {_clock.ElapsedMilliseconds} ms");
             }
             for (int f = 0; f < count; f++)
                 for (int k = 0; k < targets[f].Length; k++)
