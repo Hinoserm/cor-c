@@ -5965,6 +5965,7 @@ static class Gc
     /// reports, which is what the build sizes its parallel work by.
     const long ContainerFloor = 20971520;
     const long SmallMachine = 536870912;
+    static long _lastFreeClass;
     const long SmallReserve = 33554432;
 
     /// The heap's ceiling for the address space this process has.
@@ -6233,15 +6234,26 @@ static class Gc
             long cache = Sys.Peek(tb + Tls.Classes);
             long c = 0;
             long page = 0;
-            while (cache != 0 && c < Classes)
+            // FROM THE CLASS THE LAST FREE FOUND, round: frees come in runs of
+            // one type, and every class's page was asked in order first. Only
+            // a hint -- shared by every thread, read and written without a
+            // lock -- since the page's own range decides.
+            long first = _lastFreeClass;
+            if (first < 0 || first >= Classes) first = 0;
+            long tried = 0;
+            c = first;
+            while (cache != 0 && tried < Classes)
             {
                 long mine = Sys.Peek(cache + c * (2 * WordSize.Bytes));
                 if (mine != 0 && block >= HeapChunks.First(mine) && block < HeapChunks.End(mine))
                 {
                     page = mine;
+                    _lastFreeClass = c;
                     break;
                 }
                 c = c + 1;
+                if (c == Classes) c = 0;
+                tried = tried + 1;
             }
             if (page != 0 && HeapChunks.Owner(page) == tb && _classSize != 0)
             {
