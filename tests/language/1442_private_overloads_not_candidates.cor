@@ -1,0 +1,43 @@
+// test: private_overloads_not_candidates
+// expect-exit: 0
+// expect-output:
+// public 5
+// public text 7
+// inside 3
+//
+// A MEMBER THIS CODE CANNOT SEE IS NO CANDIDATE (C# 12.6.4.2). A private
+// constructor or method of another type that fits the arguments as well
+// as -- or better than -- the public one is passed over: Thread's own
+// `Thread(Action body, int slot)` took `new Thread(() => ..., 64 << 20)`
+// from a program and gave a slot number for a stack size. Inside the type
+// its private members are candidates as ever.
+
+using System;
+
+delegate void Work();
+
+class Runner
+{
+    public int Size;
+    public string Kind = "";
+
+    public Runner(Work w, int size) { Kind = "public"; Size = size; }
+    Runner(Action a, int slot) { Kind = "private"; Size = -slot; }
+
+    public static Runner Inside() => new Runner((Action)(() => { }), 3);
+
+    public string Say(object o) => "public text " + o;
+    string Say(int n) => "private number " + n;
+}
+
+static class P
+{
+    static int Main()
+    {
+        Runner r = new Runner(() => { }, 5);
+        Console.WriteLine(r.Kind + " " + r.Size);
+        Console.WriteLine(r.Say(7));
+        Console.WriteLine(Runner.Inside().Kind == "private" ? "inside " + -Runner.Inside().Size : "inside public");
+        return 0;
+    }
+}

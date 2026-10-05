@@ -12809,10 +12809,31 @@ public sealed partial class Binder
 
             case CastExpr cast:
             {
+                // A LAMBDA OR A METHOD GROUP CAST TO A DELEGATE is converted to
+                // it (C# 12.9.7): `(Action)(() => { })` says what the lambda
+                // is, which nothing else around it may. Checked as wanted by
+                // the type, and then converted as an assignment converts it.
+                if (cast.Operand is LambdaExpr || IsFunctionSource(cast.Operand))
+                {
+                    Type target = Resolve(cast.Type, _thisType);
+                    Type? outerWanted = _wanted;
+                    _wanted = target;
+                    Type converted = CheckExpr(cast.Operand);
+                    _wanted = outerWanted;
+                    if (!converted.IsError && !target.IsError) CheckAssignable(converted, target, cast.Operand, "cast");
+                    NoteShape(cast, target);
+                    return target;
+                }
                 Type operand = CheckExpr(cast.Operand);
                 if (cast.CanonSelf is { } castSelf) CheckExpr(castSelf);
                 Type wanted = Resolve(cast.Type, _thisType);
                 NoteShape(cast, wanted);
+                // A method group, known as one only now that it is checked.
+                if (IsFunctionSource(cast.Operand) && !wanted.IsError)
+                {
+                    CheckAssignable(operand, wanted, cast.Operand, "cast");
+                    return wanted;
+                }
 
                 // AN ARRAY OR A STRING CAST TO A SPAN IS MADE ONE, as its
                 // implicit conversion makes one where it is assigned: the cast
@@ -15712,6 +15733,33 @@ public sealed partial class Binder
     }
 
     /// <summary>
+    /// Whether the code being checked can see member `m` as C# lets it: a
+    /// public or internal one anywhere; a private one -- written so, or by
+    /// default in a class or struct -- only inside its own type or a type
+    /// nested in it; a protected one there or in a type derived from it.
+    /// </summary>
+    private bool Visible(MethodSymbol m)
+    {
+        if (m.Decl is not MethodDecl d || m.Owner is not TypeSymbol owner || owner.Kind == TypeKind.Interface) return true;
+        Mods mods = d.Mods;
+        if ((mods & (Mods.Public | Mods.Internal)) != 0) return true;
+        TypeSymbol? here = _thisType is not null && IsClosure(_thisType) ? _capturedThisType ?? _lexicalType : _thisType;
+        if (here is null) return true;
+        if (Inside(here, owner)) return true;
+        return (mods & Mods.Protected) != 0 && here.DerivesFrom(owner);
+
+        // Within: the type itself, or one written inside it, however deep.
+        bool Inside(TypeSymbol t, TypeSymbol of)
+        {
+            if (ReferenceEquals(t, of)) return true;
+            string ofPath = of.Decl is { Outer: string o } ? o + "." + of.Decl.Name : of.Decl?.Name ?? of.Name;
+            for (string? at = t.Decl?.Outer; at is not null; at = at.Contains('.') ? at[..at.LastIndexOf('.')] : null)
+                if (at == ofPath || at.EndsWith("." + ofPath, StringComparison.Ordinal)) return true;
+            return false;
+        }
+    }
+
+    /// <summary>
     /// The constructor a `new` -- or a constructor's `: base(...)` or
     /// `: this(...)`, checked as one -- calls, with its arguments put in
     /// parameter order, defaults and caller information filled in, a `params`
@@ -15723,6 +15771,13 @@ public sealed partial class Binder
     {
         List<MethodSymbol> methods = except is null ? constructed.Methods
             : constructed.Methods.Where(m => !ReferenceEquals(m.Decl, except)).ToList();
+        // ONLY THE CONSTRUCTORS THIS CODE CAN SEE are candidates (C#
+        // 12.6.4.2): Thread's own `Thread(Action body, int slot)` took
+        // `new Thread(() => ..., 64 * 1024 * 1024)` from a program, a slot
+        // number for a stack size. Where none can be seen the set stands, for
+        // library code that has always reached what it should not.
+        List<MethodSymbol> visible = methods.Where(m => !m.IsCtor || Visible(m)).ToList();
+        if (visible.Any(m => m.IsCtor)) methods = visible;
         NormalizeConstructorArguments(nw, methods, constructorArgs);
         // A `params` CONSTRUCTOR HAS TWO FORMS, exactly as a
         // `params` method does: an array supplied in the final
@@ -17137,6 +17192,14 @@ public sealed partial class Binder
         }
 
         byArity = byArity.Where(Fits).ToList();
+
+        // ONLY WHAT THIS CODE CAN SEE, as for a constructor (Visible): a
+        // private overload of another type is no candidate where a visible
+        // one fits.
+        if (byArity.Count > 1 && byArity.Any(Visible) && !byArity.All(Visible))
+        {
+            byArity = byArity.Where(Visible).ToList();
+        }
 
         if (byArity.Count == 0)
         {
