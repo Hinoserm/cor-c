@@ -341,6 +341,8 @@ public static class RegionSummary
 
                 case Opcode.Store:
                 case Opcode.InitArrayLength:
+                    // A word of the handler chain (Instr.Number) is no reference.
+                    if (i.Number) return;
                     if (i.Operands.Count >= 2 && Base(i.Operands[0]) is int into and >= 0 && Value(i.Operands[1]) is int value and >= 0)
                         _constraints.Add(new(RegionConstraintKind.Store, into, value, i.Offset, i.Op == Opcode.Store ? Family(i) : -1));
                     return;

@@ -476,8 +476,8 @@ public sealed partial class Lowering
         if (_openHandlers.Count > 0)
         {
             VReg outermost = _e.SlotAddress(_openHandlers[0].Record);
-            VReg before = _e.Load(IrTypes.Word, outermost, HandlerPrev / 4 * w);
-            _e.Store(ThreadBlockNow(), before, TlsHandler / 4 * w);
+            VReg before = ChainRead(outermost, HandlerPrev / 4 * w);
+            ChainWrite(ThreadBlockNow(), R(before), TlsHandler / 4 * w);
         }
 
         int point = _yieldPoints++;
@@ -487,15 +487,15 @@ public sealed partial class Lowering
         foreach ((FrameSlot record, AstBlock? _) in _openHandlers)
         {
             VReg addr = _e.SlotAddress(record);
-            VReg head = _e.Load(IrTypes.Word, ThreadBlockNow(), TlsHandler / 4 * w);
-            _e.Store(addr, head, HandlerPrev / 4 * w);
+            VReg head = ChainRead(ThreadBlockNow(), TlsHandler / 4 * w);
+            ChainWrite(addr, R(head), HandlerPrev / 4 * w);
             VReg sp = _e.Reg(IrTypes.Word, "sp");
             _e.Emit(Opcode.StackPointer, sp);
-            _e.Store(addr, sp, HandlerSp / 4 * w);
+            ChainWrite(addr, R(sp), HandlerSp / 4 * w);
             VReg fp = _e.Reg(IrTypes.Word, "fp");
             _e.Emit(Opcode.FramePointer, fp);
-            _e.Store(addr, fp, HandlerFp / 4 * w);
-            _e.Store(ThreadBlockNow(), addr, TlsHandler / 4 * w);
+            ChainWrite(addr, R(fp), HandlerFp / 4 * w);
+            ChainWrite(ThreadBlockNow(), R(addr), TlsHandler / 4 * w);
         }
 
         _e.Store(R(machine), Imm(-1, IrType.I32), IterStateField, 4);

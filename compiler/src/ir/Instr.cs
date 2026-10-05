@@ -50,7 +50,9 @@ public sealed class Instr
     /// bytes moved are a string's characters or a byte array's bytes
     /// (Sys.Copy, Sys.CopyNoOverlap), never an address. Call, CallIndirect:
     /// what it answers is of a number type, as its method declares it,
-    /// never an address, whatever the callee hands back. Left unset it says
+    /// never an address, whatever the callee hands back. Store: the word
+    /// written is the handler chain's, a frame's or a landing's address,
+    /// never a reference (Lowering.ChainWrite). Left unset it says
     /// nothing, so a pass making a load or a copy of its own need not know.
     /// </summary>
     public bool Number { get; set; }
