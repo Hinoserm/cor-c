@@ -3131,7 +3131,14 @@ public static class RegionSolver
                     (int c, _, ulong[] lapLive) = loops[l].Copies[i];
                     under[o] = true;
                     (beneath[l] ??= new()).Add(o);
-                    if (Has(lapLive, o) || Outlives(o, c)) refused[o] = true;
+                    if (Has(lapLive, o) || Outlives(o, c))
+                    {
+                        // --region-report +looprefusals: each object a loop region refuses, and why.
+                        if (!refused[o] && _report is not null && _report.Contains("+looprefusals"))
+                            Log($"loop {_functions[loops[l].Function].Name} at block {loops[l].Shape.Header} refuses {DescribeObject(o)}: "
+                                + (Has(lapLive, o) ? "live where a lap ends" : "outlives the call"));
+                        refused[o] = true;
+                    }
                 }
                 HashSet<(int, int)> taken = new();
                 foreach (((int, int) key, List<int> objects) in bySite)

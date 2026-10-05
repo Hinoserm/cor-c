@@ -537,6 +537,18 @@ internal sealed class RegionEscape
     /// <summary>Whether a word of a site's objects, at a byte offset (Any: some word), is never read as a reference (RegionSolver.HoldsNoReference); null for no such knowledge.</summary>
     public Func<int, int, bool>? NoReference;
 
+    /// <summary>A site's number named as the reports name it: its function and ordinal (a diagnostic).</summary>
+    public string SiteName(int site)
+    {
+        int at = 0;
+        foreach (RegionFunction function in _functions)
+        {
+            if (site < at + function.Sites.Length) return function.Name + " site " + (site - at) + " line " + function.Sites[site - at].Line;
+            at += function.Sites.Length;
+        }
+        return "site " + site;
+    }
+
     /// <summary>A diagnostic only, never for an image: leave out what roots hand back.</summary>
     public bool NoRoots;
     /// <summary>A diagnostic: the sites to explain the global reach of.</summary>
@@ -4428,6 +4440,17 @@ internal sealed class RegionEscape
                 {
                     RegionLoopShape loop = function.Loops[l];
                     held[l] = (OriginsHeld(m, loop.Live, Enumerable.Range(0, function.Slots)), OriginsHeld(m, loop.Invariant, loop.KeptSlots));
+                    // A diagnostic (+why on the function): the sites live where
+                    // a lap ends, through the registers and through the slots apart.
+                    if (_owner.WhyFunction?.Invoke(f) == true)
+                    {
+                        foreach (int node in loop.Live)
+                            if (OriginsHeld(m, new[] { node }, Array.Empty<int>()) is { Length: > 0 } byNode)
+                                _owner.Progress?.Invoke($"escape graphs why: {_owner._functions[f].Name} loop at block {loop.Header}: node {node} live where a lap ends holds {string.Join(", ", _owner.SitesOf(byNode).Select(_owner.SiteName))}; written by {string.Join("; ", function.Constraints.Where(c => c.A == node).Select(c => c.Kind + " " + c.B + " " + c.C))}");
+                        for (int slot = 0; slot < function.Slots; slot++)
+                            if (OriginsHeld(m, Array.Empty<int>(), new[] { slot }) is { Length: > 0 } bySlot)
+                                _owner.Progress?.Invoke($"escape graphs why: {_owner._functions[f].Name} loop at block {loop.Header}: slot {slot} holds {string.Join(", ", _owner.SitesOf(bySlot).Select(_owner.SiteName))}");
+                    }
                 }
                 _owner.LoopHeld[f] = held;
             }

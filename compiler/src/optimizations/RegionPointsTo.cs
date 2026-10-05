@@ -1453,6 +1453,22 @@ public sealed class RegionPointsTo : IModulePass
         if (natural.Count == 0) return found;
         Liveness liveness = new(cfg);
         (HashSet<FrameSlot> aliased, Func<Instr, IEnumerable<FrameSlot>> writes) = SlotUses(f);
+        // THE BLOCKS A RETURN IS REACHED FROM (RegionSummary's `returns`); the
+        // rest only throw. A lap that leaves for one of those goes on to no
+        // code after the loop: what it keeps, it keeps through the calls it
+        // makes there, which the escape answers follow. Counted as a lap's
+        // end, a failed cast's path -- the object handed to InvalidCastTo --
+        // made every array a lap read live where the lap ended, and the loop's
+        // region refused it (1323). Only where nothing is caught here: a
+        // handler is joined to no call that unwinds to it.
+        bool[] returns = new bool[f.Blocks.Count];
+        bool caughtHere = cfg.Roots.Any(root => root != f.Entry);
+        Stack<Block> towards = new();
+        foreach (Block b in f.Blocks)
+            if (caughtHere || b.Terminator is { Op: Opcode.Ret }) { returns[b.Order] = true; towards.Push(b); }
+        while (towards.TryPop(out Block? b))
+            foreach (Block p in cfg.Preds(b))
+                if (!returns[p.Order]) { returns[p.Order] = true; towards.Push(p); }
         foreach ((Block header, HashSet<Block> body, List<Block> latches) in natural)
         {
             if (cfg.IsRoot(header)) continue;
@@ -1471,7 +1487,7 @@ public sealed class RegionPointsTo : IModulePass
                 // A lap ends going round again, or out: what is live into
                 // where it goes, and what that block's joins take from here.
                 foreach (Block s in cfg.Succs(b))
-                    if (s == header || !body.Contains(s))
+                    if (s == header || !body.Contains(s) && returns[s.Order])
                     {
                         foreach (VReg r in liveness.LiveIn(s)) live.Add(r);
                         foreach (Instr phi in s.Instrs)
