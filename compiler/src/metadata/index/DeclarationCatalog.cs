@@ -228,6 +228,11 @@ public sealed class DeclarationCatalog : IDisposable
     // name are no answer.
     private string? Remembered(char kind, string identity, string name)
     {
+        // A NAME THE MONOMORPHISER MADE ('$' is in no C# identifier, so in no
+        // declaration's key) is in no index. The binder asks for every one it
+        // resolves, and remembering each "no" kept a hundred thousand long
+        // names live through the compile.
+        if (name.Contains('$')) return null;
         Dictionary<string, string?>? table;
         lock (bindingGate)
         {
