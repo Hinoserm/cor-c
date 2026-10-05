@@ -79,7 +79,7 @@ public sealed class IndexedDeclarations : IDisposable
         {
             string query = bindingPrefix + bindingName;
             queries.Add(query);
-            key = catalog.BindingKeyOf(query, bindingName) ?? Sole(bindingName);
+            key = catalog.BindingKey(assembly, bindingName) ?? Sole(bindingName);
             required[bindingName] = key;
         }
         if (key is not null && !loaded.Contains(key)) throw new DeclarationDemand(key);
@@ -102,7 +102,7 @@ public sealed class IndexedDeclarations : IDisposable
         // Only what the binder asks is a dependency; a prefetch is a guess.
         string query = solePrefix + name;
         if (asked) queries.Add(query);
-        return catalog.SoleKeyOf(query);
+        return catalog.SoleKey(assembly, name);
     }
 
     public void Include(string key)
