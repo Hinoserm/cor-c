@@ -3542,6 +3542,13 @@ public sealed partial class Binder
     {
         if (sym.SlotsAssigned) return;
         sym.SlotsAssigned = true;
+        // THE BASE FIRST. An override takes the slot of the method it
+        // overrides, and a new virtual the next above the base's: read before
+        // the base was numbered, both came out of thin air. A unit that met
+        // ArgumentException before Exception (abi.cor, throwing one) gave its
+        // Message a slot of its own, and the library's link refused the two
+        // layouts.
+        if (sym.Base is TypeSymbol basis) AssignSlots(basis);
         // A class's own virtual methods are numbered above the interface
         // region -- the LIBRARY's region for a library class, so that it gets
         // the numbers its own build gave it whatever this compilation adds.
