@@ -80,7 +80,7 @@ public static class RegionSolver
         Func<string, long, long?, bool>? noReference = null, bool loops = false, Func<string, string, bool?>? isA = null,
         Func<string, IReadOnlyCollection<long>?>? slotsOf = null,
         (Func<string, string, bool?> MayBeThis, Func<string, bool?> MadeOutside)? receivers = null,
-        IReadOnlyList<(string Table, long At)>? dataObjects = null)
+        IReadOnlyList<(string Table, long At)>? dataObjects = null, Func<string, IReadOnlyList<string>>? methodsOf = null)
     {
         // CONTEXTS AS FAR AS THE BUDGET GOES: two objects deep, then one, then none
         // at all -- every function one copy, coarser but far smaller.
@@ -93,7 +93,7 @@ public static class RegionSolver
         // still the deepest that fits; the coarse one is kept, not made again.
         if (!Switches.AndersenRegions)
         {
-            Solver graphs = new(units, virtuals, methodAt, entry, foreign, report, live, 0, noReference) { LoopRegions = loops, Graphs = true, IsA = isA, SlotsOf = slotsOf, Receivers = receivers, DataObjects = dataObjects };
+            Solver graphs = new(units, virtuals, methodAt, entry, foreign, report, live, 0, noReference) { LoopRegions = loops, Graphs = true, IsA = isA, SlotsOf = slotsOf, Receivers = receivers, DataObjects = dataObjects, MethodsOf = methodsOf };
             if (graphs.Run() is { } found) return found;
             Console.Error.WriteLine("regions: nothing made a region");
             return null;
@@ -626,6 +626,8 @@ public static class RegionSolver
                     foreach (string name in _units[u].AddressTaken)
                         if (Resolve(u, name) is { } those) foreach (int f in those) typedThis[f] = false;
             }
+            bool[]? reached = MethodsOf is { } methodsOf && Receivers is { } receiving && _report?.Contains("+reachoff") != true
+                ? Reachable(targets, keys, rooted, methodsOf, receiving.MadeOutside) : null;
             // ONLY WHAT EACH RECEIVER'S TYPES RUN (RegionTypes): a virtual
             // call's targets narrowed before the graphs and the judge's
             // callers are built from them (+typesoff: every override).
@@ -639,6 +641,7 @@ public static class RegionSolver
                     Receives = Receivers is { } held ? (f, table, at) => held.MayBeThis(_functions[f].Name, table) != false : null,
                     ThisMadeOutside = Receivers is { } stamped ? f => stamped.MadeOutside(_functions[f].Name) != false : null,
                     DataObjects = DataObjects,
+                    Reached = reached,
                     Progress = _report is null ? null : Log,
                     // A diagnostic (+typesbudget=M): the solve's budget, in millions of values carried.
                     Budget = _report?.FirstOrDefault(w => w.StartsWith("+typesbudget=", StringComparison.Ordinal)) is { } budgetOf && long.TryParse(budgetOf[13..], out long millions) ? millions * 1_000_000 : -1,
@@ -743,6 +746,76 @@ public static class RegionSolver
         /// descriptor not of the call's type, the method the descriptor holds
         /// at the slot where it is one of them, null where it cannot say.
         /// </summary>
+        /// <summary>
+        /// ONLY THE TYPES REACHABLE CODE MAKES (rapid type analysis): from the
+        /// roots, the functions calls reach, the descriptors their sites stamp,
+        /// and of a virtual call's overrides only those a made descriptor
+        /// holds -- or no descriptor holds, or a type made outside the IR may
+        /// run. Each virtual call is left those. The link's own list of made
+        /// types names every descriptor any code stamps: a delegate type's
+        /// multicast, made in its CombineImpl, which a vtable keeps and no
+        /// program that never combines a delegate calls, was made for every
+        /// Func the compiler has -- three hundred of them -- and every delegate
+        /// call ran every multicast's Invoke, which calls every delegate's.
+        /// </summary>
+        private bool[] Reachable(int[]?[][] targets, string?[][] keys, bool[] rooted, Func<string, IReadOnlyList<string>> methodsOf,
+            Func<string, bool?> madeOutside)
+        {
+            int count = _functions.Count;
+            bool[] reached = new bool[count];
+            Queue<int> next = new();
+            void Reach(int g) { if (!reached[g]) { reached[g] = true; next.Enqueue(g); } }
+            HashSet<string> made = new(StringComparer.Ordinal), allowed = new(StringComparer.Ordinal);
+            Dictionary<string, List<int>> waiting = new(StringComparer.Ordinal);
+            bool Allowed(int g)
+            {
+                string name = _functions[g].Name;
+                if (allowed.Contains(name)) return true;
+                if (madeOutside(name) != false) { allowed.Add(name); return true; }
+                return false;
+            }
+            void Make(string table)
+            {
+                if (!made.Add(table)) return;
+                foreach (string method in methodsOf(table))
+                    if (allowed.Add(method) && waiting.Remove(method, out List<int>? those))
+                        foreach (int g in those) Reach(g);
+            }
+            if (DataObjects is { } laid) foreach (var (table, _) in laid) Make(table);
+            for (int f = 0; f < count; f++) if (rooted[f]) Reach(f);
+            while (next.TryDequeue(out int f))
+            {
+                RegionFunction function = _functions[f];
+                foreach (RegionSite site in function.Sites) if (site.Table is { } table) Make(table);
+                for (int k = 0; k < function.Calls.Count; k++)
+                {
+                    if (targets[f][k] is not { } those) continue;
+                    bool virtualCall = keys[f][k] is not null;
+                    foreach (int g in those)
+                    {
+                        if (!virtualCall || Allowed(g)) { Reach(g); continue; }
+                        string name = _functions[g].Name;
+                        (waiting.TryGetValue(name, out List<int>? list) ? list : waiting[name] = new()).Add(g);
+                    }
+                }
+            }
+            int calls = 0, narrowed = 0, before = 0, after = 0, unreached = 0;
+            for (int f = 0; f < count; f++)
+            {
+                if (!reached[f]) { unreached++; continue; }
+                for (int k = 0; k < targets[f].Length; k++)
+                {
+                    if (keys[f][k] is null || targets[f][k] is not { } those) continue;
+                    int[] kept = those.Where(g => reached[g] && Allowed(g)).ToArray();
+                    calls++; before += those.Length; after += kept.Length;
+                    if (kept.Length < those.Length) { narrowed++; targets[f][k] = kept; }
+                }
+            }
+            if (_report is not null)
+                Log($"reachable types: {made.Count} descriptors made by reachable code, {count - unreached} of {count} functions reached; {narrowed} of {calls} virtual calls narrowed, targets {before} -> {after}, {_clock.ElapsedMilliseconds} ms");
+            return reached;
+        }
+
         private int[]? RunsOn(int f, int k, int[] those, string table, long at)
         {
             string callee = _functions[f].Calls[k].Callee!;
@@ -804,6 +877,8 @@ public static class RegionSolver
         public (Func<string, string, bool?> MayBeThis, Func<string, bool?> MadeOutside)? Receivers { get; init; }
         /// <summary>The objects laid down in data, by the place an Unknown constraint's C names one past (RegionConstants.DataObject).</summary>
         public IReadOnlyList<(string Table, long At)>? DataObjects { get; init; }
+        /// <summary>The methods a descriptor holds at its slots (VirtualTargets.MethodsOf), for the types reachable code makes.</summary>
+        public Func<string, IReadOnlyList<string>>? MethodsOf { get; init; }
 
         /// <summary>Where each method is held in a method table (VirtualTargets.SlotsOf); null: every method may be called blind.</summary>
         public Func<string, IReadOnlyCollection<long>?>? SlotsOf { get; init; }

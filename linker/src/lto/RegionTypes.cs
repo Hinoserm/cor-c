@@ -252,6 +252,9 @@ public sealed class RegionTypes
     private readonly Dictionary<int, int> _staticObjects = new();
     private int Static(int index) => _staticObjects.TryGetValue(index, out int o) ? o : _staticObjects[index] = NewObject(null, 0);
 
+    /// <summary>The functions reachable code may run (RegionSolver.Reachable): null for every one. The rest are stated as nothing.</summary>
+    public bool[]? Reached { get; init; }
+
     /// <summary>The objects laid down in data (RegionConstants.DataObject), by the place an Unknown constraint's C names one past.</summary>
     public IReadOnlyList<(string Table, long At)>? DataObjects { get; init; }
 
@@ -622,6 +625,8 @@ public sealed class RegionTypes
     {
         int f = _instF[i];
         bool own = i == f;
+        // A function no reachable code runs states nothing: no call reaches it.
+        if (Reached is { } reached && !reached[f]) return;
         RegionFunction function = _functions[f];
         foreach (RegionConstraint c in function.Constraints)
         {

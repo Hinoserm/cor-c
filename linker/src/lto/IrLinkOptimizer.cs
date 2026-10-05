@@ -179,7 +179,7 @@ public static class IrLinkOptimizer
                 (u, name) => reachability?.GetValueOrDefault(regionOrder[u]) is not { } kept || kept.Contains("F:" + name),
                 (table, at, offset) => VirtualTargets.HoldsNoReference(inputs, table, at, offset), loopRegionsPossible,
                 (table, type) => VirtualTargets.IsA(inputs, table, type), VirtualTargets.SlotsOf(inputs),
-                VirtualTargets.Receivers(inputs, archives.Keys.ToHashSet()), dataObjects);
+                VirtualTargets.Receivers(inputs, archives.Keys.ToHashSet()), dataObjects, VirtualTargets.MethodsOf(inputs));
             if (solved is not null)
             {
                 regionFacts = new();

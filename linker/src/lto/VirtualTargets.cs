@@ -216,6 +216,17 @@ public static class VirtualTargets
         return ((method, table) => index.MayBeThis(method, table), method => index.MadeOutside(method, outside));
     }
 
+    /// <summary>
+    /// The methods a descriptor holds at its method slots, by its name: what
+    /// an object stamped with it can run by a virtual call (RegionSolver's
+    /// reachable types). Empty for a name no descriptor has.
+    /// </summary>
+    public static Func<string, IReadOnlyList<string>> MethodsOf(List<(string Name, ObjectFile Object)> inputs)
+    {
+        Index index = IndexOf(inputs);
+        return table => index.MethodsOf(table);
+    }
+
     // ONE INDEX A LINK: the descriptors, the functions and the method-table
     // offsets read from the objects once, for every question the link asks
     // of them (its virtual calls, then the catches' ancestry).
@@ -421,6 +432,25 @@ public static class VirtualTargets
                         if (IsDescriptor(named) && (function || named != own)) made.Descriptors.Add(named);
                 }
             return _made = made;
+        }
+
+        // Per descriptor name: the methods its slots hold, every descriptor of the name.
+        private Dictionary<string, List<string>>? _held;
+
+        public IReadOnlyList<string> MethodsOf(string table)
+        {
+            if (_held is null)
+            {
+                _held = new(StringComparer.Ordinal);
+                for (int d = 0; d < _descriptors.Count; d++)
+                {
+                    string name = _descriptors[d].Name;
+                    if (!_held.TryGetValue(name, out List<string>? list)) _held[name] = list = new();
+                    foreach (var (offset, symbol, addend) in Relocs(d))
+                        if (addend == 0 && offset >= DescriptorWords * _word && _functions.Contains(symbol)) list.Add(symbol);
+                }
+            }
+            return _held.TryGetValue(table, out List<string>? methods) ? methods : Array.Empty<string>();
         }
 
         // Per function: the descriptors that hold it at a method slot.
