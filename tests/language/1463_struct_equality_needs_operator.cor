@@ -1,0 +1,19 @@
+// test: == between two structs whose type declares no operator == is an error
+// expect-compile-error: Operator '==' cannot be applied to operands of type
+//
+// C#'s CS0019. Accepted, it compared the two blocks' addresses, and two
+// equal values answered false.
+
+struct Pair
+{
+    public int A, B;
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Pair x = new Pair { A = 1, B = 2 }, y = new Pair { A = 1, B = 2 };
+        return x == y ? 0 : 1;
+    }
+}

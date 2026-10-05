@@ -5246,6 +5246,20 @@ public sealed partial class Binder
         return differs;
     }
 
+    /// <summary>
+    /// A struct value (not a tuple, an enum, a Nullable or a type parameter)
+    /// whose type declares no operator ==: `==` between two is an error.
+    /// </summary>
+    static bool StructWithoutEquality(Type t)
+    {
+        if (t.IsError || t.IsReference || t.IsNullableValue || t.IsPointer || t.IsArray || t.ParamName is not null) return false;
+        if (t.Symbol is not { Kind: TypeKind.Struct } s) return false;
+        if (s.Name.StartsWith(TypeRef.Tuple, StringComparison.Ordinal)) return false;
+        for (TypeSymbol? at = s; at != null; at = at.Base)
+            if (at.Methods.Any(m => m.Static && m.Name is "op_Equality" or "op_Inequality")) return false;
+        return true;
+    }
+
     /// <summary>The one place assignability and nullability are decided.</summary>
     private void CheckAssignable(Type from, Type to, Node at, string what)
     {
@@ -16972,7 +16986,31 @@ public sealed partial class Binder
             bool better = false;
             for (int i = 0; i < args.Count && i < generic.Params.Count && i < ordinary.Params.Count; i++)
             {
-                if (i < c.Args.Count && IsFunctionSource(c.Args[i])) continue;
+                if (i < c.Args.Count && IsFunctionSource(c.Args[i]))
+                {
+                    // A LAMBDA WITH A VALUE converts better to a delegate that
+                    // returns one than to one returning void (C# 12.6.4.5):
+                    // Ui<T>(Func<T>) beside Ui(Action), called with
+                    // `() => form.Handle`, is the Func -- it was the Action,
+                    // and its answer void.
+                    if (c.Args[i] is LambdaExpr lam)
+                    {
+                        Dictionary<string, Type> known = inferred ?? new();
+                        Type ga = Close(Substitute(Invoked(generic.Params[i].Type)?.Returns ?? Type.Error, Applied(generic.Params[i].Type)), known);
+                        Type gb = Substitute(Invoked(ordinary.Params[i].Type)?.Returns ?? Type.Error, Applied(ordinary.Params[i].Type));
+                        bool aVoid = ga.Prim == Prim.Void, bVoid = gb.Prim == Prim.Void;
+                        if (!ga.IsError && !gb.IsError && aVoid != bVoid)
+                        {
+                            Type? made = Produces(generic, generic.Params[i].Type, lam, known);
+                            if (made is not null && !made.IsError && made.Prim != Prim.Void)
+                            {
+                                if (bVoid) better = true;
+                                else return false;
+                            }
+                        }
+                    }
+                    continue;
+                }
                 Type closed = inferred is null ? Wants(generic, i) : Close(Wants(generic, i), inferred);
                 // An unmade parameter takes what it was inferred from, as
                 // Accepts has it.
@@ -18095,6 +18133,15 @@ public sealed partial class Binder
                 else if (!Convertible(l, r) && !Convertible(r, l))
                 {
                     Error(b, $"'{l}' and '{r}' cannot be compared");
+                }
+                // TWO STRUCTS WITH NO == OF THEIR TYPE'S (C# CS0019): there is
+                // no comparison to make, and what was made compared the two
+                // blocks' addresses -- Guid had no operator, and two equal
+                // Guids answered False.
+                else if (StructWithoutEquality(l) && StructWithoutEquality(r)
+                         && !(_member is MethodDecl { LocalCopy: true } || _thisType?.Decl?.Specialised == true))
+                {
+                    Error(b, $"Operator '{(b.Op == BinOp.Eq ? "==" : "!=")}' cannot be applied to operands of type '{l}' and '{r}'");
                 }
                 return Type.Bool;
 

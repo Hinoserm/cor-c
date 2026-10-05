@@ -1,0 +1,30 @@
+// test: Thread.Join with a limit, and a Guid made from its text
+// expect-exit: 0
+// expect-output:
+// False
+// True
+// 00021401-0000-0000-c000-000000000046
+// True
+//
+// .NET's Join(int) answers whether the thread finished in time, and
+// Guid(string) takes any of Parse's forms; the session tests wrote both.
+
+using System;
+using System.Threading;
+
+static class Program
+{
+    static int Main()
+    {
+        bool go = false;
+        Thread t = new Thread(() => { while (!Volatile.Read(ref go)) Thread.Sleep(5); });
+        t.Start();
+        Console.WriteLine(t.Join(50));
+        Volatile.Write(ref go, true);
+        Console.WriteLine(t.Join(5000));
+        Guid g = new Guid("{00021401-0000-0000-C000-000000000046}");
+        Console.WriteLine(g.ToString());
+        Console.WriteLine(g == Guid.Parse("00021401-0000-0000-c000-000000000046"));
+        return 0;
+    }
+}
