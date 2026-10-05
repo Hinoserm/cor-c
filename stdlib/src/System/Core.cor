@@ -6862,7 +6862,6 @@ static class OutgrownStorage {
     }
 }
 
-[LateBound]
 class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
@@ -7654,7 +7653,6 @@ class QueueEnumerator<T> : IEnumerator<T> {
     }
 }
 
-[LateBound]
 class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T> {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
@@ -10333,7 +10331,6 @@ interface IReadOnlyDictionary<K, V> : IEnumerable<KeyValuePair<K, V>> {
     bool TryGetValue(K key, out V value);
 }
 
-[LateBound]
 class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>>, IOwnsElements {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
@@ -11914,7 +11911,6 @@ class Random {
     }
 }
 
-[LateBound]
 class StringBuilder : IOwnsStorage {
     private string buffer;
     private int used;
@@ -12244,7 +12240,6 @@ class HashSetEnumerator<T> : IEnumerator<T> {
     }
 }
 
-[LateBound]
 class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }

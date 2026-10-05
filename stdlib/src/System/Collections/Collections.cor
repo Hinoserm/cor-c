@@ -44,7 +44,6 @@ class StackEnumerator<T> : IEnumerator<T> {
     }
 }
 
-[LateBound]
 class Stack<T> : IReadOnlyCollection<T>, IEnumerable<T> {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
