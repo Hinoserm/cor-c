@@ -2252,6 +2252,61 @@ internal sealed partial class Selector
                 Emit(MOp.CallKeep, MImm.Sym(X86Backend.BarrierStub, 0), Eax, Edx);
                 _m.UsesBarrierStub = true;
                 return;
+            case MachineIntrinsics.RefStore:
+            case MachineIntrinsics.CardStore:
+            {
+                // A REFERENCE STORED IN ONE SEQUENCE (CardMarks.FuseStores):
+                // the slot in EAX, the value in EDX, every register kept, by
+                // the image's stub -- the kernel's, from a module, read out of
+                // the GOT, for it is the kernel's range of them that its ring 0
+                // will not stop a thread inside (X86Backend.RefStoreStub).
+                string stub = name == MachineIntrinsics.RefStore ? X86Backend.RefStoreStub : X86Backend.CardStoreStub;
+                MReg? target = null;
+                if (_positionIndependent)
+                {
+                    target = Temp();
+                    Mov(target, SymbolAddress(stub, 0));
+                }
+                Mov(Eax, R(i.Operands[0]));
+                Mov(Edx, R(i.Operands[1]));
+                if (target is null) Emit(MOp.CallKeep, MImm.Sym(stub, 0), Eax, Edx);
+                else Emit(MOp.CallKeepInd, target, Eax, Edx);
+                return;
+            }
+            case MachineIntrinsics.RefExchange:
+            case MachineIntrinsics.RefCompareExchange:
+            {
+                // A REFERENCE EXCHANGED AS A SEQUENCE (Sys.ExchangeReference):
+                // xchg's stub takes the slot in EAX and the value in EDX, the
+                // compare-exchange's the slot in ECX, the value in EDX and the
+                // expected one in EAX -- CMPXCHG's own -- and both answer in
+                // EAX, every other register kept.
+                bool swap = name == MachineIntrinsics.RefExchange;
+                string stub = swap ? X86Backend.RefExchangeStub : X86Backend.RefCompareExchangeStub;
+                MReg? target = null;
+                if (_positionIndependent)
+                {
+                    target = Temp();
+                    Mov(target, SymbolAddress(stub, 0));
+                }
+                if (swap)
+                {
+                    Mov(Eax, R(i.Operands[0]));
+                    Mov(Edx, R(i.Operands[1]));
+                    if (target is null) Emit(MOp.CallKeepEax, MImm.Sym(stub, 0), Eax, Edx);
+                    else Emit(MOp.CallKeepEaxInd, target, Eax, Edx);
+                }
+                else
+                {
+                    Mov(Ecx, R(i.Operands[0]));
+                    Mov(Edx, R(i.Operands[2]));
+                    Mov(Eax, R(i.Operands[1]));
+                    if (target is null) Emit(MOp.CallKeepEax, MImm.Sym(stub, 0), Eax, Ecx, Edx);
+                    else Emit(MOp.CallKeepEaxInd, target, Eax, Ecx, Edx);
+                }
+                if (i.Dest is not null) Mov(Lo(i.Dest), Eax);
+                return;
+            }
             case MachineIntrinsics.ThreadBlock:
                 // The self pointer at gs:[0]. A machine intrinsic and not an
                 // ordinary load because nothing before here knows that GS is

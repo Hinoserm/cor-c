@@ -233,6 +233,38 @@ public sealed partial class Lowering
             case "AtomicSwap":
                 return Atomic(call, target, Opcode.AtomicSwap);
 
+            // A REFERENCE EXCHANGED, with what every reference store takes:
+            // the snapshot barrier and the card (Interlocked's reference
+            // exchanges). As the image's sequence where stores are
+            // (StoreSequences, X86Backend.RefStoreStub): the test, the
+            // barrier, the atomic exchange and the card in a stub no thread
+            // is stopped inside. Elsewhere the barrier's test before it, as
+            // a field's store has it, and the card after, and before too
+            // where cards are marked so (CardMarkBefore).
+            case "ExchangeReference":
+            case "CompareExchangeReference":
+            {
+                bool swap = name == "ExchangeReference";
+                VReg at = Address(call, target, 0);
+                VReg expect = swap ? at : ToWord(Arg(call, target, 1));
+                VReg value = ToWord(Arg(call, target, swap ? 1 : 2));
+                if (MakesStoreSequences)
+                {
+                    VReg seen = swap
+                        ? _e.Call(MachineIntrinsicRefExchange, IrTypes.Word, R(at), R(value))!
+                        : _e.Call(MachineIntrinsicRefCompareExchange, IrTypes.Word, R(at), R(expect), R(value))!;
+                    return Widen(seen);
+                }
+                MemPlace place = new(R(at), 0, Type.String);
+                ReferenceBarrier(place, value);
+                CardMarkAhead(place, value);
+                VReg old = _e.Reg(IrTypes.Word);
+                if (swap) _e.Emit(Opcode.AtomicSwap, old, R(at), R(value));
+                else _e.Emit(Opcode.AtomicCas, old, R(at), R(expect), R(value));
+                CardMark(place, value);
+                return Widen(old);
+            }
+
             case "Fence":
                 _e.Emit(Opcode.Fence, null);
                 return Void();
@@ -492,6 +524,8 @@ public sealed partial class Lowering
                 return Widen(_e.Address("__data_start"));
             case "DataEnd":
                 return Widen(_e.Address("_end"));
+            case "BuildStamp":
+                return Widen(_e.Address(Corsac.Lang.Elf.KernelExports.StampSymbol));
 
             // ---- the I/O space and the privileged instructions -----------------
             //
@@ -746,6 +780,9 @@ public sealed partial class Lowering
     }
 
     private VReg Void() => _e.Const(0, IrTypes.Word);
+
+    /// <summary>The selector's names for the reference exchanges as sequences (X86 MachineIntrinsics.RefExchange, RefCompareExchange).</summary>
+    private const string MachineIntrinsicRefExchange = "__x86.i.refxchg", MachineIntrinsicRefCompareExchange = "__x86.i.refcas";
 
     /// <summary>A machine value as a runtime routine's declared parameter: widened when the routine takes a long.</summary>
     private VReg AsParam(VReg v, Type param)

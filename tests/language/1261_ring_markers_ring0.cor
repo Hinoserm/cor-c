@@ -1,0 +1,63 @@
+// test: ring_markers_ring0
+// flags: --ring 0
+// expect-exit: 0
+// expect-output:
+// half ring 0
+// both 0 and 1
+// shared 2
+
+// A driver is one source for every ring it works in: its classes marked
+// [Ring0] or [Ring1], what both use not marked at all, and the file compiled
+// once per ring (docs/software/DRIVERS.md in the OS repository). A ring-0
+// compile leaves out every class marked for another ring before anything is
+// bound -- so the ring-1 half may name what only ring 1 has -- and keeps the
+// unmarked ones and those marked for ring 0 among others.
+
+using System;
+
+[Ring0]
+static class Half
+{
+    public static string Name() { return "ring 0"; }
+}
+
+// The other ring's half: the same name, and names nothing ring 0 has.
+[Ring1]
+static class Half
+{
+    public static string Name() { return GuiKernel.Repaint(Seat.Current); }
+}
+
+[Ring1]
+class Mixer
+{
+    SeatBuffer _buffer = new SeatBuffer();
+
+    // Everything written inside it goes with it.
+    class Voice { public PcmRing Ring; }
+}
+
+[Ring2]
+delegate void HostCall(DriverHost host);
+
+[Ring0, Ring1]
+static class Both
+{
+    public static string Name() { return "0 and 1"; }
+}
+
+static class Shared
+{
+    public static int Value => 2;
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Console.WriteLine("half " + Half.Name());
+        Console.WriteLine("both " + Both.Name());
+        Console.WriteLine("shared " + Shared.Value);
+        return 0;
+    }
+}

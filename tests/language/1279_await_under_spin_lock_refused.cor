@@ -1,0 +1,51 @@
+// test: await under a spin lock refused
+// expect-compile-error: cannot await while 'IrqSpinLock' (its Enter) is held
+// A spin lock held across a suspension spins every other taker until the
+// continuation runs -- on one processor, never (docs/X86-BACKEND.md, "Async safety"). From
+// the Enter to the Leave in the finally, on every path, an await is refused,
+// as C# refuses one in a `lock` (CS1996).
+
+using System;
+using System.Threading.Tasks;
+
+class IrqSpinLock
+{
+    long _word;
+
+    public bool Enter()
+    {
+        _word = 1;
+        return true;
+    }
+
+    public void Leave(bool on)
+    {
+        _word = 0;
+    }
+}
+
+static class Program
+{
+    static readonly IrqSpinLock Gate = new IrqSpinLock();
+    static int _shared;
+
+    static async Task Work()
+    {
+        bool on = Gate.Enter();
+        try
+        {
+            _shared++;
+            await Task.Yield();
+        }
+        finally
+        {
+            Gate.Leave(on);
+        }
+    }
+
+    static async Task Main()
+    {
+        await Work();
+        Console.WriteLine(_shared);
+    }
+}

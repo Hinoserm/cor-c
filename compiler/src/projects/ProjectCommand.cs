@@ -21,7 +21,7 @@ public static class ProjectCommand
 
     public static int Run(string[] arguments)
     {
-        string? path = null, output = null, framework = null, targetName = null, regionReport = null;
+        string? path = null, output = null, framework = null, targetName = null, regionReport = null, unusedReport = null;
         string configuration = "Release";
         int workers = Environment.ProcessorCount;
         bool linkOnly = false, runtimeOnly = false, timings = false;
@@ -51,6 +51,9 @@ public static class ProjectCommand
                 case "--target": targetName = Value(); break;
                 // The link's region report (corc link --region-report NAMES).
                 case "--region-report": regionReport = Value(); break;
+                // The program's dead code (corc link --unused-report): every
+                // unit leaves its notes, and the link says what nothing reaches.
+                case "--unused-report": unusedReport = Value(); break;
                 // The link's phases timed (corc link --timings).
                 case "--timings": timings = true; break;
                 case "--cpu": case "--tune": case "--fpu":
@@ -95,6 +98,7 @@ public static class ProjectCommand
         // compiler's own build made no region at all.
         linkArguments.Add("--closed");
         if (regionReport is not null) { linkArguments.Add("--region-report"); linkArguments.Add(regionReport); }
+        if (unusedReport is not null) { linkArguments.Add("--unused-report"); linkArguments.Add(unusedReport); }
         if (timings) linkArguments.Add("--timings");
         string directory = Path.GetDirectoryName(project.Path)!;
         string work = Path.Combine(directory, "obj", "cor-c", configuration, project.Framework);
@@ -151,11 +155,14 @@ public static class ProjectCommand
         string interfaces = string.Join("\n", catalog.Interfaces(project.AssemblyName).OrderBy(pair => pair.Key.Name, StringComparer.Ordinal)
             .ThenBy(pair => pair.Key.Arity).Select(pair => pair.Key.Name + ":" + pair.Key.Arity + ":" + pair.Value));
         string settings = toolchain + "\n" + libraryState + "\n" + interfaces + "\n" + string.Join("\n", graph.Select(node => node.Evaluation))
-            + "\n" + string.Join("\n", cpuArguments);
+            + "\n" + string.Join("\n", cpuArguments) + (unusedReport is not null ? "\nunused-report" : "");
         string runtime = Path.Combine(work, "runtime.o");
         List<string> runtimeArgs = new() { "compile", "--nostdlib", "--lib", "--obj", "--jobs", workers.ToString(), "--decl-index", index, "--assembly", project.AssemblyName };
         runtimeArgs.AddRange(libraries);
         runtimeArgs.AddRange(cpuArguments);
+        // The compiles only carry the notes: one value for all, so naming
+        // another report file recompiles nothing.
+        if (unusedReport is not null) { runtimeArgs.Add("--unused-report"); runtimeArgs.Add("-"); }
         if (linkOnly && !runtimeOnly)
         {
             if (!File.Exists(runtime)) throw new InvalidDataException("--link-only: the runtime object was never compiled: " + runtime);
@@ -180,6 +187,7 @@ public static class ProjectCommand
             bool entry = source == entries[0].Path;
             List<string> options = new() { "--nostdlib", "--obj", "--decl-index", index, "--assembly", project.AssemblyName };
             options.AddRange(cpuArguments);
+            if (unusedReport is not null) { options.Add("--unused-report"); options.Add("-"); }
             if (entry) { options.Add("--main-type"); options.Add(entries[0].Type); }
             if (!owner.WarningsAsErrors) options.Add("-Wno-error");
             foreach (string define in owner.Defines) { options.Add("--define"); options.Add(define); }
@@ -223,7 +231,8 @@ public static class ProjectCommand
             if (ProjectState.FileIdentity(source.Key) != source.Value) throw new InvalidDataException("Source changed during project compilation: " + source.Key);
         if (ProjectState.Digest(string.Join("\n", libraries.Select(ProjectState.FileIdentity))) != libraryState)
             throw new InvalidDataException("Runtime sources changed during project compilation");
-        string linkSignature = ProjectState.Digest(toolchain + "\n" + string.Join("\n", objects.Select(ProjectState.FileIdentity)));
+        string linkSignature = ProjectState.Digest(toolchain + "\n" + string.Join("\n", objects.Select(ProjectState.FileIdentity))
+            + "\n" + string.Join("\n", linkArguments));
         string linkState = Path.Combine(work, "link.state");
         if (!ProjectState.Current(linkState, linkSignature, output))
         {

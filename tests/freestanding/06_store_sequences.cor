@@ -1,0 +1,50 @@
+// test: --ring1-syscalls makes a reference store one sequence no thread is stopped inside
+// flags: --ring1-syscalls
+// run: no
+// expect-asm-x86: Store: __corsac_refstore
+// expect-no-asm-x86: Store: cmp __corsac_cardmark __corsac_barrier
+// expect-asm-x86: Swap: __corsac_refxchg
+// expect-no-asm-x86: Swap: cmp __corsac_cardmark __corsac_barrier
+//
+// THE WINDOW, CLOSED. A ring-1 kernel's thread can be sent to its
+// collector's handshake at any instruction (Ring1Kernel.SendToAnswer). Made
+// in the function, a store's barrier was a test of Runtime.Marking, the
+// store and the card mark: a thread sent between the test (Marking still 0)
+// and the store answered the snapshot and then stored over a reference the
+// concurrent mark had not been told of, and one sent between the store and
+// the card left the card unset for a minor cycle. Here the store is a call of
+// the image's __corsac_refstore -- the test, the barrier, the store and the
+// card in one stub between __corsac_store_sequences and its _end, which the
+// kernel never sends a thread out of -- and Store itself compares nothing (no CMP of Marking),
+// stores no reference and marks no card. Interlocked's exchange is the same:
+// __corsac_refxchg, with no test and no card of its own. Compiled and read, not run: the
+// gate is CORSAC's (09_store_sequences_run runs the sequences).
+
+using System.Threading;
+
+class Node
+{
+    public object? Next;
+}
+
+static class Program
+{
+    static Node _held = new Node();
+
+    static int Main()
+    {
+        Store(_held, new Node());
+        Swap(_held, new Node());
+        return _held.Next == null ? 1 : 0;
+    }
+
+    static void Store(Node into, object value)
+    {
+        into.Next = value;
+    }
+
+    static object? Swap(Node into, object value)
+    {
+        return Interlocked.Exchange(ref into.Next, value);
+    }
+}

@@ -30,6 +30,7 @@
 //             10 ShowPointer flag
 //             11 DefinePointer w h hotx hoty bytes, AND mask then XOR mask
 //             12 Window handle           -- everything after is relative to it
+//             21 PageBlit page x y w h   -- a preview page scaled into the rectangle
 //            Colours are 0x00RRGGBB.
 //   reads    16-byte events: kind, window, a, b
 //              1 Key        a = key code, b = modifiers
@@ -64,6 +65,10 @@ public delegate void MouseEventHandler(object sender, MouseEventArgs e);
 public delegate void KeyPressEventHandler(object sender, KeyPressEventArgs e);
 public delegate void KeyEventHandler(object sender, KeyEventArgs e);
 public delegate void FormClosingEventHandler(object sender, FormClosingEventArgs e);
+public delegate void DragEventHandler(object sender, DragEventArgs e);
+public delegate void GiveFeedbackEventHandler(object sender, GiveFeedbackEventArgs e);
+public delegate void InputLanguageChangingEventHandler(object sender, InputLanguageChangingEventArgs e);
+public delegate void InputLanguageChangedEventHandler(object sender, InputLanguageChangedEventArgs e);
 
 public class PaintEventArgs : EventArgs
 {
@@ -156,6 +161,129 @@ public class KeyEventArgs : EventArgs
 public class FormClosingEventArgs : EventArgs
 {
     public bool Cancel;
+}
+
+/// The language hot key asks for another input language
+/// (WM_INPUTLANGCHANGEREQUEST): set Cancel to stay with this one.
+public class InputLanguageChangingEventArgs : EventArgs
+{
+    public bool Cancel;
+    readonly InputLanguage _language;
+    readonly bool _sysCharSet;
+    public InputLanguageChangingEventArgs(InputLanguage inputLanguage, bool sysCharSet) { _language = inputLanguage; _sysCharSet = sysCharSet; }
+    public InputLanguageChangingEventArgs(CultureInfo culture, bool sysCharSet) { _language = InputLanguage.FromCulture(culture) ?? InputLanguage.DefaultInputLanguage; _sysCharSet = sysCharSet; }
+    public InputLanguage InputLanguage { get { return _language; } }
+    public CultureInfo Culture { get { return _language.Culture; } }
+    /// Whether the system's character set serves the language.
+    public bool SysCharSet { get { return _sysCharSet; } }
+}
+
+/// The input language changed (WM_INPUTLANGCHANGE).
+public class InputLanguageChangedEventArgs : EventArgs
+{
+    readonly InputLanguage _language;
+    readonly byte _charSet;
+    public InputLanguageChangedEventArgs(InputLanguage inputLanguage, byte charSet) { _language = inputLanguage; _charSet = charSet; }
+    public InputLanguageChangedEventArgs(CultureInfo culture, byte charSet) { _language = InputLanguage.FromCulture(culture) ?? InputLanguage.DefaultInputLanguage; _charSet = charSet; }
+    public InputLanguage InputLanguage { get { return _language; } }
+    public CultureInfo Culture { get { return _language.Culture; } }
+    /// The language's character set; 0 (ANSI_CHARSET), as this machine has one.
+    public byte CharSet { get { return _charSet; } }
+}
+
+/// <summary>
+/// AN INPUT LANGUAGE: one of the keyboard layouts the GUI kernel keeps
+/// (os/gui/keyboardstore.cor), named by its KLID -- Windows' number for it,
+/// the language in the low word. The user's are the installed ones, the
+/// default first; each thread types with its own current one, which the
+/// language hot key (Left Alt+Shift) asks a form to change.
+/// </summary>
+public sealed class InputLanguage
+{
+    readonly long _klid;
+
+    internal InputLanguage(long klid) { _klid = klid & 0xFFFFFFFF; }
+
+    /// The KLID: 0x00000407 for German.
+    internal long Klid { get { return _klid; } }
+
+    /// The language the layout is for: its KLID's low word.
+    public CultureInfo Culture { get { return new CultureInfo((int)(_klid & 0xFFFF)); } }
+
+    /// Its HKL, as Windows gives it: the language, and the device above it
+    /// (an IntPtr, which nint is).
+    public nint Handle
+    {
+        get
+        {
+            long hkl = Seat.Current.KeyboardLayoutHandle(_klid);
+            return (nint)(hkl < 0 ? (_klid & 0xFFFF) * 0x10001 : hkl);
+        }
+    }
+
+    /// The layout's name, as Windows' setup names it ("German (IBM)").
+    public string LayoutName { get { return Seat.Current.KeyboardLayoutName(_klid) ?? Culture.Name; } }
+
+    /// The calling thread's; set, the thread types with that one from now
+    /// on -- one of the installed ones, or ArgumentException.
+    public static InputLanguage CurrentInputLanguage
+    {
+        get { return new InputLanguage(Seat.Current.ActiveKeyboardLayout()); }
+        set
+        {
+            if (value == null) throw new ArgumentNullException("value");
+            if (Seat.Current.ActivateKeyboardLayout(value._klid) < 0) throw new ArgumentException("The input language is not installed.");
+        }
+    }
+
+    /// What a thread types with until it chooses.
+    public static InputLanguage DefaultInputLanguage { get { return new InputLanguage(Seat.Current.DefaultKeyboardLayout()); } }
+
+    /// The user's input languages, in their order.
+    public static InputLanguageCollection InstalledInputLanguages
+    {
+        get
+        {
+            long[] klids = Seat.Current.KeyboardLayouts();
+            InputLanguage[] made = new InputLanguage[klids.Length];
+            for (int i = 0; i < klids.Length; i++) made[i] = new InputLanguage(klids[i]);
+            return new InputLanguageCollection(made);
+        }
+    }
+
+    /// The first installed language for a culture; null for none.
+    public static InputLanguage? FromCulture(CultureInfo culture)
+    {
+        if (culture == null) throw new ArgumentNullException("culture");
+        foreach (InputLanguage l in InstalledInputLanguages) if ((l._klid & 0xFFFF) == culture.LCID) return l;
+        return null;
+    }
+
+    public override bool Equals(object? value) { return value is InputLanguage other && other._klid == _klid; }
+    public override int GetHashCode() { return (int)_klid; }
+}
+
+/// The installed input languages (InputLanguage.InstalledInputLanguages).
+public class InputLanguageCollection : IEnumerable<InputLanguage>
+{
+    // The non-generic IEnumerable's, as .NET's collections have it.
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
+    readonly InputLanguage[] _items;
+    internal InputLanguageCollection(InputLanguage[] items) { _items = items; }
+    public int Count { get { return _items.Length; } }
+    public InputLanguage this[int index] { get { return _items[index]; } }
+    public bool Contains(InputLanguage value) { return IndexOf(value) >= 0; }
+    public int IndexOf(InputLanguage value)
+    {
+        for (int i = 0; i < _items.Length; i++) if (_items[i].Equals(value)) return i;
+        return -1;
+    }
+    public void CopyTo(InputLanguage[] array, int index) { Array.Copy(_items, 0, array, index, _items.Length); }
+    public IEnumerator<InputLanguage> GetEnumerator()
+    {
+        for (int i = 0; i < _items.Length; i++) yield return _items[i];
+    }
 }
 
 /// A message, as WndProc sees one. The four words of the seat's event.
@@ -445,17 +573,104 @@ public static class ControlPaint
 }
 
 /// Fires Tick on the message loop every Interval milliseconds while Enabled.
+/// .NET's Forms.Timer: a timer the GUI kernel's seat keeps for this thread
+/// (Seat.SetTimer) and fires as an event the message loop reads, as Windows'
+/// SetTimer does -- one Tick for each coming due, however late the loop is.
 public class Timer
 {
-    public int Interval = 100;
-    public event EventHandler? Tick;
-    long _due;
+    int _interval = 100;
+    int _id;
     bool _enabled;
+    public event EventHandler? Tick;
+
+    /// Milliseconds between Ticks; changed while running, it starts again.
+    public int Interval
+    {
+        get { return _interval; }
+        set
+        {
+            if (value <= 0) throw new ArgumentOutOfRangeException("Interval");
+            _interval = value;
+            if (_enabled) { Stop(); Start(); }
+        }
+    }
+
     public bool Enabled { get { return _enabled; } set { if (value) Start(); else Stop(); } }
-    public void Start() { if (!_enabled) { _enabled = true; _due = Application.Now() + Interval; Application.AddTimer(this); } }
-    public void Stop() { if (_enabled) { _enabled = false; Application.RemoveTimer(this); } }
-    internal long Due { get { return _due; } }
-    internal void Fire() { _due = Application.Now() + Interval; if (Tick != null) Tick(this, EventArgs.Empty); }
+
+    public void Start()
+    {
+        if (_enabled) return;
+        _id = Seat.Current.SetTimer(0, _id, _interval, 0, false);
+        if (_id == 0) return;
+        _enabled = true;
+        Application.AddTimer(_id, this);
+    }
+
+    public void Stop()
+    {
+        if (!_enabled) return;
+        _enabled = false;
+        Seat.Current.KillTimer(0, _id, false);
+        Application.RemoveTimer(_id);
+    }
+
+    internal void Fire() { if (_enabled && Tick != null) Tick(this, EventArgs.Empty); }
+}
+
+/// A hot key pressed: the id it was registered with, its key and its
+/// modifiers, and the form it was registered for (null for the thread).
+public class HotKeyEventArgs : EventArgs
+{
+    public HotKeyEventArgs(Form? form, int id, Keys key, Keys modifiers) { Owner = form; Id = id; Key = key; Modifiers = modifiers; }
+    public Form? Owner { get; }
+    public int Id { get; }
+    public Keys Key { get; }
+    public Keys Modifiers { get; }
+}
+
+public delegate void HotKeyEventHandler(object? sender, HotKeyEventArgs e);
+
+/// <summary>
+/// HOT KEYS, the GUI kernel's (Seat.RegisterHotKey): a key and its modifiers
+/// that, pressed anywhere, come to this program and to nobody else -- what
+/// a Windows program has from RegisterHotKey, in .NET's words: a key as
+/// Keys with its modifiers or'd in, an id the program chooses, and an event.
+/// Registered for a form, the hot key goes with the form's window.
+/// </summary>
+public static class HotKey
+{
+    /// Pressed: on the thread that registered it, from the message loop.
+    public static event HotKeyEventHandler? Pressed;
+
+    /// `keys` -- a key code with Shift, Control and Alt or'd in -- made a hot
+    /// key with this id, for `owner` (null: this thread). False when the key
+    /// is somebody's already, or not one.
+    public static bool Register(Form? owner, int id, Keys keys)
+    {
+        int mods = ((keys & Keys.Alt) != 0 ? 1 : 0) | ((keys & Keys.Control) != 0 ? 2 : 0) | ((keys & Keys.Shift) != 0 ? 4 : 0);
+        int vk = (int)(keys & Keys.KeyCode);
+        int window = owner != null ? owner.Handle : 0;
+        if (owner != null && window == 0) return false;
+        try { return Seat.Current.RegisterHotKey(window, id, mods, vk); }
+        catch (IOException) { return false; }
+    }
+
+    public static bool Unregister(Form? owner, int id)
+    {
+        int window = owner != null ? owner.Handle : 0;
+        try { return Seat.Current.UnregisterHotKey(window, id); }
+        catch (IOException) { return false; }
+    }
+
+    /// The seat's HotKeyPressed: the modifiers' MOD_ bits and the key back
+    /// into Keys.
+    internal static void Raise(Form? form, int id, int packed)
+    {
+        Keys modifiers = ((packed & 1) != 0 ? Keys.Alt : Keys.None) | ((packed & 2) != 0 ? Keys.Control : Keys.None) | ((packed & 4) != 0 ? Keys.Shift : Keys.None);
+        Keys key = (Keys)((packed >> 16) & 0xFFFF);
+        HotKeyEventHandler? h = Pressed;
+        if (h != null) h(form, new HotKeyEventArgs(form, id, key, modifiers));
+    }
 }
 
 public class ControlCollection
@@ -468,13 +683,19 @@ public class ControlCollection
     /// Added controls take their tab order from the order they were added
     /// in, which is what a form built in code expects and what .NET does
     /// when nothing sets TabIndex. Setting it afterwards still wins.
-    public void Add(Control c) { c.Parent = _owner; if (c.TabIndex < 0) c.TabIndex = _items.Count; _items.Add(c); c.Invalidate(); }
+    public void Add(Control c)
+    {
+        c.Parent = _owner; if (c.TabIndex < 0) c.TabIndex = _items.Count; _items.Add(c); c.Invalidate();
+        // A drop target joining a form: the form's window registered.
+        if (c.AllowDrop) { Form? f = _owner.FindForm(); if (f != null) f.WantDrops(); }
+    }
     public void Insert(int at, Control c) { c.Parent = _owner; if (c.TabIndex < 0) c.TabIndex = at; _items.Insert(at, c); c.Invalidate(); }
     public bool Contains(Control c) { return _items.Contains(c); }
     public int IndexOf(Control c) { return _items.IndexOf(c); }
     public void Clear() { while (_items.Count > 0) Remove(_items[0]); }
     public void Remove(Control c) { _items.Remove(c); c.Parent = null; _owner.Invalidate(); }
     public void AddRange(Control[] cs) { for (int i = 0; i < cs.Length; i++) Add(cs[i]); }
+    public List<Control>.Enumerator GetEnumerator() { return _items.GetEnumerator(); }
 }
 
 public class Control
@@ -502,6 +723,7 @@ public class Control
     public event EventHandler? DoubleClick;
     public event MouseEventHandler? MouseClick;
     public event MouseEventHandler? MouseDoubleClick;
+    public event EventHandler? MouseCaptureChanged;
     public event KeyPressEventHandler? KeyPress;
     public event KeyEventHandler? KeyDown;
     public event KeyEventHandler? KeyUp;
@@ -691,6 +913,42 @@ public class Control
     public bool Visible { get { return _visible; } set { if (_visible == value) return; _visible = value; if (_parent != null) _parent.Invalidate(Bounds); else Invalidate(); OnVisibleChanged(EventArgs.Empty); } }
     public event EventHandler? VisibleChanged;
 
+    // ---- drag and drop (the seat's; DragDrop below) ----
+
+    bool _allowDrop;
+    /// .NET's AllowDrop: the control a drop target. Its form's window is
+    /// registered with the seat as one, and the seat's drag over it reaches
+    /// the control under the pointer that allows drops.
+    public virtual bool AllowDrop
+    {
+        get { return _allowDrop; }
+        set { _allowDrop = value; if (value) { Form? f = FindForm(); if (f != null) f.WantDrops(); } }
+    }
+    public event DragEventHandler? DragEnter;
+    public event DragEventHandler? DragOver;
+    public event EventHandler? DragLeave;
+    public event DragEventHandler? DragDrop;
+    public event GiveFeedbackEventHandler? GiveFeedback;
+    protected virtual void OnDragEnter(DragEventArgs e) { if (DragEnter != null) DragEnter(this, e); }
+    protected virtual void OnDragOver(DragEventArgs e) { if (DragOver != null) DragOver(this, e); }
+    protected virtual void OnDragLeave(EventArgs e) { if (DragLeave != null) DragLeave(this, e); }
+    protected virtual void OnDragDrop(DragEventArgs e) { if (DragDrop != null) DragDrop(this, e); }
+    protected virtual void OnGiveFeedback(GiveFeedbackEventArgs e) { if (GiveFeedback != null) GiveFeedback(this, e); }
+    internal void RaiseDragEnter(DragEventArgs e) { OnDragEnter(e); }
+    internal void RaiseDragOver(DragEventArgs e) { OnDragOver(e); }
+    internal void RaiseDragLeave() { OnDragLeave(EventArgs.Empty); }
+    internal void RaiseDragDrop(DragEventArgs e) { OnDragDrop(e); }
+    internal void RaiseGiveFeedback(GiveFeedbackEventArgs e) { OnGiveFeedback(e); }
+
+    /// .NET's DoDragDrop: a drag of `data` from this control, the seat's
+    /// modal loop running until it is dropped or given up; the effect done.
+    public DragDropEffects DoDragDrop(object data, DragDropEffects allowedEffects)
+    {
+        Form? f = FindForm();
+        if (f == null || f.Handle == 0) return DragDropEffects.None;
+        return DragDrop_.Run(this, f, data is IDataObject d ? d : new DataObject(data), allowedEffects);
+    }
+
     // ---- another thread's work, done on the one that runs the loop ------
     //
     // .NET's Invoke family: a thread other than the one that runs
@@ -770,6 +1028,37 @@ public class Control
         Control? c = this;
         while (c != null) { if (c is Form f) return f; c = c._parent; }
         return null;
+    }
+
+    /// .NET's DrawToBitmap: what the control shows -- a form with its frame
+    /// -- copied into the bitmap at targetBounds' corner, as much as fits
+    /// there. Read from the seat (Seat.WindowPixels), after anything owed
+    /// is painted; a part covered on a desktop drawn on the screen itself
+    /// comes back black.
+    public void DrawToBitmap(Bitmap bitmap, Rectangle targetBounds)
+    {
+        if (bitmap == null) throw new ArgumentNullException("bitmap");
+        Form? form = FindForm();
+        if (form == null || form.Handle == 0) return;
+        if (form.HasInvalid()) form.PaintWindow(new Rectangle(0, 0, form.Width, form.Height), false);
+        Rectangle area;
+        if (this == form) area = new Rectangle(0, 0, form.Width, form.Height);
+        else
+        {
+            Point o = ClientOrigin(), co = form.ClientOffset();
+            area = new Rectangle(o.X + co.X, o.Y + co.Y, Width, Height);
+        }
+        int width = Math.Min(area.Width, Math.Min(targetBounds.Width, bitmap.Width - targetBounds.X));
+        int height = Math.Min(area.Height, Math.Min(targetBounds.Height, bitmap.Height - targetBounds.Y));
+        if (width <= 0 || height <= 0) return;
+        int[]? pixels = Seat.Current.WindowPixels(form.Handle, new Rectangle(area.X, area.Y, width, height));
+        if (pixels == null) return;
+        for (int y = 0; y < height; y++)
+            for (int x = 0; x < width; x++)
+            {
+                int c = pixels[y * width + x];
+                bitmap.SetPixel(targetBounds.X + x, targetBounds.Y + y, 255, (c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF);
+            }
     }
 
     /// Where this control's origin is, in the form's client coordinates.
@@ -877,6 +1166,18 @@ public class Control
                 child.PaintTree(seat, new Point(origin.X + child._x, origin.Y + child._y), area, paintMe || force);
             }
         }
+        if (paintMe) PaintAfterChildren(seat, origin);
+    }
+
+    /// What a control draws over its children once they are drawn, at
+    /// `origin` on its form's surface: the scroll bars the seat draws for it.
+    internal virtual void PaintAfterChildren(Seat seat, Point origin) { }
+
+    /// Whether this control and every one it is in are visible.
+    internal bool ShownAll()
+    {
+        for (Control? c = this; c != null; c = c._parent) if (!c._visible) return false;
+        return true;
     }
 
     internal bool HasInvalid()
@@ -959,6 +1260,39 @@ public class Control
         OnMouseClick(e);
     }
     internal void RaiseMouseMove(MouseEventArgs e) { OnMouseMove(e); }
+    internal void RaiseMouseCaptureChanged() { OnMouseCaptureChanged(EventArgs.Empty); }
+    protected virtual void OnMouseCaptureChanged(EventArgs e) { if (MouseCaptureChanged != null) MouseCaptureChanged(this, e); }
+
+    /// Whether the control has the mouse: Windows' SetCapture for its form's
+    /// window, which the seat routes the pointer by (its seatinput.cor) --
+    /// the moves and the release come to it wherever the pointer goes, and
+    /// losing it raises MouseCaptureChanged.
+    public bool Capture
+    {
+        get { return Application.CaptureOwner == this; }
+        set { if (value) Application.TakeCapture(this); else Application.LetCaptureGo(this); }
+    }
+
+    /// The modifier keys down, as the events this thread has read left them
+    /// (GetKeyState, the seat's).
+    public static Keys ModifierKeys
+    {
+        get
+        {
+            Seat seat = Seat.Current;
+            return ((seat.KeyState(0x10) & 0x80) != 0 ? Keys.Shift : Keys.None) | ((seat.KeyState(0x11) & 0x80) != 0 ? Keys.Control : Keys.None)
+                 | ((seat.KeyState(0x12) & 0x80) != 0 ? Keys.Alt : Keys.None);
+        }
+    }
+
+    /// Whether Caps Lock, Num Lock, Scroll Lock or Insert is toggled on, as
+    /// the events this thread has read left it (GetKeyState's low bit).
+    public static bool IsKeyLocked(Keys keyVal)
+    {
+        int vk = (int)keyVal & 0xFF;
+        if (vk != 0x14 && vk != 0x90 && vk != 0x91 && vk != 0x2D) throw new NotSupportedException("Only CapsLock, NumLock, Scroll and Insert are supported.");
+        return (Seat.Current.KeyState(vk) & 1) != 0;
+    }
     internal void RaiseMouseEnter() { OnMouseEnter(EventArgs.Empty); }
     internal void RaiseMouseLeave() { OnMouseLeave(EventArgs.Empty); }
     internal void RaiseMouseWheel(MouseEventArgs e) { OnMouseWheel(e); }
@@ -967,7 +1301,7 @@ public class Control
     // as Internet Explorer and Office did it. A view that scrolls says which
     // ways and moves itself by pixels when asked; everything else -- the
     // marker, the cursors, the speed, when it starts and stops -- is
-    // AutoScroll's. Windows Forms had no such hook, so these are CORSAC's.
+    // PanScroll's. Windows Forms had no such hook, so these are CORSAC's.
 
     /// The ways middle-button autoscroll may move this control. None, the
     /// default, leaves a middle press to the control as an ordinary press.
@@ -1044,7 +1378,7 @@ public enum FormStartPosition { Manual = 0, CenterScreen = 1, WindowsDefaultLoca
 /// title bar and the border, is painted here for now; it is the seat's job
 /// once the window tree lives in the system, and the client area contract
 /// does not change when it moves.
-public class Form : Control
+public class Form : ScrollableControl
 {
     int _handle;
     bool _shown;
@@ -1074,6 +1408,11 @@ public class Form : Control
     public event EventHandler? FormClosed;
     public event EventHandler? Activated;
     public event EventHandler? Deactivate;
+    /// The language hot key asks for another input language; Cancel keeps
+    /// this one.
+    public event InputLanguageChangingEventHandler? InputLanguageChanging;
+    /// The thread's input language changed.
+    public event InputLanguageChangedEventHandler? InputLanguageChanged;
 
     public Form() { Width = 320; Height = 240; BackColor = SystemColors.Control; }
 
@@ -1159,10 +1498,44 @@ public class Form : Control
     /// a message box and will grow a proper modal state when a dialog
     /// needs to shut its owner out.
     public DialogResult ShowDialog() { return Application.RunModal(this); }
+
+    bool _wantsDrops, _dropRegistered;
+
+    /// A control of this form allows drops: the window registered with the
+    /// seat as a drop target, now or when it is made (SendFrame), and with
+    /// the COM broker through the COM runtime when there is one
+    /// (DragDrop_.ComRegister), so a Windows program's drag reaches it too.
+    internal void WantDrops()
+    {
+        _wantsDrops = true;
+        if (_handle == 0 || _dropRegistered) return;
+        _dropRegistered = true;
+        long cookie = 0;
+        Func<Form, long>? com = DragDrop_.ComRegister;
+        if (com != null) { try { cookie = com(this); } catch (Exception) { cookie = 0; } }
+        try { Seat.Current.RegisterDropTarget(_handle, cookie); } catch (IOException) { }
+    }
     /// The desktop is a surface of its own kind: it sits under every other
     /// window and a click on it never raises it. Corsac.GUI.Shell.MakeDesktop
     /// sets it, before Show.
     internal bool DesktopSurface;
+
+    /// A DESKTOP IS PAINTED WITH THE DESKTOP'S BACKGROUND, the seat's: the
+    /// wallpaper the theme names, laid as its settings say, on the desktop
+    /// colour (Seat.PaintDesktop) -- the picture win32k's PaintDesktop gives
+    /// a Windows program too. Any other form, its BackColor.
+    protected override void OnPaintBackground(PaintEventArgs e)
+    {
+        if (DesktopSurface && _handle != 0)
+        {
+            Point co = ClientOffset();
+            Rectangle r = e.ClipRectangle;
+            Seat.Current.PaintDesktop(_handle, r.X + co.X, r.Y + co.Y, r.Width, r.Height);
+            return;
+        }
+        base.OnPaintBackground(e);
+    }
+
     /// Above every ordinary window, like a taskbar. Set before Show.
     bool _topMost;
     public bool TopMost
@@ -1204,8 +1577,18 @@ public class Form : Control
     bool _controlBox = true;
 
     /// The picture at the left of the caption, and the one the taskbar
-    /// shows for this window.
-    public Icon? Icon { get { return _icon; } set { _icon = value; _iconSent = false; FrameChanged(); } }
+    /// shows for this window: as .NET's, the default icon until one is set
+    /// (the system's IDI_APPLICATION, which the frame shows then anyway).
+    public Icon? Icon
+    {
+        get
+        {
+            if (_icon != null) return _icon;
+            try { return SystemIcons.Application; }
+            catch (InvalidOperationException) { return null; }
+        }
+        set { _icon = value; _iconSent = false; FrameChanged(); }
+    }
     Icon? _icon;
     bool _iconSent;
 
@@ -1313,6 +1696,7 @@ public class Form : Control
     void SendFrame()
     {
         if (_handle == 0) return;
+        if (_wantsDrops && !_dropRegistered) WantDrops();
         Seat seat = Seat.Current;
         long style = FrameStyleBits(), ex = FrameExStyleBits();
         if (style != _sentStyle || ex != _sentExStyle)
@@ -1323,8 +1707,62 @@ public class Form : Control
         if (!_iconSent)
         {
             seat.SetFrameIcon(_handle, _icon != null ? _icon.SmallPixels() : null);
+            // The GUI kernel's object too, which the taskbar asks for at its
+            // own size when the window has no small pixels.
+            seat.SetFrameIconImage(_handle, _icon != null ? (long)_icon.Handle : 0);
             _iconSent = true;
         }
+        if (!_layerSent)
+        {
+            // Opacity and TransparencyKey are the seat's layered window, as
+            // .NET's are WS_EX_LAYERED and SetLayeredWindowAttributes.
+            bool layered = _opacity < 1.0 || !_transparencyKey.IsEmpty;
+            int key = _transparencyKey.IsEmpty ? -1 : _transparencyKey.R | (_transparencyKey.G << 8) | (_transparencyKey.B << 16);
+            if (layered || _layerOn) seat.SetLayer(_handle, layered, (int)(_opacity * 255 + 0.5), key, false, false);
+            _layerOn = layered;
+            _layerSent = true;
+        }
+    }
+
+    double _opacity = 1.0;
+    Color _transparencyKey = Color.Empty;
+    bool _layerSent = true, _layerOn;
+
+    /// .NET's Opacity: 0 to 1, the whole form drawn that much over what is
+    /// under it; below 1 the form is a layered window of the seat's.
+    public double Opacity
+    {
+        get { return _opacity; }
+        set { _opacity = value < 0 ? 0 : value > 1 ? 1 : value; _layerSent = false; SendFrame(); }
+    }
+
+    /// .NET's TransparencyKey: where the form is this colour, it is not
+    /// drawn and the pointer passes through to what is under it.
+    public Color TransparencyKey
+    {
+        get { return _transparencyKey; }
+        set { _transparencyKey = value; _layerSent = false; SendFrame(); }
+    }
+
+    /// .NET's AllowTransparency: set by Opacity and TransparencyKey as they
+    /// need it; setting it false takes both away.
+    public bool AllowTransparency
+    {
+        get { return _layerOn || _opacity < 1.0 || !_transparencyKey.IsEmpty; }
+        set { if (!value) { _opacity = 1.0; _transparencyKey = Color.Empty; _layerSent = false; SendFrame(); } }
+    }
+
+    /// The form shown as a picture with its own alpha per pixel --
+    /// UpdateLayeredWindow's native equivalent (CORSAC's): its pixels
+    /// 0xAARRGGBB premultiplied, as big as the form.
+    public void SetLayeredPicture(Bitmap picture)
+    {
+        if (_handle == 0) return;
+        int[] argb = new int[picture.Width * picture.Height];
+        for (int i = 0; i < argb.Length; i++)
+            argb[i] = (picture.Pixels[i * 4] & 255) | ((picture.Pixels[i * 4 + 1] & 255) << 8) | ((picture.Pixels[i * 4 + 2] & 255) << 16) | ((picture.Pixels[i * 4 + 3] & 255) << 24);
+        Seat.Current.SetLayerPixels(_handle, picture.Width, picture.Height, argb);
+        _layerOn = true;
     }
 
     /// A caption button, or the caption double-clicked: WM_SYSCOMMAND,
@@ -1406,6 +1844,9 @@ public class Form : Control
         }
         _handle = seat.CreateWindow(Left, Top, Width, Height);
         seat.SetTitle(_handle, Text);
+        // Every control takes double clicks (Windows Forms' CS_DBLCLKS): the
+        // seat says which presses are (DoubleClick events).
+        seat.SetDoubleClicks(_handle, true);
         // The frame, before the window is ever on the screen: the seat
         // draws it on the window's first surface.
         _sentStyle = -1; _sentExStyle = -1; _iconSent = false;
@@ -1469,6 +1910,7 @@ public class Form : Control
         if (e.Cancel) return;
         _closed = true;
         Application.Unregister(this);
+        if (_dropRegistered) { Action<Form>? revoke = DragDrop_.ComRevoke; if (revoke != null) { try { revoke(this); } catch (Exception) { } } }
         if (_handle != 0) Seat.Current.DestroyWindow(_handle);
         _handle = 0;
         OnFormClosed(EventArgs.Empty);
@@ -1487,6 +1929,12 @@ public class Form : Control
     internal void RaiseActivated() { FrameChanged(); OnActivated(EventArgs.Empty); }
     protected virtual void OnDeactivate(EventArgs e) { if (Deactivate != null) Deactivate(this, e); }
     internal void RaiseDeactivate() { FrameChanged(); OnDeactivate(EventArgs.Empty); }
+    /// WM_INPUTLANGCHANGEREQUEST: unless cancelled, the language is the
+    /// thread's from now on, as DefWindowProc makes it.
+    protected virtual void OnInputLanguageChanging(InputLanguageChangingEventArgs e) { if (InputLanguageChanging != null) InputLanguageChanging(this, e); }
+    protected virtual void OnInputLanguageChanged(InputLanguageChangedEventArgs e) { if (InputLanguageChanged != null) InputLanguageChanged(this, e); }
+    internal void RaiseInputLanguageChanging(InputLanguageChangingEventArgs e) { OnInputLanguageChanging(e); }
+    internal void RaiseInputLanguageChanged(InputLanguageChangedEventArgs e) { OnInputLanguageChanged(e); }
 
     /// The frame's style, icon or state changed: the seat is told, and it
     /// draws the frame again. Activation is the seat's own to show.
@@ -1504,33 +1952,44 @@ public class Form : Control
         Point co = ClientOffset();
         Rectangle client = new Rectangle(co.X, co.Y, ClientRectangle.Width, ClientRectangle.Height);
         PaintTree(seat, co, force ? client : Rectangle.Intersect(client, new Rectangle(0, 0, Width, Height)), force);
-        AutoScroll.Overlay(this, seat);
+        PanScroll.Overlay(this, seat);
     }
 
     /// A press, move or release in the window, which the seat sends only for
     /// its client area and for a control holding the button: the frame is
     /// the seat's.
-    internal void WindowMouse(int kind, int button, int x, int y)
+    internal void WindowMouse(int kind, int button, int x, int y) { WindowMouse(kind, button, x, y, false); }
+
+    /// `doubled`: the seat made the press a double click (its DoubleClick).
+    internal void WindowMouse(int kind, int button, int x, int y, bool doubled)
     {
         // While autoscroll runs it has the mouse: moves steer it, and the
         // presses and releases that end it end it, wherever they land.
-        if (AutoScroll.Active) { AutoScroll.Mouse(this, kind, button, x, y); return; }
-        if (AutoScroll.SwallowRelease && kind == 5) { AutoScroll.SwallowRelease = false; return; }
+        if (PanScroll.Active) { PanScroll.Mouse(this, kind, button, x, y); return; }
+        if (PanScroll.SwallowRelease && kind == 5) { PanScroll.SwallowRelease = false; return; }
         Point co = ClientOffset();
         // A control holding the button gets everything until it comes up,
         // even where the pointer has left the window altogether.
-        if (kind != 4 && Application.Captured != null) { ClientMouse(kind, button, x, y, co); return; }
+        if (kind != 4 && Application.Captured != null) { ClientMouse(kind, button, x, y, co, doubled); return; }
         if (HasFrame && (y < co.Y || x < co.X || x >= co.X + ClientRectangle.Width || y >= co.Y + ClientRectangle.Height))
         {
             // Out over the frame: nothing in the client is under the pointer.
             if (kind == 3) Application.Hover(null);
             return;
         }
-        ClientMouse(kind, button, x, y, co);
+        ClientMouse(kind, button, x, y, co, doubled);
+    }
+
+    /// The seat's CursorSet over the client area at (x, y) in the window:
+    /// the control there wears its cursor, as WM_SETCURSOR asks.
+    internal void CursorAt(int x, int y)
+    {
+        Point co = ClientOffset();
+        Cursor.Over(HitTest(x - co.X, y - co.Y));
     }
 
     /// The press, move or release, in the client's own coordinates.
-    void ClientMouse(int kind, int button, int x, int y, Point co)
+    void ClientMouse(int kind, int button, int x, int y, Point co, bool doubled)
     {
         int cx = x - co.X, cy = y - co.Y;
         Control target = HitTest(cx, cy);
@@ -1539,20 +1998,24 @@ public class Form : Control
         Control to = kind == 4 ? target : (Application.Captured ?? target);
         Point origin = to.ClientOrigin();
         MouseButtons b = Application.ButtonOf(button);
-        int clicks = kind == 4 ? Application.CountClick(target, b, x, y) : kind == 5 ? Application.LastClicks : 0;
+        int clicks = kind == 4 ? Application.CountClick(target, b, doubled) : kind == 5 ? Application.LastClicks : 0;
         MouseEventArgs e = new MouseEventArgs(b, clicks, cx - origin.X, cy - origin.Y, 0);
-        if (kind == 4 && b == MouseButtons.Middle && AutoScroll.TryBegin(this, target, x, y)) return;
+        if (kind == 4 && b == MouseButtons.Middle && PanScroll.TryBegin(this, target, x, y)) return;
         if (kind == 4)
         {
             if (target is TextBox box) box.FocusByClick();
             if (target.CanSelect) Application.SetFocus(target);
             target.RaiseMouseDown(e);
+            // The mouse is the pressed control's until the button comes up,
+            // as .NET's WmMouseDown takes it: the seat's capture.
             Application.Captured = target;
+            Application.TakeCapture(target);
         }
         else if (kind == 5)
         {
             Application.Captured = null;
             to.RaiseMouseUp(e);
+            Application.LetCaptureGo(to);
             // WM_CONTEXTMENU: the right button's release opens the context
             // menu of the control under it, or of the nearest parent with one.
             if (b == MouseButtons.Right)
@@ -1593,52 +2056,133 @@ public class Form : Control
 /// </summary>
 public sealed class Cursor : IDisposable
 {
-    readonly int _shape;               // what the seat takes (CursorShapes)
+    readonly int _shape;               // what the seat takes (CursorShapes); -1 for one worn by its handle
     readonly string _name;             // a system cursor's .NET name; "" for one from a file
     readonly CursorArt? _art;
+    long _image;                       // the GUI kernel's cursor object, 0 none (yet)
+    readonly int _system;              // a system cursor's OCR_* id, 0 for none
+    bool _owns;                        // _image made for this cursor, destroyed with it
 
-    internal Cursor(int shape, string name) { _shape = shape; _name = name; }
+    internal Cursor(int shape, string name) : this(shape, name, 0) { }
+    internal Cursor(int shape, string name, int system) { _shape = shape; _name = name; _system = system; }
 
-    /// A cursor file, still or animated. Windows' own error when it is not one.
+    /// A cursor file, still or animated: the GUI kernel's cursor object
+    /// made of it, which the pointer wears by its handle; the seat's own
+    /// reading of it (CursorArt) when the kernel would not take it. Windows'
+    /// own error when it is neither.
     public Cursor(string fileName)
     {
-        CursorArt? art = CursorArt.FromFile(fileName);
+        byte[] bytes;
+        try { bytes = File.ReadAllBytes(fileName); }
+        catch (IOException) { throw new FileNotFoundException("Could not find file '" + fileName + "'.", fileName); }
+        _name = "";
+        _shape = -1;
+        if (Load(bytes)) return;
+        CursorArt? art = CursorArt.FromBytes(bytes);
         if (art == null || art.Shape < 0) throw new ArgumentException("Image format is not valid. The image file may be corrupted.", "fileName");
-        _art = art; _shape = art.Shape; _name = "";
+        _art = art; _shape = art.Shape;
     }
 
     public Cursor(Stream stream)
     {
         MemoryStream copy = new MemoryStream();
         stream.CopyTo(copy);
-        CursorArt? art = CursorArt.FromBytes(copy.ToArray());
+        byte[] bytes = copy.ToArray();
+        _name = "";
+        _shape = -1;
+        if (Load(bytes)) return;
+        CursorArt? art = CursorArt.FromBytes(bytes);
         if (art == null || art.Shape < 0) throw new ArgumentException("Image format is not valid. The image file may be corrupted.", "stream");
-        _art = art; _shape = art.Shape; _name = "";
+        _art = art; _shape = art.Shape;
+    }
+
+    /// .NET's Cursor(IntPtr): a cursor for a handle -- one of the GUI
+    /// kernel's, a Windows program's HCURSOR -- not owned.
+    public Cursor(nint handle)
+    {
+        int kind, w, h, hx, hy, images, steps;
+        bool known = false;
+        try { known = Seat.Current.ImageInfo(handle, out kind, out w, out h, out hx, out hy, out images, out steps); }
+        catch (IOException) { }
+        if (!known) throw new ArgumentException("Invalid handle.", "handle");
+        _name = ""; _shape = -1; _image = handle;
+    }
+
+    bool Load(byte[] bytes)
+    {
+        long made;
+        try { made = Seat.Current.LoadImage(bytes, Seat.ImageCursor, 0); }
+        catch (IOException) { made = -1; }
+        if (made <= 0) return false;
+        _image = made; _owns = true;
+        return true;
     }
 
     internal int Shape { get { return _shape; } }
 
+    /// The GUI kernel's object, as .NET's Handle is the HCURSOR: a system
+    /// cursor's is the system's (made known the first time it is asked).
+    public nint Handle
+    {
+        get
+        {
+            if (_image == 0 && _system != 0)
+            {
+                try { long h = Seat.Current.SystemImage(_system, Seat.ImageCursor); if (h > 0) _image = h; }
+                catch (IOException) { }
+            }
+            return (nint)_image;
+        }
+    }
+
     /// The point of the picture that is the pointer's position.
-    public Point HotSpot { get { return _art == null ? new Point(0, 0) : new Point(_art.HotX, _art.HotY); } }
+    public Point HotSpot
+    {
+        get
+        {
+            if (_art != null) return new Point(_art.HotX, _art.HotY);
+            int kind, w, h, hx, hy, images, steps;
+            if (Handle != 0 && Seat.Current.ImageInfo(_image, out kind, out w, out h, out hx, out hy, out images, out steps)) return new Point(hx, hy);
+            return new Point(0, 0);
+        }
+    }
 
     /// The picture's size: a file's own, or the system's 32 by 32.
-    public Size Size { get { return _art == null ? new Size(32, 32) : new Size(_art.Width, _art.Height); } }
+    public Size Size
+    {
+        get
+        {
+            if (_art != null) return new Size(_art.Width, _art.Height);
+            int kind, w, h, hx, hy, images, steps;
+            if (_shape < 0 && _image != 0 && Seat.Current.ImageInfo(_image, out kind, out w, out h, out hx, out hy, out images, out steps)) return new Size(w, h);
+            return new Size(32, 32);
+        }
+    }
 
     public object? Tag { get; set; }
 
-    public void Dispose() { }
+    /// The GUI kernel's object let go of, when it was made for this cursor.
+    public void Dispose()
+    {
+        if (_owns && _image != 0)
+        {
+            try { Seat.Current.DestroyImage(_image); }
+            catch (IOException) { }
+        }
+        _owns = false;
+    }
 
     public override string ToString() { return "[Cursor: " + (_name.Length > 0 ? _name : "System.Windows.Forms.Cursor") + "]"; }
 
-    public override bool Equals(object? obj) { return obj is Cursor other && other._shape == _shape; }
+    public override bool Equals(object? obj) { return obj is Cursor other && other._shape == _shape && other._image == _image; }
 
-    public override int GetHashCode() { return _shape; }
+    public override int GetHashCode() { return _shape >= 0 ? _shape : (int)_image; }
 
     public static bool operator ==(Cursor? left, Cursor? right)
     {
         if (ReferenceEquals(left, right)) return true;
         if (left is null || right is null) return false;
-        return left._shape == right._shape;
+        return left._shape == right._shape && (left._shape >= 0 || left._image == right._image);
     }
 
     public static bool operator !=(Cursor? left, Cursor? right) { return !(left == right); }
@@ -1718,7 +2262,9 @@ public sealed class Cursor : IDisposable
                 Seat.Current.SetCursor(CursorShapes.Base + _blank);
                 return;
             }
-            if (c._shape >= CursorShapes.NoMove2D) AutoScroll.DefineShapes();
+            // One of the GUI kernel's own, worn by its handle.
+            if (c._shape < 0) { Seat.Current.WearCursor(c._image); return; }
+            if (c._shape >= CursorShapes.NoMove2D) PanScroll.DefineShapes();
             Seat.Current.SetCursor(c._shape);
         }
         catch (IOException) { }
@@ -1737,15 +2283,15 @@ public sealed class Cursor : IDisposable
 /// <summary>The system's pointer shapes, by .NET's names.</summary>
 public static class Cursors
 {
-    static readonly Cursor _appStarting = new Cursor(CursorShapes.AppStarting, "AppStarting");
-    static readonly Cursor _arrow = new Cursor(CursorShapes.Arrow, "Arrow");
-    static readonly Cursor _cross = new Cursor(CursorShapes.Cross, "Cross");
-    static readonly Cursor _default = new Cursor(CursorShapes.Arrow, "Default");
-    static readonly Cursor _hand = new Cursor(CursorShapes.Hand, "Hand");
-    static readonly Cursor _help = new Cursor(CursorShapes.Help, "Help");
+    static readonly Cursor _appStarting = new Cursor(CursorShapes.AppStarting, "AppStarting", 32650);
+    static readonly Cursor _arrow = new Cursor(CursorShapes.Arrow, "Arrow", 32512);
+    static readonly Cursor _cross = new Cursor(CursorShapes.Cross, "Cross", 32515);
+    static readonly Cursor _default = new Cursor(CursorShapes.Arrow, "Default", 32512);
+    static readonly Cursor _hand = new Cursor(CursorShapes.Hand, "Hand", 32649);
+    static readonly Cursor _help = new Cursor(CursorShapes.Help, "Help", 32651);
     static readonly Cursor _hSplit = new Cursor(CursorShapes.SizeNS, "HSplit");
-    static readonly Cursor _iBeam = new Cursor(CursorShapes.IBeam, "IBeam");
-    static readonly Cursor _no = new Cursor(CursorShapes.No, "No");
+    static readonly Cursor _iBeam = new Cursor(CursorShapes.IBeam, "IBeam", 32513);
+    static readonly Cursor _no = new Cursor(CursorShapes.No, "No", 32648);
     static readonly Cursor _noMove2D = new Cursor(CursorShapes.NoMove2D, "NoMove2D");
     static readonly Cursor _noMoveHoriz = new Cursor(CursorShapes.NoMoveHoriz, "NoMoveHoriz");
     static readonly Cursor _noMoveVert = new Cursor(CursorShapes.NoMoveVert, "NoMoveVert");
@@ -1757,14 +2303,14 @@ public static class Cursors
     static readonly Cursor _panSouth = new Cursor(CursorShapes.PanSouth, "PanSouth");
     static readonly Cursor _panSW = new Cursor(CursorShapes.PanSW, "PanSW");
     static readonly Cursor _panWest = new Cursor(CursorShapes.PanWest, "PanWest");
-    static readonly Cursor _sizeAll = new Cursor(CursorShapes.Move, "SizeAll");
-    static readonly Cursor _sizeNESW = new Cursor(CursorShapes.SizeNESW, "SizeNESW");
-    static readonly Cursor _sizeNS = new Cursor(CursorShapes.SizeNS, "SizeNS");
-    static readonly Cursor _sizeNWSE = new Cursor(CursorShapes.SizeNWSE, "SizeNWSE");
-    static readonly Cursor _sizeWE = new Cursor(CursorShapes.SizeWE, "SizeWE");
-    static readonly Cursor _upArrow = new Cursor(CursorShapes.UpArrow, "UpArrow");
+    static readonly Cursor _sizeAll = new Cursor(CursorShapes.Move, "SizeAll", 32646);
+    static readonly Cursor _sizeNESW = new Cursor(CursorShapes.SizeNESW, "SizeNESW", 32643);
+    static readonly Cursor _sizeNS = new Cursor(CursorShapes.SizeNS, "SizeNS", 32645);
+    static readonly Cursor _sizeNWSE = new Cursor(CursorShapes.SizeNWSE, "SizeNWSE", 32642);
+    static readonly Cursor _sizeWE = new Cursor(CursorShapes.SizeWE, "SizeWE", 32644);
+    static readonly Cursor _upArrow = new Cursor(CursorShapes.UpArrow, "UpArrow", 32516);
     static readonly Cursor _vSplit = new Cursor(CursorShapes.SizeWE, "VSplit");
-    static readonly Cursor _waitCursor = new Cursor(CursorShapes.Wait, "WaitCursor");
+    static readonly Cursor _waitCursor = new Cursor(CursorShapes.Wait, "WaitCursor", 32514);
 
     public static Cursor AppStarting { get { return _appStarting; } }
     public static Cursor Arrow { get { return _arrow; } }
@@ -1803,21 +2349,69 @@ public static class Cursors
 /// </summary>
 public class Screen
 {
-    Screen() { }
+    readonly int _index;
+    Screen(int index) { _index = index; }
 
-    static readonly Screen _primary = new Screen();
+    static Screen[] _all = new Screen[] { new Screen(0) };
 
-    public static Screen PrimaryScreen { get { return _primary; } }
+    /// The monitors as the seat describes them (SeatIoctl.MonitorInfo).
+    static Seat.SeatMonitor Monitor(int index)
+    {
+        Seat.SeatMonitor m;
+        try
+        {
+            if (Seat.Current.MonitorAt(index, out m)) return m;
+        }
+        catch (IOException) { }
+        m = new Seat.SeatMonitor();
+        try { m.Width = Seat.Current.Width; m.Height = Seat.Current.Height; } catch (IOException) { }
+        m.WorkWidth = m.Width; m.WorkHeight = m.Height; m.Primary = index == 0;
+        return m;
+    }
 
-    public static Screen[] AllScreens { get { return new Screen[] { _primary }; } }
+    public static Screen PrimaryScreen
+    {
+        get { foreach (Screen s in AllScreens) if (s.Primary) return s; return AllScreens[0]; }
+    }
 
-    public Rectangle Bounds { get { return new Rectangle(0, 0, Seat.Current.Width, Seat.Current.Height); } }
+    public static Screen[] AllScreens
+    {
+        get
+        {
+            int count = 1;
+            try { count = Seat.Current.MonitorCount(); } catch (IOException) { }
+            if (count < 1) count = 1;
+            if (_all.Length != count)
+            {
+                Screen[] made = new Screen[count];
+                for (int i = 0; i < count; i++) made[i] = new Screen(i);
+                _all = made;
+            }
+            return _all;
+        }
+    }
 
-    public Rectangle WorkingArea { get { return new Rectangle(0, 0, Seat.Current.Width, Seat.Current.WorkAreaHeight()); } }
+    public Rectangle Bounds { get { Seat.SeatMonitor m = Monitor(_index); return new Rectangle(m.X, m.Y, m.Width, m.Height); } }
 
-    public string DeviceName { get { return "seat0"; } }
+    /// The screen less what bars reserve (the taskbar).
+    public Rectangle WorkingArea { get { Seat.SeatMonitor m = Monitor(_index); return new Rectangle(m.WorkX, m.WorkY, m.WorkWidth, m.WorkHeight); } }
 
-    public bool Primary { get { return true; } }
+    public int BitsPerPixel { get { return Monitor(_index).Bits; } }
+
+    public string DeviceName { get { return "\\\\.\\DISPLAY" + (_index + 1); } }
+
+    public bool Primary { get { return Monitor(_index).Primary; } }
+
+    public static Screen FromControl(Control control) { return PrimaryScreen; }
+    public static Screen FromPoint(Point point) { return PrimaryScreen; }
+    public static Screen FromRectangle(Rectangle rect) { return PrimaryScreen; }
+
+    public override string ToString()
+    {
+        Rectangle b = Bounds, w = WorkingArea;
+        return "Screen[Bounds={X=" + b.X + ",Y=" + b.Y + ",Width=" + b.Width + ",Height=" + b.Height + "} WorkingArea={X=" + w.X + ",Y=" + w.Y
+             + ",Width=" + w.Width + ",Height=" + w.Height + "} Primary=" + (Primary ? "True" : "False") + " DeviceName=" + DeviceName;
+    }
 
     /// <summary>The mode changed. .NET raises SystemEvents.DisplaySettingsChanged
     /// for this; the name here says which display it was.</summary>
@@ -1826,8 +2420,18 @@ public class Screen
     internal static void RaiseChanged()
     {
         EventHandler? h = DisplaySettingsChanged;
-        if (h != null) { h(_primary, EventArgs.Empty); }
+        if (h != null) { h(PrimaryScreen, EventArgs.Empty); }
         SystemEvents.RaiseDisplaySettingsChanged();
+    }
+
+    /// A mode tried (Seat.TryMode) is over: true kept, false put back.
+    /// CORSAC's, for a display applet's "Keep these settings?".
+    public static event EventHandler<bool>? ModeTrialEnded;
+
+    internal static void RaiseTrialEnded(bool kept)
+    {
+        EventHandler<bool>? h = ModeTrialEnded;
+        if (h != null) h(PrimaryScreen, kept);
     }
 }
 
@@ -1883,6 +2487,51 @@ public static class SystemInformation
     /// Grab-and-drag on linear views instead of speed by distance (off).
     internal static bool AutoScrollGrab { get { return Parameter(0x10004, 0) != 0; } }
 
+    // THE THEME'S METRICS (os/gui/theme.cor), as GetSystemMetrics answers
+    // them, each asked when read: they follow every change of the theme.
+    static Size Pair(int x, int y, int fx, int fy) { return new Size(Metric(x, fx), Metric(y, fy)); }
+
+    public static Size BorderSize { get { return Pair(5, 6, 1, 1); } }
+    public static Size Border3DSize { get { return Pair(45, 46, 2, 2); } }
+    public static Size FrameBorderSize { get { return Pair(32, 33, 4, 4); } }
+    public static Size FixedFrameBorderSize { get { return Pair(7, 8, 3, 3); } }
+    public static int CaptionHeight { get { return Metric(4, 19); } }
+    public static Size CaptionButtonSize { get { return Pair(30, 31, 18, 18); } }
+    public static int ToolWindowCaptionHeight { get { return Metric(51, 15); } }
+    public static Size ToolWindowCaptionButtonSize { get { return Pair(52, 53, 12, 14); } }
+    public static int MenuHeight { get { return Metric(15, 19); } }
+    public static Size MenuButtonSize { get { return Pair(54, 55, 18, 18); } }
+    public static Size MenuCheckSize { get { return Pair(71, 72, 13, 13); } }
+    public static int VerticalScrollBarWidth { get { return Metric(2, 16); } }
+    public static int HorizontalScrollBarHeight { get { return Metric(3, 16); } }
+    public static int VerticalScrollBarArrowHeight { get { return Metric(20, 16); } }
+    public static int HorizontalScrollBarArrowWidth { get { return Metric(21, 16); } }
+    public static int VerticalScrollBarThumbHeight { get { return Metric(9, 16); } }
+    public static int HorizontalScrollBarThumbWidth { get { return Metric(10, 16); } }
+    public static Size IconSize { get { return Pair(11, 12, 32, 32); } }
+    public static Size SmallIconSize { get { return Pair(49, 50, 16, 16); } }
+    public static Size CursorSize { get { return Pair(13, 14, 32, 32); } }
+    public static Size IconSpacingSize { get { return Pair(38, 39, 75, 75); } }
+    public static Size MinimumWindowSize { get { return Pair(28, 29, 112, 27); } }
+    public static Size MinWindowTrackSize { get { return Pair(34, 35, 112, 27); } }
+    public static Size MaxWindowTrackSize { get { return Pair(59, 60, 652, 492); } }
+    public static Size MinimizedWindowSize { get { return Pair(57, 58, 160, 24); } }
+    public static Size MinimizedWindowSpacingSize { get { return Pair(47, 48, 160, 24); } }
+    public static Size PrimaryMonitorMaximizedWindowSize { get { return Pair(61, 62, 648, 460); } }
+
+    // THE THEME'S DESKTOP SETTINGS.
+    static long Setting(int which, long fallback)
+    {
+        try { return Seat.Current.ThemeSetting(which); }
+        catch (IOException) { return fallback; }
+    }
+
+    public static bool DragFullWindows { get { return Setting(4, 1) != 0; } }
+    public static bool IsFlatMenuEnabled { get { return Setting(5, 0) != 0; } }
+    public static bool IsFontSmoothingEnabled { get { return Setting(6, 0) != 0; } }
+    public static bool IsTitleBarGradientEnabled { get { return Setting(7, 1) != 0; } }
+    public static Font MenuFont { get { return SystemFonts.MenuFont; } }
+
     public static Size PrimaryMonitorSize { get { return new Size(Seat.Current.Width, Seat.Current.Height); } }
 
     public static Rectangle WorkingArea { get { return Screen.PrimaryScreen.WorkingArea; } }
@@ -1890,6 +2539,157 @@ public static class SystemInformation
     public static Rectangle VirtualScreen { get { return Screen.PrimaryScreen.Bounds; } }
 
     internal static void Rescreen() { }
+}
+
+/// SendKeys: keystrokes made as if typed, over the seat's injection
+/// (TODO-GUI-AND-NT-KERNELS.md item 9), Windows' API and syntax -- + ^ %
+/// for Shift, Ctrl and Alt on the next key or group, {ENTER} {TAB} {F1}
+/// and the rest for named keys, {{}/{}}/{(}/{)} and {+}{^}{%}{~} for the
+/// literals, (...) to group a modifier over several keys, and {KEY n} to
+/// repeat. Send and SendWait are the same here: the seat injects at once.
+public static class SendKeys
+{
+    public static void Send(string keys) { Play(keys); }
+    public static void SendWait(string keys) { Play(keys); }
+    public static void Flush() { }
+
+    static void Play(string keys)
+    {
+        Corsac.GUI.Seat seat = Corsac.GUI.Seat.Current;
+        int i = 0;
+        // Modifiers held over the next key, or over the next (group).
+        bool shift = false, control = false, alt = false;
+        bool groupShift = false, groupControl = false, groupAlt = false;
+        bool inGroup = false;
+        while (i < keys.Length)
+        {
+            char c = keys[i];
+            if (c == '+') { shift = true; i++; continue; }
+            if (c == '^') { control = true; i++; continue; }
+            if (c == '%') { alt = true; i++; continue; }
+            if (c == '~') { Key(seat, 0x0D, shift || groupShift, control || groupControl, alt || groupAlt, 1); shift = control = alt = false; i++; continue; }
+            if (c == '(')
+            {
+                inGroup = true; groupShift = shift; groupControl = control; groupAlt = alt;
+                shift = control = alt = false; i++; continue;
+            }
+            if (c == ')') { inGroup = false; groupShift = groupControl = groupAlt = false; i++; continue; }
+            bool s = shift || (inGroup && groupShift), ct = control || (inGroup && groupControl), al = alt || (inGroup && groupAlt);
+            if (c == '{')
+            {
+                int close = keys.IndexOf('}', i + 1);
+                if (close < 0) return;
+                string body = keys.Substring(i + 1, close - i - 1);
+                i = close + 1;
+                int vk; int count; char literal;
+                if (NamedKey(body, out vk, out count, out literal))
+                {
+                    for (int r = 0; r < count; r++)
+                        if (vk != 0) Key(seat, vk, s, ct, al, 1);
+                        else Char(seat, literal, ct, al);
+                }
+                shift = control = alt = false;
+                continue;
+            }
+            Char(seat, c, ct, al, s);
+            shift = control = alt = false;
+            i++;
+        }
+    }
+
+    /// A named key's virtual key (0 for a literal character body), how many
+    /// times, and the literal when there is one. "{ENTER}", "{LEFT 5}",
+    /// "{F10}", "{{}".
+    static bool NamedKey(string body, out int vk, out int count, out char literal)
+    {
+        vk = 0; count = 1; literal = '\0';
+        if (body.Length == 0) return false;
+        string name = body;
+        int space = body.LastIndexOf(' ');
+        if (space > 0)
+        {
+            string tail = body.Substring(space + 1);
+            int n = 0; bool digits = tail.Length > 0;
+            for (int k = 0; k < tail.Length; k++) { if (tail[k] < '0' || tail[k] > '9') { digits = false; break; } n = n * 10 + (tail[k] - '0'); }
+            if (digits) { count = n; name = body.Substring(0, space); }
+        }
+        if (name.Length == 1) { literal = name[0]; return true; }               // {+}, {{}, {~}, a single char repeated
+        switch (name.ToUpperInvariant())
+        {
+            case "ENTER": vk = 0x0D; return true;
+            case "TAB": vk = 0x09; return true;
+            case "ESC": case "ESCAPE": vk = 0x1B; return true;
+            case "BACKSPACE": case "BS": case "BKSP": vk = 0x08; return true;
+            case "DEL": case "DELETE": vk = 0x2E; return true;
+            case "INSERT": case "INS": vk = 0x2D; return true;
+            case "HOME": vk = 0x24; return true;
+            case "END": vk = 0x23; return true;
+            case "PGUP": vk = 0x21; return true;
+            case "PGDN": vk = 0x22; return true;
+            case "LEFT": vk = 0x25; return true;
+            case "UP": vk = 0x26; return true;
+            case "RIGHT": vk = 0x27; return true;
+            case "DOWN": vk = 0x28; return true;
+            case "CAPSLOCK": vk = 0x14; return true;
+            case "NUMLOCK": vk = 0x90; return true;
+            case "SCROLLLOCK": vk = 0x91; return true;
+            case "PRTSC": vk = 0x2C; return true;
+            case "BREAK": vk = 0x03; return true;
+            case "HELP": vk = 0x2F; return true;
+            case "SPACE": vk = 0x20; return true;
+        }
+        if (name.Length >= 2 && (name[0] == 'F' || name[0] == 'f'))
+        {
+            int n = 0; bool ok = true;
+            for (int k = 1; k < name.Length; k++) { if (name[k] < '0' || name[k] > '9') { ok = false; break; } n = n * 10 + (name[k] - '0'); }
+            if (ok && n >= 1 && n <= 24) { vk = 0x70 + n - 1; return true; }
+        }
+        return false;
+    }
+
+    /// A character typed: its virtual key and shift from the layout
+    /// (VkKeyScan), with any Ctrl or Alt the syntax asked. One no key on the
+    /// layout types goes as itself (VK_PACKET, KEYEVENTF_UNICODE's).
+    static void Char(Corsac.GUI.Seat seat, char c, bool control, bool alt, bool shiftToo = false)
+    {
+        int scan = seat.VkKeyScan(c);
+        if (scan == 0xFFFF || (scan & 0xFF) == 0xFF)
+        {
+            if (control || alt || shiftToo) return;
+            seat.InjectChar(c, true);
+            seat.InjectChar(c, false);
+            return;
+        }
+        int vk = scan & 0xFF;
+        bool shift = shiftToo || (scan & 0x100) != 0;
+        bool ctrl = control || (scan & 0x200) != 0;
+        bool menu = alt || (scan & 0x400) != 0;
+        Key(seat, vk, shift, ctrl, menu, 1);
+    }
+
+    static void Key(Corsac.GUI.Seat seat, int vk, bool shift, bool control, bool alt, int count)
+    {
+        for (int r = 0; r < count; r++)
+        {
+            if (shift) Inject(seat, 0x10, true);
+            if (control) Inject(seat, 0x11, true);
+            if (alt) Inject(seat, 0x12, true);
+            Inject(seat, vk, true);
+            Inject(seat, vk, false);
+            if (alt) Inject(seat, 0x12, false);
+            if (control) Inject(seat, 0x11, false);
+            if (shift) Inject(seat, 0x10, false);
+        }
+    }
+
+    static void Inject(Corsac.GUI.Seat seat, int vk, bool down)
+    {
+        byte[] item = new byte[28];
+        item[0] = 1;
+        item[4] = (byte)vk; item[5] = (byte)(vk >> 8);
+        if (!down) item[20] = 2;
+        seat.InjectInput(item);
+    }
 }
 
 public static class MessageBox
@@ -2167,7 +2967,7 @@ public enum ContentAlignment
     BottomLeft = 256, BottomCenter = 512, BottomRight = 1024,
 }
 
-public class Panel : Control
+public class Panel : ScrollableControl
 {
     internal override string ClassName { get { return "Panel"; } }
     public Panel() { TabStop = false; }
@@ -2934,16 +3734,67 @@ public class ScrollEventArgs : EventArgs
 
 public delegate void ScrollEventHandler(object? sender, ScrollEventArgs e);
 
-/// A scroll bar, as Windows draws it: an arrow button at each end, a track
-/// between, and a raised thumb whose length says how much of the whole is
-/// in view. The .NET contract: Value runs from Minimum to
-/// Maximum - LargeChange + 1, so a bar over N lines showing R of them has
-/// Maximum = N - 1 and LargeChange = R; Scroll fires for what the user
-/// does, with the kind of move, and ValueChanged for any change at all.
+/// The bars the seat draws for this program's controls, by their ids
+/// (Seat.NextScrollBarId): a ScrollBar's own, a ScrollableControl's two.
+static class ScrollWidgets
+{
+    static readonly Dictionary<int, Control> _byId = new Dictionary<int, Control>();
+    internal static void Add(int id, Control c) { _byId[id] = c; }
+
+    /// The seat's ScrollEvent: the bar's control told. A control that is not
+    /// shown now (its panel hidden) is not.
+    internal static void Raise(int id, int command, int pos)
+    {
+        Control? c;
+        if (!_byId.TryGetValue(id, out c) || !c.ShownAll()) return;
+        if (c is ScrollBar bar) bar.SeatScroll(command, pos);
+        else if (c is ScrollableControl view) view.SeatScroll(id, command, pos);
+    }
+
+    /// The .NET event an SB_ command is, with the value it moves to from
+    /// `value` by `small` and `large` steps; false for SB_ENDSCROLL.
+    internal static ScrollEventType Type(int command)
+    {
+        return command == 0 ? ScrollEventType.SmallDecrement : command == 1 ? ScrollEventType.SmallIncrement
+             : command == 2 ? ScrollEventType.LargeDecrement : command == 3 ? ScrollEventType.LargeIncrement
+             : command == 4 ? ScrollEventType.ThumbPosition : command == 5 ? ScrollEventType.ThumbTrack
+             : command == 6 ? ScrollEventType.First : command == 7 ? ScrollEventType.Last : ScrollEventType.EndScroll;
+    }
+
+    internal static int Target(int command, int value, int pos, int min, int last, int small, int large)
+    {
+        return command == 0 ? value - small : command == 1 ? value + small : command == 2 ? value - large : command == 3 ? value + large
+             : command == 4 || command == 5 ? pos : command == 6 ? min : command == 7 ? last : value;
+    }
+
+    /// A bar placed at `origin` (its form's surface), set to the values and
+    /// drawn, for `form`: what PaintAfterChildren does with each.
+    internal static void Show(Seat seat, Form form, int id, int x, int y, int width, int height, bool vertical, bool hidden,
+                              int min, int max, int page, int pos, bool enabled)
+    {
+        seat.PlaceScrollBar(form.Handle, id, x, y, width, height, vertical, hidden);
+        if (hidden) return;
+        seat.SetScrollBar(form.Handle, id, Seat.ScrollRange | Seat.ScrollPage | Seat.ScrollPos, min, max, page, pos, false);
+        seat.EnableScrollBar(form.Handle, id, enabled ? 0 : 3);
+        seat.PaintScrollBar(form.Handle, id);
+    }
+}
+
+/// A scroll bar (.NET's ScrollBar): the GUI KERNEL'S, as Windows' own bars
+/// are win32k's. The seat draws it in the theme as Windows 2000 draws one --
+/// an arrow button at each end, the track between, a raised thumb whose
+/// length says how much of the whole is in view -- and tracks a press on it:
+/// the arrows and page areas repeat while held, the thumb follows the
+/// pointer. Each step comes back as a ScrollEvent and becomes .NET's events.
+/// The .NET contract: Value runs from Minimum to Maximum - LargeChange + 1,
+/// so a bar over N lines showing R of them has Maximum = N - 1 and
+/// LargeChange = R; Scroll fires for what the user does, with the kind of
+/// move, and ValueChanged for any change at all.
 public abstract class ScrollBar : Control
 {
     int _min, _max = 100, _value, _small = 1, _large = 10;
-    int _grab = -1;                  // where along the thumb the drag took hold, or -1
+    int _id = -1;                    // the seat's bar, made at the first paint
+    int _window;                     // the form it was placed in
     public event ScrollEventHandler? Scroll;
     public event EventHandler? ValueChanged;
 
@@ -2998,103 +3849,59 @@ public abstract class ScrollBar : Control
         SetValue(e.NewValue);
     }
 
-    // The geometry along the bar's length: buttons as long as the bar is
-    // thick, the thumb sized to the part in view and never shorter than a
-    // button.
-    int Length { get { return Vertical ? Height : Width; } }
-    int Thickness { get { return Vertical ? Width : Height; } }
-    int ButtonL { get { return Thickness < Length / 2 ? Thickness : Length / 2; } }
-    int TrackL { get { return Length - 2 * ButtonL; } }
-    int Range { get { return _max - _min + 1; } }
-    bool Scrollable { get { return Enabled && Range > 0 && LargeChange < Range; } }
-    int ThumbL
+    bool Scrollable { get { return Enabled && _max - _min + 1 > 0 && LargeChange < _max - _min + 1; } }
+
+    /// The seat's bar placed where this control is, given its values and
+    /// drawn, once the control (its background) is drawn.
+    internal override void PaintAfterChildren(Seat seat, Point origin)
     {
-        get
-        {
-            if (!Scrollable) return TrackL;
-            int l = (int)((long)TrackL * LargeChange / Range);
-            return l < ButtonL ? (ButtonL < TrackL ? ButtonL : TrackL) : l;
-        }
-    }
-    int ThumbAt
-    {
-        get
-        {
-            int room = TrackL - ThumbL, span = Last_ - _min;
-            if (room <= 0 || span <= 0) return ButtonL;
-            return ButtonL + (int)((long)room * (_value - _min) / span);
-        }
-    }
-    int ValueAt(int along)
-    {
-        int room = TrackL - ThumbL, span = Last_ - _min;
-        if (room <= 0 || span <= 0) return _min;
-        return _min + (int)(((long)(along - ButtonL) * span + room / 2) / room);
-    }
-    void Box(int along, int length, out int x, out int y, out int w, out int h)
-    {
-        if (Vertical) { x = 0; y = along; w = Width; h = length; }
-        else { x = along; y = 0; w = length; h = Height; }
+        Form? f = FindForm();
+        if (f == null || f.Handle == 0) return;
+        if (_id < 0) { _id = Seat.NextScrollBarId(); ScrollWidgets.Add(_id, this); }
+        _window = f.Handle;
+        // The .NET range on Windows' bar: the page is LargeChange, so the
+        // thumb's last place is Maximum - LargeChange + 1, as .NET's bar sets
+        // it with SetScrollInfo.
+        ScrollWidgets.Show(seat, f, _id, origin.X, origin.Y, Width, Height, Vertical, !ShownAll(), _min, _max, LargeChange, _value, Scrollable);
     }
 
-    protected override void OnPaint(PaintEventArgs e)
+    /// Hidden: the seat's bar too, which is neither drawn nor pressed then.
+    protected override void OnVisibleChanged(EventArgs e)
     {
-        Graphics g = e.Graphics;
-        int x, y, w, h;
-        // THE TRACK IS THE PALE GREY the era's dither of face and white
-        // averages to. Windows drew the dither itself; a pixel at a time
-        // over the wire is thousands of operations for one scroll bar, and
-        // the flat colour is indistinguishable at this size.
-        g.FillRectangle(new SolidBrush(Color.FromArgb(223, 223, 223)), 0, 0, Width, Height);
-        Box(0, ButtonL, out x, out y, out w, out h); Arrow(g, x, y, w, h, true);
-        Box(Length - ButtonL, ButtonL, out x, out y, out w, out h); Arrow(g, x, y, w, h, false);
-        if (Scrollable)
+        if (_id >= 0 && _window != 0 && !Visible)
         {
-            Box(ThumbAt, ThumbL, out x, out y, out w, out h);
-            g.FillRectangle(new SolidBrush(SystemColors.Control), x, y, w, h);
-            ControlPaint.DrawBorder3D(g, x, y, w, h, Border3DStyle.Raised);
+            try { Seat.Current.PlaceScrollBar(_window, _id, 0, 0, 0, 0, Vertical, true); }
+            catch (IOException) { }
         }
-        base.OnPaint(e);
+        base.OnVisibleChanged(e);
     }
 
-    void Arrow(Graphics g, int x, int y, int w, int h, bool first)
+    /// A step of the seat's track (or a key): .NET's Scroll and the value,
+    /// as its WM_HSCROLL and WM_VSCROLL reflection does.
+    internal void SeatScroll(int command, int pos)
     {
-        ControlPaint.DrawButtonFace(g, x, y, w, h, false, false, SystemColors.Control);
-        Color ink = Scrollable ? SystemColors.ControlText : SystemColors.GrayText;
-        ArrowDirection way = Vertical ? (first ? ArrowDirection.Up : ArrowDirection.Down)
-                                      : (first ? ArrowDirection.Left : ArrowDirection.Right);
-        if (Vertical) ControlPaint.DrawArrow(g, way, x + w / 2 - 3, y + h / 2 - 2, 4, ink);
-        else ControlPaint.DrawArrow(g, way, x + w / 2 - 2, y + h / 2 - 3, 4, ink);
+        if (command == 8) { OnScroll(new ScrollEventArgs(ScrollEventType.EndScroll, _value, _value, Orientation)); return; }
+        UserScroll(ScrollWidgets.Type(command), ScrollWidgets.Target(command, _value, pos, _min, Last_, _small, LargeChange));
     }
 
-    protected override void OnMouseDown(MouseEventArgs e)
+    /// The keys a bar with the focus answers (xxxSBWndProc's): the arrows a
+    /// line, Page Up and Down a page, Home and End the ends, and the end of
+    /// the scroll when the key comes up.
+    protected override void OnKeyDown(KeyEventArgs e)
     {
-        if (e.Button == MouseButtons.Left && Scrollable)
-        {
-            int along = Vertical ? e.Y : e.X, bl = ButtonL;
-            if (along < bl) UserScroll(ScrollEventType.SmallDecrement, _value - _small);
-            else if (along >= Length - bl) UserScroll(ScrollEventType.SmallIncrement, _value + _small);
-            else if (along < ThumbAt) UserScroll(ScrollEventType.LargeDecrement, _value - LargeChange);
-            else if (along >= ThumbAt + ThumbL) UserScroll(ScrollEventType.LargeIncrement, _value + LargeChange);
-            else _grab = along - ThumbAt;
-        }
-        base.OnMouseDown(e);
+        int vk = (int)e.KeyCode;
+        int command = vk == 0x21 ? 2 : vk == 0x22 ? 3 : vk == 0x24 ? 6 : vk == 0x23 ? 7 : vk == 0x25 || vk == 0x26 ? 0 : vk == 0x27 || vk == 0x28 ? 1 : -1;
+        if (command >= 0 && Scrollable) { SeatScroll(command, _value); e.Handled = true; }
+        base.OnKeyDown(e);
     }
-    protected override void OnMouseMove(MouseEventArgs e)
+
+    protected override void OnKeyUp(KeyEventArgs e)
     {
-        if (_grab >= 0) UserScroll(ScrollEventType.ThumbTrack, ValueAt((Vertical ? e.Y : e.X) - _grab));
-        base.OnMouseMove(e);
+        int vk = (int)e.KeyCode;
+        if (vk >= 0x21 && vk <= 0x28 && Scrollable) SeatScroll(8, _value);
+        base.OnKeyUp(e);
     }
-    protected override void OnMouseUp(MouseEventArgs e)
-    {
-        if (_grab >= 0)
-        {
-            _grab = -1;
-            UserScroll(ScrollEventType.ThumbPosition, _value);
-            OnScroll(new ScrollEventArgs(ScrollEventType.EndScroll, _value, _value, Orientation));
-        }
-        base.OnMouseUp(e);
-    }
+
     protected override void OnMouseWheel(MouseEventArgs e)
     {
         int lines = WheelLines(e.Delta, _large > 0 ? _large / (_small > 1 ? _small : 1) : 1, false);
@@ -3109,6 +3916,134 @@ public abstract class ScrollBar : Control
         int columns = WheelLines(e.Delta, _large > 0 ? _large / (_small > 1 ? _small : 1) : 1, true);
         if (columns != 0) UserScroll(columns > 0 ? ScrollEventType.SmallIncrement : ScrollEventType.SmallDecrement, _value + columns * _small);
         base.OnMouseHWheel(e);
+    }
+}
+
+/// .NET's ScrollProperties (HScrollProperties, VScrollProperties): what a
+/// ScrollableControl's bar is set to.
+public class ScrollProperties
+{
+    internal int MinimumValue, MaximumValue = 100, ValueValue, SmallValue = 1, LargeValue = 10;
+    internal bool VisibleValue, EnabledValue = true;
+    readonly ScrollableControl _owner;
+    internal ScrollProperties(ScrollableControl owner) { _owner = owner; }
+    public int Minimum { get { return MinimumValue; } set { MinimumValue = value; _owner.Invalidate(); } }
+    public int Maximum { get { return MaximumValue; } set { MaximumValue = value; _owner.Invalidate(); } }
+    public int SmallChange { get { return SmallValue; } set { SmallValue = value; } }
+    public int LargeChange { get { return LargeValue; } set { LargeValue = value; _owner.Invalidate(); } }
+    public int Value { get { return ValueValue; } set { _owner.ScrollTo(this, value); } }
+    public bool Visible { get { return VisibleValue; } set { VisibleValue = value; _owner.Invalidate(); } }
+    public bool Enabled { get { return EnabledValue; } set { EnabledValue = value; _owner.Invalidate(); } }
+}
+
+public class HScrollProperties : ScrollProperties { internal HScrollProperties(ScrollableControl owner) : base(owner) { } }
+public class VScrollProperties : ScrollProperties { internal VScrollProperties(ScrollableControl owner) : base(owner) { } }
+
+/// A control that scrolls what it holds (.NET's ScrollableControl): with
+/// AutoScroll, scroll bars of the seat's -- SM_CYHSCROLL high along the
+/// bottom, SM_CXVSCROLL wide down the right, as a window's WS_HSCROLL and
+/// WS_VSCROLL bars lie -- whenever its children, or AutoScrollMinSize, reach
+/// past it; scrolling moves the children, as .NET's SetDisplayRectLocation
+/// does.
+public class ScrollableControl : Control
+{
+    bool _autoScroll;
+    Size _minSize;
+    int _hId = -1, _vId = -1;
+    readonly HScrollProperties _h;
+    readonly VScrollProperties _v;
+    public event ScrollEventHandler? Scroll;
+
+    public ScrollableControl() { _h = new HScrollProperties(this); _v = new VScrollProperties(this); }
+
+    public virtual bool AutoScroll { get { return _autoScroll; } set { _autoScroll = value; Invalidate(); } }
+    public Size AutoScrollMinSize { get { return _minSize; } set { _minSize = value; if (value.Width > 0 || value.Height > 0) _autoScroll = true; Invalidate(); } }
+    public HScrollProperties HorizontalScroll { get { return _h; } }
+    public VScrollProperties VerticalScroll { get { return _v; } }
+
+    /// Where the view is: the negated scroll positions, as .NET's is.
+    public Point AutoScrollPosition
+    {
+        get { return new Point(-_h.ValueValue, -_v.ValueValue); }
+        set { ScrollTo(_h, Math.Abs(value.X)); ScrollTo(_v, Math.Abs(value.Y)); }
+    }
+
+    protected virtual void OnScroll(ScrollEventArgs se) { if (Scroll != null) Scroll(this, se); }
+
+    /// The children moved so that `bar` is at `value`, kept to its range.
+    internal void ScrollTo(ScrollProperties bar, int value)
+    {
+        int last = Math.Max(bar.MinimumValue, bar.MaximumValue - bar.LargeValue + 1);
+        if (value > last) value = last;
+        if (value < bar.MinimumValue) value = bar.MinimumValue;
+        int delta = value - bar.ValueValue;
+        if (delta == 0) return;
+        bar.ValueValue = value;
+        bool horizontal = bar == _h;
+        foreach (Control child in Controls)
+            child.Location = horizontal ? new Point(child.Left - delta, child.Top) : new Point(child.Left, child.Top - delta);
+        Invalidate();
+    }
+
+    /// The bars worked out from what the children cover (AutoScroll), as
+    /// .NET's AdjustFormScrollbars does: the vertical bar's width taken from
+    /// the view when it shows, and the other way round.
+    void Measure(out int viewWidth, out int viewHeight)
+    {
+        int cxv = SystemInformation.VerticalScrollBarWidth, cyh = SystemInformation.HorizontalScrollBarHeight;
+        int right = _minSize.Width, bottom = _minSize.Height;
+        foreach (Control child in Controls)
+        {
+            if (!child.Visible) continue;
+            right = Math.Max(right, child.Left + child.Width + _h.ValueValue);
+            bottom = Math.Max(bottom, child.Top + child.Height + _v.ValueValue);
+        }
+        bool v = bottom > Height, h = right > Width;
+        if (v && right > Width - cxv) h = true;
+        if (h && bottom > Height - cyh) v = true;
+        viewWidth = Width - (v ? cxv : 0); viewHeight = Height - (h ? cyh : 0);
+        _h.VisibleValue = h; _v.VisibleValue = v;
+        _h.MinimumValue = 0; _h.MaximumValue = Math.Max(right - 1, 0); _h.LargeValue = Math.Max(viewWidth, 1);
+        _v.MinimumValue = 0; _v.MaximumValue = Math.Max(bottom - 1, 0); _v.LargeValue = Math.Max(viewHeight, 1);
+        if (!h) ScrollTo(_h, 0);
+        if (!v) ScrollTo(_v, 0);
+    }
+
+    internal override void PaintAfterChildren(Seat seat, Point origin)
+    {
+        // Nothing to do for a control that never scrolled.
+        if (!_autoScroll && !_h.VisibleValue && !_v.VisibleValue && _hId < 0) return;
+        Form? f = FindForm();
+        if (f == null || f.Handle == 0) return;
+        if (_hId < 0) { _hId = Seat.NextScrollBarId(); ScrollWidgets.Add(_hId, this); }
+        if (_vId < 0) { _vId = Seat.NextScrollBarId(); ScrollWidgets.Add(_vId, this); }
+        int viewWidth = Width, viewHeight = Height;
+        if (_autoScroll) Measure(out viewWidth, out viewHeight);
+        int cxv = SystemInformation.VerticalScrollBarWidth, cyh = SystemInformation.HorizontalScrollBarHeight;
+        bool shown = ShownAll();
+        ScrollWidgets.Show(seat, f, _hId, origin.X, origin.Y + viewHeight, viewWidth, cyh, false, !shown || !_h.VisibleValue,
+                           _h.MinimumValue, _h.MaximumValue, _h.LargeValue, _h.ValueValue, _h.EnabledValue && Enabled);
+        ScrollWidgets.Show(seat, f, _vId, origin.X + viewWidth, origin.Y, cxv, viewHeight, true, !shown || !_v.VisibleValue,
+                           _v.MinimumValue, _v.MaximumValue, _v.LargeValue, _v.ValueValue, _v.EnabledValue && Enabled);
+        // The corner where both meet, in the face colour.
+        if (shown && _h.VisibleValue && _v.VisibleValue)
+        {
+            Graphics g = CreateGraphics();
+            g.FillRectangle(new SolidBrush(SystemColors.Control), viewWidth, viewHeight, cxv, cyh);
+            seat.Flush();
+        }
+    }
+
+    /// A step of one of its bars: the view moved, .NET's Scroll raised.
+    internal void SeatScroll(int id, int command, int pos)
+    {
+        ScrollProperties bar = id == _hId ? (ScrollProperties)_h : _v;
+        ScrollOrientation way = id == _hId ? ScrollOrientation.HorizontalScroll : ScrollOrientation.VerticalScroll;
+        int was = bar.ValueValue;
+        if (command == 8) { OnScroll(new ScrollEventArgs(ScrollEventType.EndScroll, was, was, way)); return; }
+        int last = Math.Max(bar.MinimumValue, bar.MaximumValue - bar.LargeValue + 1);
+        ScrollTo(bar, ScrollWidgets.Target(command, was, pos, bar.MinimumValue, last, bar.SmallValue, bar.LargeValue));
+        OnScroll(new ScrollEventArgs(ScrollWidgets.Type(command), was, bar.ValueValue, way));
     }
 }
 
@@ -3173,8 +4108,46 @@ public class TextBox : Control
         {
             g.DrawString(shown, Font, new SolidBrush(ForeColor), BackColor, left, top);
         }
-        if (Focused) g.FillRectangle(new SolidBrush(ForeColor), left + Font.TextWidth(shown, 0, _caret > shown.Length ? shown.Length : _caret), top, 1, Font.Height);
+        // THE SYSTEM CARET, the seat's (Seat.CreateCaret): it draws it, blinks
+        // it at the blink time and keeps it off what is painted here.
+        if (Focused) PlaceCaret(left + Font.TextWidth(shown, 0, _caret > shown.Length ? shown.Length : _caret), top);
         base.OnPaint(e);
+    }
+
+    // The text box whose caret this thread's is, and the window it is in.
+    static TextBox? _caretBox;
+    static int _caretWindow;
+
+    /// The caret made in this box's form, if it is not there, and put at
+    /// (x, y) in the box.
+    void PlaceCaret(int x, int y)
+    {
+        Form? f = FindForm();
+        if (f == null || f.Handle == 0) return;
+        try
+        {
+            Seat seat = Seat.Current;
+            if (_caretBox != this || _caretWindow != f.Handle)
+            {
+                if (!seat.CreateCaret(f.Handle, 1, Font.Height)) return;
+                seat.ShowCaret(true);
+                _caretBox = this;
+                _caretWindow = f.Handle;
+            }
+            Point o = ClientOrigin(), frame = f.ClientOffset();
+            seat.MoveCaret(frame.X + o.X + x, frame.Y + o.Y + y);
+        }
+        catch (IOException) { }
+    }
+
+    /// The caret gone with the focus.
+    void DropCaret()
+    {
+        if (_caretBox != this) return;
+        _caretBox = null;
+        _caretWindow = 0;
+        try { Seat.Current.DestroyCaret(); }
+        catch (IOException) { }
     }
 
     /// Remove the selection from the text, leaving the caret where it was.
@@ -3277,7 +4250,7 @@ public class TextBox : Control
         _clickFocus = false;
         base.OnGotFocus(e);
     }
-    protected override void OnLostFocus(EventArgs e) { _dragging = false; base.OnLostFocus(e); }
+    protected override void OnLostFocus(EventArgs e) { _dragging = false; DropCaret(); base.OnLostFocus(e); }
     bool _clickFocus;
     internal void FocusByClick() { _clickFocus = true; }
 }
@@ -3940,12 +4913,12 @@ internal class ComboPopup : Form
         ShowInTaskbar = false;
         BackColor = SystemColors.Window;
         Height = rows * owner.ItemHeight + 2;
-        Scroll();
+        ScrollToHot();
     }
 
     int Height_ { get { return _owner.ItemHeight; } }
 
-    void Scroll()
+    void ScrollToHot()
     {
         if (_hot < _top) _top = _hot;
         else if (_hot >= _top + _rows) _top = _hot - _rows + 1;
@@ -3995,10 +4968,10 @@ internal class ComboPopup : Form
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
-        if (e.KeyCode == Keys.Down && _hot + 1 < _owner.Items.Count) { _hot++; Scroll(); Invalidate(); e.Handled = true; }
-        else if (e.KeyCode == Keys.Up && _hot > 0) { _hot--; Scroll(); Invalidate(); e.Handled = true; }
-        else if (e.KeyCode == Keys.Home) { _hot = 0; Scroll(); Invalidate(); e.Handled = true; }
-        else if (e.KeyCode == Keys.End) { _hot = _owner.Items.Count - 1; Scroll(); Invalidate(); e.Handled = true; }
+        if (e.KeyCode == Keys.Down && _hot + 1 < _owner.Items.Count) { _hot++; ScrollToHot(); Invalidate(); e.Handled = true; }
+        else if (e.KeyCode == Keys.Up && _hot > 0) { _hot--; ScrollToHot(); Invalidate(); e.Handled = true; }
+        else if (e.KeyCode == Keys.Home) { _hot = 0; ScrollToHot(); Invalidate(); e.Handled = true; }
+        else if (e.KeyCode == Keys.End) { _hot = _owner.Items.Count - 1; ScrollToHot(); Invalidate(); e.Handled = true; }
         else if (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Space) { _owner.Chose(_hot); e.Handled = true; }
         else if (e.KeyCode == Keys.Escape || e.KeyCode == Keys.F4) { _owner.Shut(); _owner.Focus(); e.Handled = true; }
         base.OnKeyDown(e);
@@ -4911,6 +5884,14 @@ internal static class SystemMenus
         try { m.Write(w); }
         finally { m.Writing = false; }
         Seat.Current.SetMenu(w.Done());
+        // A form's bar: its shortcuts are the seat's keys (ProcessCmdKey's
+        // place), answered as the item's Command.
+        if (m is MainMenu bar)
+        {
+            List<byte> accels = new List<byte>();
+            bar.WriteKeys(accels);
+            Seat.Current.SetMenuKeys(m.RootId, accels.ToArray(), accels.Count / 6);
+        }
         m.Sent = true;
     }
 
@@ -4997,6 +5978,25 @@ public abstract class Menu : MenuSource
 
     /// The tree's own popup opening: a ContextMenu's Popup.
     internal virtual void RootPopup() { }
+
+    /// Every shortcut of this menu's items and theirs as an ACCEL (FVIRTKEY
+    /// with FSHIFT, FCONTROL, FALT as the Shortcut has them; the key; the
+    /// item's id): the items ForShortcut would find -- enabled, visible,
+    /// with no submenu, under enabled items -- and whose id fits an ACCEL.
+    internal void WriteKeys(List<byte> accels)
+    {
+        foreach (MenuItem item in MenuItems)
+        {
+            if (!item.Enabled || !item.Visible) continue;
+            if (item.MenuItems.Count > 0) { item.WriteKeys(accels); continue; }
+            int key = (int)item.Shortcut;
+            if (key == 0 || item.Id > 0xFFFF) continue;
+            int fVirt = 1 | ((key & 0x10000) != 0 ? 4 : 0) | ((key & 0x20000) != 0 ? 8 : 0) | ((key & 0x40000) != 0 ? 0x10 : 0);
+            accels.Add((byte)fVirt); accels.Add(0);
+            accels.Add((byte)key); accels.Add((byte)(key >> 8));
+            accels.Add((byte)item.Id); accels.Add((byte)(item.Id >> 8));
+        }
+    }
 
     /// The item a shortcut belongs to, among this menu's and theirs.
     internal MenuItem? ForShortcut(Shortcut key)
@@ -5436,7 +6436,7 @@ public delegate void WatchHandler(int fd);
 /// it; the pointer shows which way. A view that scrolls one way only is
 /// scrolled that way only, by the same rule -- IE did -- unless the user
 /// asked for grab-and-drag, where the content follows the pointer instead.
-static class AutoScroll
+static class PanScroll
 {
     internal static bool Active;
     internal static bool SwallowRelease;
@@ -5732,25 +6732,63 @@ sealed class Posted : IAsyncResult
 
 public static class Application
 {
-    // THE DOUBLE-CLICK: a second press of the same button on the same
-    // control, within SystemInformation.DoubleClickTime and inside the
-    // DoubleClickSize box centred on the first. A third press starts again,
-    // as on Windows.
+    // The font store reachable through the seat before any Font is made
+    // (System.Drawing.FontStores).
+    static readonly bool _fontsLinked = LinkFonts();
+    static bool LinkFonts() { Corsac.GUI.Seat.LinkFontStore(); return true; }
+
+    // THE DOUBLE-CLICK IS THE SEAT'S (the GUI kernel's seatinput.cor): a
+    // second press of the same button in the form's window, soon enough and
+    // near enough, comes as DoubleClick in place of its Down (`doubled`).
+    // What is left here is Windows' own rule for a child window, which
+    // every control is: the same control as the press before it. A third
+    // press starts again, as on Windows.
     static Control? _clickTarget;
     static MouseButtons _clickButton;
-    static int _clickAt, _clickX, _clickY;
     internal static int LastClicks;
 
-    internal static int CountClick(Control target, MouseButtons button, int x, int y)
+    internal static int CountClick(Control target, MouseButtons button, bool doubled)
     {
-        int now = Environment.TickCount;
-        Size box = SystemInformation.DoubleClickSize;
-        bool second = LastClicks == 1 && target == _clickTarget && button == _clickButton
-            && now - _clickAt <= SystemInformation.DoubleClickTime
-            && (x > _clickX ? x - _clickX : _clickX - x) <= box.Width / 2 && (y > _clickY ? y - _clickY : _clickY - y) <= box.Height / 2;
+        bool second = doubled && LastClicks == 1 && target == _clickTarget && button == _clickButton;
         LastClicks = second ? 2 : 1;
-        _clickTarget = target; _clickButton = button; _clickAt = now; _clickX = x; _clickY = y;
+        _clickTarget = target; _clickButton = button;
         return LastClicks;
+    }
+
+    // THE CAPTURE IS THE SEAT'S (SetCapture for the form's window): the
+    // control it is for, and those that had it and have not yet been told
+    // they lost it -- the seat tells each loss once, CaptureLost, in order.
+    internal static Control? CaptureOwner;
+    static readonly List<Control> _losing = new List<Control>();
+
+    internal static void TakeCapture(Control c)
+    {
+        Form? f = c.FindForm();
+        if (f == null || f.Handle == 0) return;
+        Control? had = CaptureOwner;
+        CaptureOwner = c;
+        // The seat tells a loss only when a window had the capture (its
+        // answer): a form gone took its capture with it, untold.
+        if (Seat.Current.SetCapture(f.Handle) != 0 && had != null) _losing.Add(had);
+    }
+
+    internal static void LetCaptureGo(Control c)
+    {
+        if (CaptureOwner != c) return;
+        CaptureOwner = null;
+        if (Seat.Current.SetCapture(0) != 0) _losing.Add(c);
+    }
+
+    /// The seat's CaptureLost: the control that lost it told
+    /// (MouseCaptureChanged, Windows' WM_CAPTURECHANGED); one the program did
+    /// not let go of itself has it no more.
+    internal static void CaptureLost()
+    {
+        Control? had;
+        if (_losing.Count > 0) { had = _losing[0]; _losing.RemoveAt(0); }
+        else { had = CaptureOwner; CaptureOwner = null; }
+        if (had != null && Captured == had && CaptureOwner != had) Captured = null;
+        if (had != null) had.RaiseMouseCaptureChanged();
     }
 
     /// The seat's action numbers as Windows Forms spells them.
@@ -5763,24 +6801,19 @@ public static class Application
     static List<Form> _forms = new List<Form>();
 
 
-    static List<Timer> _timers = new List<Timer>();
-    internal static void AddTimer(Timer t) { if (!_timers.Contains(t)) _timers.Add(t); }
-    internal static void RemoveTimer(Timer t) { _timers.Remove(t); }
+    // THE TIMERS ARE THE SEAT'S (Timer): each running one by the id the seat
+    // gave it, found again when its event comes.
+    static readonly List<int> _timerIds = new List<int>();
+    static readonly List<Timer> _timers = new List<Timer>();
+    internal static void AddTimer(int id, Timer t) { RemoveTimer(id); _timerIds.Add(id); _timers.Add(t); }
+    internal static void RemoveTimer(int id) { int at = _timerIds.IndexOf(id); if (at >= 0) { _timerIds.RemoveAt(at); _timers.RemoveAt(at); } }
+    static void TimerElapsed(int id) { int at = _timerIds.IndexOf(id); if (at >= 0) _timers[at].Fire(); }
     /// Milliseconds on a clock that only goes forward.
     public static long Now() { return DateTime.UtcNow.Ticks / 10000; }
-    /// How long the loop may wait before a timer is due: -1 for ever.
-    static int TimerWait()
-    {
-        if (_timers.Count == 0) return -1;
-        long now = Now(), soonest = -1;
-        for (int i = 0; i < _timers.Count; i++) { long left = _timers[i].Due - now; if (left < 0) left = 0; if (soonest < 0 || left < soonest) soonest = left; }
-        return soonest > 1000000 ? 1000000 : (int)soonest;
-    }
-    static void FireTimers()
-    {
-        long now = Now();
-        for (int i = 0; i < _timers.Count; i++) if (_timers[i].Due <= now) _timers[i].Fire();
-    }
+    /// How long the loop may wait: for ever, since the seat wakes it for a
+    /// timer with the timer's event.
+    static int TimerWait() { return -1; }
+    static void FireTimers() { }
     /// Where the next window with no position of its own goes: down and
     /// right of the windows already on the seat, a caption's height per
     /// window, back to the corner when it would run off the screen. Asked of
@@ -5809,6 +6842,13 @@ public static class Application
 
     public static Control? FocusedControl { get { return _focus; } }
     public static Form? ActiveForm { get { return _active; } }
+
+    /// The calling thread's input language (InputLanguage.CurrentInputLanguage).
+    public static InputLanguage CurrentInputLanguage
+    {
+        get { return InputLanguage.CurrentInputLanguage; }
+        set { InputLanguage.CurrentInputLanguage = value; }
+    }
     /// Any shown form of the program: what a menu with no control to come
     /// from (a ContextMenuStrip shown at a point) is for.
     internal static Form? AnyForm() { foreach (Form f in _forms) if (f.Handle != 0) return f; return null; }
@@ -5988,6 +7028,20 @@ public static class Application
     }
 
     /// Runs the loop until `dialog` closes, and answers what it said.
+    /// The loop run until `done` says so, or the program exits: a modal
+    /// wait that keeps the program's windows answering (DoDragDrop's).
+    internal static void RunUntil(Func<bool> done)
+    {
+        Seat seat = Seat.Current;
+        bool was = _running;
+        _running = true;
+        while (_running && !done())
+        {
+            if (!Iterate(seat)) break;
+        }
+        _running = was;
+    }
+
     internal static DialogResult RunModal(Form dialog)
     {
         dialog.Show();
@@ -6096,7 +7150,15 @@ public static class Application
         // dropped when that window has gone.
         if (f == null && m.Kind != 1 && m.Kind != 11 && m.Kind != 12 && m.Kind != 13
             && m.Kind != 14 && m.Kind != 15 && m.Kind != 16 && m.Kind != 17
-            && m.Kind != 23 && m.Kind != 24 && m.Kind != 25 && m.Kind != 28) return;
+            && m.Kind != 23 && m.Kind != 24 && m.Kind != 25 && m.Kind != 28
+            && m.Kind != Seat.ClipboardChanged && m.Kind != Seat.ClipboardRender && m.Kind != Seat.ClipboardLost
+            && m.Kind != Seat.FontsChanged && m.Kind != Seat.WorkAreaChanged && m.Kind != Seat.ModeTrialEnded
+            && m.Kind != Seat.TimerElapsed && m.Kind != Seat.HotKeyPressed
+            && m.Kind != Seat.KeyChar && m.Kind != Seat.InputLanguageRequest && m.Kind != Seat.InputLanguageChanged
+            && (m.Kind < Seat.ShellCreated || m.Kind > Seat.ShellTray)) return;
+        // A step of a scroll bar the seat tracks for one of this program's
+        // controls (ScrollWidgets).
+        if (m.Kind == Seat.ScrollEvent) { ScrollWidgets.Raise(m.A & 0xFFFF, (m.A >> 16) & 0xFFFF, m.B); return; }
         switch (m.Kind)
         {
             case 1:
@@ -6113,7 +7175,7 @@ public static class Application
                 int mods = (m.B >> 8) & 7;
                 char ch = (char)((m.B >> 16) & 0xFFFF);
                 // A key ends autoscroll and goes nowhere else, as in IE.
-                if (AutoScroll.Active) { if (!up) AutoScroll.End(); return; }
+                if (PanScroll.Active) { if (!up) PanScroll.End(); return; }
                 Control? target = _focus ?? _active;
                 if (target == null) return;
                 Keys data = (Keys)vk | ((mods & 1) != 0 ? Keys.Shift : Keys.None) | ((mods & 2) != 0 ? Keys.Control : Keys.None)
@@ -6135,7 +7197,10 @@ public static class Application
                 // still gets Tab, Escape and Alt from everywhere else.
                 // A MENU'S SHORTCUT COMES FIRST, as ProcessCmdKey gives the
                 // form's menu the key before any control sees it: a key with
-                // Ctrl or Alt, or one that types nothing (F1, Delete).
+                // Ctrl or Alt, or one that types nothing (F1, Delete). The
+                // seat takes a bar's shortcuts itself (SetMenuKeys) and sends
+                // the item's Command; what reaches here is one it could not
+                // carry.
                 if (form != null && form.Menu != null && ((mods & 6) != 0 || ch == 0))
                 {
                     MenuItem? chosen = form.Menu.ForShortcut((Shortcut)(int)data);
@@ -6174,9 +7239,23 @@ public static class Application
                 f!.WindowMouse(3, 0, wx, wy); break;
             }
             case 4:
+            case Seat.DoubleClick:
+                // A press, or the seat's double click (in place of its Down).
                 ButtonHeld = true;
                 if (_active != f && !f!.StaysInactive) { _active = f; f!.RaiseActivated(); }
-                f!.WindowMouse(4, m.A & 0xFF, Seat.LowSigned(m.B), Seat.HighSigned(m.B)); break;
+                f!.WindowMouse(4, m.A & 0xFF, Seat.LowSigned(m.B), Seat.HighSigned(m.B), m.Kind == Seat.DoubleClick); break;
+            case Seat.PointerLeave:
+                // The pointer left the form's window: nothing of it is hot.
+                Hover(null);
+                break;
+            case Seat.CaptureLost:
+                CaptureLost();
+                break;
+            case Seat.CursorSet:
+                // WM_SETCURSOR for the client area: what is under the pointer
+                // says what it wears. The frame's shapes are the seat's.
+                if (m.A == 1 && f != null) f.CursorAt(Seat.LowSigned(m.B), Seat.HighSigned(m.B));
+                break;
             case 6:
             case 7:
             {
@@ -6204,7 +7283,7 @@ public static class Application
                 break;
             }
             case 9:
-                if (m.A == 0 && AutoScroll.Active) AutoScroll.End();
+                if (m.A == 0 && PanScroll.Active) PanScroll.End();
                 if (m.A != 0) { _active = f; f!.RaiseActivated(); }
                 else { if (_active == f) _active = null; f!.RaiseDeactivate(); }
                 break;
@@ -6214,10 +7293,21 @@ public static class Application
             case 16:
                 if (m.A == 1) Shell.RaiseStartRequested();
                 break;
+            case Seat.ShellCreated: case Seat.ShellDestroyed: case Seat.ShellActivated: case Seat.ShellRetitled: case Seat.ShellIcon:
+            case Seat.ShellFlash: case Seat.ShellState: case Seat.ShellFullScreen: case Seat.ShellTray:
+                // The shell feed: what a taskbar lists, as it changes.
+                Shell.RaiseShell(m.Kind, m.Window, m.A);
+                break;
             case 17:
                 // WM_SETTINGCHANGE: every setting SystemInformation answers
                 // is asked of the seat again, and whoever cares is told.
                 SystemEvents.RaiseUserPreferenceChanged((UserPreferenceCategory)m.A);
+                break;
+            case Seat.ThemeChanged:
+                // The theme changed (os/gui/theme.cor): SystemColors and
+                // SystemFonts ask the seat again at their next read. The
+                // SettingChange that follows tells whoever cares.
+                SystemTheme.Changed();
                 break;
             case 18:
                 // Its taskbar button: back from the taskbar, as it was.
@@ -6226,6 +7316,75 @@ public static class Application
             case 19:
                 // Its taskbar button, pressed while it was the active window.
                 if (f != null && f.MinimizeBox) f.WindowState = FormWindowState.Minimized;
+                break;
+            case Seat.ClipboardRender:
+                // A format this program promised, wanted now.
+                Clipboard.Render(m.A);
+                break;
+            case Seat.KeyChar:
+            {
+                // More than the Key event's one character: a ligature's
+                // others, or a dead key that did not combine and the key
+                // after it -- each a KeyPress, as each WM_CHAR is. A dead
+                // key waiting (B 1, WM_DEADCHAR) is no KeyPress in .NET.
+                if (m.B != 0 || PanScroll.Active) break;
+                Control? target = _focus ?? _active;
+                if (target == null) break;
+                KeyPressEventArgs press = new KeyPressEventArgs((char)(m.A & 0xFFFF));
+                target.RaiseKeyPress(press);
+                Message raw = m; target.DispatchRaw(ref raw);
+                break;
+            }
+            case Seat.InputLanguageRequest:
+            {
+                // WM_INPUTLANGCHANGEREQUEST: the form may refuse; else the
+                // language is the thread's, as DefWindowProc activates it.
+                if (m.B == 0) break;
+                Form? asked = f ?? _active;
+                InputLanguage wanted = new InputLanguage((long)(uint)m.B);
+                InputLanguageChangingEventArgs e = new InputLanguageChangingEventArgs(wanted, (m.A & 1) != 0);
+                if (asked != null) asked.RaiseInputLanguageChanging(e);
+                if (!e.Cancel) Seat.Current.ActivateKeyboardLayout((long)(uint)m.B);
+                break;
+            }
+            case Seat.InputLanguageChanged:
+            {
+                // WM_INPUTLANGCHANGE: the thread's language is another now.
+                Form? told = _active;
+                if (told != null) told.RaiseInputLanguageChanged(new InputLanguageChangedEventArgs(new InputLanguage((long)(uint)m.A), 0));
+                break;
+            }
+            case Seat.ClipboardLost:
+                Clipboard.Lost();
+                break;
+            case Seat.FontsChanged:
+                // A font directory changed: the fallbacks asked of the store
+                // asked again, and whoever cares told.
+                System.Drawing.FontFallback.Forget();
+                SystemEvents.RaiseInstalledFontsChanged();
+                break;
+            case Seat.TimerElapsed:
+                // A timer of this thread's come due (Timer).
+                if (m.Window == 0) TimerElapsed(m.A);
+                break;
+            case Seat.HotKeyPressed:
+                // A hot key of this thread's pressed (HotKey).
+                HotKey.Raise(f, m.A, m.B);
+                break;
+            case Seat.DragEnterEvent:
+            case Seat.DragOverEvent:
+            case Seat.DragLeaveEvent:
+            case Seat.DragDropEvent:
+                if (f != null) DragDrop_.Target(f, m.Kind, m.A, m.B);
+                break;
+            case Seat.DragEndedEvent:
+            case Seat.DragRenderEvent:
+            case Seat.DragFeedbackEvent:
+            case Seat.DragBridgeEnterEvent:
+            case Seat.DragBridgeOverEvent:
+            case Seat.DragBridgeLeaveEvent:
+            case Seat.DragBridgeDropEvent:
+                DragDrop_.Source(m.Kind, m.Window, m.A, m.B);
                 break;
             case 28:
                 // A press on one of this thread's notification-area icons.
@@ -6267,6 +7426,14 @@ public static class Application
             // the size is taken again, whoever cares is told, and every
             // form repaints. A form that filled the screen is made to fill
             // the new one, which is what a desktop and a taskbar are.
+            case Seat.WorkAreaChanged:
+                // A bar took rows or gave them back: SPI_SETWORKAREA's
+                // WM_SETTINGCHANGE, which .NET raises as Desktop.
+                SystemEvents.RaiseUserPreferenceChanged(UserPreferenceCategory.Desktop);
+                break;
+            case Seat.ModeTrialEnded:
+                Screen.RaiseTrialEnded(m.A != 0);
+                break;
             case 15:
             {
                 Seat.Current.Rescreen(m.A & 0xFFFF, (m.A >> 16) & 0xFFFF);
@@ -6447,11 +7614,13 @@ public static class Application
 
 // ---- the clipboard ----------------------------------------------------------
 //
-// .NET's Clipboard, DataFormats, IDataObject and DataObject, on the window
-// station's clipboard that Windows programs share (Seat's clipboard calls):
-// text copied here pastes into Notepad, and a bitmap WordPad copies comes
-// back as an Image. Each call replaces or reads the whole clipboard at once,
-// as .NET's static Clipboard does.
+// .NET's Clipboard, DataFormats, IDataObject and DataObject, on the GUI
+// kernel's clipboard that Windows programs share through win32k (Seat's
+// clipboard calls): text copied here pastes into Notepad, and a bitmap
+// WordPad copies comes back as an Image. Each call replaces or reads the
+// whole clipboard at once, as .NET's static Clipboard does. The clipboard
+// names its formats as MIME types are: .NET's names are mapped onto them
+// (Clipboard.NativeName), and a name with no mapping is itself.
 
 public enum TextDataFormat { Text = 0, UnicodeText = 1, Rtf = 2, Html = 3, CommaSeparatedValue = 4 }
 
@@ -6479,8 +7648,8 @@ public static class DataFormats
         "TaggedImageFileFormat", "OEMText", "DeviceIndependentBitmap", "Palette", "PenData", "RiffAudio", "WaveAudio",
         "UnicodeText", "EnhancedMetafile", "FileDrop", "Locale" };
 
-    /// A format by name: a predefined one's number, else the one
-    /// RegisterClipboardFormat gives the name (the same in every program).
+    /// A format by name: a predefined one's Windows number, else the number
+    /// the clipboard gives the name (the same in every program).
     public static Format GetFormat(string format)
     {
         if (format == null) throw new ArgumentNullException("format");
@@ -6491,14 +7660,15 @@ public static class DataFormats
         return new Format(format, id);
     }
 
-    /// A format by number: a predefined one's name, a registered one's
-    /// (GetClipboardFormatName), else "Format" and the number.
+    /// A format by number: a predefined one's name, else the name of the
+    /// clipboard's format of that number as .NET names it, else "Format" and
+    /// the number.
     public static Format GetFormat(int id)
     {
         int n = id & 0xFFFF;
         if (n > 0 && n < Standard.Length) return new Format(Standard[n], n);
         string? name = n >= 0xC000 ? Seat.Current.GetClipboardFormatName(n) : null;
-        return new Format(name ?? "Format" + n, n);
+        return new Format(name != null ? Clipboard.DotNetName(name) : "Format" + n, n);
     }
 }
 
@@ -6655,7 +7825,8 @@ sealed class ClipboardDataObject : DataObject
         List<string> all = new List<string>(base.GetFormats(false));
         foreach (int id in Seat.Current.GetClipboardFormats())
         {
-            string name = DataFormats.GetFormat(id).Name;
+            string? native = Seat.Current.GetClipboardFormatName(id);
+            string name = native != null ? Clipboard.DotNetName(native) : "Format" + id;
             if (!all.Contains(name)) all.Add(name);
         }
         if (autoConvert && all.Contains(DataFormats.UnicodeText) && !all.Contains(DataFormats.StringFormat)) all.Add(DataFormats.StringFormat);
@@ -6663,13 +7834,38 @@ sealed class ClipboardDataObject : DataObject
     }
 }
 
-/// .NET's Clipboard: the window station's clipboard, shared with every
-/// Windows program. Setting replaces everything on it; reading converts
-/// between text formats and between Bitmap and DeviceIndependentBitmap as
-/// Windows does. ExternalException when another program has it open.
+/// .NET's Clipboard: the GUI kernel's clipboard, shared with every native
+/// and Windows program. Setting replaces everything on it; reading converts
+/// between text formats and between Bitmap and DeviceIndependentBitmap.
+/// ExternalException when another program has it open.
 public static class Clipboard
 {
-    const int CfText = 1, CfBitmap = 2, CfOemText = 7, CfDib = 8, CfWave = 12, CfUnicodeText = 13, CfHdrop = 15;
+    // .NET'S NAMES AND THE CLIPBOARD'S: the formats .NET predefines, on the
+    // MIME names the GUI kernel keeps them by and win32k gives Windows
+    // programs as the CF_* formats (os/gui/win32kclipboard.cor's table).
+    static readonly string[] DotNetNames = { "UnicodeText", "System.String", "Text", "OEMText", "Bitmap", "DeviceIndependentBitmap",
+        "FileDrop", "EnhancedMetafile", "MetaFilePict", "Palette", "Locale", "WaveAudio", "TaggedImageFileFormat" };
+    static readonly string[] NativeNames = { "text/plain;charset=utf-16", "text/plain;charset=utf-16", "text/plain;charset=windows-1252",
+        "text/plain;charset=ibm437", "image/bmp", "image/bmp", "text/uri-list", "image/emf", "application/x-windows-metafilepict",
+        "application/x-windows-palette", "application/x-windows-locale", "audio/wav", "image/tiff" };
+
+    /// The clipboard's name for a .NET format: a predefined one's MIME name,
+    /// any other itself.
+    internal static string NativeName(string format)
+    {
+        for (int i = 0; i < DotNetNames.Length; i++) if (DotNetNames[i] == format) return NativeNames[i];
+        return format;
+    }
+
+    /// .NET's name for a clipboard format: the first .NET name of a MIME
+    /// name above, any other itself.
+    internal static string DotNetName(string native)
+    {
+        for (int i = 0; i < NativeNames.Length; i++)
+            if (string.Equals(NativeNames[i], native, StringComparison.OrdinalIgnoreCase))
+                return DotNetNames[i] == "System.String" || DotNetNames[i] == "DeviceIndependentBitmap" ? DotNetNames[i - 1] : DotNetNames[i];
+        return native;
+    }
 
     internal static string NameOf(TextDataFormat format)
     {
@@ -6683,15 +7879,22 @@ public static class Clipboard
         return DataFormats.UnicodeText;
     }
 
-    static int IdOf(string format) { return DataFormats.GetFormat(format).Id; }
+    static int IdOf(string format)
+    {
+        int id = Seat.Current.RegisterClipboardFormat(NativeName(format));
+        if (id == 0) throw new Win32Exception();
+        return id;
+    }
 
     // ---- to and from the clipboard's bytes ----
 
-    /// A value as the bytes its format keeps on the clipboard: text in its
-    /// code page with its NUL -- UTF-16 for UnicodeText and System.String,
-    /// 437 for OEMText, UTF-8 for HTML Format, 1252 for the rest -- a picture
-    /// as a packed DIB, a file list as DROPFILES, a stream or array as it is.
-    static byte[] Encode(string format, object data)
+    /// A value as the bytes its format keeps on the clipboard: the text
+    /// formats by their MIME names in their character sets with no NUL --
+    /// UTF-16 for UnicodeText and System.String, 437 for OEMText, 1252 for
+    /// Text -- Windows' own registered text formats as Windows has them, with
+    /// their NUL (UTF-8 for HTML Format, 1252 for the rest); a picture as a
+    /// .bmp file; a file list as text/uri-list; a stream or array as it is.
+    internal static byte[] Encode(string format, object data)
     {
         if (data is byte[] raw) return raw;
         if (data is MemoryStream ms) return ms.ToArray();
@@ -6701,18 +7904,17 @@ public static class Clipboard
             stream.CopyTo(copy);
             return copy.ToArray();
         }
-        if (data is System.Drawing.Bitmap picture) return PackedDib(picture);
-        if (data is StringCollection files) { string[] all = new string[files.Count]; files.CopyTo(all, 0); return DropFiles(all); }
-        if (data is string[] list && format == DataFormats.FileDrop) return DropFiles(list);
+        if (data is System.Drawing.Bitmap picture) return BmpFile(PackedDib(picture));
+        if (data is StringCollection files) { string[] all = new string[files.Count]; files.CopyTo(all, 0); return UriList(all); }
+        if (data is string[] list && format == DataFormats.FileDrop) return UriList(list);
         if (data is string text)
         {
-            System.Text.Encoding e = format == DataFormats.UnicodeText || format == DataFormats.StringFormat ? System.Text.Encoding.Unicode
-                                   : format == DataFormats.OemText ? System.Text.Encoding.GetEncoding(437)
-                                   : format == DataFormats.Html ? System.Text.Encoding.UTF8
-                                   : System.Text.Encoding.GetEncoding(1252);
+            if (format == DataFormats.UnicodeText || format == DataFormats.StringFormat) return System.Text.Encoding.Unicode.GetBytes(text);
+            if (format == DataFormats.OemText) return System.Text.Encoding.GetEncoding(437).GetBytes(text);
+            if (format == DataFormats.Text) return System.Text.Encoding.GetEncoding(1252).GetBytes(text);
+            System.Text.Encoding e = format == DataFormats.Html ? System.Text.Encoding.UTF8 : System.Text.Encoding.GetEncoding(1252);
             byte[] body = e.GetBytes(text);
-            int nul = e == System.Text.Encoding.Unicode || format == DataFormats.UnicodeText || format == DataFormats.StringFormat ? 2 : 1;
-            byte[] ended = new byte[body.Length + nul];
+            byte[] ended = new byte[body.Length + 1];
             Array.Copy(body, ended, body.Length);
             return ended;
         }
@@ -6720,9 +7922,9 @@ public static class Clipboard
     }
 
     /// A format's bytes as .NET answers them: text formats as strings up to
-    /// their NUL, pictures as Bitmaps, FileDrop as a string array, the rest as
-    /// a MemoryStream.
-    static object? Decode(string format, byte[] bytes)
+    /// their NUL if they have one, pictures as Bitmaps, FileDrop as a string
+    /// array, the rest as a MemoryStream.
+    internal static object? Decode(string format, byte[] bytes)
     {
         if (format == DataFormats.UnicodeText || format == DataFormats.StringFormat)
         {
@@ -6739,9 +7941,30 @@ public static class Clipboard
                                    : format == DataFormats.Html ? System.Text.Encoding.UTF8 : System.Text.Encoding.GetEncoding(1252);
             return e.GetString(bytes, 0, n);
         }
-        if (format == DataFormats.Bitmap || format == DataFormats.Dib) return BitmapOf(bytes);
+        if (format == DataFormats.Bitmap || format == DataFormats.Dib)
+        {
+            if (bytes.Length > 14 && bytes[0] == (byte)'B' && bytes[1] == (byte)'M')
+            {
+                byte[] dib = new byte[bytes.Length - 14];
+                Array.Copy(bytes, 14, dib, 0, dib.Length);
+                return BitmapOf(dib);
+            }
+            return BitmapOf(bytes);
+        }
         if (format == DataFormats.FileDrop) return FilesOf(bytes);
         return new MemoryStream(bytes);
+    }
+
+    /// A packed DIB as a .bmp file: BITMAPFILEHEADER's fourteen bytes, then
+    /// the DIB, whose bits follow its 40-byte header here.
+    static byte[] BmpFile(byte[] dib)
+    {
+        byte[] file = new byte[14 + dib.Length];
+        file[0] = (byte)'B'; file[1] = (byte)'M';
+        Put(file, 2, file.Length);
+        Put(file, 10, 14 + 40);
+        Array.Copy(dib, 0, file, 14, dib.Length);
+        return file;
     }
 
     /// A Bitmap as a packed 24-bit DIB, bottom-up. Not 32 bits: Windows 2000
@@ -6826,35 +8049,59 @@ public static class Clipboard
         return (int)((c * 255 + most / 2) / most);
     }
 
-    /// DROPFILES: the list after its twenty bytes, wide, each path ended and
-    /// the list ended again.
-    static byte[] DropFiles(string[] files)
+    /// text/uri-list: each path a file: URI, its bytes outside the
+    /// unreserved ones and "/" written %XX in UTF-8, CRLF after each.
+    internal static byte[] UriList(string[] files)
     {
-        MemoryStream s = new MemoryStream();
-        byte[] head = new byte[20];
-        Put(head, 0, 20); Put(head, 16, 1);
-        s.Write(head, 0, 20);
-        foreach (string f in files) { byte[] b = System.Text.Encoding.Unicode.GetBytes(f); s.Write(b, 0, b.Length); s.WriteByte(0); s.WriteByte(0); }
-        s.WriteByte(0); s.WriteByte(0);
-        return s.ToArray();
+        System.Text.StringBuilder made = new System.Text.StringBuilder();
+        foreach (string f in files)
+        {
+            made.Append("file://");
+            foreach (byte b in System.Text.Encoding.UTF8.GetBytes(f.Replace('\\', '/')))
+            {
+                char c = (char)b;
+                bool plain = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_' || c == '~' || c == '/' || c == ':';
+                if (plain) made.Append(c);
+                else { made.Append('%'); made.Append(((int)b).ToString("X2")); }
+            }
+            made.Append("\r\n");
+        }
+        return System.Text.Encoding.ASCII.GetBytes(made.ToString());
     }
 
-    static string[] FilesOf(byte[] drop)
+    /// text/uri-list's file: URIs as paths, %XX undone; comment lines and
+    /// other schemes passed over.
+    internal static string[] FilesOf(byte[] list)
     {
         List<string> files = new List<string>();
-        if (drop.Length < 20) return files.ToArray();
-        int at = BitConverter.ToInt32(drop, 0);
-        bool wide = BitConverter.ToInt32(drop, 16) != 0;
-        while (at < drop.Length)
+        foreach (string raw in System.Text.Encoding.UTF8.GetString(list).Split('\n'))
         {
-            int end = at;
-            if (wide) { while (end + 1 < drop.Length && (drop[end] | drop[end + 1]) != 0) end += 2; }
-            else { while (end < drop.Length && drop[end] != 0) end++; }
-            if (end == at) break;
-            files.Add(wide ? System.Text.Encoding.Unicode.GetString(drop, at, end - at) : System.Text.Encoding.GetEncoding(1252).GetString(drop, at, end - at));
-            at = end + (wide ? 2 : 1);
+            string line = raw.Trim();
+            if (line.Length == 0 || line[0] == '#' || !line.StartsWith("file://")) continue;
+            string rest = line.Substring(7);
+            int slash = rest.IndexOf('/');
+            if (slash > 0) rest = rest.Substring(slash);
+            List<byte> path = new List<byte>();
+            for (int i = 0; i < rest.Length; i++)
+            {
+                if (rest[i] == '%' && i + 2 < rest.Length && Hex(rest[i + 1]) >= 0 && Hex(rest[i + 2]) >= 0)
+                {
+                    path.Add((byte)(Hex(rest[i + 1]) * 16 + Hex(rest[i + 2])));
+                    i += 2;
+                }
+                else path.Add((byte)rest[i]);
+            }
+            files.Add(System.Text.Encoding.UTF8.GetString(path.ToArray()));
         }
         return files.ToArray();
+    }
+
+    static int Hex(char c)
+    {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
     }
 
     static void Put(byte[] b, int at, int v) { b[at] = (byte)v; b[at + 1] = (byte)(v >> 8); b[at + 2] = (byte)(v >> 16); b[at + 3] = (byte)(v >> 24); }
@@ -6878,15 +8125,65 @@ public static class Clipboard
     /// in the format its type says.
     public static void SetDataObject(object data) { SetDataObject(data, false); }
 
+    /// WITHOUT `copy`, AND A FORM TO OWN IT, THE DATA STAYS HERE: each
+    /// format is promised, and made into bytes only when some program asks
+    /// for it (Rendered, from the ClipboardRender event), until somebody
+    /// else empties the clipboard or the program ends -- as .NET's leaves
+    /// its data object on the OLE clipboard. With `copy`, or no form, every
+    /// format's bytes go on the clipboard now.
     public static void SetDataObject(object data, bool copy)
     {
         if (data == null) throw new ArgumentNullException("data");
         IDataObject d = data as IDataObject ?? new DataObject(data);
         string[] formats = d.GetFormats(false);
+        Form? owner = Application.ActiveForm;
+        if (!copy && owner != null && owner.Handle != 0)
+        {
+            Seat seat = Seat.Current;
+            if (!seat.OpenClipboard(owner.Handle)) Busy();
+            try
+            {
+                if (!seat.EmptyClipboard()) Busy();
+                _promised = d;
+                _promisedIds.Clear(); _promisedNames.Clear();
+                foreach (string f in formats)
+                {
+                    string format = f == DataFormats.Bitmap ? DataFormats.Dib : f;
+                    int id = IdOf(format);
+                    if (_promisedIds.Contains(id)) continue;
+                    _promisedIds.Add(id); _promisedNames.Add(f);
+                    if (!seat.PromiseClipboardData(id)) Busy();
+                }
+            }
+            finally { seat.CloseClipboard(); }
+            return;
+        }
         object[] values = new object[formats.Length];
         for (int i = 0; i < formats.Length; i++) values[i] = d.GetData(formats[i], false)!;
         Put(formats, values);
     }
+
+    // The data object whose formats are promised, and which format numbers
+    // stand for which of its names.
+    static IDataObject? _promised;
+    static readonly List<int> _promisedIds = new List<int>();
+    static readonly List<string> _promisedNames = new List<string>();
+
+    /// ClipboardRender: a promised format asked for, its bytes put now.
+    internal static void Render(int id)
+    {
+        IDataObject? d = _promised;
+        int at = _promisedIds.IndexOf(id);
+        if (d == null || at < 0) return;
+        string name = _promisedNames[at];
+        object? value = d.GetData(name, false);
+        if (value == null) return;
+        string format = name == DataFormats.Bitmap ? DataFormats.Dib : name;
+        Seat.Current.SetClipboardData(id, Encode(format, value), false);
+    }
+
+    /// ClipboardLost: somebody else emptied it; the promises are over.
+    internal static void Lost() { _promised = null; _promisedIds.Clear(); _promisedNames.Clear(); }
 
     static void Put(string[] formats, object[] values)
     {
@@ -6965,4 +8262,885 @@ public static class Clipboard
     public static Stream? GetAudioStream() { return GetData(DataFormats.WaveAudio) as Stream; }
     public static void SetAudio(byte[] audioBytes) { if (audioBytes == null) throw new ArgumentNullException("audioBytes"); SetData(DataFormats.WaveAudio, audioBytes); }
     public static void SetAudio(Stream audioStream) { if (audioStream == null) throw new ArgumentNullException("audioStream"); SetData(DataFormats.WaveAudio, audioStream); }
+}
+
+// ---- drag and drop -----------------------------------------------------------
+//
+// .NET's DoDragDrop, AllowDrop and the Drag events on the seat's drag
+// (os/gui/seatdrag.cor), shaped as OLE's: the data goes as clipboard
+// formats -- .NET's names on the MIME names the clipboard keeps
+// (Clipboard.NativeName), which win32k maps to CF_* for Windows programs --
+// and what a target reads is an IDataObject over the drag.
+
+public enum DragDropEffects { None = 0, Copy = 1, Move = 2, Link = 4, Scroll = -2147483648, All = -2147483645 }
+
+public class DragEventArgs : EventArgs
+{
+    public IDataObject? Data { get; }
+    public int KeyState { get; }
+    public int X { get; }
+    public int Y { get; }
+    public DragDropEffects AllowedEffect { get; }
+    public DragDropEffects Effect { get; set; }
+    public DragEventArgs(IDataObject? data, int keyState, int x, int y, DragDropEffects allowedEffect, DragDropEffects effect)
+    {
+        Data = data; KeyState = keyState; X = x; Y = y; AllowedEffect = allowedEffect; Effect = effect;
+    }
+}
+
+public class GiveFeedbackEventArgs : EventArgs
+{
+    public DragDropEffects Effect { get; }
+    public bool UseDefaultCursors { get; set; }
+    public GiveFeedbackEventArgs(DragDropEffects effect, bool useDefaultCursors) { Effect = effect; UseDefaultCursors = useDefaultCursors; }
+}
+
+/// The drag a target is told of, as an IDataObject: its formats and their
+/// data asked of the seat (the source renders a promised one then).
+sealed class SeatDragData : DataObject
+{
+    public override object? GetData(string format, bool autoConvert)
+    {
+        if (format == DataFormats.StringFormat && autoConvert) format = DataFormats.UnicodeText;
+        int id = Seat.Current.RegisterClipboardFormat(Clipboard.NativeName(format));
+        if (id == 0) return null;
+        byte[]? bytes = Seat.Current.GetDragData(id);
+        return bytes == null ? null : Clipboard.Decode(format, bytes);
+    }
+
+    public override bool GetDataPresent(string format, bool autoConvert)
+    {
+        if (format == DataFormats.StringFormat && autoConvert) format = DataFormats.UnicodeText;
+        return Array.IndexOf(GetFormats(false), format) >= 0;
+    }
+
+    public override string[] GetFormats(bool autoConvert)
+    {
+        List<string> all = new List<string>();
+        foreach (int id in Seat.Current.DragFormatList())
+        {
+            string? native = Seat.Current.GetClipboardFormatName(id);
+            string name = native != null ? Clipboard.DotNetName(native) : "Format" + id;
+            if (!all.Contains(name)) all.Add(name);
+        }
+        if (autoConvert && all.Contains(DataFormats.UnicodeText) && !all.Contains(DataFormats.StringFormat)) all.Add(DataFormats.StringFormat);
+        return all.ToArray();
+    }
+}
+
+/// The two ends of the seat's drag in this program.
+static class DragDrop_
+{
+    /// THE COM SEAMS, OLE's side's (OleDrop): a window's endpoint -- an
+    /// IInterfaceFromWindowProp of this program's, which turns ole32's
+    /// PrivDragDrop into this program's Drag events -- exported and
+    /// registered with the broker (WindowPropRegister, ISCM's opnum 4); the
+    /// broker's cookie answered, which the seat puts in the window's
+    /// "OleEndPointID" so a Windows program's DoDragDrop finds it. Taken back
+    /// when the form closes. Null: native drags still reach the window.
+    public static Func<Form, long>? ComRegister = form => OleDrop.Register(form);
+    public static Action<Form>? ComRevoke = form => OleDrop.Revoke(form);
+
+    // ---- the source -----------------------------------------------------------------
+
+    static bool _running, _ended;
+    static DragDropEffects _done;
+    static Control? _source;
+    static IDataObject? _data;
+    /// The drag's formats as put, for a Windows program's window (OleDragBridge).
+    static List<string> _names = new List<string>();
+    static List<byte[]> _encoded = new List<byte[]>();
+    static OleDragBridge? _bridge;
+
+    internal static DragDropEffects Run(Control source, Form form, IDataObject data, DragDropEffects allowed)
+    {
+        if (_running) return DragDropEffects.None;
+        Seat seat = Seat.Current;
+        string[] names = data.GetFormats(false);
+        List<int> ids = new List<int>();
+        List<string> kept = new List<string>();
+        List<byte[]> bytes = new List<byte[]>();
+        foreach (string name in names)
+        {
+            object? value = data.GetData(name, false);
+            if (value == null) continue;
+            byte[] encoded;
+            try { encoded = Clipboard.Encode(name, value); }
+            catch (ArgumentException) { continue; }
+            int id = seat.RegisterClipboardFormat(Clipboard.NativeName(name));
+            if (id == 0 || ids.Contains(id)) continue;
+            ids.Add(id); kept.Add(name); bytes.Add(encoded);
+        }
+        _running = true; _ended = false; _done = DragDropEffects.None; _source = source; _data = data;
+        _names = kept; _encoded = bytes; _bridge = null;
+        try
+        {
+            if (!seat.BeginDrag(form.Handle, (int)allowed & 7, ids.ToArray())) return DragDropEffects.None;
+            for (int i = 0; i < ids.Count; i++) seat.PutDragData(ids[i], bytes[i]);
+            // THE SEAT'S LOOP HAS THE POINTER; this program goes on reading
+            // its events -- painting, being a target of its own drag, telling
+            // a Windows program's window of it -- until the seat says the
+            // drag is over.
+            Application.RunUntil(() => _ended);
+            return _done;
+        }
+        finally
+        {
+            OleDragBridge? bridge = _bridge;
+            if (bridge != null) bridge.Close();
+            _running = false; _source = null; _data = null; _bridge = null;
+            _names = new List<string>(); _encoded = new List<byte[]>();
+        }
+    }
+
+    /// The source's events: the end, a render asked (every format was put
+    /// already: put again), the effect shown, and a Windows program's
+    /// window under the pointer to tell (Bridge).
+    internal static void Source(int kind, int window, int a, int b)
+    {
+        if (!_running) return;
+        if (kind == Seat.DragEndedEvent) { _done = (DragDropEffects)a; _ended = true; return; }
+        if (kind == Seat.DragFeedbackEvent) { if (_source != null) _source.RaiseGiveFeedback(new GiveFeedbackEventArgs((DragDropEffects)a, true)); return; }
+        if (kind >= Seat.DragBridgeEnterEvent && kind <= Seat.DragBridgeDropEvent) { Bridge(kind, window, a, b); return; }
+        // DragRender: the format asked for, encoded again from the data.
+        IDataObject? data = _data;
+        string? native = Seat.Current.GetClipboardFormatName(a);
+        if (data == null || native == null) return;
+        string name = Clipboard.DotNetName(native);
+        object? value = data.GetData(name, true);
+        if (value == null) return;
+        try { Seat.Current.PutDragData(a, Clipboard.Encode(name, value)); } catch (ArgumentException) { }
+    }
+
+    /// The drag over a Windows program's drop target: each step carried to
+    /// its window's ole32 as DoDragDrop carries it, and its answer given the
+    /// seat -- the effect it would take, or the one it took.
+    static void Bridge(int kind, int window, int a, int b)
+    {
+        Seat seat = Seat.Current;
+        int keys = a & 0xFFFF, allowed = (a >> 16) & 7;
+        int x = Seat.LowSigned(b), y = Seat.HighSigned(b);
+        if (kind == Seat.DragBridgeEnterEvent)
+        {
+            if (_bridge == null) _bridge = new OleDragBridge(_names, _encoded);
+            seat.DragBridgeAnswer(window, _bridge.Enter(window, keys, x, y, allowed));
+            return;
+        }
+        OleDragBridge? bridge = _bridge;
+        if (kind == Seat.DragBridgeOverEvent) { seat.DragBridgeAnswer(window, bridge != null ? bridge.Over(window, keys, x, y, allowed) : 0); return; }
+        if (kind == Seat.DragBridgeLeaveEvent) { if (bridge != null) bridge.Leave(window); return; }
+        seat.DragBridgeDone(window, bridge != null ? bridge.Drop(window, keys, x, y, allowed) : 0);
+    }
+
+    // ---- the target -----------------------------------------------------------------
+
+    static Control? _over;
+    static IDataObject? _overData;
+
+    /// A seat drag event for `form`: the control under the pointer that
+    /// allows drops told, and the seat answered with the effect it chose.
+    internal static void Target(Form form, int kind, int a, int b)
+    {
+        int effect = Deliver(form, kind, a & 0xFFFF, (a >> 16) & 7, Seat.LowSigned(b), Seat.HighSigned(b), null);
+        Seat seat = Seat.Current;
+        if (kind == Seat.DragDropEvent) seat.DropDone(effect);
+        else if (kind != Seat.DragLeaveEvent) seat.AnswerDrag(effect);
+    }
+
+    /// A Windows program's drag over `form`, through the form's endpoint
+    /// (OleDropEndpoint, on this thread by Invoke): the same steps, with
+    /// that program's data; the effect answered.
+    internal static int ComTarget(Form form, int kind, int keys, int allowed, int sx, int sy, IDataObject? data)
+    {
+        return Deliver(form, kind, keys, allowed, sx, sy, data ?? new DataObject());
+    }
+
+    /// One step of a drag over `form`: the control under the pointer that
+    /// allows drops told -- entered, over, left, dropped on -- and the
+    /// effect it chose, of those allowed. `data` the drag's, or null for the
+    /// seat's own (SeatDragData).
+    static int Deliver(Form form, int kind, int keys, int allowedBits, int sx, int sy, IDataObject? data)
+    {
+        if (kind == Seat.DragLeaveEvent) { Leave(); return 0; }
+        DragDropEffects allowed = (DragDropEffects)allowedBits;
+        Point co = form.ClientOffset();
+        Control? hit = form.HitTest(sx - form.Left - co.X, sy - form.Top - co.Y);
+        while (hit != null && !hit.AllowDrop) hit = hit.Parent;
+        if (hit != _over)
+        {
+            Leave();
+            _over = hit;
+            _overData = hit != null ? (data ?? new SeatDragData()) : null;
+            if (hit != null && kind != Seat.DragDropEvent)
+            {
+                DragEventArgs enter = new DragEventArgs(_overData, keys, sx, sy, allowed, DragDropEffects.None);
+                hit.RaiseDragEnter(enter);
+                return (int)enter.Effect & (int)allowed;
+            }
+        }
+        if (hit == null) return 0;
+        DragEventArgs e = new DragEventArgs(_overData, keys, sx, sy, allowed, DragDropEffects.None);
+        if (kind == Seat.DragDropEvent)
+        {
+            // The drop asks the effect again, as OLE's Drop does after DragOver.
+            hit.RaiseDragOver(e);
+            DragEventArgs drop = new DragEventArgs(_overData, keys, sx, sy, allowed, e.Effect);
+            hit.RaiseDragDrop(drop);
+            _over = null; _overData = null;
+            return (int)drop.Effect & (int)allowed;
+        }
+        hit.RaiseDragOver(e);
+        return (int)e.Effect & (int)allowed;
+    }
+
+    static void Leave()
+    {
+        Control? was = _over;
+        _over = null; _overData = null;
+        if (was != null) was.RaiseDragLeave();
+    }
+}
+
+// ---- drag and drop with Windows programs: OLE's -------------------------------
+//
+// A Windows program's drag reaches a native window, and a native drag a
+// Windows program's window, as ole32 carries a drag between two of its own
+// processes (System.Runtime.InteropServices' ComOle.cor): through the
+// window's endpoint, an IInterfaceFromWindowProp found by the cookie in its
+// "OleEndPointID" property, whose PrivDragDrop is each step; the data an
+// IDataObject of the source's, its formats asked for as HGLOBALs by their
+// CF_* numbers. The numbers and the bytes are the ones win32k gives Windows
+// programs for the clipboard (os/gui/win32kclipboard.cor): OleData.
+
+/// CF_* AND THE CLIPBOARD'S FORMATS, for an IDataObject's HGLOBALs: the
+/// table win32k keeps for the clipboard (os/gui/win32kclipboard.cor's
+/// PredefinedName, CfOf, WindowsToNative and NativeToWindows) -- a
+/// predefined format's MIME name, any other below 0xC000 as
+/// application/x-windows-cf-N, a registered one its own name, whose atom is
+/// its number -- and the bytes each side keeps: text with and without its
+/// NUL, a packed DIB and a .bmp file, DROPFILES and a URI list.
+static class OleData
+{
+    const string GenericPrefix = "application/x-windows-cf-";
+    const int CfText = 1, CfOemText = 7, CfDib = 8, CfUnicodeText = 13, CfHdrop = 15, LastPredefined = 17;
+
+    static string Predefined(int cf)
+    {
+        switch (cf)
+        {
+            case 1: return "text/plain;charset=windows-1252";
+            case 2: return "application/x-windows-bitmap";
+            case 3: return "application/x-windows-metafilepict";
+            case 6: return "image/tiff";
+            case 7: return "text/plain;charset=ibm437";
+            case 8: return "image/bmp";
+            case 9: return "application/x-windows-palette";
+            case 12: return "audio/wav";
+            case 13: return "text/plain;charset=utf-16";
+            case 14: return "image/emf";
+            case 15: return "text/uri-list";
+            case 16: return "application/x-windows-locale";
+            case 17: return "application/x-windows-dibv5";
+        }
+        return GenericPrefix + cf.ToString();
+    }
+
+    /// The CF_* number a Windows program knows a .NET format by; 0 when the
+    /// atom table refuses its name.
+    internal static int CfOf(string format)
+    {
+        string native = Clipboard.NativeName(format);
+        for (int cf = 1; cf <= LastPredefined; cf++)
+        {
+            string name = Predefined(cf);
+            if (!name.StartsWith(GenericPrefix) && string.Equals(name, native, StringComparison.OrdinalIgnoreCase)) return cf;
+        }
+        if (native.StartsWith(GenericPrefix))
+        {
+            int n = 0;
+            for (int i = GenericPrefix.Length; i < native.Length; i++)
+            {
+                char c = native[i];
+                if (c < '0' || c > '9') { n = 0; break; }
+                n = n * 10 + (c - '0');
+            }
+            if (n > 0 && n < 0xC000) return n;
+        }
+        return Seat.Current.RegisterClipboardFormat(native);
+    }
+
+    /// .NET's name for a CF_* number.
+    internal static string NameOf(int cf)
+    {
+        cf &= 0xFFFF;
+        if (cf >= 0xC000)
+        {
+            string? name = Seat.Current.GetClipboardFormatName(cf);
+            return name != null ? Clipboard.DotNetName(name) : "Format" + cf;
+        }
+        return Clipboard.DotNetName(Predefined(cf));
+    }
+
+    /// Windows' bytes for a format, from the clipboard's (NativeToWindows):
+    /// text ended by its NUL, a .bmp file's DIB, a URI list as DROPFILES.
+    internal static byte[] ToWindows(int cf, byte[] native)
+    {
+        if (cf == CfText || cf == CfOemText) return Ended(native, 1);
+        if (cf == CfUnicodeText) return Ended(native, 2);
+        if (cf == CfDib && native.Length > 14 && native[0] == (byte)'B' && native[1] == (byte)'M') return Slice(native, 14, native.Length - 14);
+        if (cf == CfHdrop) return DropFiles(Clipboard.FilesOf(native));
+        return native;
+    }
+
+    /// The clipboard's bytes for a format, from Windows' (WindowsToNative).
+    internal static byte[] FromWindows(int cf, byte[] bytes)
+    {
+        if (cf == CfText || cf == CfOemText)
+        {
+            int n = 0;
+            while (n < bytes.Length && bytes[n] != 0) n++;
+            return Slice(bytes, 0, n);
+        }
+        if (cf == CfUnicodeText)
+        {
+            int n = 0;
+            while (n + 1 < bytes.Length && (bytes[n] | bytes[n + 1]) != 0) n += 2;
+            return Slice(bytes, 0, n);
+        }
+        if (cf == CfDib) return BmpFile(bytes);
+        if (cf == CfHdrop) return Clipboard.UriList(FilesOfDrop(bytes));
+        return bytes;
+    }
+
+    static byte[] Slice(byte[] bytes, int from, int count)
+    {
+        byte[] made = new byte[Math.Max(count, 0)];
+        if (count > 0) Array.Copy(bytes, from, made, 0, count);
+        return made;
+    }
+
+    static byte[] Ended(byte[] bytes, int nul)
+    {
+        byte[] made = new byte[bytes.Length + nul];
+        Array.Copy(bytes, made, bytes.Length);
+        return made;
+    }
+
+    static int Word(byte[] b, int at) { return at + 4 <= b.Length ? b[at] | (b[at + 1] << 8) | (b[at + 2] << 16) | (b[at + 3] << 24) : 0; }
+    static void Put(byte[] b, int at, int v) { b[at] = (byte)v; b[at + 1] = (byte)(v >> 8); b[at + 2] = (byte)(v >> 16); b[at + 3] = (byte)(v >> 24); }
+
+    /// A packed DIB as a .bmp file, its bits' offset past the header, the
+    /// BI_BITFIELDS masks of a 40-byte header and the colour table, as
+    /// win32k's BmpFile has it.
+    static byte[] BmpFile(byte[] dib)
+    {
+        int header = dib.Length >= 40 ? Word(dib, 0) : 40;
+        int bits = dib.Length >= 16 ? dib[14] | (dib[15] << 8) : 0;
+        int compression = dib.Length >= 20 ? Word(dib, 16) : 0;
+        int used = dib.Length >= 36 ? Word(dib, 32) : 0;
+        int masks = compression == 3 && header == 40 ? 12 : 0;
+        int colours = bits <= 8 && bits > 0 ? (used != 0 ? used : 1 << bits) : used;
+        byte[] file = new byte[14 + dib.Length];
+        file[0] = (byte)'B'; file[1] = (byte)'M';
+        Put(file, 2, file.Length);
+        Put(file, 10, 14 + header + masks + colours * 4);
+        Array.Copy(dib, 0, file, 14, dib.Length);
+        return file;
+    }
+
+    /// Paths as DROPFILES, wide: the twenty-byte header (pFiles 20, fWide
+    /// 1), each path and its NUL, a NUL after the last.
+    static byte[] DropFiles(string[] files)
+    {
+        List<byte> made = new List<byte>();
+        byte[] head = new byte[20];
+        Put(head, 0, 20); Put(head, 16, 1);
+        made.AddRange(head);
+        foreach (string f in files)
+        {
+            made.AddRange(System.Text.Encoding.Unicode.GetBytes(f));
+            made.Add(0); made.Add(0);
+        }
+        made.Add(0); made.Add(0);
+        return made.ToArray();
+    }
+
+    /// DROPFILES' paths, wide or not.
+    static string[] FilesOfDrop(byte[] drop)
+    {
+        List<string> files = new List<string>();
+        if (drop.Length < 20) return files.ToArray();
+        int at = Word(drop, 0);
+        bool wide = Word(drop, 16) != 0;
+        while (at >= 0 && at < drop.Length)
+        {
+            int end = at;
+            if (wide) { while (end + 1 < drop.Length && (drop[end] | drop[end + 1]) != 0) end += 2; }
+            else { while (end < drop.Length && drop[end] != 0) end++; }
+            if (end == at) break;
+            files.Add(wide ? System.Text.Encoding.Unicode.GetString(drop, at, end - at) : System.Text.Encoding.GetEncoding(1252).GetString(drop, at, end - at));
+            at = end + (wide ? 2 : 1);
+        }
+        return files.ToArray();
+    }
+}
+
+/// THIS PROGRAM'S DRAG AS AN IDataObject, for a Windows program's window it
+/// is over: the formats put with the drag, each by its CF_* number with
+/// Windows' bytes, made once when the drag first reaches such a window --
+/// asked for later on the COM runtime's threads, which read only what is
+/// here. CF_TEXT and CF_UNICODETEXT each stand for the other when only one
+/// was put, as win32k's text formats do.
+[ComVisible(true)]
+sealed class OleDataExport : System.Runtime.InteropServices.ComTypes.IDataObject
+{
+    readonly List<int> _formats = new List<int>();
+    readonly Dictionary<int, byte[]> _bytes = new Dictionary<int, byte[]>();
+
+    public OleDataExport(List<string> names, List<byte[]> encoded)
+    {
+        for (int i = 0; i < names.Count && i < encoded.Count; i++) Add(OleData.CfOf(names[i]), encoded[i]);
+        byte[]? unicode, ansi;
+        _bytes.TryGetValue(13, out unicode);
+        _bytes.TryGetValue(1, out ansi);
+        if (unicode != null && ansi == null)
+        {
+            string text = System.Text.Encoding.Unicode.GetString(unicode, 0, Math.Max(unicode.Length - 2, 0));
+            Add(1, System.Text.Encoding.GetEncoding(1252).GetBytes(text));
+        }
+        else if (ansi != null && unicode == null)
+        {
+            string text = System.Text.Encoding.GetEncoding(1252).GetString(ansi, 0, Math.Max(ansi.Length - 1, 0));
+            Add(13, System.Text.Encoding.Unicode.GetBytes(text));
+        }
+    }
+
+    /// A format's clipboard bytes, kept as Windows has them.
+    void Add(int cf, byte[] native)
+    {
+        if (cf == 0 || _bytes.ContainsKey(cf)) return;
+        _formats.Add(cf);
+        _bytes[cf] = OleData.ToWindows(cf, native);
+    }
+
+    /// Whether the FORMATETC at `at` is one given here: the content, in an HGLOBAL.
+    int Check(nint at)
+    {
+        if (at == 0) return System.Runtime.InteropServices.ComMarshal.EInvalidArg;
+        System.Runtime.InteropServices.ComTypes.FORMATETC f = System.Runtime.InteropServices.OleMemory.ReadFormatEtc(at);
+        if (!_bytes.ContainsKey((ushort)f.cfFormat)) return System.Runtime.InteropServices.OleCodes.DvEFormatEtc;
+        if (((int)f.dwAspect & (int)System.Runtime.InteropServices.ComTypes.DVASPECT.DVASPECT_CONTENT) == 0) return System.Runtime.InteropServices.OleCodes.DvEDvAspect;
+        if (((int)f.tymed & (int)System.Runtime.InteropServices.ComTypes.TYMED.TYMED_HGLOBAL) == 0) return System.Runtime.InteropServices.OleCodes.DvETymed;
+        return 0;
+    }
+
+    public int GetData(nint pformatetcIn, nint pmedium)
+    {
+        int hr = Check(pformatetcIn);
+        if (hr != 0) return hr;
+        if (pmedium == 0) return System.Runtime.InteropServices.ComMarshal.EInvalidArg;
+        System.Runtime.InteropServices.ComTypes.FORMATETC f = System.Runtime.InteropServices.OleMemory.ReadFormatEtc(pformatetcIn);
+        System.Runtime.InteropServices.OleMemory.WriteHglobal(pmedium, _bytes[(ushort)f.cfFormat]);
+        return 0;
+    }
+
+    public int GetDataHere(nint pformatetc, nint pmedium) { return System.Runtime.InteropServices.ComMarshal.ENotImpl; }
+
+    public int QueryGetData(nint pformatetc) { return Check(pformatetc); }
+
+    public int GetCanonicalFormatEtc(nint pformatectIn, nint pformatetcOut)
+    {
+        if (pformatectIn == 0 || pformatetcOut == 0) return System.Runtime.InteropServices.ComMarshal.EInvalidArg;
+        System.Runtime.InteropServices.ComTypes.FORMATETC f = System.Runtime.InteropServices.OleMemory.ReadFormatEtc(pformatectIn);
+        f.ptd = 0;
+        System.Runtime.InteropServices.OleMemory.WriteFormatEtc(pformatetcOut, f);
+        return System.Runtime.InteropServices.OleCodes.DataSSameFormatEtc;
+    }
+
+    public int SetData(nint pformatetc, nint pmedium, bool fRelease) { return System.Runtime.InteropServices.ComMarshal.ENotImpl; }
+
+    public int EnumFormatEtc(int dwDirection, out System.Runtime.InteropServices.ComTypes.IEnumFORMATETC ppenumFormatEtc)
+    {
+        if (dwDirection != (int)System.Runtime.InteropServices.ComTypes.DATADIR.DATADIR_GET) { ppenumFormatEtc = null!; return System.Runtime.InteropServices.ComMarshal.ENotImpl; }
+        ppenumFormatEtc = new OleFormatList(_formats.ToArray(), 0);
+        return 0;
+    }
+
+    public int DAdvise(nint pformatetc, int advf, object pAdvSink, out int pdwConnection) { pdwConnection = 0; return System.Runtime.InteropServices.OleCodes.OleEAdviseNotSupported; }
+    public int DUnadvise(int dwConnection) { return System.Runtime.InteropServices.OleCodes.OleENoConnection; }
+    public int EnumDAdvise(out object ppenumAdvise) { ppenumAdvise = null!; return System.Runtime.InteropServices.OleCodes.OleEAdviseNotSupported; }
+}
+
+/// OleDataExport's formats, one FORMATETC each: the content, all of it, in an HGLOBAL.
+[ComVisible(true)]
+sealed class OleFormatList : System.Runtime.InteropServices.ComTypes.IEnumFORMATETC
+{
+    readonly int[] _formats;
+    int _next;
+
+    public OleFormatList(int[] formats, int next) { _formats = formats; _next = next; }
+
+    public int Next(int celt, nint rgelt, nint pceltFetched)
+    {
+        int n = 0;
+        while (n < celt && _next < _formats.Length && rgelt != 0)
+        {
+            System.Runtime.InteropServices.OleMemory.WriteFormatEtc(rgelt + n * System.Runtime.InteropServices.OleMemory.FormatEtcBytes, System.Runtime.InteropServices.OleMemory.Hglobal(_formats[_next]));
+            n++;
+            _next++;
+        }
+        if (pceltFetched != 0) System.Runtime.InteropServices.ComMarshal.WriteI4(pceltFetched, n);
+        return n == celt ? 0 : 1;
+    }
+
+    public int Skip(int celt)
+    {
+        int left = _formats.Length - _next;
+        _next += Math.Min(Math.Max(celt, 0), left);
+        return celt <= left ? 0 : 1;
+    }
+
+    public int Reset() { _next = 0; return 0; }
+
+    public int Clone(out System.Runtime.InteropServices.ComTypes.IEnumFORMATETC ppenum)
+    {
+        ppenum = new OleFormatList(_formats, _next);
+        return 0;
+    }
+}
+
+/// A WINDOWS PROGRAM'S DRAG, as a native target reads it: its IDataObject (in
+/// its process) asked for each format as an HGLOBAL by its CF_* number, the
+/// bytes made the clipboard's (OleData) and decoded as .NET decodes them.
+/// What it answers is kept for the drag. Asked on the form's thread.
+sealed class ComDragData : DataObject
+{
+    readonly System.Runtime.InteropServices.ComTypes.IDataObject _source;
+    readonly object _held;
+    string[]? _formats;
+    readonly Dictionary<int, byte[]?> _got = new Dictionary<int, byte[]?>();
+
+    public ComDragData(System.Runtime.InteropServices.ComTypes.IDataObject source, object held) { _source = source; _held = held; }
+
+    /// The source let go, when the drag leaves or drops.
+    public void Release()
+    {
+        try
+        {
+            // The wrapper and the object it wraps share one record of the
+            // other process's object, whose references go back once.
+            if (_source is System.__ComObject w) System.Runtime.InteropServices.Marshal.ReleaseComObject(w);
+            if (_held is System.__ComObject c) System.Runtime.InteropServices.Marshal.ReleaseComObject(c);
+        }
+        catch (Exception) { }
+    }
+
+    byte[]? Bytes(int cf)
+    {
+        byte[]? had;
+        if (_got.TryGetValue(cf, out had)) return had;
+        nint f = System.Runtime.InteropServices.OleMemory.NewFormatEtc(System.Runtime.InteropServices.OleMemory.Hglobal(cf));
+        nint m = System.Runtime.InteropServices.OleMemory.NewStgMedium();
+        byte[]? made = null;
+        try
+        {
+            if (_source.GetData(f, m) >= 0 && System.Runtime.InteropServices.OleMemory.MediumTymed(m) == (int)System.Runtime.InteropServices.ComTypes.TYMED.TYMED_HGLOBAL)
+                made = OleData.FromWindows(cf, System.Runtime.InteropServices.OleGlobal.Bytes(System.Runtime.InteropServices.OleMemory.MediumHandle(m)));
+        }
+        catch (Exception) { made = null; }
+        finally
+        {
+            System.Runtime.InteropServices.OleMemory.FreeFormatEtc(f);
+            System.Runtime.InteropServices.OleMemory.FreeStgMedium(m);
+        }
+        _got[cf] = made;
+        return made;
+    }
+
+    public override object? GetData(string format, bool autoConvert)
+    {
+        if (format == DataFormats.StringFormat && autoConvert) format = DataFormats.UnicodeText;
+        int cf = OleData.CfOf(format);
+        byte[]? bytes = cf == 0 ? null : Bytes(cf);
+        if (bytes != null) return Clipboard.Decode(format, bytes);
+        // Text the source has only in its other character set.
+        if (autoConvert && format == DataFormats.UnicodeText) { byte[]? ansi = Bytes(1); return ansi == null ? null : Clipboard.Decode(DataFormats.Text, ansi); }
+        if (autoConvert && format == DataFormats.Text) { byte[]? wide = Bytes(13); return wide == null ? null : Clipboard.Decode(DataFormats.UnicodeText, wide); }
+        return null;
+    }
+
+    public override bool GetDataPresent(string format, bool autoConvert)
+    {
+        if (format == DataFormats.StringFormat && autoConvert) format = DataFormats.UnicodeText;
+        return Array.IndexOf(GetFormats(autoConvert), format) >= 0;
+    }
+
+    public override string[] GetFormats(bool autoConvert)
+    {
+        if (_formats == null) _formats = Enumerate();
+        List<string> all = new List<string>(_formats);
+        if (autoConvert)
+        {
+            if (all.Contains(DataFormats.UnicodeText) && !all.Contains(DataFormats.Text)) all.Add(DataFormats.Text);
+            if (all.Contains(DataFormats.Text) && !all.Contains(DataFormats.UnicodeText)) all.Add(DataFormats.UnicodeText);
+            if (all.Contains(DataFormats.UnicodeText) && !all.Contains(DataFormats.StringFormat)) all.Add(DataFormats.StringFormat);
+        }
+        return all.ToArray();
+    }
+
+    /// The source's formats that come in an HGLOBAL (EnumFormatEtc,
+    /// DATADIR_GET), sixteen at a time.
+    string[] Enumerate()
+    {
+        List<string> all = new List<string>();
+        try
+        {
+            System.Runtime.InteropServices.ComTypes.IEnumFORMATETC e;
+            if (_source.EnumFormatEtc((int)System.Runtime.InteropServices.ComTypes.DATADIR.DATADIR_GET, out e) < 0 || e == null) return all.ToArray();
+            const int AtOnce = 16;
+            nint list = System.Runtime.InteropServices.OleMemory.NewFormatEtcs(AtOnce);
+            nint fetched = System.Runtime.InteropServices.Marshal.AllocHGlobal(4);
+            try
+            {
+                for (int rounds = 0; rounds < 64; rounds++)
+                {
+                    System.Runtime.InteropServices.ComMarshal.WriteI4(fetched, 0);
+                    int hr = e.Next(AtOnce, list, fetched);
+                    int got = Math.Min(System.Runtime.InteropServices.ComMarshal.ReadI4(fetched), AtOnce);
+                    for (int i = 0; i < got; i++)
+                    {
+                        System.Runtime.InteropServices.ComTypes.FORMATETC f = System.Runtime.InteropServices.OleMemory.ReadFormatEtc(list + i * System.Runtime.InteropServices.OleMemory.FormatEtcBytes);
+                        if (((int)f.tymed & (int)System.Runtime.InteropServices.ComTypes.TYMED.TYMED_HGLOBAL) == 0) continue;
+                        string name = OleData.NameOf((ushort)f.cfFormat);
+                        if (!all.Contains(name)) all.Add(name);
+                    }
+                    if (hr != 0 || got < AtOnce) break;
+                }
+            }
+            finally
+            {
+                System.Runtime.InteropServices.Marshal.FreeHGlobal(list);
+                System.Runtime.InteropServices.Marshal.FreeHGlobal(fetched);
+                if (e is System.__ComObject c) System.Runtime.InteropServices.Marshal.ReleaseComObject(c);
+            }
+        }
+        catch (Exception) { }
+        return all.ToArray();
+    }
+}
+
+/// A NATIVE WINDOW'S ENDPOINT for Windows programs' drags: what ole32's
+/// AssignEndpointProperty makes for a window of its own (a
+/// CInterfaceFromWindowProp), exported from here and registered with the
+/// broker for the form's window. A Windows program's DoDragDrop calls
+/// PrivDragDrop on it, on one of the COM runtime's threads; each step is
+/// made on the form's thread (Invoke) as the seat's are, with the source's
+/// IDataObject, unmarshalled from the InterfaceData at DRAGOP_ENTER and let
+/// go at the leave or the drop. Its IDropTarget is the same steps, for one
+/// who asks for it.
+[ComVisible(true)]
+sealed class OleDropEndpoint : System.Runtime.InteropServices.ComTypes.IInterfaceFromWindowProp, System.Runtime.InteropServices.ComTypes.IDropTarget
+{
+    readonly Form _form;
+    readonly object _lock = new object();
+    ComDragData? _data;
+    public long Cookie;
+    public byte[] Ipid = new byte[0];
+
+    public OleDropEndpoint(Form form) { _form = form; }
+
+    public int GetInterfaceFromWindowProp(nint hWnd, nint riid, out object ppunk, nint pwszPropName)
+    {
+        ppunk = null!;
+        return System.Runtime.InteropServices.ComMarshal.ENotImpl;
+    }
+
+    public int PrivDragDrop(nint hWnd, nint pInterfaceData, int dop, int grfKeyState, long pt, ref int pdwEffect,
+        int dwSourceThread, object pDataObject, nint hwndSource)
+    {
+        int kind = dop == System.Runtime.InteropServices.OleCodes.DragOpEnter ? Seat.DragEnterEvent
+                 : dop == System.Runtime.InteropServices.OleCodes.DragOpOver ? Seat.DragOverEvent
+                 : dop == System.Runtime.InteropServices.OleCodes.DragOpLeave ? Seat.DragLeaveEvent
+                 : dop == System.Runtime.InteropServices.OleCodes.DragOpDrop ? Seat.DragDropEvent : 0;
+        if (kind == 0) return unchecked((int)0x8000FFFF);
+        ComDragData? data;
+        lock (_lock)
+        {
+            if (kind == Seat.DragEnterEvent)
+            {
+                Forget();
+                object? source = pDataObject;
+                if (source == null) { try { source = System.Runtime.InteropServices.OleMemory.Unmarshal(pInterfaceData); } catch (Exception) { source = null; } }
+                System.Runtime.InteropServices.ComTypes.IDataObject? d = source as System.Runtime.InteropServices.ComTypes.IDataObject;
+                _data = d != null ? new ComDragData(d, source!) : null;
+            }
+            data = _data;
+        }
+        int keys = grfKeyState, allowed = pdwEffect & 7;
+        int x = System.Runtime.InteropServices.OleMemory.PointX(pt), y = System.Runtime.InteropServices.OleMemory.PointY(pt);
+        Form form = _form;
+        int effect = 0;
+        try { effect = form.Invoke<int>(() => DragDrop_.ComTarget(form, kind, keys, allowed, x, y, data)); }
+        catch (Exception) { effect = 0; }
+        if (kind == Seat.DragLeaveEvent || kind == Seat.DragDropEvent) lock (_lock) { Forget(); }
+        pdwEffect = effect;
+        return 0;
+    }
+
+    void Forget()
+    {
+        ComDragData? had = _data;
+        _data = null;
+        if (had != null) had.Release();
+    }
+
+    public int DragEnter(object pDataObj, int grfKeyState, long pt, ref int pdwEffect)
+    {
+        return PrivDragDrop(0, 0, System.Runtime.InteropServices.OleCodes.DragOpEnter, grfKeyState, pt, ref pdwEffect, 0, pDataObj, 0);
+    }
+
+    public int DragOver(int grfKeyState, long pt, ref int pdwEffect)
+    {
+        return PrivDragDrop(0, 0, System.Runtime.InteropServices.OleCodes.DragOpOver, grfKeyState, pt, ref pdwEffect, 0, null!, 0);
+    }
+
+    public int DragLeave()
+    {
+        int none = 0;
+        return PrivDragDrop(0, 0, System.Runtime.InteropServices.OleCodes.DragOpLeave, 0, 0, ref none, 0, null!, 0);
+    }
+
+    public int Drop(object pDataObj, int grfKeyState, long pt, ref int pdwEffect)
+    {
+        return PrivDragDrop(0, 0, System.Runtime.InteropServices.OleCodes.DragOpDrop, grfKeyState, pt, ref pdwEffect, 0, pDataObj, 0);
+    }
+}
+
+/// The forms' endpoints, registered and taken back (DragDrop_.ComRegister
+/// and ComRevoke).
+static class OleDrop
+{
+    static readonly Dictionary<int, OleDropEndpoint> _endpoints = new Dictionary<int, OleDropEndpoint>();
+
+    internal static long Register(Form form)
+    {
+        System.Runtime.InteropServices.OleNdr.FormatOfName = name => Seat.Current.RegisterClipboardFormat(name);
+        int window = form.Handle;
+        OleDropEndpoint endpoint = new OleDropEndpoint(form);
+        byte[] ipid;
+        long cookie = System.Runtime.InteropServices.OleWindows.Register(window, endpoint, out ipid);
+        endpoint.Cookie = cookie;
+        endpoint.Ipid = ipid;
+        lock (_endpoints) { _endpoints[window] = endpoint; }
+        return cookie;
+    }
+
+    internal static void Revoke(Form form)
+    {
+        int window = form.Handle;
+        OleDropEndpoint? endpoint;
+        lock (_endpoints)
+        {
+            if (!_endpoints.TryGetValue(window, out endpoint)) endpoint = null;
+            _endpoints.Remove(window);
+        }
+        if (endpoint != null) System.Runtime.InteropServices.OleWindows.Revoke(window, endpoint.Cookie, endpoint.Ipid);
+    }
+}
+
+/// THIS PROGRAM'S DRAG OVER WINDOWS PROGRAMS' WINDOWS, told as ole32's
+/// DoDragDrop tells another process's window (PrivDragDrop, 0x77B20DE4):
+/// the window's endpoint found by its cookie (the seat's DragBridgeTarget,
+/// then the broker), and DRAGOP_ENTER, OVER, LEAVE and DROP with the keys,
+/// the point on the screen and the effects allowed, the drag's data
+/// exported once as an IDataObject (OleDataExport) whose OBJREF goes in an
+/// InterfaceData. The endpoint answers the effect its IDropTarget chose.
+/// On this program's thread, in DoDragDrop's loop; what the window asks of
+/// the data comes to the COM runtime's threads meanwhile.
+sealed class OleDragBridge
+{
+    readonly OleDataExport _data;
+    nint _interfaceData;
+    byte[] _ipid = new byte[0];
+    System.Runtime.InteropServices.ComTypes.IInterfaceFromWindowProp? _target;
+    int _window;
+
+    public OleDragBridge(List<string> names, List<byte[]> encoded) { _data = new OleDataExport(names, encoded); }
+
+    public int Enter(int window, int keys, int x, int y, int allowed)
+    {
+        if (_target != null) Leave(_window);
+        try
+        {
+            long cookie = Seat.Current.DragBridgeTarget(window);
+            if (cookie == 0) return 0;
+            _target = System.Runtime.InteropServices.OleWindows.Endpoint(window, cookie);
+            _window = window;
+            if (_interfaceData == 0)
+            {
+                // Marshalled as a table keeps it, as the drag's whole life:
+                // each window that unmarshals it asks its own references.
+                byte[] objref = System.Runtime.InteropServices.ComExporter.ExportTable(_data, System.Runtime.InteropServices.OleCodes.IidIDataObject);
+                _ipid = new byte[16];
+                Array.Copy(objref, 48, _ipid, 0, 16);
+                _interfaceData = System.Runtime.InteropServices.OleMemory.InterfaceData(objref);
+            }
+            return Step(System.Runtime.InteropServices.OleCodes.DragOpEnter, keys, x, y, allowed);
+        }
+        catch (Exception) { Forget(); return 0; }
+    }
+
+    public int Over(int window, int keys, int x, int y, int allowed)
+    {
+        if (_target == null || window != _window) return 0;
+        try { return Step(System.Runtime.InteropServices.OleCodes.DragOpOver, keys, x, y, allowed); }
+        catch (Exception) { Forget(); return 0; }
+    }
+
+    public void Leave(int window)
+    {
+        if (_target == null || window != _window) return;
+        try { Step(System.Runtime.InteropServices.OleCodes.DragOpLeave, 0, 0, 0, 0); }
+        catch (Exception) { }
+        Forget();
+    }
+
+    public int Drop(int window, int keys, int x, int y, int allowed)
+    {
+        if (_target == null || window != _window) return 0;
+        int effect;
+        try { effect = Step(System.Runtime.InteropServices.OleCodes.DragOpDrop, keys, x, y, allowed); }
+        catch (Exception) { effect = 0; }
+        Forget();
+        return effect;
+    }
+
+    /// One PrivDragDrop: the effects allowed in, the one chosen out. The
+    /// source's thread is the broker's for this process; no source window
+    /// (the target's ole32 would attach its input to the window's thread).
+    int Step(int dop, int keys, int x, int y, int allowed)
+    {
+        System.Runtime.InteropServices.ComTypes.IInterfaceFromWindowProp? target = _target;
+        if (target == null) return 0;
+        int effect = allowed;
+        int hr = target.PrivDragDrop((nint)_window, _interfaceData, dop, keys, System.Runtime.InteropServices.OleMemory.Point(x, y), ref effect,
+            (int)System.Runtime.InteropServices.ComBroker.Thread, null!, 0);
+        return hr < 0 ? 0 : effect & allowed;
+    }
+
+    void Forget()
+    {
+        System.Runtime.InteropServices.ComTypes.IInterfaceFromWindowProp? target = _target;
+        _target = null;
+        _window = 0;
+        if (target is System.__ComObject c) { try { System.Runtime.InteropServices.Marshal.ReleaseComObject(c); } catch (Exception) { } }
+    }
+
+    /// The drag over: the window left if it was not, the data's export let go.
+    public void Close()
+    {
+        if (_target != null) Leave(_window);
+        if (_interfaceData != 0) { System.Runtime.InteropServices.Marshal.FreeHGlobal(_interfaceData); _interfaceData = 0; }
+        if (_ipid.Length == 16) System.Runtime.InteropServices.ComExporter.Unexport(_ipid);
+    }
 }

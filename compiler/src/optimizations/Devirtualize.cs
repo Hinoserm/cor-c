@@ -468,9 +468,19 @@ public sealed class Devirtualize : IModulePass
     // any call, and a direct one is not through a slot.
     private static string? Fresh(Instr i) => i.Field == Instr.FreshStruct ? Instr.FreshStruct : null;
 
+    // The backend's own names write no field -- except the store sequences
+    // (CardMarks.FuseStores), each of which IS a field's store: a fresh
+    // object's field forwarded past one read the value stored before it --
+    // the empty array a constructor put there, under the one an initialiser
+    // stored after, and SystemArt.Icon indexed past its end.
     private static bool KeepsFields(string? callee) =>
         callee is not null && (Escape.IsAllocator(callee) || Escape.NeverWritesFields(callee) || Escape.IsCollectorNote(callee)
-            || callee == "m_Runtime_InvalidCastTo_2_V$Any_V$String" || callee.StartsWith("__x86.i.", StringComparison.Ordinal));
+            || callee == "m_Runtime_InvalidCastTo_2_V$Any_V$String"
+            || callee.StartsWith("__x86.i.", StringComparison.Ordinal) && !StoreSequence(callee));
+
+    private static bool StoreSequence(string callee) =>
+        callee is CardMarks.RefStore or CardMarks.CardStore
+            || callee == Corsac.Lang.X86.MachineIntrinsics.RefExchange || callee == Corsac.Lang.X86.MachineIntrinsics.RefCompareExchange;
 
     private static readonly string? Trace = Switches.TraceForward;
 

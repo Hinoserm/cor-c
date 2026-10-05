@@ -1,0 +1,193 @@
+// test: com_vtables
+// expect-exit: 0
+// expect-output:
+// is a COM object True
+// 2 + 3 = 5
+// E_INVALIDARG as ArgumentException
+// no such interface: False
+// references left 1
+// through the vtable 0 9
+// the same object True
+// through a wrapper 30, total 39
+// last release 0
+// echo hello, twice 42, count 7
+// split a b, n 3
+// failed 0x80041234
+// box 7 seven, sum 6, even True
+// dual through its vtable 12
+//
+// [ComImport] interfaces called through native vtables, and [ComVisible]
+// classes giving them: a COM object made by hand in this file -- a vtable of
+// [UnmanagedCallersOnly] stdcall entries in native memory, its own
+// reference count -- called through the wrapper the compiler wrote for its
+// interface (a cast of the __ComObject is a QueryInterface); a managed class
+// called through its COM-callable wrapper's vtable by a function pointer,
+// and through a wrapper over that; strings as BSTRs, [out] and [in, out],
+// [PreserveSig], a property, an HRESULT thrown and caught, VARIANTs and a
+// SAFEARRAY, and a dual interface's members after IDispatch's seven slots.
+
+using System;
+using System.Runtime.InteropServices;
+
+[ComImport, Guid("6B1C0F5E-6C3A-4F2B-9C1D-0A1B2C3D4E5F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IAdder
+{
+    int Add(int a, int b);
+}
+
+[ComImport, Guid("0F0E0D0C-0B0A-0908-0706-050403020100"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface INothing
+{
+    void Nothing();
+}
+
+[ComImport, Guid("A1B2C3D4-0001-0002-0003-000000000001"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IText
+{
+    string Echo(string s);
+    [PreserveSig] int Twice(int x);
+    int Count { get; set; }
+    void Split(string s, out string first, ref int n);
+    void Fail();
+    object Box(object v);
+    int Sum(int[] values);
+    bool IsEven(int n);
+}
+
+[ComImport, Guid("A1B2C3D4-0001-0002-0003-000000000002")]
+interface IDualThing
+{
+    int Times(int a, int b);
+}
+
+/// A COM object written by hand: IUnknown and IAdder::Add, its reference count kept here.
+static unsafe class Native
+{
+    public static int Refs = 1;
+
+    public static nint Make()
+    {
+        nint vtable = Marshal.AllocHGlobal(4 * IntPtr.Size);
+        Marshal.WriteIntPtr(vtable, 0, (nint)&QueryInterface);
+        Marshal.WriteIntPtr(vtable, IntPtr.Size, (nint)&AddRef);
+        Marshal.WriteIntPtr(vtable, 2 * IntPtr.Size, (nint)&Release);
+        Marshal.WriteIntPtr(vtable, 3 * IntPtr.Size, (nint)&Add);
+        nint self = Marshal.AllocHGlobal(IntPtr.Size);
+        Marshal.WriteIntPtr(self, vtable);
+        return self;
+    }
+
+    static bool Is(nint riid, string text)
+    {
+        byte[] want = new Guid(text).ToByteArray();
+        for (int i = 0; i < 16; i++) if (Marshal.ReadByte(riid, i) != want[i]) return false;
+        return true;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
+    static int QueryInterface(nint self, nint riid, nint ppv)
+    {
+        if (Is(riid, "00000000-0000-0000-C000-000000000046") || Is(riid, "6B1C0F5E-6C3A-4F2B-9C1D-0A1B2C3D4E5F"))
+        {
+            Refs++;
+            Marshal.WriteIntPtr(ppv, self);
+            return 0;
+        }
+        Marshal.WriteIntPtr(ppv, 0);
+        return unchecked((int)0x80004002);
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
+    static int AddRef(nint self) { return ++Refs; }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
+    static int Release(nint self) { return --Refs; }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
+    static int Add(nint self, nint a, nint b, nint result)
+    {
+        if ((int)a < 0) return unchecked((int)0x80070057);
+        Marshal.WriteInt32(result, (int)a + (int)b);
+        return 0;
+    }
+}
+
+[ComVisible(true)]
+class Counter : IAdder
+{
+    public int Total;
+    public int Add(int a, int b) { Total += a + b; return a + b; }
+}
+
+[ComVisible(true)]
+class Texter : IText, IDualThing
+{
+    int _count;
+    public string Echo(string s) { return s; }
+    public int Twice(int x) { return x * 2; }
+    public int Count { get { return _count; } set { _count = value; } }
+    public void Split(string s, out string first, ref int n) { first = s.Substring(0, 1); n += 2; }
+    public void Fail() { throw new COMException("refused", unchecked((int)0x80041234)); }
+    public object Box(object v) { return v; }
+    public int Sum(int[] values) { int t = 0; foreach (int v in values) t += v; return t; }
+    public bool IsEven(int n) { return n % 2 == 0; }
+    public int Times(int a, int b) { return a * b; }
+}
+
+static unsafe class Program
+{
+    static int Main()
+    {
+        // ---- a native object through its wrapper ----------------------------------
+        nint p = Native.Make();
+        object o = Marshal.GetObjectForIUnknown(p);
+        Console.WriteLine("is a COM object " + Marshal.IsComObject(o));
+        IAdder adder = (IAdder)o;
+        Console.WriteLine("2 + 3 = " + adder.Add(2, 3));
+        try { adder.Add(-1, 1); }
+        catch (ArgumentException e) { Console.WriteLine("E_INVALIDARG as " + e.GetType().Name); }
+        Console.WriteLine("no such interface: " + (o is INothing));
+        Marshal.ReleaseComObject(adder);
+        Marshal.ReleaseComObject(o);
+        Console.WriteLine("references left " + Native.Refs);
+
+        // ---- a managed object through its COM-callable wrapper ---------------------
+        Counter counter = new Counter();
+        nint unknown = Marshal.GetIUnknownForObject(counter);
+        Guid iid = new Guid("6B1C0F5E-6C3A-4F2B-9C1D-0A1B2C3D4E5F");
+        nint pAdder;
+        Marshal.QueryInterface(unknown, ref iid, out pAdder);
+        nint vtable = Marshal.ReadIntPtr(pAdder);
+        nint add = Marshal.ReadIntPtr(vtable, 3 * IntPtr.Size);
+        nint result = Marshal.AllocHGlobal(4);
+        int hr = ((delegate* unmanaged[Stdcall]<nint, int, int, nint, int>)add)(pAdder, 4, 5, result);
+        Console.WriteLine("through the vtable " + hr + " " + Marshal.ReadInt32(result));
+        Console.WriteLine("the same object " + ReferenceEquals(Marshal.GetObjectForIUnknown(unknown), counter));
+        object wrapped = Marshal.GetUniqueObjectForIUnknown(unknown);
+        IAdder viaCom = (IAdder)wrapped;
+        Console.WriteLine("through a wrapper " + viaCom.Add(10, 20) + ", total " + counter.Total);
+        Marshal.ReleaseComObject(viaCom);
+        Marshal.ReleaseComObject(wrapped);
+        Marshal.Release(pAdder);
+        Console.WriteLine("last release " + Marshal.Release(unknown));
+
+        // ---- strings, outs, [PreserveSig], a property, a failure -------------------------
+        Texter texter = new Texter();
+        object texterCom = Marshal.GetUniqueObjectForIUnknown(Marshal.GetIUnknownForObject(texter));
+        IText text = (IText)texterCom;
+        text.Count = 7;
+        Console.WriteLine("echo " + text.Echo("hello") + ", twice " + text.Twice(21) + ", count " + text.Count);
+        string first;
+        int n = 1;
+        text.Split("ab", out first, ref n);
+        Console.WriteLine("split " + first + " " + "ab".Substring(1) + ", n " + n);
+        try { text.Fail(); }
+        catch (COMException e) { Console.WriteLine("failed 0x" + ((uint)e.HResult).ToString("X8")); }
+        Console.WriteLine("box " + text.Box(7) + " " + text.Box("seven") + ", sum " + text.Sum(new int[] { 1, 2, 3 }) + ", even " + text.IsEven(4));
+
+        // ---- a dual interface: its members after IDispatch's ---------------------------
+        IDualThing dual = (IDualThing)texterCom;
+        Console.WriteLine("dual through its vtable " + dual.Times(3, 4));
+        return 0;
+    }
+}

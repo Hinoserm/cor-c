@@ -30,6 +30,23 @@ public static class RuntimeAbi
     /// <summary>An array grown where it is, at its region's top: keeps no pointer (Runtime.GrowInPlace).</summary>
     public const string GrowInPlace = "m_Runtime_GrowInPlace_2_" + Word + "_" + Word;
     /// <summary>
+    /// THE STORE SEQUENCES (i386 images whose threads stop anywhere: CORSAC's
+    /// ring-1 kernels): a reference store with its Marking test, snapshot
+    /// barrier and card mark (RefStore), and one with its card mark alone
+    /// (CardStore), each a stub of the image that defines the runtime, laid
+    /// out together between SequencesStart and SequencesEnd -- the range its
+    /// kernel never stops a thread inside (X86Backend, CardMarks.FuseStores).
+    /// RefStore in a unit's runtime helpers says the unit's stores are made
+    /// so.
+    /// </summary>
+    public const string RefStore = "__corsac_refstore";
+    public const string CardStore = "__corsac_cardstore";
+    /// <summary>Interlocked's reference exchanges as sequences (Sys.ExchangeReference, CompareExchangeReference).</summary>
+    public const string RefExchange = "__corsac_refxchg";
+    public const string RefCompareExchange = "__corsac_refcas";
+    public const string SequencesStart = "__corsac_store_sequences";
+    public const string SequencesEnd = "__corsac_store_sequences_end";
+    /// <summary>
     /// Regions (RegionPointsTo, RegionSolver): opened on a boundary's entry,
     /// given back on its return, allocated in. RegionEnter and RegionLoop
     /// take, last, the bytes the link proved the region holds (0: not known).

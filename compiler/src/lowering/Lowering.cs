@@ -70,6 +70,51 @@ public sealed partial class Lowering
     public static bool Ring1Syscalls { get; set; }
 
     /// <summary>
+    /// THE CARD MARK BEFORE A REFERENCE STORE AS WELL AS AFTER IT: the
+    /// program's threads can be stopped by its collector at ANY instruction,
+    /// not only at a poll or a call. CORSAC's ring-1 kernels are: ring 0
+    /// sends a thread that owes their collector an answer to its handshake
+    /// from wherever the trap found it (Ring1Kernel.SendToAnswer). With the
+    /// mark only after the store, a thread sent there between the two, its
+    /// value already in the old object and in no register any more, left the
+    /// card unset while a minor cycle took the cards, and the young object
+    /// was swept with an old one still holding it. With a mark before too,
+    /// the card is set for every store a stop can fall inside: taken before
+    /// the store, the value is still in the stopped thread's registers, which
+    /// its handshake saved on its stack; taken after it, the old object holds
+    /// it and its card was read. The mark after stays, for a cycle that takes
+    /// the cards while the thread runs. Set wherever StoreSequences is:
+    /// --ring1-syscalls, or --store-sequences (ring 0's kernel and modules,
+    /// whose processors answer their collector from a Kick's interrupt).
+    ///
+    /// NOW ONLY A FALLBACK. Such an image makes its stores as sequences
+    /// (StoreSequences), inside which nothing stops a thread between the
+    /// store and its card, and each store made one drops its mark before
+    /// (CardMarks.FuseStores). What keeps it is a store the compiler could not
+    /// make one, which it says.
+    /// </summary>
+    public static bool CardMarkBefore { get; set; }
+
+    /// <summary>
+    /// THE STORE SEQUENCES: every reference store of an i386 image whose
+    /// threads its collector stops at ANY instruction -- CORSAC's ring-1
+    /// kernels, whose ring 0 sends a thread to the collector's handshake from
+    /// wherever a trap finds it (Ring1Kernel.SendToAnswer) -- is made by one
+    /// of the image's stubs, which ring 0 sends no thread out of. Its Marking
+    /// test, its snapshot barrier, the store and its card mark are one
+    /// sequence there: a thread stopped between the test and the store would
+    /// answer the snapshot and then store over a reference nobody heard of,
+    /// and the concurrent cycle lose it. Lowering emits the stores as it
+    /// always has, for every pass to read, and says so in the module's
+    /// runtime helpers (RuntimeAbi.RefStore); the last pass makes each one
+    /// its sequence (CardMarks.FuseStores); Interlocked's reference
+    /// exchanges are sequences of their own from the start
+    /// (Sys.ExchangeReference). Set with --ring1-syscalls, or
+    /// --store-sequences.
+    /// </summary>
+    public static bool StoreSequences { get; set; }
+
+    /// <summary>
     /// The runtime and the class library are shared objects this program
     /// links rather than source compiled into it.
     ///
@@ -159,11 +204,13 @@ public sealed partial class Lowering
     {
         Lowering l = new(bound, file, library);
         l.Run(unit);
+        l._m.InterruptFacts = bound.InterruptFacts;
         // The frees the lifetime passes may add (Escape), by the label they
         // call: declared is enough, the body may be another unit's.
-        foreach ((string helper, int arity) in new[] { ("Free", 1), ("FreeField", 2), ("FreeReplaced", 2), ("FreeOwnedReplaced", 2), ("KeepField", 2), ("CardMarkObject", 1), ("FreeOwnedElements", 1), ("OwnElements", 1), ("FreeStorageInFrame", 1),
+        foreach ((string helper, int arity) in new[] { ("Free", 1), ("FreeField", 2), ("FreeReplaced", 2), ("FreeOwnedReplaced", 2), ("KeepField", 2), ("CardMarkObject", 1), ("FreeOwnedElements", 1), ("FreeArrayElements", 1), ("OwnElements", 1), ("FreeStorageInFrame", 1),
                                                        ("RegionEnter", 2), ("RegionLeave", 1), ("RegionLoop", 3), ("AllocRegion", 3), ("AllocNear", 4), ("RegionCatch", 1) })
             if (l.RuntimeMethod(helper, arity) is MethodSymbol provided) l._m.RuntimeHelpers.Add(Label(provided));
+        if (l.MakesStoreSequences) l._m.RuntimeHelpers.Add(Corsac.Lang.Lto.RuntimeAbi.RefStore);
         errors.AddRange(l.Errors);
         if (entries is not null)
         {
@@ -239,6 +286,53 @@ public sealed partial class Lowering
     /// <summary>The symbol of a static field: its own ELF symbol, so a library's statics are the library's.</summary>
     private static string StaticSymbol(FieldSymbol f) => $"s_{TypeKey(f.Owner)}_{f.Name}";
 
+    /// <summary>
+    /// THE PROGRAM'S DECLARATIONS NOTHING LOWERED, for the unused-code report
+    /// (Module.Unlowered): a program starts at Main and lowers what its calls
+    /// reach, so a method nothing calls and a static nothing touches never
+    /// become a function or a data item for the report to find unreached.
+    /// Only types this compile owns -- not another unit's, a shared object's,
+    /// an instantiation or the class library's -- and of those, every method
+    /// with a body not emitted and every static field not laid down. A
+    /// generic method is never emitted as itself: it is noted, and counts as
+    /// used where a copy of it is reached at the same place in the source.
+    /// </summary>
+    private void NoteUnlowered()
+    {
+        foreach (TypeSymbol t in _b.Types.Values)
+        {
+            if (t.Decl is not TypeDecl declared || SystemCode(t) || declared.Elsewhere || declared.Specialised
+                || declared.Canon is not null || declared.File == "<prelude>" || t.Decl.External
+                // A closure or state machine nobody wrote: the method it came
+                // from is the one judged (UsesCapture.CompilerMade).
+                || declared.LocalOnly)
+                continue;
+            foreach (MethodSymbol m in t.Methods)
+            {
+                if (m.Decl is not MethodDecl method || method.Body is null || method.LocalCopy || method.File == "<prelude>") continue;
+                if (method.OwnedImplementation == false || method.AutoAccessor) continue;
+                if (_required.Contains(m)) continue;
+                _m.Unlowered.Add((true, Display(m), Corsac.Lang.Metadata.UsesCapture.Where(declared.SourcePath, method.File), method.Line));
+            }
+            foreach (FieldSymbol f in t.Fields)
+            {
+                if (!f.Static || _statics.Contains(f) || FieldDeclOf(f) is not MemberDecl field || field.Mods.HasFlag(Mods.Const)) continue;
+                _m.Unlowered.Add((false, t.Name + "." + f.Name, Corsac.Lang.Metadata.UsesCapture.Where(declared.SourcePath, field.File), field.Line));
+            }
+        }
+    }
+
+    /// <summary>
+    /// The declaration a field came from, for its position (the unused-code
+    /// report): the field, or the auto-property whose `<Name>` it is.
+    /// </summary>
+    private static MemberDecl? FieldDeclOf(FieldSymbol f)
+    {
+        if (f.Owner.Decl is not TypeDecl declaring) return null;
+        string name = f.Name.StartsWith('<') && f.Name.EndsWith('>') ? f.Name[1..^1] : f.Name;
+        return declaring.Members.FirstOrDefault(d => d is FieldDecl or PropertyDecl && d.Name == name);
+    }
+
     /// <summary>The word holding a [ThreadStatic] field's number (Runtime.ThreadStaticCell).</summary>
     private static string ThreadStaticIndex(FieldSymbol f) => "ts_" + StaticSymbol(f);
 
@@ -270,6 +364,20 @@ public sealed partial class Lowering
     /// question worth asking.
     /// </summary>
     private static bool IsLibrary(TypeSymbol? t) => t?.Decl?.FromLibrary ?? false;
+
+    /// <summary>Whether a source file, by full path, is in the system library's trees (stdlib, runtime).</summary>
+    public static Func<string, bool> LibraryPath { get; set; } = _ => false;
+
+    /// <summary>
+    /// Whether a type is written in the system library's own sources
+    /// (Function.SystemCode): any file of its trees, not only those linked
+    /// by default -- a kernel compiles more of them by name.
+    /// </summary>
+    private static bool SystemCode(TypeSymbol? t)
+        => t?.Decl is TypeDecl d && (d.SourcePath is string path ? LibraryPath(path) : d.FromLibrary);
+
+    /// <summary>The full path of the file a type is declared in (Function.SourcePath).</summary>
+    private static string? SourcePathOf(TypeSymbol? t) => t?.Decl?.SourcePath;
 
     /// <summary>object's descriptor, the declaring type of a call to one of object's own virtuals.</summary>
     internal const string ObjectDispatch = "t_object";
@@ -369,7 +477,7 @@ public sealed partial class Lowering
     public const int TlsState = 28;
     /// <summary>This thread's [ThreadStatic] cells: an object?[] (Tls.ThreadStatics).</summary>
     public const int TlsThreadStatics = 168;
-    public const int TlsBytes = 176;
+    public const int TlsBytes = 184;
 
     /// <summary>The type the runtime library provides its hooks in.</summary>
     public const string RuntimeType = "Runtime";
@@ -407,7 +515,7 @@ public sealed partial class Lowering
             // the program: the passes run after lowering, and a call they add
             // to a routine nothing else reached would name a symbol no one
             // defines.
-            foreach ((string helper, int arity) in new[] { ("Free", 1), ("FreeReplaced", 2), ("FreeOwnedReplaced", 2), ("FreeOwnedElements", 1), ("OwnElements", 1), ("FreeStorageInFrame", 1),
+            foreach ((string helper, int arity) in new[] { ("Free", 1), ("FreeReplaced", 2), ("FreeOwnedReplaced", 2), ("FreeOwnedElements", 1), ("FreeArrayElements", 1), ("OwnElements", 1), ("FreeStorageInFrame", 1),
                                                            ("RegionEnter", 2), ("RegionLeave", 1), ("RegionLoop", 3), ("AllocRegion", 3), ("AllocNear", 4), ("RegionCatch", 1) })
                 if (RuntimeMethod(helper, arity) is MethodSymbol provided) Require(provided);
         }
@@ -416,6 +524,7 @@ public sealed partial class Lowering
         {
             EmitSharedInit();
         }
+        ModuleInitializers();
 
         // Roots: a library publishes everything; a program starts at Main.
         if (_library || PartOfALibrary || entry is null)
@@ -498,6 +607,7 @@ public sealed partial class Lowering
         }
 
         SealFunctions();
+        NoteUnlowered();
 
         TypeSymbol? runtimeOwner = _b.Types.Values.FirstOrDefault(t => t.Name == RuntimeType);
         bool ownsRuntime = runtimeOwner is not null && runtimeOwner.Decl?.Elsewhere != true;
@@ -529,8 +639,9 @@ public sealed partial class Lowering
             {
                 _m.Data.Add(new DataItem(ThreadStaticIndex(f), new byte[_t.WordSize])
                 {
-                    Zero = true, Align = _t.WordSize, FromLibrary = IsLibrary(f.Owner),
+                    Zero = true, Align = _t.WordSize, FromLibrary = IsLibrary(f.Owner), SystemCode = SystemCode(f.Owner), SourcePath = SourcePathOf(f.Owner),
                     Coalescible = f.Owner.Decl?.Specialised == true,
+                    SourceFile = FieldDeclOf(f)?.File, Line = FieldDeclOf(f)?.Line ?? 0, Display = f.Owner.Name + "." + f.Name,
                 });
                 continue;
             }
@@ -547,7 +658,8 @@ public sealed partial class Lowering
                                                                      || m.Name == "StaticConstructorBody$");
                 DataItem holder = new(StaticSymbol(f), new byte[size])
                 {
-                    Align = AlignFor(size, _t.Align64), FromLibrary = IsLibrary(f.Owner), ReadOnly = fixedField,
+                    Align = AlignFor(size, _t.Align64), FromLibrary = IsLibrary(f.Owner), SystemCode = SystemCode(f.Owner), SourcePath = SourcePathOf(f.Owner), ReadOnly = fixedField,
+                    SourceFile = FieldDeclOf(f)?.File, Line = FieldDeclOf(f)?.Line ?? 0, Display = f.Owner.Name + "." + f.Name,
                 };
                 holder.Relocs.Add(new DataReloc(0, table, 0));
                 _m.Data.Add(holder);
@@ -555,8 +667,9 @@ public sealed partial class Lowering
             }
             _m.Data.Add(new DataItem(StaticSymbol(f), new byte[size])
             {
-                Zero = true, Align = AlignFor(size, _t.Align64), FromLibrary = IsLibrary(f.Owner),
+                Zero = true, Align = AlignFor(size, _t.Align64), FromLibrary = IsLibrary(f.Owner), SystemCode = SystemCode(f.Owner), SourcePath = SourcePathOf(f.Owner),
                 Coalescible = f.Owner.Decl?.Specialised == true,
+                SourceFile = FieldDeclOf(f)?.File, Line = FieldDeclOf(f)?.Line ?? 0, Display = f.Owner.Name + "." + f.Name,
             });
         }
     }
@@ -589,7 +702,7 @@ public sealed partial class Lowering
         string sym = "sa_" + StaticSymbol(f);
         DataItem item = new(sym, block)
         {
-            Align = _t.Align64, FromLibrary = IsLibrary(f.Owner), Exported = false,
+            Align = _t.Align64, FromLibrary = IsLibrary(f.Owner), SystemCode = SystemCode(f.Owner), SourcePath = SourcePathOf(f.Owner), Exported = false,
             NoReferences = table.Element != "string" && !MayHoldReference(element),
         };
         item.Relocs.Add(new DataReloc(0, SequenceDescriptor(ElementKey(element), stride, isString: false, elementType: element), _t.DescriptorBytes));
@@ -1199,6 +1312,60 @@ public sealed partial class Lowering
         EmitBeginImage(e);
         e.Ret();
         _m.Functions.Add(f);
+    }
+
+    /// <summary>
+    /// [ModuleInitializer] METHODS, which C# runs when the assembly holding
+    /// them is loaded: here, a shared object -- a kernel module registering
+    /// its drivers, above all. Each is required, so it is compiled whether
+    /// or not anything calls it, and named in the module's Initializers; the
+    /// driver writes them into a note and the link makes DT_INIT call them
+    /// after __corsac_init (Linker.Initializers), whichever unit holds that.
+    /// C#'s rules for one: static, no parameters, returning nothing, not
+    /// generic and in no generic type.
+    /// </summary>
+    private void ModuleInitializers()
+    {
+        foreach (TypeSymbol t in _b.Types.Values)
+        {
+            if (t.Decl?.Elsewhere == true) continue;
+            foreach (MethodSymbol m in t.Methods)
+            {
+                if (m.Decl is not MethodDecl d || d.OwnedImplementation == false
+                    || !d.Attributes.Any(a => a.Target.Length == 0 && (a.Is("ModuleInitializer") || a.Is("System.Runtime.CompilerServices.ModuleInitializer"))))
+                    continue;
+                if (!m.Static || m.Params.Count != 0 || m.Returns != Type.Void || d.TypeParams.Count != 0 || t.TypeParams.Count != 0 || t.Decl?.Template is not null)
+                {
+                    Errors.Add(new CompileError(d.File, d.Line, d.Col,
+                        $"module initializer '{t.Name}.{m.Name}' must be static, take no parameters, return void, and be neither generic nor in a generic type"));
+                    continue;
+                }
+                Require(m);
+                _m.Initializers.Add(InitializerEntry(m));
+            }
+        }
+    }
+
+    /// <summary>
+    /// What the link's DT_INIT calls for one initialiser: its type TOUCHED
+    /// first (Lowering.StaticInit), as the entry stub touches Main's, since
+    /// nothing outside the type calls it and a call from inside never tests --
+    /// without this `static string Greeting = ""` ran its initialiser at the
+    /// first touch from elsewhere, after the module initializer had set it,
+    /// and put it back.
+    /// </summary>
+    private string InitializerEntry(MethodSymbol m)
+    {
+        Function f = new(CallLabel(m) + "$module", IrType.Void);
+        Builder e = new(f, f.NewBlock("entry"));
+        _f = f;
+        _e = e;
+        _method = null;
+        TouchType(m.Owner);
+        e.Call(CallLabel(m), IrType.Void);
+        e.Ret();
+        _m.Functions.Add(f);
+        return f.Name;
     }
 
     /// <summary>
@@ -2110,7 +2277,7 @@ public sealed partial class Lowering
         int face = BoxedFaceFlags(t, out string? faceOf);
         WriteWord(d, DescFlags * w, TypeFlagInterface | face | (t.Decl?.IsDelegate == true ? TypeFlagDelegate : 0));
 
-        DataItem item = new(sym, d) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), Coalescible = t.Decl?.Specialised == true };
+        DataItem item = new(sym, d) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), SystemCode = SystemCode(t), SourcePath = SourcePathOf(t), Coalescible = t.Decl?.Specialised == true };
         _m.Data.Add(item);
         item.Relocs.Add(new DataReloc(DescName * w, InternString(FullTypeName(t)), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
@@ -2379,7 +2546,7 @@ public sealed partial class Lowering
         WriteWord(block, DescPayload * w, _t.ObjectHeaderBytes);
         if (t.Kind == TypeKind.Class && OwnsStorage(t)) WriteWord(block, DescGcFlags * w, GcOwnsStorage);
 
-        DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), Coalescible = t.Structural || t.Decl?.Specialised == true,
+        DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), SystemCode = SystemCode(t), SourcePath = SourcePathOf(t), Coalescible = t.Structural || t.Decl?.Specialised == true,
             Exported = t.Decl?.LocalOnly != true };
         _m.Data.Add(item);
         item.Relocs.Add(new DataReloc(DescName * w, InternString(FullTypeName(t)), 0));

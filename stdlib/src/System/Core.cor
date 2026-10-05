@@ -5563,6 +5563,51 @@ class CultureInfo : IFormatProvider {
     public static CultureInfo InvariantCulture => new CultureInfo();
     public static CultureInfo CurrentCulture => new CultureInfo();
 
+    /// LOCALE_INVARIANT: what every culture of this machine formats as.
+    const int Invariant = 0x7F;
+    readonly int _lcid;
+
+    public CultureInfo() { _lcid = Invariant; }
+
+    /// A culture by its Windows locale id (an input language's, as
+    /// InputLanguage.Culture makes it). Its formatting is the invariant
+    /// culture's: this machine formats with one.
+    public CultureInfo(int culture) { _lcid = culture & 0xFFFF; }
+
+    public int LCID => _lcid;
+
+    /// Its name, as .NET's: the languages Windows 2000 has keyboard layouts
+    /// for, "" for the invariant culture, and for another the id in hex.
+    public string Name
+    {
+        get
+        {
+            if (_lcid == Invariant) return "";
+            for (int i = 0; i + 1 < Names.Length; i += 2)
+                if (int.Parse(Names[i], NumberStyles.HexNumber) == _lcid) return Names[i + 1];
+            return "x-" + _lcid.ToString("x4");
+        }
+    }
+
+    static readonly string[] Names = new string[]
+    {
+        "0401", "ar-SA", "0402", "bg-BG", "0404", "zh-TW", "0405", "cs-CZ", "0406", "da-DK", "0407", "de-DE",
+        "0408", "el-GR", "0409", "en-US", "040a", "es-ES_tradnl", "040b", "fi-FI", "040c", "fr-FR", "040d", "he-IL",
+        "040e", "hu-HU", "040f", "is-IS", "0410", "it-IT", "0411", "ja-JP", "0412", "ko-KR", "0413", "nl-NL",
+        "0414", "nb-NO", "0415", "pl-PL", "0416", "pt-BR", "0418", "ro-RO", "0419", "ru-RU", "041a", "hr-HR",
+        "041b", "sk-SK", "041c", "sq-AL", "041d", "sv-SE", "041e", "th-TH", "041f", "tr-TR", "0422", "uk-UA",
+        "0423", "be-BY", "0424", "sl-SI", "0425", "et-EE", "0426", "lv-LV", "0427", "lt-LT", "0429", "fa-IR",
+        "042a", "vi-VN", "042b", "hy-AM", "042c", "az-Latn-AZ", "042f", "mk-MK", "0437", "ka-GE", "0438", "fo-FO",
+        "0439", "hi-IN", "043f", "kk-KZ", "0444", "tt-RU", "0449", "ta-IN", "044e", "mr-IN", "0804", "zh-CN",
+        "0807", "de-CH", "0809", "en-GB", "080a", "es-MX", "080c", "fr-BE", "0813", "nl-BE", "0816", "pt-PT",
+        "081a", "sr-Latn-CS", "082c", "az-Cyrl-AZ", "0843", "uz-Cyrl-UZ", "0c0a", "es-ES", "0c0c", "fr-CA",
+        "0c1a", "sr-Cyrl-CS", "1009", "en-CA", "100c", "fr-CH", "1809", "en-IE",
+    };
+
+    public override string ToString() { return Name; }
+    public override bool Equals(object? other) { return other is CultureInfo c && c._lcid == _lcid; }
+    public override int GetHashCode() { return _lcid; }
+
     public object? GetFormat(Type? formatType) { return null; }
 }
 
@@ -8675,6 +8720,7 @@ static class OutgrownStorage {
 class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
 
     bool ICollection<T>.IsReadOnly => false;
 
@@ -12208,6 +12254,7 @@ interface IReadOnlyDictionary<K, V> : IEnumerable<KeyValuePair<K, V>> {
 class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>>, IOwnsElements {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
 
     private K[] keys;
     private V[] values;
@@ -17442,6 +17489,611 @@ namespace System.Runtime
                 }
                 _latency = value;
             }
+        }
+    }
+}
+
+namespace Microsoft.CSharp.RuntimeBinder
+{
+    /// What a dynamic operation that cannot be bound throws (System.DynamicRuntime,
+    /// in Microsoft.CSharp; here because the members the compiler writes for
+    /// a dynamic receiver convert their arguments with DynamicValues).
+    public class RuntimeBinderException : Exception
+    {
+        public RuntimeBinderException() : base("An error occurred while binding a dynamic operation.") { }
+        public RuntimeBinderException(string message) : base(message) { }
+        public RuntimeBinderException(string message, Exception inner) : base(message, inner) { }
+    }
+
+    public class RuntimeBinderInternalCompilerException : Exception
+    {
+        public RuntimeBinderInternalCompilerException() : base("An unexpected exception occurred while binding a dynamic operation.") { }
+        public RuntimeBinderInternalCompilerException(string message) : base(message) { }
+    }
+}
+
+namespace System.Dynamic
+{
+    // ---- what a late-bound call carries, and what answers it -------------------------------
+    //
+    // Every member a dynamic receiver can reach is answered by code the
+    // compiler wrote for it: a program's providers (ILateMembers, one for each
+    // unit that writes `dynamic`, over every class it can reach) and a
+    // struct's own members (IDynamicMembers, so a write reaches the box).
+    // Each answers one of these:
+
+    /// What a member the compiler wrote for a dynamic receiver answers.
+    public static class LateStatus
+    {
+        public const int Done = 0;             // done; `result` holds the value
+        public const int NoMember = 1;         // nothing of that name: ask the next
+        public const int NoFit = 2;            // the member, but nothing that takes these arguments
+        public const int MethodGroup = 3;      // a method, where a value was asked for
+        public const int ReadOnly = 4;         // a member that cannot be written
+        public const int Static = 5;           // a static member, reached through an instance
+        public const int Ambiguous = 6;        // more than one, none better (C# 12.6.4.3)
+        public const int NotEvent = 7;         // not an event: += and -= are the operator's
+    }
+
+    /// <summary>
+    /// The arguments of a late-bound call as the compiler hands them over:
+    /// each argument, its name where it was given one (`f(x: 1)`), how it was
+    /// passed (0 by value, 1 ref, 2 out, 3 in) and the type arguments written
+    /// (`d.M&lt;int&gt;(..)`). A candidate's own parameters are matched against
+    /// them by Map, as C# matches a call's arguments to a member's
+    /// parameters (12.6.2): positional first, then by name, an optional
+    /// parameter left out marked with DynamicValues.Missing; and a ref or out
+    /// argument's new value written back by Back.
+    /// </summary>
+    public sealed class LateCall
+    {
+        public readonly object?[] Args;
+        public readonly string?[]? Names;
+        public readonly int[]? Kinds;
+        public readonly Type[]? TypeArgs;
+        /// Each argument's own type where the compiler knew it (not dynamic),
+        /// for C#'s "exactly matches" (12.6.4.5): a static argument is
+        /// compared by the type it was written as, not by what it holds.
+        public readonly Type?[]? Declared;
+        /// The method group asked, once a member says NoFit or Ambiguous: what the error names.
+        public LateGroup? Group;
+        /// What the member is called, for the error.
+        public string Member = "";
+
+        public LateCall(object?[] args, string?[]? names, int[]? kinds, Type[]? typeArgs, Type?[]? declared)
+        {
+            Args = args; Names = names; Kinds = kinds; TypeArgs = typeArgs; Declared = declared;
+        }
+
+        public LateCall(object?[] args, string?[]? names, int[]? kinds, Type[]? typeArgs) : this(args, names, kinds, typeArgs, null) { }
+
+        public LateCall(object?[] args) : this(args, null, null, null, null) { }
+
+        /// Whether argument `i` is exactly of a type: its written type when it had one, else what it holds.
+        public bool ExactlyOf(int i, Type type)
+        {
+            Type? written = Declared == null ? null : Declared[i];
+            if (written != null) return written == type;
+            return DynamicValues.Exact(Args[i], type);
+        }
+
+        public int Count { get { return Args.Length; } }
+
+        int KindOf(int argument) { return Kinds == null ? 0 : Kinds[argument]; }
+        string? NameOf(int argument) { return Names == null ? null : Names[argument]; }
+
+        /// <summary>
+        /// Each parameter's argument (its index, or -1 for an optional one
+        /// left out), or null when the arguments do not match the parameters:
+        /// too many, a name no parameter has or one given twice, a positional
+        /// argument after a named one out of its place, a required parameter
+        /// with nothing, or an argument passed otherwise than its parameter is
+        /// taken (`ref` for ref, `out` for out, by value or `in` for in).
+        /// `parameterKinds` as Kinds; `required` how many lead without a default.
+        /// </summary>
+        public int[]? Map(string[] parameters, int[] parameterKinds, int required)
+        {
+            int n = parameters.Length;
+            if (Args.Length > n) return null;
+            int[] map = new int[n];
+            for (int p = 0; p < n; p++) map[p] = -1;
+            for (int i = 0; i < Args.Length; i++)
+            {
+                string? named = NameOf(i);
+                int p = i;
+                if (named != null)
+                {
+                    p = -1;
+                    for (int k = 0; k < n; k++) if (parameters[k] == named) { p = k; break; }
+                    if (p < 0) return null;
+                }
+                else
+                {
+                    // A positional argument after a named one stands in the
+                    // named one's own place, or nowhere (C# 7.2's rule).
+                    if (map[p] != -1) return null;
+                }
+                if (map[p] != -1) return null;
+                map[p] = i;
+            }
+            for (int p = 0; p < n; p++)
+            {
+                if (map[p] == -1)
+                {
+                    if (p < required) return null;
+                    continue;
+                }
+                int passed = KindOf(map[p]), taken = parameterKinds[p];
+                if (taken == 3 ? passed == 1 || passed == 2 : passed != taken) return null;
+            }
+            return map;
+        }
+
+        /// <summary>
+        /// The expanded form of a `params` call (C# 12.6.4.2): the fixed
+        /// parameters as Map has them, every argument past them an element of
+        /// the array -- each by value and none named. Null when it does not
+        /// match.
+        /// </summary>
+        public int[]? MapExpanded(string[] fixedParameters, int[] parameterKinds, int required)
+        {
+            int n = fixedParameters.Length;
+            if (Args.Length < n) return null;
+            for (int i = n; i < Args.Length; i++) if (NameOf(i) != null || KindOf(i) != 0) return null;
+            int[] map = new int[n + 1];
+            for (int p = 0; p < n; p++)
+            {
+                if (NameOf(p) != null && NameOf(p) != fixedParameters[p]) return null;
+                int passed = KindOf(p), taken = parameterKinds[p];
+                if (taken == 3 ? passed == 1 || passed == 2 : passed != taken) return null;
+                map[p] = p;
+            }
+            map[n] = -2;                                                       // the rest
+            return map;
+        }
+
+        /// A parameter's argument, or DynamicValues.Missing for one left out.
+        public object? At(int[] map, int parameter) { return map[parameter] < 0 ? DynamicValues.Missing : Args[map[parameter]]; }
+
+        /// The arguments an expanded `params` array takes: every one from `from` on.
+        public object?[] Rest(int from)
+        {
+            object?[] rest = new object?[Args.Length - from];
+            for (int i = 0; i < rest.Length; i++) rest[i] = Args[from + i];
+            return rest;
+        }
+
+        /// A ref or out parameter's value back where its argument was.
+        public void Back(int[] map, int parameter, object? value)
+        {
+            if (map[parameter] >= 0) Args[map[parameter]] = value;
+        }
+
+        /// The element of the arguments, for a ref or out argument's new value (the compiler's write-back).
+        public object? Value(int argument) { return Args[argument]; }
+
+        /// Whether the type arguments are these.
+        public bool TypeArgumentsAre(Type[] types)
+        {
+            if (TypeArgs == null || TypeArgs.Length != types.Length) return false;
+            for (int i = 0; i < types.Length; i++) if (TypeArgs[i] != types[i]) return false;
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// A method group's overloads as the compiler saw them, for the choice
+    /// among the applicable ones (DynamicValues.Choose): the parameter types
+    /// they have, as indices into Types; which of them is a better conversion
+    /// target than which (C# 12.6.4.7, worked out where the compiler had the
+    /// types: Better[a * Types.Length + b] is 1 when Types[a] is better than
+    /// Types[b]); each candidate's expanded-form element type (-1: not
+    /// expanded), whether it is a generic method's instantiation, and how C#
+    /// writes it, for the errors.
+    /// </summary>
+    public sealed class LateGroup
+    {
+        public readonly Type[] Types;
+        public readonly int[][] Parameters;
+        public readonly int[] Element;
+        public readonly bool[] Generic;
+        public readonly byte[] Better;
+        public readonly string[] Display;
+
+        public LateGroup(Type[] types, int[][] parameters, int[] element, bool[] generic, byte[] better, string[] display)
+        {
+            Types = types; Parameters = parameters; Element = element; Generic = generic; Better = better; Display = display;
+        }
+
+        public bool BetterTarget(int a, int b) { return a != b && Better[a * Types.Length + b] != 0; }
+    }
+
+    /// <summary>
+    /// A program's answers for every class a dynamic receiver of it can reach
+    /// (compiler/src/metadata/DynamicProvider.cs): one for each unit that
+    /// writes `dynamic`, registered when its image is loaded
+    /// (DynamicRuntime.Register).
+    /// </summary>
+    public interface ILateMembers
+    {
+        int Get(object target, string name, out object? result);
+        int Set(object target, string name, object? value);
+        int Call(object target, string name, LateCall call, out object? result);
+        int GetIndex(object target, LateCall keys, out object? result);
+        int SetIndex(object target, LateCall keys, object? value);
+        int Operator(int op, object? left, object? right, out object? result);
+        int Convert(object value, Type target, bool explicitly, out object? result);
+        int Event(object target, string name, bool add, object? handler);
+        /// A static member of the target's class of that name, as C# writes it (`Counter.Make(int)`), or null: CS0176's text.
+        string? Static(object target, string name);
+    }
+
+    /// <summary>
+    /// The same answers written into a struct itself, so that a write
+    /// through a dynamic value reaches the box it holds rather than a copy
+    /// (DynamicDeclarations).
+    /// </summary>
+    public interface IDynamicMembers
+    {
+        int __DynGet(string name, out object? result);
+        int __DynSet(string name, object? value);
+        int __DynCall(string name, LateCall call, out object? result);
+        int __DynGetIndex(LateCall keys, out object? result);
+        int __DynSetIndex(LateCall keys, object? value);
+        int __DynOperator(int op, object? left, object? right, out object? result);
+        int __DynConvert(Type target, bool explicitly, out object? result);
+        int __DynEvent(string name, bool add, object? handler);
+    }
+
+    /// <summary>
+    /// A delegate called by a dynamic binder: every delegate type is one,
+    /// its Invoke reached with the call's arguments matched to its own
+    /// parameters (each delegate's own default implementation, the library's
+    /// written here and a program's by the compiler), so the delegate made
+    /// dynamic is the delegate itself.
+    /// </summary>
+    public interface ILateInvocable
+    {
+        object? __LateInvoke(LateCall call);
+    }
+}
+
+namespace System
+{
+    /// <summary>
+    /// The conversions C#'s run-time binder makes, and its choice among a
+    /// method group's applicable members (Microsoft.CSharp's DynamicRuntime
+    /// and the members the compiler writes for a dynamic receiver both use
+    /// them).
+    /// </summary>
+    public static class DynamicValues
+    {
+        const int Done = 0;
+
+        /// An optional parameter that was given nothing (LateCall.At).
+        public static readonly object Missing = new object();
+
+        public static string TypeName(object? o)
+        {
+            if (o == null) return "<null>";
+            if (o is string) return "string";
+            if (o is int) return "int";
+            if (o is long) return "long";
+            if (o is double) return "double";
+            if (o is bool) return "bool";
+            if (o is char) return "char";
+            if (o is float) return "float";
+            if (o is uint) return "uint";
+            if (o is ulong) return "ulong";
+            if (o is short) return "short";
+            if (o is ushort) return "ushort";
+            if (o is byte) return "byte";
+            if (o is sbyte) return "sbyte";
+            return o.GetType().FullName;
+        }
+
+        static long AsLong(object? v)
+        {
+            if (v is int i) return i;
+            if (v is long l) return l;
+            if (v is short s) return s;
+            if (v is sbyte sb) return sb;
+            if (v is byte b) return b;
+            if (v is ushort us) return us;
+            if (v is char c) return c;
+            if (v is uint ui) return ui;
+            if (v is ulong ul) return (long)ul;
+            if (v is float f) return (long)f;
+            if (v is double d) return (long)d;
+            throw new InvalidCastException();
+        }
+
+        static double AsDouble(object? v)
+        {
+            if (v is double d) return d;
+            if (v is float f) return f;
+            if (v is ulong ul) return (double)ul;
+            return AsLong(v);
+        }
+
+        /// <summary>
+        /// A delegate's parameter from its argument (ILateInvocable): what it
+        /// is, or what the binder's implicit conversion makes it.
+        /// </summary>
+        public static T Argument<T>(object? value)
+        {
+            if (value is T same) return same;
+            return (T)Convert(value, typeof(T), false);
+        }
+
+        /// Whether an argument converts implicitly to a delegate's parameter type.
+        public static bool Accepts<T>(object? value) { return value is T || Fits(value, typeof(T)); }
+
+        /// Whether every element of a list fits a test (an expanded `params` array).
+        public static bool All(object?[] items, Func<object?, bool> test)
+        {
+            for (int i = 0; i < items.Length; i++) if (!test(items[i])) return false;
+            return true;
+        }
+
+        /// <summary>
+        /// Whether a value converts implicitly to a type (an overload's
+        /// parameter): null to a reference or a Nullable; a number to itself
+        /// or a wider number (C# 10.2.3); anything else to its own run-time
+        /// type (a reference to a base or an interface is the `is` test the
+        /// compiler writes beside this).
+        /// </summary>
+        public static bool Fits(object? value, Type type)
+        {
+            if (type == typeof(object)) return true;
+            if (value == null) return !type.IsValueType || IsNullable(type);
+            if (value == Missing) return false;
+            Type held = value.GetType();
+            if (held == type) return true;
+            int target = NumberKind(type);
+            if (target != 0) return Widens(value, target);
+            return false;
+        }
+
+        /// Whether a value is exactly of a type (C# 12.6.4.5's "exactly matches").
+        public static bool Exact(object? value, Type type) { return value != null && value != Missing && value.GetType() == type; }
+
+        static bool IsNullable(Type t) { return t.Name.StartsWith("Nullable", StringComparison.Ordinal); }
+
+        /// A type as C# writes it in a message: its keyword for a number, a bool, a char, a string or object.
+        public static string TypeText(Type t)
+        {
+            if (t == typeof(int)) return "int";
+            if (t == typeof(long)) return "long";
+            if (t == typeof(double)) return "double";
+            if (t == typeof(bool)) return "bool";
+            if (t == typeof(char)) return "char";
+            if (t == typeof(string)) return "string";
+            if (t == typeof(object)) return "object";
+            if (t == typeof(float)) return "float";
+            if (t == typeof(uint)) return "uint";
+            if (t == typeof(ulong)) return "ulong";
+            if (t == typeof(short)) return "short";
+            if (t == typeof(ushort)) return "ushort";
+            if (t == typeof(byte)) return "byte";
+            if (t == typeof(sbyte)) return "sbyte";
+            return t.FullName;
+        }
+
+        // A number type's kind: 1 sbyte, 2 byte, 3 short, 4 ushort, 5 int, 6 uint, 7 long, 8 ulong, 9 char, 10 float, 11 double.
+        static int NumberKind(Type t)
+        {
+            if (t == typeof(sbyte)) return 1;
+            if (t == typeof(byte)) return 2;
+            if (t == typeof(short)) return 3;
+            if (t == typeof(ushort)) return 4;
+            if (t == typeof(int)) return 5;
+            if (t == typeof(uint)) return 6;
+            if (t == typeof(long)) return 7;
+            if (t == typeof(ulong)) return 8;
+            if (t == typeof(char)) return 9;
+            if (t == typeof(float)) return 10;
+            if (t == typeof(double)) return 11;
+            return 0;
+        }
+
+        static int ValueKind(object v)
+        {
+            if (v is sbyte) return 1;
+            if (v is byte) return 2;
+            if (v is short) return 3;
+            if (v is ushort) return 4;
+            if (v is int) return 5;
+            if (v is uint) return 6;
+            if (v is long) return 7;
+            if (v is ulong) return 8;
+            if (v is char) return 9;
+            if (v is float) return 10;
+            if (v is double) return 11;
+            return 0;
+        }
+
+        /// C#'s implicit numeric conversions (10.2.3), from a value's kind to a target kind.
+        static bool Widens(object value, int to)
+        {
+            int from = ValueKind(value);
+            if (from == 0) return false;
+            if (from == to) return true;
+            switch (from)
+            {
+                case 1: return to == 3 || to == 5 || to == 7 || to == 10 || to == 11;
+                case 2: return to == 3 || to == 4 || to == 5 || to == 6 || to == 7 || to == 8 || to == 10 || to == 11;
+                case 3: return to == 5 || to == 7 || to == 10 || to == 11;
+                case 4: return to == 5 || to == 6 || to == 7 || to == 8 || to == 10 || to == 11;
+                case 5: return to == 7 || to == 10 || to == 11;
+                case 6: return to == 7 || to == 8 || to == 10 || to == 11;
+                case 7: return to == 10 || to == 11;
+                case 8: return to == 10 || to == 11;
+                case 9: return to == 4 || to == 5 || to == 6 || to == 7 || to == 8 || to == 10 || to == 11;
+                case 10: return to == 11;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// A value made a type (the compiler casts what this answers to it):
+        /// implicitly, what Fits allows; explicitly, any number to any other
+        /// (unchecked, as C# casts outside `checked`) and an object to what it
+        /// is. A struct's own conversion operators are asked first; a class's
+        /// by DynamicRuntime, through the providers, before this.
+        /// </summary>
+        public static object Convert(object? value, Type type, bool explicitly)
+        {
+            if (type == typeof(object)) return value!;
+            object? result;
+            if (value == null)
+            {
+                if (!type.IsValueType || IsNullable(type)) return null!;
+                throw new Microsoft.CSharp.RuntimeBinder.RuntimeBinderException("Cannot convert null to '" + TypeText(type) + "' because it is a non-nullable value type");
+            }
+            if (value.GetType() == type) return value;
+            if (value is System.Dynamic.IDynamicMembers m && m.__DynConvert(type, explicitly, out result) == Done) return result!;
+            int target = NumberKind(type);
+            if (target != 0 && ValueKind(value) != 0)
+            {
+                if (!explicitly && !Widens(value, target))
+                    throw new Microsoft.CSharp.RuntimeBinder.RuntimeBinderException("Cannot implicitly convert type '" + TypeName(value) + "' to '" + TypeText(type) + "'. An explicit conversion exists (are you missing a cast?)");
+                return Number(value, target);
+            }
+            if (IsNullable(type) && ValueKind(value) != 0) return value;
+            // A REFERENCE: the cast the compiler writes after this checks it,
+            // with InvalidCastException; asked here only to say it C#'s way.
+            if (type.IsValueType && !type.IsEnum)
+                throw new Microsoft.CSharp.RuntimeBinder.RuntimeBinderException("Cannot " + (explicitly ? "" : "implicitly ") + "convert type '" + TypeName(value) + "' to '" + TypeText(type) + "'");
+            return value;
+        }
+
+        static object Number(object v, int to)
+        {
+            if (v is double || v is float)
+            {
+                double d = AsDouble(v);
+                switch (to)
+                {
+                    case 10: return (float)d;
+                    case 11: return d;
+                }
+                long whole = unchecked((long)d);
+                return Integer(whole, to);
+            }
+            if (v is ulong ul && to == 10) return (float)ul;
+            if (v is ulong ul2 && to == 11) return (double)ul2;
+            long n = AsLong(v);
+            if (to == 10) return (float)n;
+            if (to == 11) return (double)n;
+            return Integer(n, to);
+        }
+
+        static object Integer(long n, int to)
+        {
+            switch (to)
+            {
+                case 1: return unchecked((sbyte)n);
+                case 2: return unchecked((byte)n);
+                case 3: return unchecked((short)n);
+                case 4: return unchecked((ushort)n);
+                case 5: return unchecked((int)n);
+                case 6: return unchecked((uint)n);
+                case 7: return n;
+                case 8: return unchecked((ulong)n);
+                case 9: return unchecked((char)n);
+            }
+            throw new InvalidCastException();
+        }
+
+        // ---- the better function member (C# 12.6.4.3) ---------------------------------------
+
+        /// <summary>
+        /// Of a method group's candidates -- `maps` each one's parameters'
+        /// arguments (LateCall.Map, MapExpanded), `applicable` which take
+        /// them -- the one better than every other, as C# chooses (12.6.4.3):
+        /// for each argument, the conversion to its parameter's type better
+        /// (12.6.4.5: an argument whose run-time type is exactly one
+        /// parameter's type and not the other's, else the better conversion
+        /// target, 12.6.4.7, which the group carries); with no difference in
+        /// the parameter types, a non-generic method over a generic one's
+        /// instantiation, the normal form over the expanded, and a candidate
+        /// with no default argument filled in over one with. The index of the
+        /// best; -1 when none applies, -2 when no one is better than all the
+        /// others (ambiguous).
+        /// </summary>
+        public static int Choose(System.Dynamic.LateCall call, System.Dynamic.LateGroup group, int[]?[] maps, bool[] applicable)
+        {
+            int best = -1;
+            int count = 0;
+            for (int i = 0; i < applicable.Length; i++) if (applicable[i]) { count++; best = i; }
+            if (count <= 1) return best;
+            for (int i = 0; i < applicable.Length; i++)
+            {
+                if (!applicable[i]) continue;
+                bool wins = true;
+                for (int j = 0; j < applicable.Length && wins; j++)
+                {
+                    if (j == i || !applicable[j]) continue;
+                    if (Compare(call, group, maps, i, j) <= 0) wins = false;
+                }
+                if (wins) return i;
+            }
+            return -2;
+        }
+
+        /// The parameter type (an index into the group's Types) argument `argument` meets in candidate `c`; -1 for none.
+        static int TypeFor(System.Dynamic.LateGroup group, int[]?[] maps, int c, int argument)
+        {
+            int[] map = maps[c]!;
+            int[] types = group.Parameters[c];
+            for (int p = 0; p < map.Length; p++)
+            {
+                if (map[p] == argument) return types[p];
+                if (map[p] == -2) return argument >= p ? group.Element[c] : -1;     // the expanded rest
+            }
+            return -1;
+        }
+
+        static int Defaults(int[] map)
+        {
+            int n = 0;
+            for (int p = 0; p < map.Length; p++) if (map[p] == -1) n++;
+            return n;
+        }
+
+        /// 1 when candidate a is better than b for this call, -1 when b is, 0 when neither.
+        static int Compare(System.Dynamic.LateCall call, System.Dynamic.LateGroup group, int[]?[] maps, int a, int b)
+        {
+            bool aBetter = false, bBetter = false, same = true;
+            for (int i = 0; i < call.Args.Length; i++)
+            {
+                int ta = TypeFor(group, maps, a, i), tb = TypeFor(group, maps, b, i);
+                // One type however it was annotated: `string?` and `string`
+                // are one parameter type to C# (an annotation, not a type).
+                if (ta < 0 || tb < 0 || ta == tb || group.Types[ta] == group.Types[tb]) continue;
+                same = false;
+                bool exactA = call.ExactlyOf(i, group.Types[ta]), exactB = call.ExactlyOf(i, group.Types[tb]);
+                int said = exactA && !exactB ? 1 : exactB && !exactA ? -1
+                         : group.BetterTarget(ta, tb) && !group.BetterTarget(tb, ta) ? 1
+                         : group.BetterTarget(tb, ta) && !group.BetterTarget(ta, tb) ? -1 : 0;
+                if (said > 0) aBetter = true;
+                if (said < 0) bBetter = true;
+            }
+            if (aBetter && !bBetter) return 1;
+            if (bBetter && !aBetter) return -1;
+            if (aBetter && bBetter) return 0;
+            if (!same) return 0;
+            // THE TIE-BREAKS, the parameter types being the same.
+            if (!group.Generic[a] && group.Generic[b]) return 1;
+            if (group.Generic[a] && !group.Generic[b]) return -1;
+            bool expandedA = group.Element[a] >= 0, expandedB = group.Element[b] >= 0;
+            if (!expandedA && expandedB) return 1;
+            if (expandedA && !expandedB) return -1;
+            int da = Defaults(maps[a]!), db = Defaults(maps[b]!);
+            if (da == 0 && db > 0) return 1;
+            if (db == 0 && da > 0) return -1;
+            return 0;
         }
     }
 }

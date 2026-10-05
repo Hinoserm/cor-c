@@ -1,0 +1,764 @@
+// NDR, AS DCOM SPEAKS IT, for COM calls between processes: the octet stream
+// MIDL's stubs make (DCE 1.1 RPC chapter 14, little-endian, every value at
+// its own alignment from the start of the stub data), and the automation
+// types' wire forms as oleaut32's user-marshal routines make them --
+//
+//   BSTR      FLAGGED_WORD_BLOB: the character count, the byte count
+//             (0xFFFFFFFF for a null BSTR), the count again, the characters;
+//   VARIANT   its 20-byte header (size in eights, 0, the type, three
+//             reserved words, the switch), the value at its alignment, and
+//             what it points to: a BSTR, a SAFEARRAY, an interface's
+//             MInterfacePointer, another VARIANT by reference;
+//   SAFEARRAY its dimensions, features, element size, VARTYPE, union type
+//             and cell count, its bounds last first, then the cells (BSTRs
+//             and VARIANTs each in its wire form);
+//   IUnknown, IDispatch and every interface: MInterfacePointer, the OBJREF's
+//             length twice and its bytes;
+//
+// each of the first three, as a parameter, behind the 'User' marker
+// (0x72657355) a user-marshalled pointer type carries, its body aligned to
+// eight -- inline at the top level, after the array or structure it is in
+// otherwise. And ORPCTHIS and ORPCTHAT, which begin every DCOM request and
+// response ([MS-DCOM] 2.2.13).
+//
+// Interfaces are made OBJREFs and read back by ComRemote's exporter and
+// RemoteObject (ComRemote.cor): this file asks them through ComObjRefs.
+
+using System;
+using System.Collections.Generic;
+using System.Text;
+
+namespace System.Runtime.InteropServices
+{
+    /// <summary>What turns interfaces into OBJREFs and back for NDR: ComRemote's.</summary>
+    public interface IComObjRefs
+    {
+        /// The OBJREF of `o`'s interface `iid`, references given with it; null for null.
+        byte[]? Marshal(object? o, string iid);
+        /// The object an OBJREF stands for.
+        object? Unmarshal(byte[] objref);
+    }
+
+    public static class ComObjRefs
+    {
+        public static IComObjRefs? Current;
+
+        public static IComObjRefs Need()
+        {
+            IComObjRefs? c = Current;
+            if (c == null) throw new NotSupportedException("interfaces cannot cross processes: no COM exporter in this program");
+            return c;
+        }
+    }
+
+    /// <summary>An NDR request or response being written.</summary>
+    public sealed class NdrWriter
+    {
+        byte[] _b = new byte[256];
+        int _n;
+        int _referent = 0x20000;
+        /// Pointees put off until the array or structure they are in is done.
+        List<Action>? _deferred;
+
+        public int Length { get { return _n; } }
+
+        public byte[] ToArray()
+        {
+            byte[] made = new byte[_n];
+            Array.Copy(_b, made, _n);
+            return made;
+        }
+
+        void Room(int more)
+        {
+            if (_n + more <= _b.Length) return;
+            int size = _b.Length * 2;
+            while (size < _n + more) size *= 2;
+            byte[] bigger = new byte[size];
+            Array.Copy(_b, bigger, _n);
+            _b = bigger;
+        }
+
+        public void Align(int to)
+        {
+            while (_n % to != 0) Byte(0);
+        }
+
+        public void Byte(long v) { Room(1); _b[_n++] = (byte)v; }
+        public void Short(long v) { Align(2); Byte(v); Byte(v >> 8); }
+        public void Long(long v) { Align(4); Room(4); for (int i = 0; i < 4; i++) _b[_n++] = (byte)(v >> (8 * i)); }
+        public void Hyper(long v) { Align(8); Room(8); for (int i = 0; i < 8; i++) _b[_n++] = (byte)(v >> (8 * i)); }
+        public void Raw(byte[] bytes) { Room(bytes.Length); Array.Copy(bytes, 0, _b, _n, bytes.Length); _n += bytes.Length; }
+        public void Raw(byte[] bytes, int at, int count) { Room(count); Array.Copy(bytes, at, _b, _n, count); _n += count; }
+        public void Guid(byte[] bytes) { Align(4); Raw(bytes, 0, 16); }
+        public void Guid(string text) { Guid(ComMarshal.GuidBytes(text)); }
+
+        /// A unique pointer's referent ID, never 0.
+        public int Referent() { int r = _referent; _referent += 4; return r; }
+
+        /// Writes the body later, after the enclosing array or structure.
+        public void Defer(Action body)
+        {
+            if (_deferred == null) body();
+            else _deferred.Add(body);
+        }
+
+        /// An array or structure whose embedded pointees follow it.
+        public void Embedding(Action inline)
+        {
+            List<Action>? outer = _deferred;
+            List<Action> mine = new List<Action>();
+            _deferred = mine;
+            inline();
+            _deferred = outer;
+            foreach (Action a in mine) a();
+        }
+
+        public void Patch(int at, long v) { for (int i = 0; i < 4; i++) _b[at + i] = (byte)(v >> (8 * i)); }
+
+        // ---- ORPC --------------------------------------------------------------------------
+
+        /// ORPCTHIS: COM version 5.7, flags, reserved, the causality ID, no extensions.
+        public void OrpcThis(byte[] cid)
+        {
+            Short(5); Short(7);
+            Long(0); Long(0);
+            Guid(cid);
+            Long(0);
+        }
+
+        /// ORPCTHAT: flags, no extensions.
+        public void OrpcThat() { Long(0); Long(0); }
+
+        // ---- the automation types ------------------------------------------------------------
+
+        public const int UserMarker = 0x72657355;
+
+        /// A user-marshalled pointer type's marker, and its body at eight:
+        /// inline at the top level, after the enclosing array or structure
+        /// when inside one. (Also an interface's own wire's, ComOle.cor's:
+        /// STGMEDIUM, CLIPFORMAT, HWND.)
+        public void User(Action body)
+        {
+            Long(UserMarker);
+            Defer(() => { Align(8); body(); });
+        }
+
+        /// BSTR_UserMarshal's body.
+        public void BstrBody(string? s)
+        {
+            Align(4);
+            int chars = s == null ? 0 : s.Length;
+            Long(chars);
+            Long(s == null ? 0xFFFFFFFFL : chars * 2);
+            Long(chars);
+            Room(chars * 2);
+            for (int i = 0; i < chars; i++) { _b[_n++] = (byte)s![i]; _b[_n++] = (byte)(s[i] >> 8); }
+        }
+
+        public void Bstr(string? s) { User(() => BstrBody(s)); }
+
+        /// A [string] wchar_t*: conformant and varying, its terminator counted.
+        public void WideString(string s)
+        {
+            Long(s.Length + 1); Long(0); Long(s.Length + 1);
+            Room(s.Length * 2 + 2);
+            for (int i = 0; i < s.Length; i++) { _b[_n++] = (byte)s[i]; _b[_n++] = (byte)(s[i] >> 8); }
+            _b[_n++] = 0; _b[_n++] = 0;
+        }
+
+        public void Ansi(string s)
+        {
+            byte[] bytes = Encoding.UTF8.GetBytes(s);
+            Long(bytes.Length + 1); Long(0); Long(bytes.Length + 1);
+            Raw(bytes);
+            Byte(0);
+        }
+
+        /// An interface pointer: a unique MInterfacePointer.
+        public void Interface(object? o, string iid)
+        {
+            byte[]? objref = o == null ? null : ComObjRefs.Need().Marshal(o, iid);
+            if (objref == null) { Long(0); return; }
+            Long(Referent());
+            Defer(() => InterfaceBody(objref));
+        }
+
+        /// MInterfacePointer: its conformance and its length, then the OBJREF.
+        public void InterfaceBody(byte[] objref)
+        {
+            Align(4);
+            Long(objref.Length);
+            Long(objref.Length);
+            Raw(objref);
+        }
+
+        public void Variant(object? v) { User(() => VariantBody(v)); }
+
+        /// VARIANT_UserMarshal's body: header, value, pointee; the header's
+        /// size, in eights, filled in at the end.
+        public void VariantBody(object? v)
+        {
+            Align(8);
+            int start = _n;
+            int vt = VariantType(v);
+            Long(0);                                        // clSize, below
+            Long(0);                                        // rpcReserved
+            Short(vt); Short(0); Short(0); Short(0);
+            Long((vt & ComMarshal.VtArray) != 0 ? vt & ~ComMarshal.VtTypeMask : vt);
+            int size = WireSize(vt);
+            int align = size == 0 ? 1 : size <= 4 ? size : 8;
+            Align(align);
+            object? value = v is VariantWrapper vw ? vw.WrappedObject : v;
+            if ((vt & ComMarshal.VtByRef) != 0)
+            {
+                Long(16);
+                Long(UserMarker);
+                VariantBody(value);
+            }
+            else if ((vt & ComMarshal.VtArray) != 0)
+            {
+                Long(value == null ? 0 : 1);
+                SafeArrayBody(value);
+            }
+            else
+            {
+                switch (vt)
+                {
+                    case ComMarshal.VtEmpty: case ComMarshal.VtNull: break;
+                    case ComMarshal.VtI1: case ComMarshal.VtUi1: Byte(ComMarshal.Long(value)); break;
+                    case ComMarshal.VtI2: case ComMarshal.VtUi2: Short(value is char ch ? ch : ComMarshal.Long(value)); break;
+                    case ComMarshal.VtBool: Short(ComMarshal.Bool(value) ? 0xFFFF : 0); break;
+                    case ComMarshal.VtI4: case ComMarshal.VtUi4: Long(ComMarshal.Long(value)); break;
+                    case ComMarshal.VtError: Long(((ErrorWrapper)value!).ErrorCode); break;
+                    case ComMarshal.VtR4: Long(BitConverter.SingleToInt32Bits((float)ComMarshal.Double(value))); break;
+                    case ComMarshal.VtR8: Hyper(BitConverter.DoubleToInt64Bits(ComMarshal.Double(value))); break;
+                    case ComMarshal.VtDate: Hyper(BitConverter.DoubleToInt64Bits(ComMarshal.ToOADate((DateTime)value!))); break;
+                    case ComMarshal.VtI8: case ComMarshal.VtUi8: Hyper(ComMarshal.Long(value)); break;
+                    case ComMarshal.VtBstr:
+                    {
+                        string? s = value is BStrWrapper bw ? bw.WrappedObject : (string?)value;
+                        Long(s == null ? 0 : 1);
+                        BstrBody(s);
+                        break;
+                    }
+                    case ComMarshal.VtUnknown: case ComMarshal.VtDispatch:
+                    {
+                        object? o = value is UnknownWrapper uw ? uw.WrappedObject : value is DispatchWrapper dw ? dw.WrappedObject : value;
+                        byte[]? objref = o == null ? null : ComObjRefs.Need().Marshal(o, vt == ComMarshal.VtUnknown ? ComMarshal.IidIUnknown : ComMarshal.IidIDispatch);
+                        Long(objref == null ? 0 : 1);
+                        if (objref != null) InterfaceBody(objref);
+                        break;
+                    }
+                }
+            }
+            Patch(start, ((_n - start) + 7) >> 3);
+        }
+
+        /// The VARTYPE a .NET object travels as.
+        public static int VariantType(object? v)
+        {
+            if (v == null) return ComMarshal.VtEmpty;
+            if (v is DBNull) return ComMarshal.VtNull;
+            if (v is VariantWrapper) return ComMarshal.VtByRef | ComMarshal.VtVariant;
+            if (v is int || v.GetType().IsEnum) return ComMarshal.VtI4;
+            if (v is string || v is BStrWrapper) return ComMarshal.VtBstr;
+            if (v is bool) return ComMarshal.VtBool;
+            if (v is double) return ComMarshal.VtR8;
+            if (v is float) return ComMarshal.VtR4;
+            if (v is short) return ComMarshal.VtI2;
+            if (v is long) return ComMarshal.VtI8;
+            if (v is byte) return ComMarshal.VtUi1;
+            if (v is sbyte) return ComMarshal.VtI1;
+            if (v is ushort || v is char) return ComMarshal.VtUi2;
+            if (v is uint) return ComMarshal.VtUi4;
+            if (v is ulong) return ComMarshal.VtUi8;
+            if (v is DateTime) return ComMarshal.VtDate;
+            if (v is ErrorWrapper) return ComMarshal.VtError;
+            if (v is UnknownWrapper) return ComMarshal.VtUnknown;
+            if (v.GetType().IsArray) return ComMarshal.VtArray | ComMarshal.ArrayVt(v);
+            return ComMarshal.VtDispatch;
+        }
+
+        /// get_type_size: what a VARIANT's value takes inline.
+        static int WireSize(int vt)
+        {
+            if ((vt & ComMarshal.VtArray) != 0) return 4;
+            if ((vt & ComMarshal.VtByRef) != 0) return 4;
+            switch (vt & ComMarshal.VtTypeMask)
+            {
+                case ComMarshal.VtI1: case ComMarshal.VtUi1: return 1;
+                case ComMarshal.VtI2: case ComMarshal.VtUi2: case ComMarshal.VtBool: return 2;
+                case ComMarshal.VtI4: case ComMarshal.VtUi4: case ComMarshal.VtR4: case ComMarshal.VtError: case ComMarshal.VtBstr: case ComMarshal.VtInt: case ComMarshal.VtUint: return 4;
+                case ComMarshal.VtI8: case ComMarshal.VtUi8: case ComMarshal.VtR8: case ComMarshal.VtDate: case ComMarshal.VtCy: return 8;
+            }
+            return 0;
+        }
+
+        public void SafeArray(object? a) { User(() => { Long(a == null ? 0 : 1); SafeArrayBody(a); }); }
+
+        /// The SAFEARRAY a .NET array is, after its pointer: one dimension
+        /// from 0, its cells in their wire forms.
+        public void SafeArrayBody(object? a)
+        {
+            if (a == null) return;
+            int vt = ComMarshal.ArrayVt(a);
+            int cells = ComMarshal.ArrayLength(a);
+            int union = UnionType(vt);
+            int features = ComMarshal.FadfHaveVartype | (vt == ComMarshal.VtBstr ? ComMarshal.FadfBstr : vt == ComMarshal.VtVariant ? ComMarshal.FadfVariant : 0);
+            int elementWire = vt == ComMarshal.VtBstr ? 4 : vt == ComMarshal.VtVariant ? 16 : ComMarshal.ElementBytes(vt);
+            Align(4);
+            Long(1);                                        // cDims
+            Short(1);
+            Short(features);
+            Long(elementWire);
+            Long((long)vt << 16);                           // cLocks, the VARTYPE above it
+            Long(union);
+            Long(cells);
+            Long(cells == 0 ? 0 : 2);                       // pvData
+            Long(cells); Long(0);                           // the bound
+            Long(cells);
+            if (cells == 0) return;
+            if (union == UnionI8) Align(8);
+            for (int i = 0; i < cells; i++)
+            {
+                object? item = ComMarshal.ArrayItem(a, i);
+                switch (union)
+                {
+                    case UnionBstr: BstrBody(item == null ? null : item.ToString()); break;
+                    case UnionVariant: VariantBody(item); break;
+                    case UnionI1: Byte(ComMarshal.Long(item)); break;
+                    case UnionI2: Short(vt == ComMarshal.VtBool ? (ComMarshal.Bool(item) ? 0xFFFF : 0) : item is char c ? c : ComMarshal.Long(item)); break;
+                    case UnionI4: Long(vt == ComMarshal.VtR4 ? BitConverter.SingleToInt32Bits((float)ComMarshal.Double(item)) : ComMarshal.Long(item)); break;
+                    case UnionI8:
+                    {
+                        long bits = vt == ComMarshal.VtR8 ? BitConverter.DoubleToInt64Bits(ComMarshal.Double(item))
+                                  : vt == ComMarshal.VtDate ? BitConverter.DoubleToInt64Bits(item is DateTime d ? ComMarshal.ToOADate(d) : ComMarshal.Double(item))
+                                  : ComMarshal.Long(item);
+                        Room(8);
+                        for (int k = 0; k < 8; k++) _b[_n++] = (byte)(bits >> (8 * k));
+                        break;
+                    }
+                    default: throw new NotSupportedException("a SAFEARRAY of interfaces does not cross processes here");
+                }
+            }
+        }
+
+        public const int UnionI1 = 16, UnionI2 = 2, UnionI4 = 3, UnionI8 = 20, UnionBstr = 8, UnionUnknown = 13, UnionDispatch = 9, UnionVariant = 12;
+
+        /// SAFEARRAY_GetUnionType.
+        public static int UnionType(int vt)
+        {
+            switch (vt)
+            {
+                case ComMarshal.VtI1: case ComMarshal.VtUi1: return UnionI1;
+                case ComMarshal.VtI2: case ComMarshal.VtUi2: case ComMarshal.VtBool: return UnionI2;
+                case ComMarshal.VtI4: case ComMarshal.VtUi4: case ComMarshal.VtInt: case ComMarshal.VtUint: case ComMarshal.VtR4: case ComMarshal.VtError: return UnionI4;
+                case ComMarshal.VtR8: case ComMarshal.VtDate: case ComMarshal.VtCy: case ComMarshal.VtI8: case ComMarshal.VtUi8: return UnionI8;
+                case ComMarshal.VtBstr: return UnionBstr;
+                case ComMarshal.VtUnknown: return UnionUnknown;
+                case ComMarshal.VtDispatch: return UnionDispatch;
+            }
+            return UnionVariant;
+        }
+
+        // ---- a call's arguments by their kinds ------------------------------------------------
+
+        /// One argument of a vtable call, by its ComFrame kind: a number at
+        /// its alignment, a BSTR, VARIANT or SAFEARRAY behind its marker, an
+        /// interface an MInterfacePointer, a GUID its sixteen bytes.
+        public void Value(string kind, object? v, string iid)
+        {
+            switch (kind)
+            {
+                case "I1": case "U1": case "Bool1": Byte(kind == "Bool1" ? (ComMarshal.Bool(v) ? 1 : 0) : ComMarshal.Long(v)); return;
+                case "I2": case "U2": Short(ComMarshal.Long(v)); return;
+                case "Char": Short(v is char c ? c : ComMarshal.Long(v)); return;
+                case "VBool": Short(ComMarshal.Bool(v) ? 0xFFFF : 0); return;
+                case "I4": case "U4": Long(ComMarshal.Long(v)); return;
+                case "Bool": Long(ComMarshal.Bool(v) ? 1 : 0); return;
+                case "R4": Long(BitConverter.SingleToInt32Bits((float)ComMarshal.Double(v))); return;
+                case "I8": case "U8": Hyper(ComMarshal.Long(v)); return;
+                case "R8": Hyper(BitConverter.DoubleToInt64Bits(ComMarshal.Double(v))); return;
+                case "Bstr": Bstr((string?)v); return;
+                case "LpwStr":
+                {
+                    string? s = (string?)v;
+                    Long(s == null ? 0 : Referent());
+                    if (s != null) Defer(() => WideString(s));
+                    return;
+                }
+                case "LpStr":
+                {
+                    string? s = (string?)v;
+                    Long(s == null ? 0 : Referent());
+                    if (s != null) Defer(() => Ansi(s));
+                    return;
+                }
+                case "Variant": Variant(v); return;
+                case "Unknown": Interface(v, ComMarshal.IidIUnknown); return;
+                case "Dispatch": Interface(v, ComMarshal.IidIDispatch); return;
+                case "Interface": Interface(v, iid); return;
+                case "Guid": Guid(((Guid)v!).ToByteArray()); return;
+                case "SafeArray": SafeArray(v); return;
+            }
+            throw new NotSupportedException("a " + kind + " does not cross processes");
+        }
+    }
+
+    /// <summary>An NDR request or response being read.</summary>
+    public sealed class NdrReader
+    {
+        readonly byte[] _b;
+        int _at;
+        readonly int _end;
+        List<Action>? _deferred;
+
+        public NdrReader(byte[] b) : this(b, 0, b.Length) { }
+
+        public NdrReader(byte[] b, int at, int count)
+        {
+            _b = b;
+            _at = at;
+            _end = at + count;
+        }
+
+        public int Position { get { return _at; } }
+        public int Left { get { return _end - _at; } }
+
+        void Need(int n)
+        {
+            if (_at + n > _end) throw new COMException("The stub received bad data (RPC_X_BAD_STUB_DATA).", unchecked((int)0x800706F7));
+        }
+
+        public void Align(int to) { while (_at % to != 0) _at++; }
+        public int Byte() { Need(1); return _b[_at++]; }
+        public int Short() { Align(2); Need(2); int v = _b[_at] | (_b[_at + 1] << 8); _at += 2; return v; }
+        public long Long() { Align(4); Need(4); long v = 0; for (int i = 0; i < 4; i++) v |= (long)_b[_at + i] << (8 * i); _at += 4; return v; }
+        public int Int() { return (int)Long(); }
+        public long Hyper() { Align(8); Need(8); long v = 0; for (int i = 0; i < 8; i++) v |= (long)_b[_at + i] << (8 * i); _at += 8; return v; }
+
+        public byte[] Bytes(int n)
+        {
+            Need(n);
+            byte[] made = new byte[n];
+            Array.Copy(_b, _at, made, 0, n);
+            _at += n;
+            return made;
+        }
+
+        public byte[] Guid() { Align(4); return Bytes(16); }
+        public string GuidText() { return ComMarshal.Normal(new System.Guid(Guid()).ToString()); }
+
+        public void Defer(Action body)
+        {
+            if (_deferred == null) body();
+            else _deferred.Add(body);
+        }
+
+        public void Embedding(Action inline)
+        {
+            List<Action>? outer = _deferred;
+            List<Action> mine = new List<Action>();
+            _deferred = mine;
+            inline();
+            _deferred = outer;
+            foreach (Action a in mine) a();
+        }
+
+        public void OrpcThis()
+        {
+            Short(); Short(); Long(); Long(); Guid();
+            if (Long() != 0) SkipExtensions();
+        }
+
+        public void OrpcThat()
+        {
+            Long();
+            if (Long() != 0) SkipExtensions();
+        }
+
+        /// ORPC_EXTENT_ARRAY: its sizes, and each extent, read past.
+        void SkipExtensions()
+        {
+            long size = Long();
+            Long();                                          // reserved
+            if (Long() == 0) return;                         // the extents' pointer
+            long max = Long();
+            List<bool> present = new List<bool>();
+            for (long i = 0; i < max; i++) present.Add(Long() != 0);
+            foreach (bool p in present)
+            {
+                if (!p) continue;
+                Guid();
+                long bytes = Long();
+                Long();
+                Bytes((int)bytes);
+            }
+        }
+
+        public void User(Action body)
+        {
+            long marker = Long();
+            if (marker == 0) { body(); return; }
+            Defer(() => { Align(8); body(); });
+        }
+
+        public string? BstrBody()
+        {
+            Align(4);
+            int chars = Int();
+            long bytes = Long();
+            Long();
+            if (bytes == 0xFFFFFFFFL) return null;
+            Need(chars * 2);
+            StringBuilder s = new StringBuilder(chars);
+            int keep = (int)(bytes / 2);
+            for (int i = 0; i < chars; i++)
+            {
+                char c = (char)(_b[_at] | (_b[_at + 1] << 8));
+                _at += 2;
+                if (i < keep) s.Append(c);
+            }
+            return s.ToString();
+        }
+
+        public string? Bstr()
+        {
+            string? s = null;
+            User(() => { s = BstrBody(); });
+            return s;
+        }
+
+        public string WideString()
+        {
+            Long();
+            Long();
+            int count = Int();
+            Need(count * 2);
+            StringBuilder s = new StringBuilder(count);
+            for (int i = 0; i < count; i++)
+            {
+                char c = (char)(_b[_at] | (_b[_at + 1] << 8));
+                _at += 2;
+                if (c != 0 || i + 1 < count) s.Append(c);
+            }
+            string made = s.ToString();
+            int zero = made.IndexOf('\0');
+            return zero >= 0 ? made.Substring(0, zero) : made;
+        }
+
+        public string Ansi()
+        {
+            Long(); Long();
+            int count = Int();
+            byte[] bytes = Bytes(count);
+            int length = count > 0 && bytes[count - 1] == 0 ? count - 1 : count;
+            return Encoding.UTF8.GetString(bytes, 0, length);
+        }
+
+        public object? Interface()
+        {
+            if (Long() == 0) return null;
+            object? made = null;
+            Defer(() => { made = ComObjRefs.Need().Unmarshal(InterfaceBody()); });
+            return made;
+        }
+
+        public byte[] InterfaceBody()
+        {
+            Align(4);
+            int max = Int();
+            int count = Int();
+            if (count < 0 || count > max || count > Left) throw new COMException("bad MInterfacePointer", unchecked((int)0x800706F7));
+            return Bytes(count);
+        }
+
+        public object? Variant()
+        {
+            object? v = null;
+            User(() => { v = VariantBody(); });
+            return v;
+        }
+
+        public object? VariantBody()
+        {
+            Align(8);
+            Long();                                         // clSize
+            Long();                                         // rpcReserved
+            int vt = Short();
+            Short(); Short(); Short();
+            Long();                                         // the switch
+            if ((vt & ComMarshal.VtByRef) != 0)
+            {
+                Long();                                     // the pointee's size
+                int bare = vt & ~ComMarshal.VtByRef;
+                if (bare == ComMarshal.VtVariant)
+                {
+                    Long();                                 // 'User'
+                    return VariantBody();
+                }
+                return ByValue(bare);
+            }
+            return ByValue(vt);
+        }
+
+        object? ByValue(int vt)
+        {
+            if ((vt & ComMarshal.VtArray) != 0)
+            {
+                Align(4);
+                if (Long() == 0) return null;
+                return SafeArrayBody();
+            }
+            switch (vt)
+            {
+                case ComMarshal.VtEmpty: return null;
+                case ComMarshal.VtNull: return DBNull.Value;
+                case ComMarshal.VtI1: return (sbyte)Byte();
+                case ComMarshal.VtUi1: return (byte)Byte();
+                case ComMarshal.VtI2: return (short)Short();
+                case ComMarshal.VtUi2: return (ushort)Short();
+                case ComMarshal.VtBool: return Short() != 0;
+                case ComMarshal.VtI4: case ComMarshal.VtInt: return (int)Long();
+                case ComMarshal.VtUi4: case ComMarshal.VtUint: return (uint)Long();
+                case ComMarshal.VtError: return (int)Long();
+                case ComMarshal.VtR4: return BitConverter.Int32BitsToSingle((int)Long());
+                case ComMarshal.VtR8: return BitConverter.Int64BitsToDouble(Hyper());
+                case ComMarshal.VtDate: return ComMarshal.FromOADate(BitConverter.Int64BitsToDouble(Hyper()));
+                case ComMarshal.VtCy: return Hyper() / 10000.0;
+                case ComMarshal.VtI8: return Hyper();
+                case ComMarshal.VtUi8: return (ulong)Hyper();
+                case ComMarshal.VtBstr:
+                    Long();
+                    return BstrBody();
+                case ComMarshal.VtUnknown: case ComMarshal.VtDispatch:
+                    if (Long() == 0) return null;
+                    return ComObjRefs.Need().Unmarshal(InterfaceBody());
+            }
+            throw new NotSupportedException("a VARIANT of type " + vt + " does not cross processes here");
+        }
+
+        public object? SafeArray()
+        {
+            object? a = null;
+            User(() =>
+            {
+                Align(4);
+                if (Long() != 0) a = SafeArrayBody();
+            });
+            return a;
+        }
+
+        /// A SAFEARRAY after its pointer, as a .NET array of all its cells.
+        public object? SafeArrayBody()
+        {
+            int dims = Int();
+            Short();
+            int features = Short();
+            int elementWire = Int();
+            int vt = (int)((Long() >> 16) & 0xFFFF);
+            int union = Int();
+            int cells = Int();
+            Long();                                         // pvData
+            if (union == 0x800D) Guid();                    // SF_HAVEIID
+            for (int d = 0; d < dims; d++) { Long(); Long(); }
+            Int();                                          // the conformance
+            if (vt == 0)
+            {
+                vt = union == NdrWriter.UnionBstr ? ComMarshal.VtBstr : union == NdrWriter.UnionVariant ? ComMarshal.VtVariant
+                   : union == NdrWriter.UnionI1 ? ComMarshal.VtUi1 : union == NdrWriter.UnionI2 ? ComMarshal.VtI2
+                   : union == NdrWriter.UnionI8 ? ComMarshal.VtI8 : ComMarshal.VtI4;
+            }
+            if (union == NdrWriter.UnionI8 && cells > 0) Align(8);
+            object?[] items = new object?[cells];
+            for (int i = 0; i < cells; i++)
+            {
+                switch (union)
+                {
+                    case NdrWriter.UnionBstr: items[i] = BstrBody(); break;
+                    case NdrWriter.UnionVariant: items[i] = VariantBody(); break;
+                    case NdrWriter.UnionI1: items[i] = Byte(); break;
+                    case NdrWriter.UnionI2: items[i] = Short(); break;
+                    case NdrWriter.UnionI4: items[i] = Long(); break;
+                    case NdrWriter.UnionI8:
+                    {
+                        Need(8);
+                        long v = 0;
+                        for (int k = 0; k < 8; k++) v |= (long)_b[_at + k] << (8 * k);
+                        _at += 8;
+                        items[i] = v;
+                        break;
+                    }
+                    default: throw new NotSupportedException("a SAFEARRAY of interfaces does not cross processes here");
+                }
+            }
+            return Typed(vt, items);
+        }
+
+        /// The cells as the array type their VARTYPE is.
+        static object Typed(int vt, object?[] raw)
+        {
+            int n = raw.Length;
+            switch (vt)
+            {
+                case ComMarshal.VtBstr: { string?[] r = new string?[n]; for (int i = 0; i < n; i++) r[i] = (string?)raw[i]; return r; }
+                case ComMarshal.VtI4: case ComMarshal.VtInt: case ComMarshal.VtError: { int[] r = new int[n]; for (int i = 0; i < n; i++) r[i] = (int)(long)raw[i]!; return r; }
+                case ComMarshal.VtUi4: case ComMarshal.VtUint: { uint[] r = new uint[n]; for (int i = 0; i < n; i++) r[i] = (uint)(long)raw[i]!; return r; }
+                case ComMarshal.VtR4: { float[] r = new float[n]; for (int i = 0; i < n; i++) r[i] = BitConverter.Int32BitsToSingle((int)(long)raw[i]!); return r; }
+                case ComMarshal.VtR8: { double[] r = new double[n]; for (int i = 0; i < n; i++) r[i] = BitConverter.Int64BitsToDouble((long)raw[i]!); return r; }
+                case ComMarshal.VtDate: { DateTime[] r = new DateTime[n]; for (int i = 0; i < n; i++) r[i] = ComMarshal.FromOADate(BitConverter.Int64BitsToDouble((long)raw[i]!)); return r; }
+                case ComMarshal.VtI8: { long[] r = new long[n]; for (int i = 0; i < n; i++) r[i] = (long)raw[i]!; return r; }
+                case ComMarshal.VtUi8: { ulong[] r = new ulong[n]; for (int i = 0; i < n; i++) r[i] = (ulong)(long)raw[i]!; return r; }
+                case ComMarshal.VtUi1: { byte[] r = new byte[n]; for (int i = 0; i < n; i++) r[i] = (byte)(int)raw[i]!; return r; }
+                case ComMarshal.VtI1: { sbyte[] r = new sbyte[n]; for (int i = 0; i < n; i++) r[i] = (sbyte)(int)raw[i]!; return r; }
+                case ComMarshal.VtI2: { short[] r = new short[n]; for (int i = 0; i < n; i++) r[i] = (short)(int)raw[i]!; return r; }
+                case ComMarshal.VtUi2: { ushort[] r = new ushort[n]; for (int i = 0; i < n; i++) r[i] = (ushort)(int)raw[i]!; return r; }
+                case ComMarshal.VtBool: { bool[] r = new bool[n]; for (int i = 0; i < n; i++) r[i] = (int)raw[i]! != 0; return r; }
+            }
+            return raw;
+        }
+
+        /// One argument of a vtable call by its ComFrame kind (NdrWriter.Value's reverse).
+        public object? Value(string kind)
+        {
+            switch (kind)
+            {
+                case "I1": return (sbyte)Byte();
+                case "U1": return (byte)Byte();
+                case "Bool1": return Byte() != 0;
+                case "I2": return (short)Short();
+                case "U2": return (ushort)Short();
+                case "Char": return (char)Short();
+                case "VBool": return Short() != 0;
+                case "I4": return (int)Long();
+                case "U4": return (uint)Long();
+                case "Bool": return Long() != 0;
+                case "R4": return BitConverter.Int32BitsToSingle((int)Long());
+                case "I8": return Hyper();
+                case "U8": return (ulong)Hyper();
+                case "R8": return BitConverter.Int64BitsToDouble(Hyper());
+                case "Bstr": return Bstr();
+                case "LpwStr":
+                {
+                    if (Long() == 0) return null;
+                    string? s = null;
+                    Defer(() => { s = WideString(); });
+                    return s;
+                }
+                case "LpStr":
+                {
+                    if (Long() == 0) return null;
+                    string? s = null;
+                    Defer(() => { s = Ansi(); });
+                    return s;
+                }
+                case "Variant": return Variant();
+                case "Unknown": case "Dispatch": case "Interface": return Interface();
+                case "Guid": return new System.Guid(Guid());
+                case "SafeArray": return SafeArray();
+            }
+            throw new NotSupportedException("a " + kind + " does not cross processes");
+        }
+    }
+}

@@ -40,6 +40,36 @@ public static class IrReachabilityTests
         keep = IrReachability.Find(new[] { ("unit", unit) }, new Dictionary<ObjectFile, IrArchive> { [unit] = IrArchive.Read(unit)! },
             new Dictionary<string, ObjectFile> { ["main"] = unit }, "main")[unit];
         if (!keep.SetEquals(new[] { "F:main", "F:main$constant$0" })) throw new Exception("A body only the unit's IR defines was not retained");
-        Console.WriteLine("  closed-image reachability: code, private data, callbacks, native vectors, link roots and IR-only bodies passed");
+        // A generic copy two units compile, kept in the first: there it
+        // inlined its helper at the compile and calls nothing, while the
+        // second unit's copy still calls the helper. The link's late passes
+        // may inline the second unit's own copy into its caller, so the
+        // helper is reached and kept where it is owned -- the kernel's
+        // Dictionary<__canon,__canon>.Same, kept nowhere, failed the link --
+        // and the second unit's copy itself is still not kept.
+        ObjectFile first = new(), second = new();
+        foreach (ObjectFile obj in new[] { first, second })
+        {
+            Section text = new(".text", SectionKind.Code); text.Bytes.AddRange(new byte[] { 0xc3, 0xc3, 0xc3 }); obj.Sections.Add(text);
+            obj.Symbols.Add(new Symbol { Name = "generic", IsFunction = true, Section = text, Size = 1, Global = true });
+            obj.Symbols.Add(new Symbol { Name = "helper", IsFunction = true, Section = text, Offset = 1, Size = 1, Global = true });
+        }
+        second.Symbols.Add(new Symbol { Name = "start", IsFunction = true, Section = second.Sections[0], Offset = 2, Size = 1, Global = true });
+        IrArchive.Attach(first, new[] {
+            new IrArchiveRecord("F:generic", true, 1, Array.Empty<string>(), new byte[] { 1 }),
+            new IrArchiveRecord("F:helper", true, 1, Array.Empty<string>(), new byte[] { 2 }) });
+        IrArchive.Attach(second, new[] {
+            new IrArchiveRecord("F:generic", true, 1, new[] { "helper" }, new byte[] { 3 }, new[] { "helper" }),
+            new IrArchiveRecord("F:helper", true, 1, Array.Empty<string>(), new byte[] { 4 }),
+            new IrArchiveRecord("F:start", false, 1, new[] { "generic" }, new byte[] { 5 }, new[] { "generic" }) });
+        Dictionary<ObjectFile, IrArchive> pair = new() { [first] = IrArchive.Read(first)!, [second] = IrArchive.Read(second)! };
+        Dictionary<string, ObjectFile> firstOwns = new() { ["generic"] = first, ["helper"] = first, ["start"] = second };
+        var kept = IrReachability.Find(new[] { ("first", first), ("second", second) }, pair, firstOwns, "start");
+        if (!kept[first].SetEquals(new[] { "F:generic", "F:helper" }))
+            throw new Exception("What a unit's own copy of a coalesced function calls was not kept where it is owned: "
+                + string.Join(",", kept[first].Order(StringComparer.Ordinal)));
+        if (!kept[second].SetEquals(new[] { "F:start" }))
+            throw new Exception("A unit's own copy of a function kept elsewhere was kept: " + string.Join(",", kept[second].Order(StringComparer.Ordinal)));
+        Console.WriteLine("  closed-image reachability: code, private data, callbacks, native vectors, link roots, IR-only bodies and own copies' callees passed");
     }
 }

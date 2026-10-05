@@ -245,7 +245,16 @@ static class Tls
     /// (Runtime.AllocRegion): counted here, without a word every thread
     /// writes, and added in where a region ends (Gc.CountRegionBlocks).
     public const long RegionCount = 43 * WordSize.Bytes;
-    public const long Bytes = 44 * WordSize.Bytes;
+    /// The AsyncContext a continuation running on this block runs in (its
+    /// object's word, 0 outside every continuation): what a continuation
+    /// registered here captures. A word of the block's, so each processor
+    /// of a kernel -- each block -- has its own (AsyncContext).
+    public const long AsyncContext = 44 * WordSize.Bytes;
+    /// 1 while a continuation's run on this block has a region arena of its
+    /// own (AsyncContext, Platform.TaskArenaBytes), mapped as its regions
+    /// need and given back as the run ends; 0 otherwise.
+    public const long TaskArena = 45 * WordSize.Bytes;
+    public const long Bytes = 46 * WordSize.Bytes;
 }
 
 /// WHERE THE ALLOCATIONS COME FROM (CORSAC_ALLOC_SAMPLE=1): every sixteenth
@@ -598,6 +607,20 @@ static class Runtime
     {
         if (collection == null || (Sys.Peek(Sys.Word(collection)) & WordSize.AddressMask) == 0) return;
         if (collection is IOwnsElements owner) owner.FreeOwnedElements();
+    }
+
+    /// THE ELEMENTS OF A DYING ARRAY OF COLLECTIONS, given back (Opt.
+    /// OwnedElements, Escape.ConfirmArrayElements): the compiler proved each
+    /// element is a collection made for its slot, held by nothing else, and
+    /// dead when the array is. Each freed with its storage, its slot
+    /// cleared. Null, a frame slot not yet filled (no vtable yet), or
+    /// anything that is not an array of references is nothing to do.
+    public static void FreeArrayElements(object? array)
+    {
+        if (array == null) return;
+        long at = Sys.Word(array);
+        if ((Sys.Peek(at) & WordSize.AddressMask) == 0) return;
+        Gc.FreeReferenceElements(at);
     }
 
     /// A collection whose elements the compiler proved are the collection's
@@ -1522,7 +1545,11 @@ static class Runtime
         {
             return;
         }
-        long words = Sys.Peek(map);
+        long head = Sys.Peek(map);
+        // The element bits follow the field bits when the count says so
+        // (ElementMapFlag): a field whose array owns its collections.
+        long words = head & (ElementMapFlag - 1);
+        long elementsAt = (head & ElementMapFlag) != 0 ? map + (1 + (words + 31) / 32) * WordSize.Bytes : 0;
         for (long word = 0; word < words; word++)
         {
             long bits = Sys.PeekWord(map + WordSize.Bytes + (word / 32) * WordSize.Bytes) & 0xFFFFFFFF;
@@ -1535,6 +1562,8 @@ static class Runtime
             if (held != 0)
             {
                 Sys.Poke(field, 0);
+                if (elementsAt != 0 && ((Sys.PeekWord(elementsAt + (word / 32) * WordSize.Bytes) & 0xFFFFFFFF) & (1L << (int)(word % 32))) != 0)
+                    Gc.FreeReferenceElements(held);
                 FreeHeld(held);
             }
         }
@@ -1593,6 +1622,9 @@ static class Runtime
                 Gc.FreeFieldChecked(held);
                 return;
             }
+            // An array field whose arrays own their collections (the map's
+            // element bits): those first.
+            if (OwnsArrayElements(at, offset)) Gc.FreeReferenceElements(held);
             // As any object proved dead is given back (Free): with its own
             // owned fields, and a collection with its storage -- and its
             // elements, where the compiler marked them its own
@@ -1600,6 +1632,28 @@ static class Runtime
             // list left its array and every token to the collector.
             FreeHeld(held);
         }
+    }
+
+    /// In an owned-field map's count word: the element bits follow (Escape.ElementMapFlag).
+    const long ElementMapFlag = 0x40000000;
+
+    /// Whether the field at `offset` of the object at `at` owns its array's
+    /// elements: the element bit of its type's owned-field map
+    /// (Escape.ArrayFieldElements), which only a whole program's proof sets.
+    static bool OwnsArrayElements(long at, long offset)
+    {
+        long vtable = Sys.Peek(at) & WordSize.AddressMask;
+        if (vtable == 0 || offset < 0 || offset % WordSize.Bytes != 0) return false;
+        long map = Sys.Peek(vtable - WordSize.Bytes);
+        if (map == 0) return false;
+        long head = Sys.Peek(map);
+        if ((head & ElementMapFlag) == 0) return false;
+        long words = head & (ElementMapFlag - 1);
+        long word = offset / WordSize.Bytes;
+        if (word >= words) return false;
+        long chunks = (words + 31) / 32;
+        long bits = Sys.PeekWord(map + (1 + chunks + word / 32) * WordSize.Bytes) & 0xFFFFFFFF;
+        return (bits & (1L << (int)(word % 32))) != 0;
     }
 
     /// WHAT AN OWNED FIELD HELD, given back. One made in this thread's region
@@ -1762,10 +1816,26 @@ static class Runtime
     /// guards against it anyway.
     public static void BeginImage(long dataStart, long dataEnd, long frames)
     {
+        LastImageData = dataStart;
+        LastImageEnd = dataEnd;
+        LastImageFrames = frames;
         _imagesBegun = _imagesBegun + 1;
         RegisterRoots(dataStart, dataEnd);
         RegisterFrames(frames);
         Platform.ArmFaultReport();
+    }
+
+    /// The last image begun: what a kernel's module loader keeps, after the
+    /// module's DT_INIT, to end it with (EndImage) when the module goes.
+    public static long LastImageData, LastImageEnd, LastImageFrames;
+
+    /// An image gone (a kernel module unloaded): its statics no longer roots,
+    /// its stack maps no longer read. Its objects must be gone first, or
+    /// tombstoned (Gc.Revoke).
+    public static void EndImage(long dataStart, long dataEnd, long frames)
+    {
+        UnregisterRoots(dataStart, dataEnd);
+        UnregisterFrames(frames);
     }
 
     // WHO RUNS A LIBRARY'S INITIALISER. On Linux the dynamic linker does,
@@ -2297,7 +2367,23 @@ static class Runtime
         }
         Sys.Poke(_tables + _tableCount * WordSize.Bytes, table);
         _tableCount = _tableCount + 1;
+        Gc.MapsChanged();
         return true;
+    }
+
+    /// An image's directory taken out again: a kernel module unloaded. The
+    /// collector's index is rebuilt at its next collection.
+    public static bool UnregisterFrames(long table)
+    {
+        for (long i = 0; i < _tableCount; i++)
+        {
+            if (Sys.Peek(_tables + i * WordSize.Bytes) != table) continue;
+            for (long j = i; j + 1 < _tableCount; j++) Sys.Poke(_tables + j * WordSize.Bytes, Sys.Peek(_tables + (j + 1) * WordSize.Bytes));
+            _tableCount = _tableCount - 1;
+            Gc.MapsChanged();
+            return true;
+        }
+        return false;
     }
 
     /// The end of Main. A process lives on while any FOREGROUND thread does,

@@ -1,8 +1,9 @@
 // Microsoft.Win32.SystemEvents: what the system tells every program, as
 // .NET names it. Raised by the Windows Forms message loop from the seat's
 // events -- the settings changed (Windows' WM_SETTINGCHANGE, which the seat
-// sends to every program when the mouse's settings are read again) and the
-// display's mode changed.
+// sends to every program when the mouse's settings are read again), the
+// display's mode changed, and a font was installed or removed (the font
+// store's FontsChanged).
 
 using System;
 using System.Windows.Forms;
@@ -44,6 +45,16 @@ public static class SystemEvents
 
     /// The display's mode changed.
     public static event EventHandler? DisplaySettingsChanged;
+
+    /// A font was installed or removed: what InstalledFontCollection lists
+    /// and what a family name finds may be different.
+    public static event EventHandler? InstalledFontsChanged;
+
+    internal static void RaiseInstalledFontsChanged()
+    {
+        EventHandler? h = InstalledFontsChanged;
+        if (h != null) h(null!, EventArgs.Empty);
+    }
 
     internal static void RaiseUserPreferenceChanged(UserPreferenceCategory category)
     {

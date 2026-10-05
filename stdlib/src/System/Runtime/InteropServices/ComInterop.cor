@@ -1,0 +1,2206 @@
+// .NET'S COM INTEROP, the in-process half: what a program holding a COM
+// object and a COM object a program serves are made of, under .NET's names.
+//
+//   System.__ComObject   a COM object held by managed code (a runtime-callable
+//                        wrapper): its IUnknown, the interfaces asked of it,
+//                        or -- an object in another process -- the remote
+//                        half's record of it (ComRemoteObject).
+//   ComFrame             one call through a COM interface's vtable, as the
+//                        compiler's wrappers make it (corc's ComDeclarations):
+//                        each argument marshalled to its native form and
+//                        remembered with its kind, so the same call can go
+//                        to an object in this process through its vtable or
+//                        to one in another as an ORPC request.
+//   ComMarshal           the marshalling itself, kind by kind -- numbers,
+//                        VARIANT_BOOL, BSTR, LPWSTR, VARIANT, interfaces,
+//                        GUIDs, SAFEARRAYs -- both ways, and HRESULTs.
+//   ComCallable          a managed object COM can call (a COM-callable
+//                        wrapper): its interface pointers, their vtables,
+//                        its reference count and the handle that keeps it
+//                        alive while native code holds it; IUnknown's and
+//                        IDispatch's entries.
+//   ComDispatch          IDispatch from the calling side: GetIDsOfNames and
+//                        Invoke, what late binding and dispinterfaces use.
+//   Marshal              GetIUnknownForObject, GetObjectForIUnknown,
+//                        QueryInterface, AddRef, Release, ReleaseComObject...
+//
+// No OLE library under any of it: BSTRs, VARIANTs and SAFEARRAYs are laid out
+// as oleaut32 lays them (SysAllocString's length word in front of the
+// characters; VARIANT 16 bytes on i386, 24 on x86-64; SAFEARRAY with its
+// VARTYPE four bytes before it) and made here. A COM call is stdcall on
+// i386 -- `delegate* unmanaged[Stdcall]` -- and every argument a stack word:
+// two for a 64-bit number, four for a VARIANT or a GUID by value; on
+// x86-64 a word each, a VARIANT or GUID by reference, as Win64 passes them.
+//
+// The remote half -- activation through the GUI kernel's broker, the
+// running object table, ORPC and NDR, the object exporter -- is
+// ComRemote.cor and ComNdr.cor.
+
+using System;
+using System.Collections.Generic;
+using System.Text;
+
+namespace System
+{
+    /// <summary>
+    /// A COM object held by managed code: .NET's System.__ComObject. One
+    /// made by GetObjectForIUnknown holds the object's IUnknown; one the
+    /// compiler wrote for a [ComImport] interface (a cast of a COM object to
+    /// the interface) holds that interface too. Interfaces asked of it are
+    /// kept, a reference each, until it is released (Marshal.ReleaseComObject).
+    /// An object in another process holds no pointer: its ComRemoteObject
+    /// carries each call.
+    /// </summary>
+    public class __ComObject
+    {
+        internal nint _unknown;
+        internal nint _pointer;
+        internal string _iid = "";
+        internal System.Runtime.InteropServices.ComRemoteObject? _remote;
+        readonly Dictionary<string, nint> _asked = new Dictionary<string, nint>();
+        internal int _releases;
+        internal bool _released;
+
+        /// The object whose IUnknown is `unknown`: a reference of its own taken.
+        public __ComObject(nint unknown)
+        {
+            if (unknown == 0) throw new ArgumentNullException("unknown");
+            System.Runtime.InteropServices.ComMarshal.AddRef(unknown);
+            _unknown = unknown;
+            _releases = 1;
+        }
+
+        /// An object in another process.
+        public __ComObject(System.Runtime.InteropServices.ComRemoteObject remote)
+        {
+            _remote = remote;
+            _releases = 1;
+        }
+
+        /// A [ComImport] interface's wrapper over `from`: the interface
+        /// `pointer` (a reference the caller gives it) for `iid`.
+        protected __ComObject(__ComObject from, nint pointer, string iid)
+        {
+            _remote = from._remote;
+            _iid = iid;
+            _releases = 1;
+            if (_remote != null) return;
+            System.Runtime.InteropServices.ComMarshal.AddRef(from._unknown);
+            _unknown = from._unknown;
+            _pointer = pointer;
+        }
+
+        /// The interface for `iid` asked of the object, a new reference the
+        /// caller owns; 0 when the object has none. For an object in another
+        /// process, 1 when it has it (RemQueryInterface), the call made
+        /// through the remote record and not a pointer.
+        public nint __Query(string iid)
+        {
+            Alive();
+            if (_remote != null) return _remote.Has(iid) ? 1 : 0;
+            nint got = System.Runtime.InteropServices.ComMarshal.Query(_unknown, iid);
+            return got;
+        }
+
+        /// The interface pointer a call for `iid` goes through, held by this
+        /// object (not AddRef'd for the caller).
+        internal nint __Interface(string iid)
+        {
+            Alive();
+            if (_remote != null) return 0;
+            if (_pointer != 0 && string.Equals(iid, _iid, StringComparison.OrdinalIgnoreCase)) return _pointer;
+            nint known;
+            lock (_asked)
+            {
+                if (_asked.TryGetValue(iid, out known)) return known;
+            }
+            nint got = System.Runtime.InteropServices.ComMarshal.Query(_unknown, iid);
+            if (got == 0) throw new InvalidCastException("The COM object does not support the interface " + iid + " (E_NOINTERFACE).");
+            lock (_asked)
+            {
+                if (_asked.TryGetValue(iid, out known)) { System.Runtime.InteropServices.ComMarshal.Release(got); return known; }
+                _asked[iid] = got;
+            }
+            return got;
+        }
+
+        /// The object's IUnknown, borrowed.
+        internal nint Unknown { get { Alive(); return _unknown; } }
+
+        internal bool IsRemote { get { return _remote != null; } }
+
+        void Alive()
+        {
+            if (_released) throw new System.Runtime.InteropServices.InvalidComObjectException("COM object that has been separated from its underlying RCW cannot be used.");
+        }
+
+        /// Everything this wrapper holds let go: what ReleaseComObject does
+        /// when the count it keeps reaches 0.
+        internal void ReleaseAll()
+        {
+            if (_released) return;
+            _released = true;
+            List<nint> held = new List<nint>();
+            lock (_asked)
+            {
+                foreach (KeyValuePair<string, nint> e in _asked) held.Add(e.Value);
+                _asked.Clear();
+            }
+            foreach (nint p in held) System.Runtime.InteropServices.ComMarshal.Release(p);
+            if (_pointer != 0) System.Runtime.InteropServices.ComMarshal.Release(_pointer);
+            if (_unknown != 0) System.Runtime.InteropServices.ComMarshal.Release(_unknown);
+            _pointer = 0;
+            _unknown = 0;
+            if (_remote != null) _remote.Release();
+        }
+
+        public override string ToString() { return "System.__ComObject"; }
+    }
+
+    /// <summary>A database null: VT_NULL, as .NET's DBNull is.</summary>
+    public sealed class DBNull
+    {
+        public static readonly DBNull Value = new DBNull();
+        DBNull() { }
+        public override string ToString() { return ""; }
+    }
+}
+
+namespace System.Runtime.InteropServices
+{
+    public enum ComInterfaceType
+    {
+        InterfaceIsDual = 0,
+        InterfaceIsIUnknown = 1,
+        InterfaceIsIDispatch = 2,
+        InterfaceIsIInspectable = 3,
+    }
+
+    public enum ClassInterfaceType
+    {
+        None = 0,
+        AutoDispatch = 1,
+        AutoDual = 2,
+    }
+
+    /// VARENUM, oleaut32's VARIANT types.
+    public enum VarEnum
+    {
+        VT_EMPTY = 0, VT_NULL = 1, VT_I2 = 2, VT_I4 = 3, VT_R4 = 4, VT_R8 = 5, VT_CY = 6, VT_DATE = 7, VT_BSTR = 8,
+        VT_DISPATCH = 9, VT_ERROR = 10, VT_BOOL = 11, VT_VARIANT = 12, VT_UNKNOWN = 13, VT_DECIMAL = 14, VT_I1 = 16,
+        VT_UI1 = 17, VT_UI2 = 18, VT_UI4 = 19, VT_I8 = 20, VT_UI8 = 21, VT_INT = 22, VT_UINT = 23, VT_VOID = 24,
+        VT_HRESULT = 25, VT_PTR = 26, VT_SAFEARRAY = 27, VT_CARRAY = 28, VT_USERDEFINED = 29, VT_LPSTR = 30,
+        VT_LPWSTR = 31, VT_RECORD = 36, VT_FILETIME = 64, VT_BLOB = 65, VT_STREAM = 66, VT_STORAGE = 67,
+        VT_STREAMED_OBJECT = 68, VT_STORED_OBJECT = 69, VT_BLOB_OBJECT = 70, VT_CF = 71, VT_CLSID = 72,
+        VT_VECTOR = 0x1000, VT_ARRAY = 0x2000, VT_BYREF = 0x4000,
+    }
+
+    public enum UnmanagedType
+    {
+        Bool = 2, I1 = 3, U1 = 4, I2 = 5, U2 = 6, I4 = 7, U4 = 8, I8 = 9, U8 = 10, R4 = 11, R8 = 12, Currency = 15,
+        BStr = 19, LPStr = 20, LPWStr = 21, LPTStr = 22, ByValTStr = 23, IUnknown = 25, IDispatch = 26, Struct = 27,
+        Interface = 28, SafeArray = 29, ByValArray = 30, SysInt = 31, SysUInt = 32, VBByRefStr = 34, AnsiBStr = 35,
+        TBStr = 36, VariantBool = 37, FunctionPtr = 38, AsAny = 40, LPArray = 42, LPStruct = 43, CustomMarshaler = 44,
+        Error = 45, IInspectable = 46, HString = 47, LPUTF8Str = 48,
+    }
+
+    /// <summary>A failure a COM object answered: its HRESULT, .NET's COMException.</summary>
+    public class COMException : ExternalException
+    {
+        public COMException() : base("Error HRESULT E_FAIL has been returned from a call to a COM component.", unchecked((int)0x80004005)) { HResult = unchecked((int)0x80004005); }
+        public COMException(string? message) : base(message ?? "", unchecked((int)0x80004005)) { HResult = unchecked((int)0x80004005); }
+        public COMException(string? message, int errorCode) : base(message ?? "", errorCode) { HResult = errorCode; }
+        public COMException(string? message, Exception? inner) : base(message, inner) { HResult = unchecked((int)0x80004005); }
+    }
+
+    /// <summary>A COM wrapper used after it was released.</summary>
+    public class InvalidComObjectException : SystemException
+    {
+        public InvalidComObjectException() : base("Attempt has been made to use a COM object that does not have a backing class factory.") { }
+        public InvalidComObjectException(string? message) : base(message) { }
+    }
+
+    /// <summary>VT_ERROR: an SCODE carried in a VARIANT.</summary>
+    public sealed class ErrorWrapper
+    {
+        public ErrorWrapper(int errorCode) { ErrorCode = errorCode; }
+        public ErrorWrapper(Exception e) { ErrorCode = e.HResult; }
+        public int ErrorCode { get; }
+    }
+
+    /// <summary>VT_UNKNOWN: an object passed as its IUnknown, not its IDispatch.</summary>
+    public sealed class UnknownWrapper
+    {
+        public UnknownWrapper(object? obj) { WrappedObject = obj; }
+        public object? WrappedObject { get; }
+    }
+
+    /// <summary>VT_DISPATCH: an object passed as its IDispatch.</summary>
+    public sealed class DispatchWrapper
+    {
+        public DispatchWrapper(object? obj) { WrappedObject = obj; }
+        public object? WrappedObject { get; }
+    }
+
+    /// <summary>VT_BSTR, even for a null string.</summary>
+    public sealed class BStrWrapper
+    {
+        public BStrWrapper(string? value) { WrappedObject = value; }
+        public string? WrappedObject { get; }
+    }
+
+    /// <summary>VT_BYREF | VT_VARIANT.</summary>
+    public sealed class VariantWrapper
+    {
+        public VariantWrapper(object? obj) { WrappedObject = obj; }
+        public object? WrappedObject { get; }
+    }
+
+    /// <summary>
+    /// What the compiler's COM-callable classes are (corc's ComDeclarations):
+    /// their interfaces' entries -- each IID and native vtable -- and their
+    /// IDispatch, by name and by number. The methods are written by the
+    /// compiler; a class written by hand may implement them too.
+    /// </summary>
+    public interface IComCallable
+    {
+        ComInterfaceEntry[] __ComInterfaces();
+        int __ComDispId(string name);
+        int __ComInvoke(int dispid, int flags, object?[] args, out object? result);
+    }
+
+    /// <summary>
+    /// One interface a COM-callable object has: its IID and name, how many
+    /// slots its base has (3 IUnknown, 7 IDispatch or dual, -1 a
+    /// dispinterface), its vtable, and each entry's parameters for the
+    /// exporter's stub (ComDeclarations.Signatures).
+    /// </summary>
+    public sealed class ComInterfaceEntry
+    {
+        public readonly string Iid;
+        public readonly string Name;
+        public readonly int BaseSlots;
+        public readonly nint Vtable;
+        public readonly string[] Signatures;
+
+        public ComInterfaceEntry(string iid, string name, int baseSlots, nint vtable, string[] signatures)
+        {
+            Iid = ComMarshal.Normal(iid);
+            Name = name;
+            BaseSlots = baseSlots;
+            Vtable = vtable;
+            Signatures = signatures;
+        }
+
+        public bool Dual { get { return BaseSlots == 7 || BaseSlots < 0; } }
+    }
+
+    /// <summary>
+    /// The remote half's record of an object in another process (ComRemote.cor's
+    /// RemoteObject): what an interface asked of it, a vtable call made as an
+    /// ORPC request from the frame's remembered arguments, IDispatch's two
+    /// calls, and the references given back.
+    /// </summary>
+    public abstract class ComRemoteObject
+    {
+        public abstract bool Has(string iid);
+        public abstract int Call(string iid, int slot, ComFrame frame);
+        public abstract int GetDispId(string name, out int dispid);
+        public abstract int Invoke(int dispid, int flags, object?[] args, int byRef, out object? result);
+        public abstract void Release();
+        /// A native pointer standing for the object, for native code: IUnknown and IDispatch only.
+        public abstract nint Pointer(string iid);
+    }
+
+    /// <summary>One argument of a COM call: its kind, its direction (0 in, 1 in and out, 2 out), its value or the slot that holds it.</summary>
+    public sealed class ComArg
+    {
+        public string Kind = "";
+        public int Direction;
+        public object? Value;
+        public nint Slot;
+        public string Iid = "";
+    }
+
+    /// <summary>
+    /// ONE CALL THROUGH A COM INTERFACE, as the compiler's runtime-callable
+    /// wrappers make it: In* for each argument by value, Ref* for one in and
+    /// out (a slot of native memory holding it), Out for one out and for the
+    /// [retval]; Call; Get* to take each slot's value back; Done in a
+    /// `finally`. The native words go to the vtable of an object in this
+    /// process; the remembered arguments to an object in another.
+    /// </summary>
+    public sealed class ComFrame
+    {
+        const int SlotBytes = 32;
+        readonly __ComObject? _target;
+        readonly string _iid;
+        readonly nint _self;
+        nint[] _w = new nint[16];
+        int _n;
+        bool _preserveSig;
+        public readonly List<ComArg> Args = new List<ComArg>();
+        readonly List<nint> _memory = new List<nint>();
+        readonly List<nint> _strings = new List<nint>();
+        readonly List<nint> _variants = new List<nint>();
+        readonly List<nint> _references = new List<nint>();
+        readonly List<nint> _arrays = new List<nint>();
+
+        public ComFrame(object target, string iid)
+        {
+            __ComObject? o = target as __ComObject;
+            if (o == null) throw new InvalidCastException("not a COM object");
+            _target = o;
+            _iid = ComMarshal.Normal(iid);
+            _self = o.IsRemote ? 0 : o.__Interface(_iid);
+        }
+
+        /// A call on a native interface pointer itself: the exporter's stub.
+        public ComFrame(nint self)
+        {
+            _iid = "";
+            _self = self;
+        }
+
+        bool Remote { get { return _target != null && _target.IsRemote; } }
+
+        public bool IsPreserveSig { get { return _preserveSig; } }
+
+        /// The member is [PreserveSig]: its native answer is its result.
+        public void PreserveSig() { _preserveSig = true; }
+
+        void Push(nint w)
+        {
+            if (_n == _w.Length)
+            {
+                nint[] more = new nint[_w.Length * 2];
+                Array.Copy(_w, more, _n);
+                _w = more;
+            }
+            _w[_n++] = w;
+        }
+
+        void Push64(long v)
+        {
+            if ((int)WordSize.Bytes == 8) { Push((nint)v); return; }
+            Push((nint)(int)v);
+            Push((nint)(int)(v >> 32));
+        }
+
+        void Note(string kind, object? value, string iid = "")
+        {
+            Args.Add(new ComArg { Kind = kind, Direction = 0, Value = value, Iid = iid });
+        }
+
+        nint NewSlot()
+        {
+            nint at = Marshal.AllocHGlobal(SlotBytes);
+            for (int i = 0; i < SlotBytes; i++) Sys.PokeByte(at + i, 0);
+            _memory.Add(at);
+            return at;
+        }
+
+        // ---- by value --------------------------------------------------------------------
+
+        public void InI1(sbyte v) { Note("I1", v); Push(v); }
+        public void InU1(byte v) { Note("U1", v); Push(v); }
+        public void InI2(short v) { Note("I2", v); Push(v); }
+        public void InU2(ushort v) { Note("U2", v); Push(v); }
+        public void InI4(int v) { Note("I4", v); Push(v); }
+        public void InU4(uint v) { Note("U4", v); Push((nint)(int)v); }
+        public void InI8(long v) { Note("I8", v); Push64(v); }
+        public void InU8(ulong v) { Note("U8", v); Push64((long)v); }
+        public void InR4(float v) { Note("R4", v); Push(BitConverter.SingleToInt32Bits(v)); }
+        public void InR8(double v) { Note("R8", v); Push64(BitConverter.DoubleToInt64Bits(v)); }
+        public void InChar(char v) { Note("Char", v); Push(v); }
+        public void InVBool(bool v) { Note("VBool", v); Push(v ? 0xFFFF : 0); }
+        public void InBool(bool v) { Note("Bool", v); Push(v ? 1 : 0); }
+        public void InBool1(bool v) { Note("Bool1", v); Push(v ? 1 : 0); }
+        public void InPtr(nint v) { Note("Ptr", v); Push(v); }
+
+        public void InBstr(string? v)
+        {
+            Note("Bstr", v);
+            if (Remote) return;
+            nint b = ComMarshal.AllocBstr(v);
+            if (b != 0) _strings.Add(b);
+            Push(b);
+        }
+
+        public void InLpwStr(string? v)
+        {
+            Note("LpwStr", v);
+            if (Remote) return;
+            nint p = ComMarshal.AllocWide(v);
+            if (p != 0) _memory.Add(p);
+            Push(p);
+        }
+
+        public void InLpStr(string? v)
+        {
+            Note("LpStr", v);
+            if (Remote) return;
+            nint p = v == null ? 0 : Marshal.StringToHGlobalUTF8(v);
+            if (p != 0) _memory.Add(p);
+            Push(p);
+        }
+
+        public void InVariant(object? v)
+        {
+            Note("Variant", v);
+            if (Remote) return;
+            nint at = Marshal.AllocHGlobal(ComMarshal.VariantBytes);
+            _memory.Add(at);
+            ComMarshal.WriteVariant(at, v);
+            _variants.Add(at);
+            if ((int)WordSize.Bytes == 8) { Push(at); return; }
+            for (int i = 0; i < 4; i++) Push((nint)(int)Sys.PeekWord(at + i * 4));
+        }
+
+        public void InUnknown(object? v) { Note("Unknown", v); if (Remote) return; nint p = ComMarshal.InterfaceFor(v, ComMarshal.IidIUnknown); if (p != 0) _references.Add(p); Push(p); }
+        public void InDispatch(object? v) { Note("Dispatch", v); if (Remote) return; nint p = ComMarshal.InterfaceFor(v, ComMarshal.IidIDispatch); if (p != 0) _references.Add(p); Push(p); }
+
+        public void InInterface(object? v, string iid)
+        {
+            Note("Interface", v, iid);
+            if (Remote) return;
+            nint p = ComMarshal.InterfaceFor(v, iid);
+            if (p != 0) _references.Add(p);
+            Push(p);
+        }
+
+        public void InGuid(Guid v)
+        {
+            Note("Guid", v);
+            nint at = Marshal.AllocHGlobal(16);
+            _memory.Add(at);
+            ComMarshal.WriteGuid(at, v);
+            if ((int)WordSize.Bytes == 8) { Push(at); return; }
+            for (int i = 0; i < 4; i++) Push((nint)(int)Sys.PeekWord(at + i * 4));
+        }
+
+        public void InSafeArray(object? v)
+        {
+            Note("SafeArray", v);
+            if (Remote) return;
+            nint sa = ComMarshal.SafeArrayFor(v);
+            if (sa != 0) _arrays.Add(sa);
+            Push(sa);
+        }
+
+        // ---- in and out, out --------------------------------------------------------------
+
+        nint Slotted(string kind, string iid)
+        {
+            nint at = NewSlot();
+            Args.Add(new ComArg { Kind = kind, Direction = 1, Slot = at, Iid = iid });
+            Push(at);
+            return at;
+        }
+
+        public nint RefI1(sbyte v) { nint at = Slotted("I1", ""); ComMarshal.WriteI1(at, v); return at; }
+        public nint RefU1(byte v) { nint at = Slotted("U1", ""); ComMarshal.WriteU1(at, v); return at; }
+        public nint RefI2(short v) { nint at = Slotted("I2", ""); ComMarshal.WriteI2(at, v); return at; }
+        public nint RefU2(ushort v) { nint at = Slotted("U2", ""); ComMarshal.WriteU2(at, v); return at; }
+        public nint RefI4(int v) { nint at = Slotted("I4", ""); ComMarshal.WriteI4(at, v); return at; }
+        public nint RefU4(uint v) { nint at = Slotted("U4", ""); ComMarshal.WriteU4(at, v); return at; }
+        public nint RefI8(long v) { nint at = Slotted("I8", ""); ComMarshal.WriteI8(at, v); return at; }
+        public nint RefU8(ulong v) { nint at = Slotted("U8", ""); ComMarshal.WriteU8(at, v); return at; }
+        public nint RefR4(float v) { nint at = Slotted("R4", ""); ComMarshal.WriteR4(at, v); return at; }
+        public nint RefR8(double v) { nint at = Slotted("R8", ""); ComMarshal.WriteR8(at, v); return at; }
+        public nint RefChar(char v) { nint at = Slotted("Char", ""); ComMarshal.WriteChar(at, v); return at; }
+        public nint RefVBool(bool v) { nint at = Slotted("VBool", ""); ComMarshal.WriteVBool(at, v); return at; }
+        public nint RefBool(bool v) { nint at = Slotted("Bool", ""); ComMarshal.WriteBool(at, v); return at; }
+        public nint RefBool1(bool v) { nint at = Slotted("Bool1", ""); ComMarshal.WriteBool1(at, v); return at; }
+        public nint RefPtr(nint v) { nint at = Slotted("Ptr", ""); ComMarshal.WritePtr(at, v); return at; }
+        public nint RefBstr(string? v) { nint at = Slotted("Bstr", ""); ComMarshal.WriteBstr(at, v); return at; }
+        public nint RefLpwStr(string? v) { nint at = Slotted("LpwStr", ""); ComMarshal.WriteLpwStr(at, v); return at; }
+        public nint RefLpStr(string? v) { nint at = Slotted("LpStr", ""); ComMarshal.WriteLpStr(at, v); return at; }
+        public nint RefVariant(object? v) { nint at = Slotted("Variant", ""); ComMarshal.WriteVariant(at, v); return at; }
+        public nint RefUnknown(object? v) { nint at = Slotted("Unknown", ""); ComMarshal.WriteUnknown(at, v); return at; }
+        public nint RefDispatch(object? v) { nint at = Slotted("Dispatch", ""); ComMarshal.WriteDispatch(at, v); return at; }
+        public nint RefInterface(object? v, string iid) { nint at = Slotted("Interface", iid); ComMarshal.WriteInterface(at, v, iid); return at; }
+        public nint RefGuid(Guid v) { nint at = Slotted("Guid", ""); ComMarshal.WriteGuid(at, v); return at; }
+        public nint RefSafeArray(object? v) { nint at = Slotted("SafeArray", ""); ComMarshal.WriteSafeArray(at, v); return at; }
+
+        /// A slot for an [out] (or the [retval]) of `kind`, zeroed.
+        public nint Out(string kind) { return Out(kind, ""); }
+
+        public nint Out(string kind, string iid)
+        {
+            nint at = NewSlot();
+            Args.Add(new ComArg { Kind = kind, Direction = 2, Slot = at, Iid = iid });
+            Push(at);
+            return at;
+        }
+
+        public sbyte GetI1(nint at) { return ComMarshal.ReadI1(at); }
+        public byte GetU1(nint at) { return ComMarshal.ReadU1(at); }
+        public short GetI2(nint at) { return ComMarshal.ReadI2(at); }
+        public ushort GetU2(nint at) { return ComMarshal.ReadU2(at); }
+        public int GetI4(nint at) { return ComMarshal.ReadI4(at); }
+        public uint GetU4(nint at) { return ComMarshal.ReadU4(at); }
+        public long GetI8(nint at) { return ComMarshal.ReadI8(at); }
+        public ulong GetU8(nint at) { return ComMarshal.ReadU8(at); }
+        public float GetR4(nint at) { return ComMarshal.ReadR4(at); }
+        public double GetR8(nint at) { return ComMarshal.ReadR8(at); }
+        public char GetChar(nint at) { return ComMarshal.ReadChar(at); }
+        public bool GetVBool(nint at) { return ComMarshal.ReadVBool(at); }
+        public bool GetBool(nint at) { return ComMarshal.ReadBool(at); }
+        public bool GetBool1(nint at) { return ComMarshal.ReadBool1(at); }
+        public nint GetPtr(nint at) { return ComMarshal.ReadPtr(at); }
+        public string? GetBstr(nint at) { return ComMarshal.TakeBstr(at); }
+        public string? GetLpwStr(nint at) { return ComMarshal.TakeLpwStr(at); }
+        public string? GetLpStr(nint at) { return ComMarshal.TakeLpStr(at); }
+        public object? GetVariant(nint at) { return ComMarshal.TakeVariant(at); }
+        public object? GetUnknown(nint at) { return ComMarshal.TakeInterface(at); }
+        public object? GetDispatch(nint at) { return ComMarshal.TakeInterface(at); }
+        public object? GetInterface(nint at) { return ComMarshal.TakeInterface(at); }
+        public Guid GetGuid(nint at) { return ComMarshal.ReadGuid(at); }
+        public object? GetSafeArray(nint at) { return ComMarshal.TakeSafeArray(at); }
+
+        // ---- the call ------------------------------------------------------------------------
+
+        nint Entry(int slot)
+        {
+            nint vtable = (nint)Sys.Peek(_self);
+            return (nint)Sys.Peek(vtable + slot * (int)WordSize.Bytes);
+        }
+
+        /// The call through vtable entry `slot`: its HRESULT (a
+        /// [PreserveSig] member's answer).
+        public int Call(int slot)
+        {
+            if (Remote) return _target!._remote!.Call(_iid, slot, this);
+            return ComRuntime.CallInt(Entry(slot), _self, _w, _n);
+        }
+
+        public long CallLong(int slot) { NotRemote(); return ComRuntime.CallLong(Entry(slot), _self, _w, _n); }
+        public double CallDouble(int slot) { NotRemote(); return ComRuntime.CallDouble(Entry(slot), _self, _w, _n); }
+        public float CallFloat(int slot) { NotRemote(); return ComRuntime.CallFloat(Entry(slot), _self, _w, _n); }
+        public nint CallPtr(int slot) { NotRemote(); return ComRuntime.CallPtr(Entry(slot), _self, _w, _n); }
+
+        void NotRemote()
+        {
+            if (Remote) throw new NotSupportedException("a [PreserveSig] member answering anything but an HRESULT is not called across processes");
+        }
+
+        /// What the call's arguments held, let go: the BSTRs, VARIANTs and
+        /// interfaces made for it, and the slots.
+        public void Done()
+        {
+            foreach (nint b in _strings) ComMarshal.FreeBstr(b);
+            foreach (nint v in _variants) ComMarshal.VariantClear(v);
+            foreach (nint p in _references) ComMarshal.Release(p);
+            foreach (nint a in _arrays) ComMarshal.SafeArrayDestroy(a);
+            foreach (nint m in _memory) Marshal.FreeHGlobal(m);
+            _strings.Clear(); _variants.Clear(); _references.Clear(); _memory.Clear(); _arrays.Clear();
+        }
+    }
+
+    /// <summary>
+    /// COM's MARSHALLING, kind by kind: Read (a slot's value, its owner
+    /// unchanged), Write (a value into a slot, made for the slot's owner),
+    /// Replace (Write, what the slot held first let go -- an [in, out]
+    /// argument a callee changes), Take (Read, then let go), Arg (a value
+    /// passed in stack words). And BSTRs, VARIANTs, SAFEARRAYs, interface
+    /// pointers and HRESULTs.
+    /// </summary>
+    public static class ComMarshal
+    {
+        public const string IidIUnknown = "00000000-0000-0000-C000-000000000046";
+        public const string IidIDispatch = "00020400-0000-0000-C000-000000000046";
+        public const int SOk = 0, SFalse = 1;
+        public const int ENotImpl = unchecked((int)0x80004001), ENoInterface = unchecked((int)0x80004002), EPointer = unchecked((int)0x80004003);
+        public const int EFail = unchecked((int)0x80004005), EUnexpected = unchecked((int)0x8000FFFF), EOutOfMemory = unchecked((int)0x8007000E);
+        public const int EInvalidArg = unchecked((int)0x80070057), EAccessDenied = unchecked((int)0x80070005);
+        public const int DispEUnknownName = unchecked((int)0x80020006), DispEMemberNotFound = unchecked((int)0x80020003);
+        public const int DispEException = unchecked((int)0x80020009), DispETypeMismatch = unchecked((int)0x80020005);
+        public const int DispEBadParamCount = unchecked((int)0x8002000E), DispEParamNotFound = unchecked((int)0x80020004);
+        public const int ClassENoAggregation = unchecked((int)0x80040110), RegdbEClassNotReg = unchecked((int)0x80040154);
+
+        /// VARIANT's size: 16 bytes on i386, 24 on x86-64.
+        public static int VariantBytes { get { return (int)WordSize.Bytes == 8 ? 24 : 16; } }
+
+        /// A GUID's text as these keep it: upper case, no braces.
+        public static string Normal(string guid) { return guid.Trim().Trim('{', '}').ToUpperInvariant(); }
+
+        // ---- IUnknown on a native pointer --------------------------------------------------
+
+        static nint Entry(nint self, int slot)
+        {
+            nint vtable = (nint)Sys.Peek(self);
+            return (nint)Sys.Peek(vtable + slot * (int)WordSize.Bytes);
+        }
+
+        public static int AddRef(nint p)
+        {
+            if (p == 0) return 0;
+            return ((delegate* unmanaged[Stdcall]<nint, int>)Entry(p, 1))(p);
+        }
+
+        public static int Release(nint p)
+        {
+            if (p == 0) return 0;
+            return ((delegate* unmanaged[Stdcall]<nint, int>)Entry(p, 2))(p);
+        }
+
+        /// QueryInterface: a new reference to the interface, or 0.
+        public static nint Query(nint p, string iid)
+        {
+            if (p == 0) return 0;
+            nint g = Marshal.AllocHGlobal(16 + (int)WordSize.Bytes);
+            try
+            {
+                WriteGuid(g, new Guid(GuidBytes(iid)));
+                nint into = g + 16;
+                Sys.Poke(into, 0);
+                int hr = ((delegate* unmanaged[Stdcall]<nint, nint, nint, int>)Entry(p, 0))(p, g, into);
+                return hr < 0 ? 0 : (nint)Sys.Peek(into);
+            }
+            finally { Marshal.FreeHGlobal(g); }
+        }
+
+        /// A GUID's sixteen bytes, as Windows lays them out, from its text.
+        public static byte[] GuidBytes(string text)
+        {
+            Guid g;
+            if (!Guid.TryParse(Normal(text), out g)) throw new ArgumentException("not a GUID: " + text);
+            return g.ToByteArray();
+        }
+
+        public static Guid ReadGuid(nint at)
+        {
+            byte[] b = new byte[16];
+            for (int i = 0; i < 16; i++) b[i] = (byte)Sys.PeekByte(at + i);
+            return new Guid(b);
+        }
+
+        public static void WriteGuid(nint at, Guid g)
+        {
+            byte[] b = g.ToByteArray();
+            for (int i = 0; i < 16; i++) Sys.PokeByte(at + i, b[i]);
+        }
+
+        public static string GuidText(nint at) { return Normal(ReadGuid(at).ToString()); }
+
+        // ---- objects and interface pointers -----------------------------------------------
+
+        /// The object a native interface pointer is: the managed object
+        /// itself when it is one of this process's COM-callable wrappers, an
+        /// object in another process's when it is that's stand-in, else a
+        /// new __ComObject over it (its own reference taken).
+        public static object? ObjectFor(nint p)
+        {
+            if (p == 0) return null;
+            object? own = ComCallable.TargetOf(p);
+            if (own is RemoteStandIn stand && stand.Holder != null) return stand.Holder;
+            if (own != null) return own;
+            return new System.__ComObject(p);
+        }
+
+        /// The interface `iid` of an object, a new reference: a COM object's
+        /// asked of it (QueryInterface), a managed object's its COM-callable
+        /// wrapper's. 0 for null, and for an interface it has not.
+        public static nint InterfaceFor(object? o, string iid)
+        {
+            if (o == null) return 0;
+            if (o is UnknownWrapper uw) return InterfaceFor(uw.WrappedObject, IidIUnknown);
+            if (o is DispatchWrapper dw) return InterfaceFor(dw.WrappedObject, IidIDispatch);
+            string want = Normal(iid);
+            System.__ComObject? c = o as System.__ComObject;
+            if (c != null)
+            {
+                if (c.IsRemote) return c._remote!.Pointer(want);
+                return Query(c.Unknown, want);
+            }
+            return ComCallable.For(o).Query(want);
+        }
+
+        public static object? ArgUnknown(nint p) { return ObjectFor(p); }
+
+        public static object? ArgInterface(nint p) { return ObjectFor(p); }
+        public static object? ArgDispatch(nint p) { return ObjectFor(p); }
+        public static object? ReadInterface(nint at) { return ObjectFor((nint)Sys.Peek(at)); }
+        public static object? ReadUnknown(nint at) { return ReadInterface(at); }
+        public static object? ReadDispatch(nint at) { return ReadInterface(at); }
+
+        /// A slot's interface, made an object; the slot's reference let go.
+        public static object? TakeInterface(nint at)
+        {
+            nint p = (nint)Sys.Peek(at);
+            Sys.Poke(at, 0);
+            if (p == 0) return null;
+            object? o = ObjectFor(p);
+            Release(p);
+            return o;
+        }
+
+        public static void WriteInterface(nint at, object? o, string iid) { Sys.Poke(at, InterfaceFor(o, iid)); }
+        public static void WriteUnknown(nint at, object? o) { Sys.Poke(at, InterfaceFor(o, IidIUnknown)); }
+        public static void WriteDispatch(nint at, object? o) { Sys.Poke(at, InterfaceFor(o, IidIDispatch)); }
+
+        public static void ReplaceInterface(nint at, object? o, string iid)
+        {
+            nint old = (nint)Sys.Peek(at);
+            WriteInterface(at, o, iid);
+            Release(old);
+        }
+
+        public static void ReplaceUnknown(nint at, object? o) { ReplaceInterface(at, o, IidIUnknown); }
+        public static void ReplaceDispatch(nint at, object? o) { ReplaceInterface(at, o, IidIDispatch); }
+        public static object? ArgObject(nint p) { return ObjectFor(p); }
+
+        // ---- numbers ----------------------------------------------------------------------
+
+        public static sbyte ArgI1(nint w) { return (sbyte)w; }
+        public static byte ArgU1(nint w) { return (byte)w; }
+        public static short ArgI2(nint w) { return (short)w; }
+        public static ushort ArgU2(nint w) { return (ushort)w; }
+        public static int ArgI4(nint w) { return (int)w; }
+        public static uint ArgU4(nint w) { return (uint)(int)w; }
+        public static long ArgI8(nint w) { return (long)w; }
+        public static long ArgI8(nint low, nint high) { return ((long)(int)low & 0xFFFFFFFFL) | ((long)(int)high << 32); }
+        public static ulong ArgU8(nint w) { return (ulong)(long)w; }
+        public static ulong ArgU8(nint low, nint high) { return (ulong)ArgI8(low, high); }
+        public static float ArgR4(nint w) { return BitConverter.Int32BitsToSingle((int)w); }
+        public static double ArgR8(nint w) { return BitConverter.Int64BitsToDouble((long)w); }
+        public static double ArgR8(nint low, nint high) { return BitConverter.Int64BitsToDouble(ArgI8(low, high)); }
+        public static char ArgChar(nint w) { return (char)(ushort)w; }
+        public static bool ArgVBool(nint w) { return (short)w != 0; }
+        public static bool ArgBool(nint w) { return (int)w != 0; }
+        public static bool ArgBool1(nint w) { return (byte)w != 0; }
+        public static nint ArgPtr(nint w) { return w; }
+
+        public static sbyte ReadI1(nint at) { return (sbyte)Sys.PeekByte(at); }
+        public static byte ReadU1(nint at) { return (byte)Sys.PeekByte(at); }
+        public static short ReadI2(nint at) { return (short)Sys.PeekHalf(at); }
+        public static ushort ReadU2(nint at) { return (ushort)Sys.PeekHalf(at); }
+        public static int ReadI4(nint at) { return (int)Sys.PeekWord(at); }
+        public static uint ReadU4(nint at) { return (uint)Sys.PeekWord(at); }
+        public static long ReadI8(nint at) { return (Sys.PeekWord(at) & 0xFFFFFFFFL) | (Sys.PeekWord(at + 4) << 32); }
+        public static ulong ReadU8(nint at) { return (ulong)ReadI8(at); }
+        public static float ReadR4(nint at) { return BitConverter.Int32BitsToSingle(ReadI4(at)); }
+        public static double ReadR8(nint at) { return BitConverter.Int64BitsToDouble(ReadI8(at)); }
+        public static char ReadChar(nint at) { return (char)Sys.PeekHalf(at); }
+        public static bool ReadVBool(nint at) { return Sys.PeekHalf(at) != 0; }
+        public static bool ReadBool(nint at) { return Sys.PeekWord(at) != 0; }
+        public static bool ReadBool1(nint at) { return Sys.PeekByte(at) != 0; }
+        public static nint ReadPtr(nint at) { return (nint)Sys.Peek(at); }
+
+        public static void WriteI1(nint at, sbyte v) { Sys.PokeByte(at, v); }
+        public static void WriteU1(nint at, byte v) { Sys.PokeByte(at, v); }
+        public static void WriteI2(nint at, short v) { Sys.PokeHalf(at, v); }
+        public static void WriteU2(nint at, ushort v) { Sys.PokeHalf(at, v); }
+        public static void WriteI4(nint at, int v) { Sys.PokeWord(at, v); }
+        public static void WriteU4(nint at, uint v) { Sys.PokeWord(at, v); }
+        public static void WriteI8(nint at, long v) { Sys.PokeWord(at, v); Sys.PokeWord(at + 4, v >> 32); }
+        public static void WriteU8(nint at, ulong v) { WriteI8(at, (long)v); }
+        public static void WriteR4(nint at, float v) { WriteI4(at, BitConverter.SingleToInt32Bits(v)); }
+        public static void WriteR8(nint at, double v) { WriteI8(at, BitConverter.DoubleToInt64Bits(v)); }
+        public static void WriteChar(nint at, char v) { Sys.PokeHalf(at, v); }
+        public static void WriteVBool(nint at, bool v) { Sys.PokeHalf(at, v ? 0xFFFF : 0); }
+        public static void WriteBool(nint at, bool v) { Sys.PokeWord(at, v ? 1 : 0); }
+        public static void WriteBool1(nint at, bool v) { Sys.PokeByte(at, v ? 1 : 0); }
+        public static void WritePtr(nint at, nint v) { Sys.Poke(at, v); }
+
+        public static void ReplaceI1(nint at, sbyte v) { WriteI1(at, v); }
+        public static void ReplaceU1(nint at, byte v) { WriteU1(at, v); }
+        public static void ReplaceI2(nint at, short v) { WriteI2(at, v); }
+        public static void ReplaceU2(nint at, ushort v) { WriteU2(at, v); }
+        public static void ReplaceI4(nint at, int v) { WriteI4(at, v); }
+        public static void ReplaceU4(nint at, uint v) { WriteU4(at, v); }
+        public static void ReplaceI8(nint at, long v) { WriteI8(at, v); }
+        public static void ReplaceU8(nint at, ulong v) { WriteU8(at, v); }
+        public static void ReplaceR4(nint at, float v) { WriteR4(at, v); }
+        public static void ReplaceR8(nint at, double v) { WriteR8(at, v); }
+        public static void ReplaceChar(nint at, char v) { WriteChar(at, v); }
+        public static void ReplaceVBool(nint at, bool v) { WriteVBool(at, v); }
+        public static void ReplaceBool(nint at, bool v) { WriteBool(at, v); }
+        public static void ReplaceBool1(nint at, bool v) { WriteBool1(at, v); }
+        public static void ReplacePtr(nint at, nint v) { WritePtr(at, v); }
+
+        public static Guid ArgGuid(nint at) { return ReadGuid(at); }
+
+        public static Guid ArgGuid(nint a, nint b, nint c, nint d)
+        {
+            nint at = Marshal.AllocHGlobal(16);
+            try
+            {
+                Sys.PokeWord(at, a); Sys.PokeWord(at + 4, b); Sys.PokeWord(at + 8, c); Sys.PokeWord(at + 12, d);
+                return ReadGuid(at);
+            }
+            finally { Marshal.FreeHGlobal(at); }
+        }
+
+        public static void ReplaceGuid(nint at, Guid g) { WriteGuid(at, g); }
+
+        // ---- strings ----------------------------------------------------------------------
+
+        /// SysAllocString: the characters after a 32-bit byte count, ended by
+        /// a zero, the pointer to the first character. Null for null.
+        public static nint AllocBstr(string? s)
+        {
+            if (s == null) return 0;
+            nint block = Marshal.AllocHGlobal(4 + s.Length * 2 + 2);
+            Sys.PokeWord(block, s.Length * 2);
+            nint chars = block + 4;
+            for (int i = 0; i < s.Length; i++) Sys.PokeHalf(chars + i * 2, s[i]);
+            Sys.PokeHalf(chars + s.Length * 2, 0);
+            return chars;
+        }
+
+        /// A BSTR of `bytes` bytes (SysAllocStringByteLen), its contents zero.
+        public static nint AllocBstrBytes(int bytes)
+        {
+            nint block = Marshal.AllocHGlobal(4 + bytes + 2);
+            Sys.PokeWord(block, bytes);
+            for (int i = 0; i < bytes + 2; i++) Sys.PokeByte(block + 4 + i, 0);
+            return block + 4;
+        }
+
+        public static void FreeBstr(nint b)
+        {
+            if (b != 0) Marshal.FreeHGlobal(b - 4);
+        }
+
+        public static int BstrBytes(nint b) { return b == 0 ? 0 : (int)Sys.PeekWord(b - 4); }
+
+        public static string? FromBstr(nint b)
+        {
+            if (b == 0) return null;
+            int chars = BstrBytes(b) / 2;
+            StringBuilder s = new StringBuilder(chars);
+            for (int i = 0; i < chars; i++) s.Append((char)Sys.PeekHalf(b + i * 2));
+            return s.ToString();
+        }
+
+        public static string? ArgBstr(nint b) { return FromBstr(b); }
+        public static string? ReadBstr(nint at) { return FromBstr((nint)Sys.Peek(at)); }
+
+        public static string? TakeBstr(nint at)
+        {
+            nint b = (nint)Sys.Peek(at);
+            Sys.Poke(at, 0);
+            string? s = FromBstr(b);
+            FreeBstr(b);
+            return s;
+        }
+
+        public static void WriteBstr(nint at, string? s) { Sys.Poke(at, AllocBstr(s)); }
+
+        public static void ReplaceBstr(nint at, string? s)
+        {
+            FreeBstr((nint)Sys.Peek(at));
+            WriteBstr(at, s);
+        }
+
+        /// A zero-ended UTF-16 copy (LPWSTR), CoTaskMemAlloc'd.
+        public static nint AllocWide(string? s)
+        {
+            if (s == null) return 0;
+            nint p = Marshal.AllocHGlobal(s.Length * 2 + 2);
+            for (int i = 0; i < s.Length; i++) Sys.PokeHalf(p + i * 2, s[i]);
+            Sys.PokeHalf(p + s.Length * 2, 0);
+            return p;
+        }
+
+        public static string? FromWide(nint p)
+        {
+            if (p == 0) return null;
+            StringBuilder s = new StringBuilder();
+            for (int i = 0; ; i++)
+            {
+                int c = (int)Sys.PeekHalf(p + i * 2);
+                if (c == 0) break;
+                s.Append((char)c);
+            }
+            return s.ToString();
+        }
+
+        public static string? ArgLpwStr(nint p) { return FromWide(p); }
+        public static string? ReadLpwStr(nint at) { return FromWide((nint)Sys.Peek(at)); }
+        public static string? TakeLpwStr(nint at) { nint p = (nint)Sys.Peek(at); Sys.Poke(at, 0); string? s = FromWide(p); Marshal.FreeHGlobal(p); return s; }
+        public static void WriteLpwStr(nint at, string? s) { Sys.Poke(at, AllocWide(s)); }
+        public static void ReplaceLpwStr(nint at, string? s) { Marshal.FreeHGlobal((nint)Sys.Peek(at)); WriteLpwStr(at, s); }
+
+        public static string? ArgLpStr(nint p) { return p == 0 ? null : Marshal.PtrToStringUTF8(p); }
+        public static string? ReadLpStr(nint at) { return ArgLpStr((nint)Sys.Peek(at)); }
+        public static string? TakeLpStr(nint at) { nint p = (nint)Sys.Peek(at); Sys.Poke(at, 0); string? s = ArgLpStr(p); Marshal.FreeHGlobal(p); return s; }
+        public static void WriteLpStr(nint at, string? s) { Sys.Poke(at, s == null ? 0 : Marshal.StringToHGlobalUTF8(s)); }
+        public static void ReplaceLpStr(nint at, string? s) { Marshal.FreeHGlobal((nint)Sys.Peek(at)); WriteLpStr(at, s); }
+
+        // ---- VARIANT ----------------------------------------------------------------------
+
+        public const int VtEmpty = 0, VtNull = 1, VtI2 = 2, VtI4 = 3, VtR4 = 4, VtR8 = 5, VtCy = 6, VtDate = 7, VtBstr = 8;
+        public const int VtDispatch = 9, VtError = 10, VtBool = 11, VtVariant = 12, VtUnknown = 13, VtDecimal = 14;
+        public const int VtI1 = 16, VtUi1 = 17, VtUi2 = 18, VtUi4 = 19, VtI8 = 20, VtUi8 = 21, VtInt = 22, VtUint = 23;
+        public const int VtArray = 0x2000, VtByRef = 0x4000, VtTypeMask = 0xFFF;
+
+        /// Where a VARIANT's value is: after its type and three reserved words.
+        public const int VariantData = 8;
+
+        public static void VariantInit(nint v)
+        {
+            for (int i = 0; i < VariantBytes; i++) Sys.PokeByte(v + i, 0);
+        }
+
+        /// VariantClear: what the VARIANT owns let go, and it made VT_EMPTY.
+        public static void VariantClear(nint v)
+        {
+            int vt = (int)Sys.PeekHalf(v);
+            if ((vt & VtByRef) == 0)
+            {
+                if ((vt & VtArray) != 0) SafeArrayDestroy((nint)Sys.Peek(v + VariantData));
+                else if (vt == VtBstr) FreeBstr((nint)Sys.Peek(v + VariantData));
+                else if (vt == VtUnknown || vt == VtDispatch) Release((nint)Sys.Peek(v + VariantData));
+            }
+            VariantInit(v);
+        }
+
+        /// The DATE of a DateTime: days since 30 December 1899, the fraction the time of day.
+        public static double ToOADate(DateTime d)
+        {
+            const long epoch = 599264352000000000L, day = 864000000000L;
+            long ticks = d.Ticks - epoch;
+            double days = (double)(ticks / day);
+            long rest = ticks % day;
+            if (rest < 0) { days -= 1; rest += day; }
+            // Before the epoch the fraction counts forward from the day's
+            // start but the day backwards, as OLE's DATE does.
+            double fraction = (double)rest / day;
+            return days < 0 ? days - fraction + 1 + (fraction == 0 ? -1 : 0) : days + fraction;
+        }
+
+        public static DateTime FromOADate(double d)
+        {
+            const long epoch = 599264352000000000L, day = 864000000000L;
+            long whole = (long)d;
+            double fraction = d - whole;
+            if (fraction < 0) fraction = -fraction;
+            long ticks = epoch + whole * day + (long)(fraction * day + 0.5);
+            return new DateTime(ticks);
+        }
+
+        /// An object written as a VARIANT at `v`, as .NET marshals one:
+        /// null VT_EMPTY, DBNull VT_NULL, each number its own type, bool
+        /// VT_BOOL, string VT_BSTR, DateTime VT_DATE, an array a SAFEARRAY,
+        /// a COM object or a managed one VT_DISPATCH when it has IDispatch
+        /// (else VT_UNKNOWN), the wrappers what they say.
+        public static void WriteVariant(nint v, object? o)
+        {
+            VariantInit(v);
+            nint data = v + VariantData;
+            int vt;
+            if (o == null) vt = VtEmpty;
+            else if (o is DBNull) vt = VtNull;
+            else if (o is int i) { vt = VtI4; Sys.PokeWord(data, i); }
+            else if (o is string s) { vt = VtBstr; Sys.Poke(data, AllocBstr(s)); }
+            else if (o is bool b) { vt = VtBool; Sys.PokeHalf(data, b ? 0xFFFF : 0); }
+            else if (o is double dbl) { vt = VtR8; WriteR8(data, dbl); }
+            else if (o is float f) { vt = VtR4; WriteR4(data, f); }
+            else if (o is short sh) { vt = VtI2; Sys.PokeHalf(data, sh); }
+            else if (o is long l) { vt = VtI8; WriteI8(data, l); }
+            else if (o is byte u1) { vt = VtUi1; Sys.PokeByte(data, u1); }
+            else if (o is sbyte i1) { vt = VtI1; Sys.PokeByte(data, i1); }
+            else if (o is ushort u2) { vt = VtUi2; Sys.PokeHalf(data, u2); }
+            else if (o is uint u4) { vt = VtUi4; Sys.PokeWord(data, u4); }
+            else if (o is ulong u8) { vt = VtUi8; WriteI8(data, (long)u8); }
+            else if (o is char ch) { vt = VtUi2; Sys.PokeHalf(data, ch); }
+            else if (o is DateTime date) { vt = VtDate; WriteR8(data, ToOADate(date)); }
+            else if (o is ErrorWrapper ew) { vt = VtError; Sys.PokeWord(data, ew.ErrorCode); }
+            else if (o is BStrWrapper bw) { vt = VtBstr; Sys.Poke(data, AllocBstr(bw.WrappedObject)); }
+            else if (o is UnknownWrapper uw) { vt = VtUnknown; Sys.Poke(data, InterfaceFor(uw.WrappedObject, IidIUnknown)); }
+            else if (o is DispatchWrapper dw) { vt = VtDispatch; Sys.Poke(data, InterfaceFor(dw.WrappedObject, IidIDispatch)); }
+            else if (o.GetType().IsArray) { vt = VtArray | ArrayVt(o); Sys.Poke(data, SafeArrayFor(o)); }
+            else if (o.GetType().IsEnum) { vt = VtI4; Sys.PokeWord(data, (int)Long(o)); }
+            else
+            {
+                nint d = InterfaceFor(o, IidIDispatch);
+                if (d != 0) { vt = VtDispatch; Sys.Poke(data, d); }
+                else { vt = VtUnknown; Sys.Poke(data, InterfaceFor(o, IidIUnknown)); }
+            }
+            Sys.PokeHalf(v, vt);
+        }
+
+        public static void ReplaceVariant(nint v, object? o)
+        {
+            VariantClear(v);
+            WriteVariant(v, o);
+        }
+
+        /// The object a VARIANT holds (by reference followed), the VARIANT unchanged.
+        public static object? ReadVariant(nint v)
+        {
+            int vt = (int)Sys.PeekHalf(v);
+            nint data = v + VariantData;
+            if ((vt & VtByRef) != 0)
+            {
+                nint at = (nint)Sys.Peek(data);
+                int bare = vt & ~VtByRef;
+                if (bare == VtVariant) return ReadVariant(at);
+                return ReadValue(bare, at);
+            }
+            return ReadValue(vt, data);
+        }
+
+        /// A value of type `vt` stored at `at` (a VARIANT's data, a SAFEARRAY's element).
+        public static object? ReadValue(int vt, nint at)
+        {
+            if ((vt & VtArray) != 0) return FromSafeArray((nint)Sys.Peek(at));
+            switch (vt)
+            {
+                case VtEmpty: return null;
+                case VtNull: return DBNull.Value;
+                case VtI2: return (short)Sys.PeekHalf(at);
+                case VtI4: case VtInt: return (int)Sys.PeekWord(at);
+                case VtR4: return ReadR4(at);
+                case VtR8: return ReadR8(at);
+                case VtCy: return ReadI8(at) / 10000.0;
+                case VtDate: return FromOADate(ReadR8(at));
+                case VtBstr: return FromBstr((nint)Sys.Peek(at));
+                case VtDispatch: case VtUnknown: return ObjectFor((nint)Sys.Peek(at));
+                case VtError: return (int)Sys.PeekWord(at);
+                case VtBool: return Sys.PeekHalf(at) != 0;
+                case VtVariant: return ReadVariant(at);
+                case VtI1: return (sbyte)Sys.PeekByte(at);
+                case VtUi1: return (byte)Sys.PeekByte(at);
+                case VtUi2: return (ushort)Sys.PeekHalf(at);
+                case VtUi4: case VtUint: return (uint)Sys.PeekWord(at);
+                case VtI8: return ReadI8(at);
+                case VtUi8: return (ulong)ReadI8(at);
+            }
+            throw new NotSupportedException("a VARIANT of type " + vt + " has no .NET form here");
+        }
+
+        public static object? TakeVariant(nint v)
+        {
+            object? o = ReadVariant(v);
+            VariantClear(v);
+            return o;
+        }
+
+        /// A VARIANT passed by value: four stack words on i386.
+        public static object? ArgVariant(nint a, nint b, nint c, nint d)
+        {
+            nint at = Marshal.AllocHGlobal(16);
+            try
+            {
+                Sys.PokeWord(at, a); Sys.PokeWord(at + 4, b); Sys.PokeWord(at + 8, c); Sys.PokeWord(at + 12, d);
+                return ReadVariant(at);
+            }
+            finally { Marshal.FreeHGlobal(at); }
+        }
+
+        /// A VARIANT passed by value on x86-64: its address.
+        public static object? ArgVariant(nint at) { return ReadVariant(at); }
+
+        // ---- SAFEARRAY --------------------------------------------------------------------
+
+        public const int FadfHaveVartype = 0x80, FadfBstr = 0x100, FadfUnknown = 0x200, FadfDispatch = 0x400, FadfVariant = 0x800;
+
+        static int SaData { get { return (int)WordSize.Bytes == 8 ? 16 : 12; } }
+        static int SaBounds { get { return (int)WordSize.Bytes == 8 ? 24 : 16; } }
+
+        /// The VARTYPE a .NET array's elements become.
+        public static int ArrayVt(object o)
+        {
+            if (o is int[]) return VtI4;
+            if (o is string[]) return VtBstr;
+            if (o is double[]) return VtR8;
+            if (o is byte[]) return VtUi1;
+            if (o is short[]) return VtI2;
+            if (o is long[]) return VtI8;
+            if (o is float[]) return VtR4;
+            if (o is bool[]) return VtBool;
+            if (o is uint[]) return VtUi4;
+            if (o is ushort[]) return VtUi2;
+            if (o is sbyte[]) return VtI1;
+            if (o is ulong[]) return VtUi8;
+            if (o is DateTime[]) return VtDate;
+            return VtVariant;
+        }
+
+        public static int ElementBytes(int vt)
+        {
+            switch (vt)
+            {
+                case VtI1: case VtUi1: return 1;
+                case VtI2: case VtUi2: case VtBool: return 2;
+                case VtI4: case VtUi4: case VtR4: case VtError: case VtInt: case VtUint: return 4;
+                case VtI8: case VtUi8: case VtR8: case VtDate: case VtCy: return 8;
+                case VtBstr: case VtUnknown: case VtDispatch: return (int)WordSize.Bytes;
+                case VtVariant: return VariantBytes;
+            }
+            throw new NotSupportedException("a SAFEARRAY of type " + vt);
+        }
+
+        /// SafeArrayCreateVector: one dimension, `count` elements from 0, the
+        /// VARTYPE kept in front, its data zeroed.
+        public static nint SafeArrayCreate(int vt, int count, int lowerBound)
+        {
+            int elem = ElementBytes(vt);
+            int header = SaBounds + 8;
+            nint block = Marshal.AllocHGlobal(16 + header);
+            for (int i = 0; i < 16 + header; i++) Sys.PokeByte(block + i, 0);
+            nint sa = block + 16;
+            int features = FadfHaveVartype | (vt == VtBstr ? FadfBstr : vt == VtUnknown ? FadfUnknown : vt == VtDispatch ? FadfDispatch : vt == VtVariant ? FadfVariant : 0);
+            Sys.PokeWord(sa - 4, vt);
+            Sys.PokeHalf(sa, 1);
+            Sys.PokeHalf(sa + 2, features);
+            Sys.PokeWord(sa + 4, elem);
+            Sys.PokeWord(sa + 8, 0);
+            nint data = Marshal.AllocHGlobal(Math.Max(1, elem * count));
+            for (int i = 0; i < elem * count; i++) Sys.PokeByte(data + i, 0);
+            Sys.Poke(sa + SaData, data);
+            Sys.PokeWord(sa + SaBounds, count);
+            Sys.PokeWord(sa + SaBounds + 4, lowerBound);
+            return sa;
+        }
+
+        public static int SafeArrayVt(nint sa)
+        {
+            int features = (int)Sys.PeekHalf(sa + 2);
+            if ((features & FadfHaveVartype) != 0) return (int)Sys.PeekWord(sa - 4);
+            if ((features & FadfBstr) != 0) return VtBstr;
+            if ((features & FadfUnknown) != 0) return VtUnknown;
+            if ((features & FadfDispatch) != 0) return VtDispatch;
+            if ((features & FadfVariant) != 0) return VtVariant;
+            int elem = (int)Sys.PeekWord(sa + 4);
+            return elem == 1 ? VtUi1 : elem == 2 ? VtI2 : elem == 8 ? VtR8 : VtI4;
+        }
+
+        public static int SafeArrayDims(nint sa) { return (int)Sys.PeekHalf(sa); }
+
+        /// The elements of every dimension: what a SAFEARRAY holds in all.
+        public static int SafeArrayCells(nint sa)
+        {
+            int dims = SafeArrayDims(sa), cells = 1;
+            for (int d = 0; d < dims; d++) cells *= (int)Sys.PeekWord(sa + SaBounds + d * 8);
+            return cells;
+        }
+
+        public static nint SafeArrayData(nint sa) { return (nint)Sys.Peek(sa + SaData); }
+
+        /// SafeArrayDestroy: its elements' BSTRs, interfaces and VARIANTs
+        /// let go, then its data and itself.
+        public static void SafeArrayDestroy(nint sa)
+        {
+            if (sa == 0) return;
+            int vt = SafeArrayVt(sa);
+            int cells = SafeArrayCells(sa);
+            int elem = (int)Sys.PeekWord(sa + 4);
+            nint data = SafeArrayData(sa);
+            if (data != 0)
+            {
+                for (int i = 0; i < cells; i++)
+                {
+                    nint at = data + i * elem;
+                    if (vt == VtBstr) FreeBstr((nint)Sys.Peek(at));
+                    else if (vt == VtUnknown || vt == VtDispatch) Release((nint)Sys.Peek(at));
+                    else if (vt == VtVariant) VariantClear(at);
+                }
+                Marshal.FreeHGlobal(data);
+            }
+            Marshal.FreeHGlobal(sa - 16);
+        }
+
+        /// A .NET array as a new SAFEARRAY of the VARTYPE its elements are;
+        /// 0 for null. One dimension, from 0.
+        public static nint SafeArrayFor(object? a)
+        {
+            if (a == null) return 0;
+            int vt = ArrayVt(a);
+            int count = ArrayLength(a);
+            nint sa = SafeArrayCreate(vt, count, 0);
+            nint data = SafeArrayData(sa);
+            int elem = ElementBytes(vt);
+            for (int i = 0; i < count; i++) WriteValue(vt, data + i * elem, ArrayItem(a, i));
+            return sa;
+        }
+
+        /// An array's length and one element, whatever its element type.
+        public static int ArrayLength(object a)
+        {
+            if (a is int[] i) return i.Length;
+            if (a is double[] d) return d.Length;
+            if (a is byte[] b) return b.Length;
+            if (a is short[] sh) return sh.Length;
+            if (a is long[] l) return l.Length;
+            if (a is float[] f) return f.Length;
+            if (a is bool[] bo) return bo.Length;
+            if (a is uint[] ui) return ui.Length;
+            if (a is ushort[] us) return us.Length;
+            if (a is sbyte[] sb) return sb.Length;
+            if (a is ulong[] ul) return ul.Length;
+            if (a is char[] c) return c.Length;
+            if (a is DateTime[] dt) return dt.Length;
+            if (a is object?[] o) return o.Length;
+            throw new NotSupportedException("an array of this type is not marshalled as a SAFEARRAY");
+        }
+
+        public static object? ArrayItem(object a, int at)
+        {
+            if (a is int[] i) return i[at];
+            if (a is double[] d) return d[at];
+            if (a is byte[] b) return b[at];
+            if (a is short[] sh) return sh[at];
+            if (a is long[] l) return l[at];
+            if (a is float[] f) return f[at];
+            if (a is bool[] bo) return bo[at];
+            if (a is uint[] ui) return ui[at];
+            if (a is ushort[] us) return us[at];
+            if (a is sbyte[] sb) return sb[at];
+            if (a is ulong[] ul) return ul[at];
+            if (a is char[] c) return c[at];
+            if (a is DateTime[] dt) return dt[at];
+            if (a is object?[] o) return o[at];
+            throw new NotSupportedException("an array of this type is not marshalled as a SAFEARRAY");
+        }
+
+        /// A value written as type `vt` at `at`: a SAFEARRAY's element.
+        public static void WriteValue(int vt, nint at, object? o)
+        {
+            switch (vt)
+            {
+                case VtI1: case VtUi1: Sys.PokeByte(at, Long(o)); return;
+                case VtI2: case VtUi2: Sys.PokeHalf(at, Long(o)); return;
+                case VtBool: Sys.PokeHalf(at, Bool(o) ? 0xFFFF : 0); return;
+                case VtI4: case VtInt: case VtError: case VtUi4: case VtUint: Sys.PokeWord(at, Long(o)); return;
+                case VtR4: WriteR4(at, (float)Double(o)); return;
+                case VtI8: case VtUi8: WriteI8(at, Long(o)); return;
+                case VtR8: WriteR8(at, Double(o)); return;
+                case VtDate: WriteR8(at, o is DateTime d ? ToOADate(d) : Double(o)); return;
+                case VtBstr: Sys.Poke(at, AllocBstr(o == null ? null : o.ToString())); return;
+                case VtUnknown: Sys.Poke(at, InterfaceFor(o, IidIUnknown)); return;
+                case VtDispatch: Sys.Poke(at, InterfaceFor(o, IidIDispatch)); return;
+                case VtVariant: WriteVariant(at, o); return;
+            }
+            throw new NotSupportedException("a SAFEARRAY of type " + vt);
+        }
+
+        /// A SAFEARRAY as a .NET array of its elements' type (one
+        /// dimension; a SAFEARRAY of more is read as one of all its cells).
+        public static object? FromSafeArray(nint sa)
+        {
+            if (sa == 0) return null;
+            int vt = SafeArrayVt(sa);
+            int cells = SafeArrayCells(sa);
+            int elem = (int)Sys.PeekWord(sa + 4);
+            nint data = SafeArrayData(sa);
+            switch (vt)
+            {
+                case VtI4: case VtInt: case VtError: { int[] r = new int[cells]; for (int i = 0; i < cells; i++) r[i] = (int)Sys.PeekWord(data + i * elem); return r; }
+                case VtBstr: { string?[] r = new string?[cells]; for (int i = 0; i < cells; i++) r[i] = FromBstr((nint)Sys.Peek(data + i * elem)); return r; }
+                case VtR8: { double[] r = new double[cells]; for (int i = 0; i < cells; i++) r[i] = ReadR8(data + i * elem); return r; }
+                case VtUi1: { byte[] r = new byte[cells]; for (int i = 0; i < cells; i++) r[i] = (byte)Sys.PeekByte(data + i * elem); return r; }
+                case VtI1: { sbyte[] r = new sbyte[cells]; for (int i = 0; i < cells; i++) r[i] = (sbyte)Sys.PeekByte(data + i * elem); return r; }
+                case VtI2: { short[] r = new short[cells]; for (int i = 0; i < cells; i++) r[i] = (short)Sys.PeekHalf(data + i * elem); return r; }
+                case VtUi2: { ushort[] r = new ushort[cells]; for (int i = 0; i < cells; i++) r[i] = (ushort)Sys.PeekHalf(data + i * elem); return r; }
+                case VtUi4: case VtUint: { uint[] r = new uint[cells]; for (int i = 0; i < cells; i++) r[i] = (uint)Sys.PeekWord(data + i * elem); return r; }
+                case VtI8: { long[] r = new long[cells]; for (int i = 0; i < cells; i++) r[i] = ReadI8(data + i * elem); return r; }
+                case VtUi8: { ulong[] r = new ulong[cells]; for (int i = 0; i < cells; i++) r[i] = (ulong)ReadI8(data + i * elem); return r; }
+                case VtR4: { float[] r = new float[cells]; for (int i = 0; i < cells; i++) r[i] = ReadR4(data + i * elem); return r; }
+                case VtBool: { bool[] r = new bool[cells]; for (int i = 0; i < cells; i++) r[i] = Sys.PeekHalf(data + i * elem) != 0; return r; }
+                case VtDate: { DateTime[] r = new DateTime[cells]; for (int i = 0; i < cells; i++) r[i] = FromOADate(ReadR8(data + i * elem)); return r; }
+                case VtUnknown: case VtDispatch: { object?[] r = new object?[cells]; for (int i = 0; i < cells; i++) r[i] = ObjectFor((nint)Sys.Peek(data + i * elem)); return r; }
+                case VtVariant: { object?[] r = new object?[cells]; for (int i = 0; i < cells; i++) r[i] = ReadVariant(data + i * elem); return r; }
+            }
+            throw new NotSupportedException("a SAFEARRAY of type " + vt);
+        }
+
+        public static object? ArgSafeArray(nint sa) { return FromSafeArray(sa); }
+        public static object? ReadSafeArray(nint at) { return FromSafeArray((nint)Sys.Peek(at)); }
+
+        public static object? TakeSafeArray(nint at)
+        {
+            nint sa = (nint)Sys.Peek(at);
+            Sys.Poke(at, 0);
+            object? a = FromSafeArray(sa);
+            SafeArrayDestroy(sa);
+            return a;
+        }
+
+        public static void WriteSafeArray(nint at, object? a) { Sys.Poke(at, SafeArrayFor(a)); }
+        public static void ReplaceSafeArray(nint at, object? a) { SafeArrayDestroy((nint)Sys.Peek(at)); WriteSafeArray(at, a); }
+
+        // ---- HRESULTs ---------------------------------------------------------------------
+
+        /// A failed HRESULT thrown as .NET throws it (Marshal.ThrowExceptionForHR).
+        public static void Check(int hr)
+        {
+            if (hr < 0) throw ExceptionFor(hr);
+        }
+
+        public static Exception ExceptionFor(int hr)
+        {
+            Exception e;
+            if (hr == ENoInterface) e = new InvalidCastException("No such interface supported (E_NOINTERFACE).");
+            else if (hr == ENotImpl) e = new NotImplementedException("The method or operation is not implemented (E_NOTIMPL).");
+            else if (hr == EOutOfMemory) e = new OutOfMemoryException();
+            else if (hr == EInvalidArg) e = new ArgumentException("The parameter is incorrect (E_INVALIDARG).");
+            else if (hr == EPointer) e = new NullReferenceException("Invalid pointer (E_POINTER).");
+            else if (hr == EAccessDenied) e = new UnauthorizedAccessException("Access is denied (E_ACCESSDENIED).");
+            else e = new COMException("Error HRESULT 0x" + ((uint)hr).ToString("X8") + " has been returned from a call to a COM component.", hr);
+            e.HResult = hr;
+            return e;
+        }
+
+        /// The HRESULT an exception becomes at COM's boundary.
+        public static int HResultOf(Exception e)
+        {
+            if (e is COMException) return e.HResult;
+            if (e.HResult < 0) return e.HResult;
+            if (e is InvalidCastException) return ENoInterface;
+            if (e is NotImplementedException) return ENotImpl;
+            if (e is OutOfMemoryException) return EOutOfMemory;
+            if (e is ArgumentException) return EInvalidArg;
+            if (e is NullReferenceException) return EPointer;
+            if (e is UnauthorizedAccessException) return EAccessDenied;
+            return unchecked((int)0x80131500);                       // COR_E_EXCEPTION
+        }
+
+        // ---- late binding's conversions --------------------------------------------------
+
+        /// A value made the type `t` as VariantChangeType would make it: a
+        /// number of another width or from a string, a string of a number,
+        /// a bool of a number; a value already of the type, or an object
+        /// wanted, as it is.
+        public static object? Coerce(object? value, Type t)
+        {
+            if (value == null || t == typeof(object)) return value;
+            if (value is DBNull) return t == typeof(string) ? null : value;
+            if (value.GetType() == t) return value;
+            if (t == typeof(int)) return (int)Long(value);
+            if (t == typeof(string)) return value is bool tf ? (tf ? "True" : "False") : value.ToString();
+            if (t == typeof(bool)) return Bool(value);
+            if (t == typeof(double)) return Double(value);
+            if (t == typeof(long)) return Long(value);
+            if (t == typeof(short)) return (short)Long(value);
+            if (t == typeof(byte)) return (byte)Long(value);
+            if (t == typeof(float)) return (float)Double(value);
+            if (t == typeof(uint)) return (uint)Long(value);
+            if (t == typeof(ulong)) return (ulong)Long(value);
+            if (t == typeof(ushort)) return (ushort)Long(value);
+            if (t == typeof(sbyte)) return (sbyte)Long(value);
+            if (t == typeof(char)) return value is string one && one.Length > 0 ? one[0] : (char)Long(value);
+            if (t == typeof(DateTime)) return value is double d ? FromOADate(d) : value;
+            return value;
+        }
+
+        /// A value as a 64-bit integer: a number of any width (a fraction
+        /// rounded), a bool -1 or 0 as VARIANT_BOOL is, a string parsed.
+        public static long Long(object? v)
+        {
+            if (v == null) return 0;
+            if (v is int i) return i;
+            if (v is long l) return l;
+            if (v is short sh) return sh;
+            if (v is byte b) return b;
+            if (v is sbyte sb) return sb;
+            if (v is ushort us) return us;
+            if (v is uint ui) return ui;
+            if (v is ulong ul) return (long)ul;
+            if (v is char c) return c;
+            if (v is bool bo) return bo ? -1 : 0;
+            if (v is double d) return (long)Math.Round(d);
+            if (v is float f) return (long)Math.Round((double)f);
+            if (v is string s) return long.Parse(s.Trim());
+            if (v is DateTime dt) return (long)ToOADate(dt);
+            if (v.GetType().IsEnum) return Convert.ToInt64(v);
+            throw new InvalidCastException("Type mismatch (DISP_E_TYPEMISMATCH).");
+        }
+
+        public static double Double(object? v)
+        {
+            if (v is double d) return d;
+            if (v is float f) return f;
+            if (v is string s) return double.Parse(s.Trim());
+            if (v is DateTime dt) return ToOADate(dt);
+            return Long(v);
+        }
+
+        public static bool Bool(object? v)
+        {
+            if (v is bool b) return b;
+            if (v is string s)
+            {
+                string t = s.Trim();
+                if (string.Equals(t, "True", StringComparison.OrdinalIgnoreCase)) return true;
+                if (string.Equals(t, "False", StringComparison.OrdinalIgnoreCase)) return false;
+                return Double(t) != 0;
+            }
+            if (v is double d) return d != 0;
+            if (v is float f) return f != 0;
+            return Long(v) != 0;
+        }
+    }
+
+    /// <summary>
+    /// A MANAGED OBJECT COM CAN CALL (.NET's COM-callable wrapper). Its
+    /// interface pointers are entries of one native block, two words each --
+    /// the vtable, and the handle that finds the wrapper -- IUnknown's first,
+    /// then IDispatch's when the object has one (IComCallable), then each
+    /// interface the compiler gave it vtables for. One wrapper an object,
+    /// one reference count for all its interfaces, as .NET keeps them; while
+    /// the count is above 0 the handle keeps the object alive, and at 0 the
+    /// block is let go and the object is the collector's again.
+    /// </summary>
+    public static class ComCallable
+    {
+        static readonly object _lock = new object();
+        static readonly List<ComCallableWrapper?> _handles = new List<ComCallableWrapper?>();
+        static readonly List<int> _free = new List<int>();
+        static readonly Dictionary<long, ComCallableWrapper> _byObject = new Dictionary<long, ComCallableWrapper>();
+        static nint _unknownVtable, _dispatchVtable;
+        static nint _qi, _addRef, _release, _typeInfoCount, _typeInfo, _idsOfNames, _invoke;
+
+        static void Thunks()
+        {
+            if (_qi != 0) return;
+            lock (_lock)
+            {
+                if (_qi != 0) return;
+                _addRef = (nint)&AddRefEntry;
+                _release = (nint)&ReleaseEntry;
+                _typeInfoCount = (nint)&GetTypeInfoCountEntry;
+                _typeInfo = (nint)&GetTypeInfoEntry;
+                _idsOfNames = (nint)&GetIDsOfNamesEntry;
+                _invoke = (nint)&InvokeEntry;
+                _qi = (nint)&QueryInterfaceEntry;
+            }
+        }
+
+        /// A vtable of `count` entries, IUnknown's three filled in (and
+        /// IDispatch's four after them when `dispatch`), the rest the
+        /// compiler's to set (SetSlot). Kept for good.
+        public static nint NewVtable(int count, bool dispatch)
+        {
+            Thunks();
+            nint v = Marshal.AllocHGlobal(Math.Max(count, 3) * (int)WordSize.Bytes);
+            for (int i = 0; i < count; i++) Sys.Poke(v + i * (int)WordSize.Bytes, 0);
+            SetSlot(v, 0, _qi);
+            SetSlot(v, 1, _addRef);
+            SetSlot(v, 2, _release);
+            if (dispatch && count >= 7)
+            {
+                SetSlot(v, 3, _typeInfoCount);
+                SetSlot(v, 4, _typeInfo);
+                SetSlot(v, 5, _idsOfNames);
+                SetSlot(v, 6, _invoke);
+            }
+            return v;
+        }
+
+        public static void SetSlot(nint vtable, int slot, nint fn) { Sys.Poke(vtable + slot * (int)WordSize.Bytes, fn); }
+
+        internal static nint UnknownVtable { get { if (_unknownVtable == 0) _unknownVtable = NewVtable(3, false); return _unknownVtable; } }
+        internal static nint DispatchVtable { get { if (_dispatchVtable == 0) _dispatchVtable = NewVtable(7, true); return _dispatchVtable; } }
+
+        /// The wrapper of `o`, made when it has none.
+        internal static ComCallableWrapper For(object o)
+        {
+            long key = Sys.Word(o);
+            lock (_lock)
+            {
+                ComCallableWrapper? w;
+                if (_byObject.TryGetValue(key, out w) && w != null) return w;
+                IComCallable? callable = o as IComCallable;
+                ComInterfaceEntry[] entries = callable != null ? callable.__ComInterfaces() : new ComInterfaceEntry[0];
+                w = new ComCallableWrapper(o, entries, callable != null);
+                int handle;
+                if (_free.Count > 0) { handle = _free[_free.Count - 1]; _free.RemoveAt(_free.Count - 1); _handles[handle] = w; }
+                else { handle = _handles.Count; _handles.Add(w); }
+                w.Handle = handle;
+                w.Build(UnknownVtable, DispatchVtable);
+                _byObject[key] = w;
+                return w;
+            }
+        }
+
+        /// The managed object behind one of this process's interface pointers.
+        public static object Target(nint self)
+        {
+            ComCallableWrapper? w = WrapperOf(self);
+            if (w == null) throw new InvalidComObjectException("not an interface of this process's COM-callable wrappers");
+            return w.Target;
+        }
+
+        /// The same, or null when the pointer is not one of ours: its first
+        /// entry is this process's QueryInterface.
+        public static object? TargetOf(nint p)
+        {
+            if (p == 0 || _qi == 0) return null;
+            nint vtable = (nint)Sys.Peek(p);
+            if (vtable == 0 || (nint)Sys.Peek(vtable) != _qi) return null;
+            ComCallableWrapper? w = WrapperOf(p);
+            return w == null ? null : w.Target;
+        }
+
+        internal static ComCallableWrapper? WrapperOf(nint self)
+        {
+            int handle = (int)Sys.Peek(self + (int)WordSize.Bytes);
+            lock (_lock)
+            {
+                return handle >= 0 && handle < _handles.Count ? _handles[handle] : null;
+            }
+        }
+
+        internal static int AddRef(ComCallableWrapper w)
+        {
+            lock (_lock) { return ++w.Refs; }
+        }
+
+        internal static int Release(ComCallableWrapper w)
+        {
+            nint block = 0;
+            int left;
+            lock (_lock)
+            {
+                left = --w.Refs;
+                if (left <= 0)
+                {
+                    left = 0;
+                    _byObject.Remove(Sys.Word(w.Target));
+                    _handles[w.Handle] = null;
+                    _free.Add(w.Handle);
+                    block = w.Block;
+                    w.Block = 0;
+                }
+            }
+            if (block != 0) Marshal.FreeHGlobal(block);
+            return left;
+        }
+
+        /// A wrapper made and never given out (a QueryInterface that found
+        /// nothing): let go at once.
+        internal static void Unused(ComCallableWrapper w)
+        {
+            bool unused;
+            lock (_lock) { unused = w.Refs == 0 && w.Block != 0; }
+            if (unused) { AddRef(w); Release(w); }
+        }
+
+        // ---- IUnknown -----------------------------------------------------------------------
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
+        static int QueryInterfaceEntry(nint self, nint riid, nint ppv)
+        {
+            try
+            {
+                if (ppv == 0 || riid == 0) return ComMarshal.EPointer;
+                Sys.Poke(ppv, 0);
+                ComCallableWrapper? w = WrapperOf(self);
+                if (w == null) return ComMarshal.EUnexpected;
+                nint got = w.Query(ComMarshal.GuidText(riid));
+                if (got == 0) return ComMarshal.ENoInterface;
+                Sys.Poke(ppv, got);
+                return 0;
+            }
+            catch (Exception e) { return ComMarshal.HResultOf(e); }
+        }
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
+        static int AddRefEntry(nint self)
+        {
+            ComCallableWrapper? w = WrapperOf(self);
+            return w == null ? 0 : AddRef(w);
+        }
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
+        static int ReleaseEntry(nint self)
+        {
+            ComCallableWrapper? w = WrapperOf(self);
+            return w == null ? 0 : Release(w);
+        }
+
+        // ---- IDispatch -----------------------------------------------------------------------
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
+        static int GetTypeInfoCountEntry(nint self, nint count)
+        {
+            if (count != 0) Sys.PokeWord(count, 0);
+            return 0;
+        }
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
+        static int GetTypeInfoEntry(nint self, nint index, nint lcid, nint info)
+        {
+            if (info != 0) Sys.Poke(info, 0);
+            return unchecked((int)0x8002000B);                         // DISP_E_BADINDEX: no type information
+        }
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
+        static int GetIDsOfNamesEntry(nint self, nint riid, nint names, nint count, nint lcid, nint ids)
+        {
+            try
+            {
+                ComCallableWrapper? w = WrapperOf(self);
+                IComCallable? c = w == null ? null : w.Target as IComCallable;
+                int n = (int)count;
+                int hr = 0;
+                for (int i = 0; i < n; i++)
+                {
+                    int id = -1;
+                    if (i == 0 && c != null)
+                    {
+                        string? name = ComMarshal.FromWide((nint)Sys.Peek(names + i * (int)WordSize.Bytes));
+                        if (name != null) id = c.__ComDispId(name);
+                    }
+                    if (id == -1) hr = ComMarshal.DispEUnknownName;
+                    Sys.PokeWord(ids + i * 4, id);
+                }
+                return hr;
+            }
+            catch (Exception e) { return ComMarshal.HResultOf(e); }
+        }
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
+        static int InvokeEntry(nint self, nint dispid, nint riid, nint lcid, nint flags, nint parameters, nint result, nint exception, nint argError)
+        {
+            ComCallableWrapper? w = WrapperOf(self);
+            IComCallable? c = w == null ? null : w.Target as IComCallable;
+            if (c == null) return ComMarshal.DispEMemberNotFound;
+            return ComDispatch.Serve(c, (int)dispid, (int)(flags & 0xFFFF), parameters, result, exception, argError);
+        }
+    }
+
+    /// <summary>One managed object's COM-callable wrapper (ComCallable).</summary>
+    internal sealed class ComCallableWrapper
+    {
+        public readonly object Target;
+        public readonly ComInterfaceEntry[] Entries;
+        public readonly bool Dispatch;
+        public int Refs;
+        public int Handle;
+        public nint Block;
+
+        public ComCallableWrapper(object target, ComInterfaceEntry[] entries, bool dispatch)
+        {
+            Target = target;
+            Entries = entries;
+            Dispatch = dispatch;
+        }
+
+        int Count { get { return 2 + Entries.Length; } }
+
+        public void Build(nint unknown, nint dispatch)
+        {
+            int w = (int)WordSize.Bytes;
+            Block = Marshal.AllocHGlobal(Count * 2 * w);
+            for (int k = 0; k < Count; k++)
+            {
+                nint vtable = k == 0 ? unknown : k == 1 ? (Dispatch ? dispatch : 0) : Entries[k - 2].Vtable;
+                Sys.Poke(Block + k * 2 * w, vtable);
+                Sys.Poke(Block + k * 2 * w + w, Handle);
+            }
+        }
+
+        public nint Pointer(int k) { return Block + k * 2 * (int)WordSize.Bytes; }
+
+        /// The interface for `iid`, AddRef'd; 0 when the object has none.
+        public nint Query(string iid)
+        {
+            string want = ComMarshal.Normal(iid);
+            int found = -1;
+            if (want == ComMarshal.IidIUnknown) found = 0;
+            else if (want == ComMarshal.IidIDispatch && Dispatch) found = 1;
+            else
+            {
+                for (int i = 0; i < Entries.Length; i++) if (Entries[i].Iid == want) { found = 2 + i; break; }
+            }
+            if (found < 0 || Block == 0)
+            {
+                ComCallable.Unused(this);
+                return 0;
+            }
+            ComCallable.AddRef(this);
+            return Pointer(found);
+        }
+
+        /// The entry an interface pointer of this wrapper is, or null for IUnknown's and IDispatch's.
+        public ComInterfaceEntry? EntryOf(nint p)
+        {
+            int k = (int)((p - Block) / (2 * (int)WordSize.Bytes));
+            return k >= 2 && k < Count ? Entries[k - 2] : null;
+        }
+    }
+
+    /// <summary>
+    /// IDISPATCH, both sides. Calling: a COM object's member by name or
+    /// number, its arguments made VARIANTs (DISPPARAMS, last first), a
+    /// property set by DISPID_PROPERTYPUT, the answer and [in, out]
+    /// arguments made objects again, an exception's EXCEPINFO a
+    /// COMException. Serving: a COM-callable object's IComCallable called
+    /// from a DISPPARAMS, its answer and exceptions written back.
+    /// </summary>
+    public static class ComDispatch
+    {
+        public const int Method = 1, PropertyGet = 2, PropertyPut = 4, PropertyPutRef = 8;
+        public const int DispidPropertyPut = -3;
+        const int UserLocale = 0x400;
+
+        /// The member `dispid` (int.MinValue: by `name`) of `target`, called
+        /// as `flags` says (Method, PropertyGet, PropertyPut, PropertyPutRef)
+        /// with `args`; the arguments whose bit is set in `byRef` passed by
+        /// reference and written back.
+        public static object? Invoke(object target, int dispid, string name, int flags, object?[] args, int byRef)
+        {
+            System.__ComObject? c = target as System.__ComObject;
+            if (c == null)
+            {
+                IComCallable? managed = target as IComCallable;
+                if (managed == null) throw new InvalidCastException("not a COM object, nor one COM can call");
+                int id = dispid == int.MinValue ? managed.__ComDispId(name) : dispid;
+                if (id == -1) throw ComMarshal.ExceptionFor(ComMarshal.DispEUnknownName);
+                object? result;
+                ComMarshal.Check(managed.__ComInvoke(id, flags, args, out result));
+                return result;
+            }
+            if (c.IsRemote)
+            {
+                int id = dispid;
+                if (id == int.MinValue) ComMarshal.Check(c._remote!.GetDispId(name, out id));
+                object? result;
+                ComMarshal.Check(c._remote!.Invoke(id, flags, args, byRef, out result));
+                return result;
+            }
+            nint d = c.__Interface(ComMarshal.IidIDispatch);
+            return Native(d, dispid == int.MinValue ? GetDispId(d, name) : dispid, flags, args, byRef);
+        }
+
+        public static object? Invoke(object target, string name, int flags, object?[] args)
+        {
+            return Invoke(target, int.MinValue, name, flags, args, 0);
+        }
+
+        static nint Entry(nint self, int slot) { return (nint)Sys.Peek((nint)Sys.Peek(self) + slot * (int)WordSize.Bytes); }
+
+        /// GetIDsOfNames for one name.
+        public static int GetDispId(nint dispatch, string name)
+        {
+            nint text = ComMarshal.AllocWide(name);
+            nint block = Marshal.AllocHGlobal(16 + 2 * (int)WordSize.Bytes);
+            try
+            {
+                for (int i = 0; i < 16; i++) Sys.PokeByte(block + i, 0);              // IID_NULL
+                nint names = block + 16;
+                nint id = names + (int)WordSize.Bytes;
+                Sys.Poke(names, text);
+                Sys.PokeWord(id, -1);
+                int hr = ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, int>)Entry(dispatch, 5))(dispatch, block, names, 1, UserLocale, id);
+                ComMarshal.Check(hr);
+                return (int)Sys.PeekWord(id);
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(block);
+                Marshal.FreeHGlobal(text);
+            }
+        }
+
+        /// IDispatch::Invoke on a native pointer.
+        public static object? Native(nint dispatch, int dispid, int flags, object?[] args, int byRef)
+        {
+            int w = (int)WordSize.Bytes, vb = ComMarshal.VariantBytes, n = args.Length;
+            bool put = (flags & (PropertyPut | PropertyPutRef)) != 0;
+            nint variants = Marshal.AllocHGlobal(Math.Max(1, n) * vb);
+            nint held = Marshal.AllocHGlobal(Math.Max(1, n) * vb);
+            int blockBytes = 4 * w + 20 + vb + 72;
+            nint block = Marshal.AllocHGlobal(blockBytes);
+            try
+            {
+                for (int i = 0; i < n; i++)
+                {
+                    nint at = variants + (n - 1 - i) * vb;
+                    nint keep = held + i * vb;
+                    ComMarshal.VariantInit(keep);
+                    if ((byRef & (1 << i)) != 0 && i < 31)
+                    {
+                        ComMarshal.WriteVariant(keep, args[i]);
+                        ComMarshal.VariantInit(at);
+                        Sys.PokeHalf(at, ComMarshal.VtByRef | ComMarshal.VtVariant);
+                        Sys.Poke(at + ComMarshal.VariantData, keep);
+                    }
+                    else ComMarshal.WriteVariant(at, args[i]);
+                }
+                nint parameters = block;
+                nint named = block + 4 * w;
+                nint iid = named + 4;
+                nint result = iid + 16;
+                nint excep = result + vb;
+                nint argErr = excep + 64;
+                for (int i = 0; i < blockBytes; i++) Sys.PokeByte(block + i, 0);
+                Sys.PokeWord(named, DispidPropertyPut);
+                Sys.Poke(parameters, n == 0 ? 0 : variants);
+                Sys.Poke(parameters + w, put ? named : 0);
+                Sys.PokeWord(parameters + 2 * w, n);
+                Sys.PokeWord(parameters + 2 * w + 4, put ? 1 : 0);
+                int hr = ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, int>)Entry(dispatch, 6))(
+                    dispatch, dispid, iid, UserLocale, flags, parameters, put ? 0 : result, excep, argErr);
+                if (hr == ComMarshal.DispEException)
+                {
+                    int scode = (int)Sys.PeekWord(excep + (w == 8 ? 56 : 28));
+                    string? text = ComMarshal.FromBstr((nint)Sys.Peek(excep + (w == 8 ? 16 : 8)));
+                    FreeExcepInfo(excep);
+                    COMException e = new COMException(text ?? "Exception occurred.", scode != 0 ? scode : hr);
+                    throw e;
+                }
+                ComMarshal.Check(hr);
+                for (int i = 0; i < n && i < 31; i++)
+                    if ((byRef & (1 << i)) != 0) args[i] = ComMarshal.ReadVariant(held + i * vb);
+                return put ? null : ComMarshal.TakeVariant(result);
+            }
+            finally
+            {
+                for (int i = 0; i < n; i++)
+                {
+                    ComMarshal.VariantClear(held + i * vb);
+                    nint at = variants + (n - 1 - i) * vb;
+                    if ((Sys.PeekHalf(at) & ComMarshal.VtByRef) == 0) ComMarshal.VariantClear(at);
+                }
+                Marshal.FreeHGlobal(variants);
+                Marshal.FreeHGlobal(held);
+                Marshal.FreeHGlobal(block);
+            }
+        }
+
+        static void FreeExcepInfo(nint at)
+        {
+            int w = (int)WordSize.Bytes;
+            for (int k = 0; k < 3; k++)
+            {
+                nint field = at + (w == 8 ? 8 + k * 8 : 4 + k * 4);
+                ComMarshal.FreeBstr((nint)Sys.Peek(field));
+                Sys.Poke(field, 0);
+            }
+        }
+
+        /// IDispatch::Invoke served for a COM-callable object: the
+        /// DISPPARAMS made objects (positional ones first to last; the value
+        /// of a property set last), the call, by-reference arguments and the
+        /// answer written back, an exception made an EXCEPINFO.
+        public static int Serve(IComCallable target, int dispid, int flags, nint parameters, nint result, nint exception, nint argError)
+        {
+            int w = (int)WordSize.Bytes, vb = ComMarshal.VariantBytes;
+            try
+            {
+                nint variants = parameters == 0 ? 0 : (nint)Sys.Peek(parameters);
+                nint names = parameters == 0 ? 0 : (nint)Sys.Peek(parameters + w);
+                int count = parameters == 0 ? 0 : (int)Sys.PeekWord(parameters + 2 * w);
+                int named = parameters == 0 ? 0 : (int)Sys.PeekWord(parameters + 2 * w + 4);
+                for (int i = 0; i < named; i++)
+                    if ((int)Sys.PeekWord(names + i * 4) != DispidPropertyPut) return ComMarshal.DispEParamNotFound;
+                int positional = count - named;
+                object?[] args = new object?[count];
+                for (int i = 0; i < positional; i++) args[i] = ComMarshal.ReadVariant(variants + (count - 1 - i) * vb);
+                if (named == 1) args[positional] = ComMarshal.ReadVariant(variants);
+                object? answer;
+                int hr = target.__ComInvoke(dispid, flags, args, out answer);
+                if (hr < 0) return hr;
+                for (int i = 0; i < positional; i++)
+                {
+                    nint at = variants + (count - 1 - i) * vb;
+                    if ((Sys.PeekHalf(at) & ComMarshal.VtByRef) != 0) WriteByRef(at, args[i]);
+                }
+                if (result != 0)
+                {
+                    ComMarshal.VariantInit(result);
+                    ComMarshal.WriteVariant(result, answer);
+                }
+                return 0;
+            }
+            catch (Exception e)
+            {
+                if (exception != 0)
+                {
+                    int bytes = w == 8 ? 64 : 32;
+                    for (int i = 0; i < bytes; i++) Sys.PokeByte(exception + i, 0);
+                    Sys.Poke(exception + (w == 8 ? 8 : 4), ComMarshal.AllocBstr(e.GetType().Name));
+                    Sys.Poke(exception + (w == 8 ? 16 : 8), ComMarshal.AllocBstr(e.Message));
+                    Sys.PokeWord(exception + (w == 8 ? 56 : 28), ComMarshal.HResultOf(e));
+                    return ComMarshal.DispEException;
+                }
+                return ComMarshal.HResultOf(e);
+            }
+        }
+
+        /// A by-reference VARIANT argument's target given a new value.
+        public static void WriteByRef(nint variant, object? value)
+        {
+            int vt = (int)Sys.PeekHalf(variant) & ~ComMarshal.VtByRef;
+            nint at = (nint)Sys.Peek(variant + ComMarshal.VariantData);
+            if (at == 0) return;
+            if (vt == ComMarshal.VtVariant) { ComMarshal.ReplaceVariant(at, value); return; }
+            if (vt == ComMarshal.VtBstr) { ComMarshal.ReplaceBstr(at, value == null ? null : value.ToString()); return; }
+            if (vt == ComMarshal.VtUnknown) { ComMarshal.ReplaceUnknown(at, value); return; }
+            if (vt == ComMarshal.VtDispatch) { ComMarshal.ReplaceDispatch(at, value); return; }
+            if ((vt & ComMarshal.VtArray) != 0) { ComMarshal.ReplaceSafeArray(at, value); return; }
+            ComMarshal.WriteValue(vt, at, value);
+        }
+    }
+
+    /// <summary>A native COM function called with the interface pointer and its argument words (ComFrame).</summary>
+    public static unsafe class ComRuntime
+    {
+    /// A int-answering native function at `fn`, called with stdcall's rule on i386 (C's elsewhere): `self`, then `n` argument words.
+    public static int CallInt(nint fn, nint self, nint[] w, int n)
+    {
+        switch (n)
+        {
+            case 0: return ((delegate* unmanaged[Stdcall]<nint, int>)fn)(self);
+            case 1: return ((delegate* unmanaged[Stdcall]<nint, nint, int>)fn)(self, w[0]);
+            case 2: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, int>)fn)(self, w[0], w[1]);
+            case 3: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, int>)fn)(self, w[0], w[1], w[2]);
+            case 4: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, int>)fn)(self, w[0], w[1], w[2], w[3]);
+            case 5: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, int>)fn)(self, w[0], w[1], w[2], w[3], w[4]);
+            case 6: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, int>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5]);
+            case 7: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, int>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6]);
+            case 8: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, int>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
+            case 9: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, int>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8]);
+            case 10: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, int>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9]);
+            case 11: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, int>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10]);
+            case 12: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, int>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11]);
+            case 13: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, int>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], w[12]);
+            case 14: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, int>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], w[12], w[13]);
+            case 15: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, int>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], w[12], w[13], w[14]);
+            case 16: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, int>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], w[12], w[13], w[14], w[15]);
+        }
+        throw new NotSupportedException("a COM call of more than 16 argument words");
+    }
+
+    /// A long-answering native function at `fn`, called with stdcall's rule on i386 (C's elsewhere): `self`, then `n` argument words.
+    public static long CallLong(nint fn, nint self, nint[] w, int n)
+    {
+        switch (n)
+        {
+            case 0: return ((delegate* unmanaged[Stdcall]<nint, long>)fn)(self);
+            case 1: return ((delegate* unmanaged[Stdcall]<nint, nint, long>)fn)(self, w[0]);
+            case 2: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, long>)fn)(self, w[0], w[1]);
+            case 3: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, long>)fn)(self, w[0], w[1], w[2]);
+            case 4: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, long>)fn)(self, w[0], w[1], w[2], w[3]);
+            case 5: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, long>)fn)(self, w[0], w[1], w[2], w[3], w[4]);
+            case 6: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, long>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5]);
+            case 7: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, long>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6]);
+            case 8: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, long>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
+            case 9: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, long>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8]);
+            case 10: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, long>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9]);
+            case 11: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, long>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10]);
+            case 12: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, long>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11]);
+            case 13: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, long>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], w[12]);
+            case 14: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, long>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], w[12], w[13]);
+            case 15: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, long>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], w[12], w[13], w[14]);
+            case 16: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, long>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], w[12], w[13], w[14], w[15]);
+        }
+        throw new NotSupportedException("a COM call of more than 16 argument words");
+    }
+
+    /// A double-answering native function at `fn`, called with stdcall's rule on i386 (C's elsewhere): `self`, then `n` argument words.
+    public static double CallDouble(nint fn, nint self, nint[] w, int n)
+    {
+        switch (n)
+        {
+            case 0: return ((delegate* unmanaged[Stdcall]<nint, double>)fn)(self);
+            case 1: return ((delegate* unmanaged[Stdcall]<nint, nint, double>)fn)(self, w[0]);
+            case 2: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, double>)fn)(self, w[0], w[1]);
+            case 3: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, double>)fn)(self, w[0], w[1], w[2]);
+            case 4: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, double>)fn)(self, w[0], w[1], w[2], w[3]);
+            case 5: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, double>)fn)(self, w[0], w[1], w[2], w[3], w[4]);
+            case 6: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, double>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5]);
+            case 7: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, double>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6]);
+            case 8: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, double>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
+            case 9: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, double>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8]);
+            case 10: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, double>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9]);
+            case 11: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, double>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10]);
+            case 12: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, double>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11]);
+            case 13: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, double>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], w[12]);
+            case 14: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, double>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], w[12], w[13]);
+            case 15: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, double>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], w[12], w[13], w[14]);
+            case 16: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, double>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], w[12], w[13], w[14], w[15]);
+        }
+        throw new NotSupportedException("a COM call of more than 16 argument words");
+    }
+
+    /// A float-answering native function at `fn`, called with stdcall's rule on i386 (C's elsewhere): `self`, then `n` argument words.
+    public static float CallFloat(nint fn, nint self, nint[] w, int n)
+    {
+        switch (n)
+        {
+            case 0: return ((delegate* unmanaged[Stdcall]<nint, float>)fn)(self);
+            case 1: return ((delegate* unmanaged[Stdcall]<nint, nint, float>)fn)(self, w[0]);
+            case 2: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, float>)fn)(self, w[0], w[1]);
+            case 3: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, float>)fn)(self, w[0], w[1], w[2]);
+            case 4: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, float>)fn)(self, w[0], w[1], w[2], w[3]);
+            case 5: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, float>)fn)(self, w[0], w[1], w[2], w[3], w[4]);
+            case 6: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, float>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5]);
+            case 7: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, float>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6]);
+            case 8: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, float>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
+            case 9: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, float>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8]);
+            case 10: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, float>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9]);
+            case 11: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, float>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10]);
+            case 12: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, float>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11]);
+            case 13: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, float>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], w[12]);
+            case 14: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, float>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], w[12], w[13]);
+            case 15: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, float>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], w[12], w[13], w[14]);
+            case 16: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, float>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], w[12], w[13], w[14], w[15]);
+        }
+        throw new NotSupportedException("a COM call of more than 16 argument words");
+    }
+
+    /// A nint-answering native function at `fn`, called with stdcall's rule on i386 (C's elsewhere): `self`, then `n` argument words.
+    public static nint CallPtr(nint fn, nint self, nint[] w, int n)
+    {
+        switch (n)
+        {
+            case 0: return ((delegate* unmanaged[Stdcall]<nint, nint>)fn)(self);
+            case 1: return ((delegate* unmanaged[Stdcall]<nint, nint, nint>)fn)(self, w[0]);
+            case 2: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint>)fn)(self, w[0], w[1]);
+            case 3: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint>)fn)(self, w[0], w[1], w[2]);
+            case 4: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint>)fn)(self, w[0], w[1], w[2], w[3]);
+            case 5: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint>)fn)(self, w[0], w[1], w[2], w[3], w[4]);
+            case 6: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5]);
+            case 7: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6]);
+            case 8: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
+            case 9: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8]);
+            case 10: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9]);
+            case 11: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10]);
+            case 12: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11]);
+            case 13: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], w[12]);
+            case 14: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], w[12], w[13]);
+            case 15: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], w[12], w[13], w[14]);
+            case 16: return ((delegate* unmanaged[Stdcall]<nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint, nint>)fn)(self, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], w[12], w[13], w[14], w[15]);
+        }
+        throw new NotSupportedException("a COM call of more than 16 argument words");
+    }
+
+    }
+}
+
+/// .NET's Marshal, its COM members: interface pointers and the objects they
+/// are, references, wrappers released, HRESULTs, BSTRs and VARIANTs.
+static partial class Marshal
+{
+    public static nint GetIUnknownForObject(object o)
+    {
+        if (o == null) throw new ArgumentNullException("o");
+        return System.Runtime.InteropServices.ComMarshal.InterfaceFor(o, System.Runtime.InteropServices.ComMarshal.IidIUnknown);
+    }
+
+    public static nint GetIDispatchForObject(object o)
+    {
+        if (o == null) throw new ArgumentNullException("o");
+        nint p = System.Runtime.InteropServices.ComMarshal.InterfaceFor(o, System.Runtime.InteropServices.ComMarshal.IidIDispatch);
+        if (p == 0) throw new InvalidCastException("The object has no IDispatch.");
+        return p;
+    }
+
+    /// The interface `t` of a managed object (its COM-callable wrapper's,
+    /// found by the interface's full name) or of a COM object (asked for
+    /// the IID its wrapper class was made for).
+    public static nint GetComInterfaceForObject(object o, Type t)
+    {
+        if (o == null) throw new ArgumentNullException("o");
+        System.__ComObject? c = o as System.__ComObject;
+        if (c != null && c._iid.Length > 0) return System.Runtime.InteropServices.ComMarshal.Query(c.Unknown, c._iid);
+        System.Runtime.InteropServices.IComCallable? callable = o as System.Runtime.InteropServices.IComCallable;
+        if (callable != null)
+        {
+            foreach (System.Runtime.InteropServices.ComInterfaceEntry e in callable.__ComInterfaces())
+                if (e.Name == t.FullName || e.Name.EndsWith("." + t.Name))
+                    return System.Runtime.InteropServices.ComMarshal.InterfaceFor(o, e.Iid);
+        }
+        throw new InvalidCastException("The object has no COM interface " + t.FullName + ".");
+    }
+
+    public static nint GetComInterfaceForObject<T, TInterface>(T o)
+    {
+        if (o == null) throw new ArgumentNullException("o");
+        return GetComInterfaceForObject((object)o, typeof(TInterface));
+    }
+
+    public static object GetObjectForIUnknown(nint pUnk)
+    {
+        if (pUnk == 0) throw new ArgumentNullException("pUnk");
+        return System.Runtime.InteropServices.ComMarshal.ObjectFor(pUnk)!;
+    }
+
+    public static object GetTypedObjectForIUnknown(nint pUnk, Type t) { return GetObjectForIUnknown(pUnk); }
+
+    /// A wrapper of its own, never one already made for the same object.
+    public static object GetUniqueObjectForIUnknown(nint unknown)
+    {
+        if (unknown == 0) throw new ArgumentNullException("unknown");
+        return new System.__ComObject(unknown);
+    }
+
+    public static int QueryInterface(nint pUnk, ref Guid iid, out nint ppv)
+    {
+        if (pUnk == 0) throw new ArgumentNullException("pUnk");
+        ppv = System.Runtime.InteropServices.ComMarshal.Query(pUnk, iid.ToString());
+        return ppv == 0 ? System.Runtime.InteropServices.ComMarshal.ENoInterface : 0;
+    }
+
+    public static int AddRef(nint pUnk)
+    {
+        if (pUnk == 0) throw new ArgumentNullException("pUnk");
+        return System.Runtime.InteropServices.ComMarshal.AddRef(pUnk);
+    }
+
+    public static int Release(nint pUnk)
+    {
+        if (pUnk == 0) throw new ArgumentNullException("pUnk");
+        return System.Runtime.InteropServices.ComMarshal.Release(pUnk);
+    }
+
+    public static bool IsComObject(object o) { return o is System.__ComObject; }
+
+    /// The wrapper's count of the times it was handed out, less one; at 0
+    /// what it holds of the object is let go.
+    public static int ReleaseComObject(object o)
+    {
+        System.__ComObject? c = o as System.__ComObject;
+        if (c == null) throw new ArgumentException("The object's type must be __ComObject or derived from __ComObject.", "o");
+        if (c._released) return 0;
+        c._releases--;
+        if (c._releases <= 0) { c.ReleaseAll(); return 0; }
+        return c._releases;
+    }
+
+    public static int FinalReleaseComObject(object o)
+    {
+        System.__ComObject? c = o as System.__ComObject;
+        if (c == null) throw new ArgumentException("The object's type must be __ComObject or derived from __ComObject.", "o");
+        c.ReleaseAll();
+        return 0;
+    }
+
+    public static int GetHRForException(Exception? e) { return e == null ? 0 : System.Runtime.InteropServices.ComMarshal.HResultOf(e); }
+
+    public static Exception? GetExceptionForHR(int errorCode) { return errorCode >= 0 ? null : System.Runtime.InteropServices.ComMarshal.ExceptionFor(errorCode); }
+
+    public static void ThrowExceptionForHR(int errorCode) { System.Runtime.InteropServices.ComMarshal.Check(errorCode); }
+
+    public static nint StringToBSTR(string? s) { return System.Runtime.InteropServices.ComMarshal.AllocBstr(s); }
+    public static string PtrToStringBSTR(nint ptr)
+    {
+        if (ptr == 0) throw new ArgumentNullException("ptr");
+        return System.Runtime.InteropServices.ComMarshal.FromBstr(ptr)!;
+    }
+    public static void FreeBSTR(nint ptr) { System.Runtime.InteropServices.ComMarshal.FreeBstr(ptr); }
+
+    public static string? PtrToStringUni(nint ptr) { return System.Runtime.InteropServices.ComMarshal.FromWide(ptr); }
+    public static nint StringToHGlobalUni(string? s) { return System.Runtime.InteropServices.ComMarshal.AllocWide(s); }
+    public static nint StringToCoTaskMemUni(string? s) { return System.Runtime.InteropServices.ComMarshal.AllocWide(s); }
+
+    public static void GetNativeVariantForObject(object? obj, nint pDstNativeVariant)
+    {
+        if (pDstNativeVariant == 0) throw new ArgumentNullException("pDstNativeVariant");
+        System.Runtime.InteropServices.ComMarshal.WriteVariant(pDstNativeVariant, obj);
+    }
+
+    public static object? GetObjectForNativeVariant(nint pSrcNativeVariant)
+    {
+        if (pSrcNativeVariant == 0) throw new ArgumentNullException("pSrcNativeVariant");
+        return System.Runtime.InteropServices.ComMarshal.ReadVariant(pSrcNativeVariant);
+    }
+}

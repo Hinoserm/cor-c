@@ -32,7 +32,10 @@ public static partial class Program
             Console.WriteLine($"{_passes} passed, {_failures} failed");
             return _failures == 0 ? 0 : 1;
         }
-        _dir = args.Length > 0 ? args[0] : Path.Combine(Path.GetTempPath(), "corsac-elf-tests");
+        // Beside the test program, in the build output, unless told
+        // otherwise: never the machine's temporary directory, which on a
+        // build host is a small tmpfs other jobs fill and share.
+        _dir = args.Length > 0 ? args[0] : Path.Combine(AppContext.BaseDirectory, "elf-tests");
         Directory.CreateDirectory(_dir);
         Console.WriteLine($"work directory: {_dir}");
 
@@ -304,7 +307,14 @@ public static partial class Program
         Check(code == 0, "nm reads the executable", output);
         uint f = Address(output, "T", "f");
         uint pmsg = Address(output, "D", "pmsg");
-        uint msg = Address(output, "r", "msg");
+        // msg is a local constant, which an executable's table no longer
+        // names (07b0cb0: code, type descriptors and the runtime's tables,
+        // not every local string and constant). It is the only .rodata the
+        // link was given, at its start, so the section's address is msg's.
+        (int sections, string headers) = Run("readelf", "-SW", path);
+        Match rodata = Regex.Match(headers, @"\.rodata\s+PROGBITS\s+(\w+)");
+        uint msg = sections == 0 && rodata.Success ? Convert.ToUInt32(rodata.Groups[1].Value, 16) : 0;
+        Check(Address(output, "r", "msg") == 0, "a local constant is not named in the executable", output);
         uint buf = Address(output, "B", "buf");
         uint start = Address(output, "T", "_start");
         Check(f != 0 && pmsg != 0 && msg != 0 && buf != 0, "all symbols present with the expected types", output);

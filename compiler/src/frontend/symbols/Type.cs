@@ -103,7 +103,18 @@ public sealed class Type : IEquatable<Type>
 
     private static readonly Dictionary<int, Type> CanonAnys = new();
 
-    public static readonly Type Void  = new() { Prim = Prim.Void };
+
+    /// <summary>
+    /// C#'s `dynamic`: an object at run time -- Prim.Any -- whose members,
+    /// operators and conversions are bound when the program runs
+    /// (System.DynamicRuntime), not here. NOT PART OF EQUALITY, as C#'s
+    /// identity conversion between object and dynamic says: the two are one
+    /// type to every conversion and every generic; the flag only tells the
+    /// binder that an expression's operations are to be bound late.
+    /// </summary>
+    public bool Dynamic { get; init; }
+
+    public static readonly Type Void   = new() { Prim = Prim.Void };
     public static readonly Type Bool   = new() { Prim = Prim.Bool };
     public static readonly Type I8     = new() { Prim = Prim.I8 };
     public static readonly Type I16    = new() { Prim = Prim.I16 };
@@ -121,6 +132,7 @@ public sealed class Type : IEquatable<Type>
     public static readonly Type String = new() { Prim = Prim.String };
     public static readonly Type Null   = new() { Prim = Prim.NullLiteral, Nullable = true };
     public static readonly Type Any    = new() { Prim = Prim.Any };
+    public static readonly Type DynamicAny = new() { Prim = Prim.Any, Dynamic = true };
     public static readonly Type Error  = new() { Prim = Prim.Error };
 
     /// <summary>A type, as a value. See Prim.Type.</summary>
@@ -243,6 +255,7 @@ public sealed class Type : IEquatable<Type>
         ArrayRank = ArrayRank, Args = Args, ParamName = ParamName, StructParam = StructParam,
         Names = Names, PointerDepth = PointerDepth, Pointee = Pointee, UseArgs = UseArgs, Function = Function,
         CanonParam = CanonParam,
+        Dynamic = Dynamic,
     };
 
     public Type WithNames(IReadOnlyList<string>? names) => new()
@@ -251,6 +264,7 @@ public sealed class Type : IEquatable<Type>
         ArrayRank = ArrayRank, Args = Args, ParamName = ParamName, StructParam = StructParam,
         Names = names, PointerDepth = PointerDepth, Pointee = Pointee, UseArgs = UseArgs, Function = Function,
         CanonParam = CanonParam,
+        Dynamic = Dynamic,
     };
 
     /// <summary>
@@ -358,7 +372,7 @@ public sealed class Type : IEquatable<Type>
                 Prim.NInt => "nint", Prim.NUInt => "nuint",
                 Prim.F32 => "float", Prim.F64 => "double",
                 Prim.Char => "char", Prim.String => "string",
-                Prim.NullLiteral => "null", Prim.Any => "object", Prim.Type => "Type", _ => "?",
+                Prim.NullLiteral => "null", Prim.Any => Dynamic ? "dynamic" : "object", Prim.Type => "Type", _ => "?",
             };
 
         if (Args.Count > 0)

@@ -200,6 +200,7 @@ public sealed partial class Escape : IModulePass
             : !m.PreserveExports && m.Entry is not null ? ElementMode.Whole
             : m.AtLink ? _elementFacts is not null ? ElementMode.Linked : ElementMode.Off
             : _hinting ? ElementMode.Hints : ElementMode.Off;
+        _arrayFreer = canFree && Provided(OwnedElements.ArrayFreer);
         if (canFree) ConfirmOwnedElements(m, summaries);
         foreach (Function f in m.Functions)
         {
@@ -948,6 +949,12 @@ public sealed partial class Escape : IModulePass
             }
     }
 
+    /// <summary>
+    /// In an owned-field map's count word: the element bits follow the field
+    /// bits (ArrayFieldElements; Runtime.FreeOwnedFields' ElementMapFlag).
+    /// </summary>
+    public const long ElementMapFlag = 0x40000000;
+
     /// <summary>The runtime's free of what an owned field held before a store replaces it.</summary>
     public const string OwnedReplacedFreer = Corsac.Lang.Lto.RuntimeAbi.FreeOwnedReplaced;
 
@@ -1667,6 +1674,14 @@ continue;
         _fieldsJudged = (owned.Count, candidates.Count);
         if (owned.Count == 0) return;
 
+        // THE ARRAY FIELDS WHOSE ARRAYS OWN THEIR ELEMENTS (ArrayFieldElements):
+        // judged now, before the replacements' frees go in.
+        HashSet<string> elementOwned = byName.ContainsKey(OwnedElements.ArrayFreer) || m.RuntimeHelpers.Contains(OwnedElements.ArrayFreer)
+            ? ArrayFieldElements(owned, stores, loads, new HashSet<Instr>(fills.Keys.Concat(forwarded.Keys), ReferenceEqualityComparer.Instance),
+                new HashSet<string>(borrowing.Select(pair => pair.Field), StringComparer.Ordinal), MayWrite, livenessOf, padsOf, summaries)
+            : new HashSet<string>(StringComparer.Ordinal);
+        if (reporting) foreach (string field in elementOwned) _fieldReport.Add($"{field} owns its array's elements");
+
         // Replacing a value frees it -- ONLY IN AN OBJECT NO OTHER THREAD CAN
         // SEE: one this function made and that never escapes it, on the heap
         // or promoted to its frame (zeroed where it is made). The proof
@@ -1732,14 +1747,19 @@ continue;
             else _ownedCalls.Add(made);
         }
 
-        // Each class's owned-field map, its ancestors' fields included.
+        // Each class's owned-field map, its ancestors' fields included; and
+        // which of them own their array's elements (the map's element bits).
         Dictionary<string, List<long>> offsets = new(StringComparer.Ordinal);
+        Dictionary<string, List<long>> elementOffsets = new(StringComparer.Ordinal);
         foreach ((_, _, Instr st) in stores)
             if (owned.Contains(st.Field!))
             {
                 string owner = "t_" + st.Field![..st.Field!.IndexOf("::", StringComparison.Ordinal)];
                 if (!offsets.TryGetValue(owner, out List<long>? list)) offsets[owner] = list = new();
                 if (!list.Contains(st.Offset)) list.Add(st.Offset);
+                if (!elementOwned.Contains(st.Field!)) continue;
+                if (!elementOffsets.TryGetValue(owner, out List<long>? elements)) elementOffsets[owner] = elements = new();
+                if (!elements.Contains(st.Offset)) elements.Add(st.Offset);
             }
         int w = Target.Current.WordSize;
         Dictionary<string, DataItem> items = new(StringComparer.Ordinal);
@@ -1751,12 +1771,20 @@ continue;
             int words = (int)(mine.Max() / w) + 1;
             uint[] bits = new uint[(words + 31) / 32];
             foreach (long o in mine) bits[(int)(o / w) / 32] |= 1u << (int)(o / w % 32);
-            byte[] block = new byte[(1 + bits.Length) * w];
+            // THE ELEMENT BITS, after the field bits and as many words, where
+            // a field of it owns its array's elements; the count says they
+            // follow (ElementMapFlag, read by Runtime.FreeOwnedFields).
+            List<long> elementsMine = Ancestry(items, d.Name).Where(elementOffsets.ContainsKey).SelectMany(a => elementOffsets[a]).Distinct().Where(mine.Contains).ToList();
+            uint[] elementBits = new uint[elementsMine.Count > 0 ? bits.Length : 0];
+            foreach (long o in elementsMine) elementBits[(int)(o / w) / 32] |= 1u << (int)(o / w % 32);
+            byte[] block = new byte[(1 + bits.Length + elementBits.Length) * w];
             // The count is a whole word, shifted as a long: an int's shift
             // count wraps at 32, and long mode's map said 0x700000007 words
             // for seven, so Runtime.FreeOwnedFields read past it and faulted.
-            for (int k = 0; k < w; k++) block[k] = (byte)((long)words >> (8 * k));
+            long countWord = words | (elementBits.Length > 0 ? ElementMapFlag : 0);
+            for (int k = 0; k < w; k++) block[k] = (byte)(countWord >> (8 * k));
             for (int i = 0; i < bits.Length; i++) for (int k = 0; k < 4; k++) block[(1 + i) * w + k] = (byte)(bits[i] >> (8 * k));
+            for (int i = 0; i < elementBits.Length; i++) for (int k = 0; k < 4; k++) block[(1 + bits.Length + i) * w + k] = (byte)(elementBits[i] >> (8 * k));
             string sym = "om_" + d.Name[2..];
             m.Data.Add(new DataItem(sym, block) { ReadOnly = true, Exported = false, Align = w });
             d.Relocs.Add(new DataReloc(11 * w, sym, 0));

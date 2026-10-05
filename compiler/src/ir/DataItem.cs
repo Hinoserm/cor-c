@@ -32,6 +32,21 @@ public sealed class DataItem
     /// <summary>The class library's rather than the program's; see Function.FromLibrary.</summary>
     public bool FromLibrary { get; init; }
 
+    /// <summary>Written in the system library's own sources; see Function.SystemCode.</summary>
+    public bool SystemCode { get; init; }
+
+    /// <summary>The full path of the source file; see Function.SourcePath.</summary>
+    public string? SourcePath { get; init; }
+
+    /// <summary>
+    /// Where a static field's word was declared, and its name as written
+    /// (`Type.Field`), for the unused-code report (UsesNotes): null for data
+    /// nobody declared -- descriptors, strings, tables the compiler makes.
+    /// </summary>
+    public string? SourceFile { get; init; }
+    public int Line { get; init; }
+    public string? Display { get; init; }
+
     public List<DataReloc> Relocs { get; } = new();
 
     public DataItem(string name, byte[] bytes)

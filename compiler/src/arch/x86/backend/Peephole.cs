@@ -459,7 +459,7 @@ internal static class Peephole
     private static bool ForwardCopy(MInstr copy, MInstr user, HashSet<int> deadAfter)
     {
         if (!IsMov(copy) || copy.Operands[0] is not MReg a || copy.Operands[1] is not MReg b || a.Id == b.Id
-            || !deadAfter.Contains(a.Id) || !Understood(user) || user.Op is MOp.Xchg or MOp.CallKeep)
+            || !deadAfter.Contains(a.Id) || !Understood(user) || user.Op is MOp.Xchg or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd)
         {
             return false;
         }
@@ -529,7 +529,7 @@ internal static class Peephole
         MOp.Shld or MOp.Shrd => operand == 2,
         // A stub's registers are its calling convention: the slot in EAX,
         // the value in EDX (X86Backend.CardStub, BarrierStub).
-        MOp.CallKeep => operand > 0,
+        MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd => operand > 0,
         _ => false,
     };
 

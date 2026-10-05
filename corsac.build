@@ -83,6 +83,12 @@
         <Environment Name="CORC" Value="$(Compiler)" /><Environment Name="CORLINK" Value="$(Linker)" />
       </Test>
     </Target>
+    <Target Name="modules" DependsOnTargets="/compiler" Description="A kernel linked with --exports loading a module built against it">
+      <Test Name="kernel-modules" Executable="sh" Timeout="00:10:00">
+        <Argument Value="tests/integration/modules.sh" />
+        <Environment Name="CORC" Value="$(Compiler)" />
+      </Test>
+    </Target>
     <Target Name="ir-lto" DependsOnTargets="/compiler">
       <Test Name="ir-link-optimization" Executable="sh" Timeout="00:05:00">
         <Argument Value="tests/integration/ir-lto.sh" />

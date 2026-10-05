@@ -57,4 +57,13 @@ public sealed class Param : Node
 
     /// <summary>For [CallerArgumentExpression]: the parameter whose argument's source text is passed.</summary>
     public string? CallerArgument { get; init; }
+
+    /// <summary>
+    /// [MarshalAs(UnmanagedType.X)]: the X, or null where it was not
+    /// written. What a COM interface's parameter is on the native side
+    /// when its type alone does not say (ComDeclarations): a string as a
+    /// BSTR, an LPWStr or an LPStr; a bool as a VARIANT_BOOL, a BOOL or a
+    /// byte; an object as a VARIANT, an IUnknown or an IDispatch.
+    /// </summary>
+    public string? MarshalAs { get; init; }
 }

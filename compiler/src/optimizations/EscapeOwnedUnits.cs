@@ -466,7 +466,9 @@ public sealed partial class Escape
                 if (f.Async is null) FreeReplacedAcrossCalls(f, summaries, privateOwner, OwnedOf, decided.Borrowers.Contains);
         }
 
+        // And which of them own their arrays' elements (the map's element bits).
         Dictionary<string, List<long>> offsets = new(StringComparer.Ordinal);
+        Dictionary<string, List<long>> elementOffsets = new(StringComparer.Ordinal);
         foreach (string field in decided.Mapped.Order(StringComparer.Ordinal))
         {
             int split = field.IndexOf("::", StringComparison.Ordinal);
@@ -474,6 +476,9 @@ public sealed partial class Escape
             string owner = "t_" + field[..split];
             if (!offsets.TryGetValue(owner, out List<long>? list)) offsets[owner] = list = new();
             if (!list.Contains(offset)) list.Add(offset);
+            if (!decided.ArrayElements.Contains(field)) continue;
+            if (!elementOffsets.TryGetValue(owner, out List<long>? elements)) elementOffsets[owner] = elements = new();
+            if (!elements.Contains(offset)) elements.Add(offset);
         }
         int w = Target.Current.WordSize;
         Dictionary<string, DataItem> items = new(StringComparer.Ordinal);
@@ -485,9 +490,16 @@ public sealed partial class Escape
             int words = (int)(mine.Max() / w) + 1;
             uint[] bits = new uint[(words + 31) / 32];
             foreach (long o in mine) bits[(int)(o / w) / 32] |= 1u << (int)(o / w % 32);
-            byte[] block = new byte[(1 + bits.Length) * w];
-            for (int k = 0; k < w; k++) block[k] = (byte)((long)words >> (8 * k));
+            // The element bits after the field bits, as many words, the
+            // count word saying they follow (Escape.ElementMapFlag).
+            List<long> elementsMine = Ancestry(items, d.Name).Where(elementOffsets.ContainsKey).SelectMany(a => elementOffsets[a]).Distinct().Where(mine.Contains).ToList();
+            uint[] elementBits = new uint[elementsMine.Count > 0 ? bits.Length : 0];
+            foreach (long o in elementsMine) elementBits[(int)(o / w) / 32] |= 1u << (int)(o / w % 32);
+            byte[] block = new byte[(1 + bits.Length + elementBits.Length) * w];
+            long countWord = words | (elementBits.Length > 0 ? ElementMapFlag : 0);
+            for (int k = 0; k < w; k++) block[k] = (byte)(countWord >> (8 * k));
             for (int i = 0; i < bits.Length; i++) for (int k = 0; k < 4; k++) block[(1 + i) * w + k] = (byte)(bits[i] >> (8 * k));
+            for (int i = 0; i < elementBits.Length; i++) for (int k = 0; k < 4; k++) block[(1 + bits.Length + i) * w + k] = (byte)(elementBits[i] >> (8 * k));
             string sym = "om_" + d.Name[2..];
             m.Data.Add(new DataItem(sym, block) { ReadOnly = true, Exported = false, Align = w });
             d.Relocs.Add(new DataReloc(11 * w, sym, 0));
@@ -1062,11 +1074,23 @@ public sealed partial class Escape
         // A refused read made its caller relay nothing it knows of; the
         // callers already queued stay (more reads judged, never fewer).
 
+        // ITS ARRAYS' ELEMENTS (ArrayFieldElements), each field this unit
+        // has not refused judged over its stores and reads here.
+        ArrayFieldElementHints(hints, stores, loads, new HashSet<Instr>(forwarded.Keys, ReferenceEqualityComparer.Instance), LivenessOf, PadsOf, summaries,
+            m.RuntimeHelpers.Contains(OwnedElements.ArrayFreer) || m.Functions.Any(g => g.Name == OwnedElements.ArrayFreer));
+
         foreach ((string name, var record) in functions)
             if (record.Calls.Count + record.Writes.Count + record.InitWrites.Count + record.Borrows.Count > 0)
                 hints.Functions[name] = new OwnedFunctionRecord(record.Calls.ToArray(), record.Writes.ToArray(), record.InitWrites.ToArray(), record.Borrows.ToArray());
         foreach (OwnedFieldRecord record in hints.Fields.Values)
+        {
             if (record.Refused) { record.Danger.Clear(); record.Sinks.Clear(); record.Needs.Stays.Clear(); record.Needs.Fresh.Clear(); record.Needs.Fields.Clear(); }
+            if (record.Refused || record.ElementsRefused)
+            {
+                record.ElementsRefused = true; record.ElementArrays = false; record.ElementDanger.Clear(); record.ElementDangerFields.Clear();
+                record.ElementNeeds.Stays.Clear(); record.ElementNeeds.Fresh.Clear(); record.ElementNeeds.Fields.Clear();
+            }
+        }
         return hints;
     }
 }

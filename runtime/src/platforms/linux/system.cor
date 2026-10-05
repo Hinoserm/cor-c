@@ -634,6 +634,22 @@ static class Platform
     /// reserve a card table for the whole address space (Gc, generations).
     public const bool MapsCommitLazily = true;
 
+    /// The scheduler's continuations are its own here: no kernel's run queue
+    /// to post them to (Scheduler.Post), and no context to flow with them
+    /// (AsyncContext) -- a Linux thread is the context.
+    public const long PostHook = 0;
+    public const long ContextHook = 0;
+    public const long CompletedHook = 0;
+
+    /// Memory committed as it is first touched: what every anonymous mapping
+    /// here is already (MapsCommitLazily).
+    public static long MapLazy(long bytes) => Map(bytes);
+
+    /// Nothing to commit ahead: the kernel commits on touch, and never fails
+    /// to (Gc.CommitCards).
+    public static void Commit(long at, long bytes) { }
+    public const long TaskArenaBytes = 0;
+
     /// Free memory as the collector may ask it: with the heap held, so without
     /// allocating (SysinfoBytes answers into a page of the system's own).
     public static long FreeMemoryQuietly()
@@ -1025,6 +1041,15 @@ static class Platform
         if (Runtime.CollectorLinked()) Gc.CollectInner();
     }
 
+    /// A call into an object whose code was taken away (Gc.Revoke): a
+    /// program has no modules to lose, so this is only ever a fault, and the
+    /// process ends as a crash would end it.
+    public static void Revoked()
+    {
+        Runtime.WriteLiteral(2, "a revoked object was called\n");
+        Exit(134);
+    }
+
     /// Ends the whole process. exit_group rather than exit, so that the day
     /// this runtime has threads, exiting means what a C program means by it.
     public static void Exit(int code)
@@ -1143,6 +1168,16 @@ static partial class Os
     {
         long sp = MainEntryStack();
         return sp + WordSize.Bytes + WordSize.Bytes * Sys.Peek(sp) + WordSize.Bytes;
+    }
+
+    /// uname(2)'s nodename, or null when the call fails.
+    public static string? NodeName()
+    {
+        byte[] names = new byte[65 * 6];                      // struct utsname: six fields of 65
+        if (Platform.Result(Sys.Syscall(Call.Uname, Sys.ArrayData(names), 0, 0)) < 0) return null;
+        int end = 65;
+        while (end < 130 && names[end] != 0) end++;
+        return Utf8Transcoder.Decode(names, 65, end - 65);
     }
 
     public static int Chdir(string path)

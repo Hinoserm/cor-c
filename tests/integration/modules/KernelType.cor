@@ -1,0 +1,9 @@
+// A module source declaring a type its kernel declares (modules.sh): its
+// index, made on the kernel's, is refused.
+
+namespace Kernel;
+
+public static class Log
+{
+    public static void Write(string text) { }
+}

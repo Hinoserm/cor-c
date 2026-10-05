@@ -1,0 +1,71 @@
+// test: com_marshal
+// expect-exit: 0
+// expect-output:
+// vt 3 value 42
+// vt 8 value hello
+// vt 11 value True
+// vt 5 value 3.5
+// vt 0 value <null>
+// vt 8195 value 1,2,3
+// vt 8200 value a,b
+// BSTR bytes 10 hello
+// unknown and dispatch differ True
+// no interface 0x80004002 0
+// counted 2 1 0
+//
+// Marshal's COM members and oleaut32's types as this library lays them
+// out: a VARIANT made from an object and read back (VT_I4, VT_BSTR,
+// VT_BOOL, VT_R8, VT_EMPTY, and SAFEARRAYs of VT_I4 and VT_BSTR), a BSTR's
+// byte count before its characters, a managed object's IUnknown and
+// IDispatch, QueryInterface refused, and AddRef and Release counting.
+
+using System;
+using System.Runtime.InteropServices;
+
+[ComVisible(true)]
+class Plain
+{
+    public int Value = 1;
+}
+
+static class Program
+{
+    static void Show(nint v, object? o)
+    {
+        Marshal.GetNativeVariantForObject(o, v);
+        object? back = Marshal.GetObjectForNativeVariant(v);
+        string text = back == null ? "<null>" : back is int[] ints ? string.Join(",", ints) : back is string[] strings ? string.Join(",", strings) : back.ToString()!;
+        Console.WriteLine("vt " + Marshal.ReadInt16(v) + " value " + text);
+        ComMarshal.VariantClear(v);
+    }
+
+    static int Main()
+    {
+        nint v = Marshal.AllocHGlobal(24);
+        ComMarshal.VariantInit(v);
+        Show(v, 42);
+        Show(v, "hello");
+        Show(v, true);
+        Show(v, 3.5);
+        Show(v, null);
+        Show(v, new int[] { 1, 2, 3 });
+        Show(v, new string[] { "a", "b" });
+
+        nint b = Marshal.StringToBSTR("hello");
+        Console.WriteLine("BSTR bytes " + Marshal.ReadInt32(b, -4) + " " + Marshal.PtrToStringBSTR(b));
+        Marshal.FreeBSTR(b);
+
+        Plain plain = new Plain();
+        nint unknown = Marshal.GetIUnknownForObject(plain);
+        nint dispatch = Marshal.GetIDispatchForObject(plain);
+        Console.WriteLine("unknown and dispatch differ " + (unknown != dispatch));
+        Guid nothing = new Guid("0F0E0D0C-0B0A-0908-0706-050403020100");
+        nint none;
+        int hr = Marshal.QueryInterface(unknown, ref nothing, out none);
+        Console.WriteLine("no interface 0x" + ((uint)hr).ToString("X8") + " " + none);
+        Marshal.Release(dispatch);
+        int after = Marshal.AddRef(unknown);
+        Console.WriteLine("counted " + after + " " + Marshal.Release(unknown) + " " + Marshal.Release(unknown));
+        return 0;
+    }
+}

@@ -21,7 +21,7 @@
 // DirectoryNotFoundException, UnauthorizedAccessException or IOException --
 // with the errno kept in HResult so the message can still be recovered.
 
-static class Marshal
+static partial class Marshal
 {
     /// The errno of the last call that failed on THIS thread, as .NET's is:
     /// set by a [DllImport] declared with SetLastError = true, and by the
@@ -131,11 +131,6 @@ static class Marshal
         return StringToHGlobalUTF8(s);
     }
 
-    static long _malloc;
-    static long _free;
-    static long _realloc;
-    // 0 not yet asked, 1 the C library's, 2 our own pages.
-    static int _heapKind;
 
     /// Whether AllocHGlobal and FreeHGlobal are C's malloc and free. ONE
     /// ANSWER FOR EVERY THREAD, published in one word after the three
@@ -146,18 +141,18 @@ static class Marshal
     /// Threads that ask together find the same addresses and write the same.
     static bool CLibrary()
     {
-        int kind = _heapKind;
+        int kind = MarshalHeap.heapKind;
         if (kind == 0)
         {
             long malloc = Runtime.NativeSymbol("malloc");
             long free = Runtime.NativeSymbol("free");
             long realloc = Runtime.NativeSymbol("realloc");
-            _malloc = malloc;
-            _free = free;
-            _realloc = realloc;
+            MarshalHeap.malloc = malloc;
+            MarshalHeap.free = free;
+            MarshalHeap.realloc = realloc;
             kind = malloc != 0 && free != 0 && realloc != 0 ? 1 : 2;
             Sys.Fence();
-            _heapKind = kind;
+            MarshalHeap.heapKind = kind;
         }
         return kind == 1;
     }
@@ -172,7 +167,7 @@ static class Marshal
         long at;
         if (CLibrary())
         {
-            at = Runtime.CallC(_malloc, cb == 0 ? 1 : cb, 0, 0, 0);
+            at = Runtime.CallC(MarshalHeap.malloc, cb == 0 ? 1 : cb, 0, 0, 0);
         }
         else
         {
@@ -215,7 +210,7 @@ static class Marshal
         }
         if (CLibrary())
         {
-            Runtime.CallC(_free, hglobal, 0, 0, 0);
+            Runtime.CallC(MarshalHeap.free, hglobal, 0, 0, 0);
             return;
         }
         long pages = hglobal - 2 * WordSize.Bytes;
@@ -235,7 +230,7 @@ static class Marshal
         }
         if (CLibrary())
         {
-            long at = Runtime.CallC(_realloc, pv, cb == 0 ? 1 : cb, 0, 0);
+            long at = Runtime.CallC(MarshalHeap.realloc, pv, cb == 0 ? 1 : cb, 0, 0);
             if (at == 0)
             {
                 throw new OutOfMemoryException();
@@ -567,6 +562,17 @@ namespace System.Runtime.InteropServices
     }
 }
 
+/// MARSHAL'S HEAP WORDS, in a class of their own: Marshal is a partial class
+/// split across two libraries (System.Runtime.InteropServices and COM's), and
+/// a static of a split class lost its storage in one library's link.
+static class MarshalHeap
+{
+    public static long malloc;
+    public static long free;
+    public static long realloc;
+    // 0 not yet asked, 1 the C library's, 2 our own pages.
+    public static int heapKind;
+}
 
 namespace System.Runtime.CompilerServices
 {

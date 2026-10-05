@@ -109,6 +109,7 @@ public sealed partial class Lowering
             return obj;
         }
 
+        CardMarkAhead(new MemPlace(R(obj), payload, of), value);
         _e.Store(R(obj), R(value), payload, bytes);
         CardMark(new MemPlace(R(obj), payload, of), value);
         return obj;

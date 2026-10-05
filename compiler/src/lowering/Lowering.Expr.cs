@@ -183,7 +183,10 @@ public sealed partial class Lowering
         // So did a TUPLE REBUILT in another shape (Binder.CheckAssignable):
         // the value is already the wider tuple, and converting it again from
         // the arm's own narrower shape read its fields at the wrong widths.
-        Type had = _b.Rewrites.TryGetValue(e, out Expr? made)
+        // Not inside its own rewrite, though: a late conversion's call takes
+        // the very node it replaces as its argument (Binder.LateConversion),
+        // and there it is still the value that was written.
+        Type had = _b.Rewrites.TryGetValue(e, out Expr? made) && !_rewriting.Contains(e)
                    && (_b.UserConversions.Contains(made) || made is PatternExpr { Test: TupleExpr })
                  ? _b.TypeOf(made) : _b.TypeOf(e);
         return Convert(e, v, had, target);
@@ -1064,6 +1067,9 @@ public sealed partial class Lowering
                 return CallAccessor(captured.Getter, self: false, target: null, receiver: env);
             }
 
+            case PropertySetSym:
+                return Fail(n, $"the property '{n.Name}' cannot be read: it has no get accessor");
+
             default:
             {
                 Place? p = PlaceOfSym(sym, n);
@@ -1111,6 +1117,8 @@ public sealed partial class Lowering
             {
                 case PropertyGetSym pg:
                     return CallAccessor(pg.Getter, self: false, target: m.Target);
+                case PropertySetSym:
+                    return Fail(m, $"the property '{m.Name}' cannot be read: it has no get accessor");
                 case ConstSym k:
                     return ConstValue(k);
                 case FieldSym f when f.Field.Static:
@@ -1677,9 +1685,20 @@ public sealed partial class Lowering
         }
     }
 
-    /// <summary>A lambda is an object made where it was written, holding what it captured.</summary>
+    /// <summary>
+    /// A lambda is an object made where it was written, holding what it
+    /// captured -- or, capturing nothing, one object in the data section made
+    /// once for the program, as .NET caches such a delegate: every
+    /// evaluation the same delegate, nothing allocated per call (a LINQ
+    /// operator's predicate was 24 bytes left to the collector at every call
+    /// whose iterator another unit kept).
+    /// </summary>
     private VReg EmitLambda(LambdaExpr lam, ClosureInfo made)
     {
+        if (made.Captures.Count == 0)
+        {
+            return _e.Address(StaticClosure(made.Type));
+        }
         VReg obj = Allocate(lam, Math.Max(_t.ObjectHeaderBytes, made.Type.InstanceSize), described: true);
         _e.Store(R(obj), VtableOf(made.Type), 0, _t.WordSize);
 
@@ -1747,6 +1766,35 @@ public sealed partial class Lowering
         }
 
         return obj;
+    }
+
+    private readonly Dictionary<TypeSymbol, string> _staticClosures = new();
+
+    /// <summary>
+    /// THE ONE OBJECT OF A CLOSURE CLASS THAT CAPTURES NOTHING, laid down in
+    /// the writable data section as an allocation would leave it: its vtable,
+    /// the rest of its header zero (a lock or a hash may be written there).
+    /// No collector frees it -- a pointer outside the heap is no block -- and
+    /// no analysis takes it for something made here, so nothing frees it at
+    /// all. One per closure class in each module.
+    /// </summary>
+    private string StaticClosure(TypeSymbol type)
+    {
+        if (_staticClosures.TryGetValue(type, out string? known)) return known;
+        int w = _t.WordSize;
+        long size = Math.Max(_t.ObjectHeaderBytes, type.InstanceSize);
+        byte[] block = new byte[(size + w - 1) / w * w];
+        string descriptor = ClassDescriptor(type);
+        string sym = "sc_" + descriptor;
+        DataItem item = new(sym, block)
+        {
+            Align = _t.Align64, FromLibrary = IsLibrary(type), SystemCode = SystemCode(type), SourcePath = SourcePathOf(type),
+            Exported = false, NoReferences = true,
+        };
+        item.Relocs.Add(new DataReloc(0, descriptor, _t.DescriptorBytes));
+        _m.Data.Add(item);
+        _staticClosures[type] = sym;
+        return sym;
     }
 
     /// <summary>`x with { A = 1 }`: allocate, copy every field, then override.</summary>
@@ -2000,9 +2048,55 @@ public sealed partial class Lowering
         }
     }
 
+    /// <summary>
+    /// A [ComImport] INTERFACE'S RUNTIME-CALLABLE WRAPPER: `__Wrap`, the
+    /// static method of the class ComDeclarations wrote beside the
+    /// interface, or null when the type is not one. A COM object a program
+    /// holds (System.__ComObject) implements no interface of its own: being
+    /// cast to one is a QueryInterface for its IID, answered by a wrapper
+    /// that does implement it, as .NET's cast of a __ComObject is.
+    /// </summary>
+    private MethodSymbol? ComWrap(TypeSymbol want)
+    {
+        if (want.Kind != TypeKind.Interface || want.Decl is not TypeDecl d || !ComDeclarations.IsComImport(d)) return null;
+        string key = (d.Outer is null ? "" : d.Outer + ".") + ComDeclarations.RcwName(d);
+        if (!_b.Types.TryGetValue(key, out TypeSymbol? rcw)) return null;
+        return rcw.Methods.FirstOrDefault(m => m.Name == ComDeclarations.WrapMethod && m.Static && m.Params.Count == 1);
+    }
+
+    /// <summary>
+    /// `o as IFoo` for a [ComImport] IFoo: the object itself when it
+    /// implements the interface, else its wrapper's answer -- a new wrapper
+    /// over the interface the COM object gave for the IID, or null when it
+    /// is not a COM object or would not give one.
+    /// </summary>
+    private VReg ComAs(VReg obj, TypeSymbol want, MethodSymbol wrap)
+    {
+        VReg test = TypeTest(obj, want);
+        VReg result = _f.NewReg(IrTypes.Word, "comas");
+        Block yes = _f.NewBlock("comyes");
+        Block no = _f.NewBlock("comno");
+        Block end = _f.NewBlock("comend");
+        _e.Branch(test, yes, no);
+        _e.SetBlock(yes);
+        _e.CopyTo(result, R(obj));
+        _e.Jump(end);
+        _e.SetBlock(no);
+        Require(wrap);
+        VReg wrapped = _e.Call(CallLabel(wrap), IrTypes.Word, R(AsParam(obj, wrap.Params[0].Type)))!;
+        _e.CopyTo(result, R(wrapped));
+        _e.Jump(end);
+        _e.SetBlock(end);
+        return result;
+    }
+
     /// <summary>The object when it is of the type, null otherwise: what `as` answers.</summary>
     private VReg AsType(VReg obj, TypeSymbol want)
     {
+        if (ComWrap(want) is MethodSymbol comWrap)
+        {
+            return ComAs(obj, want, comWrap);
+        }
         VReg test = TypeTest(obj, want);
         VReg result = _f.NewReg(IrTypes.Word, "as");
         Block yes = _f.NewBlock("asyes");
@@ -2115,6 +2209,22 @@ public sealed partial class Lowering
     /// <summary>A cast that is not a reinterpretation: null passes, anything else must be the type.</summary>
     private VReg CheckedCast(Node at, VReg obj, TypeSymbol want)
     {
+        // A COM object cast to a [ComImport] interface: its wrapper, or
+        // InvalidCastException when it has none to give (E_NOINTERFACE).
+        if (ComWrap(want) is MethodSymbol comWrap)
+        {
+            VReg wrapped = ComAs(obj, want, comWrap);
+            Block given = _f.NewBlock("comgiven");
+            Block asked = _f.NewBlock("comasked");
+            Block refused = _f.NewBlock("comrefused");
+            _e.Branch(obj, asked, given);
+            _e.SetBlock(asked);
+            _e.Branch(wrapped, given, refused);
+            _e.SetBlock(refused);
+            CastFailed(obj, new Type { Prim = Prim.Void, Symbol = want });
+            _e.SetBlock(given);
+            return wrapped;
+        }
         Block check = _f.NewBlock("castck");
         Block ok = _f.NewBlock("castok");
         Block bad = _f.NewBlock("castbad");
@@ -3099,6 +3209,10 @@ public sealed partial class Lowering
                 case NameExpr when _b.Resolved.TryGetValue(a.Target, out Sym? resolved)
                                    && resolved is CapturedPropertyGetSym captured:
                     receiver = _e.Load(IrTypes.Word, _this!, captured.Holder.Offset);
+                    break;
+                case NameExpr when _b.Resolved.TryGetValue(a.Target, out Sym? resolved)
+                                   && resolved is PropertySetSym { Holder: { } holder }:
+                    receiver = _e.Load(IrTypes.Word, _this!, holder.Offset);
                     break;
                 case NameExpr:
                     receiver = _this;

@@ -127,10 +127,133 @@ enum SeatIoctl : long
     InspectReply16 = 0x4755005D,
     InspectRead16 = 0x4755005E,
     AdapterInfo16 = 0x4755005F,
+    ClipboardOpen = 0x47550060,
+    ClipboardClose = 0x47550061,
+    ClipboardWatch = 0x47550062,
+    FontFamilies = 0x47550063,
+    FontMatch = 0x47550064,
+    TimerSet = 0x47550090,
+    TimerKill = 0x47550091,
+    CaretCreate = 0x47550092,
+    CaretShow = 0x47550093,
+    CaretMove = 0x47550094,
+    CaretDestroy = 0x47550095,
+    CaretBlinkTime = 0x47550096,
+    HotKeyRegister = 0x47550097,
+    HotKeyUnregister = 0x47550098,
+    Atom16 = 0x47550099,
+    PropSet = 0x4755009A,
+    PropGet = 0x4755009B,
+    PropRemove = 0x4755009C,
+    PropList = 0x4755009D,
+    ForegroundAllow = 0x4755009E,
+    ForegroundLock = 0x4755009F,
+    // Scroll bars the seat draws and tracks (seatscroll.cor).
+    ScrollBarPlace = 0x47550700,
+    ScrollBarSet = 0x47550701,
+    ScrollBarGet = 0x47550702,
+    ScrollBarEnable = 0x47550703,
+    ScrollBarDestroy = 0x47550704,
+    ScrollBarPaint = 0x47550705,
+    ThemeColours = 0x47550080,
+    ThemeMetrics = 0x47550081,
+    ThemeFont = 0x47550082,
+    ThemeSetting = 0x47550083,
+    ThemeSetColours = 0x47550084,
+    ThemeSetFont = 0x47550085,
+    ThemeSetSetting = 0x47550086,
+    ThemeSetSizes = 0x47550087,
+    // Icons and cursors, the GUI kernel's objects (images.cor).
+    ImageLoad = 0x47550400,
+    ImageSystem = 0x47550401,
+    ImageCreate = 0x47550402,
+    ImageDestroy = 0x47550403,
+    ImageInfo = 0x47550404,
+    ImagePixels = 0x47550405,
+    CursorWear = 0x47550406,
+    FrameIconImage = 0x47550407,
+    WindowIcon = 0x47550408,
+    // A menu run ended from the program (EndMenu); a tree's keys, which the
+    // seat answers with the tree's Command (seataccelerators.cor).
+    MenuEnd = 0x47550202,
+    MenuKeys = 0x47550206,
+    KeyboardList = 0x47550101,
+    KeyboardInstalled = 0x47550102,
+    KeyboardName = 0x47550103,
+    KeyboardActive = 0x47550104,
+    KeyboardActivate = 0x47550105,
+    KeyboardLoad = 0x47550106,
+    KeyboardUnload = 0x47550107,
+    KeyboardDefault = 0x47550108,
+    KeyboardSetDefault = 0x47550109,
+    KeyboardKeyName = 0x4755010A,
+    KeyboardMapKey = 0x4755010B,
+    KeyboardAttributes = 0x4755010C,
+    KeyboardSetAttributes = 0x4755010D,
+    KeyboardHotKey = 0x4755010E,
+    KeyboardSetHotKey = 0x4755010F,
+    KeyboardHandle = 0x47550110,
+    KeyState = 0x47550500,
+    AsyncKeyState = 0x47550501,
+    KeyboardState = 0x47550502,
+    Capture = 0x47550503,
+    GetCapture = 0x47550504,
+    ClickActivation = 0x47550505,
+    DoubleClicks = 0x47550506,
+    HitCursor = 0x47550507,
+    ShellWatch = 0x47550600,
+    ShellWindowIcon = 0x47550601,
+    DesktopPaint = 0x47550602,
+    FlashWindow = 0x47550603,
+    AnimateCaption = 0x47550604,
+    WindowPixels = 0x47550605,
+    ShellWindowTitle = 0x47550606,
+    // The display and layered windows (seatdisplay.cor, seatlayers.cor).
+    ModeTry = 0x47550A00,
+    ModeKeep = 0x47550A01,
+    ModeRevert = 0x47550A02,
+    MonitorInfo = 0x47550A03,
+    Layer = 0x47550A04,
+    LayerPixels = 0x47550A05,
+    TapOpen = 0x47550800,
+    TapClose = 0x47550801,
+    TapItem = 0x47550802,
+    TapAnswer = 0x47550803,
+    TapRecorded = 0x47550804,
+    TapPlayNext = 0x47550805,
+    TapPlay = 0x47550806,
+    InjectInput = 0x47550807,
+    // A printed page (the GUI kernel's seatprint.cor): an unshown window the
+    // size of a print job's paper, drawn on like any, handed to the spooler.
+    PageCreate = 0x47550900,
+    PageSubmit = 0x47550901,
+    PageDiscard = 0x47550902,
+    // Drag and drop, the seat's (seatdrag.cor).
+    DropRegister = 0x47550B00,
+    DropRevoke = 0x47550B01,
+    DragBegin = 0x47550B02,
+    DragPut = 0x47550B03,
+    DragAnswer = 0x47550B04,
+    DragGet = 0x47550B05,
+    DragDone = 0x47550B06,
+    DragFormats = 0x47550B07,
+    DragCancel = 0x47550B08,
+    DragBridgeTarget = 0x47550B09,
+    DragBridgeAnswer = 0x47550B0A,
+    DragBridgeDone = 0x47550B0B,
 }
 
-public class Seat : IDrawingTarget
+public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPageTarget
 {
+    // The font store's door for System.Drawing, which cannot name the seat
+    // (it is the library below this one): set when this class is first
+    // touched, which Forms' Application does at its own start.
+    static readonly bool _fontsLinked = LinkFonts();
+    static bool LinkFonts() { FontStores.Open = OpenFonts; return true; }
+    static IFontStore? OpenFonts() { return Current; }
+    /// Forms' start: the font store reachable before any Font is made.
+    public static void LinkFontStore() { FontStores.Open = OpenFonts; }
+
     static Seat? _current;
     public static Seat Current
     {
@@ -277,6 +400,7 @@ public class Seat : IDrawingTarget
     Dictionary<int, byte[]> _animations = new Dictionary<int, byte[]>();   // the whole AnimateCursor record
     List<long> _watchesWindows = new List<long>();     // threads that asked, by id
     List<long> _watchesPointer = new List<long>();
+    List<long> _watchesShell = new List<long>();       // threads subscribed to the shell feed
     int _reservedBottom = -1;
 
     /// Under _keep.
@@ -302,7 +426,7 @@ public class Seat : IDrawingTarget
         int[] bindShapes, bindIds;
         byte[][] animations;
         int reserved;
-        bool watchWindows, watchPointer;
+        bool watchWindows, watchPointer, watchShell;
         List<Kept> mine = new List<Kept>();
         List<TrayKept> trays = new List<TrayKept>();
         lock (_keep)
@@ -329,6 +453,7 @@ public class Seat : IDrawingTarget
             }
             reserved = _reservedBottom;
             watchWindows = _watchesWindows.Contains(me);
+            watchShell = _watchesShell.Contains(me);
             watchPointer = _watchesPointer.Contains(me);
             foreach (TrayKept t in _trayKept) if (t.Owner == me) trays.Add(t);
             for (int i = 0; i < _kept.Count; i++)
@@ -355,7 +480,11 @@ public class Seat : IDrawingTarget
         List<byte[]> trees;
         lock (_keep) trees = new List<byte[]>(_menuTrees.Values);
         foreach (byte[] tree in trees) Ioctl(SeatIoctl.MenuSet, Sys.ArrayData(tree));
+        List<byte[]> keys;
+        lock (_keep) keys = new List<byte[]>(_menuKeys.Values);
+        foreach (byte[] table in keys) Ioctl(SeatIoctl.MenuKeys, Sys.ArrayData(table));
         if (watchWindows) Ioctl(SeatIoctl.WatchWindows, 0);
+        if (watchShell) Ioctl(SeatIoctl.ShellWatch, 1);
         if (watchPointer) Ioctl(SeatIoctl.WatchPointer, 0);
         foreach (TrayKept t in trays) { Ioctl(SeatIoctl.TraySet16, Sys.ArrayData(t.Record)); GC.KeepAlive(t.Tip); }
 
@@ -421,6 +550,9 @@ public class Seat : IDrawingTarget
         // is what lets a program say so and stop, rather than failing at its
         // first window and being started again for ever.
         if (Width <= 0 || Height <= 0) throw new IOException("seat " + path + " has no screen");
+        // The system's colours and fonts (System.Drawing's SystemColors and
+        // SystemFonts) are this seat's theme from here on.
+        SystemTheme.Source = this;
     }
 
     /// <summary>One mode this display can be put into.</summary>
@@ -452,6 +584,7 @@ public class Seat : IDrawingTarget
         _used = 0;              // whatever was half-built described the old screen
         _named = false;
         _clipOn = false;
+        ForgetGeometry();
     }
 
     /// <summary>
@@ -516,6 +649,90 @@ public class Seat : IDrawingTarget
         Sys.PokeWord(at + 8, refresh);
         Sys.PokeWord(at + 12, bits);
         return Ioctl(SeatIoctl.SetModeExact, at) == 0;
+    }
+
+    /// A MODE TRIED, as desk.cpl tries one: set now, and put back by the
+    /// seat itself unless KeepMode comes within `seconds` (0: 15) -- so a
+    /// mode the monitor cannot show undoes itself with nobody able to see
+    /// to answer. ModeTrialEnded says how it ended. False for a mode the
+    /// display does not have, or while another program's trial runs.
+    public bool TryMode(int width, int height, int refresh, int bits, int seconds)
+    {
+        Flush();
+        byte[] request = new byte[20];
+        long at = Sys.ArrayData(request);
+        Sys.PokeWord(at, width); Sys.PokeWord(at + 4, height); Sys.PokeWord(at + 8, refresh);
+        Sys.PokeWord(at + 12, bits); Sys.PokeWord(at + 16, seconds);
+        return Ioctl(SeatIoctl.ModeTry, at) == 0;
+    }
+
+    /// The mode tried kept ("Keep these settings").
+    public bool KeepMode() { return Ioctl(SeatIoctl.ModeKeep, 0) == 0; }
+
+    /// The mode tried given up now, the one before back.
+    public bool RevertMode() { return Ioctl(SeatIoctl.ModeRevert, 0) == 0; }
+
+    /// The trial is over (an event's kind): A 1 kept, 0 put back. And the
+    /// work area changed: A its height.
+    public const int WorkAreaChanged = 280, ModeTrialEnded = 281;
+
+    /// <summary>One monitor as the seat describes it.</summary>
+    public struct SeatMonitor
+    {
+        public int X, Y, Width, Height;
+        public int WorkX, WorkY, WorkWidth, WorkHeight;
+        public int Bits, Refresh;
+        public bool Primary;
+    }
+
+    /// Monitor `index` (0 the first); false past the last.
+    public bool MonitorAt(int index, out SeatMonitor monitor)
+    {
+        monitor = new SeatMonitor();
+        byte[] info = new byte[48];
+        long at = Sys.ArrayData(info);
+        Sys.PokeWord(at, index);
+        if (Ioctl(SeatIoctl.MonitorInfo, at) <= 0) return false;
+        monitor.X = (int)Sys.PeekWord(at + 4); monitor.Y = (int)Sys.PeekWord(at + 8);
+        monitor.Width = (int)Sys.PeekWord(at + 12); monitor.Height = (int)Sys.PeekWord(at + 16);
+        monitor.WorkX = (int)Sys.PeekWord(at + 20); monitor.WorkY = (int)Sys.PeekWord(at + 24);
+        monitor.WorkWidth = (int)Sys.PeekWord(at + 28); monitor.WorkHeight = (int)Sys.PeekWord(at + 32);
+        monitor.Bits = (int)Sys.PeekWord(at + 36); monitor.Refresh = (int)Sys.PeekWord(at + 40);
+        monitor.Primary = (Sys.PeekWord(at + 44) & 1) != 0;
+        return true;
+    }
+
+    /// How many monitors there are.
+    public int MonitorCount()
+    {
+        byte[] info = new byte[48];
+        long answer = Ioctl(SeatIoctl.MonitorInfo, Sys.ArrayData(info));
+        return answer > 0 ? (int)answer : 1;
+    }
+
+    /// A window layered: composed over what is under it with a constant
+    /// `alpha` (255 opaque), `colourKey` (a COLORREF, -1 none) not drawn,
+    /// its own per-pixel alpha with `perPixel`, and the pointer passing
+    /// through with `clickThrough` -- SetLayeredWindowAttributes' work. Not
+    /// `on`: an ordinary window again.
+    public void SetLayer(int window, bool on, int alpha, int colourKey, bool perPixel, bool clickThrough)
+    {
+        Flush(); Select(window);
+        byte[] args = new byte[12];
+        PutWord(args, 0, (on ? 1 : 0) | (perPixel ? 2 : 0) | (clickThrough ? 4 : 0)); PutWord(args, 4, alpha); PutWord(args, 8, colourKey);
+        Ioctl(SeatIoctl.Layer, Sys.ArrayData(args));
+    }
+
+    /// UpdateLayeredWindow's native equivalent: the window shown as this
+    /// picture -- 0xAARRGGBB, premultiplied, top row first -- with its own
+    /// alpha per pixel, from now on.
+    public void SetLayerPixels(int window, int width, int height, int[] argb)
+    {
+        Flush();
+        byte[] args = new byte[16];
+        PutWord(args, 0, window); PutWord(args, 4, width); PutWord(args, 8, height); PutWord(args, 12, Sys.ArrayData(argb));
+        Ioctl(SeatIoctl.LayerPixels, Sys.ArrayData(args));
+        GC.KeepAlive(argb);
     }
 
     /// The refresh rate in use, or zero where the card chose it.
@@ -633,14 +850,643 @@ public class Seat : IDrawingTarget
     /// next moves, if the user has "Hide pointer while typing" on.
     public void VanishPointer() { Ioctl(SeatIoctl.VanishPointer, 0); }
 
+    // ---- the theme --------------------------------------------------------------
+    //
+    // THE GUI KERNEL'S ONE (os/gui/theme.cor), which Windows programs read as
+    // GetSysColor, GetSystemMetrics and SystemParametersInfo: colours by
+    // Windows' COLOR_ number as 0x00RRGGBB, metrics by SM_ number, the
+    // non-client fonts (0 caption, 1 small caption, 2 menu, 3 status, 4
+    // message, 5 icon title), and the desktop's settings (0 wallpaper, 1 its
+    // style, 2 tiled, 3 the pattern, 4 windows dragged whole, 5 flat menus,
+    // 6 font smoothing, 7 gradient captions). Every change is sent to every
+    // program as ThemeChanged (event 36), its A what moved (1 colours, 2
+    // metrics, 4 fonts, 8 the desktop), then as SettingChange. A change made
+    // with `persist` is kept in the user's registry.
+
+    /// The event the theme sends.
+    public const int ThemeChanged = 36;
+
+    /// The input taps' events (seattaps.cor): an input held for the tap to
+    /// observe (TapInput, A its sequence, B the kind -- 1 keys, 2 pointer),
+    /// an input routed and ready to read (TapRecord), the seat wanting the
+    /// next input to play (TapPlayback), and the record or playback tap told
+    /// to end (TapCancelled, A the kind).
+    public const int TapInput = 240, TapRecord = 241, TapPlayback = 242, TapCancelled = 243;
+
+    /// The colours, 0x00RRGGBB, by COLOR_ number; null on failure.
+    public int[]? ThemeColours() { return Words(SeatIoctl.ThemeColours); }
+
+    /// The metrics, by SM_ number; null on failure.
+    public int[]? ThemeMetrics() { return Words(SeatIoctl.ThemeMetrics); }
+
+    int[]? Words(SeatIoctl request)
+    {
+        byte[] args = new byte[8];
+        long count = Ioctl(request, Sys.ArrayData(args));
+        if (count <= 0) return null;
+        byte[] list = new byte[(int)count * 4];
+        PutWord(args, 0, Sys.ArrayData(list)); PutWord(args, 4, count);
+        long again = Ioctl(request, Sys.ArrayData(args));
+        GC.KeepAlive(list);
+        if (again != count) return null;
+        int[] made = new int[(int)count];
+        for (int i = 0; i < made.Length; i++) made[i] = BitConverter.ToInt32(list, i * 4);
+        return made;
+    }
+
+    /// A non-client font: its face, height in pixels (negative: the em),
+    /// weight, and style bits (1 italic, 2 underline, 4 strikeout).
+    public bool ThemeFont(int kind, out string face, out int height, out int weight, out int flags)
+    {
+        face = ""; height = 0; weight = 0; flags = 0;
+        byte[] record = new byte[96];
+        byte[] args = new byte[12];
+        PutWord(args, 0, kind); PutWord(args, 4, Sys.ArrayData(record)); PutWord(args, 8, record.Length);
+        long size = Ioctl(SeatIoctl.ThemeFont, Sys.ArrayData(args));
+        GC.KeepAlive(record);
+        if (size != record.Length) return false;
+        height = BitConverter.ToInt32(record, 0);
+        weight = BitConverter.ToInt32(record, 8);
+        flags = BitConverter.ToInt32(record, 12);
+        int n = BitConverter.ToInt32(record, 28);
+        if (n < 0 || n > 31) return false;
+        face = System.Text.Encoding.Unicode.GetString(record, 32, n * 2);
+        return true;
+    }
+
+    /// The colours and fonts, as System.Drawing asks (ISystemTheme).
+    public int[]? SystemColourTable() { return ThemeColours(); }
+    public bool SystemFont(int kind, out string face, out int height, out int weight, out int flags) { return ThemeFont(kind, out face, out height, out weight, out flags); }
+
+    /// A desktop setting's number: windows dragged whole and the rest 1 on.
+    public long ThemeSetting(int setting)
+    {
+        byte[] args = new byte[12];
+        PutWord(args, 0, setting);
+        return Ioctl(SeatIoctl.ThemeSetting, Sys.ArrayData(args));
+    }
+
+    /// A text setting's text: the wallpaper's path or the pattern, "(None)"
+    /// for none.
+    public string ThemeText(int setting)
+    {
+        byte[] args = new byte[12];
+        PutWord(args, 0, setting);
+        long length = Ioctl(SeatIoctl.ThemeSetting, Sys.ArrayData(args));
+        if (length <= 0) return "";
+        byte[] text = new byte[(int)length * 2];
+        PutWord(args, 4, Sys.ArrayData(text)); PutWord(args, 8, length);
+        long again = Ioctl(SeatIoctl.ThemeSetting, Sys.ArrayData(args));
+        GC.KeepAlive(text);
+        return again == length ? System.Text.Encoding.Unicode.GetString(text) : "";
+    }
+
+    /// Colours set: COLOR_ numbers and 0x00RRGGBB values.
+    public bool SetThemeColours(int[] indices, int[] colours, bool persist)
+    {
+        int n = Math.Min(indices.Length, colours.Length);
+        byte[] which = new byte[n * 4], values = new byte[n * 4];
+        for (int i = 0; i < n; i++) { PutWord(which, i * 4, indices[i]); PutWord(values, i * 4, colours[i]); }
+        byte[] args = new byte[16];
+        PutWord(args, 0, n); PutWord(args, 4, Sys.ArrayData(which)); PutWord(args, 8, Sys.ArrayData(values)); PutWord(args, 12, persist ? 1 : 0);
+        long answer = Ioctl(SeatIoctl.ThemeSetColours, Sys.ArrayData(args));
+        GC.KeepAlive(which); GC.KeepAlive(values);
+        return answer == 0;
+    }
+
+    /// A non-client font set.
+    public bool SetThemeFont(int kind, string face, int height, int weight, int flags, bool persist)
+    {
+        byte[] record = new byte[96];
+        PutWord(record, 0, height); PutWord(record, 8, weight); PutWord(record, 12, flags);
+        int n = Math.Min(face.Length, 31);
+        PutWord(record, 28, n);
+        for (int i = 0; i < n; i++) { record[32 + i * 2] = (byte)face[i]; record[33 + i * 2] = (byte)(face[i] >> 8); }
+        byte[] args = new byte[12];
+        PutWord(args, 0, kind); PutWord(args, 4, Sys.ArrayData(record)); PutWord(args, 8, persist ? 1 : 0);
+        long answer = Ioctl(SeatIoctl.ThemeSetFont, Sys.ArrayData(args));
+        GC.KeepAlive(record);
+        return answer == 0;
+    }
+
+    /// A desktop setting set: a number, or a text setting's text.
+    public bool SetThemeSetting(int setting, long value, string? text, bool persist)
+    {
+        byte[] units = text != null ? System.Text.Encoding.Unicode.GetBytes(text) : new byte[0];
+        byte[] args = new byte[20];
+        PutWord(args, 0, setting); PutWord(args, 4, value); PutWord(args, 8, Sys.ArrayData(units));
+        PutWord(args, 12, units.Length / 2); PutWord(args, 16, persist ? 1 : 0);
+        long answer = Ioctl(SeatIoctl.ThemeSetSetting, Sys.ArrayData(args));
+        GC.KeepAlive(units);
+        return answer == 0;
+    }
+
+    /// The non-client sizes set, in pixels: border, scroll bar width and
+    /// height, caption button width and height, small caption's, menu's.
+    public bool SetThemeSizes(int[] sizes, bool persist)
+    {
+        if (sizes.Length != 9) return false;
+        byte[] args = new byte[40];
+        for (int i = 0; i < 9; i++) PutWord(args, i * 4, sizes[i]);
+        PutWord(args, 36, persist ? 1 : 0);
+        return Ioctl(SeatIoctl.ThemeSetSizes, Sys.ArrayData(args)) == 0;
+    }
+
     // ---- the clipboard --------------------------------------------------------
     //
-    // THE WINDOW STATION'S ONE, which Windows programs share: each call opens
-    // it, does one thing and closes it, as OpenClipboard(NULL) ...
-    // CloseClipboard would. Formats are Windows' numbers.
+    // THE GUI KERNEL'S ONE (os/gui/clipboard.cor), which Windows programs share
+    // through win32k. A format is named as a MIME type is -- text/plain;
+    // charset=utf-16, image/bmp, text/uri-list -- or by any name, and its
+    // number is the name's atom, the same in every program. A call made
+    // without OpenClipboard opens it, does one thing and closes it; a
+    // program that wants to promise formats and render them when asked opens
+    // it with one of its windows, empties it, promises, and closes it, and is
+    // then sent ClipboardRender (event 31) for each one somebody wants, which
+    // it answers with SetClipboardData of that format, and ClipboardLost (32)
+    // when somebody else empties it. WatchClipboard: ClipboardChanged (30) at
+    // every change, its A the sequence number.
 
-    /// RegisterClipboardFormat: the number a named format has, the same in
-    /// every program; 0 on failure.
+    /// The event kinds the clipboard sends.
+    public const int ClipboardChanged = 30, ClipboardRender = 31, ClipboardLost = 32;
+
+    // ---- the fonts -------------------------------------------------------------
+    //
+    // THE GUI KERNEL'S FONT STORE (os/gui/fontstore.cor) indexes every font
+    // directory -- the native one and a Windows installation's Fonts -- and
+    // answers which families there are and which face answers a request, as
+    // CSS matches one: the family, the families that stand in for it, its
+    // kind's defaults; then stretch, slant and weight; and a character the
+    // face must draw, for a missing glyph's fallback. A program maps the
+    // face's file itself (its path is in the record): one font engine, the
+    // store's choice. FontsChanged (event 33, A the index's generation) comes
+    // to every program when a font directory changes.
+
+    /// The event the font store sends.
+    public const int FontsChanged = 33;
+
+    /// Every installed family, each once, sorted without case; scalable
+    /// faces' families only with `scalableOnly`.
+    public string[] FontFamilies(bool scalableOnly)
+    {
+        byte[] args = new byte[12];
+        PutWord(args, 8, scalableOnly ? 1 : 0);
+        long size = Ioctl(SeatIoctl.FontFamilies, Sys.ArrayData(args));
+        while (size > 0)
+        {
+            byte[] list = new byte[(int)size];
+            PutWord(args, 0, Sys.ArrayData(list)); PutWord(args, 4, list.Length);
+            long again = Ioctl(SeatIoctl.FontFamilies, Sys.ArrayData(args));
+            GC.KeepAlive(list);
+            if (again == size)
+            {
+                List<string> names = new List<string>();
+                int at = 0;
+                while (at + 4 <= list.Length) names.Add(FontText(list, ref at));
+                return names.ToArray();
+            }
+            size = again;
+        }
+        return new string[0];
+    }
+
+    /// The face the font store gives for a family (or a generic name --
+    /// serif, sans-serif, monospace, cursive, fantasy -- or "" for the
+    /// default), a weight (100-900), a slant, a stretch (1-9, 5 normal) and,
+    /// when not 0, a character it must draw; null when no face will do.
+    public SeatFont? MatchFont(string family, int weight, bool italic, int stretch, int character, bool scalableOnly)
+    {
+        char[] name = family.ToCharArray();
+        byte[] text = new byte[name.Length * 2 + 2];
+        for (int i = 0; i < name.Length; i++) { text[i * 2] = (byte)name[i]; text[i * 2 + 1] = (byte)(name[i] >> 8); }
+        byte[] args = new byte[32];
+        PutWord(args, 0, Sys.ArrayData(text)); PutWord(args, 4, name.Length);
+        PutWord(args, 8, weight); PutWord(args, 12, (italic ? 1 : 0) | (scalableOnly ? 2 : 0));
+        PutWord(args, 16, stretch); PutWord(args, 20, character);
+        long size = Ioctl(SeatIoctl.FontMatch, Sys.ArrayData(args));
+        while (size > 0)
+        {
+            byte[] record = new byte[(int)size];
+            PutWord(args, 24, Sys.ArrayData(record)); PutWord(args, 28, record.Length);
+            long again = Ioctl(SeatIoctl.FontMatch, Sys.ArrayData(args));
+            GC.KeepAlive(record);
+            if (again == size)
+            {
+                GC.KeepAlive(text);
+                return ParseFont(record);
+            }
+            size = again;
+        }
+        GC.KeepAlive(text);
+        return null;
+    }
+
+    /// One of the store's texts: a word of its length in UTF-16 units, the
+    /// units, padded to a word.
+    internal static SeatFont? ParseFont(byte[] r)
+    {
+        if (r.Length < 28) return null;
+        SeatFont f = new SeatFont();
+        f.Weight = FontWord(r, 0);
+        f.Stretch = FontWord(r, 4);
+        int flags = FontWord(r, 8);
+        f.Italic = (flags & 1) != 0; f.Oblique = (flags & 2) != 0; f.Monospace = (flags & 4) != 0;
+        f.Symbol = (flags & 8) != 0; f.Scalable = (flags & 16) != 0;
+        f.Generic = FontWord(r, 12);
+        f.Index = FontWord(r, 16);
+        f.Generation = FontWord(r, 20);
+        int sizes = FontWord(r, 24);
+        int at = 28;
+        if (sizes < 0 || at + sizes * 4 > r.Length) return null;
+        f.BitmapSizes = new int[sizes];
+        for (int i = 0; i < sizes; i++) { f.BitmapSizes[i] = FontWord(r, at); at += 4; }
+        f.Family = FontText(r, ref at);
+        f.Style = FontText(r, ref at);
+        f.FullName = FontText(r, ref at);
+        f.Path = FontText(r, ref at);
+        return f;
+    }
+
+    static int FontWord(byte[] b, int at) { return b[at] | (b[at + 1] << 8) | (b[at + 2] << 16) | (b[at + 3] << 24); }
+
+    internal static string FontText(byte[] b, ref int at)
+    {
+        int length = b[at] | (b[at + 1] << 8) | (b[at + 2] << 16) | (b[at + 3] << 24);
+        at += 4;
+        char[] chars = new char[length];
+        for (int i = 0; i < length && at + i * 2 + 1 < b.Length; i++) chars[i] = (char)(b[at + i * 2] | (b[at + i * 2 + 1] << 8));
+        at += (length * 2 + 3) & ~3;
+        return new string(chars);
+    }
+
+    // ---- the window services ------------------------------------------------------
+    //
+    // THE GUI KERNEL'S OWN (os/gui/seatservices.cor): timers the seat fires,
+    // the system caret the seat draws and blinks, hot keys the seat matches
+    // before any program sees the key, a window's properties, and the
+    // foreground's rules. A Windows program has the same ones through win32k.
+
+    /// A timer come due (its window, A its id, B 1 for a system timer); a hot
+    /// key pressed (its window, A its id, B the MOD_ bits | the key << 16).
+    public const int TimerElapsed = 34, HotKeyPressed = 35;
+
+    // ---- scroll bars the seat draws and tracks ----------------------------------------
+    //
+    // A window's bars: its frame's (FrameHorizontal 0, FrameVertical 1, from
+    // WS_HSCROLL and WS_VSCROLL in its frame style) and widgets placed in it
+    // (2 and up, NextScrollBarId). The seat draws them in the theme as
+    // Windows 2000 does and tracks a press on one -- arrows and page areas
+    // repeating, the thumb following the pointer -- and says each step with a
+    // ScrollEvent: its window, A the bar | the SB_ command << 16 (SB_LINEUP 0
+    // ... SB_THUMBPOSITION 4, SB_THUMBTRACK 5, SB_TOP 6, SB_BOTTOM 7,
+    // SB_ENDSCROLL 8), B the position (the thumb's while it is held). The
+    // position is the program's to set (SetScrollBar).
+
+    public const int ScrollEvent = 220;
+    public const int FrameHorizontal = 0, FrameVertical = 1;
+    /// SCROLLINFO's mask bits, for SetScrollBar.
+    public const int ScrollRange = 1, ScrollPage = 2, ScrollPos = 4, ScrollReturnOldPos = 0x1000;
+
+    static int _nextScrollBar = 2;
+    static readonly object _scrollLock = new object();
+
+    /// A new widget bar's id, unique in this program.
+    public static int NextScrollBarId() { lock (_scrollLock) { int id = _nextScrollBar; _nextScrollBar = _nextScrollBar >= 0x7FFFFFF0 ? 2 : _nextScrollBar + 1; return id; } }
+
+    long ScrollCall(SeatIoctl request, int window, int id, long a, long b, long c, long d, long e, long f, byte[]? back)
+    {
+        byte[] args = back ?? new byte[32];
+        PutWord(args, 0, window); PutWord(args, 4, id); PutWord(args, 8, a); PutWord(args, 12, b);
+        PutWord(args, 16, c); PutWord(args, 20, d); PutWord(args, 24, e); PutWord(args, 28, f);
+        return Ioctl(request, Sys.ArrayData(args));
+    }
+
+    /// A widget bar in `window` at (x, y), width by height on its surface,
+    /// across or up and down; hidden, it is neither drawn nor pressed.
+    public void PlaceScrollBar(int window, int id, int x, int y, int width, int height, bool vertical, bool hidden)
+    {
+        ScrollCall(SeatIoctl.ScrollBarPlace, window, id, x, y, width, height, (vertical ? 1 : 0) | (hidden ? 2 : 0), 0, null);
+    }
+
+    /// SetScrollInfo's rules on a bar: what `mask` names of min, max, page
+    /// and pos stored; drawn again with `redraw`. The position it has now.
+    public int SetScrollBar(int window, int id, int mask, int min, int max, int page, int pos, bool redraw)
+    {
+        return (int)ScrollCall(SeatIoctl.ScrollBarSet, window, id, mask, min, max, page, pos, redraw ? 1 : 0, null);
+    }
+
+    /// A bar's range, page, position, the thumb's tracking position and the
+    /// ESB_ bits of its arrows; false when there is no such bar.
+    public bool GetScrollBar(int window, int id, out int min, out int max, out int page, out int pos, out int trackPos, out int disabled)
+    {
+        byte[] args = new byte[32];
+        bool ok = ScrollCall(SeatIoctl.ScrollBarGet, window, id, 0, 0, 0, 0, 0, 0, args) == 0;
+        min = Word(args, 8); max = Word(args, 12); page = Word(args, 16); pos = Word(args, 20); trackPos = Word(args, 24); disabled = Word(args, 28);
+        return ok;
+    }
+
+    /// A bar's arrows on or off (ESB_: 1 the first, 2 the second, 3 both).
+    public bool EnableScrollBar(int window, int id, int arrows)
+    {
+        return ScrollCall(SeatIoctl.ScrollBarEnable, window, id, arrows, 0, 0, 0, 0, 0, null) == 1;
+    }
+
+    public void DestroyScrollBar(int window, int id) { ScrollCall(SeatIoctl.ScrollBarDestroy, window, id, 0, 0, 0, 0, 0, 0, null); }
+
+    /// A bar drawn now, over what this program has drawn there: the drawing
+    /// so far goes first.
+    public void PaintScrollBar(int window, int id)
+    {
+        Flush();
+        ScrollCall(SeatIoctl.ScrollBarPaint, window, id, 0, 0, 0, 0, 0, 0, null);
+    }
+
+    // ---- drag and drop, the seat's ------------------------------------------------------
+    //
+    // Shaped as OLE's: a window a drop target, a drag started with the
+    // effects allowed (DROPEFFECT_COPY 1, MOVE 2, LINK 4) and data by
+    // clipboard format, the seat's modal loop telling the target under the
+    // pointer, the target answering with the effect it would take, the drop,
+    // and the source told what was done. A Windows program's ole32 reaches a
+    // native drop target through the COM broker when the window is
+    // registered with the broker's cookie for its endpoint (an
+    // IInterfaceFromWindowProp, ComOle.cor), and a native drag reaches a
+    // Windows program's window the same way the other round (the
+    // DragBridge events).
+
+    /// To a target: A the MK_ key state | the allowed effects << 16, B x | y
+    /// << 16 on the screen. To the source: DragEnded (A the effect done),
+    /// DragRender (A a format wanted now), DragFeedback (A the effect shown).
+    public const int DragEnterEvent = 300, DragOverEvent = 301, DragLeaveEvent = 302, DragDropEvent = 303;
+    public const int DragEndedEvent = 304, DragRenderEvent = 305, DragFeedbackEvent = 306;
+    /// To the source, when the window under the pointer is a Windows
+    /// program's drop target: the same words as DragEnter ... DragDrop, for
+    /// it to carry to that window's ole32 (IInterfaceFromWindowProp::
+    /// PrivDragDrop) and answer with DragBridgeAnswer and DragBridgeDone.
+    public const int DragBridgeEnterEvent = 307, DragBridgeOverEvent = 308, DragBridgeLeaveEvent = 309, DragBridgeDropEvent = 310;
+
+    /// The window a drop target; `cookie` the COM broker's for its endpoint
+    /// (the COM runtime's IInterfaceFromWindowProp), 0 none.
+    public void RegisterDropTarget(int window, long cookie)
+    {
+        byte[] args = new byte[8];
+        PutWord(args, 0, window); PutWord(args, 4, cookie);
+        Ioctl(SeatIoctl.DropRegister, Sys.ArrayData(args));
+    }
+
+    public void RevokeDropTarget(int window) { Ioctl(SeatIoctl.DropRevoke, window); }
+
+    /// A drag from `window`: the effects allowed and the formats offered.
+    /// The seat's loop has the pointer from now until DragEnded.
+    public bool BeginDrag(int window, int effects, int[] formats)
+    {
+        Flush();
+        byte[] args = new byte[16];
+        PutWord(args, 0, window); PutWord(args, 4, effects); PutWord(args, 8, formats.Length); PutWord(args, 12, Sys.ArrayData(formats));
+        bool ok = Ioctl(SeatIoctl.DragBegin, Sys.ArrayData(args)) == 0;
+        GC.KeepAlive(formats);
+        return ok;
+    }
+
+    /// The source's data for a format of its drag.
+    public void PutDragData(int format, byte[] data)
+    {
+        byte[] args = new byte[12];
+        PutWord(args, 0, format); PutWord(args, 4, Sys.ArrayData(data)); PutWord(args, 8, data.Length);
+        Ioctl(SeatIoctl.DragPut, Sys.ArrayData(args));
+        GC.KeepAlive(data);
+    }
+
+    /// The target's answer to DragEnter or DragOver: the effect it would take.
+    public void AnswerDrag(int effect) { Ioctl(SeatIoctl.DragAnswer, effect); }
+
+    /// The target's answer to DragDrop: the effect it took.
+    public void DropDone(int effect) { Ioctl(SeatIoctl.DragDone, effect); }
+
+    public void CancelDrag() { Ioctl(SeatIoctl.DragCancel, 0); }
+
+    /// The COM broker's cookie for the endpoint of the Windows program's
+    /// window this program's drag is over (its "OleEndPointID"), its ole32
+    /// asked to make one first if it has none yet; 0 when there is none.
+    public long DragBridgeTarget(int window)
+    {
+        long cookie = Ioctl(SeatIoctl.DragBridgeTarget, window);
+        return cookie < 0 ? 0 : cookie;
+    }
+
+    /// What the Windows program's window would do with the drag (its answer
+    /// to DRAGOP_ENTER or DRAGOP_OVER), and what it did with the drop.
+    public void DragBridgeAnswer(int window, int effect) { BridgeWord(SeatIoctl.DragBridgeAnswer, window, effect); }
+    public void DragBridgeDone(int window, int effect) { BridgeWord(SeatIoctl.DragBridgeDone, window, effect); }
+
+    void BridgeWord(SeatIoctl request, int window, int effect)
+    {
+        byte[] args = new byte[8];
+        PutWord(args, 0, window); PutWord(args, 4, effect);
+        Ioctl(request, Sys.ArrayData(args));
+    }
+
+    /// The drag's formats.
+    public int[] DragFormatList()
+    {
+        int[] room = new int[64];
+        byte[] args = new byte[8];
+        PutWord(args, 0, Sys.ArrayData(room)); PutWord(args, 4, room.Length);
+        long n = Ioctl(SeatIoctl.DragFormats, Sys.ArrayData(args));
+        if (n > room.Length)
+        {
+            room = new int[(int)n];
+            PutWord(args, 0, Sys.ArrayData(room)); PutWord(args, 4, room.Length);
+            n = Ioctl(SeatIoctl.DragFormats, Sys.ArrayData(args));
+        }
+        GC.KeepAlive(room);
+        if (n <= 0) return new int[0];
+        int[] made = new int[(int)Math.Min(n, room.Length)];
+        Array.Copy(room, made, made.Length);
+        return made;
+    }
+
+    /// A format of the drag's, for its target: null when there is none (a
+    /// promise its source would not keep).
+    public byte[]? GetDragData(int format)
+    {
+        byte[] args = new byte[12];
+        PutWord(args, 0, format); PutWord(args, 4, 0); PutWord(args, 8, 0);
+        long n = Ioctl(SeatIoctl.DragGet, Sys.ArrayData(args));
+        if (n < 0) return null;
+        byte[] data = new byte[n];
+        if (n == 0) return data;
+        PutWord(args, 4, Sys.ArrayData(data)); PutWord(args, 8, data.Length);
+        long got = Ioctl(SeatIoctl.DragGet, Sys.ArrayData(args));
+        GC.KeepAlive(data);
+        return got == n ? data : null;
+    }
+
+    /// A timer on `window` (0: this thread's) every `milliseconds` (at least
+    /// 10), allowed to fire up to `tolerance` milliseconds early to go with
+    /// another; its id -- `id`, or a new one for a thread timer of id 0 -- or
+    /// 0 when it could not be made. Set again, it starts again.
+    public int SetTimer(int window, int id, int milliseconds, int tolerance, bool system)
+    {
+        byte[] args = new byte[20];
+        PutWord(args, 0, window); PutWord(args, 4, id); PutWord(args, 8, milliseconds); PutWord(args, 12, tolerance); PutWord(args, 16, system ? 1 : 0);
+        long answer = Ioctl(SeatIoctl.TimerSet, Sys.ArrayData(args));
+        return answer > 0 ? (int)answer : 0;
+    }
+
+    // ---- the input policy (the GUI kernel's seatinput.cor) ---------------------
+    //
+    // What a press, a move and a key mean is decided by the seat, once, for
+    // every program: a second press that makes a double click comes as
+    // DoubleClick (180) in place of its Down, in a window that takes them
+    // (SetDoubleClicks); the pointer coming over a window and leaving it as
+    // PointerEnter (181) and PointerLeave (182); a window losing its
+    // thread's capture as CaptureLost (183, A the window that has it now);
+    // a hit area of a window the pointer is over that has no shape given
+    // (SetHitCursor) as CursorSet (184, A the area -- 1 the client -- B the
+    // point in the window), answered with Cursor.
+
+    public const int DoubleClick = 180, PointerEnter = 181, PointerLeave = 182, CaptureLost = 183, CursorSet = 184;
+
+    /// GetKeyState: the key as the events this thread has read left it --
+    /// 0x80 down, 1 toggled.
+    public int KeyState(int vk) { long a = Ioctl(SeatIoctl.KeyState, vk & 0xFF); return a < 0 ? 0 : (int)a; }
+
+    /// GetAsyncKeyState: 0x8000 while the key is down now, 1 if it went down
+    /// since the last ask.
+    public int AsyncKeyState(int vk) { long a = Ioctl(SeatIoctl.AsyncKeyState, vk & 0xFF); return a < 0 ? 0 : (int)a; }
+
+    /// GetKeyboardState: every key, as KeyState answers it, into 256 bytes.
+    public bool KeyboardState(byte[] into)
+    {
+        if (into.Length < 256) throw new ArgumentException("256 bytes are needed", "into");
+        return Ioctl(SeatIoctl.KeyboardState, Sys.ArrayData(into)) >= 0;
+    }
+
+    /// SetCapture: the pointer is `window`'s -- with no button down, while
+    /// this thread has the foreground or the pointer is over one of its
+    /// windows -- or let go with 0. The window that had it, which is told
+    /// (CaptureLost).
+    public int SetCapture(int window) { long a = Ioctl(SeatIoctl.Capture, window); return a < 0 ? 0 : (int)a; }
+
+    /// GetCapture: this thread's capture window, 0 none.
+    public int GetCapture() { long a = Ioctl(SeatIoctl.GetCapture, 0); return a < 0 ? 0 : (int)a; }
+
+    /// A press's activation of `window`, as WM_MOUSEACTIVATE answers it: 1
+    /// activate (the default), 2 activate and keep the press from it, 3 do
+    /// not activate, 4 neither.
+    public bool SetClickActivation(int window, int answer)
+    {
+        byte[] args = new byte[8];
+        PutWord(args, 0, window); PutWord(args, 4, answer);
+        return Ioctl(SeatIoctl.ClickActivation, Sys.ArrayData(args)) == 0;
+    }
+
+    /// Whether a second press in `window` comes as DoubleClick (CS_DBLCLKS).
+    public bool SetDoubleClicks(int window, bool on)
+    {
+        byte[] args = new byte[8];
+        PutWord(args, 0, window); PutWord(args, 4, on ? 1 : 0);
+        return Ioctl(SeatIoctl.DoubleClicks, Sys.ArrayData(args)) == 0;
+    }
+
+    /// The shape `window` wears over hit area `area` (1 the client), -1 to
+    /// be asked (CursorSet).
+    public bool SetHitCursor(int window, int area, int shape)
+    {
+        byte[] args = new byte[12];
+        PutWord(args, 0, window); PutWord(args, 4, area); PutWord(args, 8, shape);
+        return Ioctl(SeatIoctl.HitCursor, Sys.ArrayData(args)) == 0;
+    }
+
+    public bool KillTimer(int window, int id, bool system)
+    {
+        byte[] args = new byte[12];
+        PutWord(args, 0, window); PutWord(args, 4, id); PutWord(args, 8, system ? 1 : 0);
+        return Ioctl(SeatIoctl.TimerKill, Sys.ArrayData(args)) == 0;
+    }
+
+    /// This thread's caret, in `window`, `width` by `height`: made hidden;
+    /// ShowCaret(true) shows it. The seat draws it and blinks it.
+    // THE DRAWING SO FAR GOES FIRST: the caret is inverted on what is in the
+    // window, and drawing still in this program's batch would land over it
+    // afterwards.
+    public bool CreateCaret(int window, int width, int height)
+    {
+        Flush();
+        byte[] args = new byte[12];
+        PutWord(args, 0, window); PutWord(args, 4, width); PutWord(args, 8, height);
+        return Ioctl(SeatIoctl.CaretCreate, Sys.ArrayData(args)) == 0;
+    }
+
+    /// One fewer hide (true) or one more (false), as ShowCaret and HideCaret.
+    public bool ShowCaret(bool show) { Flush(); return Ioctl(SeatIoctl.CaretShow, show ? 1 : 0) == 0; }
+    /// The caret to (x, y) in its window.
+    public bool MoveCaret(int x, int y) { Flush(); return Ioctl(SeatIoctl.CaretMove, (x & 0xFFFF) | ((long)(y & 0xFFFF) << 16)) == 0; }
+    public bool DestroyCaret() { Flush(); return Ioctl(SeatIoctl.CaretDestroy, 0) == 0; }
+    /// The caret's blink time in milliseconds; set, for every program.
+    public int CaretBlinkTime
+    {
+        get { return (int)Ioctl(SeatIoctl.CaretBlinkTime, 0); }
+        set { Ioctl(SeatIoctl.CaretBlinkTime, value > 0 ? value : 1); }
+    }
+
+    /// A hot key: `vk` with the MOD_ bits `modifiers` (Alt 1, Ctrl 2, Shift
+    /// 4, Win 8), for `window` (0: this thread). False when the key is
+    /// somebody's already or not one.
+    public bool RegisterHotKey(int window, int id, int modifiers, int vk)
+    {
+        byte[] args = new byte[16];
+        PutWord(args, 0, window); PutWord(args, 4, id); PutWord(args, 8, modifiers); PutWord(args, 12, vk);
+        return Ioctl(SeatIoctl.HotKeyRegister, Sys.ArrayData(args)) == 0;
+    }
+
+    public bool UnregisterHotKey(int window, int id)
+    {
+        byte[] args = new byte[8];
+        PutWord(args, 0, window); PutWord(args, 4, id);
+        return Ioctl(SeatIoctl.HotKeyUnregister, Sys.ArrayData(args)) == 0;
+    }
+
+    /// A name's atom, for a window property; 0 when it is not one.
+    public int Atom(string name)
+    {
+        byte[] text = System.Text.Encoding.Unicode.GetBytes(name);
+        byte[] args = new byte[8];
+        PutWord(args, 0, Sys.ArrayData(text)); PutWord(args, 4, name.Length);
+        long answer = Ioctl(SeatIoctl.Atom16, Sys.ArrayData(args));
+        GC.KeepAlive(text);
+        return answer > 0 ? (int)answer : 0;
+    }
+
+    /// A property on one of this program's windows (SetProp, GetProp,
+    /// RemoveProp), by atom.
+    public bool SetProperty(int window, int atom, int value)
+    {
+        byte[] args = new byte[12];
+        PutWord(args, 0, window); PutWord(args, 4, atom); PutWord(args, 8, value);
+        return Ioctl(SeatIoctl.PropSet, Sys.ArrayData(args)) == 0;
+    }
+
+    public bool GetProperty(int window, int atom, out int value) { return Property(SeatIoctl.PropGet, window, atom, out value); }
+    public bool RemoveProperty(int window, int atom, out int value) { return Property(SeatIoctl.PropRemove, window, atom, out value); }
+
+    bool Property(SeatIoctl request, int window, int atom, out int value)
+    {
+        byte[] args = new byte[12];
+        PutWord(args, 0, window); PutWord(args, 4, atom);
+        bool there = Ioctl(request, Sys.ArrayData(args)) == 0;
+        value = there ? args[8] | (args[9] << 8) | (args[10] << 16) | (args[11] << 24) : 0;
+        return there;
+    }
+
+    /// AllowSetForegroundWindow: the program `group` (-1 any) may take the
+    /// foreground from this one; false when this one could not itself.
+    public bool AllowSetForeground(int group) { return Ioctl(SeatIoctl.ForegroundAllow, group) == 0; }
+    /// LockSetForegroundWindow: no program takes the foreground until this
+    /// one unlocks it, the person presses Alt, or the foreground moves.
+    public bool LockSetForeground(bool locked) { return Ioctl(SeatIoctl.ForegroundLock, locked ? 1 : 2) == 0; }
+
+    /// The number a named format has, the same in every program; 0 on failure.
     public int RegisterClipboardFormat(string name)
     {
         byte[] text = System.Text.Encoding.Unicode.GetBytes(name);
@@ -651,9 +1497,9 @@ public class Seat : IDrawingTarget
         return answer > 0 ? (int)answer : 0;
     }
 
-    /// SetClipboardData with the bytes of a memory format, the clipboard
-    /// emptied first when `empty` (EmptyClipboard). False when another
-    /// program has it open.
+    /// A format's bytes put, replacing it where it is, the clipboard emptied
+    /// first when `empty`. False when another program has it open -- unless
+    /// this one is answering a ClipboardRender for the format.
     public bool SetClipboardData(int format, byte[] data, bool empty)
     {
         byte[] args = new byte[16];
@@ -663,8 +1509,28 @@ public class Seat : IDrawingTarget
         return answer == 0;
     }
 
-    /// GetClipboardData: a format's bytes -- a picture or text format the
-    /// clipboard makes from another as Windows makes it -- or null.
+    /// A format promised, with no bytes yet: rendered when somebody asks
+    /// (ClipboardRender to the window the clipboard was opened with). Only
+    /// in this program's own open clipboard, opened with a window.
+    public bool PromiseClipboardData(int format)
+    {
+        byte[] args = new byte[16];
+        PutWord(args, 0, format); PutWord(args, 12, 2);
+        return Ioctl(SeatIoctl.ClipboardSet, Sys.ArrayData(args)) == 0;
+    }
+
+    /// Opened for this thread, naming one of its windows (0 none): false
+    /// while another has it open. EmptyClipboard then makes the window the
+    /// owner; nobody is told of a change until CloseClipboard.
+    public bool OpenClipboard(int window) { return Ioctl(SeatIoctl.ClipboardOpen, window) == 0; }
+
+    public bool CloseClipboard() { return Ioctl(SeatIoctl.ClipboardClose, 0) == 0; }
+
+    /// ClipboardChanged sent to this thread at every change, or no more.
+    public void WatchClipboard(bool on) { Ioctl(SeatIoctl.ClipboardWatch, on ? 1 : 0); }
+
+    /// A format's bytes -- text in a character set nobody gave made from
+    /// the text that is there, a promise rendered first -- or null.
     public byte[]? GetClipboardData(int format)
     {
         byte[] args = new byte[12];
@@ -684,15 +1550,15 @@ public class Seat : IDrawingTarget
 
     public bool IsClipboardFormatAvailable(int format) { return Ioctl(SeatIoctl.ClipboardHas, format) == 1; }
 
-    /// EmptyClipboard; false when another program has it open.
+    /// Everything off it, and in this program's own open clipboard its window
+    /// the owner now; false when another program has it open.
     public bool EmptyClipboard() { return Ioctl(SeatIoctl.ClipboardClear, 0) == 0; }
 
-    /// GetClipboardSequenceNumber: changes every time the clipboard does.
+    /// The sequence number: changes every time the clipboard does.
     public long ClipboardSequenceNumber { get { return Ioctl(SeatIoctl.ClipboardSequence, 0); } }
 
-    /// The formats on the clipboard, in the order they came, as
-    /// EnumClipboardFormats walks them: every one a Windows program put there,
-    /// and the ones the clipboard makes from them.
+    /// The formats on the clipboard, in the order they came: every one a
+    /// program put there, and the ones Windows makes from them.
     public int[] GetClipboardFormats()
     {
         byte[] args = new byte[8];
@@ -714,8 +1580,7 @@ public class Seat : IDrawingTarget
         return new int[0];
     }
 
-    /// GetClipboardFormatName: a registered format's name; null for a
-    /// predefined format or a number no name has.
+    /// A format's name; null for a number no name has.
     public string? GetClipboardFormatName(int format)
     {
         byte[] args = new byte[12];
@@ -730,6 +1595,128 @@ public class Seat : IDrawingTarget
     }
 
     static void PutWord(byte[] b, int at, long v) { b[at] = (byte)v; b[at + 1] = (byte)(v >> 8); b[at + 2] = (byte)(v >> 16); b[at + 3] = (byte)(v >> 24); }
+
+    // ---- keyboard layouts -----------------------------------------------------
+    //
+    // THE GUI KERNEL'S (os/gui/keyboardstore.cor): every layout the machine
+    // has, the user's (the default first), and each thread's active one,
+    // each named by its KLID -- Windows' number, 0x00000407 for German, the
+    // language in the low word. The seat types a thread's keys through its
+    // active layout: a Key event's character is the first it types, and a
+    // dead key or the rest of a ligature come as KeyChar (101), its B 1 for
+    // a dead key waiting. The language hot key sends the focus's thread
+    // InputLanguageRequest (102: A the step -- 2 forward, 4 backward, 0 the
+    // default --, B the KLID it would be), which it answers with
+    // ActivateKeyboardLayout or does not; a thread whose layout changed is
+    // sent InputLanguageChanged (103: A the KLID, B the one before).
+
+    /// The event kinds the keyboard layouts send.
+    public const int KeyChar = 101, InputLanguageRequest = 102, InputLanguageChanged = 103;
+
+    /// An answer that is a KLID or an HKL: all 32 bits, or -1 for an error.
+    static long Unsigned(long answer) { return answer < 0 && answer > -4096 ? -1 : answer & 0xFFFFFFFF; }
+
+    long[] KlidList(SeatIoctl request)
+    {
+        byte[] args = new byte[8];
+        long count = Ioctl(request, Sys.ArrayData(args));
+        while (count > 0)
+        {
+            byte[] list = new byte[(int)count * 4];
+            PutWord(args, 0, Sys.ArrayData(list)); PutWord(args, 4, count);
+            long again = Ioctl(request, Sys.ArrayData(args));
+            GC.KeepAlive(list);
+            if (again == count)
+            {
+                long[] made = new long[(int)count];
+                for (int i = 0; i < made.Length; i++) made[i] = (long)BitConverter.ToUInt32(list, i * 4);
+                return made;
+            }
+            count = again;
+        }
+        return new long[0];
+    }
+
+    /// The user's layouts, in their order (Windows' GetKeyboardLayoutList).
+    public long[] KeyboardLayouts() { return KlidList(SeatIoctl.KeyboardList); }
+
+    /// Every layout the machine has.
+    public long[] InstalledKeyboardLayouts() { return KlidList(SeatIoctl.KeyboardInstalled); }
+
+    /// A text the seat answers into a buffer of UTF-16 units: asked once
+    /// for its length, then again with room for it.
+    string? AskText(SeatIoctl request, long first)
+    {
+        byte[] args = new byte[12];
+        PutWord(args, 0, first);
+        long length = Ioctl(request, Sys.ArrayData(args));
+        if (length < 0) return null;
+        if (length == 0) return "";
+        byte[] text = new byte[(int)length * 2];
+        PutWord(args, 4, Sys.ArrayData(text)); PutWord(args, 8, length);
+        long again = Ioctl(request, Sys.ArrayData(args));
+        GC.KeepAlive(text);
+        return again == length ? System.Text.Encoding.Unicode.GetString(text, 0, text.Length) : null;
+    }
+
+    /// A layout's name, as setup names it ("German"); null for none.
+    public string? KeyboardLayoutName(long klid) { return AskText(SeatIoctl.KeyboardName, klid); }
+
+    /// The calling thread's layout.
+    public long ActiveKeyboardLayout() { return Unsigned(Ioctl(SeatIoctl.KeyboardActive, 0)); }
+
+    /// The calling thread's layout made `klid`, one of the user's -- or 0
+    /// the one before and 1 the next: the layout it had, or -1 for one the
+    /// user does not have. The thread is sent InputLanguageChanged.
+    public long ActivateKeyboardLayout(long klid) { return Unsigned(Ioctl(SeatIoctl.KeyboardActivate, klid & 0xFFFFFFFF)); }
+
+    /// A layout the machine has added to the user's -- kept in their
+    /// setting with `keep`, made this thread's with `activate` --: its KLID,
+    /// or -1 for none.
+    public long LoadKeyboardLayout(long klid, bool keep, bool activate)
+    {
+        return Unsigned(Ioctl(SeatIoctl.KeyboardLoad, (klid & 0xFFFFFFFF) | (keep ? 0x100000000 : 0) | (activate ? 0x200000000 : 0)));
+    }
+
+    /// One of the user's taken away; never the default.
+    public bool UnloadKeyboardLayout(long klid, bool keep) { return Ioctl(SeatIoctl.KeyboardUnload, (klid & 0xFFFFFFFF) | (keep ? 0x100000000 : 0)) == 0; }
+
+    /// The layout a thread types with until it chooses.
+    public long DefaultKeyboardLayout() { return Unsigned(Ioctl(SeatIoctl.KeyboardDefault, 0)); }
+
+    public bool SetDefaultKeyboardLayout(long klid, bool keep) { return Ioctl(SeatIoctl.KeyboardSetDefault, (klid & 0xFFFFFFFF) | (keep ? 0x100000000 : 0)) == 0; }
+
+    /// The HKL Windows gives a layout; -1 for none.
+    public long KeyboardLayoutHandle(long klid) { return Unsigned(Ioctl(SeatIoctl.KeyboardHandle, klid & 0xFFFFFFFF)); }
+
+    /// A key's name on this thread's layout, as Windows' GetKeyNameText
+    /// takes its lParam: the scan code in bits 16-23, extended in 24.
+    public string? KeyName(long lParam) { return AskText(SeatIoctl.KeyboardKeyName, lParam & 0xFFFFFFFF); }
+
+    /// MapVirtualKey on this thread's layout: type 0 a virtual key's scan
+    /// code, 1 a scan code's virtual key (3 keeping left and right apart),
+    /// 2 a virtual key's character (bit 31 for a dead key).
+    public long MapVirtualKey(long code, int type) { return Unsigned(Ioctl(SeatIoctl.KeyboardMapKey, (code & 0xFFFFFFFF) | ((long)(type & 3) << 32))); }
+
+    /// VkKeyScan on this thread's layout: the virtual key that types `ch`,
+    /// the shift state (1 Shift, 2 Ctrl, 4 Alt) above it; -1 for none.
+    public int VkKeyScan(char ch) { long r = Ioctl(SeatIoctl.KeyboardMapKey, ch | (4L << 32)); return r < 0 || r == 0xFFFF ? -1 : (int)r; }
+
+    /// Whether caps lock is a shift lock for every layout -- Windows'
+    /// "press SHIFT to turn off Caps Lock" -- and setting it.
+    public bool ShiftLock
+    {
+        get { return (Ioctl(SeatIoctl.KeyboardAttributes, 0) & 0x10000) != 0; }
+        set { Ioctl(SeatIoctl.KeyboardSetAttributes, value ? 0x10000 : 0); }
+    }
+
+    /// The language hot key, as Windows numbers it: 1 Left Alt+Shift, 2
+    /// Ctrl+Shift, 3 none.
+    public int LanguageHotKey
+    {
+        get { return (int)Ioctl(SeatIoctl.KeyboardHotKey, 0); }
+        set { Ioctl(SeatIoctl.KeyboardSetHotKey, value); }
+    }
 
     /// Put the pointer somewhere, as moving the mouse would: SetCursorPos.
     public void MoveCursorTo(int x, int y) { Ioctl(SeatIoctl.CursorTo, (x & 0xFFFF) | ((y & 0xFFFF) << 16)); }
@@ -753,10 +1740,36 @@ public class Seat : IDrawingTarget
     /// Room for one whole op. AN OP IS NEVER SPLIT ACROSS TWO WRITES: the
     /// seat reads each write on its own, and the tail of an op at the head
     /// of the next write is parsed as opcodes, which throws the rest away.
+    bool _renewing;                  // Renew is writing: a Room inside it grows the buffer, never flushes
+
     void Room(int words)
     {
-        if (_used + words * 4 > _batch.Length) { Flush(); Renew(); }
+        if (_used + words * 4 <= _batch.Length) return;
+        if (!_renewing)
+        {
+            Flush();
+            _renewing = true;
+            try { Renew(); }
+            finally { _renewing = false; }
+        }
+        // AN OP LARGER THAN THE BUFFER -- a long path -- goes in one write
+        // all the same, the seat reading its points out of the batch that
+        // carries it: the buffer grows to hold it, up to what the seat
+        // takes in one write.
+        if (_used + words * 4 > _batch.Length)
+        {
+            int size = _batch.Length;
+            while (size < _used + words * 4) size *= 2;
+            if (size > BatchMost) size = BatchMost;
+            if (_used + words * 4 > size) throw new InvalidOperationException("a drawing operation larger than the seat takes in one write");
+            byte[] bigger = new byte[size];
+            for (int i = 0; i < _used; i++) bigger[i] = _batch[i];
+            _batch = bigger;
+        }
     }
+
+    /// The most the seat takes in one write (seat.cor's BatchMax).
+    const int BatchMost = 0x100000;
 
     static void Put(byte[] into, int at, int v)
     {
@@ -803,6 +1816,12 @@ public class Seat : IDrawingTarget
     {
         if (_window != 0) { _named = true; Word(12); Word(_window); }
         if (_clipOn) { Word(6); Word(_clipX); Word(_clipY); Word(_clipW); Word(_clipH); }
+        // The engine's state as the Graphics drawing set it: the clip
+        // region's ops (under the identity), then the transform and the
+        // mode (IPathTarget).
+        if (_clipRegionOps != null) Words(_clipRegionOps);
+        if (_transformOp != null) Words(_transformOp);
+        if (_modeOp != null) Words(_modeOp);
     }
 
     public void Target(int window)
@@ -811,7 +1830,47 @@ public class Seat : IDrawingTarget
         _window = window;
         _named = true;
         _clipOn = false;
+        ForgetGeometry();
         Room(2); Word(12); Word(window);
+    }
+
+    // --- the engine's geometry (System.Drawing's IPathTarget) ----------------
+    //
+    // A Graphics's transform, modes and clip region, and its paths and
+    // regions, as the seat's ops 14 to 20 (GUI-KERNEL.md): words made by
+    // System.Drawing, appended here as one, and the state kept to say again
+    // when a batch is renewed in the middle of drawing, as the window and
+    // the clip are.
+
+    object? _stateOwner;
+    int[]? _transformOp, _modeOp, _clipRegionOps;
+
+    public object? StateOwner { get { return _stateOwner; } set { _stateOwner = value; } }
+
+    public void Geometry(int[] words, int count, int kind)
+    {
+        Room(count);
+        for (int i = 0; i < count; i++) Word(words[i]);
+        if (kind == 0) return;
+        int[] kept = new int[count];
+        for (int i = 0; i < count; i++) kept[i] = words[i];
+        if (kind == 1) _transformOp = kept;
+        else if (kind == 2) _modeOp = kept;
+        else if (kind == 3) _clipRegionOps = kept;
+    }
+
+    /// The seat forgets its state when a batch names a window: so does
+    /// this, and so the next Graphics to draw says all of its own.
+    void ForgetGeometry()
+    {
+        _transformOp = null; _modeOp = null; _clipRegionOps = null;
+        _stateOwner = null;
+    }
+
+    void Words(int[] words)
+    {
+        Room(words.Length);
+        for (int i = 0; i < words.Length; i++) Word(words[i]);
     }
 
     public void Fill(int x, int y, int w, int h, Color colour) { Room(6); Word(1); Word(x); Word(y); Word(w); Word(h); Word(Rgb(colour)); }
@@ -849,6 +1908,106 @@ public class Seat : IDrawingTarget
     /// A pointer shape from a cursor file. The seat reduces it to what a
     /// card's hardware cursor can show -- two colours and a hole -- and it
     /// is then selected like any other shape, by SetCursor(CursorBase + id).
+    // ---- icons and cursors, the GUI kernel's ------------------------------------------
+    //
+    // An icon or cursor is the GUI kernel's object, named by a handle of
+    // Windows' shape that a Windows program's HICON shares: one picture at
+    // several sizes, an animated cursor's frames. The kernel reads .ico,
+    // .cur and .ani files and a program's icon groups, has the system's own
+    // set, and the seat draws them -- the pointer, a frame, the taskbar.
+
+    /// What ImageLoad and ImageCreate are asked for: an icon, a cursor, or
+    /// (to ImageLoad) whatever the file is.
+    public const int ImageAny = 0, ImageIcon = 1, ImageCursor = 2;
+
+    /// An icon or cursor from a file's bytes -- an .ico, .cur or .ani, or a
+    /// program's (.exe, .dll) icon group `resource` (0 its first; its
+    /// cursor group for ImageCursor) -- this program's until destroyed.
+    /// The handle, or a negative errno.
+    public long LoadImage(byte[] bytes, int kind, int resource)
+    {
+        byte[] args = new byte[16];
+        PutWord(args, 0, Sys.ArrayData(bytes)); PutWord(args, 4, bytes.Length); PutWord(args, 8, kind); PutWord(args, 12, resource);
+        long answer = Ioctl(SeatIoctl.ImageLoad, Sys.ArrayData(args));
+        GC.KeepAlive(bytes);
+        return answer;
+    }
+
+    /// One of the system's icons (OIC_*: 32512 the application's, 32513
+    /// error, 32514 question, 32515 warning, 32516 information, 32517 the
+    /// logo) or cursors (OCR_*, IDC_*): its handle, or a negative errno.
+    public long SystemImage(int id, int kind)
+    {
+        return Ioctl(SeatIoctl.ImageSystem, (id & 0xFFFF) | ((long)kind << 32));
+    }
+
+    /// An icon or cursor from pixels, 0xAARRGGBB top row first (alpha below
+    /// half clear), with its hot spot. The handle, or a negative errno.
+    public long CreateImage(int kind, int width, int height, int hotX, int hotY, int[] argb)
+    {
+        byte[] args = new byte[24];
+        PutWord(args, 0, kind); PutWord(args, 4, width); PutWord(args, 8, height); PutWord(args, 12, hotX); PutWord(args, 16, hotY);
+        PutWord(args, 20, Sys.ArrayData(argb));
+        long answer = Ioctl(SeatIoctl.ImageCreate, Sys.ArrayData(args));
+        GC.KeepAlive(argb);
+        return answer;
+    }
+
+    /// One of this program's icons or cursors let go of.
+    public void DestroyImage(long handle) { Ioctl(SeatIoctl.ImageDestroy, handle); }
+
+    /// What an icon or cursor is: its kind, its image for 32 pixels' size
+    /// and hot spot, how many images it has and how many animation steps.
+    public bool ImageInfo(long handle, out int kind, out int width, out int height, out int hotX, out int hotY, out int images, out int steps)
+    {
+        byte[] info = new byte[32];
+        PutWord(info, 0, (int)handle);
+        bool ok = Ioctl(SeatIoctl.ImageInfo, Sys.ArrayData(info)) == 0;
+        kind = Word(info, 4); width = Word(info, 8); height = Word(info, 12); hotX = Word(info, 16); hotY = Word(info, 20);
+        images = Word(info, 24); steps = Word(info, 28);
+        return ok;
+    }
+
+
+    /// An icon or cursor at `size` by `size` (0: its largest image's own
+    /// size), 0xAARRGGBB with clear 0; null when it has none.
+    public int[]? ImagePixels(long handle, int size, out int width, out int height)
+    {
+        width = 0; height = 0;
+        int room = size > 0 ? size * size : 256 * 256;
+        int[] pixels = new int[room];
+        byte[] args = new byte[16];
+        PutWord(args, 0, (int)handle); PutWord(args, 4, size); PutWord(args, 8, Sys.ArrayData(pixels)); PutWord(args, 12, room);
+        long answer = Ioctl(SeatIoctl.ImagePixels, Sys.ArrayData(args));
+        GC.KeepAlive(pixels);
+        if (answer <= 0) return null;
+        width = (int)(answer & 0xFFFF); height = (int)((answer >> 16) & 0xFFFF);
+        if (width * height == room) return pixels;
+        int[] exact = new int[width * height];
+        Array.Copy(pixels, exact, exact.Length);
+        return exact;
+    }
+
+    /// The pointer wears a cursor -- animated, if it is -- while it is over
+    /// this program's windows.
+    public void WearCursor(long handle) { Flush(); Ioctl(SeatIoctl.CursorWear, handle); }
+
+    /// A window's icon as one of the GUI kernel's (0 none): its frame's and
+    /// its taskbar button's when it has no FrameIcon pixels.
+    public void SetFrameIconImage(int window, long handle) { Flush(); Select(window); Ioctl(SeatIoctl.FrameIconImage, handle); }
+
+    /// The icon any window shows at `size` pixels, as the taskbar draws it:
+    /// 0xAARRGGBB with clear 0; null when there is no such window.
+    public int[]? WindowIcon(int window, int size)
+    {
+        int[] pixels = new int[size * size];
+        byte[] args = new byte[16];
+        PutWord(args, 0, window); PutWord(args, 4, size); PutWord(args, 8, Sys.ArrayData(pixels)); PutWord(args, 12, pixels.Length);
+        long answer = Ioctl(SeatIoctl.WindowIcon, Sys.ArrayData(args));
+        GC.KeepAlive(pixels);
+        return answer == size ? pixels : null;
+    }
+
     public void DefineCursor(int id, int width, int height, int hotX, int hotY, byte[] argb)
     {
         int bytes = width * height * 4;
@@ -876,6 +2035,55 @@ public class Seat : IDrawingTarget
 
     void Select(int handle) { Ioctl(SeatIoctl.Select, handle); }
 
+    // ---- printed pages ------------------------------------------------------------
+    //
+    // A page of a print job begun on the spooler as one of pages (System.
+    // Drawing.Printing's PrintDocument): a window never shown, the job's
+    // paper at its dots an inch -- or the other way round, landscape -- which
+    // Target names and a Graphics draws on as on any window; submitted, the
+    // seat reads it into the form the printer's driver wants and hands it to
+    // the job. Not kept for a crash: a page outlives no GUI kernel.
+
+    /// A page for `job`, `width` by `height` pixels at `dpi` (the paper's
+    /// size the job says, either way round): its window, or an
+    /// IOException.
+    public int CreatePage(long job, int width, int height, int dpi)
+    {
+        Flush();
+        byte[] args = new byte[16];
+        Put(args, 0, (int)job); Put(args, 4, width); Put(args, 8, height); Put(args, 12, dpi);
+        long handle = Ioctl(SeatIoctl.PageCreate, Sys.ArrayData(args));
+        if (handle <= 0) throw new IOException("the seat made no page (" + (-handle) + ")");
+        return (int)handle;
+    }
+
+    /// A PREVIEW page: as a printed page, but of no job, read back by
+    /// WindowPixels and shown by ShowPage (Forms' PrintPreviewControl);
+    /// let go by DiscardPage. Its window, or an IOException.
+    public int CreatePreviewPage(int width, int height, int dpi) { return CreatePage(0, width, height, dpi); }
+
+    /// The whole of a preview page scaled into a rectangle of the window
+    /// being drawn (the seat's PageBlit).
+    public void ShowPage(int page, int x, int y, int width, int height) { Room(6); Word(21); Word(page); Word(x); Word(y); Word(width); Word(height); }
+
+    /// The page to its job, and its window gone: 0, or the seat's negative
+    /// error (-125 the job was cancelled, -5 a mode change took the page).
+    public long SubmitPage(int page)
+    {
+        Flush();
+        long answer = Ioctl(SeatIoctl.PageSubmit, page);
+        if (_window == page) { _window = 0; _named = false; }
+        return answer;
+    }
+
+    /// The page let go unprinted.
+    public void DiscardPage(int page)
+    {
+        Flush();
+        Ioctl(SeatIoctl.PageDiscard, page);
+        if (_window == page) { _window = 0; _named = false; }
+    }
+
     public int CreateWindow(int x, int y, int w, int h)
     {
         Flush();
@@ -885,7 +2093,7 @@ public class Seat : IDrawingTarget
         Ioctl(SeatIoctl.Size, (w & 0xFFFF) | (h << 16));
         Kept kept = new Kept();
         kept.Handle = handle; kept.X = x; kept.Y = y; kept.W = w; kept.H = h;
-        kept.Owner = (long)handle >> 12;            // the thread that made it (its handle says so)
+        kept.Owner = Ioctl(SeatIoctl.Whoami, 0);    // the thread that made it, for a restart
         lock (_keep) { kept.Start = _start; _kept.Add(kept); }
         return handle;
     }
@@ -939,7 +2147,7 @@ public class Seat : IDrawingTarget
     }
     public void DestroyWindow(int handle)
     {
-        Flush(); Select(handle); Ioctl(SeatIoctl.Destroy, 0); _window = 0; _named = false;
+        Flush(); Select(handle); Ioctl(SeatIoctl.Destroy, 0); _window = 0; _named = false; ForgetGeometry();
         lock (_keep) { Kept? k = Find(handle); if (k != null) _kept.Remove(k); }
     }
     public void FocusWindow(int handle) { Flush(); Select(handle); Ioctl(SeatIoctl.Focus, 0); }
@@ -1048,11 +2256,32 @@ public class Seat : IDrawingTarget
     /// The answer to MenuPopup when nothing changed.
     public void MenuReady() { Flush(); Ioctl(SeatIoctl.MenuReady, 0); }
 
+    /// The running menu of this program ended, nothing chosen (EndMenu).
+    public void EndMenu() { Flush(); Ioctl(SeatIoctl.MenuEnd, 0); }
+
+    /// Every tree's keys handed over, by its id, for a restart.
+    readonly Dictionary<int, byte[]> _menuKeys = new Dictionary<int, byte[]>();
+
+    /// The keys of tree `root`: `count` ACCELs in `accels` (fVirt, a pad
+    /// byte, the key, the item's id; 6 bytes each). A press of one of them
+    /// to a window whose bar the tree is comes back as the tree's Command
+    /// for the item, and the window never sees the key. None: the keys gone.
+    public void SetMenuKeys(int root, byte[] accels, int count)
+    {
+        byte[] table = new byte[12 + count * 6];
+        int[] head = new int[] { table.Length, root, count };
+        for (int i = 0; i < 3; i++) { table[i * 4] = (byte)head[i]; table[i * 4 + 1] = (byte)(head[i] >> 8); table[i * 4 + 2] = (byte)(head[i] >> 16); table[i * 4 + 3] = (byte)(head[i] >> 24); }
+        Array.Copy(accels, 0, table, 12, count * 6);
+        Flush();
+        Ioctl(SeatIoctl.MenuKeys, Sys.ArrayData(table));
+        lock (_keep) { if (count == 0) _menuKeys.Remove(root); else _menuKeys[root] = table; }
+    }
+
     /// A tree let go of.
     public void DeleteMenu(int root)
     {
         Flush(); Ioctl(SeatIoctl.MenuDelete, root);
-        lock (_keep) _menuTrees.Remove(root);
+        lock (_keep) { _menuTrees.Remove(root); _menuKeys.Remove(root); }
     }
 
     public void SetTitle(int handle, string title)
@@ -1088,6 +2317,119 @@ public class Seat : IDrawingTarget
         long me = Ioctl(SeatIoctl.Whoami, 0);
         lock (_keep) { if (!_watchesWindows.Contains(me)) _watchesWindows.Add(me); }
         Ioctl(SeatIoctl.WatchWindows, 0);
+    }
+
+    // ---- the shell's feed and the window effects --------------------------------
+    //
+    // THE SEAT'S (os/gui/seatshell.cor, seatdesktop.cor). A taskbar
+    // subscribes to the feed (WatchShell) and is sent an event as each
+    // window it lists comes, goes, is activated, renamed, given an icon,
+    // flashes, is minimized or restored, or covers the screen, and as the
+    // notification area changes: Shell.WindowChanged. What is there when it
+    // subscribes it reads with Windows().
+
+    /// The shell feed's event kinds.
+    public const int ShellCreated = 200, ShellDestroyed = 201, ShellActivated = 202, ShellRetitled = 203, ShellIcon = 204,
+                     ShellFlash = 205, ShellState = 206, ShellFullScreen = 207, ShellTray = 208;
+
+    /// This thread sent the shell feed's events from now on (and Ctrl+Esc,
+    /// as WatchWindows has it), or no more.
+    public void WatchShell(bool on)
+    {
+        long me = Ioctl(SeatIoctl.Whoami, 0);
+        lock (_keep) { _watchesShell.Remove(me); if (on) _watchesShell.Add(me); }
+        Ioctl(SeatIoctl.ShellWatch, on ? 1 : 0);
+    }
+
+    /// A window's 16 by 16 icon, as its frame or its program gave it:
+    /// 0x00RRGGBB a pixel, -1 where it is clear; null for none.
+    public int[]? WindowIcon(int handle)
+    {
+        byte[] words = new byte[1024];
+        byte[] args = new byte[8];
+        PutWord(args, 0, handle); PutWord(args, 4, Sys.ArrayData(words));
+        long answer = Ioctl(SeatIoctl.ShellWindowIcon, Sys.ArrayData(args));
+        GC.KeepAlive(words);
+        if (answer != 1) return null;
+        int[] made = new int[256];
+        for (int i = 0; i < 256; i++)
+        {
+            int colorref = BitConverter.ToInt32(words, i * 4);
+            // COLORREFs, as the seat keeps a frame's icon: 0x00BBGGRR.
+            made[i] = colorref == -1 ? -1 : ((colorref & 0xFF) << 16) | (colorref & 0xFF00) | ((colorref >> 16) & 0xFF);
+        }
+        return made;
+    }
+
+    /// A window's name on a taskbar: its title, or its program's; "" for
+    /// a window not there.
+    public string WindowTitle(int handle)
+    {
+        byte[] args = new byte[12];
+        PutWord(args, 0, handle);
+        long length = Ioctl(SeatIoctl.ShellWindowTitle, Sys.ArrayData(args));
+        if (length <= 0) return "";
+        byte[] text = new byte[(int)length * 2];
+        PutWord(args, 4, Sys.ArrayData(text)); PutWord(args, 8, length);
+        long again = Ioctl(SeatIoctl.ShellWindowTitle, Sys.ArrayData(args));
+        GC.KeepAlive(text);
+        return again == length ? System.Text.Encoding.Unicode.GetString(text, 0, text.Length) : "";
+    }
+
+    /// The desktop's background -- the wallpaper the theme names, on the
+    /// desktop colour -- painted into a rectangle of one of this program's
+    /// windows (window coordinates), as the screen has it there: what a
+    /// desktop paints itself with (Windows' PaintDesktop).
+    public void PaintDesktop(int window, int x, int y, int width, int height)
+    {
+        Flush();
+        byte[] args = new byte[20];
+        PutWord(args, 0, window); PutWord(args, 4, x); PutWord(args, 8, y); PutWord(args, 12, width); PutWord(args, 16, height);
+        Ioctl(SeatIoctl.DesktopPaint, Sys.ArrayData(args));
+    }
+
+    /// FlashWindowEx: a window's caption and taskbar button flashed --
+    /// flags FLASHW_ (0 stop, 1 caption, 2 tray, 4 timer, 0xC until it is
+    /// in front), `count` times, every `period` ms (0: the caret's blink).
+    /// Whether its caption was active before.
+    public bool FlashWindow(int handle, int flags, int count, int period)
+    {
+        byte[] args = new byte[16];
+        PutWord(args, 0, handle); PutWord(args, 4, flags); PutWord(args, 8, count); PutWord(args, 12, period);
+        return Ioctl(SeatIoctl.FlashWindow, Sys.ArrayData(args)) > 0;
+    }
+
+    /// One of this program's windows' caption flown from one rectangle on
+    /// the screen to another over a quarter second (DrawAnimatedRects
+    /// IDANI_CAPTION): the minimize and restore animation.
+    public void AnimateCaption(int handle, Rectangle from, Rectangle to)
+    {
+        Flush();
+        byte[] args = new byte[36];
+        PutWord(args, 0, handle);
+        PutWord(args, 4, from.X); PutWord(args, 8, from.Y); PutWord(args, 12, from.X + from.Width); PutWord(args, 16, from.Y + from.Height);
+        PutWord(args, 20, to.X); PutWord(args, 24, to.Y); PutWord(args, 28, to.X + to.Width); PutWord(args, 32, to.Y + to.Height);
+        Ioctl(SeatIoctl.AnimateCaption, Sys.ArrayData(args));
+    }
+
+    /// What one of this program's windows shows in a rectangle of it (window
+    /// coordinates, its frame included): 0x00RRGGBB a pixel, row by row, 0
+    /// where it does not show; null when it cannot be read.
+    public int[]? WindowPixels(int handle, Rectangle area)
+    {
+        if (area.Width <= 0 || area.Height <= 0) return null;
+        Flush();
+        Present();
+        byte[] pixels = new byte[area.Width * area.Height * 4];
+        byte[] args = new byte[24];
+        PutWord(args, 0, handle); PutWord(args, 4, area.X); PutWord(args, 8, area.Y);
+        PutWord(args, 12, area.Width); PutWord(args, 16, area.Height); PutWord(args, 20, Sys.ArrayData(pixels));
+        long answer = Ioctl(SeatIoctl.WindowPixels, Sys.ArrayData(args));
+        GC.KeepAlive(pixels);
+        if (answer != (long)area.Width * area.Height) return null;
+        int[] made = new int[area.Width * area.Height];
+        for (int i = 0; i < made.Length; i++) made[i] = BitConverter.ToInt32(pixels, i * 4);
+        return made;
     }
 
     /// Every shown window on the seat, bottom to top, whoever owns it.
@@ -1336,6 +2678,53 @@ public class Seat : IDrawingTarget
     /// Notches of the horizontal wheel, positive to the right.
     public void InjectPointerHWheel(int notches) { Ioctl(SeatIoctl.InjectPointerHWheel, notches); }
 
+    // --- the input taps (seattaps.cor), the seat's form of Windows' low-
+    // level and journal hooks. These are a connection's own: a tap watches,
+    // injects or plays back on the thread that opened it. Corsac.GUI's
+    // InputTap wraps them. ---------------------------------------------------
+
+    /// This connection opens a tap on the kinds given (TapKind bits: 1 keys,
+    /// 2 pointer, 4 record, 8 playback). 0, or a negative errno -- -EPERM
+    /// without the seat's user, -EEXIST when this thread has one already.
+    public long TapOpen(long kinds) { return Ioctl(SeatIoctl.TapOpen, kinds); }
+    public void TapClose() { Ioctl(SeatIoctl.TapClose, 0); }
+
+    /// The input being offered to this tap (28 bytes, TapItemBytes), read
+    /// after a TapInput event; false when none waits.
+    public bool TapItem(byte[] item) { return item.Length >= 28 && Ioctl(SeatIoctl.TapItem, Sys.ArrayData(item)) >= 0; }
+
+    /// Whether the offered input is eaten (kept from going anywhere).
+    public void TapAnswer(bool eat) { Ioctl(SeatIoctl.TapAnswer, eat ? 1 : 0); }
+
+    /// The next input routed, read after a TapRecord event; false when none.
+    public bool TapRecorded(byte[] item) { return item.Length >= 28 && Ioctl(SeatIoctl.TapRecorded, Sys.ArrayData(item)) >= 0; }
+
+    /// Whether the seat wants the next input to play (after TapPlayback).
+    public bool TapPlayWanted() { return Ioctl(SeatIoctl.TapPlayNext, 0) == 1; }
+
+    /// The next input to play and how many milliseconds hence (a 28-byte
+    /// item then the delay as a 32-bit word: a 32-byte block).
+    public void TapPlay(byte[] block) { if (block.Length >= 32) Ioctl(SeatIoctl.TapPlay, Sys.ArrayData(block)); }
+
+    /// An INPUT record injected now, SendInput's (28 bytes): a key (kind 1:
+    /// +4 the virtual key, +8 its lParam, +20 bit 2 a release) or the
+    /// pointer (kind 2: +4 the WM_ message, +8 x, +12 y, +16 the wheel delta
+    /// or X button in the high word). 0, or a negative errno.
+    public long InjectInput(byte[] item) { return item.Length >= 28 ? Ioctl(SeatIoctl.InjectInput, Sys.ArrayData(item)) : -22; }
+
+    /// A character injected with no key: VK_PACKET (0xE7), the character at
+    /// +12 of the INPUT record (the seat's InjectInput), down or up.
+    public long InjectChar(char c, bool down)
+    {
+        byte[] item = new byte[28];
+        item[0] = 1;
+        item[4] = 0xE7;
+        item[12] = (byte)c; item[13] = (byte)(c >> 8);
+        if (!down) item[20] = 2;
+        return InjectInput(item);
+    }
+
+
     /// Rows at the bottom of the screen a bar owns: windows keep out of them.
     public void ReserveBottom(int rows) { lock (_keep) { _reservedBottom = rows; } Ioctl(SeatIoctl.ReserveBottom, rows); }
     /// The screen height minus what a bar has reserved: where windows go.
@@ -1433,7 +2822,31 @@ public class SeatWindowInfo
     public bool IsMinimized { get { return (Flags & 16) != 0; } }
     /// Its program asked for attention (FlashWindowEx): the taskbar lights its button.
     public bool IsFlashing { get { return (Flags & 32) != 0; } }
+    /// It covers the screen (the shell feed's flags only).
+    public bool IsFullScreen { get { return (Flags & 64) != 0; } }
 }
+
+/// What the shell feed said changed (Shell.WindowChanged).
+public enum ShellChange
+{
+    Created = 200, Destroyed = 201, Activated = 202, Retitled = 203, IconChanged = 204,
+    Flashed = 205, StateChanged = 206, FullScreen = 207, TrayChanged = 208,
+}
+
+/// One of the shell feed's events: what changed, the window (0 for the
+/// notification area, or for none activated), and its value -- the
+/// window's flags (SeatWindowInfo.Flags, 64 full screen) for Created and
+/// StateChanged; 1 or 0 for Flashed and FullScreen; 1 for an Activated
+/// while a full-screen window is up.
+public class ShellEventArgs : EventArgs
+{
+    public readonly ShellChange Change;
+    public readonly int Handle;
+    public readonly int Value;
+    public ShellEventArgs(ShellChange change, int handle, int value) { Change = change; Handle = handle; Value = value; }
+}
+
+public delegate void ShellEventHandler(object sender, ShellEventArgs e);
 
 
 /// The shapes a pointer can take. The seat draws them; these are its names.
@@ -1489,6 +2902,19 @@ public static class Shell
     public static event EventHandler? StartRequested;
 
     public static void WatchWindows() { Seat.Current.WatchWindows(); }
+
+    /// The shell feed changed (after WatchShell()): a window a taskbar
+    /// lists came, went or changed, or the notification area did.
+    public static event ShellEventHandler? WindowChanged;
+
+    /// This thread subscribed to the shell feed, which also brings
+    /// StartRequested.
+    public static void WatchShell() { Seat.Current.WatchShell(true); }
+
+    internal static void RaiseShell(int kind, int window, int value)
+    {
+        if (WindowChanged != null) WindowChanged(null!, new ShellEventArgs((ShellChange)kind, window, value));
+    }
     public static void WatchPointer() { Seat.Current.WatchPointer(); }
 
     /// This form is the desktop: the surface under everything, never
@@ -1533,5 +2959,175 @@ static class SeatText
             length = length + 1;
         }
         return Utf8Transcoder.Decode(block, from, length);
+    }
+}
+
+/// What an InputTap watches: the keys, the pointer, or both. A tap is the
+/// seat's form of Windows' WH_KEYBOARD_LL and WH_MOUSE_LL -- it sees the
+/// machine's whole input before any window does, and may keep an input
+/// from going anywhere. Opening one needs the seat's own account (its user
+/// or root), as watching all input is the seat's to grant.
+[System.Flags]
+public enum InputTapKinds
+{
+    Keys = 1,
+    Pointer = 2,
+}
+
+/// A key seen by an InputTap, before it is routed. Set Eat to keep it from
+/// going anywhere, as a WH_KEYBOARD_LL hook's nonzero return does.
+public sealed class KeyObservedEventArgs : EventArgs
+{
+    public int VirtualKey { get; }
+    public int ScanCode { get; }
+    public bool Up { get; }
+    public bool Injected { get; }
+    public System.Windows.Forms.Keys Modifiers { get; }
+    /// VK_PACKET's character (a character injected with no key: SendInput's
+    /// KEYEVENTF_UNICODE, InputTap.InjectChar); '\0' for any other key.
+    /// ScanCode is the character too, as Windows' KBDLLHOOKSTRUCT has it.
+    public char Character { get; }
+    public bool Eat { get; set; }
+
+    internal KeyObservedEventArgs(int vk, int scan, bool up, bool injected, System.Windows.Forms.Keys mods, char character = '\0')
+    { VirtualKey = vk; ScanCode = scan; Up = up; Injected = injected; Modifiers = mods; Character = character; }
+}
+
+/// A pointer input seen by an InputTap, before it is routed. Message is the
+/// WM_ it stands for (WM_MOUSEMOVE 0x200, WM_LBUTTONDOWN 0x201, ...,
+/// WM_MOUSEWHEEL 0x20A); X and Y are on the screen. Set Eat to keep it.
+public sealed class PointerObservedEventArgs : EventArgs
+{
+    public int Message { get; }
+    public int X { get; }
+    public int Y { get; }
+    public int WheelDelta { get; }
+    public bool Injected { get; }
+    public bool Eat { get; set; }
+
+    internal PointerObservedEventArgs(int message, int x, int y, int wheel, bool injected)
+    { Message = message; X = x; Y = y; WheelDelta = wheel; Injected = injected; }
+}
+
+/// A SYSTEM-WIDE INPUT TAP (TODO-GUI-AND-NT-KERNELS.md item 9), the native
+/// form of Windows' low-level hooks, which .NET Forms has no equivalent of.
+/// It opens its own seat connection on a background thread and watches the
+/// input there: KeyObserved and PointerObserved are raised on that thread
+/// for each input before it is routed, and an input left unanswered for the
+/// seat's LowLevelHooksTimeout is let by. Inject* put input in as Windows'
+/// SendInput does. Dispose closes the tap.
+public sealed class InputTap : IDisposable
+{
+    readonly Seat _seat;
+    readonly Thread _thread;
+    volatile bool _closed;
+
+    public event EventHandler<KeyObservedEventArgs>? KeyObserved;
+    public event EventHandler<PointerObservedEventArgs>? PointerObserved;
+
+    public InputTap(InputTapKinds kinds)
+    {
+        _seat = new Seat(Environment.GetEnvironmentVariable("SEAT") ?? "/dev/seat0");
+        long opened = _seat.TapOpen((long)kinds);
+        if (opened < 0) throw new UnauthorizedAccessException("an input tap needs the seat's own account (" + (-opened) + ")");
+        _thread = new Thread(Loop);
+        _thread.IsBackground = true;
+        _thread.Start();
+    }
+
+    void Loop()
+    {
+        byte[] item = new byte[28];
+        while (!_closed)
+        {
+            Message m;
+            if (!_seat.Next(out m)) break;
+            if (m.Kind != Seat.TapInput) continue;
+            if (!_seat.TapItem(item)) continue;
+            bool eat = false;
+            int kind = Int(item, 0), flags = Int(item, 20);
+            bool injected = (flags & 1) != 0, up = (flags & 2) != 0;
+            if (kind == 1 && KeyObserved != null)
+            {
+                int vk = Int(item, 4), lParam = Int(item, 8), mods = Int(item, 12);
+                System.Windows.Forms.Keys k = (System.Windows.Forms.Keys)vk
+                    | ((mods & 1) != 0 ? System.Windows.Forms.Keys.Shift : System.Windows.Forms.Keys.None)
+                    | ((mods & 2) != 0 ? System.Windows.Forms.Keys.Control : System.Windows.Forms.Keys.None)
+                    | ((mods & 4) != 0 ? System.Windows.Forms.Keys.Alt : System.Windows.Forms.Keys.None);
+                // VK_PACKET carries its character at +16 (the seat's TapItem).
+                int packet = vk == 0xE7 ? Int(item, 16) & 0xFFFF : 0;
+                KeyObservedEventArgs e = new KeyObservedEventArgs(vk, packet != 0 ? packet : (lParam >> 16) & 0xFF, up, injected, k, (char)packet);
+                KeyObserved(this, e);
+                eat = e.Eat;
+            }
+            else if (kind == 2 && PointerObserved != null)
+            {
+                int message = Int(item, 4), x = Int(item, 8), y = Int(item, 12), extra = Int(item, 16);
+                int wheel = (short)((extra >> 16) & 0xFFFF);
+                PointerObservedEventArgs e = new PointerObservedEventArgs(message, x, y, wheel, injected);
+                PointerObserved(this, e);
+                eat = e.Eat;
+            }
+            _seat.TapAnswer(eat);
+        }
+    }
+
+    static int Int(byte[] b, int at) { return b[at] | (b[at + 1] << 8) | (b[at + 2] << 16) | (b[at + 3] << 24); }
+    static void PutInt(byte[] b, int at, int v) { b[at] = (byte)v; b[at + 1] = (byte)(v >> 8); b[at + 2] = (byte)(v >> 16); b[at + 3] = (byte)(v >> 24); }
+
+    /// A key injected, SendInput's: its virtual key, down or up. Its scan
+    /// code is the active layout's (the seat finds it); a virtual key no key
+    /// on the layout makes is refused.
+    public void InjectKey(int virtualKey, bool down)
+    {
+        byte[] item = new byte[28];
+        PutInt(item, 0, 1);
+        PutInt(item, 4, virtualKey);
+        PutInt(item, 20, down ? 0 : 2);
+        _seat.InjectInput(item);
+    }
+
+    /// A character injected with no key (SendInput's KEYEVENTF_UNICODE):
+    /// VK_PACKET down or up, which a Windows program reads as WM_KEYDOWN
+    /// VK_PACKET and TranslateMessage makes the WM_CHAR of, and a native
+    /// window as the character's key press.
+    public void InjectChar(char c, bool down)
+    {
+        _seat.InjectChar(c, down);
+    }
+
+    /// The pointer moved, injected: to (x, y) on the screen.
+    public void InjectMouseMove(int x, int y)
+    {
+        byte[] item = new byte[28];
+        PutInt(item, 0, 2); PutInt(item, 4, 0x200); PutInt(item, 8, x); PutInt(item, 12, y);
+        _seat.InjectInput(item);
+    }
+
+    /// A pointer button injected: 1 left, 2 right, 3 middle, 4 X1, 5 X2,
+    /// down or up, at (x, y) on the screen.
+    public void InjectMouseButton(int button, bool down, int x, int y)
+    {
+        int message = button == 2 ? (down ? 0x204 : 0x205) : button == 3 ? (down ? 0x207 : 0x208)
+                    : button >= 4 ? (down ? 0x20B : 0x20C) : (down ? 0x201 : 0x202);
+        int extra = button == 5 ? (2 << 16) : button == 4 ? (1 << 16) : 0;
+        byte[] item = new byte[28];
+        PutInt(item, 0, 2); PutInt(item, 4, message); PutInt(item, 8, x); PutInt(item, 12, y); PutInt(item, 16, extra);
+        _seat.InjectInput(item);
+    }
+
+    /// The wheel injected, Windows' 120ths, at (x, y) on the screen.
+    public void InjectMouseWheel(int delta, int x, int y)
+    {
+        byte[] item = new byte[28];
+        PutInt(item, 0, 2); PutInt(item, 4, 0x20A); PutInt(item, 8, x); PutInt(item, 12, y); PutInt(item, 16, (delta & 0xFFFF) << 16);
+        _seat.InjectInput(item);
+    }
+
+    public void Dispose()
+    {
+        if (_closed) return;
+        _closed = true;
+        _seat.TapClose();
     }
 }

@@ -473,59 +473,208 @@ static class Png
     }
 }
 
-/// An icon a program can draw: the file, plus what the seat has been told.
+/// An icon (.NET's System.Drawing.Icon): one of the GUI kernel's icon
+/// objects -- its Handle, the HICON a Windows program would see for it --
+/// read from an .ico file or a program's icon group, one of the system's
+/// (SystemIcons), or made from a picture (Bitmap.GetHicon).
 ///
 /// The seat keeps a picture once and draws it by number afterwards, so an
 /// icon defines itself the first time it is drawn at a given size and is a
 /// blit from then on. Which image inside the file is used depends on the
 /// size and on what the screen can show, which is the whole point of a file
-/// that holds several.
-public class Icon
+/// that holds several. A file's images are decoded here when it has them
+/// (a PNG image among them too, which the GUI kernel does not read); else
+/// the GUI kernel's pixels are drawn.
+public class Icon : IDisposable
 {
-    IconFile _file;
+    IconFile? _file;
+    long _handle;                      // the GUI kernel's object, 0 for none
+    bool _owns;                        // made here, destroyed with it
     int[] _ids = new int[8];           // the seat's bitmap for each size we have drawn
     int[] _sizes = new int[8];
     int _known;
 
-    Icon(IconFile file) { _file = file; }
+    Icon(IconFile? file, long handle, bool owns) { _file = file; _handle = handle; _owns = owns; }
+
+    /// .NET's constructors: a file, a stream, either at a size, a copy of
+    /// another at a size. The error .NET gives a file that is not an icon.
+    public Icon(string fileName) : this(fileName, 0, 0) { }
+    public Icon(string fileName, Size size) : this(fileName, size.Width, size.Height) { }
+    public Icon(string fileName, int width, int height)
+    {
+        byte[] bytes;
+        try { bytes = File.ReadAllBytes(fileName); }
+        catch (IOException) { throw new FileNotFoundException("Could not find file '" + fileName + "'.", fileName); }
+        if (!Open(bytes)) throw new ArgumentException("Argument 'picture' must be a picture that can be used as a Icon.");
+        _wantSize = width;
+    }
+    public Icon(Stream stream) : this(stream, 0, 0) { }
+    public Icon(Stream stream, int width, int height)
+    {
+        MemoryStream copy = new MemoryStream();
+        stream.CopyTo(copy);
+        if (!Open(copy.ToArray())) throw new ArgumentException("Argument 'picture' must be a picture that can be used as a Icon.");
+        _wantSize = width;
+    }
+    public Icon(Icon original, Size size) : this(original, size.Width, size.Height) { }
+    public Icon(Icon original, int width, int height)
+    {
+        _file = original._file; _handle = original._handle; _owns = false; _drawn = original._drawn;
+        _keep = original;
+        _wantSize = width;
+    }
+
+    Icon? _keep;                       // the icon a copy shares its object with
+    int _wantSize;                     // the size a constructor asked for, 0 none
+
+    /// The file's images, and the GUI kernel's object for them.
+    bool Open(byte[] bytes)
+    {
+        _file = IconFile.Read(bytes);
+        long made;
+        try { made = Seat.Current.LoadImage(bytes, Seat.ImageIcon, 0); }
+        catch (IOException) { made = -1; }
+        if (made > 0) { _handle = made; _owns = true; }
+        return _file != null || _handle != 0;
+    }
 
     // AN ICON DRAWN BY THE PROGRAM, .NET's way: Icon.FromHandle(bitmap.
     // GetHicon()), what a tray icon drawn at run time is made with. The
-    // handle is the bitmap's number in _handles.
+    // handle is the GUI kernel's icon made of the picture; with no seat to
+    // make it in, the picture's number in _handles, which FromHandle knows.
     Bitmap? _drawn;
     static List<Bitmap> _handles = new List<Bitmap>();
 
     internal static nint HandleOf(Bitmap picture)
     {
+        int[] argb = new int[picture.Width * picture.Height];
+        for (int i = 0; i < argb.Length; i++)
+            argb[i] = (picture.Pixels[i * 4] & 255) | ((picture.Pixels[i * 4 + 1] & 255) << 8) | ((picture.Pixels[i * 4 + 2] & 255) << 16) | ((picture.Pixels[i * 4 + 3] & 255) << 24);
+        long made;
+        try { made = Seat.Current.CreateImage(Seat.ImageIcon, picture.Width, picture.Height, picture.Width / 2, picture.Height / 2, argb); }
+        catch (IOException) { made = -1; }
+        if (made > 0) return (nint)made;
         _handles.Add(picture);
         return _handles.Count;
     }
 
+    /// An icon for a handle: one of the GUI kernel's (a GetHicon's, a
+    /// Windows program's HICON), not destroyed with it, as .NET's FromHandle
+    /// does not own the handle.
     public static Icon FromHandle(nint handle)
     {
-        if (handle < 1 || handle > _handles.Count) throw new ArgumentException("Parameter is not valid.");
-        Icon made = new Icon(new IconFile());
-        made._drawn = _handles[(int)handle - 1];
-        return made;
+        if (handle >= 1 && handle <= _handles.Count)
+        {
+            Icon drawn = new Icon(null, 0, false);
+            drawn._drawn = _handles[(int)handle - 1];
+            return drawn;
+        }
+        int kind, w, h, hx, hy, images, steps;
+        bool known = false;
+        try { known = Seat.Current.ImageInfo(handle, out kind, out w, out h, out hx, out hy, out images, out steps); }
+        catch (IOException) { }
+        if (!known) throw new ArgumentException("Parameter is not valid.");
+        return new Icon(null, handle, false);
     }
+
+    /// One of the system's icons (SystemIcons): OIC_* `id`.
+    internal static Icon? SystemImage(int id)
+    {
+        long handle;
+        try { handle = Seat.Current.SystemImage(id, Seat.ImageIcon); }
+        catch (IOException) { return null; }
+        return handle > 0 ? new Icon(null, handle, false) : null;
+    }
+
+    /// .NET's ExtractAssociatedIcon: the first icon group of the program at
+    /// `filePath` (or of an .ico itself); null when it has none.
+    public static Icon? ExtractAssociatedIcon(string filePath)
+    {
+        byte[] bytes;
+        try { bytes = File.ReadAllBytes(filePath); }
+        catch (IOException) { throw new FileNotFoundException("Could not find file '" + filePath + "'.", filePath); }
+        if (bytes.Length >= 2 && bytes[0] == (byte)'M' && bytes[1] == (byte)'Z')
+        {
+            long made;
+            try { made = Seat.Current.LoadImage(bytes, Seat.ImageIcon, 0); }
+            catch (IOException) { made = -1; }
+            return made > 0 ? new Icon(null, made, true) : null;
+        }
+        return FromBytes(bytes);
+    }
+
+    /// The GUI kernel's object, as .NET's Handle is the HICON.
+    public nint Handle { get { return (nint)_handle; } }
 
     Bitmap? Picture(int size)
     {
         if (_drawn != null) return _drawn;
-        int which = _file.Best(size, Seat.Current.Colours);
-        return which < 0 ? null : _file.Decode(which);
+        if (_file != null)
+        {
+            int which = _file.Best(size, Seat.Current.Colours);
+            Bitmap? decoded = which < 0 ? null : _file.Decode(which);
+            if (decoded != null) return decoded;
+        }
+        if (_handle == 0) return null;
+        int w, h;
+        int[]? argb;
+        try { argb = Seat.Current.ImagePixels(_handle, size, out w, out h); }
+        catch (IOException) { return null; }
+        if (argb == null || w <= 0 || h <= 0) return null;
+        Bitmap made = new Bitmap(w, h);
+        for (int i = 0; i < argb.Length; i++)
+        {
+            int v = argb[i];
+            made.Pixels[i * 4] = (byte)v; made.Pixels[i * 4 + 1] = (byte)(v >> 8); made.Pixels[i * 4 + 2] = (byte)(v >> 16); made.Pixels[i * 4 + 3] = (byte)(v >> 24);
+        }
+        return made;
     }
 
     public static Icon? FromFile(string path)
     {
-        IconFile? file = IconFile.Load(path);
-        return file == null ? null : new Icon(file);
+        byte[] bytes;
+        try { bytes = File.ReadAllBytes(path); }
+        catch (IOException) { return null; }
+        return FromBytes(bytes);
     }
 
     public static Icon? FromBytes(byte[] bytes)
     {
-        IconFile? file = IconFile.Read(bytes);
-        return file == null ? null : new Icon(file);
+        Icon made = new Icon(null, 0, false);
+        return made.Open(bytes) ? made : null;
+    }
+
+    /// The picture as .NET's ToBitmap gives it: the image for the size the
+    /// icon was made for (32 by default), alpha and all.
+    public Bitmap ToBitmap()
+    {
+        Bitmap? picture = Picture(_wantSize > 0 ? _wantSize : 32);
+        if (picture == null) throw new ArgumentException("Parameter is not valid.");
+        return picture;
+    }
+
+    /// Its size: the image it draws at by default.
+    public Size Size
+    {
+        get
+        {
+            Bitmap? picture = _drawn ?? Picture(_wantSize > 0 ? _wantSize : 32);
+            return picture == null ? new Size(0, 0) : new Size(picture.Width, picture.Height);
+        }
+    }
+
+    public object Clone() { return new Icon(this, _wantSize, _wantSize); }
+
+    /// The GUI kernel's object let go of, when it was made for this icon.
+    public void Dispose()
+    {
+        if (_owns && _handle != 0)
+        {
+            try { Seat.Current.DestroyImage(_handle); }
+            catch (IOException) { }
+        }
+        _owns = false;
+        _handle = 0;
     }
 
     /// The seat's bitmap id for this icon at this size, defining it if this
@@ -614,8 +763,34 @@ public class Icon
 
     int _lastWidth, _lastHeight;
     int _epoch;
-    public int Width { get { return _lastWidth; } }
-    public int Height { get { return _lastHeight; } }
+    public int Width { get { return _lastWidth > 0 ? _lastWidth : Size.Width; } }
+    public int Height { get { return _lastHeight > 0 ? _lastHeight : Size.Height; } }
+}
+
+/// .NET's SystemIcons: the system's own icons, the GUI kernel's art (the
+/// ones a Windows program's LoadIcon(NULL, IDI_*) gives it too).
+public static class SystemIcons
+{
+    static readonly Icon?[] _made = new Icon?[6];
+
+    static Icon Of(int id)
+    {
+        int at = id - 32512;
+        Icon? icon = _made[at];
+        if (icon == null) { icon = Icon.SystemImage(id); _made[at] = icon; }
+        if (icon == null) throw new InvalidOperationException("The GUI kernel has no system icon " + id + ".");
+        return icon;
+    }
+
+    public static Icon Application { get { return Of(32512); } }
+    public static Icon Hand { get { return Of(32513); } }
+    public static Icon Error { get { return Of(32513); } }
+    public static Icon Question { get { return Of(32514); } }
+    public static Icon Exclamation { get { return Of(32515); } }
+    public static Icon Warning { get { return Of(32515); } }
+    public static Icon Asterisk { get { return Of(32516); } }
+    public static Icon Information { get { return Of(32516); } }
+    public static Icon WinLogo { get { return Of(32517); } }
 }
 
 /// A pointer shape from a .cur or .ani file, given to the seat once and

@@ -1,0 +1,80 @@
+// test: an object stored through a sequence has escaped into the holder
+// flags: --store-sequences
+// expect-exit: 0
+// expect-output:
+// 10 20 30
+// 45
+// 5 6
+// 3 3
+//
+// A reference store made the image's stub (__x86.i.refstore) is still the
+// store: the object stored is the holder's, and changes made through the
+// local after it must be seen through the holder. A pass that took the
+// stub's call for one that keeps its arguments would split the object into
+// locals or free it with the frame.
+
+using System;
+
+sealed class Point
+{
+    public int X, Y;
+}
+
+sealed class Holder
+{
+    public Point? P;
+    public Point[] All = new Point[3];
+}
+
+static class Program
+{
+    static Holder Fill()
+    {
+        Holder h = new Holder();
+        for (int i = 0; i < 3; i++)
+        {
+            Point p = new Point();
+            h.All[i] = p;
+            p.X = (i + 1) * 10;
+        }
+        return h;
+    }
+
+    static int Sum(Holder h)
+    {
+        int s = 0;
+        for (int i = 0; i < 10; i++)
+        {
+            Point p = new Point { X = i };
+            h.P = p;
+            s += h.P.X;
+        }
+        return s;
+    }
+
+    static Holder Late()
+    {
+        Holder h = new Holder();
+        Point p = new Point();
+        h.P = p;
+        p.X = 5;
+        p.Y = 6;
+        return h;
+    }
+
+    static void Main()
+    {
+        Holder h = Fill();
+        GC.Collect();
+        Console.WriteLine(h.All[0].X + " " + h.All[1].X + " " + h.All[2].X);
+        Console.WriteLine(Sum(new Holder()));
+        Holder l = Late();
+        GC.Collect();
+        Console.WriteLine(l.P!.X + " " + l.P.Y);
+        Holder k = new Holder();
+        Point q = new Point { X = 3 };
+        k.P = q;
+        q.Y = 3;
+        Console.WriteLine(k.P.X + " " + k.P.Y);
+    }
+}

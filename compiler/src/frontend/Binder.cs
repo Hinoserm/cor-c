@@ -25,6 +25,14 @@ public sealed partial class Binder
     private readonly Metadata.DeclarationBatch _declarationBatch = new();
     private readonly IReadOnlyDictionary<(string Name, int Arity), int>? _indexedInterfaces;
     private readonly IReadOnlySet<(string Name, int Arity)>? _libraryInterfaces;
+    /// <summary>
+    /// A kernel module's compile: every interface family the KERNEL'S index
+    /// holds. A family outside it is the module's own, and is numbered in a
+    /// tier of its own above the kernel's classes (see the numbering), so
+    /// that declaring one never moves a slot the kernel was built with.
+    /// Null for anything that is not a module.
+    /// </summary>
+    private readonly IReadOnlySet<(string Name, int Arity)>? _kernelInterfaces;
 
     /// <summary>
     /// Whether a source file belongs to the compiler's own libraries. Set by
@@ -88,6 +96,40 @@ public sealed partial class Binder
     private int _nextSlot;
     private int _maxSlot;
     private int _loopDepth;
+
+    /// <summary>
+    /// What is definitely assigned at the breaks out of each loop or switch
+    /// section being checked, innermost last: the intersection of every
+    /// break's state, null while none has been met. After a loop whose
+    /// condition is always true, that is what is assigned (C#'s rule: its
+    /// only way out is a break).
+    /// </summary>
+    private readonly List<HashSet<LocalSym>?> _breaks = new();
+
+    private void EnterBreakable()
+    {
+        _loopDepth++;
+        _breaks.Add(null);
+    }
+
+    private HashSet<LocalSym>? LeaveBreakable()
+    {
+        _loopDepth--;
+        HashSet<LocalSym>? broke = _breaks[^1];
+        _breaks.RemoveAt(_breaks.Count - 1);
+        return broke;
+    }
+
+    /// <summary>After a loop that only a break leaves: what every break had assigned.</summary>
+    private void AfterEndlessLoop(Expr? cond, HashSet<LocalSym>? broke)
+    {
+        if (broke is null || cond is not null && !(cond is LiteralExpr { Kind: Lit.Bool, IntValue: 1 }))
+        {
+            return;
+        }
+        _assigned.Clear();
+        _assigned.UnionWith(broke);
+    }
     private readonly List<SwitchStmt> _switches = new();
 
     /// <summary>
@@ -932,9 +974,11 @@ public sealed partial class Binder
         IReadOnlyDictionary<(string Name, int Arity), int>? indexedInterfaces = null,
         Action<string, string>? requireExtensions = null,
         IReadOnlySet<(string Name, int Arity)>? libraryInterfaces = null,
-        Action<string, int>? requireOverrides = null)
+        Action<string, int>? requireOverrides = null,
+        IReadOnlySet<(string Name, int Arity)>? kernelInterfaces = null)
     {
         _file = file;
+        _kernelInterfaces = kernelInterfaces;
         _requireDeclaration = requireDeclaration;
         _requireExtensions = requireExtensions;
         _requireOverrides = requireOverrides;
@@ -974,15 +1018,21 @@ public sealed partial class Binder
         IReadOnlyDictionary<(string Name, int Arity), int>? indexedInterfaces = null,
         Action<string, string>? requireExtensions = null,
         IReadOnlySet<(string Name, int Arity)>? libraryInterfaces = null,
-        Action<string, int>? requireOverrides = null, bool freshOnly = false)
+        Action<string, int>? requireOverrides = null, bool freshOnly = false,
+        IReadOnlySet<(string Name, int Arity)>? kernelInterfaces = null)
     {
-        Binder b = new(file, requireDeclaration, indexedInterfaces, requireExtensions, libraryInterfaces, requireOverrides);
+        Binder b = new(file, requireDeclaration, indexedInterfaces, requireExtensions, libraryInterfaces, requireOverrides, kernelInterfaces);
         b._freshOnly = freshOnly;
+        b._usesDynamic = unit.UsesDynamic;
         b.Run(unit);
         // The declarations' tables carry straight on into the bodies': a copy
         // of every one, the original then dropped, was a unit's whole binding
         // made twice for the collector.
         b.CheckBodyWork();
+        // No await under a lock, nothing awaited or allocated in an interrupt
+        // handler: across the unit, now that every body is bound
+        // (Binder.AwaitChecks).
+        b.CheckAsyncSafety();
         b._r.StaticBytes = b._staticNext;
         return b._r;
     }
@@ -2109,12 +2159,21 @@ public sealed partial class Binder
         // what the sources cannot say, a family listed as the library's.
         bool IsLibraryInterface(TypeSymbol t, (string, int) family)
             => IsLibraryType(t) || (_libraryInterfaces?.Contains(family) ?? false);
-        SortedDictionary<(string, int), int> families = new(), local = new(), unitLocal = new();
+        // AND A MODULE'S OWN, in a kernel module's compile: a family the
+        // kernel's index does not hold. Numbered among the kernel's project
+        // families, as they were while a module was one compile against the
+        // kernel's index alone, one that sorted before a kernel family moved
+        // that family's slots, and every class the kernel's interface region
+        // ends below, in the module's view and not in the kernel's. They are
+        // numbered above the kernel's classes instead, where the kernel has
+        // nothing (moduleTier).
+        SortedDictionary<(string, int), int> families = new(), local = new(), unitLocal = new(), moduleTier = new();
         bool IsLibraryFamily((string, int) family, bool declaredHere)
             => _libraryInterfaces is null ? true : _libraryInterfaces.Contains(family) && !declaredHere;
+        bool IsModuleFamily((string, int) family) => _kernelInterfaces is not null && !_kernelInterfaces.Contains(family);
         if (_indexedInterfaces is not null)
             foreach (var family in _indexedInterfaces)
-                (IsLibraryFamily(family.Key, false) ? families : local)[family.Key] = family.Value;
+                (IsLibraryFamily(family.Key, false) ? families : IsModuleFamily(family.Key) ? moduleTier : local)[family.Key] = family.Value;
         foreach (TypeSymbol t in _r.Types.Values.Where(t => t.Kind == TypeKind.Interface))
         {
             (string, int) family = Family(t);
@@ -2124,8 +2183,8 @@ public sealed partial class Binder
                 continue;
             }
             bool library = IsLibraryInterface(t, family);
-            SortedDictionary<(string, int), int> into = library ? families : local;
-            if (library) local.Remove(family);
+            SortedDictionary<(string, int), int> into = library ? families : IsModuleFamily(family) ? moduleTier : local;
+            if (library) { local.Remove(family); moduleTier.Remove(family); }
             // THE DECLARED MEMBERS, not the copies this unit made beside them:
             // a copy of the interface's generic method is local to the unit,
             // and counting it gave the family one more slot here than in every
@@ -2188,6 +2247,8 @@ public sealed partial class Binder
                 Console.Error.WriteLine("  lib " + template + "`" + arity + " methods=" + methods);
             foreach (((string template, int arity), int methods) in local)
                 Console.Error.WriteLine("  project " + template + "`" + arity + " methods=" + methods);
+            foreach (((string template, int arity), int methods) in moduleTier)
+                Console.Error.WriteLine("  module " + template + "`" + arity + " methods=" + methods);
             foreach (((string template, int arity), int methods) in unitLocal)
                 Console.Error.WriteLine("  unit " + template + "`" + arity + " methods=" + methods);
         }
@@ -2205,15 +2266,26 @@ public sealed partial class Binder
             // project's own classes, per type and not per object.
             _interfaceSlots = _librarySlots + LibraryClassReserve;
             Number(local);
-            Assign(false);
+            if (moduleTier.Count == 0) Assign(false);
         }
         _projectClassSlots = _interfaceSlots;
+
+        // THE MODULE'S TIER: a fixed distance above where the kernel's
+        // classes begin their virtuals, as the project's own interfaces sit
+        // above the library's classes. Every unit of the module numbers the
+        // same families here, the module's index listing them all.
+        if (moduleTier.Count > 0)
+        {
+            _interfaceSlots = _projectClassSlots + ProjectClassReserve;
+            Number(moduleTier);
+            Assign(false);
+        }
 
         // Only closures the compiler made implement these, and they declare
         // no virtuals of their own, so the reserve is room to spare.
         if (unitLocal.Count > 0)
         {
-            _interfaceSlots = _projectClassSlots + ProjectClassReserve;
+            _interfaceSlots = (moduleTier.Count > 0 ? _interfaceSlots : _projectClassSlots) + ProjectClassReserve;
             Number(unitLocal);
             Assign(false, unitOnly: true);
         }
@@ -3108,7 +3180,7 @@ public sealed partial class Binder
                             TemplateIndex = p.TemplateIndex,
                             VtableSlotHint = p.VtableSlotHint,
                             OwnedImplementation = p.OwnedImplementation, File = p.File, Scope = p.Scope, Namespace = p.Namespace,
-                            Fresh = p.Fresh,
+                            Fresh = p.Fresh, AutoAccessor = p.Auto && !abstractAccessors,
                         };
 
                         MethodSymbol gs = new()
@@ -3142,7 +3214,7 @@ public sealed partial class Binder
                             TemplateIndex = p.TemplateIndex,
                             VtableSlotHint = p.VtableSlotHint,
                             OwnedImplementation = p.OwnedImplementation, File = p.File, Scope = p.Scope, Namespace = p.Namespace,
-                            Fresh = p.Fresh,
+                            Fresh = p.Fresh, AutoAccessor = p.Auto && !abstractAccessors,
                         };
                         // The indices, and THEN the value -- `set_Item(i, v)`,
                         // which is the order C# uses and the order the use site
@@ -3627,6 +3699,13 @@ public sealed partial class Binder
     {
         if (sym.SlotsAssigned) return;
         sym.SlotsAssigned = true;
+        // THE BASE FIRST. An override takes the slot of the method it
+        // overrides, and a new virtual the next above the base's: read before
+        // the base was numbered, both came out of thin air. A unit that met
+        // ArgumentException before Exception (abi.cor, throwing one) gave its
+        // Message a slot of its own, and the library's link refused the two
+        // layouts.
+        if (sym.Base is TypeSymbol basis) AssignSlots(basis);
         // A class's own virtual methods are numbered above the interface
         // region -- the LIBRARY's region for a library class, so that it gets
         // the numbers its own build gave it whatever this compilation adds.
@@ -3943,6 +4022,10 @@ public sealed partial class Binder
             // A SHARED METHOD COPY'S TYPE ARGUMENT is object, carrying which
             // of its type parameters it is (TypeRef.CanonIndex).
             case "object": return Type.CanonAny(r.CanonIndex);
+
+            // C#'S `dynamic`: object, with its operations bound when the
+            // program runs (Type.Dynamic; Binder.Dynamic.cs).
+            case "dynamic": return Type.DynamicAny;
 
             // .NET'S NAMES FOR THE SAME TYPES, bare or with their namespace:
             // `string` is an alias for System.String and `int` for
@@ -4290,6 +4373,7 @@ public sealed partial class Binder
             SettleGenericCaptures();
             SettleCapturedCells();
             _r.FrameSize[md] = _maxSlot;
+            NoteBoundBody(_method, md);
             _method = null;
         }
         _thisType = null;
@@ -4839,18 +4923,19 @@ public sealed partial class Binder
 
                 List<Sym> inLoop = Assume(w.Cond, true);
 
-                _loopDepth++;
+                EnterBreakable();
                 CheckEmbedded(w.Body);
-                _loopDepth--;
+                HashSet<LocalSym>? whileBroke = LeaveBreakable();
                 Forget(inLoop);
                 PopScope();
+                AfterEndlessLoop(w.Cond, whileBroke);
                 break;
             }
 
             case DoStmt dd:
-                _loopDepth++;
+                EnterBreakable();
                 CheckEmbedded(dd.Body);
-                _loopDepth--;
+                LeaveBreakable();
                 // What the condition declares is the do statement's alone:
                 // nothing after the loop sees it.
                 PushScope();
@@ -4885,9 +4970,9 @@ public sealed partial class Binder
                 // proved -- so checking it first took the proof away from the
                 // body, and `t.Interfaces` two lines in was reported as a read
                 // through something that may be null.
-                _loopDepth++;
+                EnterBreakable();
                 CheckEmbedded(f.Body);
-                _loopDepth--;
+                HashSet<LocalSym>? forBroke = LeaveBreakable();
 
                 foreach (Expr step in f.Step)
                 {
@@ -4896,6 +4981,7 @@ public sealed partial class Binder
 
                 Forget(proved);
                 PopScope();
+                AfterEndlessLoop(f.Cond, forBroke);
                 break;
             }
 
@@ -4947,6 +5033,14 @@ public sealed partial class Binder
             {
                 Type seq = Peek(fe.Sequence);
 
+                // OVER A DYNAMIC VALUE: over what the binder enumerates of it.
+                if (LateForeach(fe, seq) is Stmt lateLoop)
+                {
+                    _r.Lowered[fe] = lateLoop;
+                    CheckStmt(lateLoop);
+                    break;
+                }
+
                 // ANYTHING BUT AN ARRAY IS REWRITTEN, which is what C# does to
                 // all of them: an array keeps its own loop here only because it
                 // has one already and it is the tighter code.
@@ -4994,9 +5088,9 @@ public sealed partial class Binder
                 // Recorded as a pattern's binding is: a lambda that captures
                 // it makes it a cell, and the lowering stores into the cell.
                 _r.PatternSym[fe] = iteration;
-                _loopDepth++;
+                EnterBreakable();
                 CheckEmbedded(fe.Body);
-                _loopDepth--;
+                LeaveBreakable();
                 PopScope();
                 break;
             }
@@ -5101,6 +5195,12 @@ public sealed partial class Binder
                 {
                     Error(s, $"'{(s is BreakStmt ? "break" : "continue")}' is only valid inside a loop");
                 }
+                else if (s is BreakStmt && _breaks.Count > 0)
+                {
+                    HashSet<LocalSym>? broke = _breaks[^1];
+                    if (broke is null) _breaks[^1] = new HashSet<LocalSym>(_assigned, ReferenceEqualityComparer.Instance);
+                    else broke.IntersectWith(_assigned);
+                }
                 break;
 
             case GotoCaseStmt jump:
@@ -5193,7 +5293,7 @@ public sealed partial class Binder
                     _assigned.Clear();
                     _assigned.UnionWith(beforeSwitch);
                     PushScope();
-                    _loopDepth++;
+                    EnterBreakable();
 
                     // A LABEL IS A CONDITION, checked as one. Any binding in it
                     // declares into the scope just pushed and so is visible in
@@ -5226,7 +5326,7 @@ public sealed partial class Binder
                         continuingAssignments.Add(new HashSet<LocalSym>(
                             _assigned, ReferenceEqualityComparer.Instance));
                     }
-                    _loopDepth--;
+                    LeaveBreakable();
                     Forget(caseProof);
                     PopScope();
                 }
@@ -5343,6 +5443,12 @@ public sealed partial class Binder
     {
         Type t = CheckExpr(e);
 
+        // A DYNAMIC CONDITION: its operator true, asked when the program runs.
+        if (LateCondition(e, t))
+        {
+            return;
+        }
+
         if (!t.IsError && t.Prim != Prim.Bool)
         {
             // No truthiness. An integer is not a condition, and saying so is
@@ -5395,6 +5501,22 @@ public sealed partial class Binder
             return;
         }
 
+        // DYNAMIC, EITHER WAY. From it to anything but object, the binder's
+        // implicit conversion at run time (Binder.Dynamic); to it, or from it
+        // to object, the identity conversion C# has between dynamic and
+        // object -- with no null check, dynamic being oblivious as C#'s is.
+        if (LateConversion(from, to, at))
+        {
+            return;
+        }
+        if (from.Dynamic)
+        {
+            from = Type.Any;
+        }
+        if (to.Dynamic)
+        {
+            to = Type.Any.AsNullable();
+        }
         // A METHOD GROUP CONVERTED TO OBJECT is its natural type (C# 10):
         // converted to that delegate, which is the object.
         if (NaturalTarget(to) && at is Expr groupSource && !_r.Rewrites.ContainsKey(groupSource)
@@ -6889,6 +7011,7 @@ public sealed partial class Binder
         if (face is not null) DelegateMembers(closure, face);
         if (lam.GroupIdentity is string group) closure.DelegateGroup = group.Split('$')[0];
         else if (lam.LocalGroup is string local) closure.DelegateGroup = local;
+        ImplementDefaults(closure);
         RegisterType(name2, closure);
         _r.Methods[body] = run;
         _r.Closures[lam] = new ClosureInfo(closure, fields, run);
@@ -7142,6 +7265,14 @@ public sealed partial class Binder
             // The target has not been resolved yet on this path -- a call
             // through a value, say. Names cannot be matched to anything, and
             // the ordinary "not a method" diagnostic below is the right one.
+            return;
+        }
+
+        // A DYNAMIC ARGUMENT leaves the names to the binding made when the
+        // program runs, each candidate matching them for itself
+        // (Binder.Dynamic's LateOverloads).
+        if (_usesDynamic && c.Args.Any(a => !IsFunctionSource(a) && !HoldsLambda(a) && Peek(a is RefArgExpr { Declare: null, Name: null } ra ? ra.Target : a).Dynamic))
+        {
             return;
         }
 
@@ -11866,6 +11997,12 @@ public sealed partial class Binder
             {
                 Type target = CheckExpr(ix.Target);
 
+                // AN ELEMENT OF A DYNAMIC VALUE, bound when the program runs.
+                if (_usesDynamic && target.Dynamic && !target.IsError && !target.IsArray)
+                {
+                    return LateIndex(ix);
+                }
+
                 // AN INDEXER, when the thing is not an array.
                 //
                 // `b[i]` becomes a call to get_Item, and `b[i] = v` a call to
@@ -12277,6 +12414,12 @@ public sealed partial class Binder
                     return Type.Error;
                 }
 
+                // AN OPERATOR ON A DYNAMIC VALUE, bound when the program runs.
+                if (_usesDynamic && LateUnary(u, t) is Type lateUnary)
+                {
+                    return lateUnary;
+                }
+
                 // A TYPE'S OWN OPERATOR (C# 12.9): `-v`, `~flags`, `!ok`,
                 // `+x` and `i++` on a struct or class that declares one.
                 if (UserUnary(u, t) is Type byOperator)
@@ -12590,6 +12733,13 @@ public sealed partial class Binder
                 {
                     target = targetPrechecked ? assignmentWanted! : CheckExpr(a.Target);
 
+                    // A STORE BOUND LATE: a dynamic value's member or element,
+                    // or a compound assignment to a dynamic variable.
+                    if (_usesDynamic && LateAssignment(a, target) is Type lateStore)
+                    {
+                        return lateStore;
+                    }
+
                     // A FIELD WRITTEN THROUGH SOMETHING READ-ONLY -- a `ref
                     // readonly` local's struct, an `in` struct, a ref readonly
                     // call's -- writes the read-only variable itself.
@@ -12627,7 +12777,12 @@ public sealed partial class Binder
                             _ => null,
                         }
                         : null;
-                    if (getter != null && propertyName != null)
+                    if (property is PropertySetSym setOnly)
+                    {
+                        _r.PropertySetters[a.Target] = setOnly.Setter;
+                        target = setOnly.Setter.Params[0].Type;
+                    }
+                    else if (getter != null && propertyName != null)
                     {
                         MethodSymbol? setter = getter.Owner
                             .FindMethods("set_" + propertyName)
@@ -12948,6 +13103,12 @@ public sealed partial class Binder
                 {
                     CheckAssignable(operand, wanted, cast.Operand, "cast");
                     return wanted;
+                }
+
+                // A DYNAMIC VALUE CAST: the binder's explicit conversion.
+                if (LateCast(cast, operand, wanted) is Type lateCast)
+                {
+                    return lateCast;
                 }
 
                 // AN ARRAY OR A STRING CAST TO A SPAN IS MADE ONE, as its
@@ -14132,6 +14293,12 @@ public sealed partial class Binder
             }
             : null;
 
+        if (resolved is PropertySetSym setOnly && !_r.PropertySetters.ContainsKey(target))
+        {
+            _r.PropertySetters[target] = setOnly.Setter;
+            return;
+        }
+
         if (getter is null || propertyName is null
             || _r.PropertySetters.ContainsKey(target))
         {
@@ -14883,6 +15050,13 @@ public sealed partial class Binder
                 _r.Resolved[n] = new PropertyGetSym(getter);
                 return getter.Returns;
             }
+
+            if (Members(_thisType, "set_" + n.Name).FirstOrDefault(s => s.Params.Count == 1) is { } onlySetter
+                && !(onlySetter is { Static: false } && InStaticContext))
+            {
+                _r.Resolved[n] = new PropertySetSym(onlySetter);
+                return onlySetter.Params[0].Type;
+            }
         }
 
         // A closure object becomes `_thisType` while its Invoke body is
@@ -14959,6 +15133,14 @@ public sealed partial class Binder
                 _r.Resolved[n] = new PropertyGetSym(staticGetter);
                 return staticGetter.Returns;
             }
+
+            MethodSymbol? staticSetter = _lexicalType.FindMethods("set_" + n.Name)
+                                                     .FirstOrDefault(m => m.Static && m.Params.Count == 1);
+            if (staticSetter is not null)
+            {
+                _r.Resolved[n] = new PropertySetSym(staticSetter);
+                return staticSetter.Params[0].Type;
+            }
         }
 
         if (_capturedThisType is not null && n.Name == _capturedThisType.Name)
@@ -14992,6 +15174,13 @@ public sealed partial class Binder
             {
                 _r.Resolved[n] = new CapturedPropertyGetSym(_capturedThisField, outerGetter);
                 return outerGetter.Returns;
+            }
+
+            MethodSymbol? outerSetter = _capturedThisType.FindMethods("set_" + n.Name).FirstOrDefault(m => m.Params.Count == 1);
+            if (outerSetter is not null)
+            {
+                _r.Resolved[n] = new PropertySetSym(outerSetter, _capturedThisField);
+                return outerSetter.Params[0].Type;
             }
         }
 
@@ -15055,6 +15244,14 @@ public sealed partial class Binder
             {
                 _r.Resolved[n] = new PropertyGetSym(outerStaticGetter);
                 return outerStaticGetter.Returns;
+            }
+
+            MethodSymbol? outerStaticSetter = outer.FindMethods("set_" + n.Name)
+                                                   .FirstOrDefault(m => m.Static && m.Params.Count == 1);
+            if (outerStaticSetter is not null)
+            {
+                _r.Resolved[n] = new PropertySetSym(outerStaticSetter);
+                return outerStaticSetter.Params[0].Type;
             }
         }
 
@@ -15165,6 +15362,11 @@ public sealed partial class Binder
         "char"   => "Char",
         "string" => "String",
         "object" => "Object",
+        // System.Type's statics and the members of a Type the compiler does
+        // not answer itself (Name, FullName and the Is* flags it reads from
+        // the descriptor): GetTypeFromProgID, GetTypeFromCLSID, Missing,
+        // InvokeMember, as String's are String's.
+        "Type"   => "SystemType",
         _        => null,
     };
 
@@ -15345,6 +15547,13 @@ public sealed partial class Binder
         if (target.IsError)
         {
             return Type.Error;
+        }
+
+        // A MEMBER OF A DYNAMIC VALUE is bound when the program runs
+        // (Binder.Dynamic).
+        if (_usesDynamic && target.Dynamic && asType is null)
+        {
+            return LateMember(m);
         }
 
         // THE SAME NAME AS A MEMBER AND AS A TYPE, which C# calls the
@@ -15811,6 +16020,13 @@ public sealed partial class Binder
             _r.Resolved[m] = new PropertyGetSym(getter);
             Type read = Close(ContextualMemberResult(target, getter), received);
             return conditional ? read.AsNullable() : read;
+        }
+
+        // A SET-ONLY PROPERTY: assigned, never read (PropertySetSym).
+        if (MethodsOn(owner, "set_" + m.Name).FirstOrDefault(s => s.Params.Count == 1) is { } onlySetter)
+        {
+            _r.Resolved[m] = new PropertySetSym(onlySetter);
+            return Close(onlySetter.Params[0].Type, received);
         }
 
         // WHAT EVERY OBJECT ANSWERS. Every type derives from object, so
@@ -16739,6 +16955,13 @@ public sealed partial class Binder
             args[0] = _r.TypeOf(movedReceiver);
         }
 
+        // A CALL OF A DYNAMIC VALUE'S MEMBER, or of a dynamic value, is bound
+        // when the program runs (Binder.Dynamic).
+        if (_usesDynamic && LateInvocation(c, targetType) is Type lateCall)
+        {
+            return lateCall;
+        }
+
         // ONE OF NULLABLE<T>'S METHODS, which CheckMember found on a cell and
         // left for the call to write out; see NullableMemberCall.
         if (c.Target is MemberExpr cellMember && _cellMethods.Remove(cellMember, out Type? cell))
@@ -16859,6 +17082,19 @@ public sealed partial class Binder
             return Type.Error;
         }
 
+        // A DYNAMIC ARGUMENT: the overload chosen when the program runs, by
+        // the arguments' own types, among those that could take them
+        // (Binder.Dynamic) -- before the arguments are put in parameter
+        // order, packed into a params array or joined by a receiver, which
+        // are each candidate's own.
+        if (_usesDynamic && args.Any(a => a.Dynamic)
+            && LateOverloads(c, group, args, Implicitly,
+                             (had, want, written) => WrittenFits(had, want, written)
+                                                     && !(ObjectNarrowed(had, want) && !IsFunctionSource(written) && !TargetTyped(written))) is Type lateChoice)
+        {
+            return lateChoice;
+        }
+
         // THE RECEIVER BECOMES THE FIRST ARGUMENT, for a member call on a type
         // whose methods are static -- a string, today.
         //
@@ -16915,6 +17151,8 @@ public sealed partial class Binder
 
         bool WrittenFits(Type had, Type want, Expr written)
         {
+            // A DYNAMIC ARGUMENT converts to anything (C# 10.2.10), at run time.
+            if (had.Dynamic && !want.IsPointer) return true;
             if (written is NewExpr { Type.Name.Length: 0, Elements: null } && (want.Symbol is not null || (written is NewExpr { Collection: true } && want.IsArray))) return true;
             if (NullableIntoValue(had, want)) return false;
             if (Convertible(had, want) || had.IsError || Unmade(want) || Variant(had, want)
@@ -17435,6 +17673,8 @@ public sealed partial class Binder
                     return false;
                 }
 
+                // A DYNAMIC ARGUMENT converts to anything, at run time.
+                if (args[i].Dynamic && !want.IsPointer) continue;
                 if (NullableIntoValue(args[i], want)) return false;
                 // AN OBJECT IS NO NARROWER TYPE without a cast (C# 10.2): the
                 // machine word goes anywhere here, but an overload that wants
@@ -18534,6 +18774,11 @@ public sealed partial class Binder
         //
         // It matters more than it looks, because `is { Kind: K }` lowers to
         // exactly this shape: the null test and the member read, joined by &&.
+        if (b.Op is BinOp.AndAlso or BinOp.OrElse && LateLogical(b) is Type lateLogic)
+        {
+            return lateLogic;
+        }
+
         if (b.Op == BinOp.AndAlso)
         {
             Type left = CheckExpr(b.Left);
@@ -18604,6 +18849,12 @@ public sealed partial class Binder
         if (l.IsError || r.IsError)
         {
             return Type.Error;
+        }
+
+        // AN OPERATOR WITH A DYNAMIC OPERAND, bound when the program runs.
+        if (_usesDynamic && LateBinary(b, l, r) is Type lateBinary)
+        {
+            return lateBinary;
         }
 
         AdoptUnsignedConstant(b.Left, ref l, b.Right, ref r);

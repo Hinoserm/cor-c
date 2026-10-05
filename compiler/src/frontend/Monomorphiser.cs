@@ -204,6 +204,7 @@ public sealed class Monomorphiser
             ExplicitInterface = null, Line = made.Line, Col = made.Col,
             LocalCopy = made.LocalCopy, File = made.File, TemplateIndex = made.TemplateIndex,
             Scope = made.Scope, Namespace = made.Namespace, OwnedImplementation = made.OwnedImplementation,
+            AutoAccessor = made.AutoAccessor,
         };
         plain.WritableAttributes.AddRange(made.Attributes);
         plain.Params.AddRange(made.Params);
@@ -491,7 +492,7 @@ public sealed class Monomorphiser
             return false;
         }
 
-        if (r.Name is "string" or "object" or CanonName || _byRef.Contains(r.Name))
+        if (r.Name is "string" or "object" or "dynamic" or CanonName || _byRef.Contains(r.Name))
         {
             return true;
         }
@@ -657,7 +658,7 @@ public sealed class Monomorphiser
             Canonicalise(t);
         }
 
-        CompilationUnit output = new() { Line = unit.Line, Col = unit.Col };
+        CompilationUnit output = new() { Line = unit.Line, Col = unit.Col, UsesDynamic = unit.UsesDynamic };
         output.Usings.AddRange(unit.Usings);
         output.TupleNamings.AddRange(unit.TupleNamings);
         output.RegistrySchemas.AddRange(unit.RegistrySchemas);
@@ -2131,6 +2132,7 @@ public sealed class Monomorphiser
                 // import of a symbol nothing provides.
                 made.LocalCopy = md.LocalCopy;
                 made.Fresh = md.Fresh;
+                made.AutoAccessor = md.AutoAccessor;
                 made.File = md.File;
                 made.TemplateIndex = md.TemplateIndex;
 

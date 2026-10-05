@@ -1,0 +1,1166 @@
+// C#'S DYNAMIC BINDER (Microsoft.CSharp's RuntimeBinder), over this machine's
+// objects: the compiler rewrites every operation on a `dynamic` value into a
+// call of DynamicRuntime (compiler/src/frontend/Binder.Dynamic.cs), and these
+// bind it when the program runs, with C#'s rules, asking in this order --
+//
+//   a DynamicObject (TryGetMember and the rest), as .NET's binder asks an
+//   IDynamicMetaObjectProvider; an ExpandoObject is one;
+//   a COM object, late-bound through IDispatch (ComDispatch: GetIDsOfNames,
+//   Invoke -- DISPATCH_PROPERTYGET for a read, DISPATCH_METHOD with
+//   PROPERTYGET for a call, DISPATCH_PROPERTYPUT(REF) for a write,
+//   DISPID_VALUE for an index, by-reference arguments written back);
+//   a class's or struct's own members (System.Dynamic.IDynamicMembers),
+//   which the compiler writes into each of a program's own types when it
+//   uses `dynamic`, and into the library's [LateBound] ones (DynamicDeclarations);
+//   the program's provider (System.Dynamic.ILateMembers), one for each
+//   unit that writes `dynamic`, registered as its Main's type is touched:
+//   the library classes the unit names, each through an adapter, and a
+//   primitive's members (string's String statics, a number's CompareTo and
+//   the rest);
+//   an array's Length and elements, a string's Length and chars, and the
+//   four members every object has.
+//
+// A call's arguments travel as a LateCall: their names, how each was passed
+// (ref, out, in) and the type arguments written, matched to each candidate's
+// parameters as C# matches them, the best candidate chosen as C# chooses it
+// (DynamicValues.Choose) and a ref or out argument's new value written back.
+// A delegate is called through its own ILateInvocable.
+//
+// The operators are C#'s on the run-time types: the binary numeric
+// promotions (int, uint, long, ulong, float, double), string concatenation,
+// bool logic, equality of references and of values, a user operator of
+// either operand's type. Conversions are the implicit ones C# has (a number
+// to a wider one, null to a reference or a Nullable, an object to what it
+// is, a user conversion) and, cast explicitly, the explicit numeric ones
+// too. A failure is Microsoft.CSharp.RuntimeBinder.RuntimeBinderException,
+// with .NET's text.
+
+using System.Collections.Generic;
+using System.Dynamic;
+using System.Linq.Expressions;
+using Microsoft.CSharp.RuntimeBinder;
+
+namespace System.Linq.Expressions
+{
+    /// .NET's ExpressionType: the operation a dynamic operator binder is for.
+    public enum ExpressionType
+    {
+        Add = 0, AddChecked = 1, And = 2, AndAlso = 3, ArrayLength = 4, ArrayIndex = 5, Call = 6, Coalesce = 7,
+        Conditional = 8, Constant = 9, Convert = 10, ConvertChecked = 11, Divide = 12, Equal = 13, ExclusiveOr = 14,
+        GreaterThan = 15, GreaterThanOrEqual = 16, Invoke = 17, Lambda = 18, LeftShift = 19, LessThan = 20,
+        LessThanOrEqual = 21, ListInit = 22, MemberAccess = 23, MemberInit = 24, Modulo = 25, Multiply = 26,
+        MultiplyChecked = 27, Negate = 28, UnaryPlus = 29, NegateChecked = 30, New = 31, NewArrayInit = 32,
+        NewArrayBounds = 33, Not = 34, NotEqual = 35, Or = 36, OrElse = 37, Parameter = 38, Power = 39, Quote = 40,
+        RightShift = 41, Subtract = 42, SubtractChecked = 43, TypeAs = 44, TypeIs = 45, Assign = 46, Block = 47,
+        DebugInfo = 48, Decrement = 49, Dynamic = 50, Default = 51, Extension = 52, Goto = 53, Increment = 54,
+        Index = 55, Label = 56, RuntimeVariables = 57, Loop = 58, Switch = 59, Throw = 60, Try = 61, Unbox = 62,
+        AddAssign = 63, AndAssign = 64, DivideAssign = 65, ExclusiveOrAssign = 66, LeftShiftAssign = 67,
+        ModuloAssign = 68, MultiplyAssign = 69, OrAssign = 70, PowerAssign = 71, RightShiftAssign = 72,
+        SubtractAssign = 73, AddAssignChecked = 74, MultiplyAssignChecked = 75, SubtractAssignChecked = 76,
+        PreIncrementAssign = 77, PreDecrementAssign = 78, PostIncrementAssign = 79, PostDecrementAssign = 80,
+        TypeEqual = 81, OnesComplement = 82, IsTrue = 83, IsFalse = 84,
+    }
+}
+
+namespace System.Dynamic
+{
+    /// .NET's marker for an object that binds its own dynamic operations.
+    public interface IDynamicMetaObjectProvider
+    {
+    }
+
+    /// .NET's CallInfo: how many arguments a call has, and the names of the named ones.
+    public sealed class CallInfo
+    {
+        readonly int _count;
+        readonly List<string> _names;
+        public CallInfo(int argCount, params string[] argNames)
+        {
+            _count = argCount;
+            _names = new List<string>(argNames);
+        }
+        public CallInfo(int argCount, IEnumerable<string> argNames)
+        {
+            _count = argCount;
+            _names = new List<string>(argNames);
+        }
+        public int ArgumentCount { get { return _count; } }
+        public IReadOnlyList<string> ArgumentNames { get { return _names; } }
+    }
+
+    /// .NET's binders, as a DynamicObject's Try methods are handed them.
+    public abstract class DynamicMetaObjectBinder
+    {
+        public virtual Type ReturnType { get { return typeof(object); } }
+    }
+
+    public abstract class GetMemberBinder : DynamicMetaObjectBinder
+    {
+        readonly string _name;
+        readonly bool _ignoreCase;
+        protected GetMemberBinder(string name, bool ignoreCase) { _name = name; _ignoreCase = ignoreCase; }
+        public string Name { get { return _name; } }
+        public bool IgnoreCase { get { return _ignoreCase; } }
+    }
+
+    public abstract class SetMemberBinder : DynamicMetaObjectBinder
+    {
+        readonly string _name;
+        readonly bool _ignoreCase;
+        protected SetMemberBinder(string name, bool ignoreCase) { _name = name; _ignoreCase = ignoreCase; }
+        public string Name { get { return _name; } }
+        public bool IgnoreCase { get { return _ignoreCase; } }
+    }
+
+    public abstract class InvokeMemberBinder : DynamicMetaObjectBinder
+    {
+        readonly string _name;
+        readonly bool _ignoreCase;
+        readonly CallInfo _info;
+        protected InvokeMemberBinder(string name, bool ignoreCase, CallInfo callInfo) { _name = name; _ignoreCase = ignoreCase; _info = callInfo; }
+        public string Name { get { return _name; } }
+        public bool IgnoreCase { get { return _ignoreCase; } }
+        public CallInfo CallInfo { get { return _info; } }
+    }
+
+    public abstract class InvokeBinder : DynamicMetaObjectBinder
+    {
+        readonly CallInfo _info;
+        protected InvokeBinder(CallInfo callInfo) { _info = callInfo; }
+        public CallInfo CallInfo { get { return _info; } }
+    }
+
+    public abstract class GetIndexBinder : DynamicMetaObjectBinder
+    {
+        readonly CallInfo _info;
+        protected GetIndexBinder(CallInfo callInfo) { _info = callInfo; }
+        public CallInfo CallInfo { get { return _info; } }
+    }
+
+    public abstract class SetIndexBinder : DynamicMetaObjectBinder
+    {
+        readonly CallInfo _info;
+        protected SetIndexBinder(CallInfo callInfo) { _info = callInfo; }
+        public CallInfo CallInfo { get { return _info; } }
+    }
+
+    public abstract class BinaryOperationBinder : DynamicMetaObjectBinder
+    {
+        readonly ExpressionType _operation;
+        protected BinaryOperationBinder(ExpressionType operation) { _operation = operation; }
+        public ExpressionType Operation { get { return _operation; } }
+    }
+
+    public abstract class UnaryOperationBinder : DynamicMetaObjectBinder
+    {
+        readonly ExpressionType _operation;
+        protected UnaryOperationBinder(ExpressionType operation) { _operation = operation; }
+        public ExpressionType Operation { get { return _operation; } }
+    }
+
+    public abstract class ConvertBinder : DynamicMetaObjectBinder
+    {
+        readonly Type _type;
+        readonly bool _explicit;
+        protected ConvertBinder(Type type, bool @explicit) { _type = type; _explicit = @explicit; }
+        public Type Type { get { return _type; } }
+        public bool Explicit { get { return _explicit; } }
+        public override Type ReturnType { get { return _type; } }
+    }
+
+    // The binders DynamicRuntime hands a DynamicObject.
+    sealed class LateGetMember : GetMemberBinder { public LateGetMember(string name) : base(name, false) { } }
+    sealed class LateSetMember : SetMemberBinder { public LateSetMember(string name) : base(name, false) { } }
+    sealed class LateInvokeMember : InvokeMemberBinder { public LateInvokeMember(string name, LateCall call) : base(name, false, LateInfo.Of(call)) { } }
+    sealed class LateInvoke : InvokeBinder { public LateInvoke(LateCall call) : base(LateInfo.Of(call)) { } }
+    sealed class LateGetIndex : GetIndexBinder { public LateGetIndex(LateCall call) : base(LateInfo.Of(call)) { } }
+    sealed class LateSetIndex : SetIndexBinder { public LateSetIndex(LateCall call) : base(LateInfo.Of(call)) { } }
+
+    /// A call's CallInfo, as .NET's binder hands a DynamicObject one: the count, and the names of the named arguments, last.
+    static class LateInfo
+    {
+        public static CallInfo Of(LateCall call)
+        {
+            List<string> names = new List<string>();
+            if (call.Names != null) foreach (string? n in call.Names) if (n != null) names.Add(n);
+            return new CallInfo(call.Count, names);
+        }
+    }
+    sealed class LateBinary : BinaryOperationBinder { public LateBinary(ExpressionType op) : base(op) { } }
+    sealed class LateUnary : UnaryOperationBinder { public LateUnary(ExpressionType op) : base(op) { } }
+    sealed class LateConvert : ConvertBinder { public LateConvert(Type type, bool @explicit) : base(type, @explicit) { } }
+
+    /// <summary>
+    /// .NET's DynamicObject: a class that answers its own dynamic operations
+    /// by overriding these. Each answers whether it did; one that did not
+    /// leaves the operation to the binder's ordinary rules, which then fail.
+    /// </summary>
+    public class DynamicObject : IDynamicMetaObjectProvider
+    {
+        protected DynamicObject() { }
+        public virtual bool TryGetMember(GetMemberBinder binder, out object? result) { result = null; return false; }
+        public virtual bool TrySetMember(SetMemberBinder binder, object? value) { return false; }
+        public virtual bool TryInvokeMember(InvokeMemberBinder binder, object?[]? args, out object? result) { result = null; return false; }
+        public virtual bool TryInvoke(InvokeBinder binder, object?[]? args, out object? result) { result = null; return false; }
+        public virtual bool TryGetIndex(GetIndexBinder binder, object[] indexes, out object? result) { result = null; return false; }
+        public virtual bool TrySetIndex(SetIndexBinder binder, object[] indexes, object? value) { return false; }
+        public virtual bool TryBinaryOperation(BinaryOperationBinder binder, object arg, out object? result) { result = null; return false; }
+        public virtual bool TryUnaryOperation(UnaryOperationBinder binder, out object? result) { result = null; return false; }
+        public virtual bool TryConvert(ConvertBinder binder, out object? result) { result = null; return false; }
+        public virtual IEnumerable<string> GetDynamicMemberNames() { return new List<string>(); }
+    }
+
+    /// <summary>
+    /// .NET's ExpandoObject: members made by assigning them, kept in the
+    /// order they were made; an IDictionary&lt;string, object?&gt; of them as
+    /// well. A member read that was never made is the binder's error, as
+    /// .NET's; a member called is the delegate it holds, called.
+    /// </summary>
+    public sealed class ExpandoObject : DynamicObject, IDictionary<string, object?>
+    {
+        readonly List<string> _order = new List<string>();
+        readonly Dictionary<string, object?> _values = new Dictionary<string, object?>();
+
+        public ExpandoObject() { }
+
+        public override bool TryGetMember(GetMemberBinder binder, out object? result) { return _values.TryGetValue(binder.Name, out result); }
+
+        public override bool TrySetMember(SetMemberBinder binder, object? value) { this[binder.Name] = value; return true; }
+
+        public override bool TryInvokeMember(InvokeMemberBinder binder, object?[]? args, out object? result)
+        {
+            object? held;
+            if (!_values.TryGetValue(binder.Name, out held)) { result = null; return false; }
+            result = DynamicRuntime.Invoke(held, new LateCall(args ?? new object?[0]));
+            return true;
+        }
+
+        public override IEnumerable<string> GetDynamicMemberNames() { return new List<string>(_order); }
+
+        public object? this[string key]
+        {
+            get
+            {
+                object? v;
+                if (!_values.TryGetValue(key, out v)) throw new KeyNotFoundException("The given key '" + key + "' was not present in the dictionary.");
+                return v;
+            }
+            set
+            {
+                if (!_values.ContainsKey(key)) _order.Add(key);
+                _values[key] = value;
+            }
+        }
+
+        public ICollection<string> Keys { get { return new List<string>(_order); } }
+
+        public ICollection<object?> Values
+        {
+            get
+            {
+                List<object?> made = new List<object?>();
+                foreach (string k in _order) made.Add(_values[k]);
+                return made;
+            }
+        }
+
+        public int Count { get { return _order.Count; } }
+        public bool IsReadOnly { get { return false; } }
+
+        public void Add(string key, object? value)
+        {
+            if (_values.ContainsKey(key)) throw new ArgumentException("An element with the same key '" + key + "' already exists in the ExpandoObject.");
+            _order.Add(key);
+            _values[key] = value;
+        }
+
+        public void Add(KeyValuePair<string, object?> item) { Add(item.Key, item.Value); }
+        public bool ContainsKey(string key) { return _values.ContainsKey(key); }
+
+        public bool Remove(string key)
+        {
+            if (!_values.Remove(key)) return false;
+            _order.Remove(key);
+            return true;
+        }
+
+        public bool TryGetValue(string key, out object? value) { return _values.TryGetValue(key, out value); }
+        public void Clear() { _order.Clear(); _values.Clear(); }
+
+        public bool Contains(KeyValuePair<string, object?> item)
+        {
+            object? v;
+            return _values.TryGetValue(item.Key, out v) && DynamicRuntime.SameValue(v, item.Value);
+        }
+
+        public void CopyTo(KeyValuePair<string, object?>[] array, int arrayIndex)
+        {
+            foreach (string k in _order) array[arrayIndex++] = new KeyValuePair<string, object?>(k, _values[k]);
+        }
+
+        public bool Remove(KeyValuePair<string, object?> item) { return Contains(item) && Remove(item.Key); }
+
+        public IEnumerator<KeyValuePair<string, object?>> GetEnumerator()
+        {
+            foreach (string k in new List<string>(_order)) yield return new KeyValuePair<string, object?>(k, _values[k]);
+        }
+
+        IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+    }
+}
+
+namespace System
+{
+    /// <summary>
+    /// The compiler's dynamic binder (Binder.Dynamic.cs names each of these).
+    /// Not for programs to call: what they write is `dynamic`.
+    /// </summary>
+    public static class DynamicRuntime
+    {
+        const int Done = 0, NoMember = 1, NoFit = 2, MethodGroup = 3, ReadOnly = 4, StaticMember = 5, Ambiguous = 6;
+
+        // ---- the program's providers ----------------------------------------------------
+
+        static readonly List<ILateMembers> _providers = new List<ILateMembers>();
+        static readonly object _gate = new object();
+
+        /// A unit's provider, from its [ModuleInitializer] (DynamicProvider).
+        /// Register, as a static field's initialiser: a unit's provider, made
+        /// as the type holding its Main is first touched (DynamicDeclarations).
+        public static bool Registered(ILateMembers provider) { Register(provider); return true; }
+
+        public static void Register(ILateMembers provider)
+        {
+            lock (_gate) { _providers.Add(provider); }
+        }
+
+        static ILateMembers[] Providers()
+        {
+            lock (_gate) { return _providers.ToArray(); }
+        }
+
+        // ---- names, for the messages ----------------------------------------------------
+
+        static string TypeName(object? o) { return DynamicValues.TypeName(o); }
+
+        static RuntimeBinderException NoDefinition(object? target, string name)
+        {
+            if (target == null) return new RuntimeBinderException("Cannot perform runtime binding on a null reference");
+            return new RuntimeBinderException("'" + TypeName(target) + "' does not contain a definition for '" + name + "'");
+        }
+
+        static string ArgumentTypes(object?[] args)
+        {
+            string s = "";
+            for (int i = 0; i < args.Length; i++) s += (i > 0 ? ", " : "") + TypeName(args[i]);
+            return s;
+        }
+
+        /// C#'s errors for a method group that took none of the arguments, or more than one equally.
+        static RuntimeBinderException BadCall(object? target, string name, LateCall call, int said)
+        {
+            LateGroup? g = call.Group;
+            if (said == Ambiguous && g != null && g.Display.Length >= 2)
+                return new RuntimeBinderException("The call is ambiguous between the following methods or properties: '" + g.Display[0] + "' and '" + g.Display[1] + "'");
+            if (g != null && g.Display.Length == 1)
+                return new RuntimeBinderException("The best overloaded method match for '" + g.Display[0] + "' has some invalid arguments");
+            return new RuntimeBinderException("No overload for method '" + name + "' takes " + call.Count + " arguments");
+        }
+
+        static void NotNull(object? target)
+        {
+            if (target == null) throw new RuntimeBinderException("Cannot perform runtime binding on a null reference");
+        }
+
+        /// C#'s CS0176, for a static member reached through an instance.
+        static RuntimeBinderException StaticThroughInstance(object target, string name)
+        {
+            foreach (ILateMembers p in Providers())
+            {
+                string? display = p.Static(target, name);
+                if (display != null)
+                    return new RuntimeBinderException("Member '" + display + "' cannot be accessed with an instance reference; qualify it with a type name instead");
+            }
+            return NoDefinition(target, name);
+        }
+
+        // ---- members --------------------------------------------------------------------
+
+        /// `d.Name`.
+        public static object? GetMember(object? target, string name)
+        {
+            NotNull(target);
+            object? result;
+            if (target is DynamicObject dynamicObject && dynamicObject.TryGetMember(new LateGetMember(name), out result)) return result;
+            if (target is __ComObject)
+                return System.Runtime.InteropServices.ComDispatch.Invoke(target!, int.MinValue, name, System.Runtime.InteropServices.ComDispatch.PropertyGet, new object?[0], 0);
+            int said = NoMember;
+            if (target is IDynamicMembers members) said = members.__DynGet(name, out result);
+            else result = null;
+            if (said == NoMember)
+            {
+                foreach (ILateMembers p in Providers())
+                {
+                    said = p.Get(target!, name, out result);
+                    if (said != NoMember) break;
+                }
+            }
+            if (said == Done) return result;
+            if (said == MethodGroup) throw new RuntimeBinderException("Cannot convert method group '" + name + "' to non-delegate type 'object'. Did you intend to invoke the method?");
+            if (said == StaticMember) throw StaticThroughInstance(target!, name);
+            if (BuiltInGet(target!, name, out result)) return result;
+            throw NoDefinition(target, name);
+        }
+
+        /// `d.Name = value`: the value.
+        public static object? SetMember(object? target, string name, object? value)
+        {
+            NotNull(target);
+            if (target is DynamicObject dynamicObject && dynamicObject.TrySetMember(new LateSetMember(name), value)) return value;
+            if (target is __ComObject)
+            {
+                System.Runtime.InteropServices.ComDispatch.Invoke(target!, int.MinValue, name,
+                    value is __ComObject ? System.Runtime.InteropServices.ComDispatch.PropertyPutRef : System.Runtime.InteropServices.ComDispatch.PropertyPut,
+                    new object?[] { value }, 0);
+                return value;
+            }
+            int said = NoMember;
+            if (target is IDynamicMembers members) said = members.__DynSet(name, value);
+            if (said == NoMember)
+            {
+                foreach (ILateMembers p in Providers())
+                {
+                    said = p.Set(target!, name, value);
+                    if (said != NoMember) break;
+                }
+            }
+            if (said == Done) return value;
+            if (said == NoFit) throw new RuntimeBinderException("Cannot implicitly convert type '" + TypeName(value) + "' for '" + TypeName(target) + "." + name + "'");
+            if (said == ReadOnly) throw new RuntimeBinderException("Property or indexer '" + TypeName(target) + "." + name + "' cannot be assigned to -- it is read only");
+            if (said == StaticMember) throw StaticThroughInstance(target!, name);
+            throw NoDefinition(target, name);
+        }
+
+        /// <summary>
+        /// `d.Name op= value`: an event's += and -= add and remove a handler
+        /// (C# 12.21.5, as the binder binds them on an event); anything else
+        /// is read once through the receiver, the operator, written.
+        /// </summary>
+        public static object? CompoundMember(object? target, string name, int op, object? value)
+        {
+            NotNull(target);
+            if ((op == 0 || op == 42) && !(target is DynamicObject) && !(target is __ComObject))
+            {
+                int said = LateStatus.NotEvent;
+                if (target is IDynamicMembers members) said = members.__DynEvent(name, op == 0, value);
+                if (said == LateStatus.NotEvent || said == NoMember)
+                {
+                    foreach (ILateMembers p in Providers())
+                    {
+                        said = p.Event(target!, name, op == 0, value);
+                        if (said != LateStatus.NotEvent && said != NoMember) break;
+                    }
+                }
+                if (said == Done) return null;
+                if (said == NoFit) throw new RuntimeBinderException("Cannot implicitly convert type '" + TypeName(value) + "' to the type of event '" + TypeName(target) + "." + name + "'");
+            }
+            object? made = Binary(op, GetMember(target, name), value);
+            SetMember(target, name, made);
+            return made;
+        }
+
+        /// `d.Name++` and the rest: the old value for a postfix one, the new for a prefix one.
+        public static object? IncrementMember(object? target, string name, int op, bool postfix)
+        {
+            object? old = GetMember(target, name);
+            object? made = Unary(op, old);
+            SetMember(target, name, made);
+            return postfix ? old : made;
+        }
+
+        /// `d.Name(args)`.
+        public static object? InvokeMember(object? target, string name, LateCall call)
+        {
+            NotNull(target);
+            call.Member = name;
+            object? result;
+            if (target is DynamicObject dynamicObject && dynamicObject.TryInvokeMember(new LateInvokeMember(name, call), call.Args, out result)) return result;
+            if (target is __ComObject)
+            {
+                int byRef = 0;
+                if (call.Kinds != null) for (int i = 0; i < call.Kinds.Length && i < 31; i++) if (call.Kinds[i] == 1 || call.Kinds[i] == 2) byRef |= 1 << i;
+                return System.Runtime.InteropServices.ComDispatch.Invoke(target!, int.MinValue, name,
+                    System.Runtime.InteropServices.ComDispatch.Method | System.Runtime.InteropServices.ComDispatch.PropertyGet, call.Args, byRef);
+            }
+            int said = NoMember;
+            if (target is IDynamicMembers members) said = members.__DynCall(name, call, out result);
+            else result = null;
+            if (said == NoMember)
+            {
+                foreach (ILateMembers p in Providers())
+                {
+                    said = p.Call(target!, name, call, out result);
+                    if (said != NoMember) break;
+                }
+            }
+            if (said == Done) return result;
+            if (said == NoFit || said == Ambiguous) throw BadCall(target, name, call, said);
+            if (said == StaticMember) throw StaticThroughInstance(target!, name);
+            // A FIELD OR PROPERTY HOLDING A DELEGATE is called, as C#'s binder calls one.
+            if (said == ReadOnly || said == MethodGroup) { }
+            bool held = false;
+            object? value = null;
+            if (target is IDynamicMembers m && m.__DynGet(name, out value) == Done) held = true;
+            if (!held)
+            {
+                foreach (ILateMembers p in Providers())
+                {
+                    if (p.Get(target!, name, out value) == Done) { held = true; break; }
+                }
+            }
+            if (held) return Invoke(value, call);
+            if (BuiltInCall(target!, name, call, out result)) return result;
+            throw NoDefinition(target, name);
+        }
+
+        /// `d(args)`: a delegate's call, through its ILateInvocable.
+        public static object? Invoke(object? target, LateCall call)
+        {
+            NotNull(target);
+            object? result;
+            if (target is DynamicObject dynamicObject && dynamicObject.TryInvoke(new LateInvoke(call), call.Args, out result)) return result;
+            if (target is ILateInvocable callable) return callable.__LateInvoke(call);
+            // A delegate type the program names, through its adapter's Invoke.
+            foreach (ILateMembers p in Providers())
+            {
+                int said = p.Call(target!, "Invoke", call, out result);
+                if (said == Done) return result;
+                if (said == NoFit || said == Ambiguous) throw BadCall(target, "Invoke", call, said);
+            }
+            if (target is __ComObject)
+                return System.Runtime.InteropServices.ComDispatch.Invoke(target!, 0, "", System.Runtime.InteropServices.ComDispatch.Method, call.Args, 0);
+            throw new RuntimeBinderException("Cannot invoke a non-delegate type '" + TypeName(target) + "'");
+        }
+
+        /// A ref or out argument's new value, after the call (the compiler's write-back).
+        public static object? Element(LateCall call, int argument) { return call.Value(argument); }
+
+        // ---- the indexer ------------------------------------------------------------------
+
+        /// `d[keys]`.
+        public static object? GetIndex(object? target, LateCall keys)
+        {
+            NotNull(target);
+            object? result;
+            if (target is DynamicObject dynamicObject && dynamicObject.TryGetIndex(new LateGetIndex(keys), NonNull(keys.Args), out result)) return result;
+            if (target is __ComObject)
+                return System.Runtime.InteropServices.ComDispatch.Invoke(target!, 0, "", System.Runtime.InteropServices.ComDispatch.PropertyGet, keys.Args, 0);
+            int said = NoMember;
+            if (target is IDynamicMembers members) said = members.__DynGetIndex(keys, out result);
+            else result = null;
+            if (said == NoMember)
+            {
+                foreach (ILateMembers p in Providers())
+                {
+                    said = p.GetIndex(target!, keys, out result);
+                    if (said != NoMember) break;
+                }
+            }
+            if (said == Done) return result;
+            if (said == NoFit || said == Ambiguous) throw BadCall(target, "this[]", keys, said);
+            if (BuiltInGetIndex(target!, keys.Args, out result)) return result;
+            throw new RuntimeBinderException("Cannot apply indexing with [] to an expression of type '" + TypeName(target) + "'");
+        }
+
+        /// `d[keys] = value`: the value.
+        public static object? SetIndex(object? target, LateCall keys, object? value)
+        {
+            NotNull(target);
+            if (target is DynamicObject dynamicObject && dynamicObject.TrySetIndex(new LateSetIndex(keys), NonNull(keys.Args), value)) return value;
+            if (target is __ComObject)
+            {
+                object?[] all = new object?[keys.Count + 1];
+                for (int i = 0; i < keys.Count; i++) all[i] = keys.Args[i];
+                all[keys.Count] = value;
+                System.Runtime.InteropServices.ComDispatch.Invoke(target!, 0, "", System.Runtime.InteropServices.ComDispatch.PropertyPut, all, 0);
+                return value;
+            }
+            int said = NoMember;
+            if (target is IDynamicMembers members) said = members.__DynSetIndex(keys, value);
+            if (said == NoMember)
+            {
+                foreach (ILateMembers p in Providers())
+                {
+                    said = p.SetIndex(target!, keys, value);
+                    if (said != NoMember) break;
+                }
+            }
+            if (said == Done) return value;
+            if (said == ReadOnly) throw new RuntimeBinderException("Property or indexer '" + TypeName(target) + ".this[]' cannot be assigned to -- it is read only");
+            if (said == NoFit || said == Ambiguous) throw BadCall(target, "this[]", keys, said);
+            if (BuiltInSetIndex(target!, keys.Args, value)) return value;
+            throw new RuntimeBinderException("Cannot apply indexing with [] to an expression of type '" + TypeName(target) + "'");
+        }
+
+        public static object? CompoundIndex(object? target, LateCall keys, int op, object? value)
+        {
+            object? made = Binary(op, GetIndex(target, keys), value);
+            SetIndex(target, keys, made);
+            return made;
+        }
+
+        public static object? IncrementIndex(object? target, LateCall keys, int op, bool postfix)
+        {
+            object? old = GetIndex(target, keys);
+            object? made = Unary(op, old);
+            SetIndex(target, keys, made);
+            return postfix ? old : made;
+        }
+
+        static object[] NonNull(object?[] keys)
+        {
+            object[] made = new object[keys.Length];
+            for (int i = 0; i < keys.Length; i++) made[i] = keys[i]!;
+            return made;
+        }
+
+        // ---- the operators ----------------------------------------------------------------
+
+        // The numbers C#'s binary numeric promotion takes an operand to.
+        const int KInt = 1, KUInt = 2, KLong = 3, KULong = 4, KFloat = 5, KDouble = 6;
+
+        /// The promotion kind of a boxed number (char, byte, sbyte, short and ushort as int); 0 for anything else.
+        static int KindOf(object? v)
+        {
+            if (v is int || v is short || v is sbyte || v is byte || v is ushort || v is char) return KInt;
+            if (v is uint) return KUInt;
+            if (v is long) return KLong;
+            if (v is ulong) return KULong;
+            if (v is float) return KFloat;
+            if (v is double) return KDouble;
+            return 0;
+        }
+
+        static long AsLong(object? v)
+        {
+            if (v is int i) return i;
+            if (v is long l) return l;
+            if (v is short s) return s;
+            if (v is sbyte sb) return sb;
+            if (v is byte b) return b;
+            if (v is ushort us) return us;
+            if (v is char c) return c;
+            if (v is uint ui) return ui;
+            if (v is ulong ul) return (long)ul;
+            if (v is float f) return (long)f;
+            if (v is double d) return (long)d;
+            throw new InvalidCastException();
+        }
+
+        static ulong AsULong(object? v) { return v is ulong ul ? ul : (ulong)AsLong(v); }
+
+        static double AsDouble(object? v)
+        {
+            if (v is double d) return d;
+            if (v is float f) return f;
+            if (v is ulong ul) return (double)ul;
+            return AsLong(v);
+        }
+
+        static bool IsSigned(object? v) { return v is int || v is long || v is short || v is sbyte; }
+
+        static string OperatorText(int op)
+        {
+            switch (op)
+            {
+                case 0: return "+"; case 42: return "-"; case 26: return "*"; case 12: return "/"; case 25: return "%";
+                case 2: return "&"; case 36: return "|"; case 14: return "^"; case 19: return "<<"; case 41: return ">>";
+                case 13: return "=="; case 35: return "!="; case 20: return "<"; case 15: return ">"; case 21: return "<="; case 16: return ">=";
+                case 28: return "-"; case 29: return "+"; case 34: return "!"; case 82: return "~"; case 54: return "++"; case 49: return "--";
+                case 83: return "true"; case 84: return "false";
+            }
+            return "?";
+        }
+
+        static RuntimeBinderException CannotApply(int op, object? left, object? right)
+        {
+            return new RuntimeBinderException("Operator '" + OperatorText(op) + "' cannot be applied to operands of type '" + TypeName(left) + "' and '" + TypeName(right) + "'");
+        }
+
+        /// A user operator of either operand's type (C# 12.4.5), through a struct's own members or the providers.
+        static bool UserOperator(int op, object? left, object? right, out object? result)
+        {
+            result = null;
+            if (left is IDynamicMembers l && l.__DynOperator(op, left, right, out result) == Done) return true;
+            if (right is IDynamicMembers r && !ReferenceEquals(left, right) && r.__DynOperator(op, left, right, out result) == Done) return true;
+            if (left == null && right == null) return false;
+            foreach (ILateMembers p in Providers())
+            {
+                if (p.Operator(op, left, right, out result) == Done) return true;
+            }
+            return false;
+        }
+
+        /// `left op right`, op .NET's ExpressionType.
+        public static object? Binary(int op, object? left, object? right)
+        {
+            object? result;
+            if (left is DynamicObject dynamicObject && right != null
+                && dynamicObject.TryBinaryOperation(new LateBinary((ExpressionType)op), right, out result)) return result;
+            if (UserOperator(op, left, right, out result)) return result;
+
+            // EQUALITY first: it is defined for everything.
+            if (op == 13 || op == 35)
+            {
+                bool same = SameValue(left, right);
+                return op == 13 ? same : !same;
+            }
+
+            // STRINGS: + joins, a null as nothing, anything else by its ToString.
+            if (op == 0 && (left is string || right is string))
+                return (left == null ? "" : left.ToString()) + (right == null ? "" : right.ToString());
+
+            // A NULL OPERAND of a lifted operator gives null (C# 12.4.8); a
+            // comparison of one is false.
+            if (left == null || right == null)
+            {
+                if (op is 20 or 15 or 21 or 16) return false;
+                if (KindOf(left) != 0 || KindOf(right) != 0 || left is bool || right is bool) return null;
+                throw CannotApply(op, left, right);
+            }
+
+            if (left is bool lb && right is bool rb)
+            {
+                switch (op)
+                {
+                    case 2: return lb & rb;
+                    case 36: return lb | rb;
+                    case 14: return lb ^ rb;
+                }
+                throw CannotApply(op, left, right);
+            }
+
+            int lk = KindOf(left), rk = KindOf(right);
+            if (lk == 0 || rk == 0) throw CannotApply(op, left, right);
+
+            // SHIFTS take the left operand's promoted type, the count an int.
+            if (op == 19 || op == 41)
+            {
+                if (rk != KInt) throw CannotApply(op, left, right);
+                int count = (int)AsLong(right);
+                switch (lk)
+                {
+                    case KInt: return op == 19 ? (int)AsLong(left) << count : (int)AsLong(left) >> count;
+                    case KUInt: return op == 19 ? (uint)AsLong(left) << count : (uint)AsLong(left) >> count;
+                    case KLong: return op == 19 ? AsLong(left) << count : AsLong(left) >> count;
+                    case KULong: return op == 19 ? AsULong(left) << count : AsULong(left) >> count;
+                }
+                throw CannotApply(op, left, right);
+            }
+
+            int k = lk > rk ? lk : rk;
+            // uint with a signed operand is long; ulong with one is an error (C# 12.4.7.3).
+            if (k == KUInt && ((lk == KInt && IsSigned(left)) || (rk == KInt && IsSigned(right)))) k = KLong;
+            if (k == KULong && (IsSigned(left) || IsSigned(right))) throw CannotApply(op, left, right);
+
+            switch (k)
+            {
+                case KInt: return IntOp(op, (int)AsLong(left), (int)AsLong(right), left, right);
+                case KUInt: return UIntOp(op, (uint)AsLong(left), (uint)AsLong(right), left, right);
+                case KLong: return LongOp(op, AsLong(left), AsLong(right), left, right);
+                case KULong: return ULongOp(op, AsULong(left), AsULong(right), left, right);
+                case KFloat: return FloatOp(op, (float)AsDouble(left), (float)AsDouble(right), left, right);
+                default: return DoubleOp(op, AsDouble(left), AsDouble(right), left, right);
+            }
+        }
+
+        static object IntOp(int op, int a, int b, object? left, object? right)
+        {
+            switch (op)
+            {
+                case 0: return unchecked(a + b);
+                case 42: return unchecked(a - b);
+                case 26: return unchecked(a * b);
+                case 12: return a / b;
+                case 25: return a % b;
+                case 2: return a & b;
+                case 36: return a | b;
+                case 14: return a ^ b;
+                case 20: return a < b;
+                case 15: return a > b;
+                case 21: return a <= b;
+                case 16: return a >= b;
+            }
+            throw CannotApply(op, left, right);
+        }
+
+        static object UIntOp(int op, uint a, uint b, object? left, object? right)
+        {
+            switch (op)
+            {
+                case 0: return unchecked(a + b);
+                case 42: return unchecked(a - b);
+                case 26: return unchecked(a * b);
+                case 12: return a / b;
+                case 25: return a % b;
+                case 2: return a & b;
+                case 36: return a | b;
+                case 14: return a ^ b;
+                case 20: return a < b;
+                case 15: return a > b;
+                case 21: return a <= b;
+                case 16: return a >= b;
+            }
+            throw CannotApply(op, left, right);
+        }
+
+        static object LongOp(int op, long a, long b, object? left, object? right)
+        {
+            switch (op)
+            {
+                case 0: return unchecked(a + b);
+                case 42: return unchecked(a - b);
+                case 26: return unchecked(a * b);
+                case 12: return a / b;
+                case 25: return a % b;
+                case 2: return a & b;
+                case 36: return a | b;
+                case 14: return a ^ b;
+                case 20: return a < b;
+                case 15: return a > b;
+                case 21: return a <= b;
+                case 16: return a >= b;
+            }
+            throw CannotApply(op, left, right);
+        }
+
+        static object ULongOp(int op, ulong a, ulong b, object? left, object? right)
+        {
+            switch (op)
+            {
+                case 0: return unchecked(a + b);
+                case 42: return unchecked(a - b);
+                case 26: return unchecked(a * b);
+                case 12: return a / b;
+                case 25: return a % b;
+                case 2: return a & b;
+                case 36: return a | b;
+                case 14: return a ^ b;
+                case 20: return a < b;
+                case 15: return a > b;
+                case 21: return a <= b;
+                case 16: return a >= b;
+            }
+            throw CannotApply(op, left, right);
+        }
+
+        static object FloatOp(int op, float a, float b, object? left, object? right)
+        {
+            switch (op)
+            {
+                case 0: return a + b;
+                case 42: return a - b;
+                case 26: return a * b;
+                case 12: return a / b;
+                case 25: return a % b;
+                case 20: return a < b;
+                case 15: return a > b;
+                case 21: return a <= b;
+                case 16: return a >= b;
+            }
+            throw CannotApply(op, left, right);
+        }
+
+        static object DoubleOp(int op, double a, double b, object? left, object? right)
+        {
+            switch (op)
+            {
+                case 0: return a + b;
+                case 42: return a - b;
+                case 26: return a * b;
+                case 12: return a / b;
+                case 25: return a % b;
+                case 20: return a < b;
+                case 15: return a > b;
+                case 21: return a <= b;
+                case 16: return a >= b;
+            }
+            throw CannotApply(op, left, right);
+        }
+
+        /// <summary>
+        /// C#'s `==` on two run-time values: numbers by value across their
+        /// types (as the promotion makes them comparable), bools and chars by
+        /// value, strings by their characters, anything else by its Equals
+        /// when it is a value (a boxed struct or enum) and by reference when
+        /// it is not.
+        /// </summary>
+        public static bool SameValue(object? left, object? right)
+        {
+            if (left == null || right == null) return left == null && right == null;
+            if (left is string ls && right is string rs) return ls == rs;
+            if (left is bool lb && right is bool rb) return lb == rb;
+            int lk = KindOf(left), rk = KindOf(right);
+            if (lk != 0 && rk != 0)
+            {
+                if (lk >= KFloat || rk >= KFloat) return AsDouble(left) == AsDouble(right);
+                if (left is ulong || right is ulong) return AsULong(left) == AsULong(right) && !(IsSigned(left) && AsLong(left) < 0) && !(IsSigned(right) && AsLong(right) < 0);
+                return AsLong(left) == AsLong(right);
+            }
+            if (left.GetType().IsValueType) return left.Equals(right);
+            return ReferenceEquals(left, right);
+        }
+
+        /// `op operand`.
+        public static object? Unary(int op, object? operand)
+        {
+            object? result;
+            if (operand is DynamicObject dynamicObject && dynamicObject.TryUnaryOperation(new LateUnary((ExpressionType)op), out result)) return result;
+            if (UserOperator(op, operand, null, out result)) return result;
+            if (operand == null)
+            {
+                if (op is 28 or 29 or 34 or 82 or 54 or 49) return null;
+                throw new RuntimeBinderException("Operator '" + OperatorText(op) + "' cannot be applied to operand of type '<null>'");
+            }
+            if (operand is bool b)
+            {
+                if (op == 34) return !b;
+                if (op == 83) return b;
+                if (op == 84) return !b;
+            }
+            int k = KindOf(operand);
+            if (k != 0)
+            {
+                // ++ AND -- KEEP THE OPERAND'S OWN TYPE (C# 12.8.15).
+                if (op == 54 || op == 49) return Step(operand, op == 54 ? 1 : -1);
+                switch (op)
+                {
+                    case 29:
+                        return k == KInt ? (object)(int)AsLong(operand) : operand;
+                    case 28:
+                        if (k == KInt) return unchecked(-(int)AsLong(operand));
+                        if (k == KUInt) return -AsLong(operand);
+                        if (k == KLong) return unchecked(-AsLong(operand));
+                        if (k == KFloat) return -(float)AsDouble(operand);
+                        if (k == KDouble) return -AsDouble(operand);
+                        break;
+                    case 82:
+                        if (k == KInt) return ~(int)AsLong(operand);
+                        if (k == KUInt) return ~(uint)AsLong(operand);
+                        if (k == KLong) return ~AsLong(operand);
+                        if (k == KULong) return ~AsULong(operand);
+                        break;
+                }
+            }
+            throw new RuntimeBinderException("Operator '" + OperatorText(op) + "' cannot be applied to operand of type '" + TypeName(operand) + "'");
+        }
+
+        static object Step(object v, int by)
+        {
+            if (v is int i) return unchecked(i + by);
+            if (v is long l) return unchecked(l + by);
+            if (v is double d) return d + by;
+            if (v is float f) return f + by;
+            if (v is uint ui) return unchecked((uint)(ui + by));
+            if (v is ulong ul) return unchecked((ulong)((long)ul + by));
+            if (v is short s) return unchecked((short)(s + by));
+            if (v is ushort us) return unchecked((ushort)(us + by));
+            if (v is byte b) return unchecked((byte)(b + by));
+            if (v is sbyte sb) return unchecked((sbyte)(sb + by));
+            if (v is char c) return unchecked((char)(c + by));
+            throw new InvalidCastException();
+        }
+
+        /// <summary>
+        /// A dynamic condition, and `&&`'s and `||`'s test of their left
+        /// operand (C# 12.14: operator true and false on the run-time value):
+        /// true, false, a class's operator true (or false), or its implicit
+        /// conversion to bool; else the binder's error.
+        /// </summary>
+        public static bool IsTrue(object? value) { return Truth(value, 83); }
+
+        public static bool IsFalse(object? value) { return Truth(value, 84); }
+
+        static bool Truth(object? value, int op)
+        {
+            if (value is bool b) return op == 83 ? b : !b;
+            object? result;
+            if (value is DynamicObject dynamicObject && dynamicObject.TryUnaryOperation(new LateUnary((ExpressionType)op), out result) && result is bool said) return said;
+            if (UserOperator(op, value, null, out result) && result is bool told) return told;
+            object? converted = Convert(value, typeof(bool), false);
+            if (converted is bool truth) return op == 83 ? truth : !truth;
+            throw new RuntimeBinderException("Cannot implicitly convert type '" + TypeName(value) + "' to 'bool'");
+        }
+
+        /// A postfix increment's value: the first argument, read before the second was evaluated.
+        public static object? Post(object? old, object? assigned) { return old; }
+
+        // ---- conversions --------------------------------------------------------------------
+
+        public static bool Fits(object? value, Type type) { return DynamicValues.Fits(value, type); }
+
+        public static bool Exact(object? value, Type type) { return DynamicValues.Exact(value, type); }
+
+        /// <summary>
+        /// The binder's conversion (C# 10.2.10, 10.3.8): a DynamicObject's
+        /// TryConvert; a class's own conversion operators, through the
+        /// providers; else DynamicValues.Convert's.
+        /// </summary>
+        public static object Convert(object? value, Type type, bool explicitly)
+        {
+            object? result;
+            if (value is DynamicObject dynamicObject && type != typeof(object)
+                && dynamicObject.TryConvert(new LateConvert(type, explicitly), out result)) return result!;
+            if (value != null && type != typeof(object) && value.GetType() != type && !(value is IDynamicMembers))
+            {
+                foreach (ILateMembers p in Providers())
+                {
+                    int said = p.Convert(value, type, explicitly, out result);
+                    if (said == Done) return result!;
+                    if (said == NoFit)
+                        throw new RuntimeBinderException("Cannot implicitly convert type '" + TypeName(value) + "' to '" + DynamicValues.TypeText(type) + "'. An explicit conversion exists (are you missing a cast?)");
+                }
+            }
+            return DynamicValues.Convert(value, type, explicitly);
+        }
+
+        /// <summary>
+        /// The conversion to a type written with `?`: a null is a null, to a
+        /// Nullable as to a reference; anything else Convert's, to the
+        /// underlying type (the compiler casts the boxed value to T?).
+        /// </summary>
+        public static object? ConvertNullable(object? value, Type type, bool explicitly)
+        {
+            if (value == null) return null;
+            return Convert(value, type, explicitly);
+        }
+
+        /// The late overload choice that found nothing, or more than one.
+        public static object? NoOverload(int said, LateGroup group, LateCall call)
+        {
+            call.Group = group;
+            if (call.Member.Length == 0 && group.Display.Length > 0)
+            {
+                // `Owner.Name(int, string)`: the name between the owner and the parameters.
+                string shown = group.Display[0];
+                int open = shown.IndexOf('(');
+                string head = open < 0 ? shown : shown.Substring(0, open);
+                call.Member = head.Substring(head.LastIndexOf('.') + 1);
+            }
+            throw BadCall(null, call.Member, call, said == -2 ? Ambiguous : NoFit);
+        }
+
+        /// `foreach` over a dynamic value: its elements, as objects.
+        public static IEnumerable<object?> Enumerate(object? value)
+        {
+            NotNull(value);
+            if (value is string s)
+            {
+                List<object?> letters = new List<object?>();
+                foreach (char c in s) letters.Add(c);
+                return letters;
+            }
+            if (value is IEnumerable sequence)
+            {
+                List<object?> items = new List<object?>();
+                IEnumerator walk = sequence.GetEnumerator();
+                while (walk.MoveNext()) items.Add(walk.Current);
+                return items;
+            }
+            if (value is __ComObject)
+            {
+                object? count = GetMember(value, "Count");
+                List<object?> items = new List<object?>();
+                long n = AsLong(count);
+                for (long i = 1; i <= n; i++) items.Add(InvokeMember(value, "Item", new LateCall(new object?[] { (int)i })));
+                return items;
+            }
+            throw new RuntimeBinderException("Cannot implicitly convert type '" + TypeName(value) + "' to 'System.Collections.IEnumerable'");
+        }
+
+        // ---- what an array is, and what every object has ---------------------------------------
+
+        static bool BuiltInGet(object target, string name, out object? result)
+        {
+            result = null;
+            if (name == "Length" && ArrayLength(target) is int length) { result = length; return true; }
+            if (name == "Length" && target is string text) { result = text.Length; return true; }
+            return false;
+        }
+
+        static int? ArrayLength(object target)
+        {
+            if (target is object[] o) return o.Length;
+            if (target is int[] i) return i.Length;
+            if (target is long[] l) return l.Length;
+            if (target is double[] d) return d.Length;
+            if (target is byte[] b) return b.Length;
+            if (target is bool[] t) return t.Length;
+            if (target is char[] c) return c.Length;
+            if (target is float[] f) return f.Length;
+            if (target is short[] sh) return sh.Length;
+            if (target is uint[] ui) return ui.Length;
+            if (target is ulong[] ul) return ul.Length;
+            if (target is ushort[] us) return us.Length;
+            if (target is sbyte[] sb) return sb.Length;
+            return null;
+        }
+
+        static bool BuiltInGetIndex(object target, object?[] keys, out object? result)
+        {
+            result = null;
+            if (keys.Length != 1 || !Fits(keys[0], typeof(long))) return false;
+            int k = (int)AsLong(keys[0]);
+            if (target is string text) { result = text[k]; return true; }
+            if (target is object[] o) { result = o[k]; return true; }
+            if (target is int[] i) { result = i[k]; return true; }
+            if (target is long[] l) { result = l[k]; return true; }
+            if (target is double[] d) { result = d[k]; return true; }
+            if (target is byte[] b) { result = b[k]; return true; }
+            if (target is bool[] t) { result = t[k]; return true; }
+            if (target is char[] c) { result = c[k]; return true; }
+            if (target is float[] f) { result = f[k]; return true; }
+            if (target is short[] sh) { result = sh[k]; return true; }
+            if (target is uint[] ui) { result = ui[k]; return true; }
+            if (target is ulong[] ul) { result = ul[k]; return true; }
+            if (target is ushort[] us) { result = us[k]; return true; }
+            if (target is sbyte[] sb) { result = sb[k]; return true; }
+            return false;
+        }
+
+        static bool BuiltInSetIndex(object target, object?[] keys, object? value)
+        {
+            if (keys.Length != 1 || !Fits(keys[0], typeof(long))) return false;
+            int k = (int)AsLong(keys[0]);
+            if (target is object[] o) { o[k] = value!; return true; }
+            if (target is int[] i) { i[k] = (int)Convert(value, typeof(int), false); return true; }
+            if (target is long[] l) { l[k] = (long)Convert(value, typeof(long), false); return true; }
+            if (target is double[] d) { d[k] = (double)Convert(value, typeof(double), false); return true; }
+            if (target is byte[] b) { b[k] = (byte)Convert(value, typeof(byte), false); return true; }
+            if (target is bool[] t) { t[k] = (bool)Convert(value, typeof(bool), false); return true; }
+            if (target is char[] c) { c[k] = (char)Convert(value, typeof(char), false); return true; }
+            if (target is float[] f) { f[k] = (float)Convert(value, typeof(float), false); return true; }
+            if (target is short[] sh) { sh[k] = (short)Convert(value, typeof(short), false); return true; }
+            if (target is uint[] ui) { ui[k] = (uint)Convert(value, typeof(uint), false); return true; }
+            if (target is ulong[] ul) { ul[k] = (ulong)Convert(value, typeof(ulong), false); return true; }
+            if (target is ushort[] us) { us[k] = (ushort)Convert(value, typeof(ushort), false); return true; }
+            if (target is sbyte[] sb) { sb[k] = (sbyte)Convert(value, typeof(sbyte), false); return true; }
+            return false;
+        }
+
+        /// The members every object has (System.Object's), by value only.
+        static bool BuiltInCall(object target, string name, LateCall call, out object? result)
+        {
+            result = null;
+            if (call.Names != null || call.Kinds != null || call.TypeArgs != null) return false;
+            switch (name)
+            {
+                case "ToString": if (call.Count == 0) { result = target.ToString(); return true; } break;
+                case "Equals": if (call.Count == 1) { result = target.Equals(call.Args[0]); return true; } break;
+                case "GetHashCode": if (call.Count == 0) { result = target.GetHashCode(); return true; } break;
+                case "GetType": if (call.Count == 0) { result = target.GetType(); return true; } break;
+            }
+            return false;
+        }
+    }
+}

@@ -235,7 +235,7 @@ public sealed partial class Escape
         hints.FieldSites.AddRange(_fieldSiteRecords);
         ThrowHints(m, hints);
         m.KeepCalls.UnionWith(_keep);
-        foreach (string helper in new[] { Freer, FieldFreer, ReplacedFreer, FieldKeeper, OwnedReplacedFreer, OwnedElements.Freer, OwnedElements.Marker, StorageFreer })
+        foreach (string helper in new[] { Freer, FieldFreer, ReplacedFreer, FieldKeeper, OwnedReplacedFreer, OwnedElements.Freer, OwnedElements.ArrayFreer, OwnedElements.Marker, StorageFreer })
             if (provided(helper)) hints.Helpers.Add(helper);
         return hints;
     }
@@ -393,7 +393,11 @@ public sealed partial class Escape
                 // read across a string's free took Monomorphiser.Named back
                 // whole once HashSet.Contains was inlined into it.
                 if ((read.Op == Opcode.Store ? read.Operands.Take(1) : read.Operands).All(o => o is not RegOperand r || Handed(r.Reg))) continue;
-                // What was read, and every copy and address made from it.
+                // What was read, and every copy and address made from it; and
+                // where the field's arrays own their elements, every element
+                // read from it too (and what is read from those): freeing the
+                // owner frees them as well.
+                bool elements = read.Field is not null && owned.ArrayElements.Contains(read.Field);
                 HashSet<VReg> derived = new() { value };
                 for (bool grew = true; grew;)
                 {
@@ -401,8 +405,9 @@ public sealed partial class Escape
                     foreach (Block x in f.Blocks)
                         foreach (Instr i in x.Instrs)
                             if (i.Dest is not null && !derived.Contains(i.Dest)
-                                && i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 or Opcode.Phi or Opcode.Add or Opcode.Sub
-                                && i.Operands.Any(o => o is RegOperand r && derived.Contains(r.Reg)))
+                                && (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 or Opcode.Phi or Opcode.Add or Opcode.Sub
+                                    && i.Operands.Any(o => o is RegOperand r && derived.Contains(r.Reg))
+                                    || elements && i.Op == Opcode.Load && i.Operands.Count > 0 && i.Operands[0] is RegOperand arrayAt && derived.Contains(arrayAt.Reg)))
                             { derived.Add(i.Dest); grew = true; }
                 }
                 if (derived.Any(r => !liveness.Tracks(r) || pads.Contains(r))) return true;

@@ -11,6 +11,11 @@ public sealed class OwnedFieldFacts
     /// </summary>
     public HashSet<string> Mapped { get; } = new(StringComparer.Ordinal);
     /// <summary>
+    /// The owned fields whose arrays own their elements (Escape's
+    /// ArrayFieldElements): their bits in the owner's map say so.
+    /// </summary>
+    public HashSet<string> ArrayElements { get; } = new(StringComparer.Ordinal);
+    /// <summary>
     /// Functions, and virtual call symbols reaching one, that hand back what
     /// an owned field holds: a call to one is a read of the field.
     /// </summary>
@@ -281,6 +286,28 @@ public static class OwnedFieldSolver
             if (fields.Any(facts.Fields.ContainsKey)) facts.Borrowers.Add(function);
         foreach ((string symbol, string[] targets) in virtuals)
             if (targets.Any(facts.Borrowers.Contains)) facts.Borrowers.Add(symbol);
+
+        // ITS ARRAYS OWNING THEIR ELEMENTS (Escape.ArrayFieldElements): an
+        // owned field every unit that stores or reads it proved so, some
+        // unit storing such an array, handed back by no function, what the
+        // proofs need of the units holding, and nothing an element is live
+        // across able to store into the field, nor any field stored into
+        // meanwhile owned.
+        foreach (string field in facts.Mapped.Order(StringComparer.Ordinal))
+        {
+            List<OwnedFieldRecord> records = all.Select(unit => unit.Fields.GetValueOrDefault(field)).OfType<OwnedFieldRecord>().ToList();
+            if (records.Count == 0 || records.Any(r => r.ElementsRefused) || !records.Any(r => r.ElementArrays)) continue;
+            if (borrows.Values.Any(fields => fields.Contains(field))) { report?.Invoke(field + " elements refused: a function hands it back"); continue; }
+            if (records.FirstOrDefault(r => !solver.Holds(r.ElementNeeds)) is OwnedFieldRecord needing)
+            { report?.Invoke(field + " elements refused: needs " + Describe(needing.ElementNeeds)); continue; }
+            HashSet<string> elementDanger = new(records.SelectMany(r => r.ElementDanger), StringComparer.Ordinal);
+            if (elementDanger.FirstOrDefault(d => IsVirtual(d) && !virtuals.ContainsKey(d)) is string unknown)
+            { report?.Invoke(field + " elements refused: one is live across " + unknown + ", which the link could not resolve"); continue; }
+            if (MayWrite(field, elementDanger)) { report?.Invoke(field + " elements refused: one is live across a call that may store into it"); continue; }
+            if (records.SelectMany(r => r.ElementDangerFields).FirstOrDefault(facts.Fields.ContainsKey) is string into)
+            { report?.Invoke(field + " elements refused: one is live across a store into " + into + ", which is owned"); continue; }
+            facts.ArrayElements.Add(field);
+        }
         Elements(all, solver, facts, report);
         return facts;
 

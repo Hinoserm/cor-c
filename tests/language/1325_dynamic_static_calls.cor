@@ -1,0 +1,67 @@
+// test: dynamic_static_calls
+// expect-exit: 0
+// expect-output:
+// int long string object
+// int,string string,int
+// no overload
+// 175c
+// -150c
+// True
+// 150
+// 150
+//
+// A call whose receiver is known but an argument dynamic is bound when the
+// program runs, among the overloads that could take it (C# 12.6.4: the
+// most specific whose parameters the run-time types convert to); with one
+// candidate it is called with the argument converted; with none that
+// fits, the binder's error. And a struct's own operators and conversion
+// through dynamic values: +, unary -, ==, an implicit conversion to long,
+// and a field.
+
+using System;
+using Microsoft.CSharp.RuntimeBinder;
+
+static class Pick
+{
+    public static string Of(int x) { return "int"; }
+    public static string Of(long x) { return "long"; }
+    public static string Of(string x) { return "string"; }
+    public static string Of(object x) { return "object"; }
+    public static string Two(int a, string b) { return "int,string"; }
+    public static string Two(string a, int b) { return "string,int"; }
+}
+
+struct Money
+{
+    public long Cents;
+    public Money(long c) { Cents = c; }
+    public static Money operator +(Money a, Money b) { return new Money(a.Cents + b.Cents); }
+    public static Money operator -(Money a) { return new Money(-a.Cents); }
+    public static bool operator ==(Money a, Money b) { return a.Cents == b.Cents; }
+    public static bool operator !=(Money a, Money b) { return a.Cents != b.Cents; }
+    public static implicit operator long(Money m) { return m.Cents; }
+    public override bool Equals(object? o) { return o is Money m && m.Cents == Cents; }
+    public override int GetHashCode() { return (int)Cents; }
+    public override string ToString() { return Cents + "c"; }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        dynamic i = 1, l = 2L, s = "s", d = 1.5;
+        Console.WriteLine(Pick.Of(i) + " " + Pick.Of(l) + " " + Pick.Of(s) + " " + Pick.Of(d));
+        Console.WriteLine(Pick.Two(i, "x") + " " + Pick.Two("x", i));
+        try { Pick.Two(s, s); }
+        catch (RuntimeBinderException) { Console.WriteLine("no overload"); }
+
+        dynamic a = new Money(150), b = new Money(25);
+        Console.WriteLine(a + b);
+        Console.WriteLine(-a);
+        Console.WriteLine(a == new Money(150));
+        long cents = a;
+        Console.WriteLine(cents);
+        Console.WriteLine(a.Cents);
+        return 0;
+    }
+}

@@ -1,0 +1,365 @@
+// System.ServiceProcess, as .NET has it, over CORSAC/GUI's service manager
+// (ServiceWire.cor): ServiceController to list services, ask and control
+// them; ServiceBase for a program that is one. A Windows service and one
+// of CORSAC's own are both the manager's, so a native program sees and
+// controls Windows' services, and Windows' Services snap-in this
+// program's -- each through its own side's API onto the one manager.
+//
+// A NATIVE SERVICE'S PROGRAM is started by the manager with GUI_SERVICE
+// naming the service and its start's arguments after its own name.
+// ServiceBase.Run connects, registers as the service, says StartPending,
+// runs OnStart, says Running, and then answers the manager's controls on
+// that connection until it is stopped -- as advapi32's dispatcher answers
+// the controller's on its pipe.
+
+namespace System.ServiceProcess
+{
+    public enum ServiceControllerStatus
+    {
+        Stopped = 1,
+        StartPending = 2,
+        StopPending = 3,
+        Running = 4,
+        ContinuePending = 5,
+        PausePending = 6,
+        Paused = 7,
+    }
+
+    public enum ServiceStartMode
+    {
+        Boot = 0,
+        System = 1,
+        Automatic = 2,
+        Manual = 3,
+        Disabled = 4,
+    }
+
+    [Flags]
+    public enum ServiceType
+    {
+        KernelDriver = 1,
+        FileSystemDriver = 2,
+        Adapter = 4,
+        RecognizerDriver = 8,
+        Win32OwnProcess = 16,
+        Win32ShareProcess = 32,
+        InteractiveProcess = 256,
+    }
+
+    /// The manager's answer was not success: its Win32 error, as .NET's
+    /// ServiceController throws InvalidOperationException around a
+    /// Win32Exception.
+    static class ServiceFailure
+    {
+        public static Exception Of(string what, string name, long error)
+        {
+            return new InvalidOperationException("Cannot " + what + " service " + name + " on computer '.'.", new Win32Exception((int)error));
+        }
+    }
+
+    /// One service: what it is, and its controls.
+    public class ServiceController : IDisposable
+    {
+        string _name;
+        WireService? _record;
+
+        public ServiceController(string name) : this(name, ".") { }
+
+        public ServiceController(string name, string machineName)
+        {
+            if (name == null || name.Length == 0) throw new ArgumentException("Invalid value '' for parameter 'name'.");
+            if (machineName != "." && machineName.Length > 0 && !string.Equals(machineName, Environment.MachineName, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Cannot open Service Control Manager on computer '" + machineName + "'.");
+            _name = name;
+            MachineName = machineName;
+        }
+
+        ServiceController(WireService record) { _name = record.Name; _record = record; MachineName = "."; }
+
+        public string MachineName { get; set; }
+
+        WireService Record
+        {
+            get
+            {
+                if (_record != null) return _record;
+                WireWriter w = new WireWriter();
+                w.Text(_name);
+                long error;
+                WireReader? r = WireClient.Ask(ServiceRequest.Query, w, out error);
+                if (r == null || error != WireError.Success)
+                    throw new InvalidOperationException("Service " + _name + " was not found on computer '.'.", new Win32Exception((int)error));
+                _record = WireService.Read(r);
+                return _record;
+            }
+        }
+
+        public string ServiceName { get { return Record.Name; } set { _name = value; _record = null; } }
+        public string DisplayName { get { return Record.Display; } set { } }
+        public ServiceControllerStatus Status { get { return (ServiceControllerStatus)(int)Record.State; } }
+        public ServiceStartMode StartType { get { return (ServiceStartMode)(int)Record.Start; } }
+        public ServiceType ServiceType { get { return (ServiceType)(int)(Record.Type & 0xFFFF); } }
+        public bool CanStop { get { return (Record.Controls & 1) != 0; } }
+        public bool CanPauseAndContinue { get { return (Record.Controls & 2) != 0; } }
+        public bool CanShutdown { get { return (Record.Controls & 4) != 0; } }
+
+        /// The services this one depends on.
+        public ServiceController[] ServicesDependedOn
+        {
+            get
+            {
+                List<ServiceController> found = new List<ServiceController>();
+                foreach (string name in Record.DependsOn) found.Add(new ServiceController(name));
+                return found.ToArray();
+            }
+        }
+
+        /// The services that depend on this one.
+        public ServiceController[] DependentServices
+        {
+            get
+            {
+                List<ServiceController> found = new List<ServiceController>();
+                foreach (WireService s in All())
+                    foreach (string d in s.DependsOn)
+                        if (string.Equals(d, _name, StringComparison.OrdinalIgnoreCase)) { found.Add(new ServiceController(s)); break; }
+                return found.ToArray();
+            }
+        }
+
+        /// What the manager says now.
+        public void Refresh() { _record = null; }
+
+        public void Start() { Start(new string[0]); }
+
+        public void Start(string[] args)
+        {
+            WireWriter w = new WireWriter();
+            w.Text(_name);
+            w.Texts(new List<string>(args));
+            long error;
+            WireClient.Ask(ServiceRequest.Start, w, out error);
+            _record = null;
+            if (error != WireError.Success) throw ServiceFailure.Of("start", _name, error);
+        }
+
+        void Control(int control, string what)
+        {
+            WireWriter w = new WireWriter();
+            w.Text(_name);
+            w.Int(control);
+            long error;
+            WireClient.Ask(ServiceRequest.Control, w, out error);
+            _record = null;
+            if (error != WireError.Success) throw ServiceFailure.Of(what, _name, error);
+        }
+
+        /// Stopped, with what depends on it stopped first, as .NET does.
+        public void Stop()
+        {
+            foreach (ServiceController d in DependentServices)
+                if (d.Status != ServiceControllerStatus.Stopped) { d.Stop(); d.WaitForStatus(ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(30)); }
+            Control((int)WireControl.Stop, "stop");
+        }
+
+        public void Pause() { Control((int)WireControl.Pause, "pause"); }
+        public void Continue() { Control((int)WireControl.Continue, "resume"); }
+
+        /// A command of the service's own, 128 to 255.
+        public void ExecuteCommand(int command) { Control(command, "control"); }
+
+        public void WaitForStatus(ServiceControllerStatus desiredStatus) { Wait(desiredStatus, -1); }
+
+        /// Asked again every quarter second until it is so, or the time is
+        /// out (.NET's System.ServiceProcess.TimeoutException; here
+        /// TimeoutException's).
+        public void WaitForStatus(ServiceControllerStatus desiredStatus, TimeSpan timeout) { Wait(desiredStatus, timeout.Ticks); }
+
+        void Wait(ServiceControllerStatus desiredStatus, long ticks)
+        {
+            long until = ticks < 0 ? long.MaxValue : DateTime.UtcNow.Ticks + ticks;
+            while (true)
+            {
+                Refresh();
+                if (Status == desiredStatus) return;
+                if (DateTime.UtcNow.Ticks >= until) throw new TimeoutException("Time out has expired and the operation has not been completed.");
+                Thread.Sleep(250);
+            }
+        }
+
+        public void Close() { _record = null; }
+        public void Dispose() { Close(); }
+
+        static List<WireService> All()
+        {
+            List<WireService> all = new List<WireService>();
+            long from = 0;
+            for (int pages = 0; pages < 64 && from >= 0; pages++)
+            {
+                WireWriter w = new WireWriter();
+                w.Int(from);
+                long error;
+                WireReader? r = WireClient.Ask(ServiceRequest.List, w, out error);
+                if (r == null || error != WireError.Success) break;
+                r.Int();
+                long count = r.Int();
+                for (long i = 0; i < count && !r.Short; i++) all.Add(WireService.Read(r));
+                long next = r.Int();
+                from = next == 0xFFFFFFFF ? -1 : next;
+            }
+            return all;
+        }
+
+        /// Every service that is a program's (not a driver).
+        public static ServiceController[] GetServices()
+        {
+            List<ServiceController> found = new List<ServiceController>();
+            foreach (WireService s in All()) if ((s.Type & 0xF) == 0) found.Add(new ServiceController(s));
+            return found.ToArray();
+        }
+
+        public static ServiceController[] GetServices(string machineName) { return GetServices(); }
+
+        /// Every driver's.
+        public static ServiceController[] GetDevices()
+        {
+            List<ServiceController> found = new List<ServiceController>();
+            foreach (WireService s in All()) if ((s.Type & 0xF) != 0) found.Add(new ServiceController(s));
+            return found.ToArray();
+        }
+    }
+
+    /// A service's program, as .NET's ServiceBase: override OnStart and the
+    /// rest, and hand an instance to Run.
+    public class ServiceBase : System.ComponentModel.Component
+    {
+        public const int MaxNameLength = 80;
+
+        public string ServiceName { get; set; } = "";
+        public bool CanStop { get; set; } = true;
+        public bool CanPauseAndContinue { get; set; }
+        public bool CanShutdown { get; set; }
+        public bool CanHandlePowerEvent { get; set; }
+        public bool CanHandleSessionChangeEvent { get; set; }
+        public bool AutoLog { get; set; } = true;
+        public int ExitCode { get; set; }
+
+        int _fd = -1;
+        long _state = (long)WireState.Stopped;
+
+        protected virtual void OnStart(string[] args) { }
+        protected virtual void OnStop() { }
+        protected virtual void OnPause() { }
+        protected virtual void OnContinue() { }
+        protected virtual void OnShutdown() { }
+        protected virtual void OnCustomCommand(int command) { }
+
+        /// More time asked for a start or a stop: the wait hint the manager
+        /// is told.
+        public void RequestAdditionalTime(int milliseconds) { Say(_state, milliseconds); }
+
+        /// The service stopped from inside, as if the manager had said so.
+        public void Stop()
+        {
+            Say((long)WireState.StopPending, 0);
+            OnStop();
+            Say((long)WireState.Stopped, 0);
+        }
+
+        /// What the service accepts, as SERVICE_ACCEPT_* bits.
+        long Accepted()
+        {
+            return (CanStop ? 1 : 0) | (CanPauseAndContinue ? 2 : 0) | (CanShutdown ? 4 : 0);
+        }
+
+        /// SetStatus on the service's own connection; no answer comes back
+        /// for it there, the controls being all that comes.
+        void Say(long state, long waitHint)
+        {
+            _state = state;
+            if (_fd < 0) return;
+            WireWriter w = new WireWriter();
+            w.Text(ServiceName);
+            w.Int(state);
+            w.Int(state == (long)WireState.Running || state == (long)WireState.Paused ? Accepted() : 0);
+            w.Int(ExitCode != 0 ? 1066 : 0);                               // ERROR_SERVICE_SPECIFIC_ERROR
+            w.Int(ExitCode);
+            w.Int(0);
+            w.Int(waitHint);
+            WireClient.Send(_fd, WireClient.Message(ServiceRequest.SetStatus, w));
+        }
+
+        public static void Run(ServiceBase service) { Run(new ServiceBase[] { service }); }
+
+        /// The program's services run: the one GUI_SERVICE names, registered
+        /// with the manager, started with the program's own arguments, and
+        /// served until it is stopped. Only one service a process here: the
+        /// manager starts a native service's program for that service alone.
+        public static void Run(ServiceBase[] services)
+        {
+            if (services == null || services.Length == 0) throw new ArgumentException("No services were given.");
+            string? named = Environment.GetEnvironmentVariable("GUI_SERVICE");
+            ServiceBase service = services[0];
+            foreach (ServiceBase s in services) if (named != null && string.Equals(s.ServiceName, named, StringComparison.OrdinalIgnoreCase)) service = s;
+            if (service.ServiceName.Length == 0 && named != null) service.ServiceName = named;
+            int fd = WireClient.Connect();
+            if (fd < 0) throw new InvalidOperationException("Cannot start service from the command line or a debugger: there is no service manager to register with.");
+            service._fd = fd;
+            WireWriter w = new WireWriter();
+            w.Text(service.ServiceName);
+            w.Int(Environment.ProcessId);
+            if (!WireClient.Send(fd, WireClient.Message(ServiceRequest.Register, w))) throw new InvalidOperationException("The service manager would not take the service.");
+            byte[]? answer = WireClient.Receive(fd);
+            if (answer == null || answer.Length < 4 || new WireReader(answer, answer.Length).Int() != WireError.Success)
+                throw new InvalidOperationException("The service manager would not take " + service.ServiceName + ".");
+            string[] all = Environment.GetCommandLineArgs();
+            string[] args = new string[Math.Max(0, all.Length - 1)];
+            for (int i = 1; i < all.Length; i++) args[i - 1] = all[i];
+            service.Say((long)WireState.StartPending, 30000);
+            try { service.OnStart(args); }
+            catch (Exception e)
+            {
+                Console.Error.WriteLine(service.ServiceName + ": OnStart failed: " + e.Message);
+                if (service.ExitCode == 0) service.ExitCode = 1064;          // ERROR_EXCEPTION_IN_SERVICE
+                service.Say((long)WireState.Stopped, 0);
+                Os.Close(fd);
+                return;
+            }
+            service.Say((long)WireState.Running, 0);
+            service.Serve();
+            Os.Close(fd);
+        }
+
+        /// The manager's controls, each answered (ControlDone), until a stop.
+        void Serve()
+        {
+            while (true)
+            {
+                byte[]? m = WireClient.Receive(_fd);
+                if (m == null) return;
+                WireReader r = new WireReader(m, m.Length);
+                if (r.Int() != (long)ServiceRequest.ControlMessage) continue;
+                long control = r.Int();
+                long result = 0;
+                bool stopping = false;
+                try
+                {
+                    if (control == (long)WireControl.Stop) { Say((long)WireState.StopPending, 0); OnStop(); stopping = true; }
+                    else if (control == (long)WireControl.Pause) { Say((long)WireState.PausePending, 0); OnPause(); Say((long)WireState.Paused, 0); }
+                    else if (control == (long)WireControl.Continue) { Say((long)WireState.ContinuePending, 0); OnContinue(); Say((long)WireState.Running, 0); }
+                    else if (control == (long)WireControl.Shutdown) { OnShutdown(); stopping = true; }
+                    else if (control >= 128 && control <= 255) OnCustomCommand((int)control);
+                }
+                catch (Exception e)
+                {
+                    Console.Error.WriteLine(ServiceName + ": control " + control + " failed: " + e.Message);
+                    result = 1064;
+                }
+                WireWriter done = new WireWriter();
+                done.Int(result);
+                WireClient.Send(_fd, WireClient.Message(ServiceRequest.ControlDone, done));
+                if (stopping) { Say((long)WireState.Stopped, 0); return; }
+            }
+        }
+    }
+}

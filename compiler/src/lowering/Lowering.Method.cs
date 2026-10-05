@@ -180,10 +180,10 @@ public sealed partial class Lowering
 
         _f = new Function(Label(m), ReturnIr(m))
         {
-            SourceFile = _in, Line = decl.Line, Display = Display(m), FromLibrary = IsLibrary(m.Owner),
+            SourceFile = _in, Line = decl.Line, Display = Display(m), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCode(m.Owner), SourcePath = SourcePathOf(m.Owner),
             Coalescible = decl.LocalCopy || m.Owner.Decl?.Specialised == true,
             Exported = m.Owner.Decl?.LocalOnly != true,
-            NoInlining = NoInlining(decl),
+            NoInlining = NoInlining(decl), Unjudged = decl.AutoAccessor,
         };
         Block entry = _f.NewBlock("entry");
         _e = new Builder(_f, entry);
@@ -296,6 +296,14 @@ public sealed partial class Lowering
         }
 
         VReg? fromC = CalledByC(m) ? EnterFromC(decl) : null;
+        if (fromC is not null && _t.WordSize == 4 && CalledStdcall(m))
+        {
+            // STDCALL'S CALLEE TAKES ITS ARGUMENTS OFF: every parameter a
+            // word, a 64-bit one two, as the stack holds them.
+            int pops = 0;
+            foreach (ParamSymbol p in m.Params) pops += !p.ByRef && IrTypes.Of(p.Type) is IrType.I64 or IrType.F64 ? 8 : 4;
+            _f.CalleePops = pops;
+        }
 
         if (NativeImportOf(m) is NativeImport native)
         {
@@ -858,12 +866,33 @@ public sealed partial class Lowering
                 VReg into = held.Offset == 0 ? basis : _e.Binary(Opcode.Add, basis, held.Offset);
                 int bytes = Math.Max(1, StructOf(held.Type).InstanceSize);
                 List<(int Offset, VReg Value)> references = new();
+                // A STRUCT'S REFERENCES STORED AS SEQUENCES, where stores are
+                // (StoreSequences): each written alone first, barrier and card
+                // with it, as a field is, and then the bytes copied over them
+                // with the same words. A stop between a barrier's test and a
+                // copy that takes the whole struct at once would let the copy
+                // land over a reference nobody reported.
+                if (MakesStoreSequences)
+                {
+                    foreach ((int offset, Type type) in TracedFields(StructOf(held.Type), 0))
+                    {
+                        if (!MayHoldReference(type)) continue;
+                        VReg word = _e.Load(IrTypes.Word, value, offset);
+                        MemPlace place = new(R(into), offset, type);
+                        ReferenceBarrier(place, word);
+                        _e.Store(R(into), R(word), offset, _t.WordSize);
+                        CardMark(place, word);
+                    }
+                    _e.Emit(Opcode.MemCopy, null, R(into), R(value), Imm(bytes, IrTypes.Word));
+                    break;
+                }
                 foreach ((int offset, Type type) in TracedFields(StructOf(held.Type), 0))
                 {
                     if (!MayHoldReference(type)) continue;
                     VReg word = _e.Load(IrTypes.Word, value, offset);
                     references.Add((offset, word));
                     ReferenceBarrier(new MemPlace(R(into), offset, type), word);
+                    CardMarkAhead(new MemPlace(R(into), offset, Type.String), word);
                 }
                 _e.Emit(Opcode.MemCopy, null, R(into), R(value), Imm(bytes, IrTypes.Word));
                 foreach ((int offset, VReg word) in references)
@@ -885,6 +914,7 @@ public sealed partial class Lowering
                 // not a caller's result buffer (HeapStruct).
                 if (IsStructValue(m.Type)) value = HeapStruct(_decl ?? (Node)new MethodDecl { Name = "", Line = 0, Col = 0 }, value, m.Type);
                 ReferenceBarrier(m, value);
+                CardMarkAhead(m, value);
                 _e.Store(m.Address, new RegOperand(value), m.Offset, LoadSize(m.Type));
                 if (m.Field is FieldSymbol written && TagsField(written)) _e.Block.Instrs[^1].Field = FieldKey(written);
                 if (m.Field is FieldSymbol writtenFamily && m.Address is RegOperand) _e.Block.Instrs[^1].Family = FieldFamily(writtenFamily, m.Offset);
@@ -964,6 +994,16 @@ public sealed partial class Lowering
     private bool _inBarrier;
 
     /// <summary>
+    /// Whether this compile's reference stores are made as sequences
+    /// (StoreSequences): asked, on i386, of a runtime with a concurrent
+    /// collector's barrier and a card table, which the sequences read.
+    /// </summary>
+    private bool MakesStoreSequences
+        => StoreSequences && _t.Name == "x86" && _b.Types.TryGetValue(RuntimeType, out TypeSymbol? rt)
+            && rt.Fields.Any(f => f.Static && f.Name == "Marking") && rt.Fields.Any(f => f.Static && f.Name == "Cards")
+            && RuntimeMethod("WriteBarrier", 2) is not null;
+
+    /// <summary>
     /// Whether an array whose elements are written as this type may be one
     /// of a type derived from it, so that a store into it must be checked:
     /// object, an interface, a class that is not sealed. Not a sealed class
@@ -1035,6 +1075,15 @@ public sealed partial class Lowering
     }
 
     /// <summary>
+    /// The mark before the store as well, where a thread can be stopped
+    /// between the two (CardMarkBefore): nothing elsewhere.
+    /// </summary>
+    private void CardMarkAhead(MemPlace m, VReg value)
+    {
+        if (CardMarkBefore) CardMark(m, value);
+    }
+
+    /// <summary>
     /// THE CARD MARK, after the store, as a generational collector needs it:
     /// the byte for the kilobyte the reference went into is set, so the next
     /// minor collection reads that kilobyte for pointers old objects hold into
@@ -1042,7 +1091,9 @@ public sealed partial class Lowering
     /// shift, an add and a byte store; nothing when the table is 0 -- a
     /// freestanding image, a 64-bit one, one whose collector has no
     /// generations. After, not before: a collection that clears the card
-    /// between a mark and the store it stands for would miss the store.
+    /// between a mark and the store it stands for would miss the store --
+    /// and in an image whose threads stop anywhere, before as well
+    /// (CardMarkBefore, CardMarkAhead).
     /// Where the Marking test is omitted -- the collector's own code, a
     /// runtime without Cards -- so is this.
     /// </summary>
@@ -1067,6 +1118,7 @@ public sealed partial class Lowering
     private void StoreNew(VReg block, VReg value, long offset, Type type, FieldSymbol? field = null)
     {
         if (IsStructValue(type)) value = HeapStruct(_decl ?? (Node)new MethodDecl { Name = "", Line = 0, Col = 0 }, value, type);
+        CardMarkAhead(new MemPlace(R(block), offset, type), value);
         _e.Store(R(block), R(value), offset, LoadSize(type));
         if (field is not null && TagsField(field)) _e.Block.Instrs[^1].Field = FieldKey(field);
         if (field is not null) _e.Block.Instrs[^1].Family = FieldFamily(field, offset);
@@ -1076,6 +1128,7 @@ public sealed partial class Lowering
     /// <summary>StoreNew for a word the caller knows is a reference -- a struct's block, an object.</summary>
     private void StoreNewReference(VReg block, VReg value, long offset)
     {
+        if (CardMarkBefore) CardMarkAt(R(block), offset);
         _e.Store(R(block), R(value), offset, _t.WordSize);
         CardMarkAt(R(block), offset);
     }

@@ -1,0 +1,26 @@
+// test: await in a lock statement refused
+// expect-compile-error: cannot await in the body of a lock statement
+// C#'s CS1996: `lock` takes a Monitor, which a continuation on another
+// thread would not hold.
+
+using System;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static readonly object Gate = new object();
+
+    static async Task<int> Guarded(int value)
+    {
+        lock (Gate)
+        {
+            await Task.Yield();
+            return value;
+        }
+    }
+
+    static async Task Main()
+    {
+        Console.WriteLine(await Guarded(4));
+    }
+}

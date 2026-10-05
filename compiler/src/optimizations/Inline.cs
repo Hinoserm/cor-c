@@ -166,6 +166,7 @@ public sealed class Inline : IParallelModulePass
             pinned.Add(Escape.ReplacedFreer);
             pinned.Add(Escape.OwnedReplacedFreer);
             pinned.Add(OwnedElements.Freer);
+            pinned.Add(OwnedElements.ArrayFreer);
             pinned.Add(OwnedElements.Marker);
             pinned.Add(Escape.StorageFreer);
             // What the region pass calls (RegionPointsTo), after the inliner has run.

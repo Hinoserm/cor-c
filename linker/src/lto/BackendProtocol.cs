@@ -64,7 +64,7 @@ public static class BackendProtocol
             if (owned is not null)
             {
                 foreach ((string field, long offset) in owned.Fields.OrderBy(pair => pair.Key, StringComparer.Ordinal))
-                { WriteText(writer, field); writer.Write(offset); writer.Write((byte)((owned.Mapped.Contains(field) ? 1 : 0) | (owned.SelfFreed.Contains(field) ? 2 : 0))); }
+                { WriteText(writer, field); writer.Write(offset); writer.Write((byte)((owned.Mapped.Contains(field) ? 1 : 0) | (owned.SelfFreed.Contains(field) ? 2 : 0) | (owned.ArrayElements.Contains(field) ? 4 : 0))); }
                 writer.Write(owned.Borrowers.Count);
                 foreach (string name in owned.Borrowers.Order(StringComparer.Ordinal)) WriteText(writer, name);
                 // The fields elements are owned through, their callees, and the fields kept for it.
@@ -203,9 +203,10 @@ public static class BackendProtocol
                     string field = ReadText(reader); long offset = reader.ReadInt64();
                     if (!fields.Fields.TryAdd(field, offset)) throw new InvalidDataException("Duplicate backend owned-field fact");
                     byte flags = reader.ReadByte();
-                    if (flags > 3) throw new InvalidDataException("Invalid backend owned-field fact");
+                    if (flags > 7) throw new InvalidDataException("Invalid backend owned-field fact");
                     if ((flags & 1) != 0) fields.Mapped.Add(field);
                     if ((flags & 2) != 0) fields.SelfFreed.Add(field);
+                    if ((flags & 4) != 0) fields.ArrayElements.Add(field);
                 }
                 int borrowers = reader.ReadInt32();
                 if (borrowers < 0 || borrowers > 1000000) throw new InvalidDataException("Invalid backend owned-field fact");

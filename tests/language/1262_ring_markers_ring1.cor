@@ -1,0 +1,55 @@
+// test: ring_markers_ring1
+// flags: --ring 1
+// expect-exit: 0
+// expect-output:
+// half ring 1
+// both 0 and 1
+// shared 2
+
+// The ring-1 compile of the same shape as 1261: the ring-0 half, which names
+// the interrupt and DMA code only ring 0 has, is left out before binding, and
+// the ring-1 half binds to what ring 1 has.
+
+using System;
+
+[Ring0]
+static class Half
+{
+    public static string Name() { Irq.Mask(5); return Dma.Channel(1).ToString(); }
+
+    class Isr { public IrqFrame Frame; }
+}
+
+[Ring1]
+static class Half
+{
+    public static string Name() { return GuiKernel.Repaint(); }
+}
+
+[Ring1]
+static class GuiKernel
+{
+    public static string Repaint() { return "ring 1"; }
+}
+
+[Ring0, Ring1]
+static class Both
+{
+    public static string Name() { return "0 and 1"; }
+}
+
+static class Shared
+{
+    public static int Value => 2;
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Console.WriteLine("half " + Half.Name());
+        Console.WriteLine("both " + Both.Name());
+        Console.WriteLine("shared " + Shared.Value);
+        return 0;
+    }
+}

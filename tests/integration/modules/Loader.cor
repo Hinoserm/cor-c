@@ -1,0 +1,189 @@
+// What the kernel does with a module, in miniature, for
+// tests/integration/modules.sh: read it, refuse it unless its build stamp is
+// this kernel's, map it, bind it against the kernel's exports the way the
+// kernel's binder (elfload.cor) binds a library -- REL relocations, SysV
+// hash -- and call its DT_INIT. The image runs as a Linux process (Host.cor),
+// so the files are read with Linux's own calls.
+
+using System.Collections.Generic;
+
+namespace Kernel;
+
+public static class Modules
+{
+#if TARGET_64BIT
+    const long Read = 0, Open = 2, Close = 3, Mmap = 9;
+#else
+    const long Read = 3, Open = 5, Close = 6, Mmap = 192;
+#endif
+
+    /// Why the last Insmod refused, or "" when it did not.
+    public static string Refusal = "";
+
+    /// What the module's .corsac.modinfo says, an entry each.
+    public static List<string> Info = new List<string>();
+
+    public static bool Insmod(string module, string exports)
+    {
+        Refusal = "";
+        byte[]? image = Slurp(module), table = Slurp(exports);
+        if (image == null || table == null) return Refuse("cannot read " + (image == null ? module : exports));
+        if (U32(image, 0) != 0x464C457F || image[4] != 1 || U16(image, 16) != 3) return Refuse("not a 32-bit shared object");
+
+        // THE STAMP FIRST: a module built against another kernel's
+        // declarations reaches fields where this kernel has none.
+        long stamp = Section(image, ".corsac.stamp", out long stampBytes);
+        if (stamp < 0 || stampBytes != 32) return Refuse("no build stamp");
+        long mine = Sys.BuildStamp();
+        for (int i = 0; i < 32; i++)
+            if (image[stamp + i] != (byte)Sys.PeekByte(mine + i)) return Refuse("built for another kernel");
+        long info = Section(image, ".corsac.modinfo", out long infoBytes);
+        Info.Clear();
+        long from = info;
+        for (long at = info; info >= 0 && at < info + infoBytes; at++)
+        {
+            if (image[at] != 0) continue;
+            Info.Add(Text(image, from));
+            from = at + 1;
+        }
+
+        // MAPPED, each PT_LOAD where its address says, from a base the
+        // kernel chose; the zero tail is the mapping's own.
+        long phoff = U32(image, 28), phnum = U16(image, 44), size = 0, dynamic = 0;
+        for (long p = 0; p < phnum; p++)
+        {
+            long ph = phoff + p * 32;
+            if (U32(image, ph) == 1) size = Math.Max(size, U32(image, ph + 8) + U32(image, ph + 20));
+            if (U32(image, ph) == 2) dynamic = U32(image, ph + 8);
+        }
+        long bias = Sys.Syscall(Mmap, 0, (size + 0xFFF) & ~0xFFFL, 7, 0x22, -1, 0);
+        if (bias < 0 || bias > 0xFFFFF000L) return Refuse("no memory");
+        for (long p = 0; p < phnum; p++)
+        {
+            long ph = phoff + p * 32;
+            if (U32(image, ph) != 1) continue;
+            long offset = U32(image, ph + 4), address = U32(image, ph + 8), bytes = U32(image, ph + 16);
+            for (long b = 0; b < bytes; b++) Sys.PokeByte(bias + address + b, image[offset + b]);
+        }
+
+        // BOUND: every relocation is one a library has, every name the
+        // module does not define is the kernel's, and the text is not touched.
+        long symtab = 0, strtab = 0, rel = 0, relBytes = 0, jmprel = 0, jmprelBytes = 0, init = 0;
+        for (long d = dynamic; Word(bias + d) != 0; d += 8)
+        {
+            long tag = Word(bias + d), value = Word(bias + d + 4);
+            if (tag == 6) symtab = value; else if (tag == 5) strtab = value; else if (tag == 17) rel = value; else if (tag == 18) relBytes = value;
+            else if (tag == 23) jmprel = value; else if (tag == 2) jmprelBytes = value; else if (tag == 12) init = value;
+            else if (tag == 22) return Refuse("relocations in its text");
+            else if (tag == 1) return Refuse("needs another module");
+        }
+        if (!Bind(image, table, bias, symtab, strtab, rel, relBytes) || !Bind(image, table, bias, symtab, strtab, jmprel, jmprelBytes)) return false;
+
+        // AND STARTED: its statics become roots and its frames known, then
+        // its initialisers register its drivers.
+        if (init != 0) Sys.CallNative(bias + init);
+        return true;
+    }
+
+    static bool Bind(byte[] image, byte[] table, long bias, long symtab, long strtab, long at, long bytes)
+    {
+        for (long r = at; r < at + bytes; r += 8)
+        {
+            long where = bias + U32(image, r), info = U32(image, r + 4), kind = info & 0xFF, symbol = 0;
+            if (kind != 8)
+            {
+                long sym = symtab + (info >> 8) * 16;
+                string name = Text(image, strtab + U32(image, sym));
+                symbol = U16(image, sym + 14) != 0 ? bias + U32(image, sym + 4) : Export(table, name);
+                if (symbol == 0) return Refuse("undefined symbol " + name);
+            }
+            if (kind == 8) Sys.PokeWord(where, (Word(where) + bias) & 0xFFFFFFFFL);
+            else if (kind == 1) Sys.PokeWord(where, (Word(where) + symbol) & 0xFFFFFFFFL);
+            else if (kind == 6 || kind == 7) Sys.PokeWord(where, symbol);
+            else return Refuse("relocation of kind " + kind);
+        }
+        return true;
+    }
+
+    /// Where the kernel's exports say `name` is: their DT_HASH, chain by chain.
+    static long Export(byte[] table, string name)
+    {
+        long dynamic = 0, hash = 0, symtab = 0, strtab = 0;
+        for (long p = 0; p < U16(table, 44); p++)
+            if (U32(table, U32(table, 28) + p * 32) == 2) dynamic = U32(table, U32(table, 28) + p * 32 + 4);
+        for (long d = dynamic; U32(table, d) != 0; d += 8)
+        {
+            long tag = U32(table, d), value = U32(table, d + 4);
+            if (tag == 4) hash = value; else if (tag == 6) symtab = value; else if (tag == 5) strtab = value;
+        }
+        long h = 0;
+        for (int i = 0; i < name.Length; i++)
+        {
+            h = (h << 4) + name[i];
+            long g = h & 0xF0000000L;
+            if (g != 0) h ^= g >> 24;
+            h &= ~g & 0xFFFFFFFFL;
+        }
+        long buckets = U32(table, hash);
+        for (long i = U32(table, hash + 8 + (h % buckets) * 4); i != 0; i = U32(table, hash + 8 + buckets * 4 + i * 4))
+        {
+            long sym = symtab + i * 16;
+            if (Text(table, strtab + U32(table, sym)) == name) return U32(table, sym + 4);
+        }
+        return 0;
+    }
+
+    /// The file offset of the section called `name`, and its size; -1 if there is none.
+    static long Section(byte[] image, string name, out long bytes)
+    {
+        bytes = 0;
+        long shoff = U32(image, 32), shnum = U16(image, 48), names = U32(image, shoff + U16(image, 50) * 40 + 16);
+        for (long s = 0; s < shnum; s++)
+        {
+            long sh = shoff + s * 40;
+            if (Text(image, names + U32(image, sh)) != name) continue;
+            bytes = U32(image, sh + 20);
+            return U32(image, sh + 16);
+        }
+        return -1;
+    }
+
+    static bool Refuse(string why)
+    {
+        Refusal = why;
+        return false;
+    }
+
+    static byte[]? Slurp(string path)
+    {
+        byte[] name = new byte[path.Length + 1];
+        for (int i = 0; i < path.Length; i++) name[i] = (byte)path[i];
+        long fd = Sys.Syscall(Open, Sys.ArrayData(name), 0, 0);
+        if (fd < 0) return null;
+        byte[] buffer = new byte[4 * 1024 * 1024];
+        long filled = 0;
+        while (true)
+        {
+            long got = Sys.Syscall(Read, fd, Sys.ArrayData(buffer) + filled, buffer.Length - filled);
+            if (got <= 0) break;
+            filled += got;
+        }
+        Sys.Syscall(Close, fd, 0, 0);
+        byte[] file = new byte[filled];
+        for (long i = 0; i < filled; i++) file[i] = buffer[i];
+        return file;
+    }
+
+    static string Text(byte[] bytes, long at)
+    {
+        long end = at;
+        while (bytes[end] != 0) end++;
+        char[] chars = new char[end - at];
+        for (long i = at; i < end; i++) chars[i - at] = (char)bytes[i];
+        return new string(chars);
+    }
+
+    static long Word(long at) => Sys.PeekWord(at) & 0xFFFFFFFFL;
+    static long U16(byte[] b, long at) => b[at] | (b[at + 1] << 8);
+    static long U32(byte[] b, long at) => (b[at] | (b[at + 1] << 8) | (b[at + 2] << 16) | ((long)b[at + 3] << 24)) & 0xFFFFFFFFL;
+}

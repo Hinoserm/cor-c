@@ -316,23 +316,136 @@ static class Platform
         }
     }
 
+    /// THE TIME, from a kernel that keeps it: called with no arguments and
+    /// answering nanoseconds since it started. A kernel's own threads may
+    /// not latch the 8254 behind it -- a ring-1 kernel's view of time is
+    /// the cell its kernel writes -- so one that has a clock installs this,
+    /// and Clock.Now, which the scheduler's timers read too, asks the PIT
+    /// only where nobody did.
+    public static long NanosHook;
+
+    /// WHO ENDS A CALLER OF A REVOKED OBJECT (Gc.Revoke): the kernel installs
+    /// it -- a program is crashed, a kernel thread killed -- and it does not
+    /// return. With none installed the processor stops.
+    public static long RevokedHook;
+
+    public static void Revoked()
+    {
+        if (RevokedHook != 0) Sys.Call(RevokedHook, 0, 0, 0);
+        while (true) Sys.Hlt();
+    }
+
+    public static long Nanos() => Clock.Now();
+
     // ---- the machine's memory, for GC.GetGCMemoryInfo ------------------------
 
-    /// Unknown to the runtime: the kernel's own allocator owns the machine's
-    /// memory, and the collector's heap is what it was given (Gc's cap).
+    // ---- WHAT AN IMAGE ON TOP OF A KERNEL SAYS OF ITS MEMORY -------------------
+    //
+    // A freestanding image alone on the machine -- the kernel, a loader, a
+    // boot test -- answers as it always has: its mappings are its own frames
+    // taken whole, no card table, no region arena, every collection whole,
+    // nothing known of the machine's memory. An image with a kernel BELOW
+    // it -- CORSAC's ring-1 kernels -- has mappings that kernel commits page
+    // by page when they are first touched (ring 0's MapChunk and ZeroIn),
+    // threads of its own each with a thread block of its own, and a kernel
+    // to ask what is free. It says so, once, as it starts and before it
+    // allocates anything, by setting the four below (Service.UsePlatform in
+    // CORSAC's ring 1); the collector reads them as it starts (Gc.Start,
+    // StartGenerations) and at its first region (RegionEnter).
+
+    /// The machine's memory, in bytes, as the kernel below says it; 0 for
+    /// unknown (alone on the machine: its own allocator owns it, and the
+    /// collector's heap is what it was given).
+    public static long TotalMemoryBytes;
+
+    /// Who says what is free, a kernel's routine (by Sys.AddressOf) called
+    /// with no arguments and answering bytes; 0 for nobody. Called by the
+    /// collector with its heap held, so it allocates nothing.
+    public static long FreeMemoryHook;
+
     public static long TotalMemory()
     {
-        return 0;
+        return TotalMemoryBytes;
     }
 
     public static long AvailableMemory()
     {
-        return 0;
+        return FreeMemoryQuietly();
     }
 
-    /// A freestanding image's mappings are its own frames, taken whole: the
-    /// collector keeps no card table here, and collects the whole heap.
-    public const bool MapsCommitLazily = false;
+    /// MEMORY COMMITTED AS IT IS FIRST TOUCHED, for the collector's tables that
+    /// cover the whole address space and are read only where the heap is
+    /// (Gc.StartGenerations): a kernel's routine that hands out addresses and
+    /// makes each page when it is first touched (ring 0's KernelMapLazy), or,
+    /// with none, an ordinary Map -- a ring-1 kernel's, which its kernel
+    /// commits on touch already.
+    public static long MapLazyHook;
+
+    public static long MapLazy(long bytes)
+    {
+        if (MapLazyHook != 0) return Sys.Call(MapLazyHook, bytes, 0, 0);
+        return Map(bytes);
+    }
+
+    /// The pages of [at, at + bytes) of a MapLazy range committed now, in
+    /// thread context, by the kernel's routine (CommitHook) -- so nothing
+    /// the collector knows will be touched waits on a fault (Gc.CommitCards).
+    /// No hook: nothing to do.
+    public static long CommitHook;
+
+    public static void Commit(long at, long bytes)
+    {
+        if (CommitHook != 0) Sys.Call(CommitHook, at, bytes, 0);
+    }
+
+    /// Whether a mapping costs only the pages that are touched: false alone
+    /// on the machine -- the collector keeps no card table and collects the
+    /// whole heap -- and true for an image whose kernel commits its memory
+    /// on first touch, which turns generations on: two card tables of four
+    /// megabytes each and the held-block tables reserved, a few pages of
+    /// them committed (Gc.StartGenerations). Set before the first
+    /// allocation, which is when the collector starts and reads it.
+    public static bool MapsCommitLazily;
+
+    /// Nonzero: every thread has a region arena, mapped chunk by chunk as
+    /// its regions need (Regions); 0 for none. Set before any thread opens
+    /// a region.
+    public static long RegionArenaBytes;
+
+    // ---- THE ASYNC SCHEDULER'S CONTRACT, for a kernel that runs it --------------
+    //
+    // Alone on the machine the scheduler is its own event loop (Scheduler.
+    // RunUntil, over Clock and Native). A kernel provides the scheduler
+    // instead: its own loop runs the continuations, its clock answers the
+    // time (NanosHook), and what is current travels with each task.
+
+    /// Where a continuation goes: a kernel's routine (by Sys.AddressOf)
+    /// called with the work and the context it runs in (Scheduler.Post: an
+    /// Action's word and an AsyncContext's, or 0), which queues them for its
+    /// scheduler loop to run through Scheduler.RunPosted. 0: this
+    /// scheduler's own ring. Called in thread context only -- an interrupt
+    /// handler completes through InterruptCompletions, never here.
+    public static long PostHook;
+
+    /// What is current, as a kernel keeps it (AsyncContext): called with
+    /// AsyncContext.CaptureOp (answers a word for what is current now: an
+    /// object's, which the context then holds as its Owner; asked only where
+    /// a flow begins), EnterOp and the Owner's word as a continuation starts
+    /// (the platform may make it current or only note it; it answers a word)
+    /// and LeaveOp and that answer as it ends. 0: no context flows.
+    public static long ContextHook;
+
+    /// Called with no arguments by InterruptCompletions.Complete -- from an
+    /// interrupt handler, so it may not allocate or wait -- once a task is
+    /// queued for finishing: a kernel wakes an idle processor to run its
+    /// loop. 0: nobody to tell.
+    public static long CompletedHook;
+
+    /// Nonzero: each continuation's run on a thread block has a region
+    /// arena of its own (AsyncContext; Tls.TaskArena), mapped chunk by chunk
+    /// as its regions need and given back as the run ends. 0: continuations
+    /// run with the block's own arena words, whatever they are.
+    public static long TaskArenaBytes;
 
     public static bool VerifyGenerations()
     {
@@ -365,13 +478,15 @@ static class Platform
         return 0;
     }
 
-    /// No region arena on a machine with no operating system: a thread block
-    /// here is a processor's, and the tasks that park and resume on any
-    /// processor would share it. Regions wait for the task switch to carry
-    /// the arena's words with the task.
+    /// No region arena alone on the machine: a thread block there is a
+    /// processor's, and the tasks that park and resume on any processor
+    /// would share it. Regions wait for the task switch to carry the arena's
+    /// words with the task. An image whose every thread has a block of its
+    /// own -- a ring-1 kernel's -- turns them on (RegionArenaBytes); each
+    /// arena is then mapped chunk by chunk as its regions need.
     public static bool Regions()
     {
-        return false;
+        return RegionArenaBytes > 0;
     }
 
     public static long HeapLimit()
@@ -415,10 +530,13 @@ static class Platform
         return 0;
     }
 
-    /// Unknown here too: a kernel's collector is paced by its cap (Gc).
+    /// What the kernel below says is free (FreeMemoryHook), which the
+    /// collector paces its threshold by (Gc.NextThreshold: half of it, at
+    /// most three live sizes); 0, the old pace, with nobody to ask.
     public static long FreeMemoryQuietly()
     {
-        return 0;
+        if (FreeMemoryHook == 0) return 0;
+        return Sys.Call(FreeMemoryHook, 0, 0, 0);
     }
 
     // ---- what Monitor asks (core threading.cor) ----------------------------
@@ -618,6 +736,47 @@ static partial class Os
     {
         Sys.Hlt();
     }
+
+    // ---- what Environment asks (stdlib/src/System/environment.cor) ---------
+    //
+    // NOBODY STARTED THIS PROGRAM: no operating system laid an argument
+    // vector or an environment block on its stack, and no process holds a
+    // working directory or a number for it. Environment is the library's
+    // here too, and these are the true answers to what it asks -- an entry
+    // block of argc 0 with no arguments and no variables, no directory to
+    // change to, the one program there is, and the machine's clock -- not a
+    // copy of Environment beside the library's.
+
+    /// argc 0, argv's terminating null, envp's terminating null: four words
+    /// in either word size, laid down in the image.
+    static readonly long[] NoEntryBlock = { 0, 0, 0, 0 };
+
+    /// Where argc, argv and envp would be: the empty block.
+    public static long MainEntryStack() { return Sys.ArrayData(NoEntryBlock); }
+
+    /// envp, as on Linux: past argc, argv's entries and argv's null.
+    public static long EnvironAddress()
+    {
+        long sp = MainEntryStack();
+        return sp + WordSize.Bytes + WordSize.Bytes * Sys.Peek(sp) + WordSize.Bytes;
+    }
+
+    /// A NUL-terminated UTF-8 string at an address.
+    public static string StringAt(long at) { return Utf8Transcoder.DecodeTerminated(at); }
+
+    /// No working directory to change: ENOSYS, which Environment reports as
+    /// the IOException .NET gives for a directory that cannot be entered.
+    public static int Chdir(string path) { return -38; }
+
+    /// The one program a machine with no operating system runs.
+    public static int Getpid() { return 1; }
+
+    /// No name on a network: nothing has given the machine one.
+    public static string? NodeName() { return null; }
+
+    /// Nanoseconds on the machine's one clock, whichever clock is asked for:
+    /// with no operating system there is no wall clock apart from it.
+    public static long Nanos(int clock) { return Platform.Nanos(); }
 }
 
 // ---- what the scheduler asks of the machine -------------------------------
@@ -661,6 +820,7 @@ static class Clock
 
     public static long Now()
     {
+        if (Platform.NanosHook != 0) return Sys.Call(Platform.NanosHook, 0, 0, 0);
         if (_interrupts)
         {
             // The interrupt counts whole periods; the counter says how far

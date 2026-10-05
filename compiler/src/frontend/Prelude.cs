@@ -652,6 +652,12 @@ public static class Prelude
             public static long AtomicXorRelease(long at, long value) { return 0; }
             public static long AtomicXorSequential(long at, long value) { return 0; }
             public static long AtomicSwap(long at, long value) { return 0; }
+            // A reference exchanged at `at` with the write barrier and the card
+            // mark every reference store takes (Interlocked's reference
+            // exchanges): what was there; and the same only where it holds
+            // `expected`, answering what it held.
+            public static long ExchangeReference(long at, long value) { return 0; }
+            public static long CompareExchangeReference(long at, long expected, long value) { return 0; }
 
             // Golden unit-0x01 bulk-memory surface. These work on raw memory;
             // safe array and string operations remain in their libraries.
@@ -885,6 +891,12 @@ public static class Prelude
             public static string AsString(object x) { return ""; }
             public static long DataStart() { return 0; }
             public static long DataEnd() { return 0; }
+            // THE KERNEL'S BUILD STAMP: the address of the thirty-two bytes
+            // `corc link --exports` writes into a kernel, the hash of the
+            // declarations it was compiled against. A module's .corsac.stamp
+            // must be the same bytes to be loaded. Only in an image linked so,
+            // and in a module, where the name is the kernel's.
+            public static long BuildStamp() { return 0; }
 
         }
 

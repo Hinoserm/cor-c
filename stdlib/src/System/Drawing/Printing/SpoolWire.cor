@@ -1,0 +1,310 @@
+// THE PRINT SPOOLER, as a program reaches it: CORSAC/GUI's spooler is a
+// service of the GUI kernel (os/gui/spooler.cor in the system's
+// repository), on the service manager's socket (System.ServiceProcess's
+// WireClient: one message each way, the request's number and the user it
+// is for, then its fields; the answer a Win32 error, then its fields). The
+// requests and their fields:
+//
+//   SpoolPrinters ()                         Int(count), each a PrinterRecord
+//   SpoolPrinter (Text name: "" the default) a PrinterRecord
+//   SpoolStartDoc (Text printer, Text document, Text datatype ("RAW", or
+//       "PAGES" for pages the seat hands over), Text output file ("" the
+//       printer's port), Int copies)          Int(job)
+//   SpoolWrite (Int job, Bytes data)          Int(bytes taken)
+//   SpoolStartPage (Int job), SpoolEndPage (Int job): a RAW job's pages
+//   SpoolEndDoc (Int job), SpoolAbortDoc (Int job)
+//   SpoolJobs (Text printer: "" every one)   Int(count), each a JobRecord
+//   SpoolJob (Int job)                        a JobRecord
+//   SpoolJobControl (Int job, Int SpoolControl)
+//   SpoolPrinterControl (Text printer, Int SpoolControl)
+//   SpoolWatch (Text printer: "" every one): SpoolEvent messages from then
+//       on -- Int(SpoolEvent), Int(kind), Text(printer), Int(job), Int(status)
+//   SpoolSetPrinter (PrinterRecord), SpoolDeletePrinter (Text name)
+//
+// KEEP IN STEP with os/ring1/spoolwire.cor in the system's repository.
+
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.ServiceProcess;
+using System.Threading;
+
+namespace Corsac.Printing
+{
+    /// A job's state (winspool.h JOB_STATUS_*).
+    public enum SpoolJobStatus : long
+    {
+        Paused = 0x1, Error = 0x2, Deleting = 0x4, Spooling = 0x8, Printing = 0x10, Offline = 0x20,
+        PaperOut = 0x40, Printed = 0x80, Deleted = 0x100, BlockedDeviceQueue = 0x200, UserIntervention = 0x400,
+        Restart = 0x800, Complete = 0x1000,
+    }
+
+    /// A printer's state (winspool.h PRINTER_STATUS_*).
+    public enum SpoolPrinterStatus : long
+    {
+        Paused = 0x1, Error = 0x2, PendingDeletion = 0x4, PaperJam = 0x8, PaperOut = 0x10, ManualFeed = 0x20,
+        PaperProblem = 0x40, Offline = 0x80, IoActive = 0x100, Busy = 0x200, Printing = 0x400, NotAvailable = 0x1000,
+        Waiting = 0x2000, Processing = 0x4000,
+    }
+
+    /// What a job or printer control does (JOB_CONTROL_*, PRINTER_CONTROL_*).
+    public enum SpoolControl : long { Pause = 1, Resume = 2, Cancel = 3, Restart = 4, Purge = 3 }
+
+    /// What a SpoolEvent says changed.
+    public enum SpoolEventKind : long { JobAdded = 1, JobChanged = 2, JobGone = 3, PrinterChanged = 4, PrinterAdded = 5, PrinterGone = 6 }
+
+    /// A printer's flags in its record.
+    public enum SpoolPrinterFlag : long { Default = 1, Colour = 2 }
+
+    /// A printer, as the spooler describes it: its name, its driver
+    /// ("postscript", "pcl", "pdf"), its port ("file:/path", "lpt:/dev/lp0",
+    /// "socket:10.0.0.5:9100", "lpr:10.0.0.5/queue"), a comment and a
+    /// location, the dots an inch it prints at, its paper in hundredths of an
+    /// inch, its flags, its status and how many jobs it has.
+    public class PrinterRecord
+    {
+        public string Name = "", Driver = "", Port = "", Comment = "", Location = "";
+        public long Dpi = 150, PaperWidth = 850, PaperHeight = 1100, Flags, Status, Jobs;
+
+        public bool IsDefault { get { return (Flags & (long)SpoolPrinterFlag.Default) != 0; } }
+        public bool Colour { get { return (Flags & (long)SpoolPrinterFlag.Colour) != 0; } }
+
+        /// The page in pixels, as the spooler sizes a PAGES job's.
+        public int PixelWidth { get { return (int)(PaperWidth * Dpi / 100); } }
+        public int PixelHeight { get { return (int)(PaperHeight * Dpi / 100); } }
+
+        public void Write(WireWriter w)
+        {
+            w.Text(Name); w.Text(Driver); w.Text(Port); w.Text(Comment); w.Text(Location);
+            w.Int(Dpi); w.Int(PaperWidth); w.Int(PaperHeight); w.Int(Flags); w.Int(Status); w.Int(Jobs);
+        }
+
+        public static PrinterRecord Read(WireReader r)
+        {
+            PrinterRecord p = new PrinterRecord();
+            p.Name = r.Text(); p.Driver = r.Text(); p.Port = r.Text(); p.Comment = r.Text(); p.Location = r.Text();
+            p.Dpi = r.Int(); p.PaperWidth = r.Int(); p.PaperHeight = r.Int(); p.Flags = r.Int(); p.Status = r.Int(); p.Jobs = r.Int();
+            return p;
+        }
+    }
+
+    /// A job, as the spooler describes it.
+    public class JobRecord
+    {
+        public long Id;
+        public string Printer = "", Document = "", User = "", Datatype = "";
+        /// SpoolJobStatus bits; pages printed and in all; bytes in all and
+        /// printed; its place in its printer's queue (1 the first); when it
+        /// was submitted, milliseconds since 1970.
+        public long Status, PagesPrinted, Pages, Size, BytesPrinted, Position, Submitted;
+
+        public void Write(WireWriter w)
+        {
+            w.Int(Id); w.Text(Printer); w.Text(Document); w.Text(User); w.Text(Datatype);
+            w.Int(Status); w.Int(PagesPrinted); w.Int(Pages); w.Int(Size); w.Int(BytesPrinted); w.Int(Position); w.Quad(Submitted);
+        }
+
+        public static JobRecord Read(WireReader r)
+        {
+            JobRecord j = new JobRecord();
+            j.Id = r.Int(); j.Printer = r.Text(); j.Document = r.Text(); j.User = r.Text(); j.Datatype = r.Text();
+            j.Status = r.Int(); j.PagesPrinted = r.Int(); j.Pages = r.Int(); j.Size = r.Int(); j.BytesPrinted = r.Int(); j.Position = r.Int(); j.Submitted = r.Quad();
+            return j;
+        }
+    }
+
+    /// The spooler refused, with Windows' error for it.
+    public class SpoolerException : IOException
+    {
+        public long Error;
+        public SpoolerException(string what, long error) : base(what + " (error " + error + ")") { Error = error; }
+    }
+
+    /// THE SPOOLER'S CALLS: printers, jobs and their queues. Every call is
+    /// one request; a refusal throws a SpoolerException.
+    public static class PrintSpooler
+    {
+        static WireReader Ask(ServiceRequest op, WireWriter fields, string what)
+        {
+            long error;
+            WireReader? r = WireClient.Ask(op, fields, out error);
+            if (r == null || error != 0) throw new SpoolerException(what, error);
+            return r;
+        }
+
+        static void Do(ServiceRequest op, WireWriter fields, string what) { Ask(op, fields, what); }
+
+        /// Every printer, the default one marked.
+        public static List<PrinterRecord> Printers()
+        {
+            List<PrinterRecord> all = new List<PrinterRecord>();
+            long error;
+            WireReader? r = WireClient.Ask(ServiceRequest.SpoolPrinters, new WireWriter(), out error);
+            if (r == null || error != 0) return all;
+            long n = r.Int();
+            for (long i = 0; i < n && !r.Short; i++) all.Add(PrinterRecord.Read(r));
+            return all;
+        }
+
+        /// The printer of that name ("" the default), or null.
+        public static PrinterRecord? Printer(string name)
+        {
+            WireWriter w = new WireWriter();
+            w.Text(name);
+            long error;
+            WireReader? r = WireClient.Ask(ServiceRequest.SpoolPrinter, w, out error);
+            if (r == null || error != 0) return null;
+            return PrinterRecord.Read(r);
+        }
+
+        /// A job begun: "RAW" for bytes written (Write), "PAGES" for pages
+        /// the seat hands in (Corsac.GUI's Seat.CreatePage). Its id.
+        public static long StartDoc(string printer, string document, string datatype, string outputFile, int copies)
+        {
+            WireWriter w = new WireWriter();
+            w.Text(printer); w.Text(document); w.Text(datatype); w.Text(outputFile); w.Int(copies);
+            return Ask(ServiceRequest.SpoolStartDoc, w, "the spooler began no job").Int();
+        }
+
+        /// A RAW job's bytes, as the printer takes them, in pieces the wire
+        /// carries.
+        public static void Write(long job, byte[] data, int offset, int count)
+        {
+            while (count > 0)
+            {
+                int piece = Math.Min(count, 60 * 1024);
+                byte[] part = new byte[piece];
+                Array.Copy(data, offset, part, 0, piece);
+                WireWriter w = new WireWriter();
+                w.Int(job); w.Bytes(part);
+                Ask(ServiceRequest.SpoolWrite, w, "the spooler took no data");
+                offset += piece; count -= piece;
+            }
+        }
+
+        static WireWriter JobFields(long job) { WireWriter w = new WireWriter(); w.Int(job); return w; }
+
+        public static void StartPage(long job) { Do(ServiceRequest.SpoolStartPage, JobFields(job), "no page begun"); }
+        public static void EndPage(long job) { Do(ServiceRequest.SpoolEndPage, JobFields(job), "no page ended"); }
+        public static void EndDoc(long job) { Do(ServiceRequest.SpoolEndDoc, JobFields(job), "the job was not ended"); }
+        public static void AbortDoc(long job) { Do(ServiceRequest.SpoolAbortDoc, JobFields(job), "the job was not cancelled"); }
+
+        /// A printer's jobs ("" every printer's), in queue order.
+        public static List<JobRecord> Jobs(string printer)
+        {
+            WireWriter w = new WireWriter();
+            w.Text(printer);
+            WireReader r = Ask(ServiceRequest.SpoolJobs, w, "no jobs");
+            List<JobRecord> all = new List<JobRecord>();
+            long n = r.Int();
+            for (long i = 0; i < n && !r.Short; i++) all.Add(JobRecord.Read(r));
+            return all;
+        }
+
+        /// One job, or null when it is gone.
+        public static JobRecord? Job(long job)
+        {
+            long error;
+            WireReader? r = WireClient.Ask(ServiceRequest.SpoolJob, JobFields(job), out error);
+            if (r == null || error != 0) return null;
+            return JobRecord.Read(r);
+        }
+
+        /// Pause, resume, cancel or restart a job (the user's own, or any for
+        /// the system).
+        public static void ControlJob(long job, SpoolControl control)
+        {
+            WireWriter w = JobFields(job);
+            w.Int((long)control);
+            Do(ServiceRequest.SpoolJobControl, w, "the job was not changed");
+        }
+
+        /// Pause, resume or purge a printer (the system only).
+        public static void ControlPrinter(string printer, SpoolControl control)
+        {
+            WireWriter w = new WireWriter();
+            w.Text(printer); w.Int((long)control);
+            Do(ServiceRequest.SpoolPrinterControl, w, "the printer was not changed");
+        }
+
+        /// A printer made or changed in the machine's registry (the system
+        /// only); IsDefault makes it the default.
+        public static void SetPrinter(PrinterRecord printer)
+        {
+            WireWriter w = new WireWriter();
+            printer.Write(w);
+            Do(ServiceRequest.SpoolSetPrinter, w, "the printer was not set");
+        }
+
+        public static void DeletePrinter(string name)
+        {
+            WireWriter w = new WireWriter();
+            w.Text(name);
+            Do(ServiceRequest.SpoolDeletePrinter, w, "the printer was not deleted");
+        }
+    }
+
+    /// One change the spooler told: what, the printer, the job (0 for the
+    /// printer's own) and its status bits.
+    public class SpoolEventArgs : EventArgs
+    {
+        public SpoolEventKind Kind;
+        public string Printer = "";
+        public long Job, Status;
+    }
+
+    /// A printer's queue watched ("" every printer's): Changed is raised on a
+    /// thread of its own at every change, until Dispose -- which waits for
+    /// that thread, so is never called from Changed itself.
+    public class SpoolWatcher : IDisposable
+    {
+        int _fd = -1;
+        Thread? _reader;
+        bool _stopping;
+
+        public event EventHandler<SpoolEventArgs>? Changed;
+
+        public SpoolWatcher(string printer)
+        {
+            int fd = WireClient.Connect();
+            if (fd < 0) throw new SpoolerException("no spooler to watch", WireError.Unavailable);
+            WireWriter w = new WireWriter();
+            w.Text(printer);
+            byte[]? answer = WireClient.Send(fd, WireClient.Message(ServiceRequest.SpoolWatch, w)) ? WireClient.Receive(fd) : null;
+            long error = answer == null || answer.Length < 4 ? WireError.Unavailable : new WireReader(answer, answer.Length).Int();
+            if (error != 0) { Os.Close(fd); throw new SpoolerException("the spooler would not be watched", error); }
+            _fd = fd;
+            _reader = new Thread(ReadLoop);
+            _reader.IsBackground = true;
+            _reader.Start();
+        }
+
+        void ReadLoop()
+        {
+            while (!_stopping)
+            {
+                byte[]? m = WireClient.Receive(_fd);
+                if (m == null) return;
+                WireReader r = new WireReader(m, m.Length);
+                if (r.Int() != (long)ServiceRequest.SpoolEvent) continue;
+                SpoolEventArgs e = new SpoolEventArgs();
+                e.Kind = (SpoolEventKind)r.Int(); e.Printer = r.Text(); e.Job = r.Int(); e.Status = r.Int();
+                if (r.Short) continue;
+                EventHandler<SpoolEventArgs>? h = Changed;
+                if (h != null) h(this, e);
+            }
+        }
+
+        public void Dispose()
+        {
+            if (_fd < 0) return;
+            _stopping = true;
+            Os.Shutdown(_fd, 2);
+            Thread? reader = _reader;
+            if (reader != null) reader.Join();
+            Os.Close(_fd);
+            _fd = -1;
+            _reader = null;
+        }
+    }
+}

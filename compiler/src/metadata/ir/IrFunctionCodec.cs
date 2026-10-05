@@ -19,8 +19,10 @@ public static class IrFunctionCodec
     /// 7: and the field a load or a store names (Instr.Family), after the
     /// marks when FamilyMark says there is one: so the link can summarise a
     /// unit's archived IR again with the fields kept apart.
+    /// 8: and the bytes a stdcall function pops (CalleePops), and an async
+    /// frame's MayMove and StackSymbol.
     /// </summary>
-    private const int Version = 7;
+    private const int Version = 8;
 
     // An instruction's marks (Instr): one byte.
     private const byte NumberMark = 1, RegionSiteMark = 2, FamilyMark = 4;
@@ -32,7 +34,7 @@ public static class IrFunctionCodec
         void Text(string? value) { if (value is not null) bytes = checked(bytes + 32 + 3L * IrBinary.Utf8.GetByteCount(value)); }
         Text(function.Name); Text(function.SourceFile); Text(function.Display);
         // A lowered async body's record (Write): its size symbol and the frame.
-        if (function.Async is AsyncFrame frame) { bytes = checked(bytes + 128); Text(frame.SizeSymbol); }
+        if (function.Async is AsyncFrame frame) { bytes = checked(bytes + 128); Text(frame.SizeSymbol); Text(frame.StackSymbol); }
         foreach (Instr instruction in function.Blocks.SelectMany(block => block.Instrs))
         {
             bytes = checked(bytes + 256 + 64L * instruction.Operands.Count + 16L * instruction.Targets.Count);
@@ -64,6 +66,7 @@ public static class IrFunctionCodec
         writer.Write(Version); IrBinary.Text(writer, function.Name); writer.Write((byte)function.Returns);
         writer.Write(function.Exported); writer.Write(function.Coalescible); writer.Write(function.FromLibrary);
         writer.Write(function.NoInlining);
+        writer.Write(function.CalleePops);
         IrBinary.Text(writer, function.SourceFile); writer.Write(function.Line); IrBinary.Text(writer, function.Display);
         Dictionary<int, IrType> registers = new();
         void Remember(VReg? register)
@@ -93,6 +96,10 @@ public static class IrFunctionCodec
             writer.Write(frame.Lowered);
             writer.Write(frame.SuspendResult is ImmOperand);
             if (frame.SuspendResult is ImmOperand result) { writer.Write(result.Value); writer.Write((byte)result.Type); }
+            // Version 7: an `async ValueTask` machine that may move, and the
+            // word its kickoff reads (AsyncFrame.MayMove).
+            writer.Write(frame.MayMove);
+            IrBinary.Text(writer, frame.StackSymbol);
         }
         writer.Write(function.Slots.Count);
         foreach (FrameSlot slot in function.Slots) { writer.Write(slot.Bytes); writer.Write(slot.Align); }
@@ -158,7 +165,7 @@ public static class IrFunctionCodec
             Function function = new(IrBinary.Name(reader, budget), IrBinary.Type(reader))
             {
                 Exported = IrBinary.Flag(reader), Coalescible = IrBinary.Flag(reader), FromLibrary = IrBinary.Flag(reader),
-                NoInlining = IrBinary.Flag(reader),
+                NoInlining = IrBinary.Flag(reader), CalleePops = reader.ReadInt32(),
                 SourceFile = IrBinary.Text(reader, budget), Line = reader.ReadInt32(), Display = IrBinary.Text(reader, budget),
             };
             int count = IrBinary.Count(reader);
@@ -180,12 +187,19 @@ public static class IrFunctionCodec
                 budget.Charge(1, 128, "async frame");
                 VReg machine = At(registers, reader.ReadInt32());
                 int stateOffset = reader.ReadInt32(), fieldsStart = reader.ReadInt32();
+                string sizeSymbol = IrBinary.Text(reader, budget) ?? throw new InvalidDataException("Async frame without a size symbol");
+                bool lowered = IrBinary.Flag(reader);
+                ImmOperand? suspendResult = IrBinary.Flag(reader) ? new ImmOperand(reader.ReadInt64(), (IrType)reader.ReadByte()) : null;
+                bool mayMove = IrBinary.Flag(reader);
+                string? stackSymbol = IrBinary.Text(reader, budget);
                 function.Async = new AsyncFrame
                 {
                     StateMachine = machine, StateOffset = stateOffset, FieldsStart = fieldsStart,
-                    SizeSymbol = IrBinary.Text(reader, budget) ?? throw new InvalidDataException("Async frame without a size symbol"),
-                    Lowered = IrBinary.Flag(reader),
-                    SuspendResult = IrBinary.Flag(reader) ? new ImmOperand(reader.ReadInt64(), (IrType)reader.ReadByte()) : null,
+                    SizeSymbol = sizeSymbol,
+                    Lowered = lowered,
+                    SuspendResult = suspendResult,
+                    MayMove = mayMove,
+                    StackSymbol = stackSymbol is { Length: > 0 } ? stackSymbol : null,
                 };
             }
             int slotCount = IrBinary.Count(reader);

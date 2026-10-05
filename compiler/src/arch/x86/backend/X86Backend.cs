@@ -95,6 +95,11 @@ public sealed class X86Backend : IBackend
     public const string BarrierStub = "__corsac_barrier", BarrierRoutine = Corsac.Lang.Lto.RuntimeAbi.WriteBarrier;
     public const string StackMapEnd = "__corsac_stackmaps_end";
 
+    /// <summary>The store sequences' stubs and the range they lie in (RuntimeAbi.RefStore; CardMarks.FuseStores).</summary>
+    public const string RefStoreStub = Corsac.Lang.Lto.RuntimeAbi.RefStore, CardStoreStub = Corsac.Lang.Lto.RuntimeAbi.CardStore;
+    public const string RefExchangeStub = Corsac.Lang.Lto.RuntimeAbi.RefExchange, RefCompareExchangeStub = Corsac.Lang.Lto.RuntimeAbi.RefCompareExchange;
+    public const string MarkingFlag = "s_Runtime_Marking";
+
     /// <summary>Code bytes per function from the last Generate, in module order.</summary>
     public List<(string Name, int Bytes)> FunctionSizes { get; } = new();
 
@@ -469,6 +474,89 @@ public sealed class X86Backend : IBackend
             });
             obj.Symbols.Add(new Symbol { Name = BarrierStub, Section = text, Offset = at, Size = text.Bytes.Count - at, IsFunction = true, Global = false });
             defined.Add(BarrierStub);
+        }
+
+        // THE STORE SEQUENCES (MachineIntrinsics.RefStore, CardStore,
+        // RefExchange, RefCompareExchange), in the object that defines the
+        // runtime's barrier, when its units' stores are made through them:
+        // the image's one copy, global, which its other units and its modules
+        // call, laid out together between two symbols its kernel reads
+        // (CORSAC's ring-1 header). A thread of a ring-1 kernel is sent to its
+        // collector's handshake at whatever instruction a trap finds it on
+        // (Ring1Kernel.SendToAnswer), and ring 0 sends none whose EIP lies in
+        // here: between the Marking test and the store a thread so sent would
+        // answer the snapshot and then store over a reference nobody
+        // reported, and between the store and the card leave the card unset
+        // for a minor cycle. Each runs to its RET first. Inside the report's
+        // call to Runtime.WriteBarrier a thread may be sent: it has seen
+        // Marking set by then, and reports whatever round it answers.
+        if (!PositionIndependent && module.RuntimeHelpers.Contains(RefStoreStub)
+            && module.Functions.Any(f => f.Name == BarrierRoutine))
+        {
+            int gap = (FunctionAlign - text.Bytes.Count % FunctionAlign) % FunctionAlign;
+            Encoder.Nops(text.Bytes, gap);
+            int start = text.Bytes.Count;
+            void Bytes(params byte[] bytes) => text.Bytes.AddRange(bytes);
+            void Address(string symbol, RelocKind kind, int addend)
+            {
+                text.Relocs.Add(new Relocation(text.Bytes.Count, symbol, addend, kind));
+                text.Bytes.AddRange(new byte[4]);
+            }
+            // The test and the report: Runtime.WriteBarrier(slot, value) when
+            // a mark is under way, every register kept around it. The slot is
+            // in EAX (0x50, push eax) or ECX (0x51, push ecx); the value in EDX.
+            void Barrier(byte pushSlot)
+            {
+                Bytes(0x83, 0x3D); Address(MarkingFlag, RelocKind.Abs32, 0); Bytes(0x00);  // cmp dword [Marking], 0
+                Bytes(0x74, 0x10);                                                         // je past the report
+                Bytes(0x51, 0x52, 0x50, 0x52, pushSlot, 0xE8);                             // push ecx; push edx; push eax; push value; push slot; call
+                Address(BarrierRoutine, RelocKind.Rel32, -4);
+                Bytes(0x83, 0xC4, 0x08, 0x58, 0x5A, 0x59);                                 // add esp, 8; pop eax; pop edx; pop ecx
+            }
+            // The card of the slot in EAX, every register kept, and RET.
+            void CardOfEax()
+            {
+                Bytes(0x51, 0x8B, 0x0D); Address(CardTable, RelocKind.Abs32, 0);           // push ecx; mov ecx, [Cards]
+                Bytes(0x85, 0xC9, 0x74, 0x09,                                              // test ecx, ecx; jz done
+                      0x50, 0xC1, 0xE8, 0x0A, 0xC6, 0x04, 0x01, 0x01, 0x58,                // push eax; shr eax, 10; mov byte [ecx+eax], 1; pop eax
+                      0x59, 0xC3);                                                         // done: pop ecx; ret
+            }
+            // __corsac_refstore: slot EAX, value EDX; every register kept.
+            Barrier(0x50);
+            Bytes(0x89, 0x10);                                                             // mov [eax], edx
+            CardOfEax();
+            // __corsac_cardstore: the same from the store on, for a store
+            // that overwrites nothing (a new block's, Lowering.StoreNew).
+            int cardStore = text.Bytes.Count;
+            Bytes(0x89, 0x10);                                                             // mov [eax], edx
+            CardOfEax();
+            // __corsac_refxchg: slot EAX, value EDX; the old reference in EAX,
+            // every other register kept.
+            int exchange = text.Bytes.Count;
+            Barrier(0x50);
+            Bytes(0x51, 0x89, 0xC1, 0x89, 0xD0, 0x87, 0x01);                               // push ecx; mov ecx, eax; mov eax, edx; xchg [ecx], eax
+            Bytes(0x52, 0x8B, 0x15); Address(CardTable, RelocKind.Abs32, 0);               // push edx; mov edx, [Cards]
+            Bytes(0x85, 0xD2, 0x74, 0x09,                                                  // test edx, edx; jz done
+                  0x51, 0xC1, 0xE9, 0x0A, 0xC6, 0x04, 0x0A, 0x01, 0x59,                    // push ecx; shr ecx, 10; mov byte [edx+ecx], 1; pop ecx
+                  0x5A, 0x59, 0xC3);                                                       // done: pop edx; pop ecx; ret
+            // __corsac_refcas: slot ECX, value EDX, expected EAX; what the
+            // slot held in EAX, every other register kept.
+            int compareExchange = text.Bytes.Count;
+            Barrier(0x51);
+            Bytes(0xF0, 0x0F, 0xB1, 0x11);                                                 // lock cmpxchg [ecx], edx
+            Bytes(0x52, 0x8B, 0x15); Address(CardTable, RelocKind.Abs32, 0);               // push edx; mov edx, [Cards]
+            Bytes(0x85, 0xD2, 0x74, 0x09,                                                  // test edx, edx; jz done
+                  0x51, 0xC1, 0xE9, 0x0A, 0xC6, 0x04, 0x0A, 0x01, 0x59,                    // push ecx; shr ecx, 10; mov byte [edx+ecx], 1; pop ecx
+                  0x5A, 0xC3);                                                             // done: pop edx; ret
+            int end = text.Bytes.Count;
+            obj.Symbols.Add(new Symbol { Name = Corsac.Lang.Lto.RuntimeAbi.SequencesStart, Section = text, Offset = start, Size = end - start, Global = true });
+            obj.Symbols.Add(new Symbol { Name = RefStoreStub, Section = text, Offset = start, Size = cardStore - start, IsFunction = true, Global = true });
+            obj.Symbols.Add(new Symbol { Name = CardStoreStub, Section = text, Offset = cardStore, Size = exchange - cardStore, IsFunction = true, Global = true });
+            obj.Symbols.Add(new Symbol { Name = RefExchangeStub, Section = text, Offset = exchange, Size = compareExchange - exchange, IsFunction = true, Global = true });
+            obj.Symbols.Add(new Symbol { Name = RefCompareExchangeStub, Section = text, Offset = compareExchange, Size = end - compareExchange, IsFunction = true, Global = true });
+            obj.Symbols.Add(new Symbol { Name = Corsac.Lang.Lto.RuntimeAbi.SequencesEnd, Section = text, Offset = end, Size = 0, Global = true });
+            foreach (string stub in new[] { Corsac.Lang.Lto.RuntimeAbi.SequencesStart, RefStoreStub, CardStoreStub, RefExchangeStub, RefCompareExchangeStub, Corsac.Lang.Lto.RuntimeAbi.SequencesEnd })
+                defined.Add(stub);
         }
 
         if (StackMaps)

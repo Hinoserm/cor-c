@@ -1,0 +1,33 @@
+// test: allocation in an IIrqHandler refused
+// expect-compile-error: is an interrupt handler and must not allocate: here it makes an array
+// IIrqHandler.OnIrq is a handler without being marked: its implementations
+// are refused an allocation as a marked method is.
+
+using System;
+
+interface IIrqHandler
+{
+    void OnIrq(long n);
+}
+
+class Disc : IIrqHandler
+{
+    public long Last;
+
+    public void OnIrq(long n)
+    {
+        byte[] status = new byte[16];
+        Last = n + status.Length;
+    }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Disc d = new Disc();
+        d.OnIrq(14);
+        Console.WriteLine(d.Last);
+        return 0;
+    }
+}

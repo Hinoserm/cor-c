@@ -17,6 +17,10 @@
 // so a scalable face needs nothing from the seat that a filled rectangle
 // does not already have.
 
+using System;
+using System.Collections.Generic;
+using System.Drawing.Drawing2D;
+
 namespace System.Drawing;
 
 public struct Color
@@ -53,55 +57,115 @@ public struct Color
 }
 
 /// The colours a Windows desktop is made of. Same names, same defaults.
+/// <summary>
+/// WHERE THE SYSTEM'S COLOURS, METRICS AND FONTS COME FROM: the GUI kernel's
+/// theme, through the program's seat. System.Drawing cannot reach the seat
+/// itself -- the seat is the GUI library's (Corsac.GUI.Seat, which names this
+/// as its source when it opens) -- so it asks through this, and answers the
+/// classic look's own values when there is no seat to ask.
+/// </summary>
+public interface ISystemTheme
+{
+    /// The colours as 0x00RRGGBB by Windows' COLOR_ number; null on failure.
+    int[]? SystemColourTable();
+    /// A non-client font: its face, its height in pixels (negative: the em),
+    /// its weight and its style bits (1 italic, 2 underline, 4 strikeout);
+    /// false on failure.
+    bool SystemFont(int kind, out string face, out int height, out int weight, out int flags);
+}
+
+/// <summary>
+/// The theme as System.Drawing reads it: asked of the seat once and kept
+/// until the theme changes (the seat's ThemeChanged, which the GUI library
+/// passes on with Changed), as .NET's SystemColors follow WM_SYSCOLORCHANGE.
+/// </summary>
+public static class SystemTheme
+{
+    static ISystemTheme? _source;
+    static int[]? _colours;
+    static readonly object _gate = new object();
+
+    /// The seat the theme is read through; set by the GUI library.
+    public static ISystemTheme? Source { get { return _source; } set { lock (_gate) { _source = value; _colours = null; } SystemFonts.Forget(); } }
+
+    /// The theme changed: everything asked again at the next read.
+    public static void Changed()
+    {
+        lock (_gate) { _colours = null; }
+        SystemFonts.Forget();
+    }
+
+    /// A system colour by its COLOR_ number: the theme's, or the classic
+    /// look's when there is no seat.
+    internal static Color Colour(int index, Color classic)
+    {
+        int[]? table;
+        lock (_gate)
+        {
+            if (_colours == null && _source != null) _colours = _source.SystemColourTable();
+            table = _colours;
+        }
+        if (table == null || index < 0 || index >= table.Length) return classic;
+        int rgb = table[index];
+        return Color.FromArgb((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
+    }
+
+    internal static bool Font(int kind, out string face, out int height, out int weight, out int flags)
+    {
+        face = ""; height = 0; weight = 0; flags = 0;
+        ISystemTheme? source = _source;
+        return source != null && source.SystemFont(kind, out face, out height, out weight, out flags);
+    }
+}
+
 public static class SystemColors
 {
-    // THE WINDOWS 98 THREE-DIMENSIONAL SCHEME, to the byte. These are not
-    // approximations of it: #C0C0C0 face, #DFDFDF light, #808080 shadow,
-    // #FFFFFF highlight and black dark-shadow are the five values every
-    // bevel in the system is built from, and a control drawn with anything
-    // else reads as belonging to a different machine. The caption's two
-    // blues and the teal desktop are the defaults of the era.
-    public static Color Control { get { return Color.FromArgb(192, 192, 192); } }
-    public static Color ControlText { get { return Color.Black; } }
-    public static Color ControlLight { get { return Color.FromArgb(223, 223, 223); } }
-    public static Color ControlLightLight { get { return Color.White; } }
-    public static Color ControlDark { get { return Color.FromArgb(128, 128, 128); } }
-    public static Color ControlDarkDark { get { return Color.Black; } }
+    // THE GUI KERNEL'S THEME (os/gui/theme.cor), by Windows' COLOR_ numbers,
+    // as .NET's SystemColors read GetSysColor: each the theme's colour now,
+    // following its changes. Where there is no seat to ask, the classic
+    // look's own: Windows 2000's "Windows Standard" scheme, the theme's
+    // defaults -- #D4D0C8 face, #808080 shadow, #FFFFFF highlight, #404040
+    // dark shadow, the navy caption fading to #A6CAF0, the blue desktop.
+    static Color C(int index, int r, int g, int b) { return SystemTheme.Colour(index, Color.FromArgb(r, g, b)); }
 
-    /// .NET's names for the same five, which is what most code reaches for.
+    public static Color ScrollBar { get { return C(0, 212, 208, 200); } }
+    public static Color Desktop { get { return C(1, 58, 110, 165); } }
+    public static Color ActiveCaption { get { return C(2, 10, 36, 106); } }
+    public static Color InactiveCaption { get { return C(3, 128, 128, 128); } }
+    public static Color Menu { get { return C(4, 212, 208, 200); } }
+    public static Color Window { get { return C(5, 255, 255, 255); } }
+    public static Color WindowFrame { get { return C(6, 0, 0, 0); } }
+    public static Color MenuText { get { return C(7, 0, 0, 0); } }
+    public static Color WindowText { get { return C(8, 0, 0, 0); } }
+    public static Color ActiveCaptionText { get { return C(9, 255, 255, 255); } }
+    public static Color ActiveBorder { get { return C(10, 212, 208, 200); } }
+    public static Color InactiveBorder { get { return C(11, 212, 208, 200); } }
+    public static Color AppWorkspace { get { return C(12, 128, 128, 128); } }
+    public static Color Highlight { get { return C(13, 10, 36, 106); } }
+    public static Color HighlightText { get { return C(14, 255, 255, 255); } }
+    public static Color Control { get { return C(15, 212, 208, 200); } }
+    public static Color ControlDark { get { return C(16, 128, 128, 128); } }
+    public static Color GrayText { get { return C(17, 128, 128, 128); } }
+    public static Color ControlText { get { return C(18, 0, 0, 0); } }
+    public static Color InactiveCaptionText { get { return C(19, 212, 208, 200); } }
+    public static Color ControlLightLight { get { return C(20, 255, 255, 255); } }
+    public static Color ControlDarkDark { get { return C(21, 64, 64, 64); } }
+    public static Color ControlLight { get { return C(22, 212, 208, 200); } }
+    public static Color InfoText { get { return C(23, 0, 0, 0); } }
+    public static Color Info { get { return C(24, 255, 255, 225); } }
+    public static Color HotTrack { get { return C(26, 0, 0, 128); } }
+    public static Color GradientActiveCaption { get { return C(27, 166, 202, 240); } }
+    public static Color GradientInactiveCaption { get { return C(28, 192, 192, 192); } }
+
+    /// .NET's names for the same, which is what most code reaches for.
     public static Color ButtonFace { get { return Control; } }
     public static Color ButtonHighlight { get { return ControlLightLight; } }
     public static Color ButtonShadow { get { return ControlDark; } }
 
-    public static Color Window { get { return Color.White; } }
-    public static Color WindowText { get { return Color.Black; } }
-    public static Color WindowFrame { get { return Color.Black; } }
-    public static Color Desktop { get { return Color.FromArgb(0, 128, 128); } }
-    public static Color AppWorkspace { get { return Color.FromArgb(128, 128, 128); } }
-
-    public static Color ActiveCaption { get { return Color.FromArgb(0, 0, 128); } }
-    public static Color GradientActiveCaption { get { return Color.FromArgb(16, 132, 208); } }
-    public static Color ActiveCaptionText { get { return Color.White; } }
-    public static Color InactiveCaption { get { return Color.FromArgb(128, 128, 128); } }
-    public static Color GradientInactiveCaption { get { return Color.FromArgb(181, 181, 181); } }
-    public static Color InactiveCaptionText { get { return Color.FromArgb(192, 192, 192); } }
-    public static Color ActiveBorder { get { return Control; } }
-    public static Color InactiveBorder { get { return Control; } }
-
-    public static Color Highlight { get { return Color.FromArgb(0, 0, 128); } }
-    public static Color HighlightText { get { return Color.White; } }
-    public static Color HotTrack { get { return Color.FromArgb(0, 0, 255); } }
-    public static Color GrayText { get { return Color.FromArgb(128, 128, 128); } }
-    public static Color ScrollBar { get { return Color.FromArgb(192, 192, 192); } }
-
-    public static Color Menu { get { return Control; } }
-    public static Color MenuText { get { return Color.Black; } }
-    public static Color MenuBar { get { return Control; } }
+    /// XP's flat-menu colours, which Windows 2000 has not got: the menu's
+    /// own and the highlight, as .NET answers them there.
+    public static Color MenuBar { get { return Menu; } }
     public static Color MenuHighlight { get { return Highlight; } }
-
-    /// The tooltip's pale yellow, which Windows calls the info colours.
-    public static Color Info { get { return Color.FromArgb(255, 255, 225); } }
-    public static Color InfoText { get { return Color.Black; } }
 }
 
 public static class ColorBlend
@@ -191,6 +255,79 @@ public class Pen : IDisposable
     public float Width;
     public Pen(Color color) { Color = color; Width = 1; }
     public Pen(Color color, float width) { Color = color; Width = width; }
+    public Pen(Brush brush) : this(brush, 1) { }
+    public Pen(Brush brush, float width) { SolidBrush? solid = brush as SolidBrush; Color = solid != null ? solid.Color : Color.Black; Width = width; }
+
+    /// What the line is drawn with: a solid brush of the pen's colour.
+    public Brush Brush
+    {
+        get { return new SolidBrush(Color); }
+        set { SolidBrush? solid = value as SolidBrush; if (solid != null) Color = solid.Color; }
+    }
+
+    // THE STROKE (System.Drawing.Drawing2D), as .NET's Pen has it: the
+    // GUI kernel's engine widens the line with these (Graphics.DrawPath).
+    public DashStyle DashStyle = DashStyle.Solid;
+    public float DashOffset;
+    public DashCap DashCap = DashCap.Flat;
+    public LineCap StartCap = LineCap.Flat;
+    public LineCap EndCap = LineCap.Flat;
+    public LineJoin LineJoin = LineJoin.Miter;
+    public float MiterLimit = 10f;
+    public PenAlignment Alignment = PenAlignment.Center;
+    float[]? _dashPattern;
+
+    /// Dash and gap lengths in pen widths; setting one makes the style
+    /// Custom.
+    public float[] DashPattern
+    {
+        get
+        {
+            if (_dashPattern != null) return (float[])_dashPattern.Clone();
+            float[]? standard = StandardDashes(DashStyle);
+            return standard != null ? standard : new float[] { 1 };
+        }
+        set
+        {
+            if (value == null || value.Length == 0) throw new ArgumentException("A dash pattern needs at least one length.");
+            _dashPattern = (float[])value.Clone();
+            DashStyle = DashStyle.Custom;
+        }
+    }
+
+    public void SetLineCap(LineCap startCap, LineCap endCap, DashCap dashCap) { StartCap = startCap; EndCap = endCap; DashCap = dashCap; }
+
+    public Pen Clone()
+    {
+        Pen p = new Pen(Color, Width);
+        p.DashStyle = DashStyle; p.DashOffset = DashOffset; p.DashCap = DashCap; p.StartCap = StartCap; p.EndCap = EndCap;
+        p.LineJoin = LineJoin; p.MiterLimit = MiterLimit; p.Alignment = Alignment;
+        if (_dashPattern != null) p._dashPattern = (float[])_dashPattern.Clone();
+        return p;
+    }
+
+    /// GDI+'s patterns for the named styles, in pen widths.
+    internal static float[]? StandardDashes(DashStyle style)
+    {
+        if (style == DashStyle.Dash) return new float[] { 3, 1 };
+        if (style == DashStyle.Dot) return new float[] { 1, 1 };
+        if (style == DashStyle.DashDot) return new float[] { 3, 1, 1, 1 };
+        if (style == DashStyle.DashDotDot) return new float[] { 3, 1, 1, 1, 1, 1 };
+        return null;
+    }
+
+    /// The pattern the line is cut with, or null for a solid one.
+    internal float[]? Dashes()
+    {
+        if (DashStyle == DashStyle.Solid) return null;
+        if (DashStyle == DashStyle.Custom) return _dashPattern;
+        return StandardDashes(DashStyle);
+    }
+
+    /// Whether this pen draws as the seat's one-pixel Line and Fill: a
+    /// pixel wide or less, solid, opaque.
+    internal bool Simple { get { return Width <= 1 && DashStyle == DashStyle.Solid && Color.A == 255; } }
+
     public void Dispose() { }
 }
 
@@ -249,9 +386,10 @@ public class Font : IDisposable
     {
         // A NAME NOBODY KNOWS IS NOT AN ERROR HERE: GDI+ itself falls
         // back to a generic face rather than fail a program over a font
-        // that turned out not to be installed, and that is worth keeping
-        // even though our fallback is one face rather than a choice.
-        FontFamily? found = FontFamily.Find(name);
+        // that turned out not to be installed -- here the face the font
+        // store gives for sans-serif, and the bitmap system font only on a
+        // machine with no scalable face at all.
+        FontFamily? found = FontFamily.Find(name) ?? Installed.Generic("sans-serif");
         FontFamily = found ?? FontFamily.SystemFamily;
         Name = FontFamily.Name;
         Size = size;
@@ -326,9 +464,10 @@ public class Font : IDisposable
             if (Rune.TryGetRuneAt(text, i, out rune)) { taken = rune.Utf16SequenceLength; } else { taken = 1; rune = new Rune('?'); }
             i += taken;
 
-            int glyph = scaled.Face.GlyphIndex(rune.Value);
-            width += scaled.Kern(previous, glyph) + scaled.Advance(glyph) + extra;
-            previous = glyph;
+            int glyph;
+            SizedFace from = FontFallback.FaceFor(scaled, rune.Value, out glyph);
+            width += (from == scaled ? scaled.Kern(previous, glyph) : 0) + from.Advance(glyph) + extra;
+            previous = from == scaled ? glyph : -1;
         }
         return width;
     }
@@ -373,7 +512,7 @@ public static class SystemFonts
     /// points came to on the screens of the era.
     public const int DefaultSize = 11;
 
-    static Font? _default, _caption;
+    static Font? _default;
 
     /// <summary>
     /// The interface font: the installed sans where there is one, the
@@ -389,20 +528,45 @@ public static class SystemFonts
         }
     }
 
-    public static Font MessageBoxFont { get { return DefaultFont; } }
-    public static Font MenuFont { get { return DefaultFont; } }
-    public static Font StatusFont { get { return DefaultFont; } }
-    public static Font DialogFont { get { return DefaultFont; } }
+    // THE THEME'S NON-CLIENT FONTS (os/gui/theme.cor), as .NET's SystemFonts
+    // read NONCLIENTMETRICS and the icon title font: each the theme's face
+    // and size now, made once and kept until the theme changes. A face this
+    // program cannot find is the installed sans, as a missing font always
+    // is here; with no seat to ask, the interface font, the captions bold.
+    static readonly Font?[] _theme = new Font?[6];
 
-    /// A window's title: the same face, bold.
-    public static Font CaptionFont
+    static Font Themed(int kind, bool bold)
     {
-        get
+        Font? kept = _theme[kind];
+        if (kept != null) return kept;
+        string face; int height, weight, flags;
+        Font made;
+        if (SystemTheme.Font(kind, out face, out height, out weight, out flags))
         {
-            if (_caption == null) { _caption = new Font(FontFamily.GenericSansSerif, DefaultSize, FontStyle.Bold); }
-            return _caption;
+            FontStyle style = (weight >= 600 ? FontStyle.Bold : FontStyle.Regular) | ((flags & 1) != 0 ? FontStyle.Italic : FontStyle.Regular)
+                            | ((flags & 2) != 0 ? FontStyle.Underline : FontStyle.Regular) | ((flags & 4) != 0 ? FontStyle.Strikeout : FontStyle.Regular);
+            // A negative height is the em in pixels, which is this Font's
+            // size; a positive one is the cell, taken as the em.
+            made = new Font(FontFamily.Find(face) ?? FontFamily.GenericSansSerif, height < 0 ? -height : height, style);
         }
+        else made = new Font(FontFamily.GenericSansSerif, DefaultSize, bold ? FontStyle.Bold : FontStyle.Regular);
+        _theme[kind] = made;
+        return made;
     }
+
+    /// The theme changed: every font asked again at the next read.
+    internal static void Forget()
+    {
+        for (int i = 0; i < _theme.Length; i++) _theme[i] = null;
+    }
+
+    public static Font CaptionFont { get { return Themed(0, true); } }
+    public static Font SmallCaptionFont { get { return Themed(1, true); } }
+    public static Font MenuFont { get { return Themed(2, false); } }
+    public static Font StatusFont { get { return Themed(3, false); } }
+    public static Font MessageBoxFont { get { return Themed(4, false); } }
+    public static Font IconTitleFont { get { return Themed(5, false); } }
+    public static Font DialogFont { get { return DefaultFont; } }
 }
 
 public class SizeF
@@ -410,6 +574,59 @@ public class SizeF
     public float Width;
     public float Height;
     public SizeF(float w, float h) { Width = w; Height = h; }
+}
+
+/// <summary>
+/// The engine's geometry, for a target that has the GUI kernel's drawing
+/// engine behind it (the seat): words of its batch -- SeatOp.Transform,
+/// Mode, FillPath, StrokePath, ClipPath, FillRegion and CombineRegion,
+/// as GUI-KERNEL.md lists them -- appended as one, never split across two
+/// writes. `kind` says what the target keeps to say again when it starts a
+/// new batch in the middle of drawing (the seat forgets its state at the
+/// end of every write): 0 nothing, a drawing; 1 the transform; 2 the mode;
+/// 3 the clip region. StateOwner is the Graphics whose state the target's
+/// batch holds now; the target clears it whenever it forgets.
+/// </summary>
+public interface IPathTarget
+{
+    object? StateOwner { get; set; }
+    void Geometry(int[] words, int count, int kind);
+}
+
+/// A target that can show a print preview's page (the seat's PageBlit): a
+/// page window of the program's, the whole page scaled into a rectangle.
+public interface IPageTarget
+{
+    void ShowPage(int page, int x, int y, int width, int height);
+}
+
+/// The batch's words for the geometry ops.
+internal static class GeometryWords
+{
+    public const int Transform = 14, Mode = 15, FillPath = 16, StrokePath = 17, ClipPath = 18, FillRegion = 19, CombineRegion = 20;
+    public const int CombineNone = 6, CombineAll = 7;
+
+    /// The seat takes up to this many points in one path.
+    public const int MaxPoints = 65536;
+
+    public const int KindDrawing = 0, KindTransform = 1, KindMode = 2, KindClip = 3;
+
+    public static void Points(List<int> words, int[] points, int count)
+    {
+        if (count > MaxPoints) throw new ArgumentException("a path of more than " + MaxPoints + " points cannot be drawn");
+        for (int i = 0; i < count * 3; i++) words.Add(points[i]);
+    }
+
+    public static void Identity(List<int> words)
+    {
+        words.Add(Transform); words.Add(65536); words.Add(0); words.Add(0); words.Add(65536); words.Add(0); words.Add(0);
+    }
+
+    public static void Send(IPathTarget target, List<int> words, int kind)
+    {
+        int[] all = words.ToArray();
+        target.Geometry(all, all.Length, kind);
+    }
 }
 
 /// The batch a Graphics appends to. Owned by the seat connection in
@@ -444,30 +661,40 @@ public interface IDrawingTarget
 public class Graphics : IDisposable
 {
     IDrawingTarget _target;
+    IPathTarget? _paths;                 // the engine behind the target, when it has one
     int _originX, _originY;
     Rectangle _clip;
 
     public Graphics(IDrawingTarget target, int originX, int originY, Rectangle clip)
     {
         _target = target; _originX = originX; _originY = originY; _clip = clip;
+        _paths = target as IPathTarget;
         _target.Clip(clip.X, clip.Y, clip.Width, clip.Height);
+        if (_paths != null) _paths.StateOwner = null;
     }
 
     public Rectangle ClipBounds { get { return new Rectangle(_clip.X - _originX, _clip.Y - _originY, _clip.Width, _clip.Height); } }
 
-    public void Clear(Color colour) { _target.Fill(_clip.X, _clip.Y, _clip.Width, _clip.Height, colour); }
+    public void Clear(Color colour) { Sync(); _target.Fill(_clip.X, _clip.Y, _clip.Width, _clip.Height, colour); }
 
     public void FillRectangle(Brush brush, int x, int y, int w, int h)
     {
         SolidBrush? solid = brush as SolidBrush;
         if (solid == null || w <= 0 || h <= 0) return;
-        _target.Fill(x + _originX, y + _originY, w, h, solid.Color);
+        Sync();
+        int tx, ty;
+        if (!Plain(out tx, out ty) || solid.Color.A != 255) { FillRectangle(brush, (float)x, (float)y, (float)w, (float)h); return; }
+        _target.Fill(x + tx + _originX, y + ty + _originY, w, h, solid.Color);
     }
     public void FillRectangle(Brush brush, Rectangle r) { FillRectangle(brush, r.X, r.Y, r.Width, r.Height); }
 
     public void DrawRectangle(Pen pen, int x, int y, int w, int h)
     {
         if (w <= 0 || h <= 0) return;
+        Sync();
+        int tx, ty;
+        if (!Plain(out tx, out ty) || !pen.Simple) { DrawRectangle(pen, (float)x, (float)y, (float)w, (float)h); return; }
+        x += tx; y += ty;
         int t = (int)pen.Width; if (t < 1) t = 1;
         _target.Fill(x + _originX, y + _originY, w, t, pen.Color);
         _target.Fill(x + _originX, y + _originY + h - t, w, t, pen.Color);
@@ -487,6 +714,10 @@ public class Graphics : IDisposable
     public void DrawEllipse(Pen pen, int x, int y, int w, int h)
     {
         if (w <= 0 || h <= 0) { return; }
+        Sync();
+        int tx, ty;
+        if (!Plain(out tx, out ty) || !pen.Simple) { DrawEllipse(pen, (float)x, (float)y, (float)w, (float)h); return; }
+        x += tx; y += ty;
 
         int a = w / 2, b = h / 2;
         int cx = x + a, cy = y + b;
@@ -495,7 +726,7 @@ public class Graphics : IDisposable
         {
             // Each quadrant's extreme points, plotted so a circle of any
             // size closes rather than leaving gaps at the axes.
-            FillRectangle(new SolidBrush(pen.Color), cx + (i == 0 ? a : i == 1 ? -a : 0), cy + (i == 2 ? b : i == 3 ? -b : 0), 1, 1);
+            Dot(pen.Color, cx + (i == 0 ? a : i == 1 ? -a : 0), cy + (i == 2 ? b : i == 3 ? -b : 0));
         }
 
         long aa = (long)a * a, bb = (long)b * b;
@@ -526,13 +757,14 @@ public class Graphics : IDisposable
 
     void Quadrants(Pen pen, int cx, int cy, int px, int py)
     {
-        Brush ink = new SolidBrush(pen.Color);
-
-        FillRectangle(ink, cx + px, cy + py, 1, 1);
-        FillRectangle(ink, cx - px, cy + py, 1, 1);
-        FillRectangle(ink, cx + px, cy - py, 1, 1);
-        FillRectangle(ink, cx - px, cy - py, 1, 1);
+        Dot(pen.Color, cx + px, cy + py);
+        Dot(pen.Color, cx - px, cy + py);
+        Dot(pen.Color, cx + px, cy - py);
+        Dot(pen.Color, cx - px, cy - py);
     }
+
+    /// One pixel, at a point already moved by the transform's offset.
+    void Dot(Color colour, int x, int y) { _target.Fill(x + _originX, y + _originY, 1, 1, colour); }
 
     public void DrawEllipse(Pen pen, Rectangle r) { DrawEllipse(pen, r.X, r.Y, r.Width, r.Height); }
 
@@ -540,6 +772,12 @@ public class Graphics : IDisposable
     public void FillEllipse(Brush brush, int x, int y, int w, int h)
     {
         if (w <= 0 || h <= 0) { return; }
+        SolidBrush? solid = brush as SolidBrush;
+        if (solid == null) return;
+        Sync();
+        int tx, ty;
+        if (!Plain(out tx, out ty) || solid.Color.A != 255) { FillEllipse(brush, (float)x, (float)y, (float)w, (float)h); return; }
+        x += tx; y += ty;
 
         int a = w / 2, b = h / 2;
         int cx = x + a, cy = y + b;
@@ -554,7 +792,7 @@ public class Graphics : IDisposable
 
             while ((long)(dx + 1) * (dx + 1) * bb <= room) { dx++; }
 
-            FillRectangle(brush, cx - dx, cy + dy, dx * 2 + 1, 1);
+            _target.Fill(cx - dx + _originX, cy + dy + _originY, dx * 2 + 1, 1, solid.Color);
         }
     }
 
@@ -562,6 +800,10 @@ public class Graphics : IDisposable
 
     public void DrawLine(Pen pen, int x0, int y0, int x1, int y1)
     {
+        Sync();
+        int tx, ty;
+        if (!Plain(out tx, out ty) || !pen.Simple) { DrawLine(pen, (float)x0, (float)y0, (float)x1, (float)y1); return; }
+        x0 += tx; y0 += ty; x1 += tx; y1 += ty;
         if (y0 == y1) { int l = x0 < x1 ? x0 : x1; _target.Fill(l + _originX, y0 + _originY, (x0 < x1 ? x1 - x0 : x0 - x1) + 1, 1, pen.Color); return; }
         if (x0 == x1) { int t = y0 < y1 ? y0 : y1; _target.Fill(x0 + _originX, t + _originY, 1, (y0 < y1 ? y1 - y0 : y0 - y1) + 1, pen.Color); return; }
         _target.Line(x0 + _originX, y0 + _originY, x1 + _originX, y1 + _originY, pen.Color);
@@ -572,7 +814,14 @@ public class Graphics : IDisposable
     {
         SolidBrush? solid = brush as SolidBrush;
         if (solid == null) { return; }
+        Sync();
+        int tx, ty;
+        if (!Translation(out tx, out ty)) { TransformedString(s, font, solid.Color, x, y); return; }
+        StringAt(s, font, solid, x + tx, y + ty);
+    }
 
+    void StringAt(string s, Font font, SolidBrush solid, int x, int y)
+    {
         SizedFace? scaled = font.Scaled;
 
         // NO KNOWN BACKGROUND: nothing here is antialiased, because
@@ -613,12 +862,16 @@ public class Graphics : IDisposable
     {
         SolidBrush? solid = brush as SolidBrush;
         if (solid == null) { return; }
+        Sync();
+        int tx, ty;
+        if (!Translation(out tx, out ty)) { TransformedString(s, font, solid.Color, x, y); return; }
+        x += tx; y += ty;
 
         SizedFace? scaled = font.Scaled;
 
         if (scaled != null) { DrawScalableString(s, scaled, font.Height, font.Synthetic, solid.Color, true, background, Color.Transparent, true, x, y); return; }
 
-        DrawString(s, font, brush, x, y);
+        StringAt(s, font, solid, x, y);
     }
 
     /// <summary>
@@ -677,13 +930,17 @@ public class Graphics : IDisposable
 
             if (rune.Value == '\n') { penX = x; lineTop += lineHeight; previousGlyph = -1; continue; }
 
-            int glyphIndex = scaled.Face.GlyphIndex(rune.Value);
-            GlyphBitmap? bitmap = scaled.Glyph(glyphIndex);
+            // A CHARACTER THE FACE DOES NOT HAVE is drawn from the face the
+            // font store gives for it (FontFallback), on the same baseline;
+            // there is no kerning across two faces.
+            int glyphIndex;
+            SizedFace from = FontFallback.FaceFor(scaled, rune.Value, out glyphIndex);
+            GlyphBitmap? bitmap = from.Glyph(glyphIndex);
 
-            if (bitmap == null) { previousGlyph = glyphIndex; continue; }
+            if (bitmap == null) { previousGlyph = from == scaled ? glyphIndex : -1; continue; }
 
-            penX += scaled.Kern(previousGlyph, glyphIndex);
-            previousGlyph = glyphIndex;
+            if (from == scaled) penX += scaled.Kern(previousGlyph, glyphIndex);
+            previousGlyph = from == scaled ? glyphIndex : -1;
 
             int advance = bitmap.Advance + boldExtra;
 
@@ -807,13 +1064,14 @@ public class Graphics : IDisposable
 
             if (rune.Value == '\n') { penX = x; lineTop += lineHeight; previousGlyph = -1; continue; }
 
-            int glyphIndex = scaled.Face.GlyphIndex(rune.Value);
-            GlyphCoverage? bitmap = scaled.GlyphAA(glyphIndex);
+            int glyphIndex;
+            SizedFace from = FontFallback.FaceFor(scaled, rune.Value, out glyphIndex);
+            GlyphCoverage? bitmap = from.GlyphAA(glyphIndex);
 
-            if (bitmap == null) { previousGlyph = glyphIndex; continue; }
+            if (bitmap == null) { previousGlyph = from == scaled ? glyphIndex : -1; continue; }
 
-            penX += scaled.Kern(previousGlyph, glyphIndex);
-            previousGlyph = glyphIndex;
+            if (from == scaled) penX += scaled.Kern(previousGlyph, glyphIndex);
+            previousGlyph = from == scaled ? glyphIndex : -1;
 
             int advance = bitmap.Advance + boldExtra;
 
@@ -864,9 +1122,18 @@ public class Graphics : IDisposable
     /// Graphics has no such thing because its windows are not retained.
     public void CopyArea(int sx, int sy, int dx, int dy, int w, int h)
     {
-        _target.Copy(sx + _originX, sy + _originY, dx + _originX, dy + _originY, w, h);
+        Sync();
+        int tx, ty;
+        Offset(out tx, out ty);
+        _target.Copy(sx + tx + _originX, sy + ty + _originY, dx + tx + _originX, dy + ty + _originY, w, h);
     }
-    public void DrawString(string s, Font font, Brush brush, float x, float y) { DrawString(s, font, brush, (int)x, (int)y); }
+    public void DrawString(string s, Font font, Brush brush, float x, float y)
+    {
+        SolidBrush? solid = brush as SolidBrush;
+        int tx, ty;
+        if (solid != null && !Translation(out tx, out ty)) { Sync(); TransformedString(s, font, solid.Color, x, y); return; }
+        DrawString(s, font, brush, (int)x, (int)y);
+    }
 
     /// Opaque text: background painted with the glyph, which on the
     /// hardware is one operation and on a 486 is the difference between a
@@ -874,17 +1141,45 @@ public class Graphics : IDisposable
     /// A glyph the program defined itself (Seat.DefineGlyph): an icon, a logo.
     public void DrawGlyph(int id, int x, int y, Color foreground, Color background, bool transparent)
     {
-        _target.Glyph(id, x + _originX, y + _originY, foreground, background, transparent);
+        Sync();
+        int tx, ty;
+        At(x, y, out tx, out ty);
+        _target.Glyph(id, tx + _originX, ty + _originY, foreground, background, transparent);
     }
 
     /// A picture the seat is keeping for us, by the id it was given.
     public void DrawBitmap(int id, int x, int y, int width, int height)
     {
-        _target.Blit(id, 0, 0, x + _originX, y + _originY, width, height);
+        Sync();
+        int tx, ty;
+        At(x, y, out tx, out ty);
+        _target.Blit(id, 0, 0, tx + _originX, ty + _originY, width, height);
+    }
+
+    /// A preview page (Corsac.GUI's Seat.CreatePreviewPage) shown whole,
+    /// scaled into the rectangle; nothing on a target without pages.
+    public void DrawPage(int page, int x, int y, int width, int height)
+    {
+        IPageTarget? pages = _target as IPageTarget;
+        if (pages == null) return;
+        Sync();
+        int tx, ty;
+        At(x, y, out tx, out ty);
+        pages.ShowPage(page, tx + _originX, ty + _originY, width, height);
     }
 
     public void DrawStringOpaque(string s, Font font, Color foreground, Color background, int x, int y)
     {
+        Sync();
+        int tx, ty;
+        if (!Translation(out tx, out ty))
+        {
+            SizeF size = MeasureString(s, font);
+            FillRectangle(new SolidBrush(background), (float)x, (float)y, size.Width, size.Height);
+            TransformedString(s, font, foreground, x, y);
+            return;
+        }
+        x += tx; y += ty;
         SizedFace? scaled = font.Scaled;
 
         // Opaque already knows its own background -- it is about to
@@ -936,14 +1231,547 @@ public class Graphics : IDisposable
 
             if (rune.Value == '\n') { lines++; if (run > widest) { widest = run; } run = 0; previousGlyph = -1; continue; }
 
-            int glyphIndex = scaled.Face.GlyphIndex(rune.Value);
+            int glyphIndex;
+            SizedFace from = FontFallback.FaceFor(scaled, rune.Value, out glyphIndex);
 
-            run += scaled.Kern(previousGlyph, glyphIndex) + scaled.Advance(glyphIndex) + boldExtra;
-            previousGlyph = glyphIndex;
+            run += (from == scaled ? scaled.Kern(previousGlyph, glyphIndex) : 0) + from.Advance(glyphIndex) + boldExtra;
+            previousGlyph = from == scaled ? glyphIndex : -1;
         }
         if (run > widest) { widest = run; }
         return new SizeF(widest, lines * lineHeight);
     }
 
+    // ---- the engine's state: transform, smoothing, pixel offset, clip region --------------
+    //
+    // AS .NET'S GRAPHICS HAS THEM, kept here and drawn by the GUI kernel's
+    // engine (IPathTarget): the transform goes to the seat as its batch's
+    // Transform, with the client area's place in the window after it; the
+    // modes as Mode; the clip region, taken to window coordinates when it is
+    // set, as the ops that build it. A target with no engine behind it (a
+    // test double) draws what it always drew and nothing more.
+    //
+    // Two Graphics may draw into one batch in turn: the target remembers
+    // whose state it holds (StateOwner), and a Graphics that finds it is not
+    // its own says all of its own again before it draws (Sync).
+
+    Matrix _transform = new Matrix();
+    SmoothingMode _smoothing = SmoothingMode.None;
+    PixelOffsetMode _pixelOffset = PixelOffsetMode.Default;
+    Region? _clipRegion;                       // window coordinates; null: none
+
+    public CompositingMode CompositingMode { get; set; }
+    public CompositingQuality CompositingQuality { get; set; }
+    public InterpolationMode InterpolationMode { get; set; }
+
+    public Matrix Transform
+    {
+        get { return _transform.Clone(); }
+        set { _transform = value.Clone(); Changed(); }
+    }
+
+    public void ResetTransform() { _transform.Reset(); Changed(); }
+    public void TranslateTransform(float dx, float dy) { TranslateTransform(dx, dy, MatrixOrder.Prepend); }
+    public void TranslateTransform(float dx, float dy, MatrixOrder order) { _transform.Translate(dx, dy, order); Changed(); }
+    public void ScaleTransform(float sx, float sy) { ScaleTransform(sx, sy, MatrixOrder.Prepend); }
+    public void ScaleTransform(float sx, float sy, MatrixOrder order) { _transform.Scale(sx, sy, order); Changed(); }
+    public void RotateTransform(float angle) { RotateTransform(angle, MatrixOrder.Prepend); }
+    public void RotateTransform(float angle, MatrixOrder order) { _transform.Rotate(angle, order); Changed(); }
+    public void MultiplyTransform(Matrix matrix) { MultiplyTransform(matrix, MatrixOrder.Prepend); }
+    public void MultiplyTransform(Matrix matrix, MatrixOrder order) { _transform.Multiply(matrix, order); Changed(); }
+
+    public SmoothingMode SmoothingMode
+    {
+        get { return _smoothing; }
+        set
+        {
+            if (value == SmoothingMode.Invalid) throw new ArgumentException("SmoothingMode.Invalid cannot be set.");
+            _smoothing = value;
+            Changed();
+        }
+    }
+
+    public PixelOffsetMode PixelOffsetMode
+    {
+        get { return _pixelOffset; }
+        set
+        {
+            if (value == PixelOffsetMode.Invalid) throw new ArgumentException("PixelOffsetMode.Invalid cannot be set.");
+            _pixelOffset = value;
+            Changed();
+        }
+    }
+
+    bool Smooth { get { return _smoothing == SmoothingMode.AntiAlias || _smoothing == SmoothingMode.HighQuality; } }
+    bool HalfPixel { get { return _pixelOffset == PixelOffsetMode.Half || _pixelOffset == PixelOffsetMode.HighQuality; } }
+
+    /// World to window: the transform, then the client area's place.
+    Matrix World()
+    {
+        Matrix m = _transform.Clone();
+        m.Translate(_originX, _originY, MatrixOrder.Append);
+        return m;
+    }
+
+    /// Whether the transform only moves by whole pixels (and by how much):
+    /// then what the seat draws in whole pixels -- text, glyphs, pictures
+    /// -- is drawn as it always was, moved.
+    bool Translation(out int dx, out int dy)
+    {
+        dx = 0; dy = 0;
+        Matrix m = _transform;
+        if (m.M11 != 1 || m.M12 != 0 || m.M21 != 0 || m.M22 != 1) return false;
+        float ox = m.OffsetX, oy = m.OffsetY;
+        if (ox != (float)Math.Floor(ox) || oy != (float)Math.Floor(oy)) return false;
+        dx = (int)ox; dy = (int)oy;
+        return true;
+    }
+
+    /// Whether an integer shape may be the seat's Fill and Line as before:
+    /// moved by whole pixels and not smoothed. Anything else is a path.
+    bool Plain(out int dx, out int dy) { return Translation(out dx, out dy) && (!Smooth || _paths == null); }
+
+    /// A point through the transform, to the nearest pixel.
+    void At(int x, int y, out int tx, out int ty)
+    {
+        tx = (int)Math.Round(_transform.TransformX(x, y));
+        ty = (int)Math.Round(_transform.TransformY(x, y));
+    }
+
+    /// The transform's offset, to the nearest pixel: how far CopyArea's
+    /// rectangles move, a copy being of pixels and not of shapes.
+    void Offset(out int dx, out int dy) { dx = (int)Math.Round(_transform.OffsetX); dy = (int)Math.Round(_transform.OffsetY); }
+
+    void Changed()
+    {
+        if (_paths != null && _paths.StateOwner == this) _paths.StateOwner = null;
+    }
+
+    /// This Graphics's state said to the target, if the target's batch
+    /// holds anyone else's (or nobody's).
+    void Sync()
+    {
+        IPathTarget? p = _paths;
+        if (p == null || p.StateOwner == this) return;
+        p.StateOwner = this;
+        _target.Clip(_clip.X, _clip.Y, _clip.Width, _clip.Height);
+        // The clip region is in window coordinates already: built under
+        // the identity.
+        List<int> words = new List<int>();
+        GeometryWords.Identity(words);
+        if (_clipRegion != null) _clipRegion.Encode(words, 0, null, 0);
+        else { words.Add(GeometryWords.ClipPath); words.Add(0); words.Add(GeometryWords.CombineNone); words.Add(1); words.Add(0); }
+        GeometryWords.Send(p, words, GeometryWords.KindClip);
+        words = new List<int>();
+        int m11, m12, m21, m22, dx, dy;
+        World().Words(out m11, out m12, out m21, out m22, out dx, out dy);
+        words.Add(GeometryWords.Transform); words.Add(m11); words.Add(m12); words.Add(m21); words.Add(m22); words.Add(dx); words.Add(dy);
+        GeometryWords.Send(p, words, GeometryWords.KindTransform);
+        words = new List<int>();
+        words.Add(GeometryWords.Mode); words.Add((Smooth ? 1 : 0) | (HalfPixel ? 2 : 0));
+        GeometryWords.Send(p, words, GeometryWords.KindMode);
+    }
+
+    // ---- the clip region ---------------------------------------------------------------
+
+    /// The clip region in world coordinates: what was set, taken back
+    /// through the transform as it is now; infinite when none is set.
+    public Region Clip
+    {
+        get
+        {
+            if (_clipRegion == null) return new Region();
+            Region r = _clipRegion.Clone();
+            Matrix back = World();
+            if (back.IsInvertible) { back.Invert(); r.Transform(back); }
+            return r;
+        }
+        set { SetClip(value, CombineMode.Replace); }
+    }
+
+    public void SetClip(Rectangle rect) { SetClip(new Region(rect), CombineMode.Replace); }
+    public void SetClip(Rectangle rect, CombineMode combineMode) { SetClip(new Region(rect), combineMode); }
+    public void SetClip(RectangleF rect) { SetClip(new Region(rect), CombineMode.Replace); }
+    public void SetClip(RectangleF rect, CombineMode combineMode) { SetClip(new Region(rect), combineMode); }
+    public void SetClip(GraphicsPath path) { SetClip(new Region(path), CombineMode.Replace); }
+    public void SetClip(GraphicsPath path, CombineMode combineMode) { SetClip(new Region(path), combineMode); }
+    public void SetClip(Graphics g) { _clipRegion = g._clipRegion != null ? g._clipRegion.Clone() : null; Changed(); }
+
+    /// A region, through the transform as it is now, made the clip or
+    /// combined with it.
+    public void SetClip(Region region, CombineMode combineMode)
+    {
+        Region device = region.Clone();
+        device.Transform(World());
+        if (combineMode == CombineMode.Replace) _clipRegion = device;
+        else
+        {
+            Region now = _clipRegion != null ? _clipRegion : new Region();
+            if (combineMode == CombineMode.Intersect) now.Intersect(device);
+            else if (combineMode == CombineMode.Union) now.Union(device);
+            else if (combineMode == CombineMode.Xor) now.Xor(device);
+            else if (combineMode == CombineMode.Exclude) now.Exclude(device);
+            else if (combineMode == CombineMode.Complement) now.Complement(device);
+            _clipRegion = now;
+        }
+        Changed();
+    }
+
+    public void ResetClip() { _clipRegion = null; Changed(); }
+    public void IntersectClip(Rectangle rect) { SetClip(new Region(rect), CombineMode.Intersect); }
+    public void IntersectClip(RectangleF rect) { SetClip(new Region(rect), CombineMode.Intersect); }
+    public void IntersectClip(Region region) { SetClip(region, CombineMode.Intersect); }
+    public void ExcludeClip(Rectangle rect) { SetClip(new Region(rect), CombineMode.Exclude); }
+    public void ExcludeClip(Region region) { SetClip(region, CombineMode.Exclude); }
+
+    /// The clip moved by (dx, dy) world units.
+    public void TranslateClip(float dx, float dy)
+    {
+        if (_clipRegion == null) return;
+        PointF[] v = new PointF[] { new PointF(dx, dy) };
+        _transform.TransformVectors(v);
+        _clipRegion.Translate(v[0].X, v[0].Y);
+        Changed();
+    }
+    public void TranslateClip(int dx, int dy) { TranslateClip((float)dx, (float)dy); }
+
+    public bool IsClipEmpty { get { return _clip.Width <= 0 || _clip.Height <= 0 || (_clipRegion != null && _clipRegion.IsEmpty(this)); } }
+    public bool IsVisibleClipEmpty { get { return IsClipEmpty; } }
+
+    /// What can be drawn, in world coordinates: the painted rectangle and
+    /// the clip region's bounds where they meet, taken back through the
+    /// transform.
+    public RectangleF VisibleClipBounds
+    {
+        get
+        {
+            RectangleF area = RectangleF.From(_clip);
+            if (_clipRegion != null) area = RectangleF.Intersect(area, _clipRegion.GetBounds(this));
+            Matrix back = World();
+            if (!back.IsInvertible) return RectangleF.Empty;
+            back.Invert();
+            PointF[] corners = new PointF[] { new PointF(area.Left, area.Top), new PointF(area.Right, area.Top), new PointF(area.Left, area.Bottom), new PointF(area.Right, area.Bottom) };
+            back.TransformPoints(corners);
+            float l = corners[0].X, t = corners[0].Y, r = l, b = t;
+            for (int i = 1; i < 4; i++)
+            {
+                if (corners[i].X < l) l = corners[i].X; if (corners[i].X > r) r = corners[i].X;
+                if (corners[i].Y < t) t = corners[i].Y; if (corners[i].Y > b) b = corners[i].Y;
+            }
+            return new RectangleF(l, t, r - l, b - t);
+        }
+    }
+
+    /// Whether a world point would be drawn: inside the painted rectangle
+    /// and the clip region.
+    public bool IsVisible(float x, float y)
+    {
+        Matrix w = World();
+        float dx = w.TransformX(x, y), dy = w.TransformY(x, y);
+        if (dx < _clip.X || dy < _clip.Y || dx >= _clip.X + _clip.Width || dy >= _clip.Y + _clip.Height) return false;
+        return _clipRegion == null || _clipRegion.IsVisible(dx, dy);
+    }
+    public bool IsVisible(int x, int y) { return IsVisible((float)x, (float)y); }
+    public bool IsVisible(Point p) { return IsVisible((float)p.X, (float)p.Y); }
+    public bool IsVisible(PointF p) { return IsVisible(p.X, p.Y); }
+    public bool IsVisible(RectangleF r)
+    {
+        RectangleF bounds = VisibleClipBounds;
+        return bounds.IntersectsWith(r);
+    }
+    public bool IsVisible(Rectangle r) { return IsVisible(RectangleF.From(r)); }
+
+    // ---- saved states -----------------------------------------------------------------
+
+    public GraphicsState Save()
+    {
+        GraphicsState state = new GraphicsState();
+        state.Transform = _transform.Clone(); state.Smoothing = _smoothing; state.PixelOffset = _pixelOffset;
+        state.ClipRegion = _clipRegion != null ? _clipRegion.Clone() : null;
+        state.Compositing = CompositingMode;
+        return state;
+    }
+
+    public void Restore(GraphicsState state)
+    {
+        _transform = state.Transform.Clone(); _smoothing = state.Smoothing; _pixelOffset = state.PixelOffset;
+        _clipRegion = state.ClipRegion != null ? state.ClipRegion.Clone() : null;
+        CompositingMode = state.Compositing;
+        Changed();
+    }
+
+    // ---- paths ------------------------------------------------------------------------
+
+    /// A colour as the seat's 0xAARRGGBB; opaque under SourceCopy, which
+    /// writes the colour without blending.
+    int Argb(Color c)
+    {
+        int v = c.ToArgb();
+        if (CompositingMode == CompositingMode.SourceCopy) v |= -16777216;
+        return v;
+    }
+
+    public void FillPath(Brush brush, GraphicsPath path)
+    {
+        SolidBrush? solid = brush as SolidBrush;
+        IPathTarget? p = _paths;
+        if (solid == null || p == null || path.PointCount == 0) return;
+        Sync();
+        int n;
+        int[] pts = path.Encode(null, out n);
+        List<int> words = new List<int>();
+        words.Add(GeometryWords.FillPath); words.Add(Argb(solid.Color)); words.Add(path.FillMode == FillMode.Winding ? 2 : 1); words.Add(n);
+        GeometryWords.Points(words, pts, n);
+        GeometryWords.Send(p, words, GeometryWords.KindDrawing);
+    }
+
+    /// The path's outline with the pen: its width, dashes, ends and joins
+    /// as the engine widens them. One cap for both ends, the start's
+    /// (LineCap.Triangle and the anchors other than round and square are
+    /// flat); a width of 0 is a pixel on the screen whatever the transform.
+    public void DrawPath(Pen pen, GraphicsPath path)
+    {
+        IPathTarget? p = _paths;
+        if (p == null || path.PointCount == 0) return;
+        Sync();
+        int n;
+        int[] pts = path.Encode(null, out n);
+        float[]? dashes = pen.Dashes();
+        int dashCount = dashes == null ? 0 : Math.Min(dashes.Length, 64);
+        float unit = pen.Width > 1f ? pen.Width : 1f;
+        List<int> words = new List<int>();
+        words.Add(GeometryWords.StrokePath); words.Add(Argb(pen.Color)); words.Add(Matrix.Fixed(pen.Width > 0f ? pen.Width : 0f, 16));
+        words.Add(Cap(pen.StartCap) | Join(pen.LineJoin)); words.Add(BitConverter.SingleToInt32Bits(pen.MiterLimit));
+        words.Add(dashCount); words.Add(n);
+        if (dashes != null && dashCount > 0)
+        {
+            words.Add(Matrix.Fixed(pen.DashOffset * unit, 16));
+            for (int i = 0; i < dashCount; i++) words.Add(Math.Max(1, Matrix.Fixed(dashes[i] * unit, 16)));
+        }
+        GeometryWords.Points(words, pts, n);
+        GeometryWords.Send(p, words, GeometryWords.KindDrawing);
+    }
+
+    static int Cap(LineCap cap)
+    {
+        if (cap == LineCap.Round || cap == LineCap.RoundAnchor) return 0;
+        if (cap == LineCap.Square || cap == LineCap.SquareAnchor) return 0x100;
+        return 0x200;
+    }
+
+    static int Join(LineJoin join)
+    {
+        if (join == LineJoin.Round) return 0;
+        if (join == LineJoin.Bevel) return 0x1000;
+        return 0x2000;
+    }
+
+    public void FillRegion(Brush brush, Region region)
+    {
+        SolidBrush? solid = brush as SolidBrush;
+        IPathTarget? p = _paths;
+        if (solid == null || p == null) return;
+        Sync();
+        // The region's points are world points: the seat's transform takes
+        // them to the window, as GDI+ fills a region through the world
+        // transform.
+        List<int> words = new List<int>();
+        region.Encode(words, 1, null, 0);
+        words.Add(GeometryWords.FillRegion); words.Add(Argb(solid.Color));
+        GeometryWords.Send(p, words, GeometryWords.KindDrawing);
+    }
+
+    // ---- shapes in floats, and the shapes only paths can draw -------------------------------
+
+    public void FillRectangle(Brush brush, float x, float y, float width, float height)
+    {
+        if (width <= 0 || height <= 0) return;
+        GraphicsPath path = new GraphicsPath();
+        path.AddRectangle(new RectangleF(x, y, width, height));
+        FillPath(brush, path);
+    }
+    public void FillRectangle(Brush brush, RectangleF rect) { FillRectangle(brush, rect.X, rect.Y, rect.Width, rect.Height); }
+    public void FillRectangles(Brush brush, Rectangle[] rects) { for (int i = 0; i < rects.Length; i++) FillRectangle(brush, rects[i]); }
+    public void FillRectangles(Brush brush, RectangleF[] rects) { for (int i = 0; i < rects.Length; i++) FillRectangle(brush, rects[i]); }
+
+    public void DrawRectangle(Pen pen, float x, float y, float width, float height)
+    {
+        GraphicsPath path = new GraphicsPath();
+        path.AddRectangle(new RectangleF(x, y, width, height));
+        DrawPath(pen, path);
+    }
+    public void DrawRectangle(Pen pen, RectangleF rect) { DrawRectangle(pen, rect.X, rect.Y, rect.Width, rect.Height); }
+    public void DrawRectangles(Pen pen, Rectangle[] rects) { for (int i = 0; i < rects.Length; i++) DrawRectangle(pen, rects[i]); }
+    public void DrawRectangles(Pen pen, RectangleF[] rects) { for (int i = 0; i < rects.Length; i++) DrawRectangle(pen, rects[i]); }
+
+    public void DrawEllipse(Pen pen, float x, float y, float width, float height)
+    {
+        GraphicsPath path = new GraphicsPath();
+        path.AddEllipse(x, y, width, height);
+        DrawPath(pen, path);
+    }
+    public void DrawEllipse(Pen pen, RectangleF rect) { DrawEllipse(pen, rect.X, rect.Y, rect.Width, rect.Height); }
+
+    public void FillEllipse(Brush brush, float x, float y, float width, float height)
+    {
+        GraphicsPath path = new GraphicsPath();
+        path.AddEllipse(x, y, width, height);
+        FillPath(brush, path);
+    }
+    public void FillEllipse(Brush brush, RectangleF rect) { FillEllipse(brush, rect.X, rect.Y, rect.Width, rect.Height); }
+
+    public void DrawLine(Pen pen, float x1, float y1, float x2, float y2)
+    {
+        GraphicsPath path = new GraphicsPath();
+        path.AddLine(x1, y1, x2, y2);
+        DrawPath(pen, path);
+    }
+    public void DrawLine(Pen pen, PointF a, PointF b) { DrawLine(pen, a.X, a.Y, b.X, b.Y); }
+
+    public void DrawLines(Pen pen, PointF[] points)
+    {
+        if (points.Length < 2) return;
+        GraphicsPath path = new GraphicsPath();
+        path.AddLines(points);
+        DrawPath(pen, path);
+    }
+    public void DrawLines(Pen pen, Point[] points) { DrawLines(pen, GraphicsPath.Floats(points)); }
+
+    public void DrawPolygon(Pen pen, PointF[] points)
+    {
+        if (points.Length < 2) return;
+        GraphicsPath path = new GraphicsPath();
+        if (points.Length == 2) path.AddLines(points); else path.AddPolygon(points);
+        path.CloseFigure();
+        DrawPath(pen, path);
+    }
+    public void DrawPolygon(Pen pen, Point[] points) { DrawPolygon(pen, GraphicsPath.Floats(points)); }
+
+    public void FillPolygon(Brush brush, PointF[] points) { FillPolygon(brush, points, FillMode.Alternate); }
+    public void FillPolygon(Brush brush, PointF[] points, FillMode fillMode)
+    {
+        if (points.Length < 3) return;
+        GraphicsPath path = new GraphicsPath(fillMode);
+        path.AddPolygon(points);
+        FillPath(brush, path);
+    }
+    public void FillPolygon(Brush brush, Point[] points) { FillPolygon(brush, GraphicsPath.Floats(points), FillMode.Alternate); }
+    public void FillPolygon(Brush brush, Point[] points, FillMode fillMode) { FillPolygon(brush, GraphicsPath.Floats(points), fillMode); }
+
+    public void DrawBezier(Pen pen, float x1, float y1, float x2, float y2, float x3, float y3, float x4, float y4)
+    {
+        GraphicsPath path = new GraphicsPath();
+        path.AddBezier(x1, y1, x2, y2, x3, y3, x4, y4);
+        DrawPath(pen, path);
+    }
+    public void DrawBezier(Pen pen, PointF a, PointF b, PointF c, PointF d) { DrawBezier(pen, a.X, a.Y, b.X, b.Y, c.X, c.Y, d.X, d.Y); }
+    public void DrawBezier(Pen pen, Point a, Point b, Point c, Point d) { DrawBezier(pen, (float)a.X, (float)a.Y, (float)b.X, (float)b.Y, (float)c.X, (float)c.Y, (float)d.X, (float)d.Y); }
+
+    public void DrawBeziers(Pen pen, PointF[] points)
+    {
+        GraphicsPath path = new GraphicsPath();
+        path.AddBeziers(points);
+        DrawPath(pen, path);
+    }
+    public void DrawBeziers(Pen pen, Point[] points) { DrawBeziers(pen, GraphicsPath.Floats(points)); }
+
+    public void DrawCurve(Pen pen, PointF[] points) { DrawCurve(pen, points, 0.5f); }
+    public void DrawCurve(Pen pen, PointF[] points, float tension)
+    {
+        if (points.Length < 2) return;
+        GraphicsPath path = new GraphicsPath();
+        path.AddCurve(points, tension);
+        DrawPath(pen, path);
+    }
+    public void DrawCurve(Pen pen, Point[] points) { DrawCurve(pen, GraphicsPath.Floats(points), 0.5f); }
+    public void DrawCurve(Pen pen, Point[] points, float tension) { DrawCurve(pen, GraphicsPath.Floats(points), tension); }
+
+    public void DrawClosedCurve(Pen pen, PointF[] points)
+    {
+        if (points.Length < 3) return;
+        GraphicsPath path = new GraphicsPath();
+        path.AddClosedCurve(points, 0.5f);
+        DrawPath(pen, path);
+    }
+    public void DrawClosedCurve(Pen pen, Point[] points) { DrawClosedCurve(pen, GraphicsPath.Floats(points)); }
+
+    public void FillClosedCurve(Brush brush, PointF[] points) { FillClosedCurve(brush, points, FillMode.Alternate, 0.5f); }
+    public void FillClosedCurve(Brush brush, PointF[] points, FillMode fillMode, float tension)
+    {
+        if (points.Length < 3) return;
+        GraphicsPath path = new GraphicsPath(fillMode);
+        path.AddClosedCurve(points, tension);
+        FillPath(brush, path);
+    }
+    public void FillClosedCurve(Brush brush, Point[] points) { FillClosedCurve(brush, GraphicsPath.Floats(points), FillMode.Alternate, 0.5f); }
+
+    public void DrawArc(Pen pen, float x, float y, float width, float height, float startAngle, float sweepAngle)
+    {
+        GraphicsPath path = new GraphicsPath();
+        path.AddArc(x, y, width, height, startAngle, sweepAngle);
+        DrawPath(pen, path);
+    }
+    public void DrawArc(Pen pen, int x, int y, int width, int height, int startAngle, int sweepAngle) { DrawArc(pen, (float)x, (float)y, (float)width, (float)height, (float)startAngle, (float)sweepAngle); }
+    public void DrawArc(Pen pen, RectangleF rect, float startAngle, float sweepAngle) { DrawArc(pen, rect.X, rect.Y, rect.Width, rect.Height, startAngle, sweepAngle); }
+    public void DrawArc(Pen pen, Rectangle rect, float startAngle, float sweepAngle) { DrawArc(pen, (float)rect.X, (float)rect.Y, (float)rect.Width, (float)rect.Height, startAngle, sweepAngle); }
+
+    public void DrawPie(Pen pen, float x, float y, float width, float height, float startAngle, float sweepAngle)
+    {
+        GraphicsPath path = new GraphicsPath();
+        path.AddPie(x, y, width, height, startAngle, sweepAngle);
+        DrawPath(pen, path);
+    }
+    public void DrawPie(Pen pen, int x, int y, int width, int height, int startAngle, int sweepAngle) { DrawPie(pen, (float)x, (float)y, (float)width, (float)height, (float)startAngle, (float)sweepAngle); }
+    public void DrawPie(Pen pen, RectangleF rect, float startAngle, float sweepAngle) { DrawPie(pen, rect.X, rect.Y, rect.Width, rect.Height, startAngle, sweepAngle); }
+    public void DrawPie(Pen pen, Rectangle rect, float startAngle, float sweepAngle) { DrawPie(pen, (float)rect.X, (float)rect.Y, (float)rect.Width, (float)rect.Height, startAngle, sweepAngle); }
+
+    public void FillPie(Brush brush, float x, float y, float width, float height, float startAngle, float sweepAngle)
+    {
+        GraphicsPath path = new GraphicsPath();
+        path.AddPie(x, y, width, height, startAngle, sweepAngle);
+        FillPath(brush, path);
+    }
+    public void FillPie(Brush brush, int x, int y, int width, int height, int startAngle, int sweepAngle) { FillPie(brush, (float)x, (float)y, (float)width, (float)height, (float)startAngle, (float)sweepAngle); }
+    public void FillPie(Brush brush, Rectangle rect, float startAngle, float sweepAngle) { FillPie(brush, (float)rect.X, (float)rect.Y, (float)rect.Width, (float)rect.Height, startAngle, sweepAngle); }
+
+    // ---- text the transform turns ---------------------------------------------------------
+
+    /// TEXT UNDER A TRANSFORM THAT DOES MORE THAN MOVE IT: a scalable face's
+    /// letters as their outlines (GraphicsPath.AddString), each filled by
+    /// the engine through the transform, smoothed when the Graphics is; the
+    /// bitmap system font, which has no outlines, a glyph at each letter's
+    /// place through the transform, upright.
+    void TransformedString(string s, Font font, Color colour, float x, float y)
+    {
+        SolidBrush brush = new SolidBrush(colour);
+        if (font.FontFamily.Face != null && _paths != null)
+        {
+            List<GraphicsPath> letters = GraphicsPath.Letters(s, font.FontFamily, (int)font.Style, font.Size, new PointF(x, y));
+            for (int i = 0; i < letters.Count; i++) FillPath(brush, letters[i]);
+            return;
+        }
+        float cx = x, cy = y;
+        for (int i = 0; i < s.Length; i++)
+        {
+            int c = (int)s[i];
+            if (c == '\n') { cx = x; cy += font.Height; continue; }
+            if (c > 255) c = '?';
+            int tx = (int)Math.Round(_transform.TransformX(cx, cy)), ty = (int)Math.Round(_transform.TransformY(cx, cy));
+            _target.Glyph(c, tx + _originX, ty + _originY, colour, Color.Transparent, true);
+            cx += font.GlyphWidth;
+        }
+    }
+
+    public void DrawString(string s, Font font, Brush brush, PointF point) { DrawString(s, font, brush, point.X, point.Y); }
+
     public void Dispose() { }
+}
+
+/// What Graphics.Save keeps: the transform, the modes and the clip region.
+public sealed class GraphicsState
+{
+    internal Matrix Transform = new Matrix();
+    internal SmoothingMode Smoothing;
+    internal PixelOffsetMode PixelOffset;
+    internal Region? ClipRegion;
+    internal CompositingMode Compositing;
 }

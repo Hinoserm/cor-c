@@ -127,6 +127,8 @@ static class Gc
     const long DescPayloadWord = 7;
     const long DescRefMapWord = 8;
     const long DescGcFlagsWord = 9;
+    const long DescDepthWord = 2;           // as Runtime's type tests read them
+    const long DescDisplayWord = 3;
     const long SequenceFlag = 1;         // DescFlags: an array or a string
     const long StringFlag = 2;
     const long ElementsAreReferences = 1; // DescGcFlags, on an array
@@ -577,8 +579,14 @@ static class Gc
         {
             return;
         }
-        long cards = Platform.Map(CardTableBytes);
-        long taken = Platform.Map(CardTableBytes);
+        // THE CARDS COMMITTED ON FIRST TOUCH (Platform.MapLazy): a card is a
+        // byte for every kilobyte of the address space, and only the heap's
+        // are ever read or written. The held-block tables are not: a single
+        // collection may write the whole of one, in bursts no page fault
+        // should have to keep up with (a kernel's lazy faults take frames set
+        // aside beforehand), and they are a sixteenth of the cards' size.
+        long cards = Platform.MapLazy(CardTableBytes);
+        long taken = Platform.MapLazy(CardTableBytes);
         long held = Platform.Map(HeldBytes);
         long holding = Platform.Map(HeldBytes);
         if (cards == 0 || taken == 0 || held == 0 || holding == 0)
@@ -594,6 +602,31 @@ static class Gc
         _holding = holding;
         Runtime.Cards = cards;
         _generational = true;
+        // THE CARDS OF WHAT IS THERE ALREADY, committed now (CommitCards):
+        // the heap's chunks and the statics, which every store into either
+        // marks. From here each chunk's are committed as it is mapped.
+        for (long chunk = HeapChunks.Newest(); chunk != 0; chunk = HeapChunks.Next(chunk))
+        {
+            CommitCards(chunk, HeapChunks.End(chunk) - chunk);
+        }
+        CommitCards(Sys.DataStart(), Sys.DataEnd() - Sys.DataStart());
+    }
+
+    /// THE CARDS OF [at, at + bytes) COMMITTED, in both tables: what a store
+    /// there marks is a page that is there, so a card mark never takes a
+    /// lazily committed page's fault (Platform.MapLazy) for memory the
+    /// collector knows of. Called in thread context as the heap grows by a
+    /// chunk (HeapChunks.Take, TakePages), and by a platform for memory of
+    /// its own that holds references -- a kernel's stacks, an arena. Nothing
+    /// where the tables are committed by touch anyway (Platform.Commit).
+    public static void CommitCards(long at, long bytes)
+    {
+        long cards = Runtime.Cards;
+        if (cards == 0 || bytes <= 0) return;
+        long first = (at & WordSize.AddressMask) >> Runtime.CardShift;
+        long last = ((at + bytes - 1) & WordSize.AddressMask) >> Runtime.CardShift;
+        Platform.Commit(cards + first, last - first + 1);
+        if (_taken != 0) Platform.Commit(_taken + first, last - first + 1);
     }
 
     /// Whether the cycle about to run may be minor: there has been a major
@@ -629,7 +662,12 @@ static class Gc
     static long OldGrowth(long majorLive)
     {
         long bound = NextThreshold(majorLive);
-        return majorLive < bound ? majorLive : bound;
+        long growth = majorLive < bound ? majorLive : bound;
+        // A QUARTER WHEN MEMORY IS SHORT (ShortHook): a ring-1 kernel's heap
+        // let its old generation reach twice its live size before a major,
+        // and held 22 MB with 9 live while the machine ran out.
+        if (MemoryShort()) growth = growth / 4;
+        return growth > MinThreshold ? growth : MinThreshold;
     }
 
     // PACED BY WHAT THEY COST. A minor cycle is worth running only if it
@@ -690,6 +728,9 @@ static class Gc
             return _nurseryFixed;
         }
         long n = _majorLive != 0 && _majorLive < live ? _majorLive : live;
+        // A QUARTER OF IT WHEN MEMORY IS SHORT: the nursery is memory the
+        // heap holds between cycles, and the pool keeps as much again.
+        if (MemoryShort()) n = n / 4;
         if (n < NurseryLeast) n = NurseryLeast;
         // NEAR A HARD LIMIT a quarter of what it leaves, as before: a nursery
         // as large as the limit allows spreads each cycle's survivors over
@@ -811,9 +852,28 @@ static class Gc
 
     /// Every stack map table of every registered image, indexed by the code
     /// it covers. Once, at the first collection, with the heap lock held.
+    /// THE INDEX IS BUILT AGAIN when an image comes or goes after it was
+    /// built (Runtime.RegisterFrames, Runtime.UnregisterFrames): a kernel
+    /// module loaded or taken out while the kernel runs. The next collection
+    /// rebuilds it, with the heap lock held, before it reads a stack.
+    public static void MapsChanged()
+    {
+#if !TARGET_64BIT
+        _mapsBuilt = false;
+#endif
+    }
+
+    static long _mapsBytes;
+
     static void BuildMaps()
     {
         _mapsBuilt = true;
+        if (_maps != 0)
+        {
+            Platform.Unmap(_maps, _mapsBytes);
+            _maps = 0;
+            _mapCount = 0;
+        }
         long total = 0;
         long pass = 0;
         while (pass < 2)
@@ -866,6 +926,7 @@ static class Gc
                 {
                     return;
                 }
+                _mapsBytes = total * MapRecord;
             }
             else
             {
@@ -2318,7 +2379,9 @@ static class Gc
         if (tb == 0) return -1;
         if (Sys.Peek(tb + Tls.RegionBase) == 0)
         {
-            if (!Platform.Regions()) return -1;
+            // A continuation's run with an arena of its own (Tls.TaskArena)
+            // has one where the platform gives its blocks none.
+            if (!Platform.Regions() && Sys.Peek(tb + Tls.TaskArena) == 0) return -1;
             long chunk = MapChunk(tb, RecordBytes + (bytes > 0 ? bytes : 0), bytes > 0);
             if (chunk == 0) return -1;
             Sys.Poke(tb + Tls.RegionAt, ChunkStart(chunk));
@@ -2521,6 +2584,8 @@ static class Gc
         bytes = (bytes + ChunkPage - 1) & -ChunkPage;
         long start = Platform.Map(bytes);
         if (start == 0) return 0;
+        // Stores into its blocks mark cards: theirs committed now.
+        CommitCards(start, bytes);
         ArenaMapped(bytes);
         long chunk = start + bytes - TrailerBytes;
         Sys.Poke(chunk, start);
@@ -5176,6 +5241,9 @@ static class Gc
         // of its own.
         for (long attempt = 0; block == 0 && attempt < 3; attempt++)
         {
+            // A cycle has not found the room: the platform asked for it,
+            // with the heap lock let go (WaitForRoom).
+            if (attempt > 0) WaitForRoom(tb, need);
             // Memory itself ran out: only a whole collection finds all of it.
             _forceMajor = true;
             if (_collecting) WaitOutCycle();
@@ -5196,6 +5264,9 @@ static class Gc
 
         if (block == 0)
         {
+            // What the platform can say of where the heap went (a kernel's
+            // allocation sites), first: nothing it does may allocate.
+            if (OutOfMemoryHook != 0) Sys.Call(OutOfMemoryHook, need, 0, 0);
             SayNumber("out of memory: request ", need);
             SayNumber("out of memory: heap ", HeapChunks.HeapBytes);
             SayNumber("out of memory: since last collection ", _since);
@@ -5236,6 +5307,9 @@ static class Gc
         long failedAt = -1;
         for (long attempt = 0; attempt < 4; attempt++)
         {
+            // After a whole cycle has failed it: room asked for, the lock
+            // let go meanwhile (WaitForRoom).
+            if (attempt >= 2) WaitForRoom(tb, ClassSize(c));
             long cache = EnsureCache(tb);
             if (cache != 0)
             {
@@ -5397,6 +5471,10 @@ static class Gc
     /// A label and a number on standard error without allocating: the
     /// digits are written into a fixed buffer on the stack of static data.
     static long _digits;            // a page for the digits, mapped in Start
+
+    /// Called as the allocator gives up, with the request: the platform's
+    /// own account of where the heap went. It must allocate nothing.
+    public static long OutOfMemoryHook;
 
     internal static void SayNumber(string label, long value)
     {
@@ -6598,10 +6676,186 @@ static class Gc
     /// The heap check (CheckHeap, before and after every collection) turned
     /// on by a program after the heap has started -- a kernel from its
     /// command line (gc.heapcheck=1).
+    // ---- revoking a kernel module's objects ------------------------------------
+    //
+    // A module forced out while objects of its types are still alive
+    // (docs/software/DRIVERS.md, "Forced") leaves vtables and descriptors that
+    // are about to be unmapped. Every such object is TOMBSTONED, with the
+    // world stopped for a collection: its block becomes a leaf (never scanned
+    // again, so its descriptor is never read), and its vtable word points at
+    // the Revoked table -- a descriptor that is no type's, so every cast and
+    // type test of it fails, and a vtable whose every slot calls Revoked,
+    // which hands the caller to the platform to be ended (Platform.Revoked: a
+    // kernel kills the thread or crashes the program; a program on Linux
+    // dies). The object's memory stays good, so whatever still refers to it
+    // reads valid memory, and the collector frees it once nothing does.
+
+    static long _revokeLow, _revokeHigh, _revokedTable, _revokedCount;
+    static bool _revokeCountOnly;
+    const long RevokedSlots = 1024;
+
+    /// Every live object whose vtable is in [low, high) tombstoned; how many.
+    /// Runs a full collection to do it.
+    public static long Revoke(long low, long high)
+    {
+        if (high <= low) return 0;
+        _revokedCount = 0;
+        _revokeLow = low;
+        _revokeHigh = high;
+        Collect();
+        _revokeLow = 0;
+        _revokeHigh = 0;
+        return _revokedCount;
+    }
+
+    /// How many live objects have their vtable in [low, high), touching
+    /// none: whether a module is provably free of objects of its types
+    /// before it is taken out. Runs a full collection to know.
+    public static long CountIn(long low, long high)
+    {
+        _revokeCountOnly = true;
+        try { return Revoke(low, high); }
+        finally { _revokeCountOnly = false; }
+    }
+
+    /// Where every slot of the Revoked table leads.
+    static void Revoked()
+    {
+        Platform.Revoked();
+    }
+
+    static long RevokedVtable()
+    {
+        long w = WordSize.Bytes;
+        if (_revokedTable == 0)
+        {
+            // The descriptor, the vtable after it, and a class display of
+            // RevokedSlots zeros after that.
+            long bytes = (DescWords + 2 * RevokedSlots) * w;
+            long table = Platform.Map(bytes);
+            if (table == 0) return 0;
+            Sys.MemorySet(table, 0, bytes);
+            // The descriptor names itself, as every one does (the census and
+            // the type tests check it), and is no type: as deep in a class
+            // chain as any type can be, so the compiler's inline test of a
+            // class reads its display at the class's depth, and every entry of
+            // the display is 0, which is no class. No interfaces, no element,
+            // no references.
+            Sys.Poke(table + DescSelfWord * w, table);
+            Sys.Poke(table + DescDepthWord * w, RevokedSlots - 1);
+            Sys.Poke(table + DescDisplayWord * w, table + (DescWords + RevokedSlots) * w);
+            long stub = Sys.AddressOf(Revoked);
+            for (long i = 0; i < RevokedSlots; i++) Sys.Poke(table + (DescWords + i) * w, stub);
+            _revokedTable = table;
+        }
+        return _revokedTable + DescWords * w;
+    }
+
+    static void Tombstone(long block, long vtable)
+    {
+        if ((Sys.Peek(block) & FlagFree) != 0 || Sys.Peek(block + KindAt) != KindObject) return;
+        long vt = Sys.Peek(block + HeaderBytes) & WordSize.AddressMask;
+        if (vt < _revokeLow || vt >= _revokeHigh) return;
+        _revokedCount = _revokedCount + 1;
+        if (_revokeCountOnly) return;
+        Sys.Poke(block + KindAt, KindLeaf);
+        Sys.Poke(block + HeaderBytes, vtable);
+    }
+
+    /// The walk CheckHeap makes -- every chunk's chain, every thread's
+    /// buffer up to its pointer -- tombstoning as it goes.
+    static void RevokeNow()
+    {
+        long vtable = RevokedVtable();
+        if (vtable == 0) return;
+        if (_heapCheckTable == 0)
+        {
+            _heapCheckTable = Platform.Map(GcThreads.BufferTableBytes());
+            if (_heapCheckTable == 0) return;
+        }
+        long buffers = GcThreads.CaptureBuffersInto(_heapCheckTable);
+        long chunk = HeapChunks.Newest();
+        while (chunk != 0)
+        {
+            // A SIZE-CLASS PAGE is laid out whole in blocks of its class's
+            // size, free or not, whether or not a thread is allocating from
+            // it now: stepped through by size to its limit.
+            if (HeapChunks.PageClass(chunk) != 0)
+            {
+                long size = ClassSize(HeapChunks.PageClass(chunk) - 1);
+                long limit = HeapChunks.Limit(chunk);
+                for (long at = HeapChunks.First(chunk); at + size <= limit; at = at + size)
+                {
+                    if ((Sys.Peek(at) & SizeMask) != size) break;
+                    Tombstone(at, vtable);
+                }
+                chunk = HeapChunks.Next(chunk);
+                continue;
+            }
+            long block = HeapChunks.First(chunk);
+            long end = chunk == _current ? _bump : HeapChunks.End(chunk);
+            long step = 0;
+            while (block < end)
+            {
+                while (step < buffers && Sys.Peek(_heapCheckTable + step * (2 * WordSize.Bytes)) < block) step = step + 1;
+                if (step < buffers && Sys.Peek(_heapCheckTable + step * (2 * WordSize.Bytes)) == block)
+                {
+                    block = Sys.Peek(_heapCheckTable + step * (2 * WordSize.Bytes) + WordSize.Bytes);
+                    step = step + 1;
+                    continue;
+                }
+                long size = Sys.Peek(block) & SizeMask;
+                if (size < Smallest || block + size > end) break;
+                Tombstone(block, vtable);
+                block = block + size;
+            }
+            chunk = HeapChunks.Next(chunk);
+        }
+        for (long i = 0; i < buffers; i++)
+        {
+            long at = Sys.Peek(_heapCheckTable + i * (2 * WordSize.Bytes));
+            long upto = GcThreads.BufferPointer(at);
+            while (at < upto)
+            {
+                long word = Sys.Peek(at);
+                long size = word & SizeMask;
+                if (word == 0 || size < Smallest || at + size > upto) break;
+                Tombstone(at, vtable);
+                at = at + size;
+            }
+        }
+    }
+
     public static void CheckHeapOn()
     {
         _heapCheck = true;
         HeapChunks.CheckOverlaps = true;
+    }
+
+    /// THE WHOLE HEAP VERIFIED (a kernel's gcverify=1): every collection,
+    /// minor and major, has its marks walked (VerifyMinor: an old block
+    /// pointing at a young one this cycle did not mark, a missed card;
+    /// VerifyMajor: a kept block pointing at one about to be freed;
+    /// VerifyNewcomers), and the chunks, buffers and free lists checked
+    /// before and after (CheckHeap). The first walk that reports anything
+    /// stops the program through VerifyStopHook (the kernel's own crash),
+    /// or exits 93: the reports said what, where and in which collection.
+    public static bool VerifyHeap;
+    public static long VerifyStopHook;
+
+    public static void VerifyHeapOn()
+    {
+        VerifyHeap = true;
+        CheckHeapOn();
+    }
+
+    static void VerifyStop(long reportsBefore)
+    {
+        if (!VerifyHeap || _verifyReports == reportsBefore) return;
+        SayNumber("gc verify: HEAP BROKEN in collection ", Collections);
+        SayNumber("gc verify:   minor ", _minor ? 1 : 0);
+        if (VerifyStopHook != 0) Sys.Call(VerifyStopHook, _verifyReports - reportsBefore, Collections, 0);
+        Platform.Exit(93);
     }
     static long _heapCheckTable;
     static long _heapCheckFaults;
@@ -8697,6 +8951,10 @@ static class Gc
         {
             CheckHeap(0);
         }
+        if (_revokeHigh != 0)
+        {
+            RevokeNow();
+        }
 #if !TARGET_64BIT
         if (!_mapsBuilt)
         {
@@ -8798,12 +9056,63 @@ static class Gc
     /// garbage, which a machine with room to spare can afford and one without
     /// cannot. It must not allocate. 0, a platform that never says so.
     public static long ShortHook;
+
+    /// THE PLATFORM ASKED FOR ROOM, WITH THE HEAP LOCK LET GO: called with
+    /// the bytes a map was refused for, after a whole cycle has not found
+    /// them; nonzero when the platform made room. A ring-1 kernel's map no
+    /// longer sleeps for memory with this heap's lock held -- every other
+    /// thread of the kernel waited behind it, up to a second -- it fails at
+    /// once, and the wait is here, the thread counted as blocked. 0: none.
+    public static long RoomHook;
+
+    /// The heap lock is held on entry and on return, and let go between: the
+    /// platform asked for `need` bytes of room (RoomHook), then whatever was
+    /// owed while this thread was away -- a handshake's answer, a buffer
+    /// given back -- seen to as at the allocator's entry. The caller's state
+    /// is what it reads again after: the free lists, a cycle under way.
+    static void WaitForRoom(long tb, long need)
+    {
+        if (RoomHook == 0 || tb == 0 || Sys.Peek(tb + Tls.InAlloc) != 0) return;
+        GcLock.Exit();
+        Sys.Call(RoomHook, need, 0, 0);
+        GcLock.Enter();
+        AnswerBeforeTaking(tb);
+    }
     public static long ShortCollections;
 
     static long ShortThreshold()
     {
-        long quarter = _liveBytes / 4;
-        return quarter > MinThreshold ? quarter : MinThreshold;
+        // AN EIGHTH: on a machine short of memory every megabyte of garbage
+        // is a megabyte a program or the page cache does not have.
+        long eighth = _liveBytes / 8;
+        return eighth > MinThreshold ? eighth : MinThreshold;
+    }
+
+    /// Every element of the array at `payload` freed and its slot cleared
+    /// (Runtime.FreeArrayElements): only for an array whose elements are
+    /// references a word each, read off its descriptor as the mark reads
+    /// it; anything else is left alone.
+    public static void FreeReferenceElements(long payload)
+    {
+        long w = WordSize.Bytes;
+        long vt = Sys.Peek(payload) & WordSize.AddressMask;
+        if (vt == 0) return;
+        long desc = vt - DescWords * w;
+        if ((Sys.Peek(desc + DescSelfWord * w) & WordSize.AddressMask) != desc) return;
+        long flags = Sys.Peek(desc + DescFlagsWord * w);
+        if ((flags & SequenceFlag) == 0 || (flags & StringFlag) != 0) return;
+        if ((Sys.Peek(desc + DescGcFlagsWord * w) & ElementsAreReferences) == 0) return;
+        if (Sys.Peek(desc + DescSizeWord * w) != w) return;
+        long count = Sys.Peek(payload + ArrayCountAt) & 0x7FFFFFFF;
+        long first = payload + Sys.Peek(desc + DescPayloadWord * w);
+        for (long i = 0; i < count; i++)
+        {
+            long cell = first + i * w;
+            long element = Sys.Peek(cell) & WordSize.AddressMask;
+            if (element == 0) continue;
+            Sys.Poke(cell, 0);
+            Runtime.Free(element);
+        }
     }
 
     /// Collections given up half way -- a barrier report lost to a full
@@ -8889,8 +9198,10 @@ static class Gc
         // is empty. A worker between its check of the word and its next take
         // finds nothing to take.
         if (helped) WorkersMark(false);
-        if (_minor && _verifyGenerations) VerifyMinor();
-        if (!_minor && (_verifyGenerations || VerifyMarks)) VerifyMajor();
+        long reportsBefore = _verifyReports;
+        if (_minor && (_verifyGenerations || VerifyHeap)) VerifyMinor();
+        if (!_minor && (_verifyGenerations || VerifyMarks || VerifyHeap)) VerifyMajor();
+        VerifyStop(reportsBefore);
         HeapChunks.SetBlockAnchorsActive(false);
         if (_verify) CheckQuarantine();
         BeginSweep();
@@ -9032,9 +9343,11 @@ static class Gc
         Runtime.Marking = 0;
         GcThreads.Round(GcThreads.Ack);
         MarkToEmpty();
-        if (_minor && _verifyGenerations) VerifyMinor();
-        if (!_minor && (_verifyGenerations || VerifyMarks)) VerifyMajor();
-        if (_verifyGenerations || VerifyMarks) VerifyNewcomers();
+        long verifiedBefore = _verifyReports;
+        if (_minor && (_verifyGenerations || VerifyHeap)) VerifyMinor();
+        if (!_minor && (_verifyGenerations || VerifyMarks || VerifyHeap)) VerifyMajor();
+        if (_verifyGenerations || VerifyMarks || VerifyHeap) VerifyNewcomers();
+        VerifyStop(verifiedBefore);
 
         GcLock.Enter();
         HeapChunks.SetBlockAnchorsActive(false);
@@ -11149,6 +11462,7 @@ static class HeapChunks
             _chunks = page;
         }
         _heapBytes = _heapBytes + n * PageBytes;
+        Gc.CommitCards(raw, n * PageBytes);
         CheckNew(raw, n * PageBytes);
         IndexAddRun(raw, n, PageBytes);
         if (_floor == 0 || raw + ChunkBytes < _floor)
@@ -11403,6 +11717,7 @@ static class HeapChunks
         if (_chunks != 0) Sys.Poke(_chunks + ChunkPrevious, raw);
         _chunks = raw;
         _heapBytes = _heapBytes + ask;
+        Gc.CommitCards(raw, ask);
         CheckNew(raw, ask);
         IndexAdd(raw);
 
@@ -12049,6 +12364,15 @@ static class GcThreads
 
     public static long Answered, AnsweredFor;
 
+    /// Prompts sent while waiting for a round (Platform.PromptStop), over
+    /// all rounds.
+    public static long Prompts;
+
+    /// The turns of the round's wait between two prompts: the first gap,
+    /// and the most it doubles to while prompts move nobody.
+    const long PromptGapLeast = 16;
+    const long PromptGapMost = 1024;
+
     /// Asks every other thread for `request` and returns when all have
     /// answered. Called by the collector, without the heap lock. While it
     /// waits it answers for the blocked, marks what is queued, prompts the
@@ -12116,7 +12440,19 @@ static class GcThreads
         GcLock.Exit();
         Gc.HandshakeRounds = Gc.HandshakeRounds + 1;
 
+        // RE-PROMPT PACING. A prompt interrupts every processor that still
+        // owes the round; one found inside a store sequence puts its answer
+        // off to the next prompt (the kernel counts those). Prompting again
+        // every few turns would keep those processors in their interrupt
+        // handlers and the collector hot on interrupts, so while a prompt
+        // moves nobody the gap to the next doubles, up to PromptGapMost
+        // turns, and falls back to the first gap as soon as anyone answers.
+        // Nothing here gives up: a round waits until everybody has answered,
+        // and a put-off answer is only a later one.
         long turns = 0;
+        long gap = PromptGapLeast;
+        long nextPrompt = 0;
+        long owedAtPrompt = Pending();
 
         while (true)
         {
@@ -12141,8 +12477,20 @@ static class GcThreads
                 Gc.Assist(64);
             }
 
-            if ((turns & 0xF) == 0)
+            if (turns >= nextPrompt)
             {
+                long owedNow = Pending();
+                if (owedNow < owedAtPrompt)
+                {
+                    gap = PromptGapLeast;
+                }
+                else if (turns != 0 && gap < PromptGapMost)
+                {
+                    gap = gap * 2;
+                }
+                owedAtPrompt = owedNow;
+                nextPrompt = turns + gap;
+                Prompts = Prompts + 1;
                 Platform.PromptStop();
             }
 

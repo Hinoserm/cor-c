@@ -174,6 +174,9 @@ public static class Roles
             case MOp.Idiv:
                 return Gpr_ImplicitDefs4;
             case MOp.Cmpxchg:
+            // A reference exchange's stub answers in EAX (X86Backend).
+            case MOp.CallKeepEax:
+            case MOp.CallKeepEaxInd:
                 return Gpr_ImplicitDefs5;
             case MOp.RepMovsb:
             case MOp.RepMovsd:

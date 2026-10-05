@@ -4,6 +4,13 @@ namespace Corsac.Lang;
 public sealed partial class BindResult
 {
     /// <summary>
+    /// For a unit compiled on its own (Binder.CollectInterruptFacts): what the
+    /// link needs to check its interrupt handlers' calls into other units, a
+    /// fact for every method it binds (Lto.InterruptNotes). Null otherwise.
+    /// </summary>
+    public List<Corsac.Lang.Lto.InterruptNotes.Fact>? InterruptFacts { get; set; }
+
+    /// <summary>
     /// How many 64-bit words each type's ancestor mask takes.
     ///
     /// Program-wide: every mask in an image is the same width, so the word a

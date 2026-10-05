@@ -1,0 +1,22 @@
+// test: ring_marker_other_ring
+// flags: --ring 1
+// expect-compile-error: 'Dma' is not declared
+// What both rings compile may not name a class of one: in the ring-1
+// compile the ring-0 class is not there to bind to.
+
+using System;
+
+[Ring0]
+static class Dma
+{
+    public static int Channel() { return 1; }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Console.WriteLine(Dma.Channel());
+        return 0;
+    }
+}

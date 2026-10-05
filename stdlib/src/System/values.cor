@@ -528,6 +528,15 @@ class Tuple<T1, T2, T3, T4> {
 
 namespace System.ComponentModel
 {
+    /// .NET's CancelEventArgs: an event whose handler may stop what is
+    /// about to happen (System.Drawing.Printing's PrintEventArgs).
+    public class CancelEventArgs : EventArgs
+    {
+        public bool Cancel { get; set; }
+        public CancelEventArgs() { }
+        public CancelEventArgs(bool cancel) { Cancel = cancel; }
+    }
+
     /// .NET's IComponent: something a container can hold and dispose.
     public interface IComponent : IDisposable
     {

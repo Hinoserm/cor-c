@@ -1,0 +1,21 @@
+// The other unit of 1311_linq_consumer_across_units: LINQ walks of a list
+// the calling unit made and hands over -- the consumer is here, the list
+// and its maker are there.
+using System.Collections.Generic;
+using System.Linq;
+
+static class Consumers
+{
+    public static int Odd(List<int> l)
+    {
+        int total = 0;
+        foreach (int x in l.Where(x => x % 2 != 0)) total += x;
+        return total;
+    }
+
+    public static int Positive(List<int> l) => l.Where(x => x > 0).Count();
+
+    public static int Tripled(List<int> l) => l.Select(x => x * 3).Sum();
+
+    public static int Above(List<int> l, int floor) => l.Count(x => x > floor);
+}

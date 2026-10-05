@@ -766,7 +766,35 @@ public sealed class Parser
         }
 
         ParseNamespaceMembers(unit, "");
+        unit.UsesDynamic = _sawDynamic;
         return unit;
+    }
+
+    /// <summary>Whether a type named `dynamic` was read (CompilationUnit.UsesDynamic).</summary>
+    private bool _sawDynamic;
+
+    /// <summary>
+    /// Whether the `dynamic` at token i is the type and not a name: a type is
+    /// parsed speculatively at many places a name could stand, and a
+    /// parameter called `dynamic` (Runtime.StartImages) made the whole file
+    /// one that uses dynamic, its classes given late members in its own
+    /// object only. The type: declaring something (`dynamic d`), an array of
+    /// it, a type argument (`List&lt;dynamic&gt;`, `, dynamic&gt;`), a cast
+    /// (`(dynamic)x`).
+    /// </summary>
+    private bool WrittenAsType(int i)
+    {
+        Tok Kind(int at) => at >= 0 && at < _t.Count ? _t[at].Kind : Tok.Semi;
+        Tok before = Kind(i - 1), after = Kind(i + 1);
+        if (after == Tok.Ident) return true;
+        if (after == Tok.LBracket && Kind(i + 2) == Tok.RBracket) return true;
+        if (after == Tok.Question && Kind(i + 2) == Tok.Ident) return true;
+        if (before == Tok.Lt) return true;
+        if (before == Tok.Comma && after == Tok.Gt) return true;
+        if (before == Tok.LParen && after == Tok.RParen)
+            return Kind(i + 2) is Tok.Ident or Tok.Int or Tok.Real or Tok.Str or Tok.Char or Tok.LParen or Tok.KwNew or Tok.KwThis
+                                 or Tok.KwNull or Tok.KwTrue or Tok.KwFalse or Tok.InterpStr;
+        return false;
     }
 
     /// The types and namespaces of one namespace (`within`, "" for the
@@ -846,13 +874,65 @@ public sealed class Parser
     private void TakeTypeDecl(CompilationUnit unit)
     {
         TypeDecl top = ParseTypeDecl();
-        unit.Types.Add(top);
         FinishFamily(top, _nested);
+        if (Ring < 0 || LeaveOutOtherRings(top, _nested)) unit.Types.Add(top);
 
         // Anything written INSIDE what was just parsed comes out here, at
         // the top level, under its own simple name.
         unit.Types.AddRange(_nested);
         _nested.Clear();
+    }
+
+    // ---- rings ----------------------------------------------------------
+
+    /// <summary>
+    /// THE RING BEING COMPILED, 0 to 3, or -1 for none (--ring). A driver
+    /// that works in two rings is one source file: its ring-0 half -- DMA,
+    /// the interrupt -- and its ring-1 half -- what of the mixing is its own
+    /// -- are classes marked [Ring0] and [Ring1], and what both use is not
+    /// marked at all (docs/software/DRIVERS.md in the OS repository, "Drivers
+    /// in every ring"). The file is compiled once per ring, and each compile
+    /// sees only its own ring's classes and the unmarked ones.
+    ///
+    /// LEFT OUT HERE, AS THEY ARE READ, rather than anywhere later, because
+    /// a ring-0 class names what only ring 0 has -- Irq, Dma, the port
+    /// instructions' wrappers -- and in a ring-1 compile none of that exists
+    /// to bind to. Dropped before the binder sees it, it never has to; and
+    /// the declaration index, which is built by this parser too, holds the
+    /// same classes the compile does. With no ring given the marks mean
+    /// nothing and every class is compiled, which is every compile that is
+    /// not of a driver.
+    /// </summary>
+    public static int Ring { get; set; } = -1;
+
+    /// <summary>The rings a declaration is marked for, a bit each, or 0 when it is not marked and so is every ring's.</summary>
+    public static int RingsOf(TypeDecl decl)
+    {
+        int rings = 0;
+        foreach (AttributeRef attribute in decl.AttributeParts)
+            for (int ring = 0; ring < 4; ring++)
+                if (attribute.Target.Length == 0 && attribute.Is("Ring" + ring)) rings |= 1 << ring;
+        return rings;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="top"/> is kept in this ring's compile, taking
+    /// out of <paramref name="nested"/> every type written inside one that is
+    /// not -- a class marked for another ring goes with all it holds -- and a
+    /// delegate's multicast with its delegate.
+    /// </summary>
+    private static bool LeaveOutOtherRings(TypeDecl top, List<TypeDecl> nested)
+    {
+        static string PathOf(TypeDecl d) => d.Outer is null ? d.Name : d.Outer + "." + d.Name;
+        static bool Other(TypeDecl d) => RingsOf(d) is int rings && rings != 0 && (rings & (1 << Ring)) == 0;
+        List<TypeDecl> gone = new();
+        if (Other(top)) gone.Add(top);
+        gone.AddRange(nested.Where(Other));
+        if (gone.Count == 0) return true;
+        nested.RemoveAll(d => gone.Any(left => d == left
+            || (d.Outer is string outer && (outer == PathOf(left) || outer.StartsWith(PathOf(left) + ".", StringComparison.Ordinal)))
+            || (d.Outer == left.Outer && d.Namespace == left.Namespace && d.Name == left.Name + "__Multicast")));
+        return !gone.Contains(top);
     }
 
     /// <summary>
@@ -3291,6 +3371,7 @@ public sealed class Parser
             bool? whenProved = null;
             CallerInfo caller = CallerInfo.None;
             string? callerArgument = null;
+            string? marshalAs = null;
 
             // AND THE CALLER-INFORMATION ATTRIBUTES, which make the compiler
             // pass what it knows at the call for an argument left out: the
@@ -3310,6 +3391,7 @@ public sealed class Parser
                     caller = CallerInfo.ArgumentExpression;
                     callerArgument = of;
                 }
+                else if (named == "MarshalAs" && written.Argument is { Length: > 0 } unmanaged) marshalAs = unmanaged;
             }
 
             Token at = Cur;
@@ -3336,7 +3418,7 @@ public sealed class Parser
                 Name = name, Type = type, IsRef = byRef || byIn, IsOut = byOut,
                 IsReadOnlyRef = byIn, IsParams = variadic, IsThis = receiver,
                 NotNullWhen = whenProved, Caller = caller, CallerArgument = callerArgument,
-                Default = def, Line = at.Line, Col = at.Col,
+                MarshalAs = marshalAs, Default = def, Line = at.Line, Col = at.Col,
             });
 
             if (variadic && type.ArrayRank == 0)
@@ -3452,6 +3534,8 @@ public sealed class Parser
             _i++;
             name += "." + _t[_i++].Text;
         }
+
+        if (name == "dynamic" && WrittenAsType(_i - 1)) _sawDynamic = true;
 
         List<TypeRef> args = new();
 

@@ -135,6 +135,7 @@ public static class Frontend
                 }
 
                 unit.Types.AddRange(one.Types);
+                if (one.UsesDynamic && !isLibrary && !isElsewhere) unit.UsesDynamic = true;
 
                 // Retagged the same way decl.File is above: this loop's own
                 // `file` is the name a diagnostic will actually be stamped
@@ -187,6 +188,31 @@ public static class Frontend
             return null;
         }
 
+        // AND .NET'S COM INTEROP, written out as source: a wrapper class for
+        // each [ComImport] interface, and the vtables and IDispatch of each
+        // class COM can call (ComDeclarations). Before binding, which is
+        // where the classes they write are bound with everything else.
+        List<CompileError> com = new();
+        ComDeclarations.Expand(unit, symbols, com);
+        if (Report(com))
+        {
+            return null;
+        }
+
+        // AND `dynamic`'s view of a program's own classes: each member by
+        // name, for a dynamic receiver bound at run time to find
+        // (DynamicDeclarations). Only for a program that writes `dynamic`, and
+        // the library's own [LateBound] classes.
+        if (DynamicDeclarations.Wanted(unit))
+        {
+            List<CompileError> late = new();
+            DynamicDeclarations.Expand(unit, symbols, late);
+            if (Report(late))
+            {
+                return null;
+            }
+        }
+
         IReadOnlyList<CompileError> generic;
         Meter expanding = Meter.Start();
         unit = Monomorphiser.Expand(unit, name, library, out generic, declarations is null ? null : declarations.Require);
@@ -203,7 +229,7 @@ public static class Frontend
         Meter binding = Meter.Start();
         BindResult bound = Binder.Bind(unit, name, declarations is null ? null : declarations.Require, declarations?.Interfaces,
             declarations is null ? null : declarations.RequireExtensions, declarations?.LibraryInterfaces,
-                declarations is null ? null : declarations.RequireOverrides);
+                declarations is null ? null : declarations.RequireOverrides, kernelInterfaces: declarations?.KernelInterfaces);
         binding.Stop("front:bind");
 
         // The checker's first pass discovers which generic methods were called
@@ -284,7 +310,7 @@ public static class Frontend
                 Meter fresh = Meter.Start();
                 bound = Binder.Bind(unit, name, declarations is null ? null : declarations.Require, declarations?.Interfaces,
                     declarations is null ? null : declarations.RequireExtensions, declarations?.LibraryInterfaces,
-                    declarations is null ? null : declarations.RequireOverrides, freshOnly: true);
+                    declarations is null ? null : declarations.RequireOverrides, freshOnly: true, kernelInterfaces: declarations?.KernelInterfaces);
                 fresh.Stop("front:bind-fresh");
 
                 foreach (TypeDecl t in unit.Types)
@@ -305,7 +331,7 @@ public static class Frontend
             Meter rebinding = Meter.Start();
             bound = Binder.Bind(unit, name, declarations is null ? null : declarations.Require, declarations?.Interfaces,
                 declarations is null ? null : declarations.RequireExtensions, declarations?.LibraryInterfaces,
-                declarations is null ? null : declarations.RequireOverrides);
+                declarations is null ? null : declarations.RequireOverrides, kernelInterfaces: declarations?.KernelInterfaces);
             rebinding.Stop("front:bind-round");
             if (Switches.TraceWants)
             {

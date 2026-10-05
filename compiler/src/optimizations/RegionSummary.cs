@@ -392,8 +392,12 @@ public static class RegionSummary
                     string? callee = _virtuals!.TryGetValue(i, out string[]? named) && named.Length == 1 ? named[0] : null;
                     // One that calls a method read out of a descriptor names no
                     // virtual target: it may run any function a method slot
-                    // names (RegionHints.CallsThroughMethods).
-                    if (callee is null && i.Operands.Count > 0 && i.Operands[0] is RegOperand { Reg: var through } && MethodRead(through, 0))
+                    // names (RegionHints.CallsThroughMethods). Not a call into
+                    // C (NativeCall): a COM object's table is the foreign
+                    // code's, and what it reaches of ours is what took an
+                    // address -- read as ours, Marshal.AddRef called every
+                    // method of every program blind.
+                    if (callee is null && !NativeCall.Is(i) && i.Operands.Count > 0 && i.Operands[0] is RegOperand { Reg: var through } && MethodRead(through, 0))
                     {
                         CallsThroughMethod = true;
                         MethodSlots(through, 0);

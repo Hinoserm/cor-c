@@ -1,0 +1,120 @@
+// test: async ValueTask methods that suspend, fault and return structs
+// expect-exit: 0
+// expect-output:
+// later 42
+// chain 55
+// caught late
+// faulted True
+// caught now
+// big 5 10 15
+// nested 22
+// locked 2
+// released True
+//
+// The other half of the ValueTask promise: one that really suspends moves
+// its machine to the heap at that await and completes a task its caller
+// awaits; one that throws before suspending answers a faulted ValueTask;
+// a struct result travels through either; and a suspension inside a loop,
+// with locals and an awaiter held across it, finds them again.
+
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+
+struct Big
+{
+    public long A, B, C;
+}
+
+static class Program
+{
+    static readonly AsyncLock Gate = new AsyncLock();
+
+    static async ValueTask<int> Later(int x)
+    {
+        await Task.Yield();
+        return x + 1;
+    }
+
+    static async ValueTask<int> Chain(int n)
+    {
+        int total = 0;
+        for (int i = 0; i < n; i++)
+        {
+            total += await Later(i);
+        }
+        return total;
+    }
+
+    static async ValueTask<string> Fails()
+    {
+        await Task.Yield();
+        throw new InvalidOperationException("late");
+    }
+
+    static async ValueTask<int> FailsNow(int x)
+    {
+        if (x > 0) throw new InvalidOperationException("now");
+        await Task.Yield();
+        return x;
+    }
+
+    static async ValueTask<Big> Make(long a)
+    {
+        await Task.Yield();
+        Big b = new Big();
+        b.A = a;
+        b.B = a * 2;
+        b.C = a * 3;
+        return b;
+    }
+
+    static async ValueTask<int> Nested(int depth)
+    {
+        if (depth == 0)
+        {
+            await Task.Yield();
+            return 1;
+        }
+        int below = await Nested(depth - 1);
+        return below + depth;
+    }
+
+    static async ValueTask<int> Locked()
+    {
+        using (await Gate.LockAsync())
+        {
+            await Task.Yield();
+            return Gate.IsHeld ? 2 : 0;
+        }
+    }
+
+    static async Task Main()
+    {
+        Console.WriteLine("later " + await Later(41));
+        Console.WriteLine("chain " + await Chain(10));
+        try
+        {
+            await Fails();
+        }
+        catch (InvalidOperationException e)
+        {
+            Console.WriteLine("caught " + e.Message);
+        }
+        ValueTask<int> now = FailsNow(1);
+        Console.WriteLine("faulted " + now.IsFaulted);
+        try
+        {
+            await now;
+        }
+        catch (InvalidOperationException e)
+        {
+            Console.WriteLine("caught " + e.Message);
+        }
+        Big b = await Make(5);
+        Console.WriteLine("big " + b.A + " " + b.B + " " + b.C);
+        Console.WriteLine("nested " + await Nested(6));
+        Console.WriteLine("locked " + await Locked());
+        Console.WriteLine("released " + !Gate.IsHeld);
+    }
+}

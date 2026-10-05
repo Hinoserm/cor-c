@@ -1,0 +1,46 @@
+// A module: a driver compiled against the kernel's declarations, with no
+// runtime of its own, and the aliases it answers to.
+
+using System.Runtime.CompilerServices;
+using Kernel;
+
+namespace Sound;
+
+[ModuleAlias("pnp:CTL0031")]
+[ModuleAlias("isa:sb16@220,240,260,280")]
+[ModuleDependency("mpu401")]
+public sealed class Sb16 : Driver
+{
+    int _base;
+
+    public override string Name => "sb16";
+
+    public override int Bind(int port)
+    {
+        _base = port;
+        Log.Write("sb16 at " + port + ", " + Sb16Module.Greeting);
+        return Sb16Module.Loads;
+    }
+}
+
+// The ring-1 half of the driver: not in this ring-0 image of it.
+[Ring1]
+static class Sb16Mixer
+{
+    public static int Mix() { return Seat.Paint(); }
+}
+
+static class Sb16Module
+{
+    public static int Loads;
+    // Made on the heap at load, and held only by the module's own static.
+    public static string Greeting = "";
+
+    [ModuleInitializer]
+    internal static void Load()
+    {
+        Loads++;
+        Greeting = "loaded " + Loads + " time" + (Loads == 1 ? "" : "s");
+        Drivers.Register(new Sb16());
+    }
+}

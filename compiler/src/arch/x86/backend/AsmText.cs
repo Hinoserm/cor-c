@@ -81,7 +81,7 @@ internal static class AsmText
                     yield return $"pop {RegName((int)m.SavedRegs[k], 4)}";
                 }
                 yield return "leave";
-                yield return "ret";
+                yield return m.Source.CalleePops > 0 ? "ret " + m.Source.CalleePops : "ret";
                 yield break;
             case MOp.Jcc:
                 yield return $"j{i.Cond.Mnemonic()} {Op(i.Operands[0], 4, false)}";
@@ -98,6 +98,9 @@ internal static class AsmText
             case MOp.Call:
             case MOp.CallInd:
             case MOp.CallKeep:
+            case MOp.CallKeepInd:
+            case MOp.CallKeepEax:
+            case MOp.CallKeepEaxInd:
                 yield return $"call {Op(i.Operands[0], 4, true)}";
                 yield break;
             case MOp.Cdq:

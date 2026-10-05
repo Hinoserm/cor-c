@@ -6,6 +6,15 @@ namespace Corsac.Lang.Ir;
 /// <summary>One compilation's worth of IR: what the backend is handed.</summary>
 public sealed class Module
 {
+    /// <summary>
+    /// The program's own declarations lowering never emitted -- a method no
+    /// lowered code calls, a static nothing touches, a generic method whose
+    /// copies (if any) other units make -- for the unused-code report
+    /// (UsesCapture, UnusedReport): whether it is a method, its name as
+    /// written, and where it was declared.
+    /// </summary>
+    public List<(bool Method, string Display, string File, int Line)> Unlowered { get; } = new();
+
     public string Name { get; }
     public List<Function> Functions { get; } = new();
     public List<DataItem> Data { get; } = new();
@@ -109,6 +118,9 @@ public sealed class Module
     /// <summary>The unit's pointer constraints, for the link to solve (RegionSummary); written beside its IR.</summary>
     public Corsac.Lang.Lto.RegionHints? RegionHints { get; set; }
 
+    /// <summary>The unit's interrupt facts, for the link's check of handlers across units (Lto.InterruptNotes). Null: none kept.</summary>
+    public List<Corsac.Lang.Lto.InterruptNotes.Fact>? InterruptFacts { get; set; }
+
     /// <summary>
     /// The link's answer, for a unit it regenerates: which parameters of the
     /// functions the unit calls, and of its own, escape, solved over every
@@ -159,6 +171,14 @@ public sealed class Module
     /// and the link makes the program a dynamic one that needs them.
     /// </summary>
     public HashSet<string> NativeLibraries { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// What calls each of this unit's [ModuleInitializer] methods, its type
+    /// touched first, in the order they were declared: what a shared object's
+    /// DT_INIT calls after __corsac_init (Lowering.ModuleInitializers,
+    /// Linker.Initializers).
+    /// </summary>
+    public List<string> Initializers { get; } = new();
 
     public int Provided(IReadOnlySet<string> provided)
     {

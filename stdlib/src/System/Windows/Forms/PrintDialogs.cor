@@ -1,0 +1,283 @@
+// WINDOWS FORMS' PRINTING DIALOGS: PrintDialog (a printer, the pages, the
+// copies) and PageSetupDialog (the paper's way round and its margins), as
+// .NET's CommonDialogs over System.Drawing.Printing's settings -- forms of
+// Forms' own controls, laid out as Windows 2000's Print and Page Setup
+// dialogs are, the way MessageBox builds its form (Forms.cor).
+
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Drawing;
+using System.Drawing.Printing;
+
+namespace System.Windows.Forms
+{
+    /// .NET's CommonDialog: ShowDialog runs the dialog and answers OK when
+    /// RunDialog said yes.
+    public abstract class CommonDialog : System.ComponentModel.Component
+    {
+        public object? Tag { get; set; }
+        public abstract void Reset();
+        protected abstract bool RunDialog(nint hwndOwner);
+        public DialogResult ShowDialog() { return RunDialog(IntPtr.Zero) ? DialogResult.OK : DialogResult.Cancel; }
+        public DialogResult ShowDialog(IWin32Window? owner) { return ShowDialog(); }
+    }
+
+    /// The forms both dialogs are made of.
+    static class PrintDialogLayout
+    {
+        public const int Margin = 12, ButtonW = 75, ButtonH = 23, Gap = 8, RowH = 24;
+
+        public static Form Make(string caption, int width, int height)
+        {
+            Form f = new Form();
+            f.Text = caption;
+            f.FormBorderStyle = FormBorderStyle.FixedDialog;
+            f.MinimizeBox = false;
+            f.MaximizeBox = false;
+            f.StartPosition = FormStartPosition.CenterScreen;
+            f.ClientSize = new Size(width, height);
+            return f;
+        }
+
+        public static Label Text(Control into, string text, int x, int y, int w)
+        {
+            Label l = new Label();
+            l.AutoSize = false;
+            l.Text = text;
+            l.SetBounds(x, y + 3, w, 16);
+            into.Controls.Add(l);
+            return l;
+        }
+
+        public static NumericUpDown Number(Control into, int x, int y, int w, int min, int max, int value)
+        {
+            NumericUpDown n = new NumericUpDown();
+            n.Minimum = min; n.Maximum = max; n.Value = value;
+            n.SetBounds(x, y, w, 20);
+            into.Controls.Add(n);
+            return n;
+        }
+
+        /// OK and Cancel at the bottom right; OK the default, Cancel Escape's.
+        public static void Buttons(Form f)
+        {
+            int y = f.ClientSize.Height - Margin - ButtonH, x = f.ClientSize.Width - Margin - 2 * ButtonW - Gap;
+            Button ok = new Button();
+            ok.Text = "OK"; ok.DialogResult = DialogResult.OK;
+            ok.SetBounds(x, y, ButtonW, ButtonH);
+            Button cancel = new Button();
+            cancel.Text = "Cancel"; cancel.DialogResult = DialogResult.Cancel;
+            cancel.SetBounds(x + ButtonW + Gap, y, ButtonW, ButtonH);
+            f.Controls.Add(ok);
+            f.Controls.Add(cancel);
+            f.AcceptButton = ok;
+            f.CancelButton = cancel;
+        }
+    }
+
+    /// The Print dialog: which printer, which pages, how many copies.
+    public class PrintDialog : CommonDialog
+    {
+        PrinterSettings? _settings;
+
+        public PrintDocument? Document { get; set; }
+        public PrinterSettings PrinterSettings
+        {
+            get { if (_settings == null) _settings = Document != null ? Document.PrinterSettings : new PrinterSettings(); return _settings; }
+            set { _settings = value; }
+        }
+        public bool AllowCurrentPage { get; set; }
+        public bool AllowPrintToFile { get; set; } = true;
+        public bool AllowSelection { get; set; }
+        public bool AllowSomePages { get; set; }
+        public bool PrintToFile { get; set; }
+        public bool ShowHelp { get; set; }
+        public bool ShowNetwork { get; set; } = true;
+        public bool UseEXDialog { get; set; }
+
+        public override void Reset()
+        {
+            _settings = null; Document = null;
+            AllowCurrentPage = false; AllowPrintToFile = true; AllowSelection = false; AllowSomePages = false;
+            PrintToFile = false; ShowHelp = false; ShowNetwork = true; UseEXDialog = false;
+        }
+
+        protected override bool RunDialog(nint hwndOwner)
+        {
+            PrinterSettings ps = PrinterSettings;
+            const int M = PrintDialogLayout.Margin, W = 420;
+            Form f = PrintDialogLayout.Make("Print", W, 300);
+
+            GroupBox printer = new GroupBox();
+            printer.Text = "Printer";
+            printer.SetBounds(M, M, W - 2 * M, 104);
+            f.Controls.Add(printer);
+            PrintDialogLayout.Text(printer, "Name:", 10, 20, 60);
+            ComboBox names = new ComboBox();
+            names.SetBounds(74, 20, W - 2 * M - 84, 21);
+            printer.Controls.Add(names);
+            Label where = PrintDialogLayout.Text(printer, "", 10, 46, W - 2 * M - 20);
+            Label comment = PrintDialogLayout.Text(printer, "", 10, 64, W - 2 * M - 120);
+            CheckBox toFile = new CheckBox();
+            toFile.Text = "Print to file";
+            toFile.SetBounds(W - 2 * M - 110, 76, 100, 20);
+            toFile.Checked = PrintToFile || ps.PrintToFile;
+            toFile.Enabled = AllowPrintToFile;
+            printer.Controls.Add(toFile);
+
+            List<Corsac.Printing.PrinterRecord> all = Corsac.Printing.PrintSpooler.Printers();
+            int chosen = -1;
+            for (int i = 0; i < all.Count; i++)
+            {
+                names.Items.Add(all[i].Name);
+                if (string.Equals(all[i].Name, ps.PrinterName, StringComparison.OrdinalIgnoreCase)) chosen = i;
+            }
+            void Describe()
+            {
+                int at = names.SelectedIndex;
+                if (at < 0 || at >= all.Count) { where.Text = ""; comment.Text = ""; return; }
+                where.Text = "Where: " + all[at].Port;
+                comment.Text = "Comment: " + all[at].Comment;
+            }
+            names.SelectedIndexChanged += (object? sender, EventArgs e) => Describe();
+            if (chosen < 0 && all.Count > 0) chosen = 0;
+            names.SelectedIndex = chosen;
+            Describe();
+
+            int half = (W - 2 * M - PrintDialogLayout.Gap) / 2, below = M + 104 + PrintDialogLayout.Gap;
+            GroupBox range = new GroupBox();
+            range.Text = "Print range";
+            range.SetBounds(M, below, half, 110);
+            f.Controls.Add(range);
+            RadioButton allPages = new RadioButton();
+            allPages.Text = "All"; allPages.SetBounds(10, 20, half - 20, 20);
+            range.Controls.Add(allPages);
+            RadioButton somePages = new RadioButton();
+            somePages.Text = "Pages"; somePages.SetBounds(10, 44, 60, 20);
+            somePages.Enabled = AllowSomePages;
+            range.Controls.Add(somePages);
+            NumericUpDown from = PrintDialogLayout.Number(range, 72, 44, 44, Math.Max(ps.MinimumPage, 1), Math.Max(ps.MaximumPage, 1), Math.Max(ps.FromPage, Math.Max(ps.MinimumPage, 1)));
+            PrintDialogLayout.Text(range, "to", 120, 44, 18);
+            NumericUpDown to = PrintDialogLayout.Number(range, 140, 44, 44, Math.Max(ps.MinimumPage, 1), Math.Max(ps.MaximumPage, 1), Math.Max(ps.ToPage, Math.Max(ps.MinimumPage, 1)));
+            from.Enabled = AllowSomePages; to.Enabled = AllowSomePages;
+            RadioButton selection = new RadioButton();
+            selection.Text = "Selection"; selection.SetBounds(10, 68, half - 20, 20);
+            selection.Enabled = AllowSelection;
+            range.Controls.Add(selection);
+            if (ps.PrintRange == PrintRange.SomePages && AllowSomePages) somePages.Checked = true;
+            else if (ps.PrintRange == PrintRange.Selection && AllowSelection) selection.Checked = true;
+            else allPages.Checked = true;
+
+            GroupBox copies = new GroupBox();
+            copies.Text = "Copies";
+            copies.SetBounds(M + half + PrintDialogLayout.Gap, below, half, 110);
+            f.Controls.Add(copies);
+            PrintDialogLayout.Text(copies, "Number of copies:", 10, 20, 110);
+            NumericUpDown count = PrintDialogLayout.Number(copies, 124, 20, 50, 1, ps.MaximumCopies, Math.Max((int)ps.Copies, 1));
+            CheckBox collate = new CheckBox();
+            collate.Text = "Collate"; collate.SetBounds(10, 50, 100, 20);
+            collate.Checked = ps.Collate;
+            copies.Controls.Add(collate);
+
+            PrintDialogLayout.Buttons(f);
+            if (names.SelectedIndex < 0) f.AcceptButton!.Enabled = false;
+            if (f.ShowDialog() != DialogResult.OK) return false;
+
+            int pick = names.SelectedIndex;
+            if (pick < 0 || pick >= all.Count) return false;
+            ps.PrinterName = all[pick].Name;
+            ps.PrintToFile = toFile.Checked;
+            PrintToFile = toFile.Checked;
+            ps.PrintRange = somePages.Checked ? PrintRange.SomePages : selection.Checked ? PrintRange.Selection : PrintRange.AllPages;
+            if (somePages.Checked) { ps.FromPage = from.Value; ps.ToPage = Math.Max(to.Value, from.Value); }
+            ps.Copies = (short)count.Value;
+            ps.Collate = collate.Checked;
+            return true;
+        }
+    }
+
+    /// The Page Setup dialog: the paper, its way round, the margins.
+    public class PageSetupDialog : CommonDialog
+    {
+        PageSettings? _page;
+        PrinterSettings? _printer;
+
+        public PrintDocument? Document { get; set; }
+        public PageSettings PageSettings
+        {
+            get { if (_page == null) _page = Document != null ? Document.DefaultPageSettings : new PageSettings(); return _page; }
+            set { _page = value; }
+        }
+        public PrinterSettings PrinterSettings
+        {
+            get { if (_printer == null) _printer = Document != null ? Document.PrinterSettings : PageSettings.PrinterSettings; return _printer; }
+            set { _printer = value; }
+        }
+        public bool AllowMargins { get; set; } = true;
+        public bool AllowOrientation { get; set; } = true;
+        public bool AllowPaper { get; set; } = true;
+        public bool AllowPrinter { get; set; } = true;
+        public bool ShowHelp { get; set; }
+        public bool ShowNetwork { get; set; } = true;
+        public bool EnableMetric { get; set; }
+        public Margins? MinMargins { get; set; }
+
+        public override void Reset()
+        {
+            _page = null; _printer = null; Document = null; MinMargins = null;
+            AllowMargins = true; AllowOrientation = true; AllowPaper = true; AllowPrinter = true;
+            ShowHelp = false; ShowNetwork = true; EnableMetric = false;
+        }
+
+        protected override bool RunDialog(nint hwndOwner)
+        {
+            PageSettings page = PageSettings;
+            const int M = PrintDialogLayout.Margin, W = 360;
+            Form f = PrintDialogLayout.Make("Page Setup", W, 270);
+
+            GroupBox paper = new GroupBox();
+            paper.Text = "Paper";
+            paper.SetBounds(M, M, W - 2 * M, 50);
+            f.Controls.Add(paper);
+            PaperSize size = page.PaperSize;
+            PrintDialogLayout.Text(paper, "Size: " + size.PaperName + " (" + size.Width / 100.0 + " x " + size.Height / 100.0 + " in), " + PrinterSettings.PrinterName, 10, 20, W - 2 * M - 20);
+
+            int below = M + 50 + PrintDialogLayout.Gap, half = (W - 2 * M - PrintDialogLayout.Gap) / 2;
+            GroupBox orientation = new GroupBox();
+            orientation.Text = "Orientation";
+            orientation.SetBounds(M, below, half - 20, 100);
+            f.Controls.Add(orientation);
+            RadioButton portrait = new RadioButton();
+            portrait.Text = "Portrait"; portrait.SetBounds(10, 24, half - 50, 20);
+            RadioButton landscape = new RadioButton();
+            landscape.Text = "Landscape"; landscape.SetBounds(10, 52, half - 50, 20);
+            orientation.Controls.Add(portrait);
+            orientation.Controls.Add(landscape);
+            if (page.Landscape) landscape.Checked = true; else portrait.Checked = true;
+            portrait.Enabled = AllowOrientation; landscape.Enabled = AllowOrientation;
+
+            GroupBox margins = new GroupBox();
+            margins.Text = "Margins (hundredths of an inch)";
+            margins.SetBounds(M + half - 20 + PrintDialogLayout.Gap, below, half + 20, 100);
+            f.Controls.Add(margins);
+            Margins least = MinMargins ?? new Margins(0, 0, 0, 0);
+            Margins m = page.Margins;
+            PrintDialogLayout.Text(margins, "Left:", 10, 20, 40);
+            NumericUpDown left = PrintDialogLayout.Number(margins, 50, 20, 50, least.Left, 1000, Math.Max(m.Left, least.Left));
+            PrintDialogLayout.Text(margins, "Right:", 104, 20, 40);
+            NumericUpDown right = PrintDialogLayout.Number(margins, 144, 20, 50, least.Right, 1000, Math.Max(m.Right, least.Right));
+            PrintDialogLayout.Text(margins, "Top:", 10, 52, 40);
+            NumericUpDown top = PrintDialogLayout.Number(margins, 50, 52, 50, least.Top, 1000, Math.Max(m.Top, least.Top));
+            PrintDialogLayout.Text(margins, "Bottom:", 104, 52, 40);
+            NumericUpDown bottom = PrintDialogLayout.Number(margins, 144, 52, 50, least.Bottom, 1000, Math.Max(m.Bottom, least.Bottom));
+            left.Enabled = AllowMargins; right.Enabled = AllowMargins; top.Enabled = AllowMargins; bottom.Enabled = AllowMargins;
+
+            PrintDialogLayout.Buttons(f);
+            if (f.ShowDialog() != DialogResult.OK) return false;
+            page.Landscape = landscape.Checked;
+            page.Margins = new Margins(left.Value, right.Value, top.Value, bottom.Value);
+            return true;
+        }
+    }
+}

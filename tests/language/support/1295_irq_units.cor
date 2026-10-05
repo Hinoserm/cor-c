@@ -1,0 +1,26 @@
+// The other unit of 1295 and 1296: what an interrupt handler in the test's
+// own unit calls. Note allocates; Count does not.
+
+using System.Collections.Generic;
+
+static class IrqHelpers
+{
+    static long _count;
+    static List<long>? _kept;
+
+    public static void Note(long n)
+    {
+        List<long> made = new List<long>();
+        made.Add(n);
+        _kept = made;
+    }
+
+    public static void Count(long n)
+    {
+        _count = _count + Step(n);
+    }
+
+    static long Step(long n) => n & 1;
+
+    public static long Counted => _count;
+}

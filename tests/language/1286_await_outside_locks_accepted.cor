@@ -1,0 +1,140 @@
+// test: awaits outside every lock accepted, and an awaitable lock held across one
+// expect-exit: 0
+// expect-output:
+// left 1
+// tried 0 1
+// wrapped 3
+// monitor 4
+// lambda 5
+// async-lock 2 True
+// released True
+// uncontended 7
+//
+// What the await check lets by (docs/X86-BACKEND.md, "Async safety"): a lock left before
+// the await on every path; the branch where TryEnter answered false; a
+// method that takes and leaves a lock inside its own body; a `lock` with no
+// await in it; an async lambda in a method that holds a lock (the lambda's
+// body runs later, holding nothing); and AsyncLock, the awaitable lock a
+// hold across an await takes instead.
+
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+
+class IrqSpinLock
+{
+    long _word;
+    public bool Enter() { _word = 1; return true; }
+    public void Leave(bool on) { _word = 0; }
+}
+
+class KernelGate
+{
+    long _word;
+    public void Enter() { _word = 1; }
+    public bool TryEnter() { if (_word != 0) return false; _word = 1; return true; }
+    public void Leave() { _word = 0; }
+}
+
+static class Program
+{
+    static readonly IrqSpinLock Spin = new IrqSpinLock();
+    static readonly KernelGate Gate = new KernelGate();
+    static readonly object Monitorless = new object();
+    static readonly AsyncLock Long = new AsyncLock();
+    static int _shared;
+
+    static int Bump()
+    {
+        bool on = Spin.Enter();
+        try { return ++_shared; }
+        finally { Spin.Leave(on); }
+    }
+
+    static async Task<int> Left()
+    {
+        bool on = Spin.Enter();
+        int seen = _shared;
+        Spin.Leave(on);
+        await Task.Yield();
+        return seen + 1;
+    }
+
+    static async Task<string> Tried()
+    {
+        int first = 0;
+        if (!Gate.TryEnter())
+        {
+            // Not taken: free to await.
+            await Task.Yield();
+            first = -1;
+        }
+        else
+        {
+            Gate.Leave();
+        }
+        await Task.Yield();
+        bool second = Gate.TryEnter();
+        if (second)
+        {
+            Gate.Leave();
+        }
+        await Task.Yield();
+        return first + " " + (second ? 1 : 0);
+    }
+
+    static async Task<int> Wrapped()
+    {
+        Bump();
+        await Task.Yield();
+        return Bump() + 1;
+    }
+
+    static async Task<int> Monitored()
+    {
+        int value;
+        lock (Monitorless)
+        {
+            value = 4;
+        }
+        await Task.Yield();
+        return value;
+    }
+
+    static async Task<int> Lambda()
+    {
+        Gate.Enter();
+        Func<Task<int>> later = async () =>
+        {
+            await Task.Yield();
+            return 5;
+        };
+        Gate.Leave();
+        return await later();
+    }
+
+    static async Task<int> Locked()
+    {
+        using (await Long.LockAsync())
+        {
+            await Task.Yield();
+            return Long.IsHeld ? 2 : 0;
+        }
+    }
+
+    static async Task Main()
+    {
+        Console.WriteLine("left " + await Left());
+        Console.WriteLine("tried " + await Tried());
+        Console.WriteLine("wrapped " + await Wrapped());
+        Console.WriteLine("monitor " + await Monitored());
+        Console.WriteLine("lambda " + await Lambda());
+        int held = await Locked();
+        Console.WriteLine("async-lock " + held + " " + (held == 2));
+        Console.WriteLine("released " + !Long.IsHeld);
+        AsyncLockReleaser quick = await Long.LockAsync();
+        quick.Dispose();
+        Console.WriteLine("uncontended " + (Long.TryLock() ? 7 : 0));
+        Long.Release();
+    }
+}

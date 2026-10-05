@@ -1,0 +1,36 @@
+// test: an interrupt handler calling a clean method of another unit accepted
+// units: tests/language/support/1295_irq_units.cor
+// expect-exit: 0
+// expect-output:
+// counted 2
+//
+// The same link check as 1295 (InterruptNotes), finding nothing: IrqHelpers.
+// Count and the Step it calls allocate nothing, so the handler links and runs.
+
+using System;
+
+interface IIrqHandler
+{
+    void OnIrq(long n);
+}
+
+class Disc : IIrqHandler
+{
+    public void OnIrq(long n)
+    {
+        IrqHelpers.Count(n);
+    }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Disc d = new Disc();
+        d.OnIrq(1);
+        d.OnIrq(2);
+        d.OnIrq(3);
+        Console.WriteLine("counted " + IrqHelpers.Counted);
+        return 0;
+    }
+}
