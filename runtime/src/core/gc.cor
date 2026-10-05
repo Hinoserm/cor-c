@@ -7271,6 +7271,7 @@ static class Gc
     static void SayCensus()
     {
         SayNumber("gc census: whole cycle, live bytes ", _liveBytes);
+        HeapChunks.SayMakeup();
         SayTable(_censusAt, "gc census: bytes ", "gc census:   blocks ", "gc census:   key ", true);
         if (_deadCensus && _deadAt != 0)
         {
@@ -11413,6 +11414,37 @@ static class HeapChunks
     public static long PageClass(long chunk)
     {
         return Sys.Peek(chunk + ChunkClass);
+    }
+
+    /// What the heap is made of, said with the census: size-class pages
+    /// (and how many sit pooled, empty), chunks of mixed blocks and what
+    /// their last sweeps found live in them, and the largest chunk -- where
+    /// a heap mapped at twice what is live keeps the difference. The heap
+    /// lock is held; nothing is allocated.
+    public static void SayMakeup()
+    {
+        long pages = 0, pooled = 0, mixed = 0, mixedBytes = 0, mixedLive = 0, largest = 0;
+        for (long chunk = _chunks; chunk != 0; chunk = Sys.Peek(chunk + ChunkNext))
+        {
+            long size = Sys.Peek(chunk + ChunkLimit) - chunk;
+            if (PageClass(chunk) != 0)
+            {
+                pages = pages + 1;
+                if (IsPooled(chunk)) pooled = pooled + 1;
+                continue;
+            }
+            mixed = mixed + 1;
+            mixedBytes = mixedBytes + size;
+            mixedLive = mixedLive + Sys.Peek(chunk + ChunkLiveBytes);
+            if (size > largest) largest = size;
+        }
+        Gc.SayNumber("gc census: heap bytes ", _heapBytes);
+        Gc.SayNumber("gc census:   size-class pages ", pages);
+        Gc.SayNumber("gc census:   of them pooled ", pooled);
+        Gc.SayNumber("gc census:   mixed chunks ", mixed);
+        Gc.SayNumber("gc census:   their bytes ", mixedBytes);
+        Gc.SayNumber("gc census:   live in them ", mixedLive);
+        Gc.SayNumber("gc census:   largest chunk ", largest);
     }
 
     public static void SetPageClass(long chunk, long classPlusOne)
