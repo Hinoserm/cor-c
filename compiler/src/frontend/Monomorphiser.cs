@@ -1667,6 +1667,12 @@ public sealed class Monomorphiser
         if (r.Args.Count == 0)
         {
             if (r.ArrayRank == 1) ArrayIsASequence(r, new List<TypeRef>());
+            // NOTHING TO SUBSTITUTE IS THE SAME REFERENCE. A type reference is
+            // not written after the parser makes it, and nothing keys a table
+            // by one, so every copy of a template may hold the template's own
+            // `int` or `Expr`: a copy each was most of the half a million type
+            // references a large unit held live.
+            if (r.UseArgs is null) return r;
             return new TypeRef
             {
                 Name = r.Name, ArrayRank = r.ArrayRank, Nullable = r.Nullable,

@@ -3886,9 +3886,11 @@ public sealed partial class Binder
     /// lambda made an iterator and a closure every time a type with arguments
     /// was resolved, and the binder resolves them by the hundred thousand.
     /// </summary>
-    private Type[] ResolveAll(List<TypeRef> refs, TypeSymbol? context)
+    private IReadOnlyList<Type> ResolveAll(List<TypeRef> refs, TypeSymbol? context)
     {
-        if (refs.Count == 0) return Array.Empty<Type>();
+        // None: the one shared empty list, not the empty array, which became
+        // a view of its own at every Args it was given to -- 137 thousand.
+        if (refs.Count == 0) return Type.NoArgs;
         Type[] made = new Type[refs.Count];
         for (int i = 0; i < made.Length; i++) made[i] = Resolve(refs[i], context);
         return made;

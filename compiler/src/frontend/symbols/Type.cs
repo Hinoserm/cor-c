@@ -28,7 +28,7 @@ public sealed class Type : IEquatable<Type>
     // default spelt here made a view for every Type -- 120 thousand of them
     // live in a unit -- all around the same empty array.
     public IReadOnlyList<Type> Args { get; init; } = NoArgs;
-    private static readonly IReadOnlyList<Type> NoArgs = Array.Empty<Type>();
+    internal static readonly IReadOnlyList<Type> NoArgs = Array.Empty<Type>();
     public IReadOnlyList<Type>? UseArgs { get; init; }
     /// <summary>Set when this is a type parameter rather than a concrete type.</summary>
     public string? ParamName { get; init; }
