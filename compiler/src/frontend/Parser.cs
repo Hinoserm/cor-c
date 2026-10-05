@@ -762,6 +762,30 @@ public sealed class Parser
     /// <summary>Whether a type named `dynamic` was read (CompilationUnit.UsesDynamic).</summary>
     private bool _sawDynamic;
 
+    /// <summary>
+    /// Whether the `dynamic` at token i is the type and not a name: a type is
+    /// parsed speculatively at many places a name could stand, and a
+    /// parameter called `dynamic` (Runtime.StartImages) made the whole file
+    /// one that uses dynamic, its classes given late members in its own
+    /// object only. The type: declaring something (`dynamic d`), an array of
+    /// it, a type argument (`List&lt;dynamic&gt;`, `, dynamic&gt;`), a cast
+    /// (`(dynamic)x`).
+    /// </summary>
+    private bool WrittenAsType(int i)
+    {
+        Tok Kind(int at) => at >= 0 && at < _t.Count ? _t[at].Kind : Tok.Semi;
+        Tok before = Kind(i - 1), after = Kind(i + 1);
+        if (after == Tok.Ident) return true;
+        if (after == Tok.LBracket && Kind(i + 2) == Tok.RBracket) return true;
+        if (after == Tok.Question && Kind(i + 2) == Tok.Ident) return true;
+        if (before == Tok.Lt) return true;
+        if (before == Tok.Comma && after == Tok.Gt) return true;
+        if (before == Tok.LParen && after == Tok.RParen)
+            return Kind(i + 2) is Tok.Ident or Tok.Int or Tok.Real or Tok.Str or Tok.Char or Tok.LParen or Tok.KwNew or Tok.KwThis
+                                 or Tok.KwNull or Tok.KwTrue or Tok.KwFalse or Tok.InterpStr;
+        return false;
+    }
+
     /// The types and namespaces of one namespace (`within`, "" for the
     /// global one), up to the brace that closes it or the end of the file.
     private void ParseNamespaceMembers(CompilationUnit unit, string within)
@@ -3289,7 +3313,7 @@ public sealed class Parser
             name += "." + _t[_i++].Text;
         }
 
-        if (name == "dynamic") _sawDynamic = true;
+        if (name == "dynamic" && WrittenAsType(_i - 1)) _sawDynamic = true;
 
         List<TypeRef> args = new();
 
