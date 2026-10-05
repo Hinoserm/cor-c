@@ -12389,7 +12389,11 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     private void Tidy() {
         int[]? old = order;
         int[]? oldPlaces = placeOf;
-        int[] list = new int[(mask + 1) * 2];
+        // As many places as slots: what goes in is placed in a vacancy when
+        // one is free, so the list never holds more places than the table
+        // has held at once -- under three quarters of its slots. Twice the
+        // slots was a fifth of a table's storage for nothing.
+        int[] list = new int[mask + 1];
         int[] places = new int[mask + 1];
         int kept = 0;
 
@@ -12901,6 +12905,15 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         int size = 16;
         while (size < want) { size = size * 2; }
         if (size < mask + 1) { Rehash(size); }
+        // AND THE ORDER IS SQUEEZED, as .NET's TrimExcess copies its entries
+        // into a new array: the places of removed members go, and with them
+        // the free list, so what is added next goes at the end. .NET does it
+        // whenever its prime size for the count is below what it has, which
+        // a table with anything to trim always is; the slots here are powers
+        // of two and often stay as they were, so the order is squeezed every
+        // time. Kept, the old places were filled first and the walk differed.
+        vacancies = 0;
+        Tidy();
     }
 
     // The table remade at `size` slots, every entry in the place it had.
@@ -12928,7 +12941,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         // EVERY ONE IN THE PLACE IT HAD, and the freed places still free, as
         // .NET's resize copies its entries: growing changes nothing a walk,
         // or the next add, can see.
-        int[] list = new int[oldOrder != null && oldOrder.Length > size * 2 ? oldOrder.Length : size * 2];
+        int[] list = new int[oldOrder != null && oldOrder.Length > size ? oldOrder.Length : size];
         int[] places = new int[size];
         for (int n = 0; n < oldOrdered; n++) {
             int i = oldOrder![n];
@@ -14332,7 +14345,11 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
     private void Tidy() {
         int[]? old = order;
         int[]? oldPlaces = placeOf;
-        int[] list = new int[(mask + 1) * 2];
+        // As many places as slots: what goes in is placed in a vacancy when
+        // one is free, so the list never holds more places than the table
+        // has held at once -- under three quarters of its slots. Twice the
+        // slots was a fifth of a table's storage for nothing.
+        int[] list = new int[mask + 1];
         int[] places = new int[mask + 1];
         int kept = 0;
 
@@ -14685,6 +14702,15 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
         int size = 16;
         while (size < want) { size = size * 2; }
         if (size < mask + 1) { Rehash(size); }
+        // AND THE ORDER IS SQUEEZED, as .NET's TrimExcess copies its entries
+        // into a new array: the places of removed members go, and with them
+        // the free list, so what is added next goes at the end. .NET does it
+        // whenever its prime size for the count is below what it has, which
+        // a table with anything to trim always is; the slots here are powers
+        // of two and often stay as they were, so the order is squeezed every
+        // time. Kept, the old places were filled first and the walk differed.
+        vacancies = 0;
+        Tidy();
     }
 
     // The table remade at `size` slots, every member in the place it had.
@@ -14707,7 +14733,7 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
         // Tombstones do not survive a rehash, which is the other thing growth
         // is for; every element keeps its place, and the freed places stay
         // free, as .NET's resize copies its entries.
-        int[] list = new int[oldOrder != null && oldOrder.Length > size * 2 ? oldOrder.Length : size * 2];
+        int[] list = new int[oldOrder != null && oldOrder.Length > size ? oldOrder.Length : size];
         int[] places = new int[size];
         for (int n = 0; n < oldOrdered; n++) {
             int i = oldOrder![n];
