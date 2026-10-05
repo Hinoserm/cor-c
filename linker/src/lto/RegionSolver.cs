@@ -673,13 +673,16 @@ public static class RegionSolver
             };
             if (_report?.FirstOrDefault(w => w.StartsWith("+why=", StringComparison.Ordinal)) is { } whyOf)
             {
-                string fn = whyOf[5..];
+                // Several functions at once, by parts of their names split by '|':
+                // a link is long, and one question per link was slow going.
+                string[] names = whyOf[5..].Split('|', StringSplitOptions.RemoveEmptyEntries);
+                bool Named(int f) => names.Any(n => _functions[f].Name.Contains(n, StringComparison.Ordinal));
                 HashSet<int> explain = new();
                 for (int f = 0; f < count; f++)
-                    if (_functions[f].Name.Contains(fn, StringComparison.Ordinal))
+                    if (Named(f))
                         for (int k = 0; k < _functions[f].Sites.Length; k++) explain.Add(siteBase[f] + k);
                 _escape.Why = explain.Contains;
-                _escape.WhyFunction = f => _functions[f].Name.Contains(fn, StringComparison.Ordinal);
+                _escape.WhyFunction = Named;
             }
             // A diagnostic: wide calls past another count of targets than the
             // default sixteen (+wide=0: every call followed in order).

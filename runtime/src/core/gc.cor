@@ -7185,8 +7185,13 @@ static class Gc
     /// environment's CORSAC_GC_CENSUS=1 does from the first.
     public static void AskCensus()
     {
+        _censusAsked = true;
         _census = true;
     }
+
+    // Asked by the program (AskCensus); every collection asks the platform
+    // afresh as well, and must not take back what the program asked for.
+    static bool _censusAsked;
 
     static void StartCensus()
     {
@@ -9028,7 +9033,7 @@ static class Gc
         }
         // Asked afresh at every collection: a program may be told to take
         // the census after it started (Platform.CensusWanted).
-        _census = Platform.GcCensus();
+        _census = _censusAsked || Platform.GcCensus();
         _thresholdCap = Platform.GcThreshold();
         long clock = PauseClock;
         long began = clock != 0 ? Sys.Call(clock, 0, 0, 0) : 0;
