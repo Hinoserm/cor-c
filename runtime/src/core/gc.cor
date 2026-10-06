@@ -1666,7 +1666,7 @@ static class Gc
             if (entry == 0) return;
             nuint block = Untag(entry);
             nuint tail = TailOfEntry(entry);
-            if (SetFlagW(block, (nuint)FlagScan, tail)) ScanBlockW(block, PeekW(block) & ~(nuint)7, local, tail);
+            if (ClaimScanW(block, tail)) ScanBlockW(block, PeekW(block) & ~(nuint)7, local, tail);
         }
     }
 
@@ -4623,6 +4623,7 @@ static class Gc
         long freeBytes = 0;
         bool stillYoung = false;
         long block = first;
+        long run = 0;           // the first of the dead blocks not yet cleared (ClearDeadRun)
         while (block + size <= end)
         {
             long word = Sys.Peek(block);
@@ -4632,7 +4633,7 @@ static class Gc
             }
             SweepVisits = SweepVisits + 1;
             if (_heapCheck) CheckGuard(block, "a class page's sweep");
-            if ((word & FlagFree) == 0 && ((word & FlagMark) != 0 || Newcomer(page, block, word)))
+            if ((word & FlagFree) == 0 && ((word & FlagMark) != 0 || _concurrent && Newcomer(page, block, word)))
             {
                 if (_verify && !_minor && (word & FlagMark) != 0)
                 {
@@ -4642,13 +4643,23 @@ static class Gc
                 {
                     Census(block, size);
                 }
+                if (run != 0)
+                {
+                    ClearDeadRun(run, block, size);
+                    if (tail == 0) head = run;
+                    else Sys.Poke(tail + KindAt, run);
+                    tail = block - size;
+                    freeBytes = freeBytes + (block - run);
+                    run = 0;
+                }
+                // AN OLD BLOCK'S HEADER IS LEFT AS IT IS (SameHeader).
                 if (_generational && (word & FlagMark) != 0)
                 {
-                    StampClass(block, size, FlagMark | FlagScan);
+                    if (word != (size | FlagMark | FlagScan)) StampClass(block, size, FlagMark | FlagScan);
                 }
                 else
                 {
-                    StampClass(block, size, Zero);
+                    if (word != size) StampClass(block, size, Zero);
                     stillYoung = stillYoung || (word & FlagMark) == 0;
                 }
                 live = live + 1;
@@ -4668,9 +4679,27 @@ static class Gc
                         }
                         CensusInto(_deadAt, block, size);
                     }
-                    if (_heapCheck) Forget(block);
+                    // Cleared with the dead blocks next to it (ClearDeadRun),
+                    // but one at a time under the heap check, whose journal
+                    // names each range cleared.
+                    if (!_heapCheck)
+                    {
+                        if (run == 0) run = block;
+                        block = block + size;
+                        continue;
+                    }
+                    Forget(block);
                     ZeroWords(block + HeaderBytes, block + size);
                     StampClass(block, size, FlagFree);
+                }
+                if (run != 0)
+                {
+                    ClearDeadRun(run, block, size);
+                    if (tail == 0) head = run;
+                    else Sys.Poke(tail + KindAt, run);
+                    tail = block - size;
+                    freeBytes = freeBytes + (block - run);
+                    run = 0;
                 }
                 Sys.Poke(block + KindAt, Zero);
                 if (tail == 0) head = block;
@@ -4679,6 +4708,13 @@ static class Gc
                 freeBytes = freeBytes + size;
             }
             block = block + size;
+        }
+        if (run != 0)
+        {
+            ClearDeadRun(run, block, size);
+            if (tail == 0) head = run;
+            else Sys.Poke(tail + KindAt, run);
+            freeBytes = freeBytes + (block - run);
         }
         HeapChunks.SetPageFree(page, head);
         HeapChunks.SetLive(page, live, liveBytes);
@@ -4698,61 +4734,130 @@ static class Gc
     /// collector's own sweep does.
     static void SweepPageAlone(long page)
     {
-        long first = HeapChunks.First(page);
-        long end = HeapChunks.End(page);
-        long size = ClassSize(HeapChunks.PageClass(page) - 1);
-        long head = 0;
-        long tail = 0;
-        long live = 0;
-        long liveBytes = 0;
-        long freeBytes = 0;
-        long collected = 0;
+        // IN WORDS, as SnapshotPage is: the loop every block of every young
+        // page goes through at every cycle, and in longs on a 32-bit
+        // processor its sums and counts were an add and an adc each, held
+        // in the frame for want of registers.
+        nuint first = (nuint)HeapChunks.First(page);
+        nuint end = (nuint)HeapChunks.End(page);
+        long sizeLong = ClassSize(HeapChunks.PageClass(page) - 1);
+        nuint size = (nuint)sizeLong;
+        nuint oldHeader = size | (nuint)(FlagMark | FlagScan);
+        nuint kindAt = (nuint)KindAt;
+        nuint head = 0;
+        nuint tail = 0;
+        nuint live = 0;
+        nuint liveBytes = 0;
+        nuint freeBytes = 0;
+        nuint collected = 0;
         bool stillYoung = false;
-        long block = first;
+        bool generational = _generational;
+        bool concurrent = _concurrent;
+        nuint block = first;
+        nuint run = 0;          // the first of the dead blocks not yet cleared (ClearDeadRun)
         while (block + size <= end)
         {
-            long word = Sys.Peek(block);
-            if ((word & SizeMask) != size)
+            nuint word = PeekW(block);
+            if ((word & ~(nuint)7) != size)
             {
                 break;
             }
-            if ((word & FlagFree) == 0 && ((word & FlagMark) != 0 || Newcomer(page, block, word)))
+            bool marked = (word & (nuint)FlagMark) != 0;
+            bool free = (word & (nuint)FlagFree) != 0;
+            // NEWCOMER ASKED ONLY OF A CONCURRENT CYCLE, the one kind that has
+            // any: asked of every dead block, it was a call of three 64-bit
+            // arguments a block to answer false.
+            bool alive = !free && (marked || concurrent && Newcomer(page, (long)block, (long)word));
+            if (!alive && !free)
             {
-                if (_generational && (word & FlagMark) != 0)
+                // Dead: cleared with the dead blocks next to it, below.
+                if (run == 0) run = block;
+                collected = collected + size;
+                block = block + size;
+                continue;
+            }
+            if (run != 0)
+            {
+                ClearDeadRun((long)run, (long)block, sizeLong);
+                if (tail == 0) head = run;
+                else Sys.Poke((long)(tail + kindAt), (long)run);
+                tail = block - size;
+                freeBytes = freeBytes + (block - run);
+                run = 0;
+            }
+            if (alive)
+            {
+                // AN OLD BLOCK'S HEADER IS LEFT AS IT IS (SameHeader).
+                if (generational && marked)
                 {
-                    StampClass(block, size, FlagMark | FlagScan);
+                    if (word != oldHeader) Sys.Poke((long)block, (long)oldHeader);
                 }
                 else
                 {
-                    StampClass(block, size, Zero);
-                    stillYoung = stillYoung || (word & FlagMark) == 0;
+                    if (word != size) Sys.Poke((long)block, (long)size);
+                    stillYoung = stillYoung || !marked;
                 }
                 live = live + 1;
                 liveBytes = liveBytes + size;
             }
             else
             {
-                if ((word & FlagFree) == 0)
-                {
-                    collected = collected + size;
-                    ZeroWords(block + HeaderBytes, block + size);
-                    StampClass(block, size, FlagFree);
-                }
-                Sys.Poke(block + KindAt, Zero);
+                Sys.Poke((long)(block + kindAt), 0);
                 if (tail == 0) head = block;
-                else Sys.Poke(tail + KindAt, block);
+                else Sys.Poke((long)(tail + kindAt), (long)block);
                 tail = block;
                 freeBytes = freeBytes + size;
             }
             block = block + size;
         }
-        HeapChunks.SetPageFree(page, head);
-        HeapChunks.SetLive(page, live, liveBytes);
-        HeapChunks.SetLargestHole(page, freeBytes);
+        if (run != 0)
+        {
+            ClearDeadRun((long)run, (long)block, sizeLong);
+            if (tail == 0) head = run;
+            else Sys.Poke((long)(tail + kindAt), (long)run);
+            freeBytes = freeBytes + (block - run);
+        }
+        HeapChunks.SetPageFree(page, (long)head);
+        HeapChunks.SetLive(page, (long)live, (long)liveBytes);
+        HeapChunks.SetLargestHole(page, (long)freeBytes);
         HeapChunks.SetYoung(page, stillYoung);
-        HeapChunks.SetOwner(page, collected);
+        HeapChunks.SetOwner(page, (long)collected);
         HeapChunks.SetSwept(page, true);
     }
+
+    /// A RUN OF DEAD BLOCKS OF A PAGE, [run, stop), cleared at once and laid
+    /// down as free blocks of `size`, each linked to the next and the last
+    /// to nothing: the caller links the run in after whatever it last freed.
+    /// Cleared one by one, every dead block of a sweep was a call and two
+    /// string instructions (Sys.MemorySet: the words, then the bytes left),
+    /// whose start-up costs more than clearing a small block's few words
+    /// does -- and a minor cycle frees millions of blocks of a few words,
+    /// most of them next to each other: what died together was made
+    /// together. One clear for the run, then a header and a link a block.
+    /// Clearing the headers with the payloads is safe for the reason the
+    /// sweep is: nobody reads a page's dead blocks while it is swept.
+    /// Words, not longs, as the marker's loops are (ScanRangeW).
+    static void ClearDeadRun(long run, long stop, long size)
+    {
+        Sys.MemorySet(run, 0, stop - run);
+        nuint at = (nuint)run;
+        nuint last = (nuint)(stop - size);
+        nuint step = (nuint)size;
+        long header = size | FlagFree;
+        while (at < last)
+        {
+            Sys.Poke((long)at, header);
+            Sys.Poke((long)(at + (nuint)KindAt), (long)(at + step));
+            at = at + step;
+        }
+        Sys.Poke((long)last, header);
+    }
+
+    // SAME HEADER, NOT WRITTEN AGAIN (SweepPage, SweepPageAlone): an old
+    // block a minor cycle passes keeps its marks, so its header is already
+    // what the sweep would write. Written anyway, every old object in every
+    // young page dirtied its cache line each minor cycle, a write-back per
+    // line for nothing.
 
     // THE PAGES SWEPT TOGETHER. A collection with the world stopped sweeps
     // its pages on the workers too, before its own walk of the chunks: a
@@ -5913,8 +6018,16 @@ static class Gc
         SayNumber("gc: major ", MajorCollections);
         SayNumber("gc: majors grown ", MajorsGrown);
         SayNumber("gc: majors costly ", MajorsCostly);
+        // The majors nothing in the pacing called for: asked for (GC.Collect,
+        // GC.GetTotalMemory(true), an allocation the heap had no room for, a
+        // full held-block table) and the first; and the ones without
+        // generations at all.
+        SayNumber("gc: majors asked ", MajorsAsked);
+        SayNumber("gc: majors first ", MajorsFirst);
+        SayNumber("gc: majors without generations ", MajorsUngenerational);
         SayNumber("gc: pause ms ", PauseMicros / 1000);
         SayNumber("gc: minor pause ms ", _minorPauseMicros / 1000);
+        SayNumber("gc: snapshot ms ", SnapshotMicros / 1000);
         SayNumber("gc: roots ms ", RootMicros / 1000);
         SayNumber("gc: mark ms ", MarkMicros / 1000);
         SayNumber("gc: sweep ms ", SweepMicros / 1000);
@@ -6135,9 +6248,31 @@ static class Gc
         if (to > from)
         {
             if (_heapCheck) Journal(from, to);
-            Sys.MemorySet(from, 0, to - from);
+            // A FEW WORDS ARE STORED, NOT SET: the string instructions' start
+            // costs more than a small block's clearing, and Sys.MemorySet is
+            // two of them (the words, then the bytes left over, even when
+            // there are none). Most blocks cleared -- every block freed by
+            // hand (ClassFree and Free's rewind), every hole reused -- are a
+            // few words. In words, not longs: on a 32-bit processor a 64-bit
+            // pointer took an add and an adc a store.
+            long bytes = to - from;
+            if (bytes <= ZeroLoopBytes && ((from | bytes) & (WordSize.Bytes - 1)) == 0)
+            {
+                nuint at = (nuint)from;
+                nuint end = (nuint)to;
+                nuint w = (nuint)WordSize.Bytes;
+                while (at < end)
+                {
+                    Sys.Poke((long)at, 0);
+                    at = at + w;
+                }
+                return;
+            }
+            Sys.MemorySet(from, 0, bytes);
         }
     }
+
+    const long ZeroLoopBytes = 256;
 
     // WHAT THE COLLECTOR CLEARED, while the heap check is on: every range
     // ZeroWords clears and every boundary a merge wipes, with three return
@@ -8571,7 +8706,7 @@ static class Gc
 
             nuint block = Untag(entry);
             nuint tail = TailOfEntry(entry);
-            if (SetFlagW(block, (nuint)FlagScan, tail))
+            if (ClaimScanW(block, tail))
             {
                 ScanBlockW(block, PeekW(block) & ~(nuint)7, local, tail);
             }
@@ -8957,9 +9092,20 @@ static class Gc
             tail = block == 0 ? 0 : (nuint)TailOf((long)block);
         }
 
-        // A word pointing at a free block is a number that happens to look
-        // like a pointer: SetFlag refuses it.
-        if (block == 0 || !SetFlagW(block, (nuint)FlagMark, tail))
+        if (block == 0)
+        {
+            return;
+        }
+
+        // NOTHING IN A LEAF TO FOLLOW: marked and scanned at once, by one
+        // compare-and-swap that sets both, where it took two -- a string's
+        // or an array of numbers' mark was two locked instructions. Its kind
+        // is read first: a live block's never changes, and a free block's
+        // word there is a link, a multiple of eight that KindLeaf is not --
+        // and the swap refuses a free block anyway. A word pointing at a free
+        // block is a number that happens to look like a pointer.
+        bool leaf = (nint)PeekW(block + (nuint)KindAt) == (nint)KindLeaf;
+        if (!MarkFlagsW(block, leaf ? (nuint)(FlagMark | FlagScan) : (nuint)FlagMark, tail))
         {
             return;
         }
@@ -8968,11 +9114,8 @@ static class Gc
         {
             _censusMarked = _censusMarked + (Sys.Peek((long)block) & SizeMask);
         }
-
-        // Nothing in it to follow: scanned as soon as marked.
-        if ((nint)PeekW(block + (nuint)KindAt) == (nint)KindLeaf)
+        if (leaf)
         {
-            SetFlagW(block, (nuint)FlagScan, tail);
             return;
         }
 
@@ -9016,6 +9159,53 @@ static class Gc
                 return true;
             }
         }
+    }
+
+    /// The mark: `flags` added to the header (and footer) of a block not yet
+    /// marked, against every other marker -- SetFlagW, but refusing only a
+    /// free block or a marked one, so that a leaf's mark can carry its scan
+    /// flag with it (MarkWord). True only for the thread that marked it.
+    static bool MarkFlagsW(nuint block, nuint flags, nuint tail)
+    {
+        while (true)
+        {
+            nuint word = PeekW(block);
+
+            if ((word & (nuint)(FlagFree | FlagMark)) != 0)
+            {
+                return false;
+            }
+
+            if ((nuint)Sys.Cas((long)block, (long)word, (long)(word | flags)) == word)
+            {
+                if (tail != 0) SyncFooterW(block);
+                return true;
+            }
+        }
+    }
+
+    /// A QUEUED BLOCK'S SCAN CLAIMED WITH A PLAIN STORE, where SetFlagW takes
+    /// a locked compare-and-swap: one locked instruction a marked object, the
+    /// second of two, and a locked instruction is a full fence on top of its
+    /// own twenty-odd cycles. The swap is not needed here. A block is queued
+    /// once, by the thread whose swap marked it (MarkWord), so whoever pops
+    /// it is the only one to claim it from a queue; the header's one other
+    /// writer while it is marked and unscanned is RescanMarked, which adds
+    /// the same flag -- so the store can lose nothing but that flag, which
+    /// it sets itself -- and at worst the block is scanned twice, which
+    /// marks nothing twice (MarkWord refuses a marked block). Nothing frees,
+    /// merges or splits a block while a mark runs (Free refuses then).
+    /// `tail`: what follows its payload (TailIn).
+    static bool ClaimScanW(nuint block, nuint tail)
+    {
+        nuint word = PeekW(block);
+        if ((word & (nuint)(FlagFree | FlagScan)) != 0)
+        {
+            return false;
+        }
+        Sys.Poke((long)block, (long)(nint)(word | (nuint)FlagScan));
+        if (tail != 0) SyncFooterW(block);
+        return true;
     }
 
     static void SyncFooterW(nuint block)
@@ -9651,7 +9841,12 @@ static class Gc
         _cycle = _cycle + 1;
         Sys.AtomicSwap(ctl + GcLock.Overflow, _markAt == 0 ? 1 : 0);
         StartWorkers();
+        // THE SNAPSHOT'S WALK TIMED TOO: every young chunk's blocks read
+        // before the roots are, which none of roots, mark and sweep counted.
+        long clock = PauseClock;
+        long t = clock != 0 ? Sys.Call(clock, 0, 0, 0) : 0;
         BuildBlockAnchors(false);
+        if (clock != 0) SnapshotMicros = SnapshotMicros + ((Sys.Call(clock, 0, 0, 0) - t) & 0xFFFFFFFF);
         _rootsOnly = false;
         GcRoots.Enter();
 
@@ -9721,6 +9916,7 @@ static class Gc
 
     // WHERE A COLLECTION ALONE SPENDS ITS PAUSE: roots and cards, marking,
     // and sweeping (CORSAC_GC_STATS).
+    public static long SnapshotMicros;
     public static long RootMicros;
     public static long MarkMicros;
     public static long SweepMicros;
@@ -10817,37 +11013,46 @@ static class Gc
             long block = at <= first ? first : first + (long)((int)(at - first) / (int)size) * size;
             Sys.Poke(anchors + p * WordSize.Bytes, block < end ? block : Zero);
         }
-        long starts = anchors + count * WordSize.Bytes + WordSize.Bytes;
-        long wordAt = -1;
-        long bits = 0;
-        long block2 = first;
-        while (block2 < end)
+        // IN WORDS, as the marker's loops are (ScanRangeW): this runs for
+        // every block of every young page at every cycle, and in longs on a
+        // 32-bit processor each sum was an add and an adc, each compare two,
+        // and the start bit a 64-bit shift.
+        nuint w = (nuint)WordSize.Bytes;
+        nuint starts = (nuint)(anchors + count * WordSize.Bytes + WordSize.Bytes);
+        nuint origin = (nuint)chunk;
+        nuint step = (nuint)size;
+        nuint stop = (nuint)end;
+        nint wordAt = -1;
+        nuint bits = 0;
+        nuint block2 = (nuint)first;
+        while (block2 < stop)
         {
-            long header = Sys.Peek(block2);
-            if ((header & SizeMask) != size)
+            nuint header = PeekW(block2);
+            if ((header & ~(nuint)7) != step)
             {
                 return false;
             }
-            if ((header & FlagFree) == 0)
+            if ((header & (nuint)FlagFree) == 0)
             {
-                long bit = (block2 - chunk) >> 3;
-                long word = bit >> (3 + WordSize.Shift);
+                nuint bit = (block2 - origin) >> 3;
+                nint word = (nint)(bit >> (3 + WordSize.Shift));
                 if (word != wordAt)
                 {
-                    if (wordAt >= 0) Sys.Poke(starts + wordAt * WordSize.Bytes, bits);
+                    if (wordAt >= 0) Sys.Poke((long)(starts + (nuint)wordAt * w), (long)(nint)bits);
                     wordAt = word;
-                    bits = Sys.Peek(starts + word * WordSize.Bytes);
+                    bits = PeekW(starts + (nuint)word * w);
                 }
-                bits = bits | (One << (int)(bit & (8 * WordSize.Bytes - 1)));
-                if (_minor && (header & (FlagMark | FlagScan)) == (FlagMark | FlagScan)) OldCards(block2, size);
-                if (_generational && !_minor && (header & (FlagMark | FlagScan)) != 0)
+                bits = bits | ((nuint)1 << (int)(bit & (nuint)(8 * WordSize.Bytes - 1)));
+                nuint marks = header & (nuint)(FlagMark | FlagScan);
+                if (_minor && marks == (nuint)(FlagMark | FlagScan)) OldCards((long)block2, size);
+                if (_generational && !_minor && marks != 0)
                 {
-                    StampClass(block2, size, header & FlagMask & ~(FlagMark | FlagScan));
+                    StampClass((long)block2, size, (long)(header & (nuint)FlagMask & ~(nuint)(FlagMark | FlagScan)));
                 }
             }
-            block2 = block2 + size;
+            block2 = block2 + step;
         }
-        if (wordAt >= 0) Sys.Poke(starts + wordAt * WordSize.Bytes, bits);
+        if (wordAt >= 0) Sys.Poke((long)(starts + (nuint)wordAt * w), (long)(nint)bits);
         return true;
     }
 
@@ -10878,7 +11083,7 @@ static class Gc
                 return false;
             }
 
-            if ((word & FlagMark) != 0 || Newcomer(chunk, block, word))
+            if ((word & FlagMark) != 0 || _concurrent && Newcomer(chunk, block, word))
             {
                 return true;
             }
@@ -11133,7 +11338,7 @@ static class Gc
                 else
                 {
                     if (_heapCheck && (word & FlagFree) == 0) CheckGuard(block, "a chunk's sweep");
-                    if ((word & FlagMark) == 0 && !Newcomer(chunk, block, word))
+                    if ((word & FlagMark) == 0 && !(_concurrent && Newcomer(chunk, block, word)))
                     {
                         // A free block a minor sweep meets is still on the free
                         // lists (it kept them); it joins the dead run, so it
@@ -11186,13 +11391,17 @@ static class Gc
 
                         // A SURVIVOR IS OLD, and keeps the marks that say so;
                         // a newcomer is young and stays unmarked (generations).
-                        if (_generational && (word & FlagMark) != 0)
+                        // NOT WRITTEN WHERE BOTH ENDS SAY IT ALREADY (SameHeader):
+                        // a block here is a kilobyte or more, and its footer
+                        // another cache line, dirtied and written back for
+                        // every old array a minor sweep passed.
+                        long flags = _generational && (word & FlagMark) != 0 ? FlagMark | FlagScan : Zero;
+                        if (word != (size | flags) || Sys.Peek(block + size - FooterBytes) != (size | flags))
                         {
-                            Stamp(block, size, FlagMark | FlagScan);
+                            Stamp(block, size, flags);
                         }
-                        else
+                        if (flags == 0)
                         {
-                            Stamp(block, size, Zero);
                             stillYoung = stillYoung || (word & FlagMark) == 0;
                         }
                         live = live + 1;
@@ -11615,7 +11824,9 @@ static class HeapChunks
         if (_snapMegabytes == 0) _snapMegabytes = Platform.Map(MegabyteMapBytes);
         if (_snapMegabytes != 0)
         {
-            for (long i = 0; i < MegabyteMapBytes; i = i + WordSize.Bytes) Sys.Poke(_snapMegabytes + i, 0);
+            // Cleared by the string instruction: a word a time with a 64-bit
+            // index was sixty-five thousand trips at every collection.
+            Sys.MemorySet(_snapMegabytes, 0, MegabyteMapBytes);
             for (long i = 0; i < _snapCount; i++)
             {
                 long chunk = Sys.Peek(_snap + i * WordSize.Bytes) & WordSize.AddressMask;
