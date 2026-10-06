@@ -500,8 +500,14 @@ public sealed partial class Lowering
     {
         MethodSymbol? entry = null;
 
+        // NOT A TYPE WHOSE MEMBERS WERE NEVER ASKED FOR, here and in the walks
+        // over every type below: a word-shaped specialisation, whose methods
+        // are its canonical copy's and are emitted, rooted and initialised as
+        // that copy's (Emits, Canonical), and which asking would declare
+        // (TypeSymbol.EnsureMembers) to find nothing of its own.
         foreach (TypeSymbol t in _b.Types.Values)
         {
+            if (t.MembersPending) continue;
             foreach (MethodSymbol m in t.Methods)
             {
                 if (m.Name == "Main" && m.Static && Emits(m) && (StartupObject is null || t.Key == StartupObject))
@@ -533,7 +539,10 @@ public sealed partial class Lowering
         // Roots: a library publishes everything; a program starts at Main.
         if (_library || PartOfALibrary || entry is null)
         {
-            foreach (TypeSymbol t in _b.Types.Values)
+            // A COPY OF THE TABLE: a descriptor made here can declare a type's
+            // members on first use, whose signatures may make a tuple shape
+            // -- a new entry in the table (TypeSymbol.EnsureMembers).
+            foreach (TypeSymbol t in _b.Types.Values.ToList())
             {
                 // A PRELUDE TYPE THE LIBRARY ADDS TO. `Math` is the prelude's,
                 // for its intrinsics, and Core.cor gives it Abs(long) and
@@ -548,6 +557,7 @@ public sealed partial class Lowering
                     continue;
                 }
                 if (t.Decl?.FromLibrary == true && !_library) continue;
+                if (t.MembersPending) continue;
                 // Another shared object's; and, when this is one library of
                 // several, an instantiation is reached rather than rooted.
                 if ((t.Decl?.Elsewhere == true && !t.Methods.Any(method => method.Decl?.OwnedImplementation == true))
@@ -1332,7 +1342,7 @@ public sealed partial class Lowering
     {
         foreach (TypeSymbol t in _b.Types.Values)
         {
-            if (t.Decl?.Elsewhere == true) continue;
+            if (t.Decl?.Elsewhere == true || t.MembersPending) continue;
             foreach (MethodSymbol m in t.Methods)
             {
                 if (m.Decl is not MethodDecl d || d.OwnedImplementation == false

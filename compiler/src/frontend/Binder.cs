@@ -1034,7 +1034,27 @@ public sealed partial class Binder
         // (Binder.AwaitChecks).
         b.CheckAsyncSafety();
         b._r.StaticBytes = b._staticNext;
+        b.Retire();
         return b._r;
+    }
+
+    /// <summary>
+    /// Binding is over. THE BINDER LIVES ON while any type's members are
+    /// still to be declared -- each such symbol holds it (DeclareMembersNow)
+    /// -- so what only the bodies needed is let go here rather than kept
+    /// with it through lowering: the bodies' bookkeeping, and caches that
+    /// fill again if asked.
+    /// </summary>
+    private void Retire()
+    {
+        _bound = true;
+        _boundBodies.Clear();
+        _lockSummary.Clear();
+        _asyncSafetyReported.Clear();
+        _declOf.Clear();
+        _hoistedFunctions.Clear();
+        _importedSeen.Clear();
+        _absentWithin.Clear();
     }
 
     /// <summary>
@@ -1307,6 +1327,9 @@ public sealed partial class Binder
 
     private void EvaluateConstant(TypeSymbol owner, string name)
     {
+        // A constant of a type whose members wait to be asked for is not in
+        // the table until they are declared: asking for it is asking.
+        owner.EnsureMembers();
         var key = (owner, name);
         if (!_constantDeclarations.TryGetValue(key, out var declaration)) return;
         if (_constantStates.TryGetValue(key, out ConstantState state))
@@ -1818,8 +1841,21 @@ public sealed partial class Binder
         // FIELD INITIALISERS BECOME CONSTRUCTOR STATEMENTS, before anything is
         // declared or checked, so that everything downstream sees ordinary
         // assignments and needs to know nothing about this.
+        // NOT YET FOR A DECLARATION WHOSE MEMBERS ARE DEFERRED: there are none
+        // to move until they are made, and that is done with the rest of
+        // declaring them (DeclareMembersNow). Which ones those are is settled
+        // here, once: a list can be made by looking at it before its symbol
+        // exists (ImpliedConstructor looks at a base's), and its type is
+        // still one whose members are declared on first use.
+        _deferred.Clear();
         foreach (TypeDecl d in unit.Types)
         {
+            if (d.MembersPending) _deferred.Add(d);
+        }
+
+        foreach (TypeDecl d in unit.Types)
+        {
+            if (_deferred.Contains(d)) continue;
             Initialisers(d);
             StaticInitialisers(d);
         }
@@ -1830,42 +1866,16 @@ public sealed partial class Binder
         // initialises its own fields is something. Without it `new MemberExpr`
         // never ran Node's `File = ""`, and the file of every expression in the
         // compiler compiled by itself was null.
-        Dictionary<string, TypeDecl> byName = new(StringComparer.Ordinal);
+        _declsByName = new(StringComparer.Ordinal);
 
         foreach (TypeDecl d in unit.Types)
         {
-            byName.TryAdd(d.Name, d);
+            _declsByName.TryAdd(d.Name, d);
         }
 
         foreach (TypeDecl d in unit.Types)
         {
-            if (d.Kind != TypeKind.Class || d.Mods.HasFlag(Mods.Static)
-                || d.Members.OfType<MethodDecl>().Any(c => c.IsCtor))
-            {
-                continue;
-            }
-
-            TypeDecl? up = d;
-            bool constructed = false;
-
-            for (int depth = 0; depth < 64 && up is not null && !constructed; depth++)
-            {
-                up = up.Bases.Select(b => byName.GetValueOrDefault(b.Name))
-                       .FirstOrDefault(b => b is { Kind: TypeKind.Class });
-                constructed = up is not null
-                    && up.Members.OfType<MethodDecl>().Any(c => c.IsCtor && c.Params.Count == 0 && !c.Mods.HasFlag(Mods.Static));
-            }
-
-            if (constructed)
-            {
-                d.Members.Add(new MethodDecl
-                {
-                    Name = d.Name, IsCtor = true, Mods = Mods.Public,
-                    Body = new Block { Line = d.Line, Col = d.Col },
-                    Line = d.Line, Col = d.Col, File = d.File,
-                    OwnedImplementation = !d.Elsewhere,
-                });
-            }
+            if (!_deferred.Contains(d)) ImpliedConstructor(d);
         }
 
         // Source declarations that ADD to a prelude type rather than clashing
@@ -1965,6 +1975,7 @@ public sealed partial class Binder
 
             TypeSymbol sym = new() { Name = d.Name, Key = key, Kind = d.Kind, Decl = d };
             if (d.TypeParams.Count > 0) AddNames(sym.WritableTypeParamNames, d.TypeParams);
+            if (_deferred.Contains(d)) sym.DeclareMembersLater(_declareMembersNow ??= DeclareMembersNow);
             RegisterType(key, sym);
         }
 
@@ -2013,7 +2024,15 @@ public sealed partial class Binder
             if (_r.Types.TryGetValue(TypeKey(d), out TypeSymbol? sym) && ReferenceEquals(sym.Decl, d))
             {
                 _in = d.File;
-                DeclareMembers(d, sym);
+                // ONLY WHAT IT IS, of one whose members wait to be asked for:
+                // its base and interfaces, which every conversion and type
+                // test reads off the symbol without asking for a member, and
+                // its type arguments, so that any declaration they need is
+                // asked of the index now, while a pass can still be retried
+                // with it -- the one thing its members' signatures could ask
+                // for that its canonical copy's do not.
+                if (!_deferred.Contains(d)) DeclareMembers(d, sym);
+                else if (_basesDeclared.Add(sym)) DeclareMembers(d, sym, members: false);
             }
         }
 
@@ -2035,7 +2054,12 @@ public sealed partial class Binder
         // Every owner, base and enum is now known. Resolve constants before
         // checking bodies or emitting headers, without changing declaration
         // order for runtime static initializers or field/vtable layout.
-        foreach (var key in _constantDeclarations.Keys)
+        // A COPY OF THE KEYS: a constant's value may name a member of a type
+        // whose members are declared on that first asking, which adds its own
+        // constants to the table -- evaluated as they are declared, from here
+        // on (DeclareMembersNow).
+        _constantsEvaluated = true;
+        foreach (var key in _constantDeclarations.Keys.ToList())
             EvaluateConstant(key.Owner, key.Name);
 
         // Interface methods get slot numbers FIRST, from one program-wide
@@ -2325,9 +2349,13 @@ public sealed partial class Binder
         // no code. It is here to be NAMED -- a generic method declared over
         // `List<T>` needs `List` to be a type the checker knows -- and nothing
         // else about it is real until it is specialised.
+        // NOR ONE WHOSE MEMBERS ARE NOT DECLARED: it is laid out when they
+        // are, which anything wanting its size, its fields or its slots
+        // brings about first (TypeSymbol.EnsureMembers).
         _layingOut = true;
         foreach (TypeSymbol sym in _r.Types.Values.Where(t => !IsTemplate(t)).ToList())
         {
+            if (sym.MembersPending) continue;
             LayOut(sym);
         }
 
@@ -2408,8 +2436,10 @@ public sealed partial class Binder
             // This used to fall out of a lookup that missed -- templates are
             // keyed by name and arity, and this loop asked for the bare name --
             // so it held only as long as nothing keyed them properly.
+            // And not one whose members were never asked for: its bodies are
+            // its canonical copy's, which are never checked here either.
             if (_r.Types.TryGetValue(TypeKey(d), out TypeSymbol? sym)
-                && ReferenceEquals(sym.Decl, d) && !IsTemplate(sym))
+                && ReferenceEquals(sym.Decl, d) && !IsTemplate(sym) && !sym.MembersPending)
             {
                 _bodyWork.Add((d, sym));
             }
@@ -2764,7 +2794,182 @@ public sealed partial class Binder
         return made;
     }
 
-    private void DeclareMembers(TypeDecl d, TypeSymbol sym)
+    /// <summary>Every declaration of the unit by name, for the constructors a class is given (ImpliedConstructor).</summary>
+    private Dictionary<string, TypeDecl> _declsByName = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// C#'s parameterless constructor, given to a class that wrote none when
+    /// a base it derives from has one to call (Run).
+    /// </summary>
+    private void ImpliedConstructor(TypeDecl d)
+    {
+        if (d.Kind != TypeKind.Class || d.Mods.HasFlag(Mods.Static)
+            || d.Members.OfType<MethodDecl>().Any(c => c.IsCtor))
+        {
+            return;
+        }
+
+        TypeDecl? up = d;
+        bool constructed = false;
+
+        for (int depth = 0; depth < 64 && up is not null && !constructed; depth++)
+        {
+            up = up.Bases.Select(b => _declsByName.GetValueOrDefault(b.Name))
+                   .FirstOrDefault(b => b is { Kind: TypeKind.Class });
+            // A BASE WHOSE MEMBERS WERE DEFERRED has its initialisers placed
+            // before it is asked, as every other base had by now: a class
+            // with field initialisers and no constructor is given one there
+            // (Initialisers), which is the constructor this asks about.
+            if (up is not null) Initialisers(up);
+            constructed = up is not null
+                && up.Members.OfType<MethodDecl>().Any(c => c.IsCtor && c.Params.Count == 0 && !c.Mods.HasFlag(Mods.Static));
+        }
+
+        if (constructed)
+        {
+            d.Members.Add(new MethodDecl
+            {
+                Name = d.Name, IsCtor = true, Mods = Mods.Public,
+                Body = new Block { Line = d.Line, Col = d.Col },
+                Line = d.Line, Col = d.Col, File = d.File,
+                OwnedImplementation = !d.Elsewhere,
+            });
+        }
+    }
+
+    // ---- members declared on first use ------------------------------------
+    //
+    // A word-shaped specialisation of a generic class is declared for every
+    // signature that names it, and most of them are never asked a thing:
+    // a unit that hands a List of Control along never calls its Add. Their
+    // members are made and declared the first time something asks for one
+    // (Monomorphiser.MembersLater, TypeDecl.DeferMembers), through the
+    // symbol, which every lookup, conversion, layout, slot and descriptor
+    // goes through (TypeSymbol.EnsureMembers). Until then such a type has
+    // its symbol, its base, its interfaces and its arguments resolved, and
+    // nothing else; a walk over every type that needs nothing of members
+    // nobody asked for passes over it (MembersPending).
+
+    /// <summary>The declarations whose members were deferred when binding began (TypeDecl.MembersPending).</summary>
+    private readonly HashSet<TypeDecl> _deferred = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>The one delegate every deferred symbol is handed (DeclareMembersLater).</summary>
+    private Action<TypeSymbol>? _declareMembersNow;
+
+    /// <summary>The deferred types whose base, interfaces and arguments are declared (DeclareMembers, members: false).</summary>
+    private readonly HashSet<TypeSymbol> _basesDeclared = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>Constants are being evaluated, or have been: a deferred one's are evaluated as they are declared.</summary>
+    private bool _constantsEvaluated;
+
+    /// <summary>
+    /// Binding is over (Bind): what is declared now is declared for lowering,
+    /// with no pass left to report a mistake in or retry a declaration for.
+    /// </summary>
+    private bool _bound;
+
+    /// <summary>
+    /// A deferred type's members, declared on the first asking: made, given
+    /// their initialisers and implied constructor as Run gives every other
+    /// type's before declaring them, declared, their constants evaluated and
+    /// the type laid out -- each only once the passes over every other type
+    /// have reached it, so that the type ends as it would have, had it been
+    /// declared with them.
+    ///
+    /// WHATEVER WAS BEING BOUND IS PUT ASIDE and restored after: the asking
+    /// can come from the middle of a body, a quiet lambda pass or a naming
+    /// pass, and none of that is any part of declaring a type. Declared as
+    /// the members pass declares a specialisation, with no type being checked
+    /// and nothing marked used (BindingElsewhere).
+    /// </summary>
+    private void DeclareMembersNow(TypeSymbol sym)
+    {
+        TypeDecl d = sym.Decl!;
+        string wasIn = _in;
+        MemberDecl? wasMember = _member;
+        List<TypeParam>? wasSignature = _signature;
+        TypeSymbol? wasScope = _scope, wasThis = _thisType, wasLexical = _lexicalType;
+        MethodSymbol? wasMethod = _method;
+        int wasQuiet = _quiet, wasFloor = _lambdaFloor;
+        bool wasNaming = _namingOnly, wasTuples = _namingTuples;
+        Dictionary<string, Type>? wasCaptured = _captured;
+        Dictionary<string, ConstSym>? wasConstants = _capturedConstants;
+        // The body's locals too: a constant's value is looked for among them
+        // (Named), and one found below a lambda's floor is captured.
+        LocalScope[]? wasScopes = _scopes.Count == 0 ? null : _scopes.ToArray();
+        int errors = _r.Errors.Count;
+        bool demanded = _declarationBatch.Any;
+
+        _scopes.Clear();
+        _lambdaFloor = -1;
+        _captured = null;
+        _capturedConstants = null;
+        _member = null;
+        _signature = null;
+        _scope = null;
+        _thisType = null;
+        _lexicalType = null;
+        _method = null;
+        _quiet = 0;
+        _namingOnly = false;
+        _namingTuples = false;
+        try
+        {
+            _in = d.File;
+            // What the members pass does for it first, should it be asked
+            // before that pass has reached it.
+            if (_basesDeclared.Add(sym)) DeclareMembers(d, sym, members: false);
+            Initialisers(d);
+            StaticInitialisers(d);
+            ImpliedConstructor(d);
+            DeclareMembers(d, sym, bases: false);
+
+            if (_constantsEvaluated)
+            {
+                foreach (var key in _constantDeclarations.Keys.Where(key => ReferenceEquals(key.Owner, sym)).ToList())
+                    EvaluateConstant(key.Owner, key.Name);
+            }
+
+            if (_layingOut && !IsTemplate(sym))
+            {
+                LayOut(sym);
+            }
+        }
+        finally
+        {
+            _in = wasIn;
+            _member = wasMember;
+            _signature = wasSignature;
+            _scope = wasScope;
+            _thisType = wasThis;
+            _lexicalType = wasLexical;
+            _method = wasMethod;
+            _quiet = wasQuiet;
+            _namingOnly = wasNaming;
+            _namingTuples = wasTuples;
+            _lambdaFloor = wasFloor;
+            _captured = wasCaptured;
+            _capturedConstants = wasConstants;
+            _scopes.Clear();
+            if (wasScopes is not null) _scopes.AddRange(wasScopes);
+        }
+
+        // AFTER BINDING THERE IS NO ONE TO TELL. A mistake found now would be
+        // a message nobody prints, and a declaration wanted now one no pass
+        // will load; neither can happen to members whose canonical copy was
+        // declared without either, and if one does, it is said here rather
+        // than compiled into something wrong.
+        if (_bound && (_r.Errors.Count != errors || _declarationBatch.Any != demanded))
+        {
+            throw new InvalidOperationException($"the members of '{sym.Name}', declared after binding, "
+                + (_r.Errors.Count != errors ? "were in error: " + _r.Errors[^1] : "wanted a declaration not loaded"));
+        }
+    }
+
+    /// <param name="bases">Its base class and interfaces.</param>
+    /// <param name="members">Its fields, methods and properties -- or, left
+    /// out, its type arguments resolved instead (DeclareArguments).</param>
+    private void DeclareMembers(TypeDecl d, TypeSymbol sym, bool bases = true, bool members = true)
     {
         // A SIGNATURE IS WRITTEN INSIDE THIS TYPE, so a name in one may be a
         // type this type holds: `private Section _section;` in Assembler names
@@ -2775,7 +2980,9 @@ public sealed partial class Binder
 
         try
         {
-            DeclareMembersIn(d, sym);
+            if (bases) DeclareBases(d, sym);
+            if (members) DeclareMembersIn(d, sym);
+            else DeclareArguments(d, sym);
         }
         catch (Metadata.DeclarationDemand demand)
         {
@@ -2900,13 +3107,18 @@ public sealed partial class Binder
         }
     }
 
-    private void DeclareMembersIn(TypeDecl d, TypeSymbol sym)
+    /// <summary>
+    /// The base class and interfaces a declaration names, onto its symbol --
+    /// with every delegate's Delegate -- the part of declaring a type that
+    /// one whose members wait to be asked for has done straight away.
+    /// </summary>
+    private void DeclareBases(TypeDecl d, TypeSymbol sym)
     {
         // An enum's underlying type was settled before any members were
         // declared (EnumUnderlying), so the checks below find it in place.
 
         // CHECKED AND THEN FALLS THROUGH, rather than returning: the member
-        // values are worked out further down this same method, and returning
+        // values are worked out after it (DeclareMembersIn), and returning
         // here skipped them -- so every enum compiled to a type with no members
         // at all, and every use of one was 'ExitCode has no member Success'.
         foreach (TypeRef b in d.Kind == TypeKind.Enum ? Enumerable.Empty<TypeRef>() : d.Bases)
@@ -2954,7 +3166,33 @@ public sealed partial class Binder
         {
             sym.Interfaces.Add(root);
         }
+    }
 
+    /// <summary>
+    /// A specialisation's type arguments resolved, as its members' signatures
+    /// would resolve them, and to no other end: a declaration one of them
+    /// needs is asked of the index (DeclarationBatch) while binding can still
+    /// go round again for it. Quietly, as a type whose members name none of
+    /// its arguments would never have said anything about one; and marking
+    /// nothing used, as a specialisation's signatures mark nothing
+    /// (BindingElsewhere).
+    /// </summary>
+    private void DeclareArguments(TypeDecl d, TypeSymbol sym)
+    {
+        _quiet++;
+        try
+        {
+            foreach (TypeRef argument in d.TemplateArgs)
+            {
+                Resolve(argument, sym);
+            }
+        }
+        finally { _quiet--; }
+    }
+
+    /// <summary>A declaration's fields, methods, properties and enum values, onto its symbol.</summary>
+    private void DeclareMembersIn(TypeDecl d, TypeSymbol sym)
+    {
         if (d.Kind == TypeKind.Enum)
         {
             // C# spells it either way, and `[Flags]` is what everybody writes.
@@ -3527,6 +3765,9 @@ public sealed partial class Binder
     /// <summary>Assigns field offsets and vtable slots.</summary>
     private void LayOut(TypeSymbol sym)
     {
+        // Its members first, if they were left to be asked for: declared now,
+        // and laid out with them once layout has begun (DeclareMembersNow).
+        sym.EnsureMembers();
         if (sym.Kind == TypeKind.Enum)
         {
             return;
@@ -3697,6 +3938,7 @@ public sealed partial class Binder
 
     private void AssignSlots(TypeSymbol sym)
     {
+        sym.EnsureMembers();
         if (sym.SlotsAssigned) return;
         sym.SlotsAssigned = true;
         // THE BASE FIRST. An override takes the slot of the method it
@@ -6603,26 +6845,42 @@ public sealed partial class Binder
             // type of the unit for every extension call looked up, and each
             // query's closure and iterator was an allocation per look.
             if (namespaces.Count == 0) return found;
+            // THE CANDIDATES FIRST, THEN WHICH OF THEM APPLY. Asking whether
+            // the receiver converts can declare a type's members on first use
+            // (DeclareMembersNow), and a signature declared can make a tuple
+            // shape, which is a new entry in the very table being walked.
             foreach (TypeSymbol holder in _r.Types.Values)
             {
                 if (!namespaces.Contains(holder.Decl?.Namespace ?? "")) continue;
+                // Not one whose members were never asked for: it holds no
+                // extension method to find (Monomorphiser.MembersLater), and
+                // looking would declare every one of them.
+                if (holder.MembersPending) continue;
                 foreach (MethodSymbol m in holder.Methods)
                 {
                     if (m.Name != name) continue;
-                    if (m.Static && m.Params.Count > 0 && m.Decl?.Params.FirstOrDefault()?.IsThis == true
-                        && (Convertible(target, m.Params[0].Type)
-                            // As an argument would be accepted: an IEnumerable<Box>
-                            // is the IEnumerable<Box?> a copy of `Elements<T>(this
-                            // IEnumerable<T?>)` takes, the annotation being no type.
-                            || Variant(target, m.Params[0].Type)
-                            || m.Params[0].Type.ParamName != null
-                            || Applies(m, m.Params[0].Type, target)))
+                    if (m.Static && m.Params.Count > 0 && m.Decl?.Params.FirstOrDefault()?.IsThis == true)
                     {
                         found.Add(m);
                     }
                 }
             }
-            return found;
+            if (found.Count == 0) return found;
+            List<MethodSymbol> applying = new(found.Count);
+            foreach (MethodSymbol m in found)
+            {
+                if (Convertible(target, m.Params[0].Type)
+                    // As an argument would be accepted: an IEnumerable<Box>
+                    // is the IEnumerable<Box?> a copy of `Elements<T>(this
+                    // IEnumerable<T?>)` takes, the annotation being no type.
+                    || Variant(target, m.Params[0].Type)
+                    || m.Params[0].Type.ParamName != null
+                    || Applies(m, m.Params[0].Type, target))
+                {
+                    applying.Add(m);
+                }
+            }
+            return applying;
         }
         for (string? scope = within; scope is not null; scope = scope.Length == 0 ? null : Enclosing(scope) ?? "")
         {
@@ -18421,8 +18679,11 @@ public sealed partial class Binder
         // through the interface like any object, and the dispatch knows its
         // box (Lowering.GenericVirtualDispatch). A struct derives from nothing,
         // so a class's method never lands on one.
+        // A COPY OF THE TABLE: a class's methods asked for here may be
+        // declared on that first asking, and their signatures may make a
+        // tuple shape, a new entry in the table (DeclareMembersNow).
         foreach (TypeSymbol t in _r.Types.Values.Distinct().Where(t => (t.Kind == TypeKind.Class || contract && t.Kind == TypeKind.Struct)
-                     && !IsTemplate(t) && t.Decl is not null))
+                     && !IsTemplate(t) && t.Decl is not null).ToList())
         {
             MethodSymbol? own;
 

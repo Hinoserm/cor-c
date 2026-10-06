@@ -20,6 +20,17 @@ public sealed class Monomorphiser
 {
     private readonly Dictionary<string, TypeDecl> _generic = new(StringComparer.Ordinal);
     private readonly Dictionary<string, TypeDecl> _made = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The names in _made that are a struct or an enum: all a substitution
+    /// asks of them (Sub), kept apart so that _made -- every declaration of
+    /// the unit -- can be let go when the run is over, while deferred members
+    /// still have this monomorphiser to be made by (MakeMembers).
+    /// </summary>
+    private readonly HashSet<string> _madeValue = new(StringComparer.Ordinal);
+
+    /// <summary>Each template's members as this round read them, for the copies it deferred (MakeMembers).</summary>
+    private readonly Dictionary<TypeDecl, List<MemberDecl>> _templateMembers = new(ReferenceEqualityComparer.Instance);
     private readonly List<CompileError> _errors = new();
     private readonly string _file;
     private readonly Action<string>? _requireDeclaration;
@@ -52,6 +63,14 @@ public sealed class Monomorphiser
     /// declaration statistics.
     /// </summary>
     public static long Specialisations, SpecialisedMembers;
+
+    /// <summary>
+    /// How many of those specialised types had their members deferred
+    /// (MembersLater), and how many members were made for them afterwards
+    /// because something asked: SpecialisedMembers counts only the members
+    /// made with their type.
+    /// </summary>
+    public static long DeferredSpecialisations, MembersMadeLater;
 
     /// <summary>Names that are NOT a machine word: narrower, or in the other bank.</summary>
     private static readonly HashSet<string> Narrow = new(StringComparer.Ordinal)
@@ -620,6 +639,7 @@ public sealed class Monomorphiser
         {
             _claimed.Add(t.Name);
             _made[t.Name] = t;
+            if (t.Kind is TypeKind.Struct or TypeKind.Enum) _madeValue.Add(t.Name);
         }
 
         if (_generic.Count == 0 && _requireDeclaration is null)
@@ -708,17 +728,7 @@ public sealed class Monomorphiser
         {
             Job job = _pending.Dequeue();
 
-            Dictionary<string, TypeRef> map = new(StringComparer.Ordinal);
-
-            _structParams.Clear();
-            _paramInfo.Clear();
-            for (int i = 0; i < job.Template.TypeParams.Count && i < job.Args.Count; i++)
-            {
-                Settled(job.Args[i]);
-                map[job.Template.TypeParams[i].Name] = job.Args[i];
-                _paramInfo[job.Template.TypeParams[i].Name] = job.Template.TypeParams[i];
-                if (job.Template.TypeParams[i].Struct) _structParams.Add(job.Template.TypeParams[i].Name);
-            }
+            Dictionary<string, TypeRef> map = JobMap(job.Template, job.Args);
 
             // A WORD-SHAPED COPY TAKES NO BODIES. Canon names the one copy
             // whose instructions serve it, the checker skips its bodies and
@@ -791,10 +801,43 @@ public sealed class Monomorphiser
                 made.LibSlot = job.Template.LibSlot;
             }
 
+            // ITS MEMBERS WAIT TO BE ASKED FOR, when nothing can need them
+            // unasked (MembersLater). They were made all the same, just now,
+            // and are dropped: the rewrite of their signatures is what
+            // queued the specialisations they name, so the set of types this
+            // unit declares is the one it always was. What is deferred is
+            // only the copies of the members themselves, which the binder
+            // asks for on first use (MakeMembers).
+            if (job.Canon is not null && MembersLater(job.Template))
+            {
+                TypeDecl template = job.Template;
+                List<TypeRef> args = job.Args;
+                string name = job.Name;
+                // Where its names were read from, as they were read: a later
+                // round may move the template itself (MoveToSystem).
+                // And its members as they are now: binding adds to a template's
+                // own list (Binder.Initialisers, an implied constructor), and
+                // a copy is made of the list this rewrite read, as any copy
+                // made in this round was. One list a template, a round.
+                (string, string, FileScope?, bool) scope = ScopeOf(template);
+                if (!_templateMembers.TryGetValue(template, out List<MemberDecl>? read))
+                {
+                    read = new List<MemberDecl>(template.Members);
+                    _templateMembers[template] = read;
+                }
+                List<MemberDecl> members = read;
+                made.DeferMembers(() => MakeMembers(template, members, args, name, scope));
+                DeferredSpecialisations++;
+            }
+            else
+            {
+                SpecialisedMembers += made.Members.Count;
+            }
+
             _made[job.Name] = made;
+            if (made.Kind is TypeKind.Struct or TypeKind.Enum) _madeValue.Add(job.Name);
             output.Types.Add(made);
             Specialisations++;
-            SpecialisedMembers += made.Members.Count;
         }
         // AND AGAIN AFTER THE SPECIALISATIONS. Rewriting the queue above names
         // templates too -- EqualityComparer`1 reached only from a specialised
@@ -803,7 +846,118 @@ public sealed class Monomorphiser
         // reports as undeclared instead of one more round that loads it.
         _templateBatch.ThrowIfAny();
         output.TupleNamings.AddRange(_tupleNamings);
+
+        // WHAT A DEFERRED MEMBER LIST CANNOT NEED IS LET GO, because this
+        // monomorphiser lives on in every list it deferred. The declarations
+        // made here belong to the unit returned; the type arguments settled
+        // and the tuple namings found were for the rewrite just finished and
+        // are recorded again by any rewrite that follows (MakeMembers).
+        _made.Clear();
+        _settled.Clear();
+        _tupleNamings.Clear();
         return output;
+    }
+
+    /// <summary>
+    /// A specialisation's map of type parameter to argument, with the state
+    /// a rewrite of its template reads set for it: the arguments as spelt
+    /// where they were written, and what each parameter is constrained to.
+    /// </summary>
+    private Dictionary<string, TypeRef> JobMap(TypeDecl template, List<TypeRef> args)
+    {
+        Dictionary<string, TypeRef> map = new(StringComparer.Ordinal);
+
+        _structParams.Clear();
+        _paramInfo.Clear();
+        for (int i = 0; i < template.TypeParams.Count && i < args.Count; i++)
+        {
+            Settled(args[i]);
+            map[template.TypeParams[i].Name] = args[i];
+            _paramInfo[template.TypeParams[i].Name] = template.TypeParams[i];
+            if (template.TypeParams[i].Struct) _structParams.Add(template.TypeParams[i].Name);
+        }
+        return map;
+    }
+
+    /// <summary>
+    /// WHETHER A WORD-SHAPED COPY OF THIS TEMPLATE MAY HAVE ITS MEMBERS MADE
+    /// ON FIRST USE (TypeDecl.DeferMembers, TypeSymbol.DeclareMembersLater).
+    ///
+    /// The copy's code is the canonical copy's and is never checked or
+    /// emitted here (Binder.CheckBodies, Lowering.Emits), so its members are
+    /// declarations only, and a declaration nobody asks about changes
+    /// nothing. Everything that does ask -- a lookup, a conversion operator,
+    /// layout, slots, a descriptor -- comes through TypeSymbol, which declares
+    /// them first. What is left out is what something can need WITHOUT
+    /// asking, by walking every type:
+    ///
+    /// ONLY A CLASS. A struct's size is read off its symbol wherever one is
+    /// held by value, an interface's methods are counted for the slot
+    /// numbering of every family, and an enum has no members to speak of.
+    ///
+    /// NOT A DELEGATE, whose Invoke the binder and lowering find in ways of
+    /// their own (closures, method groups, natural types), and which carry
+    /// one or two members each, too few to be worth a doubt.
+    ///
+    /// NO EXTENSION METHOD in it, because extension lookup walks every type
+    /// of a namespace (Binder.Extension) and passes over the deferred ones.
+    /// C# allows none in a generic class anyway (CS1106).
+    ///
+    /// No static state either, but a word-shaped copy never has any: a
+    /// template with some is copied per argument (Shareable), so nothing of
+    /// this kind is laid out, initialised or numbered in a static order.
+    /// </summary>
+    private static bool MembersLater(TypeDecl template)
+        => template.Kind == TypeKind.Class && !template.IsDelegate
+        && !template.Members.Any(m => m is MethodDecl { Params.Count: > 0 } method && method.Params[0].IsThis);
+
+    /// <summary>
+    /// A deferred specialisation's members, made now: the rewrite its job
+    /// made and dropped (Run), again. THE SAME MONOMORPHISER IN THE SAME
+    /// STATE, so the same copies come out: the tables a rewrite spells a
+    /// name from were filled before the first job (the paths, the words, the
+    /// templates, the moves to System), a specialisation is claimed before
+    /// any name is spelt with it, the template's members and where it was
+    /// written are the ones that rewrite read (Run keeps them), every
+    /// specialisation the members name was claimed by that first rewrite,
+    /// and every declaration it wanted was asked of the index then. Anything
+    /// new queued, demanded or reported here would mean that no longer
+    /// holds, which is a fault in the compiler and is said so rather than
+    /// compiled past.
+    /// </summary>
+    private List<MemberDecl> MakeMembers(TypeDecl template, List<MemberDecl> members, List<TypeRef> args, string name,
+                                         (string Scope, string Namespace, FileScope? Usings, bool Library) scope)
+    {
+        int errors = _errors.Count;
+        bool demanded = _templateBatch.Any;
+        List<MemberDecl> made = new(members.Count);
+
+        Dictionary<string, TypeRef> map = JobMap(template, args);
+        _bodiesElsewhere = true;
+        _canonParams = null;
+        _canonMade = null;
+        (string, string, FileScope?, bool) was = (_scope, _inNamespace, _usings, _libraryCode);
+        LeaveScope(scope);
+        try
+        {
+            RewriteMembers(template, members, map, name, made);
+        }
+        finally
+        {
+            LeaveScope(was);
+            _bodiesElsewhere = false;
+            _settled.Clear();
+            _tupleNamings.Clear();
+        }
+
+        if (_pending.Count > 0 || _errors.Count != errors || _templateBatch.Any != demanded)
+        {
+            throw new InvalidOperationException(
+                $"the members of '{name}', made when first asked for, named a type, a declaration or a mistake "
+                + "their first making did not: deferred members must be made exactly as they were");
+        }
+        MembersMadeLater += made.Count;
+        return made;
     }
 
     /// <summary>
@@ -1590,7 +1744,7 @@ public sealed class Monomorphiser
                 && (Narrow.Contains(bound.Name) || _byValue.Contains(bound.Name)
                     || bound.Name == TypeRef.Tuple && bound.Args.Count > 0
                     || bound.Name is "long" or "ulong" or "nint" or "nuint" or "decimal"
-                    || _made.TryGetValue(bound.Name, out TypeDecl? madeDecl) && madeDecl.Kind is TypeKind.Struct or TypeKind.Enum
+                    || _madeValue.Contains(bound.Name)
                     || bound.Args.Count > 0 && _generic.TryGetValue(Arity(bound.Name, bound.Args.Count), out TypeDecl? template)
                        && template.Kind == TypeKind.Struct);
 
@@ -1863,15 +2017,7 @@ public sealed class Monomorphiser
         // what tells `List<Section>` inside ImageFile from `List<Section>`
         // inside Assembler. Restored on the way out; a rewrite of a nested type
         // happens inside a rewrite of the type that holds it.
-        string wasScope = _scope;
-        string wasNamespace = _inNamespace;
-        FileScope? wasUsings = _usings;
-        bool wasLibrary = _libraryCode;
-
-        _scope = d.Outer is null ? d.Name : d.Outer + "." + d.Name;
-        _inNamespace = d.Namespace;
-        _usings = d.Scope;
-        _libraryCode = d.FromLibrary;
+        (string, string, FileScope?, bool) was = EnterScope(d);
 
         try
         {
@@ -1879,11 +2025,30 @@ public sealed class Monomorphiser
         }
         finally
         {
-            _scope = wasScope;
-            _inNamespace = wasNamespace;
-            _usings = wasUsings;
-            _libraryCode = wasLibrary;
+            LeaveScope(was);
         }
+    }
+
+    /// <summary>Reads names from where this declaration was written, answering where they were read from before.</summary>
+    private (string Scope, string Namespace, FileScope? Usings, bool Library) EnterScope(TypeDecl d)
+    {
+        (string, string, FileScope?, bool) was = (_scope, _inNamespace, _usings, _libraryCode);
+
+        LeaveScope(ScopeOf(d));
+        return was;
+    }
+
+    /// <summary>Where the names written in a declaration are read from.</summary>
+    private static (string Scope, string Namespace, FileScope? Usings, bool Library) ScopeOf(TypeDecl d)
+        => (d.Outer is null ? d.Name : d.Outer + "." + d.Name, d.Namespace, d.Scope, d.FromLibrary);
+
+    /// <summary>Reads names from where these say, again: the way out of EnterScope, and the way into a saved scope.</summary>
+    private void LeaveScope((string Scope, string Namespace, FileScope? Usings, bool Library) was)
+    {
+        _scope = was.Scope;
+        _inNamespace = was.Namespace;
+        _usings = was.Usings;
+        _libraryCode = was.Library;
     }
 
     private TypeDecl RewriteDeclIn(TypeDecl d, Dictionary<string, TypeRef> map, string name)
@@ -1965,6 +2130,24 @@ public sealed class Monomorphiser
             made.EnumMembers.Add(copy);
         }
 
+        // A COPY WHOSE MEMBERS ARE STILL TO BE MADE STAYS ONE. A deferred
+        // specialisation passes through every later round of expansion as
+        // the declaration it is, and its members, made by the monomorphiser
+        // that deferred them, are the ones that would have been copied here.
+        // Once they have been made it is copied as any other declaration.
+        if (d.MembersPending)
+        {
+            made.DeferMembersAs(d);
+            return made;
+        }
+
+        RewriteMembers(d, d.Members, map, name, made.Members);
+        return made;
+    }
+
+    /// <summary>A declaration's members -- these, of it -- rewritten with this map, in order, into a list.</summary>
+    private void RewriteMembers(TypeDecl d, List<MemberDecl> members, Dictionary<string, TypeRef> map, string name, List<MemberDecl> into)
+    {
         // NUMBERED AS WE GO, so a specialisation can find the same member of the
         // canonical copy. Both are clones of this list in this order, so the
         // index is the only identity that survives substitution -- the name
@@ -1972,28 +2155,28 @@ public sealed class Monomorphiser
         string wasNamespace = _inNamespace;
         FileScope? wasUsings = _usings;
 
-        for (int i = 0; i < d.Members.Count; i++)
+        for (int i = 0; i < members.Count; i++)
         {
             // EACH MEMBER'S OWN FILE, because a partial class is written across
             // several of them and each brought its own using directives. This
             // compiler's own Lowering is eleven files, six of which say `using
             // Block = Corsac.Lang.Ir.Block` and five of which do not.
-            if (d.Members[i].Scope != null)
+            if (members[i].Scope != null)
             {
-                _inNamespace = d.Members[i].Namespace;
-                _usings = d.Members[i].Scope;
+                _inNamespace = members[i].Namespace;
+                _usings = members[i].Scope;
             }
 
-            _canonSelf = _canonParams is not null && !d.Members[i].Mods.HasFlag(Mods.Static);
+            _canonSelf = _canonParams is not null && !members[i].Mods.HasFlag(Mods.Static);
             _canonMarked = false;
             MemberDecl copy;
-            try { copy = RewriteMember(d.Members[i], map, name); }
+            try { copy = RewriteMember(members[i], map, name); }
             finally { _canonSelf = false; }
-            copy.ReadsTypeArguments = _canonMarked || d.Members[i].ReadsTypeArguments;
+            copy.ReadsTypeArguments = _canonMarked || members[i].ReadsTypeArguments;
 
-            copy.Scope = d.Members[i].Scope;
-            copy.OwnedImplementation = d.TypeParams.Count != 0 ? true : d.Members[i].OwnedImplementation;
-            copy.Namespace = d.Members[i].Namespace;
+            copy.Scope = members[i].Scope;
+            copy.OwnedImplementation = d.TypeParams.Count != 0 ? true : members[i].OwnedImplementation;
+            copy.Namespace = members[i].Namespace;
             copy.TemplateIndex = i;
 
             // AND WHICH FILE IT CAME FROM, which every clone above forgets
@@ -2005,12 +2188,11 @@ public sealed class Monomorphiser
             // forgotten is not an intrinsic any more. Sys.Print became an
             // ordinary call to a stub whose body does nothing, and the machine
             // ran, halted cleanly and said not one word.
-            copy.File = d.Members[i].File;
-            made.Members.Add(copy);
+            copy.File = members[i].File;
+            into.Add(copy);
             _inNamespace = wasNamespace;
             _usings = wasUsings;
         }
-        return made;
     }
 
     /// <summary>

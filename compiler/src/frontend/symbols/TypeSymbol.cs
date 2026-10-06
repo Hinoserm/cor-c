@@ -79,10 +79,73 @@ public sealed class TypeSymbol
     public bool Used { get; set; }
     public TypeSymbol? Base { get; set; }
     public List<TypeSymbol> Interfaces { get; } = new();
-    public List<FieldSymbol> Fields { get; } = new();
-    public List<MethodSymbol> Methods { get; } = new();
+    // EVERY WAY IN TO ITS MEMBERS DECLARES THEM FIRST when they were left
+    // for later (DeclareMembersLater): its fields, its methods, its slots and
+    // its size. FindField and FindMethods come through these too.
+    public List<FieldSymbol> Fields
+    {
+        get
+        {
+            EnsureMembers();
+            return _fields;
+        }
+    }
+
+    public List<MethodSymbol> Methods
+    {
+        get
+        {
+            EnsureMembers();
+            return _methods;
+        }
+    }
+
     /// <summary>One implementation can occupy several distinct interface slots.</summary>
-    public Dictionary<int, MethodSymbol> InterfaceImplementations { get; } = new();
+    public Dictionary<int, MethodSymbol> InterfaceImplementations
+    {
+        get
+        {
+            EnsureMembers();
+            return _implementations;
+        }
+    }
+
+    private readonly List<FieldSymbol> _fields = new();
+    private readonly List<MethodSymbol> _methods = new();
+    private readonly Dictionary<int, MethodSymbol> _implementations = new();
+
+    /// <summary>
+    /// What declares this type's members, while that is still to do: a
+    /// specialisation whose members are made on first use (TypeDecl.
+    /// DeferMembers). Null once they are declared, and for every other type.
+    /// </summary>
+    private Action<TypeSymbol>? _declareMembers;
+
+    /// <summary>Whether its members are still to be declared (DeclareMembersLater).</summary>
+    public bool MembersPending => _declareMembers is not null;
+
+    /// <summary>
+    /// Leaves its members to be declared the first time anything asks for
+    /// them, by this. The binder's, which declares them as its members pass
+    /// would have, lays them out once layout has begun, and stays reachable
+    /// from here until it has -- through lowering, if that is when it is.
+    /// </summary>
+    internal void DeclareMembersLater(Action<TypeSymbol> declare) => _declareMembers = declare;
+
+    /// <summary>
+    /// Declares its members now, if they were left for later. Cleared before
+    /// it runs, so the declaring itself -- which adds to these very lists --
+    /// reads them as an ordinary type's. One unit is bound and lowered on one
+    /// thread, so nothing else can ask in the middle.
+    /// </summary>
+    public void EnsureMembers()
+    {
+        if (_declareMembers is { } declare)
+        {
+            _declareMembers = null;
+            declare(this);
+        }
+    }
     // Made only when written: most have none, and a list each was the collector's.
     private static readonly List<string> NoTypeParams = new();
     private List<string>? _typeParams;
@@ -108,8 +171,18 @@ public sealed class TypeSymbol
     /// </summary>
     public bool IsFlags { get; set; }
 
-    /// <summary>Byte size of an instance, filled in during layout.</summary>
-    public int InstanceSize { get; set; }
+    /// <summary>Byte size of an instance, filled in during layout -- its members declared and laid out first.</summary>
+    public int InstanceSize
+    {
+        get
+        {
+            EnsureMembers();
+            return _instanceSize;
+        }
+        set => _instanceSize = value;
+    }
+
+    private int _instanceSize;
 
     /// <summary>
     /// This type's bit in the ancestor mask. A test like <c>x is Foo</c> is

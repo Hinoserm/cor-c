@@ -66,6 +66,8 @@ public sealed partial class Lowering
     {
         foreach (TypeSymbol t in _b.Types.Values)
         {
+            // Never asked for, a word-shaped copy emits nothing (Lowering.Run).
+            if (t.MembersPending) continue;
             foreach (MethodSymbol m in t.Methods)
             {
                 if (NativeImportOf(m) is not null && Emits(m))
