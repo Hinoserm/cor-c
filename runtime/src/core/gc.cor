@@ -3574,12 +3574,12 @@ static class Gc
         if (HeapChunks.IsListed(page)) UnlistPage(page);
         HeapChunks.SetLive(page, Zero, Zero);
         HeapChunks.SetYoung(page, false);
-        if (_poolBytes + HeapChunks.PageBytes <= PoolLimit() && !HeapChunks.OverCap() && !MemoryShort())
+        if (_poolBytes + HeapChunks.PageSize(page) <= PoolLimit() && !HeapChunks.OverCap() && !MemoryShort())
         {
             HeapChunks.SetPooled(page, true);
             HeapChunks.SetPageNext(page, _pool);
             _pool = page;
-            _poolBytes = _poolBytes + HeapChunks.PageBytes;
+            _poolBytes = _poolBytes + HeapChunks.PageSize(page);
             PagesPooled = PagesPooled + 1;
             return;
         }
@@ -3658,7 +3658,7 @@ static class Gc
         }
         _pool = HeapChunks.PageNext(page);
         HeapChunks.SetPageNext(page, Zero);
-        _poolBytes = _poolBytes - HeapChunks.PageBytes;
+        _poolBytes = _poolBytes - HeapChunks.PageSize(page);
         // A page never formatted is as the operating system gave it: zero.
         if (HeapChunks.End(page) != HeapChunks.First(page))
         {
@@ -3842,6 +3842,29 @@ static class Gc
             }
         }
     }
+
+    /// A THREAD'S HALF-EMPTY PAGES GIVEN BACK WHILE MEMORY IS SHORT
+    /// (ShortHook), at a round's answer: its own as it takes its cache back
+    /// (AnswerBeforeTaking), a blocked thread's as the collector answers for
+    /// it (GcThreads.AnswerForStopped). A thread keeps a page of every class
+    /// it has used, and a page another thread owns no sweep can empty or
+    /// give back: a 32 MB machine's GUI kernel held 52 pages, 1.7 MB, for
+    /// 0.4 MB of objects, beside a code image squeezed to 144 KiB. Given
+    /// back, the pages go on their classes' lists, the next allocation of
+    /// any thread fills them before a new one is made, and those the sweep
+    /// finds empty are pooled and released. Stamped first, as a going
+    /// thread's are (ForgetClasses). The heap lock is held, and `tb` is not
+    /// in the allocator's fast path.
+    public static void ShedPages(long tb)
+    {
+        if (ShortHook == 0 || Sys.Call(ShortHook, 0, 0, 0) == 0) return;
+        if (_stamping && !StampedAlready(tb)) StampPages(tb);
+        RetireClasses(tb);
+        PagesShed = PagesShed + 1;
+    }
+
+    /// Threads' pages given back by ShedPages.
+    public static long PagesShed;
 
     /// A thread that is going: its pages given up and its cache unmapped.
     public static void ForgetClasses(long tb)
@@ -5073,6 +5096,7 @@ static class Gc
         }
         if (tb != 0 && Sys.Peek(tb + Tls.Classes) == 0 && Sys.Peek(tb + Tls.ClassesSaved) != 0)
         {
+            ShedPages(tb);
             Sys.Poke(tb + Tls.Classes, Sys.Peek(tb + Tls.ClassesSaved));
             Sys.Poke(tb + Tls.ClassesSaved, Zero);
         }
@@ -10825,10 +10849,32 @@ static class HeapChunks
     const long ChunkPooled = 4;     // an empty page kept for any class
     const long ChunkSwept = 8;      // a page the workers swept, for the collector to list (Gc.SweepPage)
 
-    /// A size-class page: small enough that a thread owning one of every
-    /// class holds little, large enough that the start table inside it is
-    /// a few hundred bytes of it.
+    /// A size-class page at its largest: small enough that a thread owning
+    /// one of every class holds little, large enough that the start table
+    /// inside it is a few hundred bytes of it.
     public const long PageBytes = 32768;
+
+    /// THE PAGES A BATCH IS CUT INTO, by the machine (Platform.GcThreshold, a
+    /// kernel's thirty-second of memory): a quarter of the largest on a
+    /// machine of 64 MB or less, a half to 128 MB, the largest above and
+    /// where there is no such cap -- a compiler's heap keeps its pages as
+    /// they were. A thread owns a page of every class it uses, thirty-nine
+    /// classes: at 32 KiB a page, a 32 MB machine's kernel held ninety
+    /// pages, 2.9 MB, for 0.7 MB of small objects. Each page says its own
+    /// size (its limit), so pages of a size chosen before are as good.
+    static long BatchPageBytes()
+    {
+        long cap = Platform.GcThreshold();
+        if (cap > 0 && cap <= 2097152) return PageBytes / 4;
+        if (cap > 0 && cap <= 4194304) return PageBytes / 2;
+        return PageBytes;
+    }
+
+    /// A page's own size: its limit less its start.
+    public static long PageSize(long page)
+    {
+        return Sys.Peek(page + ChunkLimit) - page;
+    }
 
     // WHAT A CHUNK IS NORMALLY: a sixteenth of the heap as it stands,
     // between 64 KiB and a megabyte (ChunkAsk). A large heap -- a compiler's
@@ -11372,7 +11418,7 @@ static class HeapChunks
     /// Whether one more page would pass the cap.
     public static bool OverCap()
     {
-        return _cap != 0 && _heapBytes + PageBytes > _cap;
+        return _cap != 0 && _heapBytes + BatchPageBytes() > _cap;
     }
 
     public static void SetLimit(long bytes)
@@ -11534,17 +11580,18 @@ static class HeapChunks
     /// The bytes a page keeps at its end for its own start table, rounded
     /// to eight: the anchors, the cycle word and the start bits that
     /// AnchorBytes would have mapped a page of its own for.
-    public static long PageTableBytes()
+    public static long PageTableBytes(long size)
     {
-        long anchors = (PageBytes + 4095) / 4096;
-        long starts = (PageBytes / 8 + StartBits - 1) / StartBits;
+        long anchors = (size + 4095) / 4096;
+        long starts = (size / 8 + StartBits - 1) / StartBits;
         return ((anchors + 1 + starts) * WordSize.Bytes + 7) & -8;
     }
 
     /// Where a page's blocks must end: its start table lies above.
     public static long PageBlockLimit(long chunk)
     {
-        return chunk + PageBytes - PageTableBytes();
+        long size = PageSize(chunk);
+        return chunk + size - PageTableBytes(size);
     }
 
     /// Up to `want` new size-class pages in one mapping, laid end to end:
@@ -11557,33 +11604,34 @@ static class HeapChunks
     public static long TakePages(long want, long taken)
     {
         Sys.Poke(taken, 0);
-        if (Gc.GrowthWaits(PageBytes))
+        long pageBytes = BatchPageBytes();
+        if (Gc.GrowthWaits(pageBytes))
         {
             return 0;
         }
         long n = want;
         if (_cap != 0)
         {
-            long room = (_cap - _heapBytes) / PageBytes;
+            long room = (_cap - _heapBytes) / pageBytes;
             if (room < n) n = room;
         }
         if (n < 1)
         {
             return 0;
         }
-        long raw = Platform.Map(n * PageBytes);
+        long raw = Platform.Map(n * pageBytes);
         if (raw == 0 && n > 1)
         {
             n = 1;
-            raw = Platform.Map(PageBytes);
+            raw = Platform.Map(pageBytes);
         }
         if (raw == 0)
         {
             return 0;
         }
         Maps = Maps + 1;
-        Gc.CommitCards(raw, n * PageBytes);
-        CheckNew(raw, n * PageBytes);
+        Gc.CommitCards(raw, n * pageBytes);
+        CheckNew(raw, n * pageBytes);
         // ONE PAGE MADE NOW, THE REST AS THEY ARE ASKED FOR (TakeFresh). A
         // page's header is a write, and on an operating system that gives
         // memory on first touch the batch's thirty-two headers took its
@@ -11592,17 +11640,18 @@ static class HeapChunks
         // is taken from the top down: each page made after is below every
         // chunk indexed (mappings come top down), an insert at the index's
         // front, and no lookup ever reads a page not yet made.
-        long top = raw + (n - 1) * PageBytes;
-        MakePage(top);
+        long top = raw + (n - 1) * pageBytes;
+        MakePage(top, pageBytes);
         _freshLow = raw;
         _freshNext = top;
+        _freshBytes = pageBytes;
         Sys.Poke(taken, 1);
         return top;
     }
 
     // THE BATCH'S PAGES NOT YET MADE: [_freshLow, _freshNext), mapped and
     // untouched, given out from the top down.
-    static long _freshLow, _freshNext;
+    static long _freshLow, _freshNext, _freshBytes;
 
     /// A page of the last batch not yet given out, made now -- its header
     /// written, listed, indexed -- or zero when the batch is used up. The
@@ -11610,33 +11659,33 @@ static class HeapChunks
     public static long TakeFresh()
     {
         if (_freshNext <= _freshLow) return 0;
-        long page = _freshNext - PageBytes;
+        long page = _freshNext - _freshBytes;
         _freshNext = page;
-        MakePage(page);
+        MakePage(page, _freshBytes);
         return page;
     }
 
     /// A size-class page's header written, the page listed and indexed and
     /// counted: an empty chunk of its own (its end is its first block).
-    static void MakePage(long page)
+    static void MakePage(long page, long size)
     {
         Sys.Poke(page + ChunkNext, _chunks);
         Sys.Poke(page + ChunkPrevious, 0);
         if (_chunks != 0) Sys.Poke(_chunks + ChunkPrevious, page);
         Sys.Poke(page + ChunkEnd, page + ChunkBytes);
-        Sys.Poke(page + ChunkLimit, page + PageBytes);
+        Sys.Poke(page + ChunkLimit, page + size);
         Sys.Poke(page + ChunkFlags, ChunkYoung);
         Sys.Poke(page + ChunkAnchors, PageBlockLimit(page));
         _chunks = page;
-        _heapBytes = _heapBytes + PageBytes;
+        _heapBytes = _heapBytes + size;
         IndexAdd(page);
         if (_floor == 0 || page + ChunkBytes < _floor)
         {
             _floor = page + ChunkBytes;
         }
-        if (page + PageBytes > _ceiling)
+        if (page + size > _ceiling)
         {
-            _ceiling = page + PageBytes;
+            _ceiling = page + size;
         }
     }
 
@@ -12707,6 +12756,9 @@ static class GcThreads
                         Sys.AtomicAdd(ctl + GcLock.Pending, -1);
                         AnsweredFor = AnsweredFor + 1;
                     }
+                    // Its pages given back if memory is short: it is held
+                    // here (Busy), outside the allocator, its cache taken.
+                    if (Sys.Peek(block + Tls.Classes) == 0) Gc.ShedPages(block);
                 }
 
                 Sys.AtomicSwap(block + Tls.State, Stopped);
