@@ -1,0 +1,235 @@
+// test: stores, exchanges and compare-exchanges made while a collection marks
+// timeout: 300
+// expect-exit: 0
+// expect-output:
+// nodes 16000
+// intact True
+// named True
+// swaps True
+// concurrent True
+//
+// The marking-time barriers of every way a reference is stored: a plain
+// store, Interlocked.Exchange and Interlocked.CompareExchange (in a kernel
+// image the three store sequences, __corsac_refstore, __corsac_refxchg and
+// __corsac_refcas; here the compiled barrier and the library's). Each must
+// tell a concurrent mark of the reference it overwrites, or a node unlinked
+// from a place the marker has not reached, held for a while only in a
+// local, and linked in behind the marker, is swept while still in use.
+//
+// As 252_concurrent_mark: four threads keep sixteen lists each and move a
+// node at a time from one list to another, making garbage in between so that
+// collections run the whole time under a capped heap -- each move made with
+// one of the three, in turn, and with the list behind the moved node held
+// only in a local while it is out. Every node carries its value twice and a
+// string made from it; one swept and handed out again has neither. Every
+// exchange and compare-exchange must also have found what the thread alone
+// put there ("swaps").
+
+using System.Threading;
+
+class Node
+{
+    public int Value;
+    public int Check;
+    public string Name;
+    public Node? Next;
+}
+
+class Slot
+{
+    public Node? Head;
+}
+
+class Shuffler : Action
+{
+    public const int Lists = 16;
+    public const int Nodes = 4000;
+    public const int Moves = 60000;
+
+    public Slot[] Slots = new Slot[Lists];
+    public bool Swaps = true;
+
+    int _seed;
+
+    public Shuffler(int seed)
+    {
+        _seed = seed;
+        for (int i = 0; i < Lists; i++)
+        {
+            Slots[i] = new Slot();
+        }
+    }
+
+    public void Invoke()
+    {
+        for (int i = 0; i < Nodes; i++)
+        {
+            Node n = new Node();
+
+            n.Value = _seed * Nodes + i;
+            n.Check = n.Value ^ 0x5A5A5A5A;
+            n.Name = "v" + n.Value;
+            n.Next = Slots[i % Lists].Head;
+            Slots[i % Lists].Head = n;
+        }
+
+        int state = _seed * 7919 + 17;
+
+        for (int move = 0; move < Moves; move++)
+        {
+            state = state * 1103515245 + 12345;
+            Slot from = Slots[(state >> 16) & (Lists - 1)];
+            state = state * 1103515245 + 12345;
+            Slot to = Slots[(state >> 16) & (Lists - 1)];
+
+            if (from.Head == null)
+            {
+                continue;
+            }
+
+            switch (move % 3)
+            {
+                case 0:
+                    Stored(from, to, move);
+                    break;
+                case 1:
+                    Exchanged(from, to, move);
+                    break;
+                default:
+                    Compared(from, to, move);
+                    break;
+            }
+        }
+    }
+
+    bool Waste(int move)
+    {
+        string waste = "waste " + move + " of " + _seed;
+        return waste.Length > 0;
+    }
+
+    void Stored(Slot from, Slot to, int move)
+    {
+        Node taken = from.Head!;
+        from.Head = taken.Next;
+        taken.Next = null;
+        if (!Waste(move)) return;
+        taken.Next = to.Head;
+        to.Head = taken;
+    }
+
+    void Exchanged(Slot from, Slot to, int move)
+    {
+        Node? taken = Interlocked.Exchange(ref from.Head, null);
+        Node? rest = Interlocked.Exchange(ref taken!.Next, null);
+        if (Interlocked.Exchange(ref from.Head, rest) != null) Swaps = false;
+        if (!Waste(move)) return;
+        // The list `to` held is in a local alone until the node is linked
+        // to it.
+        Node? old = Interlocked.Exchange(ref to.Head, taken);
+        if (!Waste(move)) return;
+        if (Interlocked.Exchange(ref taken.Next, old) != null) Swaps = false;
+    }
+
+    void Compared(Slot from, Slot to, int move)
+    {
+        Node taken = from.Head!;
+        Node? rest = taken.Next;
+        if (Interlocked.CompareExchange(ref from.Head, rest, taken) != taken) Swaps = false;
+        if (Interlocked.CompareExchange(ref taken.Next, null, rest) != rest) Swaps = false;
+        if (!Waste(move)) return;
+        Node? old = to.Head;
+        // One that must not take: the slot holds `old`, not `taken`.
+        if (old != taken && Interlocked.CompareExchange(ref to.Head, null, taken) != old) Swaps = false;
+        if (Interlocked.CompareExchange(ref taken.Next, old, null) != null) Swaps = false;
+        if (Interlocked.CompareExchange(ref to.Head, taken, old) != old) Swaps = false;
+    }
+}
+
+static class Program
+{
+    static void Say(string label, long value)
+    {
+        Sys.Print(label);
+        Sys.PrintInt(value);
+        Sys.PrintLine();
+    }
+
+    static void SayBool(string label, bool value)
+    {
+        Sys.Print(label);
+        Sys.Print(value ? "True" : "False");
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        int workers = 4;
+
+        Gc.SetLimit(8388608);
+
+        Shuffler[] bodies = new Shuffler[workers];
+        Thread[] threads = new Thread[workers];
+
+        for (int i = 0; i < workers; i++)
+        {
+            Shuffler body = new Shuffler(i);
+
+            bodies[i] = body;
+            threads[i] = Thread.Start(body);
+        }
+
+        long mine = 0;
+
+        for (int i = 0; i < 40000; i++)
+        {
+            string s = "main " + i;
+
+            mine = mine + s.Length;
+        }
+
+        for (int i = 0; i < workers; i++)
+        {
+            threads[i].Join();
+        }
+
+        long nodes = 0;
+        bool intact = true;
+        bool named = true;
+        bool swaps = true;
+
+        for (int i = 0; i < workers; i++)
+        {
+            swaps = swaps && bodies[i].Swaps;
+
+            for (int list = 0; list < Shuffler.Lists; list++)
+            {
+                Node? n = bodies[i].Slots[list].Head;
+
+                while (n != null)
+                {
+                    nodes = nodes + 1;
+
+                    if ((n.Value ^ 0x5A5A5A5A) != n.Check || n.Value / Shuffler.Nodes != i)
+                    {
+                        intact = false;
+                    }
+
+                    if (n.Name != "v" + n.Value)
+                    {
+                        named = false;
+                    }
+
+                    n = n.Next;
+                }
+            }
+        }
+
+        Say("nodes ", nodes);
+        SayBool("intact ", intact);
+        SayBool("named ", named);
+        SayBool("swaps ", swaps);
+        SayBool("concurrent ", Gc.ConcurrentCycles > 0);
+        return mine > 0 ? 0 : 1;
+    }
+}

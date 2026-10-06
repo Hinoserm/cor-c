@@ -1,0 +1,282 @@
+// test: a thread says it is inside the allocator before it reads its class cache
+// timeout: 300
+// expect-exit: 0
+// expect-output:
+// word fast path PASS
+// word cache taken at every step PASS
+// word taken before the allocator said so PASS
+// long fast path PASS
+// long cache taken at every step PASS
+// long taken before the allocator said so PASS
+//
+// THE ORDER, STEPPED (Gc.AllocWord, Gc.AllocKindUnguarded). A collection
+// round takes a thread's class cache (Tls.Classes) at whatever instruction
+// the thread is on, and ShedPages then gives the cache's lists back to their
+// pages -- for every thread not inside the allocator (Tls.InAlloc). A fast
+// path that read its cache and only then said it was inside the allocator
+// could be passed over in between and go on to pop a block that had just
+// been given back: one block handed out twice.
+//
+// A handshake cannot be made to land on one instruction here, so the
+// allocation is single-stepped instead. A forked child stops before each
+// allocation; the parent traces it one instruction at a time and, at the
+// t-th instruction or the first after it at which the child is not inside
+// the allocator and holds a cache, takes the cache away as a round does and
+// remembers the head of every list in it (never while the child holds the
+// heap lock, under which ShedPages runs). Whatever the allocation then
+// returns must be none of those heads: a fast path that had already read the
+// cache, unannounced, would pop one. t runs over every instruction of an
+// allocation, so the round lands at each place the child could be found.
+// The child's addresses are the parent's (a fork), so the parent reads them
+// through ptrace at the addresses it has itself.
+//
+// "fast path" says the cache is real: untouched, the allocation returns one
+// of the heads. "taken before" says at least one round landed before the
+// allocator's own announcement and was answered by the slow path.
+
+using System;
+
+#if TARGET_64BIT
+enum SystemCall : long
+{
+    GetPid = 39,
+    Fork = 57,
+    Wait4 = 61,
+    Kill = 62,
+    Ptrace = 101,
+    ExitGroup = 231,
+}
+#else
+enum SystemCall : long
+{
+    Fork = 2,
+    GetPid = 20,
+    Ptrace = 26,
+    Kill = 37,
+    Wait4 = 114,
+    ExitGroup = 252,
+}
+#endif
+
+enum Trace : long
+{
+    Me = 0,
+    PeekData = 2,
+    PokeData = 5,
+    Continue = 7,
+    SingleStep = 9,
+}
+
+enum Signal : long
+{
+    Trap = 5,
+    Kill = 9,
+    Stop = 19,
+}
+
+enum Path : long
+{
+    Word = 0,
+    Long = 1,
+}
+
+static class Program
+{
+    const long WaitAll = 0x40000000;   // __WALL
+    const long Size = 40;
+    const long StepLimit = 2000000;
+
+    // The child's mailbox, at the same address in both: [0] the path to
+    // allocate through, [1] what the allocation returned.
+    static long[] _mailbox = new long[2];
+    static long[] _word = new long[1];
+    static long[] _status = new long[1];
+    static long[] _heads = new long[Gc.Classes];
+    static long _child;
+    static long _block;
+    static long _lock;
+    static string _broken = "";
+
+    static long Sys4(SystemCall call, long a, long b, long c, long d)
+    {
+        return Sys.Syscall((long)call, a, b, c, d, 0, 0);
+    }
+
+    static long Peek(long at)
+    {
+        _word[0] = 0;
+        Sys4(SystemCall.Ptrace, (long)Trace.PeekData, _child, at, Platform.Linear(Sys.ArrayData(_word)));
+        return _word[0] & WordSize.AddressMask;
+    }
+
+    static void Poke(long at, long value)
+    {
+        Sys4(SystemCall.Ptrace, (long)Trace.PokeData, _child, at, value);
+    }
+
+    /// The child's next stop: the signal it stopped with, or -1 when it did
+    /// not stop (it exited).
+    static long Stopped()
+    {
+        _status[0] = 0;
+        Sys4(SystemCall.Wait4, _child, Platform.Linear(Sys.ArrayData(_status)), WaitAll, 0);
+        long status = _status[0] & 0xFFFF;
+        if ((status & 0xFF) != 0x7F) return -1;
+        return (status >> 8) & 0xFF;
+    }
+
+    /// Every list head of the cache at `cache`.
+    static void ReadHeads(long cache)
+    {
+        for (long c = 0; c < Gc.Classes; c++)
+        {
+            _heads[c] = Peek(cache + c * (2 * WordSize.Bytes) + WordSize.Bytes);
+        }
+    }
+
+    static bool AHead(long result)
+    {
+        long block = (result - Gc.BlockHeaderBytes) & WordSize.AddressMask;
+        for (long c = 0; c < Gc.Classes; c++)
+        {
+            if (_heads[c] != 0 && _heads[c] == block) return true;
+        }
+        return false;
+    }
+
+    static void Child()
+    {
+        Sys4(SystemCall.Ptrace, (long)Trace.Me, 0, 0, 0);
+        long me = Sys4(SystemCall.GetPid, 0, 0, 0, 0);
+        while (true)
+        {
+            Sys4(SystemCall.Kill, me, (long)Signal.Stop, 0, 0);
+            long at = (Path)_mailbox[0] == Path.Word ? (long)Gc.AllocWord((nint)Size, 0) : Gc.Alloc(Size);
+            _mailbox[1] = at;
+        }
+    }
+
+    /// One allocation with nothing done to it: true when it came off one of
+    /// the cache's lists.
+    static bool Untouched(Path path)
+    {
+        Warm(path);
+        Poke(Sys.ArrayData(_mailbox), (long)path);
+        long cache = Peek(_block + Tls.Classes);
+        if (cache == 0) return false;
+        ReadHeads(cache);
+        Sys4(SystemCall.Ptrace, (long)Trace.Continue, _child, 0, 0);
+        if (Stopped() != (long)Signal.Stop) return false;
+        return AHead(Peek(Sys.ArrayData(_mailbox) + 8));
+    }
+
+    /// One allocation at full speed, nothing looked at.
+    static void Warm(Path path)
+    {
+        Poke(Sys.ArrayData(_mailbox), (long)path);
+        Sys4(SystemCall.Ptrace, (long)Trace.Continue, _child, 0, 0);
+        Stopped();
+    }
+
+    /// One allocation stepped, the cache taken at the first instruction at
+    /// or after `at` at which the child is outside the allocator: 1 when it
+    /// was taken and the allocation kept clear of it, 0 when the allocation
+    /// ended before `at`, -1 when it popped a block of the taken cache.
+    /// `early` is set when the cache was taken before the allocator had said
+    /// it was inside.
+    static long Stepped(Path path, long at, out bool early)
+    {
+        early = false;
+        Poke(Sys.ArrayData(_mailbox), (long)path);
+        bool taken = false;
+        bool inside = false;
+        for (long step = 0; step < StepLimit; step++)
+        {
+            long inAlloc = Peek(_block + Tls.InAlloc);
+            if (inAlloc != 0) inside = true;
+            // ShedPages passes over a thread inside the allocator, and runs
+            // under the heap lock, so never while the child holds it.
+            bool locked = Peek(_lock + GcLock.Held) == (_block & WordSize.AddressMask);
+            if (!taken && step >= at && inAlloc == 0 && !locked)
+            {
+                long cache = Peek(_block + Tls.Classes);
+                if (cache != 0)
+                {
+                    ReadHeads(cache);
+                    Poke(_block + Tls.Classes, 0);
+                    taken = true;
+                    early = !inside;
+                }
+            }
+            // Once the cache is taken, the rest of the allocation runs at
+            // full speed to the child's next stop.
+            Sys4(SystemCall.Ptrace, (long)(taken ? Trace.Continue : Trace.SingleStep), _child, 0, 0);
+            long signal = Stopped();
+            if (signal == (long)Signal.Stop)
+            {
+                if (!taken) return 0;
+                return AHead(Peek(Sys.ArrayData(_mailbox) + 8)) ? -1 : 1;
+            }
+            if (signal != (long)Signal.Trap)
+            {
+                _broken = "the child stopped with signal " + signal;
+                return -1;
+            }
+        }
+        _broken = "the allocation never ended";
+        return -1;
+    }
+
+    static void Check(string name, Path path)
+    {
+        Console.WriteLine(name + " fast path " + (Untouched(path) ? "PASS" : "FAIL"));
+        long early = 0;
+        long popped = -1;
+        for (long at = 0; ; at++)
+        {
+            // A cache taken leaves the next allocation to make a new one:
+            // one allocation untraced first, so that each stepped one starts
+            // with a cache and a list to take, as the first did.
+            Warm(path);
+            bool before;
+            long result = Stepped(path, at, out before);
+            if (result == 0) break;
+            if (result < 0)
+            {
+                popped = at;
+                break;
+            }
+            if (before) early++;
+        }
+        Console.WriteLine(name + " cache taken at every step " + (popped < 0 ? "PASS" : "FAIL: a taken block handed out, the cache taken at step " + popped + (_broken.Length > 0 ? " (" + _broken + ")" : "")));
+        Console.WriteLine(name + " taken before the allocator said so " + (early > 0 ? "PASS" : "FAIL: no round landed before the allocation"));
+    }
+
+    static int Main()
+    {
+        // A cache with a list for the size, on each path, before the fork.
+        Gc.AllocWord((nint)Size, 0);
+        Gc.Alloc(Size);
+        _block = Sys.ThreadBlock();
+        _lock = GcLock.Words();
+
+        _child = Sys4(SystemCall.Fork, 0, 0, 0, 0);
+        if (_child == 0)
+        {
+            Child();
+            Sys4(SystemCall.ExitGroup, 0, 0, 0, 0);
+        }
+        if (_child < 0 || Stopped() != (long)Signal.Stop)
+        {
+            Console.WriteLine("FAIL: no child to trace");
+            return 1;
+        }
+
+        Check("word", Path.Word);
+        Check("long", Path.Long);
+
+        Sys4(SystemCall.Kill, _child, (long)Signal.Kill, 0, 0);
+        Stopped();
+        return 0;
+    }
+}
