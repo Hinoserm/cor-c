@@ -62,7 +62,7 @@ public static class UsesNotes
     {
         Section? section = obj.Sections.FirstOrDefault(s => s.Name == SectionName);
         if (section is null) return null;
-        using MemoryStream stream = new(section.Content());
+        using Stream stream = section.OpenRead();
         using BinaryReader reader = new(stream, Encoding.UTF8);
         if (reader.ReadInt32() != Version) throw new ElfFormatException("Unknown " + SectionName + " version");
         int count = reader.ReadInt32();

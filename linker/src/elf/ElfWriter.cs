@@ -203,7 +203,14 @@ public static class ElfWriter
             uint at = b.AlignTo(align);
             if (s.Kind != SectionKind.Uninitialised)
             {
-                if (s.FileBacked is not null) b.Bytes(s.Content());
+                if (s.FileBacked is not null)
+                {
+                    // From its file a piece at a time: a unit's IR archive is
+                    // tens of megabytes, and Content made it one array.
+                    using Stream from = s.OpenRead();
+                    byte[] piece = new byte[64 * 1024];
+                    for (int got; (got = from.Read(piece, 0, piece.Length)) > 0;) b.Bytes(new ReadOnlySpan<byte>(piece, 0, got));
+                }
                 else
                 {
                     for (int k = 0; k < s.Bytes.SegmentCount; k++)

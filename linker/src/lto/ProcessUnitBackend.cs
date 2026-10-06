@@ -81,7 +81,7 @@ public sealed class ProcessUnitBackend : IUnitBackend, IDisposable
             { throw new IOException("Compiler backend exceeded five-minute unit timeout"); }
             finally { Interlocked.Exchange(ref deadline, 0); }
             if (!File.Exists(output)) throw new IOException("Compiler backend reported success without an object");
-            return ElfReader.ReadObject(File.ReadAllBytes(output));
+            return ElfReader.ReadObjectFile(output, leaveInFile: false);
         }
         finally { if (!own) File.Delete(input); File.Delete(output); }
     }

@@ -353,7 +353,8 @@ public sealed class LifetimeHints
         Section[] sections = obj.Sections.Where(section => section.Name == SectionName).ToArray();
         if (sections.Length == 0) return null;
         if (sections.Length != 1 || sections[0].Size > MaximumBytes) throw new ElfFormatException("Invalid lifetime hint section");
-        return Read(sections[0].Content(), pool);
+        using Stream stream = sections[0].OpenRead();
+        return Read(stream, sections[0].Size, pool);
     }
 
     /// <summary>
@@ -364,22 +365,32 @@ public sealed class LifetimeHints
     public static LifetimeHints Read(byte[] bytes, LifetimeHintPool? pool = null)
     {
         using MemoryStream stream = new(bytes, writable: false);
+        return Read(stream, bytes.Length, pool);
+    }
+
+    /// <summary>
+    /// The hints read from `total` bytes of `stream`, from its start: a
+    /// section's stream (Section.OpenRead), so a large unit's hints are never
+    /// one array of their own.
+    /// </summary>
+    public static LifetimeHints Read(Stream stream, int total, LifetimeHintPool? pool = null)
+    {
         using BinaryReader reader = new(stream, Utf8);
         try
         {
             if (reader.ReadUInt32() != Magic || reader.ReadInt32() != Version) throw new ElfFormatException("Unsupported lifetime hints");
-            if (reader.ReadInt32() != bytes.Length) throw new ElfFormatException("Invalid lifetime hint length");
+            if (reader.ReadInt32() != total) throw new ElfFormatException("Invalid lifetime hint length");
             int Count(int size)
             {
                 int count = reader.ReadInt32();
-                if (count < 0 || count > (bytes.Length - stream.Position) / size) throw new ElfFormatException("Invalid lifetime hint count");
+                if (count < 0 || count > (total - stream.Position) / size) throw new ElfFormatException("Invalid lifetime hint count");
                 return count;
             }
             string[] names = new string[Count(5)];
             for (int i = 0; i < names.Length; i++)
             {
                 int length = reader.ReadInt32();
-                if (length < 1 || length > 16384 || length > bytes.Length - stream.Position) throw new ElfFormatException("Invalid lifetime hint name");
+                if (length < 1 || length > 16384 || length > total - stream.Position) throw new ElfFormatException("Invalid lifetime hint name");
                 names[i] = string.Intern(Utf8.GetString(reader.ReadBytes(length)));
                 if (names[i].Contains('\0') || i > 0 && string.CompareOrdinal(names[i - 1], names[i]) >= 0)
                     throw new ElfFormatException("Invalid lifetime hint name table");
@@ -481,7 +492,7 @@ public sealed class LifetimeHints
             string Text()
             {
                 int length = reader.ReadInt32();
-                if (length < 1 || length > 16384 || length > bytes.Length - stream.Position) throw new ElfFormatException("Invalid lifetime hint text");
+                if (length < 1 || length > 16384 || length > total - stream.Position) throw new ElfFormatException("Invalid lifetime hint text");
                 string text = Utf8.GetString(reader.ReadBytes(length));
                 if (text.Contains('\0')) throw new ElfFormatException("Invalid lifetime hint text");
                 return text;
@@ -489,8 +500,8 @@ public sealed class LifetimeHints
             for (int i = Count(5); i > 0; i--) hints.Throws.Add(Text());
             for (int i = Count(10); i > 0; i--) { string field = Text(); hints.StaticStores.Add((field, Text())); }
             for (int i = Count(5); i > 0; i--) hints.StaticWrites.Add(Text());
-            if (reader.ReadBoolean()) hints.Owned = OwnedFieldHints.Read(reader, bytes.Length);
-            if (stream.Position != bytes.Length) throw new ElfFormatException("Trailing lifetime hint data");
+            if (reader.ReadBoolean()) hints.Owned = OwnedFieldHints.Read(reader, total);
+            if (stream.Position != total) throw new ElfFormatException("Trailing lifetime hint data");
             return hints;
         }
         catch (EndOfStreamException) { throw new ElfFormatException("Truncated lifetime hints"); }

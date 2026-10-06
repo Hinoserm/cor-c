@@ -36,7 +36,7 @@ public static class ManagedLayoutContract
             Section[] sections = input.Object.Sections.Where(section => section.Name == SectionName).ToArray();
             if (sections.Length == 0) continue;
             if (sections.Length != 1) throw new ElfFormatException(input.Name + ": duplicate managed layout contract");
-            using MemoryStream stream = new(sections[0].Content(), writable: false);
+            using Stream stream = sections[0].OpenRead();
             using BinaryReader reader = new(stream, Utf8);
             try
             {

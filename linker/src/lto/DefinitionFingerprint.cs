@@ -17,7 +17,7 @@ public sealed class DefinitionIndex
 {
     private readonly Dictionary<string, List<Symbol>> globals = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Symbol> locals = new(StringComparer.Ordinal);
-    private readonly Dictionary<Section, Relocation[]> relocations = new();
+    private readonly Dictionary<Section, SortedRelocations> relocations = new();
 
     public DefinitionIndex(ObjectFile obj)
     {
@@ -47,35 +47,11 @@ public sealed class DefinitionIndex
     /// The section's relocations with offsets in [from, to), by offset, those
     /// at one offset in the section's own order (a stable sort, as OrderBy is).
     /// </summary>
-    public ArraySegment<Relocation> Within(Section section, long from, long to)
+    public SortedRelocations.Range Within(Section section, long from, long to)
     {
-        if (!relocations.TryGetValue(section, out Relocation[]? sorted))
-        {
-            // Offsets read out once: a Relocation is a struct, and every read
-            // of one through the list was a copy of it, for every comparison.
-            Relocation[] all = section.Relocs.ToArray();
-            int[] offsets = new int[all.Length];
-            int[] order = new int[all.Length];
-            for (int i = 0; i < order.Length; i++) { order[i] = i; offsets[i] = all[i].Offset; }
-            Array.Sort(order, (a, b) => offsets[a] != offsets[b] ? offsets[a].CompareTo(offsets[b]) : a.CompareTo(b));
-            sorted = new Relocation[order.Length];
-            for (int i = 0; i < order.Length; i++) sorted[i] = all[order[i]];
-            relocations[section] = sorted;
-        }
-        int low = LowerBound(sorted, from), high = LowerBound(sorted, to);
-        return new ArraySegment<Relocation>(sorted, low, high - low);
-    }
-
-    private static int LowerBound(Relocation[] sorted, long offset)
-    {
-        int low = 0, high = sorted.Length;
-        while (low < high)
-        {
-            int middle = low + (high - low) / 2;
-            if (sorted[middle].Offset < offset) low = middle + 1;
-            else high = middle;
-        }
-        return low;
+        if (!relocations.TryGetValue(section, out SortedRelocations? sorted))
+            relocations[section] = sorted = new SortedRelocations(section);
+        return sorted.Within(from, to);
     }
 }
 
@@ -104,7 +80,7 @@ public static class DefinitionFingerprint
             if (section.Kind != SectionKind.Uninitialised)
             {
                 byte[] bytes = section.Bytes.Slice(checked((int)symbol.Offset), checked((int)symbol.Size));
-                ArraySegment<Relocation> relocations = index.Within(section, symbol.Offset, symbol.Offset + symbol.Size);
+                SortedRelocations.Range relocations = index.Within(section, symbol.Offset, symbol.Offset + symbol.Size);
                 foreach (Relocation relocation in relocations)
                 {
                     long offset = relocation.Offset - symbol.Offset;

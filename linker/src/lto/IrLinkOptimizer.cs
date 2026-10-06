@@ -157,7 +157,8 @@ public static class IrLinkOptimizer
             {
                 Section[] sections = obj.Sections.Where(section => section.Name == RegionHints.SectionName).ToArray();
                 if (sections.Length != 1 || sections[0].Size > RegionHints.MaximumBytes) throw new ElfFormatException("Invalid region hint section");
-                return RegionHints.Read(sections[0].Content());
+                using Stream stream = sections[0].OpenRead();
+                return RegionHints.Read(stream, sections[0].Size);
             }
             List<RegionHints> regionUnits = regionOrder.Select(ReadRegions).ToList();
             // Each symbol's address a constant or the unknown object, from every object's data.

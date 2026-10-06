@@ -964,9 +964,9 @@ public static partial class Linker
     {
         foreach (Placed part in section.Parts)
         {
-            if (offset >= part.Offset && offset + 8 <= part.Offset + (uint)part.Bytes.Length)
+            if (offset >= part.Offset && offset + 8 <= part.Offset + (uint)part.Bytes.Count)
             {
-                return BinaryPrimitives.ReadInt64LittleEndian(part.Bytes.AsSpan((int)(offset - part.Offset)));
+                return part.Bytes.ReadInt64((int)(offset - part.Offset));
             }
         }
         throw new InvalidOperationException($"{section.Name}+0x{offset:x} is in no part of the section");

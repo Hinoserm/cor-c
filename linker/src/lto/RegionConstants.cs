@@ -82,7 +82,7 @@ internal static class RegionConstants
         private readonly Dictionary<Symbol, ObjectFile> _objectOf = new(ReferenceEqualityComparer.Instance);
         private readonly Dictionary<Symbol, bool> _known = new(ReferenceEqualityComparer.Instance);
         // Per section: its relocations in offset order, found once.
-        private readonly Dictionary<Section, Relocation[]> _relocs = new(ReferenceEqualityComparer.Instance);
+        private readonly Dictionary<Section, SortedRelocations> _relocs = new(ReferenceEqualityComparer.Instance);
 
         // Symbols named by code or data outside the units' IR.
         private readonly HashSet<string> _foreignNamed = new(StringComparer.Ordinal);
@@ -213,12 +213,10 @@ internal static class RegionConstants
         private IEnumerable<Relocation> Within(Symbol s)
         {
             Section section = s.Section!;
-            if (!_relocs.TryGetValue(section, out Relocation[]? all))
-                _relocs[section] = all = section.Relocs.OrderBy(r => r.Offset).ToArray();
-            long from = s.Offset, to = s.Offset + s.Size;
-            int lo = 0, hi = all.Length;
-            while (lo < hi) { int mid = (lo + hi) / 2; if (all[mid].Offset < from) lo = mid + 1; else hi = mid; }
-            for (int k = lo; k < all.Length && all[k].Offset < to; k++) yield return all[k];
+            // In order without a copy where they already are (SortedRelocations).
+            if (!_relocs.TryGetValue(section, out SortedRelocations? all))
+                _relocs[section] = all = new SortedRelocations(section);
+            foreach (Relocation r in all.Within(s.Offset, s.Offset + s.Size)) yield return r;
         }
     }
 }

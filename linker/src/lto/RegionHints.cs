@@ -182,11 +182,17 @@ public sealed class RegionHints
     public static RegionHints Read(byte[] bytes)
     {
         using MemoryStream stream = new(bytes, writable: false);
+        return Read(stream, bytes.Length);
+    }
+
+    /// <summary>The hints read from `total` bytes of `stream`, from its start (Section.OpenRead).</summary>
+    public static RegionHints Read(Stream stream, int total)
+    {
         using BinaryReader reader = new(stream, Utf8);
         try
         {
             if (reader.ReadUInt32() != Magic || reader.ReadInt32() != Version) throw new ElfFormatException("Unsupported region hints");
-            if (reader.ReadInt32() != bytes.Length) throw new ElfFormatException("Invalid region hint length");
+            if (reader.ReadInt32() != total) throw new ElfFormatException("Invalid region hint length");
             long Var()
             {
                 ulong bits = 0;
@@ -209,7 +215,7 @@ public sealed class RegionHints
             int Count()
             {
                 int count = Int();
-                if (count < 0 || count > bytes.Length - stream.Position) throw new ElfFormatException("Invalid region hint count");
+                if (count < 0 || count > total - stream.Position) throw new ElfFormatException("Invalid region hint count");
                 return count;
             }
             int wordSize = Int();
@@ -218,7 +224,7 @@ public sealed class RegionHints
             for (int i = 0; i < names.Length; i++)
             {
                 int length = Int();
-                if (length < 1 || length > 16384 || length > bytes.Length - stream.Position) throw new ElfFormatException("Invalid region hint name");
+                if (length < 1 || length > 16384 || length > total - stream.Position) throw new ElfFormatException("Invalid region hint name");
                 string name = Utf8.GetString(reader.ReadBytes(length));
                 if (name.Contains('\0') || i > 0 && string.CompareOrdinal(names[i - 1], name) >= 0) throw new ElfFormatException("Invalid region hint name table");
                 // One string for each name however many units say it.
@@ -340,7 +346,7 @@ public sealed class RegionHints
                 function.Repeats = repeats; function.SiteBytes = siteBytes; function.SiteLoops = siteLoops; function.CallLoops = callLoops;
                 hints.Functions.Add(function);
             }
-            if (stream.Position != bytes.Length) throw new ElfFormatException("Trailing region hint data");
+            if (stream.Position != total) throw new ElfFormatException("Trailing region hint data");
             return hints;
         }
         catch (EndOfStreamException) { throw new ElfFormatException("Truncated region hints"); }

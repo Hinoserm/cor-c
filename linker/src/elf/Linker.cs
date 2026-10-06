@@ -288,7 +288,8 @@ public static partial class Linker
             }
             foreach (Placed part in s.Parts)
             {
-                Array.Copy(part.Bytes, 0, image, checked((long)(s.Addr - baseAddress + part.Offset)), part.Bytes.Length);
+                part.Bytes.CopyTo(image, checked((int)(s.Addr - baseAddress + part.Offset)));
+                part.Bytes.Clear();
             }
         }
 
@@ -354,14 +355,20 @@ public static partial class Linker
         public Section Section { get; }
         public OutputSection Output { get; }
         public uint Offset { get; }
-        public byte[] Bytes { get; }
+        /// <summary>
+        /// The section's bytes as this link relocates them: its own chunks,
+        /// taken (ReleaseSections), or a copy in chunks of its own. Never one
+        /// array: a large unit's .text is megabytes, and placing it as one
+        /// asked a capped 32-bit heap for that much in a single run.
+        /// </summary>
+        public ChunkedBytes Bytes { get; }
 
         public Placed(Section section, OutputSection output, uint offset)
         {
             Section = section;
             Output = output;
             Offset = offset;
-            Bytes = ReleaseSections ? section.HandOver() : section.Bytes.ToArray();
+            Bytes = ReleaseSections ? section.HandOver() : section.Bytes.Clone();
         }
     }
 
@@ -931,7 +938,7 @@ public static partial class Linker
                         continue;
                     }
                     int fieldBytes = r.Kind == RelocKind.Abs64 ? 8 : 4;
-                    if (r.Offset < 0 || r.Offset + fieldBytes > p.Bytes.Length)
+                    if (r.Offset < 0 || r.Offset + fieldBytes > p.Bytes.Count)
                     {
                         errors.Add($"relocation outside its section: {where}");
                         continue;
@@ -950,7 +957,7 @@ public static partial class Linker
                             // field otherwise, unsigned only for Abs32.
                             if (r.Kind == RelocKind.Abs64)
                             {
-                                BinaryPrimitives.WriteInt64LittleEndian(p.Bytes.AsSpan(r.Offset), value);
+                                p.Bytes.WriteInt64(r.Offset, value);
                                 continue;
                             }
                             bool fits64 = r.Kind == RelocKind.Abs32
@@ -961,7 +968,7 @@ public static partial class Linker
                                 errors.Add($"relocation overflow: '{r.Symbol}' from {where} gives 0x{value:x}");
                                 continue;
                             }
-                            BinaryPrimitives.WriteUInt32LittleEndian(p.Bytes.AsSpan(r.Offset), unchecked((uint)value));
+                            p.Bytes.WriteUInt32(r.Offset, unchecked((uint)value));
                             continue;
                         }
                     }
@@ -983,7 +990,7 @@ public static partial class Linker
                         switch (r.Kind)
                         {
                             case RelocKind.Abs64:
-                                BinaryPrimitives.WriteInt64LittleEndian(p.Bytes.AsSpan(r.Offset), value);
+                                p.Bytes.WriteInt64(r.Offset, value);
                                 continue;
                             case RelocKind.Abs32:
                                 if (value < 0 || value > uint.MaxValue)
@@ -991,7 +998,7 @@ public static partial class Linker
                                     errors.Add($"relocation overflow: '{r.Symbol}' is not below 4 GiB for {where}");
                                     continue;
                                 }
-                                BinaryPrimitives.WriteUInt32LittleEndian(p.Bytes.AsSpan(r.Offset), (uint)value);
+                                p.Bytes.WriteUInt32(r.Offset, (uint)value);
                                 continue;
                             case RelocKind.Abs32S:
                                 // Sign-extended: the bottom 2 GiB or the top 2 GiB.
@@ -1000,7 +1007,7 @@ public static partial class Linker
                                     errors.Add($"relocation overflow: '{r.Symbol}' is neither in the bottom nor the top 2 GiB, for {where}'s sign-extended field");
                                     continue;
                                 }
-                                BinaryPrimitives.WriteInt32LittleEndian(p.Bytes.AsSpan(r.Offset), (int)value);
+                                p.Bytes.WriteInt32(r.Offset, (int)value);
                                 continue;
                             case RelocKind.Rel32:
                             case RelocKind.Plt32:
@@ -1010,7 +1017,7 @@ public static partial class Linker
                                     errors.Add($"relocation overflow: '{r.Symbol}' is out of reach of {where}");
                                     continue;
                                 }
-                                BinaryPrimitives.WriteInt32LittleEndian(p.Bytes.AsSpan(r.Offset), (int)value);
+                                p.Bytes.WriteInt32(r.Offset, (int)value);
                                 continue;
                             default:
                                 errors.Add($"{r.Kind} relocation against '{r.Symbol}' from {where} has no x86-64 static form");
@@ -1064,7 +1071,7 @@ public static partial class Linker
                         errors.Add($"relocation overflow: '{r.Symbol}'{(r.Addend >= 0 ? "+" : "")}{r.Addend} from {where} gives 0x{value:x}");
                         continue;
                     }
-                    BinaryPrimitives.WriteUInt32LittleEndian(p.Bytes.AsSpan(r.Offset), unchecked((uint)value));
+                    p.Bytes.WriteUInt32(r.Offset, unchecked((uint)value));
                 }
             }
         }
@@ -1077,7 +1084,7 @@ public static partial class Linker
         List<OutputSection> present = Present(layout);
 
         StringTable strtab = new();
-        List<SymbolEntry> symbols = BuildSymbolTable(inputs, layout, present, strtab);
+        ChunkedList<SymbolEntry> symbols = BuildSymbolTable(inputs, layout, present, strtab);
 
         StringTable shstrtab = new();
         List<SectionHeader> headers = new() { default };
@@ -1125,7 +1132,7 @@ public static partial class Linker
             foreach (Placed p in s.Parts)
             {
                 b.PadTo(s.FileOffset + p.Offset);
-                b.Bytes(p.Bytes);
+                b.Take(p.Bytes);
             }
         }
         b.PadTo(layout.FileEnd);
@@ -1147,9 +1154,8 @@ public static partial class Linker
             headers.Add(new SectionHeader(symtabName, Elf.ShtSymTab, 0, 0, at, (uint)(symbols.Count * Elf.SymbolSize), (uint)(headers.Count + 1), (uint)firstGlobal, 4, Elf.SymbolSize));
         }
         {
-            byte[] bytes = strtab.ToArray();
-            headers.Add(new SectionHeader(strtabName, Elf.ShtStrTab, 0, 0, (uint)b.Length, (uint)bytes.Length, 0, 0, 1, 0));
-            b.Bytes(bytes);
+            headers.Add(new SectionHeader(strtabName, Elf.ShtStrTab, 0, 0, (uint)b.Length, (uint)strtab.Length, 0, 0, 1, 0));
+            strtab.WriteTo(b);
         }
         {
             byte[] bytes = shstrtab.ToArray();
@@ -1182,7 +1188,7 @@ public static partial class Linker
         List<OutputSection> present = Present(layout);
 
         StringTable strtab = new();
-        List<SymbolEntry> symbols = BuildSymbolTable(inputs, layout, present, strtab);
+        ChunkedList<SymbolEntry> symbols = BuildSymbolTable(inputs, layout, present, strtab);
 
         StringTable shstrtab = new();
         List<(uint Name, uint Type, ulong Flags, ulong Addr, ulong Offset, ulong Size, uint Link, uint Info, ulong Align, ulong EntSize)> headers = new() { default };
@@ -1257,7 +1263,7 @@ public static partial class Linker
             foreach (Placed p in s.Parts)
             {
                 b.PadTo(s.FileOffset + p.Offset);
-                b.Bytes(p.Bytes);
+                b.Take(p.Bytes);
             }
         }
         b.PadTo(layout.FileEnd);
@@ -1284,9 +1290,8 @@ public static partial class Linker
             headers.Add((symtabName, Elf.ShtSymTab, 0, 0, at, (ulong)(symbols.Count * Elf.Symbol64Size), (uint)(headers.Count + 1), (uint)firstGlobal, 8, Elf.Symbol64Size));
         }
         {
-            byte[] bytes = strtab.ToArray();
-            headers.Add((strtabName, Elf.ShtStrTab, 0, 0, (ulong)b.Length, (ulong)bytes.Length, 0, 0, 1, 0));
-            b.Bytes(bytes);
+            headers.Add((strtabName, Elf.ShtStrTab, 0, 0, (ulong)b.Length, (ulong)strtab.Length, 0, 0, 1, 0));
+            strtab.WriteTo(b);
         }
         {
             byte[] bytes = shstrtab.ToArray();
@@ -1338,9 +1343,11 @@ public static partial class Linker
     /// (a static function is still a function one wants to see in a
     /// backtrace), then the globals. Nothing here is needed to run.
     /// </summary>
-    private static List<SymbolEntry> BuildSymbolTable(List<Input> inputs, Layout layout, List<OutputSection> present, StringTable strtab)
+    // A whole program's symbols, and their names in strtab: chunks, not a
+    // doubling list and an array copied out of one at the end.
+    private static ChunkedList<SymbolEntry> BuildSymbolTable(List<Input> inputs, Layout layout, List<OutputSection> present, StringTable strtab)
     {
-        List<SymbolEntry> symbols = new() { default };
+        ChunkedList<SymbolEntry> symbols = new() { default };
         foreach (OutputSection s in present)
         {
             symbols.Add(new SymbolEntry(0, s.Addr, 0, SymbolEntry.MakeInfo(Elf.StbLocal, Elf.SttSection), 0, (ushort)s.Index));
