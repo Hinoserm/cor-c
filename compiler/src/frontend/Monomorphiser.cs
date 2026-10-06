@@ -621,7 +621,10 @@ public sealed class Monomorphiser
         // in its declaration.
         foreach (TypeDecl t in unit.Types)
         {
-            string path = t.Outer is null ? t.Name : t.Outer + "." + t.Name;
+            // One string a path, whichever round spelt it: every round's
+            // monomorphiser lives on in the lists it deferred, and each held
+            // the unit's paths again, joined anew.
+            string path = t.Outer is null ? t.Name : Interned.Name(t.Outer + "." + t.Name);
 
             _paths.Add(path);
 
@@ -895,6 +898,23 @@ public sealed class Monomorphiser
         _sharedNames.Clear();
         _sharedNames.TrimExcess();
         _pending.TrimExcess();
+        // AND WHAT IS ONLY REMEMBERED TO SAVE ASKING AGAIN: the names found
+        // not to be templates in a scope, the scopes' parents, and the arrays
+        // whose sequences were instantiated where they were read. Asked again
+        // by a deferred list, each is answered as it was -- a name absent is
+        // one already demanded (Candidate), a sequence one already claimed
+        // (Instantiate) -- and kept, they were a megabyte of keys spelt for
+        // this round held through every later one. Now that interfaces wait
+        // to be asked for too, nearly every round leaves a list deferred.
+        _absent.Clear();
+        _absent.TrimExcess();
+        _absentAt = -1;
+        _parents.Clear();
+        _parents.TrimExcess();
+        _sequencesSeen.Clear();
+        _sequencesSeen.TrimExcess();
+        _sequencesSeenUnscoped.Clear();
+        _sequencesSeenUnscoped.TrimExcess();
         return output;
     }
 
@@ -936,8 +956,15 @@ public sealed class Monomorphiser
     /// held in line are read off its symbol wherever one is held by value,
     /// and each of those reads declares and lays it out first
     /// (TypeSymbol.InstanceSize, InlineAlign, HeldInline, InlineDecided).
-    /// Not an interface, whose methods are counted for the slot numbering of
-    /// every family, and not an enum, which has no members to speak of.
+    /// Not an enum, which has no members to speak of.
+    ///
+    /// OR AN INTERFACE, whose methods are counted for the slot numbering of
+    /// every family: they are counted as its template's, which every copy
+    /// has in the same order, from a copy that was declared (Binder.Run),
+    /// and one declared after the numbering takes its family's slots
+    /// (Binder.InterfaceSlotsLater). Not one whose members carry a slot an
+    /// imported template chose (VtableSlotHint), which the numbering reserves
+    /// before it counts anything.
     ///
     /// NOT A DELEGATE, which is an interface here and is numbered as one;
     /// its one or two members are too few to be worth a doubt.
@@ -952,8 +979,9 @@ public sealed class Monomorphiser
     /// and a copy per argument with some is not deferred (BodiesLater).
     /// </summary>
     private static bool MembersLater(TypeDecl template)
-        => template.Kind is TypeKind.Class or TypeKind.Struct && !template.IsDelegate
-        && !template.Members.Any(m => m is MethodDecl { Params.Count: > 0 } method && method.Params[0].IsThis);
+        => template.Kind is TypeKind.Class or TypeKind.Struct or TypeKind.Interface && !template.IsDelegate
+        && !template.Members.Any(m => m is MethodDecl { Params.Count: > 0 } method && method.Params[0].IsThis
+            || m.VtableSlotHint >= 0);
 
     /// <summary>
     /// WHETHER A COPY MADE PER ARGUMENT MAY HAVE ITS MEMBERS AND THEIR BODIES
@@ -1736,7 +1764,9 @@ public sealed class Monomorphiser
             return writtenName;
         }
 
-        string mangled = MangledName(name, args);
+        // The one spelling of it, shared with the copy's declaration and with
+        // every later round's table of what was claimed (Interned).
+        string mangled = Interned.Name(MangledName(name, args));
 
         // CLAIMED AT THE MOMENT IT IS QUEUED, not when it is finished.
         //
