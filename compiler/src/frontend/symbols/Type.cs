@@ -15,23 +15,53 @@ public sealed record FunctionPointer(IReadOnlyList<Type> Params, Type Returns, b
 
 public sealed class Type : IEquatable<Type>
 {
-    public Prim Prim { get; init; }
+    // THE FIELDS, IN THE ORDER THEY ARE LAID OUT: every word first, then the
+    // bytes, so nothing is padded between them. What only pointers, tuples,
+    // function pointers, shared copies, `dynamic` and `where T : struct`
+    // parameters carry is in TypeRare, made only when one is set. A unit
+    // holds over a hundred thousand of these while it binds, and this is
+    // 35 bytes of instance on 32-bit -- a 48-byte block with the collector's
+    // header -- where it was 65 and an 80-byte one.
+    private readonly TypeSymbol? _symbol;
+    private readonly Type? _element;
+    private readonly IReadOnlyList<Type> _args = NoArgs;
+    private readonly IReadOnlyList<Type>? _useArgs;
+    private readonly string? _paramName;
+    private TypeRare? _rare;
+    private readonly Prim _prim;
+    private readonly bool _nullable;
+    private readonly byte _arrayRank;
+
+    /// <summary>The side object, made by the first init that sets one of its fields.</summary>
+    private TypeRare Rare => _rare ??= new();
+
+    public Prim Prim { get => _prim; init => _prim = value; }
     /// <summary>Set for classes, interfaces, structs and enums.</summary>
-    public TypeSymbol? Symbol { get; init; }
-    public bool Nullable { get; init; }
+    public TypeSymbol? Symbol { get => _symbol; init => _symbol = value; }
+    public bool Nullable { get => _nullable; init => _nullable = value; }
     /// <summary>Element type when this is an array.</summary>
-    public Type? Element { get; init; }
-    public int ArrayRank { get; init; }
+    public Type? Element { get => _element; init => _element = value; }
+    // A BYTE, because an array type is built one rank at a time (ArrayOf) and
+    // so is never more than one; refused above a byte's range rather than
+    // truncated, so a larger one could not pass silently.
+    public int ArrayRank
+    {
+        get => _arrayRank;
+        init => _arrayRank = value is >= 0 and <= byte.MaxValue
+            ? (byte)value : throw new ArgumentOutOfRangeException(nameof(ArrayRank));
+    }
     /// <summary>Type arguments of a constructed generic.</summary>
     // ONE EMPTY LIST FOR EVERY TYPE WITHOUT ARGUMENTS: an array read as
     // IReadOnlyList is wrapped in a view where it is converted, so the
     // default spelt here made a view for every Type -- 120 thousand of them
     // live in a unit -- all around the same empty array.
-    public IReadOnlyList<Type> Args { get; init; } = NoArgs;
+    public IReadOnlyList<Type> Args { get => _args; init => _args = value; }
     internal static readonly IReadOnlyList<Type> NoArgs = Array.Empty<Type>();
-    public IReadOnlyList<Type>? UseArgs { get; init; }
+    // NOT RARE: every specialisation the monomorphiser spells (List$int for
+    // List<int>) is resolved carrying the arguments it was made from.
+    public IReadOnlyList<Type>? UseArgs { get => _useArgs; init => _useArgs = value; }
     /// <summary>Set when this is a type parameter rather than a concrete type.</summary>
-    public string? ParamName { get; init; }
+    public string? ParamName { get => _paramName; init => _paramName = value; }
 
     /// <summary>
     /// A type parameter declared `where T : struct` (TypeParam.Struct). Over
@@ -40,7 +70,7 @@ public sealed class Type : IEquatable<Type>
     /// bound type is taken as it is. Not part of equality: it says what the
     /// parameter allows, and the name already says which parameter it is.
     /// </summary>
-    public bool StructParam { get; init; }
+    public bool StructParam { get => _rare?.StructParam ?? false; init { if (value) Rare.StructParam = true; } }
 
     /// <summary>
     /// What each element of a TUPLE type was called, and null for every other
@@ -51,7 +81,7 @@ public sealed class Type : IEquatable<Type>
     /// the names are there so `f.At` can mean something at the place it is
     /// written, and they travel with the type only so far as that.
     /// </summary>
-    public IReadOnlyList<string>? Names { get; init; }
+    public IReadOnlyList<string>? Names { get => _rare?.Names; init { if (value is not null) Rare.Names = value; } }
 
     /// <summary>
     /// How many stars: <c>byte*</c> is one, <c>byte**</c> is two.
@@ -65,10 +95,10 @@ public sealed class Type : IEquatable<Type>
     /// Sys.Poke -- a spelling of our own for something C# already has a way of
     /// doing. Pointers are that way.
     /// </summary>
-    public int PointerDepth { get; init; }
+    public int PointerDepth { get => _rare?.PointerDepth ?? 0; init { if (value != 0) Rare.PointerDepth = value; } }
 
     /// <summary>What this points at, one star fewer.</summary>
-    public Type? Pointee { get; init; }
+    public Type? Pointee { get => _rare?.Pointee; init { if (value is not null) Rare.Pointee = value; } }
 
     /// <summary>
     /// A FUNCTION POINTER, C# 9's `delegate* unmanaged<int, int, int>`: an
@@ -76,7 +106,7 @@ public sealed class Type : IEquatable<Type>
     /// callable through its signature. Not part of equality, as tuple element
     /// names are not: two function pointers are the same machine word.
     /// </summary>
-    public FunctionPointer? Function { get; init; }
+    public FunctionPointer? Function { get => _rare?.Function; init { if (value is not null) Rare.Function = value; } }
 
     /// <summary>
     /// WHERE A SHARED COPY'S MACHINE WORD COMES FROM (TypeRef.CanonIndex):
@@ -89,7 +119,7 @@ public sealed class Type : IEquatable<Type>
     /// they carry the instance, which is what lets a generic method called
     /// from shared code be handed its type argument.
     /// </summary>
-    public int CanonParam { get; init; } = -1;
+    public int CanonParam { get => _rare?.CanonParam ?? -1; init { if (value != -1) Rare.CanonParam = value; } }
 
     /// <summary>object, as the shared type argument at `index` (CanonParam): one instance per index.</summary>
     public static Type CanonAny(int index)
@@ -117,7 +147,7 @@ public sealed class Type : IEquatable<Type>
     /// type to every conversion and every generic; the flag only tells the
     /// binder that an expression's operations are to be bound late.
     /// </summary>
-    public bool Dynamic { get; init; }
+    public bool Dynamic { get => _rare?.Dynamic ?? false; init { if (value) Rare.Dynamic = true; } }
 
     public static readonly Type Void   = new() { Prim = Prim.Void };
     public static readonly Type Bool   = new() { Prim = Prim.Bool };
@@ -388,4 +418,16 @@ public sealed class Type : IEquatable<Type>
         s += new string('*', PointerDepth);
         return Nullable && (annotations || !IsReference) ? s + "?" : s;
     }
+}
+
+/// <summary>What few types carry (Type._rare): every field at its default until set.</summary>
+internal sealed class TypeRare
+{
+    public IReadOnlyList<string>? Names;
+    public Type? Pointee;
+    public FunctionPointer? Function;
+    public int PointerDepth;
+    public int CanonParam = -1;
+    public bool StructParam;
+    public bool Dynamic;
 }
