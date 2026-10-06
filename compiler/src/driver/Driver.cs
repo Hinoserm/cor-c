@@ -851,6 +851,14 @@ public static class Driver
         // sites in the module itself, and regenerates it position-independent
         // again (IrUnitCodec.Settings.PositionIndependent, UnitBackend).
         List<Corsac.Lang.Lto.IrArchiveRecord>? linkRecords = null;
+        // THE LINK'S HINTS AS BYTES, written when they are made: the pointer
+        // constraints (RegionSummary) are an object for every site and call
+        // of every function, made before the late passes and read by nothing
+        // but their own Write when the object is put together -- through the
+        // late passes and all of code generation, the unit's largest phases.
+        // The bytes are what the object gets either way; held as bytes, they
+        // are a fraction of the objects.
+        byte[]? regionHintBytes = null, lifetimeHintBytes = null;
         module.NoCollector = args.Contains("--no-collector");
         bool moduleUnit = kernel is not null && args.Contains("--obj");
         module.LeavesLinkHints = (args.Contains("--obj") || library) && !args.Contains("--no-lto") && !args.Contains("--no-opt")
@@ -873,10 +881,20 @@ public static class Driver
                         m.RuntimeHelpers.ToArray(), PositionIndependent: moduleUnit));
                 // Not without an operating system: no arena there (baremetal.cor),
                 // and a unit with no summary keeps the link from finding regions.
-                m.RegionHints = freestanding ? null : Corsac.Lang.Opt.RegionSummary.Of(m);
+                regionHintBytes = freestanding ? null : Corsac.Lang.Opt.RegionSummary.Of(m).Write();
             };
             Optimise(module, Value(args, "--trace-opt"), args.Contains("--experimental-ssa"), args.Contains("--opt-size"), args.Contains("--experimental-batch"), Value(args, "--batch-without"), workers, beforeLate, Value(args, "--region-report"), regions: !freestanding);
             Phase("optimise");
+            // The lifetime hints are complete once the passes are (Escape and
+            // its owned-unit pass wrote them): written now, as the region
+            // hints were, and the hints themselves let go.
+            if (module.LeavesLinkHints && module.LifetimeHints is { IsEmpty: false } hints) lifetimeHintBytes = hints.Write();
+            module.LifetimeHints = null;
+            // What the lifetime pass kept of each function between questions
+            // (Escape.StampIndex): no pass after this one asks, and every
+            // function held its index -- registers of a body that code
+            // generation lets go -- to the end of the compile.
+            foreach (Function function in module.Functions) function.AnalysisIndex = null;
             if (args.Contains("--dump-opt"))
             {
                 Console.Write(module.Dump());
@@ -1014,6 +1032,12 @@ public static class Driver
 #if COR_SELFHOST_BENCHMARK
         Program.BenchmarkStage("code-generation");
 #endif
+        // The calls the inliner had to keep for the link (Escape's pending
+        // hints) are read by the IR the object carries: taken already
+        // (linkRecords) or none at all whenever the bodies go as they are
+        // placed. The set held one instruction of every such call, and so
+        // that instruction past its function's release.
+        if (x86Backend.ReleaseBodies && backend == x86Backend) module.KeepCalls.Clear();
         ObjectFile obj = backend.Generate(module, backendErrors);
         Phase("codegen");
         Corsac.Lang.Opt.Pipeline.ReportAccounts();
@@ -1127,9 +1151,10 @@ public static class Driver
             {
                 // The lifetime hints first: the IR archive's integrity hash
                 // covers every other section, these included.
-                if (module.LeavesLinkHints && module.LifetimeHints is { IsEmpty: false } hints) hints.Attach(obj);
-                if (linkRecords is not null && module.RegionHints is { } regions) regions.Attach(obj);
-                if (linkRecords is not null) Corsac.Lang.Lto.IrArchive.Attach(obj, linkRecords);
+                if (lifetimeHintBytes is not null) Corsac.Lang.Lto.LifetimeHints.Attach(obj, lifetimeHintBytes);
+                if (linkRecords is not null && regionHintBytes is not null) Corsac.Lang.Lto.RegionHints.Attach(obj, regionHintBytes);
+                // Each body let go as it is copied: nothing reads the records after.
+                if (linkRecords is not null) Corsac.Lang.Lto.IrArchive.AttachConsuming(obj, linkRecords);
                 else IrUnitCodec.Attach(obj, module, x86Backend.StackMaps);
             }
             ElfWriter.WriteObjectFile(obj, output);

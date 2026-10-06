@@ -34,7 +34,19 @@ public sealed class IrArchive
         return body;
     }
 
-    public static void Attach(ObjectFile obj, IReadOnlyList<IrArchiveRecord> records)
+    public static void Attach(ObjectFile obj, IReadOnlyList<IrArchiveRecord> records) => Attach(obj, records, null);
+
+    /// <summary>
+    /// The same, LETTING EACH BODY GO AS IT IS COPIED: the list's records
+    /// are left with empty payloads. A unit's archive is its whole IR in
+    /// bytes -- tens of megabytes for a large one -- and its records held it
+    /// beside the section it was being copied into, so the last thing a
+    /// compile did was hold its IR twice. A caller that reads nothing of the
+    /// records afterwards (Driver.Compile) hands them over.
+    /// </summary>
+    public static void AttachConsuming(ObjectFile obj, List<IrArchiveRecord> records) => Attach(obj, records, records);
+
+    private static void Attach(ObjectFile obj, IReadOnlyList<IrArchiveRecord> records, List<IrArchiveRecord>? consumed)
     {
         if (obj.Sections.Any(section => section.Name == SectionName)) throw new ElfFormatException("Duplicate IR archive");
         if (records.Count > 100000) throw new ElfFormatException("Too many IR records");
@@ -80,7 +92,11 @@ public sealed class IrArchive
         section.Bytes.AddRange(NativeHash(obj));
         section.Bytes.AddRange(index.Sha256());
         section.Bytes.AddRange(index);
-        foreach (IrArchiveRecord record in records) section.Bytes.AddRange(record.Payload);
+        for (int k = 0; k < records.Count; k++)
+        {
+            section.Bytes.AddRange(records[k].Payload);
+            if (consumed is not null) consumed[k] = consumed[k] with { Payload = Array.Empty<byte>() };
+        }
         obj.Sections.Add(section);
     }
 

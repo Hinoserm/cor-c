@@ -881,8 +881,7 @@ public sealed partial class Escape : IModulePass
             // one, the slot holds the NEXT thing caught -- a catch in a loop
             // stores each exception there and reads it back, and those reads
             // are not of this one.
-            _reachGraphs ??= new(ReferenceEqualityComparer.Instance);
-            if (!_reachGraphs.TryGetValue(f, out Cfg? cfg) || cfg.Function != f) _reachGraphs[f] = cfg = new Cfg(f);
+            Cfg cfg = ReachGraph(f);
             HashSet<Block> seen = new(ReferenceEqualityComparer.Instance);
             Stack<Block> work = new();
             void Next(Block x)
@@ -1886,8 +1885,7 @@ continue;
     /// <summary>Every block reachable from `from` by one or more edges (as Reaches follows them), found in one walk.</summary>
     private static HashSet<Block> ReachedFrom(Function f, Block from)
     {
-        _reachGraphs ??= new(ReferenceEqualityComparer.Instance);
-        if (!_reachGraphs.TryGetValue(f, out Cfg? cfg) || cfg.Function != f) _reachGraphs[f] = cfg = new Cfg(f);
+        Cfg cfg = ReachGraph(f);
         HashSet<Block> seen = new(ReferenceEqualityComparer.Instance);
         Stack<Block> work = new();
         void Next(Block x)
@@ -1905,8 +1903,7 @@ continue;
     {
         // One graph per function for the run: a function with many stores
         // asks this for every pair.
-        _reachGraphs ??= new(ReferenceEqualityComparer.Instance);
-        if (!_reachGraphs.TryGetValue(f, out Cfg? cfg) || cfg.Function != f) _reachGraphs[f] = cfg = new Cfg(f);
+        Cfg cfg = ReachGraph(f);
         HashSet<Block> seen = new(ReferenceEqualityComparer.Instance);
         Stack<Block> work = new();
         void Next(Block x)
@@ -3968,8 +3965,24 @@ continue;
     /// a class implementing the interface by hand, and escapes as before.
     /// </summary>
     [ThreadStatic] private static Dictionary<string, bool[]>? _invokeOnly;
-    /// <summary>Flow graphs Reaches has built this run, by function.</summary>
-    [ThreadStatic] private static Dictionary<Function, Cfg>? _reachGraphs;
+    /// <summary>
+    /// The flow graph Reaches last built, for the function it was built of.
+    ///
+    /// ONE, NOT ONE A FUNCTION. Every function the run asked about kept its
+    /// graph to the end of the run -- the unit's blocks again as edge arrays,
+    /// for all of its functions at once -- where the questions come a
+    /// function at a time: a function with many stores asks for every pair,
+    /// and then the next function is asked about. A graph is only its
+    /// blocks' edges, which nothing in the run changes (it adds frees, never
+    /// a block or a branch), so one built again is the one that was kept.
+    /// </summary>
+    [ThreadStatic] private static Cfg? _reachGraphs;
+
+    private static Cfg ReachGraph(Function f)
+    {
+        if (_reachGraphs is { } kept && kept.Function == f) return kept;
+        return _reachGraphs = new Cfg(f);
+    }
     /// <summary>--alloc-report: why each virtual call it could not resolve was left.</summary>
     [ThreadStatic] private static List<string>? _unresolvedWhy;
 

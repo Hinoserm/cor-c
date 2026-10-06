@@ -60,11 +60,18 @@ public sealed class RegionHints
     /// <summary>Whether some function of the unit calls a method read out of a descriptor by a call that names no virtual target (RegionSummary).</summary>
     public bool CallsThroughMethods { get; set; }
 
-    public void Attach(ObjectFile obj)
+    public void Attach(ObjectFile obj) => Attach(obj, Write());
+
+    /// <summary>
+    /// Hints already written (Write), attached as Attach would: a compile
+    /// writes them when they are made and keeps the bytes, not the hints,
+    /// until its object is put together (Driver.Compile).
+    /// </summary>
+    public static void Attach(ObjectFile obj, byte[] written)
     {
         if (obj.Sections.Any(section => section.Name == SectionName)) throw new ElfFormatException("Duplicate region hints");
         Section section = new(SectionName, SectionKind.Note);
-        section.Bytes.AddRange(Write());
+        section.Bytes.AddRange(written);
         obj.Sections.Add(section);
     }
 
