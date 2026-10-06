@@ -509,8 +509,9 @@ public sealed partial class Lowering
         // made per argument that nothing in the unit used: no Main, no
         // static and no virtual of it is reached, and none is rooted -- not
         // even, in a unit with no entry, its statics, which only a call
-        // nothing made could reach. A library defers none (Monomorphiser.
-        // BodiesLater), and roots every one as it always did.
+        // nothing made could reach. A whole library defers none (Monomorphiser.
+        // BodiesLater), and roots every one as it always did; a part of one
+        // roots no copy, and defers them as a program does.
         foreach (TypeSymbol t in _b.Types.Values)
         {
             if (t.MembersPending) continue;

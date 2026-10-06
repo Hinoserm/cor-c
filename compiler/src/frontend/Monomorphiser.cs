@@ -967,11 +967,36 @@ public sealed class Monomorphiser
     /// are copied (CanonMadeWritten), and which every word-shaped copy's
     /// code is. NOT ONE WITH STATIC STATE, which is initialised in an order
     /// set over every type (Binder.StaticInitialisers). NOT AN EXTERNAL ONE,
-    /// whose code is another image's. And NOT IN A LIBRARY, which publishes
-    /// every method of every type it holds (Lowering.Run), asked for or not.
+    /// whose code is another image's. And NOT IN A WHOLE LIBRARY, which
+    /// publishes every method of every type it holds (Lowering.Run), asked
+    /// for or not.
+    ///
+    /// A PART OF ONE DEFERS THEM LIKE A PROGRAM. Every unit of a project but
+    /// its entry is compiled as a library, and one of several roots no copy:
+    /// an instantiation belongs to whoever wanted it, and is reached from
+    /// that one's code (Lowering.PartOfALibrary). So a copy nothing in the
+    /// unit asks for has no code here either way, and its code and the
+    /// records that describe code are what they were. What such a unit no
+    /// longer writes is what came of checking bodies it never emitted:
+    ///
+    /// THEIR INTERRUPT FACTS (Lto.InterruptNotes). The link follows only the
+    /// calls a handler's chain names, and each is a call from a body checked
+    /// in the unit that makes it, to a method whose copy that unit asked for
+    /// and so checked too (Binder.DeclareMembersNow): the fact the link
+    /// follows is that unit's own. A fact is named for its copy, arguments
+    /// and all, so the one a unit drops is the very fact any other unit
+    /// holding the copy writes. The rest are in the order checked, the
+    /// copies asked for after the others.
+    ///
+    /// THE LAYOUT RECORDS OF TYPES ONLY THOSE BODIES USED (ManagedLayouts):
+    /// the records follow use, a type's own unit always describes it, and
+    /// the link only compares what two units both describe -- an opinion
+    /// about a type no code of this unit's touches had nothing to check.
+    ///
+    /// And the lookups those bodies made, from the dependency receipt.
     /// </summary>
     private bool BodiesLater(Job job)
-        => job.Canon is null && !job.External && !_library && !HasStaticState(job.Template)
+        => job.Canon is null && !job.External && (!_library || Corsac.Lang.Lower.Lowering.PartOfALibrary) && !HasStaticState(job.Template)
         && job.Name != CanonNameOf(TemplatePath(job.Template), job.Template.TypeParams.Count);
 
     /// <summary>
