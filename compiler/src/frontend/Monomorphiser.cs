@@ -72,6 +72,9 @@ public sealed class Monomorphiser
     /// </summary>
     public static long DeferredSpecialisations, MembersMadeLater;
 
+    /// <summary>How many of the deferred ones were copies per argument, whose bodies were deferred with them (BodiesLater).</summary>
+    public static long DeferredWithBodies;
+
     /// <summary>Names that are NOT a machine word: narrower, or in the other bank.</summary>
     private static readonly HashSet<string> Narrow = new(StringComparer.Ordinal)
     {
@@ -808,7 +811,14 @@ public sealed class Monomorphiser
             // unit declares is the one it always was. What is deferred is
             // only the copies of the members themselves, which the binder
             // asks for on first use (MakeMembers).
-            if (job.Canon is not null && MembersLater(job.Template))
+            //
+            // A COPY MADE PER ARGUMENT TOO, bodies and all (BodiesLater):
+            // List<int> carries every method of List rewritten, and a unit
+            // that only names one in a signature it never calls pays for
+            // all of them. The rewrite just done was the whole of it, bodies
+            // included, so what the bodies name is queued as it always was.
+            bool bodies = BodiesLater(job);
+            if ((job.Canon is not null || bodies) && MembersLater(job.Template))
             {
                 TypeDecl template = job.Template;
                 List<TypeRef> args = job.Args;
@@ -826,8 +836,9 @@ public sealed class Monomorphiser
                     _templateMembers[template] = read;
                 }
                 List<MemberDecl> members = read;
-                made.DeferMembers(() => MakeMembers(template, members, args, name, scope));
+                made.DeferMembers(asking => MakeMembers(template, members, args, name, scope, bodies ? asking : null));
                 DeferredSpecialisations++;
+                if (bodies) DeferredWithBodies++;
             }
             else
             {
@@ -882,6 +893,7 @@ public sealed class Monomorphiser
     /// <summary>
     /// WHETHER A WORD-SHAPED COPY OF THIS TEMPLATE MAY HAVE ITS MEMBERS MADE
     /// ON FIRST USE (TypeDecl.DeferMembers, TypeSymbol.DeclareMembersLater).
+    /// A copy made per argument asks this too, and BodiesLater besides.
     ///
     /// The copy's code is the canonical copy's and is never checked or
     /// emitted here (Binder.CheckBodies, Lowering.Emits), so its members are
@@ -905,11 +917,31 @@ public sealed class Monomorphiser
     ///
     /// No static state either, but a word-shaped copy never has any: a
     /// template with some is copied per argument (Shareable), so nothing of
-    /// this kind is laid out, initialised or numbered in a static order.
+    /// this kind is laid out, initialised or numbered in a static order --
+    /// and a copy per argument with some is not deferred (BodiesLater).
     /// </summary>
     private static bool MembersLater(TypeDecl template)
         => template.Kind == TypeKind.Class && !template.IsDelegate
         && !template.Members.Any(m => m is MethodDecl { Params.Count: > 0 } method && method.Params[0].IsThis);
+
+    /// <summary>
+    /// WHETHER A COPY MADE PER ARGUMENT MAY HAVE ITS MEMBERS AND THEIR BODIES
+    /// MADE ON FIRST USE -- List&lt;int&gt;, List&lt;(A, B)&gt;, Dictionary&lt;long,
+    /// Foo&gt; -- as a word-shaped copy's are (MembersLater says which kinds).
+    /// These bodies are this copy's own: when the members are made the
+    /// binder checks them with the rest of the bodies it is checking, and
+    /// lowering emits what reaches them (Binder.DeclareMembersNow).
+    ///
+    /// NOT THE CANONICAL COPY, which records what its bodies make as they
+    /// are copied (CanonMadeWritten), and which every word-shaped copy's
+    /// code is. NOT ONE WITH STATIC STATE, which is initialised in an order
+    /// set over every type (Binder.StaticInitialisers). NOT AN EXTERNAL ONE,
+    /// whose code is another image's. And NOT IN A LIBRARY, which publishes
+    /// every method of every type it holds (Lowering.Run), asked for or not.
+    /// </summary>
+    private bool BodiesLater(Job job)
+        => job.Canon is null && !job.External && !_library && !HasStaticState(job.Template)
+        && job.Name != CanonNameOf(TemplatePath(job.Template), job.Template.TypeParams.Count);
 
     /// <summary>
     /// A deferred specialisation's members, made now: the rewrite its job
@@ -924,16 +956,33 @@ public sealed class Monomorphiser
     /// new queued, demanded or reported here would mean that no longer
     /// holds, which is a fault in the compiler and is said so rather than
     /// compiled past.
+    ///
+    /// <paramref name="bodies"/> is the declaration asking, when the copy is
+    /// one made per argument and its bodies are made with its members. A
+    /// TEMPLATE'S INITIALISERS MAY HAVE BEEN PLACED SINCE its members were
+    /// read: binding puts them into the template's own constructors, in
+    /// place, and gives it the constructor and the methods they need
+    /// (Binder.Initialisers). A copy made then is made as a later round
+    /// makes one -- from the template's members as they are now, with its
+    /// initialisers already placed -- or the constructors read would carry
+    /// them once and the copy's own placing a second time, calling methods
+    /// the list read never had.
     /// </summary>
     private List<MemberDecl> MakeMembers(TypeDecl template, List<MemberDecl> members, List<TypeRef> args, string name,
-                                         (string Scope, string Namespace, FileScope? Usings, bool Library) scope)
+                                         (string Scope, string Namespace, FileScope? Usings, bool Library) scope,
+                                         TypeDecl? bodies)
     {
         int errors = _errors.Count;
         bool demanded = _templateBatch.Any;
+        if (bodies is not null && template.InitialisersPlaced && !bodies.InitialisersPlaced)
+        {
+            members = template.Members;
+            bodies.InitialisersPlaced = true;
+        }
         List<MemberDecl> made = new(members.Count);
 
         Dictionary<string, TypeRef> map = JobMap(template, args);
-        _bodiesElsewhere = true;
+        _bodiesElsewhere = bodies is null;
         _canonParams = null;
         _canonMade = null;
         (string, string, FileScope?, bool) was = (_scope, _inNamespace, _usings, _libraryCode);

@@ -301,9 +301,11 @@ public static class Frontend
 
                 // Every member, properties too: their accessors are bodies
                 // the binder makes from them, and take the flag with them.
-                // MADE ONES ONLY: members still deferred belong to a word-shaped
-                // copy, whose bodies are never checked (Binder.CheckBodies),
-                // and are not made merely to be flagged.
+                // MADE ONES ONLY: members still deferred are not made merely to
+                // be flagged. A word-shaped copy's bodies are never checked
+                // (Binder.CheckBodies), and a copy per argument whose members
+                // are made during the binding has them flagged then
+                // (Binder.BodiesNow).
                 foreach (TypeDecl t in unit.Types)
                 {
                     if (known.Contains(t.Name)) continue;
@@ -352,7 +354,7 @@ public static class Frontend
         {
             // Counted as they stand: a deferred list is not made to be counted.
             foreach (var group in unit.Types.GroupBy(t => t.TypeParams.Count > 0 ? "template"
-                         : t.MembersPending ? "shared-copy-deferred"
+                         : t.MembersPending ? (t.Canon is not null ? "shared-copy-deferred" : "specialised-deferred")
                          : t.Canon is not null ? "shared-copy" : t.Specialised ? "specialised" : t.SignatureOnly ? "imported" : "own"))
             {
                 Console.Error.WriteLine("unit " + group.Key + ": " + group.Count() + " types, "

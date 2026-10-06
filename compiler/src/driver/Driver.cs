@@ -490,7 +490,7 @@ public static class Driver
             // whoever else is using the processors.
             + " allocated=" + GC.GetTotalAllocatedBytes()
             + " specialisations=" + Lang.Monomorphiser.Specialisations + " members=" + Lang.Monomorphiser.SpecialisedMembers
-            + " deferred=" + Lang.Monomorphiser.DeferredSpecialisations + " members-made-later=" + Lang.Monomorphiser.MembersMadeLater);
+            + " deferred=" + Lang.Monomorphiser.DeferredSpecialisations + " with-bodies=" + Lang.Monomorphiser.DeferredWithBodies + " members-made-later=" + Lang.Monomorphiser.MembersMadeLater);
         if (front is null)
         {
             return null;

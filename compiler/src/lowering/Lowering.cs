@@ -504,7 +504,12 @@ public sealed partial class Lowering
         // over every type below: a word-shaped specialisation, whose methods
         // are its canonical copy's and are emitted, rooted and initialised as
         // that copy's (Emits, Canonical), and which asking would declare
-        // (TypeSymbol.EnsureMembers) to find nothing of its own.
+        // (TypeSymbol.EnsureMembers) to find nothing of its own. Or a copy
+        // made per argument that nothing in the unit used: no Main, no
+        // static and no virtual of it is reached, and none is rooted -- not
+        // even, in a unit with no entry, its statics, which only a call
+        // nothing made could reach. A library defers none (Monomorphiser.
+        // BodiesLater), and roots every one as it always did.
         foreach (TypeSymbol t in _b.Types.Values)
         {
             if (t.MembersPending) continue;

@@ -172,6 +172,13 @@ public sealed class TypeSymbol
     /// </summary>
     private Action<TypeSymbol>? _declareMembers;
 
+    /// <summary>
+    /// A body has used this type, and a copy made per argument among it and
+    /// its arguments has been declared for lowering (Binder.ForceBody): set
+    /// once, so that the walk is one test an expression after the first.
+    /// </summary>
+    public bool ReachedFromBodies { get; set; }
+
     /// <summary>Whether its members are still to be declared (DeclareMembersLater).</summary>
     public bool MembersPending => _declareMembers is not null;
 

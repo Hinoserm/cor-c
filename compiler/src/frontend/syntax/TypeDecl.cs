@@ -77,7 +77,7 @@ public sealed class TypeDecl : Node
             if (_makeMembers is { } make)
             {
                 _makeMembers = null;
-                _members = make();
+                _members = make(this);
             }
             return _members!;
         }
@@ -102,8 +102,11 @@ public sealed class TypeDecl : Node
     /// every member of every such type was most of the declarations a large
     /// unit held. What is made later is exactly what would have been made
     /// now -- the same rewrite, by the same monomorphiser, in the same state.
+    /// Handed the declaration that asked, which in a later round of expansion
+    /// is a copy of the one deferred (DeferMembersAs), so that what the making
+    /// settles about the declaration is said of the one that holds the list.
     /// </summary>
-    internal void DeferMembers(Func<List<MemberDecl>> make)
+    internal void DeferMembers(Func<TypeDecl, List<MemberDecl>> make)
     {
         _members = null;
         _makeMembers = make;
@@ -118,7 +121,7 @@ public sealed class TypeDecl : Node
 
     // Made with the declaration, as it always was; null only while deferred.
     private List<MemberDecl>? _members = new();
-    private Func<List<MemberDecl>>? _makeMembers;
+    private Func<TypeDecl, List<MemberDecl>>? _makeMembers;
     // Read through MembersMade while deferred, never written through.
     private static readonly List<MemberDecl> NoMembers = new();
     /// <summary>Enum members, when this is an enum.</summary>
