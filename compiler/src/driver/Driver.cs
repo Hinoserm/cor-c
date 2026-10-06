@@ -901,7 +901,7 @@ public static class Driver
             // The x86 backend puts each function's allocations in place as it
             // selects it (AllocatorFastPaths.AtCodegen): not the late passes.
             module.AllocatorsAtCodegen = Target.Current.Name == "x86";
-            Optimise(module, Value(args, "--trace-opt"), args.Contains("--experimental-ssa"), args.Contains("--opt-size"), args.Contains("--experimental-batch"), Value(args, "--batch-without"), workers, beforeLate, Value(args, "--region-report"), regions: !freestanding);
+            Optimise(module, Value(args, "--trace-opt"), args.Contains("--experimental-ssa"), args.Contains("--opt-size"), args.Contains("--experimental-batch"), Value(args, "--batch-without"), workers, beforeLate, Value(args, "--region-report"), regions: !freestanding && !args.Contains("--no-regions"));
             Phase("optimise");
             // The lifetime hints are complete once the passes are (Escape and
             // its owned-unit pass wrote them): written now, as the region
