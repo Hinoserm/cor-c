@@ -7573,7 +7573,7 @@ static class Gc
             long payload = Sys.Peek(_heldExempt + i * 8) & WordSize.AddressMask;
             if (payload == 0) continue;
             long block = BlockForPointer(payload);
-            if (block != 0) SetFlag(block, FlagMark | FlagScan);
+            if (block != 0) SetFlag(block, FlagMark | FlagScan, TailOf(block));
         }
     }
 
@@ -7642,7 +7642,7 @@ static class Gc
             long payload = Sys.Peek(_heldExempt + i * 8) & WordSize.AddressMask;
             if (payload == 0) continue;
             long block = BlockForPointer(payload);
-            if (block != 0) ScanBlock(block, Sys.Peek(block) & SizeMask);
+            if (block != 0) ScanBlock(block, Sys.Peek(block) & SizeMask, TailOf(block));
         }
         Drain();
         return true;
