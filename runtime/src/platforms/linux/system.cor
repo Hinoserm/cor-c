@@ -178,7 +178,8 @@ static class Platform
 
     /// CORSAC_GC_THRESHOLD=<bytes>: collect at least that often, whatever the
     /// pacing says -- every call site a collection may fall under, tried.
-    /// WITHOUT IT, ON A SMALL MACHINE -- 128 MB or less (sysinfo) -- a
+    /// WITHOUT IT, ON A SMALL MACHINE -- 128 MB or less (TotalMemory: the
+    /// machine, or the control group's limit when that is smaller) -- a
     /// thirty-second of its memory, as a kernel's own heap is held (its
     /// ThresholdCap), and with it the collector's small pages and chunks
     /// (HeapChunks.BatchPageBytes, ChunkAsk): a 32 MB machine's desktop
@@ -639,15 +640,32 @@ static class Platform
     /// sysinfo(2)'s totalram and freeram, in bytes: what the machine has and
     /// what it has free (the kernel's view, which leaves out reclaimable
     /// caches -- MemAvailable counts those, and is read where a caller wants
-    /// it).
+    /// it) -- EACH NO MORE THAN THE PROCESS'S CONTROL GROUP ALLOWS. A
+    /// compiler run in a 256 MB group on a 48 GB server was told 48: its
+    /// caches took their largest sizes, the small-machine pacing never
+    /// applied, and the group's limit killed it where a collection would have
+    /// kept it inside. So the total is the smaller of the machine and the
+    /// group's limit (MemoryLimit), as .NET reports a container's; and what
+    /// is free is no more than the limit less what the group says it already
+    /// uses (memory.current), or than the limit when that cannot be read.
     public static long TotalMemory()
     {
-        return SysinfoBytes(SysinfoTotal);
+        long physical = SysinfoBytes(SysinfoTotal);
+        long limit = MemoryLimit();
+        return limit != 0 && (physical == 0 || limit < physical) ? limit : physical;
     }
 
     public static long AvailableMemory()
     {
-        return SysinfoBytes(SysinfoFree);
+        long free = SysinfoBytes(SysinfoFree);
+        long limit = MemoryLimit();
+        if (limit == 0)
+        {
+            return free;
+        }
+        long used = CgroupUsage();
+        long left = used < 0 ? limit : used < limit ? limit - used : 0;
+        return free != 0 && free < left ? free : left;
     }
 
     /// Whether a mapping costs only the pages that are touched: the kernel
@@ -678,14 +696,6 @@ static class Platform
         return SysinfoBytes(SysinfoFree) + SysinfoBytes(SysinfoBuffers);
     }
 
-    /// THE MEMORY THE PROCESS'S CONTROL GROUP MAY USE, or 0 when it has no
-    /// limit: what .NET reads to size its heap in a container, and what a
-    /// machine's free memory does not show -- a process capped at 256 MB on a
-    /// server with 48 GB free would otherwise pace itself for 48. cgroup v2's
-    /// memory.max, the smallest along the group's path, since a parent's
-    /// limit binds its children; or v1's memory.limit_in_bytes. Read once, at
-    /// the heap's start, with raw calls into a page of the system's own:
-    /// nothing here allocates.
     /// How much address space a 32-bit process has: four gigabytes under a
     /// 64-bit kernel, three under a 32-bit one -- uname's machine, x86_64 or
     /// not. Asked once, at the heap's start, into a page of the system's own:
@@ -864,7 +874,80 @@ static class Platform
         Sys.Syscall(Call.ExitGroup, 128 + signal, 0, 0, 0, 0, 0);
     }
 
+    /// THE MEMORY THE PROCESS'S CONTROL GROUP MAY USE, or 0 when it has no
+    /// limit that binds: what .NET reads to size its heap in a container, and
+    /// what a machine's free memory does not show -- a process capped at 256
+    /// MB on a server with 48 GB free would otherwise pace itself for 48.
+    /// cgroup v2's memory.max, the smallest along the group's path, since a
+    /// parent's limit binds its children ("max" is none); then, when v2 says
+    /// none, v1's memory.limit_in_bytes, for a hybrid system whose memory
+    /// controller is still on v1 beside a v2 line in /proc/self/cgroup. A
+    /// limit at or above the machine's memory is no limit, and answers 0.
+    ///
+    /// READ ONCE AND KEPT: the collector asks as the heap starts (Gc.Start),
+    /// before there is a heap or a second thread, and GC.GetGCMemoryInfo asks
+    /// on every call. Raw calls into pages of the system's own, so nothing
+    /// here allocates; one page is kept, holding the path of the binding
+    /// group's usage file for CgroupUsage.
     public static long MemoryLimit()
+    {
+        if (_limitAsked == 0)
+        {
+            _limit = ReadMemoryLimit();
+            long physical = SysinfoBytes(SysinfoTotal);
+            if (physical != 0 && _limit >= physical) _limit = 0;
+            _limitAsked = 1;
+        }
+        return _limit;
+    }
+
+    static long _limit;
+    static long _limitAsked;
+
+    /// The page CgroupUsage reads through: a lock word at 0, the number read
+    /// at UsageDigits, the usage file's NUL-terminated path at UsagePath. 0
+    /// when no group limits the process.
+    static long _usagePage;
+    const int UsageDigits = 64;
+    const int UsagePath = 128;
+
+    /// What the binding group says it uses now -- v2's memory.current, v1's
+    /// memory.usage_in_bytes -- or -1 when there is no such group or the file
+    /// says nothing. The page is shared, so a caller that finds another
+    /// reading it answers what was read last rather than wait or read into it
+    /// at the same time.
+    static long CgroupUsage()
+    {
+        long page = _usagePage;
+        if (page == 0)
+        {
+            return -1;
+        }
+        if (Sys.Cas(page, 0, 1) != 0)
+        {
+            return _lastUsage - 1;
+        }
+        long got = ReadPath(page + UsagePath, page + UsageDigits, 32);
+        long value = 0;
+        long digits = 0;
+        for (long p = page + UsageDigits; p < page + UsageDigits + got; p++)
+        {
+            long c = Sys.PeekByte(p);
+            if (c < 48 || c > 57) break;
+            value = value * 10 + (c - 48);
+            digits = digits + 1;
+        }
+        long answer = digits > 0 ? value : -1;
+        _lastUsage = answer + 1;
+        Sys.Poke(page, 0);
+        return answer;
+    }
+
+    // What the last read said, plus one: a static here starts as zero, read
+    // before any initialiser could run, so zero must mean "nothing read".
+    static long _lastUsage;
+
+    static long ReadMemoryLimit()
     {
         long page = Map(8192);
         if (page == 0)
@@ -881,16 +964,18 @@ static class Platform
             long end = v2;
             while (end < text + got && Sys.PeekByte(end) != 10) end = end + 1;
             // The group, then each parent up to the root, whose own file
-            // does not exist.
+            // does not exist (except as a namespace's root, which is "/").
+            long binding = 0;
             while (end > v2)
             {
                 long bytes = CgroupFile(path, v2, end, "/sys/fs/cgroup", "/memory.max", text + got + 1, page + 4096 - (text + got + 1));
-                if (bytes > 0 && (limit == 0 || bytes < limit)) limit = bytes;
+                if (bytes > 0 && (limit == 0 || bytes < limit)) { limit = bytes; binding = end; }
                 end = end - 1;
                 while (end > v2 && Sys.PeekByte(end) != 47) end = end - 1;
             }
+            if (limit != 0) KeepUsagePath(v2, binding, "/sys/fs/cgroup", "/memory.current");
         }
-        else if (got > 0)
+        if (limit == 0 && got > 0)
         {
             long v1 = LineAfter(text, got, ":memory:");
             if (v1 >= 0)
@@ -900,10 +985,28 @@ static class Platform
                 limit = CgroupFile(path, v1, end, "/sys/fs/cgroup/memory", "/memory.limit_in_bytes", text + got + 1, page + 4096 - (text + got + 1));
                 // v1 says "no limit" as a number near 2^63.
                 if (limit >= 0x7FFFFFFFFFFFF000 / 2) limit = 0;
+                if (limit != 0) KeepUsagePath(v1, end, "/sys/fs/cgroup/memory", "/memory.usage_in_bytes");
             }
         }
         Unmap(page, 8192);
         return limit;
+    }
+
+    /// The binding group's usage file, `root` + [from, to) + `leaf`, written
+    /// into a page kept for CgroupUsage; nothing kept when no page is had.
+    static void KeepUsagePath(long from, long to, string root, string leaf)
+    {
+        long page = Map(4096);
+        if (page == 0)
+        {
+            return;
+        }
+        long at = page + UsagePath;
+        for (int i = 0; i < root.Length; i++) { Sys.PokeByte(at, root[i]); at = at + 1; }
+        for (long p = from; p < to && at < page + 3900; p++) { Sys.PokeByte(at, Sys.PeekByte(p)); at = at + 1; }
+        for (int i = 0; i < leaf.Length; i++) { Sys.PokeByte(at, leaf[i]); at = at + 1; }
+        Sys.PokeByte(at, 0);
+        _usagePage = page;
     }
 
     /// Reads the file named by `name` (built into `scratch`) into [into,
