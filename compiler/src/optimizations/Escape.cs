@@ -73,8 +73,9 @@ public sealed partial class Escape : IModulePass
         // thread's static (_inserted); left set, it kept the last unit's IR
         // alive for as long as the thread lived. The flow graphs Reaches
         // built (_reachGraphs) hold their functions, so they go too.
+        _repeating = new(ReferenceEqualityComparer.Instance);
         try { RunCore(m); }
-        finally { _reachGraphs = null; _inserted = null; _indirect = null; _held = null; _fieldsOf = null; _heldStamps = null; _copies = null; _typeItems = null; _typedFieldsOf = null; _stampItems = null; }
+        finally { _repeating = null; _reachGraphs = null; _inserted = null; _indirect = null; _held = null; _fieldsOf = null; _heldStamps = null; _copies = null; _typeItems = null; _typedFieldsOf = null; _stampItems = null; }
     }
 
     /// <summary>
@@ -92,6 +93,7 @@ public sealed partial class Escape : IModulePass
     internal static void ForgetThread()
     {
         _reachGraphs = null; _inserted = null; _indirect = null; _held = null; _fieldsOf = null; _heldStamps = null;
+        _repeating = null;
         _copies = null; _typeItems = null; _typedFieldsOf = null; _stampItems = null;
         _returnsFirst = null; _bodies = null; _invokeOnly = null; _unresolvedWhy = null; UsedAfterWhy = null;
         OwnedFieldEscape.Forget();
@@ -5295,57 +5297,91 @@ continue;
     /// <summary>The blocks on some cycle of the graph: the only places an allocation site runs twice in one call.</summary>
     private static HashSet<Block> Repeating(Function f)
     {
+        if (_repeating is not null && _repeating.TryGetValue(f, out HashSet<Block>? known)) return known;
+        HashSet<Block> found = RepeatingBlocks(f);
+        _repeating?.Add(f, found);
+        return found;
+    }
+
+    /// <summary>
+    /// EACH FUNCTION'S LOOPS, while a run lasts (RunCore). The run asks for
+    /// them from five places -- the arrays it confirms, what to place in the
+    /// frame, what each fresh result is -- each in a walk over every function
+    /// of its own, and each asked again: a flow graph and two walks over it,
+    /// with their tables, every time. Which blocks repeat is the flow graph's
+    /// alone, and a run adds instructions, never a block or a branch, so the
+    /// answer found once stands for the rest of the run; a function's sets
+    /// hold only its loops' blocks. Only inside a run: the link's
+    /// per-function rules (RunAtLink) ask between inliners.
+    /// </summary>
+    [ThreadStatic] private static Dictionary<Function, HashSet<Block>>? _repeating;
+
+    private static HashSet<Block> RepeatingBlocks(Function f)
+    {
         Cfg cfg = new(f);
+        int count = f.Blocks.Count;
         // A LANDING PAD IS ENTERED FROM WHERE ITS HANDLER WAS INSTALLED (the
         // LabelAddr naming it), by an unwind no edge of the graph shows. With
         // that edge added, a pad that leads back into the loop that installed
         // it is on the loop's cycle, and one that leaves the loop is not --
         // it runs at most once however often its handler went in.
-        Dictionary<Block, List<Block>> into = new(ReferenceEqualityComparer.Instance), from = new(ReferenceEqualityComparer.Instance);
+        List<Block>?[]? into = null;
         foreach (Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
                 if (i.Op == Opcode.LabelAddr)
-                    foreach (Block pad in i.Targets)
-                    {
-                        if (!into.TryGetValue(b, out List<Block>? outs)) into[b] = outs = new();
-                        outs.Add(pad);
-                        if (!from.TryGetValue(pad, out List<Block>? ins)) from[pad] = ins = new();
-                        ins.Add(b);
-                    }
-        IEnumerable<Block> Succs(Block b) => into.TryGetValue(b, out List<Block>? extra) ? cfg.Succs(b).Concat(extra) : cfg.Succs(b);
-        IEnumerable<Block> Preds(Block b) => from.TryGetValue(b, out List<Block>? extra) ? cfg.Preds(b).Concat(extra) : cfg.Preds(b);
-        // Kosaraju: finishing order on the graph, then components on its
-        // reverse; a block is on a cycle if its component has two blocks or
-        // it is its own successor.
-        List<Block> order = new();
-        HashSet<Block> seen = new(ReferenceEqualityComparer.Instance);
-        foreach (Block root in f.Blocks)
+                    foreach (Block pad in i.Targets) ((into ??= new List<Block>?[count])[b.Order] ??= new()).Add(pad);
+        int Degree(int b) => cfg.Succs(f.Blocks[b]).Count + (into?[b]?.Count ?? 0);
+        Block Successor(int b, int k)
         {
-            if (!seen.Add(root)) continue;
-            Stack<(Block Block, IEnumerator<Block> Next)> stack = new();
-            stack.Push((root, Succs(root).GetEnumerator()));
-            while (stack.Count > 0)
-            {
-                (Block block, IEnumerator<Block> next) = stack.Peek();
-                if (next.MoveNext())
-                {
-                    if (seen.Add(next.Current)) stack.Push((next.Current, Succs(next.Current).GetEnumerator()));
-                }
-                else { stack.Pop(); order.Add(block); }
-            }
+            Edges succs = cfg.Succs(f.Blocks[b]);
+            return k < succs.Count ? succs[k] : into![b]![k - succs.Count];
         }
+        // THE STRONGLY CONNECTED PARTS (Tarjan's, by block position): a block
+        // repeats if its part has two blocks or it is its own successor. One
+        // walk over arrays, where two walks over sets and a lazy sequence of
+        // successors per block were most of what the lifetime pass allocated
+        // for this question; the blocks found are the same.
+        int[] index = new int[count], low = new int[count];
+        bool[] onStack = new bool[count];
+        Array.Fill(index, -1);
+        Stack<int> open = new();
+        Stack<(int Block, int Next)> walk = new();
         HashSet<Block> repeating = new(ReferenceEqualityComparer.Instance);
-        HashSet<Block> assigned = new(ReferenceEqualityComparer.Instance);
-        for (int k = order.Count - 1; k >= 0; k--)
+        int counter = 0;
+        for (int root = 0; root < count; root++)
         {
-            if (!assigned.Add(order[k])) continue;
-            List<Block> component = new() { order[k] };
-            Stack<Block> work = new();
-            work.Push(order[k]);
-            while (work.TryPop(out Block? block))
-                foreach (Block pred in Preds(block))
-                    if (assigned.Add(pred)) { component.Add(pred); work.Push(pred); }
-            if (component.Count > 1 || Succs(order[k]).Contains(order[k])) repeating.UnionWith(component);
+            if (index[root] >= 0) continue;
+            index[root] = low[root] = counter++; open.Push(root); onStack[root] = true;
+            walk.Push((root, 0));
+            while (walk.Count > 0)
+            {
+                (int b, int next) = walk.Pop();
+                if (next < Degree(b))
+                {
+                    walk.Push((b, next + 1));
+                    int c = Successor(b, next).Order;
+                    if (index[c] < 0)
+                    {
+                        index[c] = low[c] = counter++; open.Push(c); onStack[c] = true;
+                        walk.Push((c, 0));
+                    }
+                    else if (onStack[c]) low[b] = Math.Min(low[b], index[c]);
+                    continue;
+                }
+                if (walk.Count > 0) { int up = walk.Peek().Block; low[up] = Math.Min(low[up], low[b]); }
+                if (low[b] != index[b]) continue;
+                int top = open.Pop();
+                onStack[top] = false;
+                if (top == b)
+                {
+                    // Alone: a cycle only through an edge to itself.
+                    for (int k = 0; k < Degree(b); k++)
+                        if (Successor(b, k).Order == b) { repeating.Add(f.Blocks[b]); break; }
+                    continue;
+                }
+                repeating.Add(f.Blocks[top]);
+                do { top = open.Pop(); onStack[top] = false; repeating.Add(f.Blocks[top]); } while (top != b);
+            }
         }
         return repeating;
     }

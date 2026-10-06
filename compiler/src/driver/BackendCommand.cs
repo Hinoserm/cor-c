@@ -22,7 +22,9 @@ public static class BackendCommand
             BackendRequest? request;
             try { request = BackendProtocol.ReadRequest(reader); }
             catch (Exception error) { BackendProtocol.WriteResponse(writer, error.Message); return 1; }
-            if (request is null) return 0;
+            // --report-passes: what each pass cost this backend over every
+            // unit it regenerated, as a compile says it after code generation.
+            if (request is null) { Corsac.Lang.Opt.Pipeline.ReportAccounts(); return 0; }
             try
             {
                 if (Path.GetFullPath(request.Input) == Path.GetFullPath(request.Output)) throw new InvalidDataException("Backend output would overwrite input");

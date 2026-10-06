@@ -76,19 +76,33 @@ internal sealed class OwnedFieldEscape
         if (!cfg.Dominates(owner, child) && !cfg.Dominates(child, owner)) return false;
         // The caller has already established instruction order in this case.
         if (owner == child) return true;
-        HashSet<Corsac.Lang.Ir.Block> seen = new();
-        Stack<Corsac.Lang.Ir.Block> pending = new(cfg.Succs(child));
+        // MARKED BY POSITION, not a set made for each question: asked for
+        // every owner of every allocation PromoteIn judges, the set and the
+        // stack were a fifteenth of what the lifetime pass allocated at the
+        // link. The walk, its order and its bound are the set's.
+        int count = cfg.Function.Blocks.Count;
+        if (_renewMarks is null || _renewMarks.Length < count) _renewMarks = new int[Math.Max(count, 64)];
+        if (++_renewStamp == int.MaxValue) { Array.Clear(_renewMarks); _renewStamp = 1; }
+        int stamp = _renewStamp, seen = 0;
+        Stack<Corsac.Lang.Ir.Block> pending = _renewPending ??= new();
+        pending.Clear();
+        foreach (var first in cfg.Succs(child)) pending.Push(first);
         while (pending.Count != 0)
         {
             var block = pending.Pop();
             if (block == owner) continue;
             if (block == child) return false;
-            if (!seen.Add(block)) continue;
-            if (seen.Count > 4096) return false;
+            if (_renewMarks[block.Order] == stamp) continue;
+            _renewMarks[block.Order] = stamp;
+            if (++seen > 4096) return false;
             foreach (var next in cfg.Succs(block)) pending.Push(next);
         }
         return true;
     }
+
+    [ThreadStatic] private static int[]? _renewMarks;
+    [ThreadStatic] private static int _renewStamp;
+    [ThreadStatic] private static Stack<Corsac.Lang.Ir.Block>? _renewPending;
 
     internal static Dictionary<VReg, long> Addresses(Function f, VReg root)
         => Addresses(f, new[] { root });
@@ -107,17 +121,54 @@ internal sealed class OwnedFieldEscape
     // the function was written; any other is scanned for the one question.
     [ThreadStatic] private static Function? _cacheFor;
     [ThreadStatic] private static AddressScan? _cached;
-    internal static void Cache(Function f) { _cacheFor = f; _cached = null; }
+    internal static void Cache(Function f) { _cacheFor = f; _cached = null; _scanOwned = false; }
     internal static void Changed() => _cached = null;
-    internal static void Uncache() { _cacheFor = null; _cached = null; }
+    internal static void Uncache() { _cacheFor = null; _cached = null; _scanOwned = false; }
+
+    /// <summary>
+    /// A scan of `f` for one question that changes nothing (Escape.FieldUses):
+    /// the function marked as Cache marks it, unless it is marked already --
+    /// PromoteIn's own, kept as it is -- and the mark before handed back for
+    /// EndScan to put back.
+    /// </summary>
+    internal static (Function? For, AddressScan? Cached, bool Owned, bool Own) Scan(Function f)
+    {
+        var before = (_cacheFor, _cached, _scanOwned, false);
+        if (ReferenceEquals(_cacheFor, f)) return before;
+        _cacheFor = f; _cached = null; _scanOwned = true;
+        return (before.Item1, before.Item2, before.Item3, true);
+    }
+
+    internal static void EndScan((Function? For, AddressScan? Cached, bool Owned, bool Own) before)
+    {
+        if (!before.Own) return;
+        _cacheFor = before.For; _cached = before.Cached; _scanOwned = before.Owned;
+    }
+
+    /// <summary>Whether the scan open now was begun by Scan, for a question that changes nothing.</summary>
+    [ThreadStatic] private static bool _scanOwned;
+
+    /// <summary>
+    /// The definitions of `f`: the scan's own, when a scan began by Scan is
+    /// open for it -- made with the same options, of the same unchanged
+    /// function -- else found afresh, as they always were inside PromoteIn,
+    /// whose scan lasts across the changes it makes.
+    /// </summary>
+    internal static Defs DefsOf(Function f)
+    {
+        if (ReferenceEquals(_cacheFor, f) && _scanOwned) return (_cached ??= new AddressScan(f)).Defs;
+        return new Defs(f, buildCfg: false);
+    }
 
     /// <summary>The thread's unit is over (Escape.ForgetThread): its last refused instruction goes with it.</summary>
     internal static void Forget() { Uncache(); LastRefusal = null; }
 
-    private sealed class AddressScan
+    internal sealed class AddressScan
     {
         private readonly Function _f;
         private readonly Defs _defs;
+        /// <summary>The function's definitions the scan was made with (DefsOf).</summary>
+        public Defs Defs => _defs;
         // THE STEPS AN ADDRESS CAN TAKE: every single write that copies,
         // widens or moves a register by a constant, by the register it reads.
         // The copies into registers written more than once wait for

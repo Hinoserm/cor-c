@@ -80,21 +80,21 @@ public static class Driver
         if (traceAt >= 0 && traceAt + 1 < taken.Count)
         {
             Corsac.Lang.Opt.Escape.PromoteTrace = taken[traceAt + 1];
-            ChildFlags.Add("--trace-escape"); ChildFlags.Add(taken[traceAt + 1]);
+            Switches.HandOn("--trace-escape", taken[traceAt + 1]);
             taken.RemoveRange(traceAt, 2);
         }
         int dumpAt = taken.IndexOf("--dump-layout");
         if (dumpAt >= 0 && dumpAt + 1 < taken.Count)
         {
             Corsac.Lang.ManagedLayouts.DumpLayout = taken[dumpAt + 1];
-            ChildFlags.Add("--dump-layout"); ChildFlags.Add(taken[dumpAt + 1]);
+            Switches.HandOn("--dump-layout", taken[dumpAt + 1]);
             taken.RemoveRange(dumpAt, 2);
         }
         int lifetimesAt = taken.IndexOf("--trace-lifetimes");
         if (lifetimesAt >= 0 && lifetimesAt + 1 < taken.Count)
         {
             Corsac.Lang.Lto.LifetimeSolver.Trace = taken[lifetimesAt + 1];
-            ChildFlags.Add("--trace-lifetimes"); ChildFlags.Add(taken[lifetimesAt + 1]);
+            Switches.HandOn("--trace-lifetimes", taken[lifetimesAt + 1]);
             taken.RemoveRange(lifetimesAt, 2);
         }
         // The collector's workers in a child a project build started: its
@@ -103,18 +103,21 @@ public static class Driver
         // What every whole collection found live, by type (Gc.AskCensus).
         if (taken.Remove("--gc-census"))
         {
-            ChildFlags.Add("--gc-census");
+            while (taken.Remove("--gc-census")) { }
+            Switches.HandOn("--gc-census");
             AppContext.SetSwitch("Corsac.GC.Census", true);
         }
         // Where the allocations come from, sampled and said at exit (AllocSamples).
         if (taken.Remove("--alloc-sample"))
         {
-            ChildFlags.Add("--alloc-sample");
+            while (taken.Remove("--alloc-sample")) { }
+            Switches.HandOn("--alloc-sample");
             AppContext.SetSwitch("Corsac.GC.AllocSample", true);
         }
         if (taken.Remove("--gc-stats"))
         {
-            ChildFlags.Add("--gc-stats");
+            while (taken.Remove("--gc-stats")) { }
+            Switches.HandOn("--gc-stats");
             AppContext.SetSwitch("Corsac.GC.Stats", true);
         }
         args = taken.ToArray();
