@@ -1,0 +1,50 @@
+// test: thread loop garbage bounded
+// expect-exit: 0
+// timeout: 60
+// expect-output:
+// laps 30000 kept True
+// bounded True
+//
+// A thread whose whole body is a loop that fills a list and clears it, lap
+// after lap: what each lap made is garbage once the list is cleared. Region
+// inference took the thread's body for a region, and a region holds all it
+// makes until it ends -- every lap's garbage until the thread ended, the
+// arena growing until the kernel refused it the memory. The arenas are
+// capped, past which a region's blocks come from the heap, where the
+// collector takes them: a gigabyte made, the process's peak half that.
+
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Threading;
+
+static class P
+{
+    static int _laps;
+    static bool _kept;
+
+    static void Churn()
+    {
+        List<int[]> keep = new();
+        for (int lap = 0; lap < 30000; lap++)
+        {
+            for (int i = 0; i < 200; i++) keep.Add(new int[32]);
+            if (keep.Count > 4000) keep.Clear();
+            _laps++;
+        }
+        _kept = keep.Count <= 4200;
+    }
+
+    static void Main()
+    {
+        Thread t = new Thread(Churn);
+        t.Start();
+        t.Join();
+        Console.WriteLine("laps " + _laps + " kept " + _kept);
+        // The process's high-water mark of resident memory, in kB.
+        long peak = 0;
+        foreach (string line in File.ReadAllLines("/proc/self/status"))
+            if (line.StartsWith("VmHWM:")) peak = long.Parse(line.Substring(6).Trim().Split(' ')[0]) * 1024;
+        Console.WriteLine("bounded " + (peak > 0 && peak < 1L << 29));
+    }
+}

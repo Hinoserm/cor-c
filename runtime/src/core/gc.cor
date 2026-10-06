@@ -2634,6 +2634,25 @@ static class Gc
 
     /// Bytes mapped for arenas now, over every thread, and the most at once.
     public static long ArenaMappedNow;
+
+    /// Region allocations sent to the heap for the cap (RegionArenaCap).
+    public static long RegionCapped;
+    static long _regionArenaCap;
+
+    /// The most the region arenas may map: a sixteenth of the machine (or of
+    /// its control group), 64 MB where nobody says, and never under 16 MB nor
+    /// over 256 MB -- an arena that large holds garbage, not a working set.
+    static long RegionArenaCap()
+    {
+        long cap = _regionArenaCap;
+        if (cap != 0) return cap;
+        long total = Platform.TotalMemory();
+        cap = total > 0 ? total / 16 : 67108864;
+        if (cap < 16777216) cap = 16777216;
+        if (cap > 268435456) cap = 268435456;
+        _regionArenaCap = cap;
+        return cap;
+    }
     public static long ArenaMappedPeak;
     /// Bytes the arenas held filled, over every thread, as each last measured
     /// its own (ArenaMeasure), and the most at once. Measured where a region
@@ -3203,6 +3222,19 @@ static class Gc
         if (need < Smallest) need = Smallest;
         if (at + need > Sys.Peek(tb + Tls.RegionEnd))
         {
+            // NO MORE THAN A SIXTEENTH OF THE MACHINE IN REGIONS. A region
+            // holds everything made in it until it ends, and one around a
+            // thread's whole body -- a loop that fills a list and clears it,
+            // lap after lap -- held every lap's garbage until the thread
+            // ended: the arena grew until the kernel refused the mapping.
+            // Past the cap a region's blocks come from the heap, where the
+            // collector takes them: they die no later than the region would
+            // have ended, as every one of its blocks does.
+            if (ArenaMappedNow + need > RegionArenaCap())
+            {
+                RegionCapped = RegionCapped + 1;
+                return AllocWord(bytes, kind);
+            }
             if (!NextChunk(tb, need, false))
             {
                 RegionMisses = RegionMisses + 1;
@@ -6413,6 +6445,7 @@ static class Gc
         // before (RegionTopFreedBytes, also given alone below).
         SayNumber("gc: given back by regions MB ", (RegionFreedBytes + RegionTopFreedBytes) / 1048576);
         SayNumber("gc: region allocations the system had no memory for ", RegionMisses);
+        SayNumber("gc: region allocations past the arenas' cap ", RegionCapped);
         // WHAT THE ARENAS TOOK OF THE SYSTEM against what they held: the
         // regions take what they need and no more.
         SayNumber("gc: arena peak mapped bytes ", ArenaMappedPeak);
