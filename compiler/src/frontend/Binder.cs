@@ -11742,6 +11742,8 @@ public sealed partial class Binder
 
     /// <summary>The member a call is checking as its callee, for CheckMember.</summary>
     private MemberExpr? _callee;
+    // The argument count of the call _callee is the target of; -1 when unknown.
+    private int _calleeArgs = -1;
 
     // THE NAME BEING CALLED, while CheckCall checks its target: C# looks a
     // name up for an invocation among the members that can be invoked
@@ -16676,8 +16678,16 @@ public sealed partial class Binder
         // and ToString answer over its fields -- the boxed value's slots,
         // which is what a call on one becomes. `pair.Equals(other)` on a
         // struct that declares none was 'no member Equals'.
+        // Unless the call has an argument count none of object's instance
+        // members takes: C# (12.8.10.3) tries the extensions when no instance
+        // method applies, and `span.Equals(other, StringComparison.Ordinal)`
+        // is MemoryExtensions.Equals, where object's static Equals(a, b) took
+        // the two arguments and the receiver was dropped.
         if (owner.Kind is TypeKind.Class or TypeKind.Interface or TypeKind.Struct
-            && Rooted().FindMethods(m.Name) is { Count: > 0 } inherited)
+            && Rooted().FindMethods(m.Name) is { Count: > 0 } inherited
+            && !(ReferenceEquals(m, _callee) && _calleeArgs >= 0
+                && !inherited.Any(root => !root.Static && root.Params.Count == _calleeArgs)
+                && Extension(target, m.Name) is { Count: > 0 }))
         {
             _r.Resolved[m] = new MethodGroupSym(inherited);
             return Type.Void;
@@ -17533,11 +17543,14 @@ public sealed partial class Binder
         {
             MemberExpr? outerNamedCallee = _callee;
             NameExpr? outerNamedInvoked = _invokedName;
+            int outerNamedArgs = _calleeArgs;
             _callee = c.Target as MemberExpr;
             _invokedName = c.Target as NameExpr;
+            _calleeArgs = c.Args.Count;
             CheckExpr(c.Target);
             _callee = outerNamedCallee;
             _invokedName = outerNamedInvoked;
+            _calleeArgs = outerNamedArgs;
             Reorder(c);
         }
 
@@ -17593,11 +17606,14 @@ public sealed partial class Binder
 
         MemberExpr? outerCallee = _callee;
         NameExpr? outerInvoked = _invokedName;
+        int outerCalleeArgs = _calleeArgs;
         _callee = c.Target as MemberExpr;
         _invokedName = c.Target as NameExpr;
+        _calleeArgs = c.Args.Count;
         Type targetType = CheckExpr(c.Target);
         _callee = outerCallee;
         _invokedName = outerInvoked;
+        _calleeArgs = outerCalleeArgs;
         if (movedReceiver is not null)
         {
             args[0] = _r.TypeOf(movedReceiver);

@@ -7940,6 +7940,28 @@ public static class MemoryExtensions {
         for (int i = 0; i < value.Length; i++) { if (!Same(span[at + i], value[i])) { return false; } }
         return true;
     }
+    // WITH A STRING COMPARISON, as .NET's char-span overloads: ordinal and the
+    // culture comparisons compare units (this library's cultures are all
+    // invariant); the ignore-case ones fold as string.Equals does, on copies,
+    // since a span of each length is compared whole.
+    public static bool StartsWith(this ReadOnlySpan<char> span, ReadOnlySpan<char> value, StringComparison kind) {
+        if (value.Length > span.Length) { return false; }
+        return Equals(span.Slice(0, value.Length), value, kind);
+    }
+    public static bool EndsWith(this ReadOnlySpan<char> span, ReadOnlySpan<char> value, StringComparison kind) {
+        if (value.Length > span.Length) { return false; }
+        return Equals(span.Slice(span.Length - value.Length), value, kind);
+    }
+    public static bool Equals(this ReadOnlySpan<char> span, ReadOnlySpan<char> other, StringComparison kind) {
+        if (span.Length != other.Length) { return false; }
+        if (kind == StringComparison.OrdinalIgnoreCase
+         || kind == StringComparison.InvariantCultureIgnoreCase
+         || kind == StringComparison.CurrentCultureIgnoreCase) {
+            return string.Equals(string.FromChars(span), string.FromChars(other), kind);
+        }
+        for (int i = 0; i < span.Length; i++) { if (span[i] != other[i]) { return false; } }
+        return true;
+    }
     public static int IndexOf<T>(this ReadOnlySpan<T> span, T value) {
         for (int i = 0; i < span.Length; i++) { if (Same(span[i], value)) { return i; } }
         return -1;

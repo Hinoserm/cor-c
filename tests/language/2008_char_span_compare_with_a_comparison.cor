@@ -1,0 +1,36 @@
+// test: a char span compares with a StringComparison
+// expect-exit: 0
+// expect-output:
+// True
+// False
+// False
+// True
+// True
+// False
+// False
+// True
+// False
+//
+// .NET's MemoryExtensions has StartsWith, EndsWith and Equals for char spans
+// taking a StringComparison; the library had only the two-argument generic
+// ones, so `rest.StartsWith("define", StringComparison.Ordinal)` did not bind;
+// and `span.Equals(other, kind)` bound object's static Equals(a, b) to the
+// two arguments, dropping the receiver, where C# tries the extensions.
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        ReadOnlySpan<char> rest = "define X 1".AsSpan();
+        Console.WriteLine(rest.StartsWith("define", StringComparison.Ordinal));
+        Console.WriteLine(rest.StartsWith("undef", StringComparison.Ordinal));
+        Console.WriteLine(rest.StartsWith("DEFINE", StringComparison.Ordinal));
+        Console.WriteLine(rest.StartsWith("DEFINE", StringComparison.OrdinalIgnoreCase));
+        Console.WriteLine(rest.EndsWith("x 1", StringComparison.OrdinalIgnoreCase));
+        Console.WriteLine(rest.EndsWith("x 1", StringComparison.Ordinal));
+        Console.WriteLine(rest.StartsWith("define X 1 and more", StringComparison.Ordinal));
+        Console.WriteLine("Kelvin".AsSpan().Equals("KELVIN", StringComparison.OrdinalIgnoreCase));
+        Console.WriteLine("abc".AsSpan().Equals("abd", StringComparison.Ordinal));
+    }
+}
