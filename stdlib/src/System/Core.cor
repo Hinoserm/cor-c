@@ -12189,6 +12189,16 @@ class StringComparer : IEqualityComparer<string>, IComparer<string> {
     public static StringComparer InvariantCulture => Ordinal;
     public static StringComparer InvariantCultureIgnoreCase => OrdinalIgnoreCase;
 
+    /// WHETHER A COMPARER IS THE ORDINAL ONE, which a table asks once when it
+    /// is made (Dictionary.Comparing) so that its probes reach the string's
+    /// own hash and String.Equals directly instead of through the interface.
+    /// THE VERY OBJECT, not "a StringComparer that does not fold": this class
+    /// is not sealed, and a derived one may answer differently; the singleton
+    /// is exactly what Equals and GetHashCode above say for `!fold`.
+    internal static bool IsOrdinal(object? comparer) {
+        return comparer != null && comparer == (object?)exact;
+    }
+
     // IGNORING CASE IS COMPARING UPPER CASE, which is .NET's OrdinalIgnoreCase:
     // Equals, Compare and GetHashCode all fold the same way, or a table keyed
     // by this comparer finds a key its Equals says is there under another hash.
@@ -12322,6 +12332,28 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     // cannot, so a table of strings is given one -- see the task list.
     private IEqualityComparer<K>? by;
 
+    // HOW THE KEYS ARE COMPARED, decided once when the comparer is given
+    // (Comparing) rather than asked of it at every probe. The shared copy of
+    // a word-shaped table calls its comparer through the interface, and the
+    // two the compiler gives its tables most -- ReferenceEqualityComparer
+    // and StringComparer.Ordinal -- answer what a field test and a direct
+    // call answer: the word itself, or the string's own hash (worked out
+    // once and kept on the string, Runtime.StringHashCode) and
+    // String.Equals. Any other comparer is asked as before.
+    private int compares;
+    private const int ByDefault = 0;      // no comparer: the key is asked (Same, FullHash)
+    private const int ByReference = 1;    // ReferenceEqualityComparer: the machine word
+    private const int ByText = 2;         // StringComparer.Ordinal: the text, unfolded
+    private const int ByComparer = 3;     // anything else: through the interface
+
+    private static int Comparing(IEqualityComparer<K>? comparer) {
+        if (comparer == null) { return ByDefault; }
+        // Sealed, so what an instance answers is the class's own: the word.
+        if ((object)comparer is ReferenceEqualityComparer) { return ByReference; }
+        if (StringComparer.IsOrdinal(comparer)) { return ByText; }
+        return ByComparer;
+    }
+
     // IN THE ORDER THINGS WENT IN, which is the order .NET's walks them in
     // while nothing has been removed, and what a program that fills a table
     // and then writes it out depends on without saying so -- this compiler's
@@ -12451,11 +12483,13 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         count = 0;
         mask = 15;
         by = comparer;
+        compares = Comparing(comparer);
     }
 
     /// Both: sized once, keys compared the comparer's way.
     public Dictionary(int capacity, IEqualityComparer<K>? comparer) : this(capacity) {
         by = comparer;
+        compares = Comparing(comparer);
     }
 
     // The normal Dictionary copy constructor, including an explicit comparer.
@@ -12496,21 +12530,43 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     // COPIED TO A LOCAL FIRST, which is what a C# programmer does when the
     // checker cannot see that a field is unchanged -- a field is not tracked
     // across a call, so testing one proves nothing about the read after it.
+    //
+    // `a` is always the key a slot holds and `b` the key asked about, and
+    // they are only ever compared once their full hashes are the same.
     private bool Same(K a, K b) {
-        IEqualityComparer<K>? with = by;
+        int how = compares;
 
-        if (with != null) { return with.Equals(a, b); }
-
-        // THE DEFAULT COMPARER KNOWS STRINGS, as .NET's does: a table keyed
-        // by text compares the text, whoever built the keys. A word-shaped
-        // instantiation cannot know its K at compile time, so it asks the
-        // object -- one load of its descriptor -- and a value-typed K asks
-        // nothing, because the compiler folds the question to false.
-        // AN OBJECT IS ASKED, as .NET's default comparer asks it: text for a
-        // string, its own Equals for anything that has one -- a tuple, a type
-        // made of types. A number is the word it is.
-        if (Sys.IsObject(a)) { return Sys.KeyEquals(a, b); }
-        return Sys.EqualValues(a, b);
+        if (how == ByDefault) {
+            // THE DEFAULT COMPARER KNOWS STRINGS, as .NET's does: a table
+            // keyed by text compares the text, whoever built the keys. A
+            // word-shaped instantiation cannot know its K at compile time,
+            // so it asks the object -- one load of its descriptor -- and a
+            // value-typed K asks nothing, because the compiler folds the
+            // question to false.
+            // A STRING IS TOLD APART HERE, inline, where Sys.KeyEquals would
+            // call the shared key routine to find the same descriptor bit
+            // and then call String.Equals: the same answer -- the same
+            // object, or another string of the same text, and never a
+            // string equal to null or to something that is not one -- with
+            // one call where there were two. IsString folds to false for a
+            // value-typed K, as IsObject does, so nothing changes there.
+            if (Sys.IsString(a)) { return Sys.IsString(b) && String.Equals(Sys.As<string>(a), Sys.As<string>(b)); }
+            // AN OBJECT IS ASKED, as .NET's default comparer asks it: text
+            // for a string, its own Equals for anything that has one -- a
+            // tuple, a type made of types. A number is the word it is.
+            if (Sys.IsObject(a)) { return Sys.KeyEquals(a, b); }
+            return Sys.EqualValues(a, b);
+        }
+        // ReferenceEqualityComparer.Equals is exactly this.
+        if (how == ByReference) { return Sys.EqualValues(a, b); }
+        // StringComparer.Ordinal's Equals is String.Equals once neither is
+        // null, and String.Equals answers null as it does (the same
+        // reference, or not equal). `b` was hashed by the ordinal comparer
+        // to get here, which throws for null, so it is a string -- asked of
+        // the descriptor all the same, because that is what folds the whole
+        // path away in a value-typed copy, where a string never gets here.
+        if (how == ByText && Sys.IsString(b)) { return String.Equals(Sys.As<string>(a), Sys.As<string>(b)); }
+        return by!.Equals(a, b);
     }
 
     // A SLOT'S STATE IS IN ITS HASH: 0 empty, 1 erased, and a used slot's
@@ -12523,11 +12579,24 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     private int Hash(K key) { return FullHash(key) & mask; }
 
     /// The key's hash before it is cut to the table: what `hashes` keeps.
+    /// Each path answers what the one it stands for answered (see Same).
     private int FullHash(K key) {
-        IEqualityComparer<K>? with = by;
-        if (with != null) { return Mixed(with.GetHashCode(key)); }
-        if (Sys.IsObject(key)) { return Mixed(Sys.KeyHash(key)); }
-        return Mixed(Sys.HashValue(key));
+        int how = compares;
+        if (how == ByDefault) {
+            // A string's hash is Runtime.StringHashCode wherever it is asked
+            // for -- the shared key routine finds the text bit and calls
+            // String.KeyHash, which calls it -- and it is kept on the string
+            // after the first time, so this is a load and a test.
+            if (Sys.IsString(key)) { return Mixed(Runtime.StringHashCode(Sys.As<string>(key))); }
+            if (Sys.IsObject(key)) { return Mixed(Sys.KeyHash(key)); }
+            return Mixed(Sys.HashValue(key));
+        }
+        // ReferenceEqualityComparer.GetHashCode: the word, cut to an int.
+        if (how == ByReference) { return Mixed((int)Sys.HashValue(key)); }
+        // StringComparer.Ordinal's: the string's own. A null key goes on to
+        // the comparer, whose ArgumentNullException is the one it threw.
+        if (how == ByText && Sys.IsString(key)) { return Mixed(Runtime.StringHashCode(Sys.As<string>(key))); }
+        return Mixed(by!.GetHashCode(key));
     }
 
     /// A cheap avalanche over the hash. Without it, sequential integer keys
@@ -14277,6 +14346,23 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
     // The comparer this set was given, or null for the default: an object's
     // own Equals and hash, a number's word -- as Dictionary's.
     private IEqualityComparer<T>? by;
+
+    // HOW THE MEMBERS ARE COMPARED, decided once when the comparer is given,
+    // as Dictionary decides it: the reference comparer and the ordinal one
+    // answered by a field test and a direct call, anything else asked
+    // through the interface.
+    private int compares;
+    private const int ByDefault = 0;
+    private const int ByReference = 1;
+    private const int ByText = 2;
+    private const int ByComparer = 3;
+
+    private static int Comparing(IEqualityComparer<T>? comparer) {
+        if (comparer == null) { return ByDefault; }
+        if ((object)comparer is ReferenceEqualityComparer) { return ByReference; }
+        if (StringComparer.IsOrdinal(comparer)) { return ByText; }
+        return ByComparer;
+    }
     private T[] items;
     // A SLOT'S STATE IS IN ITS HASH, as Dictionary's: 0 empty, 1 erased,
     // a member's hash with the top bit set.
@@ -14406,7 +14492,7 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
     }
 
     /// Both: sized once, members compared the comparer's way.
-    public HashSet(int capacity, IEqualityComparer<T>? comparer) : this(capacity) { by = comparer; }
+    public HashSet(int capacity, IEqualityComparer<T>? comparer) : this(capacity) { by = comparer; compares = Comparing(comparer); }
 
     public HashSet(IEnumerable<T> source) : this() {
         foreach (T value in source) { Add(value); }
@@ -14414,10 +14500,11 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
 
     /// Equality by `comparer` -- StringComparer.OrdinalIgnoreCase,
     /// ReferenceEqualityComparer -- or, given null, the default.
-    public HashSet(IEqualityComparer<T>? comparer) : this() { by = comparer; }
+    public HashSet(IEqualityComparer<T>? comparer) : this() { by = comparer; compares = Comparing(comparer); }
 
     public HashSet(IEnumerable<T> source, IEqualityComparer<T>? comparer) : this() {
         by = comparer;
+        compares = Comparing(comparer);
         foreach (T value in source) { Add(value); }
     }
 
@@ -14426,11 +14513,18 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
     /// The comparer the set compares by: the one it was given, or the default.
     public IEqualityComparer<T> Comparer => by ?? EqualityComparer<T>.Default;
 
+    // As Dictionary's Same, path for path, and with the same reasons: `a`
+    // the member a slot holds, `b` the value asked about.
     private bool Same(T a, T b) {
-        IEqualityComparer<T>? with = by;
-        if (with != null) { return with.Equals(a, b); }
-        if (Sys.IsObject(a)) { return Sys.KeyEquals(a, b); }
-        return Sys.EqualValues(a, b);
+        int how = compares;
+        if (how == ByDefault) {
+            if (Sys.IsString(a)) { return Sys.IsString(b) && String.Equals(Sys.As<string>(a), Sys.As<string>(b)); }
+            if (Sys.IsObject(a)) { return Sys.KeyEquals(a, b); }
+            return Sys.EqualValues(a, b);
+        }
+        if (how == ByReference) { return Sys.EqualValues(a, b); }
+        if (how == ByText && Sys.IsString(b)) { return String.Equals(Sys.As<string>(a), Sys.As<string>(b)); }
+        return by!.Equals(a, b);
     }
 
     // The same avalanche Dictionary uses. Without it, sequential integer keys
@@ -14441,10 +14535,16 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
         // The comparer's hash, or the key's own when it is an object that has
         // one, as .NET's default comparer asks: a set of strings, or of
         // tuples, holds equal ones once. Mixed as Dictionary mixes its keys.
-        IEqualityComparer<T>? with = by;
-        if (with != null) { return Mixed(with.GetHashCode(value)); }
-        if (Sys.IsObject(value)) { return Mixed(Sys.KeyHash(value)); }
-        return Mixed(Sys.HashValue(value));
+        // As Dictionary's FullHash, path for path.
+        int how = compares;
+        if (how == ByDefault) {
+            if (Sys.IsString(value)) { return Mixed(Runtime.StringHashCode(Sys.As<string>(value))); }
+            if (Sys.IsObject(value)) { return Mixed(Sys.KeyHash(value)); }
+            return Mixed(Sys.HashValue(value));
+        }
+        if (how == ByReference) { return Mixed((int)Sys.HashValue(value)); }
+        if (how == ByText && Sys.IsString(value)) { return Mixed(Runtime.StringHashCode(Sys.As<string>(value))); }
+        return Mixed(by!.GetHashCode(value));
     }
 
     private static int Mixed(long h) {
