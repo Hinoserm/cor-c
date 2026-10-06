@@ -268,7 +268,7 @@ public static class IrLinkOptimizer
                 foreach ((string call, IrArchive provider, IrArchiveEntry body) in candidates.OrderBy(c => c.Body.Instructions).ThenBy(c => c.Call, StringComparer.Ordinal))
                 {
                     bool tiny = body.Instructions <= TinyBody;
-                    if (body.Length > importBytes - used || !tiny && counted >= bodyLimit) continue;
+                    if (body.Length > importBytes - used || !tiny && counted >= bodyLimit || imports.Count >= BackendProtocol.MostImports - 2) continue;
                     imports.Add((call, provider, body)); used += body.Length;
                     if (!tiny) counted++;
                 }

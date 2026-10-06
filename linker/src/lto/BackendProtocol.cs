@@ -5,6 +5,9 @@ namespace Corsac.Lang.Lto;
 /// <summary>Bounded framed requests over one persistent compiler-backend process.</summary>
 public static class BackendProtocol
 {
+    /// <summary>The most bodies one request imports: the link plans no more (IrLinkOptimizer), and a request with more is refused.</summary>
+    public const int MostImports = 4096;
+
     public static readonly UTF8Encoding Utf8 = new(false, true);
     public static void WriteRequest(BinaryWriter writer, BackendRequest request)
     {
@@ -105,7 +108,7 @@ public static class BackendProtocol
         if (marker != 0x52 || reader.ReadInt32() != 13) throw new InvalidDataException("Unsupported backend protocol");
         string input = ReadText(reader), output = ReadText(reader);
         int count = reader.ReadInt32(), bytes = 0;
-        if (count < 0 || count > 256) throw new InvalidDataException("Backend import count exceeds budget");
+        if (count < 0 || count > MostImports) throw new InvalidDataException("Backend import count exceeds budget");
         List<IrImport> imports = new(count);
         for (int i = 0; i < count; i++)
         {
