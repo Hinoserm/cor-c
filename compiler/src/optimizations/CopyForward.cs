@@ -71,9 +71,16 @@ public sealed class CopyForward : IPass
     private static bool Forward(Function f, Block home, int at, VReg dst, FrameSlot to, VReg src, FrameSlot from,
         Dictionary<VReg, FrameSlot> slotOf)
     {
-        bool Names(Instr i, FrameSlot slot) =>
-            i.Operands.Any(o => o is SlotOperand s && ReferenceEquals(s.Slot, slot)
-                || o is RegOperand r && slotOf.TryGetValue(r.Reg, out FrameSlot? of) && ReferenceEquals(of, slot));
+        // A LOOP, NOT Any WITH A LAMBDA: asked twice of every instruction of
+        // the function for every copy weighed, the lambda and the closure it
+        // captured were a third of a gigabyte of a hosted compile's garbage.
+        bool Names(Instr i, FrameSlot slot)
+        {
+            foreach (Operand o in i.Operands)
+                if (o is SlotOperand s && ReferenceEquals(s.Slot, slot)
+                    || o is RegOperand r && slotOf.TryGetValue(r.Reg, out FrameSlot? of) && ReferenceEquals(of, slot)) return true;
+            return false;
+        }
         List<Instr> zeroings = new();
         foreach (Block b in f.Blocks)
         {

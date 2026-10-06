@@ -107,6 +107,25 @@ public sealed class Monomorphiser
     private readonly HashSet<string> _paths = new(StringComparer.Ordinal);
 
     /// <summary>
+    /// The same paths by their last two parts, `scope` and simple `name`
+    /// (AddPath): asking whether `scope.name` is a type is the walk outwards
+    /// every type argument makes, and spelling the string only to look it up
+    /// was most of what Path and Named allocated.
+    /// </summary>
+    private readonly HashSet<(string Scope, string Name)> _pathParts = new();
+
+    private void AddPath(string path)
+    {
+        if (!_paths.Add(path)) return;
+        int dot = path.LastIndexOf('.');
+        if (dot > 0) _pathParts.Add((path[..dot], path[(dot + 1)..]));
+    }
+
+    /// <summary>Whether `scope + "." + name` is a type path, without making that string for a simple name.</summary>
+    private bool HasPath(string scope, string name)
+        => name.IndexOf('.') < 0 && scope.Length > 0 ? _pathParts.Contains((scope, name)) : _paths.Contains(scope + "." + name);
+
+    /// <summary>
     /// Nested types by their simple name, null where more than one shares it.
     /// The checker keeps the same index and for the same reason.
     /// </summary>
@@ -380,7 +399,7 @@ public sealed class Monomorphiser
         {
             for (string at = from; at.Length > 0; )
             {
-                if (_paths.Contains(at + "." + name))
+                if (HasPath(at, name))
                 {
                     return at + "." + name;
                 }
@@ -484,7 +503,7 @@ public sealed class Monomorphiser
 
         foreach ((string In, string Namespace) import in _usings.Imports)
         {
-            if (import.In != at || !_paths.Contains(import.Namespace + "." + name))
+            if (import.In != at || !HasPath(import.Namespace, name))
             {
                 continue;
             }
@@ -623,7 +642,7 @@ public sealed class Monomorphiser
         {
             string path = t.Outer is null ? t.Name : t.Outer + "." + t.Name;
 
-            _paths.Add(path);
+            AddPath(path);
 
             if (t.Outer is not null)
             {
@@ -1463,17 +1482,54 @@ public sealed class Monomorphiser
     internal static string MangledName(string baseName, List<TypeRef> args)
         => Interned.Name(Spelled(baseName, args));
 
+    /// <summary>
+    /// `base$arg$arg`, each argument as written with `<` as `_`, `>` dropped
+    /// and `, ` as `_`. ONE BUILDER, ONE STRING: spelt as a Replace chain on
+    /// each argument's text and a Join of those, a name was some eight
+    /// strings to make one -- at every generic reference the monomorphiser
+    /// and the binder look up.
+    /// </summary>
     private static string Spelled(string baseName, List<TypeRef> args)
-        => baseName.Replace(".", "$") + "$" + string.Join("$", args.Select(a => a.ToString()
-            .Replace("<", "_").Replace(">", "").Replace(", ", "_")
-            // A NESTED ARGUMENT KEEPS ITS OUTER, spelled with the separator
-            // this name already uses: the dot is how a nested type is KEYED,
-            // and a specialisation is not one.
-            .Replace(".", "$")));
+    {
+        System.Text.StringBuilder b = Interned.Builder();
+        b.Append(baseName).Replace('.', '$');
+        foreach (TypeRef a in args)
+        {
+            b.Append('$');
+            int start = b.Length;
+            a.AppendTo(b);
+            int to = start;
+            for (int from = start; from < b.Length; from++)
+            {
+                char c = b[from];
+                if (c == '>') continue;
+                if (c == '<') c = '_';
+                // A NESTED ARGUMENT KEEPS ITS OUTER, spelled with the separator
+                // this name already uses: the dot is how a nested type is KEYED,
+                // and a specialisation is not one.
+                else if (c == '.') c = '$';
+                else if (c == ',')
+                {
+                    // `, ` once the `>`s are gone, as the chain this replaces
+                    // dropped them before it looked for the comma's space.
+                    int next = from + 1;
+                    while (next < b.Length && b[next] == '>') next++;
+                    if (next < b.Length && b[next] == ' ')
+                    {
+                        c = '_';
+                        from = next;
+                    }
+                }
+                b[to++] = c;
+            }
+            b.Length = to;
+        }
+        return Interned.Return(b);
+    }
 
 
     /// <summary>How a generic template is keyed: its name and how many type parameters it takes.</summary>
-    private static string Arity(string name, int count) => Interned.Name(name + "`" + count);
+    private static string Arity(string name, int count) => Interned.WithArity(name, count);
 
     private static string TemplatePath(TypeDecl type)
         => type.Outer is null ? type.Name : type.Outer + "." + type.Name;

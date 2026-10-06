@@ -336,8 +336,13 @@ public sealed partial class Binder
         // -- judged by the declaration, which keeps the move after the pass
         // that made it. Not in a specialisation, whose arguments were written
         // where it was used.
+        // By its two parts where the name is simple (TryGetWithin): asked for
+        // every type name the library's global code mentions, the key spelt
+        // to be looked up was the binder's largest run of strings.
         if (written is { FromLibrary: true, Specialised: false } && within.Length == 0
-            && _r.Types.TryGetValue(LibraryHome + "." + name, out TypeSymbol? moved) && moved.Decl is { MovedToSystem: true })
+            && (name.IndexOf('.') < 0 ? _r.Types.TryGetWithin(LibraryHome, name, out TypeSymbol? moved)
+                : _r.Types.TryGetValue(LibraryHome + "." + name, out moved))
+            && moved!.Decl is { MovedToSystem: true })
         {
             if (!BindingElsewhere && !_namingOnly) moved.Used = true;
             sym = moved;
@@ -586,17 +591,61 @@ public sealed partial class Binder
             symbol = null;
             return false;
         }
+        // A DOTTED NAME BY ITS LAST PART TOO: `within.Lang.Ir.Block` is the
+        // table's `within.Lang.Ir` and `Block`, and that scope is spelt once
+        // a pair and remembered (DottedParts) -- qualified names asked from
+        // every scope outwards were twice the plain ones' strings.
+        if (!plain && within.Length > 0)
+        {
+            (string scope, string tail) = DottedParts(within, name);
+            if (_r.Types.TryGetWithin(scope, tail, out symbol))
+            {
+                if (!BindingElsewhere && !_namingOnly) symbol!.Used = true;
+                return true;
+            }
+        }
+        // AND WITHOUT THE STRING WHERE IT COULD ONLY BE TOLD NO: a simple name
+        // the split table did not have is not in the table by its full key
+        // either (TryGetWithin splits that key the same way), so all the key
+        // was for is the demand -- none while only naming, and none for a
+        // name already demanded (TypeCandidate's _demanded, kept here by its
+        // parts). Spelt for nothing, these were the most strings a unit's
+        // binding made: a hundred megabytes for one compiler unit.
+        if (within.Length > 0 && (_namingOnly || _demandedWithin.Contains((within, name))))
+        {
+            symbol = null;
+            if (!_namingOnly) Absent(within, name);
+            return false;
+        }
         bool demandedBefore = _declarationBatch.Any;
         bool found = TypeCandidate(within + "." + name, out symbol);
-        if (!found && plain && !_namingOnly && (demandedBefore || !_declarationBatch.Any))
-        {
-            if (!_absentWithin.TryGetValue(within, out absent)) _absentWithin[within] = absent = new HashSet<string>(StringComparer.Ordinal);
-            absent.Add(name);
-        }
+        if (!found && within.Length > 0 && !_namingOnly) _demandedWithin.Add((within, name));
+        if (!found && plain && !_namingOnly && (demandedBefore || !_declarationBatch.Any)) Absent(within, name);
         return found;
     }
 
+    /// <summary>`within + "." + name` split at its last dot, spelt once a pair.</summary>
+    private (string Scope, string Tail) DottedParts(string within, string name)
+    {
+        if (_dottedParts.TryGetValue((within, name), out var parts)) return parts;
+        int dot = name.LastIndexOf('.');
+        parts = (string.Concat(within, ".", name.AsSpan(0, dot)), name[(dot + 1)..]);
+        _dottedParts[(within, name)] = parts;
+        return parts;
+    }
+
+    private readonly Dictionary<(string Within, string Name), (string Scope, string Tail)> _dottedParts = new();
+
+    private void Absent(string within, string name)
+    {
+        if (!_absentWithin.TryGetValue(within, out HashSet<string>? absent)) _absentWithin[within] = absent = new HashSet<string>(StringComparer.Ordinal);
+        absent.Add(name);
+    }
+
     private readonly Dictionary<string, HashSet<string>> _absentWithin = new(StringComparer.Ordinal);
+
+    /// <summary>The names TypeCandidateIn has demanded, by their two parts (TypeCandidate's _demanded).</summary>
+    private readonly HashSet<(string Within, string Name)> _demandedWithin = new();
 
     private bool TypeCandidate(string key, out TypeSymbol? symbol)
     {
@@ -699,8 +748,10 @@ public sealed partial class Binder
 
         foreach ((string In, string Namespace) import in file.Imports)
         {
+            // By its parts (TypeCandidateIn): a name and each namespace the
+            // file imports, asked from every mention, spelt to be told no.
             if (import.In != at
-                || !TypeCandidate(import.Namespace + "." + name, out TypeSymbol? found))
+                || !TypeCandidateIn(import.Namespace, name, out TypeSymbol? found))
             {
                 continue;
             }
@@ -1087,6 +1138,7 @@ public sealed partial class Binder
         _hoistedFunctions.Clear();
         _importedSeen.Clear();
         _absentWithin.Clear();
+        _dottedParts.Clear();
     }
 
     /// <summary>
