@@ -42,6 +42,12 @@ public sealed class X86Backend : IBackend
     /// largest a compile ever got: a unit of this compiler peaked there.
     /// </summary>
     public bool ReleaseBodies { get; set; }
+
+    /// <summary>
+    /// Done to each function just before it is selected, on whichever worker
+    /// selects it (the allocation put in place, AllocatorFastPaths.AtCodegen).
+    /// </summary>
+    public Action<Function>? Prepare { get; set; }
     /// <summary>Hosted ABI owns x87/MMX state; freestanding kernel code must not borrow it implicitly.</summary>
     public bool AutomaticPacked { get; set; } = true;
     public Func<int, Function>? FunctionLoader { get; set; }
@@ -273,6 +279,7 @@ public sealed class X86Backend : IBackend
             MFunction? m;
             if (workers == 1 && FunctionLoader is null)
             {
+                Prepare?.Invoke(f);
                 m = Compile(f, errors, askPrivate, askDefined, askImported);
             }
             else
@@ -312,7 +319,9 @@ public sealed class X86Backend : IBackend
                             for (int item = lane; item < count; item += active)
                             {
                                 List<string> localErrors = new();
-                                compiled[item] = Compile(FunctionLoader?.Invoke(first + item) ?? module.Functions[first + item], localErrors,
+                                Function selected = FunctionLoader?.Invoke(first + item) ?? module.Functions[first + item];
+                                Prepare?.Invoke(selected);
+                                compiled[item] = Compile(selected, localErrors,
                                     askPrivate, askDefined, askImported);
                                 diagnostics[item] = localErrors;
                             }
@@ -689,6 +698,7 @@ public sealed class X86Backend : IBackend
         sb.Append("section .text\n\n");
         foreach (Function f in module.Functions)
         {
+            Prepare?.Invoke(f);
             MFunction? m = Compile(f, errors);
             if (m is not null)
             {
