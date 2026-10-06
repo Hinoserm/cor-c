@@ -1,0 +1,61 @@
+// test: a store through a local assigned in both arms of an if is one sequence
+// sources: stdlib/src/System/Threading/interlocked.cor
+// flags: --ring1-syscalls
+// run: no
+// expect-asm-x86: Link: __corsac_refstore
+// expect-no-asm-x86: Link: __corsac_barrier __corsac_cardmark
+//
+// A LOCAL WITH TWO DEFINITIONS. `node` is made in one arm and read out of an
+// array in the other, then `node.Next = head` is stored. Its barrier, made
+// with the value on the first path, named the new object's register, while
+// the store named the local: the slots differed, the store was left a test
+// of Runtime.Marking, a barrier call and a card store, and a thread sent to
+// its handshake between them could lose a reference to a concurrent mark
+// (ThreadStatics.Grow, NtFiles.SetInformation). The copy that reaches the
+// store along every path is its slot: one __corsac_refstore, no barrier call
+// and no card of its own.
+//
+// A PROGRAM WITH A COLLECTOR: Main asks for a collection (06's rule).
+
+using System.Runtime.CompilerServices;
+
+class Node
+{
+    public Node? Next;
+}
+
+static class Program
+{
+    static Node? _head = new Node();
+    static Node?[] _old = new Node?[] { new Node() };
+
+    static int Main()
+    {
+        Node made = Link(_old.Length > 1);
+        Gc.Collect();
+        return made.Next == _head ? 0 : 1;
+    }
+
+    static int _lock;
+
+    // Its own body, which the disassembly is read for: ThreadStatics.Grow's
+    // shape, the store in the arm that made the object, after a spin lock.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Node Link(bool fresh)
+    {
+        Node node;
+        if (fresh)
+        {
+            node = new Node();
+            while (System.Threading.Interlocked.CompareExchange(ref _lock, 1, 0) != 0) { }
+            node.Next = _head;
+            _lock = 0;
+        }
+        else
+        {
+            node = _old[0]!;
+            node.Next = _head;
+        }
+        return node;
+    }
+}

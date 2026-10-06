@@ -118,6 +118,57 @@ public sealed class CardMarks : IModulePass
             (Operand b, long o) = Canonical(slot);
             return o == at.Offset && Same(b, at.Base);
         }
+
+        // A REGISTER DEFINED MORE THAN ONCE -- a local assigned in both arms
+        // of an if, `node = new T()` here and `node = (T)old[0]` there --
+        // has no single definition to see through, and its barrier, made
+        // with the value on one path, named the new object's register while
+        // the store named the local: the slots differed and the store was not
+        // made one sequence (ThreadStatics.Grow's `node.Next = _tables`,
+        // NtFiles.SetInformation's `tf.Port = port`). What reaches a point
+        // along every path back from it is the one definition there: when
+        // that is a copy, the slot is its source's.
+        Dictionary<Block, List<Block>>? preds = null;
+        Instr? ReachingDef(VReg r, Block block, int before)
+        {
+            for (int k = before - 1; k >= 0; k--)
+                if (ReferenceEquals(block.Instrs[k].Dest, r)) return block.Instrs[k];
+            if (preds is null)
+            {
+                preds = new(ReferenceEqualityComparer.Instance);
+                foreach (Block b in f.Blocks)
+                {
+                    if (b.Instrs.Count == 0) continue;
+                    Instr last = b.Instrs[^1];
+                    foreach (Block t in last.Targets) (preds.TryGetValue(t, out var l) ? l : preds[t] = new()).Add(b);
+                    if (last.Default is { } d) (preds.TryGetValue(d, out var l2) ? l2 : preds[d] = new()).Add(b);
+                }
+            }
+            Instr? found = null;
+            HashSet<Block> seen = new(ReferenceEqualityComparer.Instance) { block };
+            Stack<Block> work = new();
+            if (preds.TryGetValue(block, out var first)) foreach (Block p in first) work.Push(p);
+            else return null;
+            while (work.TryPop(out Block? b))
+            {
+                if (!seen.Add(b)) continue;
+                Instr? here = null;
+                for (int k = b.Instrs.Count - 1; k >= 0; k--)
+                    if (ReferenceEquals(b.Instrs[k].Dest, r)) { here = b.Instrs[k]; break; }
+                if (here is not null)
+                {
+                    if (found is not null && !ReferenceEquals(found, here)) return null;
+                    found = here;
+                    continue;
+                }
+                if (!preds.TryGetValue(b, out var more) || more.Count == 0) return null;   // the entry, with r unset: a parameter's or none
+                foreach (Block p in more) work.Push(p);
+            }
+            return found;
+        }
+        Operand Settled(Operand o, Block block, int at)
+            => o is RegOperand { Reg: var r } && defs.TryGetValue(r, out Instr? only) && only is null
+               && ReachingDef(r, block, at) is { Op: Opcode.Copy, Operands.Count: 1 } copy ? copy.Operands[0] : o;
         (Operand Base, long Offset) SlotOf(Instr store)
         {
             (Operand b, long o) = Canonical(store.Operands[0]);
@@ -178,8 +229,18 @@ public sealed class CardMarks : IModulePass
                 if (report.Instrs.Count == 0 || report.Instrs[^1] is not { Op: Opcode.Jump } back || back.Targets.Count != 1 || !ReferenceEquals(back.Targets[0], stored)) continue;
                 Instr? call = report.Instrs.FirstOrDefault(i => i.Op == Opcode.Call && i.Callee == Barrier && i.Operands.Count == 2);
                 if (call is null || report.Instrs.Any(i => i.Op is Opcode.Store or Opcode.CallIndirect || i.Op == Opcode.Call && !ReferenceEquals(i, call))) continue;
-                (Operand Base, long Offset) slot = Canonical(call.Operands[0]);
-                int at = stored.Instrs.FindIndex(i => IsWordStore(i) && SameSlot(i.Operands[0], (slot.Base, slot.Offset - i.Offset)));
+                (Operand Base, long Offset) slot = Canonical(Settled(call.Operands[0], report, report.Instrs.IndexOf(call)));
+                if (slot.Base is RegOperand) slot = (Settled(slot.Base, report, report.Instrs.IndexOf(call)), slot.Offset) is var settled
+                    ? (Canonical(settled.Item1).Base, Canonical(settled.Item1).Offset + settled.Item2) : slot;
+                int at = -1;
+                for (int k = 0; k < stored.Instrs.Count && at < 0; k++)
+                {
+                    Instr i = stored.Instrs[k];
+                    if (!IsWordStore(i)) continue;
+                    (Operand b0, long o0) = Canonical(i.Operands[0]);
+                    if (b0 is RegOperand) { Operand s0 = Settled(b0, stored, k); (b0, long o1) = Canonical(s0); o0 += o1; }
+                    if (o0 + i.Offset == slot.Offset && Same(b0, slot.Base)) at = k;
+                }
                 if (at < 0 || stored.Instrs.Take(at).Any(i => IsWordStore(i) || i.Op is Opcode.CallIndirect || i.Op == Opcode.Call && !IsCardMark(i)))
                 {
                     unfused++;
