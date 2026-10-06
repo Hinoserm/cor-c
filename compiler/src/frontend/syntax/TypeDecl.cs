@@ -66,7 +66,64 @@ public sealed class TypeDecl : Node
 
     /// <summary>The text <see cref="BaseSpans"/> index.</summary>
     public string? BaseSource { get; set; }
-    public List<MemberDecl> Members { get; } = new();
+    /// <summary>
+    /// Its members, MADE HERE ON FIRST ASKING when they were deferred
+    /// (DeferMembers): every reader sees the whole list, as it always did.
+    /// </summary>
+    public List<MemberDecl> Members
+    {
+        get
+        {
+            if (_makeMembers is { } make)
+            {
+                _makeMembers = null;
+                _members = make(this);
+            }
+            return _members!;
+        }
+    }
+
+    /// <summary>
+    /// The members made so far, WITHOUT MAKING ANY: nothing while they are
+    /// deferred. For the walks over a whole unit that have nothing to do with
+    /// members nobody has asked for -- marking bodies fresh, counting -- and
+    /// that would otherwise make every deferred list just by looking.
+    /// </summary>
+    public List<MemberDecl> MembersMade => _members ?? NoMembers;
+
+    /// <summary>Whether the members are deferred and not made yet (DeferMembers).</summary>
+    public bool MembersPending => _makeMembers is not null;
+
+    /// <summary>
+    /// A LIST OF MEMBERS MADE WHEN FIRST ASKED FOR, rather than now. A
+    /// word-shaped specialisation of a generic class is declared for every
+    /// signature that names it (Monomorphiser.MembersLater), and a unit that
+    /// only passes a List of something along never asks for its Add: copying
+    /// every member of every such type was most of the declarations a large
+    /// unit held. What is made later is exactly what would have been made
+    /// now -- the same rewrite, by the same monomorphiser, in the same state.
+    /// Handed the declaration that asked, which in a later round of expansion
+    /// is a copy of the one deferred (DeferMembersAs), so that what the making
+    /// settles about the declaration is said of the one that holds the list.
+    /// </summary>
+    internal void DeferMembers(Func<TypeDecl, List<MemberDecl>> make)
+    {
+        _members = null;
+        _makeMembers = make;
+    }
+
+    /// <summary>The same deferred members as another copy of this declaration, not made yet either.</summary>
+    internal void DeferMembersAs(TypeDecl other)
+    {
+        _members = null;
+        _makeMembers = other._makeMembers;
+    }
+
+    // Made with the declaration, as it always was; null only while deferred.
+    private List<MemberDecl>? _members = new();
+    private Func<TypeDecl, List<MemberDecl>>? _makeMembers;
+    // Read through MembersMade while deferred, never written through.
+    private static readonly List<MemberDecl> NoMembers = new();
     /// <summary>Enum members, when this is an enum.</summary>
     public List<EnumMember> EnumMembers { get; } = new();
 

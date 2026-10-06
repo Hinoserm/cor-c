@@ -44,15 +44,47 @@ public sealed class TypeSymbol
     /// <summary>
     /// Whether its instance fields' FieldSymbol.Inline has been decided, and
     /// -- a struct's -- the alignment it is held in line at.
+    /// LAID OUT WITH ITS MEMBERS, as InstanceSize is: a struct whose members
+    /// wait to be asked for (DeclareMembersLater) is declared, and laid out
+    /// once layout has begun, by the first read of any of these three.
     /// </summary>
-    public bool InlineDecided { get; set; }
-    public int InlineAlign { get; set; } = 1;
+    public bool InlineDecided
+    {
+        get
+        {
+            EnsureMembers();
+            return _inlineDecided;
+        }
+        set => _inlineDecided = value;
+    }
+
+    public int InlineAlign
+    {
+        get
+        {
+            EnsureMembers();
+            return _inlineAlign;
+        }
+        set => _inlineAlign = value;
+    }
+
     /// <summary>
     /// A struct's: whether it is held in line wherever it is held -- a field
     /// (FieldSymbol.Inline) and an array's element alike -- its fields all
     /// numbers, references, or structs held in line themselves.
     /// </summary>
-    public bool HeldInline { get; set; }
+    public bool HeldInline
+    {
+        get
+        {
+            EnsureMembers();
+            return _heldInline;
+        }
+        set => _heldInline = value;
+    }
+
+    private bool _inlineDecided, _heldInline;
+    private int _inlineAlign = 1;
     /// <summary>A tuple shape's: whether it has been given ValueTuple's interfaces (Binder.TupleFaces).</summary>
     public bool TupleFacesGiven { get; set; }
 
@@ -97,19 +129,116 @@ public sealed class TypeSymbol
     public List<TypeSymbol> WritableInterfaces => _interfaces ??= new();
     private List<TypeSymbol>? _interfaces;
     private static readonly List<TypeSymbol> NoInterfaces = new();
-    public List<FieldSymbol> Fields => _fields ?? NoFields;
-    public List<FieldSymbol> WritableFields => _fields ??= new();
+
+    // EVERY WAY IN TO ITS MEMBERS DECLARES THEM FIRST when they were left
+    // for later (DeclareMembersLater): its fields, its methods, its slots and
+    // its size, read or written. FindField and FindMethods come through these
+    // too. A write must come through the Writable accessor, never through the
+    // read one, which hands out a shared empty collection while there is none.
+    public List<FieldSymbol> Fields
+    {
+        get
+        {
+            EnsureMembers();
+            return _fields ?? NoFields;
+        }
+    }
+
+    public List<FieldSymbol> WritableFields
+    {
+        get
+        {
+            EnsureMembers();
+            return _fields ??= new();
+        }
+    }
+
     private List<FieldSymbol>? _fields;
     private static readonly List<FieldSymbol> NoFields = new();
-    public List<MethodSymbol> Methods => _methods ?? NoMethods;
-    public List<MethodSymbol> WritableMethods => _methods ??= new();
+
+    public List<MethodSymbol> Methods
+    {
+        get
+        {
+            EnsureMembers();
+            return _methods ?? NoMethods;
+        }
+    }
+
+    public List<MethodSymbol> WritableMethods
+    {
+        get
+        {
+            EnsureMembers();
+            return _methods ??= new();
+        }
+    }
+
     private List<MethodSymbol>? _methods;
     private static readonly List<MethodSymbol> NoMethods = new();
+
     /// <summary>One implementation can occupy several distinct interface slots.</summary>
-    public Dictionary<int, MethodSymbol> InterfaceImplementations => _interfaceImplementations ?? NoInterfaceImplementations;
-    public Dictionary<int, MethodSymbol> WritableInterfaceImplementations => _interfaceImplementations ??= new();
+    public Dictionary<int, MethodSymbol> InterfaceImplementations
+    {
+        get
+        {
+            EnsureMembers();
+            return _interfaceImplementations ?? NoInterfaceImplementations;
+        }
+    }
+
+    public Dictionary<int, MethodSymbol> WritableInterfaceImplementations
+    {
+        get
+        {
+            EnsureMembers();
+            return _interfaceImplementations ??= new();
+        }
+    }
+
     private Dictionary<int, MethodSymbol>? _interfaceImplementations;
     private static readonly Dictionary<int, MethodSymbol> NoInterfaceImplementations = new();
+
+    /// <summary>
+    /// What declares this type's members, while that is still to do: a
+    /// specialisation whose members are made on first use (TypeDecl.
+    /// DeferMembers). Null once they are declared, and for every other type.
+    /// </summary>
+    private Action<TypeSymbol>? _declareMembers;
+
+    /// <summary>
+    /// A body has used this type, and a copy made per argument among it and
+    /// its arguments has been declared for lowering (Binder.ForceBody): set
+    /// once, so that the walk is one test an expression after the first.
+    /// </summary>
+    public bool ReachedFromBodies { get; set; }
+
+    /// <summary>Whether its members are still to be declared (DeclareMembersLater).</summary>
+    public bool MembersPending => _declareMembers is not null;
+
+    /// <summary>
+    /// Leaves its members to be declared the first time anything asks for
+    /// them, by this. The binder's, which declares them as its members pass
+    /// would have, lays them out once layout has begun, and stays reachable
+    /// from here until it has -- through lowering, if that is when it is.
+    /// </summary>
+    internal void DeclareMembersLater(Action<TypeSymbol> declare) => _declareMembers = declare;
+
+    /// <summary>
+    /// Declares its members now, if they were left for later. Cleared before
+    /// it runs, so the declaring itself -- which adds to these very lists --
+    /// reads them as an ordinary type's. One unit is bound and lowered on one
+    /// thread, so nothing else can ask in the middle.
+    /// </summary>
+    public void EnsureMembers()
+    {
+        if (_declareMembers is { } declare)
+        {
+            _declareMembers = null;
+            declare(this);
+        }
+    }
+
     // Made only when written: most have none, and a list each was the collector's.
     private static readonly List<string> NoTypeParams = new();
     private List<string>? _typeParams;
@@ -138,8 +267,18 @@ public sealed class TypeSymbol
     /// </summary>
     public bool IsFlags { get; set; }
 
-    /// <summary>Byte size of an instance, filled in during layout.</summary>
-    public int InstanceSize { get; set; }
+    /// <summary>Byte size of an instance, filled in during layout -- its members declared and laid out first.</summary>
+    public int InstanceSize
+    {
+        get
+        {
+            EnsureMembers();
+            return _instanceSize;
+        }
+        set => _instanceSize = value;
+    }
+
+    private int _instanceSize;
 
     /// <summary>
     /// This type's bit in the ancestor mask. A test like <c>x is Foo</c> is

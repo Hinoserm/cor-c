@@ -301,10 +301,15 @@ public static class Frontend
 
                 // Every member, properties too: their accessors are bodies
                 // the binder makes from them, and take the flag with them.
+                // MADE ONES ONLY: members still deferred are not made merely to
+                // be flagged. A word-shaped copy's bodies are never checked
+                // (Binder.CheckBodies), and a copy per argument whose members
+                // are made during the binding has them flagged then
+                // (Binder.BodiesNow).
                 foreach (TypeDecl t in unit.Types)
                 {
                     if (known.Contains(t.Name)) continue;
-                    foreach (MemberDecl m in t.Members) m.Fresh = true;
+                    foreach (MemberDecl m in t.MembersMade) m.Fresh = true;
                 }
 
                 Meter fresh = Meter.Start();
@@ -315,7 +320,7 @@ public static class Frontend
 
                 foreach (TypeDecl t in unit.Types)
                 {
-                    foreach (MemberDecl m in t.Members) m.Fresh = false;
+                    foreach (MemberDecl m in t.MembersMade) m.Fresh = false;
                 }
             }
 
@@ -347,12 +352,14 @@ public static class Frontend
         // unit's memory goes before a line of it is lowered.
         if (Switches.ReportUnit)
         {
+            // Counted as they stand: a deferred list is not made to be counted.
             foreach (var group in unit.Types.GroupBy(t => t.TypeParams.Count > 0 ? "template"
+                         : t.MembersPending ? (t.Canon is not null ? "shared-copy-deferred" : "specialised-deferred")
                          : t.Canon is not null ? "shared-copy" : t.Specialised ? "specialised" : t.SignatureOnly ? "imported" : "own"))
             {
                 Console.Error.WriteLine("unit " + group.Key + ": " + group.Count() + " types, "
-                    + group.Sum(t => t.Members.Count) + " members, "
-                    + group.Sum(t => t.Members.OfType<MethodDecl>().Count(m => m.Body is { Statements.Count: > 0 })) + " with bodies");
+                    + group.Sum(t => t.MembersMade.Count) + " members, "
+                    + group.Sum(t => t.MembersMade.OfType<MethodDecl>().Count(m => m.Body is { Statements.Count: > 0 })) + " with bodies");
             }
         }
 
@@ -555,9 +562,11 @@ public static class Frontend
         // once: searching every type's members for every call was a scan of
         // the whole unit per want.
         Dictionary<Lang.MemberDecl, Lang.TypeDecl> owners = new(ReferenceEqualityComparer.Instance);
+        // Made members only: a template the checker wanted a copy of is one it
+        // found, and it found it in a list that was made for the asking.
         foreach (Lang.TypeDecl t in unit.Types)
         {
-            foreach (Lang.MemberDecl m in t.Members) owners.TryAdd(m, t);
+            foreach (Lang.MemberDecl m in t.MembersMade) owners.TryAdd(m, t);
         }
 
         foreach ((Lang.CallExpr call, Lang.MethodDecl template, List<Lang.TypeRef> args) in bound.Wanted)

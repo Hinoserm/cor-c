@@ -100,6 +100,9 @@ public static class Header
         foreach (TypeDecl t in unit.Types)
         {
             symbols.TryGetValue(t, out TypeSymbol? owner);
+            // Its constants are the binder's to give, and a type whose members
+            // were left to be asked for has none declared until it is asked.
+            owner?.EnsureMembers();
             Write(s, t, made, owner, bound);
         }
 
