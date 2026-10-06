@@ -109,6 +109,19 @@ public static class StackMapTable
     /// </summary>
     public static byte[] Encode(IReadOnlyList<Function> functions)
     {
+        ChunkedBytes table = new();
+        Encode(functions, table);
+        return table.ToArray();
+    }
+
+    /// <summary>
+    /// The table's bytes appended to <paramref name="into"/> (a section's own
+    /// bytes): the stream of sites, the pool and the table itself are chunks,
+    /// where a large unit's were three lists of it at once and an array
+    /// copied out of the last, each one contiguous.
+    /// </summary>
+    public static void Encode(IReadOnlyList<Function> functions, ChunkedBytes into)
+    {
         // THE POOL, MOST USED FIRST: a reference is a varint of its offset, so
         // the bitmaps named most often are the ones placed where it is short.
         Dictionary<string, (int Uses, int First, byte[] Bytes)> pooled = new(StringComparer.Ordinal);
@@ -124,7 +137,7 @@ public static class StackMapTable
             Count(f.Objects);
             foreach (Site s in f.Sites) Count(s.Slots);
         }
-        List<byte> pool = new();
+        ChunkedBytes pool = new();
         Dictionary<string, int> placed = new(StringComparer.Ordinal);
         foreach (var entry in pooled.OrderByDescending(p => p.Value.Uses).ThenBy(p => p.Value.First))
         {
@@ -143,7 +156,7 @@ public static class StackMapTable
             return (ulong)placed[string.Join(',', words)] << 1;
         }
 
-        List<byte> stream = new();
+        ChunkedBytes stream = new();
         List<(long Anchor, int Site, int Record)> checkpoints = new();
         long anchor = 0;
         long span = 0;
@@ -173,7 +186,7 @@ public static class StackMapTable
 
         int streamAt = HeaderBytes + checkpoints.Count * CheckpointBytes;
         int poolAt = streamAt + stream.Count;
-        List<byte> table = new(poolAt + pool.Count);
+        ChunkedBytes table = into;
         Put(table, Magic);
         Put(table, Version);
         Put(table, (uint)functions.Count);
@@ -191,7 +204,6 @@ public static class StackMapTable
         }
         table.AddRange(stream);
         table.AddRange(pool);
-        return table.ToArray();
     }
 
     /// <summary>
@@ -279,6 +291,19 @@ public static class StackMapTable
     private static uint U32(IReadOnlyList<byte> b, int at) => (uint)(b[at] | b[at + 1] << 8 | b[at + 2] << 16 | b[at + 3] << 24);
 
     private static void Put(List<byte> b, uint v) { b.Add((byte)v); b.Add((byte)(v >> 8)); b.Add((byte)(v >> 16)); b.Add((byte)(v >> 24)); }
+
+    private static void Put(ChunkedBytes b, uint v) { b.Add((byte)v); b.Add((byte)(v >> 8)); b.Add((byte)(v >> 16)); b.Add((byte)(v >> 24)); }
+
+    internal static void Uleb(ChunkedBytes into, ulong v)
+    {
+        do
+        {
+            byte x = (byte)(v & 0x7F);
+            v >>= 7;
+            into.Add(v != 0 ? (byte)(x | 0x80) : x);
+        }
+        while (v != 0);
+    }
 
     internal static void Uleb(List<byte> into, ulong v)
     {

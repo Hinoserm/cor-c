@@ -493,7 +493,7 @@ public static class ElfReader
                 // REL: the addend is whatever sits in the word -- of a section
                 // left in its file too, which then comes into memory.
                 if (target.FileBacked is not null) { target.Bytes.AddRange(target.Content()); target.FileBacked = null; }
-                int addend = BinaryPrimitives.ReadInt32LittleEndian(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(target.Bytes)[(int)offset..]);
+                int addend = target.Bytes.ReadInt32((int)offset);
                 target.Relocs.Add(new Relocation((int)offset, symbol, addend, kind.Value));
             }
         }

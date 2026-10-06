@@ -11,7 +11,9 @@ namespace Corsac.Lang.Elf;
 /// </summary>
 internal sealed class StringTable
 {
-    private readonly List<byte> _bytes = new() { 0 };
+    // CHUNKS, not a list: an object's .strtab holds every symbol's name, and
+    // a large unit's generic and nested names run to megabytes.
+    private readonly ChunkedBytes _bytes = new() { 0 };
     private readonly Dictionary<string, uint> _at = new();
 
     public uint Add(string s)
@@ -34,6 +36,18 @@ internal sealed class StringTable
     public byte[] ToArray()
     {
         return _bytes.ToArray();
+    }
+
+    public int Length => _bytes.Count;
+
+    /// <summary>The table written into an ELF image a chunk at a time, never as one array.</summary>
+    public void WriteTo(ElfBuffer b)
+    {
+        for (int i = 0; i < _bytes.SegmentCount; i++)
+        {
+            (byte[] array, int length) = _bytes.Segment(i);
+            b.Bytes(new ReadOnlySpan<byte>(array, 0, length));
+        }
     }
 
     public static string Read(ReadOnlySpan<byte> table, uint offset, string what)

@@ -17,7 +17,7 @@ namespace Corsac.Lang.X86;
 internal sealed class Encoder
 {
     private readonly Section _text;
-    private readonly List<byte> _out;
+    private readonly ChunkedBytes _out;
     private readonly List<Relocation> _pending = new();
     private MFunction _m = null!;
     private int _funcStart;
@@ -84,7 +84,7 @@ internal sealed class Encoder
         do
         {
             _pending.Clear();
-            _out.RemoveRange(_funcStart, _out.Count - _funcStart);
+            _out.Truncate(_funcStart);
             grew = Pass();
         }
         while (grew);
@@ -994,7 +994,7 @@ internal sealed class Encoder
     /// targets. The 0F 1F multi-byte nop is Pentium Pro and later and is
     /// not used.
     /// </summary>
-    public static void Nops(List<byte> into, int count)
+    public static void Nops(ChunkedBytes into, int count)
     {
         while (count > 0)
         {

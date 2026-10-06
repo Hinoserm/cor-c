@@ -50,10 +50,22 @@ internal static class FrameTable
     /// <summary>Builds the table's bytes, and the one relocation it needs.</summary>
     public static byte[] Build(IReadOnlyList<Entry> entries, out int baseFixup, out string baseSymbol)
     {
+        ChunkedBytes table = new();
+        Build(table, entries, out baseFixup, out baseSymbol);
+        return table.ToArray();
+    }
+
+    /// <summary>
+    /// The table appended to <paramref name="into"/>, a section's bytes, its
+    /// fixup relative to where it starts there. A large unit's names run to
+    /// megabytes, so they are chunks, as the table is, and never one array.
+    /// </summary>
+    public static void Build(ChunkedBytes into, IReadOnlyList<Entry> entries, out int baseFixup, out string baseSymbol)
+    {
         baseFixup = FrameTableFormat.BaseOffset;
         baseSymbol = entries.Count > 0 ? entries[0].Label : "";
 
-        List<byte> strings = new();
+        ChunkedBytes strings = new();
         Dictionary<string, int> interned = new(StringComparer.Ordinal);
 
         int String(string text)
@@ -79,6 +91,6 @@ internal static class FrameTable
             coded.Add(new FrameTableFormat.Entry(e.Start - origin, e.Size, String(e.Name), String(e.File), FrameTableFormat.Normal(e.Lines)));
         }
 
-        return FrameTableFormat.Build(FrameTableFormat.Local, coded, strings);
+        FrameTableFormat.Build(into, FrameTableFormat.Local, coded, strings);
     }
 }

@@ -177,16 +177,17 @@ internal static class DuplicateCutter
 
     internal static void Splice(ObjectFile obj, Section section, List<(long Start, long End)> cuts, HashSet<Symbol> losers)
     {
-        List<byte> bytes = new(section.Bytes.Count);
-        int at = 0;
+        // IN PLACE: a cut only removes bytes, so what is kept moves down and
+        // never over a byte not yet read; no second copy of the section.
+        ChunkedBytes bytes = section.Bytes;
+        int at = 0, kept = 0;
         foreach ((long start, long end) in cuts)
         {
-            for (; at < start; at++) bytes.Add(section.Bytes[at]);
+            for (; at < start; at++) bytes[kept++] = bytes[at];
             at = (int)end;
         }
-        for (; at < section.Bytes.Count; at++) bytes.Add(section.Bytes[at]);
-        section.Bytes.Clear();
-        section.Bytes.AddRange(bytes);
+        for (; at < bytes.Count; at++) bytes[kept++] = bytes[at];
+        bytes.Truncate(kept);
 
         List<Relocation> relocs = new(section.Relocs.Count);
         foreach (Relocation r in section.Relocs)
@@ -210,7 +211,7 @@ internal static class DuplicateCutter
         }
     }
 
-    static uint U32(List<byte> b, int at) => (uint)(b[at] | b[at + 1] << 8 | b[at + 2] << 16 | b[at + 3] << 24);
+    static uint U32(IReadOnlyList<byte> b, int at) => (uint)(b[at] | b[at + 1] << 8 | b[at + 2] << 16 | b[at + 3] << 24);
 
     static void Put(List<byte> b, uint v) { b.Add((byte)v); b.Add((byte)(v >> 8)); b.Add((byte)(v >> 16)); b.Add((byte)(v >> 24)); }
 
@@ -246,7 +247,7 @@ internal static class DuplicateCutter
             Section? s = obj.Sections.FirstOrDefault(s => s.Name.EndsWith(".corsac.stackmaps", StringComparison.Ordinal));
             if (s is null || s.Bytes.Count == 0) return null;
             StackMaps m = new() { Section = s };
-            List<byte> b = s.Bytes;
+            ChunkedBytes b = s.Bytes;
             if (b.Count < 20 || U32(b, 0) != StackMapMagic) { m.Unknown = true; return m; }
             uint version = U32(b, 4);
             if (version == StackMapTable.Version)
@@ -284,7 +285,7 @@ internal static class DuplicateCutter
                 f.Start = (int)to;
                 kept.Add(f);
             }
-            List<byte> b = Section.Bytes;
+            ChunkedBytes b = Section.Bytes;
             b.Clear();
             b.AddRange(StackMapTable.Encode(kept));
         }
@@ -292,7 +293,7 @@ internal static class DuplicateCutter
         public void Write(List<(long Start, long End)> cuts)
         {
             if (_functions is not null) { WriteFunctions(cuts); return; }
-            List<byte> b = Section.Bytes;
+            ChunkedBytes b = Section.Bytes;
             List<byte[]> entries = new();
             for (int i = 0; i < _count; i++)
             {
@@ -302,14 +303,14 @@ internal static class DuplicateCutter
                 long ret = _base + U32(b, at);
                 long to = Map(cuts, ret - 1);
                 if (to < 0) continue;
-                byte[] e = b.GetRange(at, _entry).ToArray();
+                byte[] e = b.Slice(at, _entry);
                 BitConverter.TryWriteBytes(e.AsSpan(0, 4), (uint)(to + 1));
                 entries.Add(e);
             }
             int shift = (_count - entries.Count) * _entry;
-            List<byte> table = new(b.Count);
-            table.AddRange(b.GetRange(0, 20));
-            BitConverter.TryWriteBytes(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(table).Slice(8, 4), (uint)entries.Count);
+            ChunkedBytes table = new();
+            table.AddRange(b.Slice(0, 20));
+            table.WriteInt32(8, entries.Count);
             foreach (byte[] e in entries)
             {
                 foreach (int word in _pointers)
@@ -319,7 +320,7 @@ internal static class DuplicateCutter
                 }
                 table.AddRange(e);
             }
-            table.AddRange(b.GetRange(20 + _count * _entry, b.Count - (20 + _count * _entry)));
+            table.AddRange(b.Slice(20 + _count * _entry, b.Count - (20 + _count * _entry)));
             b.Clear();
             b.AddRange(table);
             // The base word is relocated; its section offset has not moved.
@@ -345,7 +346,7 @@ internal static class DuplicateCutter
             Symbol? sym = obj.Symbols.FirstOrDefault(s => s.Name == FrameSymbol && s.IsDefined);
             if (sym is null) return null;
             Frames f = new() { Section = sym.Section!, Symbol = sym };
-            List<byte> b = f.Section.Bytes;
+            ChunkedBytes b = f.Section.Bytes;
             int at = (int)sym.Offset;
             if (sym.Size < FrameTableFormat.HeaderBytes || U32(b, at) != FrameMagic) { f.Unknown = true; return f; }
             var entries = FrameTableFormat.Read(b, at, (int)sym.Size);
@@ -362,7 +363,7 @@ internal static class DuplicateCutter
         /// kept function now starts, the new base.
         public byte[] Build(List<(long Start, long End)> cuts, out long first)
         {
-            List<byte> b = Section.Bytes;
+            ChunkedBytes b = Section.Bytes;
             int at = (int)Symbol.Offset;
             List<FrameTableFormat.Entry> kept = new();
             first = -1;
@@ -374,7 +375,7 @@ internal static class DuplicateCutter
                 kept.Add(e with { Start = to - first });
             }
             if (first < 0) first = 0;
-            return FrameTableFormat.Build(FrameMagic, kept, b.GetRange(at + _strings, (int)Symbol.Size - _strings));
+            return FrameTableFormat.Build(FrameMagic, kept, b.Slice(at + _strings, (int)Symbol.Size - _strings));
         }
     }
 }

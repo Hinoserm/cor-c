@@ -30,6 +30,17 @@ public static class ElfWriter
     }
 
     /// <summary>
+    /// SHA-256 of the object WriteObject would make, hashed from the chunks
+    /// it is built in rather than from one array of the whole image.
+    /// </summary>
+    public static byte[] HashObject(ObjectFile obj)
+    {
+        ArgumentNullException.ThrowIfNull(obj);
+        if (TargetContract.IsLongMode(obj)) return System.Security.Cryptography.SHA256.HashData(Elf64Object.Write(obj));
+        return Build(obj).Sha256();
+    }
+
+    /// <summary>
     /// The object written to its file, streamed from the chunks it was built
     /// in: never the whole image as one array, nor a copy of any section --
     /// a large unit's object and its IR are tens of megabytes each, and a
@@ -68,7 +79,9 @@ public static class ElfWriter
         }
 
         StringTable strtab = new();
-        List<SymbolEntry> symbols = new() { default };
+        // The symbol table and the relocation lists below are a unit's
+        // longest after its code: chunks, not doubling arrays.
+        ChunkedList<SymbolEntry> symbols = new() { default };
         Dictionary<string, int> symbolIndex = new();
 
         for (int i = 0; i < obj.Sections.Count; i++)
@@ -105,14 +118,14 @@ public static class ElfWriter
         // The addends are written into the image as the section goes in (REL
         // keeps them in the section's bytes), never into the object's own
         // bytes and never into a copy of them.
-        List<(int Offset, uint Addend)>[] addends = new List<(int, uint)>[obj.Sections.Count];
-        List<(uint Offset, uint Info)>[] rels = new List<(uint, uint)>[obj.Sections.Count];
+        ChunkedList<(int Offset, uint Addend)>[] addends = new ChunkedList<(int, uint)>[obj.Sections.Count];
+        ChunkedList<(uint Offset, uint Info)>[] rels = new ChunkedList<(uint, uint)>[obj.Sections.Count];
         for (int i = 0; i < obj.Sections.Count; i++)
         {
             Section s = obj.Sections[i];
             int length = s.Size;
-            addends[i] = new List<(int, uint)>();
-            rels[i] = new List<(uint, uint)>();
+            addends[i] = new ChunkedList<(int, uint)>();
+            rels[i] = new ChunkedList<(uint, uint)>();
             foreach (Relocation r in s.Relocs)
             {
                 if (s.Kind == SectionKind.Uninitialised)
@@ -191,7 +204,14 @@ public static class ElfWriter
             if (s.Kind != SectionKind.Uninitialised)
             {
                 if (s.FileBacked is not null) b.Bytes(s.Content());
-                else b.Bytes(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(s.Bytes));
+                else
+                {
+                    for (int k = 0; k < s.Bytes.SegmentCount; k++)
+                    {
+                        (byte[] array, int length) = s.Bytes.Segment(k);
+                        b.Bytes(new ReadOnlySpan<byte>(array, 0, length));
+                    }
+                }
                 foreach ((int offset, uint addend) in addends[i])
                 {
                     b.PatchU32(checked((int)at + offset), addend);
@@ -227,9 +247,8 @@ public static class ElfWriter
             headers.Add(new SectionHeader(symtabName, Elf.ShtSymTab, 0, 0, at, (uint)(symbols.Count * Elf.SymbolSize), (uint)(headers.Count + 1), (uint)firstGlobal, 4, Elf.SymbolSize));
         }
         {
-            byte[] bytes = strtab.ToArray();
-            headers.Add(new SectionHeader(strtabName, Elf.ShtStrTab, 0, 0, (uint)b.Length, (uint)bytes.Length, 0, 0, 1, 0));
-            b.Bytes(bytes);
+            headers.Add(new SectionHeader(strtabName, Elf.ShtStrTab, 0, 0, (uint)b.Length, (uint)strtab.Length, 0, 0, 1, 0));
+            strtab.WriteTo(b);
         }
         {
             byte[] bytes = shstrtab.ToArray();
@@ -249,7 +268,7 @@ public static class ElfWriter
         return b;
     }
 
-    private static void AddSymbol(ObjectFile obj, Symbol sym, List<SymbolEntry> symbols, Dictionary<string, int> symbolIndex, StringTable strtab)
+    private static void AddSymbol(ObjectFile obj, Symbol sym, ChunkedList<SymbolEntry> symbols, Dictionary<string, int> symbolIndex, StringTable strtab)
     {
         if (sym.Name.Length == 0)
         {

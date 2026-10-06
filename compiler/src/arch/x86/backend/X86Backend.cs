@@ -170,7 +170,9 @@ public sealed class X86Backend : IBackend
         Encoder encoder = new(text);
         List<FrameTable.Entry> frames = new();
         FunctionSizes.Clear();
-        List<(string Function, int Return, int At, Safepoint? Map, int FrameSize, uint Saved, List<int> Objects)> maps = new();
+        // A RECORD A CALL SITE, the unit's longest list after its code and
+        // relocations, so in chunks (ChunkedList) rather than one doubling array.
+        ChunkedList<(string Function, int Return, int At, Safepoint? Map, int FrameSize, uint Saved, List<int> Objects)> maps = new();
         bool cardStub = false, barrierStub = false;
 
         // GOTOFF is sound only for a name this object defines and does not
@@ -388,19 +390,19 @@ public sealed class X86Backend : IBackend
         // a flat freestanding image carries it exactly as an ELF does.
         if (frames.Count > 0)
         {
-            byte[] bytes = FrameTable.Build(frames, out int fixup, out string baseSymbol);
             // It holds one address, so in a shared object it holds a
             // relocation, and a relocation may not land in a page the loader
             // has to keep read-only. Jump tables move for the same reason.
             Section frameSection = PositionIndependent ? relocatedConstants : rodata;
             Pad(frameSection, 4, 0);
             int at = frameSection.Bytes.Count;
+            // Built straight into the section, never one array of its own.
+            FrameTable.Build(frameSection.Bytes, frames, out int fixup, out string baseSymbol);
             obj.Symbols.Add(new Symbol
             {
-                Name = FrameTable.Symbol, Section = frameSection, Offset = at, Size = bytes.Length, Global = false,
+                Name = FrameTable.Symbol, Section = frameSection, Offset = at, Size = frameSection.Bytes.Count - at, Global = false,
             });
             defined.Add(FrameTable.Symbol);
-            frameSection.Bytes.AddRange(bytes);
             frameSection.Relocs.Add(new Relocation(at + fixup, baseSymbol, 0, RelocKind.Abs32));
         }
 
@@ -772,7 +774,7 @@ public sealed class X86Backend : IBackend
     /// adds the base, exactly as the frame table's reader does. A shared
     /// object then has one loader-written word in the table, not one a call.
     /// </summary>
-    private static void EmitStackMaps(ObjectFile obj, List<(string Function, int Return, int At, Safepoint? Map, int FrameSize, uint Saved, List<int> Objects)> maps, HashSet<string> defined, bool pic)
+    private static void EmitStackMaps(ObjectFile obj, ChunkedList<(string Function, int Return, int At, Safepoint? Map, int FrameSize, uint Saved, List<int> Objects)> maps, HashSet<string> defined, bool pic)
     {
         // The base is a relocation, so in a shared object the page holding
         // the header is written by the loader; writable in that mode, as the
@@ -809,7 +811,7 @@ public sealed class X86Backend : IBackend
                 site.Map is null ? Array.Empty<int>() : StackMapTable.Words(site.Map.SlotOffsets)));
         }
 
-        s.Bytes.AddRange(StackMapTable.Encode(functions));
+        StackMapTable.Encode(functions, s.Bytes);
         if (maps.Count > 0) s.Relocs.Add(new Relocation(StackMapTable.BaseOffset, maps[0].Function, 0, RelocKind.Abs32));
 
         // Each independently compiled object owns a complete table. These
