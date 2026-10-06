@@ -2720,6 +2720,17 @@ static partial class Scheduler
                         // A completion an interrupt may bring is looked for
                         // every InterruptPollNanos, not only at the timer.
                         if (InterruptCompletions.Armed > 0 && until > now + InterruptPollNanos) until = now + InterruptPollNanos;
+                        // AND ONE ANOTHER THREAD MAY BRING, every OthersPollNanos,
+                        // as when no timer is due: the item that completes this
+                        // task may have been taken from the shared queue by
+                        // another thread, whose completion wakes nobody. With a
+                        // timeout's timer pending, the wait slept to it -- the
+                        // thirty seconds of a WaitAsync -- after the other
+                        // thread had finished the task and exited (1258).
+                        if (GcThreads.Others() && until > now + OthersPollNanos) until = Waking(now, now + OthersPollNanos);
+                        // Looked at again last: completed since the round's
+                        // test by a thread that has gone, nothing else wakes this.
+                        if (task.IsCompleted) return;
                         Clock.SleepUntil(until);
                     }
                 }
