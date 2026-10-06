@@ -80,7 +80,7 @@ public static class DynamicDeclarations
             CompilationUnit late;
             try { late = Parser.ParseText(DelegateMembers(scope, d, invoke), "<dynamic:" + d.Name + ">", symbols); }
             catch (CompileError e) { errors.Add(e); continue; }
-            d.Bases.Add(new TypeRef { Name = "System.Dynamic.ILateInvocable", Line = d.Line, Col = d.Col });
+            d.WritableBases.Add(new TypeRef { Name = "System.Dynamic.ILateInvocable", Line = d.Line, Col = d.Col });
             foreach (MemberDecl m in late.Types[0].Members)
             {
                 m.Scope = d.Scope;
@@ -99,7 +99,7 @@ public static class DynamicDeclarations
                 && (chain.Skip(1).Any(a => given.Contains(a) || a.Members.Any(m => m is MethodDecl { Name: "__DynGet" }))
                     || t.Bases.Any(b => GenericMarkedBase(scope, b)));
             string modifier = t.Kind == TypeKind.Struct ? "" : inherits ? "override" : t.Mods.HasFlag(Mods.Sealed) ? "" : "virtual";
-            if (!inherits) t.Bases.Add(new TypeRef { Name = Face, Line = t.Line, Col = t.Col });
+            if (!inherits) t.WritableBases.Add(new TypeRef { Name = Face, Line = t.Line, Col = t.Col });
             string text = Members(scope, t, chain, modifier, inherits);
             CompilationUnit parsed;
             try { parsed = Parser.ParseText(text, "<dynamic:" + t.Name + ">", symbols); }

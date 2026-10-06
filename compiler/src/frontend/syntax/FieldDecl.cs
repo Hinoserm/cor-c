@@ -43,5 +43,15 @@ public sealed class FieldDecl : MemberDecl
     /// this one's type and modifiers, and whoever declares the members takes
     /// them along with it.
     /// </summary>
-    public List<FieldDecl> More { get; } = new();
+    // To read: one shared empty list until written (WritableMore), never
+    // written through. The parser hands the extras to the type and lets the
+    // list go (ForgetMore), so every field declaration -- and every copy the
+    // monomorphiser makes of one -- held an empty list for nothing.
+    public List<FieldDecl> More => _more ?? NoMore;
+    /// <summary>To write: made on first use.</summary>
+    public List<FieldDecl> WritableMore => _more ??= new();
+    /// <summary>The extras, once the type has taken them as members of its own.</summary>
+    internal void ForgetMore() => _more = null;
+    private List<FieldDecl>? _more;
+    private static readonly List<FieldDecl> NoMore = new();
 }
