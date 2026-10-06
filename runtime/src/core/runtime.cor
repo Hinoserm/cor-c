@@ -1372,7 +1372,7 @@ static class Runtime
                 nint freed = at - outer;
                 Sys.MemorySet(outer, 0, freed);
                 Sys.Poke(tb + (nint)Tls.RegionFloor, parent == 0 ? 0
-                    : (nint)((nuint)Sys.Peek(parent + (nint)Gc.RecordFrameAt) & ~(nuint)Gc.RecordLoopMark & (nuint)WordSize.AddressMask));
+                    : (nint)((nuint)Sys.Peek(parent + (nint)Gc.RecordFrameAt) & ~(nuint)Gc.RecordLoopMark & unchecked((nuint)WordSize.AddressMask)));
                 Sys.Poke(tb + (nint)Tls.RegionOpen, parent);
                 Gc.RegionFreedBytes = Gc.RegionFreedBytes + (freed - (nint)Gc.RegionRecordBytes);
                 Gc.FreedBytes = Gc.FreedBytes + (freed - (nint)Gc.RegionRecordBytes);
@@ -1405,7 +1405,7 @@ static class Runtime
         // The block ANDed with Gc.FastRegionMask (no block yet, a sampler, the
         // statistics), then the open region's opener from the block
         // (Tls.RegionFloor, 0 with none open): AllocRegionSized's tests.
-        nuint mask = (nuint)WordSize.AddressMask;
+        nuint mask = unchecked((nuint)WordSize.AddressMask);
         nint tb = (nint)Sys.ThreadBlock() & Gc.FastRegionMask;
         if (tb != 0 && (nuint)Sys.Peek(tb + (nint)Tls.RegionFloor) >= ((nuint)frame & mask) && (nuint)bytes <= (nuint)Gc.MostRequest)
         {
@@ -1460,7 +1460,7 @@ static class Runtime
     public static long AllocRegionSized(nint bytes, nint kind, nint frame, nint need)
     {
         nint tb = (nint)Sys.ThreadBlock() & Gc.FastRegionMask;
-        if (tb != 0 && (nuint)Sys.Peek(tb + (nint)Tls.RegionFloor) >= ((nuint)frame & (nuint)WordSize.AddressMask))
+        if (tb != 0 && (nuint)Sys.Peek(tb + (nint)Tls.RegionFloor) >= ((nuint)frame & unchecked((nuint)WordSize.AddressMask)))
         {
             nint at = (nint)Sys.Peek(tb + (nint)Tls.RegionAt);
             if ((nuint)need <= (nuint)((nint)Sys.Peek(tb + (nint)Tls.RegionEnd) - at))
