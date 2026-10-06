@@ -2922,6 +2922,43 @@ public sealed class Parser
     /// holds a comma: what tells a deconstructing ASSIGNMENT from a
     /// parenthesised expression that happens to be assigned to.
     /// </summary>
+    /// <summary>
+    /// Whether the parser is on `Type name` or `var name` closed by ',' or
+    /// ')' -- a name declared in a deconstructing assignment's list -- and if
+    /// so, past it; otherwise where it was. A null type is `var`'s.
+    /// </summary>
+    private bool DeclaredAmongPlaces(out TypeRef? type, out Token? name)
+    {
+        int was = _i;
+        type = null;
+        name = null;
+
+        try
+        {
+            if (!(At(Tok.KwVar) && Ahead().Kind == Tok.Ident))
+            {
+                type = ParseTypeRef();
+            }
+            else
+            {
+                _i++;
+            }
+
+            if (At(Tok.Ident) && Ahead().Kind is Tok.Comma or Tok.RParen)
+            {
+                name = _t[_i++];
+                return true;
+            }
+        }
+        catch (CompileError)
+        {
+        }
+
+        _i = was;
+        type = null;
+        return false;
+    }
+
     private bool AssignmentAfterBrackets()
     {
         int j = _i;
@@ -7108,6 +7145,20 @@ public sealed class Parser
                 do
                 {
                     Token where = Cur;
+
+                    // A NAME DECLARED AMONG THE PLACES: `(b0, long o1) = p`
+                    // assigns b0 and declares o1, as C# 10 allows. A type and
+                    // a name, closed by ',' or ')', is a declaration; anything
+                    // else is a place.
+                    if (DeclaredAmongPlaces(out TypeRef? declared, out Token? name))
+                    {
+                        targets.Add(new Binding
+                        {
+                            Type = declared, Name = name!.Text,
+                            Line = where.Line, Col = where.Col,
+                        });
+                        continue;
+                    }
 
                     targets.Add(new Binding
                     {

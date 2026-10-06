@@ -1,0 +1,49 @@
+// test: mixed deconstruction
+// expect-exit: 0
+// expect-output:
+// 3 4 7
+// 5 hi 12
+// 9 10
+// 1 2 3
+//
+// A deconstructing assignment may declare some names and assign others in
+// the same list, as C# 10 allows: `(b, long o) = Pair()` assigns b, which
+// already exists, and declares o. Each position is one or the other,
+// out of a tuple or a Deconstruct method, with a type or with var.
+
+using System;
+
+struct Point
+{
+    public int X, Y;
+    public Point(int x, int y) { X = x; Y = y; }
+    public void Deconstruct(out int x, out int y) { x = X; y = Y; }
+}
+
+class Box { public int Held; }
+
+static class Program
+{
+    static (int, long) Pair(int a) => (a, a + 1);
+
+    static int Main()
+    {
+        int b = 0;
+        (b, long o) = Pair(3);
+        Console.WriteLine(b + " " + o + " " + (b + o));
+
+        string s;
+        (int n, s, var k) = (5, "hi", 12L);
+        Console.WriteLine(n + " " + s + " " + k);
+
+        int px;
+        (px, int py) = new Point(9, 10);
+        Console.WriteLine(px + " " + py);
+
+        Box box = new();
+        int[] arr = new int[1];
+        (box.Held, arr[0], var third) = (1, 2, 3);
+        Console.WriteLine(box.Held + " " + arr[0] + " " + third);
+        return 0;
+    }
+}
