@@ -62,6 +62,16 @@ public sealed class Monomorphiser
     /// <summary>Every struct and enum declared here, which are not words either.</summary>
     private readonly HashSet<string> _byValue = new(StringComparer.Ordinal);
 
+    /// <summary>
+    /// The unit's value types as the caller of Specialise or Rehost holds
+    /// them, read beside _byValue and never written: copied in, they were the
+    /// whole unit's struct and enum names again for every method copy made.
+    /// </summary>
+    private HashSet<string>? _byValueAlso;
+
+    /// <summary>Whether a name is a struct or an enum declared here, or one the caller named.</summary>
+    private bool ByValue(string name) => _byValue.Contains(name) || _byValueAlso?.Contains(name) == true;
+
     /// <summary>Names declared as a class or interface, which always are.</summary>
     private readonly HashSet<string> _byRef = new(StringComparer.Ordinal);
 
@@ -121,13 +131,10 @@ public sealed class Monomorphiser
     /// in for its type parameters, the function's own type parameters kept.
     /// </summary>
     public static MethodDecl Rehost(MethodDecl local, IReadOnlyList<TypeParam> outer, IReadOnlyList<TypeRef> args,
-                                    string name, IEnumerable<string>? valueTypes = null)
+                                    string name, HashSet<string>? valueTypes = null)
     {
         Monomorphiser m = new("<rehost>");
-        if (valueTypes is not null)
-        {
-            m._byValue.UnionWith(valueTypes);
-        }
+        m._byValueAlso = valueTypes;
         Dictionary<string, TypeRef> map = new(StringComparer.Ordinal);
         for (int i = 0; i < outer.Count && i < args.Count; i++)
         {
@@ -149,13 +156,10 @@ public sealed class Monomorphiser
     }
 
     public static MethodDecl Specialise(MethodDecl template, IReadOnlyList<TypeRef> args, string name,
-                                        IEnumerable<string>? valueTypes = null)
+                                        HashSet<string>? valueTypes = null)
     {
         Monomorphiser m = new("<specialise>");
-        if (valueTypes is not null)
-        {
-            m._byValue.UnionWith(valueTypes);
-        }
+        m._byValueAlso = valueTypes;
         Dictionary<string, TypeRef> map = new(StringComparer.Ordinal);
 
         for (int i = 0; i < template.TypeParams.Count && i < args.Count; i++)
@@ -477,7 +481,7 @@ public sealed class Monomorphiser
             return true;                        // an address, whatever it addresses
         }
 
-        if (Narrow.Contains(r.Name) || _byValue.Contains(r.Name))
+        if (Narrow.Contains(r.Name) || ByValue(r.Name))
         {
             return false;
         }
@@ -1514,14 +1518,33 @@ public sealed class Monomorphiser
          : r;
 
     /// <summary>Whether a type mentions a type parameter of the method being copied.</summary>
+    // Loops, not Any over the method group: that made a delegate at every
+    // level of every type reference substituted.
     private bool MentionsMethodParameter(TypeRef a)
-        => (a.Args.Count == 0 && _methodParams.Contains(a.Name)) || a.Args.Any(MentionsMethodParameter);
+        => (a.Args.Count == 0 && _methodParams.Contains(a.Name)) || AnyMentionsMethodParameter(a.Args);
+
+    private bool AnyMentionsMethodParameter(List<TypeRef> types)
+    {
+        foreach (TypeRef t in types)
+        {
+            if (MentionsMethodParameter(t)) return true;
+        }
+        return false;
+    }
 
     /// <summary>
     /// Each of a list of types substituted, in a loop: `Select(a => Sub(a,
     /// map))` made a closure over the map for every type with arguments the
     /// copies were made of, a million a self-hosted unit, all the collector's.
     /// </summary>
+    /// <summary>Each of these qualified, into a list made at its size.</summary>
+    private List<TypeRef> QualifyAll(List<TypeRef> types)
+    {
+        List<TypeRef> made = new(types.Count);
+        foreach (TypeRef t in types) made.Add(Qualify(t));
+        return made;
+    }
+
     private List<TypeRef> SubAll(List<TypeRef> types, Dictionary<string, TypeRef> map)
     {
         List<TypeRef> made = new(types.Count);
@@ -1587,7 +1610,7 @@ public sealed class Monomorphiser
             // Nullable cell where every caller read the tuple -- the
             // has-value flag read as Callee.
             bool valueBound = bound.ArrayRank == 0 && bound.PointerDepth == 0
-                && (Narrow.Contains(bound.Name) || _byValue.Contains(bound.Name)
+                && (Narrow.Contains(bound.Name) || ByValue(bound.Name)
                     || bound.Name == TypeRef.Tuple && bound.Args.Count > 0
                     || bound.Name is "long" or "ulong" or "nint" or "nuint" or "decimal"
                     || _made.TryGetValue(bound.Name, out TypeDecl? madeDecl) && madeDecl.Kind is TypeKind.Struct or TypeKind.Enum
@@ -1709,11 +1732,7 @@ public sealed class Monomorphiser
         // inside Zip<T,U> is just as open as List<T>; eagerly instantiating the
         // outer List manufactures a tuple whose T and U are not in scope and
         // then repeats that error for every discovered specialisation.
-        bool HasMethodParameter(TypeRef a)
-            => (a.Args.Count == 0 && _methodParams.Contains(a.Name))
-            || a.Args.Any(HasMethodParameter);
-
-        bool open = args.Any(HasMethodParameter);
+        bool open = AnyMentionsMethodParameter(args);
 
         foreach (TypeRef a in args)
         {
@@ -1758,7 +1777,7 @@ public sealed class Monomorphiser
             Name = name, ArrayRank = r.ArrayRank, Nullable = r.Nullable,
             // These annotations cross into the template's scope too, including
             // arguments already hidden inside a nested specialised type name.
-            UseArgs = args.Count > 0 && name != r.Name ? args.Select(Qualify).ToList()
+            UseArgs = args.Count > 0 && name != r.Name ? QualifyAll(args)
                 : r.UseArgs is null ? null : SubAll(r.UseArgs, map),
             ElementNullable = r.ElementNullable,
             InnerNullable = r.InnerNullable,
@@ -2469,14 +2488,21 @@ public sealed class Monomorphiser
     /// what it was written to see.
     /// </summary>
     private List<Binding> CopyBindings(List<Binding> from, Dictionary<string, TypeRef> map)
-        => from.Select(b => new Binding
+    {
+        List<Binding> made = new(from.Count);
+        foreach (Binding b in from)
         {
-            Type = b.Type is null ? null : Sub(b.Type, map),
-            Name = b.Name,
-            Target = b.Target is null ? null : Rewrite(b.Target, map),
-            Nested = b.Nested is null ? null : CopyBindings(b.Nested, map),
-            Line = b.Line, Col = b.Col,
-        }).ToList();
+            made.Add(new Binding
+            {
+                Type = b.Type is null ? null : Sub(b.Type, map),
+                Name = b.Name,
+                Target = b.Target is null ? null : Rewrite(b.Target, map),
+                Nested = b.Nested is null ? null : CopyBindings(b.Nested, map),
+                Line = b.Line, Col = b.Col,
+            });
+        }
+        return made;
+    }
 
     private Expr Rewrite(Expr e, Dictionary<string, TypeRef> map)
     {
@@ -2530,7 +2556,7 @@ public sealed class Monomorphiser
                 // method is instantiated in each copy of the method, where T is
                 // bound. Instantiated here, it made a Comparer$T whose T nothing
                 // declares.
-                if (args.Any(MentionsMethodParameter))
+                if (AnyMentionsMethodParameter(args))
                 {
                     NameExpr open = new() { Name = n.Name, Global = n.Global, Line = n.Line, Col = n.Col };
                     open.WritableTypeArgs.AddRange(args);
