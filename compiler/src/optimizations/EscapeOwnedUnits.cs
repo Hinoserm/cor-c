@@ -143,7 +143,12 @@ public sealed partial class Escape
     }
 
     /// <summary>Each register written exactly once, to the instruction writing it.</summary>
-    private static Dictionary<VReg, Instr> SingleDefs(Function f)
+    // Kept while the function stands (AnalysisCache): read, never written, by
+    // every phase that asks -- the self-frees, the hints, the frees of what
+    // is replaced across calls.
+    private static Dictionary<VReg, Instr> SingleDefs(Function f) => AnalysisCache.Kept(f, AnalysisCache.SingleDefs, MakeSingleDefs);
+
+    private static Dictionary<VReg, Instr> MakeSingleDefs(Function f)
     {
         Dictionary<VReg, Instr> d = new();
         HashSet<VReg> many = new();

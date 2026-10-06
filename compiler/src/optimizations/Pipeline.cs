@@ -210,6 +210,12 @@ public sealed class Pipeline
         return p;
     }
 
+    /// <summary>--report-phases: told the name of each module and late pass as it ends (the driver's Phase).</summary>
+    public static Action<string>? Stage { get; set; }
+
+    /// <summary>Whether this pipeline tells Stage (the compile's own, not the cleanups inside passes).</summary>
+    public bool Reports { get; set; }
+
     public void Run(Module m)
     {
         // The cheap passes first, so inlining sees bodies already folded and
@@ -236,9 +242,16 @@ public sealed class Pipeline
             else p.Run(m);
             if (marks is not null) MarkVerifier.Report(marks, m, p.Name);
             TraceModulePass(p.Name, m);
+            if (Reports) Stage?.Invoke("module " + p.Name);
 #if COR_SELFHOST_BENCHMARK
             Corsac.Program.BenchmarkStage("opt-module-end " + p.Name);
 #endif
+            // After every module pass too, as after a late one: the inliner,
+            // the lifetime rules and the region passes edit whole functions,
+            // and a wrong type they leave was found only by the next
+            // function pass, under another pass's name -- or not at all.
+            if (Verify)
+                foreach (Function checkedFunction in m.Functions) Verifier.Check(checkedFunction, $"after {p.Name}");
         }
         if (ModulePasses.Count > 0)
         {
@@ -247,7 +260,9 @@ public sealed class Pipeline
 #endif
             RunFunctions(m);
         }
+        if (Reports) Stage?.Invoke("functions");
         BeforeLate?.Invoke(m);
+        if (Reports) Stage?.Invoke("before-late");
         RunLate(m);
         Dump(m, "optimised");
     }
@@ -280,6 +295,7 @@ public sealed class Pipeline
                 p.Run(m);
                 if (marks is not null) MarkVerifier.Report(marks, m, p.Name);
                 TraceModulePass(p.Name, m);
+                if (Reports) Stage?.Invoke("late " + p.Name);
 #if COR_SELFHOST_BENCHMARK
                 Corsac.Program.BenchmarkStage("opt-late-end " + p.Name);
 #endif

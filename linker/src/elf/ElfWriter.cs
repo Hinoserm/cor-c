@@ -30,14 +30,14 @@ public static class ElfWriter
     }
 
     /// <summary>
-    /// SHA-256 of the object WriteObject would make, hashed from the chunks
-    /// it is built in rather than from one array of the whole image.
+    /// A check of the object WriteObject would make (FastHash), hashed from
+    /// the chunks it is built in rather than from one array of the whole image.
     /// </summary>
     public static byte[] HashObject(ObjectFile obj)
     {
         ArgumentNullException.ThrowIfNull(obj);
-        if (TargetContract.IsLongMode(obj)) return System.Security.Cryptography.SHA256.HashData(Elf64Object.Write(obj));
-        return Build(obj).Sha256();
+        if (TargetContract.IsLongMode(obj)) return FastHash.Of(Elf64Object.Write(obj));
+        return Build(obj).Hash();
     }
 
     /// <summary>

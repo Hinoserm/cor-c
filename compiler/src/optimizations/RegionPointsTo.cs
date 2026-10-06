@@ -3009,7 +3009,11 @@ public sealed class RegionPointsTo : IModulePass
     // same locations, and are merged into one (union-find, path halving).
     private readonly List<int> _rep = new();
     // A merged node's set while solving; its representative's once solved.
-    private static readonly LocSet Merged = new(new List<long>());
+    // THIS SOLVE'S OWN: a node merged into another points at it, and the
+    // set is never read or added to after -- but a static one was a single
+    // mutable object every solve on every thread shared, safe only as long
+    // as no path ever wrote to it.
+    private readonly LocSet Merged = new(new List<long>());
     private long _edgeCount, _nextMerge = 20_000;
     private readonly HashSet<int> _owedTwice = new();
     private int[] _seenAt = Array.Empty<int>();

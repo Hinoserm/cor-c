@@ -355,9 +355,17 @@ public sealed class CardMarks : IModulePass
 
     public static void Expand(Function f)
     {
-        // ON I386 A CALL TO THE OBJECT'S STUB, which keeps every register:
-        // seven bytes a store where the table's load, test, shift and byte
-        // store, written out here, took forty and spilled what was live.
+        // ON I386 THE SNAPSHOT BARRIER'S SLOW PATH IS A CALL TO THE OBJECT'S
+        // STUB, slot and value in registers, which calls the runtime and
+        // keeps every register: it runs only while a collection marks.
+        //
+        // THE CARD MARK IS WRITTEN OUT, as on every target: the table's load,
+        // its test, a shift and a byte store. It ran as a call to a stub that
+        // kept every register (push, load, test, push, shift, store, pop,
+        // pop, ret) on EVERY store of a reference -- `node.Next = prev` in a
+        // loop called it each lap. Written out it is four instructions on
+        // the path that runs, and the register it needs for the table is
+        // free again after the store.
         if (Target.Current.Name == "x86")
         {
             foreach (Block block in f.Blocks)
@@ -366,26 +374,19 @@ public sealed class CardMarks : IModulePass
                     Instr i = block.Instrs[k];
                     if (i.Op == Opcode.Call && i.Callee == Barrier && i.Operands.Count == 2)
                     {
-                        // The snapshot barrier's slow path, the same way: slot
-                        // and value in registers, the stub calls the runtime.
                         Operand at = Narrow(block, k, i.Operands[0]), value = Narrow(block, k, i.Operands[1]);
                         if (at.Type == IrTypes.Word && value.Type == IrTypes.Word)
                             block.Instrs[k] = new Instr { Op = Opcode.Call, Callee = "__x86.i.barrier", Operands = { at, value }, Line = i.Line };
-                        continue;
                     }
-                    if (i.Op != Opcode.Call || i.Callee != CardMark || i.Operands.Count != 1) continue;
-                    Operand slot = Narrow(block, k, i.Operands[0]);
-                    // The runtime's parameter is a long; the stub takes the address, a word.
-                    if (slot.Type != IrTypes.Word)
+                    else if (i.Op == Opcode.Call && i.Callee == CardMark && i.Operands.Count == 1)
                     {
-                        VReg word = f.NewReg(IrTypes.Word);
-                        block.Instrs.Insert(k, new Instr { Op = Opcode.Trunc64, Dest = word, Operands = { slot } });
-                        k++;
-                        slot = RegOperand.Of(word);
+                        // The address the runtime's long was widened from, so
+                        // the shift below is of a word.
+                        Operand slot = Narrow(block, k, i.Operands[0]);
+                        if (!ReferenceEquals(slot, i.Operands[0]))
+                            block.Instrs[k] = new Instr { Op = Opcode.Call, Callee = CardMark, Operands = { slot }, Line = i.Line };
                     }
-                    block.Instrs[k] = new Instr { Op = Opcode.Call, Callee = "__x86.i.cardmark", Operands = { slot }, Line = i.Line };
                 }
-            return;
         }
         for (int b = 0; b < f.Blocks.Count; b++)
         {

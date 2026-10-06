@@ -403,10 +403,9 @@ public sealed partial class Lowering
                 }
                 break;
         }
-        foreach (Node child in Children(n))
-        {
-            ScanAddressTaken(child);
-        }
+        List<Node> children = Children(n);
+        foreach (Node child in children) ScanAddressTaken(child);
+        ReturnChildren(children);
     }
 
     /// <summary>
@@ -426,17 +425,17 @@ public sealed partial class Lowering
                     if (from is ParamSym { Boxed: true } captured) MakeParamCell(captured, lambda);
             return;
         }
-        foreach (Node child in Children(n))
-        {
-            MakeParamCells(child);
-        }
+        List<Node> children = Children(n);
+        foreach (Node child in children) MakeParamCells(child);
+        ReturnChildren(children);
     }
 
     private void MakeParamCell(ParamSym p, Node at)
     {
         if (p.Index >= _params.Length || _paramCells.ContainsKey(p.Index)) return;
         VReg cell = Allocate(at, Math.Max(_t.WordSize, Math.Max(1, p.Type.Size)));
-        _e.Store(RegOperand.Of(cell), RegOperand.Of(_params[p.Index]), 0, LoadSize(p.Type));
+        // A struct parameter's bytes are its caller's: the cell holds a copy (HeapStruct).
+        _e.Store(RegOperand.Of(cell), RegOperand.Of(HeapStruct(at, _params[p.Index], p.Type)), 0, LoadSize(p.Type));
         _paramCells[p.Index] = cell;
     }
 
@@ -464,10 +463,9 @@ public sealed partial class Lowering
             _symCells[bound] = Allocate(n, Math.Max(_t.WordSize, Math.Max(1, bound.Type.Size)));
         }
 
-        foreach (Node child in Children(n))
-        {
-            MakeCapturedCells(child);
-        }
+        List<Node> children = Children(n);
+        foreach (Node child in children) MakeCapturedCells(child);
+        ReturnChildren(children);
     }
 
     /// <summary>
@@ -515,20 +513,17 @@ public sealed partial class Lowering
 
     /// <summary>Every child node of a statement or expression, for the scans.</summary>
     /// <summary>Everything written inside one pair of initialiser braces.</summary>
-    private static IEnumerable<Node> InitChildren(InitBody body)
+    private static void InitChildren(InitBody body, List<Node> into)
     {
         foreach (InitAssign init in body.Inits)
         {
             if (init.Nested is InitBody nested)
             {
-                foreach (Node c in InitChildren(nested))
-                {
-                    yield return c;
-                }
+                InitChildren(nested, into);
             }
             else if (init.Value is Expr given)
             {
-                yield return given;
+                into.Add(given);
             }
         }
 
@@ -536,7 +531,7 @@ public sealed partial class Lowering
         {
             foreach (Expr e in add.Args)
             {
-                yield return e;
+                into.Add(e);
             }
         }
 
@@ -544,178 +539,199 @@ public sealed partial class Lowering
         {
             foreach (Expr e in one.Args)
             {
-                yield return e;
+                into.Add(e);
             }
-            yield return one.Value;
+            into.Add(one.Value);
         }
     }
 
-    private IEnumerable<Node> Children(Node n)
+    /// <summary>
+    /// A node's children, into a list of this lowering's own, handed back with
+    /// it emptied for the next (ReturnChildren): an iterator a node, as these
+    /// walks were, was a heap object for every node of every body walked, a
+    /// third of a gigabyte of a large unit's lowering.
+    /// </summary>
+    private List<Node> Children(Node n)
+    {
+        List<Node> into = _childLists.Count > 0 ? _childLists.Pop() : new List<Node>();
+        ChildrenInto(n, into);
+        return into;
+    }
+
+    private void ReturnChildren(List<Node> list)
+    {
+        list.Clear();
+        _childLists.Push(list);
+    }
+
+    private readonly Stack<List<Node>> _childLists = new();
+
+    private void ChildrenInto(Node n, List<Node> into)
     {
         switch (n)
         {
-            case AstBlock b: foreach (Stmt s in b.Statements) yield return s; break;
+            case AstBlock b: foreach (Stmt s in b.Statements) into.Add(s); break;
             case LocalDecl d:
                 if (d.Init is not null)
                 {
-                    yield return d.Init;
+                    into.Add(d.Init);
                 }
-                foreach (LocalDecl also in d.Also) yield return also;
+                foreach (LocalDecl also in d.Also) into.Add(also);
                 break;
-            case UsingDeclStmt u: yield return u.Declaration; break;
-            case ExprStmt e: yield return e.Expr; break;
+            case UsingDeclStmt u: into.Add(u.Declaration); break;
+            case ExprStmt e: into.Add(e.Expr); break;
             case IfStmt i:
-                yield return i.Cond; yield return i.Then;
+                into.Add(i.Cond); into.Add(i.Then);
                 if (i.Else is not null)
                 {
-                    yield return i.Else;
+                    into.Add(i.Else);
                 }
                 break;
-            case WhileStmt w: yield return w.Cond; yield return w.Body; break;
-            case LabeledStmt l: yield return l.Body; break;
-            case DoStmt d: yield return d.Body; yield return d.Cond; break;
+            case WhileStmt w: into.Add(w.Cond); into.Add(w.Body); break;
+            case LabeledStmt l: into.Add(l.Body); break;
+            case DoStmt d: into.Add(d.Body); into.Add(d.Cond); break;
             case ForStmt f:
                 if (f.Init is not null)
                 {
-                    yield return f.Init;
+                    into.Add(f.Init);
                 }
                 if (f.Cond is not null)
                 {
-                    yield return f.Cond;
+                    into.Add(f.Cond);
                 }
-                foreach (Expr s in f.Step) yield return s;
-                yield return f.Body;
+                foreach (Expr s in f.Step) into.Add(s);
+                into.Add(f.Body);
                 break;
             case ForeachStmt fe:
-                yield return fe.Sequence; yield return fe.Body;
+                into.Add(fe.Sequence); into.Add(fe.Body);
                 if (_b.Lowered.TryGetValue(fe, out Stmt? low))
                 {
-                    yield return low;
+                    into.Add(low);
                 }
                 break;
             case DeconstructStmt ds:
                 if (_b.Lowered.TryGetValue(ds, out Stmt? low2))
                 {
-                    yield return low2;
+                    into.Add(low2);
                 }
                 break;
             case ReturnStmt r:
                 if (r.Value is not null)
                 {
-                    yield return r.Value;
+                    into.Add(r.Value);
                 }
                 break;
             case YieldStmt y:
                 if (y.Value is not null)
                 {
-                    yield return y.Value;
+                    into.Add(y.Value);
                 }
                 break;
-            case ThrowStmt t: yield return t.Value; break;
+            case ThrowStmt t: into.Add(t.Value); break;
             case SwitchStmt sw:
-                yield return sw.Subject;
+                into.Add(sw.Subject);
                 foreach (SwitchCase c in sw.Cases)
                 {
                     if (c.Pattern is not null)
                     {
-                        yield return c.Pattern;
+                        into.Add(c.Pattern);
                     }
-                    foreach (Stmt s in c.Body) yield return s;
+                    foreach (Stmt s in c.Body) into.Add(s);
                 }
                 break;
             case TryStmt ts:
-                yield return ts.Body;
+                into.Add(ts.Body);
                 // The clause itself, whose variable a lambda may capture
                 // (MakeCapturedCells finds it through PatternSym), then its parts.
                 foreach (CatchClause c in ts.Catches)
                 {
-                    yield return c;
+                    into.Add(c);
                 }
                 if (ts.Finally is not null)
                 {
-                    yield return ts.Finally;
+                    into.Add(ts.Finally);
                 }
                 break;
             case CatchClause cc:
                 if (cc.When is not null)
                 {
-                    yield return cc.When;
+                    into.Add(cc.When);
                 }
-                yield return cc.Body;
+                into.Add(cc.Body);
                 break;
-            case ThrowExpr te: yield return te.Value; break;
+            case ThrowExpr te: into.Add(te.Value); break;
             case GotoCaseStmt gc:
                 if (gc.Value is not null)
                 {
-                    yield return gc.Value;
+                    into.Add(gc.Value);
                 }
                 break;
-            case TupleExpr tu: foreach (Expr e in tu.Items) yield return e; break;
+            case TupleExpr tu: foreach (Expr e in tu.Items) into.Add(e); break;
             case RangeExpr rg:
                 if (rg.From is not null)
                 {
-                    yield return rg.From;
+                    into.Add(rg.From);
                 }
                 if (rg.To is not null)
                 {
-                    yield return rg.To;
+                    into.Add(rg.To);
                 }
                 break;
-            case FromEndExpr fe2: yield return fe2.Offset; break;
-            case PatternExpr p: yield return p.Subject; yield return p.Test; break;
-            case SequenceExpr q: yield return q.Effect; yield return q.Value; break;
-            case SuppressExpr s: yield return s.Operand; break;
-            case MemberExpr m: yield return m.Target; break;
-            case CallExpr c: yield return c.Target; foreach (Expr a in c.Args) yield return a; break;
-            case IndexExpr ix: yield return ix.Target; foreach (Expr a in ix.Args) yield return a; break;
+            case FromEndExpr fe2: into.Add(fe2.Offset); break;
+            case PatternExpr p: into.Add(p.Subject); into.Add(p.Test); break;
+            case SequenceExpr q: into.Add(q.Effect); into.Add(q.Value); break;
+            case SuppressExpr s: into.Add(s.Operand); break;
+            case MemberExpr m: into.Add(m.Target); break;
+            case CallExpr c: into.Add(c.Target); foreach (Expr a in c.Args) into.Add(a); break;
+            case IndexExpr ix: into.Add(ix.Target); foreach (Expr a in ix.Args) into.Add(a); break;
             case WithExpr w:
-                yield return w.Source;
-                foreach (Node c in InitChildren(w.Body)) yield return c;
+                into.Add(w.Source);
+                InitChildren(w.Body, into);
                 break;
             case NewExpr nw:
-                foreach (Expr a in nw.Args) yield return a;
+                foreach (Expr a in nw.Args) into.Add(a);
                 if (nw.ArraySize is not null)
                 {
-                    yield return nw.ArraySize;
+                    into.Add(nw.ArraySize);
                 }
                 if (nw.Elements is not null)
                 {
-                    foreach (Expr e in nw.Elements) yield return e;
+                    foreach (Expr e in nw.Elements) into.Add(e);
                 }
-                foreach (Node c in InitChildren(nw.Body)) yield return c;
+                InitChildren(nw.Body, into);
                 break;
-            case UnaryExpr u: yield return u.Operand; break;
-            case BinaryExpr b: yield return b.Left; yield return b.Right; break;
-            case AssignExpr a: yield return a.Target; yield return a.Value; break;
-            case ConditionalExpr c: yield return c.Cond; yield return c.Then; yield return c.Else; break;
-            case CastExpr c: yield return c.Operand; break;
-            case RefArgExpr r: yield return r.Target; break;
-            case IsExpr i: yield return i.Operand; break;
-            case AsExpr a: yield return a.Operand; break;
-            case AwaitExpr a: yield return a.Operand; break;
+            case UnaryExpr u: into.Add(u.Operand); break;
+            case BinaryExpr b: into.Add(b.Left); into.Add(b.Right); break;
+            case AssignExpr a: into.Add(a.Target); into.Add(a.Value); break;
+            case ConditionalExpr c: into.Add(c.Cond); into.Add(c.Then); into.Add(c.Else); break;
+            case CastExpr c: into.Add(c.Operand); break;
+            case RefArgExpr r: into.Add(r.Target); break;
+            case IsExpr i: into.Add(i.Operand); break;
+            case AsExpr a: into.Add(a.Operand); break;
+            case AwaitExpr a: into.Add(a.Operand); break;
             case SwitchExpr sx:
-                yield return sx.Subject;
+                into.Add(sx.Subject);
                 foreach (SwitchArm arm in sx.Arms)
                 {
                     if (arm.Value is not null)
                     {
-                        yield return arm.Value;
+                        into.Add(arm.Value);
                     }
                     if (arm.When is not null)
                     {
-                        yield return arm.When;
+                        into.Add(arm.When);
                     }
-                    yield return arm.Result;
+                    into.Add(arm.Result);
                 }
                 break;
             case LambdaExpr l:
                 if (l.Body is not null)
                 {
-                    yield return l.Body;
+                    into.Add(l.Body);
                 }
                 if (l.BlockBody is not null)
                 {
-                    yield return l.BlockBody;
+                    into.Add(l.BlockBody);
                 }
                 break;
         }
@@ -797,15 +813,30 @@ public sealed partial class Lowering
     /// a static, a struct's field (held in a local, an array or a class:
     /// reached through an address into something), and an access at any
     /// other offset: what region inference cannot know the class of.
+    /// And null for a field that holds no reference: a family names a
+    /// REFERENCE field, so a load of one that finds a word never read as a
+    /// reference is a load from an object of another class, which reads
+    /// nothing (RegionEscape.Loaded). A number, an address kept as one
+    /// among them, stays the untyped word's, "the unknown object at most".
     /// </summary>
     private static string? FieldFamily(FieldSymbol f, long offset)
     {
-        if (f.Static || f.Owner.Kind != TypeKind.Class || f.Inline || f.Offset <= 0 || offset != f.Offset) return null;
+        if (f.Static || f.Owner.Kind != TypeKind.Class || f.Inline || f.Offset <= 0 || offset != f.Offset || HoldsNumber(f.Type)) return null;
         if (f.FamilyMade is string made) return made;
         TypeSymbol owner = f.Owner;
         string declaring = owner.Decl is { Specialised: true, Template: string template } d ? template + "`" + d.TemplateArgs.Count : TypeKey(owner);
         return f.FamilyMade = declaring + "::" + f.Name;
     }
+
+    /// <summary>
+    /// A number and only that: no class, struct or array, nothing nullable,
+    /// and not `object` or a type parameter, which may hold a reference
+    /// (Prim.Any). An enum is its number.
+    /// </summary>
+    private static bool HoldsNumber(Corsac.Lang.Type ty)
+        => !ty.IsArray && !ty.IsNullableValue && ty.Symbol is not { Kind: TypeKind.Class or TypeKind.Interface or TypeKind.Struct }
+            && ty.Prim is Prim.Bool or Prim.I8 or Prim.I16 or Prim.I32 or Prim.I64 or Prim.U8 or Prim.U16 or Prim.U32 or Prim.U64
+                or Prim.NInt or Prim.NUInt or Prim.F32 or Prim.F64 or Prim.Char;
 
     /// <summary>Whether a field's loads and stores carry it (Instr.Field): a reference, held by a class or statically.</summary>
     private bool TagsField(FieldSymbol f) => HoldsReference(f.Type) && (f.Static || f.Owner.Kind == TypeKind.Class);
@@ -969,6 +1000,7 @@ public sealed partial class Lowering
         {
             Require(values);
         }
+        RequireSequenceRoutines();
         _statics.Add(flag);
 
         Block report = _f.NewBlock("barrier");
@@ -999,6 +1031,21 @@ public sealed partial class Lowering
     /// (StoreSequences): asked, on i386, of a runtime with a concurrent
     /// collector's barrier and a card table, which the sequences read.
     /// </summary>
+    /// <summary>
+    /// What the store sequences call (X86Backend, "THE STORE SEQUENCES"):
+    /// Runtime.WriteBarrier, and the three routines that report, store and
+    /// mark the card while a mark is under way. The backend writes the stubs
+    /// only into a module that has all four, and a program compiled whole,
+    /// with no link to keep them, had only the first: its stubs were never
+    /// written, and its calls of them did not link.
+    /// </summary>
+    private void RequireSequenceRoutines()
+    {
+        if (!MakesStoreSequences) return;
+        foreach ((string name, int arity) in new[] { ("WriteBarrier", 2), ("WriteBarrierStore", 2), ("WriteBarrierExchange", 2), ("WriteBarrierCompareExchange", 3) })
+            if (RuntimeMethod(name, arity) is MethodSymbol routine) Require(routine);
+    }
+
     private bool MakesStoreSequences
         => StoreSequences && _t.Name == "x86" && _b.Types.TryGetValue(RuntimeType, out TypeSymbol? rt)
             && rt.Fields.Any(f => f.Static && f.Name == "Marking") && rt.Fields.Any(f => f.Static && f.Name == "Cards")
@@ -1145,7 +1192,15 @@ public sealed partial class Lowering
         {
             return;
         }
-        if (_method is { Owner.Name: "Gc" or "GcThreads" or "GcLock" or "GcRoots" or "HeapChunks" or "Runtime" or "Platform" })
+        // NOT IN THE COLLECTOR'S AND THE RUNTIME'S OWN CODE -- EXCEPT A STATIC'S
+        // STORE. A minor collection reads only the statics' cards that are
+        // set (Gc.ScanStatics), so a reference stored into a static with no
+        // card is one it never sees: Runtime's stop signal and CRC tables,
+        // a bare-metal Platform's console. The mark is a byte stored into
+        // the card table, committed for the statics from the moment it
+        // exists (Gc.StartGenerations), and calls nothing.
+        if (_method is { Owner.Name: "Gc" or "GcThreads" or "GcLock" or "GcRoots" or "HeapChunks" or "Runtime" or "Platform" }
+            && address is not SymOperand)
         {
             return;
         }
@@ -1234,7 +1289,7 @@ public sealed partial class Lowering
         if (_b.PatternSym.TryGetValue(at, out LocalSym? named) && named.Boxed
             && _symCells.TryGetValue(named, out VReg? cell) && cell is not null)
         {
-            _e.Store(RegOperand.Of(cell), RegOperand.Of(value), 0, LoadSize(held));
+            _e.Store(RegOperand.Of(cell), RegOperand.Of(HeapStruct(at, value, held)), 0, LoadSize(held));
             return;
         }
 

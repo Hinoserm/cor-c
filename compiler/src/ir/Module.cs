@@ -81,6 +81,14 @@ public sealed class Module
     public bool AtLink { get; set; }
 
     /// <summary>
+    /// The allocation at every `new` put in place as each function is
+    /// selected (AllocatorFastPaths.AtCodegen, the backend's Prepare) and not
+    /// by the late passes (InlineAllocators): set by the driver for a unit
+    /// whose backend does so.
+    /// </summary>
+    public bool AllocatorsAtCodegen { get; set; }
+
+    /// <summary>
     /// The program declares it runs without a collector (--no-collector): a
     /// loader that hands over to a kernel and is overwritten. What the
     /// lifetime passes cannot prove is taken from the manual heap and never

@@ -177,33 +177,37 @@ public static class OwnedFieldSolver
                 foreach (string field in function.Writes) Writer(field, name);
                 if (!freshThis.Contains(name)) foreach (string field in function.InitWrites) Writer(field, name);
             }
-        bool[] seen = new bool[callersOf.Count];
-        List<int> touched = new();
         // Whether any of `danger` may store into `field`: the functions that
         // do, and every function that may call one of them.
+        //
+        // ONE PASS OVER THE CALL GRAPH, NOT ONE A FIELD. Each question walked
+        // up from the field's writers through every caller until it met one
+        // of `danger` or ran out: fields times the graph, and the compiler's
+        // own link asks it of every field some unit owns. What the walks
+        // found is what a function may store into, itself or through what it
+        // calls -- the same set for every question -- so it is worked out
+        // once, bottom-up over the graph's strongly connected parts (a cycle
+        // stores into what any of its members does), for the fields that can
+        // be asked about, and each question is then a lookup. The edges are
+        // the walk's: a call, a virtual call's symbol to each override, and
+        // nothing out of a function that never returns (NeverReturns).
+        // The fields judged below (THE FIELDS), declared here for MayWrite.
+        SortedDictionary<string, long> offsets = new(StringComparer.Ordinal);
+        Dictionary<string, int>? asked = null;
+        int[]? partOf = null;
+        ulong[]?[]? storesBelow = null;
         bool MayWrite(string field, HashSet<string> danger)
         {
-            if (danger.Count == 0 || !writersOf.TryGetValue(field, out List<string>? writers)) return false;
-            HashSet<int> targets = new();
-            foreach (string d in danger) if (number.TryGetValue(d, out int n)) targets.Add(n);
-            if (targets.Count == 0) return false;
-            foreach (int k in touched) seen[k] = false;
-            touched.Clear();
-            Stack<int> work = new();
-            foreach (string w in writers) work.Push(Node(w));
-            if (seen.Length < callersOf.Count) Array.Resize(ref seen, callersOf.Count);
-            while (work.TryPop(out int at))
-            {
-                if (seen[at]) continue;
-                if (targets.Contains(at)) return true;
-                seen[at] = true; touched.Add(at);
-                foreach (int up in callersOf[at]) if (!seen[up]) work.Push(up);
-            }
+            if (danger.Count == 0 || !writersOf.ContainsKey(field)) return false;
+            if (asked is null) (asked, partOf, storesBelow) = StoresBelow(offsets.Keys, writersOf, number, callersOf);
+            if (!asked.TryGetValue(field, out int bit)) return false;
+            foreach (string d in danger)
+                if (number.TryGetValue(d, out int n) && storesBelow![partOf![n]] is { } bits && (bits[bit >> 6] & 1UL << (bit & 63)) != 0)
+                    return true;
             return false;
         }
 
         // THE FIELDS, each as every unit found it.
-        SortedDictionary<string, long> offsets = new(StringComparer.Ordinal);
         HashSet<string> refused = new(StringComparer.Ordinal), stored = new(StringComparer.Ordinal), selfFreed = new(StringComparer.Ordinal);
         void Refuse(string field, string why) { if (refused.Add(field)) report?.Invoke(field + " refused: " + why); }
         Dictionary<string, HashSet<string>> danger = new(StringComparer.Ordinal);
@@ -325,6 +329,89 @@ public static class OwnedFieldSolver
             IEnumerable<string> stays = c.Stays.Where(s => solver.Escapes(s.Callee, s.Argument)).Select(s => s.Callee + " keeping nothing of argument " + s.Argument);
             IEnumerable<string> fresh = c.Fresh.Where(name => !solver.IsFresh(name)).Select(name => name + " fresh");
             return string.Join(", ", stays.Concat(fresh).Take(3));
+        }
+    }
+
+    /// <summary>
+    /// For each part of the call graph (its strongly connected components,
+    /// numbered by <c>partOf</c>), the fields among <paramref name="fields"/>
+    /// it or anything it calls stores into, as bits by the number
+    /// <c>asked</c> gives each field; null where it stores into none. The
+    /// graph is <paramref name="callersOf"/> read the other way.
+    /// </summary>
+    private static (Dictionary<string, int> Asked, int[] PartOf, ulong[]?[] StoresBelow) StoresBelow(IEnumerable<string> fields,
+        Dictionary<string, List<string>> writersOf, Dictionary<string, int> number, List<List<int>> callersOf)
+    {
+        Dictionary<string, int> asked = new(StringComparer.Ordinal);
+        foreach (string field in fields) if (writersOf.ContainsKey(field)) asked[field] = asked.Count;
+        int nodes = callersOf.Count, words = (asked.Count + 63) >> 6;
+        // Callees of each function: the walk's edges, turned round.
+        int[] calleeStart = new int[nodes + 1];
+        foreach (List<int> callers in callersOf) foreach (int caller in callers) calleeStart[caller + 1]++;
+        for (int n = 0; n < nodes; n++) calleeStart[n + 1] += calleeStart[n];
+        int[] callees = new int[calleeStart[nodes]];
+        int[] fill = (int[])calleeStart.Clone();
+        for (int callee = 0; callee < nodes; callee++)
+            foreach (int caller in callersOf[callee]) callees[fill[caller]++] = callee;
+
+        // Tarjan's components, iteratively: a part is finished only after
+        // every part it calls into, so its stores can take theirs.
+        int[] partOf = new int[nodes], index = new int[nodes], low = new int[nodes];
+        Array.Fill(partOf, -1); Array.Fill(index, -1);
+        List<ulong[]?> parts = new();
+        Stack<int> open = new();
+        bool[] onOpen = new bool[nodes];
+        Stack<(int Node, int Next)> walk = new();
+        int counter = 0;
+        // What each function stores into itself.
+        ulong[]?[] own = new ulong[]?[nodes];
+        foreach ((string field, int bit) in asked)
+            foreach (string writer in writersOf[field])
+                if (number.TryGetValue(writer, out int w)) (own[w] ??= new ulong[words])[bit >> 6] |= 1UL << (bit & 63);
+        for (int root = 0; root < nodes; root++)
+        {
+            if (index[root] >= 0) continue;
+            walk.Push((root, calleeStart[root]));
+            index[root] = low[root] = counter++; open.Push(root); onOpen[root] = true;
+            while (walk.Count > 0)
+            {
+                (int n, int next) = walk.Pop();
+                if (next < calleeStart[n + 1])
+                {
+                    walk.Push((n, next + 1));
+                    int c = callees[next];
+                    if (index[c] < 0)
+                    {
+                        index[c] = low[c] = counter++; open.Push(c); onOpen[c] = true;
+                        walk.Push((c, calleeStart[c]));
+                    }
+                    else if (onOpen[c]) low[n] = Math.Min(low[n], index[c]);
+                    continue;
+                }
+                if (walk.Count > 0) { int up = walk.Peek().Node; low[up] = Math.Min(low[up], low[n]); }
+                if (low[n] != index[n]) continue;
+                // A whole part: its own stores and those of every part it
+                // calls into, each finished already.
+                int part = parts.Count;
+                List<int> members = new();
+                int m;
+                do { m = open.Pop(); onOpen[m] = false; partOf[m] = part; members.Add(m); } while (m != n);
+                ulong[]? bits = null;
+                foreach (int member in members)
+                {
+                    if (own[member] is { } mine) Union(ref bits, mine, words);
+                    for (int e = calleeStart[member]; e < calleeStart[member + 1]; e++)
+                        if (partOf[callees[e]] is int below && below != part && parts[below] is { } theirs) Union(ref bits, theirs, words);
+                }
+                parts.Add(bits);
+            }
+        }
+        return (asked, partOf, parts.ToArray());
+
+        static void Union(ref ulong[]? into, ulong[] from, int words)
+        {
+            if (into is null) { into = (ulong[])from.Clone(); return; }
+            for (int w = 0; w < words; w++) into[w] |= from[w];
         }
     }
 

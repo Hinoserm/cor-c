@@ -95,6 +95,10 @@ static class Program
         InterruptCompletions.Complete(handle, 42);
         Scheduler.RunUntil(waiter);
         Host.Line("late handler " + InterruptCompletions.Complete(handle, 7));
-        return waiter.Result == 42 ? 0 : 1;
+        // Out through the host: the bare-metal entry stub, returned to, says
+        // its status on the debug-exit port, which a process may not touch.
+        int code = waiter.Result == 42 ? 0 : 1;
+        Host.Done(code);
+        return code;
     }
 }

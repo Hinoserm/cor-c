@@ -30,7 +30,7 @@ public sealed class IrArchive
         if (entry.Offset > total - entry.Length) throw new ElfFormatException("IR archive changed after validation");
         byte[] body = readAt(entry.Offset, entry.Length);
         if (body.Length != entry.Length) throw new ElfFormatException("IR archive changed after validation");
-        if (!SHA256.HashData(body).SequenceEqual(entry.Hash)) throw new ElfFormatException("IR payload integrity mismatch: " + key);
+        if (!FastHash.Of(body).SequenceEqual(entry.Hash)) throw new ElfFormatException("IR payload integrity mismatch: " + key);
         return body;
     }
 
@@ -70,8 +70,8 @@ public sealed class IrArchive
             foreach (string reference in references) WriteName(writer, reference);
             if (record.DecodeBytes < 0) throw new ElfFormatException("Invalid IR decode estimate");
             writer.Write(record.DecodeBytes);
-            writer.Write(bodyBytes); writer.Write(record.Payload.Length); writer.Write(SHA256.HashData(record.Payload));
-            bodyBytes = checked(bodyBytes + record.Payload.Length);
+            writer.Write(bodyBytes); writer.Write(record.BodyLength); writer.Write(record.BodyHash());
+            bodyBytes = checked(bodyBytes + record.BodyLength);
             if (bodyBytes > MaximumBytes || directory.Length > MaximumBytes - bodyBytes - 84)
                 throw new ElfFormatException("IR archive exceeds unit budget");
         }
@@ -84,17 +84,21 @@ public sealed class IrArchive
         Section section = new(SectionName, SectionKind.Note);
         byte[] header = new byte[20];
         BinaryPrimitives.WriteUInt32LittleEndian(header, 0x52494343u);
-        BinaryPrimitives.WriteInt32LittleEndian(header.AsSpan(4), 3);
+        // VERSION 4: the records, the directory and the native object are
+        // checked by FastHash, where version 3 used SHA-256 -- a fifth of a
+        // native unit compile, and every link and backend read verified them
+        // again. An archive of either version is refused by the other.
+        BinaryPrimitives.WriteInt32LittleEndian(header.AsSpan(4), 4);
         BinaryPrimitives.WriteInt32LittleEndian(header.AsSpan(8), records.Count);
         BinaryPrimitives.WriteInt32LittleEndian(header.AsSpan(12), index.Count);
         BinaryPrimitives.WriteInt32LittleEndian(header.AsSpan(16), total);
         section.Bytes.AddRange(header);
         section.Bytes.AddRange(NativeHash(obj));
-        section.Bytes.AddRange(index.Sha256());
+        section.Bytes.AddRange(index.Hash());
         section.Bytes.AddRange(index);
         for (int k = 0; k < records.Count; k++)
         {
-            section.Bytes.AddRange(records[k].Payload);
+            section.Bytes.AddRange(records[k].Body());
             if (consumed is not null) consumed[k] = consumed[k] with { Payload = Array.Empty<byte>() };
         }
         obj.Sections.Add(section);
@@ -138,7 +142,7 @@ public sealed class IrArchive
         int bytesCount = size;
         try
         {
-            if (reader.ReadUInt32() != 0x52494343 || reader.ReadInt32() != 3) throw new ElfFormatException("Unsupported IR archive");
+            if (reader.ReadUInt32() != 0x52494343 || reader.ReadInt32() != 4) throw new ElfFormatException("Unsupported IR archive");
             int count = reader.ReadInt32(), directoryBytes = reader.ReadInt32(), total = reader.ReadInt32();
             byte[] native = reader.ReadBytes(32);
             byte[] directoryHash = reader.ReadBytes(32);
@@ -196,19 +200,17 @@ public sealed class IrArchive
     private static byte[] HashDirectory(Stream source, int length)
     {
         long start = source.Position;
-        using SHA256 hash = SHA256.Create();
-        using CryptoStream sink = new(Stream.Null, hash, CryptoStreamMode.Write);
+        FastHash hash = new();
         byte[] buffer = new byte[Math.Min(8192, length)];
         while (length > 0)
         {
             int count = source.Read(buffer, 0, Math.Min(buffer.Length, length));
             if (count == 0) throw new ElfFormatException("Truncated IR directory");
-            sink.Write(buffer, 0, count);
+            hash.Append(buffer, 0, count);
             length -= count;
         }
-        sink.FlushFinalBlock();
         source.Position = start;
-        return hash.Hash!;
+        return hash.Finish();
     }
 
     private static void WriteName(BinaryWriter writer, string name)

@@ -205,16 +205,16 @@ public sealed class ChunkedBytes : IReadOnlyList<byte>
     /// <summary>Run `i`: its array and how many of its bytes are content.</summary>
     public (byte[] Chunk, int Length) Segment(int i) => (_chunks[i], Math.Min(_chunks[i].Length, _count - (i << ChunkShift)));
 
-    /// <summary>SHA-256 of the content, fed a chunk at a time (SHA256.HashData of ToArray()).</summary>
-    public byte[] Sha256()
+    /// <summary>FastHash of the content, fed a chunk at a time (FastHash.Of of ToArray()).</summary>
+    public byte[] Hash()
     {
-        using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        FastHash hash = new();
         for (int i = 0; i < SegmentCount; i++)
         {
             (byte[] array, int length) = Segment(i);
-            hash.AppendData(array, 0, length);
+            hash.Append(array, 0, length);
         }
-        return hash.GetHashAndReset();
+        return hash.Finish();
     }
 
     public int ReadInt32(int offset) => offset >= 0 && (offset & ChunkMask) <= ChunkSize - 4 && offset <= _count - 4

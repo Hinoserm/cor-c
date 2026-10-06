@@ -27,6 +27,60 @@ public static class Interned
         return value;
     }
 
+    /// <summary>
+    /// A GENERIC TEMPLATE'S KEY, `name`count`, asked for at every reference
+    /// to a generic type the monomorphiser follows: spelt each time only to
+    /// be found in Name's table, it is kept here by its two parts instead,
+    /// and spelt once.
+    /// </summary>
+    public static string WithArity(string name, int count)
+    {
+        Dictionary<(string, int), string> arities = _arities ??= new();
+        if (arities.TryGetValue((name, count), out string? had)) return had;
+        if (arities.Count >= MostNames) arities.Clear();
+        string spelt = Name($"{name}`{count}");
+        arities[(name, count)] = spelt;
+        return spelt;
+    }
+
+    [ThreadStatic] private static Dictionary<(string, int), string>? _arities;
+
+    /// <summary>
+    /// A STRING BUILDER TO SPELL A NAME IN, one per thread and used again:
+    /// a name made of parts -- a type with its arguments, a specialisation's
+    /// mangling -- was a string for each part and each join, where one
+    /// builder and one ToString make it a single string. Taken, not shared:
+    /// a name spelt while another is (an argument's own arguments) is given
+    /// a builder of its own, and Return keeps whichever comes back first.
+    /// </summary>
+    public static System.Text.StringBuilder Builder()
+    {
+        System.Text.StringBuilder? b = _builder;
+        if (b is null) return new System.Text.StringBuilder(64);
+        _builder = null;
+        return b;
+    }
+
+    /// <summary>The builder's text, and the builder back for the next name.</summary>
+    public static string Return(System.Text.StringBuilder b)
+    {
+        string text = b.ToString();
+        // A BUILDER THAT GREW FOR ONE LONG NAME is let go rather than kept
+        // at that size for the life of the thread.
+        if (b.Capacity <= 1024)
+        {
+            b.Clear();
+            _builder = b;
+        }
+        return text;
+    }
+
+    [ThreadStatic] private static System.Text.StringBuilder? _builder;
+
     /// <summary>A new unit on this thread: what the last one named is let go with it.</summary>
-    public static void Forget() => _names = null;
+    public static void Forget()
+    {
+        _names = null;
+        _arities = null;
+    }
 }

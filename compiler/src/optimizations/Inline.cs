@@ -214,7 +214,7 @@ public sealed class Inline : IParallelModulePass
         // which nothing calls until then: kept by every one, and given to none.
         if (!PlacesAllocations) pinned.Add(AllocatorFastPaths.Sized);
         if (!PlacesAllocations) pinned.Add(AllocatorFastPaths.RegionSized);
-        pinned.Add(AllocatorFastPaths.Fast);
+        if (!PlacesAllocations) pinned.Add(AllocatorFastPaths.Fast);
         addressTaken.UnionWith(pinned);
         _keepCalls = m.KeepCalls;
 
@@ -1003,6 +1003,30 @@ public sealed class Inline : IParallelModulePass
         // suspensions become saves and calls after the optimiser has finished
         // (AsyncTransform), so while any function is one, its helper stays.
         bool coroutines = m.Functions.Any(fn => fn.Async is not null);
+        // WHAT THE LINK WILL CALL FOR THIS UNIT, from its lifetime hints: a
+        // field site becomes Runtime.FreeField or Runtime.KeepField when the
+        // link defines it (IrLinkOptimizer.DefineFieldSites), and the frees a
+        // regenerated unit gains are the hints' helpers. Nothing in the unit
+        // calls them yet, so the last inliner dropped KeepField -- an empty
+        // routine nothing else calls -- and every link of a program whose
+        // unit had a field site stopped with "Field sites need
+        // Runtime.KeepField, which no object defines".
+        HashSet<string> forLink = new(StringComparer.Ordinal);
+        if (m.LifetimeHints is { } hints)
+        {
+            if (hints.FieldSites.Count > 0) { forLink.Add(Escape.FieldKeeper); forLink.Add(Escape.FieldFreer); }
+            forLink.UnionWith(hints.Helpers);
+        }
+        // NOR ARE THE STORE SEQUENCES' BARRIERS: the backend writes the stubs
+        // (X86Backend, "THE STORE SEQUENCES") into the module that defines
+        // Runtime.WriteBarrier and the three routines they call while marking
+        // (WriteBarrierStore, WriteBarrierExchange,
+        // WriteBarrierCompareExchange), and the stubs are their callers. A
+        // program whose own stores the optimiser had all removed or proved
+        // fresh left them none in the IR, they went, the stubs with them, and
+        // the link failed on the library's Interlocked ("undefined symbol
+        // __corsac_refxchg").
+        bool sequences = m.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.RefStore);
         bool changed = true;
         while (changed)
         {
@@ -1012,7 +1036,9 @@ public sealed class Inline : IParallelModulePass
             {
                 Function f = m.Functions[i];
                 if (f.Name == m.Entry || addressTaken.Contains(f.Name) || callers.GetValueOrDefault(f.Name) > 0
-                    || (coroutines && f.Name == AsyncTransform.CardMarkObject))
+                    || (coroutines && f.Name == AsyncTransform.CardMarkObject) || forLink.Contains(f.Name)
+                    || (sequences && f.Name is Corsac.Lang.Lto.RuntimeAbi.WriteBarrier or Corsac.Lang.Lto.RuntimeAbi.WriteBarrierStore
+                        or Corsac.Lang.Lto.RuntimeAbi.WriteBarrierExchange or Corsac.Lang.Lto.RuntimeAbi.WriteBarrierCompareExchange))
                 {
                     continue;
                 }

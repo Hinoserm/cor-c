@@ -16,6 +16,7 @@ internal static class Peephole
 {
     public static void Run(MFunction m)
     {
+        DeadSpillStores(m);
         int[] liveOut = LiveOut(m);
         for (int b = 0; b < m.Blocks.Count; b++)
         {
@@ -42,30 +43,22 @@ internal static class Peephole
     /// </summary>
     private static int[] LiveOut(MFunction m)
     {
+        // A BLOCK MAY LEAVE FROM ITS MIDDLE: a conditional jump with more
+        // after it (LoopRotate copies a loop's test over a latch's jump, so
+        // `jl body` is followed by the copy's `mov eax, ...`). Summed as one
+        // use and one def a block, a register the copy writes after the jump
+        // was killed for the jump's way too, and the body's register -- a
+        // loop's `sp` -- was taken for dead in every block that reached it:
+        // the move that kept it was removed. So each block is scanned from its
+        // end, every jump on the way adding what is live where it goes.
         int nb = m.Blocks.Count;
-        int[] use = new int[nb];
-        int[] def = new int[nb];
-        int[] live = new int[nb];
-        Dictionary<MBlock, int> index = new();
+        Dictionary<MBlock, int> index = new(ReferenceEqualityComparer.Instance);
         for (int b = 0; b < nb; b++)
         {
             index[m.Blocks[b]] = b;
         }
-        for (int b = 0; b < nb; b++)
-        {
-            foreach (MInstr i in m.Blocks[b].Instrs)
-            {
-                if (!Understood(i))
-                {
-                    // Everything it might read is read; the pessimistic view.
-                    use[b] |= 0xFF & ~def[b];
-                    continue;
-                }
-                Masks(i, out long reads, out long writes);
-                use[b] |= (int)reads & ~def[b];
-                def[b] |= (int)writes;
-            }
-        }
+        int[] liveIn = new int[nb];
+        int[] liveOut = new int[nb];
         int[][] succ = new int[nb][];
         for (int b = 0; b < nb; b++)
         {
@@ -77,19 +70,53 @@ internal static class Peephole
             changed = false;
             for (int b = nb - 1; b >= 0; b--)
             {
+                MBlock block = m.Blocks[b];
                 int o = 0;
                 foreach (int t in succ[b])
                 {
-                    o |= use[t] | (live[t] & ~def[t]);
+                    o |= liveIn[t];
                 }
-                if (o != live[b])
+                liveOut[b] = o;
+                // At the end: only a fall-through's way; each jump adds its own below.
+                int live = !block.EndsUnconditionally && b + 1 < nb ? liveIn[b + 1] : 0;
+                List<MInstr> instrs = block.Instrs;
+                for (int k = instrs.Count - 1; k >= 0; k--)
                 {
-                    live[b] = o;
+                    MInstr i = instrs[k];
+                    if (i.Op is MOp.Jcc or MOp.Jmp && i.Operands.Count > 0 && i.Operands[0] is MLabel { Target: var to } && index.TryGetValue(to, out int at))
+                    {
+                        live |= liveIn[at];
+                        continue;
+                    }
+                    if (i.Op == MOp.JmpTable && i.Table is { } table)
+                    {
+                        foreach (MBlock t in table) if (index.TryGetValue(t, out int ta)) live |= liveIn[ta];
+                    }
+                    if (!Understood(i))
+                    {
+                        // Everything it might read is read; the pessimistic view.
+                        live = 0xFF;
+                        continue;
+                    }
+                    Masks(i, out long reads, out long writes);
+                    live = (live & ~(int)writes) | (int)reads;
+                }
+                live &= 0xFF;
+                if (live != liveIn[b])
+                {
+                    liveIn[b] = live;
                     changed = true;
                 }
             }
         }
-        return live;
+        // And once more for the ends, now that every block's entry is settled.
+        for (int b = 0; b < nb; b++)
+        {
+            int o = 0;
+            foreach (int t in succ[b]) o |= liveIn[t];
+            liveOut[b] = o;
+        }
+        return liveOut;
     }
 
     /// <summary>
@@ -168,6 +195,67 @@ internal static class Peephole
             else
             {
                 instrs[k + 1] = new MInstr(MOp.Mov, new MReg(lr.Id), new MReg(sr.Id));
+            }
+        }
+    }
+
+    // ---- a spill slot written and never read ---------------------------------------
+
+    /// <summary>
+    /// A store to an allocator's slot that no instruction of the function reads
+    /// and no stack map names: work for nothing. The allocator stores a spilled
+    /// register at every write of it, and a value written twice in two-address
+    /// form -- `mov t, d ; add t, h` -- whose register then carried it to its
+    /// only use, was stored twice to a slot nothing read: SHA-256's rounds,
+    /// with more live values than registers, wrote three such words a round.
+    /// A slot a stack map lists stays written, whatever reads it: the
+    /// collector reads it at that call.
+    /// </summary>
+    private static void DeadSpillStores(MFunction m)
+    {
+        HashSet<int> read = new();
+        foreach (Safepoint map in m.Safepoints.Values)
+            foreach (int offset in map.SlotOffsets) read.Add(offset);
+        bool any = false;
+        foreach (MBlock b in m.Blocks)
+            foreach (MInstr i in b.Instrs)
+                for (int k = 0; k < i.Operands.Count; k++)
+                {
+                    if (i.Operands[k] is not MMem mem || !mem.IsSpill) continue;
+                    if (k == 0 && IsMov(i) && !i.Lock && PrivateSpill(mem)) { any = true; continue; }
+                    read.Add(mem.Disp);
+                }
+        if (!any) return;
+        // A fault inside a block can land in a handler of this function that
+        // reloads a value from its slot: there the first store is not dead.
+        bool handlers = m.Blocks.Any(b => b.Source is { IsLandingPad: true });
+        foreach (MBlock b in m.Blocks)
+        {
+            b.Instrs.RemoveAll(i => IsMov(i) && !i.Lock && i.Operands.Count == 2 && i.Operands[0] is MMem mem
+                && PrivateSpill(mem) && !read.Contains(mem.Disp));
+            // And within a block, a store the next store to the same slot
+            // overwrites before anything reads it -- the slot shared with
+            // other values that do read it. Walked backwards: `written` holds
+            // the slots stored again further on with no read between. Only
+            // where the block makes no call, whose stack map may read a slot,
+            // and the function has no handler.
+            if (handlers || b.Instrs.Any(i => i.Op is MOp.Call or MOp.CallInd)) continue;
+            HashSet<int> written = new();
+            for (int k = b.Instrs.Count - 1; k >= 0; k--)
+            {
+                MInstr i = b.Instrs[k];
+                if (IsMov(i) && !i.Lock && i.Operands.Count == 2 && i.Operands[0] is MMem store && PrivateSpill(store))
+                {
+                    if (!written.Add(store.Disp)) { b.Instrs.RemoveAt(k); continue; }
+                    if (i.Operands[1] is MMem) written.Clear();
+                    continue;
+                }
+                foreach (MOperand o in i.Operands)
+                    if (o is MMem mem)
+                    {
+                        if (PrivateSpill(mem)) written.Remove(mem.Disp);
+                        else if (mem.Base?.Id == (int)Gpr.Ebp) written.Clear();
+                    }
             }
         }
     }

@@ -112,8 +112,8 @@ public static class AllocatorFastPaths
 
     /// <summary>
     /// Each allocation call of `f` made AllocFastSized (a constant size a
-    /// class holds) or AllocFast (a size not known); whether any became
-    /// AllocFastSized, the one to put in place.
+    /// class holds) or AllocFast (a size not known); whether any was, both
+    /// to be put in place.
     /// </summary>
     public static bool Retarget(Function f)
     {
@@ -125,7 +125,9 @@ public static class AllocatorFastPaths
             for (int k = 0; k < b.Instrs.Count; k++)
             {
                 Instr i = b.Instrs[k];
-                if (i.Op != Opcode.Call || i.Operands.Count != 1 || KindOf(i.Callee) is not long kind) continue;
+                // A site the link chose for a region is its call still, for
+                // MakeSitesInRegion to make so.
+                if (i.Op != Opcode.Call || i.Operands.Count != 1 || i.RegionSite || KindOf(i.Callee) is not long kind) continue;
                 if (i.Operands[0] is ImmOperand constant)
                 {
                     if (ClassOf(constant.Value, w) is not (long slot, long size)) continue;
@@ -144,6 +146,7 @@ public static class AllocatorFastPaths
                     Operands = { i.Operands[0], new ImmOperand(kind, IrTypes.Word) },
                     Line = i.Line,
                 };
+                sized = true;
             }
         }
         return sized;
@@ -165,8 +168,53 @@ public static class AllocatorFastPaths
         Module tail = new(local.Name) { Entry = function.Name, PreserveExports = true, NeedsHeap = local.NeedsHeap };
         tail.Functions.Add(function);
         tail.Functions.Add(fast);
+        // AND THE ONE OF A SIZE NOT KNOWN, where its body is to be had: a
+        // call to it otherwise, as before.
+        if (function.Blocks.Any(b => b.Instrs.Any(i => i.Op == Opcode.Call && i.Callee == Fast))
+            && body(Fast) is Function sized && sized.Name == Fast) tail.Functions.Add(sized);
         new Inline { SmallBody = 200, GrowthLimit = 1 << 20, ConstantBranchBody = 200, FreshOwnerBody = 0, PlacesAllocations = true }.Run(tail);
         cleanup.Run(tail);
+    }
+
+    /// <summary>
+    /// THE ALLOCATION PUT IN PLACE AS EACH FUNCTION IS SELECTED (the x86
+    /// backend's Prepare), not by the late passes over the whole module: each
+    /// function grows by its sites' bodies only while it is selected, and its
+    /// blocks go after it (X86Backend.ReleaseBodies). The bodies -- AllocFastSized
+    /// and AllocFast as the module left them -- are taken as bytes now and
+    /// read afresh for each function, as the link reads its imports: the
+    /// backend lets each body go as it places it, and the workers select
+    /// functions side by side. Run after everything the late passes did, the
+    /// async transform and the landing pads' homes included:
+    /// - a function with a landing pad has its homes taken off first and
+    ///   placed again after (LandingPadHomes.Strip, Place), as the link does
+    ///   around its own late steps: what it brings in is homed with the rest;
+    /// - an async method's homes are its state machine's, placed by the async
+    ///   transform: its allocations stay calls.
+    /// Null where there is nothing to put in place: no AllocFastSized in the
+    /// module (a kernel module's unit, whose allocator is the kernel's; a
+    /// program without the runtime), or --skip-passes InlineAllocators.
+    /// </summary>
+    public static Action<Function>? AtCodegen(Module m)
+    {
+        if (Skipped) return null;
+        Function? sized = m.Functions.FirstOrDefault(f => f.Name == Sized);
+        if (sized is null || sized.Blocks.Count == 0) return null;
+        Function? unsized = m.Functions.FirstOrDefault(f => f.Name == Fast);
+        byte[] sizedBytes = Corsac.Lang.Metadata.IrFunctionCodec.Write(sized);
+        byte[]? unsizedBytes = unsized is { Blocks.Count: > 0 } ? Corsac.Lang.Metadata.IrFunctionCodec.Write(unsized) : null;
+        Module shape = new(m.Name) { NeedsHeap = m.NeedsHeap };
+        return f =>
+        {
+            if (f.Name is Sized or Fast or Missed || f.Async is not null) return;
+            if (!f.Blocks.Any(b => b.Instrs.Any(i => i.Op == Opcode.Call && i.Operands.Count == 1 && KindOf(i.Callee) is not null))) return;
+            bool pads = f.Blocks.Any(b => b.IsLandingPad);
+            if (pads) LandingPadHomes.Strip(f);
+            Run(f, shape, name => name == Sized ? Corsac.Lang.Metadata.IrFunctionCodec.Read(sizedBytes)
+                                : name == Fast && unsizedBytes is not null ? Corsac.Lang.Metadata.IrFunctionCodec.Read(unsizedBytes) : null,
+                Cleanup());
+            if (pads) LandingPadHomes.Place(f, _ => true);
+        };
     }
 
     /// <summary>
@@ -202,17 +250,29 @@ public sealed class InlineAllocators : IModulePass
 
     public void Run(Module m)
     {
-        if (AllocatorFastPaths.Skipped) return;
+        // NOT IN THE LINK'S RUN OF THE LATE PASSES (Module.AtLink): the sites
+        // the link put in regions are made so after them, one function at a
+        // time, by the allocator calls they still are (RegionPointsTo.
+        // MakeSitesInRegion), and the allocation is put in place only then
+        // (UnitBackend, AllocatorFastPaths.Run). Put in place here first, the
+        // calls were gone, and every object the link had given a region was
+        // made on the heap: nothing given back at a region's end.
+        // NOR WHERE THE BACKEND PUTS THEM IN PLACE, a function at a time as it
+        // selects each (Module.AllocatorsAtCodegen, AllocatorFastPaths.AtCodegen):
+        // put in place here, every function's allocation sites grew the whole
+        // module's IR at once, the largest growth of a library's compile.
+        if (AllocatorFastPaths.Skipped || m.AtLink || m.AllocatorsAtCodegen) return;
         Function? fast = m.Functions.FirstOrDefault(f => f.Name == AllocatorFastPaths.Sized);
         Function? region = m.Functions.FirstOrDefault(f => f.Name == AllocatorFastPaths.RegionSized);
         Pipeline cleanup = AllocatorFastPaths.Cleanup();
         // AllocFast too, which sites of a size not known are made to call.
         if (fast is not null && m.Functions.Any(f => f.Name == AllocatorFastPaths.Fast))
         {
+            Function? unsized = m.Functions.FirstOrDefault(f => f.Name == AllocatorFastPaths.Fast);
             foreach (Function f in m.Functions.ToArray())
             {
-                if (ReferenceEquals(f, fast)) continue;
-                AllocatorFastPaths.Run(f, m, name => name == AllocatorFastPaths.Sized ? fast : null, cleanup);
+                if (ReferenceEquals(f, fast) || ReferenceEquals(f, unsized)) continue;
+                AllocatorFastPaths.Run(f, m, name => name == AllocatorFastPaths.Sized ? fast : name == AllocatorFastPaths.Fast ? unsized : null, cleanup);
             }
         }
         // And a region's allocation of a size known, where the region pass

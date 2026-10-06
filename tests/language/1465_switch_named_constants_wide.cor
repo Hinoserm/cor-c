@@ -1,0 +1,60 @@
+// test: a switch over named constants is a jump table, and a long subject is ranged in all its bits
+// expect-exit: 0
+// expect-output:
+// 0 none
+// 1 open
+// 4 read
+// 9 close
+// 12 seek
+// 13 none
+// 4294967297 none
+// -1 none
+//
+// Labels that name constants -- a const field of another class, a const of
+// this one written bare (bound as a value pattern) -- are integer labels like
+// literals, so a dense switch over them dispatches through a table, as
+// Roslyn's does. A long subject is checked in all 64 bits before the table:
+// cut to its low word first, 0x100000001 answered the label 1 had.
+
+static class Calls
+{
+    public const long Open = 1, Write = 2, Stat = 3, Read = 4, Map = 5, Unmap = 6, Lock = 7, Sync = 8, Close = 9;
+}
+
+static class Program
+{
+    const long Seek = 12, Tell = 11, Link = 10;
+
+    static string Name(long call)
+    {
+        switch (call)
+        {
+            case Calls.Open: return "open";
+            case Calls.Write: return "write";
+            case Calls.Stat: return "stat";
+            case Calls.Read: return "read";
+            case Calls.Map: return "map";
+            case Calls.Unmap: return "unmap";
+            case Calls.Lock: return "lock";
+            case Calls.Sync: return "sync";
+            case Calls.Close: return "close";
+            case Link: return "link";
+            case Tell: return "tell";
+            case Seek: return "seek";
+        }
+        return "none";
+    }
+
+    static int Main()
+    {
+        long[] asked = { 0, 1, 4, 9, 12, 13, 0x100000001, -1 };
+        for (int i = 0; i < asked.Length; i++)
+        {
+            Sys.PrintInt(asked[i]);
+            Sys.Print(" ");
+            Sys.Print(Name(asked[i]));
+            Sys.PrintLine();
+        }
+        return 0;
+    }
+}

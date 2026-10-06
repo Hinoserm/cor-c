@@ -1,0 +1,58 @@
+// test: a captured struct local made by a call outlives its frame
+// expect-exit: 0
+// expect-output:
+// Holder|ns|True|True
+//
+// A local a lambda captures lives in a heap cell. A struct's cell holds a
+// heap copy of it (HeapStruct), as an assignment through the cell writes
+// one; its declaration's initialiser stored the value as it came, and a
+// struct a call answers comes in its caller's result buffer, in the frame.
+// The lambda, kept past the frame and run after it was reused, read the
+// tuple out of that dead frame: the natively built compiler's deferred
+// members took their scope from it and found it null.
+using System;
+using System.Collections.Generic;
+
+sealed class Scope { public string Name = "s"; }
+sealed class Decl
+{
+    public string Name = "Holder"; public string Namespace = "ns"; public Scope? Usings = new Scope(); public bool FromLibrary = true;
+    private Func<Decl, List<string>>? _make; private List<string>? _made;
+    public void DeferMembers(Func<Decl, List<string>> make) { _make = make; }
+    public List<string> Members => _made ??= _make!(this);
+}
+
+sealed class Mono
+{
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static (string Scope, string Namespace, Scope? Usings, bool Library) ScopeOf(Decl d) => (d.Name, d.Namespace, d.Usings, d.FromLibrary);
+
+    private List<string> MakeMembers(Decl t, List<string> members, string name, (string Scope, string Namespace, Scope? Usings, bool Library) scope, Decl? bodies)
+        => new List<string> { scope.Scope + "|" + scope.Namespace + "|" + (scope.Usings != null) + "|" + scope.Library };
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    public void Defer(Decl template, Decl made, bool bodies)
+    {
+        string name = template.Name + "$x";
+        (string, string, Scope?, bool) scope = ScopeOf(template);
+        List<string> members = new List<string>();
+        made.DeferMembers(asking => MakeMembers(template, members, name, scope, bodies ? asking : null));
+    }
+}
+
+static class Program
+{
+    static Decl? Kept;
+    static int Deep(int n) { Span<int> s = stackalloc int[1024]; for (int i = 0; i < 1024; i++) s[i] = 0; return n == 0 ? s[3] : Deep(n - 1) + s[5]; }
+
+    static int Main()
+    {
+        Mono m = new();
+        Decl t = new(), made = new();
+        Kept = made;
+        m.Defer(t, made, true);
+        Deep(8);
+        Console.WriteLine(made.Members[0]);
+        return 0;
+    }
+}

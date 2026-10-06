@@ -42,8 +42,15 @@ public static class SourceIndexBuilder
     /// <summary>The key of a source file's record: the hash of the text the index was made from.</summary>
     public static string SourceKey(string path) => "F:" + System.IO.Path.GetFullPath(path);
 
-    /// <summary>A text's hash as the index records it: of its UTF-8 bytes, as read (File.ReadAllText).</summary>
-    public static byte[] TextHash(string text) => SHA256.HashData(Encoding.UTF8.GetBytes(text));
+    /// <summary>
+    /// A text's hash as the index records it: of its UTF-8 bytes, as read
+    /// (File.ReadAllText). FastHash, not SHA-256: it only tells a unit that a
+    /// file is not the text the index was made from, and every unit compile
+    /// checked each library file it took a body from with it -- megabytes of
+    /// SHA-256 a unit, under a compiler compiled by itself a fifth of the time.
+    /// Every place that makes or checks one calls this.
+    /// </summary>
+    public static byte[] TextHash(string text) => Corsac.Lang.Ir.FastHash.Of(Encoding.UTF8.GetBytes(text));
 
     public static void Write(string output, IEnumerable<string> paths, string assembly,
         IReadOnlyCollection<string>? symbols = null, int memoryBytes = 1024 * 1024,
@@ -78,7 +85,7 @@ public static class SourceIndexBuilder
             {
                 IReadOnlyCollection<string>? activeSymbols = fileSymbols?.GetValueOrDefault(path) ?? symbols;
                 string text = File.ReadAllText(path);
-                byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(text));
+                byte[] hash = TextHash(text);
                 snapshots.Add((path, hash));
                 // WHICH TEXT OF THE FILE THIS INDEX WAS MADE FROM, by its full
                 // path (DeclarationCatalog.SourceHash): a unit compiled against
@@ -184,7 +191,7 @@ public static class SourceIndexBuilder
             // Validate the complete generation before the atomic publication.
             // This rereads one source at a time; no project body graph is retained.
             foreach (var snapshot in snapshots)
-                if (!snapshot.Hash.SequenceEqual(SHA256.HashData(Encoding.UTF8.GetBytes(File.ReadAllText(snapshot.Path)))))
+                if (!snapshot.Hash.SequenceEqual(TextHash(File.ReadAllText(snapshot.Path))))
                     throw new InvalidDataException("Source changed while indexing: " + snapshot.Path);
         }
         DeclarationIndexWriter.Write(output, Records(), memoryBytes);

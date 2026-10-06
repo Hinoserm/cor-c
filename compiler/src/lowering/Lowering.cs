@@ -115,6 +115,15 @@ public sealed partial class Lowering
     public static bool StoreSequences { get; set; }
 
     /// <summary>
+    /// THE THREAD BLOCK IS A PROCESSOR'S, not a thread's: ring 0's kernel and
+    /// its modules (--store-sequences without --ring1-syscalls), where a
+    /// process's kernel code that parks is resumed on whichever processor
+    /// runs it next, with that processor's block. A read of the block before
+    /// a call is not the block after it (Gvn).
+    /// </summary>
+    public static bool ThreadBlockPerProcessor { get; set; }
+
+    /// <summary>
     /// The runtime and the class library are shared objects this program
     /// links rather than source compiled into it.
     ///
@@ -535,7 +544,12 @@ public sealed partial class Lowering
             foreach ((string helper, int arity) in new[] { ("Free", 1), ("FreeReplaced", 2), ("FreeOwnedReplaced", 2), ("FreeOwnedElements", 1), ("FreeArrayElements", 1), ("OwnElements", 1), ("FreeStorageInFrame", 1),
                                                            ("RegionEnter", 2), ("RegionLeave", 1), ("RegionLoop", 3), ("AllocRegion", 3), ("AllocNear", 4), ("RegionCatch", 1),
                                                            // The allocation put in place last (AllocatorFastPaths).
-                                                           ("AllocFast", 2), ("AllocFastSized", 4), ("AllocRegionSized", 4) })
+                                                           ("AllocFast", 2), ("AllocFastSized", 4), ("AllocRegionSized", 4),
+                                                           // What a field site becomes when the link defines it
+                                                           // (IrLinkOptimizer.DefineFieldSites): without their bodies here
+                                                           // a program compiled to an object and linked on its own
+                                                           // stopped with "Field sites need Runtime.KeepField".
+                                                           ("FreeField", 2), ("KeepField", 2) })
                 if (RuntimeMethod(helper, arity) is MethodSymbol provided) Require(provided);
         }
 

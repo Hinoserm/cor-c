@@ -70,7 +70,9 @@ public sealed partial class Lowering
                 case WithExpr with: Initialisers(with.Body); break;
                 case SwitchExpr choice: foreach (SwitchArm arm in choice.Arms) _released.Add(arm); break;
             }
-            foreach (Node child in Children(n)) _releasing.Push(child);
+            List<Node> children = Children(n);
+            foreach (Node child in children) _releasing.Push(child);
+            ReturnChildren(children);
         }
 
         foreach (Node n in _released) _b.Forget(n);

@@ -961,6 +961,19 @@ class Thread
         }
         Clock.SleepUntil(Clock.Now() + (long)milliseconds * 1000000);
     }
+
+    /// Gives the processor up to any other thread ready to run on it
+    /// (sched_yield). True, as .NET answers on Linux: the kernel does not
+    /// say whether another thread ran. Given up is stopped, as asleep is
+    /// (Clock.SleepUntil): a thread that spins on Yield waiting for another
+    /// must not keep that other's collection waiting for it.
+    public static bool Yield()
+    {
+        Runtime.BeginBlocking();
+        Platform.Yield();
+        Runtime.EndBlocking();
+        return true;
+    }
 }
 
 /// Mutual exclusion, one word, three states: 0 free, 1 held with nobody

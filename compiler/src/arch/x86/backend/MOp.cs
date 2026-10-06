@@ -91,6 +91,8 @@ public enum MOp : byte
     Cpuid,
     /// <summary>rdtsc: EDX:EAX.</summary>
     Rdtsc,
+    /// <summary>pushfd; pop r32 -- EFLAGS into a register.</summary>
+    ReadFlags,
     /// <summary>ltr r16.</summary>
     Ltr,
     /// <summary>cs &lt;- r: push r; push the next instruction; retf. EAX destroyed.</summary>

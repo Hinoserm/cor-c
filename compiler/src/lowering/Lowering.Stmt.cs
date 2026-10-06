@@ -462,7 +462,12 @@ public sealed partial class Lowering
             VReg value = EvalAs(d.Init, type);
             if (boxed)
             {
-                _e.Store(RegOperand.Of(LocalReg(d)), RegOperand.Of(value), 0, LoadSize(type));
+                // A STRUCT'S CELL HOLDS A HEAP COPY (HeapStruct), as StorePlace
+                // writes one: the value a call answers is in its caller's
+                // result buffer, and a cell holding that buffer's address held
+                // a frame long gone when the lambda ran (Monomorphiser's
+                // deferred members, natively).
+                _e.Store(RegOperand.Of(LocalReg(d)), RegOperand.Of(HeapStruct(d, value, type)), 0, LoadSize(type));
             }
             else if (_addressTakenLocals.Contains(d))
             {
@@ -611,14 +616,13 @@ public sealed partial class Lowering
 
         Block fallback = defaultBlock ?? end;
 
-        if (TryDenseSwitch(sw, bodies, fallback, out long minimum, out Block[] table))
+        if (ConstantCases(sw, bodies) is { } entries && SearchOrder(entries, of, IsWideInteger(of)) is bool unsigned)
         {
-            VReg key = IsWideInteger(of) ? _e.Unary(Opcode.Trunc64, held) : held;
-            if (minimum != 0)
-            {
-                key = _e.Binary(Opcode.Sub, key, minimum);
-            }
-            _e.Switch(RegOperand.Of(key), table, fallback);
+            Dispatch(held, entries, 0, entries.Count, fallback, IsWideInteger(of), unsigned);
+        }
+        else if (of.Prim == Prim.String && StringCases(sw, bodies) is { } byLength)
+        {
+            DispatchStrings(sw, held, bodies, byLength, fallback);
         }
         else
         {
@@ -675,17 +679,14 @@ public sealed partial class Lowering
     }
 
     /// <summary>
-    /// Whether every label is an integer constant equality on the subject and
-    /// the range is dense enough for a jump table: at most twice as many
-    /// entries as cases, and at least four cases.
+    /// Every label as an integer constant equality on the subject -- char and
+    /// enum constants too (Fold.TryConst) -- with its body, sorted by value;
+    /// null when any label is something else, or a value is labelled twice
+    /// (the branches sort that out, as they always did).
     /// </summary>
-    private bool TryDenseSwitch(SwitchStmt sw, Block[] bodies, Block fallback,
-                                out long minimum, out Block[] table)
+    private List<(long Value, Block Target)>? ConstantCases(SwitchStmt sw, Block[] bodies)
     {
-        minimum = 0;
-        table = Array.Empty<Block>();
         List<(long Value, Block Target)> entries = new();
-
         for (int i = 0; i < sw.Cases.Count; i++)
         {
             if (sw.Cases[i].Pattern is null)
@@ -694,48 +695,193 @@ public sealed partial class Lowering
             }
             if (!TryCaseConstant(sw.Cases[i].Pattern!, out long value))
             {
-                return false;
+                return null;
             }
             entries.Add((value, bodies[i]));
         }
-
-        if (entries.Count < 4)
+        if (entries.Count == 0) return null;
+        entries.Sort((a, b) => a.Value.CompareTo(b.Value));
+        for (int i = 1; i < entries.Count; i++)
         {
-            return false;
+            if (entries[i].Value == entries[i - 1].Value) return null;
         }
+        return entries;
+    }
 
-        long min = entries.Min(e => e.Value);
-        long max = entries.Max(e => e.Value);
+    /// <summary>
+    /// THE ORDER A SEARCH OVER THE SORTED VALUES COMPARES IN, which must be
+    /// the order they were sorted in, or a value is sent the wrong way and
+    /// never reaches its own label: unsigned (true) where no value is
+    /// negative and every one fits below the key's sign bit, or the subject
+    /// is unsigned -- a key above every value goes right whichever its sign,
+    /// and matches nothing there -- signed (false) where some are negative
+    /// and the subject is signed. Null where neither holds: the labels are
+    /// tried in turn, as before.
+    /// </summary>
+    private static bool? SearchOrder(List<(long Value, Block Target)> entries, Type of, bool wide)
+    {
+        long sign = wide ? long.MinValue : int.MinValue;
+        bool negative = entries[0].Value < 0;
+        bool unsignedSubject = of.IsUnsigned || of.Prim is Prim.Char or Prim.Bool;
+        if (!negative)
+        {
+            long top = entries[^1].Value;
+            if (unsignedSubject || wide || top <= int.MaxValue) return true;
+            return null;
+        }
+        if (!unsignedSubject && (wide || entries[0].Value >= sign)) return false;
+        return null;
+    }
+
+    /// <summary>
+    /// THE SWITCH OVER entries[lo, hi): a jump table where they are dense --
+    /// at most twice as many entries as cases, and eight more, and at least
+    /// four cases -- a run of compares where there are three or fewer, and
+    /// otherwise a split at the middle value and each half the same way.
+    /// The whole switch dense is the one table it always was; a sparse one
+    /// (a lexer's punctuation, a parser's token kinds) is log n compares down
+    /// to a dense cluster's table or a short run, where it was a compare for
+    /// every label before its own. Every leaf asks its value exactly (a
+    /// table's range, a compare's equality), so a key between labels finds
+    /// the fallback. A 64-bit key's table takes its range in 64 bits before
+    /// the index is narrowed: narrowed first, a value 2^32 away from a label
+    /// was that label.
+    /// </summary>
+    private void Dispatch(VReg key, List<(long Value, Block Target)> entries, int lo, int hi, Block fallback, bool wide, bool unsigned)
+    {
+        int n = hi - lo;
+        if (n == 0)
+        {
+            _e.Jump(fallback);
+            return;
+        }
+        long min = entries[lo].Value;
+        long max = entries[hi - 1].Value;
         long span = max - min + 1;
-        if (span <= 0 || span > 2L * entries.Count + 8 || span > 4096)
+        if (n >= 4 && span > 0 && span <= 2L * n + 8 && span <= 4096)
         {
-            return false;
-        }
-
-        minimum = min;
-        table = new Block[span];
-        Array.Fill(table, fallback);
-        foreach ((long v, Block t) in entries)
-        {
-            if (table[v - min] != fallback)
+            Block[] table = new Block[span];
+            Array.Fill(table, fallback);
+            for (int i = lo; i < hi; i++) table[entries[i].Value - min] = entries[i].Target;
+            VReg index = min != 0 ? _e.Binary(Opcode.Sub, key, min) : key;
+            if (wide)
             {
-                return false;       // a duplicate label; let the branches sort it out
+                Block within = _f.NewBlock("switchtable");
+                _e.Branch(_e.Binary(Opcode.LtU, index, span), within, fallback);
+                _e.SetBlock(within);
+                index = _e.Unary(Opcode.Trunc64, index);
             }
-            table[v - min] = t;
+            _e.Switch(RegOperand.Of(index), table, fallback);
+            return;
         }
-        return true;
+        if (n <= 3)
+        {
+            for (int i = lo; i < hi; i++)
+            {
+                Block next = i + 1 < hi ? _f.NewBlock("nextcase") : fallback;
+                _e.Branch(_e.Binary(Opcode.Eq, key, entries[i].Value), entries[i].Target, next);
+                if (next != fallback) _e.SetBlock(next);
+            }
+            return;
+        }
+        int mid = lo + n / 2;
+        Block below = _f.NewBlock("switchbelow");
+        Block above = _f.NewBlock("switchabove");
+        _e.Branch(_e.Binary(unsigned ? Opcode.LtU : Opcode.LtS, key, entries[mid].Value), below, above);
+        _e.SetBlock(below);
+        Dispatch(key, entries, lo, mid, fallback, wide, unsigned);
+        _e.SetBlock(above);
+        Dispatch(key, entries, mid, hi, fallback, wide, unsigned);
+    }
+
+    /// <summary>
+    /// A SWITCH ON A STRING, every label a literal and four or more of them,
+    /// none of them null: the cases grouped by their length, in the order
+    /// they are written within each. Null for any other.
+    /// </summary>
+    private SortedDictionary<int, List<int>>? StringCases(SwitchStmt sw, Block[] bodies)
+    {
+        SortedDictionary<int, List<int>> byLength = new();
+        int count = 0;
+        for (int i = 0; i < sw.Cases.Count; i++)
+        {
+            if (sw.Cases[i].Pattern is null) continue;
+            if (sw.Cases[i].Pattern is not BinaryExpr { Op: BinOp.Eq } eq) return null;
+            LiteralExpr? literal = (eq.Left, eq.Right) switch
+            {
+                (SubjectExpr, LiteralExpr { Kind: Lit.Str } r) => r,
+                (LiteralExpr { Kind: Lit.Str } l, SubjectExpr) => l,
+                _ => null,
+            };
+            // As written, not rewritten by the binder into something else.
+            if (literal is null || _b.Rewrites.ContainsKey(eq) || _b.Rewrites.ContainsKey(literal)) return null;
+            if (!byLength.TryGetValue(literal.Text.Length, out List<int>? group)) byLength[literal.Text.Length] = group = new();
+            group.Add(i);
+            count++;
+        }
+        return count >= 4 ? byLength : null;
+    }
+
+    /// <summary>
+    /// The string switch by its subject's length first (Dispatch, over the
+    /// lengths the labels have), then the labels of that length compared in
+    /// the order they are written: a keyword switch compares the few labels
+    /// as long as the subject where it compared every one before its own.
+    /// A null subject equals no literal, and goes where no label matched.
+    /// </summary>
+    private void DispatchStrings(SwitchStmt sw, VReg held, Block[] bodies, SortedDictionary<int, List<int>> byLength, Block fallback)
+    {
+        Block counted = _f.NewBlock("switchlength");
+        _e.Branch(_e.Binary(Opcode.Eq, held, 0), fallback, counted);
+        _e.SetBlock(counted);
+        VReg length = CountOf(_e, held);
+        List<(long Value, Block Target)> entries = new();
+        List<(Block Group, List<int> Cases)> groups = new();
+        foreach ((int len, List<int> cases) in byLength)
+        {
+            Block group = _f.NewBlock("switchgroup");
+            entries.Add((len, group));
+            groups.Add((group, cases));
+        }
+        Dispatch(length, entries, 0, entries.Count, fallback, wide: false, unsigned: true);
+        foreach ((Block group, List<int> cases) in groups)
+        {
+            _e.SetBlock(group);
+            foreach (int i in cases)
+            {
+                Block next = _f.NewBlock("nextcase");
+                BranchOn(sw.Cases[i].Pattern!, bodies[i], next);
+                _e.SetBlock(next);
+            }
+            _e.Jump(fallback);
+        }
     }
 
     /// <summary>A case label of the form `subject == constant`, or `constant` on its own.</summary>
     private bool TryCaseConstant(Expr pattern, out long value)
     {
+        // `case Open:` is parsed as a type pattern and bound as the value
+        // pattern it is (Binder: a constant that hides no type): the label is
+        // the rewrite's.
+        if (_b.Rewrites.TryGetValue(pattern, out Expr? bound)) pattern = bound;
         if (pattern is BinaryExpr { Op: BinOp.Eq } eq)
         {
-            if (eq.Left is SubjectExpr && Fold.TryConst(eq.Right, out value)) return true;
-            if (eq.Right is SubjectExpr && Fold.TryConst(eq.Left, out value)) return true;
+            if (eq.Left is SubjectExpr && Fold.TryConst(eq.Right, out value, NamedConstant)) return true;
+            if (eq.Right is SubjectExpr && Fold.TryConst(eq.Left, out value, NamedConstant)) return true;
         }
-        return Fold.TryConst(pattern, out value);
+        return Fold.TryConst(pattern, out value, NamedConstant);
     }
+
+    /// <summary>
+    /// A NAMED CONSTANT'S VALUE: an enum member or a `const` the checker
+    /// resolved, integral. Without it a switch over an enum -- `switch
+    /// (n.Kind)`, every pass of the compiler's own -- never made its jump
+    /// table, and ran a compare and a branch for every case above the one
+    /// taken.
+    /// </summary>
+    private long? NamedConstant(Expr e)
+        => e is MemberExpr or NameExpr && _b.Resolved.TryGetValue(e, out Sym? sym)
+            && sym is ConstSym { Text: null, Type.Prim: not (Prim.F32 or Prim.F64) } k ? k.Value : null;
 
     // ---- exceptions ----------------------------------------------------------------
 

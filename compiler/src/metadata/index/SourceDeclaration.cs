@@ -31,7 +31,7 @@ public sealed class SourceDeclaration
     public string ReadSource()
     {
         string text = File.ReadAllText(Path);
-        if (!SHA256.HashData(Encoding.UTF8.GetBytes(text)).SequenceEqual(SourceHash))
+        if (!SourceIndexBuilder.TextHash(text).SequenceEqual(SourceHash))
             throw new InvalidDataException(DeclarationCatalog.Stale(Path));
         Verify(text);
         return text;

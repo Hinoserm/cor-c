@@ -66,7 +66,8 @@ public static class IrUnitCodec
             string[] references = calls.Concat(instructions.SelectMany(instruction => instruction.Operands).OfType<SymOperand>()
                 .Select(address => address.Name)).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
             byte[] body = IrFunctionCodec.Write(function, module.KeepCalls);
-            records.Add(new("F:" + function.Name, importable, instructions.Length, calls, body, references, IrFunctionCodec.DecodeCost(function, body.Length)));
+            // Held packed until the object is written (IrArchiveRecord.Packed).
+            records.Add(IrArchiveRecord.Packed("F:" + function.Name, importable, instructions.Length, calls, body, references, IrFunctionCodec.DecodeCost(function, body.Length)));
         }
         foreach (DataItem item in module.Data)
             records.Add(new("D:" + item.Name, false, 0, Array.Empty<string>(), IrDataCodec.Write(item),

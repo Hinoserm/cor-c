@@ -39,7 +39,7 @@ public sealed class DeclarationIndex : IDisposable
         reader = new BinaryReader(stream, Utf8, leaveOpen: true);
         try
         {
-            if (stream.Length < HeaderSize || reader.ReadUInt32() != 0x58494443 || reader.ReadUInt32() != 3)
+            if (stream.Length < HeaderSize || reader.ReadUInt32() != 0x58494443 || reader.ReadUInt32() != 4)
                 throw new InvalidDataException("Unsupported declaration index");
             Count = reader.ReadInt64();
             table = reader.ReadInt64();
@@ -188,7 +188,7 @@ public sealed class DeclarationIndex : IDisposable
         string? key = keys[number];
         if (key is null)
         {
-            if (!SHA256.HashData(keyBytes).SequenceEqual(keyDigest)) throw new InvalidDataException("Declaration key checksum mismatch");
+            if (!Corsac.Lang.Ir.FastHash.Of(keyBytes).SequenceEqual(keyDigest)) throw new InvalidDataException("Declaration key checksum mismatch");
             key = Utf8.GetString(keyBytes);
             if (key.IndexOf('\0') >= 0) throw new InvalidDataException("NUL in declaration key");
             if (keep) keys[number] = key = Shared(key);
@@ -216,12 +216,19 @@ public sealed class DeclarationIndex : IDisposable
         return bytes;
     }
 
+    /// <summary>
+    /// A record's check: FastHash of its key and payload (version 4 of the
+    /// index; SHA-256 before). Every record a unit compile reads is checked
+    /// once in its process, and the declarations a unit reads from the
+    /// library -- whole types' text -- made that megabytes of SHA-256 a unit.
+    /// It only tells a reader the file is not what was written.
+    /// </summary>
     internal static byte[] Digest(byte[] key, byte[] payload)
     {
-        using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        hash.AppendData(key);
-        hash.AppendData(payload);
-        return hash.GetHashAndReset();
+        Corsac.Lang.Ir.FastHash hash = new();
+        hash.Append(key);
+        hash.Append(payload);
+        return hash.Finish();
     }
 
     public void Dispose() { Under?.Dispose(); reader.Dispose(); stream.Dispose(); }

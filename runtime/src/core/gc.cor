@@ -312,6 +312,10 @@ static class Gc
     // the kilobytes of old chunks' cards, of young chunks' (by block), the
     // blocks the stacks held, and the stacks and registers themselves.
     public static long OldCardWords;
+
+    /// The words of the statics a minor collection read by their cards, and
+    /// the words it would have read whole (Gc.ScanStatics).
+    public static long StaticCardWords, StaticWordsSkipped;
     public static long YoungCardWords;
     public static long HeldWords;
     public static long StackWords;
@@ -394,6 +398,13 @@ static class Gc
     // cannot mark -- leaves its card set for the next cycle. Read and cleared
     // in the cycle's marking (ScanTakenCards).
     static long _taken;
+    // THE CARDS A PAGE'S OLD BLOCKS LIE IN, a byte a card as the cards are,
+    // written as each page is swept (SweepPage, SweepPageAlone): what a
+    // minor cycle's snapshot read off every young page's blocks one by one
+    // (OldCards), kept instead from the sweep that made them old, so that
+    // the snapshot need not walk the pages at all (_pagesUnwalked). 0 when
+    // there is none to be had: the pages are walked.
+    static long _oldCards;
 
     static bool _verifyGenerations;
     static long _verifyReports;
@@ -625,6 +636,7 @@ static class Gc
             return;
         }
         _taken = taken;
+        _oldCards = Platform.MapLazy(CardTableBytes);
         _held = held;
         _holding = holding;
         Runtime.Cards = cards;
@@ -654,6 +666,7 @@ static class Gc
         long last = ((at + bytes - 1) & WordSize.AddressMask) >> Runtime.CardShift;
         Platform.Commit(cards + first, last - first + 1);
         if (_taken != 0) Platform.Commit(_taken + first, last - first + 1);
+        if (_oldCards != 0) Platform.Commit(_oldCards + first, last - first + 1);
     }
 
     /// Whether the cycle about to run may be minor: there has been a major
@@ -1358,6 +1371,11 @@ static class Gc
         return at;
     }
 #else
+    /// No stack maps on x86-64 (BuildMaps is i386's): nothing to rebuild.
+    public static void MapsChanged()
+    {
+    }
+
     public static bool PreciseRegisters()
     {
         return false;
@@ -1502,7 +1520,11 @@ static class Gc
         long chunk = HeapChunks.SnapshotChunk(0);
         while (chunk != 0)
         {
-            bool young = HeapChunks.StartsCycle(chunk) == _cycle;
+            // A page this cycle did not walk (_pagesUnwalked): young by its
+            // flag, and its old blocks' cards in _oldCards, which its last
+            // sweep wrote.
+            bool unwalked = _pagesUnwalked && HeapChunks.PageClass(chunk) != 0;
+            bool young = unwalked ? HeapChunks.IsYoung(chunk) : HeapChunks.StartsCycle(chunk) == _cycle;
             long card = (HeapChunks.First(chunk) & WordSize.AddressMask) >> Runtime.CardShift;
             long last = ((HeapChunks.End(chunk) - 1) & WordSize.AddressMask) >> Runtime.CardShift;
             while (card <= last)
@@ -1523,7 +1545,7 @@ static class Gc
                 }
                 else
                 {
-                    bool old = Sys.PeekByte(_taken + card) == 2;
+                    bool old = unwalked ? Sys.PeekByte(_oldCards + card) != 0 : Sys.PeekByte(_taken + card) == 2;
                     bool keep = set && (old || BufferOverlaps(card << Runtime.CardShift, (card + 1) << Runtime.CardShift));
                     Sys.PokeByte(_taken + card, keep ? 1 : 0);
                 }
@@ -1532,6 +1554,86 @@ static class Gc
             which = which + 1;
             chunk = HeapChunks.SnapshotChunk(which);
         }
+    }
+
+    // ---- the statics by their cards ----------------------------------------
+    //
+    // A MINOR COLLECTION READS THE STATICS AS IT READS AN OLD CHUNK: only the
+    // kilobytes whose cards a store set since the last cycle. A young object
+    // a static holds was put there since the last cycle -- it was made since
+    // -- and every store of a reference into a static marks its card: the
+    // compiler marks it after the store as it does a field's, in the
+    // collector's and the runtime's own classes too (Lowering.CardMarkAt),
+    // Interlocked's exchanges with it, a struct copied in for each reference
+    // in it. A static set before the cards existed is set before the first
+    // collection, which is major. What holds references in the statics and
+    // is written without a store the compiler sees is read whole every time:
+    // the main thread's block (Tls), where the thread's statics table, its
+    // async context and the rest are poked; and every range registered as
+    // roots (GcRoots.Register) is scanned whole as before. A major collection
+    // reads them all.
+    //
+    // ONLY WHERE THE PLATFORM SAYS SO (StaticsByCards): a user-mode Linux
+    // program, whose statics are written by compiled code alone. A kernel's
+    // may be written by hand at ring 0, and reads its statics whole until
+    // its platform sets this.
+
+    /// Set by a platform whose statics take a reference only through a store
+    /// the compiler card-marks; false reads them whole at every collection.
+    public static bool StaticsByCards;
+
+    // Whether this cycle reads the statics by their cards: minor, with
+    // generations, a platform that allows it, and no census -- whose roots
+    // are each attributed, and read whole.
+    static bool StaticsCarded() => _minor && _generational && StaticsByCards && !_census && Runtime.Cards != 0 && _taken != 0;
+
+    /// AT THE SNAPSHOT, with TakeCards: the statics' set cards cleared, and
+    /// for a minor cycle moved into the taken table to be read (ScanStatics).
+    /// A store after this sets its card for the next cycle; one between this
+    /// and the scan is the barrier's, as an old chunk's is.
+    static void TakeStaticCards(bool minor)
+    {
+        if (!StaticsByCards || Runtime.Cards == 0 || _taken == 0) return;
+        long cards = Runtime.Cards;
+        bool take = StaticsCarded();
+        long first = (Sys.DataStart() & WordSize.AddressMask) >> Runtime.CardShift;
+        long last = ((Sys.DataEnd() - 1) & WordSize.AddressMask) >> Runtime.CardShift;
+        for (long card = first; card <= last; card++)
+        {
+            if (Sys.PeekByte(cards + card) == 0) continue;
+            Sys.PokeByte(cards + card, 0);
+            if (take) Sys.PokeByte(_taken + card, 1);
+        }
+    }
+
+    /// The statics [from, to) marked from: whole, or -- a minor cycle that
+    /// may (StaticsCarded) -- the kilobytes whose cards were taken at the
+    /// snapshot, and the main thread's block whole.
+    public static void ScanStatics(long from, long to)
+    {
+        if (!StaticsCarded())
+        {
+            ScanRootsAttributed(from, to, 2, false);
+            return;
+        }
+        long block = Sys.MainThreadBlock();
+        if (block >= from && block < to) ScanRange(block, block + Tls.Bytes);
+        long first = (from & WordSize.AddressMask) >> Runtime.CardShift;
+        long last = ((to - 1) & WordSize.AddressMask) >> Runtime.CardShift;
+        long read = 0;
+        for (long card = first; card <= last; card++)
+        {
+            if (Sys.PeekByte(_taken + card) == 0) continue;
+            Sys.PokeByte(_taken + card, 0);
+            long low = card << Runtime.CardShift;
+            long high = low + (1 << Runtime.CardShift);
+            if (low < from) low = from;
+            if (high > to) high = to;
+            ScanRange(low, high);
+            read = read + (high - low);
+        }
+        StaticCardWords = StaticCardWords + read / WordSize.Bytes;
+        StaticWordsSkipped = StaticWordsSkipped + (to - from - read) / WordSize.Bytes;
     }
 
     /// Flags every card an old block lies in, for TakeCards -- a leaf holds
@@ -1675,7 +1777,9 @@ static class Gc
     {
         long first = HeapChunks.First(chunk);
         long end = HeapChunks.End(chunk);
-        bool indexed = _snapshots && HeapChunks.StartsCycle(chunk) == _cycle;
+        // A page is read block by block by its class whatever its start
+        // table (ScanCardBlocks): only its old blocks, walked or not.
+        bool indexed = _snapshots && (HeapChunks.StartsCycle(chunk) == _cycle || _pagesUnwalked && HeapChunks.PageClass(chunk) != 0);
         long card = (first & WordSize.AddressMask) >> Runtime.CardShift;
         long last = ((end - 1) & WordSize.AddressMask) >> Runtime.CardShift;
         long taken = 0;
@@ -1831,7 +1935,7 @@ static class Gc
             long bits = Sys.Peek(map + (1 + index / 32) * w) & 0xFFFFFFFF;
             if (((bits >> (int)(index & 31)) & 1) != 0)
             {
-                MarkWord((nuint)Sys.Peek(payload + index * w), local);
+                MarkRefW((nuint)Sys.Peek(payload + index * w), local);
             }
             index = index + 1;
         }
@@ -1893,7 +1997,60 @@ static class Gc
     /// triggers the next one.
     public static long Since
     {
-        get { return _since; }
+        get
+        {
+            // EXACT FOR THE THREAD THAT ASKS (GC.GetTotalMemory): its lists
+            // are charged as they are handed over (Charge), so what is still
+            // on them was never handed out; what it took and has not yet had
+            // folded in (Tls.ClassBytes) was.
+            long tb = Sys.ThreadBlock();
+            long pending = tb != 0 ? Sys.Peek(tb + Tls.ClassBytes) : 0;
+            long since = _since + pending - OwnListBytes();
+            return since > 0 ? since : 0;
+        }
+    }
+
+    /// THE BYTES ON THIS THREAD'S OWN CLASS LISTS, charged as each list was
+    /// handed over (Charge) and not yet taken: what the counters a program
+    /// reads (Since, Allocated, AllocatedByThread) take off, so that they say
+    /// what was handed out -- a string made and freed in a loop goes back on
+    /// its list, and costs nothing, as it did when each block was counted as
+    /// it was taken. Read inside the allocator (Tls.InAlloc), as the lists
+    /// are popped: an interrupt that allocates or frees between two links is
+    /// refused meanwhile; on top of the allocator itself, nothing is read.
+    /// Another thread's lists are not this one's to walk; theirs stay as
+    /// charged until they are handed back (RetireClasses), as their counts
+    /// not yet folded in were never counted before.
+    public static long OwnListBytes()
+    {
+        long tb = Sys.ThreadBlock();
+        if (tb == 0 || _classSize == 0 || Sys.Peek(tb + Tls.InAlloc) != 0) return 0;
+        Sys.Poke(tb + Tls.InAlloc, 1);
+        long cache = Sys.Peek(tb + Tls.Classes);
+        if (cache == 0) cache = Sys.Peek(tb + Tls.ClassesSaved);
+        long bytes = 0;
+        if (cache != 0)
+        {
+            for (long c = 0; c < Classes; c++)
+            {
+                long size = ClassSize(c);
+                long page = Sys.Peek(cache + c * (2 * WordSize.Bytes));
+                long block = Sys.Peek(cache + c * (2 * WordSize.Bytes) + WordSize.Bytes);
+                if (page == 0) continue;
+                long first = HeapChunks.First(page);
+                long end = HeapChunks.End(page);
+                // Bounded by the page: a link outside it ends the walk.
+                long left = (end - first) / size + 1;
+                while (block != 0 && block >= first && block < end && left > 0)
+                {
+                    bytes = bytes + size;
+                    block = Sys.Peek(block + KindAt);
+                    left = left - 1;
+                }
+            }
+        }
+        Sys.Poke(tb + Tls.InAlloc, 0);
+        return bytes;
     }
 
     /// Bytes allocated since the program began, by every thread: what their
@@ -1906,7 +2063,8 @@ static class Gc
             GcLock.Enter();
             long total = _allocated;
             GcLock.Exit();
-            return total + InBuffer(Sys.ThreadBlock());
+            long made = total + InBuffer(Sys.ThreadBlock()) - OwnListBytes();
+            return made > 0 ? made : 0;
         }
     }
 
@@ -1917,9 +2075,10 @@ static class Gc
         {
             long block = Sys.ThreadBlock();
             if (block == 0) return Allocated;
-            return (Sys.Peek(block + Tls.Allocated) & 0xFFFFFFFF)
+            long made = (Sys.Peek(block + Tls.Allocated) & 0xFFFFFFFF)
                  + ((Sys.Peek(block + Tls.Allocated + WordSize.Bytes) & 0xFFFFFFFF) << 32)
-                 + InBuffer(block);
+                 + InBuffer(block) - OwnListBytes();
+            return made > 0 ? made : 0;
         }
     }
 
@@ -1927,10 +2086,20 @@ static class Gc
     static long InBuffer(long block)
     {
         if (block == 0) return 0;
+        // THIS THREAD'S OWN, read inside the allocator (Tls.InAlloc): an
+        // interrupt that refilled the buffer between the two reads paired
+        // one buffer's base with another's pointer, and the count was the
+        // distance between two chunks. Another thread's is read under the
+        // heap lock, or stopped.
+        bool own = block == Sys.ThreadBlock();
+        long inside = own ? Sys.Peek(block + Tls.InAlloc) : 0;
+        if (own) Sys.Poke(block + Tls.InAlloc, 1);
         long started = Sys.Peek(block + Tls.AllocBase);
         long at = Sys.Peek(block + Tls.AllocPtr);
         // And what its class lists have handed out and not yet been counted.
-        return (started != 0 && at > started ? at - started : 0) + Sys.Peek(block + Tls.ClassBytes);
+        long counted = (started != 0 && at > started ? at - started : 0) + Sys.Peek(block + Tls.ClassBytes);
+        if (own) Sys.Poke(block + Tls.InAlloc, inside);
+        return counted;
     }
 
     /// Charges `bytes` to the program and to the thread whose block this is.
@@ -2684,9 +2853,15 @@ static class Gc
         long at = Sys.Peek(tb + Tls.RegionAt);
         long top = chunk == last ? at : Sys.Peek(chunk + 3 * w);
         // The pointer first: a scan that lands in the middle reads no further
-        // than `to`, never the bytes being cleared.
+        // than `to`, never the bytes being cleared. AND THE CHUNK WITH IT,
+        // with no handshake between the two (Tls.InAlloc): `to` paired with
+        // the old chunk being filled, when the cut is in an earlier one, is
+        // a scan from that chunk's start to an address in another.
+        long inside = Sys.Peek(tb + Tls.InAlloc);
+        Sys.Poke(tb + Tls.InAlloc, 1);
         Sys.Poke(tb + Tls.RegionAt, to);
         Sys.Poke(tb + Tls.RegionEnd, chunk);
+        Sys.Poke(tb + Tls.InAlloc, inside);
         long freed = top - to;
         if (top > to) Sys.MemorySet(to, 0, top - to);
         if (chunk != last)
@@ -2712,7 +2887,11 @@ static class Gc
                 long size = c + TrailerBytes - ChunkStart(c);
                 if (keeping && (keep == chunk || kept + size <= budget))
                 {
-                    if (filled > 0) Sys.MemorySet(ChunkStart(c), 0, filled);
+                    // NOT CLEARED NOW: how far it is dirty is written down
+                    // (SpareDirty), and cleared as the arena moves into it
+                    // (NextChunk). A spare handed back later, or with its
+                    // thread's arena, is never cleared at all.
+                    if (filled > 0 && ChunkStart(c) + filled > SpareDirty(c)) Sys.Poke(c + SpareDirtyAt * w, ChunkStart(c) + filled);
                     Sys.Poke(c + 3 * w, ChunkStart(c));
                     kept = kept + size;
                     keep = c;
@@ -2730,6 +2909,21 @@ static class Gc
             DropChunks(tb, keep);
         }
         return freed;
+    }
+
+    // A SPARE'S DIRTY TOP, in a word of its trailer only the first chunk uses
+    // otherwise (its lowest start; a spare is never the first): how far its
+    // bytes were left as its regions left them, its start when it is clean.
+    // Nothing reads a spare's bytes -- every walk stops at the chunk being
+    // filled (ScanRegion, CopyRegion, RegionWords), and a spare is filled to
+    // its first byte (ChunkTop) -- until the arena moves into it, which
+    // clears them first (NextChunk).
+    const long SpareDirtyAt = 4;
+
+    static long SpareDirty(long chunk)
+    {
+        long dirty = Sys.Peek(chunk + SpareDirtyAt * WordSize.Bytes);
+        return dirty > ChunkStart(chunk) && dirty <= chunk ? dirty : ChunkStart(chunk);
     }
 
     /// The bytes of spare chunks an arena keeps past the one being filled
@@ -2755,15 +2949,31 @@ static class Gc
             next = 0;
         }
         if (next == 0) next = MapChunk(tb, need, exact);
-        else ArenaSparesReused = ArenaSparesReused + 1;
+        else
+        {
+            ArenaSparesReused = ArenaSparesReused + 1;
+            // The spare's bytes cleared now that they are to be handed out
+            // (SpareDirty): a fresh chunk is zero, and so must this be.
+            long dirty = SpareDirty(next);
+            if (dirty > ChunkStart(next)) Sys.MemorySet(ChunkStart(next), 0, dirty - ChunkStart(next));
+            Sys.Poke(next + SpareDirtyAt * WordSize.Bytes, ChunkStart(next));
+        }
         if (next == 0) return false;
         // How far the chunk left behind is filled, before it stops being the
         // one the bump pointer is in.
         Sys.Poke(last + 3 * WordSize.Bytes, Sys.Peek(tb + Tls.RegionAt));
         // As full as the chunk left behind will get: measured as it is left.
         ArenaMeasure(tb);
+        // THE POINTER AND THE CHUNK IT IS IN CHANGE TOGETHER (Tls.InAlloc):
+        // a handshake that lands between the two stores reads the arena for
+        // its answer (ScanRegion, CopyRegion), and a pointer into the next
+        // chunk paired with the last one as the chunk being filled walked
+        // from the last chunk's start to an address in another mapping.
+        long inside = Sys.Peek(tb + Tls.InAlloc);
+        Sys.Poke(tb + Tls.InAlloc, 1);
         Sys.Poke(tb + Tls.RegionAt, ChunkStart(next));
         Sys.Poke(tb + Tls.RegionEnd, next);
+        Sys.Poke(tb + Tls.InAlloc, inside);
         return true;
     }
 
@@ -3508,7 +3718,13 @@ static class Gc
             // its handshake at any instruction, and an answer -- or a wait
             // counted as stopped, whose pages ShedPages may give up -- landing
             // between the read and the pop would leave this thread popping
-            // off a cache it had been answered for.
+            // off a cache it had been answered for. ShedPages gives back the
+            // lists of a thread whose cache the last round took and which is
+            // not in the allocator: one that had read its cache here and not
+            // yet said so popped a block RetireClasses had just put on its
+            // page's list, and the block was handed out twice -- the NT
+            // kernel's address-space list found zeroed under it at a first
+            // logon with memory short.
             Sys.Poke(tb + (nint)Tls.InAlloc, 1);
             nint cache = (nint)Sys.Peek(tb + (nint)Tls.Classes);
             if (cache == 0)
@@ -3562,7 +3778,8 @@ static class Gc
         // handshake took it away) or an empty list is the slow path's.
         if (small <= ClassMax && bytes >= 0)
         {
-            // In the allocator before the cache is read (AllocWord).
+            // Inside the allocator before the cache is read, as in AllocWord:
+            // ShedPages passes over a thread only while it says so.
             Sys.Poke(tb + Tls.InAlloc, 1);
             long cache = Sys.Peek(tb + Tls.Classes);
             if (cache != 0)
@@ -3672,15 +3889,15 @@ static class Gc
     public static void FastPathsChanged()
     {
         FastClassMask = _classSize != 0 && !_heapCheck && Runtime.AllocHook == 0 ? (nint)(-1) : (nint)0;
-        FastRegionMask = Runtime.AllocHook == 0 && !StatsAsked && !CountingCollected ? (nint)(-1) : (nint)0;
+        FastRegionMask = Runtime.AllocHook == 0 ? (nint)(-1) : (nint)0;
+        FastFreeMask = _classSize != 0 && !_heapCheck && !_verify && !VerifyingFieldFrees && !AllocSamples.Tracking
+            && Runtime.FreeLogRing == 0 && IgnoredFrees == 0 && SkippedFreePaths == 0 ? (nint)(-1) : (nint)0;
     }
 
     /// THE SAME FOR AN ALLOCATION IN A REGION (Runtime.AllocRegionSized,
-    /// AllocRegion): all ones but while a sampler counts (AllocHook) or the
-    /// statistics are asked for, when every region allocation takes the long
-    /// way, which counts its blocks (Tls.RegionCount) -- the way in place
-    /// counts nothing. 0 too until the heap starts, which is at the first
-    /// allocation of any kind.
+    /// AllocRegion): all ones but while a sampler counts (AllocHook), whose
+    /// samples the long way takes. 0 too until the heap starts, which is at
+    /// the first allocation of any kind.
     public static nint FastRegionMask;
     public static long _classOf;    // ClassMax / 8 + 1 words: need >> 3 -> class
     static long _classPages;        // Classes words: pages with room, unowned
@@ -4123,8 +4340,10 @@ static class Gc
                 Sys.Poke(tail + KindAt, HeapChunks.PageFree(page));
                 HeapChunks.SetPageFree(page, head);
                 HeapChunks.SetLargestHole(page, HeapChunks.LargestHole(page) + unused);
-                // Charged as the list was handed over (Charge), never taken.
-                Uncount(tb, unused);
+                // Charged as the list was handed over (Charge), never taken:
+                // off the pressure and off what the thread is said to have
+                // allocated, where the charge was folded in already.
+                Uncharge(tb, unused);
             }
             // A page given up with its list dry but not all laid out: more
             // laid out, so that it goes on its class's list and its room is
@@ -4257,6 +4476,22 @@ static class Gc
             _since = _since - (size - off);
             if (_since < 0) _since = Zero;
         }
+    }
+
+    /// A list's bytes charged (Charge) and handed back untaken: off the
+    /// thread's pending count as far as that goes, the rest off the pressure
+    /// counter and off the allocated counts it was folded into (Count). The
+    /// heap lock is held.
+    static void Uncharge(long tb, long bytes)
+    {
+        long pending = tb != 0 ? Sys.Peek(tb + Tls.ClassBytes) : 0;
+        long off = pending < bytes ? pending : bytes;
+        if (off > 0) Sys.Poke(tb + Tls.ClassBytes, pending - off);
+        long rest = bytes - off;
+        if (rest <= 0) return;
+        _since = _since - rest;
+        if (_since < 0) _since = Zero;
+        Count(tb, -rest);
     }
 
     /// This thread's small allocations counted into the pressure counter
@@ -4710,6 +4945,7 @@ static class Gc
         bool captured = step < GcThreads.BufferCount() && GcThreads.BufferBase(step) == first;
         if (captured || HeapChunks.Owner(page) != 0)
         {
+            OldCardsOfPage(page, 1);
             if (!captured) UnmarkRange(first, end);
             _sweepLive = _sweepLive + HeapChunks.LiveBlocks(page);
             _sweepLiveBytes = _sweepLiveBytes + (end - first);
@@ -4725,6 +4961,7 @@ static class Gc
         bool stillYoung = false;
         long block = first;
         long run = 0;           // the first of the dead blocks not yet cleared (ClearDeadRun)
+        OldCardsOfPage(page, 0);
         while (block + size <= end)
         {
             long word = Sys.Peek(block);
@@ -4757,6 +4994,7 @@ static class Gc
                 if (_generational && (word & FlagMark) != 0)
                 {
                     if (word != (size | FlagMark | FlagScan)) StampClass(block, size, FlagMark | FlagScan);
+                    OldCardsOfBlock(block, size);
                 }
                 else
                 {
@@ -4856,6 +5094,7 @@ static class Gc
         bool concurrent = _concurrent;
         nuint block = first;
         nuint run = 0;          // the first of the dead blocks not yet cleared (ClearDeadRun)
+        OldCardsOfPage(page, 0);
         while (block + size <= end)
         {
             nuint word = PeekW(block);
@@ -4892,6 +5131,7 @@ static class Gc
                 if (generational && marked)
                 {
                     if (word != oldHeader) Sys.Poke((long)block, (long)oldHeader);
+                    OldCardsOfBlock((long)block, sizeLong);
                 }
                 else
                 {
@@ -4924,6 +5164,32 @@ static class Gc
         HeapChunks.SetYoung(page, stillYoung);
         HeapChunks.SetOwner(page, (long)collected);
         HeapChunks.SetSwept(page, true);
+    }
+
+    /// A page's old-block cards (_oldCards) all cleared, as its sweep begins,
+    /// or all set: a page a thread owns, which the sweep does not walk and
+    /// whose marked blocks stay old, is taken to have an old block in every
+    /// kilobyte -- a card read for nothing costs a read, a card missed costs
+    /// a young object swept from under an old one.
+    static void OldCardsOfPage(long page, long value)
+    {
+        if (_oldCards == 0) return;
+        long first = (page & WordSize.AddressMask) >> Runtime.CardShift;
+        long last = ((HeapChunks.Limit(page) - 1) & WordSize.AddressMask) >> Runtime.CardShift;
+        Sys.MemorySet(_oldCards + first, (int)value, last - first + 1);
+    }
+
+    /// An old block's cards set in _oldCards (a leaf's none: it holds no reference).
+    static void OldCardsOfBlock(long block, long size)
+    {
+        if (_oldCards == 0 || Sys.Peek(block + KindAt) == KindLeaf) return;
+        long card = (block & WordSize.AddressMask) >> Runtime.CardShift;
+        long last = ((block + size - 1) & WordSize.AddressMask) >> Runtime.CardShift;
+        while (card <= last)
+        {
+            Sys.PokeByte(_oldCards + card, 1);
+            card = card + 1;
+        }
     }
 
     /// A RUN OF DEAD BLOCKS OF A PAGE, [run, stop), cleared at once and laid
@@ -6137,6 +6403,8 @@ static class Gc
         SayNumber("gc: cards taken ", TakenCards);
         SayNumber("gc: card words ", YoungCardWords);
         SayNumber("gc: old card words ", OldCardWords);
+        SayNumber("gc: static card words ", StaticCardWords);
+        SayNumber("gc: static words skipped ", StaticWordsSkipped);
         // The pressure counter's total is what went out and did not come back
         // by hand: a byte freed by the program is taken off it again. What was
         // handed out, all of it, is that and the program's frees together.
@@ -6698,6 +6966,10 @@ static class Gc
         {
             return;
         }
+        if (FreeOwnBlock((nuint)at))
+        {
+            return;
+        }
         long self = Sys.ThreadBlock();
         // In a region: given back with the rest of it when it ends.
         if (self != 0 && InRegion(self, at)) return;
@@ -7052,6 +7324,73 @@ static class Gc
         GcLock.Exit();
     }
 
+    /// THE COMMON FREE, IN WORDS AND FIRST: a block of a size-class page the
+    /// freeing thread owns, put on that thread's own list for its class,
+    /// with no lock. The same as the free below of a block of the thread's
+    /// own page (and its checks), found the way the marker finds a page's
+    /// block (PageBlockW): the page by the 4 KB table, the class by the page,
+    /// the grid by the class's reciprocal. Where it went through a region
+    /// test, the allocator and lock tests, a dozen flags in longs, and then
+    /// looked for the page among every class the thread holds -- each a
+    /// 64-bit compare -- and tested the grid with a division. False for
+    /// anything else, which the rest of Free takes as before: a block not on
+    /// a page this thread owns, a collection under way, any of the checking
+    /// or logging modes (FastFreeMask), the heap lock held or the allocator
+    /// interrupted on this thread (Tls.InAlloc), no class cache.
+    static bool FreeOwnBlock(nuint at)
+    {
+        nuint slots = (nuint)HeapChunks.SlotTable;
+        if (FastFreeMask == 0 || slots == 0 || (at & 7) != 0 || Runtime.Marking != 0 || _sweeping || _collecting)
+        {
+            return false;
+        }
+        nuint page = PeekW(slots + (at >> 12) * (nuint)WordSize.Bytes);
+        if (page == 0)
+        {
+            return false;
+        }
+        nuint cls = PeekW(page + (nuint)HeapChunks.ClassAt);
+        nint tb = (nint)Sys.ThreadBlock();
+        if (cls == 0 || tb == 0 || (nint)PeekW(page + (nuint)HeapChunks.OwnerAt) != tb)
+        {
+            return false;
+        }
+        long words = GcLock.Words();
+        if (words != 0 && (nint)Sys.Peek(words + GcLock.Held) == tb || Sys.Peek(tb + Tls.InAlloc) != 0)
+        {
+            return false;
+        }
+        Sys.Poke(tb + (nint)Tls.InAlloc, 1);
+        nuint cache = (nuint)Sys.Peek(tb + (nint)Tls.Classes);
+        nint c = (nint)cls - 1;
+        nuint slot = cache + (nuint)c * (nuint)(2 * WordSize.Bytes);
+        nuint block = PageBlockW(page, at, cls);
+        nuint size = block == 0 ? 0 : PeekW(block) & ~(nuint)7;
+        // ITS OWN PAGE IN ITS OWN CACHE, the block whole -- live, the class's
+        // size, on the grid (PageBlockW), and the payload's start: a pointer
+        // into the middle of one is no object handed to a free.
+        if (cache == 0 || PeekW(slot) != page || block == 0 || block + (nuint)HeaderBytes != at
+            || (PeekW(block) & (nuint)FlagFree) != 0)
+        {
+            Sys.Poke(tb + (nint)Tls.InAlloc, 0);
+            return false;
+        }
+        ZeroWords((long)(block + (nuint)HeaderBytes), (long)(block + size));
+        Sys.Poke((long)block, (long)(size | (nuint)FlagFree));
+        Sys.Poke((long)(block + (nuint)KindAt), Sys.Peek((long)(slot + (nuint)WordSize.Bytes)));
+        Sys.Poke((long)(slot + (nuint)WordSize.Bytes), (long)block);
+        Frees = Frees + 1;
+        FreedBytes = FreedBytes + (long)size;
+        Sys.Poke(tb + (nint)Tls.InAlloc, 0);
+        return true;
+    }
+
+    /// All ones but while a free must take the long way for what it checks or
+    /// says: the heap check, the checked frees (_verify, VerifyingFieldFrees),
+    /// the sampler's tracking, the free log, ignored or skipped free paths,
+    /// and before the heap starts (FastPathsChanged).
+    public static nint FastFreeMask;
+
     /// How many calls to Free actually returned a block. A test reads it to
     /// tell a free that happened from one that was ignored.
     public static long Frees;
@@ -7089,6 +7428,7 @@ static class Gc
     {
         GcLock.Enter();
         SkippedFreePaths = paths;
+        FastPathsChanged();
         GcLock.Exit();
     }
 
@@ -7117,6 +7457,7 @@ static class Gc
             _verify = true;
             if (_quarantine == 0) StartQuarantine();
         }
+        FastPathsChanged();
         GcLock.Exit();
     }
 
@@ -8623,20 +8964,31 @@ static class Gc
         }
         long block = at - HeaderBytes;
         long tb = Sys.ThreadBlock();
+        // INSIDE THE ALLOCATOR BEFORE ITS OWN BUFFER AND PAGES ARE READ
+        // (Tls.InAlloc), as Free is: an interrupt that frees or refills
+        // between the reads moves the buffer under them, and ShedPages gives
+        // back the pages of a thread that is not in the allocator -- a page
+        // found in the cache here, given back and released before its record
+        // was read, was a read of memory no longer mapped. Already inside
+        // (an interrupt on top of the allocator): nothing of its is read.
+        if (tb != 0 && Sys.Peek(tb + Tls.InAlloc) != 0)
+        {
+            return false;
+        }
         if (tb != 0)
         {
+            Sys.Poke(tb + Tls.InAlloc, 1);
             long ptr = Sys.Peek(tb + Tls.AllocPtr);
             if (ptr != 0 && block >= Sys.Peek(tb + Tls.AllocBase) && block < ptr)
             {
                 long word = Sys.Peek(block);
                 long size = word & SizeMask;
-                return size >= Smallest && (word & FlagFree) == 0 && block + size <= ptr
+                bool whole = size >= Smallest && (word & FlagFree) == 0 && block + size <= ptr
                     && Sys.Peek(block + size - FooterBytes) == word && Described(block, at);
+                Sys.Poke(tb + Tls.InAlloc, 0);
+                return whole;
             }
-            if (Sys.Peek(tb + Tls.InAlloc) != 0)
-            {
-                return false;
-            }
+            Sys.Poke(tb + Tls.InAlloc, 0);
         }
         if (GcLock.HeldByMe())
         {
@@ -8646,9 +8998,13 @@ static class Gc
         // and its blocks' headers are this thread's while it owns the page,
         // so they are read with no lock. Every free of an object a compiler
         // made took the heap lock twice, here and in Free.
-        if (tb != 0 && Runtime.Marking == 0 && !_sweeping && !_collecting && OwnPageBlock(tb, block) is long bytes and > 0)
+        if (tb != 0 && Runtime.Marking == 0 && !_sweeping && !_collecting)
         {
-            return Described(block, at);
+            Sys.Poke(tb + Tls.InAlloc, 1);
+            long bytes = OwnPageBlock(tb, block);
+            bool described = bytes > 0 && Described(block, at);
+            Sys.Poke(tb + Tls.InAlloc, 0);
+            if (bytes > 0) return described;
         }
         GcLock.Enter();
         bool live = ValidAllocated(at) != 0 && Described(block, at);
@@ -8664,6 +9020,24 @@ static class Gc
     {
         long cache = Sys.Peek(tb + Tls.Classes);
         if (cache == 0 || _classSize == 0) return 0;
+        // BY THE 4 KB TABLE, as the marker and FreeOwnBlock find a page's
+        // block: its page, the page's class, the grid by the class's
+        // reciprocal. The search below went through every class the thread
+        // holds, a 64-bit compare each, and tested the grid with a division,
+        // at every free the compiler's lifetime rules make (Runtime.Free asks
+        // this before it frees an object's owned fields).
+        nuint slots = (nuint)HeapChunks.SlotTable;
+        if (slots != 0)
+        {
+            nuint page = PeekW(slots + ((nuint)block >> 12) * (nuint)WordSize.Bytes);
+            if (page == 0) return 0;
+            nuint cls = PeekW(page + (nuint)HeapChunks.ClassAt);
+            if (cls == 0 || (long)PeekW(page + (nuint)HeapChunks.OwnerAt) != tb) return 0;
+            if (PeekW((nuint)cache + (cls - 1) * (nuint)(2 * WordSize.Bytes)) != page) return 0;
+            nuint found = PageBlockW(page, (nuint)block + (nuint)HeaderBytes, cls);
+            if (found != (nuint)block || (PeekW(found) & (nuint)FlagFree) != 0) return 0;
+            return (long)(PeekW(found) & ~(nuint)7);
+        }
         for (long c = 0; c < Classes; c = c + 1)
         {
             long page = Sys.Peek(cache + c * (2 * WordSize.Bytes));
@@ -8898,6 +9272,12 @@ static class Gc
     static long SnapshotBlock(long at)
     {
         long chunk = HeapChunks.OfSnapshot(at);
+        // A page by its class, as the marker finds it, where the pages were
+        // not walked for their start bits (_pagesUnwalked).
+        if (chunk != 0 && _pagesUnwalked && HeapChunks.PageClass(chunk) != 0)
+        {
+            return (long)PageBlockW((nuint)chunk, (nuint)at, (nuint)HeapChunks.PageClass(chunk));
+        }
 
         if (chunk == 0 || HeapChunks.StartsCycle(chunk) != _cycle)
         {
@@ -9132,7 +9512,11 @@ static class Gc
         nuint local = ClaimLocal();
         bool aborted = false;
 
-        while (budget < 0 || done < budget)
+        // THE COUNT IN WORDS: compared a 64-bit long a block, it was an add
+        // and an adc, a compare and an sbb, held in the frame.
+        nint left = budget < 0 ? (nint)0x7FFFFFFF : (nint)budget;
+        nint scanned = 0;
+        while (scanned < left)
         {
             if (Sys.Peek(ctl + GcLock.Abort) != 0)
             {
@@ -9155,8 +9539,9 @@ static class Gc
                 ScanBlockW(block, PeekW(block) & ~(nuint)7, local, tail);
             }
 
-            done = done + 1;
+            scanned = scanned + 1;
         }
+        done = (long)scanned;
 
         if (local != 0)
         {
@@ -9519,12 +9904,48 @@ static class Gc
     /// (TailIn). It is queued with PagedBit set in its address -- eight-
     /// aligned, the low bits are free -- and whoever pops it reads the bit
     /// back (Untag) rather than look the chunk up again for every block.
+    // A CALL OF ITS OWN, so that what calls it stays small enough to be put
+    // in place in the scan loops (MarkRefW): put into MarkRefW itself, it
+    // made that a call, and every null word a scan met paid for one.
+    [MethodImpl(MethodImplOptions.NoInlining)]
     static void MarkWord(nuint at, nuint local)
     {
         if (CountMarks) MarkCalls = MarkCalls + 1;
         nuint block;
         nuint tail;
-        if (_snapshots)
+        nuint slots = _markSlots;
+        if (slots != 0)
+        {
+            // ONE LOAD FOR THE CHUNK, by the word's 4 KB (HeapChunks.Of's
+            // table): 0 for a null, a number, a code or static address --
+            // most of the words a scan meets -- and for a chunk not mapped.
+            // Where OfSnapshotW searched the snapshot's chunks from a word per
+            // 64 KB and read each one's limit. No chunk is given back while a
+            // mark runs (Free and the pool's drain refuse then, and the sweep
+            // comes after), and one made since holds only newcomers: a page's
+            // are refused by their headers or marked and kept, a mixed
+            // chunk's by its start table, which is not this cycle's.
+            nuint chunk = PeekW(slots + (at >> 12) * (nuint)WordSize.Bytes);
+            block = 0;
+            tail = 0;
+            if (chunk != 0)
+            {
+                nuint cls = PeekW(chunk + (nuint)HeapChunks.ClassAt);
+                if (cls != 0 && !_concurrent)
+                {
+                    block = PageBlockW(chunk, at, cls);
+                }
+                else if (at < PeekW(chunk + (nuint)HeapChunks.LimitAt))
+                {
+                    // A mixed chunk's block by its start bits; and a page's
+                    // too in a cycle beside running threads, whose newcomers
+                    // only the start bits tell (PageBlockW).
+                    block = SnapshotBlockInW(chunk, at);
+                    tail = cls != 0 ? (nuint)0 : (nuint)FooterBytes;
+                }
+            }
+        }
+        else if (_snapshots)
         {
             nuint chunk = HeapChunks.OfSnapshotW(at);
             block = chunk == 0 ? 0 : SnapshotBlockInW(chunk, at);
@@ -9569,6 +9990,60 @@ static class Gc
         if (tail == 0) block = block | (nuint)PagedBit;
         if (local != 0) PushLocal(local, block);
         else PushGreyW(block);
+    }
+
+    /// THE BLOCK OF A SIZE-CLASS PAGE A WORD POINTS INTO, by its class: the
+    /// offset times the class's reciprocal (OnGrid's), with no start bits
+    /// read and no division. The candidate is the block holding the word a
+    /// header below `at` -- a payload pointer is one past its header, and
+    /// one past a payload's end is still its block, as SnapshotBlockInW has
+    /// it -- and it is one only if its header says the class's size: the
+    /// page's tail not yet laid out, its header, its start table, are not.
+    /// Free blocks pass here and are refused by the mark (MarkFlagsW).
+    ///
+    /// NO START BITS: ONLY WITH THE WORLD STOPPED (MarkWord asks it only when
+    /// the cycle is not concurrent), when every block a page holds was there
+    /// at the snapshot -- the start bits would say the same of each, and
+    /// need not be written (BuildBlockAnchors, _pagesUnwalked). Beside
+    /// running threads a page's newcomers are told by their missing start
+    /// bits, which this cannot see. In a minor cycle a page not walked holds
+    /// old blocks only, marked already, and free ones: the mark refuses both.
+    static nuint PageBlockW(nuint page, nuint at, nuint cls)
+    {
+        nuint first = page + (nuint)HeapChunks.FirstAt;
+        nuint highest = (at - (nuint)HeaderBytes) & ~(nuint)7;
+        if (at < first + (nuint)HeaderBytes || highest >= PeekW(page + (nuint)HeapChunks.EndAt))
+        {
+            return 0;
+        }
+        nint c = (nint)cls - 1;
+        nuint size = PeekW((nuint)_classSize + (nuint)c * (nuint)WordSize.Bytes);
+        long offset = (long)(highest - first);
+        // Under 2^16 in a page, as OnGrid requires for the floor to be exact.
+        if (offset >= 0x10000) return 0;
+        long quotient = (offset * Sys.Peek(_classStep + (long)c * WordSize.Bytes)) >> 32;
+        nuint block = first + (nuint)quotient * size;
+        if ((PeekW(block) & ~(nuint)7) != size || at > block + size)
+        {
+            return 0;
+        }
+        return block;
+    }
+
+    /// The marker's 4 KB table (HeapChunks.SlotTable) while the snapshot is
+    /// whole (BuildBlockAnchors), else 0: MarkWord's way in, and MarkRefW's.
+    static nuint _markSlots;
+
+    /// A word of a block being scanned, marked from: those that lie in no
+    /// chunk -- null above all -- turned away by one load before the call.
+    static void MarkRefW(nuint at, nuint local)
+    {
+        nuint slots = _markSlots;
+        if (slots != 0 && PeekW(slots + (at >> 12) * (nuint)WordSize.Bytes) == 0)
+        {
+            return;
+        }
+        MarkWord(at, local);
     }
 
     /// The bit a queued block carries when it lies in a size-class page and
@@ -9761,7 +10236,7 @@ static class Gc
 
         while (p < to)
         {
-            MarkWord(PeekW(p), local);
+            MarkRefW(PeekW(p), local);
             p = p + w;
         }
     }
@@ -9823,7 +10298,7 @@ static class Gc
             {
                 if ((bits & 1) != 0 && at + w <= end)
                 {
-                    MarkWord(PeekW(at), local);
+                    MarkRefW(PeekW(at), local);
                 }
                 bits = bits >> 1;
                 at = at + w;
@@ -10731,6 +11206,8 @@ static class Gc
         _stamping = false;
         HeapChunks.SetBlockAnchorsActive(false);
         _snapshots = false;
+        _markSlots = 0;
+        _pagesUnwalked = false;
         _concurrent = false;
         _collecting = false;
         // The marks just cleared may have been an old block's: only a major
@@ -10789,6 +11266,8 @@ static class Gc
         _sweeping = false;
         RestartRecycling();
         _snapshots = false;
+        _markSlots = 0;
+        _pagesUnwalked = false;
         _concurrent = false;
         ShedPages();
 
@@ -10896,7 +11375,10 @@ static class Gc
             long end = HeapChunks.End(chunk);
             long tail = TailIn(chunk);
 
-            if (_snapshots)
+            // A page this cycle did not walk has no start bits of this
+            // cycle: its blocks by their chain, below, as a chunk's are
+            // without a snapshot.
+            if (_snapshots && !(_pagesUnwalked && HeapChunks.PageClass(chunk) != 0))
             {
                 block = HeapChunks.StartsCycle(chunk) == _cycle ? HeapChunks.NextStart(chunk, block) : 0;
 
@@ -10938,6 +11420,12 @@ static class Gc
                     }
                     block = block + size;
                 }
+            }
+            if (_snapshots)
+            {
+                which = which + 1;
+                chunk = HeapChunks.SnapshotChunk(which);
+                continue;
             }
             chunk = HeapChunks.Next(chunk);
         }
@@ -11154,6 +11642,63 @@ static class Gc
         Sys.Poke(tb + Tls.InAlloc, was);
     }
 
+    /// THE STORE SEQUENCES' BARRIER: the report, the store and its card,
+    /// all inside the thread's InAlloc, for a thread its collector stops at
+    /// any instruction (Lowering.StoreSequences). Barrier alone restored
+    /// InAlloc in its own epilogue and returned to the stub to store: a
+    /// thread sent to its handshake in between could answer the next
+    /// cycle's snapshot with its report given to the last one, and then
+    /// overwrite a reference the new mark was never told of -- one another
+    /// thread had copied into an object that mark had already scanned. Sent
+    /// after this has returned, it has nothing left to do but return.
+    public static void BarrierStore(long slot, long value)
+    {
+        long tb = Sys.ThreadBlock();
+        long was = Sys.Peek(tb + Tls.InAlloc);
+        Sys.Poke(tb + Tls.InAlloc, 1);
+        Note(Sys.Peek(slot), value);
+        Sys.Poke(slot, value);
+        Card(slot);
+        Sys.Poke(tb + Tls.InAlloc, was);
+    }
+
+    /// BarrierStore for an exchange: the reference the slot held.
+    public static long BarrierExchange(long slot, long value)
+    {
+        long tb = Sys.ThreadBlock();
+        long was = Sys.Peek(tb + Tls.InAlloc);
+        Sys.Poke(tb + Tls.InAlloc, 1);
+        long old = Sys.AtomicSwap(slot, value);
+        Note(old, value);
+        Card(slot);
+        Sys.Poke(tb + Tls.InAlloc, was);
+        return old;
+    }
+
+    /// BarrierStore for a compare-exchange: what the slot held, and `value`
+    /// in it -- reported, with its card -- only where that was `expected`.
+    public static long BarrierCompareExchange(long slot, long value, long expected)
+    {
+        long tb = Sys.ThreadBlock();
+        long was = Sys.Peek(tb + Tls.InAlloc);
+        Sys.Poke(tb + Tls.InAlloc, 1);
+        long seen = Sys.Cas(slot, expected, value);
+        if ((seen & WordSize.AddressMask) == (expected & WordSize.AddressMask))
+        {
+            Note(seen, value);
+            Card(slot);
+        }
+        Sys.Poke(tb + Tls.InAlloc, was);
+        return seen;
+    }
+
+    // The card of `slot`, where there is a table.
+    static void Card(long slot)
+    {
+        long cards = Runtime.Cards;
+        if (cards != 0) Sys.PokeByte(cards + ((slot & WordSize.AddressMask) >> Runtime.CardShift), 1);
+    }
+
     /// Barrier, told the overwritten reference itself: for an object whose
     /// fields the optimiser keeps in registers (Runtime.WriteBarrierValues).
     public static void BarrierValues(long old, long value)
@@ -11285,6 +11830,20 @@ static class Gc
         // sets them. Listed in the walk below, done after it (SnapshotTogether).
         bool together = !stepping && Workers > 0 && !_census && !_heapCheck && !_verify && !_deadCensus
                      && HeapChunks.HeapBytes >= WorkersWorthBytes && SnapshotQueue();
+        // A MINOR CYCLE WITH THE WORLD STOPPED WALKS NO PAGE. A page's walk
+        // wrote each block's start bit, flagged the cards its old blocks lie
+        // in (OldCards), and -- in a major cycle -- took their marks off. The
+        // marker finds a page's blocks by its class now (PageBlockW), with
+        // nothing made since the snapshot to tell apart; the old blocks'
+        // cards are kept as each page is swept (_oldCards); and a minor
+        // cycle takes no marks off. So only a major cycle, one beside
+        // running threads (whose newcomers only start bits tell), or one
+        // checking or counting walks them. A page left so keeps the start
+        // table of an earlier cycle, which everything that reads one tells
+        // by its cycle (StartsCycle) and takes the page by its class instead.
+        _pagesUnwalked = _minor && !stepping && _oldCards != 0 && !_census && !_deadCensus && !_heapCheck
+                      && !_verify && !_verifyGenerations && !VerifyHeap && !VerifyMarks && _referencesEnd == 0
+                      && HeapChunks.SlotTable != 0 && WordSize.Bytes == 4;
         _snapCount = 0;
         long chunk = HeapChunks.Newest();
         while (chunk != 0)
@@ -11295,6 +11854,12 @@ static class Gc
             // blocks are all old, and old is kept.
             if (_minor && !HeapChunks.IsYoung(chunk))
             {
+                chunk = HeapChunks.Next(chunk);
+                continue;
+            }
+            if (_pagesUnwalked && HeapChunks.PageClass(chunk) != 0)
+            {
+                PagesUnwalked = PagesUnwalked + 1;
                 chunk = HeapChunks.Next(chunk);
                 continue;
             }
@@ -11377,13 +11942,26 @@ static class Gc
         if (_snapCount > 0 && !SnapshotTogether()) every = false;
         HeapChunks.SetBlockAnchorsActive(true);
         _snapshots = every;
+        // THE MARKER'S LOOKUP BY THE 4 KB TABLE (MarkWord), where the
+        // snapshot is whole and no quarantined range's references are being
+        // counted -- which wants every word that is not the heap's said.
+        _markSlots = 0;
+#if !TARGET_64BIT
+        if (every && _referencesEnd == 0) _markSlots = (nuint)HeapChunks.SlotTable;
+#endif
         // THE CARDS, taken at the same stop: kept to be read by a minor cycle,
         // simply cleared by a major one, which marks everything anyway.
         if (_generational)
         {
             TakeCards(_minor);
+            TakeStaticCards(_minor);
         }
     }
+
+    /// Whether this cycle's snapshot left the pages unwalked (BuildBlockAnchors).
+    static bool _pagesUnwalked;
+    /// Pages a minor cycle's snapshot did not walk, over every cycle.
+    public static long PagesUnwalked;
 
     static long _snapQueue;
     static long _snapQueueBytes;
@@ -11930,6 +12508,16 @@ static class HeapChunks
     // neighbours on its class's list of pages with room, and the thread that
     // owns it, or 0. On a page the largest-hole word is its free bytes.
     const long ChunkClass = 8 * WordSize.Bytes;
+    /// For the marker's lookups in words (Gc.MarkWord): where a chunk's end,
+    /// limit and class are, and where its first block is.
+    public const long EndAt = ChunkEnd, LimitAt = ChunkLimit, ClassAt = ChunkClass, FirstAt = ChunkBytes, OwnerAt = ChunkOwner;
+
+    /// THE CHUNK OF EVERY 4 KB (Of's table), for the marker: 0 where there is
+    /// none -- not a platform that commits lazily, or above four gigabytes.
+    public static long SlotTable
+    {
+        get { return _slots; }
+    }
     const long ChunkFree = 9 * WordSize.Bytes;
     const long ChunkPageNext = 10 * WordSize.Bytes;
     const long ChunkPagePrev = 11 * WordSize.Bytes;
@@ -13264,7 +13852,7 @@ static class GcRoots
         }
         // And its region arena, as every other thread's is with its stack.
         if (self != 0) Gc.ScanRegion(self);
-        Gc.ScanRootsAttributed(Sys.DataStart(), Sys.DataEnd(), 2, false);
+        Gc.ScanStatics(Sys.DataStart(), Sys.DataEnd());
 
         long i = 0;
 

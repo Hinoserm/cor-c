@@ -871,7 +871,13 @@ static class Runtime
     // lifetime while initialization wait-graph readers can observe them.
     public static int EnterTypeInitialization(long state)
     {
-        long self = Sys.ThreadBlock();
+        // THE OWNER IS THE RUNNING CODE, not always its thread block: a
+        // kernel's block is a processor's, and an initializer that parks in
+        // a system call would leave the processor named as the owner -- the
+        // next call on it took the type for its own, half made, and one on
+        // another processor waited on a processor (Platform.TypeInitOwnerHook).
+        long self = Platform.TypeInitOwnerHook != 0 ? Sys.Call(Platform.TypeInitOwnerHook, 0, 0, 0) : 0;
+        if (self == 0) self = Sys.ThreadBlock();
         if (self == 0) self = Sys.MainThreadBlock();
         while (true)
         {
@@ -898,11 +904,18 @@ static class Runtime
                 Sys.AtomicSwap(self + Tls.TypeInitWait, 0);
                 return 0;
             }
-            // A waiter must expose its roots before blocking: the owner may
-            // allocate and collect while executing the initializer.
-            BeginBlocking();
-            if (Sys.Peek(state) == owner) Platform.Wait(state, owner);
-            EndBlocking();
+            // A CALL THAT CAN PARK WAITS PARKED (Platform.TypeInitWaitHook):
+            // the owner may itself be parked, and resumed only where this
+            // would spin. Otherwise a waiter exposes its roots before
+            // blocking: the owner may allocate and collect while executing
+            // the initializer.
+            if (Platform.TypeInitWaitHook == 0 || Sys.Peek(state) != owner
+                || Sys.Call(Platform.TypeInitWaitHook, state, owner, 0) == 0)
+            {
+                BeginBlocking();
+                if (Sys.Peek(state) == owner) Platform.Wait(state, owner);
+                EndBlocking();
+            }
             Sys.AtomicSwap(self + Tls.TypeInitWait, 0);
         }
     }
@@ -1214,10 +1227,13 @@ static class Runtime
     }
 
     /// The same for a size the compiler does not know -- an array's, a
-    /// string's -- as a call of its own: its class and size from the
-    /// collector's tables, as AllocWord finds them. Not put in place: an
-    /// array's site would carry the table lookups for one call saved.
-    [MethodImpl(MethodImplOptions.NoInlining)]
+    /// string's (Sys.NewChars: Concat, Substring, a builder's ToString) --
+    /// put in place too (AllocatorFastPaths): its class and size from the
+    /// collector's tables, as AllocWord finds them -- the rounded size
+    /// shifted to an index into the class of every eight bytes, and the
+    /// class's size by its index: two loads, no division. A call of its
+    /// own, these were the compiler's most frequent allocations still made
+    /// through a call and a frame.
     public static long AllocFast(nint bytes, nint kind)
     {
         // THE CLASS TEST ON THE REQUEST ITSELF, unsigned: the rounded size
@@ -1232,20 +1248,23 @@ static class Runtime
             {
                 Sys.Poke(tb + (nint)Tls.InAlloc, 1);
                 nint cache = (nint)Sys.Peek(tb + (nint)Tls.Classes);
-                nint small = (bytes + (nint)Gc.ClassBlockRounding) & (nint)Gc.BlockSizeMask;
-                // The tables read as words: they are addresses, and read as
-                // longs on i386 each was two loads, one of them dead.
-                nint c = (nint)Sys.Peek((nint)Sys.Peek(Sys.AddressOf(ref Gc._classOf)) + (small >> 3) * w);
-                nint slot = cache + c * (2 * w) + w;
-                nint free = cache != 0 ? (nint)Sys.Peek(slot) : 0;
-                if (free != 0)
+                if (cache != 0)
                 {
-                    nint size = (nint)Sys.Peek((nint)Sys.Peek(Sys.AddressOf(ref Gc._classSize)) + c * w);
-                    Sys.Poke(slot, Sys.Peek(free + (nint)Gc.BlockKindAt));
-                    Sys.Poke(free, size);
-                    Sys.Poke(free + (nint)Gc.BlockKindAt, kind);
-                    Sys.Poke(tb + (nint)Tls.InAlloc, 0);
-                    return (long)(nuint)(free + (nint)Gc.BlockHeaderBytes);
+                    nint small = (bytes + (nint)Gc.ClassBlockRounding) & (nint)Gc.BlockSizeMask;
+                    // The tables read as words: they are addresses, and read as
+                    // longs on i386 each was two loads, one of them dead.
+                    nint c = (nint)Sys.Peek((nint)Sys.Peek(Sys.AddressOf(ref Gc._classOf)) + (small >> 3) * w);
+                    nint slot = cache + c * (2 * w) + w;
+                    nint free = (nint)Sys.Peek(slot);
+                    if (free != 0)
+                    {
+                        nint size = (nint)Sys.Peek((nint)Sys.Peek(Sys.AddressOf(ref Gc._classSize)) + c * w);
+                        Sys.Poke(slot, Sys.Peek(free + (nint)Gc.BlockKindAt));
+                        Sys.Poke(free, size);
+                        Sys.Poke(free + (nint)Gc.BlockKindAt, kind);
+                        Sys.Poke(tb + (nint)Tls.InAlloc, 0);
+                        return (long)(nuint)(free + (nint)Gc.BlockHeaderBytes);
+                    }
                 }
                 // InAlloc left set: AllocMissed clears it (AllocFastSized).
             }
@@ -1289,7 +1308,7 @@ static class Runtime
         {
             nint open = (nint)Sys.Peek(tb + (nint)Tls.RegionOpen);
             nint record = (nint)Sys.Peek(tb + (nint)Tls.RegionAt);
-            nuint mask = (nuint)WordSize.AddressMask;
+            nuint mask = unchecked((nuint)WordSize.AddressMask);
             nint end = record + (nint)Gc.RegionRecordBytes;
             // The open region's opener from the block (Tls.RegionFloor), not its record.
             if ((open == 0 || (nuint)Sys.Peek(tb + (nint)Tls.RegionFloor) > ((nuint)frame & mask))
@@ -1375,9 +1394,9 @@ static class Runtime
     /// open, opened by a frame no deeper than ours -- one a throw has not
     /// left -- and room for the block in the chunk being filled: header,
     /// footer and kind written, then the pointer, as Gc.AllocRegion lays a
-    /// block (a scan of a stopped thread sees it whole or not at all). Not
-    /// counted: the statistics send every region allocation the long way,
-    /// which counts it (Gc.FastRegionMask). Anything else -- no thread block
+    /// block (a scan of a stopped thread sees it whole or not at all), and
+    /// counted in the thread's block (Tls.RegionCount, added to
+    /// Gc.RegionBlocks where a region ends). Anything else -- no thread block
     /// yet, no region, a stale one to close, a chunk to grow into, a sampled
     /// allocation -- the long way (AllocRegionSlow). A size the compiler
     /// knows is AllocRegionSized's, put in place.
@@ -1406,6 +1425,11 @@ static class Runtime
                 Sys.Poke(next - (nint)Gc.BlockFooterBytes, need);
                 Sys.Poke(at + (nint)Gc.BlockKindAt, kind);
                 Sys.Poke(tb + (nint)Tls.RegionAt, next);
+                // Counted in the thread's block (Tls.RegionCount), added to
+                // Gc.RegionBlocks where a region ends: what says how much a
+                // program makes in its regions.
+                nint counted = tb + (nint)Tls.RegionCount;
+                Sys.Poke(counted, (nint)Sys.Peek(counted) + 1);
                 return (long)(nuint)(at + (nint)Gc.BlockHeaderBytes);
             }
         }
@@ -1420,11 +1444,19 @@ static class Runtime
     /// then the block laid down, header, footer and kind, before the
     /// pointer passes it, so that a scan of the stopped thread (ScanRegion)
     /// sees it whole or not at all. The memory is zero already: a region's
-    /// end clears what it held (Gc.CutBack), as a fresh chunk is. NOT
-    /// COUNTED in the thread's block (Tls.RegionCount): the statistics,
-    /// when asked for, send every region allocation the long way, which
-    /// counts (Gc.FastRegionMask). Everything else is AllocRegionSlow, the
-    /// call AllocRegion's long way is.
+    /// end clears what it held (Gc.CutBack), as a fresh chunk is. Then the
+    /// block counted in the thread's block (Tls.RegionCount), one add.
+    /// Everything else is AllocRegionSlow, the call AllocRegion's long way is.
+    ///
+    /// NOT INSIDE THE ALLOCATOR (Tls.InAlloc), as NextChunk's and CutBack's
+    /// stores are: those change the pointer and the chunk it is in, two
+    /// words a handshake reads together. This changes the pointer alone,
+    /// within the chunk being filled, after the block it passes is whole: a
+    /// scan (ScanRegion, CopyRegion) landing before the store reads the
+    /// chunk to the old pointer, after it to the new one past a whole
+    /// block, and either is an arena as it is. The count is read only by
+    /// this thread at a region's end (CountRegionBlocks) and as it ends
+    /// (ReleaseRegion), never by a handshake.
     public static long AllocRegionSized(nint bytes, nint kind, nint frame, nint need)
     {
         nint tb = (nint)Sys.ThreadBlock() & Gc.FastRegionMask;
@@ -1438,6 +1470,11 @@ static class Runtime
                 Sys.Poke(next - (nint)Gc.BlockFooterBytes, need);
                 Sys.Poke(at + (nint)Gc.BlockKindAt, kind);
                 Sys.Poke(tb + (nint)Tls.RegionAt, next);
+                // Counted in the thread's block (Tls.RegionCount), added to
+                // Gc.RegionBlocks where a region ends: what says how much a
+                // program makes in its regions.
+                nint counted = tb + (nint)Tls.RegionCount;
+                Sys.Poke(counted, (nint)Sys.Peek(counted) + 1);
                 return (long)(nuint)(at + (nint)Gc.BlockHeaderBytes);
             }
         }
@@ -1991,6 +2028,27 @@ static class Runtime
     public static void WriteBarrier(nint slot, nint value)
     {
         Gc.Barrier((long)(nuint)slot, (long)(nuint)value);
+    }
+
+    /// THE STORE SEQUENCES' BARRIERS (X86Backend: __corsac_refstore,
+    /// __corsac_refxchg, __corsac_refcas), called while Marking is set: the
+    /// report, the store and its card made together (Gc.BarrierStore).
+    public static void WriteBarrierStore(nint slot, nint value)
+    {
+        Gc.BarrierStore((long)(nuint)slot, (long)(nuint)value);
+    }
+
+    /// The same for an exchange: what the slot held.
+    public static nint WriteBarrierExchange(nint slot, nint value)
+    {
+        return (nint)Gc.BarrierExchange((long)(nuint)slot, (long)(nuint)value);
+    }
+
+    /// The same for a compare-exchange: what the slot held, `value` stored
+    /// only where that was `expected`.
+    public static nint WriteBarrierCompareExchange(nint slot, nint value, nint expected)
+    {
+        return (nint)Gc.BarrierCompareExchange((long)(nuint)slot, (long)(nuint)value, (long)(nuint)expected);
     }
 
     /// The same, told the reference being overwritten rather than where it

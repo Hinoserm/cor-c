@@ -196,11 +196,28 @@ public sealed class TypeRef : Node
 
     public override string ToString()
     {
-        string s = Name;
+        // A PLAIN NAME IS ITS OWN TEXT, as most references are; anything
+        // more is spelt in one builder, a single string however many
+        // arguments and brackets it has.
+        if (Args.Count == 0 && ArrayRank == 0 && !Nullable) return Name;
+        System.Text.StringBuilder b = Interned.Builder();
+        AppendTo(b);
+        return Interned.Return(b);
+    }
 
+    /// <summary>ToString's text, written onto the end of `b`.</summary>
+    public void AppendTo(System.Text.StringBuilder b)
+    {
+        b.Append(Name);
         if (Args.Count > 0)
         {
-            s += "<" + string.Join(", ", Args) + ">";
+            b.Append('<');
+            for (int i = 0; i < Args.Count; i++)
+            {
+                if (i > 0) b.Append(", ");
+                Args[i].AppendTo(b);
+            }
+            b.Append('>');
         }
         // AN ARRAY'S `?` IS WHERE C# WRITES IT: `int?[]` holds nullable ints
         // (ElementNullable), `int[]?` may itself be null (Nullable). Written
@@ -209,16 +226,15 @@ public sealed class TypeRef : Node
         // EqualityComparer of the wrong one, and refused its own argument.
         if (ArrayRank == 0)
         {
-            if (Nullable) s += "?";
-            return s;
+            if (Nullable) b.Append('?');
+            return;
         }
-        if (ElementNullable) s += "?";
+        if (ElementNullable) b.Append('?');
         for (int i = 0; i < ArrayRank; i++)
         {
-            s += "[]";
+            b.Append("[]");
         }
-        if (Nullable) s += "?";
-        return s;
+        if (Nullable) b.Append('?');
     }
 }
 
