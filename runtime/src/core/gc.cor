@@ -408,10 +408,18 @@ static class Gc
 
     static bool _verifyGenerations;
     static long _verifyReports;
+    // WORDS THE MARKER NEVER READS (VerifyMajor's "marker reads it 0"): a
+    // number that equals an address -- a Windows reservation's base, a
+    // thread's start -- or a reference map that left a field out. Said, a
+    // few, on a count of their own: on the reports' count, the same base
+    // said at every cycle used up the forty within seconds of a boot, and
+    // every cycle after went unchecked.
+    static long _verifyUnread;
 
-    /// The major check (VerifyMajor) asked for by a program rather than the
-    /// platform: a kernel sets it from its command line (gc.verify=1). Read
-    /// at every whole collection, so it may be set after the heap started.
+    /// The checks of marking (VerifyMajor, and VerifyMinor for a minor
+    /// cycle) asked for by a program rather than the platform: a kernel sets
+    /// it from its command line (gc.verify=1). Read at every collection, so
+    /// it may be set after the heap started.
     public static bool VerifyMarks;
 
     /// CORSAC_GC_VERIFY: after a minor cycle has marked, every old block is
@@ -509,23 +517,26 @@ static class Gc
                         {
                             long seen = Sys.Peek(target);
                             long home = HeapChunks.OfSnapshot(target + HeaderBytes);
+                            bool reads = MarkerReads(block, size, p, tail);
                             if ((seen & (FlagMark | FlagFree)) == 0 && home != 0 && !Newcomer(home, target, seen)
                                 && Sys.Peek(p) == target + HeaderBytes
                                 // A NUMBER IN AN ARRAY OF NUMBERS -- an identity hash
                                 // above all -- that equals an address is no pointer:
                                 // the marker rightly never reads it, and forty such
                                 // reports in one int[] were all the verifier said.
-                                && !NumbersOnly(block))
+                                && !NumbersOnly(block)
+                                && (reads || _verifyUnread < 8))
                             {
+                                if (!reads) _verifyUnread = _verifyUnread + 1;
                                 SayNumber("gc verify major: marked block ", block);
                                 SayNumber("gc verify major:   its vtable ", Sys.Peek(block + HeaderBytes));
                                 SayNumber("gc verify major:   kind ", Sys.Peek(block + KindAt));
                                 SayNumber("gc verify major:   offset ", p - block - HeaderBytes);
-                                SayNumber("gc verify major:   marker reads it ", MarkerReads(block, size, p, tail) ? 1 : 0);
+                                SayNumber("gc verify major:   marker reads it ", reads ? 1 : 0);
                                 SayNumber("gc verify major:   points at unmarked ", target);
                                 SayNumber("gc verify major:   whose vtable ", Sys.Peek(target + HeaderBytes));
                                 SayNumber("gc verify major:   whose kind ", Sys.Peek(target + KindAt));
-                                _verifyReports = _verifyReports + 1;
+                                if (reads) _verifyReports = _verifyReports + 1;
                             }
                         }
                         p = p + WordSize.Bytes;
@@ -11274,7 +11285,7 @@ static class Gc
         // finds nothing to take.
         if (helped) WorkersMark(false);
         long reportsBefore = _verifyReports;
-        if (_minor && (_verifyGenerations || VerifyHeap)) VerifyMinor();
+        if (_minor && (_verifyGenerations || VerifyMarks || VerifyHeap)) VerifyMinor();
         if (!_minor && (_verifyGenerations || VerifyMarks || VerifyHeap)) VerifyMajor();
         if (_verifyGenerations || VerifyMarks || VerifyHeap) VerifyRegionEscapes();
         VerifyStop(reportsBefore);
@@ -11432,7 +11443,7 @@ static class Gc
         GcThreads.Round(GcThreads.Ack);
         MarkToEmpty();
         long verifiedBefore = _verifyReports;
-        if (_minor && (_verifyGenerations || VerifyHeap)) VerifyMinor();
+        if (_minor && (_verifyGenerations || VerifyMarks || VerifyHeap)) VerifyMinor();
         if (!_minor && (_verifyGenerations || VerifyMarks || VerifyHeap)) VerifyMajor();
         if (_verifyGenerations || VerifyMarks || VerifyHeap) VerifyNewcomers();
 
