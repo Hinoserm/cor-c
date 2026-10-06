@@ -11,6 +11,8 @@ public sealed class MethodDecl : MemberDecl
     /// virtual call comes in here (UsesCapture judges the field instead).
     /// </summary>
     public bool AutoAccessor { get; set; }
+    // Declared beside AutoAccessor so the two bytes share a word.
+    public bool IsCtor { get; init; }
     // Made only when written: most have none, and a list each was the collector's.
     private static readonly List<TypeParam> NoTypeParams = new();
     private List<TypeParam>? _typeParams;
@@ -28,9 +30,9 @@ public sealed class MethodDecl : MemberDecl
     // Never written through: every writer goes by WritableParams.
     private static readonly List<Param> NoParams = new();
     public Block? Body { get; init; }
-    public bool IsCtor { get; init; }
     /// <summary>The <c>: base(...)</c> or <c>: this(...)</c> a constructor chains to.</summary>
-    public CtorInit? Init { get; init; }
+    // This and every field below live in MemberRare: few methods set any.
+    public CtorInit? Init { get => _rare?.Init; init { if (value is not null) Rare.Init = value; } }
 
     /// <summary>
     /// The parameter this method's result is null only for, named by
@@ -40,14 +42,18 @@ public sealed class MethodDecl : MemberDecl
     /// declared `string?` because a null in gives a null back, and a caller who
     /// passed a string gets one. Null where the attribute was not written.
     /// </summary>
-    public string? NotNullIfNotNull { get; init; }
+    public string? NotNullIfNotNull { get => _rare?.NotNullIfNotNull; init { if (value is not null) Rare.NotNullIfNotNull = value; } }
 
     /// <summary>
     /// A GENERIC LOCAL FUNCTION hoisted into its type (Parser.
     /// ParseGenericLocalFunction): the name it was written under, which is
     /// how its block, and its own body, call it. Null for every other method.
     /// </summary>
-    public string? HoistedName { get; set; }
+    public string? HoistedName
+    {
+        get => _rare?.HoistedName;
+        set { if (value is not null) Rare.HoistedName = value; else if (_rare is not null) _rare.HoistedName = null; }
+    }
 
     /// <summary>
     /// The type parameters of what is around a generic local function that
@@ -56,7 +62,11 @@ public sealed class MethodDecl : MemberDecl
     /// </summary>
     // Shared and empty for the many methods that carry none; only ever
     // replaced whole (Binder.SettleGenericCaptures), never written through.
-    public List<string> CarriedTypeParams { get; set; } = NoNames;
+    public List<string> CarriedTypeParams
+    {
+        get => _rare?.CarriedTypeParams ?? NoNames;
+        set { if (!ReferenceEquals(value, NoNames)) Rare.CarriedTypeParams = value; else if (_rare is not null) _rare.CarriedTypeParams = null; }
+    }
     private static readonly List<string> NoNames = new();
 
     /// <summary>
@@ -65,12 +75,11 @@ public sealed class MethodDecl : MemberDecl
     /// (written name, member name) pairs, so its body, checked as a member of
     /// the type, sees them as C# lets it.
     /// </summary>
-    public List<(string Name, string Method)> LocalGenerics => _localGenerics ?? NoLocalGenerics;
+    public List<(string Name, string Method)> LocalGenerics => _rare?.LocalGenerics ?? NoLocalGenerics;
     /// <summary>To write: made on first use. Almost no method has any, and a
     /// list, a table and two more lists each were a tenth of a compile's
     /// live heap.</summary>
-    public List<(string Name, string Method)> WritableLocalGenerics => _localGenerics ??= new();
-    private List<(string Name, string Method)>? _localGenerics;
+    public List<(string Name, string Method)> WritableLocalGenerics => Rare.LocalGenerics ??= new();
     private static readonly List<(string Name, string Method)> NoLocalGenerics = new();
 
     /// <summary>
@@ -79,7 +88,11 @@ public sealed class MethodDecl : MemberDecl
     /// each by reference, named as the variable is, so its body reads and
     /// writes the enclosing method's own variable. -1 until they are known.
     /// </summary>
-    public int Captures { get; set; } = -1;
+    public int Captures
+    {
+        get => _rare?.Captures ?? -1;
+        set { if (value != -1) Rare.Captures = value; else if (_rare is not null) _rare.Captures = -1; }
+    }
 
     /// <summary>
     /// Where a hoisted generic local function was written: the HoistKey of
@@ -88,17 +101,20 @@ public sealed class MethodDecl : MemberDecl
     /// sees the copy's type arguments as Roslyn's sees the outer type
     /// parameters it is given.
     /// </summary>
-    public string? HoistedIn { get; set; }
+    public string? HoistedIn
+    {
+        get => _rare?.HoistedIn;
+        set { if (value is not null) Rare.HoistedIn = value; else if (_rare is not null) _rare.HoistedIn = null; }
+    }
 
     /// <summary>
     /// In a copy of a method, and in the generic local functions carried with
     /// it: which hoisted function each written block's name now means, by
     /// the name it was hoisted under (Binder.DeclareGenericLocal).
     /// </summary>
-    public Dictionary<string, string> Rehosted => _rehosted ?? NoRehosted;
+    public Dictionary<string, string> Rehosted => _rare?.Rehosted ?? NoRehosted;
     /// <summary>To write: made on first use.</summary>
-    public Dictionary<string, string> WritableRehosted => _rehosted ??= new(StringComparer.Ordinal);
-    private Dictionary<string, string>? _rehosted;
+    public Dictionary<string, string> WritableRehosted => Rare.Rehosted ??= new(StringComparer.Ordinal);
     private static readonly Dictionary<string, string> NoRehosted = new(StringComparer.Ordinal);
 
     /// <summary>What a hoisted function names its parent by: unique for a hoisted one, by place for a member.</summary>

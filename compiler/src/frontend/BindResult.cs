@@ -531,8 +531,8 @@ public sealed partial class BindResult
                 size = Math.Max(1, underlying.Size);
                 align = Math.Min(8, size);
             }
-            shape.Fields.Add(new FieldSymbol { Name = "hasValue", Type = Type.Bool, Owner = shape, Offset = 0 });
-            shape.Fields.Add(new FieldSymbol { Name = "value", Type = underlying.AsNonNullable(), Owner = shape, Offset = align, Inline = inline });
+            shape.WritableFields.Add(new FieldSymbol { Name = "hasValue", Type = Type.Bool, Owner = shape, Offset = 0 });
+            shape.WritableFields.Add(new FieldSymbol { Name = "value", Type = underlying.AsNonNullable(), Owner = shape, Offset = align, Inline = inline });
             shape.InstanceSize = (align + size + align - 1) / align * align;
             shape.InlineAlign = Math.Max(1, align);
             shape.HeldInline = underlying.Symbol is not { Kind: TypeKind.Struct } || inline;

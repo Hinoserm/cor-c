@@ -137,14 +137,14 @@ public sealed partial class Lowering
             Kind = TypeKind.Class,
             Decl = new TypeDecl { Name = name, Kind = TypeKind.Class, LocalOnly = true },
         };
-        machine.Interfaces.Add(action);
+        machine.WritableInterfaces.Add(action);
 
         MethodSymbol moveNext = new()
         {
             Name = "Invoke", Returns = Type.Void, Owner = machine,
             Decl = decl, VtableSlot = invoke.VtableSlot,
         };
-        machine.Methods.Add(moveNext);
+        machine.WritableMethods.Add(moveNext);
 
         int[] offsets = new int[m.Params.Count];
         int at = FirstParamField;

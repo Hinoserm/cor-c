@@ -73,9 +73,49 @@ public sealed class TypeRef : Node
     // Use-site arguments retained after Args is folded into a specialization
     // name. These annotations do not request another runtime specialization.
     public List<TypeRef>? UseArgs { get; init; }
+    /// <summary>
+    /// THE SMALL NUMBERS AND FLAGS OF A REFERENCE, IN ONE WORD: ArrayRank in
+    /// bits 0-7, PointerDepth in bits 8-15, Nullable bit 16, ElementNullable
+    /// bit 17, and CanonIndex plus one, signed, in bits 18-31. A large unit
+    /// holds a couple of hundred thousand type references, nearly all with
+    /// every one of these zero or false, and a word each was 72 bytes a
+    /// reference. A value too big for its bits is kept in the side object
+    /// (TypeRefRare) and its bits hold the marker that says so, so every
+    /// property reads back exactly what was written.
+    /// </summary>
+    private int _packed;
+
+    /// <summary>What few references carry: null until one of its fields is set.</summary>
+    private TypeRefRare? _rare;
+    private TypeRefRare Rare => _rare ??= new();
+
+    private const int ByteMarker = 255;
+    private const int CanonShift = 18;
+    private const int CanonMarker = -8192;
+
+    private int GetByte(int shift, bool pointer)
+    {
+        int v = (_packed >> shift) & 0xFF;
+        if (v != ByteMarker) return v;
+        return pointer ? _rare!.PointerDepth : _rare!.ArrayRank;
+    }
+
+    private void SetByte(int shift, bool pointer, int value)
+    {
+        int bits = value;
+        if (value < 0 || value >= ByteMarker)
+        {
+            if (pointer) Rare.PointerDepth = value; else Rare.ArrayRank = value;
+            bits = ByteMarker;
+        }
+        _packed = (_packed & ~(0xFF << shift)) | (bits << shift);
+    }
+
+    private void SetFlag(int bit, bool value) => _packed = value ? _packed | (1 << bit) : _packed & ~(1 << bit);
+
     /// <summary>Array rank, 0 when not an array.</summary>
-    public int ArrayRank { get; init; }
-    public bool Nullable { get; init; }
+    public int ArrayRank { get => GetByte(0, false); init => SetByte(0, false, value); }
+    public bool Nullable { get => (_packed & (1 << 16)) != 0; init => SetFlag(16, value); }
 
     /// <summary>
     /// Whether the ELEMENT is nullable, when this is an array.
@@ -95,7 +135,7 @@ public sealed class TypeRef : Node
     /// The BOUND type has always modelled this correctly: Type carries a nested
     /// Element with its own Nullable. Only the syntactic side was flat.
     /// </summary>
-    public bool ElementNullable { get; init; }
+    public bool ElementNullable { get => (_packed & (1 << 17)) != 0; init => SetFlag(17, value); }
 
     /// <summary>
     /// The '?' marks between the brackets of an array of arrays: bit k-1 set
@@ -104,10 +144,10 @@ public sealed class TypeRef : Node
     /// an array that may be null, of arrays that may be null. The outermost
     /// mark is Nullable and the innermost ElementNullable, as before.
     /// </summary>
-    public int InnerNullable { get; init; }
+    public int InnerNullable { get => _rare?.InnerNullable ?? 0; init { if (value != 0) Rare.InnerNullable = value; } }
 
     /// <summary>How many stars follow the name: <c>byte*</c> is one.</summary>
-    public int PointerDepth { get; init; }
+    public int PointerDepth { get => GetByte(8, true); init => SetByte(8, true, value); }
 
     /// <summary>
     /// What each element of a TUPLE type was called, or null for every other
@@ -117,7 +157,11 @@ public sealed class TypeRef : Node
     /// names are part of it: `f.At` has to mean the first one. Parallel to
     /// Args, with an empty string where an element was not named.
     /// </summary>
-    public List<string>? TupleNames { get; set; }
+    public List<string>? TupleNames
+    {
+        get => _rare?.TupleNames;
+        set { if (value is not null) Rare.TupleNames = value; else if (_rare is not null) _rare.TupleNames = null; }
+    }
 
     /// <summary>
     /// WHICH SHARED TYPE ARGUMENT THIS MACHINE WORD STANDS FOR (Type.CanonParam):
@@ -129,7 +173,26 @@ public sealed class TypeRef : Node
     /// argument at run time. Not part of the spelling: two references
     /// differing only here name one type.
     /// </summary>
-    public int CanonIndex { get; set; } = -1;
+    public int CanonIndex
+    {
+        get
+        {
+            int stored = _packed >> CanonShift;
+            return stored == CanonMarker ? _rare!.CanonIndex : stored - 1;
+        }
+        set
+        {
+            // Plus one, so that the -1 nearly every reference has is the
+            // zero a new reference starts with.
+            int stored = value + 1;
+            if (stored <= CanonMarker || stored > -CanonMarker - 1)
+            {
+                Rare.CanonIndex = value;
+                stored = CanonMarker;
+            }
+            _packed = (_packed & ((1 << CanonShift) - 1)) | (stored << CanonShift);
+        }
+    }
 
     public override string ToString()
     {
@@ -157,4 +220,18 @@ public sealed class TypeRef : Node
         if (Nullable) s += "?";
         return s;
     }
+}
+
+/// <summary>
+/// The fields of a TypeRef that almost no reference sets (TypeRef._packed):
+/// a tuple's element names, the '?' marks inside an array of arrays, and any
+/// number too big for its bits in the packed word.
+/// </summary>
+internal sealed class TypeRefRare
+{
+    public List<string>? TupleNames;
+    public int InnerNullable;
+    public int ArrayRank;
+    public int PointerDepth;
+    public int CanonIndex;
 }
