@@ -229,7 +229,7 @@ public static class Frontend
         Meter binding = Meter.Start();
         BindResult bound = Binder.Bind(unit, name, declarations is null ? null : declarations.Require, declarations?.Interfaces,
             declarations is null ? null : declarations.RequireExtensions, declarations?.LibraryInterfaces,
-                declarations is null ? null : declarations.RequireOverrides, kernelInterfaces: declarations?.KernelInterfaces);
+                declarations is null ? null : declarations.RequireOverrides, kernelInterfaces: declarations?.KernelInterfaces, asked: declarations?.Asked);
         binding.Stop("front:bind");
 
         // The checker's first pass discovers which generic methods were called
@@ -315,7 +315,7 @@ public static class Frontend
                 Meter fresh = Meter.Start();
                 bound = Binder.Bind(unit, name, declarations is null ? null : declarations.Require, declarations?.Interfaces,
                     declarations is null ? null : declarations.RequireExtensions, declarations?.LibraryInterfaces,
-                    declarations is null ? null : declarations.RequireOverrides, freshOnly: true, kernelInterfaces: declarations?.KernelInterfaces);
+                    declarations is null ? null : declarations.RequireOverrides, freshOnly: true, kernelInterfaces: declarations?.KernelInterfaces, asked: declarations?.Asked);
                 fresh.Stop("front:bind-fresh");
 
                 foreach (TypeDecl t in unit.Types)
@@ -336,7 +336,7 @@ public static class Frontend
             Meter rebinding = Meter.Start();
             bound = Binder.Bind(unit, name, declarations is null ? null : declarations.Require, declarations?.Interfaces,
                 declarations is null ? null : declarations.RequireExtensions, declarations?.LibraryInterfaces,
-                declarations is null ? null : declarations.RequireOverrides, kernelInterfaces: declarations?.KernelInterfaces);
+                declarations is null ? null : declarations.RequireOverrides, kernelInterfaces: declarations?.KernelInterfaces, asked: declarations?.Asked);
             rebinding.Stop("front:bind-round");
             if (Switches.TraceWants)
             {
@@ -454,9 +454,30 @@ public static class Frontend
         // Source text belongs to the active parser, not the project. Retain
         // paths in the queue so completed files release their text before the
         // next file is read. At most one source buffer per worker is live.
-        string text = path is null ? Prelude.Source : File.ReadAllText(path);
+        string text = path is null ? Prelude.Source : SourceText(path);
         return tokens is null ? Parser.ParseText(text, name, symbols, elsewhere, elsewhere)
             : tokens.Parse(text, name, symbols, elsewhere, elsewhere);
+    }
+
+    /// <summary>
+    /// A source file's text, as File.ReadAllText reads it. ITS BYTES, THEN ONE
+    /// STRING: ReadAllText decodes into a growing builder and copies the text
+    /// out of it, twice the text in characters on top of the string -- and
+    /// every source is read again in every pass a demand throws away.
+    /// A UTF-16 or UTF-32 file, told by its byte-order mark, is left to
+    /// ReadAllText, which reads those; a UTF-8 one has its mark dropped as
+    /// ReadAllText drops it.
+    /// </summary>
+    private static string SourceText(string path)
+    {
+        byte[] bytes = File.ReadAllBytes(path);
+        if (bytes.Length >= 2 && (bytes[0] == 0xFE && bytes[1] == 0xFF || bytes[0] == 0xFF && bytes[1] == 0xFE)
+            || bytes.Length >= 4 && bytes[0] == 0 && bytes[1] == 0 && bytes[2] == 0xFE && bytes[3] == 0xFF)
+        {
+            return File.ReadAllText(path);
+        }
+        int skip = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF ? 3 : 0;
+        return System.Text.Encoding.UTF8.GetString(bytes, skip, bytes.Length - skip);
     }
 
     private static bool Report(IReadOnlyList<CompileError> errors)

@@ -21,6 +21,8 @@ public sealed class IndexedDeclarations : IDisposable
     /// for the same names thousands of times a unit.
     /// </summary>
     private readonly Dictionary<string, string?> required = new(StringComparer.Ordinal);
+    /// <summary>The names the unit's bindings have required, kept from one binding to the next (Binder.Bind).</summary>
+    public DemandsAsked Asked { get; } = new();
     public long PayloadLoads => catalog.PayloadLoads;
     public SyntaxTokenCache Tokens { get; }
     public int Passes { get; set; }
@@ -833,4 +835,16 @@ public sealed class IndexedDeclarations : IDisposable
         UnitDependencies.Write(path, catalog, loaded, implementations,
             queries.Select(asked => asked.Kind + ":" + identity + "\n" + asked.Name));
     }
+}
+
+/// <summary>
+/// The type names one unit's bindings have required of its declarations:
+/// whole (TypeCandidate) and by scope and name (TypeCandidateIn). Every one
+/// is answered for the rest of the unit -- in no declaration, or loaded --
+/// so a later binding need not ask, nor spell it to ask.
+/// </summary>
+public sealed class DemandsAsked
+{
+    public HashSet<string> Names { get; } = new(StringComparer.Ordinal);
+    public HashSet<(string Within, string Name)> Within { get; } = new();
 }

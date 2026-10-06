@@ -46,6 +46,23 @@ public static class Interned
     [ThreadStatic] private static Dictionary<(string, int), string>? _arities;
 
     /// <summary>
+    /// `prefix + name` kept by its two parts: an accessor's name (`get_` and
+    /// a property's) asked for at every simple name a body reads, spelt each
+    /// time only to be looked for among the members.
+    /// </summary>
+    public static string Prefixed(string prefix, string name)
+    {
+        Dictionary<(string, string), string> joined = _prefixed ??= new();
+        if (joined.TryGetValue((prefix, name), out string? had)) return had;
+        if (joined.Count >= MostNames) joined.Clear();
+        string spelt = Name(prefix + name);
+        joined[(prefix, name)] = spelt;
+        return spelt;
+    }
+
+    [ThreadStatic] private static Dictionary<(string, string), string>? _prefixed;
+
+    /// <summary>
     /// A STRING BUILDER TO SPELL A NAME IN, one per thread and used again:
     /// a name made of parts -- a type with its arguments, a specialisation's
     /// mangling -- was a string for each part and each join, where one
@@ -82,5 +99,6 @@ public static class Interned
     {
         _names = null;
         _arities = null;
+        _prefixed = null;
     }
 }

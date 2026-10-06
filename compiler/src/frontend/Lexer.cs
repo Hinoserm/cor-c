@@ -1292,7 +1292,7 @@ public sealed class Lexer
             {
                 throw Error(@"\U needs exactly eight hexadecimal digits", line, col);
             }
-            value = value * 16 + Convert.ToInt32(Cur.ToString(), 16);
+            value = value * 16 + HexValue(Cur);
             Advance();
         }
         if (value > 0x10FFFF)
@@ -1441,6 +1441,14 @@ public sealed class Lexer
         return c;
     }
 
+    /// <summary>
+    /// A hexadecimal digit's value (the caller has checked it is one). Not
+    /// Convert.ToInt32 of the digit made a string: every `\u`, `\x` and `\U`
+    /// escape made a string a digit to read it back.
+    /// </summary>
+    private static int HexValue(char c)
+        => c <= '9' ? c - '0' : (c | 0x20) - 'a' + 10;
+
     private char Escape()
     {
         int line = _line, col = _col;
@@ -1478,7 +1486,7 @@ public sealed class Lexer
                     {
                         throw Error(@"\u needs exactly four hexadecimal digits", line, col);
                     }
-                    value = value * 16 + Convert.ToInt32(Cur.ToString(), 16);
+                    value = value * 16 + HexValue(Cur);
                     Advance();
                 }
                 return (char)value;
@@ -1491,7 +1499,7 @@ public sealed class Lexer
                 int value = 0, digits = 0;
                 while (digits < 4 && !Done && Uri.IsHexDigit(Cur))
                 {
-                    value = value * 16 + Convert.ToInt32(Cur.ToString(), 16);
+                    value = value * 16 + HexValue(Cur);
                     Advance();
                     digits++;
                 }

@@ -586,6 +586,9 @@ public sealed partial class Binder
         // each time spelt `within.name` to be told no -- the binder's largest
         // run of string building. Remembered by its two parts, scope first,
         // the second asking costs two lookups and no string.
+        // Kept here only for the global scope: a name in any other is in
+        // _demandedWithin as well (below), which answers the same and holds it
+        // for the whole unit, where these were a set a scope for every binding.
         if (plain && _absentWithin.TryGetValue(within, out HashSet<string>? absent) && absent.Contains(name))
         {
             symbol = null;
@@ -614,13 +617,12 @@ public sealed partial class Binder
         if (within.Length > 0 && (_namingOnly || _demandedWithin.Contains((within, name))))
         {
             symbol = null;
-            if (!_namingOnly) Absent(within, name);
             return false;
         }
         bool demandedBefore = _declarationBatch.Any;
         bool found = TypeCandidate(within + "." + name, out symbol);
         if (!found && within.Length > 0 && !_namingOnly) _demandedWithin.Add((within, name));
-        if (!found && plain && !_namingOnly && (demandedBefore || !_declarationBatch.Any)) Absent(within, name);
+        if (!found && plain && within.Length == 0 && !_namingOnly && (demandedBefore || !_declarationBatch.Any)) Absent(within, name);
         return found;
     }
 
@@ -645,7 +647,7 @@ public sealed partial class Binder
     private readonly Dictionary<string, HashSet<string>> _absentWithin = new(StringComparer.Ordinal);
 
     /// <summary>The names TypeCandidateIn has demanded, by their two parts (TypeCandidate's _demanded).</summary>
-    private readonly HashSet<(string Within, string Name)> _demandedWithin = new();
+    private HashSet<(string Within, string Name)> _demandedWithin = new();
 
     private bool TypeCandidate(string key, out TypeSymbol? symbol)
     {
@@ -680,7 +682,7 @@ public sealed partial class Binder
         return false;
     }
 
-    private readonly HashSet<string> _demanded = new(StringComparer.Ordinal);
+    private HashSet<string> _demanded = new(StringComparer.Ordinal);
 
     /// <summary>Whether this pass has already found declarations it must retry with.</summary>
     private bool Demanded => _declarationBatch.Any;
@@ -1083,9 +1085,20 @@ public sealed partial class Binder
         Action<string, string>? requireExtensions = null,
         IReadOnlySet<(string Name, int Arity)>? libraryInterfaces = null,
         Action<string, int>? requireOverrides = null, bool freshOnly = false,
-        IReadOnlySet<(string Name, int Arity)>? kernelInterfaces = null)
+        IReadOnlySet<(string Name, int Arity)>? kernelInterfaces = null, Metadata.DemandsAsked? asked = null)
     {
         Binder b = new(file, requireDeclaration, indexedInterfaces, requireExtensions, libraryInterfaces, requireOverrides, kernelInterfaces);
+        // WHAT EARLIER BINDINGS OF THIS UNIT ALREADY ASKED THE INDEX. A name
+        // once required is answered for the rest of the unit's compile: it was
+        // in no declaration, or it was loaded -- straight away, or by the pass
+        // its demand threw away -- and asking again only spells it again to
+        // be told nothing. Each round's binder asked them all afresh, every
+        // name spelt again in every binding of the unit.
+        if (asked is not null)
+        {
+            b._demanded = asked.Names;
+            b._demandedWithin = asked.Within;
+        }
         b._freshOnly = freshOnly;
         b._usesDynamic = unit.UsesDynamic;
         b.Run(unit);
@@ -9835,7 +9848,15 @@ public sealed partial class Binder
         // shape that already had one, with no element names on it -- and
         // `p.First` over a Zip of two ParamSymbols was told the tuple has no
         // such member.
-        string name = TypeRef.Tuple + "$" + string.Join("$", elements.Select(TupleElementName));
+        // One builder and one string for the whole name (TupleElementName).
+        System.Text.StringBuilder spelling = Interned.Builder();
+        spelling.Append(TypeRef.Tuple).Append('$');
+        for (int i = 0; i < elements.Count; i++)
+        {
+            if (i > 0) spelling.Append('$');
+            TupleElementName(spelling, elements[i]);
+        }
+        string name = Interned.Return(spelling);
 
         if (_r.Types.TryGetValue(name, out TypeSymbol? already))
         {
@@ -10006,25 +10027,33 @@ public sealed partial class Binder
     /// int array, and two units that met the shapes in a different order laid
     /// the class out differently and could not be linked.
     /// </summary>
-    private static string TupleElementName(Type e)
+    /// <summary>An element's part of a tuple shape's name, written onto the end of `b`.</summary>
+    private static void TupleElementName(System.Text.StringBuilder b, Type e)
     {
         if (e.IsPointer)
         {
-            return TupleElementName(e.Pointee!) + "*";
+            TupleElementName(b, e.Pointee!);
+            b.Append('*');
+            return;
         }
 
         if (e.IsArray)
         {
-            return TupleElementName(e.Element!) + "[" + new string(',', e.ArrayRank - 1) + "]";
+            TupleElementName(b, e.Element!);
+            b.Append('[').Append(',', e.ArrayRank - 1).Append(']');
+            return;
         }
 
         if (e.IsNullableValue)
         {
-            return TupleElementName(e.Underlying) + "?";
+            TupleElementName(b, e.Underlying);
+            b.Append('?');
+            return;
         }
 
-        return (NameOf(e) ?? e.ParamName ?? e.Prim.ToString())
-            .Replace("<", "_").Replace(">", "").Replace(", ", "_").Replace(".", "$");
+        int start = b.Length;
+        b.Append(NameOf(e) ?? e.ParamName ?? e.Prim.ToString());
+        Monomorphiser.Mangle(b, start);
     }
 
     /// <summary>
@@ -15860,7 +15889,7 @@ public sealed partial class Binder
                 return Type.Void;
             }
 
-            MethodSymbol? getter = Members(_thisType, "get_" + n.Name).FirstOrDefault();
+            MethodSymbol? getter = Members(_thisType, Interned.Prefixed("get_", n.Name)).FirstOrDefault();
             if (getter is not null && NotInvocable(n, getter.Returns)) getter = null;
 
             if (getter is { Static: false } && InStaticContext)
@@ -15875,7 +15904,7 @@ public sealed partial class Binder
                 return getter.Returns;
             }
 
-            if (Members(_thisType, "set_" + n.Name).FirstOrDefault(s => s.Params.Count == 1) is { } onlySetter
+            if (Members(_thisType, Interned.Prefixed("set_", n.Name)).FirstOrDefault(s => s.Params.Count == 1) is { } onlySetter
                 && !(onlySetter is { Static: false } && InStaticContext))
             {
                 _r.Resolved[n] = new PropertySetSym(onlySetter);
@@ -16422,8 +16451,11 @@ public sealed partial class Binder
         // A type another unit declares is loaded from its index only when it
         // is asked for by name (FindType), so the nested one is asked too.
         TypeSymbol? nested = null;
+        // By its two parts first (TryGetWithin), and spelt once for FindType
+        // only when the table has no such type: `Opcode.Add`, a member of a
+        // type and no type at all, spelt its path twice at every mention.
         if (_r.Resolved.TryGetValue(m.Target, out Sym? qualifier) && qualifier is TypeNameSym holder
-            && (_r.Types.TryGetValue(holder.Symbol.Key + "." + m.Name, out nested)
+            && (_r.Types.TryGetWithin(holder.Symbol.Key, m.Name, out nested)
                 || FindType(holder.Symbol.Key + "." + m.Name, out nested) && nested is not null))
         {
             _r.Resolved[m] = new TypeNameSym(nested);

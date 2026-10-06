@@ -1498,35 +1498,45 @@ public sealed class Monomorphiser
             b.Append('$');
             int start = b.Length;
             a.AppendTo(b);
-            int to = start;
-            for (int from = start; from < b.Length; from++)
-            {
-                char c = b[from];
-                if (c == '>') continue;
-                if (c == '<') c = '_';
-                // A NESTED ARGUMENT KEEPS ITS OUTER, spelled with the separator
-                // this name already uses: the dot is how a nested type is KEYED,
-                // and a specialisation is not one.
-                else if (c == '.') c = '$';
-                else if (c == ',')
-                {
-                    // `, ` once the `>`s are gone, as the chain this replaces
-                    // dropped them before it looked for the comma's space.
-                    int next = from + 1;
-                    while (next < b.Length && b[next] == '>') next++;
-                    if (next < b.Length && b[next] == ' ')
-                    {
-                        c = '_';
-                        from = next;
-                    }
-                }
-                b[to++] = c;
-            }
-            b.Length = to;
+            Mangle(b, start);
         }
         return Interned.Return(b);
     }
 
+
+    /// <summary>
+    /// A type's text from <paramref name="start"/> on, mangled in place as a
+    /// specialisation's name spells it: `<` as `_`, `>` dropped, `, ` as `_`
+    /// and `.` as `$` -- the chain of Replaces this does in one walk.
+    /// </summary>
+    internal static void Mangle(System.Text.StringBuilder b, int start)
+    {
+        int to = start;
+        for (int from = start; from < b.Length; from++)
+        {
+            char c = b[from];
+            if (c == '>') continue;
+            if (c == '<') c = '_';
+            // A NESTED ARGUMENT KEEPS ITS OUTER, spelled with the separator
+            // this name already uses: the dot is how a nested type is KEYED,
+            // and a specialisation is not one.
+            else if (c == '.') c = '$';
+            else if (c == ',')
+            {
+                // `, ` once the `>`s are gone, as the chain this replaces
+                // dropped them before it looked for the comma's space.
+                int next = from + 1;
+                while (next < b.Length && b[next] == '>') next++;
+                if (next < b.Length && b[next] == ' ')
+                {
+                    c = '_';
+                    from = next;
+                }
+            }
+            b[to++] = c;
+        }
+        b.Length = to;
+    }
 
     /// <summary>How a generic template is keyed: its name and how many type parameters it takes.</summary>
     private static string Arity(string name, int count) => Interned.WithArity(name, count);
