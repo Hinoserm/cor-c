@@ -1681,7 +1681,7 @@ static class Gc
         }
         long vt = Sys.Peek(payload) & WordSize.AddressMask;
         YoungCardWords = YoungCardWords + (high - low) / w;
-        if (kind != KindObject || vt == 0)
+        if (kind != KindObject || vt == 0 || (_quarantinedHigh != 0 && InQuarantine(vt)))
         {
             ScanRangeW((nuint)low, (nuint)high, local);
             return;
@@ -2914,7 +2914,7 @@ static class Gc
         if (kind != KindObject && kind != KindLeaf) return false;
         // An array, or a string's characters, by its descriptor.
         long vt = Sys.Peek(at) & WordSize.AddressMask;
-        if (vt == 0) return false;
+        if (vt == 0 || InQuarantine(vt)) return false;
         long desc = vt - DescWords * w;
         if ((Sys.Peek(desc + DescSelfWord * w) & WordSize.AddressMask) != desc) return false;
         long flags = Sys.Peek(desc + DescFlagsWord * w);
@@ -6722,26 +6722,56 @@ static class Gc
     //
     // A module forced out while objects of its types are still alive
     // (docs/software/DRIVERS.md, "Forced") leaves vtables and descriptors that
-    // are about to be unmapped. Every such object is TOMBSTONED, with the
-    // world stopped for a collection: its block becomes a leaf (never scanned
-    // again, so its descriptor is never read), and its vtable word points at
-    // the Revoked table -- a descriptor that is no type's, so every cast and
-    // type test of it fails, and a vtable whose every slot calls Revoked,
-    // which hands the caller to the platform to be ended (Platform.Revoked: a
-    // kernel kills the thread or crashes the program; a program on Linux
-    // dies). The object's memory stays good, so whatever still refers to it
-    // reads valid memory, and the collector frees it once nothing does.
+    // are about to be unmapped. Every such object is TOMBSTONED at the start
+    // of a collection, with the heap lock held and no cycle under way: its
+    // vtable word points at a Revoked table -- a descriptor that is no type's,
+    // so every cast and type test of it fails, and a vtable whose every slot
+    // calls Revoked, which hands the caller to the platform to be ended
+    // (Platform.Revoked: a kernel kills the thread or crashes the program; a
+    // program on Linux dies) -- and its block becomes one the collector reads
+    // word by word, as it reads a struct's (KindAt 0). So the object keeps its
+    // size and everything it refers to is kept for as long as it is: kernel
+    // code that still holds it as a base class it knows reads fields that are
+    // good. Its own descriptor is never read again, and the collector frees it
+    // once nothing refers to it.
+    //
+    // THE TABLE IS AS LONG AS THE LONGEST VTABLE OF THE MODULE (Revoke's
+    // `slots`): an interface's methods are numbered over every interface the
+    // program declares, so a module's vtables run to thousands of slots, and
+    // a call through a slot past the table's end would jump wherever the
+    // word after it pointed. A longer table is made for a module that needs
+    // one; the older ones stay, for the objects already pointing at them.
+    //
+    // QUARANTINED RANGES (Quarantine): a kernel tells the collector which
+    // addresses are a module's that was forced out, unmapped and not to be
+    // reused. Every read of an object's descriptor first asks whether its
+    // vtable lies in one, and reads such an object word by word instead --
+    // the fault the read would take is in the collector, with nobody to end
+    // but the machine. None should be found: the kernel unmaps a module's
+    // code before its objects are tombstoned, so nothing can make one after
+    // the walk. A later Revoke tombstones any that are, all the same.
 
-    static long _revokeLow, _revokeHigh, _revokedTable, _revokedCount;
+    static long _revokeLow, _revokeHigh, _revokedTable, _revokedSlots, _revokeSlots, _revokedCount;
     static bool _revokeCountOnly;
-    const long RevokedSlots = 1024;
+    const long RevokedSlotsLeast = 1024;
+    // The class display's length: deeper than any class chain is.
+    const long RevokedDepth = 256;
+    const long DescNameWord = 0;
 
-    /// Every live object whose vtable is in [low, high) tombstoned; how many.
+    /// Every object whose vtable is in [low, high) tombstoned; how many.
     /// Runs a full collection to do it.
     public static long Revoke(long low, long high)
     {
+        return Revoke(low, high, 0);
+    }
+
+    /// The same, with a Revoked table of at least `slots` vtable slots: the
+    /// longest vtable of a type in [low, high).
+    public static long Revoke(long low, long high, long slots)
+    {
         if (high <= low) return 0;
         _revokedCount = 0;
+        _revokeSlots = slots;
         _revokeLow = low;
         _revokeHigh = high;
         Collect();
@@ -6750,11 +6780,14 @@ static class Gc
         return _revokedCount;
     }
 
-    /// How many live objects have their vtable in [low, high), touching
-    /// none: whether a module is provably free of objects of its types
-    /// before it is taken out. Runs a full collection to know.
+    /// How many objects not yet freed have their vtable in [low, high),
+    /// touching none: whether a module is free of objects of its types
+    /// before its image goes. Runs a full collection first, so garbage of
+    /// its types has been swept and what is counted is what lived through
+    /// one.
     public static long CountIn(long low, long high)
     {
+        Collect();
         _revokeCountOnly = true;
         try { return Revoke(low, high); }
         finally { _revokeCountOnly = false; }
@@ -6766,50 +6799,70 @@ static class Gc
         Platform.Revoked();
     }
 
-    static long RevokedVtable()
+    static long RevokedVtable(long slots)
     {
         long w = WordSize.Bytes;
-        if (_revokedTable == 0)
-        {
-            // The descriptor, the vtable after it, and a class display of
-            // RevokedSlots zeros after that.
-            long bytes = (DescWords + 2 * RevokedSlots) * w;
-            long table = Platform.Map(bytes);
-            if (table == 0) return 0;
-            Sys.MemorySet(table, 0, bytes);
-            // The descriptor names itself, as every one does (the census and
-            // the type tests check it), and is no type: as deep in a class
-            // chain as any type can be, so the compiler's inline test of a
-            // class reads its display at the class's depth, and every entry of
-            // the display is 0, which is no class. No interfaces, no element,
-            // no references.
-            Sys.Poke(table + DescSelfWord * w, table);
-            Sys.Poke(table + DescDepthWord * w, RevokedSlots - 1);
-            Sys.Poke(table + DescDisplayWord * w, table + (DescWords + RevokedSlots) * w);
-            long stub = Sys.AddressOf(Revoked);
-            for (long i = 0; i < RevokedSlots; i++) Sys.Poke(table + (DescWords + i) * w, stub);
-            _revokedTable = table;
-        }
-        return _revokedTable + DescWords * w;
+        if (slots < RevokedSlotsLeast) slots = RevokedSlotsLeast;
+        if (_revokedTable != 0 && slots <= _revokedSlots) return _revokedTable + DescWords * w;
+        // The descriptor, the vtable after it, and a class display of
+        // RevokedDepth zeros after that.
+        long bytes = (DescWords + slots + RevokedDepth) * w;
+        long table = Platform.Map(bytes);
+        if (table == 0) return _revokedTable != 0 && _revokedSlots >= slots ? _revokedTable + DescWords * w : 0;
+        Sys.MemorySet(table, 0, bytes);
+        // The descriptor names itself, as every one does (the census and the
+        // type tests check it), and is no type: as deep in a class chain as
+        // any type can be, so the compiler's inline test of a class reads
+        // its display at the class's depth, and every entry of the display is
+        // 0, which is no class. No interfaces, no element, no references (the
+        // block is read word by word, never through this). Its name is one
+        // of the runtime's own strings, never the module's.
+        string name = "Revoked";
+        Sys.Poke(table + DescNameWord * w, Sys.Peek(Sys.AddressOf(ref name)) & WordSize.AddressMask);
+        Sys.Poke(table + DescSelfWord * w, table);
+        Sys.Poke(table + DescDepthWord * w, RevokedDepth - 1);
+        Sys.Poke(table + DescDisplayWord * w, table + (DescWords + slots) * w);
+        long stub = Sys.AddressOf(Revoked);
+        for (long i = 0; i < slots; i++) Sys.Poke(table + (DescWords + i) * w, stub);
+        _revokedTable = table;
+        _revokedSlots = slots;
+        return table + DescWords * w;
     }
 
-    static void Tombstone(long block, long vtable)
+    /// One block of the walk: tombstoned, counted, or handed to a visitor.
+    static void AtStart(long block, long vtable)
     {
         if ((Sys.Peek(block) & FlagFree) != 0 || Sys.Peek(block + KindAt) != KindObject) return;
         long vt = Sys.Peek(block + HeaderBytes) & WordSize.AddressMask;
-        if (vt < _revokeLow || vt >= _revokeHigh) return;
+        if (_visitVtable != 0 && vt == _visitVtable)
+        {
+            _visited = _visited + 1;
+            Sys.Call(_visitor, block + HeaderBytes, 0, 0);
+            return;
+        }
+        if (_revokeHigh == 0) return;
+        bool mine = vt >= _revokeLow && vt < _revokeHigh;
+        // One a module forced out earlier made after its walk: there should
+        // be none (see above), and one found is tombstoned with these.
+        if (!mine && (_revokeCountOnly || !InQuarantine(vt))) return;
         _revokedCount = _revokedCount + 1;
         if (_revokeCountOnly) return;
-        Sys.Poke(block + KindAt, KindLeaf);
         Sys.Poke(block + HeaderBytes, vtable);
+        Sys.Poke(block + KindAt, 0);
     }
 
     /// The walk CheckHeap makes -- every chunk's chain, every thread's
-    /// buffer up to its pointer -- tombstoning as it goes.
-    static void RevokeNow()
+    /// buffer up to its pointer -- at the start of a collection, with the
+    /// heap lock held and no cycle under way: tombstoning (Revoke), counting
+    /// (CountIn) and visiting (VisitInstances) as it goes.
+    static void WalkAtStart()
     {
-        long vtable = RevokedVtable();
-        if (vtable == 0) return;
+        long vtable = 0;
+        if (_revokeHigh != 0 && !_revokeCountOnly)
+        {
+            vtable = RevokedVtable(_revokeSlots);
+            if (vtable == 0) return;
+        }
         if (_heapCheckTable == 0)
         {
             _heapCheckTable = Platform.Map(GcThreads.BufferTableBytes());
@@ -6829,7 +6882,7 @@ static class Gc
                 for (long at = HeapChunks.First(chunk); at + size <= limit; at = at + size)
                 {
                     if ((Sys.Peek(at) & SizeMask) != size) break;
-                    Tombstone(at, vtable);
+                    AtStart(at, vtable);
                 }
                 chunk = HeapChunks.Next(chunk);
                 continue;
@@ -6848,7 +6901,7 @@ static class Gc
                 }
                 long size = Sys.Peek(block) & SizeMask;
                 if (size < Smallest || block + size > end) break;
-                Tombstone(block, vtable);
+                AtStart(block, vtable);
                 block = block + size;
             }
             chunk = HeapChunks.Next(chunk);
@@ -6862,10 +6915,298 @@ static class Gc
                 long word = Sys.Peek(at);
                 long size = word & SizeMask;
                 if (word == 0 || size < Smallest || at + size > upto) break;
-                Tombstone(at, vtable);
+                AtStart(at, vtable);
                 at = at + size;
             }
         }
+    }
+
+    // ---- every object of one type, visited ---------------------------------------
+    //
+    // A kernel that killed a thread finds the locks it left held this way
+    // (every IrqSpinLock and KernelGate on the heap, os/kernel/arch/x86/
+    // modules.cor): a walk of the heap at the start of a collection, the
+    // heap lock held, every object whose vtable is the one asked for handed
+    // to the visitor. The visitor must not allocate, take the heap lock or
+    // wait.
+
+    static long _visitVtable, _visitor, _visited;
+
+    /// `visitor(payload)` called for every object whose vtable is `vtable`;
+    /// how many there were. Runs a full collection to do it.
+    public static long VisitInstances(long vtable, long visitor)
+    {
+        if (vtable == 0 || visitor == 0) return 0;
+        _visited = 0;
+        _visitor = visitor;
+        _visitVtable = vtable;
+        Collect();
+        _visitVtable = 0;
+        _visitor = 0;
+        return _visited;
+    }
+
+    // ---- quarantined ranges ------------------------------------------------------
+
+    const long QuarantinedMax = 32;
+    static long _quarantined;           // QuarantinedMax pairs (low, high), of the platform's memory
+    static long _quarantinedLow, _quarantinedHigh;  // the hull of them all, 0 when there are none
+
+    /// [low, high) is a module's, forced out: its descriptors are unmapped
+    /// and an object whose vtable is there is read word by word. False when
+    /// the table is full.
+    public static bool Quarantine(long low, long high)
+    {
+        if (high <= low) return false;
+        if (_quarantined == 0)
+        {
+            _quarantined = Platform.Map(QuarantinedMax * 2 * WordSize.Bytes);
+            if (_quarantined == 0) return false;
+            Sys.MemorySet(_quarantined, 0, QuarantinedMax * 2 * WordSize.Bytes);
+        }
+        for (long i = 0; i < QuarantinedMax; i++)
+        {
+            long at = _quarantined + i * 2 * WordSize.Bytes;
+            if (Sys.Peek(at + WordSize.Bytes) != 0) continue;
+            Sys.Poke(at, low);
+            Sys.Poke(at + WordSize.Bytes, high);
+            Hull();
+            return true;
+        }
+        return false;
+    }
+
+    /// [low, high) given back: its addresses may be anybody's again.
+    public static void Unquarantine(long low, long high)
+    {
+        if (_quarantined == 0) return;
+        for (long i = 0; i < QuarantinedMax; i++)
+        {
+            long at = _quarantined + i * 2 * WordSize.Bytes;
+            if (Sys.Peek(at) != low || Sys.Peek(at + WordSize.Bytes) != high) continue;
+            Sys.Poke(at + WordSize.Bytes, 0);
+            Sys.Poke(at, 0);
+        }
+        Hull();
+    }
+
+    static void Hull()
+    {
+        long low = 0, high = 0;
+        for (long i = 0; i < QuarantinedMax; i++)
+        {
+            long at = _quarantined + i * 2 * WordSize.Bytes;
+            long h = Sys.Peek(at + WordSize.Bytes);
+            if (h == 0) continue;
+            long l = Sys.Peek(at);
+            if (high == 0 || l < low) low = l;
+            if (h > high) high = h;
+        }
+        // Low first: a reader that sees the new high with the old low asks
+        // the table, which is right either way.
+        _quarantinedLow = low;
+        _quarantinedHigh = high;
+    }
+
+    /// Whether `address` is in a quarantined range. One load and a branch
+    /// when there is none, which is always outside a kernel that has forced
+    /// a module out.
+    public static bool InQuarantine(long address)
+    {
+        if (_quarantinedHigh == 0 || address >= _quarantinedHigh || address < _quarantinedLow) return false;
+        for (long i = 0; i < QuarantinedMax; i++)
+        {
+            long at = _quarantined + i * 2 * WordSize.Bytes;
+            if (address >= Sys.Peek(at) && address < Sys.Peek(at + WordSize.Bytes)) return true;
+        }
+        return false;
+    }
+
+    // ---- what is held of a module's types from outside it ----------------------
+    //
+    // A PLAIN rmmod asks whether anything outside the module holds an object
+    // of its types, and must leave the module working when something does.
+    // A collection run without its statics as roots would answer, and free
+    // what only its statics held -- under statics it is about to need again.
+    // So the answer is had in two phases of ONE collection (CountHeld):
+    //
+    //   1. The module's statics are not a root (the registered range that
+    //      starts at `rootFrom` is passed over), and the objects the kernel
+    //      holds of it on purpose -- its drivers and buses, registered in the
+    //      kernel's tables -- are marked before anything else and not
+    //      scanned, so nothing is reached through them. When the mark is
+    //      over, every marked object of its types is held from outside it,
+    //      and counted.
+    //   2. Then the statics and those objects are scanned and the mark run
+    //      to its end again, so what they hold is kept, and the sweep frees
+    //      only what nothing at all holds.
+    //
+    // Only a major cycle counts, and only the cycle that began after it was
+    // asked for: one already under way had read its roots before.
+
+    static long _heldLow, _heldHigh, _heldRootFrom, _heldRootTo;
+    static long _heldExempt, _heldExempts, _heldCycle, _heldFound;
+    static long _heldPhase;             // 0 none, 1 asked, 2 counted
+
+    /// How many objects whose vtable is in [low, high) are held other than
+    /// through the root range [rootFrom, rootTo) and the objects at the
+    /// payload addresses in `exempt`; -1 when no collection could tell.
+    public static long CountHeld(long low, long high, long rootFrom, long rootTo, long[] exempt)
+    {
+        if (high <= low) return 0;
+        for (int tries = 0; tries < 4; tries++)
+        {
+            _heldLow = low;
+            _heldHigh = high;
+            _heldRootFrom = rootFrom;
+            _heldRootTo = rootTo;
+            _heldExempt = Sys.ArrayData(exempt);
+            _heldExempts = exempt.Length;
+            _heldCycle = 0;
+            _heldFound = 0;
+            _heldPhase = 1;
+            Collect();
+            long phase = _heldPhase;
+            _heldPhase = 0;
+            _heldCycle = 0;
+            _heldExempts = 0;
+            _heldExempt = 0;
+            Sys.KeepAlive(exempt);
+            if (phase == 2) return _heldFound;
+        }
+        return -1;
+    }
+
+    /// Whether the registered root range starting at `start` is passed over
+    /// in this cycle's roots (CountHeld's phase 1).
+    public static bool PassedOver(long start)
+    {
+        return _heldPhase == 1 && _heldCycle == _cycle && start == _heldRootFrom;
+    }
+
+    /// The cycle about to begin is the one that counts, when one was asked
+    /// for and none has taken it yet. With the heap lock, as a cycle starts.
+    static void ClaimHeldCycle()
+    {
+        if (_heldPhase == 1 && _heldCycle == 0 && !_minor) _heldCycle = _cycle + 1;
+    }
+
+    /// Phase 1's marks: the exempt objects marked and taken as scanned, so
+    /// the mark never goes through them. After the cycle's marks were
+    /// cleared and before its first root.
+    static void MarkExempt()
+    {
+        if (_heldPhase != 1 || _heldCycle != _cycle) return;
+        for (long i = 0; i < _heldExempts; i++)
+        {
+            long payload = Sys.Peek(_heldExempt + i * 8) & WordSize.AddressMask;
+            if (payload == 0) continue;
+            long block = BlockForPointer(payload);
+            if (block != 0) SetFlag(block, FlagMark | FlagScan);
+        }
+    }
+
+    static bool Exempt(long payload)
+    {
+        for (long i = 0; i < _heldExempts; i++)
+            if ((Sys.Peek(_heldExempt + i * 8) & WordSize.AddressMask) == payload) return true;
+        return false;
+    }
+
+    static void CountHeldBlock(long block)
+    {
+        long word = Sys.Peek(block);
+        if ((word & (FlagFree | FlagMark)) != FlagMark || Sys.Peek(block + KindAt) != KindObject) return;
+        long vt = Sys.Peek(block + HeaderBytes) & WordSize.AddressMask;
+        if (vt < _heldLow || vt >= _heldHigh || Exempt(block + HeaderBytes)) return;
+        _heldFound = _heldFound + 1;
+    }
+
+    /// The end of phase 1: every marked object of the module's types that
+    /// is not exempt counted, then the statics and the exempt objects
+    /// scanned. True when it did so, and the mark must be run to its end
+    /// again.
+    static bool CountHeldAndKeep()
+    {
+        if (_heldPhase != 1 || _heldCycle != _cycle || _minor) return false;
+        _heldFound = 0;
+        if (_snapshots)
+        {
+            long which = 0;
+            long chunk = HeapChunks.SnapshotChunk(0);
+            while (chunk != 0)
+            {
+                long block = HeapChunks.StartsCycle(chunk) == _cycle ? HeapChunks.NextStart(chunk, HeapChunks.First(chunk)) : 0;
+                while (block != 0)
+                {
+                    CountHeldBlock(block);
+                    block = HeapChunks.NextStart(chunk, block + 8);
+                }
+                which = which + 1;
+                chunk = HeapChunks.SnapshotChunk(which);
+            }
+        }
+        else
+        {
+            long chunk = HeapChunks.Newest();
+            while (chunk != 0)
+            {
+                long block = HeapChunks.First(chunk);
+                long end = HeapChunks.PageClass(chunk) != 0 ? HeapChunks.Limit(chunk) : HeapChunks.End(chunk);
+                while (block < end)
+                {
+                    long size = Sys.Peek(block) & SizeMask;
+                    if (size < Smallest || block + size > end) break;
+                    CountHeldBlock(block);
+                    block = block + size;
+                }
+                chunk = HeapChunks.Next(chunk);
+            }
+        }
+        _heldPhase = 2;
+        // Phase 2: what the statics and the exempt objects hold, kept.
+        if (_heldRootTo > _heldRootFrom) ScanRootsAttributed(_heldRootFrom, _heldRootTo, 3, false);
+        for (long i = 0; i < _heldExempts; i++)
+        {
+            long payload = Sys.Peek(_heldExempt + i * 8) & WordSize.AddressMask;
+            if (payload == 0) continue;
+            long block = BlockForPointer(payload);
+            if (block != 0) ScanBlock(block, Sys.Peek(block) & SizeMask);
+        }
+        Drain();
+        return true;
+    }
+
+    // ---- references into a range, counted ---------------------------------------
+    //
+    // Whether a quarantined range can be given back: a collection in which
+    // every word the mark looks at that is not a heap block's address -- a
+    // static, a stack slot, a field -- is counted when it points into the
+    // range. A pointer held as a number in a field the descriptor says is a
+    // number is not seen; nothing the kernel keeps of a module is held so.
+    // The range is kept as one byte below it and its end, so that the
+    // bounds themselves, in these statics, are not counted.
+
+    static long _referencesBelow, _referencesEnd, _references;
+
+    /// How many words the mark finds pointing into [low, high). Runs a full
+    /// collection to know.
+    public static long CountReferencesInto(long low, long high)
+    {
+        if (high <= low) return 0;
+        _references = 0;
+        _referencesBelow = low - 1;
+        _referencesEnd = high;
+        Collect();
+        _referencesEnd = 0;
+        _referencesBelow = 0;
+        return _references;
+    }
+
+    static void NoteReference(nuint at)
+    {
+        if ((long)at > _referencesBelow && (long)at < _referencesEnd)
+            Sys.AtomicAdd(Sys.AddressOf(ref _references), 1);
     }
 
     public static void CheckHeapOn()
@@ -7269,14 +7610,14 @@ static class Gc
             // end, and not in the heap -- a leaf of raw bytes has any word first.
             long imageEnd = Sys.DataEnd();
             bool described = lvt > DescWords * w && lvt < imageEnd && imageEnd - lvt < 0x10000000 && HeapChunks.Of(lvt) == 0
-                && (Sys.Peek(ldesc + DescSelfWord * w) & WordSize.AddressMask) == ldesc;
+                && !InQuarantine(lvt) && (Sys.Peek(ldesc + DescSelfWord * w) & WordSize.AddressMask) == ldesc;
             key = described ? lvt : CensusLeaf;
         }
         else if (kind == KindObject)
         {
             long vt = Sys.Peek(block + HeaderBytes) & WordSize.AddressMask;
             long desc = vt - DescWords * w;
-            key = vt != 0 && (Sys.Peek(desc + DescSelfWord * w) & WordSize.AddressMask) == desc ? vt : CensusNoVtable;
+            key = vt != 0 && !InQuarantine(vt) && (Sys.Peek(desc + DescSelfWord * w) & WordSize.AddressMask) == desc ? vt : CensusNoVtable;
         }
         else
         {
@@ -7390,7 +7731,7 @@ static class Gc
         // A BLOCK NO DESCRIPTOR DESCRIBES -- a struct's, a cell, a frame --
         // word by word, as the marker reads it: a struct is copied a word at
         // a time, so a reference freed out of one copy is still in the other.
-        if (kind != KindObject || vt == 0 || (Sys.Peek(desc + DescSelfWord * w) & WordSize.AddressMask) != desc)
+        if (kind != KindObject || vt == 0 || InQuarantine(vt) || (Sys.Peek(desc + DescSelfWord * w) & WordSize.AddressMask) != desc)
         {
             if (kind == KindObject)
             {
@@ -8491,7 +8832,7 @@ static class Gc
     {
         long w = WordSize.Bytes;
         long vt = Sys.Peek(payload) & WordSize.AddressMask;
-        if (vt == 0)
+        if (vt == 0 || (_quarantinedHigh != 0 && InQuarantine(vt)))
         {
             return false;
         }
@@ -8586,7 +8927,14 @@ static class Gc
 
         // A word pointing at a free block is a number that happens to look
         // like a pointer: SetFlag refuses it.
-        if (block == 0 || !SetFlagW(block, (nuint)FlagMark))
+        if (block == 0)
+        {
+            // Not the heap's: counted when a quarantined range's references
+            // are (CountReferencesInto).
+            if (_referencesEnd != 0) NoteReference(at);
+            return;
+        }
+        if (!SetFlagW(block, (nuint)FlagMark))
         {
             return;
         }
@@ -8743,7 +9091,7 @@ static class Gc
     {
         nuint w = (nuint)WordSize.Bytes;
         nuint vt = PeekW(payload);
-        if (vt == 0)
+        if (vt == 0 || (_quarantinedHigh != 0 && InQuarantine((long)vt)))
         {
             return false;
         }
@@ -8853,7 +9201,7 @@ static class Gc
         long payload = block + HeaderBytes;
         if (Sys.Peek(block + KindAt) != KindObject) return false;
         long vt = Sys.Peek(payload) & WordSize.AddressMask;
-        if (vt == 0) return false;
+        if (vt == 0 || InQuarantine(vt)) return false;
         long desc = vt - DescWords * w;
         if ((Sys.Peek(desc + DescSelfWord * w) & WordSize.AddressMask) != desc) return false;
         long flags = Sys.Peek(desc + DescFlagsWord * w);
@@ -8872,7 +9220,7 @@ static class Gc
             return false;
         }
         long vt = Sys.Peek(payload) & WordSize.AddressMask;
-        if (kind != KindObject || vt == 0)
+        if (kind != KindObject || vt == 0 || InQuarantine(vt))
         {
             return true;
         }
@@ -9043,9 +9391,9 @@ static class Gc
         {
             CheckHeap(0);
         }
-        if (_revokeHigh != 0)
+        if (_revokeHigh != 0 || _visitVtable != 0)
         {
-            RevokeNow();
+            WalkAtStart();
         }
 #if !TARGET_64BIT
         if (!_mapsBuilt)
@@ -9068,6 +9416,7 @@ static class Gc
             else MajorsGrown = MajorsGrown + 1;
         }
         _forceMajor = false;
+        ClaimHeldCycle();
         if (_generational)
         {
             SwapHeld();
@@ -9189,7 +9538,7 @@ static class Gc
     {
         long w = WordSize.Bytes;
         long vt = Sys.Peek(payload) & WordSize.AddressMask;
-        if (vt == 0) return;
+        if (vt == 0 || InQuarantine(vt)) return;
         long desc = vt - DescWords * w;
         if ((Sys.Peek(desc + DescSelfWord * w) & WordSize.AddressMask) != desc) return;
         long flags = Sys.Peek(desc + DescFlagsWord * w);
@@ -9268,6 +9617,7 @@ static class Gc
         _cardsTogether = helped && Workers > 0 && !_verify && !_heapCheck;
         long clock = PauseClock;
         long t0 = clock != 0 ? Sys.Call(clock, 0, 0, 0) : 0;
+        if (!_concurrent) MarkExempt();
         GcRoots.ScanAll();
 
         // A MINOR CYCLE'S OTHER ROOTS, read with the ordinary ones: what old
@@ -9286,6 +9636,7 @@ static class Gc
 
         long t1 = clock != 0 ? Sys.Call(clock, 0, 0, 0) : 0;
         MarkToEmpty();
+        if (CountHeldAndKeep()) MarkToEmpty();
         long t2 = clock != 0 ? Sys.Call(clock, 0, 0, 0) : 0;
         // Idle, as MarkToEmpty found them: none holds a block, and the queue
         // is empty. A worker between its check of the word and its next take
@@ -9396,6 +9747,7 @@ static class Gc
         GcLock.Enter();
         _stamping = false;
         GcLock.Exit();
+        MarkExempt();
         Runtime.Marking = 2;
         // Before the ranges are read: a range registered from here on is
         // marked by its registrar (MarkRegistered), one before is read below.
@@ -9418,15 +9770,25 @@ static class Gc
             return;
         }
 
-        // 5. Mark to the end, and prove it is the end.
+        // 5. Mark to the end, and prove it is the end -- twice when what is
+        //    held of a module's types is being counted (CountHeld): the
+        //    count at the first end, then what the module holds itself
+        //    marked, to the end again.
         while (true)
         {
-            MarkToEmpty();
-            long before = Marked(ctl);
-            GcThreads.Round(GcThreads.Ack);
-            MarkToEmpty();
+            while (true)
+            {
+                MarkToEmpty();
+                long before = Marked(ctl);
+                GcThreads.Round(GcThreads.Ack);
+                MarkToEmpty();
 
-            if (Marked(ctl) == before)
+                if (Marked(ctl) == before)
+                {
+                    break;
+                }
+            }
+            if (!CountHeldAndKeep())
             {
                 break;
             }
@@ -12124,7 +12486,7 @@ static class GcRoots
             long start = Sys.Peek(_extra + i * (2 * WordSize.Bytes));
             // A slot whose start is the claim mark is one a thread is filling
             // in: its end is not written yet and there is nothing to scan.
-            if (start != 0 && start != Claiming)
+            if (start != 0 && start != Claiming && !Gc.PassedOver(start))
             {
                 Gc.ScanRootsAttributed(start, Sys.Peek(_extra + i * (2 * WordSize.Bytes) + WordSize.Bytes), 3, false);
             }
