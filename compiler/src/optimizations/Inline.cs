@@ -176,6 +176,9 @@ public sealed class Inline : IParallelModulePass
             pinned.Add(RegionPointsTo.InRegion);
             pinned.Add(RegionPointsTo.Near);
             pinned.Add(RegionPointsTo.Catch);
+            // And the allocation put in place after them (AllocatorFastPaths),
+            // which nothing calls until then.
+            pinned.Add(AllocatorFastPaths.Fast);
             // An array grown where it is (Runtime.GrowInPlace), a call the
             // lifetime and region passes know by name to keep nothing
             // (Escape.IsCollectorNote, RegionPointsTo.Harmless). Inlined,

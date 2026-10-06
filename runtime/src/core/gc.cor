@@ -2436,6 +2436,8 @@ static class Gc
     public const long BlockKindAt = KindAt;
     public const long BlockRounding = Overhead + 7;
     public const long BlockSizeMask = SizeMask;
+    /// What a request is rounded by for a size-class block (Runtime.AllocFast).
+    public const long ClassBlockRounding = ClassRounding;
     public const long SmallestBlock = Smallest;
     public const long MostRequest = MaxRequest;
     public const long RegionRecordBytes = RecordBytes;
@@ -3603,8 +3605,11 @@ static class Gc
 
     public const long ClassMax = 1024;      // the largest block a class holds
     public const long Classes = 39;
-    static long _classSize;         // Classes words: each class's block size
-    static long _classOf;           // ClassMax / 8 + 1 words: need >> 3 -> class
+    // PUBLIC FOR THE ALLOCATION INLINED AT EVERY `new` (Runtime.AllocFast),
+    // which reads them as AllocWord does. Mapped once, at Start, and never
+    // moved: 0 until then, which sends that path to the long way.
+    public static long _classSize;  // Classes words: each class's block size
+    public static long _classOf;    // ClassMax / 8 + 1 words: need >> 3 -> class
     static long _classPages;        // Classes words: pages with room, unowned
     static long _classStep;         // Classes words: ceil(2^32 / the class's size), for OnGrid
     static long _pool;              // empty pages, through their next-page word
@@ -7183,7 +7188,8 @@ static class Gc
     // listed must be what the lists hold. The first faults are said, and the
     // process ends with 94. A diagnostic: it walks the whole heap twice a
     // collection.
-    static bool _heapCheck;
+    // Public for Runtime.AllocFast, which leaves a checked heap's guards to AllocWord.
+    public static bool _heapCheck;
     static long _badFrees;
 
     /// The heap check (CheckHeap, before and after every collection) turned

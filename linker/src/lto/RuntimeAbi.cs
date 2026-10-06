@@ -16,6 +16,14 @@ public static class RuntimeAbi
     public const string Alloc = "m_Runtime_Alloc_1_" + Word;
     public const string AllocLeaf = "m_Runtime_AllocLeaf_1_" + Word;
     public const string AllocObject = "m_Runtime_AllocObject_1_" + Word;
+    /// <summary>
+    /// THE ALLOCATION IN PLACE (Opt.AllocatorFastPaths): after every pass
+    /// that knows a `new` by its call to the three above, each becomes a call
+    /// to AllocFast, with the kind, and AllocFast's body is put where it was;
+    /// AllocMissed is its long way, a call at each site.
+    /// </summary>
+    public const string AllocFast = "m_Runtime_AllocFast_2_" + Word + "_" + Word;
+    public const string AllocMissed = "m_Runtime_AllocMissed_2_" + Word + "_" + Word;
     public const string AllocManual = "m_Runtime_AllocManual_1_" + Word;
     public const string AllocManualObject = "m_Runtime_AllocManualObject_1_" + Word;
     public const string Free = "m_Runtime_Free_1_" + Word;

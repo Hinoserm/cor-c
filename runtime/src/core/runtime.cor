@@ -1138,6 +1138,80 @@ static class Runtime
         return at;
     }
 
+    /// THE ALLOCATION AT EVERY `new`, IN PLACE. Every object compiled code
+    /// made was two calls -- AllocObject, then Gc.AllocWord, each with its
+    /// frame and its saved registers -- and the sampler's test after, for
+    /// a block AllocWord took off a list in a dozen instructions. The
+    /// compiler and the link keep each allocation a call to AllocObject,
+    /// AllocLeaf or Alloc through every pass that knows a `new` by that call
+    /// (Escape, the region passes, the lifetime rules), and only after the
+    /// last of them make the call this, with the kind those three pass to
+    /// AllocWord, and put this body where the call was (AllocatorFastPaths):
+    /// with a constant size the rounding and the class test fold away.
+    ///
+    /// WHAT IT DOES IS AllocWord's SIZE-CLASS PATH, store for store: the
+    /// thread's list for the class popped, the header and kind written, the
+    /// bytes counted in the thread's block (Tls.ClassBytes), all between
+    /// Tls.InAlloc's two stores, so that a thread stopped anywhere in it --
+    /// a kernel's, at any instruction -- is not answered for half way, as
+    /// in AllocWord. A free block in a page is zero already, the payload's
+    /// last word too. Nothing for a collection under way: a block taken off
+    /// a page the thread owns is written into the snapshot by its owner's
+    /// STAMP answer (StampedAlready), exactly as one AllocWord hands out.
+    ///
+    /// EVERYTHING ELSE IS THE CALL IT WAS (AllocMissed): a block above
+    /// ClassMax, an empty list, no class cache yet (the heap not started,
+    /// a handshake that took it), the heap check's guards (Gc._heapCheck),
+    /// and the sampler (AllocHook), which counts allocations that call.
+    public static long AllocFast(nint bytes, nint kind)
+    {
+        // THE CLASS TEST ON THE REQUEST ITSELF, unsigned: the rounded size
+        // is at most ClassMax exactly when this holds, and a negative request
+        // -- which AllocWord refuses -- is a huge one here, and goes there.
+        //
+        // THE LONGS READ AS WORDS (Sys.Peek of the static): AllocHook and the
+        // tables are addresses, a word on either target, and read as longs on
+        // i386 each was two loads, one of them dead and kept in the frame.
+        if ((nuint)bytes <= (nuint)(Gc.ClassMax + 7 - Gc.ClassBlockRounding)
+            && Sys.Peek(Sys.AddressOf(ref AllocHook)) == 0 && !Gc._heapCheck)
+        {
+            nint small = (bytes + (nint)Gc.ClassBlockRounding) & (nint)Gc.BlockSizeMask;
+            nint w = (nint)WordSize.Bytes;
+            nint tb = (nint)Sys.ThreadBlock();
+            nint cache = (nint)Sys.Peek(tb + (nint)Tls.Classes);
+            if (cache != 0)
+            {
+                nint c = (nint)Sys.Peek((nint)Sys.Peek(Sys.AddressOf(ref Gc._classOf)) + (small >> 3) * w);
+                nint slot = cache + c * (2 * w);
+                Sys.Poke(tb + (nint)Tls.InAlloc, 1);
+                nint free = (nint)Sys.Peek(slot + w);
+                if (free != 0)
+                {
+                    nint size = (nint)Sys.Peek((nint)Sys.Peek(Sys.AddressOf(ref Gc._classSize)) + c * w);
+                    Sys.Poke(slot + w, Sys.Peek(free + (nint)Gc.BlockKindAt));
+                    Sys.Poke(free, size);
+                    Sys.Poke(free + (nint)Gc.BlockKindAt, kind);
+                    nint counted = tb + (nint)Tls.ClassBytes;
+                    Sys.Poke(counted, (nint)Sys.Peek(counted) + size);
+                    Sys.Poke(tb + (nint)Tls.InAlloc, 0);
+                    return (long)(nuint)(free + (nint)Gc.BlockHeaderBytes);
+                }
+                Sys.Poke(tb + (nint)Tls.InAlloc, 0);
+            }
+        }
+        return AllocMissed(bytes, kind);
+    }
+
+    /// AllocFast's long way: the call the site was, by its kind. A call of
+    /// its own, never put in place, so that each site carries one call.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long AllocMissed(nint bytes, nint kind)
+    {
+        if (kind == (nint)Gc.ObjectKind) return AllocObject(bytes);
+        if (kind == (nint)Gc.LeafKind) return AllocLeaf(bytes);
+        return Alloc(bytes);
+    }
+
     /// REGIONS: a call the compiler proved leaves dead, at its return, every
     /// object certain allocations make for it opens one on entry and gives
     /// it back on every way out. What it hands RegionLeave is what this
@@ -1234,7 +1308,7 @@ static class Runtime
     /// that a throw has left is closed first (Gc.PopStale).
     ///
     /// THE FAST PATH, kept to a few instructions so the link inlines it at
-    /// every site (Lto's UnitBackend, after the region passes), as AllocWord
+    /// every site (Lto's UnitBackend, after the region passes), as AllocFast
     /// is at each `new`; a constant size folds its rounding there. A region
     /// open, opened by a frame no deeper than ours -- one a throw has not
     /// left -- and room for the block in the chunk being filled: header,

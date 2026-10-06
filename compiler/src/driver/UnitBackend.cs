@@ -277,7 +277,7 @@ public sealed class UnitBackend : IUnitBackend
             // beside that object (RegionPointsTo.MakeStorageBeside).
             if (facts?.OwnedFields is { Beside: true } beside) RegionPointsTo.MakeStorageBeside(function, beside);
             // AND THE REGION HELPERS' FAST PATHS PUT IN PLACE (Runtime.AllocRegion,
-            // RegionEnter, RegionLeave), as AllocWord's is at every `new`: the
+            // RegionEnter, RegionLeave), as AllocFast's is at every `new` (below): the
             // passes above made the calls, after every inliner here, so they
             // stayed calls. One more inliner, over this function and those
             // three bodies alone -- every other decision as it was, and
@@ -289,6 +289,13 @@ public sealed class UnitBackend : IUnitBackend
             // a call, AllocRegionSlow), so nothing in it is a site. A constant
             // size folds the rounding (cleanup's ConstantFold).
             if (module.RegionFacts is not null || importedSites) InlineRegionHelpers(function, local, Callee, cleanup);
+            // AND THE ALLOCATION PUT IN PLACE at every `new` still a call to
+            // the runtime's allocators, as the unit's own late passes do
+            // (AllocatorFastPaths): after every pass here that knows a `new`
+            // by that call, the region sites above included.
+            // Not in a kernel module's unit: the body reads the collector's
+            // tables, which are the kernel's, by name.
+            if (!positionIndependent) AllocatorFastPaths.Run(function, local, Callee, cleanup);
             // Written out last here too: the link's lifetime pass saw them as
             // notes to the collector (CardMarks).
             new CardMarks().Run(local);
