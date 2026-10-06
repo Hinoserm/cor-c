@@ -5,7 +5,7 @@
 // expect-asm-x86: Store: __corsac_refstore
 // expect-no-asm-x86: Store: cmp __corsac_cardmark __corsac_barrier
 // expect-asm-x86: Swap: __corsac_refxchg
-// expect-no-asm-x86: Swap: cmp __corsac_cardmark __corsac_barrier
+// expect-no-asm-x86: Swap: [s_Runtime_Marking] __corsac_cardmark __corsac_barrier
 //
 // THE WINDOW, CLOSED. A ring-1 kernel's thread can be sent to its
 // collector's handshake at any instruction (Ring1Kernel.SendToAnswer). Made
@@ -18,8 +18,17 @@
 // card in one stub between __corsac_store_sequences and its _end, which the
 // kernel never sends a thread out of -- and Store itself compares nothing (no CMP of Marking),
 // stores no reference and marks no card. Interlocked's exchange is the same:
-// __corsac_refxchg, with no test and no card of its own. Compiled and read, not run: the
+// __corsac_refxchg, with no test of Marking (its address never read: Swap
+// compares Interlocked's type-ready word) and no card of its own. Compiled and read, not run: the
 // gate is CORSAC's (09_store_sequences_run runs the sequences).
+//
+// A PROGRAM WITH A COLLECTOR. Main asks for a collection itself (Gc.Collect,
+// from the program's own source), as a kernel has one. Without that, every
+// allocation here is one that lives to the end, the whole program is proved
+// to need no collector (Escape, NeedsHeap), and its barriers and card marks
+// go with the collector they would have told -- soundly: there is no mark
+// for a store to race. Store then makes a plain store and has no sequence,
+// which is 11_no_collector_no_barrier's rule, not a miscompile.
 
 using System.Runtime.CompilerServices;
 using System.Threading;
@@ -37,6 +46,7 @@ static class Program
     {
         Store(_held, new Node());
         Swap(_held, new Node());
+        Gc.Collect();
         return _held.Next == null ? 1 : 0;
     }
 

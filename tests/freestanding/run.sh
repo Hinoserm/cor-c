@@ -35,7 +35,10 @@
 #   // expect-no-asm-<target>: F: a b c
 #                                the same function's disassembly contains
 #                                none of a, b, c (expect-asm and this may each
-#                                be given more than once)
+#                                be given more than once). In either, a word
+#                                [SYM] is SYM's address as objdump writes an
+#                                operand (0x8049000): a read of a static
+#                                named, which objdump prints only as a number
 #   // expect-asm-count-<target>: F: word N
 #                                the same function's disassembly has at
 #                                least N lines containing word
@@ -88,6 +91,17 @@ image_bytes() {
 word_bytes() {
     local v=$(( $1 & 0xFFFFFFFF ))
     printf '%02x %02x %02x %02x' $(( v & 255 )) $(( (v >> 8) & 255 )) $(( (v >> 16) & 255 )) $(( (v >> 24) & 255 ))
+}
+
+# An expect-asm word as the disassembly has it: [SYM] made SYM's address.
+asm_word() {
+    local exe="$1" word="$2" address
+    case "$word" in
+        \[*\])
+            read -r address _ < <(symbol "$exe" "${word:1:${#word}-2}")
+            if [ -n "$address" ]; then printf '0x%x' "$address"; else printf 'no-symbol-%s' "$word"; fi ;;
+        *) printf '%s' "$word" ;;
+    esac
 }
 
 # Whatever is wrong with a symbol's bytes against an expect-bytes line, or
@@ -179,9 +193,11 @@ for source in "$here"/[0-9]*.cor; do
             if [ -z "$body" ]; then
                 wrong="no function $function in the disassembly"
             else
+                set -f
                 for word in $words; do
-                    if ! grep -qF -- "$word" <<< "$body"; then wrong="$wrong $word"; fi
+                    if ! grep -qF -- "$(asm_word "$exe" "$word")" <<< "$body"; then wrong="$wrong $word"; fi
                 done
+                set +f
                 [ -n "$wrong" ] && wrong="$function lacks:$wrong"
             fi
         done < <(sed -n "s|^// expect-asm-$target: *||p" "$source")
@@ -190,9 +206,11 @@ for source in "$here"/[0-9]*.cor; do
             function="${asm%%:*}"
             words="${asm#*:}"
             body="$(body_of "$function")"
+            set -f
             for word in $words; do
-                if grep -qF -- "$word" <<< "$body"; then wrong="$wrong $word"; fi
+                if grep -qF -- "$(asm_word "$exe" "$word")" <<< "$body"; then wrong="$wrong $word"; fi
             done
+            set +f
             [ -n "$wrong" ] && wrong="$function has:$wrong"
         done < <(sed -n "s|^// expect-no-asm-$target: *||p" "$source")
 
