@@ -269,17 +269,67 @@ public sealed class TypeSymbol
 
     public FieldSymbol? FindField(string name)
     {
+        // A loop, not List.Find: the predicate closed over the name, and this
+        // is asked of every member access the binder checks.
         for (TypeSymbol? t = this; t != null; t = t.Base)
         {
-            FieldSymbol? f = t.Fields.Find(f => f.Name == name);
-
-            if (f != null)
+            foreach (FieldSymbol f in t.Fields)
             {
-                return f;
+                if (f.Name == name)
+                {
+                    return f;
+                }
             }
         }
         return null;
     }
+
+    /// <summary>
+    /// FindField("&lt;" + name + "&gt;"), an auto-property's backing field,
+    /// without making that string: it was made for every member access that
+    /// was not a field, to be told no.
+    /// </summary>
+    public FieldSymbol? FindBackingField(string name)
+    {
+        for (TypeSymbol? t = this; t != null; t = t.Base)
+        {
+            foreach (FieldSymbol f in t.Fields)
+            {
+                if (IsBackingName(f.Name, name))
+                {
+                    return f;
+                }
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// FindMethods(prefix + name) -- `get_Count` from "get_" and "Count" --
+    /// without making the joined name only to compare it.
+    /// </summary>
+    public List<MethodSymbol> FindMethods(string prefix, string name)
+    {
+        List<MethodSymbol> found = new();
+
+        for (TypeSymbol? t = this; t != null; t = t.Base)
+        {
+            foreach (MethodSymbol m in t.Methods)
+                if (IsJoined(m.Name, prefix, name)) found.Add(m);
+        }
+        return found;
+    }
+
+    /// <summary>Whether a field's name is "&lt;" + name + "&gt;", the backing field of a property called name.</summary>
+    public static bool IsBackingName(string held, string name)
+        => held.Length == name.Length + 2 && held[0] == '<' && held[held.Length - 1] == '>'
+        && string.CompareOrdinal(held, 1, name, 0, name.Length) == 0;
+
+    /// <summary>Whether a name is exactly prefix followed by rest.</summary>
+    public static bool IsJoined(string full, string prefix, string rest)
+        => full.Length == prefix.Length + rest.Length
+        && string.CompareOrdinal(full, 0, prefix, 0, prefix.Length) == 0
+        && string.CompareOrdinal(full, prefix.Length, rest, 0, rest.Length) == 0;
 
     public List<MethodSymbol> FindMethods(string name)
     {

@@ -326,7 +326,7 @@ public sealed partial class Binder
         // a program's `Version` spliced into ReadOnlyCollection<T>, declared
         // in a namespace beneath System, was read there as System.Version.
         if (written is { Specialised: true, TemplateArgs.Count: > 0 } specialised && !name.Contains('.')
-            && specialised.TemplateArgs.Any(a => a.Name == name) && TypeCandidate(name, out sym) && sym is not null)
+            && NamesTemplateArg(specialised, name) && TypeCandidate(name, out sym) && sym is not null)
         {
             return true;
         }
@@ -355,11 +355,14 @@ public sealed partial class Binder
         // wherever the generic was used. `List$Operand` has no path to walk
         // and the namespace it was made in is the only thing that can say
         // which Operand its element is.
-        string?[] outwards = { (_scope ?? _thisType)?.Key, within.Length == 0 ? null : within };
+        //
+        // The two starting points are held in locals, not an array: this is
+        // asked for every type name every body mentions.
+        string? fromType = (_scope ?? _thisType)?.Key, fromNamespace = within.Length == 0 ? null : within;
 
-        foreach (string? from in outwards)
+        for (int pass = 0; pass < 2; pass++)
         {
-            for (string? at = from; at is not null; at = Enclosing(at))
+            for (string? at = pass == 0 ? fromType : fromNamespace; at is not null; at = Enclosing(at))
             {
                 if (TypeCandidateIn(at, name, out sym))
                 {
@@ -413,6 +416,16 @@ public sealed partial class Binder
         // the walk above from inside, and neither is sole, so an unqualified
         // mention from anywhere else is refused rather than guessed.
         return Sole(name, out sym);
+    }
+
+    /// <summary>Whether a specialisation has a template argument written as this name.</summary>
+    private static bool NamesTemplateArg(TypeDecl specialised, string name)
+    {
+        foreach (TypeRef a in specialised.TemplateArgs)
+        {
+            if (a.Name == name) return true;
+        }
+        return false;
     }
 
     /// <summary>
@@ -3030,8 +3043,15 @@ public sealed partial class Binder
                     // first -- and a driver's sixty-four-slot transmit queue was
                     // written into its sixteen-slot receive queue, because both
                     // had been called `_queue` four hundred lines apart.
-                    if (sym.Fields.Any(had => had.Name == f.Name)
-                        || sym.Fields.Any(had => had.Name == "<" + f.Name + ">"))
+                    // A loop, and the backing field's name matched in place:
+                    // `"<" + name + ">"` was made for every field already
+                    // declared, for every field declared.
+                    bool declaredTwice = false;
+                    foreach (FieldSymbol had in sym.Fields)
+                    {
+                        declaredTwice |= had.Name == f.Name || TypeSymbol.IsBackingName(had.Name, f.Name);
+                    }
+                    if (declaredTwice)
                     {
                         Error(f, $"'{sym.Name}' already has a member called '{f.Name}'");
                         break;
@@ -3316,12 +3336,27 @@ public sealed partial class Binder
                     // as well (C# 15.10.4): JsonNode converts to bool, int,
                     // long and double from the one parameter.
                     bool conversion = ms.Name is "op_Implicit" or "op_Explicit";
-                    MethodSymbol? twin = sym.Methods.FirstOrDefault(had => had.Decl != md && had.Name == ms.Name
-                        && had.TypeParams.Count == ms.TypeParams.Count && had.Params.Count == ms.Params.Count
-                        && had.Params.Zip(ms.Params).All(pair => MethodSignatures.SameType(pair.First.Type, pair.Second.Type)
-                            && pair.First.ByRef == pair.Second.ByRef)
-                        && (!conversion || MethodSignatures.SameType(had.Returns, ms.Returns))
-                        && !(had.Decl is MethodDecl hd && hd.Mods.HasFlag(Mods.Partial)) && !md.Mods.HasFlag(Mods.Partial));
+                    // A loop over the methods already declared, a name compared
+                    // before anything else: as a FirstOrDefault it was a
+                    // closure for every method of every type.
+                    MethodSymbol? twin = null;
+                    foreach (MethodSymbol had in sym.Methods)
+                    {
+                        if (had.Decl == md || had.Name != ms.Name
+                            || had.TypeParams.Count != ms.TypeParams.Count || had.Params.Count != ms.Params.Count) continue;
+                        bool same = true;
+                        for (int k = 0; k < had.Params.Count && same; k++)
+                        {
+                            same = MethodSignatures.SameType(had.Params[k].Type, ms.Params[k].Type)
+                                && had.Params[k].ByRef == ms.Params[k].ByRef;
+                        }
+                        if (same && (!conversion || MethodSignatures.SameType(had.Returns, ms.Returns))
+                            && !(had.Decl is MethodDecl hd && hd.Mods.HasFlag(Mods.Partial)) && !md.Mods.HasFlag(Mods.Partial))
+                        {
+                            twin = had;
+                            break;
+                        }
+                    }
                     if (twin != null)
                     {
                         Error(md, $"'{sym.Name}' already defines a member called '{md.Name}' with the same parameter types");
@@ -3409,6 +3444,28 @@ public sealed partial class Binder
     /// unchanged -- the interfaces it implements are a contract it satisfies,
     /// not a place its members are found.
     /// </summary>
+    /// <summary>MethodsOn(owner, prefix + name), the name never joined: a property's accessors by its name.</summary>
+    private static List<MethodSymbol> MethodsOn(TypeSymbol owner, string prefix, string name)
+    {
+        List<MethodSymbol> found = owner.FindMethods(prefix, name);
+
+        if (found.Count > 0 || owner.Kind != TypeKind.Interface)
+        {
+            return found;
+        }
+
+        foreach (TypeSymbol face in Extended(owner))
+        {
+            List<MethodSymbol> up = face.FindMethods(prefix, name);
+
+            if (up.Count > 0)
+            {
+                return up;
+            }
+        }
+        return found;
+    }
+
     private static List<MethodSymbol> MethodsOn(TypeSymbol owner, string name)
     {
         List<MethodSymbol> found = owner.FindMethods(name);
@@ -4849,7 +4906,7 @@ public sealed partial class Binder
             case IfStmt i:
             {
                 CheckCondition(i.Cond);
-                HashSet<LocalSym> before = new(_assigned, ReferenceEqualityComparer.Instance);
+                HashSet<LocalSym> before = AssignedCopy();
 
                 // THE THEN BRANCH KNOWS WHAT THE CONDITION PROVED, and the else
                 // branch knows the opposite. Each is undone afterwards, because
@@ -4857,7 +4914,7 @@ public sealed partial class Binder
                 List<Sym> inThen = Assume(i.Cond, true);
 
                 CheckEmbedded(i.Then);
-                HashSet<LocalSym> afterThen = new(_assigned, ReferenceEqualityComparer.Instance);
+                HashSet<LocalSym> afterThen = AssignedCopy();
                 Forget(inThen);
 
                 _assigned.Clear();
@@ -4869,7 +4926,9 @@ public sealed partial class Binder
                 {
                     CheckEmbedded(i.Else);
                 }
-                HashSet<LocalSym> afterElse = new(_assigned, ReferenceEqualityComparer.Instance);
+                // _assigned IS what the else branch leaves assigned, and is
+                // merged in place rather than copied first: only membership
+                // is ever asked of these sets, never their order.
 
                 bool thenLeaves = Leaves(i.Then);
                 bool elseLeaves = i.Else != null && Leaves(i.Else);
@@ -4879,22 +4938,17 @@ public sealed partial class Binder
                 // throw contributes no path at all; intersecting it used to
                 // reject the ordinary `if (...) x = a; else return; use(x);`
                 // form even though every reaching path assigned x.
-                if (thenLeaves && !elseLeaves)
-                {
-                    _assigned.Clear();
-                    _assigned.UnionWith(afterElse);
-                }
-                else if (!thenLeaves && elseLeaves)
+                if (!thenLeaves && elseLeaves)
                 {
                     _assigned.Clear();
                     _assigned.UnionWith(afterThen);
                 }
                 else if (!thenLeaves && !elseLeaves)
                 {
-                    _assigned.Clear();
-                    _assigned.UnionWith(afterThen);
-                    _assigned.IntersectWith(afterElse);
+                    _assigned.IntersectWith(afterThen);
                 }
+                SpareAssigned(before);
+                SpareAssigned(afterThen);
 
                 // AND THE GUARD CLAUSE. If the then-branch always leaves, then
                 // reaching the line after the `if` means the condition was
@@ -5253,8 +5307,10 @@ public sealed partial class Binder
             case SwitchStmt sw:
             {
                 Type subject = CheckExpr(sw.Subject);
-                HashSet<LocalSym> beforeSwitch = new(_assigned, ReferenceEqualityComparer.Instance);
-                List<HashSet<LocalSym>> continuingAssignments = new();
+                HashSet<LocalSym> beforeSwitch = AssignedCopy();
+                // What every arm that reaches the following statement assigned,
+                // met as each one is checked rather than kept arm by arm.
+                HashSet<LocalSym>? continuing = null;
 
                 // `case null:` PROVES THE OTHER ARMS. Reaching any of them
                 // means the subject was not null, which is what C# knows and
@@ -5263,13 +5319,17 @@ public sealed partial class Binder
                 // legal.
                 List<Sym> proven = new();
 
-                if (sw.Cases.Any(c => c.Pattern is BinaryExpr
-                                      {
-                                          Op: BinOp.Eq,
-                                          Left: SubjectExpr,
-                                          Right: LiteralExpr { Kind: Lit.Null },
-                                      })
-                    && Path(sw.Subject) is string spelt && _notNullPaths.Add(spelt))
+                bool caseNull = false;
+                foreach (SwitchCase c in sw.Cases)
+                {
+                    caseNull |= c.Pattern is BinaryExpr
+                    {
+                        Op: BinOp.Eq,
+                        Left: SubjectExpr,
+                        Right: LiteralExpr { Kind: Lit.Null },
+                    };
+                }
+                if (caseNull && Path(sw.Subject) is string spelt && _notNullPaths.Add(spelt))
                 {
                     proven.Add(new PathSym(spelt));
                 }
@@ -5325,8 +5385,8 @@ public sealed partial class Binder
                     if ((c.Body.Count > 0 && ReachesAfterSwitch(c.Body[^1]))
                         || (c.Body.Count == 0 && ReferenceEquals(c, sw.Cases[^1])))
                     {
-                        continuingAssignments.Add(new HashSet<LocalSym>(
-                            _assigned, ReferenceEqualityComparer.Instance));
+                        if (continuing is null) continuing = AssignedCopy();
+                        else continuing.IntersectWith(_assigned);
                     }
                     LeaveBreakable();
                     Forget(caseProof);
@@ -5337,24 +5397,27 @@ public sealed partial class Binder
                 // carries only what was assigned before the switch. Otherwise
                 // the intersection of every arm that reaches the following
                 // statement is exactly C#'s definite-assignment result.
-                if (!sw.Cases.Any(c => c.Pattern is null))
+                bool hasDefault = false;
+                foreach (SwitchCase c in sw.Cases)
                 {
-                    continuingAssignments.Add(beforeSwitch);
+                    hasDefault |= c.Pattern is null;
                 }
 
                 _assigned.Clear();
-                if (continuingAssignments.Count > 0)
+                if (continuing is not null)
                 {
-                    _assigned.UnionWith(continuingAssignments[0]);
-                    foreach (HashSet<LocalSym> path in continuingAssignments.Skip(1))
+                    _assigned.UnionWith(continuing);
+                    if (!hasDefault)
                     {
-                        _assigned.IntersectWith(path);
+                        _assigned.IntersectWith(beforeSwitch);
                     }
+                    SpareAssigned(continuing);
                 }
                 else
                 {
                     _assigned.UnionWith(beforeSwitch);
                 }
+                SpareAssigned(beforeSwitch);
 
                 _subject.RemoveAt(_subject.Count - 1);
                 _switches.RemoveAt(_switches.Count - 1);
@@ -6789,7 +6852,7 @@ public sealed partial class Binder
                     continue;
                 }
                 if (_thisType is { } enclosing && enclosing.Name.StartsWith("Lambda$", StringComparison.Ordinal)
-                    && (enclosing.FindField(name) ?? enclosing.FindField("<" + name + ">")) is not null)
+                    && (enclosing.FindField(name) ?? enclosing.FindBackingField(name)) is not null)
                 {
                     outerCaptured[name] = held;
                 }
@@ -7775,7 +7838,7 @@ public sealed partial class Binder
                 return null;
         }
 
-        if (owner is null || owner.FindField(name) is not null || owner.FindMethods("get_" + name).Count > 0
+        if (owner is null || owner.FindField(name) is not null || owner.FindMethods("get_", name).Count > 0
             || MethodsOn(owner, prefix + name).Count == 0)
         {
             return null;
@@ -7820,15 +7883,28 @@ public sealed partial class Binder
     /// </summary>
     private List<Type> CheckIndexArgs(Type target, List<Expr> args, IEnumerable<MethodSymbol> indexers)
     {
-        List<MethodSymbol> taking = indexers.Where(m => m.Params.Count == args.Count).ToList();
-        List<Type> index = new();
+        // The indexers taking this many, gathered only when an argument holds
+        // a lambda and so asks what they want: most index with a plain value.
+        List<MethodSymbol>? taking = null;
+        List<Type> index = new(args.Count);
         for (int i = 0; i < args.Count; i++)
         {
             Type? want = null;
-            if (HoldsLambda(args[i]) && taking.Count > 0)
+            if (HoldsLambda(args[i]))
             {
-                List<Type> wants = taking.Select(m => ThroughUnmade(target, m, m.Params[i].Type)).Distinct().ToList();
-                if (wants.Count == 1) want = wants[0];
+                if (taking is null)
+                {
+                    taking = new List<MethodSymbol>();
+                    foreach (MethodSymbol m in indexers)
+                    {
+                        if (m.Params.Count == args.Count) taking.Add(m);
+                    }
+                }
+                if (taking.Count > 0)
+                {
+                    List<Type> wants = taking.Select(m => ThroughUnmade(target, m, m.Params[i].Type)).Distinct().ToList();
+                    if (wants.Count == 1) want = wants[0];
+                }
             }
             if (want is null)
             {
@@ -8827,25 +8903,35 @@ public sealed partial class Binder
     private static List<MethodSymbol> Reachable(TypeSymbol t, string name)
     {
         List<MethodSymbol> found = new();
+        Reach(t, name, found);
+        return found;
+    }
 
-        void Walk(TypeSymbol at)
+    /// <summary>Reachable's walk: a method of its own, not a local function closing over the list and the name.</summary>
+    private static void Reach(TypeSymbol at, string name, List<MethodSymbol> found)
+    {
+        foreach (MethodSymbol m in at.Methods)
+            if (m.Name == name) found.Add(m);
+
+        if (at.Base != null)
         {
-            foreach (MethodSymbol m in at.Methods)
-                if (m.Name == name) found.Add(m);
-
-            if (at.Base != null)
-            {
-                Walk(at.Base);
-            }
-
-            foreach (TypeSymbol face in at.Interfaces)
-            {
-                Walk(face);
-            }
+            Reach(at.Base, name, found);
         }
 
-        Walk(t);
-        return found;
+        foreach (TypeSymbol face in at.Interfaces)
+        {
+            Reach(face, name, found);
+        }
+    }
+
+    /// <summary>Whether any of these methods takes this many arguments.</summary>
+    private static bool TakesArgs(List<MethodSymbol> methods, int count)
+    {
+        foreach (MethodSymbol m in methods)
+        {
+            if (m.Params.Count == count) return true;
+        }
+        return false;
     }
 
     /// <summary>
@@ -11024,7 +11110,7 @@ public sealed partial class Binder
             }
 
             FieldSymbol? field = owner.FindField(init.Name)
-                              ?? owner.FindField("<" + init.Name + ">");
+                              ?? owner.FindBackingField(init.Name);
 
             // `Name = { … }` -- the member is READ and what it holds is filled
             // in, so a get-only property is enough and no assignment happens.
@@ -11037,7 +11123,7 @@ public sealed partial class Binder
                     continue;
                 }
 
-                MethodSymbol? getter = owner.FindMethods("get_" + init.Name)
+                MethodSymbol? getter = owner.FindMethods("get_", init.Name)
                                             .FirstOrDefault(g => g.Params.Count == 0);
 
                 if (getter != null)
@@ -11052,7 +11138,7 @@ public sealed partial class Binder
             }
 
             MethodSymbol? setter = field is null
-                                 ? owner.FindMethods("set_" + init.Name).FirstOrDefault()
+                                 ? owner.FindMethods("set_", init.Name).FirstOrDefault()
                                  : null;
 
             if (field is null && (setter is null || setter.Params.Count != 1))
@@ -11334,7 +11420,7 @@ public sealed partial class Binder
             bool has = FindConstant(at, n.Name) is not null
                     || FindText(at, n.Name) is not null
                     || at.FindField(n.Name) is { Static: true }
-                    || at.FindField("<" + n.Name + ">") is { Static: true }
+                    || at.FindBackingField(n.Name) is { Static: true }
                     || at.EnumValues.ContainsKey(n.Name);
 
             if (has)
@@ -12086,11 +12172,13 @@ public sealed partial class Binder
                 // : IA` where IA is what declares `this[int]` -- is the
                 // interface's own as far as C# is concerned, and asking only
                 // the type answered that 'IC' cannot be indexed.
-                if (target.Symbol != null && !target.IsArray && !target.IsError
-                    && Reachable(target.Symbol, "get_Item")
-                             .Any(m => m.Params.Count == ix.Args.Count))
+                // The indexers are gathered once for the test and the checking
+                // of the arguments, nothing running between the two.
+                List<MethodSymbol>? itemGetters = target.Symbol != null && !target.IsArray && !target.IsError
+                    ? Reachable(target.Symbol, "get_Item") : null;
+                if (itemGetters is not null && TakesArgs(itemGetters, ix.Args.Count))
                 {
-                    List<Type> index = CheckIndexArgs(target, ix.Args, Reachable(target.Symbol, "get_Item"));
+                    List<Type> index = CheckIndexArgs(target, ix.Args, itemGetters);
                     MethodSymbol? getter = IndexerFor(
                         Reachable(target.Symbol, "get_Item"), index, ix.Args.Count);
 
@@ -12368,8 +12456,12 @@ public sealed partial class Binder
 
                 _wanted = null;
 
-                List<Type> constructorArgs = nw.Args.Select(argument =>
-                    argument is LambdaExpr or NewExpr { Type.Name.Length: 0, Elements: null } || HoldsLambda(argument) ? Type.Any : CheckExpr(argument)).ToList();
+                List<Type> constructorArgs = new(nw.Args.Count);
+                foreach (Expr argument in nw.Args)
+                {
+                    constructorArgs.Add(argument is LambdaExpr or NewExpr { Type.Name.Length: 0, Elements: null } || HoldsLambda(argument)
+                        ? Type.Any : CheckExpr(argument));
+                }
 
                 _wanted = outerNew;
 
@@ -12847,7 +12939,7 @@ public sealed partial class Binder
                     else if (getter != null && propertyName != null)
                     {
                         MethodSymbol? setter = getter.Owner
-                            .FindMethods("set_" + propertyName)
+                            .FindMethods("set_", propertyName)
                             .FirstOrDefault(m => m.Params.Count == 1);
                         if (setter == null)
                         {
@@ -13950,7 +14042,7 @@ public sealed partial class Binder
 
                     Type value = CheckExpr(given);
                     FieldSymbol? field = owner.FindField(init.Name)
-                                      ?? owner.FindField("<" + init.Name + ">");
+                                      ?? owner.FindBackingField(init.Name);
 
                     if (field is null)
                     {
@@ -14368,7 +14460,7 @@ public sealed partial class Binder
         }
 
         MethodSymbol? propertySetter = getter.Owner
-            .FindMethods("set_" + propertyName)
+            .FindMethods("set_", propertyName)
             .FirstOrDefault(m => m.Params.Count == 1);
 
         if (propertySetter is null)
@@ -14465,6 +14557,37 @@ public sealed partial class Binder
     // tracked separately below and invalidated by writes to their prefixes.
     private readonly HashSet<Sym> _notNull = new();
     private readonly HashSet<LocalSym> _assigned = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
+    /// Emptied sets for AssignedCopy to fill again. Every `if` and `switch`
+    /// copied _assigned two or three times to merge its branches, and each
+    /// copy was dropped as the statement ended.
+    /// </summary>
+    private readonly List<HashSet<LocalSym>> _spareAssigned = new();
+
+    /// <summary>A copy of what is definitely assigned now, in a set from the spares where there is one.</summary>
+    private HashSet<LocalSym> AssignedCopy()
+    {
+        HashSet<LocalSym> copy;
+        if (_spareAssigned.Count > 0)
+        {
+            copy = _spareAssigned[^1];
+            _spareAssigned.RemoveAt(_spareAssigned.Count - 1);
+        }
+        else
+        {
+            copy = new HashSet<LocalSym>(ReferenceEqualityComparer.Instance);
+        }
+        copy.UnionWith(_assigned);
+        return copy;
+    }
+
+    /// <summary>A set from AssignedCopy that nothing holds any longer, emptied for the next.</summary>
+    private void SpareAssigned(HashSet<LocalSym> set)
+    {
+        set.Clear();
+        _spareAssigned.Add(set);
+    }
 
     /// <summary>
     /// MEMBER PATHS proved non-null: `d.Init`, `node.Left.Right`.
@@ -15036,7 +15159,7 @@ public sealed partial class Binder
                 return Type.String;
             }
 
-            FieldSymbol? f = _thisType.FindField(n.Name) ?? _thisType.FindField("<" + n.Name + ">");
+            FieldSymbol? f = _thisType.FindField(n.Name) ?? _thisType.FindBackingField(n.Name);
             if (f is not null && NotInvocable(n, f.Type)) f = null;
 
             // NO INSTANCE IN A STATIC METHOD (C#'s CS0120). A static method
@@ -15150,7 +15273,7 @@ public sealed partial class Binder
             }
 
             FieldSymbol? staticField = _lexicalType.FindField(n.Name)
-                                      ?? _lexicalType.FindField("<" + n.Name + ">");
+                                      ?? _lexicalType.FindBackingField(n.Name);
             if (staticField is { Static: true } && !NotInvocable(n, staticField.Type))
             {
                 _r.Resolved[n] = new FieldSym(staticField);
@@ -15188,7 +15311,7 @@ public sealed partial class Binder
                 return Type.Void;
             }
 
-            MethodSymbol? staticGetter = _lexicalType.FindMethods("get_" + n.Name)
+            MethodSymbol? staticGetter = _lexicalType.FindMethods("get_", n.Name)
                                                      .FirstOrDefault(m => m.Static);
             if (staticGetter is not null && !NotInvocable(n, staticGetter.Returns))
             {
@@ -15196,7 +15319,7 @@ public sealed partial class Binder
                 return staticGetter.Returns;
             }
 
-            MethodSymbol? staticSetter = _lexicalType.FindMethods("set_" + n.Name)
+            MethodSymbol? staticSetter = _lexicalType.FindMethods("set_", n.Name)
                                                      .FirstOrDefault(m => m.Static && m.Params.Count == 1);
             if (staticSetter is not null)
             {
@@ -15217,7 +15340,7 @@ public sealed partial class Binder
         if (_capturedThisType is not null && _capturedThisField is not null)
         {
             FieldSymbol? outerField = _capturedThisType.FindField(n.Name)
-                                   ?? _capturedThisType.FindField("<" + n.Name + ">");
+                                   ?? _capturedThisType.FindBackingField(n.Name);
             if (outerField is not null && !NotInvocable(n, outerField.Type))
             {
                 _r.Resolved[n] = new CapturedFieldSym(_capturedThisField, outerField);
@@ -15231,14 +15354,14 @@ public sealed partial class Binder
                 return Type.Void;
             }
 
-            MethodSymbol? outerGetter = _capturedThisType.FindMethods("get_" + n.Name).FirstOrDefault();
+            MethodSymbol? outerGetter = _capturedThisType.FindMethods("get_", n.Name).FirstOrDefault();
             if (outerGetter is not null && !NotInvocable(n, outerGetter.Returns))
             {
                 _r.Resolved[n] = new CapturedPropertyGetSym(_capturedThisField, outerGetter);
                 return outerGetter.Returns;
             }
 
-            MethodSymbol? outerSetter = _capturedThisType.FindMethods("set_" + n.Name).FirstOrDefault(m => m.Params.Count == 1);
+            MethodSymbol? outerSetter = _capturedThisType.FindMethods("set_", n.Name).FirstOrDefault(m => m.Params.Count == 1);
             if (outerSetter is not null)
             {
                 _r.Resolved[n] = new PropertySetSym(outerSetter, _capturedThisField);
@@ -15285,7 +15408,7 @@ public sealed partial class Binder
             }
 
             FieldSymbol? outerStatic = outer.FindField(n.Name)
-                                    ?? outer.FindField("<" + n.Name + ">");
+                                    ?? outer.FindBackingField(n.Name);
             if (outerStatic is { Static: true } && !NotInvocable(n, outerStatic.Type))
             {
                 _r.Resolved[n] = new FieldSym(outerStatic);
@@ -15300,7 +15423,7 @@ public sealed partial class Binder
                 return Type.Void;
             }
 
-            MethodSymbol? outerStaticGetter = outer.FindMethods("get_" + n.Name)
+            MethodSymbol? outerStaticGetter = outer.FindMethods("get_", n.Name)
                                                    .FirstOrDefault(m => m.Static);
             if (outerStaticGetter is not null && !NotInvocable(n, outerStaticGetter.Returns))
             {
@@ -15308,7 +15431,7 @@ public sealed partial class Binder
                 return outerStaticGetter.Returns;
             }
 
-            MethodSymbol? outerStaticSetter = outer.FindMethods("set_" + n.Name)
+            MethodSymbol? outerStaticSetter = outer.FindMethods("set_", n.Name)
                                                    .FirstOrDefault(m => m.Static && m.Params.Count == 1);
             if (outerStaticSetter is not null)
             {
@@ -15441,8 +15564,8 @@ public sealed partial class Binder
         return type.EnumValues.ContainsKey(name)
             || type.FindField(name) is { Static: true }
             || type.FindMethods(name).Any(method => method.Static)
-            || type.FindMethods("get_" + name).Any(method => method.Static)
-            || type.FindMethods("set_" + name).Any(method => method.Static)
+            || type.FindMethods("get_", name).Any(method => method.Static)
+            || type.FindMethods("set_", name).Any(method => method.Static)
             || _r.Types.ContainsKey(type.Key + "." + name);
     }
 
@@ -15514,9 +15637,9 @@ public sealed partial class Binder
             => Lookup(name) is not null
             || (_thisType is { } owner
                 && (owner.FindField(name) is not null
-                    || owner.FindField("<" + name + ">") is not null
+                    || owner.FindBackingField(name) is not null
                     || owner.FindMethods(name).Count > 0
-                    || owner.FindMethods("get_" + name).Count > 0))
+                    || owner.FindMethods("get_", name).Count > 0))
             || FindConstant(_thisType, name) is not null
             || FindText(_thisType, name) is not null;
 
@@ -16028,7 +16151,7 @@ public sealed partial class Binder
         // asks for the specialisation and is given it.
         Dictionary<string, Type>? received = Received(target, owner);
 
-        FieldSymbol? field = owner.FindField(m.Name) ?? owner.FindField("<" + m.Name + ">");
+        FieldSymbol? field = owner.FindField(m.Name) ?? owner.FindBackingField(m.Name);
 
         if (field != null)
         {
@@ -16075,7 +16198,7 @@ public sealed partial class Binder
             return Type.Void;
         }
 
-        MethodSymbol? getter = MethodsOn(owner, "get_" + m.Name).FirstOrDefault();
+        MethodSymbol? getter = MethodsOn(owner, "get_", m.Name).FirstOrDefault();
 
         if (getter != null)
         {
@@ -16085,7 +16208,7 @@ public sealed partial class Binder
         }
 
         // A SET-ONLY PROPERTY: assigned, never read (PropertySetSym).
-        if (MethodsOn(owner, "set_" + m.Name).FirstOrDefault(s => s.Params.Count == 1) is { } onlySetter)
+        if (MethodsOn(owner, "set_", m.Name).FirstOrDefault(s => s.Params.Count == 1) is { } onlySetter)
         {
             _r.Resolved[m] = new PropertySetSym(onlySetter);
             return Close(onlySetter.Params[0].Type, received);
@@ -16589,6 +16712,19 @@ public sealed partial class Binder
         }
     }
 
+    /// <summary>An empty method list, read and never written, for a parameter type with no Invoke.</summary>
+    private static readonly List<MethodSymbol> NoMethods = new();
+
+    /// <summary>Whether any argument was passed by name.</summary>
+    private static bool AnyNamed(List<string?> names)
+    {
+        foreach (string? name in names)
+        {
+            if (name != null) return true;
+        }
+        return false;
+    }
+
     private Type CheckCall(CallExpr c)
     {
         if (c.FormatHole && c.Target is MemberExpr { Name: "ToString" } hole && c.Args.Count == 1)
@@ -16943,7 +17079,7 @@ public sealed partial class Binder
         // only happens when something was actually named. Checking the target
         // twice is safe: it is a name or a member access, and both record the
         // same answer whichever time they are asked.
-        if (c.ArgNames.Any(n => n != null))
+        if (AnyNamed(c.ArgNames))
         {
             MemberExpr? outerNamedCallee = _callee;
             NameExpr? outerNamedInvoked = _invokedName;
@@ -17265,9 +17401,20 @@ public sealed partial class Binder
             && want.ParamName is null && !want.IsPointer;
 
         bool OrdinaryFits(MethodSymbol m) => m.Params.Count == args.Count
-            && Enumerable.Range(0, args.Count)
-                         .All(i => WordFits(m, i) && WrittenFits(args[i], Wants(m, i), c.Args[i]))
+            && AllWritten(m, 0)
             && (m.TypeParams.Count == 0 || OrdinaryInferred(m) is not null);
+
+        // Whether every argument from `from` on is passed with the word its
+        // parameter wants and converts to what it wants: a loop, where a range
+        // and a closure over it were made for every candidate of every call.
+        bool AllWritten(MethodSymbol m, int from)
+        {
+            for (int i = from; i < args.Count; i++)
+            {
+                if (!WordFits(m, i) || !WrittenFits(args[i], Wants(m, i), c.Args[i])) return false;
+            }
+            return true;
+        }
 
         // A GENERIC METHOD FITS IN ITS ORDINARY FORM WHEN ITS TYPE ARGUMENTS
         // CAN BE INFERRED, not because an open parameter takes anything:
@@ -17336,7 +17483,11 @@ public sealed partial class Binder
             return better;
         }
 
-        List<MethodSymbol> ordinaryFits = group.Methods.Where(OrdinaryFits).ToList();
+        List<MethodSymbol> ordinaryFits = new();
+        foreach (MethodSymbol m in group.Methods)
+        {
+            if (OrdinaryFits(m)) ordinaryFits.Add(m);
+        }
         {
             // THE BEST EXPANDED FORM, not the first declared: Join(",", "a")
             // takes params string[] over params object[], a string being
@@ -17447,9 +17598,19 @@ public sealed partial class Binder
         }
 
         // Overload resolution by arity, then by exact-then-convertible match.
-        List<MethodSymbol> byArity = expandedParams is null
-            ? group.Methods.Where(m => m.Params.Count == args.Count).ToList()
-            : new List<MethodSymbol> { expandedParams };
+        List<MethodSymbol> byArity;
+        if (expandedParams is null)
+        {
+            byArity = new List<MethodSymbol>();
+            foreach (MethodSymbol m in group.Methods)
+            {
+                if (m.Params.Count == args.Count) byArity.Add(m);
+            }
+        }
+        else
+        {
+            byArity = new List<MethodSymbol> { expandedParams };
+        }
 
         // A PARAMETER WITH A DEFAULT NEED NOT BE PASSED, which is what the
         // default is FOR. `char Peek(int n = 1)` is called as `Peek()` eleven
@@ -17465,11 +17626,16 @@ public sealed partial class Binder
         // bool = false)` both exist, and a call with a Type was answered by the
         // first and refused -- where C# considers every candidate, in expanded
         // form as well as written.
-        if (byArity.Count > 0
-            && !byArity.Any(m => m.TypeParams.Count > 0
-                              || Enumerable.Range(0, args.Count)
-                                           .All(i => WordFits(m, i)
-                                                  && WrittenFits(args[i], Wants(m, i), c.Args[i]))))
+        bool anyFits = false;
+        foreach (MethodSymbol m in byArity)
+        {
+            if (m.TypeParams.Count > 0 || AllWritten(m, 0))
+            {
+                anyFits = true;
+                break;
+            }
+        }
+        if (byArity.Count > 0 && !anyFits)
         {
             byArity = new List<MethodSymbol>();
         }
@@ -17578,7 +17744,7 @@ public sealed partial class Binder
             for (int i = 0; i < c.Args.Count && i < m.Params.Count; i++)
             {
                 List<MethodSymbol> invokes = m.Params[i].Type.Symbol?.FindMethods("Invoke")
-                                          ?? new List<MethodSymbol>();
+                                          ?? NoMethods;
 
                 // AND BY THE TYPES IT WROTE, when it wrote them: `(string s)
                 // => ...` is no Func<int, ...> (C# 7.5.3.1 -- an explicitly
@@ -17628,7 +17794,22 @@ public sealed partial class Binder
             return true;
         }
 
-        byArity = byArity.Where(Fits).ToList();
+        // Copied only when one does not fit: the list is never changed after
+        // this, so where every one fits it serves as it is.
+        List<MethodSymbol>? fitting = null;
+        for (int k = 0; k < byArity.Count; k++)
+        {
+            if (Fits(byArity[k]))
+            {
+                fitting?.Add(byArity[k]);
+            }
+            else if (fitting is null)
+            {
+                fitting = new List<MethodSymbol>(byArity.Count);
+                for (int j = 0; j < k; j++) fitting.Add(byArity[j]);
+            }
+        }
+        if (fitting is not null) byArity = fitting;
 
         // ONLY WHAT THIS CODE CAN SEE, as for a constructor (Visible): a
         // private overload of another type is no candidate where a visible
@@ -17793,20 +17974,41 @@ public sealed partial class Binder
         // THE WORD AT THE CALL SITE NARROWS FIRST, because it is part of the
         // signature rather than a thing to complain about afterwards: `IsImm(y,
         // 0)` cannot mean the overload whose second parameter is `out long`.
-        List<MethodSymbol> byWord = byArity
-            .Where(m => Enumerable.Range(0, args.Count).All(i => WordFits(m, i))).ToList();
+        List<MethodSymbol> byWord = new();
+        foreach (MethodSymbol m in byArity)
+        {
+            bool words = true;
+            for (int i = 0; i < args.Count && words; i++) words = WordFits(m, i);
+            if (words) byWord.Add(m);
+        }
 
         if (byWord.Count > 0)
         {
             byArity = byWord;
         }
 
-        MethodSymbol? best = byArity.FirstOrDefault(
-                                 m => m.TypeParams.Count == 0
-                                   && Enumerable.Range(0, Math.Min(args.Count, m.Params.Count))
-                                                .All(i => args[i].Equals(Wants(m, i))
-                                                    || (!args[i].IsNullableValue && !Wants(m, i).IsNullableValue
-                                                        && args[i].AsNonNullable().Equals(Wants(m, i).AsNonNullable()))))
+        // The first that takes every argument as exactly its own type.
+        bool Exact(MethodSymbol m)
+        {
+            if (m.TypeParams.Count != 0) return false;
+            for (int i = 0; i < Math.Min(args.Count, m.Params.Count); i++)
+            {
+                if (!(args[i].Equals(Wants(m, i))
+                      || (!args[i].IsNullableValue && !Wants(m, i).IsNullableValue
+                          && args[i].AsNonNullable().Equals(Wants(m, i).AsNonNullable())))) return false;
+            }
+            return true;
+        }
+        MethodSymbol? exact = null;
+        foreach (MethodSymbol m in byArity)
+        {
+            if (Exact(m))
+            {
+                exact = m;
+                break;
+            }
+        }
+        MethodSymbol? best = exact
                           // AN ENUM IS NOT A NUMBER TO C#: there is no implicit
                           // conversion from one, so `sb.Append(op)` is
                           // Append(object) and prints the member's NAME. This
@@ -17846,10 +18048,13 @@ public sealed partial class Binder
         MethodSymbol? plain = best;
         best = null;
 
-        if (byArity.Any(m => m.TypeParams.Count > 0))
+        bool anyGeneric = false;
+        foreach (MethodSymbol m in byArity) anyGeneric |= m.TypeParams.Count > 0;
+        if (anyGeneric)
         {
-            foreach (MethodSymbol candidate in byArity.Where(m => m.TypeParams.Count > 0))
+            foreach (MethodSymbol candidate in byArity)
             {
+                if (candidate.TypeParams.Count == 0) continue;
                 // WRITTEN DOWN BEATS WORKED OUT. `Array.Empty<Node>()` has
                 // nothing to infer from -- it takes no arguments at all -- and
                 // saying so at the call is how C# answers that.
