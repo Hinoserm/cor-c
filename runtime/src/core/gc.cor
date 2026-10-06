@@ -7674,6 +7674,31 @@ static class Gc
         GcLock.Exit();
     }
 
+    /// The checked mode for the compiler's FIELD frees alone (FreeField ->
+    /// FreeFieldChecked), turned on after the heap has started -- a kernel
+    /// from its command line (gc.checkfields=1): each block an owned field
+    /// gave back is poisoned and kept, with who made it and who freed it,
+    /// and a write into it after its free is reported. Fewer than every
+    /// free, so its quarantine fits where gc.checkfrees=1's does not.
+    public static void CheckFieldFrees(long keptBytes)
+    {
+        GcLock.Enter();
+        if (!VerifyingFieldFrees)
+        {
+            VerifyingFieldFrees = true;
+            _quarantineCap = keptBytes;
+            if (_quarantine == 0) StartQuarantine();
+            if (Runtime.AllocHook == 0 && _sites == 0) StartSites();
+            if (_sites != 0 && Runtime.AllocHook == 0)
+            {
+                Runtime.AllocHookEvery = true;
+                Runtime.AllocHook = Sys.AddressOf(RecordAllocSite);
+            }
+        }
+        FastPathsChanged();
+        GcLock.Exit();
+    }
+
     // ---- who made each block and who freed it, in the checked mode ----
     //
     // A REPORT NAMING A BLOCK IS ONLY HALF AN ANSWER without the code that
@@ -7827,6 +7852,12 @@ static class Gc
     {
         _quarantineEntries = _verify ? QuarantineAll : QuarantineFields;
         _quarantineBudget = _verify ? QuarantineAllBytes : QuarantineFieldBytes;
+        // A KERNEL'S CAP (CheckFieldFrees): what a 128 MB machine can keep poisoned.
+        if (_quarantineCap > 0 && _quarantineBudget > _quarantineCap) _quarantineBudget = _quarantineCap;
+        // AND ITS RING TO MATCH: one entry for each smallest block the budget
+        // can keep. Sixteen megabytes of ring, mapped and scanned as a root
+        // range at every collection, were a 128 MB machine's whole margin.
+        if (_quarantineCap > 0 && _quarantineEntries > _quarantineBudget / Smallest) _quarantineEntries = _quarantineBudget / Smallest;
         long bytes = (_quarantineEntries + 1) * WordSize.Bytes;
         long ring = Platform.Map(bytes);
         if (ring != 0 && Runtime.RegisterRoots(ring + WordSize.Bytes, ring + bytes))
@@ -7844,6 +7875,7 @@ static class Gc
     const long QuarantineAllBytes = 402653184;
     const long QuarantineFieldBytes = 134217728;
     static long _quarantineBudget;
+    static long _quarantineCap;
     static long _quarantineHead;
     static long _quarantineCount;
     static long _quarantineBytes;
@@ -11247,7 +11279,7 @@ static class Gc
         if (_verifyGenerations || VerifyMarks || VerifyHeap) VerifyRegionEscapes();
         VerifyStop(reportsBefore);
         HeapChunks.SetBlockAnchorsActive(false);
-        if (_verify) CheckQuarantine();
+        if (_verify || VerifyingFieldFrees) CheckQuarantine();
         BeginSweep();
         SweepPagesTogether();
         while (SweepNext()) { }
@@ -11410,7 +11442,7 @@ static class Gc
         HeapChunks.SetBlockAnchorsActive(false);
         GcThreads.CaptureBuffers();
         GcThreads.UnmarkBuffers();
-        if (_verify) CheckQuarantine();
+        if (_verify || VerifyingFieldFrees) CheckQuarantine();
         BeginSweep();
         Sys.AtomicSwap(ctl + GcLock.Collector, 0);
         Sys.AtomicSwap(ctl + GcLock.Collecting, 0);
