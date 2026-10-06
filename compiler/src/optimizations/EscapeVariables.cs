@@ -37,15 +37,25 @@ public sealed partial class Escape
     {
         if (f.Async is not null) return;
         int word = IrTypes.Word.Bytes();
+        // ONLY THE REGISTERS THE LOOP BELOW TAKES: a word written twice or
+        // more that is no parameter. Every register's writes were gathered,
+        // a list each, for a loop that passes over all but a few -- a
+        // tenth of what the lifetime pass allocated at the link. Counted
+        // first by number, the few are gathered in the order they are first
+        // written, the order the loop took them in.
+        int[] written = new int[f.RegCount];
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Dest is { } d && d.Id < written.Length) written[d.Id]++;
         Dictionary<VReg, List<(Block Block, Instr Def)>> writers = new();
         foreach (Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
-                if (i.Dest is not null)
+                if (i.Dest is { } d && (d.Id >= written.Length || written[d.Id] >= 2) && d.Type == IrTypes.Word && !f.Params.Contains(d))
                 {
-                    if (!writers.TryGetValue(i.Dest, out var list)) writers[i.Dest] = list = new();
+                    if (!writers.TryGetValue(d, out var list)) writers[d] = list = new();
                     list.Add((b, i));
                 }
-        Defs defs = new(f, buildCfg: false);
+        Defs defs = AnalysisCache.DefsOf(f, buildCfg: false);
         Liveness? liveness = null;
 
         foreach ((VReg v, List<(Block Block, Instr Def)> list) in writers)
@@ -194,7 +204,7 @@ public sealed partial class Escape
             Owned++;
             VariablesOwned++;
             liveness = null;
-            defs = new(f, buildCfg: false);
+            defs = AnalysisCache.DefsOf(f, buildCfg: false);
         }
     }
 

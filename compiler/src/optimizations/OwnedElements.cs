@@ -1696,6 +1696,7 @@ public sealed partial class Escape
                 int k = at.Instrs.IndexOf(origin);
                 at.Instrs.RemoveAt(k);
                 at.Instrs.InsertRange(k, RegionPointsTo.Beside(f, origin, made.Dest));
+                f.Edited();
             }
         }
         _elementSites.Clear();
@@ -3199,7 +3200,7 @@ public sealed partial class Escape
                 if (i.Op == Opcode.Call && IsAllocator(i.Callee) && i.Dest is not null && i.Field is null)
                     arrays.Add(i);
         if (arrays.Count == 0) return;
-        Defs defs = new(f, buildCfg: false);
+        Defs defs = AnalysisCache.DefsOf(f, buildCfg: false);
         HashSet<Block>? repeating = null;
         foreach (Instr made in arrays)
         {

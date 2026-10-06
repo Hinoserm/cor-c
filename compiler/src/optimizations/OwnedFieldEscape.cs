@@ -180,7 +180,7 @@ internal sealed class OwnedFieldEscape
         public AddressScan(Function f)
         {
             _f = f;
-            _defs = new(f, buildCfg: false);
+            _defs = AnalysisCache.DefsOf(f, buildCfg: false);
             foreach (var b in f.Blocks)
                 foreach (Instr i in b.Instrs)
                 {

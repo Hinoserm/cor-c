@@ -41,6 +41,13 @@ public static class Switches
     /// <summary>--verify-passes: the IR verified after every pass.</summary>
     public static bool VerifyPasses;
 
+    /// <summary>
+    /// --verify-analyses: every analysis the lifetime rules keep of a function
+    /// (Opt.AnalysisCache) checked, at each answer, against the function's
+    /// whole shape: an in-place edit that did not say so stops the run.
+    /// </summary>
+    public static bool VerifyAnalyses;
+
     /// <summary>--verify-marks: every pass checked for a mark it lost off an instruction it kept (MarkVerifier).</summary>
     public static bool VerifyMarks;
 
@@ -158,6 +165,7 @@ public static class Switches
         if (Number(taken, "--work-budget") is long budget) WorkBudget = budget;
         VerifyPasses |= Switch(taken, "--verify-passes");
         VerifyMarks |= Switch(taken, "--verify-marks");
+        VerifyAnalyses |= Switch(taken, "--verify-analyses");
         SkipPasses = Valued(taken, "--skip-passes") ?? SkipPasses;
         ReportPasses |= Switch(taken, "--report-passes");
         TraceDemand |= Switch(taken, "--trace-demand");

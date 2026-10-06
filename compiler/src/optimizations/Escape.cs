@@ -74,8 +74,9 @@ public sealed partial class Escape : IModulePass
         // alive for as long as the thread lived. The flow graphs Reaches
         // built (_reachGraphs) hold their functions, so they go too.
         _repeating = new(ReferenceEqualityComparer.Instance);
+        AnalysisCache.Open();
         try { RunCore(m); }
-        finally { _repeating = null; _reachGraphs = null; _inserted = null; _indirect = null; _held = null; _fieldsOf = null; _heldStamps = null; _copies = null; _typeItems = null; _typedFieldsOf = null; _stampItems = null; }
+        finally { AnalysisCache.Close(); _repeating = null; _reachGraphs = null; _inserted = null; _indirect = null; _held = null; _fieldsOf = null; _heldStamps = null; _copies = null; _typeItems = null; _typedFieldsOf = null; _stampItems = null; }
     }
 
     /// <summary>
@@ -94,6 +95,7 @@ public sealed partial class Escape : IModulePass
     {
         _reachGraphs = null; _inserted = null; _indirect = null; _held = null; _fieldsOf = null; _heldStamps = null;
         _repeating = null;
+        AnalysisCache.Close();
         _copies = null; _typeItems = null; _typedFieldsOf = null; _stampItems = null;
         _returnsFirst = null; _bodies = null; _invokeOnly = null; _unresolvedWhy = null; UsedAfterWhy = null;
         OwnedFieldEscape.Forget();
@@ -263,11 +265,14 @@ public sealed partial class Escape : IModulePass
                 foreach (Block b in f.Blocks)
                     for (int k = 0; k < b.Instrs.Count; k++)
                         if (b.Instrs[k] is { Op: Opcode.Call, Callee: CollectorQuery, Dest: { } answer } asked)
+                        {
                             b.Instrs[k] = new Instr
                             {
                                 Op = Opcode.Copy, Dest = answer, Line = asked.Line,
                                 Operands = { new ImmOperand(m.NeedsHeap ? 1 : 0, answer.Type) },
                             };
+                            f.Edited();
+                        }
         }
 
         // A PROGRAM THAT NEEDS NO COLLECTOR STILL ALLOCATES AND FREES: what
@@ -300,6 +305,7 @@ public sealed partial class Escape : IModulePass
                         if (i.Dest is null && (IsCollectorNote(i.Callee) || i.Callee is ThreadBlocking or ThreadUnblocking or ThreadSafePoint or ThreadRegister))
                         {
                             b.Instrs.RemoveAt(k);
+                            f.Edited();
                             k--;
                             continue;
                         }
@@ -325,6 +331,7 @@ public sealed partial class Escape : IModulePass
                         };
                         retargeted.Operands.AddRange(i.Operands);
                         b.Instrs[k] = retargeted;
+                        f.Edited();
                     }
                 }
             }
@@ -851,6 +858,7 @@ public sealed partial class Escape : IModulePass
                 int at = b.Instrs.IndexOf(end);
                 b.Instrs.RemoveAt(at);
                 b.Instrs.InsertRange(at, made);
+                f.Edited();
                 _bookkeeping.UnionWith(made);
                 Owned++;
             }
@@ -3245,7 +3253,7 @@ continue;
             // grows as the analysis goes.
             if (!changed && !flow.Escapes && pending is { Count: > 0 })
             {
-                writes ??= new(f);
+                writes ??= AnalysisCache.WritesOf(f);
                 bool resolved = false;
                 foreach (VReg d in pending.ToList())
                 {
@@ -3382,7 +3390,7 @@ continue;
             if (depth > 4 || o is not RegOperand { Reg: var r }) return null;
             holderRegs ??= new();
             if (holderRegs.TryGetValue(r, out var known)) return known;
-            writes ??= new(f);
+            writes ??= AnalysisCache.WritesOf(f);
             if (!writes.TryGetValue(r, out WriteList ws) || ws.Count != 1)
             {
                 if (PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal))
@@ -3416,7 +3424,7 @@ continue;
         {
             if (o is SlotOperand { Slot: var slot }) return slot;
             if (depth > 4 || o is not RegOperand { Reg: var r }) return null;
-            writes ??= new(f);
+            writes ??= AnalysisCache.WritesOf(f);
             return writes.TryGetValue(r, out WriteList ws) && ws.Count == 1 && ws[0] is { Op: Opcode.Copy, Operands: [var from] }
                 ? FrameSlotOf(from, depth + 1) : null;
         }
@@ -3428,7 +3436,7 @@ continue;
         // else written to it, and nothing can be said.
         bool MergeFrameWrites(VReg d, object root)
         {
-            writes ??= new(f);
+            writes ??= AnalysisCache.WritesOf(f);
             if (!writes.TryGetValue(d, out WriteList ws)) return false;
             List<object> slots = new();
             bool tracing = PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal);
@@ -3567,7 +3575,7 @@ continue;
                 // set to null before the `try` that disposes it -- is the
                 // holder wherever it is not null: every write is null or a
                 // copy of a register already known to address the same place.
-                writes ??= new(f);
+                writes ??= AnalysisCache.WritesOf(f);
                 if (!writes.TryGetValue(d, out WriteList all) || !all.All(w =>
                         w.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 && w.Operands.Count == 1
                         && (w.Operands[0] is ImmOperand { Value: 0 }
@@ -3599,7 +3607,7 @@ continue;
         {
             root = Canon(root);
             if (kinds is not null && kinds.TryGetValue(root, out Stamp[]? known)) return known;
-            writes ??= new(f);
+            writes ??= AnalysisCache.WritesOf(f);
             return root is VReg made && writes.TryGetValue(made, out WriteList ws) && ws.Count == 1 && ws[0] is { Op: Opcode.Call, Callee: Allocator or ObjectAllocator }
                 && StampOf(f, made) is Stamp stamp && stamp.Base == Target.Current.DescriptorBytes ? new[] { stamp } : null;
         }
@@ -3622,7 +3630,7 @@ continue;
         {
             if (call.Op != Opcode.CallIndirect || call.Operands.Count < 2 || KindsOf(root) is not { Length: > 0 } types || _typeItems is null
                 || call.Operands[0] is not RegOperand { Reg: var method }) return null;
-            writes ??= new(f);
+            writes ??= AnalysisCache.WritesOf(f);
             if (!writes.TryGetValue(method, out WriteList ws) || ws.Count != 1 || ws[0] is not { Op: Opcode.Load, Operands: [RegOperand { Reg: var table }] } slot
                 || !writes.TryGetValue(table, out WriteList ts) || ts.Count != 1 || ts[0] is not { Op: Opcode.Load, Offset: 0, Operands: [RegOperand { Reg: var self }] }
                 || Holding(RegOperand.Of(self)) is not (var selfRoot, 0) || !Equals(Canon(selfRoot), Canon(root))) return null;
@@ -3659,7 +3667,7 @@ continue;
             if (_stampItems is null || call.Op != Opcode.CallIndirect || call.Operands.Count < 2
                 || call.Operands[0] is not RegOperand { Reg: var method } || call.Operands[1] is not RegOperand { Reg: var receiver }) return null;
             if (exact is null) return null;
-            writes ??= new(f);
+            writes ??= AnalysisCache.WritesOf(f);
             if (!writes.TryGetValue(method, out WriteList methodWrites) || methodWrites.Count != 1
                 || methodWrites[0] is not { Op: Opcode.Load, Operands: [RegOperand { Reg: var table }] } slotLoad
                 || !writes.TryGetValue(table, out WriteList tableWrites) || tableWrites.Count != 1
@@ -3679,7 +3687,7 @@ continue;
             if (bases is null)
             {
                 bases = new(roots);
-                writes ??= new(f);
+                writes ??= AnalysisCache.WritesOf(f);
                 for (bool grew = true; grew;)
                 {
                     grew = false;
@@ -3705,7 +3713,7 @@ continue;
         // A register's one write, where it has one (StorageFreed's zero).
         Instr? ZeroOrigin(VReg zeroReg)
         {
-            writes ??= new(f);
+            writes ??= AnalysisCache.WritesOf(f);
             return writes.TryGetValue(zeroReg, out WriteList zeroWrites) && zeroWrites.Count == 1 ? zeroWrites[0] : null;
         }
 
@@ -3741,7 +3749,7 @@ continue;
                     : IndirectOverrides(i) is string[] found ? found
                     // Through the one function's address (Devirtualize's
                     // answer for a box it saw made): that function.
-                    : i.Operands[0] is RegOperand { Reg: var method } && (writes ??= new(f)).TryGetValue(method, out WriteList known) && known.Count == 1
+                    : i.Operands[0] is RegOperand { Reg: var method } && (writes ??= AnalysisCache.WritesOf(f)).TryGetValue(method, out WriteList known) && known.Count == 1
                       && known[0] is { Op: Opcode.Copy, Operands: [SymOperand { Name: var named, Offset: 0 }] } ? new[] { named } : null;
                 // No method there in any type it is: never called with it.
                 if (targets is { Length: 0 } && i.Op == Opcode.CallIndirect && o == first && KindsOf(box) is { Length: > 0 }) continue;
@@ -4434,7 +4442,7 @@ continue;
                 OwnedFieldEscape.Owner promotedOwner = new() { Block = b, Root = i.Dest, Bytes = size, Stamp = ClosureStamp(f, i) };
                 promotedOwner.Aliases.Add(i.Dest);
                 bool canAnchor = true;
-                defs ??= flow.Escapes && sized && owners.Count != 0 ? new Defs(f) : null;
+                defs ??= flow.Escapes && sized && owners.Count != 0 ? AnalysisCache.DefsOf(f) : null;
                 if (flow.Escapes && sized && owners.Count != 0 && defs!.IsSingle(i.Dest))
                 {
                     HashSet<VReg> roots = new() { i.Dest };
@@ -4533,7 +4541,7 @@ continue;
                     // Left to the collector: say why, for the link (EscapeHints).
                     if (_hinting && sweep == 0)
                     {
-                        liveness ??= new Liveness(f);
+                        liveness ??= AnalysisCache.LivenessOf(f);
                         pads ??= PadLive(liveness);
                         Pending(f, b, i, summaries, liveness, pads, null);
                     }
@@ -4544,7 +4552,7 @@ continue;
                 // one pointer the function remembers -- is reused each time
                 // round, so the previous object must be dead by the time this
                 // runs again.
-                liveness ??= new Liveness(f);
+                liveness ??= AnalysisCache.LivenessOf(f);
                 pads ??= PadLive(liveness);
                 // A group's members already promoted this pass hold their own
                 // slots, reached through registers made after the liveness was
@@ -4634,7 +4642,7 @@ continue;
                 }
 
                 b.Instrs.RemoveAt(k);
-                b.Instrs.InsertRange(k, replacement); OwnedFieldEscape.Changed();
+                b.Instrs.InsertRange(k, replacement); OwnedFieldEscape.Changed(); f.Edited();
                 _promotedMade.Add(replacement[0]);
                 _promotedZeroing.Add(replacement[1]);
                 // ONLY ROUND A CYCLE IS THERE A PREVIOUS OCCUPANT: off every
@@ -4661,7 +4669,7 @@ continue;
                         AppendElementFree(f, before, i, addr, i.Line);
                         if (storage) AppendStorageFree(f, before, addr, i.Line);
                         int renewAt = b.Instrs.IndexOf(replacement[1]);
-                        b.Instrs.InsertRange(renewAt, before); OwnedFieldEscape.Changed();
+                        b.Instrs.InsertRange(renewAt, before); OwnedFieldEscape.Changed(); f.Edited();
                         _bookkeeping.UnionWith(before);
                         k += before.Count;
                     }
@@ -4672,7 +4680,7 @@ continue;
                         List<Instr> last = new() { new Instr { Op = Opcode.Copy, Dest = at, Operands = { new SlotOperand(slot) }, Line = exit.Instrs[^1].Line } };
                         AppendElementFree(f, last, i, at, exit.Instrs[^1].Line);
                         if (storage) AppendStorageFree(f, last, at, exit.Instrs[^1].Line);
-                        exit.Instrs.InsertRange(exit.Instrs.Count - 1, last); OwnedFieldEscape.Changed();
+                        exit.Instrs.InsertRange(exit.Instrs.Count - 1, last); OwnedFieldEscape.Changed(); f.Edited();
                         _bookkeeping.UnionWith(last);
                     }
                     VReg zeroAt = f.NewReg(IrTypes.Word, "elementsAt");
@@ -4681,7 +4689,7 @@ continue;
                         new Instr { Op = Opcode.Copy, Dest = zeroAt, Operands = { new SlotOperand(slot) }, Line = EntryLine(f, i.Line) },
                         new Instr { Op = Opcode.Store, Size = IrTypes.Word.Bytes(), Operands = { RegOperand.Of(zeroAt), new ImmOperand(0, IrTypes.Word) }, Line = EntryLine(f, i.Line) },
                     };
-                    f.Entry.Instrs.InsertRange(0, entry); OwnedFieldEscape.Changed();
+                    f.Entry.Instrs.InsertRange(0, entry); OwnedFieldEscape.Changed(); f.Edited();
                     _bookkeeping.UnionWith(entry);
                     if (ReferenceEquals(b, f.Entry)) k += entry.Count;
                 }
@@ -4993,7 +5001,7 @@ continue;
             foreach (Instr i in f.Blocks.SelectMany(b => b.Instrs).Where(i => i.Op == Opcode.Call && i.Callee is not null && i.Dest is not null && !IsAllocator(i.Callee)))
                 Console.Error.WriteLine($"fresh {f.Name}: {i} fresh={IsFreshCall(i)} hinting={_hinting}");
         if (calls.Count == 0 && waiting.Count == 0) return;
-        Defs defs = new(f, buildCfg: false);
+        Defs defs = AnalysisCache.DefsOf(f, buildCfg: false);
         HashSet<VReg>? addresses = waiting.Count == 0 ? null : AddressRegisters(f);
         waiting.RemoveAll(w => !defs.IsSingle(w.Call.Dest!) || !addresses!.Contains(w.Call.Dest!));
         Liveness? liveness = null;
@@ -5012,13 +5020,13 @@ continue;
                 // to a table's lookup is the link's to free.
                 if (_hinting)
                 {
-                    liveness ??= new Liveness(f);
+                    liveness ??= AnalysisCache.LivenessOf(f);
                     pads ??= PadLive(liveness);
                     Pending(f, b, call, summaries, liveness, pads, call.Callee);
                 }
                 continue;
             }
-            liveness ??= new Liveness(f);
+            liveness ??= AnalysisCache.LivenessOf(f);
             pads ??= PadLive(liveness);
             if (LiveAtSelf(liveness, pads, b, call, flow.Derived))
             {
@@ -5054,7 +5062,7 @@ continue;
         if (!_hinting) return;
         foreach ((Block b, Instr call) in waiting)
         {
-            liveness ??= new Liveness(f);
+            liveness ??= AnalysisCache.LivenessOf(f);
             pads ??= PadLive(liveness);
             Pending(f, b, call, summaries, liveness, pads, call.Callee ?? VirtualSymbol(call));
         }
