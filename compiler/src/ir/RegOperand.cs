@@ -18,7 +18,7 @@ public sealed class RegOperand : Operand
     private RegOperand(VReg reg) => Reg = reg;
 
     /// <summary>The register's one operand.</summary>
-    public static RegOperand Of(VReg reg) => reg.SharedOperand ??= RegOperand.Of(reg);
+    public static RegOperand Of(VReg reg) => reg.SharedOperand ??= new RegOperand(reg);
 
     public override IrType Type => Reg.Type;
     public override string ToString() => Reg.ToString();
