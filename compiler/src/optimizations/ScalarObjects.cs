@@ -64,7 +64,7 @@ public sealed class ScalarObjects : IParallelModulePass
         private Defs? _defs;
         private Liveness? _liveness;
         public Analysis(Function f) { _f = f; }
-        public Defs Defs => _defs ??= new Defs(_f);
+        public Defs Defs => _defs ??= PipelineAnalyses.DefsOf(_f);
         public Liveness Liveness => _liveness ??= new Liveness(Defs.Cfg);
         private Dictionary<VReg, List<(Block Block, int Index)>>? _uses;
         /// <summary>Every instruction that reads each register, in block and instruction order.</summary>

@@ -12,7 +12,7 @@ public sealed class ArrayLengthFacts : IPass
     public void Run(Function function)
     {
         if (function.Async is not null || !function.Blocks.Any(block => block.Instrs.Any(instruction => instruction.Op == Opcode.ArrayLength))) return;
-        Cfg cfg = new(function); Defs defs = new(cfg);
+        Cfg cfg = PipelineAnalyses.CfgOf(function); Defs defs = PipelineAnalyses.DefsOf(function);
         object? Root(Operand operand, Block use, int index, int depth = 0)
         {
             if (operand is SlotOperand slot) return slot.Slot;

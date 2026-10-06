@@ -14,7 +14,7 @@ public sealed class WideProductSharing : IPass
         if (!f.Blocks.Exists(block => block.Instrs.Exists(i => i.Op == Opcode.Mul && i.Dest?.Type == IrType.I64
                 && i.Operands.Count == 2 && i.Operands[0] is RegOperand && i.Operands[1] is RegOperand)))
             return;
-        Defs defs = new(f);
+        Defs defs = PipelineAnalyses.DefsOf(f);
         Dictionary<Instr, List<Instr>> replacements = new();
         foreach (var block in f.Blocks)
         for (int k = 0; k < block.Instrs.Count; k++)

@@ -14,7 +14,7 @@ public sealed class CommonTailMerge : IPass
     public void Run(Function function)
     {
         if (function.Async is not null || function.Blocks.Count < 2) return;
-        Cfg cfg = new(function);
+        Cfg cfg = PipelineAnalyses.CfgOf(function);
         if (cfg.Roots.Count != 1 || function.Blocks.SelectMany(b => b.Instrs).Any(i =>
             i.Op is Opcode.Phi or Opcode.Unwind or Opcode.LabelAddr or Opcode.StackPointer or Opcode.FramePointer)) return;
         Dictionary<string, List<Block>> groups = new(StringComparer.Ordinal);

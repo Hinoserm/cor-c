@@ -35,9 +35,9 @@ public sealed class DominatingBranch : IPass
                 repeated |= n > 1;
             }
         if (!repeated) return;
-        Cfg cfg = new(function);
+        Cfg cfg = PipelineAnalyses.CfgOf(function);
         if (cfg.Roots.Count != 1) return;
-        Defs defs = new(cfg);
+        Defs defs = PipelineAnalyses.DefsOf(function);
         foreach (Block block in function.Blocks)
         {
             if (block.Terminator is not { Op: Opcode.Branch, Operands: [RegOperand { Reg: var condition }] } branch

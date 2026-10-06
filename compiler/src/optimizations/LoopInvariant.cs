@@ -11,9 +11,9 @@ public sealed class LoopInvariant : IPass
     public void Run(Function function)
     {
         if (function.Async is not null || function.Blocks.Count == 0) return;
-        Cfg cfg = new(function);
+        Cfg cfg = PipelineAnalyses.CfgOf(function);
         if (cfg.Roots.Count != 1) return; // EH/indirect entry needs separate reasoning.
-        Defs defs = new(cfg);
+        Defs defs = PipelineAnalyses.DefsOf(function);
         // Where each register is written, by its number. Loops and arrays
         // throughout: the lambdas here were closures and boxed edge walks
         // for every block of every function.

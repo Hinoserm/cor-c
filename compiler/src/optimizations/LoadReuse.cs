@@ -28,9 +28,9 @@ public sealed class LoadReuse : IPass
             for (int k = 0; k < function.Blocks.Count; k++) function.Blocks[k].Order = k;
             return;
         }
-        Cfg cfg = new(function);
+        Cfg cfg = PipelineAnalyses.CfgOf(function);
         if (cfg.Roots.Count != 1) return;
-        Defs defs = new(cfg);
+        Defs defs = PipelineAnalyses.DefsOf(function);
         bool Stable(VReg register, Block from, int fromIndex, Block use, int useIndex)
         {
             if (defs.CanForward(register, from, fromIndex, use, useIndex)) return true;

@@ -52,7 +52,7 @@ public sealed class ReadOnlyFold : IParallelModulePass
     private static void Fold(Function f, Dictionary<string, DataItem> items)
     {
             // This pass only queries definitions; no CFG is needed.
-            Defs defs = new(f, buildCfg: false);
+            Defs defs = PipelineAnalyses.DefsOf(f, buildCfg: false);
             foreach (Block b in f.Blocks)
             {
                 for (int k = 0; k < b.Instrs.Count; k++)

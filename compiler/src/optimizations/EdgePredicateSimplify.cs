@@ -15,9 +15,9 @@ public sealed class EdgePredicateSimplify : IPass
     public void Run(Function function)
     {
         if (function.Async is not null) return;
-        Cfg cfg = new(function);
+        Cfg cfg = PipelineAnalyses.CfgOf(function);
         if (cfg.Roots.Count != 1) return;
-        Defs defs = new(cfg);
+        Defs defs = PipelineAnalyses.DefsOf(function);
         Dictionary<Block, List<Fact>> outgoing = new();
         foreach (Block block in cfg.ReversePostorder)
         {
