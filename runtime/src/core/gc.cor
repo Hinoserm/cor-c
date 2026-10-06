@@ -8102,10 +8102,10 @@ static class Gc
             {
                 long word = Sys.Peek(block);
                 long size = word & SizeMask;
-                bool live = size >= Smallest && (word & FlagFree) == 0 && block + size <= ptr
+                bool whole = size >= Smallest && (word & FlagFree) == 0 && block + size <= ptr
                     && Sys.Peek(block + size - FooterBytes) == word && Described(block, at);
                 Sys.Poke(tb + Tls.InAlloc, 0);
-                return live;
+                return whole;
             }
             Sys.Poke(tb + Tls.InAlloc, 0);
         }
@@ -8121,9 +8121,9 @@ static class Gc
         {
             Sys.Poke(tb + Tls.InAlloc, 1);
             long bytes = OwnPageBlock(tb, block);
-            bool live = bytes > 0 && Described(block, at);
+            bool described = bytes > 0 && Described(block, at);
             Sys.Poke(tb + Tls.InAlloc, 0);
-            if (bytes > 0) return live;
+            if (bytes > 0) return described;
         }
         GcLock.Enter();
         bool live = ValidAllocated(at) != 0 && Described(block, at);
