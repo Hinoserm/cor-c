@@ -568,6 +568,127 @@ public sealed partial class BindResult
     public Type TypeOf(Expr e) => ExprType.TryGetValue(e, out Type? t) ? t : Type.Error;
 
     /// <summary>
+    /// A NODE NOTHING WILL ASK ABOUT AGAIN, let go of: its rows in every
+    /// table keyed by node (Lowering.ReleaseBody, once its method is
+    /// lowered). The facts kept on the nodes themselves -- types, symbols,
+    /// calls, rewrites -- go with the nodes; a row here held its node, and so
+    /// the subtree under it, to the end of lowering whatever became of the
+    /// method: every local declaration with its initialiser, every boxing,
+    /// pattern and tuple of the unit. Asking about a node after this answers
+    /// as for a node never bound, so only a node no one will ask about may
+    /// be forgotten.
+    /// </summary>
+    public void Forget(Node n)
+    {
+        switch (n)
+        {
+            case LocalDecl d:
+                LocalSlot.Remove(d);
+                LocalType.Remove(d);
+                BoxedLocals.Remove(d);
+                // The reverse map (DeclOf) loses the row too. In step with the
+                // table before, it stays in step; otherwise it is made again
+                // at the next miss -- a count that only matched because rows
+                // went as others came would have said nothing was added.
+                bool inStep = _declBySym is not null && _declBySymCount == LocalSymbols.Count;
+                if (LocalSymbols.Remove(d, out LocalSym? local))
+                {
+                    if (_declBySym is not null && _declBySym.TryGetValue(local, out LocalDecl? mapped) && ReferenceEquals(mapped, d))
+                        _declBySym.Remove(local);
+                    _declBySymCount = inStep ? LocalSymbols.Count : -1;
+                }
+                break;
+            case IsExpr i:
+                PatternSlot.Remove(i);
+                NullablePatterns.Remove(i);
+                ValuePatterns.Remove(i);
+                NonNullPatterns.Remove(i);
+                BoxPatterns.Remove(i);
+                break;
+            case SwitchArm arm:
+                ArmSlot.Remove(arm);
+                ArmTests.Remove(arm);
+                break;
+            case InitAssign init:
+                InitField.Remove(init);
+                InitSetter.Remove(init);
+                InitGetter.Remove(init);
+                break;
+            case InitAdd add:
+                InitAdder.Remove(add);
+                break;
+            case InitIndex index:
+                InitIndexer.Remove(index);
+                break;
+            case ForeachStmt each:
+                ForeachSlot.Remove(each);
+                break;
+            case SwitchStmt sw:
+                SwitchSubject.Remove(sw);
+                break;
+            case GotoCaseStmt gc:
+                GotoCases.Remove(gc);
+                break;
+            case GotoStmt go:
+                Gotos.Remove(go);
+                break;
+            case CatchClause cc:
+                CatchType.Remove(cc);
+                CatchSlot.Remove(cc);
+                break;
+        }
+        if (n is Expr e)
+        {
+            Views.Remove(e);
+            Boxes.Remove(e);
+            BoxedAs.Remove(e);
+            UserConversions.Remove(e);
+            switch (e)
+            {
+                case AssignExpr a:
+                    DelegateCompounds.Remove(a);
+                    DiscardAssignments.Remove(a);
+                    break;
+                case SwitchExpr sx:
+                    SwitchSlot.Remove(sx);
+                    break;
+                case PatternExpr p:
+                    PatternSubject.Remove(p);
+                    break;
+                case TupleExpr tu:
+                    Tuples.Remove(tu);
+                    break;
+                case SizeOfExpr so:
+                    SizeOfs.Remove(so);
+                    break;
+                case TypeOfExpr to:
+                    TypeOfs.Remove(to);
+                    PrimitiveTypeOfs.Remove(to);
+                    ArrayTypeOfs.Remove(to);
+                    RunTimeTypeOfs.Remove(to);
+                    break;
+                case CallExpr c:
+                    GetTypes.Remove(c);
+                    GenericDispatches.Remove(c);
+                    PointerCalls.Remove(c);
+                    CapturedReceivers.Remove(c);
+                    EnumHasFlags.Remove(c);
+                    EnumStatics.Remove(c);
+                    AddressOf.Remove(c);
+                    break;
+                case UnaryExpr u:
+                    MethodAddresses.Remove(u);
+                    break;
+            }
+        }
+        StringTests.Remove(n);
+        TestedTypes.Remove(n);
+        TestedArrays.Remove(n);
+        Shapes.Remove(n);
+        PatternSym.Remove(n);
+    }
+
+    /// <summary>
     /// Drop the completed analysis after specialization has consumed it.
     /// Only the final binding is needed by lowering. Clear references even
     /// if a conservative stack root temporarily retains this result object.
