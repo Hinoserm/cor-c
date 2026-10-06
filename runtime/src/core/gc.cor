@@ -3292,14 +3292,23 @@ static class Gc
         nint need = (bytes + (nint)(Overhead + 7)) & (nint)SizeMask;
         if (need <= (nint)ClassMax)
         {
+            // INSIDE THE ALLOCATOR BEFORE THE CACHE IS READ (Tls.InAlloc):
+            // ShedPages gives back the lists of a thread whose cache the last
+            // round took and which is not in the allocator, and one that had
+            // read its cache here and not yet said so was such a thread -- it
+            // went on to pop a block RetireClasses had just put on its page's
+            // list, and the block was handed out twice. The NT kernel's
+            // address-space list was found zeroed under it at a first logon
+            // with memory short.
+            Sys.Poke(tb + (nint)Tls.InAlloc, 1);
             nint cache = (nint)Sys.Peek(tb + (nint)Tls.Classes);
             if (cache == 0)
             {
+                Sys.Poke(tb + (nint)Tls.InAlloc, 0);
                 return (nint)AllocSlow(bytes, kind);
             }
             nint c = (nint)Sys.Peek((nint)_classOf + (need >> 3) * w);
             nint slot = cache + c * (2 * w);
-            Sys.Poke(tb + (nint)Tls.InAlloc, 1);
             nint free = (nint)Sys.Peek(slot + w);
             if (free == 0)
             {
@@ -3344,12 +3353,14 @@ static class Gc
         // the slow path's.
         if (need <= ClassMax && bytes >= 0)
         {
+            // Inside the allocator before the cache is read, as in AllocKind:
+            // ShedPages passes over a thread only while it says so.
+            Sys.Poke(tb + Tls.InAlloc, 1);
             long cache = Sys.Peek(tb + Tls.Classes);
             if (cache != 0)
             {
                 long c = Sys.Peek(_classOf + (need >> 3) * WordSize.Bytes);
                 long slot = cache + c * (2 * WordSize.Bytes);
-                Sys.Poke(tb + Tls.InAlloc, 1);
                 long free = Sys.Peek(slot + WordSize.Bytes);
                 if (free != 0)
                 {
@@ -3364,8 +3375,8 @@ static class Gc
                     if (_heapCheck) { CheckMade(free, "class fast path"); CheckList(Sys.Peek(slot + WordSize.Bytes), size, "class fast path"); }
                     return free + HeaderBytes;
                 }
-                Sys.Poke(tb + Tls.InAlloc, 0);
             }
+            Sys.Poke(tb + Tls.InAlloc, 0);
             return AllocSlow(bytes, kind);
         }
         // Not to be stopped from outside between here and the bump
