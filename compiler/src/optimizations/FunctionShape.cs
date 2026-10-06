@@ -126,7 +126,7 @@ internal sealed class FunctionShape
 /// </summary>
 internal static class AnalysisCache
 {
-    private const int Kept = 8;
+    private const int KeptFunctions = 8;
 
     private sealed class Entry
     {
@@ -138,13 +138,20 @@ internal static class AnalysisCache
         public RegisterWrites? Writes;
         public Liveness? Liveness;
         public Defs? DefsWithCfg, DefsWithoutCfg;
+        // One flow graph for whatever of the above needs one, and the rest
+        // kept by their askers' own kinds (Kept).
+        public Cfg? Cfg;
+        public readonly object?[] Other = new object?[OtherKinds];
     }
+
+    /// <summary>The other kinds kept (Kept): the promotion order, the use index, the single definitions.</summary>
+    public const int PromotionOrder = 0, UseIndex = 1, SingleDefs = 2, OtherKinds = 3;
 
     private static readonly bool Verifying = Switches.VerifyAnalyses;
 
     [ThreadStatic] private static List<Entry>? _entries;
 
-    public static void Open() => _entries = new(Kept);
+    public static void Open() => _entries = new(KeptFunctions);
 
     public static void Close() => _entries = null;
 
@@ -165,14 +172,15 @@ internal static class AnalysisCache
             if (!e.Key.Equals(key))
             {
                 e.Key = key;
-                e.Writes = null; e.Liveness = null; e.DefsWithCfg = null; e.DefsWithoutCfg = null;
+                e.Writes = null; e.Liveness = null; e.DefsWithCfg = null; e.DefsWithoutCfg = null; e.Cfg = null;
+                Array.Clear(e.Other);
                 if (Verifying) e.Proof = FunctionShape.Of(f);
             }
             else if (Verifying && !e.Proof!.Matches(f))
                 throw new InvalidOperationException("analysis cache: " + f.Name + " was edited in place without saying so (Function.Edited)");
             return e;
         }
-        if (entries.Count == Kept) entries.RemoveAt(Kept - 1);
+        if (entries.Count == KeptFunctions) entries.RemoveAt(KeptFunctions - 1);
         Entry made = new() { F = f, Key = key, Proof = Verifying ? FunctionShape.Of(f) : null };
         entries.Insert(0, made);
         return made;
@@ -211,13 +219,36 @@ internal static class AnalysisCache
             kept.PadFrom = null;
             return kept;
         }
-        return e.Liveness = new Liveness(f);
+        return e.Liveness = new Liveness(e.Cfg ??= new Cfg(f));
+    }
+
+    /// <summary>
+    /// An analysis of a kind of the asker's own (`which`, one of the kinds
+    /// above), made by `make` when none of the function in this state is
+    /// kept. Never written by its users, as the rest.
+    /// </summary>
+    public static T Kept<T>(Function f, int which, Func<Function, T> make) where T : class
+    {
+        if (_entries is not { } entries) return make(f);
+        Entry e = Now(f, entries);
+        if (e.Other[which] is T kept) return kept;
+        T made = make(f);
+        e.Other[which] = made;
+        return made;
+    }
+
+    /// <summary>The function's flow graph in this state, shared by the analyses kept that need one.</summary>
+    public static Cfg CfgOf(Function f)
+    {
+        if (_entries is not { } entries) return new Cfg(f);
+        Entry e = Now(f, entries);
+        return e.Cfg ??= new Cfg(f);
     }
 
     public static Defs DefsOf(Function f, bool buildCfg = true)
     {
         if (_entries is not { } entries) return new Defs(f, buildCfg: buildCfg);
         Entry e = Now(f, entries);
-        return buildCfg ? e.DefsWithCfg ??= new Defs(f, buildCfg: true) : e.DefsWithoutCfg ??= new Defs(f, buildCfg: false);
+        return buildCfg ? e.DefsWithCfg ??= new Defs(e.Cfg ??= new Cfg(f)) : e.DefsWithoutCfg ??= new Defs(f, buildCfg: false);
     }
 }

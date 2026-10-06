@@ -4269,7 +4269,9 @@ continue;
         // Spend a bounded frame budget on repeatedly executed allocations
         // before one-time setup. This is only a selection heuristic: no IR
         // moves, and every escape, renewal and liveness proof still runs.
-        Cfg cfg = new(f);
+        // The function's graph as the lifetime rules keep it (AnalysisCache),
+        // with its dominators, shared with the liveness and definitions.
+        Cfg cfg = AnalysisCache.CfgOf(f);
         if (cfg.Roots.Count != 1) return f.Blocks.ToList();
         Dictionary<Block, int> depth = new();
         foreach (Block header in f.Blocks)
@@ -4417,7 +4419,7 @@ continue;
         for (int sweep = 0; sweep < 2; sweep++)
         {
         if (sweep == 1 && (anchorLater is null || owners.Count == 0)) break;
-        foreach (Block b in PromotionOrder(f))
+        foreach (Block b in AnalysisCache.Kept(f, AnalysisCache.PromotionOrder, PromotionOrder))
         {
             for (int k = 0; k < b.Instrs.Count; k++)
             {
@@ -4601,7 +4603,7 @@ continue;
                     // this one, so the function holds at most one at once.
                     long ownedBytes = ConstantSize(f, i.Operands[0], out long constant) ? constant : -1;
                     // Dead within its own block: one free at its last use.
-                    uses ??= new UseIndex(f);
+                    uses ??= AnalysisCache.Kept(f, AnalysisCache.UseIndex, MakeUseIndex);
                     if (FreeAtLastUse(f, b, i, flow.Derived, liveness, pads, uses, ownedBytes))
                     {
                         _owned.Add(i);
@@ -5039,7 +5041,7 @@ continue;
                 if (o is RegOperand arg && flow.Derived.Contains(arg.Reg)) readsPrevious = true;
             chosen.Add((b, call, readsPrevious, flow.Derived));
         }
-        UseIndex? uses = chosen.Count == 0 ? null : new UseIndex(f);
+        UseIndex? uses = chosen.Count == 0 ? null : AnalysisCache.Kept(f, AnalysisCache.UseIndex, MakeUseIndex);
         HashSet<Block>? repeating = null;
         foreach ((Block b, Instr call, bool readsPrevious, HashSet<VReg> derived) in chosen)
         {
@@ -5237,6 +5239,9 @@ continue;
     /// lifetime passes add read only registers of their own, so it stays
     /// right for every register a later candidate is judged on.
     /// </summary>
+    private static UseIndex MakeUseIndex(Function f) => new(f);
+
+    /// <summary>Every register's readers and every instruction's block; kept while the function stands (AnalysisCache), read and never written.</summary>
     private sealed class UseIndex
     {
         public readonly Dictionary<VReg, List<Instr>> Readers = new();

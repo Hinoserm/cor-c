@@ -239,6 +239,12 @@ public sealed class Pipeline
 #if COR_SELFHOST_BENCHMARK
             Corsac.Program.BenchmarkStage("opt-module-end " + p.Name);
 #endif
+            // After every module pass too, as after a late one: the inliner,
+            // the lifetime rules and the region passes edit whole functions,
+            // and a wrong type they leave was found only by the next
+            // function pass, under another pass's name -- or not at all.
+            if (Verify)
+                foreach (Function checkedFunction in m.Functions) Verifier.Check(checkedFunction, $"after {p.Name}");
         }
         if (ModulePasses.Count > 0)
         {
