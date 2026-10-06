@@ -665,6 +665,10 @@ public sealed partial class Lowering
             }
             case BinaryExpr { Op: BinOp.OrElse } or:
             {
+                if (ConstantSet(or) is { } set && BranchOnSet(set.Operand, set.Values, ifTrue, ifFalse))
+                {
+                    return;
+                }
                 Block mid = _f.NewBlock("or");
                 BranchOn(or.Left, ifTrue, mid);
                 _e.SetBlock(mid);
@@ -2834,8 +2838,10 @@ public sealed partial class Lowering
             _e.CopyTo(SlotReg(held, IrTypes.Of(of)), R(subject));
         }
 
-        foreach (SwitchArm arm in sx.Arms)
+        int first = ConstantArms(sx, of, subject, resultType, result, end);
+        for (int armAt = first; armAt < sx.Arms.Count; armAt++)
         {
+            SwitchArm arm = sx.Arms[armAt];
             Block next = _f.NewBlock("swarm");
             Block body = _f.NewBlock("swbody");
 
@@ -2957,6 +2963,137 @@ public sealed partial class Lowering
         _e.Jump(end);
         _e.SetBlock(end);
         return result;
+    }
+
+    /// <summary>
+    /// THE LEADING ARMS OF A SWITCH EXPRESSION THAT ARE PLAIN CONSTANTS --
+    /// no type, no binding, no guard, a value that folds -- four or more of
+    /// them on an integer, char or enum subject, dispatched as a switch
+    /// statement's labels are (Dispatch): a table where dense, a search
+    /// otherwise, where each arm was a compare in turn. An arm whose value an
+    /// earlier arm has is never reached, as it never was. What none of them
+    /// takes goes on to the arms after them, tested in order as before.
+    /// Answers how many arms it took (0: none, the arms are tested in order).
+    /// </summary>
+    private int ConstantArms(SwitchExpr sx, Type of, VReg subject, Type resultType, VReg result, Block end)
+    {
+        if (!(of.IsInteger || of.IsEnumValue) || of.IsNullableValue || of.IsPointer || of.IsArray || of.IsFloat) return 0;
+        int k = 0;
+        List<(long Value, Block Target)> entries = new();
+        HashSet<long> seen = new();
+        List<(SwitchArm Arm, Block Body)> bodies = new();
+        while (k < sx.Arms.Count)
+        {
+            SwitchArm arm = sx.Arms[k];
+            if (arm.Type is not null || arm.Discard || arm.When is not null || arm.Binding is not null
+                || arm.Value is null || _b.ArmSlot.ContainsKey(arm) || !Fold.TryConst(arm.Value, out long value))
+            {
+                break;
+            }
+            Block body = _f.NewBlock("swbody");
+            bodies.Add((arm, body));
+            if (seen.Add(value)) entries.Add((value, body));
+            k++;
+        }
+        if (entries.Count < 4) return 0;
+        entries.Sort((a, b) => a.Value.CompareTo(b.Value));
+        bool wide = IsWideInteger(of);
+        if (SearchOrder(entries, of, wide) is not bool unsigned) return 0;
+        Block rest = _f.NewBlock("swarm");
+        Dispatch(subject, entries, 0, entries.Count, rest, wide, unsigned);
+        foreach ((SwitchArm arm, Block body) in bodies)
+        {
+            _e.SetBlock(body);
+            _e.CopyTo(result, R(EvalAs(arm.Result, resultType)));
+            _e.Jump(end);
+        }
+        _e.SetBlock(rest);
+        return k;
+    }
+
+    /// <summary>
+    /// `x is A or B or C or D`: an OR of four or more equalities of one
+    /// subject with constants -- the parser's own subject (a place it reads
+    /// again, or the pattern's SubjectExpr), the same object in every test --
+    /// on an integer, char or enum. Null for anything else.
+    /// </summary>
+    private (Expr Operand, List<long> Values)? ConstantSet(BinaryExpr or)
+    {
+        List<Expr> tests = new();
+        void Flatten(Expr e)
+        {
+            if (e is BinaryExpr { Op: BinOp.OrElse } more) { Flatten(more.Left); Flatten(more.Right); }
+            else tests.Add(e);
+        }
+        Flatten(or);
+        if (tests.Count < 4) return null;
+        Expr? operand = null;
+        List<long> values = new();
+        foreach (Expr test in tests)
+        {
+            if (test is not BinaryExpr { Op: BinOp.Eq } eq || _b.Rewrites.ContainsKey(eq)) return null;
+            Expr side;
+            long value;
+            if (Fold.TryConst(eq.Right, out value)) side = eq.Left;
+            else if (Fold.TryConst(eq.Left, out value)) side = eq.Right;
+            else return null;
+            if (operand is null) operand = side;
+            else if (!SameOperand(operand, side)) return null;
+            values.Add(value);
+        }
+        Type of = _b.TypeOf(operand!);
+        if (!(of.IsInteger || of.IsEnumValue) || of.IsNullableValue || of.IsPointer || of.IsArray || of.IsFloat) return null;
+        return (operand!, values);
+    }
+
+    /// <summary>
+    /// The same subject in two of a pattern's tests: the one object the
+    /// parser put in each, or -- the binder having copied the tests -- the
+    /// same local or parameter, which reads the same however often it is
+    /// read and is read once here.
+    /// </summary>
+    private bool SameOperand(Expr a, Expr b)
+    {
+        if (ReferenceEquals(a, b)) return true;
+        if (a is not (NameExpr or SubjectExpr) || b.GetType() != a.GetType()) return false;
+        return _b.Resolved.TryGetValue(a, out Sym? x) && _b.Resolved.TryGetValue(b, out Sym? y)
+            && x is LocalSym or ParamSym && Equals(x, y);
+    }
+
+    /// <summary>
+    /// A CONSTANT SET TESTED AT ONCE (ConstantSet): its subject read once,
+    /// then -- where the values lie within one word's bits of each other --
+    /// a range test and a bit of a mask (`c is ' ' or '\t' or '\r' or
+    /// '\n'`: a subtract, a compare, a shift and a test), else the switch
+    /// dispatch (Dispatch) with every value going to `ifTrue`. False where
+    /// the order of a search over the values is not to be had (SearchOrder):
+    /// the tests are made in turn, as before.
+    /// </summary>
+    private bool BranchOnSet(Expr operand, List<long> values, Block ifTrue, Block ifFalse)
+    {
+        Type of = _b.TypeOf(operand);
+        bool wide = IsWideInteger(of);
+        List<long> sorted = values.Distinct().Order().ToList();
+        List<(long Value, Block Target)> entries = sorted.Select(v => (v, ifTrue)).ToList();
+        if (SearchOrder(entries, of, wide) is not bool unsigned) return false;
+        VReg v = Eval(operand);
+        long min = sorted[0];
+        long span = sorted[^1] - min + 1;
+        if (!wide && span > 0 && span <= 32)
+        {
+            long mask = 0;
+            foreach (long value in sorted) mask |= 1L << (int)(value - min);
+            VReg offset = min != 0 ? _e.Binary(Opcode.Sub, v, min) : v;
+            Block within = _f.NewBlock("setbits");
+            _e.Branch(_e.Binary(Opcode.LtU, offset, span), within, ifFalse);
+            _e.SetBlock(within);
+            VReg bits = _e.Const(unchecked((int)mask), IrType.I32);
+            VReg shifted = _e.Binary(Opcode.ShrU, R(bits), R(offset), IrType.I32);
+            _e.Branch(_e.Binary(Opcode.And, shifted, 1), ifTrue, ifFalse);
+            return true;
+        }
+        Dispatch(v, entries, 0, entries.Count, ifFalse, wide, unsigned);
+        return true;
     }
 
     // ---- assignment -------------------------------------------------------------------

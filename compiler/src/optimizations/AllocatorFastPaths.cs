@@ -125,7 +125,9 @@ public static class AllocatorFastPaths
             for (int k = 0; k < b.Instrs.Count; k++)
             {
                 Instr i = b.Instrs[k];
-                if (i.Op != Opcode.Call || i.Operands.Count != 1 || KindOf(i.Callee) is not long kind) continue;
+                // A site the link chose for a region is its call still, for
+                // MakeSitesInRegion to make so.
+                if (i.Op != Opcode.Call || i.Operands.Count != 1 || i.RegionSite || KindOf(i.Callee) is not long kind) continue;
                 if (i.Operands[0] is ImmOperand constant)
                 {
                     if (ClassOf(constant.Value, w) is not (long slot, long size)) continue;
@@ -202,7 +204,14 @@ public sealed class InlineAllocators : IModulePass
 
     public void Run(Module m)
     {
-        if (AllocatorFastPaths.Skipped) return;
+        // NOT IN THE LINK'S RUN OF THE LATE PASSES (Module.AtLink): the sites
+        // the link put in regions are made so after them, one function at a
+        // time, by the allocator calls they still are (RegionPointsTo.
+        // MakeSitesInRegion), and the allocation is put in place only then
+        // (UnitBackend, AllocatorFastPaths.Run). Put in place here first, the
+        // calls were gone, and every object the link had given a region was
+        // made on the heap: nothing given back at a region's end.
+        if (AllocatorFastPaths.Skipped || m.AtLink) return;
         Function? fast = m.Functions.FirstOrDefault(f => f.Name == AllocatorFastPaths.Sized);
         Function? region = m.Functions.FirstOrDefault(f => f.Name == AllocatorFastPaths.RegionSized);
         Pipeline cleanup = AllocatorFastPaths.Cleanup();

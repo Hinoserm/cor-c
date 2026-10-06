@@ -214,18 +214,27 @@ public static class ObjectLinkCommand
 
         // What a module must agree with, read before the contracts go: the
         // kernel's units' native contract (one that claims a thread-block
-        // model, not an assembled stub's) and their processor.
-        byte[]? kernelAbi = null, kernelCpu = null;
+        // model, not an assembled stub's) and their processor -- that same
+        // unit's, never the stub's: the assembled entry, linked first, says
+        // the 486, and a Pentium kernel's modules were refused for being
+        // built as the kernel was.
+        byte[]? kernelAbi = null, kernelCpu = null, firstCpu = null;
         if (exportsPath is not null)
         {
             foreach (var input in inputs)
+            {
+                byte[]? abi = null, cpu = null;
                 foreach (Section section in input.Item2.Sections)
                 {
-                    if (section.Name == TargetContract.SectionName && kernelAbi is null && section.Size == 28
+                    if (section.Name == TargetContract.SectionName && section.Size == 28
                         && System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(section.Content().AsSpan(20)) != TargetContract.NoTlsClaim)
-                        kernelAbi = section.Content();
-                    if (section.Name == X86CodeGenerationContract.SectionName && kernelCpu is null) kernelCpu = section.Content();
+                        abi = section.Content();
+                    if (section.Name == X86CodeGenerationContract.SectionName) cpu = section.Content();
                 }
+                firstCpu ??= cpu;
+                if (abi is not null && kernelAbi is null) { kernelAbi = abi; kernelCpu = cpu; }
+            }
+            kernelCpu ??= firstCpu;
             inputs.Add(("the build stamp", KernelExports.StampObject(stamp!, loaded: true)));
         }
         if (kernel is not null) Linker.AgreeWithKernel(inputs, kernel);

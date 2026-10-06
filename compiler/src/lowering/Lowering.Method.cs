@@ -1146,7 +1146,15 @@ public sealed partial class Lowering
         {
             return;
         }
-        if (_method is { Owner.Name: "Gc" or "GcThreads" or "GcLock" or "GcRoots" or "HeapChunks" or "Runtime" or "Platform" })
+        // NOT IN THE COLLECTOR'S AND THE RUNTIME'S OWN CODE -- EXCEPT A STATIC'S
+        // STORE. A minor collection reads only the statics' cards that are
+        // set (Gc.ScanStatics), so a reference stored into a static with no
+        // card is one it never sees: Runtime's stop signal and CRC tables,
+        // a bare-metal Platform's console. The mark is a byte stored into
+        // the card table, committed for the statics from the moment it
+        // exists (Gc.StartGenerations), and calls nothing.
+        if (_method is { Owner.Name: "Gc" or "GcThreads" or "GcLock" or "GcRoots" or "HeapChunks" or "Runtime" or "Platform" }
+            && address is not SymOperand)
         {
             return;
         }

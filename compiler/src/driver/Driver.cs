@@ -635,6 +635,7 @@ public static class Driver
         // in the same images: one scheme an image.
         Corsac.Lang.Lower.Lowering.StoreSequences = freestanding && (Corsac.Lang.Lower.Lowering.Ring1Syscalls || args.Contains("--store-sequences"));
         Corsac.Lang.Lower.Lowering.CardMarkBefore = Corsac.Lang.Lower.Lowering.StoreSequences;
+        Corsac.Lang.Lower.Lowering.ThreadBlockPerProcessor = Corsac.Lang.Lower.Lowering.StoreSequences && !Corsac.Lang.Lower.Lowering.Ring1Syscalls;
 
         // --asm-entry: an assembled object supplies `_start`, and this is the
         // name it calls once it has a stack and a cleared .bss.
