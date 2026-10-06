@@ -3755,7 +3755,17 @@ continue;
                 // leaves every word holding the object clean. Its own memory,
                 // so nothing to accept of how it was made.
                 VReg? box = root as VReg;
-                bool frameBlock = box is null && root is FrameSlot { Name: EnvironmentSlot } && i.Op == Opcode.Call && i.Callee is not null && delta == 0;
+                // Or AN OBJECT PROMOTED TO THE FRAME ("obj", PromoteIn), handed
+                // whole to its own methods: what it holds goes with it as with
+                // a box -- a register allocator whose constructor filled its
+                // tables, run method by method.
+                // Only for a child of no constant size, which no frame can
+                // hold: one that has a size goes in the frame with its owner
+                // (PromoteIn's frame children), better than freed after it.
+                bool frameBlock = box is null && i.Op == Opcode.Call && i.Callee is not null && delta == 0
+                    && (root is FrameSlot { Name: EnvironmentSlot }
+                        || root is FrameSlot { Name: "obj" } && i.Operands[o].Type == IrTypes.Word
+                           && source is { Op: Opcode.Call } made && IsAllocator(made.Callee) && made.Operands.Count > 0 && !ConstantSize(f, made.Operands[0], out _));
                 if (!frameBlock && (o < first || delta != 0 || box is null || !Acceptable(box)))
                 {
                     if (PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal)) Console.Error.WriteLine($"holder {f.Name}: {i} operand {o} not a box's base ({root} +{delta})");
