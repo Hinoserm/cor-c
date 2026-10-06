@@ -30,6 +30,7 @@ internal static class PipelineAnalyses
 {
     [ThreadStatic] private static Function? _f;
     [ThreadStatic] private static long _print;
+    [ThreadStatic] private static long _shapePrint;
     [ThreadStatic] private static Cfg? _cfg;
     [ThreadStatic] private static Defs? _withCfg, _withoutCfg;
 
@@ -41,6 +42,7 @@ internal static class PipelineAnalyses
         if (_f is not null) return false;
         _f = f;
         _print = 0;
+        _shapePrint = 0;
         _cfg = null; _withCfg = null; _withoutCfg = null;
         return true;
     }
@@ -55,14 +57,24 @@ internal static class PipelineAnalyses
     // every question, and enumerators over every instruction's targets were
     // a twentieth of a native compile. An instruction's opcode is fixed as
     // it is made (init), so the object it is says it.
-    private static long Print(Function f)
+    //
+    // TWO PRINTS IN ONE WALK: everything, for the definitions; and the
+    // graph's own shape -- the blocks in order, which are landing pads, the
+    // blocks a LabelAddr names and every terminator's targets -- for the flow
+    // graph, which nothing else goes into (Cfg's constructor). Most passes
+    // rewrite instructions and leave the edges alone: the graph, its
+    // dominators and its order were made again after every one of them, a
+    // tenth of what the collector took in a native compile.
+    private static (long All, long Shape) Prints(Function f)
     {
-        long h = 17;
+        long h = 17, g = 19;
         List<Block> blocks = f.Blocks;
         for (int n = 0; n < blocks.Count; n++)
         {
             Block b = blocks[n];
-            h = h * 31 + RuntimeHelpers.GetHashCode(b);
+            int id = RuntimeHelpers.GetHashCode(b);
+            h = h * 31 + id;
+            g = g * 31 + id + (b.IsLandingPad ? 1 : 0);
             List<Instr> instrs = b.Instrs;
             int count = instrs.Count;
             for (int k = 0; k < count; k++)
@@ -71,23 +83,44 @@ internal static class PipelineAnalyses
                 h = h * 31 + RuntimeHelpers.GetHashCode(i);
                 if (i.Dest is { } d) h = h * 31 + d.Id;
                 if (i.TargetBlocks is { } targets)
-                    for (int t = 0; t < targets.Length; t++) h = h * 31 + RuntimeHelpers.GetHashCode(targets[t]);
-                if (i.Default is { } fallback) h = h * 31 + RuntimeHelpers.GetHashCode(fallback);
+                {
+                    // A terminator's targets and a LabelAddr's are the graph's.
+                    bool edges = k == count - 1 && i.IsTerminator || i.Op == Opcode.LabelAddr;
+                    for (int t = 0; t < targets.Length; t++)
+                    {
+                        int target = RuntimeHelpers.GetHashCode(targets[t]);
+                        h = h * 31 + target;
+                        if (edges) g = g * 37 + target;
+                    }
+                }
+                if (i.Default is { } fallback)
+                {
+                    int target = RuntimeHelpers.GetHashCode(fallback);
+                    h = h * 31 + target;
+                    if (k == count - 1 && i.IsTerminator) g = g * 37 + target;
+                }
             }
             h = h * 31 + count;
+            // Where a block ends without a terminator, the graph has no edge out of it.
+            g = g * 41 + (count > 0 && instrs[count - 1].IsTerminator ? 1 : 0);
         }
-        return h * 31 + f.RegCount;
+        return (h * 31 + f.RegCount, g * 31 + blocks.Count);
     }
 
-    /// <summary>Whether what is kept is `f`'s as it is now; if not, nothing is kept any more.</summary>
+    /// <summary>Whether what is kept is `f`'s as it is now; what no longer is, is kept no more.</summary>
     private static bool Current(Function f)
     {
         if (!ReferenceEquals(_f, f)) return false;
-        long now = Print(f);
+        (long now, long shape) = Prints(f);
+        if (shape != _shapePrint)
+        {
+            _shapePrint = shape;
+            _cfg = null; _withCfg = null;
+        }
         if (now != _print)
         {
             _print = now;
-            _cfg = null; _withCfg = null; _withoutCfg = null;
+            _withCfg = null; _withoutCfg = null;
         }
         return true;
     }
