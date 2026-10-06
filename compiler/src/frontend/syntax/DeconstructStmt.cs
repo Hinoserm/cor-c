@@ -12,4 +12,9 @@ public sealed class DeconstructStmt : Stmt
 {
     public List<Binding> Names { get; } = new();
     public required Expr Value { get; init; }
+
+    // What the checker rewrote this statement into (BindResult.Lowered), and which
+    // binding wrote it (NodeBinding): read back only by that binding.
+    internal Stmt? BoundLowered;
+    internal int BoundLoweredBy;
 }

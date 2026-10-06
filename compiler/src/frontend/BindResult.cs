@@ -134,7 +134,14 @@ public sealed partial class BindResult
 
     public ExprTypes ExprType { get; } = new();
     public ExprSyms Resolved { get; } = new();
-    public Dictionary<Expr, MethodSymbol> Calls { get; } = new(ReferenceEqualityComparer.Instance);
+    /// <summary>
+    /// Which binding the facts kept on the nodes belong to (NodeBinding), for
+    /// Calls, Invocations, Rewrites, NewConstructors, Lowered, Indexers,
+    /// IndexSetters, PropertySetters and Receivers.
+    /// </summary>
+    private readonly NodeBinding _binding = new();
+
+    public CallTargets Calls { get; }
     /// <summary>A delegate += or -=: the synthesised Combine or Remove call that replaces it, already bound.</summary>
     public Dictionary<AssignExpr, CallExpr> DelegateCompounds { get; } = new(ReferenceEqualityComparer.Instance);
 
@@ -302,7 +309,7 @@ public sealed partial class BindResult
     /// emit instead: `n.ToString()` is `String.FromInt(n)`, and an enum's is a
     /// switch over its members.
     /// </summary>
-    public Dictionary<Expr, Expr> Rewrites { get; } = new(ReferenceEqualityComparer.Instance);
+    public ExprRewrites Rewrites { get; }
 
     /// <summary>The calls Rewrites made of user-defined conversions: their
     /// value is the operator's result, not the expression they replace.</summary>
@@ -310,7 +317,7 @@ public sealed partial class BindResult
 
     /// The Add each element of a collection initialiser calls.
     public Dictionary<InitAdd, MethodSymbol> InitAdder { get; } = new(ReferenceEqualityComparer.Instance);
-    public Dictionary<NewExpr, MethodSymbol> NewConstructors { get; } = new(ReferenceEqualityComparer.Instance);
+    public NewTargets NewConstructors { get; }
 
     /// The indexer each `[key] = value` in an initialiser calls.
     public Dictionary<InitIndex, MethodSymbol> InitIndexer { get; } = new(ReferenceEqualityComparer.Instance);
@@ -332,15 +339,15 @@ public sealed partial class BindResult
     /// through an interface dispatches the same way every other interface call
     /// does, because it IS every other interface call.
     /// </summary>
-    public Dictionary<Stmt, Stmt> Lowered { get; } = new(ReferenceEqualityComparer.Instance);
+    public LoweredStmts Lowered { get; }
 
     /// Which accessor an `x[i]` on a user type calls. Reading records get_Item
     /// here; assigning records set_Item, because only the assignment path knows
     /// that is what it is.
-    public Dictionary<IndexExpr, MethodSymbol> Indexers { get; } = new(ReferenceEqualityComparer.Instance);
+    public IndexTargets Indexers { get; }
 
-    public Dictionary<IndexExpr, MethodSymbol> IndexSetters { get; } = new(ReferenceEqualityComparer.Instance);
-    public Dictionary<Expr, MethodSymbol> PropertySetters { get; } = new(ReferenceEqualityComparer.Instance);
+    public IndexTargets IndexSetters { get; }
+    public ExprMethods PropertySetters { get; }
 
     /// What each `sizeof(T)` came to. Worked out where the type can be resolved
     /// and the instantiation is known, not left for the code generator.
@@ -371,7 +378,7 @@ public sealed partial class BindResult
 
     /// Calls of a VALUE rather than of a named method: `f(x)` where f holds
     /// something with an Invoke. The method recorded here is that Invoke.
-    public Dictionary<CallExpr, MethodSymbol> Invocations { get; } = new(ReferenceEqualityComparer.Instance);
+    public ExprMethods Invocations { get; }
 
     /// <summary>
     /// Calls of a GENERIC VIRTUAL METHOD (MethodSymbol.GenericVirtual) and the
@@ -416,7 +423,7 @@ public sealed partial class BindResult
     /// Member accesses whose RECEIVER is really the first argument: `s.Trim()`
     /// calling the static `String.Trim(s)`. A primitive has no vtable to hang an
     /// instance method on, so this is how a string gets methods at all.
-    public Dictionary<MemberExpr, bool> Receivers { get; } = new(ReferenceEqualityComparer.Instance);
+    public ReceiverFlags Receivers { get; }
     public Dictionary<ForeachStmt, int> ForeachSlot { get; } = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>
@@ -545,6 +552,19 @@ public sealed partial class BindResult
     /// <summary>Bytes of static storage, including the reserved low words.</summary>
     public int StaticBytes { get; set; } = 16;
 
+    public BindResult()
+    {
+        Calls = new(_binding);
+        Invocations = new(_binding, invokes: true);
+        Rewrites = new(_binding);
+        NewConstructors = new(_binding);
+        Lowered = new(_binding);
+        Indexers = new(_binding, setters: false);
+        IndexSetters = new(_binding, setters: true);
+        PropertySetters = new(_binding, invokes: false);
+        Receivers = new(_binding);
+    }
+
     public Type TypeOf(Expr e) => ExprType.TryGetValue(e, out Type? t) ? t : Type.Error;
 
     /// <summary>
@@ -555,6 +575,8 @@ public sealed partial class BindResult
     /// </summary>
     public void ReleaseForRebind()
     {
+        // Calls, Rewrites and the rest kept on the nodes, all at once.
+        _binding.Next();
         StaticInits.Clear();
         Wanted.Clear();
         Wanting.Clear();
@@ -564,7 +586,6 @@ public sealed partial class BindResult
         Closures.Clear();
         ExprType.Clear();
         Resolved.Clear();
-        Calls.Clear();
         Chained.Clear();
         Methods.Clear();
         FrameSize.Clear();
@@ -590,26 +611,18 @@ public sealed partial class BindResult
         InitField.Clear();
         InitSetter.Clear();
         InitGetter.Clear();
-        Rewrites.Clear();
         UserConversions.Clear();
         InitAdder.Clear();
-        NewConstructors.Clear();
         InitIndexer.Clear();
         Tuples.Clear();
-        Lowered.Clear();
-        Indexers.Clear();
-        IndexSetters.Clear();
-        PropertySetters.Clear();
         SizeOfs.Clear();
         TypeOfs.Clear();
         PrimitiveTypeOfs.Clear();
         ArrayTypeOfs.Clear();
         RunTimeTypeOfs.Clear();
         GetTypes.Clear();
-        Invocations.Clear();
         GenericDispatches.Clear();
         WantedOverrides.Clear();
-        Receivers.Clear();
         ForeachSlot.Clear();
         SwitchSubject.Clear();
         GotoCases.Clear();
@@ -852,4 +865,342 @@ public sealed class ExprSyms
     }
 
     public void Clear() => _generation = Interlocked.Increment(ref _generations);
+}
+
+/// <summary>
+/// WHICH BINDING the facts kept on the nodes belong to, for the maps below:
+/// one generation shared by all of a BindResult's node-kept maps, so a node
+/// needs one number however many of them it is in.
+///
+/// They were dictionaries keyed by node, and the ones over every call, every
+/// rewrite and every user indexer grew as ExprTypes' did, to tables whose
+/// rehash a fragmented heap could not place. Keeping the value on the node
+/// costs no table at all. As with ExprTypes, a value is read back only by the
+/// binding that wrote it: the same trees are bound again in later rounds, and
+/// Next (ReleaseForRebind) leaves every map sharing this generation empty at
+/// once. They are only ever emptied together, so none of them has a Clear of
+/// its own.
+/// </summary>
+public sealed class NodeBinding
+{
+    private static int _generations;
+    internal int Current = Interlocked.Increment(ref _generations);
+
+    internal void Next() => Current = Interlocked.Increment(ref _generations);
+}
+
+/// <summary>
+/// THE RARER FACTS ABOUT ONE EXPRESSION: what it was rewritten to, the
+/// property setter assigning it calls, the Invoke a call of a value runs, and
+/// whether a member access's receiver is really the first argument. Most
+/// expressions have none of these, so they live in an object made only for
+/// those that do (Expr.Facts) rather than in four fields on every expression.
+/// </summary>
+internal sealed class ExprFacts
+{
+    internal int By;
+    internal Expr? Rewrite;
+    internal MethodSymbol? Setter;
+    internal MethodSymbol? Invoke;
+    internal bool? Receiver;
+
+    /// <summary>This binding's facts about e, or null when it has written none.</summary>
+    internal static ExprFacts? Read(Expr e, NodeBinding binding)
+        => e.Facts is { } facts && facts.By == binding.Current ? facts : null;
+
+    /// <summary>
+    /// This binding's facts about e, to write into: made the first time, and
+    /// emptied when what is there belongs to an earlier binding, so nothing of
+    /// that one shows through.
+    /// </summary>
+    internal static ExprFacts Write(Expr e, NodeBinding binding)
+    {
+        ExprFacts? facts = e.Facts;
+        if (facts is null)
+        {
+            facts = new ExprFacts { By = binding.Current };
+            e.Facts = facts;
+        }
+        else if (facts.By != binding.Current)
+        {
+            facts.By = binding.Current;
+            facts.Rewrite = null;
+            facts.Setter = null;
+            facts.Invoke = null;
+            facts.Receiver = null;
+        }
+        return facts;
+    }
+}
+
+/// <summary>The method each call was bound to (BindResult.Calls), kept on the call.</summary>
+public sealed class CallTargets
+{
+    private readonly NodeBinding _binding;
+
+    internal CallTargets(NodeBinding binding) => _binding = binding;
+
+    public MethodSymbol this[CallExpr c]
+    {
+        get => TryGetValue(c, out MethodSymbol? m) ? m : throw new KeyNotFoundException("a call this binding has not bound");
+        set { c.BoundCall = value; c.BoundCallBy = _binding.Current; }
+    }
+
+    public bool TryGetValue(CallExpr c, [System.Diagnostics.CodeAnalysis.MaybeNullWhen(false)] out MethodSymbol method)
+    {
+        if (c.BoundCallBy == _binding.Current && c.BoundCall is { } bound) { method = bound; return true; }
+        method = null;
+        return false;
+    }
+
+    public bool ContainsKey(CallExpr c) => c.BoundCallBy == _binding.Current && c.BoundCall is not null;
+
+    public bool Remove(CallExpr c)
+    {
+        if (!ContainsKey(c)) return false;
+        c.BoundCall = null;
+        return true;
+    }
+}
+
+/// <summary>The constructor each `new` runs (BindResult.NewConstructors), kept on the NewExpr.</summary>
+public sealed class NewTargets
+{
+    private readonly NodeBinding _binding;
+
+    internal NewTargets(NodeBinding binding) => _binding = binding;
+
+    public MethodSymbol this[NewExpr n]
+    {
+        get => TryGetValue(n, out MethodSymbol? m) ? m : throw new KeyNotFoundException("a new this binding has not bound");
+        set { n.BoundCtor = value; n.BoundCtorBy = _binding.Current; }
+    }
+
+    public bool TryGetValue(NewExpr n, [System.Diagnostics.CodeAnalysis.MaybeNullWhen(false)] out MethodSymbol ctor)
+    {
+        if (n.BoundCtorBy == _binding.Current && n.BoundCtor is { } bound) { ctor = bound; return true; }
+        ctor = null;
+        return false;
+    }
+
+    public bool ContainsKey(NewExpr n) => n.BoundCtorBy == _binding.Current && n.BoundCtor is not null;
+
+    public bool Remove(NewExpr n)
+    {
+        if (!ContainsKey(n)) return false;
+        n.BoundCtor = null;
+        return true;
+    }
+}
+
+/// <summary>
+/// The accessor a user type's `x[i]` calls, kept on the IndexExpr: the getter
+/// for BindResult.Indexers, the setter for IndexSetters. The two share the
+/// node's generation, so writing either for a new binding empties both first.
+/// </summary>
+public sealed class IndexTargets
+{
+    private readonly NodeBinding _binding;
+    private readonly bool _setters;
+
+    internal IndexTargets(NodeBinding binding, bool setters)
+    {
+        _binding = binding;
+        _setters = setters;
+    }
+
+    private MethodSymbol? Read(IndexExpr ix)
+        => ix.BoundIndexBy != _binding.Current ? null : _setters ? ix.BoundSetter : ix.BoundGetter;
+
+    private void Write(IndexExpr ix, MethodSymbol? value)
+    {
+        if (ix.BoundIndexBy != _binding.Current)
+        {
+            ix.BoundIndexBy = _binding.Current;
+            ix.BoundGetter = null;
+            ix.BoundSetter = null;
+        }
+        if (_setters) ix.BoundSetter = value;
+        else ix.BoundGetter = value;
+    }
+
+    public MethodSymbol this[IndexExpr ix]
+    {
+        get => Read(ix) ?? throw new KeyNotFoundException("an index this binding has not bound");
+        set => Write(ix, value);
+    }
+
+    public bool TryGetValue(IndexExpr ix, [System.Diagnostics.CodeAnalysis.MaybeNullWhen(false)] out MethodSymbol accessor)
+    {
+        accessor = Read(ix);
+        return accessor is not null;
+    }
+
+    public bool ContainsKey(IndexExpr ix) => Read(ix) is not null;
+
+    public bool Remove(IndexExpr ix)
+    {
+        if (Read(ix) is null) return false;
+        Write(ix, null);
+        return true;
+    }
+}
+
+/// <summary>
+/// What a foreach or a deconstruction became (BindResult.Lowered), kept on
+/// the statement. Only those two are ever rewritten, so only they carry the
+/// field; any other statement has nothing here, and recording one is a bug.
+/// </summary>
+public sealed class LoweredStmts
+{
+    private readonly NodeBinding _binding;
+
+    internal LoweredStmts(NodeBinding binding) => _binding = binding;
+
+    private Stmt? Read(Stmt s) => s switch
+    {
+        ForeachStmt fe when fe.BoundLoweredBy == _binding.Current => fe.BoundLowered,
+        DeconstructStmt ds when ds.BoundLoweredBy == _binding.Current => ds.BoundLowered,
+        _ => null,
+    };
+
+    private void Write(Stmt s, Stmt? value)
+    {
+        switch (s)
+        {
+            case ForeachStmt fe: fe.BoundLowered = value; fe.BoundLoweredBy = _binding.Current; break;
+            case DeconstructStmt ds: ds.BoundLowered = value; ds.BoundLoweredBy = _binding.Current; break;
+            default: throw new InvalidOperationException("only a foreach or a deconstruction is lowered by the binder");
+        }
+    }
+
+    public Stmt this[Stmt s]
+    {
+        get => Read(s) ?? throw new KeyNotFoundException("a statement this binding has not lowered");
+        set => Write(s, value);
+    }
+
+    public bool TryGetValue(Stmt s, [System.Diagnostics.CodeAnalysis.MaybeNullWhen(false)] out Stmt lowered)
+    {
+        lowered = Read(s);
+        return lowered is not null;
+    }
+
+    public bool ContainsKey(Stmt s) => Read(s) is not null;
+
+    public bool Remove(Stmt s)
+    {
+        if (Read(s) is null) return false;
+        Write(s, null);
+        return true;
+    }
+}
+
+/// <summary>What each expression was rewritten to (BindResult.Rewrites), kept in its ExprFacts.</summary>
+public sealed class ExprRewrites
+{
+    private readonly NodeBinding _binding;
+
+    internal ExprRewrites(NodeBinding binding) => _binding = binding;
+
+    public Expr this[Expr e]
+    {
+        get => TryGetValue(e, out Expr? r) ? r : throw new KeyNotFoundException("an expression this binding has not rewritten");
+        set => ExprFacts.Write(e, _binding).Rewrite = value;
+    }
+
+    public bool TryGetValue(Expr e, [System.Diagnostics.CodeAnalysis.MaybeNullWhen(false)] out Expr rewrite)
+    {
+        rewrite = ExprFacts.Read(e, _binding)?.Rewrite;
+        return rewrite is not null;
+    }
+
+    public bool ContainsKey(Expr e) => ExprFacts.Read(e, _binding)?.Rewrite is not null;
+
+    public bool Remove(Expr e)
+    {
+        ExprFacts? facts = ExprFacts.Read(e, _binding);
+        if (facts is null || facts.Rewrite is null) return false;
+        facts.Rewrite = null;
+        return true;
+    }
+}
+
+/// <summary>
+/// A method recorded in an expression's ExprFacts: the property setter an
+/// assignment to it calls (BindResult.PropertySetters), or the Invoke a call
+/// of a value runs (BindResult.Invocations).
+/// </summary>
+public sealed class ExprMethods
+{
+    private readonly NodeBinding _binding;
+    private readonly bool _invokes;
+
+    internal ExprMethods(NodeBinding binding, bool invokes)
+    {
+        _binding = binding;
+        _invokes = invokes;
+    }
+
+    private MethodSymbol? Read(Expr e)
+        => ExprFacts.Read(e, _binding) is { } facts ? (_invokes ? facts.Invoke : facts.Setter) : null;
+
+    public MethodSymbol this[Expr e]
+    {
+        get => Read(e) ?? throw new KeyNotFoundException("an expression this binding has not bound");
+        set
+        {
+            ExprFacts facts = ExprFacts.Write(e, _binding);
+            if (_invokes) facts.Invoke = value;
+            else facts.Setter = value;
+        }
+    }
+
+    public bool TryGetValue(Expr e, [System.Diagnostics.CodeAnalysis.MaybeNullWhen(false)] out MethodSymbol method)
+    {
+        method = Read(e);
+        return method is not null;
+    }
+
+    public bool ContainsKey(Expr e) => Read(e) is not null;
+
+    public bool Remove(Expr e)
+    {
+        if (Read(e) is null) return false;
+        ExprFacts facts = ExprFacts.Write(e, _binding);
+        if (_invokes) facts.Invoke = null;
+        else facts.Setter = null;
+        return true;
+    }
+}
+
+/// <summary>The member accesses whose receiver is the first argument (BindResult.Receivers), kept in their ExprFacts.</summary>
+public sealed class ReceiverFlags
+{
+    private readonly NodeBinding _binding;
+
+    internal ReceiverFlags(NodeBinding binding) => _binding = binding;
+
+    public bool this[MemberExpr m]
+    {
+        get => TryGetValue(m, out bool flag) ? flag : throw new KeyNotFoundException("a member access this binding has not marked");
+        set => ExprFacts.Write(m, _binding).Receiver = value;
+    }
+
+    public bool TryGetValue(MemberExpr m, out bool flag)
+    {
+        bool? held = ExprFacts.Read(m, _binding)?.Receiver;
+        flag = held ?? false;
+        return held.HasValue;
+    }
+
+    public bool ContainsKey(MemberExpr m) => ExprFacts.Read(m, _binding)?.Receiver is not null;
+
+    public bool Remove(MemberExpr m)
+    {
+        ExprFacts? facts = ExprFacts.Read(m, _binding);
+        if (facts is null || facts.Receiver is null) return false;
+        facts.Receiver = null;
+        return true;
+    }
 }

@@ -61,4 +61,9 @@ public sealed class NewExpr : Expr, ICanonSlot
     public List<InitAssign> Inits => Body.Inits;
     public List<InitAdd> Adds => Body.Adds;
     public List<InitIndex> Indexes => Body.Indexes;
+
+    // The constructor this `new` runs (BindResult.NewConstructors), and which
+    // binding chose it (NodeBinding): read back only by that binding.
+    internal MethodSymbol? BoundCtor;
+    internal int BoundCtorBy;
 }

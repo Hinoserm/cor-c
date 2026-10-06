@@ -95,4 +95,9 @@ public sealed class CallExpr : Expr
     /// names the copy, and there is nothing left to infer.
     /// </summary>
     public int[]? HiddenTypeArgs { get; set; }
+
+    // The method the checker bound this call to (BindResult.Calls), and which
+    // binding bound it (NodeBinding): read back only by that binding.
+    internal MethodSymbol? BoundCall;
+    internal int BoundCallBy;
 }
