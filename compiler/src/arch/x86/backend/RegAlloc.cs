@@ -73,7 +73,15 @@ internal sealed class Allocator
     private readonly List<MInstr> _lin = new();
     private readonly List<MBlock> _blockOf = new();
     private readonly int _n;
-    private readonly List<Occurrence>[] _occ;
+    /// <summary>
+    /// Every register's occurrences, in instruction order, laid end to end
+    /// by register: register v's are _occAll[_occFirst[v] .. _occFirst[v + 1]).
+    /// ONE ARRAY, NOT A LIST PER REGISTER: a function names hundreds of
+    /// virtual registers, and a list each was hundreds of objects made and
+    /// dropped for every function compiled.
+    /// </summary>
+    private Occurrence[] _occAll = Array.Empty<Occurrence>();
+    private readonly int[] _occFirst;
     private readonly int[] _start;
     private readonly int[] _end;
     /// <summary>The positions each virtual register is live at, as ranges.</summary>
@@ -127,7 +135,7 @@ internal sealed class Allocator
             }
         }
         _n = m.NextVReg;
-        _occ = new List<Occurrence>[_n];
+        _occFirst = new int[_n + 1];
         _start = new int[_n];
         _end = new int[_n];
         _assigned = new int[_n];
@@ -137,7 +145,6 @@ internal sealed class Allocator
         _ranges = new List<(int, int)>[_n];
         for (int v = 0; v < _n; v++)
         {
-            _occ[v] = new List<Occurrence>();
             _ranges[v] = new List<(int, int)>();
             _start[v] = int.MaxValue;
             _end[v] = -1;
@@ -167,9 +174,16 @@ internal sealed class Allocator
         // register/immediate sources qualify: memory reads can be observable.
         bool changed;
         List<(MReg Reg, Role Role, int Operand, bool InMem)> regs = new();
+        // The sets and the predicate are made once and emptied each round,
+        // not made again for every round and every block.
+        HashSet<MInstr> deadFlags = new();
+        HashSet<int> used = new();
+        Predicate<MInstr> unused = i => i.Operands.Count > 0 && i.Operands[0] is MReg dest && !dest.IsPhys
+            && !used.Contains(dest.Id) && (deadFlags.Contains(i)
+                || (i.Op == MOp.Mov && !i.Lock && i.Operands.Count == 2 && i.Operands[1] is not MMem));
         do
         {
-            HashSet<MInstr> deadFlags = new();
+            deadFlags.Clear();
             foreach (MBlock block in m.Blocks)
             {
                 // No assumptions about flags on another block's edges.
@@ -184,7 +198,7 @@ internal sealed class Allocator
                     else if (!KnownFlagEffect(i.Op)) flagsLive = true;
                 }
             }
-            HashSet<int> used = new();
+            used.Clear();
             foreach (MBlock block in m.Blocks)
             foreach (MInstr instruction in block.Instrs)
                 foreach (var operand in RegsOf(instruction, regs))
@@ -196,18 +210,25 @@ internal sealed class Allocator
                             && (operand.Role & Role.Def) != 0)) used.Add(operand.Reg.Id);
             changed = false;
             foreach (MBlock block in m.Blocks)
-                changed |= block.Instrs.RemoveAll(i => i.Operands.Count > 0 && i.Operands[0] is MReg dest && !dest.IsPhys
-                    && !used.Contains(dest.Id) && (deadFlags.Contains(i)
-                        || (i.Op == MOp.Mov && !i.Lock && i.Operands.Count == 2 && i.Operands[1] is not MMem))) != 0;
+                changed |= block.Instrs.RemoveAll(unused) != 0;
         } while (changed);
     }
 
     private static bool PureArithmetic(MInstr i) => !i.Lock && i.Width == 4
         && i.Operands.Count > 0 && i.Operands[0] is MReg d && !d.IsPhys
-        && i.Operands.All(o => o is MReg or MImm)
+        && RegistersAndImmediates(i)
         && i.Op is MOp.Add or MOp.Adc or MOp.Sub or MOp.Sbb or MOp.And or MOp.Or or MOp.Xor
             or MOp.Imul or MOp.Imul3 or MOp.Neg or MOp.Not or MOp.Shl or MOp.Shr or MOp.Sar
             or MOp.Ror or MOp.Shld or MOp.Shrd;
+
+    private static bool RegistersAndImmediates(MInstr i)
+    {
+        foreach (MOperand o in i.Operands)
+        {
+            if (o is not (MReg or MImm)) return false;
+        }
+        return true;
+    }
 
     // Partial/conditional flag writers do not kill liveness: a zero shift
     // preserves flags, and rotate/multiply do not define all condition bits.
@@ -268,13 +289,32 @@ internal sealed class Allocator
 
     private void CollectOccurrences()
     {
+        // Counted first, then placed: each register's run starts where the
+        // counts before it end, and is filled in instruction order.
+        for (int i = 0; i < _lin.Count; i++)
+        {
+            foreach ((MReg r, _, _, _) in RegsOf(_lin[i], _regsOf))
+            {
+                if (Tracked(r))
+                {
+                    _occFirst[r.Id + 1]++;
+                }
+            }
+        }
+        for (int v = 0; v < _n; v++)
+        {
+            _occFirst[v + 1] += _occFirst[v];
+        }
+        _occAll = new Occurrence[_occFirst[_n]];
+        int[] fill = new int[_n];
+        Array.Copy(_occFirst, fill, _n);
         for (int i = 0; i < _lin.Count; i++)
         {
             foreach ((MReg r, Role role, int k, bool inMem) in RegsOf(_lin[i], _regsOf))
             {
                 if (Tracked(r))
                 {
-                    _occ[r.Id].Add(new Occurrence(i, k, role, inMem));
+                    _occAll[fill[r.Id]++] = new Occurrence(i, k, role, inMem);
                 }
             }
         }
@@ -286,8 +326,9 @@ internal sealed class Allocator
         {
             Occurrence? def = null;
             int defs = 0;
-            foreach (Occurrence o in _occ[v])
+            for (int occ = _occFirst[v], occEnd = _occFirst[v + 1]; occ < occEnd; occ++)
             {
+                Occurrence o = _occAll[occ];
                 if ((o.Role & Role.Def) != 0)
                 {
                     defs++;
@@ -374,9 +415,12 @@ internal sealed class Allocator
         }
 
         int[][] succ = new int[nb][];
+        List<int> to = new();
         for (int b = 0; b < nb; b++)
         {
-            succ[b] = _m.Successors(b).Select(s => index[s]).ToArray();
+            to.Clear();
+            foreach (MBlock s in _m.Successors(b)) to.Add(index[s]);
+            succ[b] = to.ToArray();
         }
 
         _blockFirst = first;
@@ -432,13 +476,14 @@ internal sealed class Allocator
             }
         }
 
-        _liveIn = new BitSet[nb];
+        // live-in(b) = use(b) | (live-out(b) & ~def(b)), made in use(b)'s own
+        // bits: nothing reads use(b) again, so it needs no set of its own.
+        _liveIn = use;
         for (int b = 0; b < nb; b++)
         {
-            _liveIn[b] = new BitSet(_n);
-            _liveIn[b].CopyFrom(live[b]);
-            _liveIn[b].AndNot(def[b]);
-            _liveIn[b].Or(use[b]);
+            tmp.CopyFrom(live[b]);
+            tmp.AndNot(def[b]);
+            use[b].Or(tmp);
         }
 
         // Backward walk of each block, marking every position each register
@@ -497,19 +542,21 @@ internal sealed class Allocator
                 continue;
             }
             list.Sort();
-            List<(int S, int E)> merged = new(list.Count) { list[0] };
+            // Merged in place: the merged run is never longer than what has
+            // been read, so writing at `w` overwrites only ranges already read.
+            int w = 0;
             for (int k = 1; k < list.Count; k++)
             {
-                if (list[k].S <= merged[^1].E + 1)
+                if (list[k].S <= list[w].E + 1)
                 {
-                    merged[^1] = (merged[^1].S, Math.Max(merged[^1].E, list[k].E));
+                    list[w] = (list[w].S, Math.Max(list[w].E, list[k].E));
                 }
                 else
                 {
-                    merged.Add(list[k]);
+                    list[++w] = list[k];
                 }
             }
-            _ranges[v] = merged;
+            list.RemoveRange(w + 1, list.Count - w - 1);
         }
 
         // Prefix sums so "is r busy anywhere in [a, b]" is a subtraction.
@@ -559,7 +606,14 @@ internal sealed class Allocator
             {
                 _pending.Remove((cur.VReg, cur.Instr));
             }
-            _active.RemoveAll(a => a.End < cur.Start);
+            // By hand, not RemoveAll: a predicate capturing `cur` was a
+            // closure and a delegate for every interval the scan placed.
+            int kept = 0;
+            for (int k = 0; k < _active.Count; k++)
+            {
+                if (_active[k].End >= cur.Start) _active[kept++] = _active[k];
+            }
+            _active.RemoveRange(kept, _active.Count - kept);
 
             int reg = FreeRegister(cur);
             if (reg < 0)
@@ -644,6 +698,20 @@ internal sealed class Allocator
         return false;
     }
 
+    /// <summary>
+    /// Whether another placed interval in cur's register is live anywhere in
+    /// cur.Start..end, cur's reach were it carried to `end`.
+    /// </summary>
+    private bool SpanTaken(Interval cur, int end)
+    {
+        foreach (Interval a in _active)
+        {
+            if (a == cur || a.Reg != cur.Reg || a.End < cur.Start || end < a.Start) continue;
+            if (a.Ranges is null || Touches(a.Ranges, cur.Start, end)) return true;
+        }
+        return false;
+    }
+
     /// <summary>Whether sorted ranges meet the positions start..end.</summary>
     private static bool Touches(List<(int S, int E)> ranges, int start, int end)
     {
@@ -657,7 +725,17 @@ internal sealed class Allocator
     }
 
     /// <summary>Whether a register is taken by any placed interval live where this one is.</summary>
-    private bool Taken(int reg, Interval iv) => _active.Any(a => a != iv && a.Reg == reg && Overlaps(a, iv));
+    private bool Taken(int reg, Interval iv) => Taken(reg, iv, iv);
+
+    /// <summary>Whether a placed interval other than `except` holds the register where `iv` is live.</summary>
+    private bool Taken(int reg, Interval iv, Interval except)
+    {
+        foreach (Interval a in _active)
+        {
+            if (a != except && a.Reg == reg && Overlaps(a, iv)) return true;
+        }
+        return false;
+    }
 
     private int FreeRegister(Interval iv)
     {
@@ -683,8 +761,9 @@ internal sealed class Allocator
     /// </summary>
     private int Hint(Interval iv)
     {
-        foreach (Occurrence o in _occ[iv.VReg])
+        for (int occ = _occFirst[iv.VReg], occEnd = _occFirst[iv.VReg + 1]; occ < occEnd; occ++)
         {
+            Occurrence o = _occAll[occ];
             if (iv.Short && o.Instr != iv.Instr)
             {
                 continue;
@@ -714,8 +793,9 @@ internal sealed class Allocator
     /// <summary>The position of the next read or write of a register at or after an instruction; MaxValue if none.</summary>
     private int NextUse(int vreg, int instr)
     {
-        foreach (Occurrence o in _occ[vreg])
+        for (int occ = _occFirst[vreg], occEnd = _occFirst[vreg + 1]; occ < occEnd; occ++)
         {
+            Occurrence o = _occAll[occ];
             if (o.Instr >= instr)
             {
                 return o.Instr * 4;
@@ -812,15 +892,18 @@ internal sealed class Allocator
             foreach (Interval a in _active)
             {
                 if (a.Short || !Allocatable(a.Reg, cur) || _remat[a.VReg] is not null || !Overlaps(a, cur)
-                    || _active.Any(b => b != a && b.Reg == a.Reg && Overlaps(b, cur)))
+                    || Taken(a.Reg, cur, a))
                 {
                     continue;
                 }
 
                 bool foldable = false;
 
-                foreach (Occurrence o in _occ[a.VReg])
+                for (int occ = _occFirst[a.VReg], occEnd = _occFirst[a.VReg + 1]; occ < occEnd; occ++)
+
                 {
+
+                    Occurrence o = _occAll[occ];
                     if (o.Instr != at)
                     {
                         continue;
@@ -925,7 +1008,7 @@ internal sealed class Allocator
     /// </summary>
     private int SplitPrefix(Interval cur)
     {
-        int first = _occ[cur.VReg].Count > 0 ? _occ[cur.VReg][0].Instr : int.MaxValue;
+        int first = _occFirst[cur.VReg + 1] > _occFirst[cur.VReg] ? _occAll[_occFirst[cur.VReg]].Instr : int.MaxValue;
         int best = -1, bestUntil = -1;
         foreach (Gpr g in Preference)
         {
@@ -944,8 +1027,9 @@ internal sealed class Allocator
         // The register is needed only up to the last read or write before
         // the conflict: the slot serves from there.
         int from = -1;
-        foreach (Occurrence o in _occ[cur.VReg])
+        for (int occ = _occFirst[cur.VReg], occEnd = _occFirst[cur.VReg + 1]; occ < occEnd; occ++)
         {
+            Occurrence o = _occAll[occ];
             if (o.Instr >= bestUntil / 4)
             {
                 break;
@@ -1000,8 +1084,9 @@ internal sealed class Allocator
         int v = cur.VReg;
         int i = cur.Instr;
         int run = _runHead[_blockOfInstr[i]];
-        foreach (Occurrence o in _occ[v])
+        for (int occ = _occFirst[v], occEnd = _occFirst[v + 1]; occ < occEnd; occ++)
         {
+            Occurrence o = _occAll[occ];
             int j = o.Instr;
             if (j <= i)
             {
@@ -1024,8 +1109,7 @@ internal sealed class Allocator
                 continue;
             }
             if (!_pending.TryGetValue((v, j), out Interval? next) || Busy(cur.Reg, cur.Start, next.End)
-                || _active.Any(a => a != cur && a.Reg == cur.Reg && a.End >= cur.Start
-                    && Overlaps(a, new Interval { Start = cur.Start, End = next.End })))
+                || SpanTaken(cur, next.End))
             {
                 break;
             }
@@ -1062,7 +1146,9 @@ internal sealed class Allocator
     private void Truncate(Interval a, int at)
     {
         List<(int Instr, Role Role)> served = a.Served!;
-        int keep = served.FindIndex(s => s.Instr >= at);
+        int keep = 0;
+        while (keep < served.Count && served[keep].Instr < at) keep++;
+        if (keep == served.Count) keep = -1;
         for (int k = keep; k < served.Count; k++)
         {
             (int instr, Role role) = served[k];
@@ -1078,8 +1164,9 @@ internal sealed class Allocator
     private int NextUseAfterStart(Interval cur)
     {
         int at = cur.Start / 4;
-        foreach (Occurrence o in _occ[cur.VReg])
+        for (int occ = _occFirst[cur.VReg], occEnd = _occFirst[cur.VReg + 1]; occ < occEnd; occ++)
         {
+            Occurrence o = _occAll[occ];
             if (o.Instr > at)
             {
                 return o.Instr * 4;
@@ -1110,8 +1197,9 @@ internal sealed class Allocator
             return false;
         }
         int hits = 0;
-        foreach (Occurrence other in _occ[vreg])
+        for (int occ = _occFirst[vreg], occEnd = _occFirst[vreg + 1]; occ < occEnd; occ++)
         {
+            Occurrence other = _occAll[occ];
             if (other.Instr == o.Instr)
             {
                 hits++;
@@ -1160,8 +1248,9 @@ internal sealed class Allocator
         }
         int lastInstr = -1;
         Role merged = Role.None;
-        foreach (Occurrence o in _occ[vreg])
+        for (int occ = _occFirst[vreg], occEnd = _occFirst[vreg + 1]; occ < occEnd; occ++)
         {
+            Occurrence o = _occAll[occ];
             if (remat && (o.Role & Role.Def) != 0)
             {
                 // The defining move is gone: the constant is written where it is used instead.
@@ -1315,7 +1404,8 @@ internal sealed class Allocator
         // and EBP, so the registers the unwound frames saved and used reach
         // its landing pad as they left them, and only an epilogue that
         // restores every one gives its caller back what it had.
-        bool catches = _m.Blocks.Any(b => b.Source?.IsLandingPad == true);
+        bool catches = false;
+        foreach (MBlock b in _m.Blocks) catches |= b.Source?.IsLandingPad == true;
         foreach (Gpr g in new[] { Gpr.Ebx, Gpr.Esi, Gpr.Edi })
         {
             if (catches || saved.Contains((int)g))
@@ -1474,7 +1564,7 @@ internal sealed class Allocator
         int reg = RegAt(r.Id, index);
         if (reg < 0)
         {
-            throw new InvalidOperationException($"{_m.Source.Name}: v{r.Id} has no register at instruction {index} ({i.Op}): live {_start[r.Id]}..{_end[r.Id]}, {_occ[r.Id].Count} occurrence(s), assigned {_assigned[r.Id]}, spilled from {_spilledFrom[r.Id]}, {_shortReg.Count} short, {_lin.Count} instruction(s), {_n} register(s)");
+            throw new InvalidOperationException($"{_m.Source.Name}: v{r.Id} has no register at instruction {index} ({i.Op}): live {_start[r.Id]}..{_end[r.Id]}, {_occFirst[r.Id + 1] - _occFirst[r.Id]} occurrence(s), assigned {_assigned[r.Id]}, spilled from {_spilledFrom[r.Id]}, {_shortReg.Count} short, {_lin.Count} instruction(s), {_n} register(s)");
         }
         saved.Add(reg);
         if (_spilledFrom[r.Id] != int.MaxValue && _rwDone.Add(r.Id))
