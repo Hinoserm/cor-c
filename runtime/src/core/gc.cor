@@ -3688,6 +3688,8 @@ static class Gc
     {
         FastClassMask = _classSize != 0 && !_heapCheck && Runtime.AllocHook == 0 ? (nint)(-1) : (nint)0;
         FastRegionMask = Runtime.AllocHook == 0 && !StatsAsked && !CountingCollected ? (nint)(-1) : (nint)0;
+        FastFreeMask = _classSize != 0 && !_heapCheck && !_verify && !VerifyingFieldFrees && !AllocSamples.Tracking
+            && Runtime.FreeLogRing == 0 && IgnoredFrees == 0 && SkippedFreePaths == 0 ? (nint)(-1) : (nint)0;
     }
 
     /// THE SAME FOR AN ALLOCATION IN A REGION (Runtime.AllocRegionSized,
@@ -6744,6 +6746,10 @@ static class Gc
         {
             return;
         }
+        if (FreeOwnBlock((nuint)at))
+        {
+            return;
+        }
         long self = Sys.ThreadBlock();
         // In a region: given back with the rest of it when it ends.
         if (self != 0 && InRegion(self, at)) return;
@@ -7098,6 +7104,73 @@ static class Gc
         GcLock.Exit();
     }
 
+    /// THE COMMON FREE, IN WORDS AND FIRST: a block of a size-class page the
+    /// freeing thread owns, put on that thread's own list for its class,
+    /// with no lock. The same as the free below of a block of the thread's
+    /// own page (and its checks), found the way the marker finds a page's
+    /// block (PageBlockW): the page by the 4 KB table, the class by the page,
+    /// the grid by the class's reciprocal. Where it went through a region
+    /// test, the allocator and lock tests, a dozen flags in longs, and then
+    /// looked for the page among every class the thread holds -- each a
+    /// 64-bit compare -- and tested the grid with a division. False for
+    /// anything else, which the rest of Free takes as before: a block not on
+    /// a page this thread owns, a collection under way, any of the checking
+    /// or logging modes (FastFreeMask), the heap lock held or the allocator
+    /// interrupted on this thread (Tls.InAlloc), no class cache.
+    static bool FreeOwnBlock(nuint at)
+    {
+        nuint slots = (nuint)HeapChunks.SlotTable;
+        if (FastFreeMask == 0 || slots == 0 || (at & 7) != 0 || Runtime.Marking != 0 || _sweeping || _collecting)
+        {
+            return false;
+        }
+        nuint page = PeekW(slots + (at >> 12) * (nuint)WordSize.Bytes);
+        if (page == 0)
+        {
+            return false;
+        }
+        nuint cls = PeekW(page + (nuint)HeapChunks.ClassAt);
+        nint tb = (nint)Sys.ThreadBlock();
+        if (cls == 0 || tb == 0 || (nint)PeekW(page + (nuint)HeapChunks.OwnerAt) != tb)
+        {
+            return false;
+        }
+        long words = GcLock.Words();
+        if (words != 0 && (nint)Sys.Peek(words + GcLock.Held) == tb || Sys.Peek(tb + Tls.InAlloc) != 0)
+        {
+            return false;
+        }
+        Sys.Poke(tb + (nint)Tls.InAlloc, 1);
+        nuint cache = (nuint)Sys.Peek(tb + (nint)Tls.Classes);
+        nint c = (nint)cls - 1;
+        nuint slot = cache + (nuint)c * (nuint)(2 * WordSize.Bytes);
+        nuint block = PageBlockW(page, at, cls);
+        nuint size = block == 0 ? 0 : PeekW(block) & ~(nuint)7;
+        // ITS OWN PAGE IN ITS OWN CACHE, the block whole -- live, the class's
+        // size, on the grid (PageBlockW), and the payload's start: a pointer
+        // into the middle of one is no object handed to a free.
+        if (cache == 0 || PeekW(slot) != page || block == 0 || block + (nuint)HeaderBytes != at
+            || (PeekW(block) & (nuint)FlagFree) != 0)
+        {
+            Sys.Poke(tb + (nint)Tls.InAlloc, 0);
+            return false;
+        }
+        ZeroWords((long)(block + (nuint)HeaderBytes), (long)(block + size));
+        Sys.Poke((long)block, (long)(size | (nuint)FlagFree));
+        Sys.Poke((long)(block + (nuint)KindAt), Sys.Peek((long)(slot + (nuint)WordSize.Bytes)));
+        Sys.Poke((long)(slot + (nuint)WordSize.Bytes), (long)block);
+        Frees = Frees + 1;
+        FreedBytes = FreedBytes + (long)size;
+        Sys.Poke(tb + (nint)Tls.InAlloc, 0);
+        return true;
+    }
+
+    /// All ones but while a free must take the long way for what it checks or
+    /// says: the heap check, the checked frees (_verify, VerifyingFieldFrees),
+    /// the sampler's tracking, the free log, ignored or skipped free paths,
+    /// and before the heap starts (FastPathsChanged).
+    public static nint FastFreeMask;
+
     /// How many calls to Free actually returned a block. A test reads it to
     /// tell a free that happened from one that was ignored.
     public static long Frees;
@@ -7135,6 +7208,7 @@ static class Gc
     {
         GcLock.Enter();
         SkippedFreePaths = paths;
+        FastPathsChanged();
         GcLock.Exit();
     }
 
@@ -7163,6 +7237,7 @@ static class Gc
             _verify = true;
             if (_quarantine == 0) StartQuarantine();
         }
+        FastPathsChanged();
         GcLock.Exit();
     }
 
@@ -8710,6 +8785,24 @@ static class Gc
     {
         long cache = Sys.Peek(tb + Tls.Classes);
         if (cache == 0 || _classSize == 0) return 0;
+        // BY THE 4 KB TABLE, as the marker and FreeOwnBlock find a page's
+        // block: its page, the page's class, the grid by the class's
+        // reciprocal. The search below went through every class the thread
+        // holds, a 64-bit compare each, and tested the grid with a division,
+        // at every free the compiler's lifetime rules make (Runtime.Free asks
+        // this before it frees an object's owned fields).
+        nuint slots = (nuint)HeapChunks.SlotTable;
+        if (slots != 0)
+        {
+            nuint page = PeekW(slots + ((nuint)block >> 12) * (nuint)WordSize.Bytes);
+            if (page == 0) return 0;
+            nuint cls = PeekW(page + (nuint)HeapChunks.ClassAt);
+            if (cls == 0 || (long)PeekW(page + (nuint)HeapChunks.OwnerAt) != tb) return 0;
+            if (PeekW((nuint)cache + (cls - 1) * (nuint)(2 * WordSize.Bytes)) != page) return 0;
+            nuint found = PageBlockW(page, (nuint)block + (nuint)HeaderBytes, cls);
+            if (found != (nuint)block || (PeekW(found) & (nuint)FlagFree) != 0) return 0;
+            return (long)(PeekW(found) & ~(nuint)7);
+        }
         for (long c = 0; c < Classes; c = c + 1)
         {
             long page = Sys.Peek(cache + c * (2 * WordSize.Bytes));
@@ -9184,7 +9277,11 @@ static class Gc
         nuint local = ClaimLocal();
         bool aborted = false;
 
-        while (budget < 0 || done < budget)
+        // THE COUNT IN WORDS: compared a 64-bit long a block, it was an add
+        // and an adc, a compare and an sbb, held in the frame.
+        nint left = budget < 0 ? (nint)0x7FFFFFFF : (nint)budget;
+        nint scanned = 0;
+        while (scanned < left)
         {
             if (Sys.Peek(ctl + GcLock.Abort) != 0)
             {
@@ -9207,8 +9304,9 @@ static class Gc
                 ScanBlockW(block, PeekW(block) & ~(nuint)7, local, tail);
             }
 
-            done = done + 1;
+            scanned = scanned + 1;
         }
+        done = (long)scanned;
 
         if (local != 0)
         {
@@ -12119,7 +12217,7 @@ static class HeapChunks
     const long ChunkClass = 8 * WordSize.Bytes;
     /// For the marker's lookups in words (Gc.MarkWord): where a chunk's end,
     /// limit and class are, and where its first block is.
-    public const long EndAt = ChunkEnd, LimitAt = ChunkLimit, ClassAt = ChunkClass, FirstAt = ChunkBytes;
+    public const long EndAt = ChunkEnd, LimitAt = ChunkLimit, ClassAt = ChunkClass, FirstAt = ChunkBytes, OwnerAt = ChunkOwner;
 
     /// THE CHUNK OF EVERY 4 KB (Of's table), for the marker: 0 where there is
     /// none -- not a platform that commits lazily, or above four gigabytes.
