@@ -115,6 +115,15 @@ public sealed partial class Lowering
     public static bool StoreSequences { get; set; }
 
     /// <summary>
+    /// THE THREAD BLOCK IS A PROCESSOR'S, not a thread's: ring 0's kernel and
+    /// its modules (--store-sequences without --ring1-syscalls), where a
+    /// process's kernel code that parks is resumed on whichever processor
+    /// runs it next, with that processor's block. A read of the block before
+    /// a call is not the block after it (Gvn).
+    /// </summary>
+    public static bool ThreadBlockPerProcessor { get; set; }
+
+    /// <summary>
     /// The runtime and the class library are shared objects this program
     /// links rather than source compiled into it.
     ///

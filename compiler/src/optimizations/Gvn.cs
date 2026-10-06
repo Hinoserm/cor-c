@@ -145,8 +145,28 @@ public sealed class Gvn : IPass
         return true;
     }
 
+    /// <summary>
+    /// A PROCESSOR'S BLOCK IS NOT A THREAD'S (ring 0: Lowering.ThreadBlockPerProcessor).
+    /// Code that parks in a call comes back on whichever processor resumed
+    /// it, reading that processor's block; a read reused across the call is
+    /// the block of the processor it left, which is running something else
+    /// with it. There a read is reused only inside one block, up to a call.
+    /// </summary>
+    private static void ForgetThreadBlock(Dictionary<string, VReg> exprs, List<(string Key, VReg? Old)> undo)
+    {
+        foreach (string key in new[] { "threadblock|" + IrType.I32, "threadblock|" + IrType.I64 })
+        {
+            if (exprs.TryGetValue(key, out VReg? had))
+            {
+                undo.Add((key, had));
+                exprs.Remove(key);
+            }
+        }
+    }
+
     private void VisitBlock(Block b, List<(string Key, VReg? Old)> undo, Dictionary<string, MemEntry> mem)
     {
+        if (Corsac.Lang.Lower.Lowering.ThreadBlockPerProcessor) ForgetThreadBlock(_exprs, undo);
         for (int k = 0; k < b.Instrs.Count; k++)
         {
             Instr i = b.Instrs[k];
@@ -183,6 +203,9 @@ public sealed class Gvn : IPass
                 case Opcode.Call:
                 case Opcode.CallIndirect:
                 case Opcode.Syscall:
+                    if (Corsac.Lang.Lower.Lowering.ThreadBlockPerProcessor) ForgetThreadBlock(_exprs, undo);
+                    mem.Clear();
+                    continue;
                 case Opcode.MemCopy:
                 case Opcode.MemSet:
                 case Opcode.AtomicSwap:
