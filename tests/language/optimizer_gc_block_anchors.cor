@@ -30,10 +30,14 @@ sealed class Roots
 static class Program
 {
     // Where a request's payload ends: the block is the request plus a
-    // two-word header and a one-word footer, rounded to eight bytes.
+    // two-word header, rounded to eight bytes -- and a one-word footer
+    // besides, outside a size-class page (a block past the largest class,
+    // 1024 bytes, is in the mixed heap and keeps one).
     static long OnePast(long request)
     {
-        long overhead = 3 * WordSize.Bytes;
+        long header = 2 * WordSize.Bytes;
+        if (((request + header + 7) & -8L) <= 1024) return ((request + header + 7) & -8L) - header;
+        long overhead = header + WordSize.Bytes;
         return ((request + overhead + 7) & -8L) - overhead;
     }
 
@@ -46,8 +50,8 @@ static class Program
         {
             long memory = Runtime.Alloc(64);
             Sys.Poke(memory + 16, i + 1);
-            // A 64-byte request's actual payload ends at OnePast(64) (+68 in
-            // an 80-byte block on i386), which is also a valid conservative root.
+            // A 64-byte request's actual payload ends at OnePast(64) (+64 in
+            // a 72-byte class block on i386), which is also a valid conservative root.
             roots[i] = memory + (i % 7 == 0 ? OnePast(64) : 16);
         }
         for (int i = 0; i < 2; i++)

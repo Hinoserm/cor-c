@@ -2032,7 +2032,7 @@ static class Gc
         {
             long first = HeapChunks.First(chunk);
             // In 32 bits a long division is a call; a page is 32 KB at most.
-            return size == ClassSize(c - 1) && block >= first && (int)(block - first) % (int)size == 0;
+            return size == ClassSize(c - 1) && block >= first && OnGrid(block - first, c - 1);
         }
         return Sys.Peek(block + size - FooterBytes) == word;
     }
@@ -3606,6 +3606,7 @@ static class Gc
     static long _classSize;         // Classes words: each class's block size
     static long _classOf;           // ClassMax / 8 + 1 words: need >> 3 -> class
     static long _classPages;        // Classes words: pages with room, unowned
+    static long _classStep;         // Classes words: ceil(2^32 / the class's size), for OnGrid
     static long _pool;              // empty pages, through their next-page word
     static long _poolBytes;
     public static long PagesTaken, PagesPooled, PagesReleased, PagesRefilled;
@@ -3625,11 +3626,13 @@ static class Gc
         _classSize = tables;
         _classOf = tables + 64 * WordSize.Bytes;
         _classPages = tables + 200 * WordSize.Bytes;
+        _classStep = tables + 256 * WordSize.Bytes;
         long size = 16;
         long c = 0;
         while (size <= ClassMax)
         {
             Sys.Poke(_classSize + c * WordSize.Bytes, size);
+            Sys.Poke(_classStep + c * WordSize.Bytes, Reciprocal(size));
             c = c + 1;
             // Eighths of each power of two above 128: no block wastes more
             // than an eighth of itself to its class.
@@ -3650,6 +3653,37 @@ static class Gc
     static long ClassSize(long c)
     {
         return Sys.Peek(_classSize + c * WordSize.Bytes);
+    }
+
+    /// WHETHER `offset` INTO A PAGE OF CLASS `c` IS A BLOCK'S START, without
+    /// a division. A division by a size not known until run time is checked
+    /// for zero, and the check's throw reaches, through an unhandled
+    /// exception's report, the whole program: put on the barrier's path
+    /// (Whole, through BlockForPointer), it told the link every store a
+    /// collection makes may write any field, and nothing owned what it held.
+    /// The quotient is the offset times ceil(2^32 / size), high half: an
+    /// offset inside a page (under 2^16) and a size of at most ClassMax
+    /// leave the error under 2^-16 of a block, so the floor is exact.
+    static bool OnGrid(long offset, long c)
+    {
+        if (offset < 0 || offset >= 0x10000) return false;
+        long quotient = (offset * Sys.Peek(_classStep + c * WordSize.Bytes)) >> 32;
+        return quotient * ClassSize(c) == offset;
+    }
+
+    /// ceil(2^32 / size) by shifts and subtraction: no division, for the
+    /// reason OnGrid gives.
+    static long Reciprocal(long size)
+    {
+        long quotient = 0, rest = 0;
+        for (long bit = 32; bit >= 0; bit--)
+        {
+            rest = rest << 1;
+            if (bit == 32) rest = rest | 1;
+            quotient = quotient << 1;
+            if (rest >= size) { rest = rest - size; quotient = quotient | 1; }
+        }
+        return rest != 0 ? quotient + 1 : quotient;
     }
 
     /// This thread's class cache, mapped at its first small allocation. The
@@ -4244,7 +4278,7 @@ static class Gc
         long first = HeapChunks.First(chunk);
         if (block < first || block >= HeapChunks.End(chunk)) return false;
         long c = HeapChunks.PageClass(chunk);
-        if (c != 0) return (block - first) % ClassSize(c - 1) == 0;
+        if (c != 0) return OnGrid(block - first, c - 1);
         long at = HeapChunks.MarkStart(chunk, block + HeaderBytes);
         long end = HeapChunks.End(chunk);
         for (long n = 0; at < block && n < 100000; n++)
@@ -6158,7 +6192,7 @@ static class Gc
         long first = HeapChunks.First(chunk);
         long next = at & ~3L;
         if (next < first + size || next >= HeapChunks.End(chunk)) return 0;
-        if ((next - first) % size != 0) return 0;
+        if (!OnGrid(next - first, c - 1)) return 0;
         long block = next - size;
         long word = Sys.Peek(block);
         if ((word & FlagFree) != 0 || (word & SizeMask) != size) return 0;

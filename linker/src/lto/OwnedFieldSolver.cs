@@ -152,11 +152,20 @@ public static class OwnedFieldSolver
             foreach ((string name, OwnedFunctionRecord function) in unit.Functions)
             {
                 int caller = Node(name);
+                // WHAT AN UNHANDLED EXCEPTION'S REPORT CALLS IS NOBODY'S STORE:
+                // Runtime.Unhandled prints and ends the process, so no read
+                // live in any caller is ever used after it. Followed, its
+                // virtual ToString reached the whole program -- every writer
+                // of every field -- and the collector's grid test, a division
+                // the barrier makes (Gc.Whole), put that under every store a
+                // collection does: no Dictionary, List or Queue field owned.
+                if (NeverReturns(name)) continue;
                 foreach (string call in function.Calls) callersOf[Node(call)].Add(caller);
             }
         foreach ((string symbol, string[] targets) in virtuals.OrderBy(pair => pair.Key, StringComparer.Ordinal))
             if (number.ContainsKey(symbol)) foreach (string target in targets) callersOf[Node(target)].Add(Node(symbol));
         Dictionary<string, List<string>> writersOf = new(StringComparer.Ordinal);
+        static bool NeverReturns(string function) => function.StartsWith("m_Runtime_Unhandled_", StringComparison.Ordinal);
         void Writer(string field, string function)
         {
             if (!writersOf.TryGetValue(field, out List<string>? list)) writersOf[field] = list = new();

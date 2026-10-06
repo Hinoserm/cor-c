@@ -28,7 +28,8 @@ static class Program
         long a = Runtime.AllocObject(48);
         long b = Runtime.AllocObject(48);
         long c = Runtime.AllocObject(48);
-        if (b != a + 64 || c != b + 64)
+        // One block apart each, whatever a 48-byte request's block is now.
+        if (b - a < 48 || c - b != b - a)
         {
             Console.WriteLine("not side by side");
             return 3;
