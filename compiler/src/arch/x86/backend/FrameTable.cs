@@ -18,28 +18,23 @@ namespace Corsac.Lang.X86;
 /// and works the same in a flat freestanding image as in an ELF.
 ///
 /// COMPACT, BECAUSE IT IS IN EVERY IMAGE. A fixed twenty bytes a function came
-/// to sixty kilobytes on the kernel; these entries average nine. The addresses
-/// ascend, so each is written as the distance from the one before it and the
-/// whole table needs ONE relocation -- the first function's address. Nothing
-/// can binary-search it, and nothing needs to: the only reader is a fault, and
-/// a fault can afford a walk.
+/// to sixty kilobytes on the kernel. The addresses ascend, so each entry says
+/// only how far its function starts past the end of the one before -- nearly
+/// always under four bytes of padding -- and the whole table needs ONE
+/// relocation, the first function's address. Its name is a delta from the
+/// name before, its file is said only when it changes, and its line program
+/// by its length. Nothing can binary-search it, and nothing needs to: the
+/// only reader is a fault, and a fault can afford a walk.
 ///
-/// The layout, all little-endian, all offsets from the symbol:
-///
-///   u32 magic  'CFRM'      u32 count
-///   u32 base   (relocated) u32 strings   u32 lines
-///   count entries, in address order:
-///     uleb start delta from the previous function (the first is 0 from base)
-///     uleb size            uleb name      uleb file
-///     uleb line program, plus one -- zero meaning the function has none
-///   the line programs: uleb pairs,  uleb count then (uleb offset, sleb line)
-///   the strings, each ending in a zero byte
+/// The layout ('CFR3') is FrameTableFormat's, in the linker's object model,
+/// which the link shares when it rewrites the table; the strings follow the
+/// line programs, each ending in a zero byte.
 /// </summary>
 internal static class FrameTable
 {
     public const string Symbol = "__corsac_frames";
 
-    public const uint Magic = 0x4D524643;        // 'CFRM', little-endian
+    public const uint Magic = FrameTableFormat.Local;
 
     /// <summary>
     /// One function. <paramref name="Label"/> is the symbol the linker knows
@@ -54,7 +49,7 @@ internal static class FrameTable
     /// <summary>Builds the table's bytes, and the one relocation it needs.</summary>
     public static byte[] Build(IReadOnlyList<Entry> entries, out int baseFixup, out string baseSymbol)
     {
-        baseFixup = 8;
+        baseFixup = FrameTableFormat.BaseOffset;
         baseSymbol = entries.Count > 0 ? entries[0].Label : "";
 
         List<byte> strings = new();
@@ -73,92 +68,29 @@ internal static class FrameTable
             return at;
         }
 
-        // The line programs first, so an entry can name where its own begins.
+        // The line programs, in entry order: an entry says only how long its own is.
         List<byte> lines = new();
-        List<int> lineAt = new();
+        List<FrameTableFormat.Entry> coded = new(entries.Count);
+        long origin = entries.Count > 0 ? entries[0].Start : 0;
 
         foreach (Entry e in entries)
         {
-            if (e.Lines.Count == 0)
+            int programAt = lines.Count;
+            if (e.Lines.Count > 0)
             {
-                lineAt.Add(-1);
-                continue;
+                FrameTableFormat.Uleb(lines, (ulong)e.Lines.Count);
+                int offset = 0, line = 0;
+                foreach ((int at, int n) in e.Lines)
+                {
+                    FrameTableFormat.Uleb(lines, (ulong)(at - offset));
+                    FrameTableFormat.Sleb(lines, n - line);
+                    offset = at;
+                    line = n;
+                }
             }
-            lineAt.Add(lines.Count);
-            Uleb(lines, (uint)e.Lines.Count);
-            int offset = 0, line = 0;
-            foreach ((int at, int n) in e.Lines)
-            {
-                Uleb(lines, (uint)(at - offset));
-                Sleb(lines, n - line);
-                offset = at;
-                line = n;
-            }
+            coded.Add(new FrameTableFormat.Entry(e.Start - origin, e.Size, String(e.Name), String(e.File), lines.Count - programAt));
         }
 
-        List<byte> table = new();
-        int previous = entries.Count > 0 ? entries[0].Start : 0;
-
-        for (int i = 0; i < entries.Count; i++)
-        {
-            Entry e = entries[i];
-            Uleb(table, (uint)(e.Start - previous));
-            previous = e.Start;
-            Uleb(table, (uint)e.Size);
-            Uleb(table, (uint)String(e.Name));
-            Uleb(table, (uint)String(e.File));
-            Uleb(table, lineAt[i] < 0 ? 0u : (uint)(lineAt[i] + 1));
-        }
-
-        const int header = 20;
-        int linesOff = header + table.Count;
-        int stringsOff = linesOff + lines.Count;
-
-        List<byte> all = new();
-        U32(all, Magic);
-        U32(all, (uint)entries.Count);
-        U32(all, 0);                     // the base address, relocated
-        U32(all, (uint)stringsOff);
-        U32(all, (uint)linesOff);
-        all.AddRange(table);
-        all.AddRange(lines);
-        all.AddRange(strings);
-        return all.ToArray();
-    }
-
-    private static void U32(List<byte> into, uint v)
-    {
-        into.Add((byte)v);
-        into.Add((byte)(v >> 8));
-        into.Add((byte)(v >> 16));
-        into.Add((byte)(v >> 24));
-    }
-
-    private static void Uleb(List<byte> into, uint v)
-    {
-        do
-        {
-            byte b = (byte)(v & 0x7F);
-            v >>= 7;
-            into.Add(v != 0 ? (byte)(b | 0x80) : b);
-        }
-        while (v != 0);
-    }
-
-    private static void Sleb(List<byte> into, int v)
-    {
-        while (true)
-        {
-            byte b = (byte)(v & 0x7F);
-            v >>= 7;
-            bool sign = (b & 0x40) != 0;
-
-            if ((v == 0 && !sign) || (v == -1 && sign))
-            {
-                into.Add(b);
-                return;
-            }
-            into.Add((byte)(b | 0x80));
-        }
+        return FrameTableFormat.Build(FrameTableFormat.Local, coded, lines, strings);
     }
 }

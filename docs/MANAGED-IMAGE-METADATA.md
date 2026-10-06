@@ -22,6 +22,13 @@ also supported as a distinct metadata kind. Repeated registration is idempotent.
 `Sys.FrameDirectory()` supplies the current image directory; `Sys.FrameTable()`
 still supplies the current compilation unit's table for low-level inspection.
 
+The tables' own layouts live in the linker's object model, shared by the code
+generator and the link: `FrameTableFormat` (`'CFR3'` per object, `'CFR4'` once
+the link has moved its names into the image's tokenized `__corsac_frame_pool`)
+and `StackMapTable` (`'CSM1'` version 6, varint call sites with checkpoints
+for a logarithmic lookup). The runtime's readers (`Runtime.LookupIn`,
+`Gc.MapSite`) are the third copy and change with them.
+
 Stack lookup searches each unit and carries an absolute line-program address
 from the matching table. It must never interpret another unit's line offset
 relative to the runtime's own table. The directory makes stack maps discoverable

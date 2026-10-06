@@ -497,24 +497,19 @@ internal static class Program
         byte[] b = s.Bytes.ToArray();
         uint W(int at) => (uint)(b[at] | (b[at + 1] << 8) | (b[at + 2] << 16) | (b[at + 3] << 24));
 
-        Check(W(0) == 0x314d5343, "stack maps begin with the CSM1 magic");
-        Check(W(4) == 2, "stack maps are version 2");
-        Check(W(12) == 16, "a stack-map entry is sixteen bytes");
-
-        int count = (int)W(8);
-        Check(count > 0 && 20 + count * 16 <= b.Length, "the entry count fits the section");
+        Check(W(0) == StackMapTable.Magic, "stack maps begin with the CSM1 magic");
+        Check(W(4) == StackMapTable.Version, "stack maps are version 6");
+        List<StackMapTable.Function>? functions = StackMapTable.Decode(b);
+        Check(functions is not null && functions.Count > 0, "the table decodes to its end");
+        functions ??= new();
+        Check(StackMapTable.Encode(functions).SequenceEqual(b), "the table encodes again to the same bytes");
 
         // ONE RELOCATION FOR THE WHOLE TABLE, in the header: the base is the
-        // start of the first function that has a call site, and every entry
-        // holds its return address measured from there. Version 1 relocated
-        // every entry, which in a shared object was a page the loader wrote
-        // and every process kept a private copy of.
-        Check(s.Relocs.Count == 1 && s.Relocs[0].Offset == 16, "the table's one relocation is its base");
+        // start of the first function that has a call site, and every
+        // function's start is measured from there.
+        Check(s.Relocs.Count == 1 && s.Relocs[0].Offset == StackMapTable.BaseOffset, "the table's one relocation is its base");
         string baseFunction = s.Relocs.Count == 1 ? s.Relocs[0].Symbol : "";
 
-        // Which function an entry belongs to is now a question about
-        // addresses rather than about relocations: the text offset of the
-        // call is the base function's offset plus what the entry stores.
         Symbol? baseSymbol = obj.Symbols.Find(y => y.Name == baseFunction && y.Section is not null);
         Check(baseSymbol is not null, "the base names a defined function");
         List<Symbol> text = obj.Symbols
@@ -526,7 +521,7 @@ internal static class Program
             long target = baseSymbol.Offset + fromBase;
             for (int k = text.Count - 1; k >= 0; k--)
             {
-                if (text[k].Offset <= target && target < text[k].Offset + text[k].Size) return text[k].Name;
+                if (text[k].Offset == target) return text[k].Name;
             }
             return "";
         }
@@ -534,52 +529,22 @@ internal static class Program
             && obj.Symbols.Any(y => y.Name == X86Backend.StackMapEnd && y.Offset == b.Length && !y.Global),
             "object-local start and end symbols bracket the table");
 
-        Dictionary<string, (uint Regs, int Map, uint Frame)> byFunction = new(StringComparer.Ordinal);
-        bool bitmapsInRange = true;
-        for (int i = 0; i < count; i++)
-        {
-            int at = 20 + i * 16;
-            uint regs = W(at + 4);
-            int map = (int)W(at + 8);
-            if (map != 0 && (map + 4 > b.Length || map + 4 + (int)W(map) * 4 > b.Length))
-            {
-                bitmapsInRange = false;
-            }
-            // Only EBX, ESI and EDI survive a call, so no other bit may be set.
-            Check((regs & ~0b1100_1000u) == 0, "a stack map names only callee-saved registers");
-            string owner = Owner((int)W(at));
-            if (!byFunction.ContainsKey(owner) || regs != 0 || map != 0)
-            {
-                byFunction[owner] = (regs, map, W(at + 12));
-            }
-        }
-        Check(bitmapsInRange, "every bitmap offset lies inside the table");
+        Check(functions.All(f => Owner(f.Start) != ""), "every function record starts at a function this object defines");
+        Check(functions.All(f => f.Sites.All(site => (site.Live & ~0b1100_1000u) == 0)), "a stack map names only callee-saved registers");
 
-        if (byFunction.TryGetValue("pressure", out (uint Regs, int Map, uint Frame) p))
+        StackMapTable.Function? pressure = functions.Find(f => Owner(f.Start) == "pressure");
+        if (pressure is not null)
         {
-            Check(p.Regs != 0, "the pressure call site keeps references in callee-saved registers");
-            Check(p.Map != 0, "the pressure call site has a frame bitmap");
-            Check(p.Frame >= 4, "the pressure call site records its frame size");
-            if (p.Map != 0)
-            {
-                int words = (int)W(p.Map);
-                int bits = 0;
-                for (int k = 0; k < words; k++)
-                {
-                    bits += System.Numerics.BitOperations.PopCount(W(p.Map + 4 + k * 4));
-                }
-                Check(bits > 0, "the pressure bitmap marks at least one slot");
-                Check(words * 32 * 4 <= p.Frame + 128, "the bitmap covers no more than the frame it describes");
-            }
+            Check(pressure.Sites.Any(site => site.Live != 0), "the pressure call site keeps references in callee-saved registers");
+            Check(pressure.Sites.Any(site => site.Slots.Length > 0), "the pressure call site has a frame bitmap");
+            Check(pressure.FrameSize >= 4, "the pressure call site records its frame size");
+            Check(pressure.Sites.All(site => site.Slots.All(word => 4 * (word + 1) <= pressure.FrameSize + 128)),
+                "the bitmap covers no more than the frame it describes");
         }
         else
         {
             Fail("pressure has a stack map");
         }
-
-        // A function with no call has no entry, and every entry names a
-        // function this object defines.
-        Check(s.Relocs.All(r => obj.Symbols.Any(y => y.Name == r.Symbol && y.IsFunction)), "every entry names a function in this object");
     }
 
     private static void Check(bool ok, string what)
