@@ -3,11 +3,38 @@ using System.Text;
 
 namespace Corsac.Lang.Ir;
 
-public sealed class Instr
+// WHAT AN INSTRUCTION WEIGHS: a large unit holds about four hundred
+// thousand of them through code generation, and they were the biggest part
+// of its peak. So the operands live in the instruction (OperandList, its
+// base), the fields are declared so the bytes share words -- the layout
+// follows declaration order -- and what few instructions say (DispatchType,
+// Default, an Offset or a Size too big for its field) waits in InstrRare,
+// made only when one is written.
+public sealed class Instr : OperandList
 {
-    public Opcode Op { get; init; }
-    public VReg? Dest { get; set; }
-    public List<Operand> Operands { get; } = new();
+    // Declared first, beside the base's operand count, so the three bytes
+    // share its word.
+    private readonly Opcode _op;
+    private byte _flags;
+    private byte _size;
+    private VReg? _dest;
+    private string? _callee;
+    private string? _field;
+    private string? _family;
+    private List<Block>? _targets;
+    private InstrRare? _rare;
+    private int _offset;
+    private int _line;
+
+    private const byte SignedFlag = 1, NumberFlag = 2, RegionSiteFlag = 4, BigOffsetFlag = 8, BigSizeFlag = 16;
+
+    private InstrRare Rare => _rare ??= new();
+
+    public Opcode Op { get => _op; init => _op = value; }
+    public VReg? Dest { get => _dest; set => _dest = value; }
+
+    /// <summary>The operands: this instruction itself, as the list it is (OperandList).</summary>
+    public OperandList Operands => this;
 
     /// <summary>
     /// What a Store writes. Operands[1], but for an object's header written by
@@ -20,14 +47,30 @@ public sealed class Instr
     public Operand StoredValue => Operands.Count > 2 ? Operands[2] : Operands[1];
 
     /// <summary>Load and Store: how many bytes, and whether a narrow load sign-extends.</summary>
-    public int Size { get; init; }
-    public bool Signed { get; init; }
+    public int Size
+    {
+        get => (_flags & BigSizeFlag) != 0 ? _rare!.Size : _size;
+        init
+        {
+            if (value is >= 0 and <= byte.MaxValue) { _size = (byte)value; _flags = (byte)(_flags & ~BigSizeFlag); }
+            else { Rare.Size = value; _flags |= BigSizeFlag; }
+        }
+    }
+    public bool Signed { get => (_flags & SignedFlag) != 0; init => SetFlag(SignedFlag, value); }
 
     /// <summary>Load and Store: a constant displacement from the address operand.</summary>
-    public long Offset { get; init; }
+    public long Offset
+    {
+        get => (_flags & BigOffsetFlag) != 0 ? _rare!.Offset : _offset;
+        init
+        {
+            if (value is >= int.MinValue and <= int.MaxValue) { _offset = (int)value; _flags = (byte)(_flags & ~BigOffsetFlag); }
+            else { Rare.Offset = value; _flags |= BigOffsetFlag; }
+        }
+    }
 
     /// <summary>Call: who.</summary>
-    public string? Callee { get; init; }
+    public string? Callee { get => _callee; init => _callee = value; }
 
     /// <summary>
     /// CallIndirect of a virtual method: the descriptor of the type that
@@ -35,14 +78,18 @@ public sealed class Instr
     /// and nothing else (Escape.IndirectTargets). On a catch body's end
     /// (Runtime.CatchEnd): the type the catch takes, null for every type.
     /// </summary>
-    public string? DispatchType { get; set; }
+    public string? DispatchType
+    {
+        get => _rare?.DispatchType;
+        set { if (value is not null) Rare.DispatchType = value; else if (_rare is not null) _rare.DispatchType = null; }
+    }
 
     /// <summary>
     /// Load or Store of a field: which one ("Type::name"). What lets a whole
     /// program's every store into a field, and every read of it, be found
     /// (the owned-field rules).
     /// </summary>
-    public string? Field { get; set; }
+    public string? Field { get => _field; set => _field = value; }
 
     /// <summary>
     /// Load: the word read is a field's, an element's or a cell's of a
@@ -55,7 +102,7 @@ public sealed class Instr
     /// never a reference (Lowering.ChainWrite). Left unset it says
     /// nothing, so a pass making a load or a copy of its own need not know.
     /// </summary>
-    public bool Number { get; set; }
+    public bool Number { get => (_flags & NumberFlag) != 0; set => SetFlag(NumberFlag, value); }
 
     /// <summary>
     /// Load or Store of a class's field at its offset from the start of an
@@ -65,14 +112,14 @@ public sealed class Instr
     /// same offset (RegionConstraint.Family). Left unset it says nothing:
     /// a raw read or write, a struct's field, an element, a copy.
     /// </summary>
-    public string? Family { get; set; }
+    public string? Family { get => _family; set => _family = value; }
 
     /// <summary>
     /// An allocator call the link chose to make in the innermost open region
     /// (Lto.RegionSolver; RegionPointsTo.MarkSites): the late passes' copies
     /// of it are chosen too.
     /// </summary>
-    public bool RegionSite { get; set; }
+    public bool RegionSite { get => (_flags & RegionSiteFlag) != 0; set => SetFlag(RegionSiteFlag, value); }
 
     /// <summary>
     /// What a call's Field says when its result is a struct its callee made
@@ -108,11 +155,14 @@ public sealed class Instr
     // compiler found them all when this was briefly read-only).
     public List<Block> Targets => _targets ?? NoTargets;
     public List<Block> WritableTargets => _targets ??= new();
-    private List<Block>? _targets;
     private static readonly List<Block> NoTargets = new();
 
     /// <summary>Switch: where an out-of-range index goes.</summary>
-    public Block? Default { get; set; }
+    public Block? Default
+    {
+        get => _rare?.Default;
+        set { if (value is not null) Rare.Default = value; else if (_rare is not null) _rare.Default = null; }
+    }
 
     /// <summary>
     /// Source line, for the dump and for the line table a stack trace reads.
@@ -121,7 +171,9 @@ public sealed class Instr
     /// every one of the hundreds of places that build an Instr having to
     /// remember to pass it.
     /// </summary>
-    public int Line { get; set; }
+    public int Line { get => _line; set => _line = value; }
+
+    private void SetFlag(byte flag, bool on) => _flags = on ? (byte)(_flags | flag) : (byte)(_flags & ~flag);
 
     public bool IsTerminator => Op is Opcode.Ret or Opcode.Jump or Opcode.Branch
                                    or Opcode.Switch or Opcode.Unreachable or Opcode.Unwind;
@@ -165,4 +217,17 @@ public sealed class Instr
         }
         return sb.ToString();
     }
+}
+
+/// <summary>
+/// What few instructions carry (Instr): a virtual call's declaring type or a
+/// catch's, a switch's default, and an Offset or a Size that does not fit
+/// the instruction's own narrow field.
+/// </summary>
+internal sealed class InstrRare
+{
+    public string? DispatchType;
+    public Block? Default;
+    public long Offset;
+    public int Size;
 }

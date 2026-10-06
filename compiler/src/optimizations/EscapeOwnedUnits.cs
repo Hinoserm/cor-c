@@ -263,7 +263,7 @@ public sealed partial class Escape
             to = from;
             for (int k = from; k < instrs.Count; k++)
             {
-                List<Operand> operands = instrs[k].Operands;
+                OperandList operands = instrs[k].Operands;
                 for (int o = 0; o < operands.Count; o++)
                     if (operands[o] is RegOperand r && derived.Contains(r.Reg)) { to = k; break; }
             }
