@@ -1832,7 +1832,7 @@ static class Runtime
     /// freed with what it owns, unless it is what is being stored again.
     public static void FreeOwnedReplaced(nint old, nint current)
     {
-        if (old != 0 && old != current && Gc.IgnoredFrees != 'r')
+        if (old != 0 && old != current && Gc.IgnoredFrees != 'r' && Gc.IgnoredFrees != 'w')
         {
             FreeHeld((long)(nuint)old);
         }
@@ -1844,7 +1844,7 @@ static class Runtime
     /// null or a string literal, which is no heap block, is ignored by Free.
     public static void FreeReplaced(nint old, nint current)
     {
-        if (old != current && Gc.IgnoredFrees != 'r')
+        if (old != current && Gc.IgnoredFrees != 'r' && Gc.IgnoredFrees != 'v')
         {
             Gc.Free((long)(nuint)old);
         }

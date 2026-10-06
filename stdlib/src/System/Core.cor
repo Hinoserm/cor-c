@@ -8779,7 +8779,9 @@ static class OutgrownStorage {
         // As an owned field's old value (Runtime.FreeOwnedReplaced): read from
         // the collection's own field, so in a region it is given back at
         // once where it is the top (Gc.RegionFree).
-        if (old != null) { Runtime.FreeOwnedReplaced((nint)Sys.Word(old), 0); }
+        // A DIAGNOSTIC (Gc.IgnoredFrees 'o'): a collection's outgrown
+        // storage left to the collector, apart from the compiler's frees.
+        if (old != null && Gc.IgnoredFrees != 'o') { Runtime.FreeOwnedReplaced((nint)Sys.Word(old), 0); }
     }
 }
 
