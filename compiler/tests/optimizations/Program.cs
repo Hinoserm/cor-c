@@ -160,7 +160,7 @@ public static partial class Program
             Function Build()
             {
                 (Function f, Builder b) = Fn(type, type);
-                b.Ret(new RegOperand(b.Binary(operation, new RegOperand(f.Params[0]), new ImmOperand(divisor, type), type)));
+                b.Ret(RegOperand.Of(b.Binary(operation, RegOperand.Of(f.Params[0]), new ImmOperand(divisor, type), type)));
                 return f;
             }
             long[][] inputs = new long[] { 0, 1, -1, 7, -7, int.MinValue, int.MaxValue, long.MinValue, long.MaxValue }
@@ -171,7 +171,7 @@ public static partial class Program
         foreach (string callee in new[] { "m_Runtime_DivS_2_V$I64_V$I64", "m_Runtime_RemS_2_V$I64_V$I64", "user_divide" })
         {
             (Function f, Builder b) = Fn(IrType.I64, IrType.I64);
-            b.Ret(new RegOperand(b.Call(callee, IrType.I64, new RegOperand(f.Params[0]), new ImmOperand(divisor, IrType.I64))!));
+            b.Ret(RegOperand.Of(b.Call(callee, IrType.I64, RegOperand.Of(f.Params[0]), new ImmOperand(divisor, IrType.I64))!));
             Run(f, new SignedPowerOfTwo());
             bool eligible = callee != "user_divide" && divisor is 8 or -8 or long.MinValue;
             Assert(f.Blocks.SelectMany(block => block.Instrs).Any(i => i.Op == Opcode.Call) != eligible,
@@ -189,10 +189,10 @@ public static partial class Program
             (Function f, Builder b) = Fn(type, type);
             VReg inner = f.NewReg(type), outer = f.NewReg(type);
             Block block = f.Blocks[0];
-            block.Instrs.Add(new Instr { Op = op, Dest = inner, Operands = { new RegOperand(f.Params[0]) } });
+            block.Instrs.Add(new Instr { Op = op, Dest = inner, Operands = { RegOperand.Of(f.Params[0]) } });
             if (mutate) b.CopyTo(f.Params[0], new ImmOperand(13, type));
-            block.Instrs.Add(new Instr { Op = op, Dest = outer, Operands = { new RegOperand(inner) } });
-            b.Ret(new RegOperand(outer));
+            block.Instrs.Add(new Instr { Op = op, Dest = outer, Operands = { RegOperand.Of(inner) } });
+            b.Ret(RegOperand.Of(outer));
             new Peephole().Run(f);
             Instr result = block.Instrs.Single(i => ReferenceEquals(i.Dest, outer));
             bool cancel = !mutate && type != IrType.F64;
@@ -214,7 +214,7 @@ public static partial class Program
                 VReg left = b.Binary(Opcode.Add, first, f.Params[1]);
                 if (mutate) b.CopyTo(first, new ImmOperand(13, IrType.I64));
                 VReg right = b.Binary(Opcode.Add, repeated, f.Params[1]);
-                b.Ret(new RegOperand(b.Binary(Opcode.Add, left, right)));
+                b.Ret(RegOperand.Of(b.Binary(Opcode.Add, left, right)));
                 return f;
             }
             SameResults(Build, Inputs2, new IntegerValueReuse());
@@ -235,14 +235,14 @@ public static partial class Program
                 VReg whole = b.Binary(Opcode.Mul, a, c);
                 if (mode == "mutated") b.CopyTo(c, new ImmOperand(19, IrType.I64));
                 VReg al = b.Binary(Opcode.And, a, 4294967295);
-                VReg ah = b.Binary(Opcode.ShrU, new RegOperand(a), new ImmOperand(32, IrType.I32), IrType.I64);
+                VReg ah = b.Binary(Opcode.ShrU, RegOperand.Of(a), new ImmOperand(32, IrType.I32), IrType.I64);
                 VReg bl = b.Binary(Opcode.And, c, 4294967295);
-                VReg bh = b.Binary(Opcode.ShrU, new RegOperand(c), new ImmOperand(32, IrType.I32), IrType.I64);
+                VReg bh = b.Binary(Opcode.ShrU, RegOperand.Of(c), new ImmOperand(32, IrType.I32), IrType.I64);
                 VReg p00 = b.Binary(Opcode.Mul, al, bl), p01 = b.Binary(Opcode.Mul, al, bh);
                 VReg p10 = b.Binary(Opcode.Mul, ah, bl);
                 VReg mix = b.Binary(Opcode.Xor, whole, b.Binary(Opcode.Xor, p00, b.Binary(Opcode.Xor, p01, p10)));
                 if (mode != "missing") mix = b.Binary(Opcode.Xor, mix, b.Binary(Opcode.Mul, ah, bh));
-                b.Ret(new RegOperand(mix));
+                b.Ret(RegOperand.Of(mix));
                 return f;
             }
             long[][] inputs = { new long[] { 0, 0 }, new long[] { -1, -1 }, new long[] { long.MinValue, long.MaxValue },
@@ -273,8 +273,8 @@ public static partial class Program
                 if (mode == "shared") Sink(b, combined);
                 if (mode == "mutated-source") b.CopyTo(a, new ImmOperand(0, type));
                 VReg shift = b.Binary(mode == "logical" ? Opcode.ShrU : Opcode.ShrS,
-                    new RegOperand(combined), new ImmOperand(type == IrType.I64 ? 63 : 31, IrType.I32), type);
-                b.Ret(new RegOperand(b.Binary(Opcode.And, shift, 1)));
+                    RegOperand.Of(combined), new ImmOperand(type == IrType.I64 ? 63 : 31, IrType.I32), type);
+                b.Ret(RegOperand.Of(b.Binary(Opcode.And, shift, 1)));
                 return f;
             }
             long[] edges = { 0, 1, -1, int.MinValue, int.MaxValue, long.MinValue, long.MaxValue };
@@ -295,18 +295,18 @@ public static partial class Program
         module.Functions.Add(f); module.Entry = f.Name;
         VReg outer = b.Unary(Opcode.Trunc64, b.Call(Escape.Allocator, IrType.I64, new ImmOperand(24, IrType.I64))!);
         VReg middle = b.Unary(Opcode.Trunc64, b.Call(Escape.Allocator, IrType.I64, new ImmOperand(24, IrType.I64))!);
-        b.Store(new RegOperand(outer), new RegOperand(middle), 8, 4);
+        b.Store(RegOperand.Of(outer), RegOperand.Of(middle), 8, 4);
         VReg inner = b.Unary(Opcode.Trunc64, b.Call(Escape.Allocator, IrType.I64, new ImmOperand(64, IrType.I64))!);
-        b.Store(new RegOperand(middle), new RegOperand(inner), 8, 4);
-        b.Ret(new RegOperand(b.Call("return-grandchild", IrType.I32, new RegOperand(outer))!));
+        b.Store(RegOperand.Of(middle), RegOperand.Of(inner), 8, 4);
+        b.Ret(RegOperand.Of(b.Call("return-grandchild", IrType.I32, RegOperand.Of(outer))!));
         Function callee = new("return-grandchild", IrType.I32);
         VReg parameter = callee.NewReg(IrType.I32); callee.Params.Add(parameter);
         Builder cb = new(callee, callee.NewBlock("entry"));
         VReg parent = cb.Load(IrType.I32, parameter, 8, 4, false);
         VReg reference = cb.Load(IrType.I32, parent, 8, 4, false);
-        if (mode == "retain") cb.Store(new SymOperand("retained-grandchild"), new RegOperand(reference), 0, 4);
-        if (mode == "unknown") cb.Call("unknown-reader", IrType.Void, new RegOperand(reference));
-        cb.Ret(new RegOperand(mode == "return-middle" ? parent : mode == "return" ? reference
+        if (mode == "retain") cb.Store(new SymOperand("retained-grandchild"), RegOperand.Of(reference), 0, 4);
+        if (mode == "unknown") cb.Call("unknown-reader", IrType.Void, RegOperand.Of(reference));
+        cb.Ret(RegOperand.Of(mode == "return-middle" ? parent : mode == "return" ? reference
             : cb.Load(IrType.I32, reference, 0, 1, false)));
         module.Functions.Add(callee);
         Escape pass = new(); pass.Run(module);
@@ -340,16 +340,16 @@ public static partial class Program
             }
             VReg child = b.Call(Escape.Allocator, IrType.I64, new ImmOperand(64, IrType.I64))!;
             VReg childAddress = b.Unary(Opcode.Trunc64, child);
-            b.Store(new RegOperand(address), new RegOperand(childAddress), 8, 4);
-            VReg result = b.Call("read-owned-field", IrType.I32, new RegOperand(address))!;
+            b.Store(RegOperand.Of(address), RegOperand.Of(childAddress), 8, 4);
+            VReg result = b.Call("read-owned-field", IrType.I32, RegOperand.Of(address))!;
             if (mode is "loop-persistent" or "loop-renewed")
             {
                 Block body = b.Block, exit = f.NewBlock("exit");
-                b.CopyTo(remaining, new RegOperand(b.Binary(Opcode.Sub, remaining, 1)));
+                b.CopyTo(remaining, RegOperand.Of(b.Binary(Opcode.Sub, remaining, 1)));
                 b.Branch(remaining, mode == "loop-renewed" ? ownerBlock : body, exit);
                 b.SetBlock(exit);
             }
-            b.Ret(new RegOperand(result));
+            b.Ret(RegOperand.Of(result));
             Function callee = new("read-owned-field", IrType.I32);
             VReg receiver = callee.NewReg(IrType.I32); callee.Params.Add(receiver);
             Builder cb = new(callee, callee.NewBlock("entry"));
@@ -359,16 +359,16 @@ public static partial class Program
                 VReg parameter = helper.NewReg(IrType.I32); helper.Params.Add(parameter);
                 Builder hb = new(helper, helper.NewBlock("entry"));
                 VReg reference = hb.Load(IrType.I32, parameter, 8, 4, false);
-                if (mode == "nested-retain") hb.Store(new SymOperand("escaped-child"), new RegOperand(reference), 0, 4);
-                hb.Ret(new RegOperand(hb.Load(IrType.I32, reference, 0, 1, false)));
+                if (mode == "nested-retain") hb.Store(new SymOperand("escaped-child"), RegOperand.Of(reference), 0, 4);
+                hb.Ret(RegOperand.Of(hb.Load(IrType.I32, reference, 0, 1, false)));
                 module.Functions.Add(helper);
-                cb.Call(helper.Name, IrType.I32, new RegOperand(receiver));
+                cb.Call(helper.Name, IrType.I32, RegOperand.Of(receiver));
             }
-            if (mode == "wrap-return") receiver = cb.Binary(Opcode.Add, new RegOperand(receiver),
+            if (mode == "wrap-return") receiver = cb.Binary(Opcode.Add, RegOperand.Of(receiver),
                 new ImmOperand(4294967296L, IrType.I32), IrType.I32);
             VReg pointer = cb.Load(IrType.I32, receiver, mode == "overlap" ? 9 : 8, mode == "overlap" ? 1 : 4, false);
-            if (mode == "retain") cb.Store(new SymOperand("escaped-child"), new RegOperand(pointer), 0, 4);
-            cb.Ret(new RegOperand(mode is "return" or "overlap" or "wrap-return" ? pointer : cb.Load(IrType.I32, pointer, 0, 1, false)));
+            if (mode == "retain") cb.Store(new SymOperand("escaped-child"), RegOperand.Of(pointer), 0, 4);
+            cb.Ret(RegOperand.Of(mode is "return" or "overlap" or "wrap-return" ? pointer : cb.Load(IrType.I32, pointer, 0, 1, false)));
             module.Functions.Add(callee);
             Escape pass = new(); pass.Run(module);
             Verifier.Check(f, "owned field caller"); Verifier.Check(callee, "owned field callee");
@@ -387,13 +387,13 @@ public static partial class Program
             {
                 (Function f, Builder b) = Fn(type, type);
                 VReg x = f.Params[0];
-                VReg first = b.Binary(op, new RegOperand(x), new ImmOperand(long.MaxValue, type), type);
+                VReg first = b.Binary(op, RegOperand.Of(x), new ImmOperand(long.MaxValue, type), type);
                 if (mode == "source") b.CopyTo(x, new ImmOperand(17, type));
                 if (mode == "result") b.CopyTo(first, new ImmOperand(19, type));
                 VReg last = mode == "self" ? x : f.NewReg(type);
                 b.Block.Instrs.Add(new Instr { Op = op, Dest = last,
-                    Operands = { new RegOperand(first), new ImmOperand(13, type) } });
-                b.Ret(new RegOperand(last));
+                    Operands = { RegOperand.Of(first), new ImmOperand(13, type) } });
+                b.Ret(RegOperand.Of(last));
                 return f;
             }
             long[][] values = { new long[] { 0 }, new long[] { 1 }, new long[] { -1 },
@@ -428,13 +428,13 @@ public static partial class Program
                     if (mode == "arm")
                     {
                         VReg repeated = b.Binary(Opcode.Xor, y, x);
-                        b.Ret(new RegOperand(b.Binary(Opcode.Add, repeated, first)));
+                        b.Ret(RegOperand.Of(b.Binary(Opcode.Add, repeated, first)));
                     }
                     else b.Jump(join);
                     b.SetBlock(join);
                 }
                 VReg second = b.Binary(Opcode.Xor, y, x);
-                b.Ret(new RegOperand(b.Binary(Opcode.Add, first, second)));
+                b.Ret(RegOperand.Of(b.Binary(Opcode.Add, first, second)));
                 return f;
             }
             SameResults(Build, Inputs2, new IntegerValueReuse());
@@ -460,7 +460,7 @@ public static partial class Program
                 if (mode == "quotient") b.CopyTo(q, new ImmOperand(91, IrType.I32));
                 if (mode == "block") { Block next = f.NewBlock("next"); b.Jump(next); b.SetBlock(next); }
                 VReg remainder = b.Binary(Opcode.RemS, f.Params[0], f.Params[1]);
-                b.Ret(new RegOperand(b.Binary(Opcode.Add, q, remainder)));
+                b.Ret(RegOperand.Of(b.Binary(Opcode.Add, q, remainder)));
                 return f;
             }
             SameResults(Build, inputs, new DivRemReuse());
@@ -483,10 +483,10 @@ public static partial class Program
             b.CopyTo(source, new ImmOperand(91, IrType.I32));
             Block yes = f.NewBlock("yes"), no = f.NewBlock("no"), join = f.NewBlock("join");
             b.Branch(f.Params[1], yes, no);
-            b.SetBlock(yes); b.CopyTo(captured, new RegOperand(source)); b.Jump(join);
-            b.SetBlock(no); b.CopyTo(source, new RegOperand(chain)); b.Jump(join);
+            b.SetBlock(yes); b.CopyTo(captured, RegOperand.Of(source)); b.Jump(join);
+            b.SetBlock(no); b.CopyTo(source, RegOperand.Of(chain)); b.Jump(join);
             b.SetBlock(join);
-            b.Ret(new RegOperand(b.Binary(Opcode.Add, b.Binary(Opcode.Add, source, captured), chain)));
+            b.Ret(RegOperand.Of(b.Binary(Opcode.Add, b.Binary(Opcode.Add, source, captured), chain)));
             return f;
         }
         SameResults(Build, Inputs2, new LocalCopies());
@@ -521,16 +521,16 @@ public static partial class Program
             (Function f, Builder b) = Fn(IrType.I32);
             module.Functions.Add(f); module.Entry = f.Name;
             VReg obj = b.Unary(Opcode.Trunc64, b.Call(Escape.Allocator, IrType.I64, new ImmOperand(24, IrType.I64))!);
-            b.Ret(new RegOperand(b.Call("walk", IrType.I32, new RegOperand(obj))!));
+            b.Ret(RegOperand.Of(b.Call("walk", IrType.I32, RegOperand.Of(obj))!));
             foreach ((string name, string next) in new[] { ("walk", "step"), ("step", "walk") })
             {
                 Function g = new(name, IrType.I32);
                 VReg p = g.NewReg(IrType.I32); g.Params.Add(p);
                 Builder gb = new(g, g.NewBlock("entry"));
-                if (mode == "retain" && name == "step") gb.Store(new SymOperand("kept-object"), new RegOperand(p), 0, 4);
+                if (mode == "retain" && name == "step") gb.Store(new SymOperand("kept-object"), RegOperand.Of(p), 0, 4);
                 VReg read = gb.Load(IrType.I32, p, 8, 4, false);
-                VReg deeper = gb.Call(next, IrType.I32, new RegOperand(p))!;
-                gb.Ret(new RegOperand(gb.Binary(Opcode.Add, read, deeper)));
+                VReg deeper = gb.Call(next, IrType.I32, RegOperand.Of(p))!;
+                gb.Ret(RegOperand.Of(gb.Binary(Opcode.Add, read, deeper)));
                 module.Functions.Add(g);
             }
             Escape pass = new(); pass.Run(module);
@@ -559,15 +559,15 @@ public static partial class Program
         b.Jump(body);
         b.SetBlock(body);
         VReg scratch = b.Unary(Opcode.Trunc64, b.Call(Escape.Allocator, IrType.I64, new ImmOperand(16, IrType.I64))!);
-        b.Store(new RegOperand(scratch), new RegOperand(sum), 0, 8);
+        b.Store(RegOperand.Of(scratch), RegOperand.Of(sum), 0, 8);
         VReg kept = b.Unary(Opcode.Trunc64, b.Call(Escape.Allocator, IrType.I64, new ImmOperand(16, IrType.I64))!);
-        b.Store(new RegOperand(kept), new RegOperand(b.Load(IrType.I64, scratch, 0, 8)), 0, 8);
-        b.CopyTo(sum, new RegOperand(b.Load(IrType.I64, held, 0, 8)));   // last iteration's object, read after this one is made
-        b.CopyTo(held, new RegOperand(kept));
-        b.CopyTo(n, new RegOperand(b.Binary(Opcode.Add, n, 1)));
+        b.Store(RegOperand.Of(kept), RegOperand.Of(b.Load(IrType.I64, scratch, 0, 8)), 0, 8);
+        b.CopyTo(sum, RegOperand.Of(b.Load(IrType.I64, held, 0, 8)));   // last iteration's object, read after this one is made
+        b.CopyTo(held, RegOperand.Of(kept));
+        b.CopyTo(n, RegOperand.Of(b.Binary(Opcode.Add, n, 1)));
         b.Branch(b.Binary(Opcode.LtS, n, f.Params[0]), body, exit);
         b.SetBlock(exit);
-        b.Ret(new RegOperand(sum));
+        b.Ret(RegOperand.Of(sum));
 
         Escape pass = new(); pass.Run(module);
         Verifier.Check(f, "shared liveness");
@@ -589,20 +589,20 @@ public static partial class Program
         Instr? alloc = null;
         VReg obj = b.Unary(Opcode.Trunc64, b.Call(Escape.Allocator, IrType.I64, new ImmOperand(24, IrType.I64))!);
         foreach (Block block in lend.Blocks) foreach (Instr i in block.Instrs) if (i.Op == Opcode.Call) alloc = i;
-        b.Call("ext", IrType.Void, new RegOperand(obj));
-        b.Ret(new RegOperand(b.Load(IrType.I64, obj, 8, 8)));
+        b.Call("ext", IrType.Void, RegOperand.Of(obj));
+        b.Ret(RegOperand.Of(b.Load(IrType.I64, obj, 8, 8)));
 
         Function pass = new("pass", IrType.Void) { Exported = true };
         VReg p = pass.NewReg(IrType.I32); pass.Params.Add(p);
         Builder pb = new(pass, pass.NewBlock("entry"));
-        pb.Call("ext", IrType.Void, new RegOperand(p));
+        pb.Call("ext", IrType.Void, RegOperand.Of(p));
         pb.Ret();
         module.Functions.Add(pass);
 
         Function relay = new("relay", IrType.I32) { Exported = true };
         Builder rb = new(relay, relay.NewBlock("entry"));
         VReg made = rb.Call("make", IrType.I32)!;
-        rb.Ret(new RegOperand(made));
+        rb.Ret(RegOperand.Of(made));
         module.Functions.Add(relay);
 
         Escape escape = new(); escape.Run(module);
@@ -643,14 +643,14 @@ public static partial class Program
         b.CopyTo(n, new ImmOperand(0, IrType.I32));
         b.Jump(loop);
         b.SetBlock(loop);
-        VReg made = b.Call("next", IrType.I32, new RegOperand(s))!;
-        b.CopyTo(s, new RegOperand(made));
+        VReg made = b.Call("next", IrType.I32, RegOperand.Of(s))!;
+        b.CopyTo(s, RegOperand.Of(made));
         VReg block = b.Call("__x86.i.threadblock", IrType.I32)!;
-        b.Store(new RegOperand(block), new RegOperand(n), 0, 4);
-        b.CopyTo(n, new RegOperand(b.Binary(Opcode.Add, n, 1)));
+        b.Store(RegOperand.Of(block), RegOperand.Of(n), 0, 4);
+        b.CopyTo(n, RegOperand.Of(b.Binary(Opcode.Add, n, 1)));
         b.Branch(b.Binary(Opcode.LtS, n, f.Params[0]), loop, done);
         b.SetBlock(done);
-        b.Ret(new RegOperand(b.Load(IrType.I32, s, 0, 4)));
+        b.Ret(RegOperand.Of(b.Load(IrType.I32, s, 0, 4)));
         foreach (string helper in new[] { Escape.Freer, Escape.ReplacedFreer })
         {
             Function h = new(helper, IrType.Void);
@@ -688,15 +688,15 @@ public static partial class Program
             Module module = new("fresh-" + mode);
             (Function f, Builder b) = Fn(IrType.I64, IrType.I64);
             module.Functions.Add(f); module.Entry = f.Name;
-            VReg made = b.Call("make", IrType.I32, new RegOperand(f.Params[0]))!;
-            b.Ret(new RegOperand(b.Load(IrType.I64, made, 16, 8)));
+            VReg made = b.Call("make", IrType.I32, RegOperand.Of(f.Params[0]))!;
+            b.Ret(RegOperand.Of(b.Load(IrType.I64, made, 16, 8)));
             Function make = new("make", IrType.I32);
             VReg n = make.NewReg(IrType.I64); make.Params.Add(n);
             Builder mb = new(make, make.NewBlock("entry"));
-            VReg at = mb.Unary(Opcode.Trunc64, mb.Call(Escape.Allocator, IrType.I64, new RegOperand(n))!);
-            mb.Store(new RegOperand(at), new ImmOperand(7, IrType.I64), 16, 8);
-            if (mode == "kept") mb.Store(new SymOperand("kept-array"), new RegOperand(at), 0, 4);
-            mb.Ret(new RegOperand(at));
+            VReg at = mb.Unary(Opcode.Trunc64, mb.Call(Escape.Allocator, IrType.I64, RegOperand.Of(n))!);
+            mb.Store(RegOperand.Of(at), new ImmOperand(7, IrType.I64), 16, 8);
+            if (mode == "kept") mb.Store(new SymOperand("kept-array"), RegOperand.Of(at), 0, 4);
+            mb.Ret(RegOperand.Of(at));
             module.Functions.Add(make);
             AddFreeHelpers(module);
             Escape pass = new(); pass.Run(module);
@@ -719,17 +719,17 @@ public static partial class Program
             (Function f, Builder b) = Fn(IrType.I64, IrType.I64);
             module.Functions.Add(f); module.Entry = f.Name;
             VReg owner = b.Unary(Opcode.Trunc64, b.Call(Escape.Allocator, IrType.I64, new ImmOperand(16, IrType.I64))!);
-            b.Call("fill", IrType.Void, new RegOperand(owner), new RegOperand(f.Params[0]));
+            b.Call("fill", IrType.Void, RegOperand.Of(owner), RegOperand.Of(f.Params[0]));
             VReg child = b.Load(IrType.I32, owner, 8, 4, false);
-            b.Ret(new RegOperand(b.Load(IrType.I64, child, 16, 8)));
+            b.Ret(RegOperand.Of(b.Load(IrType.I64, child, 16, 8)));
             Function fill = new("fill", IrType.Void);
             VReg o = fill.NewReg(IrType.I32); fill.Params.Add(o);
             VReg size = fill.NewReg(IrType.I64); fill.Params.Add(size);
             Builder fb = new(fill, fill.NewBlock("entry"));
-            VReg made = fb.Unary(Opcode.Trunc64, fb.Call(Escape.Allocator, IrType.I64, new RegOperand(size))!);
-            fb.Store(new RegOperand(made), new ImmOperand(5, IrType.I64), 16, 8);
-            fb.Store(new RegOperand(o), new RegOperand(made), 8, 4);
-            if (mode == "leaked") fb.Store(new SymOperand("kept-child"), new RegOperand(made), 0, 4);
+            VReg made = fb.Unary(Opcode.Trunc64, fb.Call(Escape.Allocator, IrType.I64, RegOperand.Of(size))!);
+            fb.Store(RegOperand.Of(made), new ImmOperand(5, IrType.I64), 16, 8);
+            fb.Store(RegOperand.Of(o), RegOperand.Of(made), 8, 4);
+            if (mode == "leaked") fb.Store(new SymOperand("kept-child"), RegOperand.Of(made), 0, 4);
             fb.Ret();
             module.Functions.Add(fill);
             AddFreeHelpers(module);
@@ -747,10 +747,10 @@ public static partial class Program
         Module module = new("owned-abi");
         (Function f, Builder b) = Fn(IrType.I64, IrType.I64);
         module.Functions.Add(f); module.Entry = f.Name;
-        VReg allocation = b.Call(Escape.Allocator, IrType.I64, new RegOperand(f.Params[0]))!;
+        VReg allocation = b.Call(Escape.Allocator, IrType.I64, RegOperand.Of(f.Params[0]))!;
         VReg address = b.Unary(Opcode.Trunc64, allocation);
-        b.Store(new RegOperand(address), new ImmOperand(123, IrType.I64), 0, 8);
-        b.Ret(new RegOperand(b.Load(IrType.I64, address, 0, 8)));
+        b.Store(RegOperand.Of(address), new ImmOperand(123, IrType.I64), 0, 8);
+        b.Ret(RegOperand.Of(b.Load(IrType.I64, address, 0, 8)));
         Function free = new(Escape.Freer, IrType.Void);
         free.Params.Add(free.NewReg(IrTypes.Word));
         new Builder(free, free.NewBlock("entry")).Ret();
@@ -779,14 +779,14 @@ public static partial class Program
         lb.CopyTo(n, new ImmOperand(0, IrType.I64));
         lb.Jump(head);
         lb.SetBlock(head);
-        VReg made = lb.Unary(Opcode.Trunc64, lb.Call(Escape.Allocator, IrType.I64, new RegOperand(g.Params[0]))!);
-        lb.Store(new RegOperand(made), new RegOperand(n), 0, 8);
+        VReg made = lb.Unary(Opcode.Trunc64, lb.Call(Escape.Allocator, IrType.I64, RegOperand.Of(g.Params[0]))!);
+        lb.Store(RegOperand.Of(made), RegOperand.Of(n), 0, 8);
         lb.Jump(next);
         lb.SetBlock(next);
-        lb.CopyTo(n, new RegOperand(lb.Binary(Opcode.Add, lb.Load(IrType.I64, made, 0, 8), 1)));
+        lb.CopyTo(n, RegOperand.Of(lb.Binary(Opcode.Add, lb.Load(IrType.I64, made, 0, 8), 1)));
         lb.Branch(lb.Binary(Opcode.LtS, n, 10), head, done);
         lb.SetBlock(done);
-        lb.Ret(new RegOperand(n));
+        lb.Ret(RegOperand.Of(n));
         Function loopFree = new(Escape.Freer, IrType.Void);
         loopFree.Params.Add(loopFree.NewReg(IrTypes.Word));
         new Builder(loopFree, loopFree.NewBlock("entry")).Ret();
@@ -808,14 +808,14 @@ public static partial class Program
             VReg pointer = b.Call(Escape.Allocator, IrType.I64, new ImmOperand(32, IrType.I64))!;
             VReg address = b.Unary(Opcode.Trunc64, pointer);
             int width = mode == "byte" ? 1 : mode == "short" ? 2 : 4;
-            if (mode != "zero") b.Store(new RegOperand(address), new ImmOperand(-1, IrType.I32), 8, width);
-            if (mode == "call") b.Call("unknown", IrType.Void, new RegOperand(address));
-            if (mode == "escape") b.Store(new SymOperand("escaped"), new RegOperand(address), 0, 4);
-            if (mode == "overlap") b.Store(new RegOperand(address), new ImmOperand(7, IrType.I32), 9, 1);
+            if (mode != "zero") b.Store(RegOperand.Of(address), new ImmOperand(-1, IrType.I32), 8, width);
+            if (mode == "call") b.Call("unknown", IrType.Void, RegOperand.Of(address));
+            if (mode == "escape") b.Store(new SymOperand("escaped"), RegOperand.Of(address), 0, 4);
+            if (mode == "overlap") b.Store(RegOperand.Of(address), new ImmOperand(7, IrType.I32), 9, 1);
             if (mode == "identity") b.Store(new SymOperand("identity"),
-                new RegOperand(b.Binary(Opcode.Eq, address, 0)), 0, 4);
+                RegOperand.Of(b.Binary(Opcode.Eq, address, 0)), 0, 4);
             VReg value = b.Load(IrType.I32, address, 8, width, true);
-            b.Ret(new RegOperand(value));
+            b.Ret(RegOperand.Of(value));
             string before = Dump(f);
             ScalarObjects pass = new(); pass.Run(module);
             bool accepted = mode is "plain" or "byte" or "short" or "zero";
@@ -843,14 +843,14 @@ public static partial class Program
         (Function f, Builder b) = Fn(IrType.I32, IrType.I32);
         module.Functions.Add(f); module.Entry = f.Name;
         VReg cold = b.Unary(Opcode.Trunc64, b.Call(Escape.Allocator, IrType.I64, new ImmOperand(32, IrType.I64))!);
-        b.Store(new RegOperand(cold), new ImmOperand(7, IrType.I32), 0, 4);
+        b.Store(RegOperand.Of(cold), new ImmOperand(7, IrType.I32), 0, 4);
         Block loop = f.NewBlock("loop"), exit = f.NewBlock("exit");
         b.Jump(loop); b.SetBlock(loop);
         VReg hot = b.Unary(Opcode.Trunc64, b.Call(Escape.Allocator, IrType.I64, new ImmOperand(32, IrType.I64))!);
-        b.Store(new RegOperand(hot), new ImmOperand(3, IrType.I32), 0, 4);
+        b.Store(RegOperand.Of(hot), new ImmOperand(3, IrType.I32), 0, 4);
         b.Load(IrType.I32, hot, 0, 4);
         b.Branch(f.Params[0], loop, exit);
-        b.SetBlock(exit); b.Ret(new RegOperand(b.Load(IrType.I32, cold, 0, 4)));
+        b.SetBlock(exit); b.Ret(RegOperand.Of(b.Load(IrType.I32, cold, 0, 4)));
         Escape pass = new() { FrameBudget = 32 }; pass.Run(module);
         Verifier.Check(f, "hot allocation budget");
         Assert(pass.Promoted == 1, "budget is not enlarged");
@@ -873,14 +873,14 @@ public static partial class Program
             Builder cb = new(callee, callee.NewBlock("entry"));
             VReg result = a;
             for (int n = 0; n < 10; n++) result = cb.Binary(Opcode.Add, result, c);
-            cb.Ret(new RegOperand(result));
+            cb.Ret(RegOperand.Of(result));
             Function caller = new("main", type);
             VReg x = caller.NewReg(type), y = caller.NewReg(type);
             caller.Params.Add(x); caller.Params.Add(y);
             Builder b = new(caller, caller.NewBlock("entry"));
-            VReg first = b.Call("mix", type, new RegOperand(x), new RegOperand(y))!;
-            VReg second = b.Call("mix", type, new RegOperand(y), new RegOperand(x))!;
-            b.Ret(new RegOperand(b.Binary(Opcode.Add, first, second)));
+            VReg first = b.Call("mix", type, RegOperand.Of(x), RegOperand.Of(y))!;
+            VReg second = b.Call("mix", type, RegOperand.Of(y), RegOperand.Of(x))!;
+            b.Ret(RegOperand.Of(b.Binary(Opcode.Add, first, second)));
             module.Functions.Add(caller); module.Functions.Add(callee); module.Entry = "main";
             new Inline { SmallBody = 1, ArgumentWordCredit = credit, GrowthLimit = limit }.Run(module);
             Verifier.Check(caller, "argument cost inline");
@@ -906,8 +906,8 @@ public static partial class Program
             VReg input = caller.NewReg(IrType.I32); caller.Params.Add(input);
             Builder b = new(caller, caller.NewBlock("entry"));
             VReg value = input;
-            for (int n = 0; n < sites; n++) value = b.Call("choose", IrType.I32, new RegOperand(value))!;
-            b.Ret(new RegOperand(value));
+            for (int n = 0; n < sites; n++) value = b.Call("choose", IrType.I32, RegOperand.Of(value))!;
+            b.Ret(RegOperand.Of(value));
             module.Functions.Add(caller); module.Functions.Add(callee); module.Entry = "main";
             new Inline { SmallBody = 3, ConditionalBranchCost = penalty, GrowthLimit = 100 }.Run(module);
             Verifier.Check(caller, "branch cost inline");
@@ -929,14 +929,14 @@ public static partial class Program
             VReg receiver = callee.NewReg(IrType.I64); callee.Params.Add(receiver);
             Builder cb = new(callee, callee.NewBlock("entry"));
             VReg child = cb.Call(Escape.Allocator, IrType.I64, new ImmOperand(32, IrType.I64))!;
-            cb.Ret(new RegOperand(child));
+            cb.Ret(RegOperand.Of(child));
             Function caller = new("main", IrType.I64);
             VReg input = caller.NewReg(IrType.I64); caller.Params.Add(input);
             Builder b = new(caller, caller.NewBlock("entry"));
             VReg owner = fresh ? b.Call(Escape.Allocator, IrType.I64, new ImmOperand(16, IrType.I64))! : input;
-            VReg first = b.Call("initialize", IrType.I64, new RegOperand(owner))!;
-            VReg second = b.Call("initialize", IrType.I64, new RegOperand(owner))!;
-            b.Ret(new RegOperand(b.Binary(Opcode.Add, first, second)));
+            VReg first = b.Call("initialize", IrType.I64, RegOperand.Of(owner))!;
+            VReg second = b.Call("initialize", IrType.I64, RegOperand.Of(owner))!;
+            b.Ret(RegOperand.Of(b.Binary(Opcode.Add, first, second)));
             module.Functions.Add(caller); module.Functions.Add(callee); module.Entry = "main";
             new Inline { SmallBody = 1, FreshOwnerBody = bodyLimit, GrowthLimit = limit,
                 FreshOwnerGrowthLimit = freshLimit }.Run(module);
@@ -962,10 +962,10 @@ public static partial class Program
             Function caller = new("main", IrType.I32);
             VReg input = caller.NewReg(IrType.I32); caller.Params.Add(input);
             Builder b = new(caller, caller.NewBlock("entry"));
-            Operand arg = constant ? new ImmOperand(1, IrType.I32) : new RegOperand(input);
+            Operand arg = constant ? new ImmOperand(1, IrType.I32) : RegOperand.Of(input);
             VReg first = b.Call("choose", IrType.I32, arg)!;
             VReg second = b.Call("choose", IrType.I32, arg)!;
-            b.Ret(new RegOperand(b.Binary(Opcode.Add, first, second)));
+            b.Ret(RegOperand.Of(b.Binary(Opcode.Add, first, second)));
             module.Functions.Add(caller); module.Functions.Add(callee); module.Entry = "main";
             new Inline { SmallBody = 1, ConstantBranchBody = 100, GrowthLimit = limit }.Run(module);
             Verifier.Check(caller, "constant branch inline");
@@ -1053,7 +1053,7 @@ public static partial class Program
     }
 
     /// <summary>A store to a symbol, so a value stays alive without a register holding the address.</summary>
-    private static void Sink(Builder b, VReg v) => b.Store(new SymOperand("sink"), new RegOperand(v));
+    private static void Sink(Builder b, VReg v) => b.Store(new SymOperand("sink"), RegOperand.Of(v));
 
     private static void Assert(bool cond, string what)
     {
@@ -1112,7 +1112,7 @@ public static partial class Program
         VReg three = b.Const(3, IrType.I32);
         VReg x = b.Binary(Opcode.Add, two, three);
         VReg y = b.Binary(Opcode.Mul, x, 4);
-        b.Ret(new RegOperand(y));
+        b.Ret(RegOperand.Of(y));
         RunAll(f);
         Expect(f, "ret 20");
     }
@@ -1125,7 +1125,7 @@ public static partial class Program
         VReg wide = b.Const(int.MaxValue, IrType.I64);
         VReg notWrapped = b.Binary(Opcode.Add, wide, 1);         // 2147483648 in I64
         VReg one = b.Const(1, IrType.I32);
-        VReg shifted = b.Binary(Opcode.Shl, new RegOperand(one), new ImmOperand(33, IrType.I32), IrType.I32); // count masked to 1
+        VReg shifted = b.Binary(Opcode.Shl, RegOperand.Of(one), new ImmOperand(33, IrType.I32), IrType.I32); // count masked to 1
         VReg minus = b.Const(-1, IrType.I32);
         VReg ltu = b.Binary(Opcode.LtU, minus, 0);               // 0xffffffff <u 0 is false
         VReg lts = b.Binary(Opcode.LtS, minus, 0);               // -1 <s 0 is true
@@ -1173,7 +1173,7 @@ public static partial class Program
         (Function f, Builder b) = Fn(IrType.F32, IrType.F32);
         VReg x = b.Binary(Opcode.FAdd, f.Params[0], f.Params[0]);
         VReg y = b.Binary(Opcode.FMul, x, f.Params[0]);
-        b.Ret(new RegOperand(y));
+        b.Ret(RegOperand.Of(y));
         RunAll(f);
         Expect(f, "%1 = fadd %0.p0 %0.p0\n%2 = fmul %1 %0.p0\nret %2");
     }
@@ -1190,7 +1190,7 @@ public static partial class Program
         b.SetBlock(t);
         b.Ret(new ImmOperand(1, IrType.I32));
         b.SetBlock(e);
-        b.Switch(new RegOperand(b.Const(1, IrType.I32)), new[] { s0, s1 }, d);
+        b.Switch(RegOperand.Of(b.Const(1, IrType.I32)), new[] { s0, s1 }, d);
         b.SetBlock(s0);
         b.Ret(new ImmOperand(10, IrType.I32));
         b.SetBlock(s1);
@@ -1210,7 +1210,7 @@ public static partial class Program
         VReg a = b.Copy(f.Params[0]);
         VReg c = b.Copy(a);
         VReg d = b.Copy(c);
-        b.Ret(new RegOperand(d));
+        b.Ret(RegOperand.Of(d));
         RunAll(f);
         Expect(f, "ret %0.p0");
     }
@@ -1228,7 +1228,7 @@ public static partial class Program
         b.Jump(j);
         b.SetBlock(j);
         VReg y = b.Binary(Opcode.Add, x, 1);
-        b.Ret(new RegOperand(y));
+        b.Ret(RegOperand.Of(y));
         RunAll(f);
         ExpectContains(f, "%2 = add %1.x 1");
         ExpectContains(f, "%1.x = copy 2");
@@ -1251,10 +1251,10 @@ public static partial class Program
         VReg loaded = b.Load(IrType.I32, f.Params[0]);
         b.Branch(f.Params[0], d, r);
         b.SetBlock(d);
-        b.CopyTo(v, new RegOperand(loaded));
+        b.CopyTo(v, RegOperand.Of(loaded));
         b.Jump(w);
         b.SetBlock(r);
-        b.Ret(new RegOperand(v));
+        b.Ret(RegOperand.Of(v));
         RunAll(f);
         ExpectContains(f, "ret %1.v");
         ExpectContains(f, "%1.v = copy %2");
@@ -1275,15 +1275,15 @@ public static partial class Program
         b.CopyTo(w, new ImmOperand(0, IrType.I32));      // w has two defs: not a candidate at all
         b.Jump(l);
         b.SetBlock(l);
-        b.CopyTo(v, new RegOperand(w));
+        b.CopyTo(v, RegOperand.Of(w));
         VReg x = b.Binary(Opcode.Add, v, 1);
-        b.CopyTo(w, new RegOperand(b.Load(IrType.I32, f.Params[0])));
+        b.CopyTo(w, RegOperand.Of(b.Load(IrType.I32, f.Params[0])));
         VReg y = b.Binary(Opcode.Add, v, 2);
         b.Store(f.Params[0], x);
         b.Store(f.Params[0], y);
         b.Branch(f.Params[0], l, exit);
         b.SetBlock(exit);
-        b.Ret(new RegOperand(v));
+        b.Ret(RegOperand.Of(v));
         Run(f, new ConstantAndCopyPropagation());
         ExpectContains(f, "%3 = add %2.v 1");
         ExpectContains(f, "%5 = add %2.v 2");
@@ -1297,15 +1297,15 @@ public static partial class Program
         v = b.Reg(IrType.I32, "v");
         b.Jump(l);
         b.SetBlock(l);
-        b.CopyTo(v, new RegOperand(w));
+        b.CopyTo(v, RegOperand.Of(w));
         x = b.Binary(Opcode.Add, v, 1);
-        b.CopyTo(w, new RegOperand(b.Load(IrType.I32, f.Params[0])));
+        b.CopyTo(w, RegOperand.Of(b.Load(IrType.I32, f.Params[0])));
         y = b.Binary(Opcode.Add, v, 2);
         b.Store(f.Params[0], x);
         b.Store(f.Params[0], y);
         b.Branch(f.Params[0], l, exit);
         b.SetBlock(exit);
-        b.Ret(new RegOperand(v));
+        b.Ret(RegOperand.Of(v));
         Run(f, new ConstantAndCopyPropagation());
         // The chain goes one further: at that point the load's register
         // still holds the previous trip's value, which is what w was.
@@ -1332,7 +1332,7 @@ public static partial class Program
         Sink(b, b.Binary(Opcode.Add, v, 1));
         b.Jump(after);
         b.SetBlock(after);
-        b.Ret(new RegOperand(v));
+        b.Ret(RegOperand.Of(v));
         Run(f, new ConstantAndCopyPropagation());
         ExpectContains(f, "%2 = add %0 1");
         ExpectContains(f, "ret %1");
@@ -1384,7 +1384,7 @@ public static partial class Program
         b.CopyTo(r, new ImmOperand(2, IrType.I32));
         b.Jump(join);
         b.SetBlock(join);
-        b.Ret(new RegOperand(r));
+        b.Ret(RegOperand.Of(r));
         RunAll(f);
         // r had two definitions before the dead branch went; the second
         // round of the pipeline sees one and finishes the job.
@@ -1399,7 +1399,7 @@ public static partial class Program
         Block hop = f.NewBlock("hop");
         Block d = f.NewBlock("d");
         Block target = f.NewBlock("target");
-        b.Switch(new RegOperand(f.Params[0]), new[] { s0, hop }, hop);
+        b.Switch(RegOperand.Of(f.Params[0]), new[] { s0, hop }, hop);
         b.SetBlock(s0);
         b.Ret(new ImmOperand(0, IrType.I32));
         b.SetBlock(hop);
@@ -1429,7 +1429,7 @@ public static partial class Program
         b.Ret();
         b.SetBlock(pad);
         VReg ex = b.Call("__exception", IrTypes.Word)!;
-        b.Emit(Opcode.Unwind, null, new RegOperand(ex), new RegOperand(ex));
+        b.Emit(Opcode.Unwind, null, RegOperand.Of(ex), RegOperand.Of(ex));
         b.SetBlock(padOnly);
         b.Jump(after);
         RunAll(f);
@@ -1475,7 +1475,7 @@ public static partial class Program
         Sink(b, b.Binary(Opcode.And, p, 0));
         Sink(b, b.Binary(Opcode.Or, p, 0));
         Sink(b, b.Binary(Opcode.Xor, p, 0));
-        Sink(b, b.Binary(Opcode.Shl, new RegOperand(q), new ImmOperand(64, IrType.I32), IrType.I64));
+        Sink(b, b.Binary(Opcode.Shl, RegOperand.Of(q), new ImmOperand(64, IrType.I32), IrType.I64));
         Sink(b, b.Binary(Opcode.Sub, p, p));
         Sink(b, b.Binary(Opcode.And, p, -1));
         Sink(b, b.Binary(Opcode.DivS, p, 2));                   // not an uncorrected shift
@@ -1506,7 +1506,7 @@ public static partial class Program
         VReg p = f.Params[0];
         VReg q = f.Params[1];
         Sink(b, b.Binary(Opcode.Mul, p, 8));
-        Sink(b, b.Binary(Opcode.Mul, new ImmOperand(4, IrType.I64), new RegOperand(q), IrType.I64));
+        Sink(b, b.Binary(Opcode.Mul, new ImmOperand(4, IrType.I64), RegOperand.Of(q), IrType.I64));
         Sink(b, b.Binary(Opcode.DivU, p, 4));
         Sink(b, b.Binary(Opcode.RemU, p, 16));
         Sink(b, b.Binary(Opcode.RemS, p, 16));                  // this peephole leaves signed remainder alone
@@ -1531,7 +1531,7 @@ public static partial class Program
         VReg lt = b.Binary(Opcode.LtS, p, q);
         Sink(b, b.Binary(Opcode.Ne, lt, 0));                     // -> lt itself
         Sink(b, b.Binary(Opcode.Eq, lt, 0));                     // -> ges p q
-        Sink(b, b.Binary(Opcode.Eq, new ImmOperand(0, IrType.I32), new RegOperand(lt), IrType.I32));
+        Sink(b, b.Binary(Opcode.Eq, new ImmOperand(0, IrType.I32), RegOperand.Of(lt), IrType.I32));
         VReg flt = b.Binary(Opcode.FLt, f.Params[2], f.Params[2]);
         Sink(b, b.Binary(Opcode.Eq, flt, 0));                    // -> xor flt 1, never fge
         b.Ret();
@@ -1559,13 +1559,13 @@ public static partial class Program
     {
         (Function f, Builder b) = Fn(IrType.Void, IrType.I32);
         VReg a = b.Reg(IrType.I32, "a");
-        b.CopyTo(a, new RegOperand(b.Load(IrType.I32, f.Params[0])));
+        b.CopyTo(a, RegOperand.Of(b.Load(IrType.I32, f.Params[0])));
         Block h = f.NewBlock("H");
         Block x = f.NewBlock("X");
         b.Jump(h);
         b.SetBlock(h);
         VReg t = b.Binary(Opcode.LtS, a, f.Params[0]);
-        b.CopyTo(a, new RegOperand(b.Load(IrType.I32, f.Params[0], 4)));
+        b.CopyTo(a, RegOperand.Of(b.Load(IrType.I32, f.Params[0], 4)));
         VReg c = b.Binary(Opcode.Eq, t, 0);
         b.Store(f.Params[0], c);
         b.Branch(c, h, x);
@@ -1634,11 +1634,11 @@ public static partial class Program
         b.Jump(body);
         b.SetBlock(body);
         VReg tmp = b.Binary(Opcode.Add, acc, i);
-        b.CopyTo(acc, new RegOperand(tmp));
-        b.CopyTo(i, new RegOperand(b.Binary(Opcode.Add, i, 1)));
+        b.CopyTo(acc, RegOperand.Of(tmp));
+        b.CopyTo(i, RegOperand.Of(b.Binary(Opcode.Add, i, 1)));
         b.Branch(b.Binary(Opcode.LtS, i, f.Params[0]), body, exit);
         b.SetBlock(exit);
-        b.Ret(new RegOperand(acc));
+        b.Ret(RegOperand.Of(acc));
 
         Liveness live = new(f);
         Assert(live.IsLiveIn(body, i) && live.IsLiveIn(body, acc) && live.IsLiveIn(body, f.Params[0]), "loop inputs live-in");
@@ -1661,17 +1661,17 @@ public static partial class Program
         b.CopyTo(i, new ImmOperand(0, IrType.I32));
         b.Jump(body);
         b.SetBlock(body);
-        b.CopyTo(i, new RegOperand(b.Binary(Opcode.Add, i, 1)));
+        b.CopyTo(i, RegOperand.Of(b.Binary(Opcode.Add, i, 1)));
         b.Branch(b.Binary(Opcode.LtS, i, f.Params[0]), body, exit);
         b.SetBlock(exit);
-        b.Ret(new RegOperand(i));
+        b.Ret(RegOperand.Of(i));
 
         Liveness live = new(f);
         VReg late = f.NewReg(IrType.I32, "late");
         for (int k = 0; k < 200; k++) f.NewReg(IrType.I32, "pad");  // past the analysis's last bit-vector word
         VReg later = f.NewReg(IrType.I32, "later");
-        body.Instrs.Insert(0, new Instr { Op = Opcode.Copy, Dest = late, Operands = { new RegOperand(i) } });
-        body.Instrs.Insert(1, new Instr { Op = Opcode.Add, Dest = later, Operands = { new RegOperand(late), new RegOperand(i) } });
+        body.Instrs.Insert(0, new Instr { Op = Opcode.Copy, Dest = late, Operands = { RegOperand.Of(i) } });
+        body.Instrs.Insert(1, new Instr { Op = Opcode.Add, Dest = later, Operands = { RegOperand.Of(late), RegOperand.Of(i) } });
         Assert(live.Tracks(i) && !live.Tracks(late) && !live.Tracks(later), "only registers from before the analysis are tracked");
         bool iLive = false;
         foreach ((Instr instr, ulong[] after) in live.WalkBackwards(body, skipNewer: true))
@@ -1714,7 +1714,7 @@ public static partial class Program
     {
         Module m = new("m");
         (Function f, Builder b) = Fn(IrType.I32);
-        b.Ret(new RegOperand(b.Binary(Opcode.Add, b.Const(1, IrType.I32), 1)));
+        b.Ret(RegOperand.Of(b.Binary(Opcode.Add, b.Const(1, IrType.I32), 1)));
         m.Functions.Add(f);
         List<string> names = new();
         Pipeline p = Pipeline.Default(rounds: 2);
@@ -1750,11 +1750,11 @@ public static partial class Program
         b.SetBlock(head);
         b.Branch(b.Binary(Opcode.LtS, i, f.Params[0]), body, exit);
         b.SetBlock(body);
-        b.CopyTo(acc, new RegOperand(b.Binary(Opcode.Add, acc, i)));
-        b.CopyTo(i, new RegOperand(b.Binary(Opcode.Add, i, 1)));
+        b.CopyTo(acc, RegOperand.Of(b.Binary(Opcode.Add, acc, i)));
+        b.CopyTo(i, RegOperand.Of(b.Binary(Opcode.Add, i, 1)));
         b.Jump(head);
         b.SetBlock(exit);
-        b.Ret(new RegOperand(acc));
+        b.Ret(RegOperand.Of(acc));
         return f;
     }
 
@@ -1776,13 +1776,13 @@ public static partial class Program
         b.Branch(b.Binary(Opcode.LtS, i, f.Params[0]), body, exit);
         b.SetBlock(body);
         VReg t = b.Binary(Opcode.Add, x, y);
-        b.CopyTo(x, new RegOperand(y));
-        b.CopyTo(y, new RegOperand(t));
-        b.CopyTo(i, new RegOperand(b.Binary(Opcode.Add, i, 1)));
+        b.CopyTo(x, RegOperand.Of(y));
+        b.CopyTo(y, RegOperand.Of(t));
+        b.CopyTo(i, RegOperand.Of(b.Binary(Opcode.Add, i, 1)));
         b.Jump(head);
         b.SetBlock(exit);
         VReg result = b.Copy(x);
-        b.Ret(new RegOperand(b.Binary(Opcode.And, result, 255)));
+        b.Ret(RegOperand.Of(b.Binary(Opcode.And, result, 255)));
         return f;
     }
 
@@ -1804,12 +1804,12 @@ public static partial class Program
         b.Branch(b.Binary(Opcode.LtS, i, f.Params[0]), body, exit);
         b.SetBlock(body);
         VReg t = b.Copy(x);
-        b.CopyTo(x, new RegOperand(y));
-        b.CopyTo(y, new RegOperand(t));
-        b.CopyTo(i, new RegOperand(b.Binary(Opcode.Add, i, 1)));
+        b.CopyTo(x, RegOperand.Of(y));
+        b.CopyTo(y, RegOperand.Of(t));
+        b.CopyTo(i, RegOperand.Of(b.Binary(Opcode.Add, i, 1)));
         b.Jump(head);
         b.SetBlock(exit);
-        b.Ret(new RegOperand(b.Binary(Opcode.Sub, x, y)));
+        b.Ret(RegOperand.Of(b.Binary(Opcode.Sub, x, y)));
         return f;
     }
 
@@ -1832,21 +1832,21 @@ public static partial class Program
         b.SetBlock(head);
         b.Branch(b.Binary(Opcode.LtS, i, f.Params[0]), body, exit);
         b.SetBlock(body);
-        b.Switch(new RegOperand(b.Binary(Opcode.RemS, i, 3)), new[] { c0, c1 }, dflt);
+        b.Switch(RegOperand.Of(b.Binary(Opcode.RemS, i, 3)), new[] { c0, c1 }, dflt);
         b.SetBlock(c0);
-        b.CopyTo(v, new RegOperand(b.Binary(Opcode.Add, v, 10)));
+        b.CopyTo(v, RegOperand.Of(b.Binary(Opcode.Add, v, 10)));
         b.Jump(join);
         b.SetBlock(c1);
-        b.CopyTo(v, new RegOperand(b.Binary(Opcode.Mul, v, 2)));
+        b.CopyTo(v, RegOperand.Of(b.Binary(Opcode.Mul, v, 2)));
         b.Jump(join);
         b.SetBlock(dflt);
         b.Jump(join);
         b.SetBlock(join);
-        b.Store(new SymOperand("g"), new RegOperand(v));
-        b.CopyTo(i, new RegOperand(b.Binary(Opcode.Add, i, 1)));
+        b.Store(new SymOperand("g"), RegOperand.Of(v));
+        b.CopyTo(i, RegOperand.Of(b.Binary(Opcode.Add, i, 1)));
         b.Jump(head);
         b.SetBlock(exit);
-        b.Ret(new RegOperand(b.Binary(Opcode.Add, v, b.Load(IrType.I32, new SymOperand("g")))));
+        b.Ret(RegOperand.Of(b.Binary(Opcode.Add, v, b.Load(IrType.I32, new SymOperand("g")))));
         return f;
     }
 
@@ -1885,11 +1885,11 @@ public static partial class Program
             b.Jump(l);
             b.SetBlock(l);
             Sink(b, v);                                              // reads the previous trip's v
-            b.CopyTo(v, new RegOperand(b.Binary(Opcode.Add, i, 100)));
-            b.CopyTo(i, new RegOperand(b.Binary(Opcode.Add, i, 1)));
+            b.CopyTo(v, RegOperand.Of(b.Binary(Opcode.Add, i, 100)));
+            b.CopyTo(i, RegOperand.Of(b.Binary(Opcode.Add, i, 1)));
             b.Branch(b.Binary(Opcode.LtS, i, f.Params[0]), l, exit);
             b.SetBlock(exit);
-            b.Ret(new RegOperand(b.Load(IrType.I32, new SymOperand("sink"))));
+            b.Ret(RegOperand.Of(b.Load(IrType.I32, new SymOperand("sink"))));
             return f;
         }
         SameResults(Build, Inputs, new Ssa());
@@ -1937,11 +1937,11 @@ public static partial class Program
             b.SetBlock(head);
             b.Branch(b.Binary(Opcode.LtS, i, f.Params[0]), body, exit);
             b.SetBlock(body);
-            b.CopyTo(r, new RegOperand(b.Binary(Opcode.Mul, i, 3)));
-            b.CopyTo(i, new RegOperand(b.Binary(Opcode.Add, i, 1)));
+            b.CopyTo(r, RegOperand.Of(b.Binary(Opcode.Mul, i, 3)));
+            b.CopyTo(i, RegOperand.Of(b.Binary(Opcode.Add, i, 1)));
             b.Branch(b.Binary(Opcode.Eq, r, 6), exit, head);
             b.SetBlock(exit);
-            b.Ret(new RegOperand(r));
+            b.Ret(RegOperand.Of(r));
             return f;
         }
         SameResults(Build, Inputs, new Ssa(), new OutOfSsa());
@@ -1969,11 +1969,11 @@ public static partial class Program
         b.Jump(after);
         b.SetBlock(pad);
         VReg e = b.Call("__exception", IrType.I32)!;
-        b.CopyTo(x, new RegOperand(e));                          // x in the pad
+        b.CopyTo(x, RegOperand.Of(e));                          // x in the pad
         Sink(b, b.Binary(Opcode.Add, x, f.Params[0]));           // uses the pad's x and the parameter
         b.Jump(after);
         b.SetBlock(after);
-        b.Ret(new RegOperand(x));
+        b.Ret(RegOperand.Of(x));
         Run(f, new Ssa());
         Assert(AllSingleDef(f), "single defs:\n" + Dump(f));
         Assert(Phi.Of(after).Count() == 1, "after joins the entry's x and the pad's x:\n" + Dump(f));
@@ -2016,7 +2016,7 @@ public static partial class Program
             b.Jump(j);
             b.SetBlock(j);
             b.CopyTo(r, new ImmOperand(0, IrType.I32));
-            b.Ret(new RegOperand(r));
+            b.Ret(RegOperand.Of(r));
             return f;
         }
         Function f = Build();
@@ -2028,7 +2028,7 @@ public static partial class Program
             Operands = { new ImmOperand(1, IrType.I32), new ImmOperand(2, IrType.I32) },
             Targets = { f.Blocks[1], f.Blocks[2] },
         });
-        jb.Instrs[^1].Operands[0] = new RegOperand(d);
+        jb.Instrs[^1].Operands[0] = RegOperand.Of(d);
         Verifier.Check(f, "built");
         Assert(new Interp().Run(f, 1) == 1 && new Interp().Run(f, 0) == 2, "phi picks by path");
         Run(f, new BranchSimplify());
@@ -2064,7 +2064,7 @@ public static partial class Program
             b.Jump(j);
             b.SetBlock(j);
             VReg y = b.Binary(Opcode.Mul, x, 2);
-            b.Ret(new RegOperand(b.Binary(Opcode.Add, y, f.Params[0])));
+            b.Ret(RegOperand.Of(b.Binary(Opcode.Add, y, f.Params[0])));
             return f;
         }
         SameResults(Build, Inputs, new SsaOptimise());
@@ -2090,11 +2090,11 @@ public static partial class Program
             b.CopyTo(k, new ImmOperand(3, IrType.I32));
             b.Jump(head);
             b.SetBlock(head);
-            b.CopyTo(k, new RegOperand(b.Binary(Opcode.Add, k, 0)));
-            b.CopyTo(i, new RegOperand(b.Binary(Opcode.Add, i, 1)));
+            b.CopyTo(k, RegOperand.Of(b.Binary(Opcode.Add, k, 0)));
+            b.CopyTo(i, RegOperand.Of(b.Binary(Opcode.Add, i, 1)));
             b.Branch(b.Binary(Opcode.LtS, i, f.Params[0]), head, exit);
             b.SetBlock(exit);
-            b.Ret(new RegOperand(b.Binary(Opcode.Mul, k, i)));
+            b.Ret(RegOperand.Of(b.Binary(Opcode.Mul, k, i)));
             return f;
         }
         SameResults(Build, Inputs, new SsaOptimise());
@@ -2118,7 +2118,7 @@ public static partial class Program
         VReg m2 = b.Binary(Opcode.Mul, s2, 3);
         VReg d = b.Binary(Opcode.Sub, p, q);                    // not commutative: sub q p differs
         VReg d2 = b.Binary(Opcode.Sub, q, p);
-        b.Ret(new RegOperand(b.Binary(Opcode.Add, b.Binary(Opcode.Add, m1, m2), b.Binary(Opcode.Xor, d, d2))));
+        b.Ret(RegOperand.Of(b.Binary(Opcode.Add, b.Binary(Opcode.Add, m1, m2), b.Binary(Opcode.Xor, d, d2))));
         return f;
     }
 
@@ -2141,7 +2141,7 @@ public static partial class Program
         SymOperand h = new("h");
         FrameSlot slot = f.NewSlot(8, 4, "s");
         SlotOperand sl = new(slot);
-        b.Store(g, new RegOperand(f.Params[0]));
+        b.Store(g, RegOperand.Of(f.Params[0]));
         VReg a = b.Load(IrType.I32, g);                            // forwarded: p
         b.Store(h, new ImmOperand(9, IrType.I32));
         VReg c = b.Load(IrType.I32, g);                            // still p: h is distinct
@@ -2151,7 +2151,7 @@ public static partial class Program
         b.Store(sl, new ImmOperand(1, IrType.I32), 0);             // slot+0 does not overlap slot+4
         VReg e3 = b.Load(IrType.I32, sl, 4);                       // still e
         VReg n = b.Load(IrType.I32, g, 0, 1, true);                // narrow: not forwarded from the 4-byte store
-        b.Ret(new RegOperand(b.Binary(Opcode.Add, b.Binary(Opcode.Add, b.Binary(Opcode.Add, a, c), b.Binary(Opcode.Add, d, e)),
+        b.Ret(RegOperand.Of(b.Binary(Opcode.Add, b.Binary(Opcode.Add, b.Binary(Opcode.Add, a, c), b.Binary(Opcode.Add, d, e)),
             b.Binary(Opcode.Add, b.Binary(Opcode.Add, e2, e3), n))));
         return f;
     }
@@ -2175,12 +2175,12 @@ public static partial class Program
         b.Call("touch", IrType.Void);
         VReg c = b.Load(IrType.I32, g);                            // after a call: reloaded
         VReg addr = b.Address("g");
-        b.Store(new RegOperand(addr), new RegOperand(f.Params[0]));                // through a register: could be g
+        b.Store(RegOperand.Of(addr), RegOperand.Of(f.Params[0]));                // through a register: could be g
         VReg d = b.Load(IrType.I32, g);                            // reloaded
         b.Store(g, new ImmOperand(4, IrType.I32));
         b.Emit(Opcode.Fence, null);
         VReg e = b.Load(IrType.I32, g);                            // fence: reloaded
-        b.Ret(new RegOperand(b.Binary(Opcode.Add, b.Binary(Opcode.Add, a, c), b.Binary(Opcode.Add, d, e))));
+        b.Ret(RegOperand.Of(b.Binary(Opcode.Add, b.Binary(Opcode.Add, a, c), b.Binary(Opcode.Add, d, e))));
         return f;
     }
 
@@ -2212,22 +2212,22 @@ public static partial class Program
             Block exit = f.NewBlock("exit");
             VReg x = b.Reg(IrType.I32, "x");
             VReg i = b.Reg(IrType.I32, "i");
-            b.Store(g, new RegOperand(f.Params[0]));
+            b.Store(g, RegOperand.Of(f.Params[0]));
             b.CopyTo(i, new ImmOperand(0, IrType.I32));
             b.Branch(f.Params[0], t, e);
             b.SetBlock(t);
-            b.CopyTo(x, new RegOperand(b.Binary(Opcode.Add, b.Load(IrType.I32, g), 1)));
+            b.CopyTo(x, RegOperand.Of(b.Binary(Opcode.Add, b.Load(IrType.I32, g), 1)));
             b.Jump(head);
             b.SetBlock(e);
-            b.CopyTo(x, new RegOperand(b.Binary(Opcode.Add, b.Load(IrType.I32, g), 2)));
+            b.CopyTo(x, RegOperand.Of(b.Binary(Opcode.Add, b.Load(IrType.I32, g), 2)));
             b.Jump(head);
             b.SetBlock(head);
             VReg y = b.Load(IrType.I32, g);
-            b.Store(g, new RegOperand(b.Binary(Opcode.Add, y, 1)));
-            b.CopyTo(i, new RegOperand(b.Binary(Opcode.Add, i, 1)));
+            b.Store(g, RegOperand.Of(b.Binary(Opcode.Add, y, 1)));
+            b.CopyTo(i, RegOperand.Of(b.Binary(Opcode.Add, i, 1)));
             b.Branch(b.Binary(Opcode.LtS, i, f.Params[0]), head, exit);
             b.SetBlock(exit);
-            b.Ret(new RegOperand(b.Binary(Opcode.Add, x, b.Load(IrType.I32, g))));
+            b.Ret(RegOperand.Of(b.Binary(Opcode.Add, x, b.Load(IrType.I32, g))));
             return f;
         }
         SameResults(Build, Inputs, new SsaOptimise());
@@ -2246,14 +2246,14 @@ public static partial class Program
         FrameSlot slot = f.NewSlot(8, 4, "s");
         SlotOperand sl = new(slot);
         b.Store(g, new ImmOperand(1, IrType.I32));               // overwritten below: dead
-        b.Store(g, new RegOperand(f.Params[0]));                 // read by the ret: stays
+        b.Store(g, RegOperand.Of(f.Params[0]));                 // read by the ret: stays
         b.Store(sl, new ImmOperand(2, IrType.I32), 0);           // never read before ret: dead
         b.Store(sl, new ImmOperand(3, IrType.I32), 4);           // read below: stays
         VReg x = b.Load(IrType.I32, sl, 4);
         b.Store(sl, new ImmOperand(4, IrType.I32), 4);           // after the last read: dead
         b.Store(new SymOperand("h"), new ImmOperand(5, IrType.I32), 0, 2);   // 2 bytes, covered by the 4 below
         b.Store(new SymOperand("h"), new ImmOperand(6, IrType.I32));
-        b.Ret(new RegOperand(b.Binary(Opcode.Add, x, b.Load(IrType.I32, g))));
+        b.Ret(RegOperand.Of(b.Binary(Opcode.Add, x, b.Load(IrType.I32, g))));
         Interp before = new();
         long r0 = before.Run(f, 7);
         Run(f, new Dse());
@@ -2276,7 +2276,7 @@ public static partial class Program
         b.Call("read_g", IrType.Void);                           // may read g: the store above stays
         b.Store(g, new ImmOperand(2, IrType.I32));
         VReg addr = b.Address("g");
-        b.Store(new RegOperand(addr), new ImmOperand(3, IrType.I32));   // through a register: unknown
+        b.Store(RegOperand.Of(addr), new ImmOperand(3, IrType.I32));   // through a register: unknown
         b.Store(g, new ImmOperand(4, IrType.I32));
         b.Load(IrType.I32, g);                                   // reads 4, so the store stays even before another
         b.Store(g, new ImmOperand(5, IrType.I32));

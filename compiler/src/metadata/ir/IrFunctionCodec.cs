@@ -252,7 +252,7 @@ public static class IrFunctionCodec
                     {
                         switch (reader.ReadByte())
                         {
-                            case 1: instruction.Operands.Add(new RegOperand(At(registers, reader.ReadInt32()))); break;
+                            case 1: instruction.Operands.Add(RegOperand.Of(At(registers, reader.ReadInt32()))); break;
                             case 2:
                                 IrType type = IrBinary.Type(reader);
                                 instruction.Operands.Add(new ImmOperand(reader.ReadInt64(), type)); break;

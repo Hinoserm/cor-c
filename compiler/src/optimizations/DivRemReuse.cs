@@ -31,9 +31,9 @@ public sealed class DivRemReuse : IPass
                     VReg product = f.NewReg(i.Dest!.Type, "quotientProduct");
                     result ??= block.Instrs.GetRange(0, n);
                     result.Add(new Instr { Op = Opcode.Mul, Dest = product,
-                        Operands = { new RegOperand(previous.Quotient), i.Operands[1] }, Line = i.Line });
+                        Operands = { RegOperand.Of(previous.Quotient), i.Operands[1] }, Line = i.Line });
                     result.Add(new Instr { Op = Opcode.Sub, Dest = i.Dest,
-                        Operands = { i.Operands[0], new RegOperand(product) }, Line = i.Line });
+                        Operands = { i.Operands[0], RegOperand.Of(product) }, Line = i.Line });
                 }
                 else result?.Add(i);
 

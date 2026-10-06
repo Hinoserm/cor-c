@@ -46,7 +46,7 @@ public sealed class Builder
         return i;
     }
 
-    private static RegOperand R(VReg r) => new(r);
+    private static RegOperand R(VReg r) => RegOperand.Of(r);
 
     public VReg Copy(VReg src)
     {

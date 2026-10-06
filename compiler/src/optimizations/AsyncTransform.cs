@@ -222,10 +222,10 @@ public static class AsyncTransform
                     b.Instrs.Insert(k, new Instr
                     {
                         Op = Opcode.Add, Dest = addr, Line = i.Line,
-                        Operands = { new RegOperand(machine), new ImmOperand(slotField[slot.Slot], word) },
+                        Operands = { RegOperand.Of(machine), new ImmOperand(slotField[slot.Slot], word) },
                     });
                     k++;
-                    i.Operands[o] = new RegOperand(addr);
+                    i.Operands[o] = RegOperand.Of(addr);
                     fieldAddrs.Add(addr);
                 }
             }
@@ -265,7 +265,7 @@ public static class AsyncTransform
                     {
                         List<Instr> mark = new();
                         VReg at = Escape.Word(f, mark, machine, i?.Line ?? b.Instrs[^1].Line, "cardp");
-                        mark.Add(new Instr { Op = Opcode.Call, Callee = cards, Operands = { new RegOperand(at) }, Line = i?.Line ?? b.Instrs[^1].Line });
+                        mark.Add(new Instr { Op = Opcode.Call, Callee = cards, Operands = { RegOperand.Of(at) }, Line = i?.Line ?? b.Instrs[^1].Line });
                         b.Instrs.InsertRange(k, mark);
                         k += mark.Count;
                         pending = false;
@@ -409,30 +409,30 @@ public static class AsyncTransform
                 {
                     stays = false;
                 }
-                Operand kept = new RegOperand(v);
+                Operand kept = RegOperand.Of(v);
                 if (pointsInto == 1)
                 {
                     // An address in the machine, kept as where in it.
                     VReg offset = f.NewReg(v.Type, "offset");
-                    saves.Add(new Instr { Op = Opcode.Sub, Dest = offset, Operands = { new RegOperand(v), new RegOperand(machine) } });
-                    kept = new RegOperand(offset);
+                    saves.Add(new Instr { Op = Opcode.Sub, Dest = offset, Operands = { RegOperand.Of(v), RegOperand.Of(machine) } });
+                    kept = RegOperand.Of(offset);
                 }
                 saves.Add(new Instr
                 {
                     Op = Opcode.Store, Size = v.Type.Bytes(), Offset = regField[v],
-                    Operands = { new RegOperand(machine), kept },
+                    Operands = { RegOperand.Of(machine), kept },
                 });
             }
             if (cards is not null && resume.Live.Count > 0)
             {
                 // The runtime takes a machine word, which the machine's address is.
                 VReg at = Escape.Word(f, saves, machine, 0, "cardp");
-                saves.Add(new Instr { Op = Opcode.Call, Callee = cards, Operands = { new RegOperand(at) } });
+                saves.Add(new Instr { Op = Opcode.Call, Callee = cards, Operands = { RegOperand.Of(at) } });
             }
             saves.Add(new Instr
             {
                 Op = Opcode.Store, Size = 4, Offset = frame.StateOffset,
-                Operands = { new RegOperand(machine), new ImmOperand(state, IrType.I32) },
+                Operands = { RegOperand.Of(machine), new ImmOperand(state, IrType.I32) },
             });
             sb.Instrs.RemoveAt(s);
             sb.Instrs.InsertRange(s, saves);
@@ -455,15 +455,15 @@ public static class AsyncTransform
                     resumeBlock.Instrs.Add(new Instr
                     {
                         Op = Opcode.Load, Dest = offset, Size = v.Type.Bytes(), Offset = regField[v], Signed = true,
-                        Operands = { new RegOperand(machine) },
+                        Operands = { RegOperand.Of(machine) },
                     });
-                    resumeBlock.Instrs.Add(new Instr { Op = Opcode.Add, Dest = v, Operands = { new RegOperand(offset), new RegOperand(machine) } });
+                    resumeBlock.Instrs.Add(new Instr { Op = Opcode.Add, Dest = v, Operands = { RegOperand.Of(offset), RegOperand.Of(machine) } });
                     continue;
                 }
                 resumeBlock.Instrs.Add(new Instr
                 {
                     Op = Opcode.Load, Dest = v, Size = v.Type.Bytes(), Offset = regField[v], Signed = true,
-                    Operands = { new RegOperand(machine) },
+                    Operands = { RegOperand.Of(machine) },
                 });
             }
             resumeBlock.Instrs.AddRange(after);
@@ -482,9 +482,9 @@ public static class AsyncTransform
             {
                 Op = Opcode.Load, Dest = current, Size = 4, Offset = frame.StateOffset, Signed = true,
                 // The state is a number, never an address (Instr.Number).
-                Operands = { new RegOperand(machine) }, Number = true,
+                Operands = { RegOperand.Of(machine) }, Number = true,
             });
-            Instr sw = new() { Op = Opcode.Switch, Operands = { new RegOperand(current) }, Default = originalEntry };
+            Instr sw = new() { Op = Opcode.Switch, Operands = { RegOperand.Of(current) }, Default = originalEntry };
             sw.WritableTargets.Add(originalEntry);
             sw.WritableTargets.AddRange(resumptions);
             dispatch.Instrs.Add(sw);

@@ -133,7 +133,7 @@ public sealed class Gvn : IPass
         string key = "threadblock|" + i.Dest!.Type;
         if (_exprs.TryGetValue(key, out VReg? existing))
         {
-            RegOperand value = new(existing);
+            RegOperand value = RegOperand.Of(existing);
             _leader[i.Dest] = value;
             b.Instrs[k] = IrInfo.CopyOf(i, value);
         }
@@ -168,7 +168,7 @@ public sealed class Gvn : IPass
                                 continue;
                             }
                         }
-                        mem[key] = new MemEntry(new RegOperand(i.Dest!), i.Size, i.Signed, false);
+                        mem[key] = new MemEntry(RegOperand.Of(i.Dest!), i.Size, i.Signed, false);
                         continue;
                     }
 
@@ -206,7 +206,7 @@ public sealed class Gvn : IPass
             string ekey = ExprKey(b, i);
             if (_exprs.TryGetValue(ekey, out VReg? existing))
             {
-                RegOperand value = new(existing);
+                RegOperand value = RegOperand.Of(existing);
                 _leader[i.Dest] = value;
                 // A phi must stay a phi at the top of its block; once its
                 // uses are gone dead-code elimination removes it.

@@ -103,8 +103,8 @@ public sealed partial class Escape
                     load.Operands.Add(watched[k].Owner);
                     after.Add(load);
                     Instr free = new() { Op = Opcode.Call, Callee = OwnedReplacedFreer, Line = call.Line };
-                    free.Operands.Add(Word(f, after, new RegOperand(olds[k]), call.Line));
-                    free.Operands.Add(Word(f, after, new RegOperand(now), call.Line));
+                    free.Operands.Add(Word(f, after, RegOperand.Of(olds[k]), call.Line));
+                    free.Operands.Add(Word(f, after, RegOperand.Of(now), call.Line));
                     after.Add(free);
                 }
                 b.Instrs.InsertRange(at + 1, after);
@@ -432,7 +432,7 @@ public sealed partial class Escape
                     load.Operands.Add(st.Operands[0]);
                     made.Add(load);
                     Instr free = new() { Op = Opcode.Call, Callee = OwnedReplacedFreer, Line = st.Line };
-                    free.Operands.Add(Word(f, made, new RegOperand(old), st.Line));
+                    free.Operands.Add(Word(f, made, RegOperand.Of(old), st.Line));
                     free.Operands.Add(Word(f, made, st.Operands[1], st.Line));
                     made.Add(free);
                     b.Instrs.InsertRange(at, made);

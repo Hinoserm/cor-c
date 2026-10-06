@@ -21,15 +21,15 @@ public static partial class Program
         VReg count = f.NewReg(IrType.I32); count.Number = true; f.Params.Add(count);
         Block entry = f.NewBlock("entry");
         VReg read = f.NewReg(IrType.I32);
-        Instr load = new() { Op = Opcode.Load, Dest = read, Size = 4, Operands = { new RegOperand(at) }, Number = true, Field = "T::count", Family = "T" };
+        Instr load = new() { Op = Opcode.Load, Dest = read, Size = 4, Operands = { RegOperand.Of(at) }, Number = true, Field = "T::count", Family = "T" };
         entry.Instrs.Add(load);
-        Instr store = new() { Op = Opcode.Store, Size = 4, Operands = { new RegOperand(at), new RegOperand(read) }, Field = "T::count", Family = "T" };
+        Instr store = new() { Op = Opcode.Store, Size = 4, Operands = { RegOperand.Of(at), RegOperand.Of(read) }, Field = "T::count", Family = "T" };
         entry.Instrs.Add(store);
-        new Builder(f, entry).Ret(new RegOperand(read));
+        new Builder(f, entry).Ret(RegOperand.Of(read));
 
         MarkVerifier before = MarkVerifier.Snapshot(f);
-        entry.Instrs[0] = new Instr { Op = Opcode.Load, Dest = read, Size = 4, Operands = { new RegOperand(at) } };
-        entry.Instrs[1] = new Instr { Op = Opcode.Store, Size = 4, Operands = { new RegOperand(at), new RegOperand(read) }, Field = "T::count" };
+        entry.Instrs[0] = new Instr { Op = Opcode.Load, Dest = read, Size = 4, Operands = { RegOperand.Of(at) } };
+        entry.Instrs[1] = new Instr { Op = Opcode.Store, Size = 4, Operands = { RegOperand.Of(at), RegOperand.Of(read) }, Field = "T::count" };
         count.Number = false;
         List<string> lost = before.Check(f, "careless");
         Assert(lost.Count == 3, "a load, a store and a parameter each said: " + string.Join(" | ", lost));
@@ -41,8 +41,8 @@ public static partial class Program
 
         count.Number = true;
         before = MarkVerifier.Snapshot(f);
-        entry.Instrs[0] = new Instr { Op = Opcode.Load, Dest = read, Size = 4, Operands = { new RegOperand(at) }, Number = true, Field = "T::count", Family = "T" };
-        entry.Instrs[1] = new Instr { Op = Opcode.Copy, Dest = f.NewReg(IrType.I32), Operands = { new RegOperand(read) } };
+        entry.Instrs[0] = new Instr { Op = Opcode.Load, Dest = read, Size = 4, Operands = { RegOperand.Of(at) }, Number = true, Field = "T::count", Family = "T" };
+        entry.Instrs[1] = new Instr { Op = Opcode.Copy, Dest = f.NewReg(IrType.I32), Operands = { RegOperand.Of(read) } };
         Assert(before.Check(f, "careful").Count == 0, "a replacement with its marks, and a store gone, lose nothing");
 
         // A loop header merged into the block before it, its region not.
@@ -71,9 +71,9 @@ public static partial class Program
         var slot = f.NewSlot(16, 4); var block = f.NewBlock("entry");
         VReg pointer = f.NewReg(IrTypes.Word), value = f.NewReg(IrType.I32);
         block.Instrs.Add(new Instr { Op = Opcode.Copy, Dest = pointer, Operands = { new SlotOperand(slot) } });
-        block.Instrs.Add(new Instr { Op = Opcode.Load, Dest = value, Size = 4, Offset = 4, Operands = { new RegOperand(pointer) },
+        block.Instrs.Add(new Instr { Op = Opcode.Load, Dest = value, Size = 4, Offset = 4, Operands = { RegOperand.Of(pointer) },
             Number = true, Field = "Point::y", Family = "Point" });
-        new Builder(f, block).Ret(new RegOperand(value));
+        new Builder(f, block).Ret(RegOperand.Of(value));
         MarkVerifier before = MarkVerifier.Snapshot(f);
         new FrameAddressFold().Run(f);
         Instr read = block.Instrs.Single(i => i.Op == Opcode.Load);
@@ -100,7 +100,7 @@ public static partial class Program
         VReg result = caller.NewReg(IrTypes.Word);
         start.Instrs.Add(new Instr { Op = Opcode.Call, Dest = result, Callee = "choose", Operands = { new ImmOperand(1, IrType.I32) },
             Field = Instr.FreshStruct, RegionSite = true });
-        new Builder(caller, start).Ret(new RegOperand(result));
+        new Builder(caller, start).Ret(RegOperand.Of(result));
         module.Functions.Add(caller); module.Functions.Add(callee); module.Entry = "main";
         ConstantSpecialize pass = new();
         Dictionary<Function, MarkVerifier> before = MarkVerifier.Snapshot(module);
@@ -126,9 +126,9 @@ public static partial class Program
             Block entry = f.NewBlock("entry");
             VReg target = f.NewReg(IrTypes.Word), result = f.NewReg(IrTypes.Word);
             entry.Instrs.Add(new Instr { Op = Opcode.Copy, Dest = target, Operands = { new SymOperand("m_Make", 0) } });
-            entry.Instrs.Add(new Instr { Op = Opcode.CallIndirect, Dest = result, Operands = { new RegOperand(target), new RegOperand(receiver) },
+            entry.Instrs.Add(new Instr { Op = Opcode.CallIndirect, Dest = result, Operands = { RegOperand.Of(target), RegOperand.Of(receiver) },
                 Field = mark, DispatchType = "t_Table" });
-            new Builder(f, entry).Ret(new RegOperand(result));
+            new Builder(f, entry).Ret(RegOperand.Of(result));
             module.Functions.Add(f); module.Entry = "main";
             Devirtualize pass = new();
             Dictionary<Function, MarkVerifier> before = MarkVerifier.Snapshot(module);
@@ -178,7 +178,7 @@ public static partial class Program
         Function caller = new("main", IrType.Void);
         VReg input = caller.NewReg(IrType.I32); caller.Params.Add(input);
         Builder b = new(caller, caller.NewBlock("entry"));
-        b.Call("spin", IrType.Void, new RegOperand(input));
+        b.Call("spin", IrType.Void, RegOperand.Of(input));
         b.Ret();
         module.Functions.Add(caller); module.Functions.Add(callee); module.Entry = "main";
         new Inline { SmallBody = 3, GrowthLimit = 100 }.Run(module);

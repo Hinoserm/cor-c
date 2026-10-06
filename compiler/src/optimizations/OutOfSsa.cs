@@ -133,12 +133,12 @@ public sealed class OutOfSsa : IPass
             (VReg d0, Operand s0) = pending[0];
             VReg src = ((RegOperand)s0).Reg;
             VReg tmp = f.NewReg(src.Type, src.Name);
-            outp.Add(new Instr { Op = Opcode.Copy, Dest = tmp, Operands = { new RegOperand(src) } });
+            outp.Add(new Instr { Op = Opcode.Copy, Dest = tmp, Operands = { RegOperand.Of(src) } });
             for (int k = 0; k < pending.Count; k++)
             {
                 if (pending[k].Src is RegOperand r && ReferenceEquals(r.Reg, src))
                 {
-                    pending[k] = (pending[k].Dest, new RegOperand(tmp));
+                    pending[k] = (pending[k].Dest, RegOperand.Of(tmp));
                 }
             }
             _ = d0;

@@ -78,7 +78,7 @@ public sealed class Ssa : IPass
                     Instr phi = new() { Op = Opcode.Phi, Dest = v };
                     foreach (Block p in cfg.Preds(y))
                     {
-                        phi.Operands.Add(new RegOperand(v));
+                        phi.Operands.Add(RegOperand.Of(v));
                         phi.WritableTargets.Add(p);
                     }
                     if (!phis.TryGetValue(y, out List<Instr>? list))
@@ -149,7 +149,7 @@ public sealed class Ssa : IPass
                                 VReg top = s.Peek();
                                 if (!ReferenceEquals(top, r.Reg))
                                 {
-                                    i.Operands[k] = new RegOperand(top);
+                                    i.Operands[k] = RegOperand.Of(top);
                                 }
                             }
                         }
@@ -179,7 +179,7 @@ public sealed class Ssa : IPass
                         }
                         if (names.TryGetValue(r.Reg, out Stack<VReg>? s) && s.Count > 0)
                         {
-                            phi.Operands[k] = new RegOperand(s.Peek());
+                            phi.Operands[k] = RegOperand.Of(s.Peek());
                         }
                     }
                 }

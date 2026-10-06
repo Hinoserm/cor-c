@@ -184,6 +184,6 @@ public static class LandingPadHomes
     private static Instr StoreTo(FrameSlot slot, VReg r) => new()
     {
         Op = Opcode.Store, Size = r.Type.Bytes(),
-        Operands = { new SlotOperand(slot), new RegOperand(r) },
+        Operands = { new SlotOperand(slot), RegOperand.Of(r) },
     };
 }

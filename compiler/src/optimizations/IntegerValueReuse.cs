@@ -101,7 +101,7 @@ public sealed class IntegerValueReuse : IPass
                 RegOperand? reused = null;
                 if (key is { } found && _values.TryGetValue(found, out Value existing))
                 {
-                    reused = aliases.GetValueOrDefault(existing.Result) ?? new RegOperand(existing.Result);
+                    reused = aliases.GetValueOrDefault(existing.Result) ?? RegOperand.Of(existing.Result);
                     block.Instrs[k] = IrInfo.CopyOf(i, reused);
                 }
                 if (i.Dest is not { } dest) continue;

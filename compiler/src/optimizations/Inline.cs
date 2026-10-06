@@ -746,7 +746,7 @@ public sealed class Inline : IParallelModulePass
 
         Operand Op(Operand o) => o switch
         {
-            RegOperand r => new RegOperand(Reg(r.Reg)),
+            RegOperand r => RegOperand.Of(Reg(r.Reg)),
             SlotOperand s => new SlotOperand(Slot(s.Slot)),
             _ => o,
         };

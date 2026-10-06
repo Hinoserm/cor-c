@@ -46,23 +46,23 @@ public sealed class SignedPowerOfTwo : IPass
                 result ??= block.Instrs.GetRange(0, n);
                 int shift = System.Numerics.BitOperations.TrailingZeroCount(magnitude);
                 VReg sign = Binary(Opcode.ShrS, i.Operands[0], new ImmOperand(type == IrType.I64 ? 63 : 31, IrType.I32));
-                VReg bias = Binary(Opcode.And, new RegOperand(sign), new ImmOperand((long)(magnitude - 1), type));
-                VReg adjusted = Binary(Opcode.Add, i.Operands[0], new RegOperand(bias));
+                VReg bias = Binary(Opcode.And, RegOperand.Of(sign), new ImmOperand((long)(magnitude - 1), type));
+                VReg adjusted = Binary(Opcode.Add, i.Operands[0], RegOperand.Of(bias));
                 if (operation == Opcode.RemS)
                 {
                     // Remainder has the numerator's sign, independent of the
                     // divisor's sign. This also handles the signed minimum.
-                    VReg masked = Binary(Opcode.And, new RegOperand(adjusted), new ImmOperand((long)(magnitude - 1), type));
+                    VReg masked = Binary(Opcode.And, RegOperand.Of(adjusted), new ImmOperand((long)(magnitude - 1), type));
                     result.Add(new Instr { Op = Opcode.Sub, Dest = i.Dest, Line = i.Line,
-                        Operands = { new RegOperand(masked), new RegOperand(bias) } });
+                        Operands = { RegOperand.Of(masked), RegOperand.Of(bias) } });
                 }
                 else
                 {
-                    VReg quotient = Binary(Opcode.ShrS, new RegOperand(adjusted), new ImmOperand(shift, IrType.I32));
+                    VReg quotient = Binary(Opcode.ShrS, RegOperand.Of(adjusted), new ImmOperand(shift, IrType.I32));
                     if (signed < 0)
                         result.Add(new Instr { Op = Opcode.Neg, Dest = i.Dest, Line = i.Line,
-                            Operands = { new RegOperand(quotient) } });
-                    else result.Add(IrInfo.CopyOf(i, new RegOperand(quotient)));
+                            Operands = { RegOperand.Of(quotient) } });
+                    else result.Add(IrInfo.CopyOf(i, RegOperand.Of(quotient)));
                 }
 
                 VReg Binary(Opcode op, Operand a, Operand b)

@@ -83,7 +83,7 @@ public sealed partial class Lowering
                             Type held = _b.LocalType.TryGetValue(early, out Type? known) ? known : Type.I32;
 
                             _e.CopyTo(LocalReg(early),
-                                      new RegOperand(Allocate(early, Math.Max(_t.WordSize, held.Size))));
+                                      RegOperand.Of(Allocate(early, Math.Max(_t.WordSize, held.Size))));
                         }
                     }
 
@@ -314,7 +314,7 @@ public sealed partial class Lowering
                         : _resultBuffer is not null && _openHandlers.Count == 0
                         ? InlineValue(new MemPlace(R(_resultBuffer), 0, wanted, Inline: true), r.Value, wanted)
                         : EvalAs(r.Value, wanted);
-                    _e.CopyTo(_returnValue, new RegOperand(v));
+                    _e.CopyTo(_returnValue, RegOperand.Of(v));
                 }
                 // `return Os.Syscall(..., Sys.ArrayData(path))`: the value is
                 // made, and the array must live until here, not only until
@@ -403,7 +403,7 @@ public sealed partial class Lowering
         int first = 0;
         while (first < entry.Count && entry[first].Op == Opcode.Phi) first++;
         entry.Insert(first, new Instr { Op = Opcode.Copy, Dest = keep, Operands = { new ImmOperand(0, array.Type) } });
-        _e.CopyTo(keep, new RegOperand(array));
+        _e.CopyTo(keep, RegOperand.Of(array));
         _addressed.Add((_f, keep));
     }
 
@@ -421,7 +421,7 @@ public sealed partial class Lowering
         for (int i = _addressed.Count - 1; i >= from; i--)
         {
             if (!ReferenceEquals(_addressed[i].Function, _f)) continue;
-            if (!_e.Closed) _e.Call(MachineIntrinsics.KeepAlive, IrType.Void, new RegOperand(_addressed[i].Array));
+            if (!_e.Closed) _e.Call(MachineIntrinsics.KeepAlive, IrType.Void, RegOperand.Of(_addressed[i].Array));
             if (forget) _addressed.RemoveAt(i);
         }
     }
@@ -454,7 +454,7 @@ public sealed partial class Lowering
         if (boxed && !_cellsMade.Contains(d))
         {
             VReg cell = Allocate(d, Math.Max(_t.WordSize, type.Size));
-            _e.CopyTo(LocalReg(d), new RegOperand(cell));
+            _e.CopyTo(LocalReg(d), RegOperand.Of(cell));
         }
 
         if (d.Init is not null)
@@ -462,15 +462,15 @@ public sealed partial class Lowering
             VReg value = EvalAs(d.Init, type);
             if (boxed)
             {
-                _e.Store(new RegOperand(LocalReg(d)), new RegOperand(value), 0, LoadSize(type));
+                _e.Store(RegOperand.Of(LocalReg(d)), RegOperand.Of(value), 0, LoadSize(type));
             }
             else if (_addressTakenLocals.Contains(d))
             {
-                _e.Store(new SlotOperand(LocalSlot(d, type)), new RegOperand(value), 0, LoadSize(type));
+                _e.Store(new SlotOperand(LocalSlot(d, type)), RegOperand.Of(value), 0, LoadSize(type));
             }
             else
             {
-                _e.CopyTo(LocalReg(d), new RegOperand(value));
+                _e.CopyTo(LocalReg(d), RegOperand.Of(value));
             }
         }
         else if (IsStructValue(type))
@@ -481,15 +481,15 @@ public sealed partial class Lowering
             VReg zero = NewStruct(d, StructOf(type));
             if (boxed)
             {
-                _e.Store(new RegOperand(LocalReg(d)), new RegOperand(zero), 0, LoadSize(type));
+                _e.Store(RegOperand.Of(LocalReg(d)), RegOperand.Of(zero), 0, LoadSize(type));
             }
             else if (_addressTakenLocals.Contains(d))
             {
-                _e.Store(new SlotOperand(LocalSlot(d, type)), new RegOperand(zero), 0, LoadSize(type));
+                _e.Store(new SlotOperand(LocalSlot(d, type)), RegOperand.Of(zero), 0, LoadSize(type));
             }
             else
             {
-                _e.CopyTo(LocalReg(d), new RegOperand(zero));
+                _e.CopyTo(LocalReg(d), RegOperand.Of(zero));
             }
         }
         else if (!boxed)
@@ -553,7 +553,7 @@ public sealed partial class Lowering
         VReg scaled = stride == 1 ? index : _e.Binary(Opcode.Mul, index, stride);
         VReg addr = _e.Binary(Opcode.Add, seq, WordOf(scaled));
         bool inline = sequenceType.Prim != Prim.String && InlineElement(stored);
-        VReg value = LoadPlace(new MemPlace(new RegOperand(addr), _t.ArrayHeaderBytes, stored, Inline: inline));
+        VReg value = LoadPlace(new MemPlace(RegOperand.Of(addr), _t.ArrayHeaderBytes, stored, Inline: inline));
         // A CURSOR A LAMBDA CAPTURES is read through its cell, so the element
         // goes there -- a new cell each time round, as C# 5 has it, so each
         // lambda keeps its own iteration's value. Written to the slot, the
@@ -561,14 +561,14 @@ public sealed partial class Lowering
         if (_b.PatternSym.TryGetValue(fe, out LocalSym? named) && named.Boxed
             && _symCells.TryGetValue(named, out VReg? cell) && cell is not null)
         {
-            _e.CopyTo(cell, new RegOperand(Allocate(fe, Math.Max(_t.WordSize, Math.Max(1, element.Size)))));
+            _e.CopyTo(cell, RegOperand.Of(Allocate(fe, Math.Max(_t.WordSize, Math.Max(1, element.Size)))));
             // A lambda keeps a copy of the element, not where it is in the array.
             StoreNew(cell, inline ? CopyStruct(fe, value, StructOf(stored)) : value, 0, element);
         }
         else
         {
             VReg cursor = SlotReg(elem, IrTypes.Of(element));
-            _e.CopyTo(cursor, new RegOperand(value));
+            _e.CopyTo(cursor, RegOperand.Of(value));
         }
 
         _loops.Add((end, step, _openHandlers.Count, _openHandlers.Count));
@@ -580,7 +580,7 @@ public sealed partial class Lowering
         }
 
         _e.SetBlock(step);
-        _e.CopyTo(index, new RegOperand(_e.Binary(Opcode.Add, index, 1)));
+        _e.CopyTo(index, RegOperand.Of(_e.Binary(Opcode.Add, index, 1)));
         _e.Jump(top);
         _e.SetBlock(end);
     }
@@ -607,7 +607,7 @@ public sealed partial class Lowering
         Type of = _b.TypeOf(sw.Subject);
         VReg subject = Eval(sw.Subject);
         VReg held = SlotReg(_b.SwitchSubject[sw], IrTypes.Of(of));
-        _e.CopyTo(held, new RegOperand(subject));
+        _e.CopyTo(held, RegOperand.Of(subject));
 
         Block fallback = defaultBlock ?? end;
 
@@ -618,7 +618,7 @@ public sealed partial class Lowering
             {
                 key = _e.Binary(Opcode.Sub, key, minimum);
             }
-            _e.Switch(new RegOperand(key), table, fallback);
+            _e.Switch(RegOperand.Of(key), table, fallback);
         }
         else
         {
@@ -866,14 +866,14 @@ public sealed partial class Lowering
         _e.SetBlock(some);
         VReg prev = ChainRead(head, HandlerPrev / 4 * w);
         ChainWrite(ThreadBlockNow(), R(prev), TlsHandler / 4 * w);
-        _e.Emit(Opcode.Unwind, null, new RegOperand(head), new RegOperand(obj));
+        _e.Emit(Opcode.Unwind, null, RegOperand.Of(head), RegOperand.Of(obj));
 
         _e.SetBlock(none);
         MethodSymbol? unhandled = RuntimeMethod("Unhandled", 1);
         if (unhandled is not null)
         {
             Require(unhandled);
-            _e.Call(CallLabel(unhandled), IrType.Void, new RegOperand(obj));
+            _e.Call(CallLabel(unhandled), IrType.Void, RegOperand.Of(obj));
         }
         _e.Emit(Opcode.Trap, null);
         _e.Unreachable();
@@ -942,7 +942,7 @@ public sealed partial class Lowering
         // on outward with the same object.
         VReg exc = LandingValue(landing);
         FrameSlot keep = _f.NewSlot(_t.WordSize, _t.WordSize, "exc");
-        _e.Store(new SlotOperand(keep), new RegOperand(exc));
+        _e.Store(new SlotOperand(keep), RegOperand.Of(exc));
         EmitStmt(fin);
         if (!_e.Closed)
         {
@@ -976,7 +976,7 @@ public sealed partial class Lowering
 
         VReg exc = LandingValue(landing);
         FrameSlot keep = _f.NewSlot(_t.WordSize, _t.WordSize, "exc");
-        _e.Store(new SlotOperand(keep), new RegOperand(exc));
+        _e.Store(new SlotOperand(keep), RegOperand.Of(exc));
 
         foreach (CatchClause c in t.Catches)
         {

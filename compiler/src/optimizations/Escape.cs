@@ -1708,7 +1708,7 @@ continue;
             made.Add(load);
             // Both machine words, as the runtime's frees take on every target.
             Instr free = new() { Op = Opcode.Call, Callee = OwnedReplacedFreer, Line = st.Line };
-            free.Operands.Add(Word(f, made, new RegOperand(old), st.Line));
+            free.Operands.Add(Word(f, made, RegOperand.Of(old), st.Line));
             free.Operands.Add(Word(f, made, st.Operands[1], st.Line));
             made.Add(free);
             b.Instrs.InsertRange(at, made);
@@ -3606,7 +3606,7 @@ continue;
             writes ??= new(f);
             if (!writes.TryGetValue(method, out WriteList ws) || ws.Count != 1 || ws[0] is not { Op: Opcode.Load, Operands: [RegOperand { Reg: var table }] } slot
                 || !writes.TryGetValue(table, out WriteList ts) || ts.Count != 1 || ts[0] is not { Op: Opcode.Load, Offset: 0, Operands: [RegOperand { Reg: var self }] }
-                || Holding(new RegOperand(self)) is not (var selfRoot, 0) || !Equals(Canon(selfRoot), Canon(root))) return null;
+                || Holding(RegOperand.Of(self)) is not (var selfRoot, 0) || !Equals(Canon(selfRoot), Canon(root))) return null;
             List<string> found = new();
             foreach (Stamp t in types)
             {
@@ -4584,15 +4584,15 @@ continue;
                 List<Instr> replacement = new()
                 {
                     new Instr { Op = Opcode.Copy, Dest = addr, Operands = { new SlotOperand(slot) }, Line = i.Line },
-                    new Instr { Op = Opcode.MemSet, Operands = { new RegOperand(addr), new ImmOperand(0, IrType.I32), new ImmOperand(size, IrTypes.Word) }, Line = i.Line },
+                    new Instr { Op = Opcode.MemSet, Operands = { RegOperand.Of(addr), new ImmOperand(0, IrType.I32), new ImmOperand(size, IrTypes.Word) }, Line = i.Line },
                 };
                 if (i.Dest.Type == IrTypes.Word)
                 {
-                    replacement.Add(new Instr { Op = Opcode.Copy, Dest = i.Dest, Operands = { new RegOperand(addr) }, Line = i.Line });
+                    replacement.Add(new Instr { Op = Opcode.Copy, Dest = i.Dest, Operands = { RegOperand.Of(addr) }, Line = i.Line });
                 }
                 else
                 {
-                    replacement.Add(new Instr { Op = Opcode.ZExt32, Dest = i.Dest, Operands = { new RegOperand(addr) }, Line = i.Line });
+                    replacement.Add(new Instr { Op = Opcode.ZExt32, Dest = i.Dest, Operands = { RegOperand.Of(addr) }, Line = i.Line });
                 }
 
                 b.Instrs.RemoveAt(k);
@@ -4641,7 +4641,7 @@ continue;
                     List<Instr> entry = new()
                     {
                         new Instr { Op = Opcode.Copy, Dest = zeroAt, Operands = { new SlotOperand(slot) }, Line = EntryLine(f, i.Line) },
-                        new Instr { Op = Opcode.Store, Size = IrTypes.Word.Bytes(), Operands = { new RegOperand(zeroAt), new ImmOperand(0, IrTypes.Word) }, Line = EntryLine(f, i.Line) },
+                        new Instr { Op = Opcode.Store, Size = IrTypes.Word.Bytes(), Operands = { RegOperand.Of(zeroAt), new ImmOperand(0, IrTypes.Word) }, Line = EntryLine(f, i.Line) },
                     };
                     f.Entry.Instrs.InsertRange(0, entry); OwnedFieldEscape.Changed();
                     _bookkeeping.UnionWith(entry);
@@ -4787,7 +4787,7 @@ continue;
     private static void AppendStorageFree(Function f, List<Instr> output, VReg pointer, int line)
     {
         VReg argument = Word(f, output, pointer, line, "storageOf");
-        output.Add(new Instr { Op = Opcode.Call, Callee = StorageFreer, Operands = { new RegOperand(argument) }, Line = line });
+        output.Add(new Instr { Op = Opcode.Call, Callee = StorageFreer, Operands = { RegOperand.Of(argument) }, Line = line });
     }
 
     /// <summary>
@@ -4836,7 +4836,7 @@ continue;
         f.Entry.Instrs.InsertRange(0, new List<Instr>
         {
             new Instr { Op = Opcode.Copy, Dest = entryAddr, Operands = { new SlotOperand(slot) }, Line = entryLine },
-            new Instr { Op = Opcode.Store, Size = word, Operands = { new RegOperand(entryAddr), new ImmOperand(0, IrTypes.Word) }, Line = entryLine },
+            new Instr { Op = Opcode.Store, Size = word, Operands = { RegOperand.Of(entryAddr), new ImmOperand(0, IrTypes.Word) }, Line = entryLine },
         });
 
         int at = block.Instrs.IndexOf(alloc);
@@ -4854,7 +4854,7 @@ continue;
         if (repeats)
         {
             VReg prev = f.NewReg(IrTypes.Word, "owned");
-            releasePrevious.Add(new Instr { Op = Opcode.Load, Size = word, Dest = prev, Operands = { new RegOperand(addr) }, Line = alloc.Line });
+            releasePrevious.Add(new Instr { Op = Opcode.Load, Size = word, Dest = prev, Operands = { RegOperand.Of(addr) }, Line = alloc.Line });
             AppendElementFree(f, releasePrevious, alloc, prev, alloc.Line);
             record.Frees.Add((block, AppendFree(f, releasePrevious, prev, alloc.Line), prev));
         }
@@ -4864,13 +4864,13 @@ continue;
         // After it: remember the new one.
         VReg made = f.NewReg(IrTypes.Word, "owned");
         Instr resize = alloc.Dest!.Type == IrTypes.Word
-            ? new Instr { Op = Opcode.Copy, Dest = made, Operands = { new RegOperand(alloc.Dest) }, Line = alloc.Line }
+            ? new Instr { Op = Opcode.Copy, Dest = made, Operands = { RegOperand.Of(alloc.Dest) }, Line = alloc.Line }
             : new Instr { Op = IrTypes.Word == IrType.I32 ? Opcode.Trunc64 : Opcode.ZExt32,
-                Dest = made, Operands = { new RegOperand(alloc.Dest) }, Line = alloc.Line };
+                Dest = made, Operands = { RegOperand.Of(alloc.Dest) }, Line = alloc.Line };
         List<Instr> remember = new()
         {
             resize,
-            new Instr { Op = Opcode.Store, Size = word, Operands = { new RegOperand(addr), new RegOperand(made) }, Line = alloc.Line },
+            new Instr { Op = Opcode.Store, Size = word, Operands = { RegOperand.Of(addr), RegOperand.Of(made) }, Line = alloc.Line },
         };
         block.Instrs.InsertRange(block.Instrs.IndexOf(alloc) + 1, remember);
         _bookkeeping.UnionWith(remember);
@@ -4884,7 +4884,7 @@ continue;
             List<Instr> releaseExit = new()
             {
                 new Instr { Op = Opcode.Copy, Dest = a, Operands = { new SlotOperand(slot) }, Line = exitLine },
-                new Instr { Op = Opcode.Load, Size = word, Dest = p, Operands = { new RegOperand(a) }, Line = exitLine },
+                new Instr { Op = Opcode.Load, Size = word, Dest = p, Operands = { RegOperand.Of(a) }, Line = exitLine },
             };
             AppendElementFree(f, releaseExit, alloc, p, exitLine);
             record.Frees.Add((b, AppendFree(f, releaseExit, p, exitLine), p));
@@ -5115,7 +5115,7 @@ continue;
         f.Entry.Instrs.InsertRange(0, new List<Instr>
         {
             new Instr { Op = Opcode.Copy, Dest = entryAddr, Operands = { new SlotOperand(slot) }, Line = entryLine },
-            new Instr { Op = Opcode.Store, Size = word, Operands = { new RegOperand(entryAddr), new ImmOperand(0, IrTypes.Word) }, Line = entryLine },
+            new Instr { Op = Opcode.Store, Size = word, Operands = { RegOperand.Of(entryAddr), new ImmOperand(0, IrTypes.Word) }, Line = entryLine },
         });
 
         at = block.Instrs.IndexOf(call);
@@ -5128,15 +5128,15 @@ continue;
         };
         if (repeats)
         {
-            after.Add(new Instr { Op = Opcode.Load, Size = word, Dest = prev, Operands = { new RegOperand(addr) }, Line = call.Line });
+            after.Add(new Instr { Op = Opcode.Load, Size = word, Dest = prev, Operands = { RegOperand.Of(addr) }, Line = call.Line });
             AppendElementFree(f, after, call, prev, call.Line);
             record.Frees.Add((block, AppendFree(f, after, prev, call.Line), prev));
         }
         after.Add(call.Dest!.Type == IrTypes.Word
-            ? new Instr { Op = Opcode.Copy, Dest = made, Operands = { new RegOperand(call.Dest) }, Line = call.Line }
+            ? new Instr { Op = Opcode.Copy, Dest = made, Operands = { RegOperand.Of(call.Dest) }, Line = call.Line }
             : new Instr { Op = IrTypes.Word == IrType.I32 ? Opcode.Trunc64 : Opcode.ZExt32,
-                Dest = made, Operands = { new RegOperand(call.Dest) }, Line = call.Line });
-        after.Add(new Instr { Op = Opcode.Store, Size = word, Operands = { new RegOperand(addr), new RegOperand(made) }, Line = call.Line });
+                Dest = made, Operands = { RegOperand.Of(call.Dest) }, Line = call.Line });
+        after.Add(new Instr { Op = Opcode.Store, Size = word, Operands = { RegOperand.Of(addr), RegOperand.Of(made) }, Line = call.Line });
         block.Instrs.InsertRange(at + 1, after);
         _bookkeeping.UnionWith(after);
 
@@ -5150,7 +5150,7 @@ continue;
             List<Instr> releaseExit = new()
             {
                 new Instr { Op = Opcode.Copy, Dest = a, Operands = { new SlotOperand(slot) }, Line = exitLine },
-                new Instr { Op = Opcode.Load, Size = word, Dest = p, Operands = { new RegOperand(a) }, Line = exitLine },
+                new Instr { Op = Opcode.Load, Size = word, Dest = p, Operands = { RegOperand.Of(a) }, Line = exitLine },
             };
             AppendElementFree(f, releaseExit, call, p, exitLine);
             record.Frees.Add((b, AppendFree(f, releaseExit, p, exitLine), p));
@@ -5303,12 +5303,12 @@ continue;
             case RegOperand { Reg: var r } when r.Type == IrTypes.Word:
                 return value;
             case RegOperand { Reg.Type: IrType.I32 or IrType.I64 } reg:
-                return new RegOperand(Word(f, output, reg.Reg, line));
+                return RegOperand.Of(Word(f, output, reg.Reg, line));
             default:
             {
                 VReg word = f.NewReg(IrTypes.Word);
                 output.Add(new Instr { Op = Opcode.Copy, Dest = word, Operands = { value }, Line = line });
-                return new RegOperand(word);
+                return RegOperand.Of(word);
             }
         }
     }
@@ -5319,7 +5319,7 @@ continue;
         if (r.Type == IrTypes.Word || r.Type is not (IrType.I32 or IrType.I64)) return r;
         VReg word = f.NewReg(IrTypes.Word, name);
         output.Add(new Instr { Op = IrTypes.Word == IrType.I64 ? Opcode.ZExt32 : Opcode.Trunc64, Dest = word,
-            Operands = { new RegOperand(r) }, Line = line });
+            Operands = { RegOperand.Of(r) }, Line = line });
         return word;
     }
 
@@ -5328,7 +5328,7 @@ continue;
         // Ownership slots are machine words, and so is Runtime.Free's parameter.
         VReg argument = Word(f, output, pointer, line, "freeAddress");
         Instr free = new Instr { Op = Opcode.Call, Callee = Freer,
-            Operands = { new RegOperand(argument) }, Line = line };
+            Operands = { RegOperand.Of(argument) }, Line = line };
         output.Add(free);
         return free;
     }

@@ -74,9 +74,9 @@ public sealed class ConstantSpecialize : IModulePass
                 }
                 Block entry = version.NewBlock("entry");
                 Builder builder = new(version, entry);
-                Operand[] arguments = call.Operands.Select((o, index) => o is ImmOperand ? o : new RegOperand(version.Params[index])).ToArray();
+                Operand[] arguments = call.Operands.Select((o, index) => o is ImmOperand ? o : RegOperand.Of(version.Params[index])).ToArray();
                 VReg? result = builder.Call(target.Name, target.Returns, arguments);
-                builder.Ret(result is null ? null : new RegOperand(result));
+                builder.Ret(result is null ? null : RegOperand.Of(result));
                 Inline.Expand(version, entry, 0, entry.Instrs[0], target);
                 cleanup.Run(version);
                 int cost = version.Blocks.Sum(b => b.Instrs.Count);

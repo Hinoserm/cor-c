@@ -9,7 +9,7 @@ namespace Corsac.Tests.X86;
 public static class PackedMemoryBenchmarks
 {
     private static ImmOperand I(int value) => new(value, IrType.I32);
-    private static RegOperand R(VReg value) => new(value);
+    private static RegOperand R(VReg value) => RegOperand.Of(value);
 
     public static int Run(string? filter = null)
     {
