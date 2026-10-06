@@ -7424,6 +7424,19 @@ static class Gc
 
     /// The same, set by a program after the heap has started -- a kernel from
     /// its command line (gc.freepaths=N) -- to find which path a fault needs.
+    /// The compiler's frees of one kind left undone, as the Linux platform's
+    /// CORSAC_IGNORE_FREES letter says ('r' owned variables and outgrown
+    /// collection storage, 'f' field frees, 'p' the region paths), turned on
+    /// by a program after the heap has started -- a kernel from its command
+    /// line (gc.ignorefrees=r): the bisection of a block freed under a holder.
+    public static void IgnoreFrees(long letter)
+    {
+        GcLock.Enter();
+        IgnoredFrees = letter;
+        FastPathsChanged();
+        GcLock.Exit();
+    }
+
     public static void SkipFreePaths(long paths)
     {
         GcLock.Enter();
