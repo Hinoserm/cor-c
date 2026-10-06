@@ -1,0 +1,39 @@
+// test: new() assigned to a property takes the property's type
+// expect-exit: 0
+// expect-output:
+// 1 1 3
+//
+// A get-only auto-property is set in its constructor by its bare name:
+// `Items = new();`. The assignment worked out what a bare name's new() makes
+// from a local, a parameter or a field, and a property is none of those, so
+// it said the type of new() could not be worked out. The property's getter
+// says it.
+
+using System;
+using System.Collections.Generic;
+
+sealed class Box { public int N; public Box(int n) { N = n; } }
+
+sealed class Holder
+{
+    public List<int> Items { get; }
+    public Box First { get; }
+    public Box Second { get; set; }
+    public Holder()
+    {
+        Items = new();
+        First = new(1);
+        Second = new(2) { N = 3 };
+    }
+}
+
+static class P
+{
+    static int Main()
+    {
+        Holder h = new();
+        h.Items.Add(4);
+        Console.WriteLine(h.Items.Count + " " + h.First.N + " " + h.Second.N);
+        return 0;
+    }
+}

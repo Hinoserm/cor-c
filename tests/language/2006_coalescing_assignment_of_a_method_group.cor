@@ -1,0 +1,38 @@
+// test: a method group on the right of ??= (and ??) is the left's delegate
+// expect-exit: 0
+// expect-output:
+// say 3
+// 8
+// say 5
+// say 6
+//
+// `_handler ??= Handle` is parsed as `_handler = _handler ?? Handle`, and the
+// right of `??` was checked with nothing done for a method group there: Handle
+// was read as its call, and the assignment said it could not convert 'void'
+// to the delegate. The right operand takes the left's type, as a lambda there
+// does.
+
+using System;
+
+static class P
+{
+    static Action<int>? _act;
+    static Func<int, int>? _f;
+    static void Say(int x) => Console.WriteLine("say " + x);
+    static int Twice(int x) => x * 2;
+
+    static int Main()
+    {
+        _act ??= Say;
+        _act(3);
+        _f ??= Twice;
+        Console.WriteLine(_f(4));
+        Action<int>? local = null;
+        local ??= Say;
+        local(5);
+        Action<int>? none = null;
+        Action<int> chosen = none ?? Say;
+        chosen(6);
+        return 0;
+    }
+}

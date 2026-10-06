@@ -2813,6 +2813,15 @@ public sealed partial class Binder
     /// Fills in the type of a target-typed <c>new()</c> from the declaration
     /// it is initialising, and leaves everything else alone.
     /// </summary>
+    /// A property of `owner` named `name`, by its getter: its type, or null.
+    private static Type? PropertyType(TypeSymbol? owner, string name)
+    {
+        if (owner is null) return null;
+        foreach (MethodSymbol m in owner.FindMethods("get_" + name))
+            if (m.Params.Count == 0) return m.Returns;
+        return null;
+    }
+
     private static Expr Retarget(Expr init, TypeRef declared)
     {
         // A collection expression is made for its type by the checker, which
@@ -13198,8 +13207,16 @@ public sealed partial class Binder
                         ParamSym p => p.Type,
                         FieldSym f => f.Field.Type,
                         CapturedFieldSym f => f.Field.Type,
+                        // A PROPERTY TOO: `Items = new()` in a constructor, a
+                        // get-only auto-property's one place to be set, is a
+                        // List because Items is (its getter's type).
+                        PropertyGetSym g => g.Getter.Returns,
+                        CapturedPropertyGetSym g => g.Getter.Returns,
+                        PropertySetSym p => p.Setter.Params[^1].Type,
                         _ => _thisType?.FindField(assignmentName.Name)?.Type
-                          ?? _capturedThisType?.FindField(assignmentName.Name)?.Type,
+                          ?? _capturedThisType?.FindField(assignmentName.Name)?.Type
+                          ?? PropertyType(_thisType, assignmentName.Name)
+                          ?? PropertyType(_capturedThisType, assignmentName.Name),
                     }
                     : null;
                 // A LAMBDA ASSIGNED TO A MEMBER -- `h.Op = v => v + 9` -- is
@@ -19583,6 +19600,16 @@ public sealed partial class Binder
         }
 
         Type r = CheckExpr(b.Right);
+        // A METHOD GROUP ON THE RIGHT is the left's delegate, as a lambda there
+        // is: `_handler ??= Handle` -- which the parser makes `_handler =
+        // _handler ?? Handle` -- named a method and was read as its call.
+        if (b.Op == BinOp.Coalesce && !l.IsError && b.Right is not LambdaExpr && !_r.Rewrites.ContainsKey(b.Right)
+            && l.AsNonNullable() is { Symbol: { Decl.IsDelegate: true } } delegated
+            && MethodGroupLambda(b.Right, delegated) is LambdaExpr grouped)
+        {
+            _r.Rewrites[b.Right] = grouped;
+            r = CheckLambda(grouped, delegated);
+        }
         _wanted = beforeFallback;
 
         if (l.IsError || r.IsError)
