@@ -470,7 +470,7 @@ public sealed partial class Lowering
                     MethodSymbol? order = StructCompareTo(shape, out boxed);
                     if (order is null) return _e.Const(0, IrType.I32);
                     Require(order);
-                    VReg other = boxed ? Box(call, y, new Type { Symbol = shape }) : y;
+                    VReg other = boxed ? Box(call, y, Type.Plain(shape, Prim.Void)) : y;
                     VReg said = CallDirect(order, IrTypes.Of(order.Returns), new List<Operand> { R(x), R(other) })!;
                     return said.Type == IrType.I32 ? said : _e.Unary(Opcode.Trunc64, R(said), IrType.I32);
                 }
@@ -878,7 +878,7 @@ public sealed partial class Lowering
                     MethodSymbol? order = StructCompareTo(shape, out bool boxed);
                     if (order is null) return _e.Const(0, IrType.I32);
                     Require(order);
-                    VReg other = boxed ? Box(null!, ToWord(y!), new Type { Symbol = shape }) : ToWord(y!);
+                    VReg other = boxed ? Box(null!, ToWord(y!), Type.Plain(shape, Prim.Void)) : ToWord(y!);
                     VReg said = CallDirect(order, IrTypes.Of(order.Returns), new List<Operand> { R(ToWord(x)), R(other) })!;
                     return said.Type == IrType.I32 ? said : _e.Unary(Opcode.Trunc64, R(said), IrType.I32);
                 }

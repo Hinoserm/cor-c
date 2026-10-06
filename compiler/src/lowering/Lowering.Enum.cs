@@ -201,7 +201,7 @@ public sealed partial class Lowering
             return _e.Call(CallLabel(run), IrType.I32, R(names), R(values), R(text), R(fold))!;
         }
 
-        VReg into = EvalAs(rest[^1], new Type { Prim = Prim.I32, Symbol = e }, byRef: true);
+        VReg into = EvalAs(rest[^1], Type.Plain(e, Prim.I32), byRef: true);
         return _e.Call(CallLabel(run), IrType.I32, R(names), R(values), R(text), R(fold), R(into))!;
     }
 }

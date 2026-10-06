@@ -505,7 +505,7 @@ public sealed partial class Lowering
             Block hit = _f.NewBlock("gvmhit");
             Block next = _f.NewBlock("gvmnext");
             bool boxed = type.Kind == TypeKind.Struct;
-            _e.Branch(boxed ? BoxTest(receiver, new Type { Prim = Prim.Void, Symbol = type }) : TypeTest(receiver, type), hit, next);
+            _e.Branch(boxed ? BoxTest(receiver, Type.Plain(type, Prim.Void)) : TypeTest(receiver, type), hit, next);
             _e.SetBlock(hit);
             Land(copy, boxed);
             _e.SetBlock(next);

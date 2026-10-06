@@ -529,7 +529,7 @@ public sealed partial class Lowering
         {
             MethodSymbol eq = typed ?? untyped!;
             Require(eq);
-            VReg other = typed is not null ? b : Box(at, b, new Type { Symbol = sym });
+            VReg other = typed is not null ? b : Box(at, b, Type.Plain(sym, Prim.Void));
             VReg said = CallDirect(eq, IrTypes.Of(eq.Returns), new List<Operand> { R(a), R(other) })!;
             _e.Ret(R(_e.Binary(Opcode.Ne, R(said), Imm(0, said.Type), IrType.I32)));
         }

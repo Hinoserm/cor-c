@@ -559,8 +559,8 @@ public sealed partial class Lowering
         // AN ENUM CONVERTS AS ITS UNDERLYING TYPE, whatever that is: taken as
         // int, `(long)Status.Error` of a `: uint` enum sign-extended
         // 0xC0000001 into a negative number, which is not what C# gives.
-        Type f = from.IsEnumValue && from.Symbol is { } enumFrom ? new Type { Prim = enumFrom.EnumUnderlying } : from;
-        Type t = to.IsEnumValue && to.Symbol is { } enumTo ? new Type { Prim = enumTo.EnumUnderlying } : to;
+        Type f = from.IsEnumValue && from.Symbol is { } enumFrom ? Type.Plain(null, enumFrom.EnumUnderlying) : from;
+        Type t = to.IsEnumValue && to.Symbol is { } enumTo ? Type.Plain(null, enumTo.EnumUnderlying) : to;
 
         if (f.Prim == Prim.Bool)
             f = Type.I32;
@@ -907,7 +907,7 @@ public sealed partial class Lowering
 
             case TypeOfExpr to when _b.TypeOfs.TryGetValue(to, out TypeSymbol? named):
                 return _e.Address(named.Kind is TypeKind.Enum or TypeKind.Struct
-                    ? BoxDescriptor(new Type { Symbol = named }) : DescriptorOf(named));
+                    ? BoxDescriptor(Type.Plain(named, Prim.Void)) : DescriptorOf(named));
 
             case TypeOfExpr to when _b.PrimitiveTypeOfs.TryGetValue(to, out Prim prim):
                 return _e.Address(PrimitiveDescriptor(prim));
@@ -2221,7 +2221,7 @@ public sealed partial class Lowering
             _e.SetBlock(asked);
             _e.Branch(wrapped, given, refused);
             _e.SetBlock(refused);
-            CastFailed(obj, new Type { Prim = Prim.Void, Symbol = want });
+            CastFailed(obj, Type.Plain(want, Prim.Void));
             _e.SetBlock(given);
             return wrapped;
         }
@@ -2232,7 +2232,7 @@ public sealed partial class Lowering
         _e.SetBlock(check);
         _e.Branch(TypeTest(obj, want), ok, bad);
         _e.SetBlock(bad);
-        CastFailed(obj, new Type { Prim = Prim.Void, Symbol = want });
+        CastFailed(obj, Type.Plain(want, Prim.Void));
         _e.SetBlock(ok);
         return obj;
     }
@@ -2597,7 +2597,7 @@ public sealed partial class Lowering
         // (ShapeTest), bound as the type it is written.
         if (ShapeOf(isx) is { } isShape && HeldByReference(_b.TypeOf(isx.Operand)))
         {
-            Type written = new() { Prim = Prim.Void, Symbol = isShape.Interface };
+            Type written = Type.Plain(isShape.Interface, Prim.Void);
             VReg subject = Eval(isx.Operand);
             VReg shapeFound = ShapeTest(isShape, subject, NamedTest(subject, written));
             if (_b.PatternSlot.TryGetValue(isx, out int shapeBound))
@@ -2611,8 +2611,8 @@ public sealed partial class Lowering
         if (isx.CanonSlot >= 0 && isx.Type.Args.Count > 0 && HeldByReference(_b.TypeOf(isx.Operand)))
         {
             Type? written = _b.TestedArrays.TryGetValue(isx, out Type? array0) ? array0
-                          : _b.TestedTypes.TryGetValue(isx, out TypeSymbol? tested0) ? new Type { Prim = Prim.Void, Symbol = tested0 }
-                          : _b.Types.TryGetValue(isx.Type.Name, out TypeSymbol? named0) ? new Type { Prim = Prim.Void, Symbol = named0 } : null;
+                          : _b.TestedTypes.TryGetValue(isx, out TypeSymbol? tested0) ? Type.Plain(tested0, Prim.Void)
+                          : _b.Types.TryGetValue(isx.Type.Name, out TypeSymbol? named0) ? Type.Plain(named0, Prim.Void) : null;
             VReg subject = Eval(isx.Operand);
             VReg canonFound = CanonTest(isx, subject, NamedTest(subject, written));
             if (_b.PatternSlot.TryGetValue(isx, out int boundTo))
@@ -2766,7 +2766,7 @@ public sealed partial class Lowering
         VReg matched = AsType(obj, want);
         if (_b.PatternSlot.TryGetValue(isx, out int bound))
         {
-            BindPattern(isx, bound, new Type { Prim = Prim.Void, Symbol = want }, matched);
+            BindPattern(isx, bound, Type.Plain(want, Prim.Void), matched);
         }
         return _e.Binary(Opcode.Ne, R(matched), Imm(0, matched.Type), IrType.I32);
     }
@@ -2861,7 +2861,7 @@ public sealed partial class Lowering
                 // `ICollection<T> c =>` in a shared copy: of what that type is
                 // for the object at hand (CanonTest).
                 Type? armWritten = _b.TestedArrays.TryGetValue(arm, out Type? armArray) ? armArray
-                                 : _b.TestedTypes.TryGetValue(arm, out TypeSymbol? armType) ? new Type { Prim = Prim.Void, Symbol = armType } : null;
+                                 : _b.TestedTypes.TryGetValue(arm, out TypeSymbol? armType) ? Type.Plain(armType, Prim.Void) : null;
                 VReg armMatched = CanonTest(arm, subject, NamedTest(subject, armWritten));
                 if (_b.ArmSlot.TryGetValue(arm, out int canonBound))
                 {
@@ -2893,7 +2893,7 @@ public sealed partial class Lowering
                 VReg matched = AsType(subject, want);
                 if (_b.ArmSlot.TryGetValue(arm, out int bound))
                 {
-                    BindPattern(arm, bound, new Type { Prim = Prim.Void, Symbol = want }, matched);
+                    BindPattern(arm, bound, Type.Plain(want, Prim.Void), matched);
                 }
                 _e.Branch(matched, body, next);
             }
@@ -4132,8 +4132,8 @@ public sealed partial class Lowering
     /// <summary>The C# binary numeric promotion, with shifts taking their width from the left alone.</summary>
     private static Type OperandPromotion(BinOp op, Type left, Type right)
     {
-        Type l = left.IsEnumValue && left.Symbol is { } enumLeft ? new Type { Prim = enumLeft.EnumUnderlying } : left;
-        Type r = right.IsEnumValue && right.Symbol is { } enumRight ? new Type { Prim = enumRight.EnumUnderlying } : right;
+        Type l = left.IsEnumValue && left.Symbol is { } enumLeft ? Type.Plain(null, enumLeft.EnumUnderlying) : left;
+        Type r = right.IsEnumValue && right.Symbol is { } enumRight ? Type.Plain(null, enumRight.EnumUnderlying) : right;
         if (l.Prim == Prim.Bool)
             l = Type.I32;
         if (r.Prim == Prim.Bool)

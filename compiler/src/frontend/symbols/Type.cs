@@ -284,7 +284,7 @@ public sealed class Type : IEquatable<Type>
     public Type AsNullable() => Nullable ? this : With(nullable: true);
     public Type AsNonNullable() => !Nullable ? this : With(nullable: false);
 
-    private Type With(bool nullable) => new()
+    private Type With(bool nullable) => IsPlain ? Plain(Symbol, Prim, nullable) : new()
     {
         Prim = Prim, Symbol = Symbol, Nullable = nullable, Element = Element,
         ArrayRank = ArrayRank, Args = Args, ParamName = ParamName, StructParam = StructParam,
@@ -329,11 +329,98 @@ public sealed class Type : IEquatable<Type>
                 nameof(rank), "an array has at least one dimension");
         }
 
-        Type made = new() { Prim = Prim.Void, Element = element, ArrayRank = 1 };
+        Type made = PlainArrayOf(element);
 
         for (int i = 1; i < rank; i++)
         {
             made = new() { Prim = Prim.Void, Element = made, ArrayRank = 1 };
+        }
+        return made;
+    }
+
+    /// <summary>
+    /// A type that is a class, struct, enum, interface or primitive and
+    /// nothing more: no element, arguments, parameter name, pointer, tuple
+    /// names or any other of TypeRare's fields. What Equals compares of one is
+    /// its Prim, Symbol and Nullable alone.
+    /// </summary>
+    private bool IsPlain => _element is null && _args.Count == 0 && _useArgs is null && _paramName is null && _rare is null;
+
+    /// <summary>
+    /// THE ONE INSTANCE of a plain type: `symbol` (or, with no symbol, the
+    /// primitive) with `prim`, and the '?' if `nullable`.
+    ///
+    /// SHARED BECAUSE A TYPE IS NEVER CHANGED once made -- every property is
+    /// init-only -- so two uses of `Foo` or `int?` cannot tell one object
+    /// from two, and the binder built one at every place a name was resolved,
+    /// a `this` was typed or a '?' was added: most of the hundred thousand
+    /// live while a unit binds. Only plain types are shared, and the
+    /// primitives without '?' are the static instances above.
+    ///
+    /// An enum's symbol is read with its underlying primitive in one place and
+    /// Prim.Void in another, so the cached one is kept only while its Prim is
+    /// the one asked for; a mismatch makes a new one and keeps that instead.
+    /// Two threads racing here each get a correct type, and one is kept.
+    /// </summary>
+    public static Type Plain(TypeSymbol? symbol, Prim prim, bool nullable = false)
+    {
+        if (symbol is null)
+        {
+            int slot = (int)prim * 2 + (nullable ? 1 : 0);
+            return PlainPrims[slot] ??= new Type { Prim = prim, Nullable = nullable };
+        }
+
+        SharedTypes shared = symbol.Shared ??= new SharedTypes();
+        Type? made = nullable ? shared.Nullable : shared.Plain;
+        if (made is null || made._prim != prim)
+        {
+            made = new Type { Prim = prim, Symbol = symbol, Nullable = nullable };
+            if (nullable) shared.Nullable = made;
+            else shared.Plain = made;
+        }
+        return made;
+    }
+
+    /// <summary>
+    /// `element[]`, shared where the element is plain and has no '?' --
+    /// `string[]`, `Foo[]` -- and made anew for every other element.
+    /// </summary>
+    private static Type PlainArrayOf(Type element)
+    {
+        if (!element.IsPlain || element._nullable)
+        {
+            return new Type { Prim = Prim.Void, Element = element, ArrayRank = 1 };
+        }
+
+        // KEYED BY THE ELEMENT'S EQUALITY, which for a plain type is its
+        // Prim and Symbol (Nullable being false): the cached array's element
+        // may be another instance equal to this one, which nothing can tell.
+        if (element._symbol is not { } symbol)
+        {
+            return PlainPrimArrays[(int)element._prim] ??= new Type { Prim = Prim.Void, Element = element, ArrayRank = 1 };
+        }
+
+        SharedTypes shared = symbol.Shared ??= new SharedTypes();
+        Type? made = shared.Array;
+        if (made is null || made._element!._prim != element._prim)
+        {
+            made = new Type { Prim = Prim.Void, Element = element, ArrayRank = 1 };
+            shared.Array = made;
+        }
+        return made;
+    }
+
+    // Indexed by Prim, twice over for the '?' (Plain); the primitives' own
+    // statics are their entries, so `int` stays Type.I32 however it is made.
+    private static readonly Type?[] PlainPrims = MakePlainPrims();
+    private static readonly Type?[] PlainPrimArrays = new Type?[256];
+
+    private static Type?[] MakePlainPrims()
+    {
+        Type?[] made = new Type?[512];
+        foreach (Type t in new[] { Void, Bool, I8, I16, I32, I64, U8, U16, U32, U64, NInt, NUInt, F32, F64, Char, String, Null, Any, Error, TypeHandle })
+        {
+            made[(int)t._prim * 2 + (t._nullable ? 1 : 0)] = t;
         }
         return made;
     }
@@ -430,4 +517,15 @@ internal sealed class TypeRare
     public int CanonParam = -1;
     public bool StructParam;
     public bool Dynamic;
+}
+
+/// <summary>
+/// The plain types of one type symbol, made once each (Type.Plain): itself,
+/// itself with '?', and an array of itself.
+/// </summary>
+internal sealed class SharedTypes
+{
+    public Type? Plain;
+    public Type? Nullable;
+    public Type? Array;
 }

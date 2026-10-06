@@ -3978,6 +3978,17 @@ public sealed partial class Binder
         return baseType.AsNullable();
     }
 
+    /// <summary>
+    /// A named type as Resolve finds it: the symbol's one shared plain type
+    /// (Type.Plain) when it is written with no arguments, a new one otherwise.
+    /// </summary>
+    private static Type NamedType(TypeSymbol symbol, IReadOnlyList<Type> args, IReadOnlyList<Type>? useArgs)
+    {
+        Prim prim = symbol.Kind == TypeKind.Enum ? symbol.EnumUnderlying : Prim.Void;
+        if (args.Count == 0 && useArgs is null) return Type.Plain(symbol, prim);
+        return new Type { Prim = prim, Symbol = symbol, Args = args, UseArgs = useArgs };
+    }
+
     private Type ResolveCore(TypeRef r, TypeSymbol? context)
     {
         // A TUPLE TYPE is the class this writes for its shape, carrying the
@@ -4123,13 +4134,7 @@ public sealed partial class Binder
 
         if (FindType(r.Name, out TypeSymbol? path) && path is not null)
         {
-            return new Type
-            {
-                Prim = path.Kind == TypeKind.Enum ? path.EnumUnderlying : Prim.Void,
-                Symbol = path,
-                Args = ResolveAll(r.Args, context),
-                UseArgs = (r.UseArgs is null ? null : ResolveAll(r.UseArgs, context)),
-            };
+            return NamedType(path, ResolveAll(r.Args, context), r.UseArgs is null ? null : ResolveAll(r.UseArgs, context));
         }
 
         // OTHERWISE A QUALIFIED NAME NAMES ITS LAST PART. `Corsac.Size` is the
@@ -4150,12 +4155,7 @@ public sealed partial class Binder
             && TypeCandidate(r.Args.Count > 0 ? Arity(LibraryHome + "." + bare, r.Args.Count) : LibraryHome + "." + bare, out TypeSymbol? system)
             && system is not null)
         {
-            return new Type
-            {
-                Prim = system.Kind == TypeKind.Enum ? system.EnumUnderlying : Prim.Void,
-                Symbol = system,
-                Args = ResolveAll(r.Args, context),
-            };
+            return NamedType(system, ResolveAll(r.Args, context), null);
         }
 
         // `System.X` FOR ONE OF THE LIBRARY'S GLOBAL TYPES, which are System's:
@@ -4170,12 +4170,7 @@ public sealed partial class Binder
             && systemGlobal.Decl is { } systemDecl && systemDecl.Outer is null
             && (systemDecl.Namespace.Length == 0 || systemDecl.Namespace == LibraryHome))
         {
-            return new Type
-            {
-                Prim = systemGlobal.Kind == TypeKind.Enum ? systemGlobal.EnumUnderlying : Prim.Void,
-                Symbol = systemGlobal,
-                Args = ResolveAll(r.Args, context),
-            };
+            return NamedType(systemGlobal, ResolveAll(r.Args, context), null);
         }
 
         // AN OPEN TEMPLATE APPLICATION -- `List<T>` where T is a method's own
@@ -4197,13 +4192,7 @@ public sealed partial class Binder
         // type's own, and only then is it a name the whole program shares.
         if (FindType(bare, out TypeSymbol? sym) && sym is not null)
         {
-            return new Type
-            {
-                Prim = sym.Kind == TypeKind.Enum ? sym.EnumUnderlying : Prim.Void,
-                Symbol = sym,
-                Args = ResolveAll(r.Args, context),
-                UseArgs = (r.UseArgs is null ? null : ResolveAll(r.UseArgs, context)),
-            };
+            return NamedType(sym, ResolveAll(r.Args, context), r.UseArgs is null ? null : ResolveAll(r.UseArgs, context));
         }
 
         // The keywords again, in case the qualifier hid one -- `System.Int32`.
@@ -5377,7 +5366,7 @@ public sealed partial class Binder
                     // a hidden name when its body says `throw;`, so this is
                     // the shape a rethrow out of `catch { … }` arrives in.
                     Type caught = _r.Types.TryGetValue("Exception", out TypeSymbol? root)
-                                ? new Type { Prim = Prim.Void, Symbol = root }
+                                ? Type.Plain(root, Prim.Void)
                                 : Type.Error;
 
                     if (c.Type != null)
@@ -6459,11 +6448,7 @@ public sealed partial class Binder
         {
             if (second.Symbol.DerivesFrom(candidate))
             {
-                return new Type
-                {
-                    Prim = Prim.Void, Symbol = candidate,
-                    Nullable = first.Nullable || second.Nullable,
-                };
+                return Type.Plain(candidate, Prim.Void, first.Nullable || second.Nullable);
             }
         }
         return null;
@@ -6485,7 +6470,7 @@ public sealed partial class Binder
         {
             foreach (TypeSymbol face in at.Interfaces)
             {
-                Type candidate = new() { Prim = Prim.Void, Symbol = face };
+                Type candidate = Type.Plain(face, Prim.Void);
                 if (Convertible(other, candidate))
                 {
                     return candidate;
@@ -6908,7 +6893,7 @@ public sealed partial class Binder
                 if (enclosingThis is not null)
                 {
                     enclosingThisSource = new ThisSym(
-                        new Type { Prim = Prim.Void, Symbol = enclosingThis });
+                        Type.Plain(enclosingThis, Prim.Void));
                 }
             }
         }
@@ -6916,7 +6901,7 @@ public sealed partial class Binder
 
         if (enclosingThis is not null && enclosingThisSource is not null)
         {
-            Type thisType = new() { Prim = Prim.Void, Symbol = enclosingThis };
+            Type thisType = Type.Plain(enclosingThis, Prim.Void);
             thisField = new FieldSymbol
             {
                 Name = "$this", Type = thisType, Owner = closure, Offset = at,
@@ -8420,7 +8405,7 @@ public sealed partial class Binder
                         Else = chosen.List is { } listed
                             ? new ConditionalExpr
                             {
-                                Cond = Exactly(RefOf(new Type { Symbol = listed })!), Then = Num(1),
+                                Cond = Exactly(RefOf(Type.Plain(listed, Prim.Void))!), Then = Num(1),
                                 Else = new ConditionalExpr { Cond = Exactly(arrayRef), Then = Num(2), Else = Num(0), Line = fe.Line, Col = fe.Col },
                                 Line = fe.Line, Col = fe.Col,
                             }
@@ -8464,7 +8449,7 @@ public sealed partial class Binder
                     ? new IfStmt
                     {
                         Cond = Is(1),
-                        Then = Set(listWalker, Called(new CastExpr { Type = RefOf(new Type { Symbol = listType })!, Operand = Named(held), Line = fe.Line, Col = fe.Col }, "GetEnumerator")),
+                        Then = Set(listWalker, Called(new CastExpr { Type = RefOf(Type.Plain(listType, Prim.Void))!, Operand = Named(held), Line = fe.Line, Col = fe.Col }, "GetEnumerator")),
                         Else = notList,
                         Line = fe.Line, Col = fe.Col,
                     }
@@ -8956,7 +8941,7 @@ public sealed partial class Binder
             return null;
         }
 
-        Type asEnum = new() { Prim = chosen.EnumUnderlying, Symbol = chosen };
+        Type asEnum = Type.Plain(chosen, chosen.EnumUnderlying);
         List<Expr> rest = call.Args.Skip(skip).ToList();
 
         switch (named.Name)
@@ -9215,7 +9200,7 @@ public sealed partial class Binder
         // and ITuple's members, which .NET implements explicitly. The
         // interfaces are added when the library's have their slots
         // (TupleFaces).
-        Type self = new() { Prim = Prim.Void, Symbol = tuple };
+        Type self = Type.Plain(tuple, Prim.Void);
         MethodSymbol Member(string name, Type returns, params (string Name, Type Type)[] parameters)
         {
             MethodSymbol m = new() { Name = name, Returns = returns, Owner = tuple };
@@ -9749,7 +9734,7 @@ public sealed partial class Binder
             {
                 return null;
             }
-            made = Close(WithArgs(new Type { Prim = Prim.Void, Symbol = generic }, args), new Dictionary<string, Type>());
+            made = Close(WithArgs(Type.Plain(generic, Prim.Void), args), new Dictionary<string, Type>());
         }
 
         if (made is null || made.IsError) return null;
@@ -11535,14 +11520,14 @@ public sealed partial class Binder
                 if (_capturedThisType is not null && _capturedThisField is not null)
                 {
                     _r.Resolved[e] = new FieldSym(_capturedThisField);
-                    return new Type { Prim = Prim.Void, Symbol = _capturedThisType };
+                    return Type.Plain(_capturedThisType, Prim.Void);
                 }
                 if (_thisType is null || _method is { Static: true })
                 {
                     Error(e, "'this' is not available in a static method");
                     return Type.Error;
                 }
-                return new Type { Prim = Prim.Void, Symbol = _thisType };
+                return Type.Plain(_thisType, Prim.Void);
 
             case NameExpr n:
                 return CheckName(n);
@@ -14048,7 +14033,7 @@ public sealed partial class Binder
                     Error(e, "'base' is not available: this type has no base class");
                     return Type.Error;
                 }
-                return new Type { Prim = Prim.Void, Symbol = _thisType.Base };
+                return Type.Plain(_thisType.Base, Prim.Void);
 
             default:
                 return Type.Error;
@@ -14932,7 +14917,7 @@ public sealed partial class Binder
                 || (Alias(n.Name) is string globalAlias && _r.Types.TryGetValue(globalAlias, out globalType))))
         {
             _r.Resolved[n] = new TypeNameSym(globalType);
-            return new Type { Prim = Prim.Void, Symbol = globalType };
+            return Type.Plain(globalType, Prim.Void);
         }
 
         // A generic local function's captured variable, handed to it at a
@@ -15018,7 +15003,7 @@ public sealed partial class Binder
             if (n.Name == _thisType.Name)
             {
                 _r.Resolved[n] = new TypeNameSym(_thisType);
-                return new Type { Prim = Prim.Void, Symbol = _thisType };
+                return Type.Plain(_thisType, Prim.Void);
             }
 
             if (FindConstant(_thisType, n.Name) is (long value, Type ctype))
@@ -15131,7 +15116,7 @@ public sealed partial class Binder
             if (n.Name == _lexicalType.Name)
             {
                 _r.Resolved[n] = new TypeNameSym(_lexicalType);
-                return new Type { Prim = Prim.Void, Symbol = _lexicalType };
+                return Type.Plain(_lexicalType, Prim.Void);
             }
 
             if (FindConstant(_lexicalType, n.Name) is (long value, Type ctype))
@@ -15208,7 +15193,7 @@ public sealed partial class Binder
         if (_capturedThisType is not null && n.Name == _capturedThisType.Name)
         {
             _r.Resolved[n] = new TypeNameSym(_capturedThisType);
-            return new Type { Prim = Prim.Void, Symbol = _capturedThisType };
+            return Type.Plain(_capturedThisType, Prim.Void);
         }
 
         // An instance local function is lowered to a closure but retains the
@@ -15352,13 +15337,13 @@ public sealed partial class Binder
         {
             TypeSymbol root = Rooted();
             _r.Resolved[n] = new TypeNameSym(root);
-            return new Type { Prim = Prim.Void, Symbol = root };
+            return Type.Plain(root, Prim.Void);
         }
         if ((FindType(n.Name, out TypeSymbol? type) && type is not null)
             || (Alias(n.Name) is string full && _r.Types.TryGetValue(full, out type)))
         {
             _r.Resolved[n] = new TypeNameSym(type);
-            return new Type { Prim = Prim.Void, Symbol = type };
+            return Type.Plain(type, Prim.Void);
         }
 
         Error(n, $"'{n.Name}' is not declared");
@@ -15579,7 +15564,7 @@ public sealed partial class Binder
             if (Spelt(m) is string path && FindType(path, out TypeSymbol? byPath) && byPath is not null)
             {
                 _r.Resolved[m] = new TypeNameSym(byPath);
-                return new Type { Prim = Prim.Void, Symbol = byPath };
+                return Type.Plain(byPath, Prim.Void);
             }
 
             // AND THEN THE LAST PART ALONE, for the namespaces this compiler
@@ -15588,7 +15573,7 @@ public sealed partial class Binder
             if (_r.Types.TryGetValue(m.Name, out TypeSymbol? qualified))
             {
                 _r.Resolved[m] = new TypeNameSym(qualified);
-                return new Type { Prim = Prim.Void, Symbol = qualified };
+                return Type.Plain(qualified, Prim.Void);
             }
         }
 
@@ -15599,7 +15584,7 @@ public sealed partial class Binder
         if (asType is not null)
         {
             _r.Resolved[m.Target] = new TypeNameSym(asType);
-            target = new Type { Prim = Prim.Void, Symbol = asType };
+            target = Type.Plain(asType, Prim.Void);
         }
         else
         {
@@ -15631,7 +15616,7 @@ public sealed partial class Binder
             && shadowed.Kind == TypeKind.Enum && shadowed.EnumValues.ContainsKey(m.Name)
             && (target.Symbol is null || target.Symbol.FindField(m.Name) is null))
         {
-            Type asEnum = new() { Prim = shadowed.EnumUnderlying, Symbol = shadowed };
+            Type asEnum = Type.Plain(shadowed, shadowed.EnumUnderlying);
 
             _r.Resolved[m] = new ConstSym(shadowed.EnumValues[m.Name], asEnum);
             return asEnum;
@@ -15655,7 +15640,7 @@ public sealed partial class Binder
                 || FindType(holder.Symbol.Key + "." + m.Name, out nested) && nested is not null))
         {
             _r.Resolved[m] = new TypeNameSym(nested);
-            return new Type { Prim = Prim.Void, Symbol = nested };
+            return Type.Plain(nested, Prim.Void);
         }
 
         // Enum member access: State.Idle.
@@ -19282,7 +19267,7 @@ public sealed partial class Binder
                 // now -- it is the difference between "Read, Run" and "5".
                 if (l.Symbol is { Kind: TypeKind.Enum } bits && ReferenceEquals(bits, r.Symbol))
                 {
-                    return new Type { Prim = bits.EnumUnderlying, Symbol = bits };
+                    return Type.Plain(bits, bits.EnumUnderlying);
                 }
                 goto case BinOp.Add;
 
