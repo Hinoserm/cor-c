@@ -598,6 +598,70 @@ static class Gc
         }
     }
 
+    /// AN ESCAPE FROM A REGION, under the verifier: every live heap block's
+    /// words the marker reads, and one that lands in any registered thread's
+    /// region arena is reported -- the holder, its vtable, the offset, the
+    /// address and what it points at. A heap object never holds a region's
+    /// block: the region ends and zeroes it, or the thread ends and its arena
+    /// is given back, while the heap object still reads it. The heap lock is
+    /// held, so no thread on the table gives its arena back meanwhile.
+    static void VerifyRegionEscapes()
+    {
+        long chunk = HeapChunks.Newest();
+        while (chunk != 0 && _verifyReports < 40)
+        {
+            long block = HeapChunks.First(chunk);
+            long end = HeapChunks.End(chunk);
+            long tail = TailIn(chunk);
+            while (block < end && _verifyReports < 40)
+            {
+                long word = Sys.Peek(block);
+                long size = word & SizeMask;
+                if (size < Smallest || block + size > end || !Whole(chunk, block, word))
+                {
+                    break;
+                }
+                if ((word & (FlagFree | FlagMark)) == FlagMark && Sys.Peek(block + KindAt) != KindLeaf && !NumbersOnly(block))
+                {
+                    long p = block + HeaderBytes;
+                    while (p < block + size - tail && _verifyReports < 40)
+                    {
+                        long at = Sys.Peek(p) & WordSize.AddressMask;
+                        long tb = at != 0 && MarkerReads(block, size, p, tail) ? RegionOwner(at) : 0;
+                        if (tb != 0)
+                        {
+                            SayNumber("gc verify region: heap block ", block);
+                            SayNumber("gc verify region:   its vtable ", Sys.Peek(block + HeaderBytes));
+                            SayNumber("gc verify region:   kind ", Sys.Peek(block + KindAt));
+                            SayNumber("gc verify region:   offset ", p - block - HeaderBytes);
+                            SayNumber("gc verify region:   holds arena address ", at);
+                            SayNumber("gc verify region:   which reads ", Sys.Peek(at));
+                            SayNumber("gc verify region:   still filled ", Filled(tb, ChunkOf(tb, at), at) ? 1 : 0);
+                            SayNumber("gc verify region:   thread block ", tb);
+                            SayNumber("gc verify region:   minor ", _minor ? 1 : 0);
+                            _verifyReports = _verifyReports + 1;
+                        }
+                        p = p + WordSize.Bytes;
+                    }
+                }
+                block = block + size;
+            }
+            chunk = HeapChunks.Next(chunk);
+        }
+    }
+
+    // The registered thread whose arena holds `at`, or 0.
+    static long RegionOwner(long at)
+    {
+        long n = GcThreads.Count();
+        for (long i = 0; i < n; i++)
+        {
+            long tb = GcThreads.BlockAt(i);
+            if (tb != 0 && InRegion(tb, at)) return tb;
+        }
+        return 0;
+    }
+
     /// Whether the record RescanHeld read this cycle names a block (the verifier).
     static bool WasHeld(long block)
     {
@@ -4649,6 +4713,9 @@ static class Gc
             // and footer not yet -- and it is that thread's own recheck that
             // reads it, once it is whole.
             if (Sys.Peek(e + 6 * w) != Sys.ThreadBlock()) continue;
+            // Its chunk given back since -- the sweep found nothing live in
+            // it -- and its memory with it: nothing there to read.
+            if (HeapChunks.Of(block) == 0) { Sys.Poke(e, Zero); continue; }
             long word = Sys.Peek(block);
             long size = word & SizeMask;
             // Freed since, or taken again: no longer the block it was.
@@ -4672,6 +4739,13 @@ static class Gc
                 if (home == 0 || watched >= HeapChunks.End(home) || (foot & SizeMask) == size) continue;
             }
             else if (foot == word) continue;
+            // SWEPT, AND FOLDED INTO A DEAD RUN that ends where it ended: the
+            // run's footer is its footer now, and the run's header -- read back
+            // through that footer's size -- says the same. Forget missed it:
+            // its hash slot had gone to a block remembered later.
+            else if ((foot & FlagFree) != 0 && (foot & SizeMask) >= size
+                && HeapChunks.Of(watched + FooterBytes - (foot & SizeMask)) == HeapChunks.Of(block)
+                && Sys.Peek(watched + FooterBytes - (foot & SizeMask)) == foot) { Sys.Poke(e, Zero); continue; }
             _recentReports = _recentReports + 1;
             SayNumber(paged ? "gc owner check: the next slot's header overwritten after it was made, block "
                 : "gc owner check: a footer overwritten after it was made, block ", block);
@@ -6950,6 +7024,16 @@ static class Gc
     /// pointer into someone else's memory, a block already free -- is ignored,
     /// because the compiler frees what it has proved dead and a wrong proof
     /// must cost nothing worse than the memory it forgot to give back.
+    // Whether `at` is in a heap chunk, asked under the heap lock: the index
+    // is nobody's to read without it. Not for a caller inside the allocator.
+    static bool OnHeapLocked(long at)
+    {
+        GcLock.Enter();
+        bool on = HeapChunks.Of(at) != 0;
+        GcLock.Exit();
+        return on;
+    }
+
     public static void Free(long at)
     {
         // NOT ON TOP OF THE ALLOCATOR, NOR OF THE HEAP LOCK'S HOLDER. A
@@ -6981,7 +7065,10 @@ static class Gc
             return;
         }
         if (AllocSamples.Tracking) AllocSamples.Freed(at);
-        if (_heapCheck && (at & 3) == 0)
+        // ON THE HEAP ONLY: a wrong proof's free of a literal laid out in the
+        // image has no header before it, and the span its first word makes
+        // ran past everything mapped.
+        if (_heapCheck && (at & 3) == 0 && OnHeapLocked(at))
         {
             long guarded = at - HeaderBytes;
             long head = Sys.Peek(guarded);
@@ -10935,6 +11022,7 @@ static class Gc
         long reportsBefore = _verifyReports;
         if (_minor && (_verifyGenerations || VerifyHeap)) VerifyMinor();
         if (!_minor && (_verifyGenerations || VerifyMarks || VerifyHeap)) VerifyMajor();
+        if (_verifyGenerations || VerifyMarks || VerifyHeap) VerifyRegionEscapes();
         VerifyStop(reportsBefore);
         HeapChunks.SetBlockAnchorsActive(false);
         if (_verify) CheckQuarantine();
@@ -11093,9 +11181,10 @@ static class Gc
         if (_minor && (_verifyGenerations || VerifyHeap)) VerifyMinor();
         if (!_minor && (_verifyGenerations || VerifyMarks || VerifyHeap)) VerifyMajor();
         if (_verifyGenerations || VerifyMarks || VerifyHeap) VerifyNewcomers();
-        VerifyStop(verifiedBefore);
 
         GcLock.Enter();
+        if (_verifyGenerations || VerifyMarks || VerifyHeap) VerifyRegionEscapes();
+        VerifyStop(verifiedBefore);
         HeapChunks.SetBlockAnchorsActive(false);
         GcThreads.CaptureBuffers();
         GcThreads.UnmarkBuffers();
