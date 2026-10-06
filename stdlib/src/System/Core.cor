@@ -12718,18 +12718,31 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
 
     /// A key already there is an error, as in .NET: the indexer is how a value
     /// is replaced.
+    ///
+    /// ONE PROBE, where this asked ContainsKey and then the indexer: the
+    /// key's hash worked out and its chain walked once. A table that has to
+    /// be made or grown first goes the way it went, looked up before it is
+    /// grown -- a key already there grows nothing -- and stored after.
     public void Add(K key, V value) {
-        if (ContainsKey(key)) ThrowHelper.DuplicateKey(KeyText(key));
-        this[key] = value;
+        if (hashes == null || Crowded()) {
+            if (ContainsKey(key)) ThrowHelper.DuplicateKey(KeyText(key));
+            this[key] = value;
+            return;
+        }
+        if (!Put(key, value, false)) ThrowHelper.DuplicateKey(KeyText(key));
     }
 
     /// TRUE WHEN IT WENT IN, false when the key was already there and the
     /// value it had was LEFT ALONE. .NET's TryAdd, and the difference from Add
     /// is the whole of why it exists: a first-writer-wins table is one call.
+    /// One probe, as Add's.
     public bool TryAdd(K key, V value) {
-        if (ContainsKey(key)) { return false; }
-        this[key] = value;
-        return true;
+        if (hashes == null || Crowded()) {
+            if (ContainsKey(key)) { return false; }
+            this[key] = value;
+            return true;
+        }
+        return Put(key, value, false);
     }
 
     /// .NET's GetValueOrDefault, which says out loud what the indexer here
