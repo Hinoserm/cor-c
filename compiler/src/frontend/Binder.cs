@@ -5997,7 +5997,8 @@ public sealed partial class Binder
         if (t.Symbol is not { Kind: TypeKind.Struct } s) return false;
         if (s.Name.StartsWith(TypeRef.Tuple, StringComparison.Ordinal)) return false;
         for (TypeSymbol? at = s; at != null; at = at.Base)
-            if (at.Methods.Any(m => m.Static && m.Name is "op_Equality" or "op_Inequality")) return false;
+            if ((at.MayHave("op_Equality") || at.MayHave("op_Inequality"))
+                && at.Methods.Any(m => m.Static && m.Name is "op_Equality" or "op_Inequality")) return false;
         return true;
     }
 
@@ -9351,8 +9352,15 @@ public sealed partial class Binder
     /// <summary>Reachable's walk: a method of its own, not a local function closing over the list and the name.</summary>
     private static void Reach(TypeSymbol at, string name, List<MethodSymbol> found)
     {
-        foreach (MethodSymbol m in at.Methods)
-            if (m.Name == name) found.Add(m);
+        // ITS OWN only when it may have one by this name (TypeSymbol.
+        // MayHave): a GetEnumerator, Dispose or get_Item asked of a type whose
+        // members wait is not a reason to declare them all, and its base and
+        // interfaces below are asked all the same.
+        if (at.MayHave(name))
+        {
+            foreach (MethodSymbol m in at.Methods)
+                if (m.Name == name) found.Add(m);
+        }
 
         if (at.Base != null)
         {
@@ -19083,6 +19091,8 @@ public sealed partial class Binder
         {
             if (ReferenceEquals(twin, home)) return best;
             int place = best.Decl?.TemplateIndex ?? -1;
+            // Not declared to be told it has none (TypeSymbol.MayHave).
+            if (!twin.MayHave(best.Name)) return null;
             return twin.Methods.FirstOrDefault(m => m.Name == best.Name && m.TypeParams.Count == best.TypeParams.Count
                                                   && m.Params.Count == best.Params.Count
                                                   && (place < 0 || m.Decl?.TemplateIndex == place));
@@ -19113,8 +19123,13 @@ public sealed partial class Binder
                 // implementation for this interface first, then a public one
                 // of the name -- on this class or inherited.
                 string ifaceName = ExplicitName(face);
-                own = t.Methods.FirstOrDefault(m => m.ExplicitMember == best.Name && m.ExplicitInterface == ifaceName
-                          && !m.Abstract && m.TypeParams.Count == best.TypeParams.Count && MethodSignatures.Implements(m, wanted))
+                // ITS OWN, explicit or not, only when one of its members may
+                // be called this (TypeSymbol.MayHave, which counts an explicit
+                // implementation by the member it implements): every class of
+                // the unit is walked here, and one that cannot have the method
+                // is not declared to find that out. FindMethods asks its bases.
+                own = (t.MayHave(best.Name) ? t.Methods.FirstOrDefault(m => m.ExplicitMember == best.Name && m.ExplicitInterface == ifaceName
+                          && !m.Abstract && m.TypeParams.Count == best.TypeParams.Count && MethodSignatures.Implements(m, wanted)) : null)
                    ?? t.FindMethods(best.Name).FirstOrDefault(m => !m.Static && !m.Abstract
                           && m.TypeParams.Count == best.TypeParams.Count && MethodSignatures.Implements(m, wanted));
             }
@@ -19135,7 +19150,7 @@ public sealed partial class Binder
                 // ITS OWN override, declared here: a class that inherits one
                 // is matched by the class it inherits it from, further down
                 // the list.
-                own = t.Methods.FirstOrDefault(m => ReferenceEquals(m.Owner, t) && m.Name == best.Name && !m.Abstract
+                own = !t.MayHave(best.Name) ? null : t.Methods.FirstOrDefault(m => ReferenceEquals(m.Owner, t) && m.Name == best.Name && !m.Abstract
                     && (m.Override || ReferenceEquals(m, wanted)) && MethodSignatures.Implements(m, wanted));
             }
 
