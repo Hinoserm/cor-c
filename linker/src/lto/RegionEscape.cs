@@ -3135,7 +3135,7 @@ internal sealed class RegionEscape
             int o = _locObject[loc];
             if (IsConstant(o)) { Add(dest, Constant); return; }
             int at = Offset(_locOffset[loc], offset);
-            if (at == Any) { LoadedAll(loc, dest); return; }
+            if (at == Any) { LoadedAll(loc, dest, family); return; }
             // A word never read as a reference holds a number: the unknown
             // object at most. But a load naming a field names a reference
             // field of its class (Lowering.FieldFamily), and an object whose
@@ -3203,12 +3203,15 @@ internal sealed class RegionEscape
                 if (StepFamily(step) >= 0 && StepOffset(step) == at && _loadedFrom.Add(Pair(node, dest))) CopyEdge(node, dest, 0);
         }
 
-        private void LoadedAll(int loc, int dest)
+        private void LoadedAll(int loc, int dest, int family = -1)
         {
             int o = _locObject[loc];
             if (o == 0) { Add(dest, Unknown); return; }
             if (IsConstant(o)) { Add(dest, Constant); return; }
-            if (NoReference(o, Any)) { if (!_deepReaders.Contains(dest)) Add(dest, Unknown); return; }
+            // An object of numbers read whole: nothing a deep step reaches, and
+            // nothing a load naming a reference field reads -- one at an offset
+            // nobody knew, of an address into the object (Loaded).
+            if (NoReference(o, Any)) { if (!_deepReaders.Contains(dest) && family < 0) Add(dest, Unknown); return; }
             HashSet<int> readers = _allReaders[o] ??= new();
             if (!readers.Add(dest)) return;
             Cell(o, Any);
