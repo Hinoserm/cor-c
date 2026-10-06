@@ -543,6 +543,13 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
     {
         _fd = Os.Open(path, 2, 0);          // O_RDWR
         if (_fd < 0) throw new IOException("cannot open seat " + path);
+        // THIS THREAD ATTACHED BEFORE ITS FIRST CALL. A call from a thread
+        // that is not is refused at the gate, and the kernel says so on the
+        // console as a refusal; Call's attach on ENOSYS is for a thread the
+        // GUI kernel let go of -- a crash, or another thread of this program
+        // coming in for the first time. A failure here is Call's to answer,
+        // at the first ioctl.
+        Attach();
         Width = (int)Ioctl(SeatIoctl.Width, 0);
         Height = (int)Ioctl(SeatIoctl.Height, 0);
         Format = (int)Ioctl(SeatIoctl.Format, 0);
