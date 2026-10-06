@@ -1992,7 +1992,60 @@ static class Gc
     /// triggers the next one.
     public static long Since
     {
-        get { return _since; }
+        get
+        {
+            // EXACT FOR THE THREAD THAT ASKS (GC.GetTotalMemory): its lists
+            // are charged as they are handed over (Charge), so what is still
+            // on them was never handed out; what it took and has not yet had
+            // folded in (Tls.ClassBytes) was.
+            long tb = Sys.ThreadBlock();
+            long pending = tb != 0 ? Sys.Peek(tb + Tls.ClassBytes) : 0;
+            long since = _since + pending - OwnListBytes();
+            return since > 0 ? since : 0;
+        }
+    }
+
+    /// THE BYTES ON THIS THREAD'S OWN CLASS LISTS, charged as each list was
+    /// handed over (Charge) and not yet taken: what the counters a program
+    /// reads (Since, Allocated, AllocatedByThread) take off, so that they say
+    /// what was handed out -- a string made and freed in a loop goes back on
+    /// its list, and costs nothing, as it did when each block was counted as
+    /// it was taken. Read inside the allocator (Tls.InAlloc), as the lists
+    /// are popped: an interrupt that allocates or frees between two links is
+    /// refused meanwhile; on top of the allocator itself, nothing is read.
+    /// Another thread's lists are not this one's to walk; theirs stay as
+    /// charged until they are handed back (RetireClasses), as their counts
+    /// not yet folded in were never counted before.
+    public static long OwnListBytes()
+    {
+        long tb = Sys.ThreadBlock();
+        if (tb == 0 || _classSize == 0 || Sys.Peek(tb + Tls.InAlloc) != 0) return 0;
+        Sys.Poke(tb + Tls.InAlloc, 1);
+        long cache = Sys.Peek(tb + Tls.Classes);
+        if (cache == 0) cache = Sys.Peek(tb + Tls.ClassesSaved);
+        long bytes = 0;
+        if (cache != 0)
+        {
+            for (long c = 0; c < Classes; c++)
+            {
+                long size = ClassSize(c);
+                long page = Sys.Peek(cache + c * (2 * WordSize.Bytes));
+                long block = Sys.Peek(cache + c * (2 * WordSize.Bytes) + WordSize.Bytes);
+                if (page == 0) continue;
+                long first = HeapChunks.First(page);
+                long end = HeapChunks.End(page);
+                // Bounded by the page: a link outside it ends the walk.
+                long left = (end - first) / size + 1;
+                while (block != 0 && block >= first && block < end && left > 0)
+                {
+                    bytes = bytes + size;
+                    block = Sys.Peek(block + KindAt);
+                    left = left - 1;
+                }
+            }
+        }
+        Sys.Poke(tb + Tls.InAlloc, 0);
+        return bytes;
     }
 
     /// Bytes allocated since the program began, by every thread: what their
@@ -2005,7 +2058,8 @@ static class Gc
             GcLock.Enter();
             long total = _allocated;
             GcLock.Exit();
-            return total + InBuffer(Sys.ThreadBlock());
+            long made = total + InBuffer(Sys.ThreadBlock()) - OwnListBytes();
+            return made > 0 ? made : 0;
         }
     }
 
@@ -2016,9 +2070,10 @@ static class Gc
         {
             long block = Sys.ThreadBlock();
             if (block == 0) return Allocated;
-            return (Sys.Peek(block + Tls.Allocated) & 0xFFFFFFFF)
+            long made = (Sys.Peek(block + Tls.Allocated) & 0xFFFFFFFF)
                  + ((Sys.Peek(block + Tls.Allocated + WordSize.Bytes) & 0xFFFFFFFF) << 32)
-                 + InBuffer(block);
+                 + InBuffer(block) - OwnListBytes();
+            return made > 0 ? made : 0;
         }
     }
 
@@ -4280,8 +4335,10 @@ static class Gc
                 Sys.Poke(tail + KindAt, HeapChunks.PageFree(page));
                 HeapChunks.SetPageFree(page, head);
                 HeapChunks.SetLargestHole(page, HeapChunks.LargestHole(page) + unused);
-                // Charged as the list was handed over (Charge), never taken.
-                Uncount(tb, unused);
+                // Charged as the list was handed over (Charge), never taken:
+                // off the pressure and off what the thread is said to have
+                // allocated, where the charge was folded in already.
+                Uncharge(tb, unused);
             }
             // A page given up with its list dry but not all laid out: more
             // laid out, so that it goes on its class's list and its room is
@@ -4414,6 +4471,22 @@ static class Gc
             _since = _since - (size - off);
             if (_since < 0) _since = Zero;
         }
+    }
+
+    /// A list's bytes charged (Charge) and handed back untaken: off the
+    /// thread's pending count as far as that goes, the rest off the pressure
+    /// counter and off the allocated counts it was folded into (Count). The
+    /// heap lock is held.
+    static void Uncharge(long tb, long bytes)
+    {
+        long pending = tb != 0 ? Sys.Peek(tb + Tls.ClassBytes) : 0;
+        long off = pending < bytes ? pending : bytes;
+        if (off > 0) Sys.Poke(tb + Tls.ClassBytes, pending - off);
+        long rest = bytes - off;
+        if (rest <= 0) return;
+        _since = _since - rest;
+        if (_since < 0) _since = Zero;
+        Count(tb, -rest);
     }
 
     /// This thread's small allocations counted into the pressure counter
