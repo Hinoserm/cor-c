@@ -12413,6 +12413,11 @@ interface IReadOnlyDictionary<K, V> : IEnumerable<KeyValuePair<K, V>> {
 }
 
 class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>>, IOwnsElements {
+    // A TABLE MADE WITH NO CAPACITY STARTS AT FOUR SLOTS, and grows as it
+    // fills: the compiler's own symbols make tens of thousands of tables
+    // that hold one or two entries, each five arrays of sixteen slots at
+    // sixteen -- the largest single kind of memory a unit's binding held.
+    private const int SmallestTable = 4;
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
@@ -12561,7 +12566,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     // every lookup of an empty table finds nothing.
     public Dictionary() {
         count = 0;
-        mask = 15;
+        mask = SmallestTable - 1;
         by = null;
     }
 
@@ -12583,7 +12588,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
 
     public Dictionary(IEqualityComparer<K> comparer) {
         count = 0;
-        mask = 15;
+        mask = SmallestTable - 1;
         by = comparer;
         compares = Comparing(comparer);
     }
@@ -14535,6 +14540,8 @@ class HashSetEnumerator<T> : IEnumerator<T> {
 }
 
 class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
+    // As Dictionary's: four slots to begin with (SmallestTable).
+    private const int SmallestTable = 4;
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
@@ -14671,7 +14678,7 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
     public HashSet() {
         count = 0;
         filled = 0;
-        mask = 15;
+        mask = SmallestTable - 1;
     }
 
     /// ROOM FOR `capacity` MEMBERS before the first growth, as .NET's
