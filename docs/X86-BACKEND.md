@@ -1047,41 +1047,49 @@ image-wide precise collector must enumerate every table through a linker-built
 directory or explicit registration; choosing one object's table is incorrect.
 Nothing executes this data, and a program without a collector pays only its bytes.
 
-    header, 20 bytes
-      +0   magic 'CSM1' (0x314d5343)
-      +4   version, 2
-      +8   entry count
-      +12  entry stride, 16
+The layout is version 6, written by `StackMapTable` in the linker's object
+model (linker/src/model/StackMapTable.cs, which has it in full), shared by
+the code generator and by the link when it cuts duplicate bodies, and read
+by the collector (`Gc.MapSite`). All little-endian, offsets from the table:
+
+    header, 36 bytes
+      +0   magic 'CSM1' (0x314d5343)        +4   version, 6
+      +8   function count                   +12  call-site count
       +16  the BASE: the address of the first function in this object
            that has a call site -- the table's one relocation
+      +20  checkpoint count                 +24  the span: code bytes from
+                                                 the base the table covers
+      +28  the stream's offset              +32  the bitmap pool's offset
 
-    entry, 16 bytes, one per call site, in code order per function
-      +0   the RETURN address of the call, less the base. Version 1 held
-           the address whole, and in a shared object every entry was a
-           relocation applied at every exec (four thousand of the runtime
-           library's six and a half thousand) and its pages a private
-           copy per process; every function of an object is in its one
-           text section, so the distance is known when the table is
-           written, as the frame table has always done it
-      +4   callee-saved registers holding references at that point, one
-           bit per hardware register number (EBX 3, ESI 6, EDI 7). No
-           other bit can be set: a value live across a call is never left
-           in a caller-saved register.
-      +8   byte offset from the start of the table to this entry's slot
-           bitmap, or zero when no frame slot holds a reference
-      +12  bytes of frame below EBP, so a walker can sanity-check a
-           bitmap against the frame it is reading
+    checkpoints, 12 bytes, one every 32nd call site, ascending
+      +0   the anchor that site's delta counts from (a code offset)
+      +4   the site's offset in the table   +8   its function record's
 
-    bitmaps, after the entries
-      +0   length in words
-      +4.. the bits; bit i of word k stands for the slot at
-           [EBP - 4*(32k + i + 1)]
+    the stream, all ULEB128, per function in address order
+      start - anchor (the anchor: the previous function's last return
+        address, 0 at first; the start becomes the anchor)
+      frame size << 3 | saved registers (bit 0 EBX, 1 ESI, 2 EDI)
+      the IR frame slots' bitmap reference
+      per call site: return address - anchor (never 0; it becomes the
+        anchor), then bitmap reference << 4 | live registers | 8 for a
+        call with no map
+      0, the end of the function's sites
 
-Entries are not sorted: the linker decides the addresses, so ordering is
-the runtime's to do once at startup if it wants a binary search rather
-than a scan. A return address is looked up by equality against base plus
-the entry's word, and a frame whose return address is not in the table
-is a frame this compiler did not emit.
+    the pool: per bitmap, a byte count and the bytes; bit b of byte k is
+      the word at [EBP - 4*(8k + b + 1)]
+
+A bitmap reference is odd for a bitmap held inline (ref >> 1, bit b the
+word at [EBP - 4*(b + 1)], up to sixteen words) and even for one in the
+pool (ref >> 1 its offset there); pooled bitmaps are stored once and
+placed most used first, so the common references are the short ones.
+Version 5 spent sixteen bytes a function and eight a call site; this is
+about two bytes a site and five a function.
+
+A return address is looked up by a binary search of the checkpoints for
+the last anchor below it, then a forward read of at most thirty-two sites
+until it is reached or passed; a frame whose return address is not in the
+table is a frame this compiler did not emit, and is read whole. The
+runtime keeps one index record per table, sorted once.
 
 **Array covariance.** A Dog[] may be held as an Animal[], as C# allows, and a
 store into an array whose element type is written as `object`, an interface
@@ -1281,20 +1289,33 @@ linker script has to learn about, and carried by a flat freestanding
 image exactly as by an ELF.
 
 The table is compact because it is in every image: a fixed twenty bytes
-a function came to sixty kilobytes on the kernel, and these entries
-average nine. The addresses ascend, so each is the distance from the one
-before it, and the whole table needs ONE relocation -- the first
-function's address. Nothing can binary-search it and nothing needs to:
-the only reader is a fault, and a fault can afford a walk.
+a function came to sixty kilobytes on the kernel. The addresses ascend,
+so each entry says only how far its function starts past the end of the
+one before, and the whole table needs ONE relocation -- the first
+function's address. A name is a delta from the name before, a file is
+said only when it changes, and a line program by its length. Nothing can
+binary-search it and nothing needs to: the only reader is a fault, and a
+fault can afford a walk. The layout is `FrameTableFormat`'s, in the
+linker's object model (linker/src/model/FrameTableFormat.cs).
 
 All little-endian, all offsets from the symbol:
 
 | part | contents |
 | --- | --- |
-| header | `u32` magic `'CFRM'`, `u32` count, `u32` base (relocated), `u32` strings, `u32` lines |
-| an entry | uleb start delta, uleb size, uleb name, uleb file, uleb line program plus one (zero meaning none) |
-| a line program | uleb count, then that many (uleb offset delta, sleb line delta) |
+| header | `u32` magic `'CFR3'`, `u32` count, `u32` base (relocated), `u32` strings, `u32` lines |
+| an entry | sleb start less the previous entry's end, uleb size, sleb name less the previous name, uleb file (0 the previous one's, else file + 1), uleb line program length (0 none) |
+| a line program | uleb count, then that many (uleb offset delta, sleb line delta); in entry order |
 | the strings | each ending in a zero byte |
+
+At the link every table becomes `'CFR4'`: the word at +12 is the address
+of the image's one name pool, `__corsac_frame_pool`, and a name or file is
+the offset of a name there. The pool (`'CFP1'`, its token count, the
+names' offset, a word per token for where it starts and one for where the
+last ends, the tokens' bytes, then the names) spells each name as a
+ULEB128 count of tokens and their indices: a token is a run of separators
+(`. $ _ ( ) , [ ] < > `` ` `` / ` and space) and the run after it, and
+generic names repeat in tokens far more than whole, so most of a name is
+one-byte indices of words stored once.
 
 `Sys.FrameTable()` is the address of the table and `Sys.FramePointer()`
 the current frame; `Runtime.Trace(frame)` walks the one and looks each

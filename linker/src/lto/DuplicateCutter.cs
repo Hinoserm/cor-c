@@ -23,7 +23,7 @@ internal static class DuplicateCutter
     const string CodeBase = "__corsac_code_base";
     const string FramesBase = "__corsac_frames_base";
     const uint StackMapMagic = 0x314d5343;      // 'CSM1'
-    const uint FrameMagic = 0x4D524643;         // 'CFRM'
+    const uint FrameMagic = FrameTableFormat.Local;     // 'CFR3'
     const string FrameSymbol = "__corsac_frames";
     const string StackMapStart = "__corsac_stackmaps";
     const string StackMapEnd = "__corsac_stackmaps_end";
@@ -211,9 +211,11 @@ internal static class DuplicateCutter
         return 0;
     }
 
-    /// The stack-map table: 'CSM1', a version, the count, the entry size and
-    /// the relocated base; entries whose first word is a return address from
-    /// the base; then the pool of bitmaps the entries point into.
+    /// The stack-map table: 'CSM1' and a version. Version 6 (StackMapTable,
+    /// the x86 code generator's) is decoded and encoded again; versions 3 and
+    /// 4 (the x86-64 generator's is 3) are fixed entries -- the count, the
+    /// entry size and the relocated base, entries whose first word is a
+    /// return address from the base, then the pool of bitmaps they point into.
     sealed class StackMaps
     {
         public required Section Section;
@@ -230,17 +232,14 @@ internal static class DuplicateCutter
             List<byte> b = s.Bytes;
             if (b.Count < 20 || U32(b, 0) != StackMapMagic) { m.Unknown = true; return m; }
             uint version = U32(b, 4);
-            if (version == 5)
+            if (version == StackMapTable.Version)
             {
-                // A function record each, then a site record each (X86Backend.EmitStackMaps).
-                if (b.Count < 32) { m.Unknown = true; return m; }
-                m._v5 = true;
-                m._count = (int)U32(b, 8);
-                m._sites = (int)U32(b, 12);
-                if (m._count == 0) return null;
-                if (U32(b, 20) != 32 + m._count * 16 || U32(b, 28) != U32(b, 20) + m._sites * 8 || b.Count < U32(b, 28)) { m.Unknown = true; return m; }
-                m._base = BaseOffset(obj, s, 16, code, out bool known5);
-                if (!known5) m.Unknown = true;
+                // Functions with their sites, as varints (StackMapTable).
+                m._functions = StackMapTable.Decode(b);
+                if (m._functions is null) { m.Unknown = true; return m; }
+                if (m._functions.Count == 0) return null;
+                m._base = BaseOffset(obj, s, StackMapTable.BaseOffset, code, out bool known6);
+                if (!known6) m.Unknown = true;
                 return m;
             }
             m._count = (int)U32(b, 8);
@@ -253,56 +252,29 @@ internal static class DuplicateCutter
             return m;
         }
 
-        bool _v5;
-        int _sites;
+        List<StackMapTable.Function>? _functions;
 
-        /// Version 5: functions whose code was cut go with their sites; the
+        /// Version 6: functions whose code was cut go with their sites; the
         /// rest are measured from the code's first byte (the new base), their
-        /// sites unchanged, and pooled bitmaps move down with the tables.
+        /// sites unchanged, and the table is encoded again.
         void WriteFunctions(List<(long Start, long End)> cuts)
         {
-            List<byte> b = Section.Bytes;
-            int sitesAt = (int)U32(b, 20), poolAt = (int)U32(b, 28);
-            List<(uint Start, uint Frame, uint Objects, int First, int Last)> kept = new();
-            long span = 0;
-            for (int f = 0; f < _count; f++)
+            List<StackMapTable.Function> kept = new();
+            foreach (StackMapTable.Function f in _functions!)
             {
-                int at = 32 + f * 16;
-                long start = _base + U32(b, at);
-                int first = (int)U32(b, at + 12), last = f + 1 < _count ? (int)U32(b, at + 16 + 12) : _sites;
-                long to = Map(cuts, start);
+                long to = Map(cuts, _base + f.Start);
                 if (to < 0) continue;
-                for (int k = first; k < last; k++) span = Math.Max(span, to + (U32(b, sitesAt + k * 8) & 0x7FFFFF) + 1);
-                kept.Add(((uint)to, U32(b, at + 4), U32(b, at + 8), first, last));
+                f.Start = (int)to;
+                kept.Add(f);
             }
-            int keptSites = kept.Sum(k => k.Last - k.First);
-            int shift = (_count - kept.Count) * 16 + (_sites - keptSites) * 8;
-            uint Moved(uint word) => word != 0 && (word & 0x80000000) == 0 ? (uint)(word - shift) : word;
-            List<byte> table = new(b.Count);
-            Put(table, StackMapMagic); Put(table, 5); Put(table, (uint)kept.Count); Put(table, (uint)keptSites);
-            Put(table, 0);                                   // the base, relocated
-            Put(table, (uint)(32 + kept.Count * 16)); Put(table, (uint)span);
-            Put(table, (uint)(32 + kept.Count * 16 + keptSites * 8));
-            int index = 0;
-            foreach (var k in kept)
-            {
-                Put(table, k.Start); Put(table, k.Frame); Put(table, Moved(k.Objects)); Put(table, (uint)index);
-                index += k.Last - k.First;
-            }
-            foreach (var k in kept)
-                for (int site = k.First; site < k.Last; site++)
-                {
-                    Put(table, U32(b, sitesAt + site * 8));
-                    Put(table, Moved(U32(b, sitesAt + site * 8 + 4)));
-                }
-            table.AddRange(b.GetRange(poolAt, b.Count - poolAt));
+            List<byte> b = Section.Bytes;
             b.Clear();
-            b.AddRange(table);
+            b.AddRange(StackMapTable.Encode(kept));
         }
 
         public void Write(List<(long Start, long End)> cuts)
         {
-            if (_v5) { WriteFunctions(cuts); return; }
+            if (_functions is not null) { WriteFunctions(cuts); return; }
             List<byte> b = Section.Bytes;
             List<byte[]> entries = new();
             for (int i = 0; i < _count; i++)
@@ -337,15 +309,17 @@ internal static class DuplicateCutter
         }
     }
 
-    /// The frame table (FrameTable in the compiler): a header, uleb entries
-    /// delta-coded from a relocated base, then line programs and strings.
+    /// The frame table (FrameTable in the compiler, FrameTableFormat its
+    /// layout): a header, entries delta-coded from a relocated base, then the
+    /// line programs in entry order and the strings.
     sealed class Frames
     {
         public required Section Section;
         public required Symbol Symbol;
         public bool Unknown;
         long _base;
-        int _count, _lines, _strings;
+        int _strings;
+        List<(FrameTableFormat.Entry Entry, int ProgramAt)> _entries = new();
 
         public static Frames? Read(ObjectFile obj, Section code)
         {
@@ -354,73 +328,36 @@ internal static class DuplicateCutter
             Frames f = new() { Section = sym.Section!, Symbol = sym };
             List<byte> b = f.Section.Bytes;
             int at = (int)sym.Offset;
-            if (sym.Size < 20 || U32(b, at) != FrameMagic) { f.Unknown = true; return f; }
-            f._count = (int)U32(b, at + 4);
+            if (sym.Size < FrameTableFormat.HeaderBytes || U32(b, at) != FrameMagic) { f.Unknown = true; return f; }
+            var entries = FrameTableFormat.Read(b, at, (int)sym.Size);
+            if (entries is null) { f.Unknown = true; return f; }
+            if (entries.Count == 0) return null;
+            f._entries = entries;
             f._strings = (int)U32(b, at + 12);
-            f._lines = (int)U32(b, at + 16);
-            if (f._count == 0) return null;
-            f._base = BaseOffset(obj, f.Section, at + 8, code, out bool known);
-            if (!known || f._lines > f._strings || f._strings > sym.Size) f.Unknown = true;
+            f._base = BaseOffset(obj, f.Section, at + FrameTableFormat.BaseOffset, code, out bool known);
+            if (!known || f._strings < FrameTableFormat.HeaderBytes || f._strings > sym.Size) f.Unknown = true;
             return f;
         }
 
+        /// The table without the cut functions, their line programs gone with
+        /// them; `first` is where the first kept function now starts, the new base.
         public byte[] Build(List<(long Start, long End)> cuts, out long first)
         {
             List<byte> b = Section.Bytes;
             int at = (int)Symbol.Offset;
-            int p = at + 20;
-            uint Next()
+            List<FrameTableFormat.Entry> kept = new();
+            List<byte> programs = new();
+            first = -1;
+            foreach ((FrameTableFormat.Entry e, int programAt) in _entries)
             {
-                uint v = 0;
-                int shift = 0;
-                while (true)
-                {
-                    byte x = b[p++];
-                    v |= (uint)(x & 0x7F) << shift;
-                    if ((x & 0x80) == 0) return v;
-                    shift += 7;
-                }
-            }
-            List<byte> table = new();
-            long start = _base, previous = -1;
-            int kept = 0;
-            first = 0;
-            for (int i = 0; i < _count; i++)
-            {
-                start += Next();
-                uint size = Next(), name = Next(), file = Next(), line = Next();
-                long to = Map(cuts, start);
+                long to = Map(cuts, _base + e.Start);
                 if (to < 0) continue;
-                if (previous < 0) first = previous = to;
-                Uleb(table, (uint)(to - previous));
-                previous = to;
-                Uleb(table, size);
-                Uleb(table, name);
-                Uleb(table, file);
-                Uleb(table, line);
-                kept++;
+                if (first < 0) first = to;
+                kept.Add(e with { Start = to - first });
+                if (programAt >= 0) programs.AddRange(b.GetRange(at + programAt, e.Program));
             }
-            List<byte> all = new();
-            Put(all, FrameMagic);
-            Put(all, (uint)kept);
-            Put(all, 0);
-            int lines = 20 + table.Count;
-            Put(all, (uint)(lines + (_strings - _lines)));
-            Put(all, (uint)lines);
-            all.AddRange(table);
-            all.AddRange(b.GetRange(at + _lines, (int)Symbol.Size - _lines));
-            return all.ToArray();
-        }
-
-        static void Uleb(List<byte> into, uint v)
-        {
-            do
-            {
-                byte x = (byte)(v & 0x7F);
-                v >>= 7;
-                into.Add(v != 0 ? (byte)(x | 0x80) : x);
-            }
-            while (v != 0);
+            if (first < 0) first = 0;
+            return FrameTableFormat.Build(FrameMagic, kept, programs, b.GetRange(at + _strings, (int)Symbol.Size - _strings));
         }
     }
 }
