@@ -37,16 +37,23 @@ public sealed class MethodSymbol
     /// name finds it and it never meets a member of that name the type has
     /// of its own.
     /// </summary>
-    public string? ExplicitInterface { get => _explicitInterface; init => _explicitInterface = value is null ? null : Interned.Name(value); }
-    private readonly string? _explicitInterface;
-    public string? ExplicitMember { get; init; }
+    public string? ExplicitInterface { get => _rare?.ExplicitInterface; init { if (value is not null) Rare.ExplicitInterface = Interned.Name(value); } }
+    public string? ExplicitMember { get => _rare?.ExplicitMember; init { if (value is not null) Rare.ExplicitMember = value; } }
+
+    /// <summary>
+    /// What few methods carry -- an explicit interface and its member, type
+    /// parameters -- in one object made only when one is set. Three words
+    /// fewer put a method symbol in a 64-byte block rather than a 72-byte one.
+    /// </summary>
+    private MethodSymbolRare? _rare;
+    private MethodSymbolRare Rare => _rare ??= new();
+
     // Made only when written: most have none, and a list each was the collector's.
     private static readonly List<string> NoTypeParams = new();
-    private List<string>? _typeParams;
     /// <summary>To read: one shared empty list when there are none, never written through.</summary>
-    public List<string> TypeParams => _typeParams ?? NoTypeParams;
+    public List<string> TypeParams => _rare?.TypeParams ?? NoTypeParams;
     /// <summary>To write: made on first use.</summary>
-    public List<string> WritableTypeParamNames => _typeParams ??= new();
+    public List<string> WritableTypeParamNames => Rare.TypeParams ??= new();
 
     /// <summary>
     /// A GENERIC VIRTUAL METHOD: `virtual T GetValue&lt;T&gt;()`, an override of
@@ -67,4 +74,12 @@ public sealed class MethodSymbol
 
     public string Signature => $"{Owner.Name}.{Name}({string.Join(", ", Params.Select(p => p.Type))})";
     public override string ToString() => Signature;
+}
+
+/// <summary>What few method symbols carry (MethodSymbol._rare).</summary>
+internal sealed class MethodSymbolRare
+{
+    public string? ExplicitInterface;
+    public string? ExplicitMember;
+    public List<string>? TypeParams;
 }
