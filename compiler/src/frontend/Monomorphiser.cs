@@ -238,7 +238,7 @@ public sealed class Monomorphiser
     public static string CopyName(string baseName, IReadOnlyList<TypeRef> args, int member)
     {
         string name = MethodName(baseName, args) + "$" + member;
-        return Metadata.DeclarationIndex.Shared(args.Any(a => a.CanonIndex <= -2) ? name + HiddenTypeArgumentsMark + args.Count : name);
+        return Interned.Name(args.Any(a => a.CanonIndex <= -2) ? name + HiddenTypeArgumentsMark + args.Count : name);
     }
 
     /// <summary>How many hidden type arguments a method copy takes (CopyName): 0 for any other method.</summary>
@@ -1195,11 +1195,11 @@ public sealed class Monomorphiser
     }
 
     /// <summary>The name a specialisation gets. Readable on purpose: it appears in diagnostics.</summary>
-    // ONE COPY OF EACH NAME (Metadata.DeclarationIndex.Shared): a name is
+    // ONE COPY OF EACH NAME (Interned, per unit): a name is
     // made again wherever a specialisation is spelled, and half the bytes
     // of the strings a large unit held were second and later copies.
     internal static string MangledName(string baseName, List<TypeRef> args)
-        => Metadata.DeclarationIndex.Shared(Spelled(baseName, args));
+        => Interned.Name(Spelled(baseName, args));
 
     private static string Spelled(string baseName, List<TypeRef> args)
         => baseName.Replace(".", "$") + "$" + string.Join("$", args.Select(a => a.ToString()
@@ -1211,7 +1211,7 @@ public sealed class Monomorphiser
 
 
     /// <summary>How a generic template is keyed: its name and how many type parameters it takes.</summary>
-    private static string Arity(string name, int count) => Metadata.DeclarationIndex.Shared(name + "`" + count);
+    private static string Arity(string name, int count) => Interned.Name(name + "`" + count);
 
     private static string TemplatePath(TypeDecl type)
         => type.Outer is null ? type.Name : type.Outer + "." + type.Name;

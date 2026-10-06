@@ -477,6 +477,9 @@ public static class Driver
     {
         (CompilationUnit unit, BindResult bound)? front =
             Frontend.Compile(files, name, library, libraryMark, symbols, references, workers, declarations);
+        // The names the front end shared are let go with it: what lowering
+        // still holds keeps its own, and the table kept every one of them.
+        Lang.Interned.Forget();
         if (declarations is not null) Console.Error.WriteLine("indexed declaration payloads loaded=" + declarations.PayloadLoads
             + " passes=" + declarations.Passes + " token-cache hits=" + declarations.Tokens.Hits
             + " misses=" + declarations.Tokens.Misses + " bytes=" + declarations.Tokens.ResidentBytes

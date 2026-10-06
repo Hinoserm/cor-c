@@ -322,18 +322,38 @@ public sealed partial class Binder
         {
             return true;
         }
-        foreach (Node c in SafetyChildren(n))
+        int from = _safety.Count;
+        Expr? marked = AddSafetyChildren(n, _safety);
+        int to = _safety.Count;
+        try
         {
-            if (c is LambdaExpr)
+            for (int i = from; i < to; i++)
             {
-                // A lambda's own awaits are its own; but walking the body
-                // finds the lambda, which is walked by itself.
-                if (HoldsAwaitInLambda((LambdaExpr)c)) return true;
-                continue;
+                Node c = _safety[i];
+                if (c is LambdaExpr)
+                {
+                    // A lambda's own awaits are its own; but walking the body
+                    // finds the lambda, which is walked by itself.
+                    if (HoldsAwaitInLambda((LambdaExpr)c)) return true;
+                    continue;
+                }
+                if (HoldsAwait(c)) return true;
             }
-            if (HoldsAwait(c)) return true;
+            return false;
         }
-        return false;
+        finally { Unwalked(from, marked); }
+    }
+
+    /// <summary>
+    /// The children of the nodes a recursive walk is inside, one slice per
+    /// level (AddSafetyChildren): a level reads its own and gives them back.
+    /// </summary>
+    private readonly List<Node> _safety = new();
+
+    private void Unwalked(int from, Expr? marked)
+    {
+        _safety.RemoveRange(from, _safety.Count - from);
+        if (marked is not null) _inOwnRewrite.Remove(marked);
     }
 
     private bool HoldsAwaitInLambda(LambdaExpr l)
@@ -581,12 +601,22 @@ public sealed partial class Binder
                 return WalkLockStmt(l.Body, JoinLocks(h, w.Gotos), w);
 
             default:
-                foreach (Node c in SafetyChildren(s))
                 {
-                    if (c is Stmt inner) h = WalkLockStmt(inner, h, w);
-                    else if (c is Expr e) h = WalkLockExpr(e, h, w);
+                    int from = _safety.Count;
+                    Expr? marked = AddSafetyChildren(s, _safety);
+                    int to = _safety.Count;
+                    try
+                    {
+                        for (int i = from; i < to; i++)
+                        {
+                            Node c = _safety[i];
+                            if (c is Stmt inner) h = WalkLockStmt(inner, h, w);
+                            else if (c is Expr e) h = WalkLockExpr(e, h, w);
+                        }
+                    }
+                    finally { Unwalked(from, marked); }
+                    return h;
                 }
-                return h;
         }
     }
 
@@ -775,12 +805,22 @@ public sealed partial class Binder
             }
 
             default:
-                foreach (Node c in SafetyChildren(e))
                 {
-                    if (c is Expr inner) h = WalkLockExpr(inner, h, w);
-                    else if (c is Stmt s) h = WalkLockStmt(s, h, w);
+                    int from = _safety.Count;
+                    Expr? marked = AddSafetyChildren(e, _safety);
+                    int to = _safety.Count;
+                    try
+                    {
+                        for (int i = from; i < to; i++)
+                        {
+                            Node c = _safety[i];
+                            if (c is Expr inner) h = WalkLockExpr(inner, h, w);
+                            else if (c is Stmt s) h = WalkLockStmt(s, h, w);
+                        }
+                    }
+                    finally { Unwalked(from, marked); }
+                    return h;
                 }
-                return h;
         }
     }
 
@@ -1180,16 +1220,26 @@ public sealed partial class Binder
             // One buffer for every node's children, reversed onto the stack:
             // a list of its own for each node was most of what the walk cost.
             int below = stack.Count;
-            foreach (Node child in SafetyChildren(n, rewritten)) stack.Add(child);
+            if (AddSafetyChildren(n, stack, rewritten) is { } marked) _inOwnRewrite.Remove(marked);
             stack.Reverse(below, stack.Count - below);
         }
     }
 
-    /// <summary>A node's children as the code runs them: a rewritten expression's rewrite, a lowered statement's lowering.</summary>
     /// <summary>The expressions whose rewrite a recursive walk is inside now: met again there, they are walked by their own children.</summary>
     private readonly HashSet<Node> _inOwnRewrite = new(ReferenceEqualityComparer.Instance);
 
-    private IEnumerable<Node> SafetyChildren(Node n, HashSet<Node>? rewritten = null)
+    /// <summary>
+    /// A node's children as the code runs them, appended to <paramref name="into"/>:
+    /// a rewritten expression's rewrite, a lowered statement's lowering. An
+    /// enumerator per node was a quarter of a gigabyte of garbage in one unit
+    /// of this compiler, every node of every body walked several times.
+    ///
+    /// For a recursive walker (no <paramref name="rewritten"/>), an expression
+    /// whose rewrite is its child is marked as inside its own rewrite, and
+    /// returned: the walker unmarks it once it has walked the children, as
+    /// long as the enumerator's mark used to last.
+    /// </summary>
+    private Expr? AddSafetyChildren(Node n, List<Node> into, HashSet<Node>? rewritten = null)
     {
         if (n is Expr e && _r.Rewrites.TryGetValue(e, out Expr? instead) && !ReferenceEquals(instead, e))
         {
@@ -1197,138 +1247,136 @@ public sealed partial class Binder
             {
                 if (rewritten.Add(e))
                 {
-                    yield return instead;
-                    yield break;
+                    into.Add(instead);
+                    return null;
                 }
             }
             else if (_inOwnRewrite.Add(e))
             {
-                // A recursive walker descends into the rewrite before this
-                // enumerator resumes, so the mark lasts exactly as long.
-                try { yield return instead; }
-                finally { _inOwnRewrite.Remove(e); }
-                yield break;
+                into.Add(instead);
+                return e;
             }
         }
         switch (n)
         {
-            case Block b: foreach (Stmt s in b.Statements) yield return s; break;
+            case Block b: foreach (Stmt s in b.Statements) into.Add(s); break;
             case LocalDecl d:
-                if (d.Init is not null) yield return d.Init;
-                foreach (LocalDecl also in d.Also) yield return also;
+                if (d.Init is not null) into.Add(d.Init);
+                foreach (LocalDecl also in d.Also) into.Add(also);
                 break;
-            case UsingDeclStmt u: yield return u.Declaration; break;
-            case ExprStmt es: yield return es.Expr; break;
+            case UsingDeclStmt u: into.Add(u.Declaration); break;
+            case ExprStmt es: into.Add(es.Expr); break;
             case IfStmt i:
-                yield return i.Cond; yield return i.Then;
-                if (i.Else is not null) yield return i.Else;
+                into.Add(i.Cond); into.Add(i.Then);
+                if (i.Else is not null) into.Add(i.Else);
                 break;
-            case WhileStmt w: yield return w.Cond; yield return w.Body; break;
-            case LabeledStmt l: yield return l.Body; break;
-            case DoStmt d: yield return d.Body; yield return d.Cond; break;
+            case WhileStmt w: into.Add(w.Cond); into.Add(w.Body); break;
+            case LabeledStmt l: into.Add(l.Body); break;
+            case DoStmt d: into.Add(d.Body); into.Add(d.Cond); break;
             case ForStmt f:
-                if (f.Init is not null) yield return f.Init;
-                if (f.Cond is not null) yield return f.Cond;
-                foreach (Expr s in f.Step) yield return s;
-                yield return f.Body;
+                if (f.Init is not null) into.Add(f.Init);
+                if (f.Cond is not null) into.Add(f.Cond);
+                foreach (Expr s in f.Step) into.Add(s);
+                into.Add(f.Body);
                 break;
             case ForeachStmt fe:
-                if (_r.Lowered.TryGetValue(fe, out Stmt? low)) yield return low;
-                else { yield return fe.Sequence; yield return fe.Body; }
+                if (_r.Lowered.TryGetValue(fe, out Stmt? low)) into.Add(low);
+                else { into.Add(fe.Sequence); into.Add(fe.Body); }
                 break;
             case DeconstructStmt ds:
-                if (_r.Lowered.TryGetValue(ds, out Stmt? low2)) yield return low2;
+                if (_r.Lowered.TryGetValue(ds, out Stmt? low2)) into.Add(low2);
                 break;
-            case ReturnStmt r: if (r.Value is not null) yield return r.Value; break;
-            case YieldStmt y: if (y.Value is not null) yield return y.Value; break;
-            case ThrowStmt t: if (t.Value is not null) yield return t.Value; break;
+            case ReturnStmt r: if (r.Value is not null) into.Add(r.Value); break;
+            case YieldStmt y: if (y.Value is not null) into.Add(y.Value); break;
+            case ThrowStmt t: if (t.Value is not null) into.Add(t.Value); break;
             case SwitchStmt sw:
-                yield return sw.Subject;
+                into.Add(sw.Subject);
                 foreach (SwitchCase c in sw.Cases)
                 {
-                    if (c.Pattern is not null) yield return c.Pattern;
-                    foreach (Stmt s in c.Body) yield return s;
+                    if (c.Pattern is not null) into.Add(c.Pattern);
+                    foreach (Stmt s in c.Body) into.Add(s);
                 }
                 break;
             case TryStmt ts:
-                yield return ts.Body;
+                into.Add(ts.Body);
                 foreach (CatchClause c in ts.Catches)
                 {
-                    if (c.When is not null) yield return c.When;
-                    yield return c.Body;
+                    if (c.When is not null) into.Add(c.When);
+                    into.Add(c.Body);
                 }
-                if (ts.Finally is not null) yield return ts.Finally;
+                if (ts.Finally is not null) into.Add(ts.Finally);
                 break;
-            case ThrowExpr te: yield return te.Value; break;
-            case GotoCaseStmt gc: if (gc.Value is not null) yield return gc.Value; break;
-            case TupleExpr tu: foreach (Expr x in tu.Items) yield return x; break;
+            case ThrowExpr te: into.Add(te.Value); break;
+            case GotoCaseStmt gc: if (gc.Value is not null) into.Add(gc.Value); break;
+            case TupleExpr tu: foreach (Expr x in tu.Items) into.Add(x); break;
             case RangeExpr rg:
-                if (rg.From is not null) yield return rg.From;
-                if (rg.To is not null) yield return rg.To;
+                if (rg.From is not null) into.Add(rg.From);
+                if (rg.To is not null) into.Add(rg.To);
                 break;
-            case FromEndExpr fe2: yield return fe2.Offset; break;
-            case PatternExpr p: yield return p.Subject; yield return p.Test; break;
-            case SequenceExpr q: yield return q.Effect; yield return q.Value; break;
-            case SuppressExpr s: yield return s.Operand; break;
-            case MemberExpr m: yield return m.Target; break;
-            case CallExpr c: yield return c.Target; foreach (Expr a in c.Args) yield return a; break;
-            case IndexExpr ix: yield return ix.Target; foreach (Expr a in ix.Args) yield return a; break;
+            case FromEndExpr fe2: into.Add(fe2.Offset); break;
+            case PatternExpr p: into.Add(p.Subject); into.Add(p.Test); break;
+            case SequenceExpr q: into.Add(q.Effect); into.Add(q.Value); break;
+            case SuppressExpr s: into.Add(s.Operand); break;
+            case MemberExpr m: into.Add(m.Target); break;
+            case CallExpr c: into.Add(c.Target); foreach (Expr a in c.Args) into.Add(a); break;
+            case IndexExpr ix: into.Add(ix.Target); foreach (Expr a in ix.Args) into.Add(a); break;
             case WithExpr w:
-                yield return w.Source;
-                foreach (Node c in SafetyInitChildren(w.Body)) yield return c;
+                into.Add(w.Source);
+                AddSafetyInitChildren(w.Body, into);
                 break;
             case NewExpr nw:
-                foreach (Expr a in nw.Args) yield return a;
-                if (nw.ArraySize is not null) yield return nw.ArraySize;
-                if (nw.Elements is not null) foreach (Expr x in nw.Elements) yield return x;
-                foreach (Node c in SafetyInitChildren(nw.Body)) yield return c;
+                foreach (Expr a in nw.Args) into.Add(a);
+                if (nw.ArraySize is not null) into.Add(nw.ArraySize);
+                if (nw.Elements is not null) foreach (Expr x in nw.Elements) into.Add(x);
+                AddSafetyInitChildren(nw.Body, into);
                 break;
-            case UnaryExpr u: yield return u.Operand; break;
-            case BinaryExpr b: yield return b.Left; yield return b.Right; break;
-            case AssignExpr a: yield return a.Target; yield return a.Value; break;
-            case ConditionalExpr c: yield return c.Cond; yield return c.Then; yield return c.Else; break;
-            case CastExpr c: yield return c.Operand; break;
-            case RefArgExpr r: yield return r.Target; break;
-            case IsExpr i: yield return i.Operand; break;
-            case AsExpr a: yield return a.Operand; break;
-            case AwaitExpr a: yield return a.Operand; break;
+            case UnaryExpr u: into.Add(u.Operand); break;
+            case BinaryExpr b: into.Add(b.Left); into.Add(b.Right); break;
+            case AssignExpr a: into.Add(a.Target); into.Add(a.Value); break;
+            case ConditionalExpr c: into.Add(c.Cond); into.Add(c.Then); into.Add(c.Else); break;
+            case CastExpr c: into.Add(c.Operand); break;
+            case RefArgExpr r: into.Add(r.Target); break;
+            case IsExpr i: into.Add(i.Operand); break;
+            case AsExpr a: into.Add(a.Operand); break;
+            case AwaitExpr a: into.Add(a.Operand); break;
             case SwitchExpr sx:
-                yield return sx.Subject;
+                into.Add(sx.Subject);
                 foreach (SwitchArm arm in sx.Arms)
                 {
-                    if (arm.Value is not null) yield return arm.Value;
-                    if (arm.When is not null) yield return arm.When;
-                    yield return arm.Result;
+                    if (arm.Value is not null) into.Add(arm.Value);
+                    if (arm.When is not null) into.Add(arm.When);
+                    into.Add(arm.Result);
                 }
                 break;
             case LambdaExpr l:
-                if (l.Body is not null) yield return l.Body;
-                if (l.BlockBody is not null) yield return l.BlockBody;
+                if (l.Body is not null) into.Add(l.Body);
+                if (l.BlockBody is not null) into.Add(l.BlockBody);
                 break;
         }
+        return null;
     }
 
-    private static IEnumerable<Node> SafetyInitChildren(InitBody body)
+    private static void AddSafetyInitChildren(InitBody body, List<Node> into)
     {
         foreach (InitAssign init in body.Inits)
         {
             if (init.Nested is InitBody nested)
             {
-                foreach (Node c in SafetyInitChildren(nested)) yield return c;
+                AddSafetyInitChildren(nested, into);
             }
             else if (init.Value is Expr given)
             {
-                yield return given;
+                into.Add(given);
             }
         }
         foreach (InitAdd add in body.Adds)
         {
-            foreach (Expr e in add.Args) yield return e;
+            foreach (Expr e in add.Args) into.Add(e);
         }
         foreach (InitIndex one in body.Indexes)
         {
-            foreach (Expr e in one.Args) yield return e;
-            yield return one.Value;
+            foreach (Expr e in one.Args) into.Add(e);
+            into.Add(one.Value);
         }
     }
 }
