@@ -246,6 +246,18 @@ public static class FrameTableFormat
     /// </summary>
     public static byte[] Build(uint magic, IReadOnlyList<Entry> entries, IReadOnlyList<byte>? strings, LinePrograms? shared = null, int sharedAt = 0)
     {
+        ChunkedBytes all = new();
+        Build(all, magic, entries, strings, shared, sharedAt);
+        return all.ToArray();
+    }
+
+    /// <summary>
+    /// The table appended to <paramref name="into"/> (a section's own bytes):
+    /// its codes and own programs are chunks, where a large unit's were lists
+    /// copied into a third pre-sized one and out again as an array.
+    /// </summary>
+    public static void Build(ChunkedBytes into, uint magic, IReadOnlyList<Entry> entries, IReadOnlyList<byte>? strings, LinePrograms? shared = null, int sharedAt = 0)
+    {
         byte[] sharedBytes = [];
         if (shared is null)
         {
@@ -253,8 +265,8 @@ public static class FrameTableFormat
             foreach (Entry e in entries) shared.Count(e.Lines);
             sharedBytes = shared.Seal();
         }
-        List<byte> coded = new();
-        List<byte> own = new();
+        ChunkedBytes coded = new();
+        ChunkedBytes own = new();
         long end = 0;
         int name = 0, file = 0, line = 0;
         foreach (Entry e in entries)
@@ -287,7 +299,7 @@ public static class FrameTableFormat
         int ownAt = HeaderBytes + coded.Count;
         int sharedHere = ownAt + own.Count;
         int stringsAt = sharedHere + sharedBytes.Length;
-        List<byte> all = new(stringsAt + (strings?.Count ?? 0));
+        ChunkedBytes all = into;
         Put(all, magic);
         Put(all, (uint)entries.Count);
         Put(all, 0);                                    // the base, relocated
@@ -297,8 +309,9 @@ public static class FrameTableFormat
         all.AddRange(coded);
         all.AddRange(own);
         all.AddRange(sharedBytes);
-        if (strings is not null) all.AddRange(strings);
-        return all.ToArray();
+        if (strings is ChunkedBytes chunked) all.AddRange(chunked);
+        else if (strings is byte[] array) all.AddRange(array);
+        else if (strings is not null) all.AddRange(strings);
     }
 
     /// <summary>
@@ -517,7 +530,27 @@ public static class FrameTableFormat
 
     private static void Put(List<byte> b, uint v) { b.Add((byte)v); b.Add((byte)(v >> 8)); b.Add((byte)(v >> 16)); b.Add((byte)(v >> 24)); }
 
+    private static void Put(ChunkedBytes b, uint v) { b.Add((byte)v); b.Add((byte)(v >> 8)); b.Add((byte)(v >> 16)); b.Add((byte)(v >> 24)); }
+
     public static void Uleb(List<byte> into, ulong v) => StackMapTable.Uleb(into, v);
+
+    public static void Uleb(ChunkedBytes into, ulong v) => StackMapTable.Uleb(into, v);
+
+    public static void Sleb(ChunkedBytes into, long v)
+    {
+        while (true)
+        {
+            byte b = (byte)(v & 0x7F);
+            v >>= 7;
+            bool sign = (b & 0x40) != 0;
+            if ((v == 0 && !sign) || (v == -1 && sign))
+            {
+                into.Add(b);
+                return;
+            }
+            into.Add((byte)(b | 0x80));
+        }
+    }
 
     public static void Sleb(List<byte> into, long v)
     {

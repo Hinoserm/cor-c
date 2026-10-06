@@ -103,7 +103,7 @@ public static class DefinitionFingerprint
             writer.Write((byte)1); writer.Write((int)section.Kind); writer.Write(symbol.Size); writer.Write(symbol.IsFunction);
             if (section.Kind != SectionKind.Uninitialised)
             {
-                byte[] bytes = section.Bytes.GetRange(checked((int)symbol.Offset), checked((int)symbol.Size)).ToArray();
+                byte[] bytes = section.Bytes.Slice(checked((int)symbol.Offset), checked((int)symbol.Size));
                 ArraySegment<Relocation> relocations = index.Within(section, symbol.Offset, symbol.Offset + symbol.Size);
                 foreach (Relocation relocation in relocations)
                 {

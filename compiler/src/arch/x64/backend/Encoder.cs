@@ -827,7 +827,7 @@ internal sealed class Encoder
     }
 
     /// <summary>Real no-ops for alignment padding between functions.</summary>
-    public static void Nops(List<byte> bytes, int count)
+    public static void Nops(ChunkedBytes bytes, int count)
     {
         for (int k = 0; k < count; k++)
         {

@@ -38,7 +38,11 @@ public sealed class IrArchive
     {
         if (obj.Sections.Any(section => section.Name == SectionName)) throw new ElfFormatException("Duplicate IR archive");
         if (records.Count > 100000) throw new ElfFormatException("Too many IR records");
-        using MemoryStream directory = new();
+        // THE DIRECTORY IN CHUNKS too: a large unit's names of calls and
+        // references run to megabytes, and a MemoryStream doubled to hold
+        // them and then copied them out with ToArray.
+        ChunkedBytes index = new();
+        using ChunkedBytesWriteStream directory = new(index);
         using BinaryWriter writer = new(directory, Utf8, leaveOpen: true);
         HashSet<string> seen = new(StringComparer.Ordinal);
         int bodyBytes = 0;
@@ -59,22 +63,22 @@ public sealed class IrArchive
             if (bodyBytes > MaximumBytes || directory.Length > MaximumBytes - bodyBytes - 84)
                 throw new ElfFormatException("IR archive exceeds unit budget");
         }
-        // Straight into the section, sized once: the header, the directory,
-        // then every body. Written through a stream and copied out, a large
-        // unit's IR -- tens of megabytes -- was held three times over.
-        byte[] index = directory.ToArray();
-        int total = checked(84 + index.Length + bodyBytes);
+        // Straight into the section: the header, the directory, then every
+        // body. Written through a stream and copied out, a large unit's IR --
+        // tens of megabytes -- was held three times over; the section's bytes
+        // are chunks now, so nothing here is one large array.
+        writer.Flush();
+        int total = checked(84 + index.Count + bodyBytes);
         Section section = new(SectionName, SectionKind.Note);
-        section.Bytes.Capacity = total;
         byte[] header = new byte[20];
         BinaryPrimitives.WriteUInt32LittleEndian(header, 0x52494343u);
         BinaryPrimitives.WriteInt32LittleEndian(header.AsSpan(4), 3);
         BinaryPrimitives.WriteInt32LittleEndian(header.AsSpan(8), records.Count);
-        BinaryPrimitives.WriteInt32LittleEndian(header.AsSpan(12), index.Length);
+        BinaryPrimitives.WriteInt32LittleEndian(header.AsSpan(12), index.Count);
         BinaryPrimitives.WriteInt32LittleEndian(header.AsSpan(16), total);
         section.Bytes.AddRange(header);
         section.Bytes.AddRange(NativeHash(obj));
-        section.Bytes.AddRange(SHA256.HashData(index));
+        section.Bytes.AddRange(index.Sha256());
         section.Bytes.AddRange(index);
         foreach (IrArchiveRecord record in records) section.Bytes.AddRange(record.Payload);
         obj.Sections.Add(section);
@@ -108,7 +112,7 @@ public sealed class IrArchive
                 return read;
             };
         }
-        else readAt = (at, length) => section.Bytes.GetRange(at, length).ToArray();
+        else readAt = (at, length) => section.Bytes.Slice(at, length);
         // The header and directory only; the bodies stay where they are.
         if (size < 84) throw new ElfFormatException("Truncated IR archive");
         int indexBytes = BinaryPrimitives.ReadInt32LittleEndian(readAt(12, 4));
@@ -168,7 +172,9 @@ public sealed class IrArchive
         native.Symbols.AddRange(obj.Symbols);
         // Standard ELF serialization canonicalizes relocation addends and
         // local/global symbol order, so object round trips preserve the digest.
-        return SHA256.HashData(ElfWriter.WriteObject(native));
+        // Hashed from the chunks the object is built in: a large unit's code
+        // made one array here only to be hashed.
+        return ElfWriter.HashObject(native);
     }
 
     private static byte[] HashDirectory(Stream source, int length)

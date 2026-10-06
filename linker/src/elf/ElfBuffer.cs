@@ -130,6 +130,29 @@ internal sealed class ElfBuffer
     }
 
     /// <summary>
+    /// SHA-256 of the bytes, fed a chunk at a time: what SHA256.HashData of
+    /// ToArray() gives, without the object ever being one array.
+    /// </summary>
+    public byte[] Sha256()
+    {
+        using System.Security.Cryptography.IncrementalHash hash =
+            System.Security.Cryptography.IncrementalHash.CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256);
+        for (int i = 0; i < _chunks.Count && (i << ChunkShift) < _length; i++)
+        {
+            int from = i << ChunkShift;
+            hash.AppendData(_chunks[i], 0, Math.Min(ChunkBytes, _length - from));
+        }
+        // Zeros past the last chunk made, as WriteTo writes them.
+        byte[]? zeros = null;
+        for (int at = _chunks.Count << ChunkShift; at < _length; at += ChunkBytes)
+        {
+            zeros ??= new byte[ChunkBytes];
+            hash.AppendData(zeros, 0, Math.Min(ChunkBytes, _length - at));
+        }
+        return hash.GetHashAndReset();
+    }
+
+    /// <summary>
     /// The bytes written out a chunk at a time: an object of any size goes to
     /// its file without ever being one array, which on a 32-bit heap is a
     /// contiguous run of address space a large unit's object can fail to get.

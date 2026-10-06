@@ -68,7 +68,7 @@ public sealed class ProcessUnitBackend : IUnitBackend, IDisposable
         string input = own ? original.SourcePath! : Path.Combine(work, "input-" + sequence + ".o"), output = Path.Combine(work, "output-" + sequence++ + ".o");
         try
         {
-            if (!own) File.WriteAllBytes(input, ElfWriter.WriteObject(original));
+            if (!own) ElfWriter.WriteObjectFile(original, input);
             BackendProtocol.WriteRequest(writer, new(input, output, imports, retained, facts));
             // READ HERE, ON THIS THREAD, with a watchdog for the time limit:
             // the read once ran as a task waited on with a timeout, and the

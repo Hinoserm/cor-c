@@ -45,7 +45,7 @@ public static class NativeLibraries
                 {
                     if (i > start)
                     {
-                        names.Add(Encoding.UTF8.GetString(s.Bytes.GetRange(start, i - start).ToArray()));
+                        names.Add(Encoding.UTF8.GetString(s.Bytes.Slice(start, i - start)));
                     }
                     start = i + 1;
                 }

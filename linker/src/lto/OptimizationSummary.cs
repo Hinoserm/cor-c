@@ -65,7 +65,7 @@ public sealed class OptimizationSummary
     /// <summary>ELF REL stores addends in code words; normalize those fields for hashing.</summary>
     public static byte[] HashCode(Section section, int offset, int length)
     {
-        byte[] code = section.Bytes.GetRange(offset, length).ToArray();
+        byte[] code = section.Bytes.Slice(offset, length);
         foreach (Relocation relocation in section.Relocs)
         {
             long start = Math.Max((long)offset, relocation.Offset);

@@ -44,7 +44,7 @@ public static class FramePool
             ObjectFile obj = input.Object;
             Symbol? table = obj.Symbols.FirstOrDefault(s => s.Name == TableSymbol && s.IsDefined);
             if (table is null || table.Section is null || table.Size < FrameTableFormat.HeaderBytes) continue;
-            List<byte> b = table.Section.Bytes;
+            ChunkedBytes b = table.Section.Bytes;
             int at = (int)table.Offset, size = (int)table.Size;
             if (U32(b, at) != FrameTableFormat.Local) continue;
             int strings = (int)U32(b, at + 12);
@@ -54,7 +54,7 @@ public static class FramePool
             {
                 int start = at + strings + offset, end = start;
                 while (end < at + size && b[end] != 0) end++;
-                return b.GetRange(start, end - start).ToArray();
+                return b.Slice(start, end - start);
             }
             List<FrameTableFormat.Entry> entries = new(read.Count);
             foreach (var e in read)
@@ -72,7 +72,7 @@ public static class FramePool
         foreach (var t in tables)
         {
             Section section = t.Table.Section!;
-            List<byte> b = section.Bytes;
+            ChunkedBytes b = section.Bytes;
             int at = (int)t.Table.Offset, size = (int)t.Table.Size;
             List<FrameTableFormat.Entry> entries = t.Entries.Select(e => e with { Name = pool.Offset(e.Name), File = pool.Offset(e.File) }).ToList();
             byte[] made = FrameTableFormat.Build(FrameTableFormat.Pooled, entries, null, programs, sharedAt);
@@ -112,5 +112,5 @@ public static class FramePool
         Console.Error.WriteLine("frame names: " + tables.Count + " tables, one pool of " + built.Count + " bytes, " + (built.Count - sharedAt) + " of them shared line programs");
     }
 
-    private static uint U32(List<byte> b, int at) => (uint)(b[at] | b[at + 1] << 8 | b[at + 2] << 16 | b[at + 3] << 24);
+    private static uint U32(IReadOnlyList<byte> b, int at) => (uint)(b[at] | b[at + 1] << 8 | b[at + 2] << 16 | b[at + 3] << 24);
 }
