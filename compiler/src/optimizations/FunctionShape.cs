@@ -162,7 +162,7 @@ internal static class AnalysisCache
             Entry e = entries[k];
             if (!ReferenceEquals(e.F, f)) continue;
             if (k != 0) { entries.RemoveAt(k); entries.Insert(0, e); }
-            if (e.Key != key)
+            if (!e.Key.Equals(key))
             {
                 e.Key = key;
                 e.Writes = null; e.Liveness = null; e.DefsWithCfg = null; e.DefsWithoutCfg = null;
