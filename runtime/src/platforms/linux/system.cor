@@ -178,11 +178,29 @@ static class Platform
 
     /// CORSAC_GC_THRESHOLD=<bytes>: collect at least that often, whatever the
     /// pacing says -- every call site a collection may fall under, tried.
+    /// WITHOUT IT, ON A SMALL MACHINE -- 128 MB or less (sysinfo) -- a
+    /// thirty-second of its memory, as a kernel's own heap is held (its
+    /// ThresholdCap), and with it the collector's small pages and chunks
+    /// (HeapChunks.BatchPageBytes, ChunkAsk): a 32 MB machine's desktop
+    /// programs each kept a heap paced for a machine with memory to spare.
+    /// A larger machine has none, as before.
     public static long GcThreshold()
     {
-        if (!_thresholdAsked) { _threshold = EnvironmentNumber("CORSAC_GC_THRESHOLD="); _thresholdAsked = true; }
+        if (!_thresholdAsked)
+        {
+            _threshold = EnvironmentNumber("CORSAC_GC_THRESHOLD=");
+            if (_threshold == 0)
+            {
+                long total = TotalMemory();
+                if (total > 0 && total <= SmallMachineBytes) _threshold = total / 32;
+            }
+            _thresholdAsked = true;
+        }
         return _threshold;
     }
+
+    /// The most memory a machine has that its programs' heaps are held for.
+    const long SmallMachineBytes = 128L * 1024 * 1024;
 
     static bool _thresholdAsked;
     static long _threshold;
