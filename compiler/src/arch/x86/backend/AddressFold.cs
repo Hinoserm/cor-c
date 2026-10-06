@@ -116,7 +116,10 @@ internal static class AddressFold
                     return true;
                 case MOp.Imul or MOp.Imul3:
                     return true;
-                case MOp.Call or MOp.Jmp or MOp.Ret or MOp.Epilogue:
+                // A call through a register leaves the flags as any call
+                // does, its callee's: an element passed to a virtual or an
+                // interface call kept its address out of the mode for it.
+                case MOp.Call or MOp.CallInd or MOp.Jmp or MOp.Ret or MOp.Epilogue:
                     return true;
                 default:
                     return false;

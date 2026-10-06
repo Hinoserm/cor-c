@@ -27,6 +27,12 @@ public sealed class InductionBounds : IPass
 {
     public string Name => "induction-bounds";
 
+    // ONE WALK A RUN: the pipeline runs a pass's one instance over several
+    // functions at once (FunctionWorkers), so what a walk holds is its own.
+    public void Run(Function function) => new Walk().Run(function);
+
+    private sealed class Walk
+    {
     private Function _f = null!;
     private Cfg _cfg = null!;
     private Defs _defs = null!;
@@ -218,4 +224,5 @@ public sealed class InductionBounds : IPass
                 }
         return _writes;
     }
+}
 }
