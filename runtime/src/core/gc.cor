@@ -3843,24 +3843,36 @@ static class Gc
         }
     }
 
-    /// A THREAD'S HALF-EMPTY PAGES GIVEN BACK WHILE MEMORY IS SHORT
-    /// (ShortHook), at a round's answer: its own as it takes its cache back
-    /// (AnswerBeforeTaking), a blocked thread's as the collector answers for
-    /// it (GcThreads.AnswerForStopped). A thread keeps a page of every class
-    /// it has used, and a page another thread owns no sweep can empty or
-    /// give back: a 32 MB machine's GUI kernel held 52 pages, 1.7 MB, for
-    /// 0.4 MB of objects, beside a code image squeezed to 144 KiB. Given
-    /// back, the pages go on their classes' lists, the next allocation of
-    /// any thread fills them before a new one is made, and those the sweep
-    /// finds empty are pooled and released. Stamped first, as a going
-    /// thread's are (ForgetClasses). The heap lock is held, and `tb` is not
-    /// in the allocator's fast path.
-    public static void ShedPages(long tb)
+    /// THREADS' HALF-EMPTY PAGES GIVEN BACK WHILE MEMORY IS SHORT
+    /// (ShortHook), as a cycle ends (FinishCycle): a thread keeps a page of
+    /// every class it has used, and a page another thread owns no sweep can
+    /// empty or give back -- a 32 MB machine's GUI kernel held 52 pages,
+    /// 1.7 MB, for 0.4 MB of objects. Given back, the pages go on their
+    /// classes' lists, the next allocation of any thread fills them before a
+    /// new one is made, and those the next sweep finds empty are pooled and
+    /// released.
+    ///
+    /// ONLY BETWEEN CYCLES, AND ONLY A THREAD THE LAST ROUND TOOK THE CACHE
+    /// OF: its Classes word is 0, so its next small allocation comes to the
+    /// slow path, which waits for the heap lock this holds; and it is not in
+    /// the allocator (InAlloc). Given back at a round's answer -- in the
+    /// middle of a cycle -- a page the sweep had yet to reach was released
+    /// twice, and the GUI kernel died sweeping a chunk whose header the
+    /// first release had given back (Service.Unmap: "unmapping a linked heap
+    /// chunk", a limit of 0). The heap lock is held.
+    static void ShedPages()
     {
         if (ShortHook == 0 || Sys.Call(ShortHook, 0, 0, 0) == 0) return;
-        if (_stamping && !StampedAlready(tb)) StampPages(tb);
-        RetireClasses(tb);
-        PagesShed = PagesShed + 1;
+        long self = Sys.ThreadBlock();
+        long count = GcThreads.Count();
+        for (long i = 0; i < count; i++)
+        {
+            long tb = GcThreads.BlockAt(i);
+            if (tb == 0 || tb == self || Sys.Peek(tb + Tls.InAlloc) != 0) continue;
+            if (Sys.Peek(tb + Tls.Classes) != 0 || Sys.Peek(tb + Tls.ClassesSaved) == 0) continue;
+            RetireClasses(tb);
+            PagesShed = PagesShed + 1;
+        }
     }
 
     /// Threads' pages given back by ShedPages.
@@ -5096,7 +5108,6 @@ static class Gc
         }
         if (tb != 0 && Sys.Peek(tb + Tls.Classes) == 0 && Sys.Peek(tb + Tls.ClassesSaved) != 0)
         {
-            ShedPages(tb);
             Sys.Poke(tb + Tls.Classes, Sys.Peek(tb + Tls.ClassesSaved));
             Sys.Poke(tb + Tls.ClassesSaved, Zero);
         }
@@ -9713,6 +9724,7 @@ static class Gc
         RestartRecycling();
         _snapshots = false;
         _concurrent = false;
+        ShedPages();
 
         // What was allocated while the mark ran was not looked at by it and
         // still counts towards the next.
@@ -12403,6 +12415,14 @@ static class GcThreads
         return Sys.Peek(_blocks + i * WordSize.Bytes);
     }
 
+    /// Registered thread `i`'s block (Gc.ShedPages), 0 past the table. The
+    /// heap lock is held.
+    public static long BlockAt(long i)
+    {
+        if (_blocks == 0) return i == 0 ? _first : 0;
+        return i < _count ? At(i) : 0;
+    }
+
     /// Adds a thread. The first one is only written down, because a program
     /// with one thread needs no table and must not ask for memory it will
     /// never read (a bare-metal program has no heap at all until it says so).
@@ -12756,9 +12776,6 @@ static class GcThreads
                         Sys.AtomicAdd(ctl + GcLock.Pending, -1);
                         AnsweredFor = AnsweredFor + 1;
                     }
-                    // Its pages given back if memory is short: it is held
-                    // here (Busy), outside the allocator, its cache taken.
-                    if (Sys.Peek(block + Tls.Classes) == 0) Gc.ShedPages(block);
                 }
 
                 Sys.AtomicSwap(block + Tls.State, Stopped);
