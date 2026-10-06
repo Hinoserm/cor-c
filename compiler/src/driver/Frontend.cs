@@ -264,7 +264,7 @@ public static class Frontend
 #if COR_SELFHOST_BENCHMARK
                 Program.BenchmarkStage("specialise-" + round + "-" + step);
 #endif
-                HashSet<string> known = new(unit.Types.Select(t => t.Name), StringComparer.Ordinal);
+                HashSet<string> known = Names(unit.Types);
                 bool reexpand = bound.Reexpand;
 
                 // THE DELEGATES C# SYNTHESISES for natural types no Func or
@@ -306,11 +306,7 @@ public static class Frontend
                 // (Binder.CheckBodies), and a copy per argument whose members
                 // are made during the binding has them flagged then
                 // (Binder.BodiesNow).
-                foreach (TypeDecl t in unit.Types)
-                {
-                    if (known.Contains(t.Name)) continue;
-                    foreach (MemberDecl m in t.MembersMade) m.Fresh = true;
-                }
+                Flag(unit.Types, known, fresh: true);
 
                 Meter fresh = Meter.Start();
                 bound = Binder.Bind(unit, name, declarations is null ? null : declarations.Require, declarations?.Interfaces,
@@ -318,10 +314,7 @@ public static class Frontend
                     declarations is null ? null : declarations.RequireOverrides, freshOnly: true, kernelInterfaces: declarations?.KernelInterfaces);
                 fresh.Stop("front:bind-fresh");
 
-                foreach (TypeDecl t in unit.Types)
-                {
-                    foreach (MemberDecl m in t.MembersMade) m.Fresh = false;
-                }
+                Flag(unit.Types, null, fresh: false);
             }
 
             if (!made)
@@ -466,6 +459,42 @@ public static class Frontend
             Console.Error.WriteLine(e.ToString());
         }
         return errors.Count > 0;
+    }
+
+    /// <summary>
+    /// THE NAMES OF A UNIT'S TYPES, and (Flag) its new members marked fresh
+    /// or not, each walk in a frame of its own. Written inline in CompileCore
+    /// they left the walk behind -- a list's enumerator is a struct holding
+    /// the list it walks, an enumeration over one an object holding it -- in
+    /// a slot of a frame with handlers, whose slots the collector is told of
+    /// for as long as the frame runs, read again or not. The list the last
+    /// walk of a round held was the expansion before, and through its
+    /// declarations, their bodies and the facts the binding left on them the
+    /// whole of the round before stayed alive beside the next, declarations
+    /// and symbols: a compiler unit's live heap went from 145 megabytes at
+    /// its first round's binding to 245 at its second's.
+    /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static HashSet<string> Names(List<TypeDecl> types)
+    {
+        HashSet<string> names = new(StringComparer.Ordinal);
+        foreach (TypeDecl t in types) names.Add(t.Name);
+        return names;
+    }
+
+    /// <summary>
+    /// Every made member of a unit's types flagged fresh, or not: with
+    /// <paramref name="known"/>, of the types it does not name, the ones the
+    /// round has just added. In a frame of its own, as Names says why.
+    /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static void Flag(List<TypeDecl> types, HashSet<string>? known, bool fresh)
+    {
+        foreach (TypeDecl t in types)
+        {
+            if (known is not null && known.Contains(t.Name)) continue;
+            foreach (MemberDecl m in t.MembersMade) m.Fresh = fresh;
+        }
     }
 
     /// <summary>

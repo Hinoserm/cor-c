@@ -1059,11 +1059,14 @@ public sealed partial class Binder
     /// -- a parameter, a field of its own -- has had nothing of it asked for.
     /// Declared after binding, a declaration its members wanted could no
     /// longer be loaded; declared here, it is asked of the index like any
-    /// other, and the pass goes round for it.
+    /// other, and the pass goes round for it. And so for one from elsewhere
+    /// whose members were here and whose symbols waited (DeclaredLater),
+    /// but a template, which no layout describes.
     /// </summary>
     private void DeclareUsed()
     {
-        foreach (TypeSymbol t in _r.Types.Values.Where(t => t.MembersPending && t.Used && t.Decl?.SignatureTypes is not null).ToList())
+        foreach (TypeSymbol t in _r.Types.Values.Where(t => t.MembersPending && t.Used && t.Decl is { } d
+                                                             && (d.SignatureTypes is not null || _declaredLater.Contains(d) && !IsTemplate(t))).ToList())
         {
             t.EnsureMembers();
         }
@@ -1909,6 +1912,39 @@ public sealed partial class Binder
             else _deferred.Add(d);
         }
 
+        // AND ONE FROM ELSEWHERE WHOSE MEMBERS ARE ALL HERE, its symbols left
+        // for first use (DeclaredLater): the whole class library, read for
+        // its declarations by every unit of a project, and the templates
+        // whose copies are made from it. Only when its key is the only one:
+        // a second declaration of it moves or extends one of the two below.
+        // By key, not by name: every Enumerator nested in a collection is
+        // one of its own.
+        _declaredLater.Clear();
+        Dictionary<string, int>? present = null;
+        foreach (TypeDecl d in unit.Types)
+        {
+            if (DeclaredLater(d)) (present ??= new(StringComparer.Ordinal))[TypeKey(d)] = 0;
+        }
+        if (present is not null)
+        {
+            foreach (TypeDecl d in unit.Types)
+            {
+                if (present.TryGetValue(TypeKey(d), out int seen)) present[TypeKey(d)] = seen + 1;
+            }
+            foreach (TypeDecl d in unit.Types)
+            {
+                if (present.TryGetValue(TypeKey(d), out int seen) && seen == 1 && DeclaredLater(d)) _declaredLater.Add(d);
+            }
+        }
+
+        // ITS INITIALISERS ARE PLACED HERE ALL THE SAME, and its implied
+        // constructor made below, as every other declaration's: only its
+        // symbols wait (DeclaredLater). Placing them is what a template's
+        // later copies are made from -- a copy made before this binding
+        // places its own, one made after reads the template's as placed here
+        // (Monomorphiser.MakeMembers), and helper calls and constants differ
+        // between the two (InitializerMethods) -- and a static initialiser
+        // is listed for the type in the order of this walk (StaticInits).
         foreach (TypeDecl d in unit.Types)
         {
             if (_deferred.Contains(d)) continue;
@@ -2031,7 +2067,7 @@ public sealed partial class Binder
 
             TypeSymbol sym = new() { Name = d.Name, Key = key, Kind = d.Kind, Decl = d };
             if (d.TypeParams.Count > 0) AddNames(sym.WritableTypeParamNames, d.TypeParams);
-            if (_deferred.Contains(d)) sym.DeclareMembersLater(_declareMembersNow ??= DeclareMembersNow);
+            if (_deferred.Contains(d) || _declaredLater.Contains(d)) sym.DeclareMembersLater(_declareMembersNow ??= DeclareMembersNow);
             RegisterType(key, sym);
         }
 
@@ -2087,7 +2123,7 @@ public sealed partial class Binder
                 // asked of the index now, while a pass can still be retried
                 // with it -- the one thing its members' signatures could ask
                 // for that its canonical copy's do not.
-                if (!_deferred.Contains(d)) DeclareMembers(d, sym);
+                if (!_deferred.Contains(d) && !_declaredLater.Contains(d)) DeclareMembers(d, sym);
                 else if (_basesDeclared.Add(sym)) DeclareMembers(d, sym, members: false);
             }
         }
@@ -3020,9 +3056,15 @@ public sealed partial class Binder
             // What the members pass does for it first, should it be asked
             // before that pass has reached it.
             if (_basesDeclared.Add(sym)) DeclareMembers(d, sym, members: false);
-            Initialisers(d);
-            StaticInitialisers(d);
-            ImpliedConstructor(d);
+            // NOT AGAIN FOR ONE WHOSE MEMBERS WERE HERE: Run placed them with
+            // every other declaration's (DeclaredLater), and a static
+            // initialiser placed twice is listed twice.
+            if (!_declaredLater.Contains(d))
+            {
+                Initialisers(d);
+                StaticInitialisers(d);
+                ImpliedConstructor(d);
+            }
             DeclareMembers(d, sym, bases: false);
 
             if (_constantsEvaluated)
@@ -3040,8 +3082,9 @@ public sealed partial class Binder
             // as every other type's are (BodiesNow); and what its descriptor
             // will name, declared while binding can still check it.
             // Not an imported declaration's, which has none to check
-            // (CheckBodies passes over a signature-only one).
-            if (d.Canon is null && !d.SignatureOnly) BodiesNow(d, sym);
+            // (CheckBodies passes over a signature-only one), nor a
+            // template's, which are never checked (Run lists none).
+            if (d.Canon is null && !d.SignatureOnly && !IsTemplate(sym)) BodiesNow(d, sym);
             if (_contextsResolved) ForceContext(sym);
         }
         finally
@@ -3173,7 +3216,11 @@ public sealed partial class Binder
         while (t.IsArray && t.Element is Type element) t = element;
         if (t.Symbol is not TypeSymbol s || s.ReachedFromBodies) return;
         s.ReachedFromBodies = true;
-        if (s.MembersPending && s.Decl is { Canon: null }) s.EnsureMembers();
+        // NOT ONE FROM ELSEWHERE WHOSE SYMBOLS WAIT though its members are
+        // here (DeclaredLater): it has no bodies for binding to check, so
+        // lowering may declare it when it lays the descriptor down, as it
+        // may an imported class waiting to be read again (ForceContext).
+        if (s.MembersPending && s.Decl is { Canon: null } d && !_declaredLater.Contains(d)) s.EnsureMembers();
         foreach (Type argument in s.TemplateArgTypes) ForceBody(argument);
     }
 
@@ -3203,8 +3250,12 @@ public sealed partial class Binder
             // may declare it when it lays the descriptor down. Every
             // IEnumerable<Foo> a List<Foo> or a Foo[] brings in is such a
             // copy, and asked here, every class any loaded signature holds
-            // in a collection was declared for nothing.
-            if (of.Symbol is { Kind: TypeKind.Class } argumentClass && argumentClass.Decl?.SignatureTypes is null)
+            // in a collection was declared for nothing. NOR ONE FROM
+            // ELSEWHERE whose symbols wait though its members are here
+            // (DeclaredLater), for the same reasons: no bodies to check, and
+            // its signatures resolved where it was declared without them.
+            if (of.Symbol is { Kind: TypeKind.Class } argumentClass && argumentClass.Decl?.SignatureTypes is null
+                && !(argumentClass.Decl is { } waiting && _declaredLater.Contains(waiting)))
             {
                 argumentClass.EnsureMembers();
             }
@@ -3450,8 +3501,95 @@ public sealed partial class Binder
                     catch (Metadata.DeclarationDemand demand) { _declarationBatch.Add(demand); }
                 }
             }
+            // AND ONE WHOSE MEMBERS ARE HERE, ITS SYMBOLS WAITING
+            // (DeclaredLater): the same types, read off the members
+            // themselves in the order declaring them reads them
+            // (Monomorphiser.SignatureTypes, which is that order).
+            else if (_declaredLater.Contains(d))
+            {
+                foreach (MemberDecl m in d.Members)
+                {
+                    switch (m)
+                    {
+                        case FieldDecl f:
+                            Signature(f.Type);
+                            break;
+                        case PropertyDecl p:
+                            Signature(p.Type);
+                            foreach (Param ip in p.Params) Signature(ip.Type);
+                            break;
+                        case MethodDecl md:
+                            if (!md.IsCtor) Signature(md.Returns);
+                            foreach (Param mp in md.Params) Signature(mp.Type);
+                            break;
+                    }
+                }
+            }
         }
         finally { _quiet--; }
+
+        void Signature(TypeRef? written)
+        {
+            if (written is null) return;
+            try { Resolve(written, sym); }
+            catch (Metadata.DeclarationDemand demand) { _declarationBatch.Add(demand); }
+        }
+    }
+
+    /// <summary>
+    /// The declarations from elsewhere whose members are here and whose
+    /// symbols wait to be asked for (DeclaredLater): reset with each binding.
+    /// </summary>
+    private readonly HashSet<TypeDecl> _declaredLater = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
+    /// WHETHER A DECLARATION'S MEMBERS ARE DECLARED ON FIRST USE THOUGH THEY
+    /// ARE ALL HERE. Every unit of a project reads the whole class library
+    /// for its declarations (--ref), and the templates of it its copies are
+    /// made from; each unit asks for the members of a few of those types,
+    /// and declaring every one -- a symbol for each field, method and
+    /// parameter, a method and a body for each accessor -- was a large part
+    /// of what a compiler unit held while binding. The list stays: it is
+    /// what a copy is made from, and what the next round copies. Only the
+    /// binder's symbols for it wait, through the deferral a specialisation
+    /// has (TypeSymbol.DeclareMembersLater); the types its signatures name
+    /// are resolved where its members would have been declared
+    /// (DeclareArguments), as for an imported declaration read again later.
+    ///
+    /// FROM ELSEWHERE, whose code is not this unit's: its signatures mark
+    /// nothing used (BindingElsewhere), its bodies are never checked and its
+    /// methods never rooted (Lowering.Run passes over a type from elsewhere
+    /// with no implementation here), so declaring it later or never changes
+    /// nothing a unit says. NOT EXTERNAL: another image's statics are laid
+    /// out in the order its types are (LayOut). NOT A SPECIALISATION, whose
+    /// bodies are this unit's. Then the same as an imported declaration's
+    /// members read again later (IndexedDeclarations.ReadLater): A CLASS OR
+    /// A STRUCT, NOT PARTIAL, NO EXTENSION METHOD and NO CONSTANT BUT A
+    /// PLAIN ONE; and NO GENERIC METHOD, whose signatures are read with its
+    /// own parameters in scope.
+    /// </summary>
+    private static bool DeclaredLater(TypeDecl d)
+    {
+        if (!d.Elsewhere || d.External || d.MembersPending || d.SignatureTypes is not null
+            || d.Specialised || d.Canon is not null || d.LocalOnly || d.File == "<prelude>"
+            || d.Kind is not (TypeKind.Class or TypeKind.Struct) || d.IsDelegate || d.Mods.HasFlag(Mods.Partial))
+        {
+            return false;
+        }
+        foreach (MemberDecl m in d.Members)
+        {
+            // No member this unit's: nothing of it is rooted here.
+            if (m.OwnedImplementation == true) return false;
+            switch (m)
+            {
+                case MethodDecl { TypeParams.Count: > 0 }:
+                case MethodDecl { Params.Count: > 0 } method when method.Params[0].IsThis:
+                case FieldDecl field when field.Mods.HasFlag(Mods.Const) && field.Init is { } value
+                                          && value is not LiteralExpr && !Fold.TryConst(value, out _):
+                    return false;
+            }
+        }
+        return true;
     }
 
     /// <summary>A declaration's fields, methods, properties and enum values, onto its symbol.</summary>
@@ -4470,11 +4608,14 @@ public sealed partial class Binder
         // of it -- is one lowering lays down a descriptor for: its members
         // are declared now, whatever kind of copy it is, and what that
         // descriptor names with them (ForceBody, ForceContext).
+        // But for one from elsewhere whose symbols wait though its members
+        // are here (DeclaredLater): no bodies of it for binding to check,
+        // lowering may declare it when it lays that descriptor down.
         if (_inBodies)
         {
             Type of = resolved;
             while (of.IsArray && of.Element is Type element) of = element;
-            of.Symbol?.EnsureMembers();
+            if (of.Symbol is { } named && !(named.Decl is { } waiting && _declaredLater.Contains(waiting))) named.EnsureMembers();
             ForceBody(resolved);
         }
         return resolved;
