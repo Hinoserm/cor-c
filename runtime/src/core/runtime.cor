@@ -1124,6 +1124,11 @@ static class Runtime
     /// allocating calls' return addresses are read, and the size -- where a
     /// program's collector work comes from, counted without allocating.
     public static long AllocHook;
+    /// Whether the hook is called for every allocation (the checked mode's
+    /// table of who made each block) rather than every sixteenth. A flag of
+    /// its own, zero by default: the runtime has no static initializer, and
+    /// one runs before the thread's block is set.
+    public static bool AllocHookEvery;
     static long _allocCount;
 
     public static long Alloc(nint bytes)
@@ -1131,7 +1136,7 @@ static class Runtime
         long at = (long)(nuint)Gc.AllocWord(bytes, 0);
         // After the allocation, so the sampler knows the block (and whether
         // the program frees it or leaves it to the collector).
-        if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes | (1L << 40), at);
+        if (AllocHook != 0 && (((++_allocCount) & 15) == 0 || AllocHookEvery)) Sys.Call(AllocHook, Sys.FramePointer(), bytes | (1L << 40), at);
         return at;
     }
 
@@ -1144,7 +1149,7 @@ static class Runtime
         long at = (long)(nuint)Gc.AllocWord(bytes, (nint)Gc.LeafKind);
         // After the allocation, so the sampler knows the block (and whether
         // the program frees it or leaves it to the collector).
-        if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes | (2L << 40), at);
+        if (AllocHook != 0 && (((++_allocCount) & 15) == 0 || AllocHookEvery)) Sys.Call(AllocHook, Sys.FramePointer(), bytes | (2L << 40), at);
         return at;
     }
 
@@ -1156,7 +1161,7 @@ static class Runtime
         long at = (long)(nuint)Gc.AllocWord(bytes, (nint)Gc.ObjectKind);
         // After the allocation, so the sampler knows the block (and whether
         // the program frees it or leaves it to the collector).
-        if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes | (3L << 40), at);
+        if (AllocHook != 0 && (((++_allocCount) & 15) == 0 || AllocHookEvery)) Sys.Call(AllocHook, Sys.FramePointer(), bytes | (3L << 40), at);
         return at;
     }
 
@@ -1486,7 +1491,7 @@ static class Runtime
     static long AllocRegionSlow(nint bytes, nint kind, nint frame)
     {
         long at = (long)(nuint)Gc.AllocRegion(bytes, kind, 0, (long)(nuint)frame);
-        if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes | (SampleKind(kind) << 40), at);
+        if (AllocHook != 0 && (((++_allocCount) & 15) == 0 || AllocHookEvery)) Sys.Call(AllocHook, Sys.FramePointer(), bytes | (SampleKind(kind) << 40), at);
         return at;
     }
 
@@ -1500,7 +1505,7 @@ static class Runtime
     public static long AllocNear(nint bytes, nint kind, nint owner, nint frame)
     {
         long at = (long)(nuint)Gc.AllocRegion(bytes, kind, owner == 0 ? -1 : (long)(nuint)owner, (long)(nuint)frame);
-        if (AllocHook != 0 && ((++_allocCount) & 15) == 0) Sys.Call(AllocHook, Sys.FramePointer(), bytes | (SampleKind(kind) << 40), at);
+        if (AllocHook != 0 && (((++_allocCount) & 15) == 0 || AllocHookEvery)) Sys.Call(AllocHook, Sys.FramePointer(), bytes | (SampleKind(kind) << 40), at);
         return at;
     }
 
