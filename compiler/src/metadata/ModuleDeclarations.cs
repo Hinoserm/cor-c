@@ -12,6 +12,8 @@ namespace Corsac.Lang;
 ///   eisa:ADP7771               EISA identifier
 ///   isa:sb16@220,240,260,280   legacy ISA: a probe at those ports
 ///   i8042:aux                  a child of the 8042
+///   platform:fdc               a fixed device of the board
+///   virtio:d00000001           a virtio device, by its type
 ///
 /// -- and a bus that finds a device looks its alias up. The attribute is on
 /// the class because the class is the driver: the module holding it is what
@@ -24,7 +26,7 @@ namespace Corsac.Lang;
 public static class ModuleDeclarations
 {
     /// <summary>The buses an alias may name, each the prefix before its colon.</summary>
-    static readonly HashSet<string> Buses = new(StringComparer.Ordinal) { "pnp", "pci", "eisa", "isa", "i8042", "virtio" };
+    static readonly HashSet<string> Buses = new(StringComparer.Ordinal) { "pnp", "pci", "eisa", "isa", "i8042", "virtio", "platform" };
 
     public static List<string> Collect(CompilationUnit unit, List<CompileError> errors)
     {
