@@ -578,6 +578,9 @@ public sealed class IndexedDeclarations : IDisposable
                 bool template = typeName.Contains('`');
                 // Set below, by one branch or the other.
                 TypeDecl root = null!;
+                // Whether this is the signature-only reading of a declaration
+                // that is no template, which can be read again (ReadAgain).
+                bool signatures = false;
                 if (!template)
                 {
                     CompilationUnit header = Tokens.Parse(source.Text, displayFile, declarationsOnly: true);
@@ -585,14 +588,9 @@ public sealed class IndexedDeclarations : IDisposable
                     // index built for every ring holds it, and this compile does
                     // not, any more than its own sources' copy of it.
                     if (header.Types.Count == 0) continue;
-                    // A slice can parse to more than one declaration: a delegate's
-                    // text also yields the multicast class synthesised beside it.
-                    // The record names which one it is for.
-                    string wanted = source.Key[(source.Key.LastIndexOf('.') + 1)..];
-                    if (wanted.Contains('\n')) wanted = wanted[(wanted.LastIndexOf('\n') + 1)..];
-                    root = header.Types.FirstOrDefault(type => type.Name == wanted)
-                        ?? header.Types.OrderBy(type => type.SourceFrom).First();
+                    root = Wanted(header, source.Key);
                     template = root.Members.OfType<MethodDecl>().Any(method => method.TypeParams.Count != 0);
+                    signatures = !template;
                 }
                 if (template)
                 {
@@ -638,13 +636,7 @@ public sealed class IndexedDeclarations : IDisposable
                 root.SourceTo = source.To;
                 root.Elsewhere = true;
                 root.SignatureOnly = true;
-                foreach (MemberDecl member in root.Members)
-                {
-                    member.File = displayFile;
-                    member.Namespace = source.Namespace;
-                    member.Scope = source.Scope;
-                    member.OwnedImplementation = false;
-                }
+                Place(root.Members, source.Namespace, source.Scope, displayFile);
                 unit.Types.Add(root);
                 foreach ((string name, int arity) in SignatureNames(root))
                 {
@@ -673,8 +665,103 @@ public sealed class IndexedDeclarations : IDisposable
                     string? next = SpeculateIn(root.Namespace, root.Scope, reference.Name, reference.Args.Count);
                     if (next is not null && Load(next)) pending.Enqueue(next);
                 }, Qualifiers(root, next => { if (Load(next)) pending.Enqueue(next); }));
+                // LAST, once nothing here reads its members again: from now on
+                // a reader of them clears the mark (TypeDecl.ReadableAgain).
+                if (signatures && ReadLater(root)) root.ReadableAgain(ReadAgain(source, displayFile));
             }
         }
+    }
+
+    /// <summary>
+    /// The declaration a signature-only slice was read for. A slice can parse
+    /// to more than one declaration: a delegate's text also yields the
+    /// multicast class synthesised beside it. The record names which one it
+    /// is for.
+    /// </summary>
+    private static TypeDecl Wanted(CompilationUnit header, string key)
+    {
+        string wanted = key[(key.LastIndexOf('.') + 1)..];
+        if (wanted.Contains('\n')) wanted = wanted[(wanted.LastIndexOf('\n') + 1)..];
+        return header.Types.FirstOrDefault(type => type.Name == wanted)
+            ?? header.Types.OrderBy(type => type.SourceFrom).First();
+    }
+
+    /// <summary>
+    /// An imported declaration's members, placed where its record says they
+    /// were written: each read as the record's file, namespace and usings, and
+    /// none of them this unit's to compile.
+    /// </summary>
+    private static void Place(List<MemberDecl> members, string space, FileScope scope, string displayFile)
+    {
+        foreach (MemberDecl member in members)
+        {
+            member.File = displayFile;
+            member.Namespace = space;
+            member.Scope = scope;
+            member.OwnedImplementation = false;
+        }
+    }
+
+    /// <summary>
+    /// WHETHER AN IMPORTED DECLARATION'S MEMBERS MAY BE DROPPED AND READ
+    /// AGAIN FROM ITS RECORD WHEN FIRST ASKED FOR (Monomorphiser.
+    /// DeferImported). A unit loads every declaration its signatures reach,
+    /// the closure above, and asks for the members of a few: compiling one
+    /// file of the compiler loaded the whole front end's declarations, and
+    /// their members and the binder's symbols for them were much of what the
+    /// unit held while binding. Only what nothing can need without asking:
+    ///
+    /// A CLASS OR A STRUCT, for the reasons a specialisation's members are
+    /// deferred only for those (Monomorphiser.MembersLater): an interface's
+    /// methods are counted for every family's slots, and a delegate is one.
+    /// NOT PARTIAL: its parts are merged with the unit's own. NO EXTENSION
+    /// METHOD, as extension lookup passes over a type whose members wait
+    /// (Binder.Extension). And NO CONSTANT BUT A PLAIN ONE: a constant
+    /// written with names is evaluated with every other at binding, where a
+    /// declaration it names is asked of the index; declared after binding,
+    /// one it named that was not loaded would stop the compile. A generic
+    /// method makes it a template (above), which is read with its bodies and
+    /// is never deferred.
+    /// </summary>
+    private static bool ReadLater(TypeDecl root)
+    {
+        if (root.Kind is not (TypeKind.Class or TypeKind.Struct) || root.IsDelegate || root.Mods.HasFlag(Mods.Partial))
+        {
+            return false;
+        }
+        foreach (MemberDecl member in root.Members)
+        {
+            switch (member)
+            {
+                case MethodDecl { Params.Count: > 0 } method when method.Params[0].IsThis:
+                    return false;
+                case FieldDecl field when field.Mods.HasFlag(Mods.Const) && field.Init is { } value
+                                          && value is not LiteralExpr && !Fold.TryConst(value, out _):
+                    return false;
+            }
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// How to read an imported declaration's members again, as they were
+    /// read here: its slice parsed afresh, the same declaration picked out of
+    /// it (Wanted) and its members placed (Place). Holds the slice's text
+    /// and nothing else of the record -- the catalog holds the same string
+    /// while it holds the record.
+    /// </summary>
+    private Func<List<MemberDecl>> ReadAgain(SourceDeclaration source, string displayFile)
+    {
+        SyntaxTokenCache tokens = Tokens;
+        string text = source.Text, key = source.Key, space = source.Namespace;
+        FileScope scope = source.Scope;
+        return () =>
+        {
+            CompilationUnit header = tokens.Parse(text, displayFile, declarationsOnly: true);
+            List<MemberDecl> members = Wanted(header, key).Members;
+            Place(members, space, scope, displayFile);
+            return members;
+        };
     }
 
     /// <summary>Where a declaration is read from in its file, and where it was written (Parser.StartNamespace).</summary>

@@ -26,17 +26,32 @@ public sealed class TypeDecl : Node
     public List<TypeParam> TypeParams => _typeParams ?? NoTypeParams;
     /// <summary>To write: made on first use.</summary>
     public List<TypeParam> WritableTypeParams => _typeParams ??= new();
+    // THE FOUR LISTS BELOW ARE MADE ON THEIR FIRST WRITE: the plain property
+    // reads one shared empty list until then, never written through, and
+    // every writer goes by its Writable twin. Most declarations -- every
+    // imported header and every specialisation among them -- have no
+    // attributes and no enum members, and many no base, and an empty list
+    // each was four objects a declaration for nothing.
     /// <summary>The attributes written on it, by name: `[Flags]` is "Flags".</summary>
-    public List<string> Attributes { get; } = new();
+    public List<string> Attributes => _attributes ?? NoAttributes;
+    public List<string> WritableAttributes => _attributes ??= new();
+    private List<string>? _attributes;
+    private static readonly List<string> NoAttributes = new();
 
     /// <summary>
     /// The same attributes with their arguments, for the ones whose argument
     /// is the whole point -- `[Registry("CORSAC.Paint")]` names a domain, and
     /// the name in it is the source of truth for where those settings live.
     /// </summary>
-    public List<AttributeRef> AttributeParts { get; } = new();
+    public List<AttributeRef> AttributeParts => _attributeParts ?? NoAttributeParts;
+    public List<AttributeRef> WritableAttributeParts => _attributeParts ??= new();
+    private List<AttributeRef>? _attributeParts;
+    private static readonly List<AttributeRef> NoAttributeParts = new();
     /// <summary>Base class and interfaces, undistinguished until binding.</summary>
-    public List<TypeRef> Bases { get; } = new();
+    public List<TypeRef> Bases => _bases ?? NoBases;
+    public List<TypeRef> WritableBases => _bases ??= new();
+    private List<TypeRef>? _bases;
+    private static readonly List<TypeRef> NoBases = new();
 
     /// <summary>
     /// The arguments a positional record hands its base: the `Type` of
@@ -74,6 +89,9 @@ public sealed class TypeDecl : Node
     {
         get
         {
+            // Looked at, so no longer the list its record reads back as
+            // (ReadableAgain): whoever asked may change it.
+            _untouched = false;
             if (_makeMembers is { } make)
             {
                 _makeMembers = null;
@@ -106,11 +124,12 @@ public sealed class TypeDecl : Node
     /// is a copy of the one deferred (DeferMembersAs), so that what the making
     /// settles about the declaration is said of the one that holds the list.
     /// </summary>
-    internal void DeferMembers(Func<TypeDecl, List<MemberDecl>> make, HashSet<string> names)
+    internal void DeferMembers(Func<TypeDecl, List<MemberDecl>> make, HashSet<string> names, TypeRef[]? signatures = null)
     {
         _members = null;
         _makeMembers = make;
         MemberNames = names;
+        SignatureTypes = signatures;
     }
 
     /// <summary>The same deferred members as another copy of this declaration, not made yet either.</summary>
@@ -119,7 +138,46 @@ public sealed class TypeDecl : Node
         _members = null;
         _makeMembers = other._makeMembers;
         MemberNames = other.MemberNames;
+        SignatureTypes = other.SignatureTypes;
     }
+
+    /// <summary>
+    /// AN IMPORTED DECLARATION WHOSE MEMBERS ARE MADE ON FIRST USE: every
+    /// type its members' signatures name, as the rewrite that dropped them
+    /// spelt each one, once. Binding resolves these where it would have
+    /// declared the members (Binder.DeclareArguments), so a declaration they
+    /// need is asked of the index while the pass can still go round for it,
+    /// and a tuple or nullable shape they make is made where it always was.
+    /// Null for every other declaration -- which is also how the binder tells
+    /// an imported one from a specialisation (Monomorphiser.DeferImported).
+    /// </summary>
+    internal TypeRef[]? SignatureTypes { get; private set; }
+
+    /// <summary>
+    /// How to read this imported declaration's members again from its index
+    /// record (IndexedDeclarations.AddHeaders): parsed afresh and placed as
+    /// the first reading placed them. Null for every other declaration.
+    /// </summary>
+    internal Func<List<MemberDecl>>? ReadAgain { get; private set; }
+
+    /// <summary>
+    /// Whether nothing has looked at the members since they were read
+    /// (ReadableAgain): what reading them again gives is then exactly what
+    /// they are. Any reader of Members clears it, as it may have changed the
+    /// list -- a [Registry] class's fields become properties, a class a
+    /// `dynamic` receiver may be is given members to be reached by name --
+    /// and reading again would undo that.
+    /// </summary>
+    internal bool UntouchedSinceRead => _untouched && ReadAgain is not null;
+
+    /// <summary>Says how to read the members again, and that what is held now is exactly that.</summary>
+    internal void ReadableAgain(Func<List<MemberDecl>> read)
+    {
+        ReadAgain = read;
+        _untouched = true;
+    }
+
+    private bool _untouched;
 
     /// <summary>
     /// EVERY NAME ITS DEFERRED MEMBERS CAN BE DECLARED UNDER, from its
@@ -136,7 +194,10 @@ public sealed class TypeDecl : Node
     // Read through MembersMade while deferred, never written through.
     private static readonly List<MemberDecl> NoMembers = new();
     /// <summary>Enum members, when this is an enum.</summary>
-    public List<EnumMember> EnumMembers { get; } = new();
+    public List<EnumMember> EnumMembers => _enumMembers ?? NoEnumMembers;
+    public List<EnumMember> WritableEnumMembers => _enumMembers ??= new();
+    private List<EnumMember>? _enumMembers;
+    private static readonly List<EnumMember> NoEnumMembers = new();
 
     /// <summary>
     /// The type this one was written INSIDE, spelled in full -- `Outer.Middle`

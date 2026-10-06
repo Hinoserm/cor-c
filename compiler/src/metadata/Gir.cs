@@ -1272,21 +1272,21 @@ public static class Gir
 
             for (int i = 0; i < bases; i++)
             {
-                d.Bases.Add(Type());
+                d.WritableBases.Add(Type());
             }
 
             int attributes = Count();
 
             for (int i = 0; i < attributes; i++)
             {
-                d.Attributes.Add(Str());
+                d.WritableAttributes.Add(Str());
             }
 
             int enums = Count();
 
             for (int i = 0; i < enums; i++)
             {
-                d.EnumMembers.Add(new EnumMember { Name = Str(), Value = Expr() });
+                d.WritableEnumMembers.Add(new EnumMember { Name = Str(), Value = Expr() });
             }
 
             int members = Count();
@@ -1667,11 +1667,11 @@ public static class Gir
                     InitBody nested = new();
 
                     ReadBody(nested);
-                    body.Inits.Add(new InitAssign { Name = name, Nested = nested });
+                    body.WritableInits.Add(new InitAssign { Name = name, Nested = nested });
                 }
                 else
                 {
-                    body.Inits.Add(new InitAssign { Name = name, Value = Need() });
+                    body.WritableInits.Add(new InitAssign { Name = name, Value = Need() });
                 }
             }
 
@@ -1686,7 +1686,7 @@ public static class Gir
                 {
                     add.Args.Add(Need());
                 }
-                body.Adds.Add(add);
+                body.WritableAdds.Add(add);
             }
 
             int indexes = Count();
@@ -1704,7 +1704,7 @@ public static class Gir
                 InitIndex one = new() { Value = Need() };
 
                 one.Args.AddRange(args);
-                body.Indexes.Add(one);
+                body.WritableIndexes.Add(one);
             }
         }
 

@@ -1042,6 +1042,7 @@ public sealed partial class Binder
         // of every one, the original then dropped, was a unit's whole binding
         // made twice for the collector.
         b.CheckBodyWork();
+        b.DeclareUsed();
         // No await under a lock, nothing awaited or allocated in an interrupt
         // handler: across the unit, now that every body is bound
         // (Binder.AwaitChecks).
@@ -1049,6 +1050,24 @@ public sealed partial class Binder
         b._r.StaticBytes = b._staticNext;
         b.Retire();
         return b._r;
+    }
+
+    /// <summary>
+    /// THE IMPORTED TYPES THIS UNIT ASKED FOR, their members declared while
+    /// binding can still answer for them. A unit describes the layout of
+    /// every type it used (ManagedLayouts), and one named only in a signature
+    /// -- a parameter, a field of its own -- has had nothing of it asked for.
+    /// Declared after binding, a declaration its members wanted could no
+    /// longer be loaded; declared here, it is asked of the index like any
+    /// other, and the pass goes round for it.
+    /// </summary>
+    private void DeclareUsed()
+    {
+        foreach (TypeSymbol t in _r.Types.Values.Where(t => t.MembersPending && t.Used && t.Decl?.SignatureTypes is not null).ToList())
+        {
+            t.EnsureMembers();
+        }
+        _declarationBatch.ThrowIfAny();
     }
 
     /// <summary>
@@ -1341,7 +1360,12 @@ public sealed partial class Binder
     private void EvaluateConstant(TypeSymbol owner, string name)
     {
         // A constant of a type whose members wait to be asked for is not in
-        // the table until they are declared: asking for it is asking.
+        // the table until they are declared: asking for it is asking. Unless
+        // none of them has the name (TypeSymbol.MayHave): a name looked for
+        // as a constant is looked for on the type being checked and every
+        // base, outer type and imported type it passes, and each would have
+        // been declared to find nothing.
+        if (!owner.MayHave(name)) return;
         owner.EnsureMembers();
         var key = (owner, name);
         if (!_constantDeclarations.TryGetValue(key, out var declaration)) return;
@@ -1860,10 +1884,29 @@ public sealed partial class Binder
         // here, once: a list can be made by looking at it before its symbol
         // exists (ImpliedConstructor looks at a base's), and its type is
         // still one whose members are declared on first use.
+        // NOT AN IMPORTED ONE WHOSE NAME ANOTHER DECLARATION HAS: the pass
+        // below adds it to the prelude's type of its name, or moves one of
+        // the two into System, and declares it there and then. The
+        // monomorphiser deferred none such (ImportedLater); a declaration a
+        // later round added could still take the name.
         _deferred.Clear();
+        Dictionary<string, int>? imported = null;
         foreach (TypeDecl d in unit.Types)
         {
-            if (d.MembersPending) _deferred.Add(d);
+            if (d.MembersPending && d.SignatureTypes is not null) (imported ??= new(StringComparer.Ordinal))[d.Name] = 0;
+        }
+        if (imported is not null)
+        {
+            foreach (TypeDecl d in unit.Types)
+            {
+                if (imported.TryGetValue(d.Name, out int seen)) imported[d.Name] = seen + 1;
+            }
+        }
+        foreach (TypeDecl d in unit.Types)
+        {
+            if (!d.MembersPending) continue;
+            if (d.SignatureTypes is not null && imported![d.Name] > 1) _ = d.Members;
+            else _deferred.Add(d);
         }
 
         foreach (TypeDecl d in unit.Types)
@@ -2840,11 +2883,11 @@ public sealed partial class Binder
         };
 
         made.Args.AddRange(nw.Args);
-        made.WritableArgNames.AddRange(nw.ArgNames);
+        if (nw.ArgNames.Count > 0) made.WritableArgNames.AddRange(nw.ArgNames);
         made.Elements = nw.Elements;
-        made.Inits.AddRange(nw.Inits);
-        made.Adds.AddRange(nw.Adds);
-        made.Indexes.AddRange(nw.Indexes);
+        if (nw.Inits.Count > 0) made.Body.WritableInits.AddRange(nw.Inits);
+        if (nw.Adds.Count > 0) made.Body.WritableAdds.AddRange(nw.Adds);
+        if (nw.Indexes.Count > 0) made.Body.WritableIndexes.AddRange(nw.Indexes);
         return made;
     }
 
@@ -2996,7 +3039,9 @@ public sealed partial class Binder
             // ITS OWN BODIES, when it is a copy made per argument, checked
             // as every other type's are (BodiesNow); and what its descriptor
             // will name, declared while binding can still check it.
-            if (d.Canon is null) BodiesNow(d, sym);
+            // Not an imported declaration's, which has none to check
+            // (CheckBodies passes over a signature-only one).
+            if (d.Canon is null && !d.SignatureOnly) BodiesNow(d, sym);
             if (_contextsResolved) ForceContext(sym);
         }
         finally
@@ -3151,7 +3196,18 @@ public sealed partial class Binder
         {
             Type of = argument;
             while (of.IsArray && of.Element is Type element) of = element;
-            if (of.Symbol is { Kind: TypeKind.Class } argumentClass) argumentClass.EnsureMembers();
+            // NOT AN IMPORTED CLASS WAITING TO BE READ AGAIN (Monomorphiser.
+            // DeferImported): it has no bodies for binding to check, and
+            // what declaring it asks of the index was asked where it was
+            // declared without its members (DeclareArguments), so lowering
+            // may declare it when it lays the descriptor down. Every
+            // IEnumerable<Foo> a List<Foo> or a Foo[] brings in is such a
+            // copy, and asked here, every class any loaded signature holds
+            // in a collection was declared for nothing.
+            if (of.Symbol is { Kind: TypeKind.Class } argumentClass && argumentClass.Decl?.SignatureTypes is null)
+            {
+                argumentClass.EnsureMembers();
+            }
         }
     }
 
@@ -3374,6 +3430,25 @@ public sealed partial class Binder
             foreach (TypeRef argument in d.TemplateArgs)
             {
                 Resolve(argument, sym);
+            }
+
+            // AND AN IMPORTED DECLARATION'S SIGNATURES, whose members wait
+            // to be read again (Monomorphiser.DeferImported): every type they
+            // name, resolved here, where declaring them resolved each before.
+            // A declaration one needs is asked of the index while the pass
+            // can still go round for it, and the shapes they make -- a tuple,
+            // a nullable struct -- are made where they always were, in the
+            // same order; nothing is marked used, the scope being an imported
+            // type's (BindingElsewhere).
+            // EACH ON ITS OWN, as each member is declared on its own: one
+            // missing declaration does not keep the rest from being asked.
+            if (d.SignatureTypes is { } signatures)
+            {
+                foreach (TypeRef written in signatures)
+                {
+                    try { Resolve(written, sym); }
+                    catch (Metadata.DeclarationDemand demand) { _declarationBatch.Add(demand); }
+                }
             }
         }
         finally { _quiet--; }
@@ -11215,7 +11290,7 @@ public sealed partial class Binder
         if (target.Symbol is { Kind: TypeKind.Class or TypeKind.Struct } && !target.IsArray && RefOf(target) is TypeRef targetRef)
         {
             NewExpr made = new() { Type = targetRef, Line = collection.Line, Col = collection.Col };
-            made.Adds.AddRange(collection.Adds);
+            if (collection.Adds.Count > 0) made.Body.WritableAdds.AddRange(collection.Adds);
             return made;
         }
 
@@ -12036,7 +12111,7 @@ public sealed partial class Binder
                     };
 
                     _r.InitField[one] = shape.Fields[i];
-                    made.Inits.Add(one);
+                    made.Body.WritableInits.Add(one);
                 }
 
                 Type shaped = new() { Prim = Prim.Void, Symbol = shape, Names = tup.Names.ToArray(), UseArgs = elements };

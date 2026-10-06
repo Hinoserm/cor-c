@@ -492,7 +492,8 @@ public static class Driver
             + " specialisations=" + Lang.Monomorphiser.Specialisations + " members=" + Lang.Monomorphiser.SpecialisedMembers
             + " deferred=" + Lang.Monomorphiser.DeferredSpecialisations + " with-bodies=" + Lang.Monomorphiser.DeferredWithBodies + " members-made-later=" + Lang.Monomorphiser.MembersMadeLater
             + " deferred-declared=" + Lang.TypeSymbol.DeferredDeclared + " members-declared-later=" + Lang.TypeSymbol.DeferredMembersDeclared
-            + " probes-answered=" + Lang.TypeSymbol.ProbesAnswered);
+            + " probes-answered=" + Lang.TypeSymbol.ProbesAnswered
+            + " imported-deferred=" + Lang.Monomorphiser.DeferredImports + " imported-members-made-later=" + Lang.Monomorphiser.ImportedMembersMadeLater);
         if (front is null)
         {
             return null;

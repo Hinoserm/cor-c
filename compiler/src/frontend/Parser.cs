@@ -1522,8 +1522,8 @@ public sealed class Parser
             Line = start.Line, Col = start.Col,
         };
 
-        decl.Attributes.AddRange(_attributes);
-        decl.AttributeParts.AddRange(CapturedAttributes());
+        if (_attributes.Count > 0) decl.WritableAttributes.AddRange(_attributes);
+        if (_attributeParts.Count > 0) decl.WritableAttributeParts.AddRange(CapturedAttributes());
 
         // WHERE THIS ONE WAS WRITTEN, before its own body moves the path on.
         // Empty means the top level, and a top-level type has no outer.
@@ -1571,7 +1571,7 @@ public sealed class Parser
         {
             do
             {
-                decl.Bases.Add(ParseTypeRef());
+                decl.WritableBases.Add(ParseTypeRef());
 
                 // A RECORD'S BASE IS CONSTRUCTED, and the arguments are written
                 // where the base is named: `record RegPlace(VReg Reg, Type
@@ -1650,7 +1650,7 @@ public sealed class Parser
                 EnumMember declared = new() { Name = member, Value = value, Line = m.Line, Col = m.Col };
 
                 declared.WritableAttributes.AddRange(on);
-                decl.EnumMembers.Add(declared);
+                decl.WritableEnumMembers.Add(declared);
 
                 if (!Take(Tok.Comma))
                 {
@@ -1710,7 +1710,7 @@ public sealed class Parser
                     }
 
                     decl.Members.AddRange(several.More);
-                    several.More.Clear();
+                    several.ForgetMore();
                 }
                 _inInterface = false;
             }
@@ -1748,8 +1748,8 @@ public sealed class Parser
             Namespace = _namespace, Scope = _fileScope, Outer = _typePath.Length == 0 ? null : _typePath,
             File = _file, Line = start.Line, Col = start.Col, SourceFrom = start.Pos,
         };
-        declaration.Attributes.AddRange(_attributes);
-        declaration.AttributeParts.AddRange(CapturedAttributes());
+        if (_attributes.Count > 0) declaration.WritableAttributes.AddRange(_attributes);
+        if (_attributeParts.Count > 0) declaration.WritableAttributeParts.AddRange(CapturedAttributes());
         if (At(Tok.Lt)) ParseTypeParams(declaration.WritableTypeParams);
         if (_enclosingParams.Count > 0)
         {
@@ -2730,7 +2730,7 @@ public sealed class Parser
         };
 
         if (attributes.Count > 0) first.WritableAttributes.AddRange(attributes);
-        first.More.AddRange(rest);
+        if (rest.Count > 0) first.WritableMore.AddRange(rest);
 
         // AN EVENT IS ITS add AND remove ACCESSORS, as C# compiles one, and a
         // field-like event has them too: they combine into its field. Through
@@ -7371,7 +7371,7 @@ public sealed class Parser
 
                 Expect(Tok.Assign, "'=' after the member name");
 
-                copy.Inits.Add(new InitAssign
+                copy.Body.WritableInits.Add(new InitAssign
                 {
                     Name = member.Text, Value = ParseExpr(),
                     Line = member.Line, Col = member.Col,
@@ -7520,7 +7520,7 @@ public sealed class Parser
                 };
 
                 one.Args.AddRange(index);
-                body.Indexes.Add(one);
+                body.WritableIndexes.Add(one);
             }
             else if (At(Tok.Ident) && Ahead().Kind == Tok.Assign)
             {
@@ -7534,7 +7534,7 @@ public sealed class Parser
                     InitBody inner = new() { Line = Cur.Line, Col = Cur.Col };
 
                     ReadInitBody(inner);
-                    body.Inits.Add(new InitAssign
+                    body.WritableInits.Add(new InitAssign
                     {
                         Name = member.Text, Nested = inner,
                         Line = member.Line, Col = member.Col,
@@ -7542,7 +7542,7 @@ public sealed class Parser
                 }
                 else
                 {
-                    body.Inits.Add(new InitAssign
+                    body.WritableInits.Add(new InitAssign
                     {
                         Name = member.Text, Value = ParseExpr(),
                         Line = member.Line, Col = member.Col,
@@ -7569,7 +7569,7 @@ public sealed class Parser
                     add.Args.Add(ParseExpr());
                 }
 
-                body.Adds.Add(add);
+                body.WritableAdds.Add(add);
             }
 
             if (!Take(Tok.Comma))
@@ -8166,7 +8166,7 @@ public sealed class Parser
                     Token elementAt = Cur;
                     InitAdd add = new() { Spread = Take(Tok.DotDot), Line = elementAt.Line, Col = elementAt.Col };
                     add.Args.Add(ParseExpr());
-                    collection.Adds.Add(add);
+                    collection.Body.WritableAdds.Add(add);
                     if (!Take(Tok.Comma)) break;
                 }
                 Expect(Tok.RBracket, "']' to close the collection expression");
