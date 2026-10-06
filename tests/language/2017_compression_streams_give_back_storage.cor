@@ -1,0 +1,74 @@
+// test: compression streams give back storage
+// expect-exit: 0
+// expect-output:
+// deflate 300 True 4394
+// zlib 300 True 4394
+// gzip 300 True 4394
+// after dispose: ObjectDisposedException
+//
+// A compressor and a decompressor made per record, as the IR archive makes
+// them, round trip hundreds of payloads: short ones (one fixed block) and
+// long ones of skewed text (several dynamic blocks, each with tables of its
+// own). Each stream's working storage is given back when it is disposed and
+// made again for the next; every payload still comes back byte for byte.
+
+using System;
+using System.IO;
+using System.IO.Compression;
+using System.Text;
+
+static class Program
+{
+    static byte[] Payload(int k)
+    {
+        StringBuilder b = new();
+        int words = k % 3 == 0 ? 3 : 3000 + k * 7;
+        uint x = (uint)(k * 2654435761u + 1);
+        for (int i = 0; i < words; i++)
+        {
+            x = x * 1103515245u + 12345u;
+            int w = (int)((x >> 16) % 23);
+            b.Append(w < 12 ? "the " : w < 18 ? "of " + w : "z" + (x % 997) + " ");
+        }
+        return Encoding.UTF8.GetBytes(b.ToString());
+    }
+
+    static Stream Packer(Stream to, int kind) => kind == 0 ? new DeflateStream(to, CompressionLevel.Fastest, true)
+        : kind == 1 ? new ZLibStream(to, CompressionLevel.Optimal, true) : new GZipStream(to, CompressionLevel.Fastest, true);
+
+    static Stream Unpacker(Stream from, int kind) => kind == 0 ? new DeflateStream(from, CompressionMode.Decompress)
+        : kind == 1 ? new ZLibStream(from, CompressionMode.Decompress) : new GZipStream(from, CompressionMode.Decompress);
+
+    static int Main()
+    {
+        string[] names = { "deflate", "zlib", "gzip" };
+        for (int kind = 0; kind < 3; kind++)
+        {
+            int same = 0;
+            long sum = 0;
+            for (int k = 0; k < 300; k++)
+            {
+                byte[] body = Payload(k % 40);
+                MemoryStream packed = new();
+                using (Stream z = Packer(packed, kind)) z.Write(body, 0, body.Length);
+                packed.Position = 0;
+                MemoryStream back = new();
+                using (Stream u = Unpacker(packed, kind)) u.CopyTo(back);
+                byte[] got = back.ToArray();
+                bool equal = got.Length == body.Length;
+                for (int i = 0; equal && i < got.Length; i++) equal = got[i] == body[i];
+                if (equal) same++;
+                sum += got.Length % 31;
+            }
+            Console.WriteLine(names[kind] + " " + same + " " + (same == 300) + " " + sum);
+        }
+
+        MemoryStream once = new();
+        Stream done = new DeflateStream(once, CompressionLevel.Fastest, true);
+        done.Write(new byte[] { 1, 2, 3 }, 0, 3);
+        done.Dispose();
+        try { done.Write(new byte[] { 4 }, 0, 1); Console.WriteLine("after dispose: wrote"); }
+        catch (ObjectDisposedException) { Console.WriteLine("after dispose: ObjectDisposedException"); }
+        return 0;
+    }
+}

@@ -215,6 +215,19 @@ class DeflateTree
         ExtraBase = 0;
         HasStatic = false;
     }
+
+    /// Its arrays given back with its finished deflater's (Deflater.Release):
+    /// each is this tree's own, the shared tables copied into them.
+    public void Release()
+    {
+        OutgrownStorage.Release(Freq);
+        OutgrownStorage.Release(Len);
+        OutgrownStorage.Release(Code);
+        OutgrownStorage.Release(Dad);
+        OutgrownStorage.Release(StaticLen);
+        OutgrownStorage.Release(Extra);
+        Freq = null!; Len = null!; Code = null!; Dad = null!; StaticLen = null!; Extra = null!;
+    }
 }
 
 /// The shared, never-modified tables: the static literal and distance trees
@@ -1332,6 +1345,40 @@ class Deflater
         FlushPending();
     }
 
+    /// THE WORKING STORAGE GIVEN BACK, once the stream is finished: the
+    /// window, the hash chains, the symbol and pending buffers and the trees'
+    /// counts, a quarter of a megabyte made for this deflater alone and
+    /// never handed out (Write's buffer is the caller's and is not freed; the
+    /// static tables are DeflateStatic's). A compressor made per record --
+    /// the IR archive's -- left them all to the collector, which then did
+    /// most of a compile's collecting.
+    internal void Release()
+    {
+        if (!_finished || _window == null) return;
+        OutgrownStorage.Release(_window);
+        OutgrownStorage.Release(_prev);
+        OutgrownStorage.Release(_head);
+        OutgrownStorage.Release(_pending);
+        OutgrownStorage.Release(_sym);
+        OutgrownStorage.Release(_store);
+        OutgrownStorage.Release(_heap);
+        OutgrownStorage.Release(_depth);
+        OutgrownStorage.Release(_blCount);
+        _lTree.Release();
+        _dTree.Release();
+        _blTree.Release();
+        _window = null!;
+        _prev = null!;
+        _head = null!;
+        _pending = null!;
+        _sym = null!;
+        _store = null!;
+        _heap = null!;
+        _depth = null!;
+        _blCount = null!;
+        _input = _empty;
+    }
+
     /// Z_SYNC_FLUSH: everything held is coded, and an empty stored block
     /// aligns the stream so that a reader can see all of it.
     public void Flush()
@@ -1857,10 +1904,41 @@ class Inflater
         {
             throw new InvalidDataException("invalid distances set");
         }
+        DropTables();
         _lenTable = lenTable;
         _lenBits = lenBits;
         _distTable = distTable;
         _distBits = distBits;
+    }
+
+    /// The last dynamic block's code tables given back as the next block's
+    /// replace them: made for that block alone, never the fixed tables
+    /// (InflateFixed), which every inflater shares.
+    void DropTables()
+    {
+        if (_lenTable != null && _lenTable != InflateFixed.LenTable) OutgrownStorage.Release(_lenTable);
+        if (_distTable != null && _distTable != InflateFixed.DistTable) OutgrownStorage.Release(_distTable);
+        _lenTable = null!;
+        _distTable = null!;
+    }
+
+    /// THE WORKING STORAGE GIVEN BACK when its stream is disposed: the input
+    /// buffer, the window and the tables, this inflater's alone (Read copies
+    /// out of the window into the caller's buffer). Read after it is an
+    /// error, as on a disposed stream.
+    internal void Release()
+    {
+        if (_window == null) return;
+        DropTables();
+        OutgrownStorage.Release(_in);
+        OutgrownStorage.Release(_window);
+        OutgrownStorage.Release(_codeTable);
+        OutgrownStorage.Release(_lens);
+        OutgrownStorage.Release(_work);
+        OutgrownStorage.Release(_count);
+        OutgrownStorage.Release(_offs);
+        _in = null!; _window = null!; _codeTable = null!;
+        _lens = null!; _work = null!; _count = null!; _offs = null!;
     }
 
     void BeginBlock()
@@ -1890,6 +1968,7 @@ class Inflater
         }
         if (type == 1)
         {
+            DropTables();
             _lenTable = InflateFixed.LenTable;
             _lenBits = InflateFixed.LenBits;
             _distTable = InflateFixed.DistTable;
@@ -2128,6 +2207,7 @@ class DeflateStream : Stream
 
     public override int Read(byte[] buffer, int offset, int count)
     {
+        if (_disposed) throw new ObjectDisposedException("DeflateStream");
         if (_inflater == null)
         {
             throw new NotSupportedException("this stream does not support reading");
@@ -2137,6 +2217,7 @@ class DeflateStream : Stream
 
     public override void Write(byte[] buffer, int offset, int count)
     {
+        if (_disposed) throw new ObjectDisposedException("DeflateStream");
         if (_deflater == null)
         {
             throw new NotSupportedException("this stream does not support writing");
@@ -2146,6 +2227,7 @@ class DeflateStream : Stream
 
     public override void Flush()
     {
+        if (_disposed) throw new ObjectDisposedException("DeflateStream");
         if (_deflater != null)
         {
             _deflater.Flush();
@@ -2157,7 +2239,8 @@ class DeflateStream : Stream
     {
         if (_disposed) return;
         _disposed = true;
-        if (_deflater != null) _deflater.Finish();
+        if (_inflater != null) _inflater.Release();
+        if (_deflater != null) { _deflater.Finish(); _deflater.Release(); }
         if (!_leaveOpen) _stream.Dispose();
     }
 }
@@ -2250,6 +2333,7 @@ class ZLibStream : Stream
 
     public override int Read(byte[] buffer, int offset, int count)
     {
+        if (_disposed) throw new ObjectDisposedException("ZLibStream");
         if (_inflater == null)
         {
             throw new NotSupportedException("this stream does not support reading");
@@ -2283,6 +2367,7 @@ class ZLibStream : Stream
 
     public override void Write(byte[] buffer, int offset, int count)
     {
+        if (_disposed) throw new ObjectDisposedException("ZLibStream");
         if (_deflater == null)
         {
             throw new NotSupportedException("this stream does not support writing");
@@ -2293,6 +2378,7 @@ class ZLibStream : Stream
 
     public override void Flush()
     {
+        if (_disposed) throw new ObjectDisposedException("ZLibStream");
         if (_deflater != null)
         {
             _deflater.Flush();
@@ -2304,9 +2390,11 @@ class ZLibStream : Stream
     {
         if (_disposed) return;
         _disposed = true;
+        if (_inflater != null) _inflater.Release();
         if (_deflater != null)
         {
             _deflater.Finish();
+            _deflater.Release();
             byte[] trailer = new byte[4];
             trailer[0] = (byte)(_adler >> 24);
             trailer[1] = (byte)((_adler >> 16) & 255);
@@ -2492,6 +2580,7 @@ class GZipStream : Stream
 
     public override int Read(byte[] buffer, int offset, int count)
     {
+        if (_disposed) throw new ObjectDisposedException("GZipStream");
         if (_inflater == null)
         {
             throw new NotSupportedException("this stream does not support reading");
@@ -2521,6 +2610,7 @@ class GZipStream : Stream
 
     public override void Write(byte[] buffer, int offset, int count)
     {
+        if (_disposed) throw new ObjectDisposedException("GZipStream");
         if (_deflater == null)
         {
             throw new NotSupportedException("this stream does not support writing");
@@ -2532,6 +2622,7 @@ class GZipStream : Stream
 
     public override void Flush()
     {
+        if (_disposed) throw new ObjectDisposedException("GZipStream");
         if (_deflater != null)
         {
             _deflater.Flush();
@@ -2543,9 +2634,11 @@ class GZipStream : Stream
     {
         if (_disposed) return;
         _disposed = true;
+        if (_inflater != null) _inflater.Release();
         if (_deflater != null)
         {
             _deflater.Finish();
+            _deflater.Release();
             byte[] trailer = new byte[8];
             for (int i = 0; i < 4; i++)
             {
