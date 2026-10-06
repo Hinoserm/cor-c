@@ -6964,7 +6964,8 @@ static class Gc
         // A null first, which an owned variable's first assignment hands
         // over (FreeReplaced), and with no thread block nothing to read:
         // before one exists there is no fast path to be on top of.
-        if (at == 0 || IgnoredFrees != 0 && IgnoredFrees != 'p' && IgnoredFrees != 'f' && IgnoredFrees != 'r')
+        if (at == 0 || IgnoredFrees != 0 && IgnoredFrees != 'p' && IgnoredFrees != 'f' && IgnoredFrees != 'r'
+            && IgnoredFrees != 'v' && IgnoredFrees != 'w' && IgnoredFrees != 'o' && IgnoredFrees != 's')
         {
             return;
         }
