@@ -2358,6 +2358,8 @@ static partial class Scheduler
     static int _head;
     static int _count;
     static AtomicCell? _gate;
+    // Set once the gate's ring and timers are made (Gate): read before them.
+    static volatile int _gateReady;
 
     static TimerEntry?[] _timers = null!;
     static int _timerCount;
@@ -2367,16 +2369,39 @@ static partial class Scheduler
     {
         AtomicCell? g = _gate;
 
+        if (g != null && _gateReady != 0)
+        {
+            return g;
+        }
+
+        // ONE GATE, WHOEVER ASKS FIRST. Eight threads posting their first
+        // Task.Run at once each found no gate, and each made a ring and a
+        // gate of its own: one thread's work went into a ring the next one
+        // then replaced, under a lock nobody else held, and was never run --
+        // its waiter timed out (1258, one run in five). The gate is
+        // published by one compare-and-swap (the barrier's, a static
+        // reference), and the ring made by the one that published it; any
+        // other thread waits until the ring is there (_gateReady), since some
+        // read the timers' heap without the gate (RunUntil's next deadline).
         if (g == null)
         {
             Atom.CheckLayout();
-            _ring = new Action?[16];
-            _ringContexts = new AsyncContext?[16];
-            _timers = new TimerEntry?[8];
-            g = new AtomicCell();
-            _gate = g;
+            AtomicCell made = new AtomicCell();
+            if (Sys.CompareExchangeReference(Sys.AddressOf(ref _gate), 0, Sys.Word(made)) == 0)
+            {
+                _ring = new Action?[16];
+                _ringContexts = new AsyncContext?[16];
+                _timers = new TimerEntry?[8];
+                Sys.Fence();
+                _gateReady = 1;
+                return made;
+            }
         }
-        return g;
+        while (_gateReady == 0)
+        {
+            Sys.Pause();
+        }
+        return _gate!;
     }
 
     // ---- the thread pool ----------------------------------------------------
@@ -3591,6 +3616,8 @@ static class InterruptCompletions
     static nint _free;          // first free slot + 1, under the gate
     static nint _ready;         // first completed slot + 1, pushed by handlers
     static AtomicCell? _gate;
+    // Set once the table is made (Gate).
+    static volatile int _gateReady;
     static nint _armed;
 
     /// Slots armed and not yet drained: a device may still complete them.
@@ -3603,21 +3630,31 @@ static class InterruptCompletions
     static AtomicCell Gate()
     {
         AtomicCell? g = _gate;
+        if (g != null && _gateReady != 0) return g;
+        // ONE TABLE, WHOEVER ARMS FIRST, as the scheduler's gate (Scheduler.
+        // Gate): two threads arming at once each made a table, and a task
+        // armed in the one replaced was never completed.
         if (g == null)
         {
             Atom.CheckLayout();
-            _held = new Task?[Slots];
-            _results = new long[Slots];
-            _links = new int[Slots];
-            _generations = new int[Slots];
-            _typed = new bool[Slots];
-            for (int i = 0; i < Slots - 1; i++) _links[i] = i + 2;
-            _links[Slots - 1] = 0;
-            _free = 1;
-            g = new AtomicCell();
-            _gate = g;
+            AtomicCell made = new AtomicCell();
+            if (Sys.CompareExchangeReference(Sys.AddressOf(ref _gate), 0, Sys.Word(made)) == 0)
+            {
+                _held = new Task?[Slots];
+                _results = new long[Slots];
+                _links = new int[Slots];
+                _generations = new int[Slots];
+                _typed = new bool[Slots];
+                for (int i = 0; i < Slots - 1; i++) _links[i] = i + 2;
+                _links[Slots - 1] = 0;
+                _free = 1;
+                Sys.Fence();
+                _gateReady = 1;
+                return made;
+            }
         }
-        return g;
+        while (_gateReady == 0) Sys.Pause();
+        return _gate!;
     }
 
     /// `task` armed for an interrupt handler to complete with a number (its

@@ -90,6 +90,24 @@ public sealed class LifetimeSolver
         foreach (LifetimeHints unit in all)
             foreach (LifetimeFunction function in unit.Functions)
                 if (function.Global) _globals.TryAdd(function.Name, function);
+        // A UNIT'S OWN FUNCTIONS TOO, where a virtual call reaches them: an
+        // iterator's GetEnumerator or MoveNext is a method of a class only its
+        // unit sees, and as an override another unit's IEnumerable call runs
+        // it. Left out, "nothing summarises" it, and every argument handed to
+        // any IEnumerable's GetEnumerator escaped (1311). Only a name no other
+        // unit defines as well, global or its own: two units' functions of one
+        // local name are two functions, and neither speaks for the other.
+        if (virtuals is not null)
+        {
+            HashSet<string> reached = new(virtuals.Values.SelectMany(targets => targets), StringComparer.Ordinal);
+            Dictionary<string, LifetimeFunction?> locals = new(StringComparer.Ordinal);
+            foreach (LifetimeHints unit in all)
+                foreach (LifetimeFunction function in unit.Functions)
+                    if (!function.Global && reached.Contains(function.Name))
+                        locals[function.Name] = locals.ContainsKey(function.Name) ? null : function;
+            foreach ((string name, LifetimeFunction? function) in locals.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+                if (function is not null) _globals.TryAdd(name, function);
+        }
         // A VIRTUAL CALL'S SYMBOL (VirtualTargets) is every override it
         // reaches together: an argument stays put only if it does in each,
         // which is a condition like any other -- one no unit states, so it
