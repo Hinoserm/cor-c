@@ -236,6 +236,112 @@ public sealed class IndexedDeclarations : IDisposable
         return Speculate(name, arity);
     }
 
+    /// <summary>
+    /// What BodyTypeNames' qualifiers under one declaration come to, handed
+    /// to <paramref name="load"/>: a single name speculated as before, a
+    /// dotted path resolved whole (SpeculatePath), each path once.
+    /// </summary>
+    private Action<string> Qualifiers(TypeDecl type, Action<string> load)
+    {
+        Dictionary<string, string?>? paths = null;
+        HashSet<string>? values = null;
+        return qualifier =>
+        {
+            string? key;
+            if (qualifier.IndexOf('.') < 0) key = SpeculateIn(type.Namespace, type.Scope, qualifier, 0);
+            else
+            {
+                paths ??= new(StringComparer.Ordinal);
+                if (!paths.TryGetValue(qualifier, out key))
+                    paths[qualifier] = key = SpeculatePath(type, qualifier, values ??= ValueNames(type));
+            }
+            if (key is not null) load(key);
+        };
+    }
+
+    /// <summary>
+    /// The declaration a dotted path written in <paramref name="type"/> names
+    /// -- `Corsac.Lang.Elf.Linker`, or `Elf.Linker` inside Corsac.Lang --
+    /// found the way Binder.FindType finds it, or null.
+    ///
+    /// CERTAIN, NOT A GUESS, which a path has to be: loading what nobody asked
+    /// for puts a name in scope the compilation did not have (BodyTypeNames).
+    /// So the path is looked up only WHOLE, at exactly the places FindType
+    /// tries it and in its order -- under the type it was written in and each
+    /// type and namespace enclosing that, with the using directives written
+    /// at each level after the level's own members; then as written; then the
+    /// file's top-level directives -- and the first one the index has is the
+    /// answer. FindType asks the index at every one of those places in turn
+    /// (TypeCandidate), so a pass that has none of them loaded demands that
+    /// first one; this loads it a pass sooner. Never by its last name alone,
+    /// which is how Speculate treats a dotted TYPE reference: `Node.Kind`
+    /// cut to `Kind` would load whatever Kind is sole. Nor through an alias
+    /// on its first name, which FindType does not follow for a dotted name
+    /// either. Two imports that both have it are ambiguous to the binder,
+    /// and are no answer here.
+    ///
+    /// What is left uncertain is whether the binder takes the first name for
+    /// a namespace at all, which it does only where it names no value
+    /// (Binder.NamespaceOnly). So a path whose first name is one of this
+    /// declaration's own members or parameters is not looked up: `Options`
+    /// as a property is not the namespace of the same name.
+    /// </summary>
+    private string? SpeculatePath(TypeDecl type, string path, HashSet<string> values)
+    {
+        string head = path[..path.IndexOf('.')];
+        if (values.Contains(head)) return null;
+        FileScope? scope = type.Scope;
+        for (string? at = Binder.TypeKey(type); at is not null; at = at.LastIndexOf('.') is int cut && cut > 0 ? at[..cut] : null)
+        {
+            if (Qualified(at + "." + path) is string key) return key;
+            if (Imported(scope, at, path, out string? imported)) return imported;
+        }
+        if (Qualified(path) is string written) return written;
+        return Imported(scope, "", path, out string? top) ? top : null;
+    }
+
+    /// <summary>
+    /// The one declaration the namespaces imported at level <paramref name="at"/>
+    /// give this path, as Binder.ImportedNow finds it. True when the level
+    /// settles the question: one declaration (in <paramref name="key"/>), or
+    /// two, which is ambiguous and stops the search with no answer.
+    /// </summary>
+    private bool Imported(FileScope? scope, string at, string path, out string? key)
+    {
+        key = null;
+        if (scope is null) return false;
+        foreach ((string In, string Namespace) import in scope.Imports)
+        {
+            if (import.In != at || Qualified(import.Namespace + "." + path) is not string found) continue;
+            if (key is not null && key != found) { key = null; return true; }
+            key = found;
+        }
+        return key is not null;
+    }
+
+    /// <summary>
+    /// The names in a declaration that are values rather than namespaces:
+    /// its members, the members of an enum, and every parameter of every
+    /// method, for SpeculatePath to leave alone. More than any one place in
+    /// the declaration has in scope, which only means fewer paths prefetched.
+    /// </summary>
+    private static HashSet<string> ValueNames(TypeDecl type)
+    {
+        HashSet<string> names = new(StringComparer.Ordinal);
+        foreach (MemberDecl member in type.Members)
+        {
+            names.Add(member.Name);
+            switch (member)
+            {
+                case FieldDecl field: foreach (FieldDecl more in field.More) names.Add(more.Name); break;
+                case PropertyDecl property: foreach (Param parameter in property.Params) names.Add(parameter.Name); break;
+                case MethodDecl method: foreach (Param parameter in method.Params) names.Add(parameter.Name); break;
+            }
+        }
+        foreach (EnumMember member in type.EnumMembers) names.Add(member.Name);
+        return names;
+    }
+
     private readonly Dictionary<string, string?> qualified = new(StringComparer.Ordinal);
 
     private string? Qualified(string name)
@@ -350,11 +456,7 @@ public sealed class IndexedDeclarations : IDisposable
             {
                 string? key = SpeculateIn(type.Namespace, type.Scope, reference.Name, reference.Args.Count);
                 if (key is not null) Load(key);
-            }, qualifier =>
-            {
-                string? key = SpeculateIn(type.Namespace, type.Scope, qualifier, 0);
-                if (key is not null) Load(key);
-            });
+            }, Qualifiers(type, key => Load(key)));
         }
         // THE WHOLE CHAIN IN ONE PASS. A header's own signatures name more
         // types -- List names IEnumerable, which names IEnumerator, and so on
@@ -488,11 +590,7 @@ public sealed class IndexedDeclarations : IDisposable
                 {
                     string? next = SpeculateIn(root.Namespace, root.Scope, reference.Name, reference.Args.Count);
                     if (next is not null && Load(next)) pending.Enqueue(next);
-                }, qualifier =>
-                {
-                    string? next = SpeculateIn(root.Namespace, root.Scope, qualifier, 0);
-                    if (next is not null && Load(next)) pending.Enqueue(next);
-                });
+                }, Qualifiers(root, next => { if (Load(next)) pending.Enqueue(next); }));
             }
         }
     }
