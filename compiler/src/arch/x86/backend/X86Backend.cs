@@ -99,6 +99,10 @@ public sealed class X86Backend : IBackend
     public const string RefStoreStub = Corsac.Lang.Lto.RuntimeAbi.RefStore, CardStoreStub = Corsac.Lang.Lto.RuntimeAbi.CardStore;
     public const string RefExchangeStub = Corsac.Lang.Lto.RuntimeAbi.RefExchange, RefCompareExchangeStub = Corsac.Lang.Lto.RuntimeAbi.RefCompareExchange;
     public const string MarkingFlag = "s_Runtime_Marking";
+    /// <summary>What the store sequences call while Marking is set: the report, the store and the card in one (Runtime.WriteBarrierStore).</summary>
+    public const string BarrierStoreRoutine = Corsac.Lang.Lto.RuntimeAbi.WriteBarrierStore,
+        BarrierExchangeRoutine = Corsac.Lang.Lto.RuntimeAbi.WriteBarrierExchange,
+        BarrierCompareExchangeRoutine = Corsac.Lang.Lto.RuntimeAbi.WriteBarrierCompareExchange;
 
     /// <summary>Code bytes per function from the last Generate, in module order.</summary>
     public List<(string Name, int Bytes)> FunctionSizes { get; } = new();
@@ -478,7 +482,7 @@ public sealed class X86Backend : IBackend
 
         // THE STORE SEQUENCES (MachineIntrinsics.RefStore, CardStore,
         // RefExchange, RefCompareExchange), in the object that defines the
-        // runtime's barrier, when its units' stores are made through them:
+        // runtime's barriers, when its units' stores are made through them:
         // the image's one copy, global, which its other units and its modules
         // call, laid out together between two symbols its kernel reads
         // (CORSAC's ring-1 header). A thread of a ring-1 kernel is sent to its
@@ -487,11 +491,20 @@ public sealed class X86Backend : IBackend
         // here: between the Marking test and the store a thread so sent would
         // answer the snapshot and then store over a reference nobody
         // reported, and between the store and the card leave the card unset
-        // for a minor cycle. Each runs to its RET first. Inside the report's
-        // call to Runtime.WriteBarrier a thread may be sent: it has seen
-        // Marking set by then, and reports whatever round it answers.
+        // for a minor cycle. Each runs to its RET first.
+        // WHILE MARKING, THE STORE IS THE RUNTIME'S: Runtime.WriteBarrierStore
+        // (and its exchange and compare-exchange) reports, stores and marks
+        // the card inside the thread's InAlloc, which no handshake is sent
+        // into either, and the stub returns what it answers. A report made in
+        // a call that came back here to store left the call's epilogue -- after
+        // InAlloc was let go, outside this range -- where a thread could be
+        // sent to the next cycle's snapshot between its report to the last
+        // one and its store.
         if (!PositionIndependent && module.RuntimeHelpers.Contains(RefStoreStub)
-            && module.Functions.Any(f => f.Name == BarrierRoutine))
+            && module.Functions.Any(f => f.Name == BarrierRoutine)
+            && module.Functions.Any(f => f.Name == BarrierStoreRoutine)
+            && module.Functions.Any(f => f.Name == BarrierExchangeRoutine)
+            && module.Functions.Any(f => f.Name == BarrierCompareExchangeRoutine))
         {
             int gap = (FunctionAlign - text.Bytes.Count % FunctionAlign) % FunctionAlign;
             Encoder.Nops(text.Bytes, gap);
@@ -502,16 +515,18 @@ public sealed class X86Backend : IBackend
                 text.Relocs.Add(new Relocation(text.Bytes.Count, symbol, addend, kind));
                 text.Bytes.AddRange(new byte[4]);
             }
-            // The test and the report: Runtime.WriteBarrier(slot, value) when
-            // a mark is under way, every register kept around it. The slot is
-            // in EAX (0x50, push eax) or ECX (0x51, push ecx); the value in EDX.
-            void Barrier(byte pushSlot)
+            // While a mark is under way, `routine` does the whole operation:
+            // `pushes` puts its arguments (first last), `cleanup` is how many
+            // bytes they took, and `restore` the registers popped after; it
+            // RETs with the routine's answer in EAX. Else on past it.
+            void Marked(byte[] saves, byte[] pushes, string routine, byte cleanup, byte[] restore)
             {
                 Bytes(0x83, 0x3D); Address(MarkingFlag, RelocKind.Abs32, 0); Bytes(0x00);  // cmp dword [Marking], 0
-                Bytes(0x74, 0x10);                                                         // je past the report
-                Bytes(0x51, 0x52, 0x50, 0x52, pushSlot, 0xE8);                             // push ecx; push edx; push eax; push value; push slot; call
-                Address(BarrierRoutine, RelocKind.Rel32, -4);
-                Bytes(0x83, 0xC4, 0x08, 0x58, 0x5A, 0x59);                                 // add esp, 8; pop eax; pop edx; pop ecx
+                int skip = saves.Length + pushes.Length + 5 + 3 + restore.Length + 1;
+                Bytes(0x74, (byte)skip);                                                   // je past the call
+                Bytes(saves); Bytes(pushes); Bytes(0xE8);                                  // push ...; call routine
+                Address(routine, RelocKind.Rel32, -4);
+                Bytes(0x83, 0xC4, cleanup); Bytes(restore); Bytes(0xC3);                   // add esp, n; pop ...; ret
             }
             // The card of the slot in EAX, every register kept, and RET.
             void CardOfEax()
@@ -522,7 +537,9 @@ public sealed class X86Backend : IBackend
                       0x59, 0xC3);                                                         // done: pop ecx; ret
             }
             // __corsac_refstore: slot EAX, value EDX; every register kept.
-            Barrier(0x50);
+            // Marking: WriteBarrierStore(slot, value) with EAX, ECX and EDX
+            // saved round it.
+            Marked([0x51, 0x52, 0x50], [0x52, 0x50], BarrierStoreRoutine, 0x08, [0x58, 0x5A, 0x59]);
             Bytes(0x89, 0x10);                                                             // mov [eax], edx
             CardOfEax();
             // __corsac_cardstore: the same from the store on, for a store
@@ -531,18 +548,21 @@ public sealed class X86Backend : IBackend
             Bytes(0x89, 0x10);                                                             // mov [eax], edx
             CardOfEax();
             // __corsac_refxchg: slot EAX, value EDX; the old reference in EAX,
-            // every other register kept.
+            // every other register kept. Marking: WriteBarrierExchange(slot,
+            // value), its answer the old reference, ECX and EDX saved round it.
             int exchange = text.Bytes.Count;
-            Barrier(0x50);
+            Marked([0x51, 0x52], [0x52, 0x50], BarrierExchangeRoutine, 0x08, [0x5A, 0x59]);
             Bytes(0x51, 0x89, 0xC1, 0x89, 0xD0, 0x87, 0x01);                               // push ecx; mov ecx, eax; mov eax, edx; xchg [ecx], eax
             Bytes(0x52, 0x8B, 0x15); Address(CardTable, RelocKind.Abs32, 0);               // push edx; mov edx, [Cards]
             Bytes(0x85, 0xD2, 0x74, 0x09,                                                  // test edx, edx; jz done
                   0x51, 0xC1, 0xE9, 0x0A, 0xC6, 0x04, 0x0A, 0x01, 0x59,                    // push ecx; shr ecx, 10; mov byte [edx+ecx], 1; pop ecx
                   0x5A, 0x59, 0xC3);                                                       // done: pop edx; pop ecx; ret
             // __corsac_refcas: slot ECX, value EDX, expected EAX; what the
-            // slot held in EAX, every other register kept.
+            // slot held in EAX, every other register kept. Marking:
+            // WriteBarrierCompareExchange(slot, value, expected), ECX and EDX
+            // saved round it.
             int compareExchange = text.Bytes.Count;
-            Barrier(0x51);
+            Marked([0x51, 0x52], [0x50, 0x52, 0x51], BarrierCompareExchangeRoutine, 0x0C, [0x5A, 0x59]);
             Bytes(0xF0, 0x0F, 0xB1, 0x11);                                                 // lock cmpxchg [ecx], edx
             Bytes(0x52, 0x8B, 0x15); Address(CardTable, RelocKind.Abs32, 0);               // push edx; mov edx, [Cards]
             Bytes(0x85, 0xD2, 0x74, 0x09,                                                  // test edx, edx; jz done

@@ -15,7 +15,8 @@ namespace Corsac.Lang;
 /// error.
 ///
 /// What is a lock: IrqSpinLock, KernelGate, Ring1Lock, IoOwnership (and its
-/// IFilesystemGuard), GcLock, Atom, System.Threading.Monitor (what `lock`
+/// IFilesystemGuard), GcLock, Atom, the runtime's AtomicCell (whose spin
+/// InterruptCompletions keeps), System.Threading.Monitor (what `lock`
 /// expands to) and SpinLock -- and any type, or a type deriving from or
 /// implementing one, marked [NoAwaitWhileHeld]. Its Enter, EnterInterruptible,
 /// EnterPair and TryEnter take it; Leave, Exit and LeavePair give it back.
@@ -840,7 +841,7 @@ public sealed partial class Binder
     private static readonly HashSet<string> KnownLocks = new(StringComparer.Ordinal)
     {
         "IrqSpinLock", "KernelGate", "Ring1Lock", "IoOwnership", "IFilesystemGuard",
-        "GcLock", "Atom", "Monitor", "SpinLock",
+        "GcLock", "Atom", "AtomicCell", "Monitor", "SpinLock",
     };
 
     private readonly Dictionary<TypeSymbol, bool> _lockTypes = new(ReferenceEqualityComparer.Instance);

@@ -25,6 +25,14 @@ public static class RuntimeAbi
     public const string KeepField = "m_Runtime_KeepField_2_" + Word + "_" + Word;
     public const string WriteBarrier = "m_Runtime_WriteBarrier_2_" + Word + "_" + Word;
     public const string WriteBarrierValues = "m_Runtime_WriteBarrierValues_2_" + Word + "_" + Word;
+    /// <summary>
+    /// The store sequences' barriers (RefStore, RefExchange, RefCompareExchange
+    /// while Marking is set): the report, the store and its card in one call,
+    /// inside the thread's InAlloc, which no handshake is sent into.
+    /// </summary>
+    public const string WriteBarrierStore = "m_Runtime_WriteBarrierStore_2_" + Word + "_" + Word;
+    public const string WriteBarrierExchange = "m_Runtime_WriteBarrierExchange_2_" + Word + "_" + Word;
+    public const string WriteBarrierCompareExchange = "m_Runtime_WriteBarrierCompareExchange_3_" + Word + "_" + Word + "_" + Word;
     public const string CardMark = "m_Runtime_CardMark_1_" + Word;
     public const string CardMarkObject = "m_Runtime_CardMarkObject_1_" + Word;
     /// <summary>An array grown where it is, at its region's top: keeps no pointer (Runtime.GrowInPlace).</summary>

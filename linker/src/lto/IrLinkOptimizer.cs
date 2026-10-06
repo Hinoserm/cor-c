@@ -129,6 +129,15 @@ public static class IrLinkOptimizer
         // see the whole unit, what the image keeps of it or not (UnitBackend),
         // and the one holding the runtime called it unkept.
         linkRoots.Add(RuntimeAbi.WriteBarrierValues);
+        // And the store sequences' barriers, where the image has the stubs
+        // (the runtime's unit defines __corsac_refstore): only those stubs,
+        // which the backend writes, call them, and no unit's IR names them.
+        if (owners.ContainsKey(RuntimeAbi.RefStore))
+        {
+            linkRoots.Add(RuntimeAbi.WriteBarrierStore);
+            linkRoots.Add(RuntimeAbi.WriteBarrierExchange);
+            linkRoots.Add(RuntimeAbi.WriteBarrierCompareExchange);
+        }
         // A KERNEL WITH EXPORTS, PRUNED (reachableFrom, keep): open -- its
         // types are subclassed and its virtual calls overridden by modules, so
         // no closed fact holds -- but what neither the kernel nor any module
