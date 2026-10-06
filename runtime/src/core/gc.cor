@@ -427,6 +427,14 @@ static class Gc
     /// kernel sets it from its command line (gc.walkpages=1).
     public static bool WalkPages;
 
+    /// At every minor cycle that leaves the pages unwalked, every young
+    /// page walked anyway and each old block's cards looked up in _oldCards:
+    /// a card set there for none is a store into an old block the cycle
+    /// would not read (CheckOldCardsOf). A kernel sets it from its command
+    /// line (gc.checkoldcards=1).
+    public static bool CheckOldCards;
+    static long _oldCardsReports;
+
     /// CORSAC_GC_VERIFY: after a minor cycle has marked, every old block is
     /// read word by word, and a word that lands on a young block this cycle
     /// did not mark -- which the sweep is about to free -- is reported: the
@@ -1605,6 +1613,7 @@ static class Gc
             // sweep wrote.
             bool unwalked = _pagesUnwalked && HeapChunks.PageClass(chunk) != 0;
             bool young = unwalked ? HeapChunks.IsYoung(chunk) : HeapChunks.StartsCycle(chunk) == _cycle;
+            if (CheckOldCards && minor && unwalked && young) CheckOldCardsOf(chunk);
             long card = (HeapChunks.First(chunk) & WordSize.AddressMask) >> Runtime.CardShift;
             long last = ((HeapChunks.End(chunk) - 1) & WordSize.AddressMask) >> Runtime.CardShift;
             while (card <= last)
@@ -1633,6 +1642,50 @@ static class Gc
             }
             which = which + 1;
             chunk = HeapChunks.SnapshotChunk(which);
+        }
+    }
+
+    /// CheckOldCards: an unwalked young page's blocks stepped through by
+    /// its class, and every old block (marked and scanned, not a leaf) on a
+    /// card _oldCards does not hold said -- the page, the block, its header,
+    /// its kind and vtable, the card and whether a store set it, whether a
+    /// thread's buffer covers it, and the page's owner. Before the cards are
+    /// taken, so what TakeCards will keep can be told from it.
+    static void CheckOldCardsOf(long chunk)
+    {
+        if (_oldCardsReports >= 24) return;
+        long size = ClassSize(HeapChunks.PageClass(chunk) - 1);
+        long block = HeapChunks.First(chunk);
+        long end = HeapChunks.End(chunk);
+        while (block + size <= end && _oldCardsReports < 24)
+        {
+            long header = Sys.Peek(block);
+            if ((header & SizeMask) != size) return;
+            if ((header & (FlagFree | FlagMark | FlagScan)) == (FlagMark | FlagScan) && Sys.Peek(block + KindAt) != KindLeaf)
+            {
+                long card = (block & WordSize.AddressMask) >> Runtime.CardShift;
+                long last = ((block + size - 1) & WordSize.AddressMask) >> Runtime.CardShift;
+                while (card <= last)
+                {
+                    if (Sys.PeekByte(_oldCards + card) == 0)
+                    {
+                        SayNumber("gc old cards: page ", chunk);
+                        SayNumber("gc old cards:   old block not on _oldCards ", block);
+                        SayNumber("gc old cards:   header ", header);
+                        SayNumber("gc old cards:   kind ", Sys.Peek(block + KindAt));
+                        SayNumber("gc old cards:   vtable ", Sys.Peek(block + HeaderBytes));
+                        SayNumber("gc old cards:   card ", card);
+                        SayNumber("gc old cards:   card set by a store ", Sys.PeekByte(Runtime.Cards + card));
+                        SayNumber("gc old cards:   a buffer covers it ", BufferOverlaps(card << Runtime.CardShift, (card + 1) << Runtime.CardShift) ? 1 : 0);
+                        SayNumber("gc old cards:   page owner ", HeapChunks.Owner(chunk));
+                        SayNumber("gc old cards:   cycle ", _cycle);
+                        _oldCardsReports = _oldCardsReports + 1;
+                        break;
+                    }
+                    card = card + 1;
+                }
+            }
+            block = block + size;
         }
     }
 
