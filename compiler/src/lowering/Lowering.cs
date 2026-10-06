@@ -623,6 +623,9 @@ public sealed partial class Lowering
             }
 
             EmitMethod(m, m.Decl);
+            // Its syntax and what the binder said of it, now that nothing
+            // will read them again (Lowering.Release).
+            if (m.Decl is MethodDecl lowered) ReleaseBody(m, lowered);
         }
 
         SealFunctions();
