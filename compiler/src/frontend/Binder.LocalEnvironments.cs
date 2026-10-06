@@ -187,6 +187,7 @@ public sealed partial class Binder
                     offset = (at + 7) & ~7;
                     offsets[key] = offset;
                     at = offset + (inline || !cell ? Math.Max(8, field.Type.Size) : 8);
+                    if (tracing) Console.Error.WriteLine($"environment {md.Name}: +{offset} {(key is LocalDecl named ? named.Name : key)} {(inline ? "held here" : cell ? "its cell" : "a value")}");
                     if (inline && key is LocalDecl local) env.Locals[local] = offset;
                     else if (inline && key is int index) env.Params[index] = offset;
                     else if (inline && key is LocalSym symbol) env.Syms[symbol] = offset;

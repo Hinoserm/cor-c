@@ -3118,7 +3118,7 @@ continue;
                             break;
 
                         case Opcode.Call when views is not null && IsFreeCall(i.Callee) && _inserted?.Contains(i) == true
-                            && i.Operands.All(o => o is not RegOperand { Reg: var r } || !flow.Derived.Contains(r) || views.Contains(r)):
+                            && OnlyViews(i):
                             // THE VIEW GIVEN BACK by this pass, a fresh object
                             // handed over by Values: the view goes, not what
                             // it holds.
@@ -3181,7 +3181,7 @@ continue;
                             break;
 
                         case Opcode.CallIndirect when (invokeReceiverStays || closure) && i.Field == Instr.DelegateInvoke
-                            && !i.Operands.Skip(2).Any(o => o is RegOperand q && flow.Derived.Contains(q.Reg)):
+                            && !DerivedFrom(i, 2):
                             // The receiver of a delegate's Invoke, and nothing
                             // derived passed as an argument: the parameter
                             // escapes only this way (InvokeOnly), or the closure
@@ -3264,11 +3264,7 @@ continue;
                     // is assigned into is pointed at the frame slot the value
                     // was built in -- the List walk of a foreach. A register
                     // that holds the object or the frame holds nothing else.
-                    bool mine = f.Params.Contains(d) is false && writes.TryGetValue(d, out WriteList all) && all.All(w =>
-                        w.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 && w.Operands.Count == 1
-                        && (w.Operands[0] is ImmOperand { Value: 0 } || Literal(w.Operands[0], writes)
-                            || FrameAddress(w.Operands[0], writes)
-                            || w.Operands[0] is RegOperand { Reg: var from } && flow.Derived.Contains(from) && !flow.Borrowed.Contains(from)));
+                    bool mine = f.Params.Contains(d) is false && writes.TryGetValue(d, out WriteList all) && OnlyMine(all, null);
                     if (!mine) continue;
                     pending.Remove(d);
                     // Resolved only when it adds something: one already known
@@ -3307,11 +3303,7 @@ continue;
                         shrank = false;
                         foreach (VReg d in group.ToList())
                         {
-                            bool closed = writes.TryGetValue(d, out WriteList all) && all.All(w =>
-                                w.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 && w.Operands.Count == 1
-                                && (w.Operands[0] is ImmOperand { Value: 0 } || Literal(w.Operands[0], writes)
-                                    || FrameAddress(w.Operands[0], writes)
-                                    || w.Operands[0] is RegOperand { Reg: var from } && (flow.Derived.Contains(from) && !flow.Borrowed.Contains(from) || group.Contains(from))));
+                            bool closed = writes.TryGetValue(d, out WriteList all) && OnlyMine(all, group);
                             if (!closed) { group.Remove(d); shrank = true; }
                         }
                     }
@@ -3598,10 +3590,7 @@ continue;
                 // holder wherever it is not null: every write is null or a
                 // copy of a register already known to address the same place.
                 writes ??= AnalysisCache.WritesOf(f);
-                if (!writes.TryGetValue(d, out WriteList all) || !all.All(w =>
-                        w.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 && w.Operands.Count == 1
-                        && (w.Operands[0] is ImmOperand { Value: 0 }
-                            || w.Operands[0] is RegOperand { Reg: var from } && holderRegs!.TryGetValue(from, out var at) && Equals(at.Root, root) && at.Delta == delta)))
+                if (!writes.TryGetValue(d, out WriteList all) || !OnlyHolder(all, root, delta))
                 {
                     if (delta != 0 || !MergeFrameWrites(d, root)) { flow.Escapes = true; return; }
                     root = Canon(root);
@@ -3732,6 +3721,68 @@ continue;
             return bases.Contains(r);
         }
 
+        // LOOPS, NOT LAMBDAS: a lambda capturing flow, views or writes made
+        // each of them a cell on the heap, and everything put in one went to
+        // the collector; a local function called by name keeps them in the
+        // frame (Binder.ArrangeLocalFunctionEnvironment).
+
+        // Every register operand of a free this pass inserted is a view or
+        // nothing derived (the view given back, not what it holds).
+        bool OnlyViews(Instr i)
+        {
+            for (int k = 0; k < i.Operands.Count; k++)
+                if (i.Operands[k] is RegOperand { Reg: var r } && flow.Derived.Contains(r) && !views!.Contains(r)) return false;
+            return true;
+        }
+
+        // Whether an operand from `first` on is derived from the object.
+        bool DerivedFrom(Instr i, int first)
+        {
+            for (int k = first; k < i.Operands.Count; k++)
+                if (i.Operands[k] is RegOperand q && flow.Derived.Contains(q.Reg)) return true;
+            return false;
+        }
+
+        // Every write a copy of null, a literal, the frame's own memory, or a
+        // register derived and not borrowed -- or, given a group, one of it.
+        bool OnlyMine(WriteList all, HashSet<VReg>? group)
+        {
+            for (int k = 0; k < all.Count; k++)
+            {
+                Instr w = all[k];
+                if (w.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32) || w.Operands.Count != 1) return false;
+                Operand o = w.Operands[0];
+                if (o is ImmOperand { Value: 0 } || Literal(o, writes!) || FrameAddress(o, writes!)) continue;
+                if (o is RegOperand { Reg: var from } && (flow.Derived.Contains(from) && !flow.Borrowed.Contains(from) || group is not null && group.Contains(from))) continue;
+                return false;
+            }
+            return true;
+        }
+
+        // Every write null or a copy of a register addressing the same place.
+        bool OnlyHolder(WriteList all, object root, long delta)
+        {
+            for (int k = 0; k < all.Count; k++)
+            {
+                Instr w = all[k];
+                if (w.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32) || w.Operands.Count != 1) return false;
+                if (w.Operands[0] is ImmOperand { Value: 0 }) continue;
+                if (w.Operands[0] is RegOperand { Reg: var from } && holderRegs!.TryGetValue(from, out var at) && Equals(at.Root, root) && at.Delta == delta) continue;
+                return false;
+            }
+            return true;
+        }
+
+        // --trace-escape: why the words a call was handed are dirty.
+        static string DirtyWhy(FieldSummary? uses, HashSet<long> holds)
+        {
+            if (uses?.DirtyWhy is not { } why) return "";
+            System.Text.StringBuilder said = new();
+            foreach (var kv in why)
+                if (holds.Contains(kv.Key)) said.Append("\n    +").Append(kv.Key).Append(": ").Append(kv.Value);
+            return said.ToString();
+        }
+
         // A HOLDER HANDED TO A CALL: a box -- a block made here and stamped
         // one, or a call's result that holds the object -- at its base, to
         // functions that each keep nothing of that argument and whose field
@@ -3811,7 +3862,7 @@ continue;
                     {
                         if (PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal))
                             Console.Error.WriteLine($"holder {f.Name}: {i} to {t}:{p} keeps={keeps} fields={(uses is null ? "none" : uses.Opaque ? "opaque " + uses.Why : "dirty " + string.Join(",", uses.Dirty.Order()))} at {string.Join(",", holds.Order())}"
-                                + string.Concat((uses?.DirtyWhy ?? new()).Where(kv => holds.Contains(kv.Key)).Select(kv => $"\n    +{kv.Key}: {kv.Value}")));
+                                + DirtyWhy(uses, holds));
                         return false;
                     }
                 }
