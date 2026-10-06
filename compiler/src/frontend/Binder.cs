@@ -16206,7 +16206,17 @@ public sealed partial class Binder
         // follows: the last part names the type. Only when the qualifier is not
         // a declared thing at all, so a real member access is never shadowed by
         // a type that happens to share its name.
-        if (NamespaceOnly(m.Target))
+        // UNLESS THE LAST PART OF THE QUALIFIER IS A TYPE WITH THIS MEMBER:
+        // `System.Security.Cryptography.HashAlgorithmName.SHA256` is the
+        // struct's static property, and with the whole path naming no type in
+        // the flat table the qualifier read as a namespace and SHA256 as the
+        // class of that name (test 2011). A namespace has no members, so a
+        // type that answers the name is what the source meant.
+        if (NamespaceOnly(m.Target)
+            && !(m.Target is MemberExpr { Name: string last } && _r.Types.TryGetValue(last, out TypeSymbol? lastType)
+                 && (lastType.FindField(m.Name) is not null || lastType.FindMethods("get_", m.Name).Count > 0
+                     || lastType.FindMethods(m.Name).Count > 0 || FindConstant(lastType, m.Name) is not null
+                     || lastType.Kind == TypeKind.Enum && lastType.EnumValues.ContainsKey(m.Name))))
         {
             // THE WHOLE PATH FIRST, because a namespace is real: `Corsac.Lang.Block`
             // and `Corsac.Lang.Ir.Block` differ in nothing else, and reading
