@@ -1,0 +1,26 @@
+// test: a fully qualified type's member that shares its name with a type
+// expect-exit: 0
+// expect-output:
+// 64
+// SHA256
+//
+// `System.Security.Cryptography.HashAlgorithmName.SHA256` is the static
+// property SHA256 of the struct HashAlgorithmName. The whole path names no
+// type in this compiler's flat table of types, so the qualifier was taken
+// for a namespace and the last part for the type it also names, the class
+// SHA256, and IncrementalHash.CreateHash refused it.
+using System;
+using System.Text;
+
+public static class Program
+{
+    public static int Main()
+    {
+        using System.Security.Cryptography.IncrementalHash hash =
+            System.Security.Cryptography.IncrementalHash.CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256);
+        hash.AppendData(Encoding.ASCII.GetBytes("abc"));
+        Console.WriteLine(Convert.ToHexString(hash.GetHashAndReset()).Length);
+        Console.WriteLine(System.Security.Cryptography.HashAlgorithmName.SHA256.Name);
+        return 0;
+    }
+}
