@@ -51,21 +51,30 @@ internal static class PipelineAnalyses
         _cfg = null; _withCfg = null; _withoutCfg = null;
     }
 
+    // By index, and the targets' array itself: the fingerprint is taken at
+    // every question, and enumerators over every instruction's targets were
+    // a twentieth of a native compile. An instruction's opcode is fixed as
+    // it is made (init), so the object it is says it.
     private static long Print(Function f)
     {
         long h = 17;
-        foreach (Block b in f.Blocks)
+        List<Block> blocks = f.Blocks;
+        for (int n = 0; n < blocks.Count; n++)
         {
+            Block b = blocks[n];
             h = h * 31 + RuntimeHelpers.GetHashCode(b);
-            foreach (Instr i in b.Instrs)
+            List<Instr> instrs = b.Instrs;
+            int count = instrs.Count;
+            for (int k = 0; k < count; k++)
             {
+                Instr i = instrs[k];
                 h = h * 31 + RuntimeHelpers.GetHashCode(i);
-                h = h * 31 + (int)i.Op;
-                h = h * 31 + (i.Dest?.Id ?? -1);
-                foreach (Block t in i.Targets) h = h * 31 + RuntimeHelpers.GetHashCode(t);
-                if (i.Default is { } d) h = h * 31 + RuntimeHelpers.GetHashCode(d);
+                if (i.Dest is { } d) h = h * 31 + d.Id;
+                if (i.TargetBlocks is { } targets)
+                    for (int t = 0; t < targets.Length; t++) h = h * 31 + RuntimeHelpers.GetHashCode(targets[t]);
+                if (i.Default is { } fallback) h = h * 31 + RuntimeHelpers.GetHashCode(fallback);
             }
-            h = h * 31 + b.Instrs.Count;
+            h = h * 31 + count;
         }
         return h * 31 + f.RegCount;
     }

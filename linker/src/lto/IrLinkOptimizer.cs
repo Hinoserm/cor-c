@@ -6,6 +6,9 @@ namespace Corsac.Lang.Lto;
 /// <summary>Summary-only planning with bounded, selective cross-unit body imports.</summary>
 public static class IrLinkOptimizer
 {
+    /// <summary>A body this small is imported into every unit that calls it, however many (the byte budget still holds).</summary>
+    public const int TinyBody = 24;
+
     public static int Run(List<(string Name, ObjectFile Object)> inputs, Func<IUnitBackend> backend,
         bool enabled = true, int importBytes = 1024 * 1024, int bodyLimit = 32, string? closedImageEntry = null, bool parallelBackends = false,
         string? regionReport = null, bool madeOnly = false, bool openTypes = false, string? reachableFrom = null,
@@ -244,13 +247,30 @@ public static class IrLinkOptimizer
                 List<(string Symbol, IrArchive Archive, IrArchiveEntry Body)> imports = new(); int used = 0;
                 // The runtime's frees are calls such a unit is about to make.
                 IEnumerable<string> helpers = gains ? hints[obj].Helpers : Enumerable.Empty<string>();
+                // SMALLEST FIRST, AND A TINY ONE WHATEVER THE COUNT. Taken in
+                // the order of their names, a unit calling hundreds of another
+                // unit's getters and enumerators imported whichever thirty-two
+                // came first in the alphabet, and called the rest -- a call and
+                // a struct copied through a result buffer for every operand an
+                // optimiser walked (OperandList's GetEnumerator and MoveNext, a
+                // twentieth of a native compile). Bodies of at most TinyBody
+                // instructions count against the bytes only.
+                List<(string Call, IrArchive Provider, IrArchiveEntry Body)> candidates = new();
                 foreach (string call in archive.Entries.Values.Where(record => retained is null || retained.Contains(record.Key))
                     .SelectMany(record => record.Calls).Concat(helpers).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
                 {
                     if (defined.Contains(call) || !owners.TryGetValue(call, out ObjectFile? owner) || !archives.TryGetValue(owner, out IrArchive? provider)
                         || !provider.Entries.TryGetValue("F:" + call, out IrArchiveEntry? body) || !body.Importable
-                        || body.Instructions > 160 || body.Length > importBytes - used || imports.Count >= bodyLimit) continue;
+                        || body.Instructions > 160) continue;
+                    candidates.Add((call, provider, body));
+                }
+                int counted = 0;
+                foreach ((string call, IrArchive provider, IrArchiveEntry body) in candidates.OrderBy(c => c.Body.Instructions).ThenBy(c => c.Call, StringComparer.Ordinal))
+                {
+                    bool tiny = body.Instructions <= TinyBody;
+                    if (body.Length > importBytes - used || !tiny && counted >= bodyLimit) continue;
                     imports.Add((call, provider, body)); used += body.Length;
+                    if (!tiny) counted++;
                 }
                 bool planned = imports.Count > 0 || prune || gains;
                 // THE ALLOCATION EVERY `new` BECOMES, for each unit made again
