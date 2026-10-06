@@ -106,6 +106,12 @@ public sealed class Pipeline
         p.Passes.Add(new Narrowing());
         p.Passes.Add(new ConstantAndCopyPropagation());
         p.Passes.Add(new ArrayLengthFacts());
+        // After copies are propagated, so a loop's test and the bounds check
+        // inside it name the same registers (InductionBounds).
+        p.Passes.Add(new InductionBounds());
+        // A branch on a test decided on the way in: an inlined getter's
+        // repeat of its caller's (DominatingBranch).
+        p.Passes.Add(new DominatingBranch());
         p.Passes.Add(new FrameAddressFold());
         // A struct copied for a call from a slot nothing touches again.
         p.Passes.Add(new CopyForward());
@@ -133,6 +139,9 @@ public sealed class Pipeline
         // A field read again with no write, call or lock between: `while
         // (!Done) { char c = Cur; ...` read pos, the source and its length
         // twice over in every lap of every lexer loop.
+        // An inlined callee's null check that its first field read makes
+        // again (NullCheckFold), before the loads are compared.
+        p.Passes.Add(new NullCheckFold());
         p.Passes.Add(new LoadReuse());
         p.Passes.Add(new DeadCodeElimination());
         p.Passes.Add(new LoopInvariant());
@@ -278,6 +287,23 @@ public sealed class Pipeline
             Corsac.Program.BenchmarkStage("opt-functions-final");
 #endif
             RunFunctions(m);
+            // STRUCTS IN THE FRAME WHOSE ADDRESS GOES NOWHERE, IN REGISTERS
+            // (SlotScalars): after everything, when no pass reads a slot as
+            // it was made and the cleanup has left each slot's address named
+            // plainly; the copies it leaves propagated and the dead ones gone.
+            foreach (Function f in m.Functions)
+            {
+                if (!SlotScalars.Apply(f)) continue;
+                new ConstantAndCopyPropagation().Run(f);
+                new LocalCopies().Run(f);
+                // With the slot's stores gone, an inlined method's null check
+                // and the field read after it meet, and loads of the same
+                // field across what were stores to the frame are one.
+                new NullCheckFold().Run(f);
+                new LoadReuse().Run(f);
+                new ConstantAndCopyPropagation().Run(f);
+                new DeadCodeElimination().Run(f);
+            }
         }
     }
 

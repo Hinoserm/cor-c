@@ -45,6 +45,7 @@ public sealed class CardMarks : IModulePass
         {
             DropFrameNotes(f);
             if (sequences) FuseStores(f);
+            else DropNullCards(f);
             Expand(f);
         }
     }
@@ -263,6 +264,72 @@ public sealed class CardMarks : IModulePass
                     b.Instrs.RemoveAt(k);
             }
     }
+
+    /// <summary>
+    /// A NULL STORED MAKES NO POINTER FOR A CARD TO REPORT. The card tells the
+    /// next minor collection that a kilobyte may hold an old object's pointer
+    /// to a young one; a store of null takes such a pointer away and never
+    /// makes one, so its mark is work for nothing -- a call, and on i386 the
+    /// stub's table read, test, shift and byte store. `node.Next = null`,
+    /// `items[i] = default`, a list's Clear: every one called it. Dropped where
+    /// the mark follows the word store it stands for in the same block with
+    /// only computation between (its slot's address), and that store's value
+    /// is the constant 0. The snapshot barrier before such a store stays: it
+    /// reports the reference the store overwrites, which a null store loses
+    /// as surely as any other. Not where stores become sequences (FuseStores),
+    /// whose marks it pairs.
+    /// </summary>
+    public static void DropNullCards(Function f)
+    {
+        Dictionary<VReg, Instr?>? defs = null;
+        foreach (Block b in f.Blocks)
+            for (int k = b.Instrs.Count - 1; k >= 0; k--)
+            {
+                Instr mark = b.Instrs[k];
+                if (mark.Op != Opcode.Call || mark.Dest is not null || mark.Callee != CardMark || mark.Operands.Count != 1) continue;
+                int at = k - 1;
+                while (at >= 0 && b.Instrs[at].Op != Opcode.Store && IrInfo.IsPure(b.Instrs[at])) at--;
+                if (at < 0 || b.Instrs[at] is not { Op: Opcode.Store } store || store.Operands.Count != 2
+                    || store.Size != IrTypes.Word.Bytes() || store.StoredValue is not ImmOperand { Value: 0 }) continue;
+                if (defs is null)
+                {
+                    defs = new();
+                    foreach (Block d in f.Blocks)
+                        foreach (Instr i in d.Instrs)
+                            if (i.Dest is { } dest) defs[dest] = defs.ContainsKey(dest) ? null : i;
+                    foreach (VReg p in f.Params) defs[p] = null;
+                }
+                (Operand Base, long Offset) slot = Canonical(defs, mark.Operands[0]);
+                (Operand Base, long Offset) stored = Canonical(defs, store.Operands[0]);
+                // The base not written between: the same name, the same address.
+                bool rewritten = stored.Base is RegOperand { Reg: var held }
+                    && b.Instrs.Skip(at + 1).Take(k - at - 1).Any(between => ReferenceEquals(between.Dest, held));
+                if (!rewritten && slot.Offset == stored.Offset + store.Offset && SameBase(slot.Base, stored.Base)) b.Instrs.RemoveAt(k);
+            }
+    }
+
+    /// <summary>Where an operand points, as a base and a constant offset, through copies, widenings and constant additions.</summary>
+    private static (Operand Base, long Offset) Canonical(Dictionary<VReg, Instr?> defs, Operand o)
+    {
+        long offset = 0;
+        for (int hops = 0; hops < 8; hops++)
+        {
+            if (o is not RegOperand { Reg: var r } || !defs.TryGetValue(r, out Instr? def) || def is null) break;
+            if (def.Op is Opcode.Copy or Opcode.ZExt32 or Opcode.Trunc64 && def.Operands.Count == 1) { o = def.Operands[0]; continue; }
+            if (def.Op == Opcode.Add && def.Operands.Count == 2 && def.Operands[1] is ImmOperand right) { offset += right.Value; o = def.Operands[0]; continue; }
+            if (def.Op == Opcode.Add && def.Operands.Count == 2 && def.Operands[0] is ImmOperand left) { offset += left.Value; o = def.Operands[1]; continue; }
+            break;
+        }
+        return (o, offset);
+    }
+
+    private static bool SameBase(Operand a, Operand b) => (a, b) switch
+    {
+        (RegOperand x, RegOperand y) => ReferenceEquals(x.Reg, y.Reg),
+        (SymOperand x, SymOperand y) => x.Name == y.Name && x.Offset == y.Offset,
+        (SlotOperand x, SlotOperand y) => ReferenceEquals(x.Slot, y.Slot),
+        _ => false,
+    };
 
     /// <summary>Runtime.WriteBarrier: the snapshot barrier's slow path, which lowering calls.</summary>
     public const string Barrier = Corsac.Lang.Lto.RuntimeAbi.WriteBarrier;
