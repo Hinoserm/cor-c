@@ -3777,6 +3777,9 @@ static class Gc
         if (HeapChunks.IsListed(page)) UnlistPage(page);
         HeapChunks.SetLive(page, Zero, Zero);
         HeapChunks.SetYoung(page, false);
+        // NOT POOLED NEAR THE CAP (OverCap, by the soft cap): a pooled page is
+        // mapped and counted, and a large array -- which only a new mapping
+        // can hold -- found the cap filled by pages kept for small objects.
         if (_poolBytes + HeapChunks.PageSize(page) <= PoolLimit() && !HeapChunks.OverCap() && !MemoryShort())
         {
             HeapChunks.SetPooled(page, true);
@@ -5439,7 +5442,7 @@ static class Gc
         // for the requests too large for a buffer, and for the sweep to join.
         bool room = Sys.Peek(tb + Tls.AllocPtr) != 0
             && Sys.Peek(tb + Tls.AllocPtr) + need + Smallest <= Sys.Peek(tb + Tls.AllocLimit);
-        bool tight = HeapChunks.Cap != 0 && HeapChunks.HeapBytes + BufferBytes > HeapChunks.Cap
+        bool tight = HeapChunks.SoftCap != 0 && HeapChunks.HeapBytes + BufferBytes > HeapChunks.SoftCap
             || HeapCeiling != 0 && HeapChunks.HeapBytes + BufferBytes > HeapCeiling;
         if (need + Smallest <= BufferBytes
             && (room || Recycle(tb, need) || (!(tight && HasReusableFree(need)) && Refill(tb, need))))
@@ -5458,6 +5461,12 @@ static class Gc
         // long-lived nodes: one surviving node would pin the whole mapping
         // after the array dies. Give these objects page-rounded chunks whose
         // padding belongs to the same block, so no small allocation enters it.
+        // FROM A BUFFER'S SIZE, 64 KiB: anything smaller goes in a thread's
+        // buffer among small objects. A dedicated array freed by hand -- the
+        // storage a List or Dictionary outgrew (OutgrownStorage) -- gives its
+        // whole chunk straight back to the system (Free), and one found dead
+        // goes back with the sweep (SweepNext): neither leaves a hole, and
+        // neither counts against a cap after.
         bool dedicated = need >= BufferBytes;
         long block = dedicated ? TakeDedicated(need) : Take(need);
 
@@ -5488,7 +5497,22 @@ static class Gc
         // it is waited out, and if what it frees is still not enough -- it
         // frees only what was garbage when it began -- this thread runs one
         // of its own.
+        //
+        // WHY A LARGE REQUEST CAN FAIL WITH THE HEAP HALF FREE: free memory
+        // serves it only as a whole mapping. A request of a megabyte or more
+        // is larger than any mixed chunk (ChunkAsk), so no hole can hold it,
+        // and the collector moves nothing to make one; a size-class page's
+        // free slots serve only its class. Under a cap the heap's room is
+        // counted in mapped bytes, so what a large request can be given is
+        // the cap less every chunk still mapped -- and a chunk with one live
+        // object in it is mapped. What these tries can do is give back every
+        // chunk and page with nothing alive in it -- the whole collection
+        // releases the mixed chunks and dedicated arrays it finds dead
+        // (SweepNext) and retires the empty pages (PlacePage), and the pool
+        // of empty pages is drained below -- and then, failing that, open
+        // the reserve kept under the cap for this (HeapChunks.Reserve).
         long lapped = 0;
+        long failedAt = -1;
         for (long attempt = 0; block == 0 && attempt < 3; attempt++)
         {
             // A cycle has not found the room: the platform asked for it,
@@ -5496,11 +5520,37 @@ static class Gc
             if (attempt > 0) WaitForRoom(tb, need);
             // Memory itself ran out: only a whole collection finds all of it.
             _forceMajor = true;
-            if (_collecting) WaitOutCycle();
+            // A CYCLE ALREADY UNDER WAY when this request first came up short
+            // frees only what was garbage when it began, and it may be a
+            // minor one: waited out, it is not counted as a try, as in
+            // AllocClass. Only the first can be such a cycle -- every cycle
+            // begun later is numbered past failedAt -- so the loop ends.
+            if (failedAt < 0) failedAt = _cycle;
+            bool early = false;
+            if (_collecting)
+            {
+                long waited = _cycle;
+                WaitOutCycle();
+                early = waited <= failedAt;
+            }
             else CollectLocked();
 
-            // THE LAST TRY IS NOT HELD AT THE CEILING (GrowthWaits).
+            // THE POOL OF EMPTY PAGES IS GIVEN BACK: a whole collection has
+            // not found this request's room, and pages kept to spare a
+            // mapping later are room the system could give it now. Only
+            // with no cycle under way (another thread may have begun one
+            // while this one waited): its snapshot names the pooled pages,
+            // and the next try drains them instead.
+            DrainPool();
+
+            // THE LAST TRY IS NOT HELD AT THE CEILING (GrowthWaits). AND THE
+            // RESERVE IS OPEN to a large request after a whole collection --
+            // what it is kept for; not after a cycle begun before the need,
+            // which may have been minor and left dead arrays mapped -- and to
+            // any request on the last try, which would otherwise be out of
+            // memory.
             _growPast = attempt == 2;
+            HeapChunks.ReserveOpen = dedicated && !early || attempt == 2;
             block = dedicated ? TakeDedicated(need) : Take(need);
 
             if (block == 0 && !dedicated && Grow(need))
@@ -5510,6 +5560,12 @@ static class Gc
             // Mapping failure must not reject usable existing free space.
             if (block == 0 && dedicated) block = Take(need);
             _growPast = false;
+            HeapChunks.ReserveOpen = false;
+            if (block == 0 && early)
+            {
+                attempt = attempt - 1;
+                continue;
+            }
             if (block == 0 && attempt == 2 && MostlyGarbage(lapped))
             {
                 lapped = lapped + 1;
@@ -5530,6 +5586,9 @@ static class Gc
             SayNumber("out of memory: small free blocks ", _smallFree);
             SayNumber("out of memory: bump bytes remaining ", _limit - _bump);
             SayNumber("out of memory: anchor metadata bytes ", HeapChunks.BlockAnchorBytes);
+            SayNumber("out of memory: cap ", HeapChunks.Cap);
+            SayNumber("out of memory: reserve under the cap ", HeapChunks.ReserveBytes);
+            SayNumber("out of memory: pooled page bytes ", _poolBytes);
             if (_bins != 0)
             {
                 for (long bin = 0; bin < Bins; bin++)
@@ -5570,6 +5629,13 @@ static class Gc
             // After a whole cycle has failed it: room asked for, the lock
             // let go meanwhile (WaitForRoom).
             if (attempt >= 2) WaitForRoom(tb, ClassSize(c));
+            // THE LAST TRY, after three cycles: not held at the ceiling
+            // (GrowthWaits), and the reserve under the cap open to it
+            // (HeapChunks.Reserve) -- set here, after the lock was last let
+            // go, and shut again before it is (ShutLastTry), so that no other
+            // thread's request grows into the reserve on this one's behalf.
+            _growPast = attempt == 3;
+            HeapChunks.ReserveOpen = attempt == 3;
             long cache = EnsureCache(tb);
             if (cache != 0)
             {
@@ -5581,6 +5647,7 @@ static class Gc
                 }
                 if (at != 0)
                 {
+                    ShutLastTry();
                     GcLock.Exit();
                     return at;
                 }
@@ -5599,6 +5666,7 @@ static class Gc
                     Count(tb, SizeOfBlock(block));
                     Sys.Poke(block + KindAt, kind);
                     if (_heapCheck) CheckMade(block, "a bigger class's slot", Zero);
+                    ShutLastTry();
                     GcLock.Exit();
                     return block + HeaderBytes;
                 }
@@ -5621,9 +5689,11 @@ static class Gc
                 Sys.Poke(block + KindAt, kind);
                 if (_heapCheck) CheckMade(block, "class fallback", FooterBytes);
                 StampHandedOut(tb, block, Zero);
+                ShutLastTry();
                 GcLock.Exit();
                 return block + HeaderBytes;
             }
+            ShutLastTry();
             if (attempt == 3)
             {
                 if (!MostlyGarbage(lapped)) break;
@@ -5650,16 +5720,23 @@ static class Gc
                 }
             }
             else CollectLocked();
-            _growPast = attempt == 2;
             if (attempt == 2) DrainPool();
         }
-        _growPast = false;
+        ShutLastTry();
         SayNumber("out of memory: small request ", small);
         SayNumber("out of memory: heap ", HeapChunks.HeapBytes);
         SayNumber("out of memory: live bytes at last collection ", _liveBytes);
         SayFreeShape();
         OutOfMemory();
         return 0;
+    }
+
+    /// The last try's allowances taken back: the ceiling and the reserve.
+    /// The heap lock is held.
+    static void ShutLastTry()
+    {
+        _growPast = false;
+        HeapChunks.ReserveOpen = false;
     }
 
     /// A FREE SLOT OF A BIGGER CLASS, for a request of class `c` that found
@@ -10100,9 +10177,11 @@ static class Gc
         long floor = live > MinThreshold ? live : MinThreshold;
         long room;
         long bound = -1;            // half of what a hard limit leaves; -1 for none
-        if (HeapChunks.Cap != 0)
+        if (HeapChunks.SoftCap != 0)
         {
-            long left = HeapChunks.Cap - live;
+            // THE SOFT CAP, the reserve left out (HeapChunks.Reserve): what
+            // ordinary growth may reach, and so what the pace is set by.
+            long left = HeapChunks.SoftCap - live;
             room = left > 0 ? left / 2 : 0;
             bound = room;
         }
@@ -11760,10 +11839,66 @@ static class HeapChunks
         get { return _heapBytes; }
     }
 
-    /// Whether one more page would pass the cap.
+    /// Whether one more page would pass the cap -- the cap as it stands for
+    /// this request (CapNow): an emptied page near it goes back to the system
+    /// rather than into the pool (Gc.RetirePage), so the reserve below it is
+    /// never held by pages kept for reuse.
     public static bool OverCap()
     {
-        return _cap != 0 && _heapBytes + BatchPageBytes() > _cap;
+        long cap = CapNow();
+        return cap != 0 && _heapBytes + BatchPageBytes() > cap;
+    }
+
+    // THE RESERVE UNDER THE CAP: the last few megabytes of it, which the heap
+    // grows into only for a request that would otherwise fail (ReserveOpen).
+    // A capped heap filled to its cap with free memory in pieces -- holes in
+    // mixed chunks, slots of size-class pages, none of them a whole chunk
+    // the system could take back -- refused a two-megabyte Dictionary rehash
+    // with eighty-five megabytes free: no hole of a mixed chunk is larger
+    // than the chunk (a megabyte at most, ChunkAsk), the collector moves
+    // nothing, and a large array is only ever a new mapping. And a rehash, or
+    // a list's growth, needs the new array while the old one is still alive:
+    // the old one goes back the moment the copy is made (OutgrownStorage),
+    // but not before. Held back from ordinary growth, the reserve is there
+    // after a whole collection for exactly that moment. A thirty-second of
+    // the cap, between 64 KiB and 8 MiB and never more than a quarter of it:
+    // 7 MB of a compiler's 224, a few hundred kilobytes of a small kernel's
+    // heap. Shifts, not a division: nothing here may throw.
+    const long ReserveMost = 8388608;
+
+    static long Reserve()
+    {
+        long reserve = (_cap >> 5) & -4096;
+        if (reserve < ChunkLeast) reserve = ChunkLeast;
+        if (reserve > ReserveMost) reserve = ReserveMost;
+        if (reserve > (_cap >> 2)) reserve = (_cap >> 2) & -4096;
+        return reserve;
+    }
+
+    /// Set by the allocator, with the heap lock held, only around its tries
+    /// after a whole collection has not found a request's room (Gc.AllocSlow,
+    /// Gc.AllocClass), and cleared again before the lock goes.
+    public static bool ReserveOpen;
+
+    /// The cap ordinary growth stops at: the cap less its reserve, 0 for none.
+    /// What the collector paces itself by (Gc.NextThreshold), so that a heap
+    /// is collected before it reaches the reserve rather than at it.
+    public static long SoftCap
+    {
+        get { return _cap == 0 ? 0 : _cap - Reserve(); }
+    }
+
+    /// The cap for the request being answered now: the whole of it while the
+    /// reserve is open, else the soft cap. 0 for none.
+    static long CapNow()
+    {
+        return ReserveOpen ? _cap : SoftCap;
+    }
+
+    /// The bytes held back below the cap, for the out-of-memory report.
+    public static long ReserveBytes
+    {
+        get { return _cap == 0 ? 0 : Reserve(); }
     }
 
     public static void SetLimit(long bytes)
@@ -11955,9 +12090,10 @@ static class HeapChunks
             return 0;
         }
         long n = want;
-        if (_cap != 0)
+        long cap = CapNow();
+        if (cap != 0)
         {
-            long room = (_cap - _heapBytes) / pageBytes;
+            long room = (cap - _heapBytes) / pageBytes;
             if (room < n) n = room;
         }
         if (n < 1)
@@ -12239,19 +12375,27 @@ static class HeapChunks
 
         // The preferred growth quantum is not a minimum allocation size.
         // A smaller remaining cap (or address-space hole) can still satisfy
-        // this request. Count actual mapped pages against the heap cap.
-        if (_cap != 0 && _heapBytes + ask > _cap) ask = minimum;
+        // this request. Count actual mapped pages against the heap cap --
+        // the soft cap, unless the reserve is open for this request.
+        // INTO THE RESERVE, ONLY WHAT IS ASKED: a usual chunk taken there
+        // for a small request spent a megabyte of it on a few bytes.
+        long cap = CapNow();
+        long soft = SoftCap;
+        if (soft != 0 && _heapBytes + ask > soft) ask = minimum;
 
         // THE POOL OF EMPTY PAGES GOES FIRST: kept to spare the mapping, it
         // is no reason to refuse a large array its room.
-        if (_cap != 0 && _heapBytes + ask > _cap && Gc.DrainPool())
+        if (cap != 0 && _heapBytes + ask > cap && Gc.DrainPool())
         {
-            if (_heapBytes + ask > _cap) ask = minimum;
+            if (_heapBytes + ask > cap) ask = minimum;
         }
 
-        if (_cap != 0 && _heapBytes + ask > _cap)
+        if (cap != 0 && _heapBytes + ask > cap)
         {
-            Gc.SayNumber("heap: the cap refused a chunk; heap bytes ", _heapBytes);
+            // SAID ONLY OF THE LAST TRY, the reserve open: the soft cap
+            // refuses a chunk whenever growth should wait for a collection,
+            // which is ordinary and was said a line per refusal.
+            if (ReserveOpen) Gc.SayNumber("heap: the cap refused a chunk; heap bytes ", _heapBytes);
             return 0;
         }
 
