@@ -1003,6 +1003,20 @@ public sealed class Inline : IParallelModulePass
         // suspensions become saves and calls after the optimiser has finished
         // (AsyncTransform), so while any function is one, its helper stays.
         bool coroutines = m.Functions.Any(fn => fn.Async is not null);
+        // WHAT THE LINK WILL CALL FOR THIS UNIT, from its lifetime hints: a
+        // field site becomes Runtime.FreeField or Runtime.KeepField when the
+        // link defines it (IrLinkOptimizer.DefineFieldSites), and the frees a
+        // regenerated unit gains are the hints' helpers. Nothing in the unit
+        // calls them yet, so the last inliner dropped KeepField -- an empty
+        // routine nothing else calls -- and every link of a program whose
+        // unit had a field site stopped with "Field sites need
+        // Runtime.KeepField, which no object defines".
+        HashSet<string> forLink = new(StringComparer.Ordinal);
+        if (m.LifetimeHints is { } hints)
+        {
+            if (hints.FieldSites.Count > 0) { forLink.Add(Escape.FieldKeeper); forLink.Add(Escape.FieldFreer); }
+            forLink.UnionWith(hints.Helpers);
+        }
         bool changed = true;
         while (changed)
         {
@@ -1012,7 +1026,7 @@ public sealed class Inline : IParallelModulePass
             {
                 Function f = m.Functions[i];
                 if (f.Name == m.Entry || addressTaken.Contains(f.Name) || callers.GetValueOrDefault(f.Name) > 0
-                    || (coroutines && f.Name == AsyncTransform.CardMarkObject))
+                    || (coroutines && f.Name == AsyncTransform.CardMarkObject) || forLink.Contains(f.Name))
                 {
                     continue;
                 }

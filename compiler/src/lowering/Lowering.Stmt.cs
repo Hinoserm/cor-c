@@ -862,11 +862,22 @@ public sealed partial class Lowering
     {
         if (pattern is BinaryExpr { Op: BinOp.Eq } eq)
         {
-            if (eq.Left is SubjectExpr && Fold.TryConst(eq.Right, out value)) return true;
-            if (eq.Right is SubjectExpr && Fold.TryConst(eq.Left, out value)) return true;
+            if (eq.Left is SubjectExpr && Fold.TryConst(eq.Right, out value, NamedConstant)) return true;
+            if (eq.Right is SubjectExpr && Fold.TryConst(eq.Left, out value, NamedConstant)) return true;
         }
-        return Fold.TryConst(pattern, out value);
+        return Fold.TryConst(pattern, out value, NamedConstant);
     }
+
+    /// <summary>
+    /// A NAMED CONSTANT'S VALUE: an enum member or a `const` the checker
+    /// resolved, integral. Without it a switch over an enum -- `switch
+    /// (n.Kind)`, every pass of the compiler's own -- never made its jump
+    /// table, and ran a compare and a branch for every case above the one
+    /// taken.
+    /// </summary>
+    private long? NamedConstant(Expr e)
+        => e is MemberExpr or NameExpr && _b.Resolved.TryGetValue(e, out Sym? sym)
+            && sym is ConstSym { Type.Prim: not (Prim.F32 or Prim.F64) } k ? k.Value : null;
 
     // ---- exceptions ----------------------------------------------------------------
 

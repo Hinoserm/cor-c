@@ -16,6 +16,7 @@ internal static class Peephole
 {
     public static void Run(MFunction m)
     {
+        DeadSpillStores(m);
         int[] liveOut = LiveOut(m);
         for (int b = 0; b < m.Blocks.Count; b++)
         {
@@ -168,6 +169,67 @@ internal static class Peephole
             else
             {
                 instrs[k + 1] = new MInstr(MOp.Mov, new MReg(lr.Id), new MReg(sr.Id));
+            }
+        }
+    }
+
+    // ---- a spill slot written and never read ---------------------------------------
+
+    /// <summary>
+    /// A store to an allocator's slot that no instruction of the function reads
+    /// and no stack map names: work for nothing. The allocator stores a spilled
+    /// register at every write of it, and a value written twice in two-address
+    /// form -- `mov t, d ; add t, h` -- whose register then carried it to its
+    /// only use, was stored twice to a slot nothing read: SHA-256's rounds,
+    /// with more live values than registers, wrote three such words a round.
+    /// A slot a stack map lists stays written, whatever reads it: the
+    /// collector reads it at that call.
+    /// </summary>
+    private static void DeadSpillStores(MFunction m)
+    {
+        HashSet<int> read = new();
+        foreach (Safepoint map in m.Safepoints.Values)
+            foreach (int offset in map.SlotOffsets) read.Add(offset);
+        bool any = false;
+        foreach (MBlock b in m.Blocks)
+            foreach (MInstr i in b.Instrs)
+                for (int k = 0; k < i.Operands.Count; k++)
+                {
+                    if (i.Operands[k] is not MMem mem || !mem.IsSpill) continue;
+                    if (k == 0 && IsMov(i) && !i.Lock && PrivateSpill(mem)) { any = true; continue; }
+                    read.Add(mem.Disp);
+                }
+        if (!any) return;
+        // A fault inside a block can land in a handler of this function that
+        // reloads a value from its slot: there the first store is not dead.
+        bool handlers = m.Blocks.Any(b => b.Source is { IsLandingPad: true });
+        foreach (MBlock b in m.Blocks)
+        {
+            b.Instrs.RemoveAll(i => IsMov(i) && !i.Lock && i.Operands.Count == 2 && i.Operands[0] is MMem mem
+                && PrivateSpill(mem) && !read.Contains(mem.Disp));
+            // And within a block, a store the next store to the same slot
+            // overwrites before anything reads it -- the slot shared with
+            // other values that do read it. Walked backwards: `written` holds
+            // the slots stored again further on with no read between. Only
+            // where the block makes no call, whose stack map may read a slot,
+            // and the function has no handler.
+            if (handlers || b.Instrs.Any(i => i.Op is MOp.Call or MOp.CallInd)) continue;
+            HashSet<int> written = new();
+            for (int k = b.Instrs.Count - 1; k >= 0; k--)
+            {
+                MInstr i = b.Instrs[k];
+                if (IsMov(i) && !i.Lock && i.Operands.Count == 2 && i.Operands[0] is MMem store && PrivateSpill(store))
+                {
+                    if (!written.Add(store.Disp)) { b.Instrs.RemoveAt(k); continue; }
+                    if (i.Operands[1] is MMem) written.Clear();
+                    continue;
+                }
+                foreach (MOperand o in i.Operands)
+                    if (o is MMem mem)
+                    {
+                        if (PrivateSpill(mem)) written.Remove(mem.Disp);
+                        else if (mem.Base?.Id == (int)Gpr.Ebp) written.Clear();
+                    }
             }
         }
     }

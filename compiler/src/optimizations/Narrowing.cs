@@ -98,39 +98,76 @@ public sealed class Narrowing : IPass
                 // operands' low words is that operation on the low words: an
                 // address widened to a long, offset, and truncated back is
                 // one 32-bit add, not a pair add and two moves.
-                if (def is { Op: Opcode.Add or Opcode.Sub or Opcode.Mul or Opcode.And or Opcode.Or or Opcode.Xor }
+                //
+                // THROUGH SHIFTS AND NESTED ARITHMETIC TOO: the low word of
+                // `x << k` (k below 32), of a sum, a difference, a product or
+                // a bitwise operation is made from its operands' low words
+                // alone, so `table + (index - 1) * 4` on longs -- every word
+                // the runtime addresses, Gc's page lists among them -- is a
+                // 32-bit tree, where it was an add, adc, sub, sbb, shld and
+                // shl on pairs of registers. A long held as is -- `page`, a
+                // static's value -- is truncated where the truncation was,
+                // so long as it is still the long the operation read. The
+                // new instructions go in when the walk is done (pending), so
+                // no index the definition table holds moves under it.
+                if (def is { Op: Opcode.Add or Opcode.Sub or Opcode.Mul or Opcode.And or Opcode.Or or Opcode.Xor or Opcode.Shl }
                     && defs.Site(r.Reg) is (Block opBlock, int opIndex))
                 {
-                    // A LONG HELD AS IS -- the runtime's addresses, `page + 40`
-                    // -- is truncated here instead: its low word, read where
-                    // the truncation is, so long as the long is the one the
-                    // operation read. The 64-bit add, its adc and the high
-                    // word then go, and the address is a 32-bit add the
-                    // selector folds into the load or store that uses it.
-                    // The truncation goes in when the walk is done (pending),
-                    // so no index the definition table holds moves under it.
-                    VReg? made = null;
-                    Operand? Held(Operand o, Operand? low)
-                    {
-                        if (low is not null || made is not null) return low;
-                        if (o is not RegOperand { Reg: var wide } || wide.Type != IrType.I64
-                            || !defs.CanForward(wide, opBlock, opIndex, b, k)) return null;
-                        made = f.NewReg(IrType.I32);
-                        pending.Add((b, k, new Instr { Op = Opcode.Trunc64, Dest = made, Operands = { o }, Line = i.Line }));
-                        return RegOperand.Of(made);
-                    }
                     int was = pending.Count;
-                    Operand? a = Held(def.Operands[0], LowWord(def.Operands[0], defs, b, k));
-                    Operand? c = a is null ? null : Held(def.Operands[1], LowWord(def.Operands[1], defs, b, k));
-                    if (a is not null && c is not null)
+                    Operand? low = LowTree(r.Reg, opBlock, opIndex, 0, top: true);
+                    if (low is RegOperand { Reg: var made } && pending.Count > was && ReferenceEquals(pending[^1].Truncation.Dest, made))
                     {
-                        b.Instrs[k] = new Instr { Op = def.Op, Dest = i.Dest, Operands = { a, c }, Line = i.Line };
-                    }
-                    else if (pending.Count > was)
-                    {
+                        // The tree's root is this truncation's value: written
+                        // here in its place rather than before it.
+                        Instr root = pending[^1].Truncation;
                         pending.RemoveAt(pending.Count - 1);
+                        b.Instrs[k] = new Instr { Op = root.Op, Dest = i.Dest, Operands = { root.Operands[0], root.Operands[1] }, Line = i.Line };
+                    }
+                    else
+                    {
+                        pending.RemoveRange(was, pending.Count - was);
                     }
                 }
+
+                // The low word of a 64-bit value, as an operand read at (b, k):
+                // null when it cannot be had there. `from` is where the value
+                // was read by the operation being narrowed.
+                Operand? LowTree(VReg wide, Block from, int fromIndex, int depth, bool top = false)
+                {
+                    // The value the operation read must still be the one at
+                    // (b, k): its definition not run again in between.
+                    if (!top && !defs.CanForward(wide, from, fromIndex, b, k)) return null;
+                    Instr? d = defs.IsSingle(wide) ? defs.Definition(wide) : null;
+                    if (d is { Op: Opcode.SExt32 or Opcode.ZExt32 } && d.Operands[0] is RegOperand inner
+                        && defs.Site(wide) is (Block dBlock, int dIndex) && defs.CanForward(inner.Reg, dBlock, dIndex, b, k))
+                        return inner;
+                    if (depth < 4 && d is { Operands.Count: 2 } && defs.Site(wide) is (Block site, int siteIndex)
+                        && (d.Op is Opcode.Add or Opcode.Sub or Opcode.Mul or Opcode.And or Opcode.Or or Opcode.Xor
+                            || d.Op == Opcode.Shl && d.Operands[1] is ImmOperand { Value: >= 0 and < 32 }))
+                    {
+                        int mark = pending.Count;
+                        Operand? x = LowOperand(d.Operands[0], site, siteIndex, depth + 1);
+                        Operand? y = x is null ? null : d.Op == Opcode.Shl ? d.Operands[1] : LowOperand(d.Operands[1], site, siteIndex, depth + 1);
+                        if (x is not null && y is not null)
+                        {
+                            VReg made = f.NewReg(IrType.I32);
+                            pending.Add((b, k, new Instr { Op = d.Op, Dest = made, Operands = { x, y }, Line = i.Line }));
+                            return RegOperand.Of(made);
+                        }
+                        pending.RemoveRange(mark, pending.Count - mark);
+                    }
+                    if (top || wide.Type != IrType.I64) return null;
+                    VReg held = f.NewReg(IrType.I32);
+                    pending.Add((b, k, new Instr { Op = Opcode.Trunc64, Dest = held, Operands = { RegOperand.Of(wide) }, Line = i.Line }));
+                    return RegOperand.Of(held);
+                }
+
+                Operand? LowOperand(Operand o, Block from, int fromIndex, int depth) => o switch
+                {
+                    ImmOperand imm => new ImmOperand((int)imm.Value, IrType.I32),
+                    RegOperand { Reg: var reg } when reg.Type == IrType.I64 => LowTree(reg, from, fromIndex, depth),
+                    _ => null,
+                };
             }
         }
 

@@ -543,7 +543,12 @@ public sealed partial class Lowering
             foreach ((string helper, int arity) in new[] { ("Free", 1), ("FreeReplaced", 2), ("FreeOwnedReplaced", 2), ("FreeOwnedElements", 1), ("FreeArrayElements", 1), ("OwnElements", 1), ("FreeStorageInFrame", 1),
                                                            ("RegionEnter", 2), ("RegionLeave", 1), ("RegionLoop", 3), ("AllocRegion", 3), ("AllocNear", 4), ("RegionCatch", 1),
                                                            // The allocation put in place last (AllocatorFastPaths).
-                                                           ("AllocFast", 2), ("AllocFastSized", 4), ("AllocRegionSized", 4) })
+                                                           ("AllocFast", 2), ("AllocFastSized", 4), ("AllocRegionSized", 4),
+                                                           // What a field site becomes when the link defines it
+                                                           // (IrLinkOptimizer.DefineFieldSites): without their bodies here
+                                                           // a program compiled to an object and linked on its own
+                                                           // stopped with "Field sites need Runtime.KeepField".
+                                                           ("FreeField", 2), ("KeepField", 2) })
                 if (RuntimeMethod(helper, arity) is MethodSymbol provided) Require(provided);
         }
 

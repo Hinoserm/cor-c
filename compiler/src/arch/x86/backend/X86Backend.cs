@@ -764,6 +764,7 @@ public sealed class X86Backend : IBackend
             AddressFold.Run(m);
             Allocator.Run(m);
             Layout.Run(m);
+            LoopRotate.Run(m);
             Peephole.Run(m);
             FrameCompact.Run(m);
         }

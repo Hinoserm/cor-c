@@ -230,6 +230,15 @@ sealed class Sha256Implementation : SHA256
         int end = ibStart + cbSize;
         while (at < end)
         {
+            // WHOLE BLOCKS STRAIGHT FROM THE CALLER'S ARRAY: copied a byte at
+            // a time into the block first, each one bounds-checked twice, the
+            // copy cost a fifth of what compressing the block did.
+            if (_filled == 0 && end - at >= 64)
+            {
+                Compress(array, at);
+                at = at + 64;
+                continue;
+            }
             int take = 64 - _filled;
             if (take > end - at) take = end - at;
             for (int i = 0; i < take; i++) _block[_filled + i] = array[at + i];
@@ -237,7 +246,7 @@ sealed class Sha256Implementation : SHA256
             at = at + take;
             if (_filled == 64)
             {
-                Compress();
+                Compress(_block, 0);
                 _filled = 0;
             }
         }
@@ -251,12 +260,12 @@ sealed class Sha256Implementation : SHA256
         if (_filled > 56)
         {
             while (_filled < 64) { _block[_filled] = 0; _filled = _filled + 1; }
-            Compress();
+            Compress(_block, 0);
             _filled = 0;
         }
         while (_filled < 56) { _block[_filled] = 0; _filled = _filled + 1; }
         for (int i = 0; i < 8; i++) _block[56 + i] = (byte)(bits >> (56 - 8 * i));
-        Compress();
+        Compress(_block, 0);
 
         byte[] made = new byte[32];
         for (int i = 0; i < 8; i++)
@@ -272,41 +281,76 @@ sealed class Sha256Implementation : SHA256
 
     static uint Rotr(uint x, int n) { return (x >> n) | (x << (32 - n)); }
 
-    void Compress()
+    /// The 64 bytes at `at` of `data`, compressed into the state.
+    ///
+    /// EIGHT ROUNDS TO A LAP, each naming the working variables in the turn
+    /// they hold that round's roles, so a round changes two of them (d and h,
+    /// as the standard writes it: h += S1 + Ch + K + W; d += h; h += S0 +
+    /// Maj) and moves none: the one-round loop shifted all eight down a
+    /// place every round, eight moves through the frame on a machine with
+    /// six registers. Ch and Maj in their three-operation forms, g ^ (e &
+    /// (f ^ g)) and (a & b) | (c & (a | b)), the same values. The schedule's
+    /// sum of K and W is made once per word, in the schedule.
+    void Compress(byte[] data, int at)
     {
         uint[] w = _w;
+        uint[] k = K;
         for (int i = 0; i < 16; i++)
         {
-            w[i] = ((uint)_block[i * 4] << 24) | ((uint)_block[i * 4 + 1] << 16) | ((uint)_block[i * 4 + 2] << 8) | _block[i * 4 + 3];
+            int p = at + i * 4;
+            w[i] = ((uint)data[p] << 24) | ((uint)data[p + 1] << 16) | ((uint)data[p + 2] << 8) | data[p + 3];
         }
-        for (int i = 16; i < 64; i++)
+        // BOUNDED BY THE ARRAY ITSELF, which is 64 words: the loops' own tests
+        // then prove every index in range (InductionBounds), and the rounds
+        // read w[i] to w[i + 7] with no bounds check between them.
+        for (int i = 16; i < w.Length; i++)
         {
-            uint s0 = Rotr(w[i - 15], 7) ^ Rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
-            uint s1 = Rotr(w[i - 2], 17) ^ Rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
+            uint x = w[i - 15], y = w[i - 2];
+            uint s0 = Rotr(x, 7) ^ Rotr(x, 18) ^ (x >> 3);
+            uint s1 = Rotr(y, 17) ^ Rotr(y, 19) ^ (y >> 10);
             w[i] = w[i - 16] + s0 + w[i - 7] + s1;
         }
+        for (int i = 0; i < w.Length; i++) w[i] = w[i] + k[i];
 
-        uint a = _state[0], b = _state[1], c = _state[2], d = _state[3];
-        uint e = _state[4], f = _state[5], g = _state[6], h = _state[7];
-        for (int i = 0; i < 64; i++)
+        uint[] state = _state;
+        uint a = state[0], b = state[1], c = state[2], d = state[3];
+        uint e = state[4], f = state[5], g = state[6], h = state[7];
+        for (int i = 0; i + 7 < w.Length; i += 8)
         {
-            uint big1 = Rotr(e, 6) ^ Rotr(e, 11) ^ Rotr(e, 25);
-            uint choose = (e & f) ^ (~e & g);
-            uint t1 = h + big1 + choose + K[i] + w[i];
-            uint big0 = Rotr(a, 2) ^ Rotr(a, 13) ^ Rotr(a, 22);
-            uint majority = (a & b) ^ (a & c) ^ (b & c);
-            uint t2 = big0 + majority;
-            h = g;
-            g = f;
-            f = e;
-            e = d + t1;
-            d = c;
-            c = b;
-            b = a;
-            a = t1 + t2;
+            h = h + (Rotr(e, 6) ^ Rotr(e, 11) ^ Rotr(e, 25)) + (g ^ (e & (f ^ g))) + w[i];
+            d = d + h;
+            h = h + (Rotr(a, 2) ^ Rotr(a, 13) ^ Rotr(a, 22)) + ((a & b) | (c & (a | b)));
+
+            g = g + (Rotr(d, 6) ^ Rotr(d, 11) ^ Rotr(d, 25)) + (f ^ (d & (e ^ f))) + w[i + 1];
+            c = c + g;
+            g = g + (Rotr(h, 2) ^ Rotr(h, 13) ^ Rotr(h, 22)) + ((h & a) | (b & (h | a)));
+
+            f = f + (Rotr(c, 6) ^ Rotr(c, 11) ^ Rotr(c, 25)) + (e ^ (c & (d ^ e))) + w[i + 2];
+            b = b + f;
+            f = f + (Rotr(g, 2) ^ Rotr(g, 13) ^ Rotr(g, 22)) + ((g & h) | (a & (g | h)));
+
+            e = e + (Rotr(b, 6) ^ Rotr(b, 11) ^ Rotr(b, 25)) + (d ^ (b & (c ^ d))) + w[i + 3];
+            a = a + e;
+            e = e + (Rotr(f, 2) ^ Rotr(f, 13) ^ Rotr(f, 22)) + ((f & g) | (h & (f | g)));
+
+            d = d + (Rotr(a, 6) ^ Rotr(a, 11) ^ Rotr(a, 25)) + (c ^ (a & (b ^ c))) + w[i + 4];
+            h = h + d;
+            d = d + (Rotr(e, 2) ^ Rotr(e, 13) ^ Rotr(e, 22)) + ((e & f) | (g & (e | f)));
+
+            c = c + (Rotr(h, 6) ^ Rotr(h, 11) ^ Rotr(h, 25)) + (b ^ (h & (a ^ b))) + w[i + 5];
+            g = g + c;
+            c = c + (Rotr(d, 2) ^ Rotr(d, 13) ^ Rotr(d, 22)) + ((d & e) | (f & (d | e)));
+
+            b = b + (Rotr(g, 6) ^ Rotr(g, 11) ^ Rotr(g, 25)) + (a ^ (g & (h ^ a))) + w[i + 6];
+            f = f + b;
+            b = b + (Rotr(c, 2) ^ Rotr(c, 13) ^ Rotr(c, 22)) + ((c & d) | (e & (c | d)));
+
+            a = a + (Rotr(f, 6) ^ Rotr(f, 11) ^ Rotr(f, 25)) + (h ^ (f & (g ^ h))) + w[i + 7];
+            e = e + a;
+            a = a + (Rotr(b, 2) ^ Rotr(b, 13) ^ Rotr(b, 22)) + ((b & c) | (d & (b | c)));
         }
-        _state[0] = _state[0] + a; _state[1] = _state[1] + b; _state[2] = _state[2] + c; _state[3] = _state[3] + d;
-        _state[4] = _state[4] + e; _state[5] = _state[5] + f; _state[6] = _state[6] + g; _state[7] = _state[7] + h;
+        state[0] = state[0] + a; state[1] = state[1] + b; state[2] = state[2] + c; state[3] = state[3] + d;
+        state[4] = state[4] + e; state[5] = state[5] + f; state[6] = state[6] + g; state[7] = state[7] + h;
     }
 }
 
