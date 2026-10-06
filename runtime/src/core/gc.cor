@@ -3634,7 +3634,13 @@ static class Gc
             // its handshake at any instruction, and an answer -- or a wait
             // counted as stopped, whose pages ShedPages may give up -- landing
             // between the read and the pop would leave this thread popping
-            // off a cache it had been answered for.
+            // off a cache it had been answered for. ShedPages gives back the
+            // lists of a thread whose cache the last round took and which is
+            // not in the allocator: one that had read its cache here and not
+            // yet said so popped a block RetireClasses had just put on its
+            // page's list, and the block was handed out twice -- the NT
+            // kernel's address-space list found zeroed under it at a first
+            // logon with memory short.
             Sys.Poke(tb + (nint)Tls.InAlloc, 1);
             nint cache = (nint)Sys.Peek(tb + (nint)Tls.Classes);
             if (cache == 0)
@@ -3688,7 +3694,8 @@ static class Gc
         // handshake took it away) or an empty list is the slow path's.
         if (small <= ClassMax && bytes >= 0)
         {
-            // In the allocator before the cache is read (AllocWord).
+            // Inside the allocator before the cache is read, as in AllocWord:
+            // ShedPages passes over a thread only while it says so.
             Sys.Poke(tb + Tls.InAlloc, 1);
             long cache = Sys.Peek(tb + Tls.Classes);
             if (cache != 0)
