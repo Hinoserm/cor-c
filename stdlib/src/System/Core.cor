@@ -14799,15 +14799,21 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
     }
 
     /// The member equal to `equalValue`, which may not be the same object.
+    ///
+    /// FOUND BY ITS HASH, as Contains finds it and as .NET's TryGetValue
+    /// does, where this walked every member asking the comparer of each:
+    /// a set holds at most one member equal to a value, and the comparer's
+    /// hash agrees with its equality or the set could not hold it once, so
+    /// the one the walk found is the one in the value's chain. Same asks
+    /// what Comparer.Equals asked -- the member first, the value second.
     public bool TryGetValue(T equalValue, out T actualValue) {
-        foreach (T value in this) {
-            if (Comparer.Equals(value, equalValue)) {
-                actualValue = value;
-                return true;
-            }
+        int i = Find(equalValue);
+        if (i < 0) {
+            actualValue = default!;
+            return false;
         }
-        actualValue = default!;
-        return false;
+        actualValue = items[i];
+        return true;
     }
 
     public void CopyTo(T[] array) { CopyTo(array, 0, Count); }
