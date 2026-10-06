@@ -4,6 +4,8 @@
 #
 #   tests/freestanding/run.sh            every test, for i386 and x86-64
 #   tests/freestanding/run.sh 02         the ones whose name matches
+#   tests/freestanding/run.sh --work=DIR 02
+#                                        the images and logs made in DIR
 #
 # Each test is compiled --freestanding: the runtime is baremetal.cor, the
 # entry stub is the one a kernel gets, and nothing of the Linux platform
@@ -16,6 +18,10 @@
 #   // expect-output:            then the lines, each after "// "
 #   // flags: ...                extra compiler flags
 #   // flags-<target>: ...       the same, for one target (instead of flags)
+#   // sources: a b              library sources compiled in as well, from
+#                                the repository's root: what a kernel lists
+#                                beside the runtime (Interlocked's, say),
+#                                which a freestanding compile leaves out
 #   // expect-readelf-<target>: text
 #                                readelf -hl of the image shows this text
 #   // run: no                   compile and read, do not run
@@ -33,6 +39,12 @@
 #   // expect-asm-count-<target>: F: word N
 #                                the same function's disassembly has at
 #                                least N lines containing word
+#   // expect-bytes-<target>: SYMBOL: b b [SYM] (SYM) b ...
+#                                the symbol's bytes in the image, all of them
+#                                and nothing more: each b a byte in hex,
+#                                [SYM] the four bytes of SYM's address, and
+#                                (SYM) a rel32 that reaches SYM (a call's or
+#                                a jump's, counted from the end of the four)
 #
 # Environment: CORC (the compiler), TARGETS (default "x86 x86-64").
 
@@ -41,18 +53,81 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 corc="${CORC:-$root/compiler/bin/managed/Release/net10.0/corc}"
 targets="${TARGETS:-x86 x86-64}"
+work=""
+made=""
+case "${1:-}" in
+    --work=*) work="${1#--work=}"; shift; mkdir -p "$work" || exit 2 ;;
+esac
 filter="${1:-}"
-work="$(mktemp -d "${TMPDIR:-/tmp}/corc-freestanding.XXXXXX")"
+[ -n "$work" ] || { work="$(mktemp -d "${TMPDIR:-/tmp}/corc-freestanding.XXXXXX")"; made=1; }
 passed=0
 failed=0
 failed_names=""
 
 header() { sed -n "s|^// $2: *||p" "$1" | head -n 1; }
 
+# A symbol's address and size in an image, in decimal: "address size".
+symbol() {
+    nm -S "$1" | awk -v s="$2" 'NF == 4 && $4 == s { print strtonum("0x" $1), strtonum("0x" $2); exit }
+                                NF == 3 && $3 == s { print strtonum("0x" $1), 0; exit }'
+}
+
+# The bytes at an address of an image, `count` of them, in lower-case hex
+# separated by single spaces: read from the file through the LOAD segment
+# that holds the address.
+image_bytes() {
+    local exe="$1" address="$2" count="$3" offset
+    offset="$(readelf -lW "$exe" | awk -v a="$address" '$1 == "LOAD" {
+        o = strtonum($2); v = strtonum($3); n = strtonum($5)
+        if (a >= v && a < v + n) { print o + a - v; exit } }')"
+    [ -n "$offset" ] || return 1
+    od -An -v -tx1 -j "$offset" -N "$count" "$exe" | tr -s ' \n' '  ' | sed 's/^ *//; s/ *$//'
+}
+
+# Four little-endian bytes of a value, in the same form.
+word_bytes() {
+    local v=$(( $1 & 0xFFFFFFFF ))
+    printf '%02x %02x %02x %02x' $(( v & 255 )) $(( (v >> 8) & 255 )) $(( (v >> 16) & 255 )) $(( (v >> 24) & 255 ))
+}
+
+# Whatever is wrong with a symbol's bytes against an expect-bytes line, or
+# nothing.
+check_bytes() {
+    local exe="$1" line="$2" name tokens got want="" size address target position token
+    # [SYM] is a bracket pattern to the shell: no globbing of the tokens.
+    local -
+    set -f
+    name="${line%%:*}"
+    tokens="${line#*:}"
+    read -r address size < <(symbol "$exe" "$name")
+    if [ -z "$address" ]; then echo "no symbol $name"; return; fi
+    position=0
+    for token in $tokens; do
+        case "$token" in
+            \[*\])
+                read -r target _ < <(symbol "$exe" "${token:1:${#token}-2}")
+                [ -n "$target" ] || { echo "no symbol ${token:1:${#token}-2}"; return; }
+                want="$want $(word_bytes "$target")"; position=$((position + 4)) ;;
+            \(*\))
+                read -r target _ < <(symbol "$exe" "${token:1:${#token}-2}")
+                [ -n "$target" ] || { echo "no symbol ${token:1:${#token}-2}"; return; }
+                want="$want $(word_bytes $(( target - (address + position + 4) )))"; position=$((position + 4)) ;;
+            *)
+                want="$want $(printf '%s' "$token" | tr 'A-F' 'a-f')"; position=$((position + 1)) ;;
+        esac
+    done
+    want="${want# }"
+    if [ "$size" != "$position" ]; then echo "$name is $size bytes, not $position"; return; fi
+    got="$(image_bytes "$exe" "$address" "$size")"
+    [ "$got" = "$want" ] || echo "$name is: $got"
+}
+
 for source in "$here"/[0-9]*.cor; do
     name="$(basename "$source" .cor)"
     if [ -n "$filter" ] && [[ "$name" != *"$filter"* ]]; then continue; fi
     common_flags="$(header "$source" flags)"
+    sources=""
+    for extra in $(header "$source" sources); do sources="$sources $root/$extra"; done
     run="$(header "$source" run)"
     want_exit="$(header "$source" expect-exit)"; want_exit="${want_exit:-0}"
     awk '/^\/\/ expect-output:/{on=1;next} on&&/^\/\/ [a-z0-9-]+:/{exit} on&&/^\/\/ /{print substr($0,4);next} on{exit}' "$source" > "$work/$name.want"
@@ -74,7 +149,7 @@ for source in "$here"/[0-9]*.cor; do
             with="--with $object"
         fi
         # shellcheck disable=SC2086
-        if ! "$corc" compile --target "$target" --freestanding $flags $with "$here/host.cor" "$source" -o "$exe" > "$work/$name.$target.log" 2>&1; then
+        if ! "$corc" compile --target "$target" --freestanding $flags $with $sources "$here/host.cor" "$source" -o "$exe" > "$work/$name.$target.log" 2>&1; then
             sed 's/^/    /' "$work/$name.$target.log" | head -n 20
             failed=$((failed + 1)); failed_names="$failed_names $label"; echo "FAIL $label (did not compile)"; continue
         fi
@@ -134,6 +209,11 @@ for source in "$here"/[0-9]*.cor; do
             [ "$got" -ge "$least" ] || wrong="$function has $got of $word, not $least"
         fi
 
+        while IFS= read -r line; do
+            [ -n "$line" ] && [ -z "$wrong" ] || continue
+            wrong="$(check_bytes "$exe" "$line")"
+        done < <(sed -n "s|^// expect-bytes-$target: *||p" "$source")
+
         readelf_want="$(header "$source" "expect-readelf-$target")"
         if [ -z "$wrong" ] && [ -n "$readelf_want" ] && ! readelf -hlW "$exe" | grep -qF -- "$readelf_want"; then
             wrong="readelf does not show '$readelf_want'"
@@ -180,5 +260,6 @@ done
 
 echo
 echo "$passed passed, $failed failed"
-[ "$failed" = 0 ] && rm -rf "$work"
+# A directory given with --work is the caller's, and kept.
+[ "$failed" = 0 ] && [ -n "$made" ] && rm -rf "$work"
 [ "$failed" = 0 ] || { echo "failed:$failed_names"; echo "kept: $work"; exit 1; }

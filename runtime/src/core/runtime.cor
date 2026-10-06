@@ -1158,7 +1158,7 @@ static class Runtime
         {
             nint open = (nint)Sys.Peek(tb + (nint)Tls.RegionOpen);
             nint record = (nint)Sys.Peek(tb + (nint)Tls.RegionAt);
-            nuint mask = (nuint)WordSize.AddressMask;
+            nuint mask = unchecked((nuint)WordSize.AddressMask);
             nint end = record + (nint)Gc.RegionRecordBytes;
             if ((open == 0 || ((nuint)Sys.Peek(open + (nint)Gc.RecordFrameAt) & ~(nuint)Gc.RecordLoopMark & mask) > ((nuint)frame & mask))
                 && (nuint)end <= (nuint)Sys.Peek(tb + (nint)Tls.RegionEnd))
@@ -1251,7 +1251,7 @@ static class Runtime
         nint open = tb == 0 || AllocHook != 0 ? 0 : (nint)Sys.Peek(tb + (nint)Tls.RegionOpen);
         if (open != 0 && (nuint)bytes <= (nuint)Gc.MostRequest)
         {
-            nuint mask = (nuint)WordSize.AddressMask;
+            nuint mask = unchecked((nuint)WordSize.AddressMask);
             nuint opener = (nuint)Sys.Peek(open + (nint)Gc.RecordFrameAt) & ~(nuint)Gc.RecordLoopMark & mask;
             if (opener >= ((nuint)frame & mask))
             {

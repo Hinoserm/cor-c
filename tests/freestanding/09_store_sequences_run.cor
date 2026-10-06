@@ -1,4 +1,5 @@
 // test: reference stores made as sequences (--store-sequences) store, report and keep every register
+// sources: stdlib/src/System/Threading/interlocked.cor
 // flags-x86: --store-sequences
 // expect-asm-x86: Store: __corsac_refstore
 // expect-no-asm-x86: Store: cmp __corsac_cardmark __corsac_barrier
@@ -27,6 +28,7 @@
 // with Marking set (the WriteBarrierValues path, which needs no sequence).
 
 using System;
+using System.Runtime.CompilerServices;
 using System.Threading;
 
 class Cell
@@ -117,6 +119,8 @@ static class Program
         return 0;
     }
 
+    // Its own body, which the disassembly is read for.
+    [MethodImpl(MethodImplOptions.NoInlining)]
     static void Store(Cell into, object value) { into.Value = value; }
 
     // An object the optimiser keeps in registers (ScalarObjects): its field's

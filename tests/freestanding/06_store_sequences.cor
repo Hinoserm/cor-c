@@ -1,4 +1,5 @@
 // test: --ring1-syscalls makes a reference store one sequence no thread is stopped inside
+// sources: stdlib/src/System/Threading/interlocked.cor
 // flags: --ring1-syscalls
 // run: no
 // expect-asm-x86: Store: __corsac_refstore
@@ -20,6 +21,7 @@
 // __corsac_refxchg, with no test and no card of its own. Compiled and read, not run: the
 // gate is CORSAC's (09_store_sequences_run runs the sequences).
 
+using System.Runtime.CompilerServices;
 using System.Threading;
 
 class Node
@@ -38,11 +40,15 @@ static class Program
         return _held.Next == null ? 1 : 0;
     }
 
+    // Its own body, which the disassembly is read for.
+    [MethodImpl(MethodImplOptions.NoInlining)]
     static void Store(Node into, object value)
     {
         into.Next = value;
     }
 
+    // Its own body, which the disassembly is read for.
+    [MethodImpl(MethodImplOptions.NoInlining)]
     static object? Swap(Node into, object value)
     {
         return Interlocked.Exchange(ref into.Next, value);
