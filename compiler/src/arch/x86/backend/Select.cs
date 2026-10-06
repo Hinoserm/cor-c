@@ -22,10 +22,14 @@ internal sealed partial class Selector
     private readonly Function _f;
     private readonly MFunction _m;
     private readonly List<string> _errors;
-    private readonly Dictionary<int, MReg> _lo = new();
-    private readonly Dictionary<int, MReg> _hi = new();
+    // BY THE REGISTER'S NUMBER, in arrays: a function's registers are
+    // numbered from 0 (Function.NewReg), and a table of every one of them
+    // keyed by its number was an entry, a bucket and a hash for what is a
+    // slot. The largest function's tables are what selection holds at most.
+    private readonly ByRegister<MReg> _lo;
+    private readonly ByRegister<MReg> _hi;
     private readonly Dictionary<Block, MBlock> _heads = new();
-    private readonly Dictionary<int, int> _useCount = new();
+    private readonly UseCounts _useCount;
     private readonly Dictionary<VReg, Instr?> _definitions = new();
     /// <summary>
     /// Every definition of a register defined more than once, or of a
@@ -60,6 +64,9 @@ internal sealed partial class Selector
     {
         _f = f;
         _m = new MFunction(f);
+        _lo = new ByRegister<MReg>(f.RegCount);
+        _hi = new ByRegister<MReg>(f.RegCount);
+        _useCount = new UseCounts(f.RegCount);
         _errors = errors;
         _automaticPacked = automaticPacked;
         foreach (VReg parameter in f.Params) _definitions[parameter] = null;
@@ -154,7 +161,8 @@ internal sealed partial class Selector
 
     private MReg Lo(VReg v)
     {
-        if (!_lo.TryGetValue(v.Id, out MReg? r))
+        MReg? r = _lo[v.Id];
+        if (r is null)
         {
             r = _m.NewReg();
             _lo[v.Id] = r;
@@ -171,7 +179,8 @@ internal sealed partial class Selector
 
     private MReg Hi(VReg v)
     {
-        if (!_hi.TryGetValue(v.Id, out MReg? r))
+        MReg? r = _hi[v.Id];
+        if (r is null)
         {
             r = _m.NewReg();
             _hi[v.Id] = r;
@@ -309,7 +318,7 @@ internal sealed partial class Selector
                 {
                     if (o is RegOperand r)
                     {
-                        _useCount[r.Reg.Id] = _useCount.GetValueOrDefault(r.Reg.Id) + 1;
+                        _useCount.Count(r.Reg.Id);
                     }
                 }
             }
@@ -2489,4 +2498,42 @@ internal sealed partial class Selector
         }
         Mov(Lo(i.Dest!), Eax);
     }
+}
+
+/// <summary>
+/// A value for each of a function's registers, by its number (VReg.Id):
+/// null until set. Sized by the function's register count and grown if a
+/// number is past it, so a number nobody set reads null as a missing key did.
+/// </summary>
+internal sealed class ByRegister<T> where T : class
+{
+    private T?[] _slots;
+
+    public ByRegister(int count) => _slots = new T?[Math.Max(count, 1)];
+
+    public T? this[int id]
+    {
+        get => (uint)id < (uint)_slots.Length ? _slots[id] : null;
+        set
+        {
+            if (id >= _slots.Length) Array.Resize(ref _slots, Math.Max(id + 1, _slots.Length * 2));
+            _slots[id] = value;
+        }
+    }
+}
+
+/// <summary>How many times each of a function's registers is read, by its number: 0 for one never counted.</summary>
+internal sealed class UseCounts
+{
+    private int[] _counts;
+
+    public UseCounts(int count) => _counts = new int[Math.Max(count, 1)];
+
+    public void Count(int id)
+    {
+        if (id >= _counts.Length) Array.Resize(ref _counts, Math.Max(id + 1, _counts.Length * 2));
+        _counts[id]++;
+    }
+
+    public int GetValueOrDefault(int id) => (uint)id < (uint)_counts.Length ? _counts[id] : 0;
 }

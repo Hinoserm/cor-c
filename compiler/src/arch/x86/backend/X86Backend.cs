@@ -170,9 +170,17 @@ public sealed class X86Backend : IBackend
         Encoder encoder = new(text);
         List<FrameTable.Entry> frames = new();
         FunctionSizes.Clear();
-        // A RECORD A CALL SITE, the unit's longest list after its code and
-        // relocations, so in chunks (ChunkedList) rather than one doubling array.
-        ChunkedList<(string Function, int Return, int At, Safepoint? Map, int FrameSize, uint Saved, List<int> Objects)> maps = new();
+        // THE STACK MAPS AS THE TABLE WILL HOLD THEM, a record a function and
+        // a site per call, made as each function is encoded. They were kept
+        // as the allocator left them -- per site a tuple, the Safepoint and
+        // its list of offsets -- for every call of the unit, then turned into
+        // these records only once the last function was placed, with both
+        // alive together: two copies of the unit's largest table after its
+        // code. Now a site is its return, its registers and its words, and
+        // the allocator's objects go with the function.
+        List<StackMapTable.Function> mapFunctions = new();
+        string? mapBase = null;
+        int mapBaseAt = 0;
         bool cardStub = false, barrierStub = false;
 
         // GOTOFF is sound only for a name this object defines and does not
@@ -357,10 +365,27 @@ public sealed class X86Backend : IBackend
 
             if (StackMaps)
             {
-                List<int>? objects = null;
+                // A record only for a function with a call, from the first
+                // such function's start (the table's base), as EmitStackMaps
+                // made them from the sites.
+                StackMapTable.Function? record = null;
                 foreach ((MInstr call, int ret) in encoder.CallSites)
                 {
-                    maps.Add((f.Name, ret, start + ret, m.Safepoints.GetValueOrDefault(call), m.Frame.Size, SavedMask(m), objects ??= ObjectWords(m)));
+                    if (record is null)
+                    {
+                        if (m.Frame.Size > 0xFFFFFF) throw new InvalidOperationException("a frame over 16 MB has no stack map");
+                        if (mapBase is null) { mapBase = f.Name; mapBaseAt = start; }
+                        record = new StackMapTable.Function
+                        {
+                            Start = start - mapBaseAt, FrameSize = m.Frame.Size, Saved = SavedMask(m), Objects = StackMapTable.Words(ObjectWords(m)),
+                        };
+                        mapFunctions.Add(record);
+                    }
+                    if (ret > 0x7FFFFF) throw new InvalidOperationException("a function over 8 MB has no stack map");
+                    Safepoint? map = m.Safepoints.GetValueOrDefault(call);
+                    // No live spill slot is one shared empty list of words.
+                    record.Sites.Add(new StackMapTable.Site(ret, map is null, map?.Registers ?? 0,
+                        map is null || map.SlotOffsets.Count == 0 ? Array.Empty<int>() : StackMapTable.Words(map.SlotOffsets)));
                 }
             }
 
@@ -381,6 +406,17 @@ public sealed class X86Backend : IBackend
             {
                 f.Blocks.Clear();
                 f.Blocks.TrimExcess();
+                // AND WHAT HANGS OFF IT BESIDE ITS BLOCKS: its parameters and
+                // frame slots, its state machine's frame, and the index an
+                // analysis kept (Escape.StampIndex), which holds registers of
+                // the body just let go. Nothing past this point reads a
+                // placed function but its name.
+                f.Params.Clear();
+                f.Params.TrimExcess();
+                f.Slots.Clear();
+                f.Slots.TrimExcess();
+                f.Async = null;
+                f.AnalysisIndex = null;
             }
         }
 
@@ -446,6 +482,17 @@ public sealed class X86Backend : IBackend
             s.Align = Math.Max(s.Align, align);
             obj.Symbols.Add(new Symbol { Name = d.Name, Section = s, Offset = offset, Size = d.Bytes.Length, Global = d.Exported });
             defined.Add(d.Name);
+            // A PLACED ITEM'S BYTES ARE THE SECTION'S NOW, and were held twice
+            // over to the end of the compile: the module's copy and the
+            // section's. A zero-filled one held an array of zeros as large as
+            // the storage it stands for. Let go when the caller reads nothing
+            // of the module after this (ReleaseBodies), as a function is.
+            if (ReleaseBodies)
+            {
+                d.Bytes = Array.Empty<byte>();
+                d.Relocs.Clear();
+                d.Relocs.TrimExcess();
+            }
         }
 
         if (cardStub)
@@ -587,7 +634,7 @@ public sealed class X86Backend : IBackend
 
         if (StackMaps)
         {
-            EmitStackMaps(obj, maps, defined, PositionIndependent);
+            EmitStackMaps(obj, mapFunctions, mapBase, defined, PositionIndependent);
         }
 
         // Whatever is referenced and not defined here is the linker's to find.
@@ -774,7 +821,7 @@ public sealed class X86Backend : IBackend
     /// adds the base, exactly as the frame table's reader does. A shared
     /// object then has one loader-written word in the table, not one a call.
     /// </summary>
-    private static void EmitStackMaps(ObjectFile obj, ChunkedList<(string Function, int Return, int At, Safepoint? Map, int FrameSize, uint Saved, List<int> Objects)> maps, HashSet<string> defined, bool pic)
+    private static void EmitStackMaps(ObjectFile obj, List<StackMapTable.Function> functions, string? baseFunction, HashSet<string> defined, bool pic)
     {
         // The base is a relocation, so in a shared object the page holding
         // the header is written by the loader; writable in that mode, as the
@@ -783,36 +830,11 @@ public sealed class X86Backend : IBackend
             pic ? SectionKind.Data : SectionKind.ReadOnlyData) { Align = 4 };
         obj.Sections.Add(s);
 
-        // The sites come in code order, a function's together: a function
-        // record each time the start changes, its sites after it.
-        List<StackMapTable.Function> functions = new();
-        int baseAt = maps.Count > 0 ? maps[0].At - maps[0].Return : 0;
-        int[]? objects = null;
-        List<int>? objectsOf = null;
-        foreach (var site in maps)
-        {
-            int start = site.At - site.Return;
-            if (functions.Count == 0 || functions[^1].Start != start - baseAt)
-            {
-                if (site.FrameSize > 0xFFFFFF) throw new InvalidOperationException("a frame over 16 MB has no stack map");
-                // ObjectWords is computed once a function and shared by its sites.
-                if (!ReferenceEquals(objectsOf, site.Objects))
-                {
-                    objectsOf = site.Objects;
-                    objects = StackMapTable.Words(site.Objects);
-                }
-                functions.Add(new StackMapTable.Function
-                {
-                    Start = start - baseAt, FrameSize = site.FrameSize, Saved = site.Saved, Objects = objects!,
-                });
-            }
-            if (site.Return > 0x7FFFFF) throw new InvalidOperationException("a function over 8 MB has no stack map");
-            functions[^1].Sites.Add(new StackMapTable.Site(site.Return, site.Map is null, site.Map?.Registers ?? 0,
-                site.Map is null ? Array.Empty<int>() : StackMapTable.Words(site.Map.SlotOffsets)));
-        }
-
+        // The records were made in code order as each function was encoded
+        // (Generate), a function's sites together, starts from the first
+        // function with a call: the base the relocation names.
         StackMapTable.Encode(functions, s.Bytes);
-        if (maps.Count > 0) s.Relocs.Add(new Relocation(StackMapTable.BaseOffset, maps[0].Function, 0, RelocKind.Abs32));
+        if (baseFunction is not null) s.Relocs.Add(new Relocation(StackMapTable.BaseOffset, baseFunction, 0, RelocKind.Abs32));
 
         // Each independently compiled object owns a complete table. These
         // boundaries must not collide or bind another object's table. A future
