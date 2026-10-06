@@ -5241,14 +5241,27 @@ static class Runtime
     /// all the same. Every hash of a whole string -- string.GetHashCode,
     /// StringComparer.Ordinal, the tables' KeyHash -- is this one, so they
     /// agree; nothing the compiler writes depends on its value.
+    ///
+    /// TWO HALVES: the kept hash read here, small enough for every caller
+    /// to take in its own body -- a table's probe asks this of every key --
+    /// and the working out (StringHashWorkedOut) called only the first time.
     public static int StringHashCode(string s)
     {
-        long at = Sys.Word(s) + StringHashAt;
-        long cached = Sys.PeekWord(at);
+        long cached = Sys.PeekWord(Sys.Word(s) + StringHashAt);
         if (cached != 0)
         {
             return (int)cached;
         }
+        return StringHashWorkedOut(s);
+    }
+
+    /// A string's hash the first time it is asked for, kept on the string
+    /// (StringHashCode). NEVER TAKEN BACK IN: called from one place, it was
+    /// inlined into the half meant to be small, and the half was its size.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int StringHashWorkedOut(string s)
+    {
+        long at = Sys.Word(s) + StringHashAt;
         uint h = 2166136261;
         int n = s.Length;
         int pairs = n - 1;

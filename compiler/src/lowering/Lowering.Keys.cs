@@ -442,7 +442,28 @@ public sealed partial class Lowering
             }
 
             e.SetBlock(ask);
-            e.Ret(RegOperand.Of(AskSlot(e, a, vt, _b.HashSlot, narrow, IrType.I32, R(a))));
+            if (SealedTarget(narrow, _b.HashSlot) is not null)
+            {
+                e.Ret(RegOperand.Of(AskSlot(e, a, vt, _b.HashSlot, narrow, IrType.I32, R(a))));
+            }
+            else
+            {
+                // OBJECT'S OWN HASH WITHOUT A CALL. A class that declares no
+                // GetHashCode has object's in its slot (ObjectHashStub), and
+                // that answers the word below -- so a slot holding it is
+                // answered here, by the same shift, and only a hash of the
+                // class's own is called. Every key of a table keyed by a
+                // plain class went through the slot to three instructions.
+                // Where the slot holds another copy of the stub (a library of
+                // its own), the call answers as it did.
+                VReg fn = e.Load(IrTypes.Word, vt, (long)_b.HashSlot * _t.WordSize);
+                Block call = f.NewBlock("khcall");
+                e.Branch(e.Binary(Opcode.Eq, R(fn), R(e.Address(ObjectHashStub())), IrType.I32), word, call);
+                e.SetBlock(call);
+                VReg answered = e.CallIndirect(R(fn), IrType.I32, new Operand[] { R(a) })!;
+                e.Block.Instrs[^1].DispatchType = narrow is null ? ObjectDispatch : DescriptorOf(narrow);
+                e.Ret(RegOperand.Of(answered));
+            }
         }
 
         // IDENTITY, AS object.GetHashCode ANSWERS IT (ObjectHashStub): the
