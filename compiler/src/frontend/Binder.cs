@@ -18221,6 +18221,9 @@ public sealed partial class Binder
 
                 RequireNonNull(targetType, c.Target, "call");
                 _r.Invocations[c] = invoke;
+                if (c.Target is NameExpr && _r.Resolved.TryGetValue(c.Target, out Sym? calledLocal)
+                    && LocalFunctionDeclaration(calledLocal) is { } function)
+                    _r.LocalFunctionCalls[c] = function;
                 return invoke.Returns;
             }
 

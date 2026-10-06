@@ -6834,7 +6834,9 @@ static class Gc
 
     static void Start()
     {
-        _verify = Platform.VerifyFrees();
+        // Kept where the program asked for it before the heap started
+        // (CheckFrees as its first statement), which this set back to off.
+        _verify = _verify || Platform.VerifyFrees();
         VerifyingFieldFrees = Platform.VerifyFieldFrees();
         IgnoredFrees = Platform.IgnoreFrees();
         CountingCollected = Platform.GcStats();
@@ -7469,9 +7471,100 @@ static class Gc
         {
             _verify = true;
             if (_quarantine == 0) StartQuarantine();
+            // WHO MADE EACH BLOCK, AND WHO FREED IT (Sites): every allocation
+            // from here on, through the allocation hook where no sampler has
+            // it already, which takes every allocation off the fast paths.
+            if (Runtime.AllocHook == 0 && _sites == 0) StartSites();
+            if (_sites != 0 && Runtime.AllocHook == 0)
+            {
+                Runtime.AllocHookEvery = true;
+                Runtime.AllocHook = Sys.AddressOf(RecordAllocSite);
+            }
         }
         FastPathsChanged();
         GcLock.Exit();
+    }
+
+    // ---- who made each block and who freed it, in the checked mode ----
+    //
+    // A REPORT NAMING A BLOCK IS ONLY HALF AN ANSWER without the code that
+    // made it and the code that gave it back. The freed block's own last
+    // words hold its freeing calls (VerifyFree), but a block of two words has
+    // room for none, and nothing kept who made it. So, checking, a table
+    // keyed by block holds both: four return addresses of the allocating
+    // calls, five of the freeing ones. Fixed in size and lossy (a slot taken
+    // by a later block is overwritten), outside the heap and no root: what
+    // it holds keeps nothing alive.
+    const long SiteSlots = 65536, SiteWords = 10;
+    static long _sites;
+
+    static void StartSites()
+    {
+        long table = Platform.Map(SiteSlots * SiteWords * WordSize.Bytes);
+        if (table != 0) _sites = table;
+    }
+
+    static long SiteEntry(long at, bool make)
+    {
+        if (_sites == 0 || at == 0) return 0;
+        long h = ((at >> 3) * 40503) & (SiteSlots - 1);
+        long empty = 0;
+        for (long probe = 0; probe < 8; probe++)
+        {
+            long e = _sites + ((h + probe) & (SiteSlots - 1)) * SiteWords * WordSize.Bytes;
+            long key = Sys.Peek(e);
+            if (key == at) return e;
+            if (key == 0 && empty == 0) empty = e;
+        }
+        if (!make) return 0;
+        long slot = empty != 0 ? empty : _sites + h * SiteWords * WordSize.Bytes;
+        for (long k = 1; k < SiteWords; k++) Sys.Poke(slot + k * WordSize.Bytes, 0);
+        Sys.Poke(slot, at);
+        return slot;
+    }
+
+    // The return addresses up the frame chain from `frame`, into words
+    // first..first+count-1 of an entry.
+    static void SiteFrames(long entry, long first, long count, long frame)
+    {
+        for (long k = 0; k < count; k++)
+        {
+            long word = entry + (first + k) * WordSize.Bytes;
+            if (frame == 0) { Sys.Poke(word, 0); continue; }
+            Sys.Poke(word, Sys.Peek(frame + WordSize.Bytes) & WordSize.AddressMask);
+            long next = Sys.Peek(frame) & WordSize.AddressMask;
+            frame = next != 0 && next > frame ? next : 0;
+        }
+    }
+
+    /// The allocation hook while checking (Runtime.AllocHook): the block and
+    /// the allocator's frame, from which the allocating calls are read.
+    static void RecordAllocSite(long fp, long bytesKind, long at)
+    {
+        long entry = SiteEntry(at, true);
+        if (entry == 0) return;
+        SiteFrames(entry, 1, 4, fp);
+        for (long k = 5; k < SiteWords; k++) Sys.Poke(entry + k * WordSize.Bytes, 0);
+    }
+
+    static void RecordFreeSite(long at)
+    {
+        long entry = SiteEntry(at, true);
+        if (entry != 0) SiteFrames(entry, 5, 5, Sys.FramePointer());
+    }
+
+    /// What the table knows of the block at `at`, for a report.
+    static void SaySites(long at, string what)
+    {
+        long entry = SiteEntry(at, false);
+        if (entry == 0) return;
+        Runtime.WriteLiteral(2, what);
+        Runtime.WriteLiteral(2, " made by:\n");
+        for (long k = 1; k < 5; k++) { long back = Sys.Peek(entry + k * WordSize.Bytes); if (back != 0) Runtime.SayFrame(2, back); }
+        if (Sys.Peek(entry + 5 * WordSize.Bytes) == 0) return;
+        Runtime.WriteLiteral(2, what);
+        Runtime.WriteLiteral(2, " freed by:\n");
+        for (long k = 5; k < SiteWords; k++) { long back = Sys.Peek(entry + k * WordSize.Bytes); if (back != 0) Runtime.SayFrame(2, back); }
     }
 
     /// CORSAC_VERIFY_FREES=f: only field frees are checked (Runtime.FreeField).
@@ -7491,6 +7584,7 @@ static class Gc
         }
         SayNumber("gc: checked field free: the block is freed again, block ", at);
         SayNumber("gc:   size ", SizeOfBlock(block));
+        SaySites(at, "gc:   the block was");
         Runtime.WriteLiteral(2, "gc: first freed as a field by:\n");
         long site = end - 4;
         while (site >= at + 8)
@@ -8761,6 +8855,7 @@ static class Gc
                 SayNumber("gc:   at offset ", p - at);
                 SayNumber("gc:   now holding ", now);
                 SayNumber("gc:   block bytes ", end - at);
+                SaySites(at, "gc:   the block was");
                 Runtime.WriteLiteral(2, "gc:   freed by:\n");
                 long site = end - 4;
                 while (site > record)
@@ -8874,6 +8969,8 @@ static class Gc
         }
         SayNumber("gc:   freed block ", target);
         SayNumber("gc:   its size ", size);
+        SaySites(holder, "gc:   the holder was");
+        SaySites(target, "gc:   the freed block was");
         Runtime.WriteLiteral(2, "gc: it was freed by:\n");
         long site = end - 4;
         while (site >= target + 8)
@@ -8907,6 +9004,7 @@ static class Gc
         if (Sys.Peek(block + KindAt) == KindLeaf && Sys.PeekWord(at) == Poison && (at + 4 >= end || Sys.PeekWord(at + 4) == Poison))
         {
             SayNumber("gc: checked free: freed twice, block ", at);
+            SaySites(at, "gc:   the block was");
             // Who freed it first -- the return addresses the first free left
             // in the block's last words (below), less 0x08000000 -- and who
             // frees it now.
@@ -8955,6 +9053,7 @@ static class Gc
             frame = next;
         }
         Sys.Poke(block + KindAt, KindLeaf);
+        RecordFreeSite(at);
         Quarantine(at);
         VerifiedFrees = VerifiedFrees + 1;
         Frees = Frees + 1;

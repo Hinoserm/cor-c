@@ -390,6 +390,30 @@ public sealed partial class Lowering
         // Calling a value is calling its Invoke through the interface slot.
         if (_b.Invocations.TryGetValue(call, out MethodSymbol? invoke))
         {
+            // A LOCAL FUNCTION IS ITS OWN LAMBDA, always: the local holding it
+            // is never assigned again, so the call runs that closure's Invoke,
+            // called directly rather than read out of the closure's slot. A
+            // known callee is one the lifetime rules can ask about -- a call
+            // through the slot reached every delegate's Invoke of the shape --
+            // and one the inliner can take.
+            if (_b.LocalFunctionCalls.TryGetValue(call, out LocalDecl? function) && function.Init is LambdaExpr local
+                && _b.Closures.TryGetValue(local, out ClosureInfo? closure) && !invoke.RefReturn
+                && !SharedCopy(closure.Type) && Monomorphiser.SharedMethodCopy(closure.Invoke.Name) == 0
+                && closure.Invoke.Params.Count == call.Args.Count)
+            {
+                VReg localReceiver = Eval(call.Target);
+                Operand[] prepared = new Operand[call.Args.Count];
+                IEnumerable<int> order = call.LocalArgumentOrder.Count != 0 ? call.LocalArgumentOrder : Enumerable.Range(0, call.Args.Count);
+                foreach (int index in order)
+                    prepared[index] = R(EvalAs(call.Args[index], invoke.Params[index]));
+                List<Operand> ordered = new() { R(localReceiver) };
+                ordered.AddRange(prepared);
+                VReg? answered = CallDirect(closure.Invoke, ReturnIr(closure.Invoke), ordered);
+                if (answered is not null && NeverAddress(closure.Invoke.Returns) && _e.Block.Instrs.Count > 0
+                    && _e.Block.Instrs[^1] is { Op: Opcode.Call } made && made.Dest == answered)
+                    made.Number = true;
+                return answered ?? _e.Const(0, IrTypes.Word);
+            }
             if (call.LocalArgumentOrder.Count != 0)
             {
                 VReg localReceiver = Eval(call.Target);

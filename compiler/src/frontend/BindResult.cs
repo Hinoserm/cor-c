@@ -446,6 +446,12 @@ public sealed partial class BindResult
     public Dictionary<GotoStmt, LabeledStmt> Gotos { get; } = new(ReferenceEqualityComparer.Instance);
     public HashSet<AssignExpr> DiscardAssignments { get; } = new(ReferenceEqualityComparer.Instance);
     public Dictionary<CallExpr, FieldSymbol> CapturedReceivers { get; } = new(ReferenceEqualityComparer.Instance);
+    /// <summary>
+    /// Each call of a local function, by name, and the function's declaration:
+    /// the delegate a local function is never reassigned, so the call runs its
+    /// own lambda's Invoke, and lowering calls that directly (no slot read).
+    /// </summary>
+    public Dictionary<CallExpr, LocalDecl> LocalFunctionCalls { get; } = new(ReferenceEqualityComparer.Instance);
     public HashSet<CallExpr> EnumHasFlags { get; } = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>
@@ -674,6 +680,7 @@ public sealed partial class BindResult
                     GenericDispatches.Remove(c);
                     PointerCalls.Remove(c);
                     CapturedReceivers.Remove(c);
+                    LocalFunctionCalls.Remove(c);
                     EnumHasFlags.Remove(c);
                     EnumStatics.Remove(c);
                     AddressOf.Remove(c);
@@ -752,6 +759,7 @@ public sealed partial class BindResult
         Gotos.Clear();
         DiscardAssignments.Clear();
         CapturedReceivers.Clear();
+        LocalFunctionCalls.Clear();
         EnumHasFlags.Clear();
         EnumStatics.Clear();
         CatchType.Clear();
