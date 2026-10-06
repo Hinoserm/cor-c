@@ -55,7 +55,7 @@ public sealed partial class Binder
     {
         try
         {
-            if (_method is not null && !md.Mods.HasFlag(Mods.Async) && md.Body is { Iterator: false })
+            if (_method is not null && !Switches.NoLocalEnvironments && !md.Mods.HasFlag(Mods.Async) && md.Body is { Iterator: false })
                 Arrange(md);
         }
         finally
