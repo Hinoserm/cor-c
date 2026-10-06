@@ -54,9 +54,9 @@ public sealed class InductionBounds : IPass
     {
         if (function.Async is not null || !Candidates(function)) return;
         _f = function;
-        _cfg = new Cfg(function);
+        _cfg = PipelineAnalyses.CfgOf(function);
         if (_cfg.Roots.Count != 1) return;
-        _defs = new Defs(_cfg);
+        _defs = PipelineAnalyses.DefsOf(function);
         _writes = null;
         foreach (Block block in function.Blocks)
         {

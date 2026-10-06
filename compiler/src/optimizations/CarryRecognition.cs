@@ -14,7 +14,7 @@ public sealed class CarryRecognition : IPass
                 && i.Dest?.Type is IrType.I32 or IrType.I64
                 && (IrInfo.IsImm(i.Operands[1], 1) || IrInfo.IsImm(i.Operands[0], 1)))))
             return;
-        Defs defs = new(f);
+        Defs defs = PipelineAnalyses.DefsOf(f);
         Dictionary<VReg, int> uses = new();
         foreach (var block in f.Blocks)
             foreach (Instr i in block.Instrs)

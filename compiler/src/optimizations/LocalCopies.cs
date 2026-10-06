@@ -17,7 +17,7 @@ public sealed class LocalCopies : IPass
         // ONE SCOPE A THREAD, kept: its tables are empty again when a walk
         // ends (every change is undone), and keep their storage for the next
         // function -- made per run, they and their growth were the collector's.
-        new Cfg(f).WalkSolePredecessors(_scope ??= new Scope(), dominating: false);
+        PipelineAnalyses.CfgOf(f).WalkSolePredecessors(_scope ??= new Scope(), dominating: false);
     }
 
     [ThreadStatic] private static Scope? _scope;

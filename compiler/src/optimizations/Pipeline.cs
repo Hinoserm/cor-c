@@ -381,6 +381,11 @@ public sealed class Pipeline
         {
             Verifier.Check(f, "before optimisation");
         }
+        // The flow graph and definitions kept from pass to pass while the
+        // function keeps their shape (PipelineAnalyses).
+        bool keeping = PipelineAnalyses.Begin(f);
+        try
+        {
         for (int round = 0; round < Rounds; round++)
         {
             foreach (IPass p in Passes)
@@ -405,6 +410,11 @@ public sealed class Pipeline
                     Trace(p, f, sb.ToString());
                 }
             }
+        }
+        }
+        finally
+        {
+            if (keeping) PipelineAnalyses.End();
         }
     }
 }

@@ -54,7 +54,7 @@ public sealed class Devirtualize : IModulePass
             foreach (Instr i in b.Instrs)
                 if (i.Op == Opcode.CallIndirect) { any = true; break; }
 
-        Defs defs = new(f, buildCfg: false);
+        Defs defs = PipelineAnalyses.DefsOf(f, buildCfg: false);
         Cfg? cfg = null;
         int word = IrTypes.Word.Bytes();
 
@@ -547,7 +547,7 @@ public sealed class Devirtualize : IModulePass
         }
 
         Cfg? cfg = null;
-        Cfg G() => cfg ??= new Cfg(f);
+        Cfg G() => cfg ??= PipelineAnalyses.CfgOf(f);
         // WHAT EACH OBJECT'S REGISTERS TOUCH, indexed once: the registers that
         // may hold it among other things (aliases), their writes, and the
         // instructions that mention one of its registers, in order. Each

@@ -1164,6 +1164,64 @@ class ManualResetEvent : WaitHandle
     }
 }
 
+/// .NET's ManualResetEventSlim: ManualResetEvent's word and futex, with the
+/// waits that give up after a time.
+public class ManualResetEventSlim : IDisposable
+{
+    // LAYOUT: first instance field, at Atom.FirstWord (see Atom).
+    nint _signalled;
+    int _pad;
+
+    public ManualResetEventSlim() : this(false) { }
+
+    public ManualResetEventSlim(bool initialState)
+    {
+        _signalled = initialState ? 1 : 0;
+        _pad = 0;
+        Atom.CheckLayout();
+    }
+
+    public bool IsSet => Sys.PeekWord(Atom.At(this, Atom.FirstWord)) != 0;
+
+    public void Set()
+    {
+        long at = Atom.At(this, Atom.FirstWord);
+        Sys.AtomicSwap(at, 1);
+        Native.Wake(at, Native.WakeAll);
+    }
+
+    public void Reset()
+    {
+        Sys.AtomicSwap(Atom.At(this, Atom.FirstWord), 0);
+    }
+
+    public void Wait()
+    {
+        long at = Atom.At(this, Atom.FirstWord);
+        while (Sys.PeekWord(at) == 0) Native.Wait(at, 0);
+    }
+
+    public bool Wait(TimeSpan timeout) => Wait(Timeouts.Milliseconds(timeout, "timeout"));
+
+    /// True once set; false when `millisecondsTimeout` passes first (-1: never).
+    public bool Wait(int millisecondsTimeout)
+    {
+        if (millisecondsTimeout < -1) throw new ArgumentOutOfRangeException("millisecondsTimeout");
+        if (millisecondsTimeout == -1) { Wait(); return true; }
+        long at = Atom.At(this, Atom.FirstWord);
+        long until = System.Diagnostics.Stopwatch.GetTimestamp() + (long)millisecondsTimeout * System.Diagnostics.Stopwatch.Frequency / 1000;
+        while (Sys.PeekWord(at) == 0)
+        {
+            long left = until - System.Diagnostics.Stopwatch.GetTimestamp();
+            if (left <= 0) return false;
+            Native.WaitFor(at, 0, left * 1000000000 / System.Diagnostics.Stopwatch.Frequency);
+        }
+        return true;
+    }
+
+    public void Dispose() { }
+}
+
 // ---- Monitor.Wait and Pulse --------------------------------------------------
 //
 // The other half of System.Threading.Monitor (core threading.cor), where a

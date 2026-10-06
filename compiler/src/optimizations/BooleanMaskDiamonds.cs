@@ -12,7 +12,7 @@ public sealed class BooleanMaskDiamonds : IPass
     public void Run(Function function)
     {
         if (function.Async is not null) return;
-        Cfg cfg = new(function);
+        Cfg cfg = PipelineAnalyses.CfgOf(function);
         foreach (Block block in function.Blocks)
         {
             Instr? branch = block.Terminator;

@@ -23,7 +23,7 @@ public sealed class IntegerValueReuse : IPass
 
     public void Run(Function f)
     {
-        Cfg cfg = new(f);
+        Cfg cfg = PipelineAnalyses.CfgOf(f);
         // ONE TABLE, SCOPED. A block with one predecessor (not a root) starts
         // from what that predecessor's table held at its end: every way in is
         // through it (LocalCopies). Walked as the tree those predecessors make

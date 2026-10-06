@@ -24,8 +24,8 @@ public sealed class FrameAddressFold : IPass
             for (int k = 0; k < function.Blocks.Count; k++) function.Blocks[k].Order = k;
             return;
         }
-        Cfg cfg = new(function);
-        Defs defs = new(cfg);
+        Cfg cfg = PipelineAnalyses.CfgOf(function);
+        Defs defs = PipelineAnalyses.DefsOf(function);
         Address? Resolve(Operand operand, Block useBlock, int useIndex, int depth)
         {
             if (operand is SlotOperand slot) return new(slot.Slot, 0);

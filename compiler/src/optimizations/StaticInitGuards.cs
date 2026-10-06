@@ -46,7 +46,7 @@ public sealed class StaticInitGuards : IPass
         if (guards is null || guards.Count < 2) return;
         if (!guards.GroupBy(g => g.Ready).Any(group => group.Count() > 1)) return;
 
-        Cfg cfg = new(f);
+        Cfg cfg = PipelineAnalyses.CfgOf(f);
         // The join entered from the guard and its call alone, the call from the guard alone.
         bool Sealed(Guard g)
         {

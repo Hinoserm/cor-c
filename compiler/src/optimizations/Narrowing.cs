@@ -25,7 +25,7 @@ public sealed class Narrowing : IPass
 
     public void Run(Function f)
     {
-        Defs defs = new(f);
+        Defs defs = PipelineAnalyses.DefsOf(f);
         List<(Block Block, int Index, Instr Truncation)> pending = new();
         foreach (Block b in f.Blocks)
         {

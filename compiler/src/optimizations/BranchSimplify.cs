@@ -85,7 +85,7 @@ public sealed class BranchSimplify : IPass
     /// </summary>
     private static bool ThreadConstantConditions(Function f)
     {
-        Cfg cfg = new(f);
+        Cfg cfg = PipelineAnalyses.CfgOf(f);
         bool changed = false;
         foreach (Block p in f.Blocks)
         {
@@ -143,7 +143,7 @@ public sealed class BranchSimplify : IPass
     /// </summary>
     private static bool ThreadJumps(Function f)
     {
-        Cfg cfg = new(f);
+        Cfg cfg = PipelineAnalyses.CfgOf(f);
         Dictionary<Block, Block> next = new(ReferenceEqualityComparer.Instance);
         foreach (Block b in f.Blocks)
         {
@@ -243,7 +243,7 @@ public sealed class BranchSimplify : IPass
         // BY POSITION: how many blocks come into each, and which one when
         // it is one -- all a merge asks. A set of predecessors a block was
         // the pass's own largest allocation, a fifth of it ever given back.
-        Cfg cfg = new(f);
+        Cfg cfg = PipelineAnalyses.CfgOf(f);
         int n = f.Blocks.Count;
         int[] into = new int[n];
         Block?[] only = new Block?[n];
