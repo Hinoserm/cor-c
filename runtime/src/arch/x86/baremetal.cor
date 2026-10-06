@@ -447,6 +447,28 @@ static class Platform
     /// run with the block's own arena words, whatever they are.
     public static long TaskArenaBytes;
 
+    /// WHERE THE RUNNING CODE'S OWN WORDS ARE, when that is not the thread
+    /// block. A kernel's thread block is a processor's, and a system call
+    /// that parks comes back on whichever processor resumes it: what the
+    /// call made its own -- its [ThreadStatic] table, the type initializer
+    /// it is running -- must go with the call, not stay with the processor.
+    ///
+    /// ThreadStaticsHook, called with nothing: the address of the word that
+    /// holds the running code's [ThreadStatic] table (ThreadStatics), or 0
+    /// for the thread block's own (Tls.ThreadStatics).
+    public static long ThreadStaticsHook;
+
+    /// TypeInitOwnerHook, called with nothing: the block that names the
+    /// running code as a type initializer's owner -- a word at
+    /// Tls.TypeInitWait says what it waits for -- or 0 for the thread block.
+    public static long TypeInitOwnerHook;
+
+    /// TypeInitWaitHook, called with the type's state word and the owner it
+    /// holds: 1 when the wait was made (a parked call that slept a moment,
+    /// which the caller follows by looking again), 0 to wait here as any
+    /// thread does (Runtime.EnterTypeInitialization).
+    public static long TypeInitWaitHook;
+
     public static bool VerifyGenerations()
     {
         return false;

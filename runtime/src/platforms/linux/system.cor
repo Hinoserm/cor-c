@@ -671,6 +671,12 @@ static class Platform
     public static void Commit(long at, long bytes) { }
     public const long TaskArenaBytes = 0;
 
+    /// A thread here is a thread: its block is its own, and what it runs
+    /// keeps its words there (the bare-metal platform's hooks of these names).
+    public const long ThreadStaticsHook = 0;
+    public const long TypeInitOwnerHook = 0;
+    public const long TypeInitWaitHook = 0;
+
     /// Free memory as the collector may ask it: with the heap held, so without
     /// allocating (SysinfoBytes answers into a page of the system's own).
     public static long FreeMemoryQuietly()

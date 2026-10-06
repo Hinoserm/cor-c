@@ -850,7 +850,13 @@ static class Runtime
     // lifetime while initialization wait-graph readers can observe them.
     public static int EnterTypeInitialization(long state)
     {
-        long self = Sys.ThreadBlock();
+        // THE OWNER IS THE RUNNING CODE, not always its thread block: a
+        // kernel's block is a processor's, and an initializer that parks in
+        // a system call would leave the processor named as the owner -- the
+        // next call on it took the type for its own, half made, and one on
+        // another processor waited on a processor (Platform.TypeInitOwnerHook).
+        long self = Platform.TypeInitOwnerHook != 0 ? Sys.Call(Platform.TypeInitOwnerHook, 0, 0, 0) : 0;
+        if (self == 0) self = Sys.ThreadBlock();
         if (self == 0) self = Sys.MainThreadBlock();
         while (true)
         {
@@ -877,11 +883,18 @@ static class Runtime
                 Sys.AtomicSwap(self + Tls.TypeInitWait, 0);
                 return 0;
             }
-            // A waiter must expose its roots before blocking: the owner may
-            // allocate and collect while executing the initializer.
-            BeginBlocking();
-            if (Sys.Peek(state) == owner) Platform.Wait(state, owner);
-            EndBlocking();
+            // A CALL THAT CAN PARK WAITS PARKED (Platform.TypeInitWaitHook):
+            // the owner may itself be parked, and resumed only where this
+            // would spin. Otherwise a waiter exposes its roots before
+            // blocking: the owner may allocate and collect while executing
+            // the initializer.
+            if (Platform.TypeInitWaitHook == 0 || Sys.Peek(state) != owner
+                || Sys.Call(Platform.TypeInitWaitHook, state, owner, 0) == 0)
+            {
+                BeginBlocking();
+                if (Sys.Peek(state) == owner) Platform.Wait(state, owner);
+                EndBlocking();
+            }
             Sys.AtomicSwap(self + Tls.TypeInitWait, 0);
         }
     }
