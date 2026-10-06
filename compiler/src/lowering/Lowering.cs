@@ -1991,7 +1991,7 @@ public sealed partial class Lowering
         // A VALUE'S TYPE IS ITS BOX'S, which is what GetType() on one reads:
         // `((object)5).GetType() == typeof(int)` holds, as it does in .NET,
         // only if the two are one descriptor.
-        Type primitive = new() { Prim = prim };
+        Type primitive = Type.Plain(null, prim);
         if (Boxable(primitive))
         {
             return BoxDescriptor(primitive);
@@ -2166,7 +2166,7 @@ public sealed partial class Lowering
                 {
                     if (made[k] is { Kind: TypeKind.Class or TypeKind.Interface } element)
                     {
-                        Type of = new() { Prim = Prim.Void, Symbol = element };
+                        Type of = Type.Plain(element, Prim.Void);
                         table.Relocs.Add(new DataReloc((1 + 2 * args.Count + k) * w,
                             SequenceDescriptor(ElementKey(of), ElementStride(of), isString: false, elementType: of), 0));
                     }
@@ -2501,7 +2501,7 @@ public sealed partial class Lowering
         // only a class has, and a tuple shape's none ever written.
         if (t.Kind is TypeKind.Struct or TypeKind.Enum)
         {
-            return BoxDescriptor(new Type { Prim = t.Kind == TypeKind.Enum ? t.EnumUnderlying : Prim.Void, Symbol = t });
+            return BoxDescriptor(Type.Plain(t, t.Kind == TypeKind.Enum ? t.EnumUnderlying : Prim.Void));
         }
         if (_descriptors.TryGetValue(t, out string? sym))
         {
@@ -2775,7 +2775,7 @@ public sealed partial class Lowering
         _f = f; _e = new Builder(f, f.NewBlock("entry")); _boundsFail = null;
         Builder e = _e;
         Node at = new MethodDecl { Name = f.Name, Line = 0, Col = 0 };
-        Type shapeType = new() { Prim = Prim.Void, Symbol = shape };
+        Type shapeType = Type.Plain(shape, Prim.Void);
         string member = m.ExplicitMember ?? m.Name;
         bool typed = m.Params.Count == 1 && m.Params[0].Type.Symbol == shape;
         int n = shape.Fields.Count(fd => !fd.Static);

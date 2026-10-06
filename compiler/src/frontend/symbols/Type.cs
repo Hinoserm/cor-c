@@ -15,23 +15,53 @@ public sealed record FunctionPointer(IReadOnlyList<Type> Params, Type Returns, b
 
 public sealed class Type : IEquatable<Type>
 {
-    public Prim Prim { get; init; }
+    // THE FIELDS, IN THE ORDER THEY ARE LAID OUT: every word first, then the
+    // bytes, so nothing is padded between them. What only pointers, tuples,
+    // function pointers, shared copies, `dynamic` and `where T : struct`
+    // parameters carry is in TypeRare, made only when one is set. A unit
+    // holds over a hundred thousand of these while it binds, and this is
+    // 35 bytes of instance on 32-bit -- a 48-byte block with the collector's
+    // header -- where it was 65 and an 80-byte one.
+    private readonly TypeSymbol? _symbol;
+    private readonly Type? _element;
+    private readonly IReadOnlyList<Type> _args = NoArgs;
+    private readonly IReadOnlyList<Type>? _useArgs;
+    private readonly string? _paramName;
+    private TypeRare? _rare;
+    private readonly Prim _prim;
+    private readonly bool _nullable;
+    private readonly byte _arrayRank;
+
+    /// <summary>The side object, made by the first init that sets one of its fields.</summary>
+    private TypeRare Rare => _rare ??= new();
+
+    public Prim Prim { get => _prim; init => _prim = value; }
     /// <summary>Set for classes, interfaces, structs and enums.</summary>
-    public TypeSymbol? Symbol { get; init; }
-    public bool Nullable { get; init; }
+    public TypeSymbol? Symbol { get => _symbol; init => _symbol = value; }
+    public bool Nullable { get => _nullable; init => _nullable = value; }
     /// <summary>Element type when this is an array.</summary>
-    public Type? Element { get; init; }
-    public int ArrayRank { get; init; }
+    public Type? Element { get => _element; init => _element = value; }
+    // A BYTE, because an array type is built one rank at a time (ArrayOf) and
+    // so is never more than one; refused above a byte's range rather than
+    // truncated, so a larger one could not pass silently.
+    public int ArrayRank
+    {
+        get => _arrayRank;
+        init => _arrayRank = value is >= 0 and <= byte.MaxValue
+            ? (byte)value : throw new ArgumentOutOfRangeException(nameof(ArrayRank));
+    }
     /// <summary>Type arguments of a constructed generic.</summary>
     // ONE EMPTY LIST FOR EVERY TYPE WITHOUT ARGUMENTS: an array read as
     // IReadOnlyList is wrapped in a view where it is converted, so the
     // default spelt here made a view for every Type -- 120 thousand of them
     // live in a unit -- all around the same empty array.
-    public IReadOnlyList<Type> Args { get; init; } = NoArgs;
+    public IReadOnlyList<Type> Args { get => _args; init => _args = value; }
     internal static readonly IReadOnlyList<Type> NoArgs = Array.Empty<Type>();
-    public IReadOnlyList<Type>? UseArgs { get; init; }
+    // NOT RARE: every specialisation the monomorphiser spells (List$int for
+    // List<int>) is resolved carrying the arguments it was made from.
+    public IReadOnlyList<Type>? UseArgs { get => _useArgs; init => _useArgs = value; }
     /// <summary>Set when this is a type parameter rather than a concrete type.</summary>
-    public string? ParamName { get; init; }
+    public string? ParamName { get => _paramName; init => _paramName = value; }
 
     /// <summary>
     /// A type parameter declared `where T : struct` (TypeParam.Struct). Over
@@ -40,7 +70,7 @@ public sealed class Type : IEquatable<Type>
     /// bound type is taken as it is. Not part of equality: it says what the
     /// parameter allows, and the name already says which parameter it is.
     /// </summary>
-    public bool StructParam { get; init; }
+    public bool StructParam { get => _rare?.StructParam ?? false; init { if (value) Rare.StructParam = true; } }
 
     /// <summary>
     /// What each element of a TUPLE type was called, and null for every other
@@ -51,7 +81,7 @@ public sealed class Type : IEquatable<Type>
     /// the names are there so `f.At` can mean something at the place it is
     /// written, and they travel with the type only so far as that.
     /// </summary>
-    public IReadOnlyList<string>? Names { get; init; }
+    public IReadOnlyList<string>? Names { get => _rare?.Names; init { if (value is not null) Rare.Names = value; } }
 
     /// <summary>
     /// How many stars: <c>byte*</c> is one, <c>byte**</c> is two.
@@ -65,10 +95,10 @@ public sealed class Type : IEquatable<Type>
     /// Sys.Poke -- a spelling of our own for something C# already has a way of
     /// doing. Pointers are that way.
     /// </summary>
-    public int PointerDepth { get; init; }
+    public int PointerDepth { get => _rare?.PointerDepth ?? 0; init { if (value != 0) Rare.PointerDepth = value; } }
 
     /// <summary>What this points at, one star fewer.</summary>
-    public Type? Pointee { get; init; }
+    public Type? Pointee { get => _rare?.Pointee; init { if (value is not null) Rare.Pointee = value; } }
 
     /// <summary>
     /// A FUNCTION POINTER, C# 9's `delegate* unmanaged<int, int, int>`: an
@@ -76,7 +106,7 @@ public sealed class Type : IEquatable<Type>
     /// callable through its signature. Not part of equality, as tuple element
     /// names are not: two function pointers are the same machine word.
     /// </summary>
-    public FunctionPointer? Function { get; init; }
+    public FunctionPointer? Function { get => _rare?.Function; init { if (value is not null) Rare.Function = value; } }
 
     /// <summary>
     /// WHERE A SHARED COPY'S MACHINE WORD COMES FROM (TypeRef.CanonIndex):
@@ -89,7 +119,7 @@ public sealed class Type : IEquatable<Type>
     /// they carry the instance, which is what lets a generic method called
     /// from shared code be handed its type argument.
     /// </summary>
-    public int CanonParam { get; init; } = -1;
+    public int CanonParam { get => _rare?.CanonParam ?? -1; init { if (value != -1) Rare.CanonParam = value; } }
 
     /// <summary>object, as the shared type argument at `index` (CanonParam): one instance per index.</summary>
     public static Type CanonAny(int index)
@@ -117,7 +147,7 @@ public sealed class Type : IEquatable<Type>
     /// type to every conversion and every generic; the flag only tells the
     /// binder that an expression's operations are to be bound late.
     /// </summary>
-    public bool Dynamic { get; init; }
+    public bool Dynamic { get => _rare?.Dynamic ?? false; init { if (value) Rare.Dynamic = true; } }
 
     public static readonly Type Void   = new() { Prim = Prim.Void };
     public static readonly Type Bool   = new() { Prim = Prim.Bool };
@@ -254,7 +284,7 @@ public sealed class Type : IEquatable<Type>
     public Type AsNullable() => Nullable ? this : With(nullable: true);
     public Type AsNonNullable() => !Nullable ? this : With(nullable: false);
 
-    private Type With(bool nullable) => new()
+    private Type With(bool nullable) => IsPlain ? Plain(Symbol, Prim, nullable) : new()
     {
         Prim = Prim, Symbol = Symbol, Nullable = nullable, Element = Element,
         ArrayRank = ArrayRank, Args = Args, ParamName = ParamName, StructParam = StructParam,
@@ -299,11 +329,98 @@ public sealed class Type : IEquatable<Type>
                 nameof(rank), "an array has at least one dimension");
         }
 
-        Type made = new() { Prim = Prim.Void, Element = element, ArrayRank = 1 };
+        Type made = PlainArrayOf(element);
 
         for (int i = 1; i < rank; i++)
         {
             made = new() { Prim = Prim.Void, Element = made, ArrayRank = 1 };
+        }
+        return made;
+    }
+
+    /// <summary>
+    /// A type that is a class, struct, enum, interface or primitive and
+    /// nothing more: no element, arguments, parameter name, pointer, tuple
+    /// names or any other of TypeRare's fields. What Equals compares of one is
+    /// its Prim, Symbol and Nullable alone.
+    /// </summary>
+    private bool IsPlain => _element is null && _args.Count == 0 && _useArgs is null && _paramName is null && _rare is null;
+
+    /// <summary>
+    /// THE ONE INSTANCE of a plain type: `symbol` (or, with no symbol, the
+    /// primitive) with `prim`, and the '?' if `nullable`.
+    ///
+    /// SHARED BECAUSE A TYPE IS NEVER CHANGED once made -- every property is
+    /// init-only -- so two uses of `Foo` or `int?` cannot tell one object
+    /// from two, and the binder built one at every place a name was resolved,
+    /// a `this` was typed or a '?' was added: most of the hundred thousand
+    /// live while a unit binds. Only plain types are shared, and the
+    /// primitives without '?' are the static instances above.
+    ///
+    /// An enum's symbol is read with its underlying primitive in one place and
+    /// Prim.Void in another, so the cached one is kept only while its Prim is
+    /// the one asked for; a mismatch makes a new one and keeps that instead.
+    /// Two threads racing here each get a correct type, and one is kept.
+    /// </summary>
+    public static Type Plain(TypeSymbol? symbol, Prim prim, bool nullable = false)
+    {
+        if (symbol is null)
+        {
+            int slot = (int)prim * 2 + (nullable ? 1 : 0);
+            return PlainPrims[slot] ??= new Type { Prim = prim, Nullable = nullable };
+        }
+
+        SharedTypes shared = symbol.Shared ??= new SharedTypes();
+        Type? made = nullable ? shared.Nullable : shared.Plain;
+        if (made is null || made._prim != prim)
+        {
+            made = new Type { Prim = prim, Symbol = symbol, Nullable = nullable };
+            if (nullable) shared.Nullable = made;
+            else shared.Plain = made;
+        }
+        return made;
+    }
+
+    /// <summary>
+    /// `element[]`, shared where the element is plain and has no '?' --
+    /// `string[]`, `Foo[]` -- and made anew for every other element.
+    /// </summary>
+    private static Type PlainArrayOf(Type element)
+    {
+        if (!element.IsPlain || element._nullable)
+        {
+            return new Type { Prim = Prim.Void, Element = element, ArrayRank = 1 };
+        }
+
+        // KEYED BY THE ELEMENT'S EQUALITY, which for a plain type is its
+        // Prim and Symbol (Nullable being false): the cached array's element
+        // may be another instance equal to this one, which nothing can tell.
+        if (element._symbol is not { } symbol)
+        {
+            return PlainPrimArrays[(int)element._prim] ??= new Type { Prim = Prim.Void, Element = element, ArrayRank = 1 };
+        }
+
+        SharedTypes shared = symbol.Shared ??= new SharedTypes();
+        Type? made = shared.Array;
+        if (made is null || made._element!._prim != element._prim)
+        {
+            made = new Type { Prim = Prim.Void, Element = element, ArrayRank = 1 };
+            shared.Array = made;
+        }
+        return made;
+    }
+
+    // Indexed by Prim, twice over for the '?' (Plain); the primitives' own
+    // statics are their entries, so `int` stays Type.I32 however it is made.
+    private static readonly Type?[] PlainPrims = MakePlainPrims();
+    private static readonly Type?[] PlainPrimArrays = new Type?[256];
+
+    private static Type?[] MakePlainPrims()
+    {
+        Type?[] made = new Type?[512];
+        foreach (Type t in new[] { Void, Bool, I8, I16, I32, I64, U8, U16, U32, U64, NInt, NUInt, F32, F64, Char, String, Null, Any, Error, TypeHandle })
+        {
+            made[(int)t._prim * 2 + (t._nullable ? 1 : 0)] = t;
         }
         return made;
     }
@@ -388,4 +505,27 @@ public sealed class Type : IEquatable<Type>
         s += new string('*', PointerDepth);
         return Nullable && (annotations || !IsReference) ? s + "?" : s;
     }
+}
+
+/// <summary>What few types carry (Type._rare): every field at its default until set.</summary>
+internal sealed class TypeRare
+{
+    public IReadOnlyList<string>? Names;
+    public Type? Pointee;
+    public FunctionPointer? Function;
+    public int PointerDepth;
+    public int CanonParam = -1;
+    public bool StructParam;
+    public bool Dynamic;
+}
+
+/// <summary>
+/// The plain types of one type symbol, made once each (Type.Plain): itself,
+/// itself with '?', and an array of itself.
+/// </summary>
+internal sealed class SharedTypes
+{
+    public Type? Plain;
+    public Type? Nullable;
+    public Type? Array;
 }

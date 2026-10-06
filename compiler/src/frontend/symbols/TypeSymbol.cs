@@ -6,6 +6,8 @@ public sealed class TypeSymbol
 {
     /// <summary>Its key spelled as a symbol (Lowering.TypeKey), made once.</summary>
     internal string? TypeKeyMade;
+    /// <summary>The plain types of this symbol, made once each (Type.Plain).</summary>
+    internal SharedTypes? Shared;
     public required string Name { get => _name; init => _name = Interned.Name(value); }
     private readonly string _name = "";
 

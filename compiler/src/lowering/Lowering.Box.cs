@@ -248,7 +248,7 @@ public sealed partial class Lowering
         // one name.
         if (of.Symbol is { Kind: TypeKind.Enum } named && !of.IsArray && !of.IsPointer && !of.IsNullableValue)
         {
-            of = new Type { Prim = named.EnumUnderlying, Symbol = named };
+            of = Type.Plain(named, named.EnumUnderlying);
         }
         string name = BoxName(of);
         string key = BoxKey(of);
@@ -896,7 +896,7 @@ public sealed partial class Lowering
         }
         return _b.Types.TryGetValue(name, out TypeSymbol? sym)
             && sym.Kind is TypeKind.Enum or TypeKind.Struct
-            ? new Type { Symbol = sym }
+            ? Type.Plain(sym, Prim.Void)
             : null;
     }
 }
