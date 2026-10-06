@@ -9158,9 +9158,13 @@ static class Gc
     /// 21 MB heap was told it was out of memory (test 1185 on a busy
     /// machine). A few laps more, two cycles each, and only while the heap
     /// is mostly garbage: a program that really holds the heap still hears
-    /// it on the third try.
+    /// it on the third try. AND ONLY WHILE OTHERS ARE MAKING IT (_since): with
+    /// nothing made since the last cycle, what the heap holds besides its
+    /// live bytes is holes too small for the request, and no cycle mends
+    /// them -- a compile at a 256 MB cap ran its collections back to back
+    /// for ten minutes, every request lapping, rather than ending.
     /// </summary>
-    static bool MostlyGarbage(long lapped) => lapped < MostLaps && _liveBytes * 2 < HeapChunks.HeapBytes;
+    static bool MostlyGarbage(long lapped) => lapped < MostLaps && _liveBytes * 2 < HeapChunks.HeapBytes && _since > 0;
     const long MostLaps = 8;
 
     static void WaitForRoom(long tb, long need)
