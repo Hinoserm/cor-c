@@ -1,0 +1,72 @@
+// test: the store sequences' bytes, which the kernels' handshakes rely on
+// sources: stdlib/src/System/Threading/interlocked.cor
+// flags-x86: --store-sequences
+// expect-bytes-x86: __corsac_refstore: 83 3d [s_Runtime_Marking] 00 74 11 51 52 50 52 50 e8 (m_Runtime_WriteBarrierStore_2_V$NInt_V$NInt) 83 c4 08 58 5a 59 c3 89 10 51 8b 0d [s_Runtime_Cards] 85 c9 74 09 50 c1 e8 0a c6 04 01 01 58 59 c3
+// expect-bytes-x86: __corsac_cardstore: 89 10 51 8b 0d [s_Runtime_Cards] 85 c9 74 09 50 c1 e8 0a c6 04 01 01 58 59 c3
+// expect-bytes-x86: __corsac_refxchg: 83 3d [s_Runtime_Marking] 00 74 0f 51 52 52 50 e8 (m_Runtime_WriteBarrierExchange_2_V$NInt_V$NInt) 83 c4 08 5a 59 c3 51 89 c1 89 d0 87 01 52 8b 15 [s_Runtime_Cards] 85 d2 74 09 51 c1 e9 0a c6 04 0a 01 59 5a 59 c3
+// expect-bytes-x86: __corsac_refcas: 83 3d [s_Runtime_Marking] 00 74 10 51 52 50 52 51 e8 (m_Runtime_WriteBarrierCompareExchange_3_V$NInt_V$NInt_V$NInt) 83 c4 0c 5a 59 c3 f0 0f b1 11 52 8b 15 [s_Runtime_Cards] 85 d2 74 09 51 c1 e9 0a c6 04 0a 01 59 5a c3
+// expect-bytes-x86: __corsac_store_sequences: 83 3d [s_Runtime_Marking] 00 74 11 51 52 50 52 50 e8 (m_Runtime_WriteBarrierStore_2_V$NInt_V$NInt) 83 c4 08 58 5a 59 c3 89 10 51 8b 0d [s_Runtime_Cards] 85 c9 74 09 50 c1 e8 0a c6 04 01 01 58 59 c3 89 10 51 8b 0d [s_Runtime_Cards] 85 c9 74 09 50 c1 e8 0a c6 04 01 01 58 59 c3 83 3d [s_Runtime_Marking] 00 74 0f 51 52 52 50 e8 (m_Runtime_WriteBarrierExchange_2_V$NInt_V$NInt) 83 c4 08 5a 59 c3 51 89 c1 89 d0 87 01 52 8b 15 [s_Runtime_Cards] 85 d2 74 09 51 c1 e9 0a c6 04 0a 01 59 5a 59 c3 83 3d [s_Runtime_Marking] 00 74 10 51 52 50 52 51 e8 (m_Runtime_WriteBarrierCompareExchange_3_V$NInt_V$NInt_V$NInt) 83 c4 0c 5a 59 c3 f0 0f b1 11 52 8b 15 [s_Runtime_Cards] 85 d2 74 09 51 c1 e9 0a c6 04 0a 01 59 5a c3
+// expect-exit: 0
+// expect-output:
+// stored a
+// exchanged a b
+// compared b c
+//
+// EVERY BYTE OF THE FOUR STUBS (X86Backend, "THE STORE SEQUENCES"). A ring-1
+// kernel sends no thread to its handshake whose EIP lies between
+// __corsac_store_sequences and its _end (Ring1Kernel.SendToAnswer), and ring
+// 0 holds a trap taken inside one in the allocator (UserMode.Trap): both
+// trust that what lies there is the Marking test, the report, the store and
+// the card, run to the RET -- and that every register but the answer comes
+// back as it went in, since the compiled code around a call keeps its values
+// there. Nothing else said so: a stub changed by a byte was found only by
+// 09_store_sequences_run's run, if the change was one it reached.
+//
+// Each stub is read from the image and compared whole, the addresses of
+// Runtime.Marking and Runtime.Cards and the calls of WriteBarrierStore,
+// WriteBarrierExchange and WriteBarrierCompareExchange included -- which,
+// while a mark is under way, report, store and mark the card inside InAlloc
+// and RET from the stub with their answer -- and the region is the four of
+// them back to back and nothing else. Each JE over the marking call and each
+// JZ over the card is in the bytes, so a call or a card made longer without
+// its jump is found.
+// (The x86-64 image makes no sequences; there the program only runs.)
+
+using System.Threading;
+
+class Cell
+{
+    public object? Value;
+}
+
+static class Program
+{
+    static void Store(Cell into, object value)
+    {
+        into.Value = value;
+    }
+
+    static object? Swap(Cell into, object value)
+    {
+        return Interlocked.Exchange(ref into.Value, value);
+    }
+
+    static object? Compare(Cell into, object value, object? expected)
+    {
+        return Interlocked.CompareExchange(ref into.Value, value, expected);
+    }
+
+    static int Main()
+    {
+        Host.Start(4 * 1024 * 1024);
+        Cell cell = new Cell();
+        Store(cell, "a");
+        Host.Line("stored " + (string)cell.Value!);
+        object? was = Swap(cell, "b");
+        Host.Line("exchanged " + (string)was! + " " + (string)cell.Value!);
+        object? seen = Compare(cell, "c", was == null ? null : cell.Value);
+        Host.Line("compared " + (string)seen! + " " + (string)cell.Value!);
+        Host.Done(0);
+        return 0;
+    }
+}

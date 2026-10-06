@@ -4372,11 +4372,11 @@ static class ThreadStatics
             Sys.Cas(indexAt, 0, (int)Sys.AtomicAdd(Sys.AddressOf(ref _fields), 1) + 1);
             index = Sys.Peek(indexAt);
         }
-        long block = Sys.ThreadBlock();
-        object?[]? cells = Sys.FromWord(Sys.Peek(block + Tls.ThreadStatics)) as object?[];
+        long home = Home();
+        object?[]? cells = Sys.FromWord(Sys.Peek(home)) as object?[];
         if (cells is null || index >= cells.Length)
         {
-            cells = Grow(block, cells, index);
+            cells = Grow(home, cells, index);
         }
         object? cell = cells[index];
         if (cell is null)
@@ -4387,9 +4387,23 @@ static class ThreadStatics
         return Sys.Word(cell);
     }
 
+    /// The word that holds the running code's table: the thread block's, or
+    /// where the platform keeps it for code whose block is not its own -- a
+    /// kernel's system call, which may park and come back on another
+    /// processor (Platform.ThreadStaticsHook).
+    static long Home()
+    {
+        if (Platform.ThreadStaticsHook != 0)
+        {
+            long word = Sys.Call(Platform.ThreadStaticsHook, 0, 0, 0);
+            if (word != 0) return word;
+        }
+        return Sys.ThreadBlock() + Tls.ThreadStatics;
+    }
+
     /// This thread's table, long enough for `index`: its first, put on the
-    /// list, or a longer copy of the one it has.
-    static object?[] Grow(long block, object?[]? old, long index)
+    /// list, or a longer copy of the one it has, named in the word at `home`.
+    static object?[] Grow(long home, object?[]? old, long index)
     {
         long size = old is null ? 8 : old.Length * 2;
         while (size <= index)
@@ -4415,7 +4429,7 @@ static class ThreadStatics
         cells[0] = node;
         // Kept by the list before the thread block names it.
         node.Cells = cells;
-        Sys.Poke(block + Tls.ThreadStatics, Sys.Word(cells));
+        Sys.Poke(home, Sys.Word(cells));
         return cells;
     }
 
@@ -4423,12 +4437,20 @@ static class ThreadStatics
     /// collector's once nothing else holds what is in them.
     public static void Release(long block)
     {
-        object?[]? cells = Sys.FromWord(Sys.Peek(block + Tls.ThreadStatics)) as object?[];
+        ReleaseAt(block + Tls.ThreadStatics);
+    }
+
+    /// The table named in the word at `home` off the list, and the word
+    /// cleared: a kernel's process, whose system calls kept their table
+    /// there (Platform.ThreadStaticsHook), as it ends.
+    public static void ReleaseAt(long home)
+    {
+        object?[]? cells = Sys.FromWord(Sys.Peek(home)) as object?[];
         if (cells is null)
         {
             return;
         }
-        Sys.Poke(block + Tls.ThreadStatics, 0);
+        Sys.Poke(home, 0);
         ThreadStaticTable node = (ThreadStaticTable)cells[0]!;
         Enter();
         if (node.Previous is not null) node.Previous.Next = node.Next;

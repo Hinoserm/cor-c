@@ -1017,6 +1017,16 @@ public sealed class Inline : IParallelModulePass
             if (hints.FieldSites.Count > 0) { forLink.Add(Escape.FieldKeeper); forLink.Add(Escape.FieldFreer); }
             forLink.UnionWith(hints.Helpers);
         }
+        // NOR ARE THE STORE SEQUENCES' BARRIERS: the backend writes the stubs
+        // (X86Backend, "THE STORE SEQUENCES") into the module that defines
+        // Runtime.WriteBarrier and the three routines they call while marking
+        // (WriteBarrierStore, WriteBarrierExchange,
+        // WriteBarrierCompareExchange), and the stubs are their callers. A
+        // program whose own stores the optimiser had all removed or proved
+        // fresh left them none in the IR, they went, the stubs with them, and
+        // the link failed on the library's Interlocked ("undefined symbol
+        // __corsac_refxchg").
+        bool sequences = m.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.RefStore);
         bool changed = true;
         while (changed)
         {
@@ -1026,7 +1036,9 @@ public sealed class Inline : IParallelModulePass
             {
                 Function f = m.Functions[i];
                 if (f.Name == m.Entry || addressTaken.Contains(f.Name) || callers.GetValueOrDefault(f.Name) > 0
-                    || (coroutines && f.Name == AsyncTransform.CardMarkObject) || forLink.Contains(f.Name))
+                    || (coroutines && f.Name == AsyncTransform.CardMarkObject) || forLink.Contains(f.Name)
+                    || (sequences && f.Name is Corsac.Lang.Lto.RuntimeAbi.WriteBarrier or Corsac.Lang.Lto.RuntimeAbi.WriteBarrierStore
+                        or Corsac.Lang.Lto.RuntimeAbi.WriteBarrierExchange or Corsac.Lang.Lto.RuntimeAbi.WriteBarrierCompareExchange))
                 {
                     continue;
                 }

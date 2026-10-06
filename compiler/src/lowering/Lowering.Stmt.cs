@@ -860,6 +860,10 @@ public sealed partial class Lowering
     /// <summary>A case label of the form `subject == constant`, or `constant` on its own.</summary>
     private bool TryCaseConstant(Expr pattern, out long value)
     {
+        // `case Open:` is parsed as a type pattern and bound as the value
+        // pattern it is (Binder: a constant that hides no type): the label is
+        // the rewrite's.
+        if (_b.Rewrites.TryGetValue(pattern, out Expr? bound)) pattern = bound;
         if (pattern is BinaryExpr { Op: BinOp.Eq } eq)
         {
             if (eq.Left is SubjectExpr && Fold.TryConst(eq.Right, out value, NamedConstant)) return true;
@@ -877,7 +881,7 @@ public sealed partial class Lowering
     /// </summary>
     private long? NamedConstant(Expr e)
         => e is MemberExpr or NameExpr && _b.Resolved.TryGetValue(e, out Sym? sym)
-            && sym is ConstSym { Type.Prim: not (Prim.F32 or Prim.F64) } k ? k.Value : null;
+            && sym is ConstSym { Text: null, Type.Prim: not (Prim.F32 or Prim.F64) } k ? k.Value : null;
 
     // ---- exceptions ----------------------------------------------------------------
 

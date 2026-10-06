@@ -790,6 +790,10 @@ public static class Prelude
             public static void Cpuid(int leaf, int subleaf, long into) { }
             // rdtsc: the time-stamp counter.
             public static long ReadTsc() { return 0; }
+            // pushfd; pop (pushfq on x86-64): the flags register, which a
+            // kernel asks for the interrupt flag (bit 9) before it turns
+            // interrupts off and on again.
+            public static long ReadFlags() { return 0; }
             // swapgs: the kernel's GS base for the user's, on x86-64.
             public static void SwapGs() { }
 

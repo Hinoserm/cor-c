@@ -264,6 +264,7 @@ public sealed partial class Lowering
                 VReg value = ToWord(Arg(call, target, swap ? 1 : 2));
                 if (MakesStoreSequences)
                 {
+                    RequireSequenceRoutines();
                     VReg seen = swap
                         ? _e.Call(MachineIntrinsicRefExchange, IrTypes.Word, R(at), R(value))!
                         : _e.Call(MachineIntrinsicRefCompareExchange, IrTypes.Word, R(at), R(expect), R(value))!;
@@ -651,6 +652,8 @@ public sealed partial class Lowering
                 return Void();
             case "ReadTsc":
                 return _e.Call(MachineIntrinsics.ReadTsc, IrType.I64)!;
+            case "ReadFlags":
+                return Widen(_e.Call(MachineIntrinsics.ReadFlags, IrTypes.Word)!);
             case "SwapGs":
                 _e.Call(MachineIntrinsics.SwapGs, IrType.Void);
                 return Void();

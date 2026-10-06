@@ -1,0 +1,10 @@
+# Test 1480's response file: every source it adds, one a line, comments and
+# blank lines skipped, each path relative to this file rather than to where
+# the compiler was started.
+
+1480_response_file_listed.cor
+
+# And a flag, passed on as it is: a line that begins with '-' is one
+# argument, so a flag with a value is written --cpu=486 (a value alone on a
+# line would be taken for a source beside this file).
+--cpu=486

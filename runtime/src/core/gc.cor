@@ -1371,6 +1371,11 @@ static class Gc
         return at;
     }
 #else
+    /// No stack maps on x86-64 (BuildMaps is i386's): nothing to rebuild.
+    public static void MapsChanged()
+    {
+    }
+
     public static bool PreciseRegisters()
     {
         return false;
