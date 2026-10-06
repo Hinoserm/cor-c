@@ -1209,12 +1209,14 @@ public class ManualResetEventSlim : IDisposable
         if (millisecondsTimeout < -1) throw new ArgumentOutOfRangeException("millisecondsTimeout");
         if (millisecondsTimeout == -1) { Wait(); return true; }
         long at = Atom.At(this, Atom.FirstWord);
-        long until = System.Diagnostics.Stopwatch.GetTimestamp() + (long)millisecondsTimeout * System.Diagnostics.Stopwatch.Frequency / 1000;
+        // Timed by the runtime's own clock, as Thread.Join's: Stopwatch is a
+        // library above this one.
+        long until = Clock.Now() + (long)millisecondsTimeout * 1000000;
         while (Sys.PeekWord(at) == 0)
         {
-            long left = until - System.Diagnostics.Stopwatch.GetTimestamp();
+            long left = until - Clock.Now();
             if (left <= 0) return false;
-            Native.WaitFor(at, 0, left * 1000000000 / System.Diagnostics.Stopwatch.Frequency);
+            Native.WaitFor(at, 0, left);
         }
         return true;
     }
