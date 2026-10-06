@@ -62,8 +62,14 @@ public sealed class DeclarationSession : IDisposable
 
     public void Speculate((string Name, int Arity) key, string? value)
     {
-        lock (gate) speculated[key] = value;
+        // BOUNDED, as the catalog's own answers are (DeclarationCatalog.
+        // Remembered): every unit adds the names it asked that no unit
+        // before it did, misses included, and the session lives for the
+        // whole project. Past its size an answer is simply looked up again.
+        lock (gate) if (speculated.Count < MostSpeculated || speculated.ContainsKey(key)) speculated[key] = value;
     }
+
+    private const int MostSpeculated = 1 << 16;
 
     public void Dispose() => Catalog.Dispose();
 }

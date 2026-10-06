@@ -47,11 +47,17 @@ internal sealed class NameTable
     }
 
     private static readonly Dictionary<(string Prefix, string Name), string> Accessors = new();
+    private const int MostAccessors = 1 << 15;
 
     /// <summary>
     /// An accessor's name -- `get_Item`, `set_Count` -- as one string for the
     /// whole process. Accessors are made again by every bind of every copy of
     /// a type, and each made its own: `get_Item` was six thousand strings.
+    ///
+    /// BOUNDED, because the process is a project's: hundreds of units on a
+    /// dozen threads each add the property names they declare, and nothing
+    /// is ever taken out. Past its size a name is made and handed back as it
+    /// was before the table, a copy too many and never a different string.
     /// </summary>
     public static string Accessor(string prefix, string name)
     {
@@ -60,7 +66,7 @@ internal sealed class NameTable
             if (!Accessors.TryGetValue((prefix, name), out string? joined))
             {
                 joined = prefix + name;
-                Accessors.Add((prefix, name), joined);
+                if (Accessors.Count < MostAccessors) Accessors.Add((prefix, name), joined);
             }
             return joined;
         }

@@ -258,9 +258,15 @@ public sealed class DeclarationCatalog : IDisposable
             }
         }
         if (ambiguous) result = null;
-        lock (bindingGate) table[name] = result;
+        // BOUNDED: a project's units each add what they asked that none
+        // before them did, misses included, for as long as the catalog is
+        // open. Past its size an answer is asked of the index again, which
+        // gives the same one.
+        lock (bindingGate) if (table.Count < MostRemembered) table[name] = result;
         return result;
     }
+
+    private const int MostRemembered = 1 << 16;
 
     public byte[] QueryFingerprint(string key)
     {

@@ -111,6 +111,9 @@ internal sealed class OwnedFieldEscape
     internal static void Changed() => _cached = null;
     internal static void Uncache() { _cacheFor = null; _cached = null; }
 
+    /// <summary>The thread's unit is over (Escape.ForgetThread): its last refused instruction goes with it.</summary>
+    internal static void Forget() { Uncache(); LastRefusal = null; }
+
     private sealed class AddressScan
     {
         private readonly Function _f;

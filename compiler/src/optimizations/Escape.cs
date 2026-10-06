@@ -77,6 +77,26 @@ public sealed partial class Escape : IModulePass
         finally { _reachGraphs = null; _inserted = null; _indirect = null; _held = null; _fieldsOf = null; _heldStamps = null; _copies = null; _typeItems = null; _typedFieldsOf = null; _stampItems = null; }
     }
 
+    /// <summary>
+    /// A UNIT IS OVER ON THIS THREAD (ProjectCompile): everything the
+    /// analyses keep in thread statics is let go, including what Run leaves
+    /// set on purpose for the rest of a compile. A project's units compile one
+    /// after another on a dozen long-lived threads, and what survived a unit
+    /// was the next one's to carry: _returnsFirst and _bodies held every
+    /// function name of the last unit, and _invokeOnly was never emptied at
+    /// all, so it gathered the names of every unit the thread had compiled --
+    /// and a later unit could read an answer an earlier one made for a
+    /// function of the same name, which a unit compiled alone never sees.
+    /// Emptied, each unit starts as it would in a process of its own.
+    /// </summary>
+    internal static void ForgetThread()
+    {
+        _reachGraphs = null; _inserted = null; _indirect = null; _held = null; _fieldsOf = null; _heldStamps = null;
+        _copies = null; _typeItems = null; _typedFieldsOf = null; _stampItems = null;
+        _returnsFirst = null; _bodies = null; _invokeOnly = null; _unresolvedWhy = null; UsedAfterWhy = null;
+        OwnedFieldEscape.Forget();
+    }
+
     private void RunCore(Module m)
     {
         Dictionary<string, Function> byName = new(StringComparer.Ordinal);

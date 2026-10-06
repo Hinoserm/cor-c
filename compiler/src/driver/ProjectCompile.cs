@@ -156,10 +156,30 @@ public static class ProjectCompile
             catch (InvalidDataException) { return false; }
         }
 
+        // WHAT A UNIT LEFT ON ITS THREAD IS LET GO, before the next and again
+        // after it. Before, so a unit starts as it would in a process of its
+        // own: names a unit before this one interned on this thread are its,
+        // not ours, and the escape analysis's thread statics answer for the
+        // functions they were made for. After, because a worker that has
+        // finished waits at the memory gate (Gated) or for the build to end
+        // with the last unit's names and function tables still reachable --
+        // up to a hundred thousand strings a thread, held while the units
+        // still running are the ones that need the room.
+        static void ForgetUnit()
+        {
+            Corsac.Lang.Interned.Forget();
+            Corsac.Lang.Opt.Escape.ForgetThread();
+        }
+
         int One(Unit unit)
         {
-            // Names a unit before this one on this thread are its, not ours.
-            Corsac.Lang.Interned.Forget();
+            ForgetUnit();
+            try { return OneUnit(unit); }
+            finally { ForgetUnit(); }
+        }
+
+        int OneUnit(Unit unit)
+        {
             if (Current(unit))
             {
                 lock (gate) { done++; skipped++; }
