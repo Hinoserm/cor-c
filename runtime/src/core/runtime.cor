@@ -1164,29 +1164,44 @@ static class Runtime
     /// owner's STAMP answer (StampedAlready), exactly as one AllocWord hands
     /// out.
     ///
-    /// ONE TEST FOR EVERYTHING ELSE: the cache ANDed with Gc.FastClassMask
-    /// is 0 with no cache (none yet, or a handshake took it to make the
-    /// thread answer), before the heap starts, under the heap check, and
-    /// while a sampler counts (AllocHook) -- and an empty list is the other
-    /// way out. Both go to AllocMissed, the call the site was.
+    /// IN THE ALLOCATOR BEFORE THE CACHE IS READ (Tls.InAlloc), as every
+    /// path of Gc's is: a kernel sends a thread to its handshake at any
+    /// instruction, and an answer there -- or a wait counted as stopped,
+    /// whose pages ShedPages may give up -- is refused while InAlloc is set.
+    /// Read first and marked after, the cache could be one this thread had
+    /// been answered for between the two. So: the thread's block ANDed with
+    /// Gc.FastClassMask -- 0 with no block yet, before the heap starts,
+    /// under the heap check, and while a sampler counts (AllocHook) -- then
+    /// InAlloc set, then the cache, 0 when a handshake took it to make the
+    /// thread answer, then the list. Every way out but the pop goes to
+    /// AllocMissed, the call the site was, which clears InAlloc first; the
+    /// pop clears it itself. Each exactly once.
     public static long AllocFastSized(nint bytes, nint kind, nint slot, nint size)
     {
-        nint tb = (nint)Sys.ThreadBlock();
-        nint cache = (nint)Sys.Peek(tb + (nint)Tls.Classes) & Gc.FastClassMask;
-        if (cache != 0)
+        nint tb = (nint)Sys.ThreadBlock() & Gc.FastClassMask;
+        if (tb != 0)
         {
             Sys.Poke(tb + (nint)Tls.InAlloc, 1);
-            nint free = (nint)Sys.Peek(cache + slot);
-            if (free != 0)
+            nint cache = (nint)Sys.Peek(tb + (nint)Tls.Classes);
+            if (cache != 0)
             {
-                Sys.Poke(cache + slot, Sys.Peek(free + (nint)Gc.BlockKindAt));
-                Sys.Poke(free, size);
-                Sys.Poke(free + (nint)Gc.BlockKindAt, kind);
-                Sys.Poke(tb + (nint)Tls.InAlloc, 0);
-                return (long)(nuint)(free + (nint)Gc.BlockHeaderBytes);
+                nint free = (nint)Sys.Peek(cache + slot);
+                if (free != 0)
+                {
+                    // An interrupt between the next link's load and its store
+                    // finds InAlloc set and comes back: nothing else pops or
+                    // pushes this list -- other threads' frees go to the
+                    // page's own (Gc.ClassFree), and this thread's frees and
+                    // handshake answers are refused while InAlloc is set.
+                    Sys.Poke(cache + slot, Sys.Peek(free + (nint)Gc.BlockKindAt));
+                    Sys.Poke(free, size);
+                    Sys.Poke(free + (nint)Gc.BlockKindAt, kind);
+                    Sys.Poke(tb + (nint)Tls.InAlloc, 0);
+                    return (long)(nuint)(free + (nint)Gc.BlockHeaderBytes);
+                }
             }
-            // An empty list leaves InAlloc set: AllocMissed clears it, so
-            // that both ways out are the one call at every site.
+            // No cache or an empty list leaves InAlloc set: AllocMissed
+            // clears it, so that every way out is the one call at each site.
         }
         return AllocMissed(bytes, kind);
     }
@@ -1204,17 +1219,18 @@ static class Runtime
         if ((nuint)bytes <= (nuint)(Gc.ClassMax + 7 - Gc.ClassBlockRounding))
         {
             nint w = (nint)WordSize.Bytes;
-            nint tb = (nint)Sys.ThreadBlock();
-            nint cache = (nint)Sys.Peek(tb + (nint)Tls.Classes) & Gc.FastClassMask;
-            if (cache != 0)
+            // In the allocator before the cache is read (AllocFastSized).
+            nint tb = (nint)Sys.ThreadBlock() & Gc.FastClassMask;
+            if (tb != 0)
             {
+                Sys.Poke(tb + (nint)Tls.InAlloc, 1);
+                nint cache = (nint)Sys.Peek(tb + (nint)Tls.Classes);
                 nint small = (bytes + (nint)Gc.ClassBlockRounding) & (nint)Gc.BlockSizeMask;
                 // The tables read as words: they are addresses, and read as
                 // longs on i386 each was two loads, one of them dead.
                 nint c = (nint)Sys.Peek((nint)Sys.Peek(Sys.AddressOf(ref Gc._classOf)) + (small >> 3) * w);
                 nint slot = cache + c * (2 * w) + w;
-                Sys.Poke(tb + (nint)Tls.InAlloc, 1);
-                nint free = (nint)Sys.Peek(slot);
+                nint free = cache != 0 ? (nint)Sys.Peek(slot) : 0;
                 if (free != 0)
                 {
                     nint size = (nint)Sys.Peek((nint)Sys.Peek(Sys.AddressOf(ref Gc._classSize)) + c * w);
@@ -1224,7 +1240,7 @@ static class Runtime
                     Sys.Poke(tb + (nint)Tls.InAlloc, 0);
                     return (long)(nuint)(free + (nint)Gc.BlockHeaderBytes);
                 }
-                Sys.Poke(tb + (nint)Tls.InAlloc, 0);
+                // InAlloc left set: AllocMissed clears it (AllocFastSized).
             }
         }
         return AllocMissed(bytes, kind);
@@ -1235,10 +1251,11 @@ static class Runtime
     [MethodImpl(MethodImplOptions.NoInlining)]
     public static long AllocMissed(nint bytes, nint kind)
     {
-        // OUT OF THE ALLOCATOR FIRST: AllocFastSized comes here from an empty
-        // list with Tls.InAlloc still set, which saves every site a store.
-        // Nothing is half done then -- the list was read, not changed -- and
-        // the few instructions to here are as unanswerable as the pop.
+        // OUT OF THE ALLOCATOR FIRST: AllocFastSized and AllocFast come here
+        // with Tls.InAlloc still set when the cache or the list was empty,
+        // which saves every site a store. Nothing is half done then -- the
+        // cache and the list were read, not changed -- and the few
+        // instructions to here are as unanswerable as the pop.
         nint tb = (nint)Sys.ThreadBlock();
         if (tb != 0) Sys.Poke(tb + (nint)Tls.InAlloc, 0);
         if (kind == (nint)Gc.ObjectKind) return AllocObject(bytes);

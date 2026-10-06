@@ -3459,14 +3459,21 @@ static class Gc
         nint small = (bytes + (nint)ClassRounding) & (nint)SizeMask;
         if (small <= (nint)ClassMax)
         {
+            // IN THE ALLOCATOR BEFORE THE CACHE IS READ (Tls.InAlloc), as the
+            // bump below is before its pointer is: a kernel sends a thread to
+            // its handshake at any instruction, and an answer -- or a wait
+            // counted as stopped, whose pages ShedPages may give up -- landing
+            // between the read and the pop would leave this thread popping
+            // off a cache it had been answered for.
+            Sys.Poke(tb + (nint)Tls.InAlloc, 1);
             nint cache = (nint)Sys.Peek(tb + (nint)Tls.Classes);
             if (cache == 0)
             {
+                Sys.Poke(tb + (nint)Tls.InAlloc, 0);
                 return (nint)AllocSlow(bytes, kind);
             }
             nint c = (nint)Sys.Peek((nint)_classOf + (small >> 3) * w);
             nint slot = cache + c * (2 * w);
-            Sys.Poke(tb + (nint)Tls.InAlloc, 1);
             nint free = (nint)Sys.Peek(slot + w);
             if (free == 0)
             {
@@ -3511,12 +3518,13 @@ static class Gc
         // handshake took it away) or an empty list is the slow path's.
         if (small <= ClassMax && bytes >= 0)
         {
+            // In the allocator before the cache is read (AllocWord).
+            Sys.Poke(tb + Tls.InAlloc, 1);
             long cache = Sys.Peek(tb + Tls.Classes);
             if (cache != 0)
             {
                 long c = Sys.Peek(_classOf + (small >> 3) * WordSize.Bytes);
                 long slot = cache + c * (2 * WordSize.Bytes);
-                Sys.Poke(tb + Tls.InAlloc, 1);
                 long free = Sys.Peek(slot + WordSize.Bytes);
                 if (free != 0)
                 {
@@ -3529,8 +3537,8 @@ static class Gc
                     if (_heapCheck) { CheckMade(free, "class fast path", Zero); CheckList(Sys.Peek(slot + WordSize.Bytes), size, "class fast path"); }
                     return free + HeaderBytes;
                 }
-                Sys.Poke(tb + Tls.InAlloc, 0);
             }
+            Sys.Poke(tb + Tls.InAlloc, 0);
             return AllocSlow(bytes, kind);
         }
         // Not to be stopped from outside between here and the bump
