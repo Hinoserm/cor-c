@@ -2522,6 +2522,16 @@ static class Gc
     // The frame a record names, without its mark.
     static long OpenerFrame(long record) => Sys.Peek(record + HeaderBytes + WordSize.Bytes) & ~LoopMark;
 
+    /// THE INNERMOST OPEN REGION, `record` (0 for none), and with it the
+    /// frame that opened it (Tls.RegionFloor), which every allocation in a
+    /// region put in place reads instead of the record: the two always
+    /// change together, and only on their own thread.
+    public static void SetOpen(long tb, long record)
+    {
+        Sys.Poke(tb + Tls.RegionFloor, record == 0 ? 0 : OpenerFrame(record) & WordSize.AddressMask);
+        Sys.Poke(tb + Tls.RegionOpen, record);
+    }
+
     /// Opens a region for the call whose frame is `frame`: what RegionLeave
     /// is handed back, -1 when there is none (no regions on this platform, or
     /// no memory to grow the arena by). `bytes` is the most the region holds
@@ -2597,7 +2607,7 @@ static class Gc
             if (Filled(tb, chunk, record) && OpenerFrame(record) == frame)
             {
                 long freed = Cut(tb, chunk, record + RecordBytes);
-                Sys.Poke(tb + Tls.RegionOpen, record);
+                SetOpen(tb, record);
                 RegionFreedBytes = RegionFreedBytes + freed;
                 FreedBytes = FreedBytes + freed;
                 // Without the memory for the lap, it grows as an unsized
@@ -2632,7 +2642,7 @@ static class Gc
         Sys.Poke(record + HeaderBytes, Sys.Peek(tb + Tls.RegionOpen));
         Sys.Poke(record + HeaderBytes + WordSize.Bytes, frame);
         Sys.Poke(tb + Tls.RegionAt, record + RecordBytes);
-        Sys.Poke(tb + Tls.RegionOpen, record);
+        SetOpen(tb, record);
         return record;
     }
 
@@ -2648,7 +2658,7 @@ static class Gc
         if (!Filled(tb, chunk, record)) return;
         long outer = Sys.Peek(record + HeaderBytes);
         long freed = Cut(tb, chunk, record);
-        Sys.Poke(tb + Tls.RegionOpen, outer);
+        SetOpen(tb, outer);
         // The record is the region's own, not anything the program made.
         RegionFreedBytes = RegionFreedBytes + (freed - RecordBytes);
         FreedBytes = FreedBytes + (freed - RecordBytes);
@@ -2681,20 +2691,54 @@ static class Gc
         if (top > to) Sys.MemorySet(to, 0, top - to);
         if (chunk != last)
         {
+            // THE CHUNKS PAST `chunk` KEPT AS SPARES, cleared and empty, as
+            // far as ArenaKeepBytes reaches -- the first always -- and only
+            // the rest handed back. Kept to one spare, a region that crossed
+            // two chunks' ends mapped and unmapped the second at every lap
+            // and every call. Every chunk from the spare to the one being
+            // filled had bytes in it, which are counted and, where it is
+            // kept, cleared; any past that one is a spare already, empty.
             long spare = ChunkAfter(chunk);
+            long budget = ArenaKeepBytes();
+            long kept = 0;
+            long keep = chunk;          // the last chunk kept
+            bool keeping = true;
+            bool used = true;           // up to and including the one being filled
             long c = spare;
             while (c != 0)
             {
-                long filled = (c == last ? at : Sys.Peek(c + 3 * w)) - ChunkStart(c);
+                long filled = used ? (c == last ? at : Sys.Peek(c + 3 * w)) - ChunkStart(c) : 0;
                 freed = freed + filled;
-                if (c == spare && filled > 0) Sys.MemorySet(ChunkStart(c), 0, filled);
-                if (c == last) break;
+                long size = c + TrailerBytes - ChunkStart(c);
+                if (keeping && (keep == chunk || kept + size <= budget))
+                {
+                    if (filled > 0) Sys.MemorySet(ChunkStart(c), 0, filled);
+                    Sys.Poke(c + 3 * w, ChunkStart(c));
+                    kept = kept + size;
+                    keep = c;
+                }
+                else
+                {
+                    // Past the budget: this and every one after it handed
+                    // back (DropChunks), counted first while they held bytes.
+                    keeping = false;
+                    if (!used) break;
+                }
+                if (c == last) used = false;
                 c = ChunkAfter(c);
             }
-            Sys.Poke(spare + 3 * w, ChunkStart(spare));
-            DropChunks(tb, spare);
+            DropChunks(tb, keep);
         }
         return freed;
+    }
+
+    /// The bytes of spare chunks an arena keeps past the one being filled
+    /// (CutBack): the platform's collection allowance where it sets one (a
+    /// kernel's, a thirty-second of memory), else 16 MB.
+    static long ArenaKeepBytes()
+    {
+        long cap = Platform.GcThreshold();
+        return cap > 0 ? cap : 16777216;
     }
 
     // The innermost region's next `need` bytes do not fit in the chunk being
@@ -3123,7 +3167,7 @@ static class Gc
         if (measured != 0) Sys.AtomicAdd(Sys.AddressOf(ref ArenaUsedNow), -measured);
         Sys.Poke(tb + Tls.RegionBase, 0);
         Sys.Poke(tb + Tls.RegionAt, 0);
-        Sys.Poke(tb + Tls.RegionOpen, 0);
+        SetOpen(tb, 0);
         Sys.Poke(tb + Tls.RegionEnd, 0);
         while (c != 0)
         {
@@ -3628,7 +3672,16 @@ static class Gc
     public static void FastPathsChanged()
     {
         FastClassMask = _classSize != 0 && !_heapCheck && Runtime.AllocHook == 0 ? (nint)(-1) : (nint)0;
+        FastRegionMask = Runtime.AllocHook == 0 && !StatsAsked && !CountingCollected ? (nint)(-1) : (nint)0;
     }
+
+    /// THE SAME FOR AN ALLOCATION IN A REGION (Runtime.AllocRegionSized,
+    /// AllocRegion): all ones but while a sampler counts (AllocHook) or the
+    /// statistics are asked for, when every region allocation takes the long
+    /// way, which counts its blocks (Tls.RegionCount) -- the way in place
+    /// counts nothing. 0 too until the heap starts, which is at the first
+    /// allocation of any kind.
+    public static nint FastRegionMask;
     public static long _classOf;    // ClassMax / 8 + 1 words: need >> 3 -> class
     static long _classPages;        // Classes words: pages with room, unowned
     static long _classStep;         // Classes words: ceil(2^32 / the class's size), for OnGrid

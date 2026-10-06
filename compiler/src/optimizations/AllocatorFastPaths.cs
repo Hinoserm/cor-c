@@ -27,6 +27,51 @@ public static class AllocatorFastPaths
     public const string Sized = Corsac.Lang.Lto.RuntimeAbi.AllocFastSized;
     public const string Fast = Corsac.Lang.Lto.RuntimeAbi.AllocFast;
     public const string Missed = Corsac.Lang.Lto.RuntimeAbi.AllocMissed;
+    public const string Region = Corsac.Lang.Lto.RuntimeAbi.AllocRegion;
+    public const string RegionSized = Corsac.Lang.Lto.RuntimeAbi.AllocRegionSized;
+
+    /// <summary>
+    /// A REGION'S BLOCK FOR A REQUEST, as Gc.AllocRegion lays it: the request
+    /// with a header (two words) and a footer (one), rounded to eight, and at
+    /// least four words (Gc.Smallest). Null for a size this does not hold
+    /// to be safe to fold (negative, or past a megabyte, which the long way
+    /// takes as it always did). THE RUNTIME'S LAYOUT AND THIS MUST AGREE.
+    /// </summary>
+    public static long? RegionBlock(long bytes, int wordSize)
+    {
+        if (bytes < 0 || bytes > 1048576) return null;
+        long need = (bytes + 3 * wordSize + 7) & -8;
+        return need < 4 * wordSize ? 4 * wordSize : need;
+    }
+
+    /// <summary>
+    /// Each call to AllocRegion of a constant size made AllocRegionSized,
+    /// its block's size added (RegionBlock): the site stays a region's, its
+    /// frame the one it computed. Whether there was one.
+    /// </summary>
+    public static bool RetargetRegions(Function f)
+    {
+        if (f.Name is Region or RegionSized) return false;
+        int w = Target.Current.WordSize;
+        bool any = false;
+        foreach (Block b in f.Blocks)
+        {
+            for (int k = 0; k < b.Instrs.Count; k++)
+            {
+                Instr i = b.Instrs[k];
+                if (i.Op != Opcode.Call || i.Callee != Region || i.Operands.Count != 3
+                    || i.Operands[0] is not ImmOperand constant || RegionBlock(constant.Value, w) is not long need) continue;
+                b.Instrs[k] = new Instr
+                {
+                    Op = Opcode.Call, Dest = i.Dest, Callee = RegionSized,
+                    Operands = { i.Operands[0], i.Operands[1], i.Operands[2], new ImmOperand(need, IrTypes.Word) },
+                    Line = i.Line,
+                };
+                any = true;
+            }
+        }
+        return any;
+    }
 
     // The kinds Runtime passes Gc.AllocWord for each (Gc.KindObject, KindLeaf;
     // 0 for a block scanned word by word), as RegionPointsTo knows them.
@@ -157,14 +202,32 @@ public sealed class InlineAllocators : IModulePass
 
     public void Run(Module m)
     {
+        if (AllocatorFastPaths.Skipped) return;
         Function? fast = m.Functions.FirstOrDefault(f => f.Name == AllocatorFastPaths.Sized);
-        // AllocFast too, which sites of a size not known are made to call.
-        if (fast is null || !m.Functions.Any(f => f.Name == AllocatorFastPaths.Fast)) return;
+        Function? region = m.Functions.FirstOrDefault(f => f.Name == AllocatorFastPaths.RegionSized);
         Pipeline cleanup = AllocatorFastPaths.Cleanup();
-        foreach (Function f in m.Functions.ToArray())
+        // AllocFast too, which sites of a size not known are made to call.
+        if (fast is not null && m.Functions.Any(f => f.Name == AllocatorFastPaths.Fast))
         {
-            if (ReferenceEquals(f, fast)) continue;
-            AllocatorFastPaths.Run(f, m, name => name == AllocatorFastPaths.Sized ? fast : null, cleanup);
+            foreach (Function f in m.Functions.ToArray())
+            {
+                if (ReferenceEquals(f, fast)) continue;
+                AllocatorFastPaths.Run(f, m, name => name == AllocatorFastPaths.Sized ? fast : null, cleanup);
+            }
+        }
+        // And a region's allocation of a size known, where the region pass
+        // made any (RegionPointsTo): given its block's size and put in place.
+        if (region is not null)
+        {
+            foreach (Function f in m.Functions.ToArray())
+            {
+                if (ReferenceEquals(f, region) || !AllocatorFastPaths.RetargetRegions(f)) continue;
+                Module tail = new(m.Name) { Entry = f.Name, PreserveExports = true, NeedsHeap = m.NeedsHeap };
+                tail.Functions.Add(f);
+                tail.Functions.Add(region);
+                new Inline { SmallBody = 200, GrowthLimit = 1 << 20, ConstantBranchBody = 200, FreshOwnerBody = 0, PlacesAllocations = true }.Run(tail);
+                cleanup.Run(tail);
+            }
         }
     }
 }

@@ -376,7 +376,10 @@ public sealed class UnitBackend : IUnitBackend
     /// </summary>
     private static void InlineRegionHelpers(Function function, Module local, Func<string, Function?> callee, Pipeline cleanup)
     {
-        string[] helpers = { RuntimeAbi.AllocRegion, RuntimeAbi.RegionEnter, RuntimeAbi.RegionLeave };
+        // A region's allocation of a size the compiler knows given its
+        // block's size, and put in place with the others (AllocatorFastPaths).
+        if (!AllocatorFastPaths.Skipped && callee(RuntimeAbi.AllocRegionSized) is not null) AllocatorFastPaths.RetargetRegions(function);
+        string[] helpers = { RuntimeAbi.AllocRegion, RuntimeAbi.RegionEnter, RuntimeAbi.RegionLeave, RuntimeAbi.AllocRegionSized };
         SortedSet<string> called = new(StringComparer.Ordinal);
         foreach (Corsac.Lang.Ir.Block b in function.Blocks)
             foreach (Instr i in b.Instrs)

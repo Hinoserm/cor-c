@@ -254,7 +254,14 @@ static class Tls
     /// own (AsyncContext, Platform.TaskArenaBytes), mapped as its regions
     /// need and given back as the run ends; 0 otherwise.
     public const long TaskArena = 45 * WordSize.Bytes;
-    public const long Bytes = 46 * WordSize.Bytes;
+    /// The frame of the call that opened the innermost open region, without
+    /// a loop's mark (Gc.OpenerFrame), or 0 when none is open: kept with
+    /// RegionOpen wherever that changes (Gc.SetOpen), so that the allocation
+    /// in a region put in place at every site (Runtime.AllocRegionSized)
+    /// asks one word whether a region is open and is not one a throw has
+    /// left -- an allocating frame at or above it -- with one compare.
+    public const long RegionFloor = 46 * WordSize.Bytes;
+    public const long Bytes = 47 * WordSize.Bytes;
 }
 
 /// WHERE THE ALLOCATIONS COME FROM (CORSAC_ALLOC_SAMPLE=1): every sixteenth
@@ -1284,7 +1291,8 @@ static class Runtime
             nint record = (nint)Sys.Peek(tb + (nint)Tls.RegionAt);
             nuint mask = (nuint)WordSize.AddressMask;
             nint end = record + (nint)Gc.RegionRecordBytes;
-            if ((open == 0 || ((nuint)Sys.Peek(open + (nint)Gc.RecordFrameAt) & ~(nuint)Gc.RecordLoopMark & mask) > ((nuint)frame & mask))
+            // The open region's opener from the block (Tls.RegionFloor), not its record.
+            if ((open == 0 || (nuint)Sys.Peek(tb + (nint)Tls.RegionFloor) > ((nuint)frame & mask))
                 && (nuint)end <= (nuint)Sys.Peek(tb + (nint)Tls.RegionEnd))
             {
                 Sys.Poke(record, (nint)Gc.RegionRecordBytes);
@@ -1293,6 +1301,7 @@ static class Runtime
                 Sys.Poke(record + (nint)Gc.BlockHeaderBytes, open);
                 Sys.Poke(record + (nint)Gc.RecordFrameAt, frame);
                 Sys.Poke(tb + (nint)Tls.RegionAt, end);
+                Sys.Poke(tb + (nint)Tls.RegionFloor, (nint)((nuint)frame & mask));
                 Sys.Poke(tb + (nint)Tls.RegionOpen, record);
                 return record;
             }
@@ -1343,6 +1352,8 @@ static class Runtime
                 Sys.Poke(tb + (nint)Tls.RegionAt, outer);
                 nint freed = at - outer;
                 Sys.MemorySet(outer, 0, freed);
+                Sys.Poke(tb + (nint)Tls.RegionFloor, parent == 0 ? 0
+                    : (nint)((nuint)Sys.Peek(parent + (nint)Gc.RecordFrameAt) & ~(nuint)Gc.RecordLoopMark & (nuint)WordSize.AddressMask));
                 Sys.Poke(tb + (nint)Tls.RegionOpen, parent);
                 Gc.RegionFreedBytes = Gc.RegionFreedBytes + (freed - (nint)Gc.RegionRecordBytes);
                 Gc.FreedBytes = Gc.FreedBytes + (freed - (nint)Gc.RegionRecordBytes);
@@ -1371,34 +1382,62 @@ static class Runtime
     /// sampled allocation -- the long way (AllocRegionSlow).
     public static long AllocRegion(nint bytes, nint kind, nint frame)
     {
-        nint tb = (nint)Sys.ThreadBlock();
-        nint open = tb == 0 || AllocHook != 0 ? 0 : (nint)Sys.Peek(tb + (nint)Tls.RegionOpen);
-        if (open != 0 && (nuint)bytes <= (nuint)Gc.MostRequest)
+        // The block ANDed with Gc.FastRegionMask (no block yet, a sampler, the
+        // statistics), then the open region's opener from the block
+        // (Tls.RegionFloor, 0 with none open): AllocRegionSized's tests.
+        nuint mask = (nuint)WordSize.AddressMask;
+        nint tb = (nint)Sys.ThreadBlock() & Gc.FastRegionMask;
+        if (tb != 0 && (nuint)Sys.Peek(tb + (nint)Tls.RegionFloor) >= ((nuint)frame & mask) && (nuint)bytes <= (nuint)Gc.MostRequest)
         {
-            nuint mask = (nuint)WordSize.AddressMask;
-            nuint opener = (nuint)Sys.Peek(open + (nint)Gc.RecordFrameAt) & ~(nuint)Gc.RecordLoopMark & mask;
-            if (opener >= ((nuint)frame & mask))
+            nint at = (nint)Sys.Peek(tb + (nint)Tls.RegionAt);
+            nint need = (bytes + (nint)Gc.BlockRounding) & (nint)Gc.BlockSizeMask;
+            if (need < (nint)Gc.SmallestBlock) need = (nint)Gc.SmallestBlock;
+            // ROOM COUNTED, NOT AN END COMPARED: on i386 a request near
+            // MostRequest added to an arena high in the address space
+            // wraps, and a wrapped end below the chunk's passed the test
+            // and the block's footer was written far below it. The slow
+            // path's sums are longs. The pointer is never past the end.
+            nint end = (nint)Sys.Peek(tb + (nint)Tls.RegionEnd);
+            if ((nuint)need <= (nuint)(end - at))
             {
-                nint at = (nint)Sys.Peek(tb + (nint)Tls.RegionAt);
-                nint need = (bytes + (nint)Gc.BlockRounding) & (nint)Gc.BlockSizeMask;
-                if (need < (nint)Gc.SmallestBlock) need = (nint)Gc.SmallestBlock;
-                // ROOM COUNTED, NOT AN END COMPARED: on i386 a request near
-                // MostRequest added to an arena high in the address space
-                // wraps, and a wrapped end below the chunk's passed the test
-                // and the block's footer was written far below it. The slow
-                // path's sums are longs.
-                nint end = (nint)Sys.Peek(tb + (nint)Tls.RegionEnd);
                 nint next = at + need;
-                if ((nuint)at <= (nuint)end && (nuint)need <= (nuint)(end - at))
-                {
-                    Sys.Poke(at, need);
-                    Sys.Poke(next - (nint)Gc.BlockFooterBytes, need);
-                    Sys.Poke(at + (nint)Gc.BlockKindAt, kind);
-                    Sys.Poke(tb + (nint)Tls.RegionAt, next);
-                    nint counted = tb + (nint)Tls.RegionCount;
-                    Sys.Poke(counted, (nint)Sys.Peek(counted) + 1);
-                    return (long)(nuint)(at + (nint)Gc.BlockHeaderBytes);
-                }
+                Sys.Poke(at, need);
+                Sys.Poke(next - (nint)Gc.BlockFooterBytes, need);
+                Sys.Poke(at + (nint)Gc.BlockKindAt, kind);
+                Sys.Poke(tb + (nint)Tls.RegionAt, next);
+                return (long)(nuint)(at + (nint)Gc.BlockHeaderBytes);
+            }
+        }
+        return AllocRegionSlow(bytes, kind, frame);
+    }
+
+    /// THE SAME FOR A SIZE THE COMPILER KNOWS, put in place at the site
+    /// (Opt.AllocatorFastPaths, after the region passes): `need` is the
+    /// block's size, rounded with its header and footer as Gc lays a block
+    /// out, a constant there. Three tests -- a block and no sampler, a
+    /// region open by a frame at or below this one, room in the chunk --
+    /// then the block laid down, header, footer and kind, before the
+    /// pointer passes it, so that a scan of the stopped thread (ScanRegion)
+    /// sees it whole or not at all. The memory is zero already: a region's
+    /// end clears what it held (Gc.CutBack), as a fresh chunk is. NOT
+    /// COUNTED in the thread's block (Tls.RegionCount): the statistics,
+    /// when asked for, send every region allocation the long way, which
+    /// counts (Gc.FastRegionMask). Everything else is AllocRegionSlow, the
+    /// call AllocRegion's long way is.
+    public static long AllocRegionSized(nint bytes, nint kind, nint frame, nint need)
+    {
+        nint tb = (nint)Sys.ThreadBlock() & Gc.FastRegionMask;
+        if (tb != 0 && (nuint)Sys.Peek(tb + (nint)Tls.RegionFloor) >= ((nuint)frame & (nuint)WordSize.AddressMask))
+        {
+            nint at = (nint)Sys.Peek(tb + (nint)Tls.RegionAt);
+            if ((nuint)need <= (nuint)((nint)Sys.Peek(tb + (nint)Tls.RegionEnd) - at))
+            {
+                nint next = at + need;
+                Sys.Poke(at, need);
+                Sys.Poke(next - (nint)Gc.BlockFooterBytes, need);
+                Sys.Poke(at + (nint)Gc.BlockKindAt, kind);
+                Sys.Poke(tb + (nint)Tls.RegionAt, next);
+                return (long)(nuint)(at + (nint)Gc.BlockHeaderBytes);
             }
         }
         return AllocRegionSlow(bytes, kind, frame);

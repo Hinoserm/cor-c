@@ -3493,7 +3493,7 @@ sealed class AsyncContext
             Sys.Poke(block + Tls.RegionBase, 0);
             Sys.Poke(block + Tls.RegionAt, 0);
             Sys.Poke(block + Tls.RegionEnd, 0);
-            Sys.Poke(block + Tls.RegionOpen, 0);
+            Gc.SetOpen(block, 0);
             Sys.Poke(block + Tls.TaskArena, 1);
         }
         Sys.Poke(block + Tls.AsyncContext, Sys.Word(context));
@@ -3529,7 +3529,7 @@ sealed class AsyncContext
                 Sys.Poke(block + Tls.RegionBase, saved.RegionBase);
                 Sys.Poke(block + Tls.RegionAt, saved.RegionAt);
                 Sys.Poke(block + Tls.RegionEnd, saved.RegionEnd);
-                Sys.Poke(block + Tls.RegionOpen, saved.RegionOpen);
+                Gc.SetOpen(block, saved.RegionOpen);
             }
             Sys.Poke(block + Tls.ThreadStatics, saved.Statics);
             Sys.Poke(block + Tls.AsyncContext, saved.Running);

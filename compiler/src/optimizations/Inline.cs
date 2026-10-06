@@ -213,6 +213,7 @@ public sealed class Inline : IParallelModulePass
         // THE ALLOCATION PUT IN PLACE AFTER EVERY INLINER (AllocatorFastPaths),
         // which nothing calls until then: kept by every one, and given to none.
         if (!PlacesAllocations) pinned.Add(AllocatorFastPaths.Sized);
+        if (!PlacesAllocations) pinned.Add(AllocatorFastPaths.RegionSized);
         pinned.Add(AllocatorFastPaths.Fast);
         addressTaken.UnionWith(pinned);
         _keepCalls = m.KeepCalls;
