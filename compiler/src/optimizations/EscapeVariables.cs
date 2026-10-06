@@ -152,7 +152,7 @@ public sealed partial class Escape
             List<Instr> entry = new()
             {
                 new Instr { Op = Opcode.Copy, Dest = entryAddr, Operands = { new SlotOperand(slot) }, Line = line },
-                new Instr { Op = Opcode.Store, Size = word, Operands = { new RegOperand(entryAddr), new ImmOperand(0, IrTypes.Word) }, Line = line },
+                new Instr { Op = Opcode.Store, Size = word, Operands = { RegOperand.Of(entryAddr), new ImmOperand(0, IrTypes.Word) }, Line = line },
             };
             f.Entry.Instrs.InsertRange(0, entry);
             _bookkeeping.UnionWith(entry);
@@ -165,12 +165,12 @@ public sealed partial class Escape
                 List<Instr> after = new()
                 {
                     new Instr { Op = Opcode.Copy, Dest = addr, Operands = { new SlotOperand(slot) }, Line = d.Line },
-                    new Instr { Op = Opcode.Load, Size = word, Dest = old, Operands = { new RegOperand(addr) }, Line = d.Line },
+                    new Instr { Op = Opcode.Load, Size = word, Dest = old, Operands = { RegOperand.Of(addr) }, Line = d.Line },
                 };
                 VReg oldArg = Widen(f, after, old, d.Line), curArg = Widen(f, after, v, d.Line);
-                after.Add(new Instr { Op = Opcode.Call, Callee = ReplacedFreer, Operands = { new RegOperand(oldArg), new RegOperand(curArg) }, Line = d.Line });
-                Operand shadow = framed.Contains(d) ? new ImmOperand(0, IrTypes.Word) : new RegOperand(v);
-                after.Add(new Instr { Op = Opcode.Store, Size = word, Operands = { new RegOperand(addr), shadow }, Line = d.Line });
+                after.Add(new Instr { Op = Opcode.Call, Callee = ReplacedFreer, Operands = { RegOperand.Of(oldArg), RegOperand.Of(curArg) }, Line = d.Line });
+                Operand shadow = framed.Contains(d) ? new ImmOperand(0, IrTypes.Word) : RegOperand.Of(v);
+                after.Add(new Instr { Op = Opcode.Store, Size = word, Operands = { RegOperand.Of(addr), shadow }, Line = d.Line });
                 b.Instrs.InsertRange(at + 1, after);
                 _bookkeeping.UnionWith(after);
             }
@@ -184,7 +184,7 @@ public sealed partial class Escape
                 List<Instr> release = new()
                 {
                     new Instr { Op = Opcode.Copy, Dest = a, Operands = { new SlotOperand(slot) }, Line = exitLine },
-                    new Instr { Op = Opcode.Load, Size = word, Dest = p, Operands = { new RegOperand(a) }, Line = exitLine },
+                    new Instr { Op = Opcode.Load, Size = word, Dest = p, Operands = { RegOperand.Of(a) }, Line = exitLine },
                 };
                 AppendFree(f, release, p, exitLine);
                 b.Instrs.InsertRange(b.Instrs.Count - 1, release);

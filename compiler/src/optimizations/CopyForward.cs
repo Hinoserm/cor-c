@@ -113,7 +113,7 @@ public sealed class CopyForward : IPass
             Instr i = home.Instrs[k];
             for (int n = 0; n < i.Operands.Count; n++)
                 if (i.Operands[n] is RegOperand { Reg: var r } && slotOf.TryGetValue(r, out FrameSlot? of) && ReferenceEquals(of, to))
-                    i.Operands[n] = new RegOperand(src);
+                    i.Operands[n] = RegOperand.Of(src);
                 else if (i.Operands[n] is SlotOperand s && ReferenceEquals(s.Slot, to))
                     i.Operands[n] = new SlotOperand(from);
         }

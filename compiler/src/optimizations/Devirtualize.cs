@@ -299,17 +299,17 @@ public sealed class Devirtualize : IModulePass
                     Block each = f.NewBlock("devirt");
                     VReg? got = i.Dest is null ? null : f.NewReg(i.Dest.Type, i.Dest.Name);
                     each.Instrs.Add(Direct(cases[c].Target, got));
-                    if (got is not null) each.Instrs.Add(new Instr { Op = Opcode.Copy, Dest = i.Dest, Operands = { new RegOperand(got) }, Line = i.Line });
-                    each.Instrs.Add(new Instr { Op = Opcode.Jump, WritableTargets = { after }, Line = i.Line });
+                    if (got is not null) each.Instrs.Add(new Instr { Op = Opcode.Copy, Dest = i.Dest, Operands = { RegOperand.Of(got) }, Line = i.Line });
+                    each.Instrs.Add(new Instr { Op = Opcode.Jump, InitialTargets = new[] { after }, Line = i.Line });
                     if (c == cases.Count - 1)
                     {
-                        test.Instrs.Add(new Instr { Op = Opcode.Jump, WritableTargets = { each }, Line = i.Line });
+                        test.Instrs.Add(new Instr { Op = Opcode.Jump, InitialTargets = new[] { each }, Line = i.Line });
                         break;
                     }
                     Block next = f.NewBlock("devirt");
                     VReg same = f.NewReg(IrType.I32, "isType");
-                    test.Instrs.Add(new Instr { Op = Opcode.Eq, Dest = same, Operands = { new RegOperand(vt.Reg), new SymOperand(cases[c].Vtable.Name, cases[c].Vtable.Offset) }, Line = i.Line });
-                    test.Instrs.Add(new Instr { Op = Opcode.Branch, Operands = { new RegOperand(same) }, WritableTargets = { each, next }, Line = i.Line });
+                    test.Instrs.Add(new Instr { Op = Opcode.Eq, Dest = same, Operands = { RegOperand.Of(vt.Reg), new SymOperand(cases[c].Vtable.Name, cases[c].Vtable.Offset) }, Line = i.Line });
+                    test.Instrs.Add(new Instr { Op = Opcode.Branch, Operands = { RegOperand.Of(same) }, InitialTargets = new[] { each, next }, Line = i.Line });
                     test = next;
                 }
                 break;   // the block was split; the rest of it is `after`, met later
@@ -769,7 +769,7 @@ public sealed class Devirtualize : IModulePass
                     {
                         ImmOperand im => new ImmOperand(im.Value, l.Dest.Type),
                         SymOperand sy when l.Size == word => new SymOperand(sy.Name, sy.Offset),
-                        RegOperand rv when defs.IsSingle(rv.Reg) && rv.Reg.Type == l.Dest.Type && l.Size == word => new RegOperand(rv.Reg),
+                        RegOperand rv when defs.IsSingle(rv.Reg) && rv.Reg.Type == l.Dest.Type && l.Size == word => RegOperand.Of(rv.Reg),
                         _ => null!,
                     };
                     if (value is null) continue;
@@ -930,10 +930,12 @@ public sealed class DeadClosureThis : IModulePass
                     && (o < 0 || o + i.Offset <= at && at < o + i.Offset + i.Size))
                     return true;
                 // Copied whole, or handed on: whatever reads it then is not seen.
+                // A store's address is passed over by its position, not by
+                // reference: one register stored through itself has one
+                // operand object in both places (RegOperand.Of).
                 if (i.Op is Opcode.MemCopy or Opcode.Call or Opcode.CallIndirect or Opcode.Store)
-                    foreach (Operand op in i.Operands)
-                        if (op is RegOperand q && derived.ContainsKey(q.Reg)
-                            && !(i.Op == Opcode.Store && ReferenceEquals(op, i.Operands[0])))
+                    for (int k = i.Op == Opcode.Store ? 1 : 0; k < i.Operands.Count; k++)
+                        if (i.Operands[k] is RegOperand q && derived.ContainsKey(q.Reg))
                             return true;
             }
         return false;

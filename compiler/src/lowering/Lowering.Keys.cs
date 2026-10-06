@@ -38,7 +38,7 @@ public sealed partial class Lowering
             // nothing and would fill one slot in eight of a table.
             VReg word = IrTypes.Word == IrType.I64 ? e.Unary(Opcode.Trunc64, self) : self;
 
-            e.Ret(new RegOperand(e.Binary(Opcode.ShrU, word, 3)));
+            e.Ret(RegOperand.Of(e.Binary(Opcode.ShrU, word, 3)));
             _m.Functions.Add(f);
         }
         return name;
@@ -278,7 +278,7 @@ public sealed partial class Lowering
         }
 
         e.SetBlock(ask);
-        e.Ret(new RegOperand(AskSlot(e, a, vt, _b.EqualsSlot, narrow, IrType.I32, R(a), R(b))));
+        e.Ret(RegOperand.Of(AskSlot(e, a, vt, _b.EqualsSlot, narrow, IrType.I32, R(a), R(b))));
         e.SetBlock(yes);
         e.Ret(new ImmOperand(1, IrType.I32));
         e.SetBlock(no);
@@ -304,13 +304,13 @@ public sealed partial class Lowering
 
         if (equals is not null)
         {
-            e.Ret(new RegOperand(e.Call(CallLabel(equals), IrTypes.Of(equals.Returns), R(a), R(b))!));
+            e.Ret(RegOperand.Of(e.Call(CallLabel(equals), IrTypes.Of(equals.Returns), R(a), R(b))!));
         }
         else if (compare is not null)
         {
             VReg order = e.Call(CallLabel(compare), IrTypes.Of(compare.Returns), R(a), R(b))!;
 
-            e.Ret(new RegOperand(e.Binary(Opcode.Eq, R(order), new ImmOperand(0, order.Type), IrType.I32)));
+            e.Ret(RegOperand.Of(e.Binary(Opcode.Eq, R(order), new ImmOperand(0, order.Type), IrType.I32)));
         }
         else
         {
@@ -374,7 +374,7 @@ public sealed partial class Lowering
             f.Params.Add(a);
             f.Params.Add(b);
             Builder e = new(f, f.NewBlock("entry"));
-            e.Ret(new RegOperand(e.Binary(Opcode.Eq, a, b)));
+            e.Ret(RegOperand.Of(e.Binary(Opcode.Eq, a, b)));
             _m.Functions.Add(f);
         }
         return name;
@@ -442,7 +442,7 @@ public sealed partial class Lowering
             }
 
             e.SetBlock(ask);
-            e.Ret(new RegOperand(AskSlot(e, a, vt, _b.HashSlot, narrow, IrType.I32, R(a))));
+            e.Ret(RegOperand.Of(AskSlot(e, a, vt, _b.HashSlot, narrow, IrType.I32, R(a))));
         }
 
         // IDENTITY, AS object.GetHashCode ANSWERS IT (ObjectHashStub): the
@@ -452,7 +452,7 @@ public sealed partial class Lowering
         // argument returned to the caller, which the lifetime rules take for
         // an escape. A shifted address is a number.
         e.SetBlock(word);
-        e.Ret(new RegOperand(e.Binary(Opcode.ShrU, IrTypes.Word == IrType.I64 ? e.Unary(Opcode.Trunc64, a) : a, 3)));
+        e.Ret(RegOperand.Of(e.Binary(Opcode.ShrU, IrTypes.Word == IrType.I64 ? e.Unary(Opcode.Trunc64, a) : a, 3)));
         e.SetBlock(none);
         e.Ret(new ImmOperand(0, IrType.I32));
         _m.Functions.Add(f);
@@ -466,7 +466,7 @@ public sealed partial class Lowering
 
         if (hash is not null)
         {
-            e.Ret(new RegOperand(e.Call(CallLabel(hash), IrTypes.Of(hash.Returns), R(a))!));
+            e.Ret(RegOperand.Of(e.Call(CallLabel(hash), IrTypes.Of(hash.Returns), R(a))!));
         }
         else
         {
@@ -764,7 +764,7 @@ public sealed partial class Lowering
 
         _e.Branch(TypeTest(other, typed.Params[0].Type.Symbol!), ask, no);
         _e.SetBlock(ask);
-        _e.Ret(new RegOperand(_e.Call(CallLabel(typed), IrType.I32, R(self), R(other))!));
+        _e.Ret(RegOperand.Of(_e.Call(CallLabel(typed), IrType.I32, R(self), R(other))!));
         _e.SetBlock(no);
         _e.Ret(new ImmOperand(0, IrType.I32));
 
@@ -841,7 +841,7 @@ public sealed partial class Lowering
         VReg said = group
             ? e.Call(CallLabel(same), IrType.I32, R(self), R(other), new ImmOperand((long)_b.EqualsSlot * _t.WordSize, IrType.I32))!
             : e.Call(CallLabel(same), IrType.I32, R(self), R(other))!;
-        e.Ret(new RegOperand(said));
+        e.Ret(RegOperand.Of(said));
         _m.Functions.Add(f);
         return label;
     }
@@ -875,7 +875,7 @@ public sealed partial class Lowering
         f.Params.Add(self);
         Builder e = new(f, f.NewBlock("entry"));
         Operand which = identity is null ? (Operand)new ImmOperand(0, IrType.I64) : R(WordAddress(e, identity));
-        e.Ret(new RegOperand(e.Call(CallLabel(hash), IrType.I32, R(self), which)!));
+        e.Ret(RegOperand.Of(e.Call(CallLabel(hash), IrType.I32, R(self), which)!));
         _m.Functions.Add(f);
         return label;
     }
@@ -954,7 +954,7 @@ public sealed partial class Lowering
             text = StringBinary(at, BinOp.Add, text, Stringify(at, item, items[i].Type));
         }
         text = StringBinary(at, BinOp.Add, text, e.Address(InternString(")")));
-        e.Ret(new RegOperand(text));
+        e.Ret(RegOperand.Of(text));
 
         _f = savedF;
         _e = savedE;
@@ -1021,11 +1021,11 @@ public sealed partial class Lowering
         Block more = f.NewBlock("ormore");
         Block same = f.NewBlock("orsame");
 
-        e.Branch(e.Binary(unsigned ? Opcode.LtU : Opcode.LtS, new RegOperand(a), new RegOperand(b), IrType.I32), less, rest);
+        e.Branch(e.Binary(unsigned ? Opcode.LtU : Opcode.LtS, RegOperand.Of(a), RegOperand.Of(b), IrType.I32), less, rest);
         e.SetBlock(less);
         e.Ret(new ImmOperand(-1, IrType.I32));
         e.SetBlock(rest);
-        e.Branch(e.Binary(Opcode.Eq, new RegOperand(a), new RegOperand(b), IrType.I32), same, more);
+        e.Branch(e.Binary(Opcode.Eq, RegOperand.Of(a), RegOperand.Of(b), IrType.I32), same, more);
         e.SetBlock(same);
         e.Ret(new ImmOperand(0, IrType.I32));
         e.SetBlock(more);
@@ -1104,7 +1104,7 @@ public sealed partial class Lowering
             }
 
             e.SetBlock(ask);
-            e.Ret(new RegOperand(AskSlot(e, a, vt, _b.CompareSlot, narrow, IrType.I32, R(a), R(b))));
+            e.Ret(RegOperand.Of(AskSlot(e, a, vt, _b.CompareSlot, narrow, IrType.I32, R(a), R(b))));
         }
 
         e.SetBlock(word);
@@ -1126,7 +1126,7 @@ public sealed partial class Lowering
 
         if (compare is not null)
         {
-            e.Ret(new RegOperand(e.Call(CallLabel(compare), IrTypes.Of(compare.Returns), R(a), R(b))!));
+            e.Ret(RegOperand.Of(e.Call(CallLabel(compare), IrTypes.Of(compare.Returns), R(a), R(b))!));
         }
         else
         {
@@ -1278,11 +1278,11 @@ public sealed partial class Lowering
         if (BoxedBlock(of))
         {
             // A struct by its fields, as its Equals is (StructHash).
-            e.Ret(new RegOperand(e.Call(StructHash(of.Symbol!), IrType.I32, R(e.Binary(Opcode.Add, self, _t.ObjectHeaderBytes)))!));
+            e.Ret(RegOperand.Of(e.Call(StructHash(of.Symbol!), IrType.I32, R(e.Binary(Opcode.Add, self, _t.ObjectHeaderBytes)))!));
             _m.Functions.Add(f);
             return label;
         }
-        e.Ret(new RegOperand(Numbered(e, e.Load(IrType.I32, self, _t.ObjectHeaderBytes, Math.Min(4, Math.Max(1, of.Size)), false), NeverAddress(of))));
+        e.Ret(RegOperand.Of(Numbered(e, e.Load(IrType.I32, self, _t.ObjectHeaderBytes, Math.Min(4, Math.Max(1, of.Size)), false), NeverAddress(of))));
         _m.Functions.Add(f);
         return label;
     }

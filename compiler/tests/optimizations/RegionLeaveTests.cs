@@ -26,9 +26,9 @@ public static partial class Program
             foreach (string step in steps)
                 switch (step)
                 {
-                    case "leave1": b.Call(RegionPointsTo.Leave, IrType.Void, new RegOperand(own)); break;
-                    case "leave2": b.Call(RegionPointsTo.Leave, IrType.Void, new RegOperand(lap)); break;
-                    case "free": b.Call(Free, IrType.Void, new RegOperand(held)); break;
+                    case "leave1": b.Call(RegionPointsTo.Leave, IrType.Void, RegOperand.Of(own)); break;
+                    case "leave2": b.Call(RegionPointsTo.Leave, IrType.Void, RegOperand.Of(lap)); break;
+                    case "free": b.Call(Free, IrType.Void, RegOperand.Of(held)); break;
                     case "alloc": b.Call(Escape.Allocator, IrTypes.Word, new ImmOperand(16, IrTypes.Word)); break;
                 }
             b.Ret();

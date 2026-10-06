@@ -1306,7 +1306,7 @@ public sealed partial class Escape
         {
             int at = b.Instrs.IndexOf(after);
             if (at < 0) continue;
-            Instr keep = new() { Op = Opcode.Call, Callee = Corsac.Lang.X86.MachineIntrinsics.KeepAlive, Operands = { new RegOperand(holder) }, Line = after.Line };
+            Instr keep = new() { Op = Opcode.Call, Callee = Corsac.Lang.X86.MachineIntrinsics.KeepAlive, Operands = { RegOperand.Of(holder) }, Line = after.Line };
             if (ReferenceEquals(after, b.Terminator)) b.Instrs.Insert(at, keep);
             else b.Instrs.Insert(at + 1, keep);
         }
@@ -1665,7 +1665,7 @@ public sealed partial class Escape
             if (b is null || operand >= at.Operands.Count || at.Operands[operand] is not RegOperand collection) continue;
             List<Instr> mark = new();
             VReg word = Word(f, mark, collection.Reg, at.Line, "elementsOf");
-            mark.Add(new Instr { Op = Opcode.Call, Callee = OwnedElements.Marker, Operands = { new RegOperand(word) }, Line = at.Line });
+            mark.Add(new Instr { Op = Opcode.Call, Callee = OwnedElements.Marker, Operands = { RegOperand.Of(word) }, Line = at.Line });
             b.Instrs.InsertRange(b.Instrs.IndexOf(at), mark);
             _bookkeeping.UnionWith(mark);
         }
@@ -1865,7 +1865,7 @@ public sealed partial class Escape
             foreach (Instr i in list)
             {
                 if (i.Op != Opcode.Copy || i.Operands[0] is not RegOperand from) return false;
-                Operand o = new RegOperand(from.Reg);
+                Operand o = RegOperand.Of(from.Reg);
                 Instr? made = null;
                 for (int hops = 0; hops < 8 && made is null; hops++)
                 {
@@ -3096,7 +3096,7 @@ public sealed partial class Escape
         VReg argument = Word(f, output, pointer, line, "elementsOf");
         // An array's elements, or a collection's (ConfirmArrayElements).
         string freer = _arrayOwners.Contains(made) ? OwnedElements.ArrayFreer : OwnedElements.Freer;
-        output.Add(new Instr { Op = Opcode.Call, Callee = freer, Operands = { new RegOperand(argument) }, Line = line });
+        output.Add(new Instr { Op = Opcode.Call, Callee = freer, Operands = { RegOperand.Of(argument) }, Line = line });
     }
 }
 
@@ -3167,7 +3167,7 @@ public sealed partial class Escape
                 if (exit.Terminator is not { Op: Opcode.Ret } ret) continue;
                 exit.Instrs.Insert(exit.Instrs.Count - 1, new Instr
                 {
-                    Op = Opcode.Call, Callee = Corsac.Lang.X86.MachineIntrinsics.KeepAlive, Operands = { new RegOperand(made.Dest!) }, Line = ret.Line,
+                    Op = Opcode.Call, Callee = Corsac.Lang.X86.MachineIntrinsics.KeepAlive, Operands = { RegOperand.Of(made.Dest!) }, Line = ret.Line,
                 });
             }
             OwnedElements.Say(f, $"array at {made.Line}: OWNS ELEMENTS");

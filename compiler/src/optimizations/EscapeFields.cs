@@ -996,7 +996,7 @@ public sealed partial class Escape
         VReg entryAddr = f.NewReg(IrTypes.Word, "fieldsp");
         entry.Add(new Instr { Op = Opcode.Copy, Dest = entryAddr, Operands = { new SlotOperand(r.Slot!) }, Line = line });
         foreach ((long o, string _) in frees)
-            entry.Add(new Instr { Op = Opcode.Store, Size = word, Offset = o, Operands = { new RegOperand(entryAddr), new ImmOperand(0, IrTypes.Word) }, Line = line });
+            entry.Add(new Instr { Op = Opcode.Store, Size = word, Offset = o, Operands = { RegOperand.Of(entryAddr), new ImmOperand(0, IrTypes.Word) }, Line = line });
         f.Entry.Instrs.InsertRange(0, entry);
         _bookkeeping.UnionWith(entry);
 
@@ -1035,7 +1035,7 @@ public sealed partial class Escape
     {
         VReg argument = Word(f, output, owner, line, "fieldOwner");
         output.Add(new Instr { Op = Opcode.Call, Callee = callee,
-            Operands = { new RegOperand(argument), new ImmOperand(offset, IrTypes.Word) }, Line = line });
+            Operands = { RegOperand.Of(argument), new ImmOperand(offset, IrTypes.Word) }, Line = line });
     }
 
     /// <summary>The registers holding what the given ones hold, or an address inside it.</summary>

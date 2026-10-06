@@ -107,7 +107,7 @@ public sealed class LoadReuse : IPass
                         && (i.Operands[0] is not RegOperand address
                             || Stable(address.Reg, prior.Block, prior.Index, block, index)))
                     {
-                        block.Instrs[index] = IrInfo.CopyOf(i, new RegOperand(prior.Load.Dest!));
+                        block.Instrs[index] = IrInfo.CopyOf(i, RegOperand.Of(prior.Load.Dest!));
                         continue;
                     }
                     if (_memory.Count >= 64) ForgetAll();

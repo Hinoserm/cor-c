@@ -827,7 +827,7 @@ public sealed class RegionPointsTo : IModulePass
                 b.Instrs.InsertRange(at, new[]
                 {
                     new Instr { Op = Opcode.FramePointer, Dest = frame, Line = b.Instrs.Count > 0 ? b.Instrs[0].Line : f.Line },
-                    new Instr { Op = Opcode.Call, Callee = Catch, Operands = { new RegOperand(frame) }, Line = b.Instrs.Count > 0 ? b.Instrs[0].Line : f.Line },
+                    new Instr { Op = Opcode.Call, Callee = Catch, Operands = { RegOperand.Of(frame) }, Line = b.Instrs.Count > 0 ? b.Instrs[0].Line : f.Line },
                 });
             }
     }
@@ -996,7 +996,7 @@ public sealed class RegionPointsTo : IModulePass
                     Default = i.Default is null ? null : blocks[i.Default],
                 };
                 foreach (Operand o in i.Operands)
-                    c.Operands.Add(o switch { RegOperand r => new RegOperand(Reg(r.Reg)), SlotOperand s => new SlotOperand(slots[s.Slot]), _ => o });
+                    c.Operands.Add(o switch { RegOperand r => RegOperand.Of(Reg(r.Reg)), SlotOperand s => new SlotOperand(slots[s.Slot]), _ => o });
                 foreach (Block t in i.Targets) c.WritableTargets.Add(blocks[t]);
                 if (keep.Contains(i)) keep.Add(c);
                 blocks[b].Instrs.Add(c);
@@ -1139,8 +1139,8 @@ public sealed class RegionPointsTo : IModulePass
         Instr call = new() { Op = Opcode.Call, Callee = Near, Dest = alloc.Dest, Line = alloc.Line };
         call.Operands.Add(AsWord(f, made, alloc.Operands[0], alloc.Line));
         call.Operands.Add(new ImmOperand(kind, IrTypes.Word));
-        call.Operands.Add(AsWord(f, made, new RegOperand(owner), alloc.Line));
-        call.Operands.Add(new RegOperand(frame));
+        call.Operands.Add(AsWord(f, made, RegOperand.Of(owner), alloc.Line));
+        call.Operands.Add(RegOperand.Of(frame));
         made.Add(Checked(call));
         return made.ToArray();
     }
@@ -1156,8 +1156,8 @@ public sealed class RegionPointsTo : IModulePass
         Instr call = new() { Op = Opcode.Call, Callee = helper, Dest = alloc.Dest, Line = alloc.Line };
         call.Operands.Add(AsWord(f, made, alloc.Operands[0], alloc.Line));
         call.Operands.Add(new ImmOperand(kind, IrTypes.Word));
-        if (helper == Near) call.Operands.Add(AsWord(f, made, new RegOperand(f.Params[0]), alloc.Line));
-        call.Operands.Add(new RegOperand(frame));
+        if (helper == Near) call.Operands.Add(AsWord(f, made, RegOperand.Of(f.Params[0]), alloc.Line));
+        call.Operands.Add(RegOperand.Of(frame));
         made.Add(Checked(call));
         return made;
     }
@@ -1176,8 +1176,8 @@ public sealed class RegionPointsTo : IModulePass
         if (o is ImmOperand imm) return imm.Type == IrTypes.Word ? imm : new ImmOperand(imm.Value, IrTypes.Word);
         if (o is not RegOperand { Reg: var r } || r.Type == IrTypes.Word) return o;
         VReg word = f.NewReg(IrTypes.Word);
-        before.Add(new Instr { Op = r.Type == IrType.I64 ? Opcode.Trunc64 : Opcode.ZExt32, Dest = word, Operands = { new RegOperand(r) }, Line = line });
-        return new RegOperand(word);
+        before.Add(new Instr { Op = r.Type == IrType.I64 ? Opcode.Trunc64 : Opcode.ZExt32, Dest = word, Operands = { RegOperand.Of(r) }, Line = line });
+        return RegOperand.Of(word);
     }
 
     /// <summary>
@@ -1214,7 +1214,7 @@ public sealed class RegionPointsTo : IModulePass
         Instr[] open =
         {
             new Instr { Op = Opcode.FramePointer, Dest = frame, Line = f.Line },
-            new Instr { Op = Opcode.Call, Callee = Enter, Dest = handle, Operands = { new RegOperand(frame), new ImmOperand(bytes, IrTypes.Word) }, Line = f.Line },
+            new Instr { Op = Opcode.Call, Callee = Enter, Dest = handle, Operands = { RegOperand.Of(frame), new ImmOperand(bytes, IrTypes.Word) }, Line = f.Line },
         };
         at.Instrs.InsertRange(k0, open);
         // Opened further in: a return that never passed there hands RegionLeave
@@ -1225,7 +1225,7 @@ public sealed class RegionPointsTo : IModulePass
             for (int k = 0; k < b.Instrs.Count; k++)
                 if (b.Instrs[k].Op == Opcode.Ret)
                 {
-                    b.Instrs.Insert(k, new Instr { Op = Opcode.Call, Callee = Leave, Operands = { new RegOperand(handle) }, Line = b.Instrs[k].Line });
+                    b.Instrs.Insert(k, new Instr { Op = Opcode.Call, Callee = Leave, Operands = { RegOperand.Of(handle) }, Line = b.Instrs[k].Line });
                     k++;
                 }
     }
@@ -1824,7 +1824,7 @@ public sealed class RegionPointsTo : IModulePass
             int line = header.Instrs.Count > 0 ? header.Instrs[0].Line : f.Line;
             onEntry.Add(new Instr { Op = Opcode.Copy, Dest = handle, Operands = { new ImmOperand(-1, IrTypes.Word) }, Line = f.Line });
             (tops.TryGetValue(header, out List<Instr>? t) ? t : tops[header] = new()).Add(
-                new Instr { Op = Opcode.Call, Callee = LoopTop, Dest = handle, Operands = { new RegOperand(handle), new RegOperand(frame), new ImmOperand(bytes, IrTypes.Word) }, Line = line });
+                new Instr { Op = Opcode.Call, Callee = LoopTop, Dest = handle, Operands = { RegOperand.Of(handle), RegOperand.Of(frame), new ImmOperand(bytes, IrTypes.Word) }, Line = line });
             HashSet<Block> outs = new(ReferenceEqualityComparer.Instance);
             foreach (Block b in body)
                 foreach (Block s in cfg.Succs(b))
@@ -1832,7 +1832,7 @@ public sealed class RegionPointsTo : IModulePass
                     {
                         List<Instr> l = leaves.TryGetValue(s, out List<Instr>? have) ? have : leaves[s] = new();
                         int at = s.Instrs.Count > 0 ? s.Instrs[0].Line : line;
-                        l.Add(new Instr { Op = Opcode.Call, Callee = Leave, Operands = { new RegOperand(handle) }, Line = at });
+                        l.Add(new Instr { Op = Opcode.Call, Callee = Leave, Operands = { RegOperand.Of(handle) }, Line = at });
                         l.Add(new Instr { Op = Opcode.Copy, Dest = handle, Operands = { new ImmOperand(-1, IrTypes.Word) }, Line = at });
                     }
         }
@@ -1852,7 +1852,7 @@ public sealed class RegionPointsTo : IModulePass
                 {
                     foreach (VReg h in handles)
                     {
-                        b.Instrs.Insert(k, new Instr { Op = Opcode.Call, Callee = Leave, Operands = { new RegOperand(h) }, Line = b.Instrs[k].Line });
+                        b.Instrs.Insert(k, new Instr { Op = Opcode.Call, Callee = Leave, Operands = { RegOperand.Of(h) }, Line = b.Instrs[k].Line });
                         k++;
                     }
                 }

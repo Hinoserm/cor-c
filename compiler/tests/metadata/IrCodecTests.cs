@@ -14,7 +14,7 @@ public static class IrCodecTests
         Function function = new("twice", IrType.I32) { Coalescible = true, SourceFile = "test.cor", Line = 7, Display = "Test.Twice" };
         VReg argument = function.NewReg(IrType.I32); function.Params.Add(argument);
         Builder builder = new(function, function.NewBlock());
-        builder.Ret(new RegOperand(builder.Binary(Opcode.Mul, argument, 2)));
+        builder.Ret(RegOperand.Of(builder.Binary(Opcode.Mul, argument, 2)));
         byte[] bytes = IrFunctionCodec.Write(function);
         Function restored = IrFunctionCodec.Read(bytes);
         Reject(() => IrFunctionCodec.Read(bytes, new IrReadBudget(512)));
@@ -32,7 +32,7 @@ public static class IrCodecTests
         // still carrying its suspension markers is refused.
         Function stepped = new("stepped", IrType.I32);
         VReg machine = stepped.NewReg(IrType.I32); stepped.Params.Add(machine);
-        new Builder(stepped, stepped.NewBlock()).Ret(new RegOperand(machine));
+        new Builder(stepped, stepped.NewBlock()).Ret(RegOperand.Of(machine));
         stepped.Async = new AsyncFrame { StateMachine = machine, StateOffset = 8, FieldsStart = 12, SizeSymbol = "stepped$size" };
         Check(Throws(() => IrFunctionCodec.Write(stepped)), "An unlowered async body was archived");
         stepped.Async.Lowered = true;
@@ -68,13 +68,13 @@ public static class IrCodecTests
         VReg at = marked.NewReg(IrTypes.Word); marked.Params.Add(at);
         var head = marked.NewBlock(); var lap = marked.NewBlock();
         VReg read = marked.NewReg(IrType.I32);
-        head.Instrs.Add(new Instr { Op = Opcode.Load, Dest = read, Size = 4, Operands = { new RegOperand(at) }, Number = true, Field = "T::count", Family = "T" });
-        head.Instrs.Add(new Instr { Op = Opcode.MemCopy, Operands = { new RegOperand(at), new RegOperand(at), new RegOperand(count) }, Number = true });
+        head.Instrs.Add(new Instr { Op = Opcode.Load, Dest = read, Size = 4, Operands = { RegOperand.Of(at) }, Number = true, Field = "T::count", Family = "T" });
+        head.Instrs.Add(new Instr { Op = Opcode.MemCopy, Operands = { RegOperand.Of(at), RegOperand.Of(at), RegOperand.Of(count) }, Number = true });
         VReg made = marked.NewReg(IrTypes.Word);
-        head.Instrs.Add(new Instr { Op = Opcode.Call, Callee = "alloc", Dest = made, Operands = { new RegOperand(count) }, RegionSite = true, Field = Instr.FreshStruct });
-        head.Instrs.Add(new Instr { Op = Opcode.CallIndirect, Operands = { new RegOperand(made), new RegOperand(made) }, DispatchType = "t_Node" });
-        head.Instrs.Add(new Instr { Op = Opcode.Load, Dest = marked.NewReg(IrTypes.Word), Size = IrTypes.Word.Bytes(), Operands = { new RegOperand(at) } });
-        head.Instrs.Add(new Instr { Op = Opcode.Jump, Targets = { lap } });
+        head.Instrs.Add(new Instr { Op = Opcode.Call, Callee = "alloc", Dest = made, Operands = { RegOperand.Of(count) }, RegionSite = true, Field = Instr.FreshStruct });
+        head.Instrs.Add(new Instr { Op = Opcode.CallIndirect, Operands = { RegOperand.Of(made), RegOperand.Of(made) }, DispatchType = "t_Node" });
+        head.Instrs.Add(new Instr { Op = Opcode.Load, Dest = marked.NewReg(IrTypes.Word), Size = IrTypes.Word.Bytes(), Operands = { RegOperand.Of(at) } });
+        head.Instrs.Add(new Instr { Op = Opcode.Jump, InitialTargets = new[] { lap } });
         lap.RegionLoop = true; lap.RegionLoopBytes = 96;
         lap.Instrs.Add(new Instr { Op = Opcode.Ret });
         bytes = IrFunctionCodec.Write(marked);

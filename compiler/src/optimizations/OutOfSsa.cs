@@ -70,12 +70,12 @@ public sealed class OutOfSsa : IPass
                 // Split the edge p -> b.
                 Block split = f.NewBlock("phi");
                 split.Instrs.AddRange(copies);
-                split.Instrs.Add(new Instr { Op = Opcode.Jump, WritableTargets = { b }, Line = t.Line });
+                split.Instrs.Add(new Instr { Op = Opcode.Jump, InitialTargets = new[] { b }, Line = t.Line });
                 for (int k = 0; k < t.Targets.Count; k++)
                 {
                     if (ReferenceEquals(t.Targets[k], b))
                     {
-                        t.WritableTargets[k] = split;
+                        t.SetTarget(k, split);
                     }
                 }
                 if (ReferenceEquals(t.Default, b))
@@ -133,12 +133,12 @@ public sealed class OutOfSsa : IPass
             (VReg d0, Operand s0) = pending[0];
             VReg src = ((RegOperand)s0).Reg;
             VReg tmp = f.NewReg(src.Type, src.Name);
-            outp.Add(new Instr { Op = Opcode.Copy, Dest = tmp, Operands = { new RegOperand(src) } });
+            outp.Add(new Instr { Op = Opcode.Copy, Dest = tmp, Operands = { RegOperand.Of(src) } });
             for (int k = 0; k < pending.Count; k++)
             {
                 if (pending[k].Src is RegOperand r && ReferenceEquals(r.Reg, src))
                 {
-                    pending[k] = (pending[k].Dest, new RegOperand(tmp));
+                    pending[k] = (pending[k].Dest, RegOperand.Of(tmp));
                 }
             }
             _ = d0;

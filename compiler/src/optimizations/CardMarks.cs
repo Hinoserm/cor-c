@@ -149,7 +149,7 @@ public sealed class CardMarks : IModulePass
                 VReg sum = f.NewReg(IrTypes.Word);
                 block.Instrs.Insert(at, new Instr { Op = Opcode.Add, Dest = sum, Operands = { address, new ImmOperand(store.Offset, IrTypes.Word) }, Line = store.Line });
                 at++;
-                address = new RegOperand(sum);
+                address = RegOperand.Of(sum);
             }
             block.Instrs[at] = new Instr { Op = Opcode.Call, Callee = sequence, Operands = { address, store.Operands[1] }, Line = store.Line };
         }
@@ -187,7 +187,7 @@ public sealed class CardMarks : IModulePass
                 Fuse(stored, at, RefStore);
                 // The test goes: the branch is a jump to the store, the
                 // report block nobody's.
-                test.Instrs[^1] = new Instr { Op = Opcode.Jump, WritableTargets = { stored }, Line = branch.Line };
+                test.Instrs[^1] = new Instr { Op = Opcode.Jump, InitialTargets = new[] { stored }, Line = branch.Line };
                 gone.Add(report);
                 break;
             }
@@ -314,7 +314,7 @@ public sealed class CardMarks : IModulePass
                         VReg word = f.NewReg(IrTypes.Word);
                         block.Instrs.Insert(k, new Instr { Op = Opcode.Trunc64, Dest = word, Operands = { slot } });
                         k++;
-                        slot = new RegOperand(word);
+                        slot = RegOperand.Of(word);
                     }
                     block.Instrs[k] = new Instr { Op = Opcode.Call, Callee = "__x86.i.cardmark", Operands = { slot }, Line = i.Line };
                 }
@@ -349,7 +349,7 @@ public sealed class CardMarks : IModulePass
                         ? e.Unary(Opcode.Copy, slot, IrTypes.Word)
                         : e.Unary(IrTypes.Word == IrType.I32 ? Opcode.Trunc64 : Opcode.ZExt32, slot, IrTypes.Word);
                 VReg card = e.Binary(Opcode.Add, table, e.Binary(Opcode.ShrU, word, CardShift));
-                e.Store(new RegOperand(card), new ImmOperand(1, IrType.I32), 0, 1);
+                e.Store(RegOperand.Of(card), new ImmOperand(1, IrType.I32), 0, 1);
                 e.Jump(after);
                 // The rest of the old block is `after` now; carry on there.
                 break;

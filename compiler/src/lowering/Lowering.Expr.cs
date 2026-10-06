@@ -11,7 +11,7 @@ public sealed partial class Lowering
     /// <summary>Expressions whose rewrite is being emitted right now, so a rewrite containing itself terminates.</summary>
     private readonly HashSet<Expr> _rewriting = new(ReferenceEqualityComparer.Instance);
 
-    private static RegOperand R(VReg v) => new(v);
+    private static RegOperand R(VReg v) => RegOperand.Of(v);
     private static ImmOperand Imm(long v, IrType t) => new(v, t);
 
     /// <summary>
@@ -149,7 +149,7 @@ public sealed partial class Lowering
                 int size = Math.Max(4, target.Size);
                 FrameSlot temp = _f.NewSlot(size, Math.Min(size, _t.Align64), "in");
 
-                _e.Store(new SlotOperand(temp), new RegOperand(value), 0, LoadSize(target));
+                _e.Store(new SlotOperand(temp), RegOperand.Of(value), 0, LoadSize(target));
                 return RegOf(new SlotOperand(temp));
             }
 

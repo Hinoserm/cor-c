@@ -15,7 +15,7 @@ public static class DefinitionSemanticsTests
             Block block = function.NewBlock();
             VReg result = function.NewReg(IrType.I32);
             block.Instrs.Add(new Instr { Op = Opcode.Load, Dest = result, Size = 1, Operands = { new SymOperand(local) } });
-            block.Instrs.Add(new Instr { Op = Opcode.Ret, Operands = { new RegOperand(result) } });
+            block.Instrs.Add(new Instr { Op = Opcode.Ret, Operands = { RegOperand.Of(result) } });
             module.Functions.Add(function);
             module.Functions.Add(new Function("ordinary", IrType.Void));
             return module;

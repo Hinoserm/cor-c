@@ -103,7 +103,7 @@ public sealed partial class Lowering
                 {
                     Error(at, $"'{m.Name}': a ref or out {t} cannot be passed to C; only numbers, pointers and nint can");
                 }
-                args.Add(new RegOperand(v));
+                args.Add(RegOperand.Of(v));
                 continue;
             }
 
@@ -112,7 +112,7 @@ public sealed partial class Lowering
                 VReg? bytes = CallRuntime(at, "NativeString", IrTypes.Word, v);
                 if (bytes is null) return;
                 keep.Add(bytes);
-                args.Add(new RegOperand(CallRuntime(at, "NativeData", IrTypes.Word, bytes)!));
+                args.Add(RegOperand.Of(CallRuntime(at, "NativeData", IrTypes.Word, bytes)!));
                 continue;
             }
 
@@ -125,13 +125,13 @@ public sealed partial class Lowering
                 keep.Add(v);
                 VReg? data = CallRuntime(at, "NativeData", IrTypes.Word, v);
                 if (data is null) return;
-                args.Add(new RegOperand(data));
+                args.Add(RegOperand.Of(data));
                 continue;
             }
 
             if (t.Prim == Prim.Bool || Blittable(t))
             {
-                args.Add(new RegOperand(v));
+                args.Add(RegOperand.Of(v));
                 continue;
             }
 
@@ -160,7 +160,7 @@ public sealed partial class Lowering
         {
             _m.NativeLibraries.Add("libc.so.6");
             VReg? location = _e.Call(NativeCall.Of("__errno_location"), IrTypes.Word);
-            errno = Numbered(_e, _e.Load(IrType.I32, new RegOperand(location!), 0));
+            errno = Numbered(_e, _e.Load(IrType.I32, RegOperand.Of(location!), 0));
         }
 
         if (import.Transition && RequireRuntime(at, "LeaveNative", 0, "a call into C") is MethodSymbol leave)
@@ -170,12 +170,12 @@ public sealed partial class Lowering
 
         if (errno is not null && RequireRuntime(at, "SetNativeError", 1, "SetLastError") is MethodSymbol setError)
         {
-            _e.Call(CallLabel(setError), IrType.Void, new RegOperand(errno));
+            _e.Call(CallLabel(setError), IrType.Void, RegOperand.Of(errno));
         }
 
         foreach (VReg alive in keep)
         {
-            _e.Call(MachineIntrinsics.KeepAlive, IrType.Void, new RegOperand(alive));
+            _e.Call(MachineIntrinsics.KeepAlive, IrType.Void, RegOperand.Of(alive));
         }
 
         if (result is not null && _returnValue is not null)
@@ -184,7 +184,7 @@ public sealed partial class Lowering
             if (ret.Prim == Prim.Bool)
             {
                 VReg raw = import.ByteBool ? _e.Unary(Opcode.ZExt8, result) : result;
-                shaped = _e.Binary(Opcode.Ne, new RegOperand(raw), new ImmOperand(0, IrType.I32), IrType.I32);
+                shaped = _e.Binary(Opcode.Ne, RegOperand.Of(raw), new ImmOperand(0, IrType.I32), IrType.I32);
             }
             else if (ret.Prim is Prim.I8 or Prim.U8 or Prim.I16 or Prim.U16 or Prim.Char)
             {
@@ -195,7 +195,7 @@ public sealed partial class Lowering
             {
                 shaped = result;
             }
-            _e.CopyTo(_returnValue, new RegOperand(shaped));
+            _e.CopyTo(_returnValue, RegOperand.Of(shaped));
         }
         _e.Jump(_returnBlock);
     }
@@ -212,7 +212,7 @@ public sealed partial class Lowering
         List<Operand> args = new();
         for (int i = 0; i < call.Args.Count; i++)
         {
-            args.Add(new RegOperand(EvalAs(call.Args[i], pointer.Params[i])));
+            args.Add(RegOperand.Of(EvalAs(call.Args[i], pointer.Params[i])));
         }
         Type ret = pointer.Returns;
         IrType returns = ret.IsVoid ? IrType.Void : ret.Prim == Prim.Bool && pointer.Unmanaged ? IrType.I32 : IrTypes.Of(ret);
@@ -220,7 +220,7 @@ public sealed partial class Lowering
         {
             _e.Call(CallLabel(enter), IrType.Void);
         }
-        VReg? result = _e.CallIndirect(new RegOperand(target), returns, args, pointer.Unmanaged ? NativeCall.Indirect : null);
+        VReg? result = _e.CallIndirect(RegOperand.Of(target), returns, args, pointer.Unmanaged ? NativeCall.Indirect : null);
         if (pointer.Unmanaged && RequireRuntime(call, "LeaveNative", 0, "a call into C") is MethodSymbol leave)
         {
             _e.Call(CallLabel(leave), IrType.Void);
@@ -231,7 +231,7 @@ public sealed partial class Lowering
         }
         if (pointer.Unmanaged && ret.Prim == Prim.Bool)
         {
-            return _e.Binary(Opcode.Ne, new RegOperand(result), new ImmOperand(0, IrType.I32), IrType.I32);
+            return _e.Binary(Opcode.Ne, RegOperand.Of(result), new ImmOperand(0, IrType.I32), IrType.I32);
         }
         if (pointer.Unmanaged && ret.Prim is Prim.I8 or Prim.U8 or Prim.I16 or Prim.U16 or Prim.Char)
         {
@@ -280,7 +280,7 @@ public sealed partial class Lowering
     private void LeaveToC(Node at, VReg chain)
     {
         int w = _t.WordSize;
-        ChainWrite(ThreadBlockNow(), new RegOperand(chain), TlsHandler / 4 * w);
+        ChainWrite(ThreadBlockNow(), RegOperand.Of(chain), TlsHandler / 4 * w);
         if (RequireRuntime(at, "EnterNative", 0, "a method C calls") is MethodSymbol enter)
         {
             _e.Call(CallLabel(enter), IrType.Void);
@@ -299,6 +299,6 @@ public sealed partial class Lowering
         {
             return null;
         }
-        return _e.Call(CallLabel(hook), returns, new RegOperand(argument));
+        return _e.Call(CallLabel(hook), returns, RegOperand.Of(argument));
     }
 }

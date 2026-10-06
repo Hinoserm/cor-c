@@ -437,7 +437,7 @@ public sealed partial class Lowering
         Prim width = of.Symbol is { Kind: TypeKind.Enum } named ? named.EnumUnderlying : of.Prim;
         if (width is Prim.I8 or Prim.U8 or Prim.I16 or Prim.U16 or Prim.Char)
         {
-            e.Ret(new RegOperand(e.Binary(Opcode.Sub, R(a), R(b), IrType.I32)));
+            e.Ret(RegOperand.Of(e.Binary(Opcode.Sub, R(a), R(b), IrType.I32)));
             return;
         }
         EmitOrder(f, e, a, b, unsigned: of.IsUnsigned || of.Prim is Prim.Bool or Prim.Char);
@@ -519,9 +519,9 @@ public sealed partial class Lowering
         {
             VReg equal = e.Binary(Opcode.FEq, R(mine), R(other), IrType.I32);
             VReg bothNan = e.Binary(Opcode.And, e.Binary(Opcode.FNe, R(mine), R(mine), IrType.I32), e.Binary(Opcode.FNe, R(other), R(other), IrType.I32));
-            e.Ret(new RegOperand(e.Binary(Opcode.Or, equal, bothNan)));
+            e.Ret(RegOperand.Of(e.Binary(Opcode.Or, equal, bothNan)));
         }
-        else e.Ret(new RegOperand(e.Binary(Opcode.Eq, R(mine), R(other), IrType.I32)));
+        else e.Ret(RegOperand.Of(e.Binary(Opcode.Eq, R(mine), R(other), IrType.I32)));
         _m.Functions.Add(f);
         return label;
     }
@@ -553,13 +553,13 @@ public sealed partial class Lowering
             VReg raw = BoxedValue(e, self, of);
             VReg wide = raw.Type == IrType.I64 ? raw : e.Unary(of.IsUnsigned ? Opcode.ZExt32 : Opcode.SExt32, raw);
             Require(enumFormat);
-            e.Ret(new RegOperand(e.Call(CallLabel(enumFormat), IrTypes.Word, R(name), R(wide),
+            e.Ret(RegOperand.Of(e.Call(CallLabel(enumFormat), IrTypes.Word, R(name), R(wide),
                 new ImmOperand(Math.Max(1, of.Size), IrType.I32), R(format))!));
         }
         else if (StringRoutine("FormatBoxed", 3) is MethodSymbol boxedFormat)
         {
             Require(boxedFormat);
-            e.Ret(new RegOperand(e.Call(CallLabel(boxedFormat), IrTypes.Word, R(self), R(format), R(provider))!));
+            e.Ret(RegOperand.Of(e.Call(CallLabel(boxedFormat), IrTypes.Word, R(self), R(format), R(provider))!));
         }
         else
         {
@@ -567,7 +567,7 @@ public sealed partial class Lowering
             VReg fn = e.Load(IrTypes.Word, vt, (long)_b.ToStringSlot * _t.WordSize);
             VReg said = e.CallIndirect(R(fn), IrTypes.Word, new Operand[] { R(self) })!;
             e.Block.Instrs[^1].DispatchType = ObjectDispatch;
-            e.Ret(new RegOperand(said));
+            e.Ret(RegOperand.Of(said));
         }
         _m.Functions.Add(f);
         return label;
@@ -606,7 +606,7 @@ public sealed partial class Lowering
         Builder e = new(f, f.NewBlock("entry"));
         args.Insert(0, e.Binary(Opcode.Add, self, _t.ObjectHeaderBytes));
         VReg? result = e.Call(target, returns, args);
-        e.Ret(result is null ? null : new RegOperand(result));
+        e.Ret(result is null ? null : RegOperand.Of(result));
         _m.Functions.Add(f);
         return label;
     }
@@ -643,7 +643,7 @@ public sealed partial class Lowering
         e.Emit(Opcode.Trap, null);
         e.Unreachable();
         e.SetBlock(same);
-        e.Ret(new RegOperand(e.Call(TupleCompare(shape), IrType.I32,
+        e.Ret(RegOperand.Of(e.Call(TupleCompare(shape), IrType.I32,
             R(e.Binary(Opcode.Add, self, _t.ObjectHeaderBytes)), R(e.Binary(Opcode.Add, other, _t.ObjectHeaderBytes)))!));
         _m.Functions.Add(f);
         return label;
@@ -694,7 +694,7 @@ public sealed partial class Lowering
         if (StringRoutine(Prelude.CompareMethod, 2) is MethodSymbol compare)
         {
             VReg order = e.Call(CallLabel(compare), IrTypes.Of(compare.Returns), R(self), R(other))!;
-            e.Ret(new RegOperand(order));
+            e.Ret(RegOperand.Of(order));
         }
         else e.Ret(new ImmOperand(0, IrType.I32));
         _m.Functions.Add(f);
@@ -710,7 +710,7 @@ public sealed partial class Lowering
         VReg self = f.NewReg(IrTypes.Word, "this");
         f.Params.Add(self);
         Builder e = new(f, f.NewBlock("entry"));
-        e.Ret(new RegOperand(self));
+        e.Ret(RegOperand.Of(self));
         _m.Functions.Add(f);
         return label;
     }
@@ -733,12 +733,12 @@ public sealed partial class Lowering
         e.SetBlock(some);
         if (StringEqualsRoutine() is MethodSymbol equals)
         {
-            e.Ret(new RegOperand(e.Call(CallLabel(equals), IrTypes.Of(equals.Returns), R(self), R(other))!));
+            e.Ret(RegOperand.Of(e.Call(CallLabel(equals), IrTypes.Of(equals.Returns), R(self), R(other))!));
         }
         else if (StringRoutine(Prelude.CompareMethod, 2) is MethodSymbol compare)
         {
             VReg order = e.Call(CallLabel(compare), IrTypes.Of(compare.Returns), R(self), R(other))!;
-            e.Ret(new RegOperand(e.Binary(Opcode.Eq, R(order), new ImmOperand(0, order.Type), IrType.I32)));
+            e.Ret(RegOperand.Of(e.Binary(Opcode.Eq, R(order), new ImmOperand(0, order.Type), IrType.I32)));
         }
         else e.Ret(new ImmOperand(0, IrType.I32));
         _m.Functions.Add(f);
@@ -771,16 +771,16 @@ public sealed partial class Lowering
             if (own is not null)
             {
                 Require(own);
-                e.Ret(new RegOperand(e.Call(CallLabel(own), IrTypes.Word, R(inside))!));
+                e.Ret(RegOperand.Of(e.Call(CallLabel(own), IrTypes.Word, R(inside))!));
             }
             else if (IsTupleShape(of.Symbol!))
             {
                 // A TUPLE SAYS ITS ITEMS, as ValueTuple's ToString: "(1, a)".
-                e.Ret(new RegOperand(e.Call(TupleToString(of.Symbol!), IrTypes.Word, R(inside))!));
+                e.Ret(RegOperand.Of(e.Call(TupleToString(of.Symbol!), IrTypes.Word, R(inside))!));
             }
             else
             {
-                e.Ret(new RegOperand(e.Address(InternString(name))));
+                e.Ret(RegOperand.Of(e.Address(InternString(name))));
             }
         }
         else
@@ -790,7 +790,7 @@ public sealed partial class Lowering
             // Straight into the same rendering a written `"" + value` reaches,
             // so a boxed double prints what an unboxed one prints.
             VReg text = Stringify(new LiteralExpr { Kind = Lit.Int, Text = "0", Line = 0, Col = 0 }, raw, of);
-            e.Ret(new RegOperand(text));
+            e.Ret(RegOperand.Of(text));
         }
 
         _f = savedF;
@@ -836,7 +836,7 @@ public sealed partial class Lowering
             if (own is not null && own.Params[0].Type.Symbol == of.Symbol)
             {
                 Require(own);
-                e.Ret(new RegOperand(e.Call(CallLabel(own), IrType.I32, R(mine2), R(theirs2))!));
+                e.Ret(RegOperand.Of(e.Call(CallLabel(own), IrType.I32, R(mine2), R(theirs2))!));
                 e.SetBlock(no);
                 e.Ret(new ImmOperand(0, IrType.I32));
                 _m.Functions.Add(f);
@@ -846,7 +846,7 @@ public sealed partial class Lowering
             // OTHERWISE FIELD BY FIELD, as ValueType.Equals: each one by its
             // own Equals (StructEquals). By bytes, two copies of a struct
             // holding equal strings were unequal.
-            e.Ret(new RegOperand(e.Call(StructEquals(of.Symbol!), IrType.I32, R(mine2), R(theirs2))!));
+            e.Ret(RegOperand.Of(e.Call(StructEquals(of.Symbol!), IrType.I32, R(mine2), R(theirs2))!));
             e.SetBlock(no);
             e.Ret(new ImmOperand(0, IrType.I32));
             _m.Functions.Add(f);
@@ -865,9 +865,9 @@ public sealed partial class Lowering
             VReg nanA = e.Binary(Opcode.FNe, R(a), R(a), IrType.I32);
             VReg nanB = e.Binary(Opcode.FNe, R(b), R(b), IrType.I32);
             VReg bothNan = e.Binary(Opcode.And, nanA, nanB);
-            e.Ret(new RegOperand(e.Binary(Opcode.Or, equal, bothNan)));
+            e.Ret(RegOperand.Of(e.Binary(Opcode.Or, equal, bothNan)));
         }
-        else e.Ret(new RegOperand(e.Binary(Opcode.Eq, R(a), R(b), IrType.I32)));
+        else e.Ret(RegOperand.Of(e.Binary(Opcode.Eq, R(a), R(b), IrType.I32)));
 
         e.SetBlock(no);
         e.Ret(new ImmOperand(0, IrType.I32));

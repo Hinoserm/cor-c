@@ -56,7 +56,7 @@ public sealed class CarryRecognition : IPass
                     };
                     if (root.Dest.Type == IrType.I64)
                         replacement.Add(new Instr { Op = Opcode.ZExt32, Dest = root.Dest, Line = root.Line,
-                            Operands = { new RegOperand(carry) } });
+                            Operands = { RegOperand.Of(carry) } });
                     replacements[root] = replacement;
                     break;
                 }

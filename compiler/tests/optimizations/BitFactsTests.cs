@@ -16,12 +16,12 @@ public static partial class Program
             VReg pointer = f.NewReg(IrType.I32), adjusted = f.NewReg(IrType.I32), value = f.NewReg(IrType.I32);
             block.Instrs.Add(new Instr { Op = Opcode.Copy, Dest = pointer, Operands = { new SlotOperand(slot) } });
             block.Instrs.Add(new Instr { Op = Opcode.Add, Dest = adjusted,
-                Operands = { new RegOperand(pointer), new ImmOperand(offset, IrType.I32) } });
+                Operands = { RegOperand.Of(pointer), new ImmOperand(offset, IrType.I32) } });
             if (reassigned) block.Instrs.Add(new Instr { Op = Opcode.Copy, Dest = adjusted,
                 Operands = { new ImmOperand(0, IrType.I32) } });
-            Instr read = new() { Op = Opcode.Load, Dest = value, Size = 4, Operands = { new RegOperand(adjusted) },
+            Instr read = new() { Op = Opcode.Load, Dest = value, Size = 4, Operands = { RegOperand.Of(adjusted) },
                 Field = "Node::Left", Family = "Node::Left" };
-            block.Instrs.Add(read); new Builder(f, block).Ret(new RegOperand(value));
+            block.Instrs.Add(read); new Builder(f, block).Ret(RegOperand.Of(value));
             Verifier.Check(f, "before frame address fold");
             new FrameAddressFold().Run(f);
             Verifier.Check(f, "after frame address fold");
@@ -46,13 +46,13 @@ public static partial class Program
             var entry = f.NewBlock("entry"); var body = f.NewBlock("body"); var exit = f.NewBlock("exit");
             VReg first = f.NewReg(IrType.I32), second = f.NewReg(IrType.I32);
             entry.Instrs.Add(new Instr { Op = Opcode.Load, Dest = first, Size = 4,
-                Operands = { new RegOperand(address) } });
+                Operands = { RegOperand.Of(address) } });
             new Builder(f, entry).Branch(condition, body, exit);
             body.Instrs.Add(new Instr { Op = Opcode.Load, Dest = second, Size = 4,
-                Operands = { new RegOperand(address) } });
-            if (backEdge) body.Instrs.Add(new Instr { Op = Opcode.Jump, Targets = { entry } });
-            else new Builder(f, body).Ret(new RegOperand(second));
-            new Builder(f, exit).Ret(new RegOperand(first));
+                Operands = { RegOperand.Of(address) } });
+            if (backEdge) body.Instrs.Add(new Instr { Op = Opcode.Jump, InitialTargets = new[] { entry } });
+            else new Builder(f, body).Ret(RegOperand.Of(second));
+            new Builder(f, exit).Ret(RegOperand.Of(first));
             Verifier.Check(f, "before entry load reuse");
             new LoadReuse().Run(f);
             Verifier.Check(f, "after entry load reuse");
@@ -66,18 +66,18 @@ public static partial class Program
             var block = f.NewBlock("entry"); Builder b = new(f, block);
             VReg first = f.NewReg(IrType.I32), second = f.NewReg(IrType.I32);
             Instr original = new() { Op = Opcode.Load, Dest = first, Size = 1,
-                Operands = { new RegOperand(address) } };
+                Operands = { RegOperand.Of(address) } };
             block.Instrs.Add(original);
             if (barrier is "address" or "value") block.Instrs.Add(new Instr { Op = Opcode.Copy,
                 Dest = barrier == "address" ? address : first, Operands = { new ImmOperand(16, IrType.I32) } });
             if (barrier == "store") block.Instrs.Add(new Instr { Op = Opcode.Store, Size = 1,
-                Operands = { new RegOperand(address), new ImmOperand(7, IrType.I32) } });
+                Operands = { RegOperand.Of(address), new ImmOperand(7, IrType.I32) } });
             if (barrier == "call") b.Call("effect", IrType.Void);
             if (barrier == "fence") block.Instrs.Add(new Instr { Op = Opcode.Fence });
             block.Instrs.Add(new Instr { Op = Opcode.Load, Dest = second,
                 Size = barrier == "width" ? 2 : 1, Signed = barrier == "signed",
-                Operands = { new RegOperand(address) } });
-            b.Ret(new RegOperand(second));
+                Operands = { RegOperand.Of(address) } });
+            b.Ret(RegOperand.Of(second));
             Verifier.Check(f, "before load reuse");
             new LoadReuse().Run(f);
             Verifier.Check(f, "after load reuse");
@@ -108,7 +108,7 @@ public static partial class Program
                 Operands = { new SlotOperand(slot), new ImmOperand(7, IrType.I32) } });
             if (barrier == "escape") b.Call("capture", IrType.Void, new SlotOperand(slot));
             Instr writeBack = new() { Op = Opcode.Store, Size = width, Offset = offset,
-                Operands = { new SlotOperand(slot), new RegOperand(value) } };
+                Operands = { new SlotOperand(slot), RegOperand.Of(value) } };
             block.Instrs.Add(writeBack);
             b.Ret();
             new StoreBackElimination().Run(f);
@@ -133,7 +133,7 @@ public static partial class Program
             VReg x = f.NewReg(type), y = f.NewReg(type); f.Params.Add(x); f.Params.Add(y);
             var entry = f.NewBlock("entry"); var yes = f.NewBlock("yes"); var no = f.NewBlock("no");
             Builder b = new(f, entry);
-            VReg condition = b.Binary(first, new RegOperand(x), new RegOperand(y), IrType.I32);
+            VReg condition = b.Binary(first, RegOperand.Of(x), RegOperand.Of(y), IrType.I32);
             b.Branch(condition, yes, no);
             foreach (var block in new[] { yes, no })
             {
@@ -141,8 +141,8 @@ public static partial class Program
                 if (mutate) block.Instrs.Add(new Instr { Op = Opcode.Copy, Dest = x,
                     Operands = { new ImmOperand(-1, type) } });
                 // Reverse the compared operands to exercise relation inversion.
-                VReg result = arm.Binary(second, new RegOperand(y), new RegOperand(x), IrType.I32);
-                arm.Ret(new RegOperand(result));
+                VReg result = arm.Binary(second, RegOperand.Of(y), RegOperand.Of(x), IrType.I32);
+                arm.Ret(RegOperand.Of(result));
             }
             Verifier.Check(f, "before edge proof");
             long[] expected = (from a in values from c in values select new Interp().Run(f, a, c)).ToArray();
@@ -172,13 +172,13 @@ public static partial class Program
             Function f = new("bit-proof", IrInfo.IsIntCompare(op) ? IrType.I32 : type);
             VReg input = f.NewReg(type); f.Params.Add(input);
             Builder b = new(f, f.NewBlock("entry"));
-            VReg bounded = b.Binary(Opcode.And, new RegOperand(input), new ImmOperand(mask, type), type);
+            VReg bounded = b.Binary(Opcode.And, RegOperand.Of(input), new ImmOperand(mask, type), type);
             IrType rightType = op is Opcode.Shl or Opcode.ShrU or Opcode.ShrS ? IrType.I32 : type;
-            VReg result = b.Binary(op, new RegOperand(bounded), new ImmOperand(constant, rightType), f.Returns);
-            b.Ret(new RegOperand(result));
+            VReg result = b.Binary(op, RegOperand.Of(bounded), new ImmOperand(constant, rightType), f.Returns);
+            b.Ret(RegOperand.Of(result));
             Verifier.Check(f, "before bit fact proof");
             long[] expected = values.Select(value => new Interp().Run(f, value)).ToArray();
-            var bits = new IntegerBitFacts(f).Get(new RegOperand(result));
+            var bits = new IntegerBitFacts(f).Get(RegOperand.Of(result));
             Assert((bits.Zero & bits.One) == 0, "known zero and one never conflict");
             foreach (long value in expected)
             {
@@ -203,8 +203,8 @@ public static partial class Program
         // Even a constant reassignment must not describe the entry value.
         f.Entry.Instrs.Add(new Instr { Op = Opcode.Copy, Dest = input,
             Operands = { new ImmOperand(0, IrType.I32) } });
-        b.Ret(new RegOperand(before));
-        Assert(new IntegerBitFacts(f).Get(new RegOperand(input)) == default,
+        b.Ret(RegOperand.Of(before));
+        Assert(new IntegerBitFacts(f).Get(RegOperand.Of(input)) == default,
             "mutable parameter retains unknown entry facts");
         new BitFactSimplify().Run(f);
         Assert(new Interp().Run(f, 171) == 171, "parameter snapshot preserved");
@@ -214,9 +214,9 @@ public static partial class Program
         VReg loaded = read.NewReg(IrType.I32);
         Builder rb = new(read, read.NewBlock("entry"));
         read.Entry.Instrs.Add(new Instr { Op = Opcode.Load, Dest = loaded, Size = 1,
-            Operands = { new RegOperand(address) } });
+            Operands = { RegOperand.Of(address) } });
         VReg zero = rb.Binary(Opcode.And, loaded, 0);
-        rb.Ret(new RegOperand(zero));
+        rb.Ret(RegOperand.Of(zero));
         new BitFactSimplify().Run(read);
         new DeadCodeElimination().Run(read);
         Verifier.Check(read, "bit fact fault barrier");

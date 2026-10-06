@@ -67,7 +67,7 @@ public sealed class ConstantAndCopyPropagation : IPass
             {
                 // In a loop, not ReplaceUses with a lambda: the lambda held the
                 // position, a closure for every instruction of the function.
-                List<Operand> operands = b.Instrs[k].Operands;
+                OperandList operands = b.Instrs[k].Operands;
                 for (int o = 0; o < operands.Count; o++)
                     if (operands[o] is RegOperand { Reg: var r } && copies.ContainsKey(r)
                         && Resolve(r, defs, copies, b, k) is { } resolved)

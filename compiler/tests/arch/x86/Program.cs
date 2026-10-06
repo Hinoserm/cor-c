@@ -659,7 +659,7 @@ internal static class Program
         b.Ret(R(b.Binary(Opcode.Add, b.Binary(Opcode.Add, byteIn, wordIn), longIn)));
     }
 
-    private static RegOperand R(VReg v) => new(v);
+    private static RegOperand R(VReg v) => RegOperand.Of(v);
     private static ImmOperand I(long v, IrType t = IrType.I32) => new(v, t);
 
     /// <summary>int add(int a, int b) { return a + b; }</summary>

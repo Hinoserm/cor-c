@@ -1035,7 +1035,7 @@ public sealed partial class Lowering
                 VReg bssStart = e.Address("__bss_start");
                 VReg bssEnd = e.Address("_end");
                 VReg bssBytes = e.Binary(Opcode.Sub, bssEnd, bssStart);
-                e.Emit(Opcode.MemSet, null, new RegOperand(bssStart), new ImmOperand(0, IrType.I32), new RegOperand(bssBytes));
+                e.Emit(Opcode.MemSet, null, RegOperand.Of(bssStart), new ImmOperand(0, IrType.I32), RegOperand.Of(bssBytes));
             }
 
             // With no operating system there is one thread, and its block is
@@ -1043,7 +1043,7 @@ public sealed partial class Lowering
             // the clear that would otherwise undo it, so nothing on this
             // target needs a set-up call before a `try` or a `new`.
             VReg only = e.Address(ThreadBlock0);
-            e.Store(new SymOperand(ThreadBlockSelf), new RegOperand(only));
+            e.Store(new SymOperand(ThreadBlockSelf), RegOperand.Of(only));
             e.Store(only, only, TlsSelf);
 
             // AND WHERE ITS STACK BEGINS, which is where the collector's scan
@@ -1116,7 +1116,7 @@ public sealed partial class Lowering
             {
                 Require(images);
                 e.Call(CallLabel(images), IrType.Void,
-                    new RegOperand(WordAddress(e, "_DYNAMIC")));
+                    RegOperand.Of(WordAddress(e, "_DYNAMIC")));
             }
             EmitBeginImage(e);
         }
@@ -1156,7 +1156,7 @@ public sealed partial class Lowering
 
             Require(startC);
             e.Call(CallLabel(startC), IrType.Void,
-                new RegOperand(loaderFini), new RegOperand(entrySp), new RegOperand(e.Address(CMainName)));
+                RegOperand.Of(loaderFini), RegOperand.Of(entrySp), RegOperand.Of(e.Address(CMainName)));
         }
 
         EmitRunMain(entry, f, e);
@@ -1222,7 +1222,7 @@ public sealed partial class Lowering
         TouchType(entry.Owner);
 
         Operand[] passed = entry.Params.Count == 1
-            ? new Operand[] { new RegOperand(EntryArgs(entry)) }
+            ? new Operand[] { RegOperand.Of(EntryArgs(entry)) }
             : Array.Empty<Operand>();
 
         Operand code;
@@ -1235,13 +1235,13 @@ public sealed partial class Lowering
             _e = e;
             if (AsyncRuntimeMethod(entry.Decl!, "RunMain", 1) is MethodSymbol runMain)
             {
-                e.Call(CallLabel(runMain), IrType.Void, new RegOperand(task));
+                e.Call(CallLabel(runMain), IrType.Void, RegOperand.Of(task));
             }
             Type result = AsyncResultType(entry.Returns);
             if (!result.IsVoid && entry.Returns.Symbol?.FindMethods("get_Result").FirstOrDefault(g => g.Params.Count == 0) is MethodSymbol getResult)
             {
-                VReg value = CallMethod(getResult, task, new List<Operand> { new RegOperand(task) })!;
-                code = new RegOperand(Narrow(e, value, result, Type.I32));
+                VReg value = CallMethod(getResult, task, new List<Operand> { RegOperand.Of(task) })!;
+                code = RegOperand.Of(Narrow(e, value, result, Type.I32));
             }
             else
             {
@@ -1256,7 +1256,7 @@ public sealed partial class Lowering
         else
         {
             VReg r = e.Call(CallLabel(entry), IrTypes.Of(entry.Returns), passed)!;
-            code = new RegOperand(Narrow(e, r, entry.Returns, Type.I32));
+            code = RegOperand.Of(Narrow(e, r, entry.Returns, Type.I32));
         }
 
         MethodSymbol? exit = RuntimeMethod("Exit", 1);
@@ -1385,9 +1385,9 @@ public sealed partial class Lowering
         }
         Require(begin);
         e.Call(CallLabel(begin), IrType.Void,
-            new RegOperand(WordAddress(e, "__data_start")),
-            new RegOperand(WordAddress(e, "_end")),
-            new RegOperand(WordAddress(e, ManagedDirectory.Symbol)));
+            RegOperand.Of(WordAddress(e, "__data_start")),
+            RegOperand.Of(WordAddress(e, "_end")),
+            RegOperand.Of(WordAddress(e, ManagedDirectory.Symbol)));
     }
 
     /// <summary>
@@ -2719,7 +2719,7 @@ public sealed partial class Lowering
             f.Params.Add(a);
             f.Params.Add(b);
             Builder e = new(f, f.NewBlock("entry"));
-            e.Ret(new RegOperand(e.Binary(Opcode.Eq, a, b)));
+            e.Ret(RegOperand.Of(e.Binary(Opcode.Eq, a, b)));
             _m.Functions.Add(f);
         }
         return name;
@@ -2746,7 +2746,7 @@ public sealed partial class Lowering
             {
                 nm = e.Call(CallLabel(text), IrTypes.Word, R(nm))!;
             }
-            e.Ret(new RegOperand(nm));
+            e.Ret(RegOperand.Of(nm));
             _m.Functions.Add(f);
         }
         return name;
@@ -2919,21 +2919,21 @@ public sealed partial class Lowering
             }
             else if (m.Name == "Reset")
             {
-                e.Store(new RegOperand(self), Imm(-1, IrType.I32), cursor.Offset, 4);
+                e.Store(RegOperand.Of(self), Imm(-1, IrType.I32), cursor.Offset, 4);
                 e.Ret(null);
             }
             else if (m.ExplicitMember == "get_Current")
             {
                 // IEnumerator's Current, an object: the element boxed.
                 VReg value = LoadElement(items, Numbered(e, e.Load(IrType.I32, self, cursor.Offset)), of, At(m));
-                e.Ret(new RegOperand(Boxable(of) ? BoxValue(At(m), value, of) : value));
+                e.Ret(RegOperand.Of(Boxable(of) ? BoxValue(At(m), value, of) : value));
             }
             else if (m.Name == "MoveNext")
             {
                 VReg next = e.Binary(Opcode.Add, Numbered(e, e.Load(IrType.I32, self, cursor.Offset)), 1);
 
-                e.Store(new RegOperand(self), new RegOperand(next), cursor.Offset, 4);
-                e.Ret(new RegOperand(e.Binary(Opcode.LtS, next,
+                e.Store(RegOperand.Of(self), RegOperand.Of(next), cursor.Offset, 4);
+                e.Ret(RegOperand.Of(e.Binary(Opcode.LtS, next,
                                               CountOf(e, items))));
             }
             else
@@ -2944,7 +2944,7 @@ public sealed partial class Lowering
                 if (buffer is not null) { e.Emit(Opcode.MemCopy, null, R(buffer), R(value), Imm(Math.Max(1, StructOf(of).InstanceSize), IrTypes.Word)); value = buffer; }
                 else if (IsStructValue(of)) value = CopyStruct(At(m), value, StructOf(of));
 
-                e.Ret(new RegOperand(value));
+                e.Ret(RegOperand.Of(value));
             }
 
             _f = savedFn; _e = savedB; _boundsFail = savedFail;
@@ -2966,11 +2966,11 @@ public sealed partial class Lowering
             TypeSymbol walker = _b.Types[$"ArrayEnumerator${typed.Returns.Symbol!.Name}"];
             VReg made = Allocate(At(m), Math.Max(_t.ObjectHeaderBytes, walker.InstanceSize), described: true);
 
-            e.Store(new RegOperand(made), VtableOf(walker), 0, _t.WordSize);
-            e.Store(new RegOperand(made), new RegOperand(items), walker.Fields[0].Offset, _t.WordSize);
-            e.Store(new RegOperand(made), Imm(-1, IrType.I32), walker.Fields[1].Offset, 4);
+            e.Store(RegOperand.Of(made), VtableOf(walker), 0, _t.WordSize);
+            e.Store(RegOperand.Of(made), RegOperand.Of(items), walker.Fields[0].Offset, _t.WordSize);
+            e.Store(RegOperand.Of(made), Imm(-1, IrType.I32), walker.Fields[1].Offset, 4);
             _f = savedFn; _e = savedB; _boundsFail = savedFail;
-            e.Ret(new RegOperand(made));
+            e.Ret(RegOperand.Of(made));
             _m.Functions.Add(f);
             return;
         }
@@ -2979,7 +2979,7 @@ public sealed partial class Lowering
 
         if (m.Name == "get_Count" || m.Params.Count == 0)
         {
-            e.Ret(new RegOperand(CountOf(e, items)));
+            e.Ret(RegOperand.Of(CountOf(e, items)));
         }
         else
         {
@@ -2990,7 +2990,7 @@ public sealed partial class Lowering
             if (buffer is not null) { e.Emit(Opcode.MemCopy, null, R(buffer), R(value), Imm(Math.Max(1, StructOf(of).InstanceSize), IrTypes.Word)); value = buffer; }
             else if (IsStructValue(of)) value = CopyStruct(At(m), value, StructOf(of));
             _f = saved; _e = savedE;
-            e.Ret(new RegOperand(value));
+            e.Ret(RegOperand.Of(value));
         }
         _boundsFail = savedFail;
         _m.Functions.Add(f);

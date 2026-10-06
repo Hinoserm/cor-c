@@ -76,7 +76,7 @@ public sealed partial class Lowering
                 _e.Store(R(Address(call, target, 0)), R(ToI32(Arg(call, target, 1))), 0, 1);
                 return Void();
             case "KeepAlive":
-                _e.Call(MachineIntrinsics.KeepAlive, IrType.Void, new RegOperand(Arg(call, target, 0)));
+                _e.Call(MachineIntrinsics.KeepAlive, IrType.Void, RegOperand.Of(Arg(call, target, 0)));
                 return Void();
             case "PokeHalf":
                 _e.Store(R(Address(call, target, 0)), R(ToI32(Arg(call, target, 1))), 0, 2);

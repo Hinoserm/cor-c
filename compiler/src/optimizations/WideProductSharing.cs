@@ -39,21 +39,21 @@ public sealed class WideProductSharing : IPass
             Operand mask = new ImmOperand(4294967295, IrType.I64), count = new ImmOperand(32, IrType.I32);
             VReg al = Binary(Opcode.And, a, mask), ah = Binary(Opcode.ShrU, a, count);
             VReg bl = Binary(Opcode.And, b, mask), bh = Binary(Opcode.ShrU, b, count);
-            VReg p00 = Binary(Opcode.Mul, new RegOperand(al), new RegOperand(bl));
-            VReg p01 = Binary(Opcode.Mul, new RegOperand(al), new RegOperand(bh));
-            VReg p10 = Binary(Opcode.Mul, new RegOperand(ah), new RegOperand(bl));
+            VReg p00 = Binary(Opcode.Mul, RegOperand.Of(al), RegOperand.Of(bl));
+            VReg p01 = Binary(Opcode.Mul, RegOperand.Of(al), RegOperand.Of(bh));
+            VReg p10 = Binary(Opcode.Mul, RegOperand.Of(ah), RegOperand.Of(bl));
             // Share the middle column itself as well as its products. Its
             // low word is the low result's high word, and its high word is
             // the carry consumed by the existing high-half expansion.
-            VReg carry = Binary(Opcode.ShrU, new RegOperand(p00), count);
-            VReg p01lo = Binary(Opcode.And, new RegOperand(p01), mask);
-            VReg middle0 = Binary(Opcode.Add, new RegOperand(carry), new RegOperand(p01lo));
-            VReg p10lo = Binary(Opcode.And, new RegOperand(p10), mask);
-            VReg middle = Binary(Opcode.Add, new RegOperand(middle0), new RegOperand(p10lo));
-            VReg upper = Binary(Opcode.Shl, new RegOperand(middle), count);
-            VReg lower = Binary(Opcode.And, new RegOperand(p00), mask);
+            VReg carry = Binary(Opcode.ShrU, RegOperand.Of(p00), count);
+            VReg p01lo = Binary(Opcode.And, RegOperand.Of(p01), mask);
+            VReg middle0 = Binary(Opcode.Add, RegOperand.Of(carry), RegOperand.Of(p01lo));
+            VReg p10lo = Binary(Opcode.And, RegOperand.Of(p10), mask);
+            VReg middle = Binary(Opcode.Add, RegOperand.Of(middle0), RegOperand.Of(p10lo));
+            VReg upper = Binary(Opcode.Shl, RegOperand.Of(middle), count);
+            VReg lower = Binary(Opcode.And, RegOperand.Of(p00), mask);
             expanded.Add(new Instr { Op = Opcode.Or, Dest = low.Dest, Line = low.Line,
-                Operands = { new RegOperand(lower), new RegOperand(upper) } });
+                Operands = { RegOperand.Of(lower), RegOperand.Of(upper) } });
             replacements[low] = expanded;
 
             VReg Binary(Opcode op, Operand left, Operand right)

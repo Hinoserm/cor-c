@@ -245,7 +245,7 @@ public sealed partial class Lowering
                 Type pt = m.Params[i].Type;
                 FrameSlot slot = _f.NewSlot(Math.Max(4, pt.Size), Math.Min(Math.Max(4, pt.Size), _t.Align64), m.Params[i].Name);
                 _paramSlots[i] = slot;
-                _e.Store(new SlotOperand(slot), new RegOperand(_params[i]), 0, pt.Size);
+                _e.Store(new SlotOperand(slot), RegOperand.Of(_params[i]), 0, pt.Size);
             }
         }
 
@@ -267,19 +267,19 @@ public sealed partial class Lowering
             {
                 // Named arguments are evaluated where they were written and
                 // passed where they belong, as `new`'s are.
-                List<Operand> args = new() { new RegOperand(_this!) };
+                List<Operand> args = new() { RegOperand.Of(_this!) };
                 if (decl.Init.ArgumentOrder.Count != 0)
                 {
                     Operand[] prepared = new Operand[decl.Init.Args.Count];
                     foreach (int index in decl.Init.ArgumentOrder)
-                        prepared[index] = new RegOperand(EvalAs(decl.Init.Args[index], chained.Params[index]));
+                        prepared[index] = RegOperand.Of(EvalAs(decl.Init.Args[index], chained.Params[index]));
                     args.AddRange(prepared);
                 }
                 else
                 {
                     for (int i = 0; i < decl.Init.Args.Count; i++)
                     {
-                        args.Add(new RegOperand(EvalAs(decl.Init.Args[i], chained.Params[i])));
+                        args.Add(RegOperand.Of(EvalAs(decl.Init.Args[i], chained.Params[i])));
                     }
                 }
                 CallDirect(chained, IrType.Void, args);
@@ -292,7 +292,7 @@ public sealed partial class Lowering
         if (decl.IsCtor && decl.Init is null && !m.Static
             && NearestConstructor(m.Owner.Base) is MethodSymbol inherited)
         {
-            CallDirect(inherited, IrType.Void, new List<Operand> { new RegOperand(_this!) });
+            CallDirect(inherited, IrType.Void, new List<Operand> { RegOperand.Of(_this!) });
         }
 
         VReg? fromC = CalledByC(m) ? EnterFromC(decl) : null;
@@ -333,11 +333,11 @@ public sealed partial class Lowering
             // bytes only. A buffer is the caller's frame, or a block the caller
             // made for it and marks the cards of itself (ResultBuffer).
             _e.Emit(Opcode.MemCopy, null, R(_resultBuffer), R(_returnValue), Imm(Math.Max(1, StructOf(m.Returns).InstanceSize), IrTypes.Word));
-            _e.Ret(new RegOperand(_resultBuffer));
+            _e.Ret(RegOperand.Of(_resultBuffer));
         }
         else
         {
-            _e.Ret(_returnValue is null ? null : new RegOperand(_returnValue));
+            _e.Ret(_returnValue is null ? null : RegOperand.Of(_returnValue));
         }
 
         _m.Functions.Add(_f);
@@ -436,7 +436,7 @@ public sealed partial class Lowering
     {
         if (p.Index >= _params.Length || _paramCells.ContainsKey(p.Index)) return;
         VReg cell = Allocate(at, Math.Max(_t.WordSize, Math.Max(1, p.Type.Size)));
-        _e.Store(new RegOperand(cell), new RegOperand(_params[p.Index]), 0, LoadSize(p.Type));
+        _e.Store(RegOperand.Of(cell), RegOperand.Of(_params[p.Index]), 0, LoadSize(p.Type));
         _paramCells[p.Index] = cell;
     }
 
@@ -851,7 +851,7 @@ public sealed partial class Lowering
         switch (p)
         {
             case RegPlace r:
-                _e.CopyTo(r.Reg, new RegOperand(value));
+                _e.CopyTo(r.Reg, RegOperand.Of(value));
                 break;
             case MemPlace { Inline: true } held:
             {
@@ -916,7 +916,7 @@ public sealed partial class Lowering
                 if (IsStructValue(m.Type)) value = HeapStruct(_decl ?? (Node)new MethodDecl { Name = "", Line = 0, Col = 0 }, value, m.Type);
                 ReferenceBarrier(m, value);
                 CardMarkAhead(m, value);
-                _e.Store(m.Address, new RegOperand(value), m.Offset, LoadSize(m.Type));
+                _e.Store(m.Address, RegOperand.Of(value), m.Offset, LoadSize(m.Type));
                 if (m.Field is FieldSymbol written && TagsField(written)) _e.Block.Instrs[^1].Field = FieldKey(written);
                 if (m.Field is FieldSymbol writtenFamily && m.Address is RegOperand) _e.Block.Instrs[^1].Family = FieldFamily(writtenFamily, m.Offset);
                 CardMark(m, value);
@@ -1234,11 +1234,11 @@ public sealed partial class Lowering
         if (_b.PatternSym.TryGetValue(at, out LocalSym? named) && named.Boxed
             && _symCells.TryGetValue(named, out VReg? cell) && cell is not null)
         {
-            _e.Store(new RegOperand(cell), new RegOperand(value), 0, LoadSize(held));
+            _e.Store(RegOperand.Of(cell), RegOperand.Of(value), 0, LoadSize(held));
             return;
         }
 
-        _e.CopyTo(SlotReg(slot, IrTypes.Of(held)), new RegOperand(value));
+        _e.CopyTo(SlotReg(slot, IrTypes.Of(held)), RegOperand.Of(value));
     }
 
     /// <summary>The place a resolved name denotes, or null with an error.</summary>
@@ -1254,7 +1254,7 @@ public sealed partial class Lowering
         // written by copying into them, and both names see every write.
         if (storage is not null and not MemPlace { Inline: true } && _refAliased.Contains(sym) && IsStructValue(storage.Type))
         {
-            return new MemPlace(new RegOperand(StructBlock(storage, at, storage.Type)), 0, storage.Type, false, true);
+            return new MemPlace(RegOperand.Of(StructBlock(storage, at, storage.Type)), 0, storage.Type, false, true);
         }
         return storage;
     }
@@ -1275,7 +1275,7 @@ public sealed partial class Lowering
                     Error(at, $"'{reference.Name}' has no declaration");
                     return null;
                 }
-                return new MemPlace(new RegOperand(LocalReg(d)), 0, reference.Type, false, IsStructValue(reference.Type));
+                return new MemPlace(RegOperand.Of(LocalReg(d)), 0, reference.Type, false, IsStructValue(reference.Type));
             }
 
             case LocalSym { Boxed: true } b:
@@ -1288,14 +1288,14 @@ public sealed partial class Lowering
                     // entry instead. See MakeCapturedCells.
                     if (_symCells.TryGetValue(b, out VReg? cell) && cell is not null)
                     {
-                        return new MemPlace(new RegOperand(cell), 0, b.Type);
+                        return new MemPlace(RegOperand.Of(cell), 0, b.Type);
                     }
 
                     Error(at, $"'{b.Name}' has no declaration");
                     return null;
                 }
                 // The register holds the cell's address; the value is in the cell.
-                return new MemPlace(new RegOperand(LocalReg(d)), 0, b.Type);
+                return new MemPlace(RegOperand.Of(LocalReg(d)), 0, b.Type);
             }
 
             case LocalSym l:
@@ -1334,11 +1334,11 @@ public sealed partial class Lowering
                     // copy into it, as a struct held in line is. A captured
                     // variable's cell (ParamSym.Cell) holds the struct as a
                     // boxed local's does.
-                    return new MemPlace(new RegOperand(_params[p.Index]), 0, p.Type, false, IsStructValue(p.Type) && !p.Cell);
+                    return new MemPlace(RegOperand.Of(_params[p.Index]), 0, p.Type, false, IsStructValue(p.Type) && !p.Cell);
                 }
                 if (_paramCells.TryGetValue(p.Index, out VReg? paramCell))
                 {
-                    return new MemPlace(new RegOperand(paramCell), 0, p.Type);
+                    return new MemPlace(RegOperand.Of(paramCell), 0, p.Type);
                 }
                 if (_paramSlots[p.Index] is FrameSlot ps)
                 {
@@ -1355,7 +1355,7 @@ public sealed partial class Lowering
             case CapturedFieldSym captured:
             {
                 VReg env = _e.Load(IrTypes.Word, _this!, captured.Holder.Offset);
-                return new MemPlace(new RegOperand(env), captured.Field.Offset, captured.Field.Type, captured.Field.Volatile);
+                return new MemPlace(RegOperand.Of(env), captured.Field.Offset, captured.Field.Type, captured.Field.Volatile);
             }
 
             default:
@@ -1391,7 +1391,7 @@ public sealed partial class Lowering
             // storage, and nothing shares it with another thread.
             VReg? cell = store.ThreadStatic ? ThreadStaticCell(store, at) : null;
             MemPlace place = cell is not null
-                ? new MemPlace(new RegOperand(cell), 0, f.Type, f.Volatile)
+                ? new MemPlace(RegOperand.Of(cell), 0, f.Type, f.Volatile)
                 : new MemPlace(new SymOperand(StaticSymbol(store)), 0, f.Type, f.Volatile, Field: store);
 
             // A STATIC STRUCT FIELD IS A VALUE TOO, zero until written; static
@@ -1426,10 +1426,10 @@ public sealed partial class Lowering
         if (f.Boxed)
         {
             VReg cell = _e.Load(IrTypes.Word, obj, f.Offset);
-            return new MemPlace(new RegOperand(cell), 0, f.Type, f.Volatile);
+            return new MemPlace(RegOperand.Of(cell), 0, f.Type, f.Volatile);
         }
 
-        return new MemPlace(new RegOperand(obj), f.Offset, f.Type, f.Volatile, f.Inline, Field: f);
+        return new MemPlace(RegOperand.Of(obj), f.Offset, f.Type, f.Volatile, f.Inline, Field: f);
     }
 
     /// <summary>
@@ -1469,7 +1469,7 @@ public sealed partial class Lowering
             {
                 Type pointee = _b.TypeOf(deref);
                 VReg addr = Eval(deref.Operand);
-                return new MemPlace(new RegOperand(addr), 0, pointee);
+                return new MemPlace(RegOperand.Of(addr), 0, pointee);
             }
 
             case IndexExpr ix when !_b.Indexers.ContainsKey(ix) && !_b.IndexSetters.ContainsKey(ix):
@@ -1507,13 +1507,13 @@ public sealed partial class Lowering
         {
             VReg scaled = stride == 1 ? index : _e.Binary(Opcode.Mul, index, stride);
             VReg addr = _e.Binary(Opcode.Add, basis, WordOf(scaled));
-            return new MemPlace(new RegOperand(addr), 0, stored);
+            return new MemPlace(RegOperand.Of(addr), 0, stored);
         }
 
         BoundsCheck(basis, index, at, sequence.IsArray);
         VReg scaled2 = stride == 1 ? index : _e.Binary(Opcode.Mul, index, stride);
         VReg addr2 = _e.Binary(Opcode.Add, basis, WordOf(scaled2));
-        return new MemPlace(new RegOperand(addr2), _t.ArrayHeaderBytes, stored,
+        return new MemPlace(RegOperand.Of(addr2), _t.ArrayHeaderBytes, stored,
             Inline: sequence.Prim != Prim.String && InlineElement(stored),
             CovariantArray: sequence.IsArray && MayBeCovariant(stored) ? basis : null);
     }

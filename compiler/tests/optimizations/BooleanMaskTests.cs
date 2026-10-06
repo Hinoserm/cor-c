@@ -21,7 +21,7 @@ public static partial class Program
             if (mode == "effect") b.Call("side_effect", IrType.Void);
             b.CopyTo(result, new ImmOperand(mode == "other-value" ? 1 : -1, IrType.I32)); b.Jump(join);
             b.SetBlock(no); b.CopyTo(result, new ImmOperand(0, IrType.I32)); b.Jump(join);
-            b.SetBlock(join); b.Ret(new RegOperand(result));
+            b.SetBlock(join); b.Ret(RegOperand.Of(result));
             new BooleanMaskDiamonds().Run(f);
             Assert(entry.Instrs.Any(i => i.Op == Opcode.Neg && i.Dest == result) == (mode == "mask"), mode + " diamond safety");
         }

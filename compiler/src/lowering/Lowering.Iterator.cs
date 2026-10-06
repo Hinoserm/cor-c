@@ -388,7 +388,7 @@ public sealed partial class Lowering
                 Type pt = m.Params[i].Type;
                 FrameSlot slot = _f.NewSlot(Math.Max(4, pt.Size), Math.Min(Math.Max(4, pt.Size), _t.Align64), m.Params[i].Name);
                 _paramSlots[i] = slot;
-                _e.Store(new SlotOperand(slot), new RegOperand(_params[i]), 0, pt.Size);
+                _e.Store(new SlotOperand(slot), RegOperand.Of(_params[i]), 0, pt.Size);
             }
         }
 
