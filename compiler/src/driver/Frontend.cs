@@ -354,7 +354,7 @@ public static class Frontend
         {
             // Counted as they stand: a deferred list is not made to be counted.
             foreach (var group in unit.Types.GroupBy(t => t.TypeParams.Count > 0 ? "template"
-                         : t.MembersPending ? (t.Canon is not null ? "shared-copy-deferred" : "specialised-deferred")
+                         : t.MembersPending ? (t.Canon is not null ? "shared-copy-deferred" : t.SignatureOnly ? "imported-deferred" : "specialised-deferred")
                          : t.Canon is not null ? "shared-copy" : t.Specialised ? "specialised" : t.SignatureOnly ? "imported" : "own"))
             {
                 Console.Error.WriteLine("unit " + group.Key + ": " + group.Count() + " types, "
@@ -808,7 +808,7 @@ public static class Frontend
             {
                 if (!into.Bases.Any(had => had.ToString() == basis.ToString()))
                 {
-                    into.Bases.Add(basis);
+                    into.WritableBases.Add(basis);
                 }
             }
 

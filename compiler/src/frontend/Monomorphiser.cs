@@ -608,6 +608,13 @@ public sealed class Monomorphiser
             }
         }
 
+        // Which simple names are declared twice, for ImportedLater.
+        HashSet<string> named = new(StringComparer.Ordinal);
+        foreach (TypeDecl t in unit.Types)
+        {
+            if (!named.Add(t.Name)) _sharedNames.Add(t.Name);
+        }
+
         // WHICH NAMES ARE A MACHINE WORD, gathered before anything is
         // instantiated, because whether one compiled copy can serve a type
         // argument is a question about that argument's SHAPE and the shape is
@@ -878,6 +885,7 @@ public sealed class Monomorphiser
         _made.Clear();
         _settled.Clear();
         _tupleNamings.Clear();
+        _sharedNames.Clear();
         return output;
     }
 
@@ -2227,22 +2235,22 @@ public sealed class Monomorphiser
             Scope = d.Scope,
         };
 
-        made.WritableTemplateArgs.AddRange(d.TemplateArgs);
+        if (d.TemplateArgs.Count > 0) made.WritableTemplateArgs.AddRange(d.TemplateArgs);
 
         foreach (TypeRef b in d.Bases)
         {
-            made.Bases.Add(Sub(b, map));
+            made.WritableBases.Add(Sub(b, map));
         }
 
-        made.Attributes.AddRange(d.Attributes);
-        made.AttributeParts.AddRange(d.AttributeParts);
+        if (d.Attributes.Count > 0) made.WritableAttributes.AddRange(d.Attributes);
+        if (d.AttributeParts.Count > 0) made.WritableAttributeParts.AddRange(d.AttributeParts);
 
         foreach (EnumMember em in d.EnumMembers)
         {
             EnumMember copy = new() { Name = em.Name, Value = em.Value, Line = em.Line, Col = em.Col };
 
-            copy.WritableAttributes.AddRange(em.Attributes);
-            made.EnumMembers.Add(copy);
+            if (em.Attributes.Count > 0) copy.WritableAttributes.AddRange(em.Attributes);
+            made.WritableEnumMembers.Add(copy);
         }
 
         // A COPY WHOSE MEMBERS ARE STILL TO BE MADE STAYS ONE. A deferred
@@ -2256,7 +2264,172 @@ public sealed class Monomorphiser
             return made;
         }
 
+        // Asked before the members are read, which clears it.
+        bool later = ImportedLater(d, map);
         RewriteMembers(d, d.Members, map, name, made.Members);
+        if (later) DeferImported(made, d.ReadAgain!, name, ScopeOf(d));
+        return made;
+    }
+
+    /// <summary>
+    /// WHETHER AN IMPORTED DECLARATION'S MEMBERS ARE DROPPED ONCE REWRITTEN
+    /// and made again on first use (DeferImported): one the index says can be
+    /// read again (IndexedDeclarations.ReadLater), that nothing has looked at
+    /// since -- so reading it again gives exactly what is being rewritten --
+    /// copied as itself rather than as a template's copy. Not in a library,
+    /// which publishes every type it holds, and not one whose name another
+    /// declaration of the unit has too: the binder moves such a one into
+    /// System, or adds it to the prelude's type of its name, there and then.
+    /// </summary>
+    private bool ImportedLater(TypeDecl d, Dictionary<string, TypeRef> map)
+        => d.UntouchedSinceRead && map.Count == 0 && !_library && !_sharedNames.Contains(d.Name);
+
+    /// <summary>The simple names more than one declaration of the unit has (ImportedLater).</summary>
+    private readonly HashSet<string> _sharedNames = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// How many imported declarations had their members dropped once
+    /// rewritten (DeferImported), and how many members were read and made
+    /// for them again because something asked: printed with the declaration
+    /// statistics.
+    /// </summary>
+    public static long DeferredImports, ImportedMembersMadeLater;
+
+    /// <summary>
+    /// AN IMPORTED DECLARATION'S MEMBERS, DROPPED NOW AND MADE ON FIRST USE.
+    /// A unit loads every declaration its signatures reach and asks for the
+    /// members of few of them; until now each was copied, round after round,
+    /// and its fields, methods and properties declared, initialisers and
+    /// accessors and all. The rewrite just done is what claimed every
+    /// specialisation they name, so the unit declares the types it always
+    /// did; what is dropped is only the copy, made again -- read from the
+    /// record (TypeDecl.ReadAgain) and rewritten by this monomorphiser, as
+    /// here -- when the binder first asks (Binder.DeclareMembersNow).
+    ///
+    /// What binding needs of it before then is kept: every name its members
+    /// can be declared under, for a lookup that cannot find one there
+    /// (TypeSymbol.MayHave), and every type their signatures name, which
+    /// binding resolves where it would have declared them
+    /// (TypeDecl.SignatureTypes).
+    /// </summary>
+    private void DeferImported(TypeDecl made, Func<List<MemberDecl>> read, string name,
+                               (string Scope, string Namespace, FileScope? Usings, bool Library) scope)
+    {
+        HashSet<string> names = MemberNames(made.Members);
+        TypeRef[] signatures = SignatureTypes(made.Members);
+        made.DeferMembers(asking => MakeImported(asking, read, name, scope), names, signatures);
+        DeferredImports++;
+    }
+
+    /// <summary>
+    /// Every type a list of members' signatures names, in the order the
+    /// binder resolves them (Binder.DeclareMembersIn) and once each: a field's
+    /// type, a property's and its indexer's parameters', a method's result
+    /// and its parameters'. A constant's too, which the binder resolves when
+    /// it evaluates it. Once each by what it spells and everything the
+    /// spelling leaves out, so that `int` and `List$Token` written in fifty
+    /// signatures are kept once, and two references that could resolve apart
+    /// are both kept.
+    /// </summary>
+    private static TypeRef[] SignatureTypes(List<MemberDecl> members)
+    {
+        List<TypeRef> found = new();
+        HashSet<string> seen = new(StringComparer.Ordinal);
+        void Add(TypeRef? r)
+        {
+            if (r is not null && seen.Add(Spelling(r))) found.Add(r);
+        }
+        foreach (MemberDecl m in members)
+        {
+            switch (m)
+            {
+                case FieldDecl f:
+                    Add(f.Type);
+                    break;
+                case PropertyDecl p:
+                    Add(p.Type);
+                    foreach (Param ip in p.Params) Add(ip.Type);
+                    break;
+                case MethodDecl md:
+                    if (!md.IsCtor) Add(md.Returns);
+                    foreach (Param p in md.Params) Add(p.Type);
+                    break;
+            }
+        }
+        return found.ToArray();
+    }
+
+    /// <summary>
+    /// A type reference spelt with everything resolving it reads: its name,
+    /// its arguments and its use-site arguments, its ranks, stars and marks,
+    /// a tuple's element names, and which shared argument it stands for.
+    /// </summary>
+    private static string Spelling(TypeRef r)
+    {
+        System.Text.StringBuilder s = new();
+        void Spell(TypeRef t)
+        {
+            s.Append(t.Name).Append('|').Append(t.ArrayRank).Append(',').Append(t.PointerDepth).Append(',')
+             .Append(t.Nullable ? '?' : '-').Append(t.ElementNullable ? '?' : '-').Append(',').Append(t.InnerNullable)
+             .Append(',').Append(t.CanonIndex);
+            if (t.TupleNames is { } names) s.Append('(').Append(string.Join(",", names)).Append(')');
+            s.Append('<');
+            foreach (TypeRef a in t.Args) Spell(a);
+            s.Append('>');
+            if (t.UseArgs is { } uses)
+            {
+                s.Append('[');
+                foreach (TypeRef a in uses) Spell(a);
+                s.Append(']');
+            }
+            s.Append(';');
+        }
+        Spell(r);
+        return s.ToString();
+    }
+
+    /// <summary>
+    /// An imported declaration's members, made now: read from its record
+    /// again and rewritten as DeferImported's rewrite rewrote them, by this
+    /// monomorphiser, from where the declaration was written, as a
+    /// declaration of its own is copied in a round (Run). The same checks as
+    /// a specialisation's (MakeMembers): anything new queued, demanded or
+    /// reported means the members were not made as they were the first time,
+    /// which is a fault in the compiler and is said so.
+    /// </summary>
+    private List<MemberDecl> MakeImported(TypeDecl asking, Func<List<MemberDecl>> read, string name,
+                                          (string Scope, string Namespace, FileScope? Usings, bool Library) scope)
+    {
+        int errors = _errors.Count;
+        bool demanded = _templateBatch.Any;
+        List<MemberDecl> members = read();
+        List<MemberDecl> made = new(members.Count);
+
+        _structParams.Clear();
+        _paramInfo.Clear();
+        _bodiesElsewhere = false;
+        _canonParams = null;
+        _canonMade = null;
+        (string, string, FileScope?, bool) was = (_scope, _inNamespace, _usings, _libraryCode);
+        LeaveScope(scope);
+        try
+        {
+            RewriteMembers(asking, members, new Dictionary<string, TypeRef>(StringComparer.Ordinal), name, made);
+        }
+        finally
+        {
+            LeaveScope(was);
+            _settled.Clear();
+            _tupleNamings.Clear();
+        }
+
+        if (_pending.Count > 0 || _errors.Count != errors || _templateBatch.Any != demanded)
+        {
+            throw new InvalidOperationException(
+                $"the members of '{name}', read again when first asked for, named a type, a declaration or a mistake "
+                + "their first reading did not: deferred members must be made exactly as they were");
+        }
+        ImportedMembersMadeLater += made.Count;
         return made;
     }
 
@@ -2471,8 +2644,8 @@ public sealed class Monomorphiser
         {
             made.Args.Add(Rewrite(a, map));
         }
-        made.WritableArgNames.AddRange(init.ArgNames);
-        made.WritableArgumentOrder.AddRange(init.ArgumentOrder);
+        if (init.ArgNames.Count > 0) made.WritableArgNames.AddRange(init.ArgNames);
+        if (init.ArgumentOrder.Count > 0) made.WritableArgumentOrder.AddRange(init.ArgumentOrder);
         return made;
     }
 
@@ -2723,7 +2896,7 @@ public sealed class Monomorphiser
                 CopyInitBody(inner, nested, map);
             }
 
-            to.Inits.Add(new InitAssign
+            to.WritableInits.Add(new InitAssign
             {
                 Name = init.Name,
                 Value = init.Value is null ? null : Rewrite(init.Value, map),
@@ -2741,7 +2914,7 @@ public sealed class Monomorphiser
                 copy.Args.Add(Rewrite(one, map));
             }
 
-            to.Adds.Add(copy);
+            to.WritableAdds.Add(copy);
         }
 
         foreach (InitIndex one in from.Indexes)
@@ -2756,7 +2929,7 @@ public sealed class Monomorphiser
                 copy.Args.Add(Rewrite(key, map));
             }
 
-            to.Indexes.Add(copy);
+            to.WritableIndexes.Add(copy);
         }
     }
 
@@ -2900,8 +3073,8 @@ public sealed class Monomorphiser
                 // in every specialisation -- which is right by accident when
                 // the named argument is the first one, and silently wrong the
                 // moment it is not.
-                made.WritableArgNames.AddRange(c.ArgNames);
-                made.WritableLocalArgumentOrder.AddRange(c.LocalArgumentOrder);
+                if (c.ArgNames.Count > 0) made.WritableArgNames.AddRange(c.ArgNames);
+                if (c.LocalArgumentOrder.Count > 0) made.WritableLocalArgumentOrder.AddRange(c.LocalArgumentOrder);
                 made.Spans = c.Spans;
                 made.Source = c.Source;
                 made.HiddenTypeArgs = c.HiddenTypeArgs;
@@ -3025,7 +3198,7 @@ public sealed class Monomorphiser
                     Returns = lambda.Returns is null ? null : Sub(lambda.Returns, map), ReturnMods = lambda.ReturnMods,
                     TypesWritten = lambda.TypesWritten,
                 };
-                made.WritableAttributes.AddRange(lambda.Attributes);
+                if (lambda.Attributes.Count > 0) made.WritableAttributes.AddRange(lambda.Attributes);
                 foreach (Param p in lambda.Params)
                 {
                     made.WritableParams.Add(new Param
@@ -3076,10 +3249,10 @@ public sealed class Monomorphiser
                 {
                     made.Args.Add(Rewrite(a, map));
                 }
-                made.WritableArgNames.AddRange(nw.ArgNames);
+                if (nw.ArgNames.Count > 0) made.WritableArgNames.AddRange(nw.ArgNames);
                 made.Spans = nw.Spans;
                 made.Source = nw.Source;
-                made.WritableArgumentOrder.AddRange(nw.ArgumentOrder);
+                if (nw.ArgumentOrder.Count > 0) made.WritableArgumentOrder.AddRange(nw.ArgumentOrder);
 
                 // AND THE ARRAY'S ELEMENTS. `new[] { a, b }` is the whole of
                 // the expression, not decoration on it, and a copy that lost

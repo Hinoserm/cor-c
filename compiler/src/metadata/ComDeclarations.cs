@@ -838,7 +838,7 @@ public static class ComDeclarations
         // them with its own interfaces and members; a sealed class's are
         // plain.
         string modifier = inherits ? "override" : c.Mods.HasFlag(Mods.Sealed) ? "" : "virtual";
-        if (!inherits) c.Bases.Add(new TypeRef { Name = Ns + ".IComCallable", Line = c.Line, Col = c.Col });
+        if (!inherits) c.WritableBases.Add(new TypeRef { Name = Ns + ".IComCallable", Line = c.Line, Col = c.Col });
 
         // The members, by name: the class's own and its bases' public ones,
         // then its COM interfaces' [DispId] ones under their numbers.
