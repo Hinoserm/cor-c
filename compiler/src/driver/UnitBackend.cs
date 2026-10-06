@@ -134,7 +134,10 @@ public sealed class UnitBackend : IUnitBackend
             ? record.Calls.Where(available.ContainsKey).Select(name => available[name]).ToArray() : Array.Empty<IrImport>();
         long Cost(int index) => checked(3 * ((archive.Entries.TryGetValue("F:" + module.Functions[index].Name, out IrArchiveEntry? record) ? record.DecodeBytes : 0)
             + Selected(index).Sum(import => import.DecodeBytes)) + 512 * 1024);
-        Dictionary<string, DataItem>? items = null;
+        // The unit's read-only items, made once before any worker asks for
+        // them: made on first use inside Load, every backend worker could
+        // be making its own at once over the module the others were reading.
+        Dictionary<string, DataItem> items = Devirtualize.ReadOnlyItems(module);
         // WHAT A FUNCTION CALLS, for the link's lifetime run to look into
         // (Escape.RunAtLink): the body this unit archived, or another unit's
         // the link handed over to import. Decoded fresh for each asker, as
@@ -224,7 +227,6 @@ public sealed class UnitBackend : IUnitBackend
             // sequence) now walks an iterator this function made, whose
             // type its descriptor says -- the unit's own, or another unit's
             // as this one knew it (ShadowData).
-            items ??= Devirtualize.ReadOnlyItems(module);
             for (int round = 0; round < 2; round++)
             {
                 devirtualize.Run(function, items);
