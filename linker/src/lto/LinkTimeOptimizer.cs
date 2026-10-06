@@ -29,10 +29,13 @@ public static class LinkTimeOptimizer
             if (summary is null) continue;
             summaries.Add(input.Object, summary);
             Dictionary<string, int> values = new(StringComparer.Ordinal);
+            // EACH NAME'S DEFINITIONS, found once: every return asked the whole
+            // symbol table for its name, returns times symbols in each unit.
+            Dictionary<string, List<Symbol>>? definitions = summary.Returns.Count == 0 ? null : DefinitionsByName(input.Object);
             foreach (ConstantReturn returned in summary.Returns)
             {
                 if (input.Object.SuppressedDefinitions.Contains(returned.Symbol)) continue;
-                Symbol[] matches = input.Object.Symbols.Where(s => s.Name == returned.Symbol && s.IsDefined).ToArray();
+                Symbol[] matches = definitions!.TryGetValue(returned.Symbol, out List<Symbol>? named) ? named.ToArray() : Array.Empty<Symbol>();
                 if (matches.Length != 1 || !matches[0].IsFunction || matches[0].Section!.Kind != SectionKind.Code)
                     throw new ElfFormatException(input.Name + ": invalid LTO function definition " + returned.Symbol);
                 Symbol symbol = matches[0];
@@ -50,16 +53,27 @@ public static class LinkTimeOptimizer
         {
             if (!summaries.TryGetValue(input.Object, out OptimizationSummary? summary)) continue;
             Section text = input.Object.Section(".text");
+            // THE RELOCATIONS BY OFFSET AND THE DEFINITIONS BY NAME, made once a
+            // unit: each call asked every relocation of the unit's code twice
+            // (its own, and any overlapping it) and every symbol once -- calls
+            // times relocations, in every unit of the image. A relocation's
+            // four bytes overlap the call's from four before it to three
+            // after, so those offsets are all the overlap test can be.
+            Dictionary<int, List<Relocation>>? at = summary.Calls.Count == 0 ? null : RelocationsByOffset(text);
+            Dictionary<string, List<Symbol>>? named = summary.Calls.Count == 0 ? null : DefinitionsByName(input.Object);
             foreach (DirectCall call in summary.Calls)
             {
-                Relocation[] matches = text.Relocs.Where(r => r.Offset == call.Offset).ToArray();
+                Relocation[] matches = at!.TryGetValue(call.Offset, out List<Relocation>? here) ? here.ToArray() : Array.Empty<Relocation>();
+                bool overlapped = false;
+                for (int near = call.Offset - 4; near <= call.Offset + 3 && !overlapped; near++)
+                    overlapped = near != call.Offset && at.ContainsKey(near);
                 if (call.Offset > text.Bytes.Count - 4 || text.Bytes[call.Offset - 1] != 0xe8
                     || matches.Length != 1 || matches[0].Kind is not (RelocKind.Rel32 or RelocKind.Plt32) || matches[0].Addend != -4
                     || matches[0].Symbol != call.Symbol
-                    || text.Relocs.Any(r => r.Offset != call.Offset && r.Offset < call.Offset + 4 && r.Offset + 4 > call.Offset - 1))
+                    || overlapped)
                     throw new ElfFormatException(input.Name + ": invalid LTO direct call " + call.Symbol);
                 // Local definitions shadow globals, exactly as native symbol resolution does.
-                Symbol? local = input.Object.Symbols.FirstOrDefault(s => s.Name == call.Symbol && s.IsDefined && !s.Global);
+                Symbol? local = named!.TryGetValue(call.Symbol, out List<Symbol>? candidates) ? candidates.FirstOrDefault(s => !s.Global) : null;
                 ObjectFile? owner = local is not null ? input.Object
                     : globals.TryGetValue(call.Symbol, out var found) ? found.Object : null;
                 if (owner is not null && constants.TryGetValue(owner, out var values) && values.TryGetValue(call.Symbol, out int value))
@@ -81,5 +95,30 @@ public static class LinkTimeOptimizer
         foreach (var input in inputs) input.Object.Sections.RemoveAll(s => s.Name == OptimizationSummary.SectionName || s.Name == IrArchive.SectionName
             || s.Name == LifetimeHints.SectionName || s.Name == RegionHints.SectionName);
         return enabled ? changes.Count : 0;
+    }
+
+    /// <summary>An object's defined symbols by name, each name's in the order the table holds them.</summary>
+    private static Dictionary<string, List<Symbol>> DefinitionsByName(ObjectFile obj)
+    {
+        Dictionary<string, List<Symbol>> named = new(StringComparer.Ordinal);
+        foreach (Symbol symbol in obj.Symbols)
+        {
+            if (!symbol.IsDefined) continue;
+            if (!named.TryGetValue(symbol.Name, out List<Symbol>? list)) named[symbol.Name] = list = new(1);
+            list.Add(symbol);
+        }
+        return named;
+    }
+
+    /// <summary>A section's relocations by the offset they patch, each offset's in the order the section holds them.</summary>
+    private static Dictionary<int, List<Relocation>> RelocationsByOffset(Section section)
+    {
+        Dictionary<int, List<Relocation>> at = new();
+        foreach (Relocation r in section.Relocs)
+        {
+            if (!at.TryGetValue(r.Offset, out List<Relocation>? list)) at[r.Offset] = list = new(1);
+            list.Add(r);
+        }
+        return at;
     }
 }

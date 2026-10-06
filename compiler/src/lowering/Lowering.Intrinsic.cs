@@ -53,7 +53,21 @@ public sealed partial class Lowering
         {
             // The word as it is: no test, no conversion (Sys.As).
             case "As":
-                return Arg(call, target, 0);
+            {
+                // THE WORD AT THE TYPE ASKED FOR. As changes the static type
+                // and nothing else, but a value held in another register width
+                // -- a long's two words, read as a string in a table whose key
+                // is long, on a path the copy's IsString folds away -- came
+                // back a register of the old width, and its copy into a word
+                // was IR of two widths that only the folding kept from being
+                // compiled. Narrowed or widened as a word is (ToWord).
+                VReg value = Arg(call, target, 0);
+                IrType wanted = IrTypes.Of(_b.TypeOf(call));
+                if (value.Type == wanted || value.Type is IrType.F32 or IrType.F64 || wanted is IrType.F32 or IrType.F64) return value;
+                if (value.Type == IrType.I64 && wanted == IrType.I32) return _e.Unary(Opcode.Trunc64, value);
+                if (value.Type == IrType.I32 && wanted == IrType.I64) return _e.Unary(Opcode.ZExt32, R(value), IrType.I64);
+                return value;
+            }
             case "Rethrow":
                 Rethrow(Arg(call, target, 0), call);
                 return Void();

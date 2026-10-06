@@ -41,6 +41,13 @@ public static class Switches
     /// <summary>--verify-passes: the IR verified after every pass.</summary>
     public static bool VerifyPasses;
 
+    /// <summary>
+    /// --verify-analyses: every analysis the lifetime rules keep of a function
+    /// (Opt.AnalysisCache) checked, at each answer, against the function's
+    /// whole shape: an in-place edit that did not say so stops the run.
+    /// </summary>
+    public static bool VerifyAnalyses;
+
     /// <summary>--verify-marks: every pass checked for a mark it lost off an instruction it kept (MarkVerifier).</summary>
     public static bool VerifyMarks;
 
@@ -136,6 +143,11 @@ public static class Switches
     public static bool NoRta;
 
     /// <summary>Takes this process's switches off the command line, wherever they are written.</summary>
+    // KEPT WHEN ABSENT, every one: a switch is the process's, and this runs
+    // again for every command a hosted build runs inside it (a unit's
+    // compile, the project's link), whose own arguments name none of them.
+    // Assigned afresh, each such command turned the process's diagnostics
+    // off for the rest of it.
     public static List<string> Take(IEnumerable<string> args)
     {
         List<string> taken = new(args);
@@ -145,39 +157,40 @@ public static class Switches
             AllocReport = true;
             AllocReportOnly = report == "all" ? null : report;
         }
-        HandedTrace = Switch(taken, "--trace-handed");
-        FieldTrace = Valued(taken, "--trace-fields");
-        FieldTraceAll = Switch(taken, "--trace-fields-all");
-        TraceForward = Valued(taken, "--trace-forward");
-        DumpFunction = Valued(taken, "--dump-function");
+        HandedTrace |= Switch(taken, "--trace-handed");
+        FieldTrace = Valued(taken, "--trace-fields") ?? FieldTrace;
+        FieldTraceAll |= Switch(taken, "--trace-fields-all");
+        TraceForward = Valued(taken, "--trace-forward") ?? TraceForward;
+        DumpFunction = Valued(taken, "--dump-function") ?? DumpFunction;
         if (Number(taken, "--work-budget") is long budget) WorkBudget = budget;
-        VerifyPasses = Switch(taken, "--verify-passes");
-        VerifyMarks = Switch(taken, "--verify-marks");
-        SkipPasses = Valued(taken, "--skip-passes");
-        ReportPasses = Switch(taken, "--report-passes");
-        TraceDemand = Switch(taken, "--trace-demand");
-        TraceInline = Valued(taken, "--trace-inline");
-        TraceElements = Valued(taken, "--trace-elements");
+        VerifyPasses |= Switch(taken, "--verify-passes");
+        VerifyMarks |= Switch(taken, "--verify-marks");
+        VerifyAnalyses |= Switch(taken, "--verify-analyses");
+        SkipPasses = Valued(taken, "--skip-passes") ?? SkipPasses;
+        ReportPasses |= Switch(taken, "--report-passes");
+        TraceDemand |= Switch(taken, "--trace-demand");
+        TraceInline = Valued(taken, "--trace-inline") ?? TraceInline;
+        TraceElements = Valued(taken, "--trace-elements") ?? TraceElements;
         if (Number(taken, "--lto-jobs") is long jobs) LtoJobs = (int)jobs;
-        TraceFieldSites = Switch(taken, "--trace-field-sites");
-        TraceWants = Switch(taken, "--trace-wants");
-        ReportUnit = Switch(taken, "--report-unit");
-        ReportPhases = Switch(taken, "--report-phases");
-        ReportAlloc = Switch(taken, "--report-alloc");
-        TraceSemantics = Valued(taken, "--trace-semantics");
-        TraceSemanticsOut = Valued(taken, "--trace-semantics-out");
-        LibRoot = Valued(taken, "--lib-root");
-        DumpSlots = Switch(taken, "--dump-slots");
-        DumpFamilies = Switch(taken, "--dump-families");
+        TraceFieldSites |= Switch(taken, "--trace-field-sites");
+        TraceWants |= Switch(taken, "--trace-wants");
+        ReportUnit |= Switch(taken, "--report-unit");
+        ReportPhases |= Switch(taken, "--report-phases");
+        ReportAlloc |= Switch(taken, "--report-alloc");
+        TraceSemantics = Valued(taken, "--trace-semantics") ?? TraceSemantics;
+        TraceSemanticsOut = Valued(taken, "--trace-semantics-out") ?? TraceSemanticsOut;
+        LibRoot = Valued(taken, "--lib-root") ?? LibRoot;
+        DumpSlots |= Switch(taken, "--dump-slots");
+        DumpFamilies |= Switch(taken, "--dump-families");
         if (Number(taken, "--decl-budget") is long decl) DeclBudget = decl;
         if (Number(taken, "--token-budget") is long token) TokenBudget = token;
         if (Number(taken, "--source-budget") is long source) SourceBudget = source;
-        TraceEscapes = Valued(taken, "--trace-escapes");
-        TraceFunctions = Switch(taken, "--trace-functions");
-        TraceDecl = Switch(taken, "--trace-decl");
-        TraceJoin = Switch(taken, "--trace-join");
-        CompilerIdentity = Valued(taken, "--compiler-identity");
-        TraceVirtuals = Switch(taken, "--trace-virtuals");
+        TraceEscapes = Valued(taken, "--trace-escapes") ?? TraceEscapes;
+        TraceFunctions |= Switch(taken, "--trace-functions");
+        TraceDecl |= Switch(taken, "--trace-decl");
+        TraceJoin |= Switch(taken, "--trace-join");
+        CompilerIdentity = Valued(taken, "--compiler-identity") ?? CompilerIdentity;
+        TraceVirtuals |= Switch(taken, "--trace-virtuals");
         // Kept when absent, as --region-engine is.
         if (Switch(taken, "--no-rta")) NoRta = true;
         // Kept when absent: a hosted project link takes the switches again
@@ -202,8 +215,7 @@ public static class Switches
             taken.RemoveRange(at, 2);
         }
         if (value is null) return null;
-        ChildFlags.Add(flag);
-        ChildFlags.Add(value);
+        HandOn(flag, value);
         return value;
     }
 
@@ -218,7 +230,37 @@ public static class Switches
     private static bool Switch(List<string> taken, string flag)
     {
         if (!taken.Remove(flag)) return false;
-        ChildFlags.Add(flag);
+        while (taken.Remove(flag)) { }
+        HandOn(flag);
         return true;
+    }
+
+    /// <summary>
+    /// A switch for every corc this one starts (ChildFlags), ONCE. A hosted
+    /// project build runs its link in this process (ProjectCommand.LinkApart)
+    /// with the switches it hands on written before the command, and taking
+    /// them again added each a second time: the link's backend children were
+    /// started with `--report-passes --report-passes backend`, took one, and
+    /// refused the other as an unknown command. A value given again replaces
+    /// the one handed on.
+    /// </summary>
+    public static void HandOn(string flag, string? value = null)
+    {
+        int at = ChildFlags.IndexOf(flag);
+        if (value is null)
+        {
+            if (at < 0) ChildFlags.Add(flag);
+            return;
+        }
+        // A valued flag's value follows it; a value that happens to read as a
+        // flag name is never taken for one, as values are skipped in pairs.
+        for (int k = 0; k < ChildFlags.Count; k++)
+        {
+            if (ChildFlags[k] != flag || k + 1 >= ChildFlags.Count) continue;
+            ChildFlags[k + 1] = value;
+            return;
+        }
+        ChildFlags.Add(flag);
+        ChildFlags.Add(value);
     }
 }

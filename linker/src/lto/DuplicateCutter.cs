@@ -34,6 +34,13 @@ internal static class DuplicateCutter
         List<Symbol> kept = new();
         Dictionary<Section, List<(long Start, long End)>> cuts = new();
         HashSet<Symbol> cutSymbols = new(ReferenceEqualityComparer.Instance);
+        // EACH SECTION'S SYMBOLS BY OFFSET, sorted once: every loser walked
+        // the object's whole symbol table for the one that follows it --
+        // losers times symbols, and a unit of the compiler's own build loses
+        // thousands of generic copies out of tens of thousands of symbols.
+        // What the walk found is the same: another symbol where the loser
+        // starts makes it an alias, else the first one after it ends it.
+        Dictionary<Section, (long[] Offsets, Symbol[] Symbols)> placed = new();
         foreach (Symbol loser in losers)
         {
             Section? section = loser.Section;
@@ -41,12 +48,13 @@ internal static class DuplicateCutter
             long start = loser.Offset;
             long end = section.Bytes.Count;
             bool alias = false;
-            foreach (Symbol other in obj.Symbols)
-            {
-                if (ReferenceEquals(other, loser) || other.Section != section) continue;
-                if (other.Offset == start) { alias = true; break; }
-                if (other.Offset > start && other.Offset < end) end = other.Offset;
-            }
+            if (!placed.TryGetValue(section, out var sorted)) placed.Add(section, sorted = Placed(obj, section));
+            int at = Array.BinarySearch(sorted.Offsets, start);
+            if (at < 0) at = ~at;
+            else while (at > 0 && sorted.Offsets[at - 1] == start) at--;
+            for (; at < sorted.Offsets.Length && sorted.Offsets[at] == start; at++)
+                if (!ReferenceEquals(sorted.Symbols[at], loser)) { alias = true; break; }
+            if (!alias && at < sorted.Offsets.Length && sorted.Offsets[at] < end) end = sorted.Offsets[at];
             if (alias || end < start + loser.Size || (end - start) % section.Align != 0) { kept.Add(loser); continue; }
             if (!cuts.TryGetValue(section, out var list)) cuts.Add(section, list = new());
             list.Add((start, end));
@@ -209,6 +217,18 @@ internal static class DuplicateCutter
             if (to != s.Offset)
                 obj.Symbols[i] = new Symbol { Name = s.Name, Section = section, Offset = to, Size = s.Size, IsFunction = s.IsFunction, Global = s.Global };
         }
+    }
+
+    /// <summary>A section's symbols and their offsets, ascending by offset.</summary>
+    static (long[] Offsets, Symbol[] Symbols) Placed(ObjectFile obj, Section section)
+    {
+        List<Symbol> here = new();
+        foreach (Symbol symbol in obj.Symbols) if (symbol.Section == section) here.Add(symbol);
+        Symbol[] symbols = here.ToArray();
+        long[] offsets = new long[symbols.Length];
+        for (int i = 0; i < symbols.Length; i++) offsets[i] = symbols[i].Offset;
+        Array.Sort(offsets, symbols);
+        return (offsets, symbols);
     }
 
     static uint U32(IReadOnlyList<byte> b, int at) => (uint)(b[at] | b[at + 1] << 8 | b[at + 2] << 16 | b[at + 3] << 24);

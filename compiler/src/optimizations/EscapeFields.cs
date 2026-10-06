@@ -350,10 +350,24 @@ public sealed partial class Escape
     internal FieldSummary FieldUses(Function f, IEnumerable<VReg> roots, Dictionary<string, bool[]> summaries,
         Instr? source, HashSet<VReg>? returnable, LifetimeFields? hint = null, bool framed = false, Stamp[]? kinds = null)
     {
+        // ONE SCAN OF THE FUNCTION FOR THE WHOLE QUESTION (OwnedFieldEscape.
+        // Scan): the question changes nothing, and outside PromoteIn's own
+        // scan each of its address questions -- up to four -- scanned the
+        // function again, and its definitions were found once more beside.
+        // Each record OwnFields asks about, and each parameter ParameterFields
+        // does, was that many walks of the function and their tables.
+        var scope = OwnedFieldEscape.Scan(f);
+        try { return FieldUsesCore(f, roots, summaries, source, returnable, hint, framed, kinds); }
+        finally { OwnedFieldEscape.EndScan(scope); }
+    }
+
+    private FieldSummary FieldUsesCore(Function f, IEnumerable<VReg> roots, Dictionary<string, bool[]> summaries,
+        Instr? source, HashSet<VReg>? returnable, LifetimeFields? hint, bool framed, Stamp[]? kinds)
+    {
         FieldSummary fs = new();
         int word = IrTypes.Word.Bytes();
         Dictionary<VReg, long> addresses = OwnedFieldEscape.Addresses(f, roots);
-        Defs defs = new(f, buildCfg: false);
+        Defs defs = OwnedFieldEscape.DefsOf(f);
         List<(long At, VReg Value, Instr Load)> loads = new();
         List<(long At, Instr Store)> stores = new();
 

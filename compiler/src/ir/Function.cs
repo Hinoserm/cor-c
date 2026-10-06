@@ -94,6 +94,19 @@ public sealed class Function
     private int _nextSlot;
     private int _nextLabel;
 
+    /// <summary>
+    /// HOW MANY TIMES THE FUNCTION HAS BEEN EDITED IN PLACE, as the code that
+    /// edits it says (Edited): an analysis kept of it (Opt.AnalysisCache) is
+    /// the function's while this, its register count and its block and
+    /// instruction counts are what they were. Only an edit that leaves the
+    /// counts as they were -- an instruction replaced by another -- could go
+    /// unseen without it; the lifetime rules say every edit they make.
+    /// </summary>
+    internal int Edits { get; private set; }
+
+    /// <summary>Says that the function was just edited in place (Edits).</summary>
+    internal void Edited() => Edits++;
+
     public Function(string name, IrType returns)
     {
         Name = name;
