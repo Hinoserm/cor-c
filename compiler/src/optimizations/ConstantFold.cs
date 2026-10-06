@@ -61,6 +61,13 @@ public sealed class ConstantFold : IPass
     /// `return (int)Sys.Word(value)` under `if (value is an object)` is then
     /// the zero it is, and not the pointer handed back, which made every key
     /// a table was asked about escape.
+    /// AND WHAT THE TESTED REGISTER STANDS FOR, where it is a parameter or
+    /// what one was on the way in: `source is List<T> list`, its test folded
+    /// to "not null" (Devirtualize.FoldParamClassTests), left `list` the
+    /// source where the source is not null and null where it is -- the
+    /// source either way -- and Where's general walk under `list == null`
+    /// was handed the source, a List the walk then kept for all the
+    /// analysis knew. There the source is the null it is.
     /// </summary>
     private static void EdgeConstants(Function f)
     {
@@ -80,7 +87,16 @@ public sealed class ConstantFold : IPass
             foreach (Block t in end.Targets) into[t] = into.GetValueOrDefault(t) + 1;
             if (end.Default is not null) into[end.Default] = into.GetValueOrDefault(end.Default) + 1;
         }
-        foreach (VReg p in f.Params) many.Add(p);
+        // The parameters nothing here writes, before they join the many:
+        // each holds what the caller passed, the same at every point.
+        HashSet<VReg> unwritten = new();
+        foreach (VReg p in f.Params)
+        {
+            if (!single.ContainsKey(p)) unwritten.Add(p);
+            many.Add(p);
+        }
+        List<(VReg X, long K, Block Where)> edges = new();
+        Dictionary<Block, (VReg X, long K)> entering = new(ReferenceEqualityComparer.Instance);
         foreach (Block b in f.Blocks)
         {
             if (b.Terminator is not { Op: Opcode.Branch, Targets.Count: 2 } branch || branch.Operands[0] is not RegOperand { Reg: var c }) continue;
@@ -99,6 +115,18 @@ public sealed class ConstantFold : IPass
                 x = c; k = 0; where = branch.Targets[1];
             }
             if (x is null || where is null || ReferenceEquals(where, b) || entered.Contains(where) || into.GetValueOrDefault(where) != 1) continue;
+            edges.Add((x, k, where));
+            entering[where] = (x, IrInfo.Normalise(k, x.Type));
+        }
+        Dictionary<VReg, List<(Block Block, Instr Def)>>? defsOf = null;
+        foreach ((VReg x, long k, Block where) in edges)
+        {
+            Substitute(where, x, k);
+            if (StandsFor(x) is { } y) Substitute(where, y, k);
+        }
+
+        static void Substitute(Block where, VReg x, long k)
+        {
             foreach (Instr i in where.Instrs)
             {
                 for (int o = 0; o < i.Operands.Count; o++)
@@ -106,6 +134,44 @@ public sealed class ConstantFold : IPass
                         i.Operands[o] = new ImmOperand(IrInfo.Normalise(k, x.Type), x.Type);
                 if (ReferenceEquals(i.Dest, x)) break;
             }
+        }
+
+        // The unwritten parameter a register always equals: every write of
+        // it a copy of the parameter, or of the constant the parameter is
+        // known to be where that copy is made -- in a block entered only by
+        // the edge on which a test of the parameter said so. Whatever the
+        // register is tested equal to, then, so is the parameter.
+        VReg? StandsFor(VReg x)
+        {
+            if (unwritten.Count == 0 || unwritten.Contains(x)) return null;
+            if (defsOf is null)
+            {
+                defsOf = new();
+                foreach (Block b in f.Blocks)
+                    foreach (Instr i in b.Instrs)
+                        if (i.Dest is { } d)
+                        {
+                            if (!defsOf.TryGetValue(d, out var list)) defsOf[d] = list = new();
+                            list.Add((b, i));
+                        }
+            }
+            if (!defsOf.TryGetValue(x, out var defs)) return null;
+            VReg? y = null;
+            foreach ((Block _, Instr d) in defs)
+                if (d is { Op: Opcode.Copy, Operands: [RegOperand { Reg: var from }] })
+                {
+                    if (y is not null && !ReferenceEquals(y, from)) return null;
+                    y = from;
+                }
+            if (y is null || !unwritten.Contains(y) || y.Type != x.Type) return null;
+            foreach ((Block b, Instr d) in defs)
+            {
+                if (d is { Op: Opcode.Copy, Operands: [RegOperand] }) continue;
+                if (d is not { Op: Opcode.Copy, Operands: [ImmOperand constant] }
+                    || !entering.TryGetValue(b, out var known) || !ReferenceEquals(known.X, y)
+                    || known.K != IrInfo.Normalise(constant.Value, y.Type)) return null;
+            }
+            return y;
         }
     }
 

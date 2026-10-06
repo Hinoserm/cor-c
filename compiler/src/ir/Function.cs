@@ -107,6 +107,19 @@ public sealed class Function
     /// <summary>Says that the function was just edited in place (Edits).</summary>
     internal void Edited() => Edits++;
 
+    /// <summary>
+    /// THE CLASS EACH OF ITS PARAMETERS IS DECLARED AS, where that says what
+    /// the object can be: a register here holds an object of that class, of
+    /// a class derived from it, or null -- which C#'s types promise whatever
+    /// the caller is. Its descriptors' names root first, the class's own
+    /// last, as its display lists them, by the parameter's register; set by
+    /// lowering for a class parameter of a method that is not shared code
+    /// (Lowering.ParamClass), and read by the type tests' folding
+    /// (Devirtualize.FoldParamClassTests): `source is T[]` of a List
+    /// parameter is false, `source is List<T>` true once it is not null.
+    /// </summary>
+    internal Dictionary<VReg, string[]>? ParamClasses { get; set; }
+
     public Function(string name, IrType returns)
     {
         Name = name;

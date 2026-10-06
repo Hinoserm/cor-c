@@ -727,6 +727,31 @@ tasks below track that work; moving files alone does not reduce the working set.
 
 ## Allocation, retention and low-memory acceptance
 
+- [ ] Free a caller's object handed to another unit's walk when the callee's
+  parameter is an INTERFACE (`IEnumerable<int> source`). 1311's consumers take
+  a `List<int>`, and the parameter's declared class settles it: its type tests
+  fold (Devirtualize.FoldParamClassTests), its virtual calls name the class
+  (Escape.VirtualCallee `@`), and LINQ walks the list by index. An interface
+  parameter gives none of that. The walk calls `GetEnumerator` through the
+  interface and the callee's hint can only say `Stays`, which no
+  `GetEnumerator` satisfies: List's keeps the list in the box it returns, an
+  iterator's hands itself back. Needed: two condition atoms. `Boxed(C, a, uses)`:
+  C keeps argument a nowhere, or only in a fresh box it returns (held offsets,
+  the box's stamps) or hands it back, and every call the caller makes on that
+  result keeps nothing of it and leaves the held offsets clean. `Clean(C, a,
+  offsets)`: C keeps nothing of a and leaves those offsets clean.
+  - The unit tracks a virtual call's result as a box of unknown layout,
+    recording the calls made on it.
+  - `HolderCall`, when writing hints, reads a callee's field hint (its
+    Conditional entries and Merges) instead of the pessimistic summary.
+  - `LifetimeHeld` carries the box's stamps; functions record whether they
+    hand their first argument back.
+  - The solver resolves each use per stamp (`VirtualTargets.MethodAt`), and
+    refutes atoms to a joint fixpoint with escapes, held boxes and fields.
+  Tests then: the 1311 walks over an `IEnumerable<int>` parameter, plus a
+  consumer that keeps the enumerator, a user struct enumerator that keeps its
+  owner, and the same iterator compiled in two units.
+
 - [x] Smaller-fragment TLS refill before heap growth passed ten GC checks at
   its checkpoint. Evidence: build/perf-fragment-refill-proof.log.
   This removed the observed 64 KiB minimum-buffer growth behavior; it

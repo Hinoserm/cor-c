@@ -167,6 +167,34 @@ public sealed partial class Lowering
         _checkedDepth = 0;
     }
 
+    /// <summary>
+    /// The descriptors of the class a parameter is declared as and of its
+    /// ancestors, root first, as its display lists them, where every
+    /// object it can hold is one of that class or of one derived from it
+    /// (Function.ParamClasses); null where that is not what the descriptor
+    /// would say. Not in shared code -- a canonical copy's types stand in for
+    /// every argument, and what it makes is stamped with the canonical copy's
+    /// descriptor -- nor for a shared class itself, an interface, object, a
+    /// string, an array, a delegate or a struct.
+    /// </summary>
+    private string[]? ParamClass(MethodSymbol m, Type t)
+    {
+        if (t.IsArray || t.IsPointer || t.IsNullableValue || t.ParamName is not null || t.Prim is Prim.Any or Prim.String
+            || t.Symbol is not { Kind: TypeKind.Class } c || c.Decl is not TypeDecl d || d.IsDelegate || c.Structural
+            || SharedCopy(c) || CanonicalCopy(c) || c.Name.Contains(Monomorphiser.CanonName, StringComparison.Ordinal)
+            || "t_" + TypeKey(c) == ObjectDispatch)
+            return null;
+        if (Monomorphiser.SharedMethodCopy(m.Name) > 0 || SharedCopy(m.Owner) || CanonicalCopy(m.Owner)
+            || m.Owner.Name.Contains(Monomorphiser.CanonName, StringComparison.Ordinal))
+            return null;
+        // NAMED, NOT MADE: ClassDescriptor would write the descriptor and its
+        // vtable here, pulling methods into a unit that never uses them. The
+        // names are the ones it gives a class (and its display holds).
+        List<string> chain = new();
+        for (TypeSymbol? s = c; s is not null; s = s.Base) chain.Insert(0, "t_" + TypeKey(s));
+        return chain.Count == c.Depth + 1 ? chain.ToArray() : null;
+    }
+
     private void EmitMethod(MethodSymbol m, MethodDecl decl)
     {
         ResetMethodState();
@@ -232,6 +260,7 @@ public sealed partial class Lowering
             _params[i] = _f.NewReg(p.ByRef ? IrTypes.Word : IrTypes.Of(p.Type), p.Name);
             _params[i].Number = !p.ByRef && NeverAddress(p.Type);
             _f.Params.Add(_params[i]);
+            if (!p.ByRef && ParamClass(m, p.Type) is string[] classOf) (_f.ParamClasses ??= new())[_params[i]] = classOf;
         }
 
         if (Buffered(m))

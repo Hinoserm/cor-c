@@ -44,8 +44,28 @@ public sealed class Devirtualize : IModulePass
         // passes then made it direct.
         Dictionary<string, DataItem> items = ReadOnlyItems(m);
         if (items.Count == 0) return;
-        foreach (Function f in m.Functions) Run(f, items);
+        // THE MODULE'S FUNCTIONS BY NAME, for what a call made of a
+        // parameter says of it once it returns (ReturnsOnlyIfNotNull).
+        Dictionary<string, Function>? byName = null;
+        _callees = name =>
+        {
+            if (byName is null)
+            {
+                byName = new(StringComparer.Ordinal);
+                foreach (Function g in m.Functions) byName.TryAdd(g.Name, g);
+            }
+            return byName.GetValueOrDefault(name);
+        };
+        _guards = new();
+        try
+        {
+            foreach (Function f in m.Functions) Run(f, items);
+        }
+        finally { _callees = null; _guards = null; }
     }
+
+    private Func<string, Function?>? _callees;
+    private Dictionary<(string, int), bool>? _guards;
 
     internal void Run(Function f, Dictionary<string, DataItem> items)
     {
@@ -100,6 +120,7 @@ public sealed class Devirtualize : IModulePass
         //     next, below: found again after a fold and then once more,
         //     with nothing changed between, the first was never read.
         FoldTypeTests(f, items);
+        FoldParamClassTests(f, items, _callees, _guards);
         if (!any) return;
         // Fresh: the one before is the pipeline's, kept for other passes.
         defs = new(f, buildCfg: false);
@@ -530,6 +551,238 @@ public sealed class Devirtualize : IModulePass
         // no name, no self, only some of its methods.
         bool Shadow(string name, DataItem item)
             => name.StartsWith("t_", StringComparison.Ordinal) && !item.Relocs.Any(rel => rel.Offset == 5 * word && rel.Symbol == name);
+    }
+
+    /// <summary>
+    /// A TYPE TEST OF A PARAMETER ITS DECLARED CLASS ANSWERS (Function.ParamClasses).
+    /// A parameter declared as class C holds null or an object of C or of a
+    /// class derived from it, stamped with that class's descriptor; every such
+    /// descriptor's depth is at least C's, and its display lists C's
+    /// ancestors and C itself first, as C's does. So, where the test reads
+    /// them (Lowering.TypeTest, ArrayTest) -- after its null check, so the
+    /// object is there: a depth compared with C's or less is deep enough; a
+    /// display entry at C's depth or less is the one C's display holds; and
+    /// the vtable compared with one of a type not derived from C (an array's,
+    /// another branch's) is not it. `source is T[]` and `source is List<T>`
+    /// asked by Where of a List the caller handed in are answered, and the
+    /// general walk they guard -- an enumerator through an interface, which
+    /// keeps the List for all the analysis knows -- goes with it, so the
+    /// parameter is proved kept by nothing and the caller frees its List.
+    /// A test of C itself or a class below it reads what only the object
+    /// says, and is left.
+    /// </summary>
+    private static bool FoldParamClassTests(Function f, Dictionary<string, DataItem> items,
+        Func<string, Function?>? callees, Dictionary<(string, int), bool>? guards)
+    {
+        if (f.ParamClasses is not { Count: > 0 } classes) return false;
+        int word = IrTypes.Word.Bytes();
+        int depthAt = Lower.Lowering.DescriptorDepthWord * word, displayAt = Lower.Lowering.DescriptorDisplayWord * word;
+        Dictionary<VReg, Instr?> single = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Dest is { } d) single[d] = single.ContainsKey(d) ? null : i;
+        // Only a parameter nothing here writes: it holds what the caller passed.
+        Dictionary<VReg, string[]> held = new();
+        foreach (VReg p in f.Params)
+            if (classes.TryGetValue(p, out string[]? chain) && !single.ContainsKey(p)) held[p] = chain;
+        if (held.Count == 0) return false;
+        bool folded = callees is not null && guards is not null && FoldCheckedNulls(f, held, single, callees, guards);
+
+        // What a register is, read from a parameter: the object itself, an
+        // address `At` bytes into its descriptor, its display, its depth, or
+        // the descriptor its display names at an index C's covers.
+        (Kind Kind, string[] Chain, long At)? Read(Operand o, int depth)
+        {
+            if (depth > 12 || o is not RegOperand { Reg: var r }) return null;
+            if (held.TryGetValue(r, out string[]? chain)) return (Kind.Object, chain, 0);
+            if (!single.TryGetValue(r, out Instr? d) || d is null) return null;
+            switch (d.Op)
+            {
+                case Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 when d.Operands.Count == 1 && d.Dest!.Type == IrTypes.Word:
+                    return Read(d.Operands[0], depth + 1);
+                case Opcode.Add or Opcode.Sub when d.Operands.Count == 2 && d.Operands[1] is ImmOperand plus:
+                    return Read(d.Operands[0], depth + 1) is { Kind: Kind.Descriptor } inner
+                        ? (Kind.Descriptor, inner.Chain, d.Op == Opcode.Add ? inner.At + plus.Value : inner.At - plus.Value) : null;
+                case Opcode.Load when d.Operands.Count == 1:
+                {
+                    if (Read(d.Operands[0], depth + 1) is not { } from) return null;
+                    if (from.Kind == Kind.Object && d.Offset == 0 && d.Size == word)
+                        return (Kind.Descriptor, from.Chain, Target.Current.DescriptorBytes);
+                    if (from.Kind == Kind.Descriptor && from.At + d.Offset == depthAt && d.Size == 4)
+                        return (Kind.Depth, from.Chain, 0);
+                    if (from.Kind == Kind.Descriptor && from.At + d.Offset == displayAt && d.Size == word)
+                        return (Kind.Display, from.Chain, 0);
+                    if (from.Kind == Kind.Display && d.Size == word && d.Offset % word == 0 && d.Offset >= 0 && d.Offset / word < from.Chain.Length)
+                        return (Kind.Named, from.Chain, d.Offset / word);
+                    return null;
+                }
+                default:
+                    return null;
+            }
+        }
+        SymOperand? Symbol(Operand o, int depth)
+        {
+            if (o is SymOperand s) return s;
+            if (depth > 8 || o is not RegOperand { Reg: var r } || !single.TryGetValue(r, out Instr? d) || d is not { Op: Opcode.Copy }) return null;
+            return Symbol(d.Operands[0], depth + 1);
+        }
+        long? Number(Operand o, int depth)
+        {
+            if (o is ImmOperand imm) return imm.Value;
+            if (depth > 8 || o is not RegOperand { Reg: var r } || !single.TryGetValue(r, out Instr? d) || d is not { Op: Opcode.Copy }) return null;
+            return Number(d.Operands[0], depth + 1);
+        }
+        // Whether a descriptor is of a type derived from the class (or the
+        // class), as the unit's own copy of it says: its depth, and its
+        // display at the class's depth. Null where the unit does not hold
+        // it whole -- another unit's class as this one shadows it has no
+        // display -- and so cannot say.
+        bool? Below(string name, string[] chain)
+        {
+            if (name == chain[^1]) return true;
+            if (!items.TryGetValue(name, out DataItem? item) || depthAt + 4 > item.Bytes.Length
+                || item.Relocs.Any(rel => rel.Offset < depthAt + 4 && rel.Offset + word > depthAt)) return null;
+            int depthOf = BitConverter.ToInt32(item.Bytes, depthAt);
+            if (depthOf < chain.Length - 1) return false;
+            if (item.Relocs.Find(rel => rel.Offset == displayAt) is not { Symbol: { } display, Addend: 0 }
+                || !items.TryGetValue(display, out DataItem? table)) return null;
+            return table.Relocs.Find(rel => rel.Offset == (chain.Length - 1) * word) is { Symbol: { } at, Addend: 0 } ? at == chain[^1] : null;
+        }
+
+        foreach (Block b in f.Blocks)
+            for (int k = 0; k < b.Instrs.Count; k++)
+            {
+                Instr i = b.Instrs[k];
+                if (!IrInfo.IsIntCompare(i.Op) || i.Dest is null || i.Operands.Count != 2) continue;
+                if (Read(i.Operands[0], 0) is not { } x) continue;
+                bool? answer = null;
+                switch (x.Kind)
+                {
+                    // Deep enough for C or above it: every object here is.
+                    case Kind.Depth when Number(i.Operands[1], 0) is long want && want <= x.Chain.Length - 1:
+                        answer = i.Op switch
+                        {
+                            Opcode.GeS => true, Opcode.LtS => false,
+                            Opcode.GtS when want < x.Chain.Length - 1 => true, Opcode.LeS when want < x.Chain.Length - 1 => false,
+                            _ => null,
+                        };
+                        break;
+                    // An ancestor's place in the display: the same descriptor in each.
+                    case Kind.Named when i.Op is Opcode.Eq or Opcode.Ne && Symbol(i.Operands[1], 0) is { } named:
+                        answer = (i.Op == Opcode.Eq) == (named.Name == x.Chain[x.At] && named.Offset == 0);
+                        break;
+                    // The descriptor itself, compared with one exact type's: never
+                    // one that is not C or derived from it.
+                    case Kind.Descriptor when i.Op is Opcode.Eq or Opcode.Ne && Symbol(i.Operands[1], 0) is { } exact
+                        && exact.Offset == x.At && Below(exact.Name, x.Chain) == false:
+                        answer = i.Op == Opcode.Ne;
+                        break;
+                }
+                if (answer is not bool known) continue;
+                b.Instrs[k] = new Instr { Op = Opcode.Copy, Dest = i.Dest, Line = i.Line, Operands = { new ImmOperand(known ? 1 : 0, i.Dest.Type) } };
+                folded = true;
+            }
+        return folded;
+    }
+
+    private enum Kind { Object, Descriptor, Depth, Display, Named }
+
+    /// <summary>
+    /// A NULL TEST OF A PARAMETER AFTER A CALL THAT WOULD NOT HAVE RETURNED
+    /// HAD IT BEEN NULL, made a jump to its other side: LINQ's argument check
+    /// (Enumerable.NotNull) throws on a null source, and the null test the
+    /// inlined `source is List<T> list` makes after it then has one answer.
+    /// Left, its null side went on to Where's general walk, handed the same
+    /// source -- a path no call can take, which kept every caller's List
+    /// alive for all the analysis knew. A test in the call's block after it,
+    /// or in a block only the call's block leads into (dominated by it).
+    /// </summary>
+    private static bool FoldCheckedNulls(Function f, Dictionary<VReg, string[]> held, Dictionary<VReg, Instr?> single,
+        Func<string, Function?> callees, Dictionary<(string, int), bool> guards)
+    {
+        // The parameter a register is, through copies.
+        VReg? ParamOf(Operand o)
+        {
+            for (int depth = 0; depth < 8; depth++)
+            {
+                if (o is not RegOperand { Reg: var r }) return null;
+                if (held.ContainsKey(r)) return r;
+                if (!single.TryGetValue(r, out Instr? d) || d is not { Op: Opcode.Copy, Operands.Count: 1 }) return null;
+                o = d.Operands[0];
+            }
+            return null;
+        }
+        List<(Block Block, VReg Param)>? checks = null;
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Op == Opcode.Call && i.Callee is { } name)
+                    for (int k = 0; k < i.Operands.Count; k++)
+                        if (ParamOf(i.Operands[k]) is { } p && ReturnsOnlyIfNotNull(name, k, callees, guards))
+                            (checks ??= new()).Add((b, p));
+        if (checks is null) return false;
+        Cfg cfg = new(f);
+        bool folded = false;
+        foreach (Block b in f.Blocks)
+        {
+            if (b.Terminator is not { Op: Opcode.Branch, Targets.Count: 2, Operands: [RegOperand { Reg: var c }] } branch
+                || branch.Targets[0] == branch.Targets[1]) continue;
+            (VReg? p, Block? notNull) = (ParamOf(RegOperand.Of(c)), branch.Targets[0]);
+            if (p is null && single.TryGetValue(c, out Instr? test) && test is { Op: Opcode.Eq or Opcode.Ne, Operands: [var tested, ImmOperand { Value: 0 }] })
+                (p, notNull) = (ParamOf(tested), test.Op == Opcode.Eq ? branch.Targets[1] : branch.Targets[0]);
+            if (p is null) continue;
+            // The call before the branch, in its block or one it is reached through.
+            bool after = false;
+            foreach ((Block at, VReg checkedParam) in checks)
+                if (ReferenceEquals(checkedParam, p) && (ReferenceEquals(at, b) || cfg.Dominates(at, b))) { after = true; break; }
+            if (!after) continue;
+            b.Instrs[^1] = new Instr { Op = Opcode.Jump, InitialTargets = new[] { notNull }, Line = branch.Line };
+            folded = true;
+        }
+        return folded;
+    }
+
+    /// <summary>
+    /// Whether a function returns only when its argument at `k` is not null:
+    /// the parameter written nowhere in it, and every return it makes in a
+    /// block entered only from the side of a test of that parameter on which
+    /// it is not null. An exception's landing pad is a way in of its own, so
+    /// a return after a catch is not one of them.
+    /// </summary>
+    private static bool ReturnsOnlyIfNotNull(string name, int k, Func<string, Function?> callees, Dictionary<(string, int), bool> guards)
+    {
+        if (guards.TryGetValue((name, k), out bool known)) return known;
+        guards[(name, k)] = false;
+        if (callees(name) is not { } g || k >= g.Params.Count || g.Async is not null) return false;
+        VReg p = g.Params[k];
+        Dictionary<VReg, Instr?> defs = new();
+        foreach (Block b in g.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Dest is { } d) defs[d] = defs.ContainsKey(d) ? null : i;
+        if (defs.ContainsKey(p)) return false;
+        Cfg cfg = new(g);
+        List<Block> notNull = new();
+        foreach (Block b in g.Blocks)
+        {
+            if (b.Terminator is not { Op: Opcode.Branch, Targets.Count: 2, Operands: [RegOperand { Reg: var c }] } branch
+                || branch.Targets[0] == branch.Targets[1]) continue;
+            Block? side = ReferenceEquals(c, p) ? branch.Targets[0]
+                : defs.GetValueOrDefault(c) is { Op: Opcode.Eq or Opcode.Ne, Operands: [RegOperand { Reg: var tested }, ImmOperand { Value: 0 }] } test && ReferenceEquals(tested, p)
+                    ? (test.Op == Opcode.Eq ? branch.Targets[1] : branch.Targets[0]) : null;
+            if (side is null || ReferenceEquals(side, b) || cfg.IsRoot(side) || cfg.Preds(side) is not { Count: 1 } preds || !ReferenceEquals(preds[0], b)) continue;
+            notNull.Add(side);
+        }
+        if (notNull.Count == 0) return false;
+        bool returns = false;
+        foreach (Block b in cfg.ReversePostorder)
+        {
+            if (b.Terminator?.Op != Opcode.Ret) continue;
+            returns = true;
+            bool guarded = false;
+            foreach (Block side in notNull)
+                if (cfg.Dominates(side, b)) { guarded = true; break; }
+            if (!guarded) return false;
+        }
+        return guards[(name, k)] = returns;
     }
 
     // What a direct call made of `i` keeps of its Field: a struct made for
