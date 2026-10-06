@@ -1,0 +1,53 @@
+// test: a reference store with other work between its barrier's test and the store is still one sequence
+// sources: stdlib/src/System/Threading/interlocked.cor
+// flags-x86: --store-sequences
+// expect-asm-x86: Swap: __corsac_refstore
+// expect-no-asm-x86: Swap: __corsac_cardmark __corsac_barrier
+// expect-exit: 0
+// expect-output:
+// had a now b
+// had b now c
+//
+// The NT kernel's completion port: `had = file.Port; file.Port = port;` --
+// the field read into a local, a call, and then the store. The work between
+// the barrier's test and the store once kept the two apart, the window left
+// open, and a thread sent to its handshake there could lose the reference to
+// a concurrent mark. The store is now the sequence wherever it stands, the
+// slot's value reported as it is overwritten.
+
+using System;
+using System.Runtime.CompilerServices;
+
+class Holder
+{
+    public object? Value;
+}
+
+static class Program
+{
+    static int _seen;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Note(object? o) { if (o != null) _seen++; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static object? Swap(Holder h, object v)
+    {
+        object? had = h.Value;
+        Note(had);
+        h.Value = v;
+        return had;
+    }
+
+    static int Main()
+    {
+        Host.Start(16 * 1024 * 1024);
+        Holder h = new Holder { Value = "a" };
+        object? had = Swap(h, "b");
+        Host.Line("had " + had + " now " + h.Value);
+        had = Swap(h, "c");
+        Host.Line("had " + had + " now " + h.Value);
+        Host.Done(_seen == 2 ? 0 : 1);
+        return 0;
+    }
+}
