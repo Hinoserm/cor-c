@@ -241,7 +241,19 @@ public sealed class CardMarks : IModulePass
                     if (b0 is RegOperand) { Operand s0 = Settled(b0, stored, k); (b0, long o1) = Canonical(s0); o0 += o1; }
                     if (o0 + i.Offset == slot.Offset && Same(b0, slot.Base)) at = k;
                 }
-                if (at < 0 || stored.Instrs.Take(at).Any(i => IsWordStore(i) || i.Op is Opcode.CallIndirect || i.Op == Opcode.Call && !IsCardMark(i)))
+                // OTHER WORK BEFORE THE STORE -- a read of the field into a
+                // local that is spilled, another store, a call -- once left
+                // the diamond unfused, and its window open: a thread sent to
+                // its handshake between the barrier's test and the store could
+                // lose the reference to a concurrent mark (the NT kernel's
+                // completion port, freed under the file that held it). The
+                // fused sequence tests, reports the slot's value AS IT IS
+                // OVERWRITTEN and stores, all in one; reporting at the store
+                // rather than before the work in between is the snapshot
+                // barrier's own rule, so the work stays where it is and the
+                // store becomes the sequence. Only a store not found in the
+                // join is left as it was.
+                if (at < 0)
                 {
                     unfused++;
                     break;
