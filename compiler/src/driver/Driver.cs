@@ -483,6 +483,7 @@ public static class Driver
         // The names the front end shared are let go with it: what lowering
         // still holds keeps its own, and the table kept every one of them.
         Lang.Interned.Forget();
+        phase("front");
         if (declarations is not null) Console.Error.WriteLine("indexed declaration payloads loaded=" + declarations.PayloadLoads
             + " passes=" + declarations.Passes + " token-cache hits=" + declarations.Tokens.Hits
             + " misses=" + declarations.Tokens.Misses + " bytes=" + declarations.Tokens.ResidentBytes
@@ -817,9 +818,15 @@ public static class Driver
         {
             if (!phases) return;
             long now = GC.GetAllocatedBytesForCurrentThread();
-            Console.Error.WriteLine("phase " + what + " " + phaseClock.ElapsedMilliseconds + "ms " + ((now - phaseBytes) >> 20) + "MiB");
+            // And what is held at its end: the managed heap's live bytes after
+            // a collection, and the process's resident set and its peak.
+            long held = GC.GetTotalMemory(true) >> 20;
+            using System.Diagnostics.Process self = System.Diagnostics.Process.GetCurrentProcess();
+            Console.Error.WriteLine("phase " + what + " " + phaseClock.ElapsedMilliseconds + "ms " + ((now - phaseBytes) >> 20) + "MiB"
+                + " live " + held + "MiB rss " + (self.WorkingSet64 >> 20) + "MiB peak " + (self.PeakWorkingSet64 >> 20) + "MiB");
             phaseClock.Restart(); phaseBytes = now;
         }
+        if (phases) Corsac.Lang.Opt.Pipeline.Stage = Phase;
         // THE FRONT END IN A CALL OF ITS OWN (FrontToModule): parsing,
         // binding and lowering make the unit's largest structure -- syntax,
         // symbols, bindings -- and all of it is dead once the module and the
@@ -887,7 +894,13 @@ public static class Driver
                 // Not without an operating system: no arena there (baremetal.cor),
                 // and a unit with no summary keeps the link from finding regions.
                 regionHintBytes = freestanding ? null : Corsac.Lang.Opt.RegionSummary.Of(m).Write();
+                if (Switches.ReportPhases)
+                    Console.Error.WriteLine("phase snapshot: " + linkRecords.Count + " records, " + (linkRecords.Sum(r => (long)r.BodyLength) >> 10)
+                        + " KiB of bodies held in " + (linkRecords.Sum(r => (long)r.Payload.Length) >> 10) + " KiB, region hints " + ((regionHintBytes?.Length ?? 0) >> 10) + " KiB");
             };
+            // The x86 backend puts each function's allocations in place as it
+            // selects it (AllocatorFastPaths.AtCodegen): not the late passes.
+            module.AllocatorsAtCodegen = Target.Current.Name == "x86";
             Optimise(module, Value(args, "--trace-opt"), args.Contains("--experimental-ssa"), args.Contains("--opt-size"), args.Contains("--experimental-batch"), Value(args, "--batch-without"), workers, beforeLate, Value(args, "--region-report"), regions: !freestanding);
             Phase("optimise");
             // The lifetime hints are complete once the passes are (Escape and
@@ -895,6 +908,8 @@ public static class Driver
             // hints were, and the hints themselves let go.
             if (module.LeavesLinkHints && module.LifetimeHints is { IsEmpty: false } hints) lifetimeHintBytes = hints.Write();
             module.LifetimeHints = null;
+            if (Switches.ReportPhases) Console.Error.WriteLine("phase lifetime hints " + ((lifetimeHintBytes?.Length ?? 0) >> 10) + " KiB");
+            Phase("hints");
             // What the lifetime pass kept of each function between questions
             // (Escape.StampIndex): no pass after this one asks, and every
             // function held its index -- registers of a body that code
@@ -1019,6 +1034,10 @@ public static class Driver
             "x86-64" => x64Backend,
             _ => throw new NotSupportedException($"no backend for target '{target.Name}'"),
         };
+
+        // THE ALLOCATION PUT IN PLACE AS EACH FUNCTION IS SELECTED, where the
+        // late passes left it to the backend (Module.AllocatorsAtCodegen).
+        if (backend == x86Backend && module.AllocatorsAtCodegen) x86Backend.Prepare = Corsac.Lang.Opt.AllocatorFastPaths.AtCodegen(module);
 
         if (args.Contains("--asm"))
         {
@@ -1493,6 +1512,7 @@ public static class Driver
         Corsac.Lang.Opt.Pipeline pipeline = Corsac.Lang.Opt.Pipeline.Default(optimizeSize: optimizeSize, experimentalBatch: experimentalBatch, regionReport: regionReport, regions: regions);
         pipeline.Workers = workers;
         pipeline.BeforeLate = beforeLate;
+        pipeline.Reports = true;
         if (batchWithout is not null)
         {
             if (!experimentalBatch || batchWithout is not ("bit-fact-simplify" or "edge-predicates"

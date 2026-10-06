@@ -177,6 +177,47 @@ public static class AllocatorFastPaths
     }
 
     /// <summary>
+    /// THE ALLOCATION PUT IN PLACE AS EACH FUNCTION IS SELECTED (the x86
+    /// backend's Prepare), not by the late passes over the whole module: each
+    /// function grows by its sites' bodies only while it is selected, and its
+    /// blocks go after it (X86Backend.ReleaseBodies). The bodies -- AllocFastSized
+    /// and AllocFast as the module left them -- are taken as bytes now and
+    /// read afresh for each function, as the link reads its imports: the
+    /// backend lets each body go as it places it, and the workers select
+    /// functions side by side. Run after everything the late passes did, the
+    /// async transform and the landing pads' homes included:
+    /// - a function with a landing pad has its homes taken off first and
+    ///   placed again after (LandingPadHomes.Strip, Place), as the link does
+    ///   around its own late steps: what it brings in is homed with the rest;
+    /// - an async method's homes are its state machine's, placed by the async
+    ///   transform: its allocations stay calls.
+    /// Null where there is nothing to put in place: no AllocFastSized in the
+    /// module (a kernel module's unit, whose allocator is the kernel's; a
+    /// program without the runtime), or --skip-passes InlineAllocators.
+    /// </summary>
+    public static Action<Function>? AtCodegen(Module m)
+    {
+        if (Skipped) return null;
+        Function? sized = m.Functions.FirstOrDefault(f => f.Name == Sized);
+        if (sized is null || sized.Blocks.Count == 0) return null;
+        Function? unsized = m.Functions.FirstOrDefault(f => f.Name == Fast);
+        byte[] sizedBytes = Corsac.Lang.Metadata.IrFunctionCodec.Write(sized);
+        byte[]? unsizedBytes = unsized is { Blocks.Count: > 0 } ? Corsac.Lang.Metadata.IrFunctionCodec.Write(unsized) : null;
+        Module shape = new(m.Name) { NeedsHeap = m.NeedsHeap };
+        return f =>
+        {
+            if (f.Name is Sized or Fast or Missed || f.Async is not null) return;
+            if (!f.Blocks.Any(b => b.Instrs.Any(i => i.Op == Opcode.Call && i.Operands.Count == 1 && KindOf(i.Callee) is not null))) return;
+            bool pads = f.Blocks.Any(b => b.IsLandingPad);
+            if (pads) LandingPadHomes.Strip(f);
+            Run(f, shape, name => name == Sized ? Corsac.Lang.Metadata.IrFunctionCodec.Read(sizedBytes)
+                                : name == Fast && unsizedBytes is not null ? Corsac.Lang.Metadata.IrFunctionCodec.Read(unsizedBytes) : null,
+                Cleanup());
+            if (pads) LandingPadHomes.Place(f, _ => true);
+        };
+    }
+
+    /// <summary>
     /// --skip-passes InlineAllocators: every allocation left the call it was,
     /// at the link as in a unit's compile -- the A/B of this against the two
     /// calls, and of the code it grows.
@@ -216,7 +257,11 @@ public sealed class InlineAllocators : IModulePass
         // (UnitBackend, AllocatorFastPaths.Run). Put in place here first, the
         // calls were gone, and every object the link had given a region was
         // made on the heap: nothing given back at a region's end.
-        if (AllocatorFastPaths.Skipped || m.AtLink) return;
+        // NOR WHERE THE BACKEND PUTS THEM IN PLACE, a function at a time as it
+        // selects each (Module.AllocatorsAtCodegen, AllocatorFastPaths.AtCodegen):
+        // put in place here, every function's allocation sites grew the whole
+        // module's IR at once, the largest growth of a library's compile.
+        if (AllocatorFastPaths.Skipped || m.AtLink || m.AllocatorsAtCodegen) return;
         Function? fast = m.Functions.FirstOrDefault(f => f.Name == AllocatorFastPaths.Sized);
         Function? region = m.Functions.FirstOrDefault(f => f.Name == AllocatorFastPaths.RegionSized);
         Pipeline cleanup = AllocatorFastPaths.Cleanup();
