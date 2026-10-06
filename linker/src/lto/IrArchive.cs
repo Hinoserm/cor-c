@@ -70,8 +70,8 @@ public sealed class IrArchive
             foreach (string reference in references) WriteName(writer, reference);
             if (record.DecodeBytes < 0) throw new ElfFormatException("Invalid IR decode estimate");
             writer.Write(record.DecodeBytes);
-            writer.Write(bodyBytes); writer.Write(record.Payload.Length); writer.Write(SHA256.HashData(record.Payload));
-            bodyBytes = checked(bodyBytes + record.Payload.Length);
+            writer.Write(bodyBytes); writer.Write(record.BodyLength); writer.Write(record.BodyHash());
+            bodyBytes = checked(bodyBytes + record.BodyLength);
             if (bodyBytes > MaximumBytes || directory.Length > MaximumBytes - bodyBytes - 84)
                 throw new ElfFormatException("IR archive exceeds unit budget");
         }
@@ -94,7 +94,7 @@ public sealed class IrArchive
         section.Bytes.AddRange(index);
         for (int k = 0; k < records.Count; k++)
         {
-            section.Bytes.AddRange(records[k].Payload);
+            section.Bytes.AddRange(records[k].Body());
             if (consumed is not null) consumed[k] = consumed[k] with { Payload = Array.Empty<byte>() };
         }
         obj.Sections.Add(section);
