@@ -422,6 +422,11 @@ static class Gc
     /// it may be set after the heap started.
     public static bool VerifyMarks;
 
+    /// Every size-class page walked at every minor cycle, as a checking one
+    /// walks them: the unwalked minor cycle (_pagesUnwalked) never taken. A
+    /// kernel sets it from its command line (gc.walkpages=1).
+    public static bool WalkPages;
+
     /// CORSAC_GC_VERIFY: after a minor cycle has marked, every old block is
     /// read word by word, and a word that lands on a young block this cycle
     /// did not mark -- which the sweep is about to free -- is reported: the
@@ -12308,7 +12313,7 @@ static class Gc
         // table of an earlier cycle, which everything that reads one tells
         // by its cycle (StartsCycle) and takes the page by its class instead.
         _pagesUnwalked = _minor && !stepping && _oldCards != 0 && !_census && !_deadCensus && !_heapCheck
-                      && !_verify && !_verifyGenerations && !VerifyHeap && !VerifyMarks && _referencesEnd == 0
+                      && !_verify && !_verifyGenerations && !VerifyHeap && !VerifyMarks && !WalkPages && _referencesEnd == 0
                       && HeapChunks.SlotTable != 0 && WordSize.Bytes == 4;
         _snapCount = 0;
         long chunk = HeapChunks.Newest();
