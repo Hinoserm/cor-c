@@ -12632,15 +12632,9 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     // TryGetValue, which is what a caller that cares uses in C# anyway.
     public V this[K key] {
         get {
-            if (hashes == null) { ThrowHelper.KeyNotFound(KeyText(key)); return default(V)!; }
-            int full = FullHash(key) | Used;
-            int i = full & mask;
-            while (hashes[i] != 0) {
-                if (hashes[i] == full && Same(keys[i], key)) { return values[i]; }
-                i = (i + 1) & mask;
-            }
-            ThrowHelper.KeyNotFound(KeyText(key));
-            return default(V)!;
+            int i = Find(key);
+            if (i < 0) { ThrowHelper.KeyNotFound(KeyText(key)); return default(V)!; }
+            return values[i];
         }
         set {
             // Grow at three quarters: linear probing degrades sharply above.
@@ -12648,30 +12642,78 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
             // BY WHAT IS FILLED, NOT BY WHAT IS HELD: an erased slot ends no
             // probe, and a table with none empty is a search that never ends.
             if (hashes == null) { Rehash(mask + 1); }
-            else if ((filled + 1) * 4 > (mask + 1) * 3) { Grow(); }
-
-            int full = FullHash(key);
-            int i = full & mask;
-            int free = -1;
-
-            // THE WHOLE CHAIN, past the erased ones. Stopping at the first of
-            // them wrote a second copy of a key that lives further along.
-            int used = full | Used;
-            while (hashes[i] != 0) {
-                if (hashes[i] == used && Same(keys[i], key)) {
-                    values[i] = value;
-                    return;
-                }
-                if (hashes[i] == Erased && free < 0) { free = i; }
-                i = (i + 1) & mask;
-            }
-            if (free >= 0) { i = free; } else { filled = filled + 1; }
-            keys[i] = key;
-            values[i] = value;
-            hashes[i] = used;
-            count = count + 1;
-            Placed(i);
+            else if (Crowded()) { Grow(); }
+            Put(key, value, true);
         }
+    }
+
+    // Whether one more filled slot would take the table past three quarters.
+    private bool Crowded() { return (filled + 1) * 4 > (mask + 1) * 3; }
+
+    // THE SLOT `key` IS IN, or -1: every lookup's probe, written once.
+    //
+    // THE HASHES READ AS A LOCAL A ROUND AT A TIME. A slot of another key
+    // is passed on its hash alone, so most rounds of the probe call nothing,
+    // and there the array and the mask are a register each where the field
+    // was loaded again for every test of every slot. Each round reads the
+    // fields afresh after the comparer has run -- a local held across that
+    // call would be a second read of the field joined with the first, which
+    // the owned-field rules cannot follow (Placed) -- and so the comparer
+    // sees, and may do, exactly what it could before. The order of the slots
+    // looked at and of the comparer's calls is the loop's that this was.
+    private int Find(K key) {
+        if (hashes == null) { return -1; }
+        int full = FullHash(key) | Used;
+        int i = full & mask;
+        while (true) {
+            int[] h = hashes;
+            int m = mask;
+            int at = h[i];
+            while (at != full) {
+                if (at == 0) { return -1; }
+                i = (i + 1) & m;
+                at = h[i];
+            }
+            if (Same(keys[i], key)) { return i; }
+            i = (i + 1) & mask;
+        }
+    }
+
+    // PUT INTO A TABLE THAT IS MADE AND HAS ROOM: the indexer's store, and
+    // Add's and TryAdd's. A key already there has its value replaced when
+    // `replace` says so and is left alone when not; the answer is whether
+    // the key was new. The probe is Find's, one round per call of the
+    // comparer, and remembers the first erased slot it passes.
+    private bool Put(K key, V value, bool replace) {
+        int full = FullHash(key) | Used;
+        int i = full & mask;
+        int free = -1;
+
+        // THE WHOLE CHAIN, past the erased ones. Stopping at the first of
+        // them wrote a second copy of a key that lives further along.
+        while (true) {
+            int[] h = hashes;
+            int m = mask;
+            int at = h[i];
+            while (at != full && at != 0) {
+                if (at == Erased && free < 0) { free = i; }
+                i = (i + 1) & m;
+                at = h[i];
+            }
+            if (at == 0) { break; }
+            if (Same(keys[i], key)) {
+                if (replace) { values[i] = value; }
+                return false;
+            }
+            i = (i + 1) & mask;
+        }
+        if (free >= 0) { i = free; } else { filled = filled + 1; }
+        keys[i] = key;
+        values[i] = value;
+        hashes[i] = full;
+        count = count + 1;
+        Placed(i);
+        return true;
     }
 
     /// A key already there is an error, as in .NET: the indexer is how a value
@@ -12873,54 +12915,30 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         return false;
     }
 
-    public bool ContainsKey(K key) {
-        if (hashes == null) { return false; }
-        int full = FullHash(key) | Used;
-        int i = full & mask;
-        while (hashes[i] != 0) {
-            if (hashes[i] == full && Same(keys[i], key)) { return true; }
-            i = (i + 1) & mask;
-        }
-        return false;
-    }
+    public bool ContainsKey(K key) { return Find(key) >= 0; }
 
     // THE ONE THE COMPILER'S OWN SOURCE USES CONSTANTLY, and the reason `out`
     // had to exist before this could be written at all: one lookup answers both
     // whether the key was there and what was under it, where ContainsKey then
     // an index is two.
     public bool TryGetValue(K key, out V value) {
-        if (hashes == null) { value = default(V)!; return false; }
-        int full = FullHash(key) | Used;
-        int i = full & mask;
-        while (hashes[i] != 0) {
-            if (hashes[i] == full && Same(keys[i], key)) {
-                value = values[i];
-                return true;
-            }
-            i = (i + 1) & mask;
-        }
-        value = default(V)!;
-        return false;
+        int i = Find(key);
+        if (i < 0) { value = default(V)!; return false; }
+        value = values[i];
+        return true;
     }
 
     public bool Remove(K key) {
-        if (hashes == null) { return false; }
-        int full = FullHash(key) | Used;
-        int i = full & mask;
-        while (hashes[i] != 0) {
-            if (hashes[i] == full && Same(keys[i], key)) {
-                // A tombstone, not an empty: erasing to empty would cut the
-                // probe chain and hide everything after it.
-                hashes[i] = Erased;
-                keys[i] = default(K)!;
-                values[i] = default(V)!;
-                count = count - 1;
-                Unplaced(i);
-                return true;
-            }
-            i = (i + 1) & mask;
-        }
-        return false;
+        int i = Find(key);
+        if (i < 0) { return false; }
+        // A tombstone, not an empty: erasing to empty would cut the probe
+        // chain and hide everything after it.
+        hashes[i] = Erased;
+        keys[i] = default(K)!;
+        values[i] = default(V)!;
+        count = count - 1;
+        Unplaced(i);
+        return true;
     }
 
     public void Clear() {
@@ -14568,12 +14586,22 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
         int i = full & mask;
         int free = -1;
 
-        while (hashes[i] != 0) {
-            if (hashes[i] == full && Same(items[i], value)) { return false; }
-            // A tombstone is reusable, but only after the whole probe chain has
-            // been searched -- taking it early would let the same value be
-            // added twice with a copy further along the chain.
-            if (hashes[i] == Erased && free < 0) { free = i; }
+        // A round at a time, the array and the mask locals between calls of
+        // the comparer, as Dictionary's probe (Find).
+        while (true) {
+            int[] h = hashes;
+            int m = mask;
+            int at = h[i];
+            while (at != full && at != 0) {
+                // A tombstone is reusable, but only after the whole probe
+                // chain has been searched -- taking it early would let the
+                // same value be added twice with a copy further along.
+                if (at == Erased && free < 0) { free = i; }
+                i = (i + 1) & m;
+                at = h[i];
+            }
+            if (at == 0) { break; }
+            if (Same(items[i], value)) { return false; }
             i = (i + 1) & mask;
         }
 
@@ -14586,15 +14614,26 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
         return true;
     }
 
-    public bool Contains(T value) {
-        if (hashes == null) { return false; }
+    public bool Contains(T value) { return Find(value) >= 0; }
+
+    // THE SLOT `value` IS IN, or -1: Dictionary's Find, and for its reasons
+    // -- the array and the mask held only between calls of the comparer.
+    private int Find(T value) {
+        if (hashes == null) { return -1; }
         int full = FullHash(value) | Used;
         int i = full & mask;
-        while (hashes[i] != 0) {
-            if (hashes[i] == full && Same(items[i], value)) { return true; }
+        while (true) {
+            int[] h = hashes;
+            int m = mask;
+            int at = h[i];
+            while (at != full) {
+                if (at == 0) { return -1; }
+                i = (i + 1) & m;
+                at = h[i];
+            }
+            if (Same(items[i], value)) { return i; }
             i = (i + 1) & mask;
         }
-        return false;
     }
 
     /// .NET's HashSet<T>.Enumerator: a struct, so a foreach over a set
@@ -14627,22 +14666,15 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
     IEnumerator<T> IEnumerable<T>.GetEnumerator() { return new HashSetEnumerator<T>(this); }
 
     public bool Remove(T value) {
-        if (hashes == null) { return false; }
-        int full = FullHash(value) | Used;
-        int i = full & mask;
-        while (hashes[i] != 0) {
-            if (hashes[i] == full && Same(items[i], value)) {
-                // A tombstone, not an empty: erasing to empty would cut the
-                // probe chain and hide everything after it.
-                hashes[i] = Erased;
-                items[i] = default(T)!;
-                count = count - 1;
-                Unplaced(i);
-                return true;
-            }
-            i = (i + 1) & mask;
-        }
-        return false;
+        int i = Find(value);
+        if (i < 0) { return false; }
+        // A tombstone, not an empty: erasing to empty would cut the probe
+        // chain and hide everything after it.
+        hashes[i] = Erased;
+        items[i] = default(T)!;
+        count = count - 1;
+        Unplaced(i);
+        return true;
     }
 
     public void Clear() {
