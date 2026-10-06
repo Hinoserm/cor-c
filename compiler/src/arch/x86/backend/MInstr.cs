@@ -52,5 +52,34 @@ public sealed class MInstr
         Operands.AddRange(operands);
     }
 
+    // ONE, TWO AND THREE OPERANDS WRITTEN OUT: nearly every instruction has
+    // one of those counts, and through `params` each was an array made only
+    // to be copied into Operands and dropped.
+    public MInstr(MOp op)
+    {
+        Op = op;
+    }
+
+    public MInstr(MOp op, MOperand a)
+    {
+        Op = op;
+        Operands.Add(a);
+    }
+
+    public MInstr(MOp op, MOperand a, MOperand b)
+    {
+        Op = op;
+        Operands.Add(a);
+        Operands.Add(b);
+    }
+
+    public MInstr(MOp op, MOperand a, MOperand b, MOperand c)
+    {
+        Op = op;
+        Operands.Add(a);
+        Operands.Add(b);
+        Operands.Add(c);
+    }
+
     public MReg Reg(int i) => (MReg)Operands[i];
 }

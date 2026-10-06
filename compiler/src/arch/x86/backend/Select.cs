@@ -27,6 +27,12 @@ internal sealed partial class Selector
     private readonly Dictionary<Block, MBlock> _heads = new();
     private readonly Dictionary<int, int> _useCount = new();
     private readonly Dictionary<VReg, Instr?> _definitions = new();
+    /// <summary>
+    /// Every definition of a register defined more than once, or of a
+    /// parameter, in instruction order. A register defined once has its one
+    /// definition in _definitions and no list: most registers are, and a list
+    /// each was an object for nearly every instruction selected.
+    /// </summary>
     private readonly Dictionary<VReg, List<Instr>> _rangeDefinitions = new();
     private int _rangeVisits;
     private MBlock _cur = null!;
@@ -57,12 +63,21 @@ internal sealed partial class Selector
         _errors = errors;
         _automaticPacked = automaticPacked;
         foreach (VReg parameter in f.Params) _definitions[parameter] = null;
-        foreach (Instr instruction in f.Blocks.SelectMany(b => b.Instrs))
+        foreach (Block b in f.Blocks)
+        foreach (Instr instruction in b.Instrs)
             if (instruction.Dest is { } dest)
             {
-                _definitions[dest] = _definitions.ContainsKey(dest) ? null : instruction;
+                if (!_definitions.TryGetValue(dest, out Instr? prior))
+                {
+                    _definitions[dest] = instruction;
+                    continue;
+                }
+                _definitions[dest] = null;
                 if (!_rangeDefinitions.TryGetValue(dest, out List<Instr>? definitions))
+                {
                     _rangeDefinitions[dest] = definitions = new();
+                    if (prior is not null) definitions.Add(prior);
+                }
                 definitions.Add(instruction);
             }
     }
@@ -90,7 +105,15 @@ internal sealed partial class Selector
 
     private MInstr Emit(MOp op, params MOperand[] ops) => Emit(new MInstr(op, ops));
 
+    // The common arities written out, so no `params` array is made per instruction.
+    private MInstr Emit(MOp op) => Emit(new MInstr(op));
+    private MInstr Emit(MOp op, MOperand a) => Emit(new MInstr(op, a));
+    private MInstr Emit(MOp op, MOperand a, MOperand b) => Emit(new MInstr(op, a, b));
+    private MInstr Emit(MOp op, MOperand a, MOperand b, MOperand c) => Emit(new MInstr(op, a, b, c));
+
     private MInstr EmitW(MOp op, int width, params MOperand[] ops) => Emit(new MInstr(op, ops) { Width = width });
+    private MInstr EmitW(MOp op, int width, MOperand a) => Emit(new MInstr(op, a) { Width = width });
+    private MInstr EmitW(MOp op, int width, MOperand a, MOperand b) => Emit(new MInstr(op, a, b) { Width = width });
 
     private void Jcc(Cond c, MBlock target) => Emit(new MInstr(MOp.Jcc, new MLabel(target)) { Cond = c });
 
@@ -893,8 +916,10 @@ internal sealed partial class Selector
             return bits;
         }
         if (depth >= 8 || ++_rangeVisits > 256 || operand is not RegOperand r
-            || _f.Params.Contains(r.Reg) || !_rangeDefinitions.TryGetValue(r.Reg, out List<Instr>? definitions)) return 64;
+            || _f.Params.Contains(r.Reg) || !_definitions.TryGetValue(r.Reg, out Instr? only)) return 64;
+        if (only is not null) return Math.Max(0, DefinitionBits(only, depth));
         int bound = 0;
+        List<Instr> definitions = _rangeDefinitions[r.Reg];
         foreach (Instr definition in definitions)
         {
             bound = Math.Max(bound, DefinitionBits(definition, depth));

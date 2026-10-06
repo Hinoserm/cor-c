@@ -289,7 +289,7 @@ public sealed partial class Binder
             // this one reads the variable through it (Lookup writes it down
             // when it is below that one's floor).
             if (named is null && _captured is not null && _thisType is not null && IsClosure(_thisType)
-                && (_thisType.FindField(name) ?? _thisType.FindField("<" + name + ">")) is not null)
+                && (_thisType.FindField(name) ?? _thisType.FindBackingField(name)) is not null)
             {
                 _captured[name] = held;
             }

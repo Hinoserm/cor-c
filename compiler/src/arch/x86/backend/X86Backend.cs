@@ -231,7 +231,18 @@ public sealed class X86Backend : IBackend
         bool IsImported(string name) => imported.Contains(name);
         // What this module defines: a constant naming anything else names
         // another image, or another unit of this one (ImportConstants).
-        HashSet<string> moduleDefines = new(module.Functions.Select(f => f.Name).Concat(module.Data.Select(d => d.Name)), StringComparer.Ordinal);
+        HashSet<string> moduleDefines = new(StringComparer.Ordinal);
+        foreach (Function f in module.Functions) moduleDefines.Add(f.Name);
+        foreach (DataItem d in module.Data) moduleDefines.Add(d.Name);
+
+        // THE SYMBOL QUESTIONS, AS DELEGATES MADE ONCE: written at each call
+        // below, a local function became a new delegate for every function
+        // compiled.
+        Func<string, bool>? askPrivate = PositionIndependent ? IsPrivate : null;
+        Func<string, bool> askDefined = IsDefined;
+        Func<string, bool>? askImported = imported.Count == 0 ? null : IsImported;
+        // The calls a link summary may name, refilled for each function.
+        HashSet<string> eligible = new(StringComparer.Ordinal);
 
         // A bounded window avoids retaining a whole module of machine IR.
         // Workers only read the symbol sets and each owns disjoint functions,
@@ -248,8 +259,7 @@ public sealed class X86Backend : IBackend
             MFunction? m;
             if (workers == 1 && FunctionLoader is null)
             {
-                m = Compile(f, errors, PositionIndependent ? IsPrivate : null, IsDefined,
-                    imported.Count == 0 ? null : IsImported);
+                m = Compile(f, errors, askPrivate, askDefined, askImported);
             }
             else
             {
@@ -289,8 +299,7 @@ public sealed class X86Backend : IBackend
                             {
                                 List<string> localErrors = new();
                                 compiled[item] = Compile(FunctionLoader?.Invoke(first + item) ?? module.Functions[first + item], localErrors,
-                                    PositionIndependent ? IsPrivate : null, IsDefined,
-                                    imported.Count == 0 ? null : IsImported);
+                                    askPrivate, askDefined, askImported);
                                 diagnostics[item] = localErrors;
                             }
                         });
@@ -318,9 +327,11 @@ public sealed class X86Backend : IBackend
             int size = encoder.Encode(m);
             if (EmitLinkSummary && !PositionIndependent)
             {
-                HashSet<string> eligible = new(f.Blocks.SelectMany(b => b.Instrs)
-                    .Where(i => i.Op == Opcode.Call && i.Operands.Count == 0 && i.Dest?.Type == IrType.I32 && i.Callee is not null)
-                    .Select(i => i.Callee!), StringComparer.Ordinal);
+                eligible.Clear();
+                foreach (Corsac.Lang.Ir.Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.Call && i.Operands.Count == 0 && i.Dest?.Type == IrType.I32 && i.Callee is not null)
+                        eligible.Add(i.Callee!);
                 foreach ((MInstr call, int ret) in encoder.CallSites)
                     if (call.Op == MOp.Call && call.CallReloc == RelocKind.Rel32
                         && call.Operands[0] is MImm { Symbol: { } callee, Value: 0 } && eligible.Contains(callee))
@@ -333,7 +344,7 @@ public sealed class X86Backend : IBackend
             });
             defined.Add(f.Name);
             if (EmitLinkSummary && !PositionIndependent)
-                Corsac.Lang.Opt.LinkSummary.AddConstantReturns(new[] { f }, obj, summary);
+                Corsac.Lang.Opt.LinkSummary.AddConstantReturns(f, obj, summary);
 
             // WHAT THIS FUNCTION IS, for a fault to read back. Recorded per
             // function as it is encoded, because this is the one moment the
@@ -360,7 +371,7 @@ public sealed class X86Backend : IBackend
                 foreach (MBlock t in targets)
                 {
                     tables.Relocs.Add(new Relocation(tables.Bytes.Count, f.Name, t.Offset, RelocKind.Abs32));
-                    tables.Bytes.AddRange(new byte[4]);
+                    for (int z = 0; z < 4; z++) tables.Bytes.Add(0);
                 }
             }
             encoder.ReleaseFunction();
@@ -719,7 +730,9 @@ public sealed class X86Backend : IBackend
     /// </summary>
     private static List<int> ObjectWords(MFunction m)
     {
-        SortedSet<int> words = new();
+        // Gathered, sorted and made unique in one list: what a SortedSet
+        // copied out to a list gave, without the set's node per word.
+        List<int> words = new();
         foreach ((int offset, int bytes) in m.Frame.SlotRanges())
         {
             for (int at = offset & ~3; at < offset + bytes; at += 4)
@@ -727,7 +740,14 @@ public sealed class X86Backend : IBackend
                 if (at < 0) words.Add(at);
             }
         }
-        return words.ToList();
+        words.Sort();
+        int unique = 0;
+        for (int k = 0; k < words.Count; k++)
+        {
+            if (unique == 0 || words[k] != words[unique - 1]) words[unique++] = words[k];
+        }
+        words.RemoveRange(unique, words.Count - unique);
+        return words;
     }
 
     /// <summary>

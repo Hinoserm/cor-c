@@ -17,6 +17,14 @@ public sealed class LoadReuse : IPass
     public void Run(Function function)
     {
         if (function.Async is not null) return;
+        // NO LOAD TO REUSE, NO GRAPH: a function without one gets no Cfg and
+        // no Defs. The blocks are numbered as the Cfg would have numbered
+        // them, for whatever reads Order next.
+        if (!AnyCandidate(function))
+        {
+            for (int k = 0; k < function.Blocks.Count; k++) function.Blocks[k].Order = k;
+            return;
+        }
         Cfg cfg = new(function);
         if (cfg.Roots.Count != 1) return;
         Defs defs = new(cfg);
@@ -109,6 +117,17 @@ public sealed class LoadReuse : IPass
                     ForgetAll();
             }
         }
+    }
+
+    /// <summary>Whether any instruction is a load Visit could remember.</summary>
+    private static bool AnyCandidate(Function function)
+    {
+        foreach (Block block in function.Blocks)
+        foreach (Instr i in block.Instrs)
+        {
+            if (i.Op == Opcode.Load && i.Dest is { } result && result.Type.IsInt() && Address(i, out _)) return true;
+        }
+        return false;
     }
 
     private static bool Address(Instr i, out Key key)
