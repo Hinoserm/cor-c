@@ -2937,19 +2937,21 @@ static class Runtime
     /// nobody reads them; .NET truncates too.
     const int TraceDepth = 32;
 
-    /// 'CFR3' as the code generator writes it, least significant byte first.
+    /// 'CFR5' as the code generator writes it, least significant byte first.
     /// Spelled as the four letters rather than the number they come to, so
     /// that it cannot drift from FrameTableFormat (the linker's object
     /// model, where the layout is written down in full) by a typing slip.
-    const long TableMagic = 67 + (70 << 8) + (82 << 16) + (51 << 24);
-    /// 'CFR4': the same table, its names and files in the image's one pool,
-    /// whose address the link wrote at +12 (Lto.FramePool).
-    const long PooledMagic = 67 + (70 << 8) + (82 << 16) + (52 << 24);
-    /// 'CFP1': that pool. Its names are spelled in tokens: at +4 how many,
+    const long TableMagic = 67 + (70 << 8) + (82 << 16) + (53 << 24);
+    /// 'CFR6': the same table, its names and files in the image's one pool,
+    /// whose address the link wrote at +12 (Lto.FramePool), and its shared
+    /// line programs there too, from where +20 says.
+    const long PooledMagic = 67 + (70 << 8) + (82 << 16) + (54 << 24);
+    /// 'CFP2': that pool. Its names are spelled in tokens: at +4 how many,
     /// at +8 where the names begin, at +12 a word for where each token
     /// starts and one more for where the last ends, then the tokens' bytes;
-    /// a name is a ULEB128 token count and then each token's index.
-    const long NamePoolMagic = 67 + (70 << 8) + (80 << 16) + (49 << 24);
+    /// a name is a ULEB128 token count and then each token's index. The
+    /// image's shared line programs follow the names.
+    const long NamePoolMagic = 67 + (70 << 8) + (80 << 16) + (50 << 24);
     const long DirectoryMagic = 67 + (77 << 8) + (68 << 16) + (82 << 24);
 
     /// A ULEB128 at `at`, with `at` left just past it. The table is written
@@ -3029,29 +3031,30 @@ static class Runtime
     }
 
     /// THE TABLE ENTRY AN ADDRESS FALLS IN: where its name and its source
-    /// file are spelled, where its line program begins, and how far into the
-    /// function the address lies. False when the address belongs to no
-    /// function this image described. `pool` is the name pool the name and
+    /// file are spelled, the source line the address is on (0 for none, and
+    /// left at 0 unless `lines` asks, since a line is its function's line
+    /// program read), and how far into the function the address lies. False
+    /// when the address belongs to no function this image described. `pool` is the name pool the name and
     /// file are spelled in, or 0 when they are zero-terminated strings
     /// (NameAt, SayName).
     ///
     /// Allocates nothing, which is what lets the out-of-memory report use it.
-    static bool Lookup(long address, out long name, out long file, out long pool, out long program, out long offset) {
+    static bool Lookup(long address, out long name, out long file, out long pool, out long line, out long offset, bool lines) {
         // This image's own table first, then every other image's, in the
         // order they introduced themselves.
-        if (LookupMetadata(Sys.FrameDirectory(), address, out name, out file, out pool, out program, out offset)) { return true; }
+        if (LookupMetadata(Sys.FrameDirectory(), address, out name, out file, out pool, out line, out offset, lines)) { return true; }
 
         for (long i = 0; i < _tableCount; i++) {
-            if (LookupMetadata(Sys.Peek(_tables + i * WordSize.Bytes), address, out name, out file, out pool, out program, out offset)) { return true; }
+            if (LookupMetadata(Sys.Peek(_tables + i * WordSize.Bytes), address, out name, out file, out pool, out line, out offset, lines)) { return true; }
         }
         return false;
     }
 
-    static bool LookupMetadata(long metadata, long address, out long name, out long file, out long pool, out long program, out long offset) {
-        name = 0; file = 0; pool = 0; program = 0; offset = 0;
+    static bool LookupMetadata(long metadata, long address, out long name, out long file, out long pool, out long line, out long offset, bool lines) {
+        name = 0; file = 0; pool = 0; line = 0; offset = 0;
         if (metadata == 0) { return false; }
         if (Sys.PeekWord(metadata) == TableMagic || Sys.PeekWord(metadata) == PooledMagic) {
-            return LookupIn(metadata, address, out name, out file, out pool, out program, out offset);
+            return LookupIn(metadata, address, out name, out file, out pool, out line, out offset, lines);
         }
         if (Sys.PeekWord(metadata) != DirectoryMagic || Sys.PeekWord(metadata + 4) != 1 || Sys.PeekWord(metadata + 12) != 16) { return false; }
         long count = Sys.PeekWord(metadata + 8);
@@ -3059,7 +3062,7 @@ static class Runtime
         for (long i = 0; i < count; i++) {
             long record = metadata + 16 + i * 16;
             long table = TableAddress(record);
-            if (table != 0 && Sys.PeekWord(record + 4) >= 20 && LookupIn(table, address, out name, out file, out pool, out program, out offset)) { return true; }
+            if (table != 0 && Sys.PeekWord(record + 4) >= 24 && LookupIn(table, address, out name, out file, out pool, out line, out offset, lines)) { return true; }
         }
         return false;
     }
@@ -3078,18 +3081,22 @@ static class Runtime
 #endif
     }
 
-    /// The same, in one table ('CFR3' or 'CFR4'; FrameTableFormat in the
-    /// linker's object model). Each entry is said against the one before:
-    /// its start from that one's end, its name from that one's name, its file
-    /// only when it changes (0 for the same), and its line program by its
-    /// length (0 for none), the programs following in entry order. The line
-    /// program is an absolute address into the matched table, not an offset
-    /// relative to the runtime's own unit.
-    static bool LookupIn(long table, long address, out long name, out long file, out long pool, out long program, out long offset) {
+    /// The same, in one table ('CFR5' or 'CFR6'; FrameTableFormat in the
+    /// linker's object model). Each entry is a lead byte -- its start's
+    /// distance from the end of the one before when under 7, whether its file
+    /// changed, which kind of line program it has, and its size's low two
+    /// bits -- and then its fields, each said against the entry before: its
+    /// name from that one's name, its file only when it changes, and its line
+    /// program by its length and first line when it is its own (those follow
+    /// in entry order) or by where it lies among the shared ones. Only the
+    /// matching entry's program is read, and only to the address. The shared
+    /// programs are the matched table's own or its image's pool's, never the
+    /// runtime's unit's.
+    static bool LookupIn(long table, long address, out long name, out long file, out long pool, out long line, out long offset, bool lines) {
         name = 0;
         file = 0;
         pool = 0;
-        program = 0;
+        line = 0;
         offset = 0;
 
         if (table == 0) { return false; }
@@ -3099,25 +3106,42 @@ static class Runtime
         long count = Sys.PeekWord(table + 4);
         long end = TableAddress(table + 8);
         long strings;
+        long shared;
         if (pooled) {
             pool = TableAddress(table + 12);
             if (pool == 0 || Sys.PeekWord(pool) != NamePoolMagic) { pool = 0; return false; }
             strings = pool + Sys.PeekWord(pool + 8);
+            shared = pool + Sys.PeekWord(table + 20);
         } else {
             strings = table + Sys.PeekWord(table + 12);
+            shared = table + Sys.PeekWord(table + 20);
         }
-        long lines = table + Sys.PeekWord(table + 16);
-        long at = table + 20;
+        long own = table + Sys.PeekWord(table + 16);
+        long at = table + 24;
         long said = 0;
         long source = 0;
+        long first = 0;
 
         for (long i = 0; i < count; i++) {
-            long start = end + Sleb(at, out at);
-            long size = Uleb(at, out at);
+            long lead = Sys.PeekByte(at);
+            at = at + 1;
+            long start = end + (lead & 7);
+            if ((lead & 7) == 7) { start = end + Sleb(at, out at); }
+            long size = (Uleb(at, out at) << 2) | ((lead >> 6) & 3);
             said = said + Sleb(at, out at);
-            long changed = Uleb(at, out at);
-            long length = Uleb(at, out at);
-            if (changed != 0) { source = changed - 1; }
+            if ((lead & 8) != 0) { source = Uleb(at, out at); }
+            long kind = (lead >> 4) & 3;
+            long program = 0;
+            long length = 0;
+            if (kind == 1) {
+                length = Uleb(at, out at);
+                first = first + Sleb(at, out at);
+            } else if (kind == 2) {
+                program = shared + Uleb(at, out at);
+            } else if (kind != 0) {
+                pool = 0;
+                return false;
+            }
 
             // The functions ascend: every entry after one past the address
             // starts past it too.
@@ -3125,12 +3149,19 @@ static class Runtime
             if (address < start + size) {
                 name = strings + said;
                 file = strings + source;
-                program = length == 0 ? 0 : lines;
                 offset = address - start;
+                if (lines && kind == 1) {
+                    line = LineIn(own, own + length, first, offset);
+                } else if (lines && kind == 2) {
+                    length = Uleb(program, out program);
+                    long top = program + length;
+                    long from = Sleb(program, out program);
+                    line = LineIn(program, top, from, offset);
+                }
                 return true;
             }
             end = start + size;
-            lines = lines + length;
+            own = own + length;
         }
         pool = 0;
         return false;
@@ -3142,16 +3173,15 @@ static class Runtime
         long name;
         long file;
         long pool;
-        long program;
+        long line;
         long offset;
 
-        if (!Lookup(address, out name, out file, out pool, out program, out offset)) { return null; }
+        if (!Lookup(address, out name, out file, out pool, out line, out offset, true)) { return null; }
 
         string where = String.Concat("   at ", NameAt(pool, name));
         string source = NameAt(pool, file);
         if (source.Length == 0) { return where; }
 
-        long line = LineAt(program, offset);
         if (line == 0) { return String.Concat(where, String.Concat(" in ", source)); }
 
         return String.Concat(where,
@@ -3159,24 +3189,42 @@ static class Runtime
                String.Concat(":line ", String.FromInt(line)))));
     }
 
-    /// The line a byte of a function belongs to: the last one that begins at
-    /// or before it, or 0 when the function carries no line program.
-    static long LineAt(long program, long offset) {
-        if (program == 0) { return 0; }
+    /// THE LINE A BYTE OF A FUNCTION BELONGS TO: that of the last pair at
+    /// or before it, or 0 when it lies before the first. The program runs
+    /// from `at` to `end` and starts at line `line`: a ULEB128 first offset,
+    /// then ops, each moving the offset forward by A and the line by L, never
+    /// 0 (FrameTableFormat, which writes them, has the same numbers):
+    ///   b < 160         A = b / 2 + 1, L = b % 2 + 1
+    ///   160 <= b < 255  c = (b - 160) * 256 + the next byte, A = c / 48 + 1,
+    ///                   D = c % 48 - 24, and L = D + 1 when D >= 0, else D
+    ///   b = 255         ULEB128 A, SLEB128 L
+    static long LineIn(long at, long end, long line, long offset) {
+        long where = Uleb(at, out at);
+        if (where > offset) { return 0; }
 
-        long at = program;
-        long count = Uleb(at, out at);
-        long where = 0;
-        long line = 0;
-        long answer = 0;
-
-        for (long i = 0; i < count; i++) {
-            where = where + Uleb(at, out at);
-            line = line + Sleb(at, out at);
-            if (where > offset) { return answer; }
-            answer = line;
+        while (at < end) {
+            long b = Sys.PeekByte(at);
+            at = at + 1;
+            long step;
+            long moved;
+            if (b < 160) {
+                step = (b >> 1) + 1;
+                moved = (b & 1) + 1;
+            } else if (b < 255) {
+                long c = ((b - 160) << 8) | Sys.PeekByte(at);
+                at = at + 1;
+                step = c / 48 + 1;
+                moved = c % 48 - 24;
+                if (moved >= 0) { moved = moved + 1; }
+            } else {
+                step = Uleb(at, out at);
+                moved = Sleb(at, out at);
+            }
+            where = where + step;
+            if (where > offset) { return line; }
+            line = line + moved;
         }
-        return answer;
+        return line;
     }
 
     /// THE CALLERS ABOVE A FRAME, newest first, as .NET lays them out.
@@ -3275,10 +3323,10 @@ static class Runtime
             long name;
             long file;
             long pool;
-            long program;
+            long line;
             long offset;
 
-            if (!Lookup(ret, out name, out file, out pool, out program, out offset)) { break; }
+            if (!Lookup(ret, out name, out file, out pool, out line, out offset, false)) { break; }
 
             SayLiteral(fd, "   at ");
             SayName(fd, pool, name);
@@ -3321,10 +3369,10 @@ static class Runtime
         long name;
         long file;
         long pool;
-        long program;
+        long line;
         long offset;
 
-        if (Lookup(pc, out name, out file, out pool, out program, out offset)) {
+        if (Lookup(pc, out name, out file, out pool, out line, out offset, false)) {
             SayLiteral(StdErr, "   at ");
             SayName(StdErr, pool, name);
             SayLiteral(StdErr, "\n");
@@ -3399,11 +3447,11 @@ static class Runtime
         long name;
         long file;
         long pool;
-        long program;
+        long line;
         long offset;
 
         SayLiteral(fd, "   at ");
-        if (Lookup(address, out name, out file, out pool, out program, out offset)) {
+        if (Lookup(address, out name, out file, out pool, out line, out offset, false)) {
             SayName(fd, pool, name);
         } else {
             SayLiteral(fd, "?");
@@ -3417,17 +3465,17 @@ static class Runtime
         long name;
         long file;
         long pool;
-        long program;
+        long line;
         long offset;
 
-        if (!Lookup(address, out name, out file, out pool, out program, out offset)) { return; }
+        if (!Lookup(address, out name, out file, out pool, out line, out offset, true)) { return; }
         SayLiteral(StdErr, prefix);
         SayName(StdErr, pool, name);
         if (Sys.PeekByte(file) != 0) {
             SayLiteral(StdErr, " in ");
             SayName(StdErr, pool, file);
         }
-        Gc.SayNumber(":line ", LineAt(program, offset));
+        Gc.SayNumber(":line ", line);
     }
 
     /// A string the compiler laid out in the image, which is data and not an

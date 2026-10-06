@@ -23,15 +23,32 @@ also supported as a distinct metadata kind. Repeated registration is idempotent.
 still supplies the current compilation unit's table for low-level inspection.
 
 The tables' own layouts live in the linker's object model, shared by the code
-generator and the link: `FrameTableFormat` (`'CFR3'` per object, `'CFR4'` once
-the link has moved its names into the image's tokenized `__corsac_frame_pool`)
-and `StackMapTable` (`'CSM1'` version 6, varint call sites with checkpoints
-for a logarithmic lookup). The runtime's readers (`Runtime.LookupIn`,
-`Gc.MapSite`) are the third copy and change with them.
+generator and the link: `FrameTableFormat` (`'CFR5'` per object, `'CFR6'` once
+the link has moved its names and shared line programs into the image's
+`__corsac_frame_pool`, `'CFP2'`) and `StackMapTable` (`'CSM1'` version 6,
+varint call sites with checkpoints for a logarithmic lookup). The runtime's
+readers (`Runtime.LookupIn` and `Runtime.LineIn`, `Gc.MapSite`) are the third
+copy and change with them; they accept only these magics.
 
-Stack lookup searches each unit and carries an absolute line-program address
-from the matching table. It must never interpret another unit's line offset
-relative to the runtime's own table. The directory makes stack maps discoverable
+Frame entries are a lead byte (start padding, file-changed flag, line-program
+kind, low size bits) and a few varint deltas. A line program is its first code
+offset and then one op per line change, coded like DWARF's special opcodes: a
+byte for small forward steps of one or two lines, two bytes for nearly every
+other step, an escape for the rest; pairs that do not change the line are
+dropped. A function's own program takes its first line from the entry as a
+delta from the previous one's. A program that several functions carry -- a
+generic body compiled into many units, a one-line accessor -- is stored once,
+most used first, and referred to by offset: within a table in `'CFR5'`, across
+the whole image in the pool after the link. Only the matched entry's program
+is decoded, only up to the address, and only when the caller wants a line;
+nothing is allocated. Modelled on the compiler's own native image, the line
+programs shrink from about 506 KB to about 249 KB and the tables from about
+787 KB to about 425 KB, with about 18 KB of shared programs added to the pool.
+
+Stack lookup searches each unit and decodes the line from the matching table's
+own programs or its shared ones (the table's for `'CFR5'`, its pool's for
+`'CFR6'`). It must never interpret another unit's line offset relative to the
+runtime's own table. The directory makes stack maps discoverable
 but does not by itself implement a precise collector or reflection metadata.
 
 The compiler passes `Runtime.Capture` the throwing function's frame pointer and
