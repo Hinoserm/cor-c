@@ -597,7 +597,7 @@ public sealed partial class Binder
                                                                   && m.Decl?.Body is not null && MethodSignatures.Implements(m, want)))
                     .FirstOrDefault(found => found is not null)
                     ?? (want.Decl?.Body is not null ? want : null);
-                if (body is not null) closure.InterfaceImplementations[want.VtableSlot] = body;
+                if (body is not null) closure.WritableInterfaceImplementations[want.VtableSlot] = body;
             }
         }
     }

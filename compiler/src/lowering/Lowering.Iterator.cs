@@ -89,7 +89,7 @@ public sealed partial class Lowering
             Decl = new TypeDecl { Name = name, Kind = TypeKind.Class, LocalOnly = true },
         };
         List<TypeSymbol> faces = enumerable ? new() { returned, enumerator } : new() { enumerator };
-        foreach (TypeSymbol face in faces) machine.Interfaces.Add(face);
+        foreach (TypeSymbol face in faces) machine.WritableInterfaces.Add(face);
         Binder.ImplementSlots(machine, faces);
 
         MethodSymbol? moveNext = machine.Methods.FirstOrDefault(x => x.Name == "MoveNext" && x.Params.Count == 0);
