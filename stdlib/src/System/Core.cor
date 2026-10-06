@@ -8763,9 +8763,28 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
 
     public int Count => count;
 
+    // THE ROOM ASKED OF A LOCAL, as .NET's Add asks it: the array and the
+    // count read once, and the room tested as the store's own bounds check
+    // tests it -- an unsigned compare of the index with the length -- so the
+    // check is a question already answered on the way in (edge predicates).
+    // Before, the field was loaded again for the null test, the length and
+    // the store. A list that is full, or has no array yet, grows in Added,
+    // as it grew here -- the growth a call apart, so the common store holds
+    // no join of the field read before Grow with the field read after it.
     public void Add(T value) {
         version = version + 1;
-        if (items == null || count == items.Length) { Grow(); }
+        T[] array = items;
+        int n = count;
+        if (array != null && (uint)n < (uint)array.Length) {
+            array[n] = value;
+            count = n + 1;
+            return;
+        }
+        Added(value);
+    }
+
+    private void Added(T value) {
+        Grow();
         items[count] = value;
         count = count + 1;
     }
