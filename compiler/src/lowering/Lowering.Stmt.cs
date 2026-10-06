@@ -613,8 +613,19 @@ public sealed partial class Lowering
 
         if (TryDenseSwitch(sw, bodies, fallback, out long minimum, out Block[] table))
         {
-            VReg key = IsWideInteger(of) ? _e.Unary(Opcode.Trunc64, held) : held;
-            if (minimum != 0)
+            VReg key = held;
+            if (IsWideInteger(of))
+            {
+                // A 64-BIT SUBJECT IS RANGED IN ALL 64 BITS before the table:
+                // cut to its low word first, a value with anything in its high
+                // word was taken for the label its low word matched.
+                VReg shifted = minimum != 0 ? _e.Binary(Opcode.Sub, held, minimum) : held;
+                Block tabled = _f.NewBlock("switchtable");
+                _e.Branch(_e.Binary(Opcode.LtU, shifted, table.Length), tabled, fallback);
+                _e.SetBlock(tabled);
+                key = _e.Unary(Opcode.Trunc64, shifted);
+            }
+            else if (minimum != 0)
             {
                 key = _e.Binary(Opcode.Sub, key, minimum);
             }
@@ -729,12 +740,30 @@ public sealed partial class Lowering
     /// <summary>A case label of the form `subject == constant`, or `constant` on its own.</summary>
     private bool TryCaseConstant(Expr pattern, out long value)
     {
+        // `case Open:` is parsed as a type pattern and bound as the value
+        // pattern it is (Binder: a constant that hides no type): the label is
+        // the rewrite's.
+        if (_b.Rewrites.TryGetValue(pattern, out Expr? bound)) pattern = bound;
         if (pattern is BinaryExpr { Op: BinOp.Eq } eq)
         {
-            if (eq.Left is SubjectExpr && Fold.TryConst(eq.Right, out value)) return true;
-            if (eq.Right is SubjectExpr && Fold.TryConst(eq.Left, out value)) return true;
+            if (eq.Left is SubjectExpr && Fold.TryConst(eq.Right, out value, NamedConstant)) return true;
+            if (eq.Right is SubjectExpr && Fold.TryConst(eq.Left, out value, NamedConstant)) return true;
         }
-        return Fold.TryConst(pattern, out value);
+        return Fold.TryConst(pattern, out value, NamedConstant);
+    }
+
+    /// <summary>
+    /// A label that names a constant -- `case Calls.Open:`, a const field --
+    /// as the number the binder resolved it to. Without it a switch over
+    /// named constants, which is how C# writes nearly all of them, was never
+    /// dense: every label was a test, one after another, as Roslyn emits a
+    /// switch over literals as a jump table and one over consts the same.
+    /// A string or floating-point const is no integer label.
+    /// </summary>
+    private long? NamedConstant(Expr e)
+    {
+        if (e is not (NameExpr or MemberExpr) || !_b.Resolved.TryGetValue(e, out Sym? sym)) return null;
+        return sym is ConstSym { Text: null } k && k.Type.Prim is not (Prim.F32 or Prim.F64) ? k.Value : null;
     }
 
     // ---- exceptions ----------------------------------------------------------------

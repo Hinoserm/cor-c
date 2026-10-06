@@ -2390,6 +2390,11 @@ internal sealed partial class Selector
             case MachineIntrinsics.GetGs:
                 Emit(MOp.GetGs, Lo(i.Dest!));
                 return;
+            case MachineIntrinsics.ReadFlags:
+                // pushfd; pop r: no call to a stub for the one bit a lock or a
+                // gate asks before it turns interrupts off.
+                if (i.Dest is not null) Emit(MOp.ReadFlags, Lo(i.Dest));
+                return;
             case MachineIntrinsics.SetGs:
                 Emit(MOp.SetGs, R(i.Operands[0]));
                 return;

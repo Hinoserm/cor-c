@@ -613,6 +613,8 @@ public sealed partial class Lowering
                 return Void();
             case "ReadTsc":
                 return _e.Call(MachineIntrinsics.ReadTsc, IrType.I64)!;
+            case "ReadFlags":
+                return Widen(_e.Call(MachineIntrinsics.ReadFlags, IrTypes.Word)!);
             case "SwapGs":
                 _e.Call(MachineIntrinsics.SwapGs, IrType.Void);
                 return Void();
